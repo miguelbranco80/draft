@@ -41,6 +41,7 @@ add_library(
   src/syntax/token.cpp
   src/target/profile.cpp
   src/workspace/package.cpp
+  src/workspace/workspace.cpp
 )
 
 target_include_directories(draft_compiler PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
@@ -89,6 +90,10 @@ if(BUILD_TESTING)
   add_executable(draft_package_tests tests/package_test.cpp)
   target_link_libraries(draft_package_tests PRIVATE draft_compiler)
   add_test(NAME draft_package_tests COMMAND draft_package_tests)
+
+  add_executable(draft_workspace_tests tests/workspace_test.cpp)
+  target_link_libraries(draft_workspace_tests PRIVATE draft_compiler)
+  add_test(NAME draft_workspace_tests COMMAND draft_workspace_tests)
 
   add_executable(draft_sema_foundation_tests tests/sema_foundation_test.cpp)
   target_link_libraries(draft_sema_foundation_tests PRIVATE draft_compiler)

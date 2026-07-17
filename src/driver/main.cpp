@@ -17,10 +17,13 @@
 #include "syntax/token.h"
 #include "target/profile.h"
 #include "workspace/package.h"
+#include "workspace/workspace.h"
 
+#include <filesystem>
 #include <iostream>
 #include <string>
 #include <string_view>
+#include <system_error>
 
 namespace {
 
@@ -116,9 +119,12 @@ int print_target() {
   return 0;
 }
 
-// Runs the complete provider-free front end currently available for one folder
-// package. `check` never invokes an agent, assembler, linker, or network service;
-// later backend stages consume the returned semantic graph and HIR in memory.
+// Runs the complete provider-free front end currently available for one root
+// package and all workspace-relative imports. Until the build manifest command
+// supplies an explicit workspace root, the parent of the requested package is
+// the command's canonical workspace root. No dependency or core roots are
+// inferred from the environment. `check` never invokes an agent, assembler,
+// linker, or network service.
 int check_package(const std::string &directory) {
   draft::SourceManager sources;
   draft::DiagnosticSink diagnostics;
@@ -129,28 +135,57 @@ int check_package(const std::string &directory) {
     return 1;
   }
 
-  draft::PackageLoadOptions options;
-  options.file_tag = target.facts.file_tag;
-  draft::PackageLoadResult loaded = draft::load_package(
-      sources, directory, options, diagnostics);
+  std::error_code path_error;
+  const std::filesystem::path absolute_directory =
+      std::filesystem::absolute(directory, path_error);
+  if (path_error) {
+    std::cerr << "error: cannot make package path absolute: "
+              << path_error.message() << '\n';
+    return 1;
+  }
+
+  draft::WorkspaceLoadOptions options;
+  options.workspace_directory = absolute_directory.parent_path().string();
+  options.package_options.file_tag = target.facts.file_tag;
+  draft::WorkspaceLoadResult loaded = draft::load_workspace(
+      sources, absolute_directory.string(), options, diagnostics);
+  std::size_t symbol_count = 0;
+  std::size_t type_count = 0;
+  std::size_t procedure_count = 0;
+  bool checked_all = loaded.ok;
   if (loaded.ok) {
-    draft::SemanticAnalysisResult semantics = draft::analyze_package_semantics(
-        sources, loaded.package, target.facts, diagnostics);
-    draft::BodyCheckResult bodies;
-    if (semantics.ok) {
-      bodies = draft::check_package_bodies(
-          sources,
-          loaded.package,
-          semantics.selections,
-          semantics.package,
-          semantics.constants,
-          diagnostics);
+    // DFS discovery places every dependency after its importer. Reversing that
+    // order checks dependencies before consumers and is the order the canonical
+    // interface pass will use to publish imported names.
+    for (std::size_t remaining = loaded.graph.packages.size(); remaining > 0; --remaining) {
+      draft::WorkspacePackage &workspace_package = loaded.graph.packages[remaining - 1];
+      draft::SemanticAnalysisResult semantics = draft::analyze_package_semantics(
+          sources, workspace_package.loaded, target.facts, diagnostics);
+      draft::BodyCheckResult bodies;
+      if (semantics.ok) {
+        bodies = draft::check_package_bodies(
+            sources,
+            workspace_package.loaded,
+            semantics.selections,
+            semantics.package,
+            semantics.constants,
+            diagnostics);
+      }
+      if (!semantics.ok || !bodies.ok) {
+        checked_all = false;
+        continue;
+      }
+      symbol_count += semantics.package.symbols.symbol_count();
+      type_count += semantics.package.types.size();
+      procedure_count += bodies.checked_procedures;
     }
-    if (semantics.ok && bodies.ok) {
-      std::cout << "checked package " << loaded.package.short_name << ": "
-                << semantics.package.symbols.symbol_count() << " symbols, "
-                << semantics.package.types.size() << " types, "
-                << bodies.checked_procedures << " procedure bodies\n";
+    if (checked_all) {
+      const draft::WorkspacePackage &root = loaded.graph.package(loaded.graph.root_package);
+      std::cout << "checked package graph rooted at " << root.loaded.short_name << ": "
+                << loaded.graph.packages.size() << " packages, "
+                << symbol_count << " symbols, "
+                << type_count << " types, "
+                << procedure_count << " procedure bodies\n";
     }
   }
 
