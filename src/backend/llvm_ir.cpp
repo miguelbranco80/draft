@@ -997,14 +997,63 @@ private:
     return 0;
   }
 
+  [[nodiscard]] std::string union_scratch(std::size_t instruction_index) const {
+    return "%union.scratch." + std::to_string(instruction_index);
+  }
+
+  [[nodiscard]] std::optional<TypeId> union_scratch_type(
+      const MirProcedure &procedure,
+      const MirInstruction &instruction) const {
+    TypeId candidate;
+    if (instruction.kind == MirInstructionKind::Aggregate) {
+      candidate = instruction.type;
+    } else if (instruction.kind == MirInstructionKind::ExtractMember &&
+               !instruction.operands.empty()) {
+      candidate = procedure.value(instruction.operands.front()).type;
+    }
+    if (!candidate.is_valid()) return std::nullopt;
+    const TypeKind kind = type(candidate).kind;
+    if (kind != TypeKind::TaggedUnion && kind != TypeKind::RawUnion) {
+      return std::nullopt;
+    }
+    return candidate;
+  }
+
   void emit_aggregate(
+      std::size_t instruction_index,
       const MirProcedure &procedure,
       const MirInstruction &instruction,
       std::vector<std::string> &operands) {
     if (type(instruction.type).kind == TypeKind::TaggedUnion ||
         type(instruction.type).kind == TypeKind::RawUnion) {
-      error(instruction.range, "union aggregate construction is not lowered yet");
-      assign_alias(operands, instruction, "zeroinitializer");
+      // Unions are represented as their exact byte-sized storage because LLVM
+      // has no source-level tagged-union type. Build the value in temporary
+      // memory: zeroing first gives deterministic padding and the Draft zero
+      // value, then discriminator/payload stores write their typed fields.
+      const Type &aggregate_type = type(instruction.type);
+      const std::string storage = union_scratch(instruction_index);
+      output_ << "  store " << llvm_type(instruction.type)
+              << " zeroinitializer, ptr " << storage << ", align "
+              << aggregate_type.layout.alignment << '\n';
+      for (std::size_t index = 0; index < instruction.operands.size(); ++index) {
+        const MirValueId operand = instruction.operands[index];
+        const TypeId operand_type = procedure.value(operand).type;
+        const std::uint64_t offset = index < instruction.offsets.size()
+            ? instruction.offsets[index]
+            : 0;
+        const std::string address = auxiliary();
+        output_ << "  " << address << " = getelementptr i8, ptr "
+                << storage << ", i64 " << offset << '\n';
+        output_ << "  store "
+                << typed_operand(procedure, operands, operand, instruction.range)
+                << ", ptr " << address << ", align "
+                << type(operand_type).layout.alignment << '\n';
+      }
+      const std::string result = "%v" + std::to_string(instruction.result.value);
+      output_ << "  " << result << " = load " << llvm_type(instruction.type)
+              << ", ptr " << storage << ", align "
+              << aggregate_type.layout.alignment << '\n';
+      assign_alias(operands, instruction, result);
       return;
     }
     if (instruction.operands.empty()) {
@@ -1144,12 +1193,31 @@ private:
       {
         const MirValueId aggregate_id = instruction.operands[0];
         const TypeId aggregate_type = procedure.value(aggregate_id).type;
-        const std::size_t member = aggregate_index(
-            aggregate_type, instruction.offset);
-        output_ << "  " << result << " = extractvalue "
-                << typed_operand(
-                       procedure, operands, aggregate_id, instruction.range)
-                << ", " << member << '\n';
+        const TypeKind aggregate_kind = type(aggregate_type).kind;
+        if (aggregate_kind == TypeKind::TaggedUnion ||
+            aggregate_kind == TypeKind::RawUnion) {
+          // The source is an opaque byte aggregate in LLVM. Materializing it
+          // permits a typed load at the semantically checked payload offset.
+          const std::string storage = union_scratch(instruction_index);
+          output_ << "  store "
+                  << typed_operand(
+                         procedure, operands, aggregate_id, instruction.range)
+                  << ", ptr " << storage << ", align "
+                  << type(aggregate_type).layout.alignment << '\n';
+          const std::string address = auxiliary();
+          output_ << "  " << address << " = getelementptr i8, ptr "
+                  << storage << ", i64 " << instruction.offset << '\n';
+          output_ << "  " << result << " = load "
+                  << llvm_type(instruction.type) << ", ptr " << address
+                  << ", align " << type(instruction.type).layout.alignment << '\n';
+        } else {
+          const std::size_t member = aggregate_index(
+              aggregate_type, instruction.offset);
+          output_ << "  " << result << " = extractvalue "
+                  << typed_operand(
+                         procedure, operands, aggregate_id, instruction.range)
+                  << ", " << member << '\n';
+        }
         assign_alias(operands, instruction, result);
       }
       break;
@@ -1261,7 +1329,7 @@ private:
       break;
     }
     case MirInstructionKind::Aggregate:
-      emit_aggregate(procedure, instruction, operands);
+      emit_aggregate(instruction_index, procedure, instruction, operands);
       break;
     case MirInstructionKind::Assembly:
       if (instruction.result.is_valid()) output_ << "  " << result << " = ";
@@ -1359,6 +1427,19 @@ private:
                     << local.parameter_index << ", ptr %l" << local_index
                     << ", align " << type(local.type).layout.alignment << '\n';
           }
+        }
+        // Union packing and extraction use one fixed scratch slot per MIR
+        // instruction. Declaring these in the entry block avoids dynamic stack
+        // growth when the source operation executes repeatedly inside a loop.
+        for (std::size_t instruction_index = 0;
+             instruction_index < procedure.instructions.size();
+             ++instruction_index) {
+          const std::optional<TypeId> scratch_type = union_scratch_type(
+              procedure, procedure.instructions[instruction_index]);
+          if (!scratch_type.has_value()) continue;
+          output_ << "  " << union_scratch(instruction_index) << " = alloca "
+                  << llvm_type(*scratch_type) << ", align "
+                  << type(*scratch_type).layout.alignment << '\n';
         }
       }
       for (MirInstructionId instruction_id : block.instructions) {

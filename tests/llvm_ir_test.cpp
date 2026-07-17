@@ -76,6 +76,28 @@ Code :: enum i16 {
     Seven = 7,
 }
 
+Outcome :: union {
+    empty,
+    value: i64,
+    failure: u32,
+}
+
+make_outcome :: proc(value: i64) -> Outcome {
+    return .value(value)
+}
+
+read_outcome :: proc(outcome: Outcome) -> i64 {
+    switch outcome {
+    case .value(payload):
+        return payload
+    case .failure(_):
+        return -1
+    case .empty:
+        return 0
+    }
+    return -2
+}
+
 truncate_checked :: proc(value: f64) -> i32 {
     return cast[i32](value)
 }
@@ -96,6 +118,11 @@ main :: proc() -> i32 {
     inferred := identity(value)
     small := 1 + 2
     assert(left + right == 42)
+    assert(read_outcome(make_outcome(42)) == 42)
+    assert(read_outcome(.failure(7)) == -1)
+    assert(read_outcome(.empty) == 0)
+    zero_outcome: Outcome
+    assert(read_outcome(zero_outcome) == 0)
     assert(copy == 42)
     assert(inferred == 42)
     assert(small == 3)
@@ -164,6 +191,8 @@ main :: proc() -> i32 {
   EXPECT(state, module.text.find("icmp eq i16") != std::string::npos);
   EXPECT(state, module.text.find(", 7") != std::string::npos);
   EXPECT(state, module.text.find("extractvalue { i64, i64 }") != std::string::npos);
+  EXPECT(state, module.text.find("switch i8") != std::string::npos);
+  EXPECT(state, module.text.find("getelementptr i8") != std::string::npos);
   EXPECT(state, module.text.find("bitcast (i64 4602678819172646912 to double)") !=
       std::string::npos);
   EXPECT(state, module.text.find("bitcast (i64 4591870180066957722 to double)") !=

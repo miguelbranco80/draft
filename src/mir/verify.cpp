@@ -177,6 +177,16 @@ private:
     case MirTerminatorKind::Switch:
       if (terminator.targets.size() != 1 || !terminator.value.is_valid()) {
         error(terminator.range, "switch shape is invalid");
+      } else {
+        const TypeId subject_type = procedure.value(terminator.value).type;
+        for (const MirSwitchArm &arm : terminator.switch_arms) {
+          if (valid_value(procedure, arm.label) &&
+              procedure.value(arm.label).type != subject_type) {
+            error(
+                terminator.range,
+                "switch label type differs from subject type");
+          }
+        }
       }
       break;
     case MirTerminatorKind::Unreachable:

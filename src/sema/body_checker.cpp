@@ -672,6 +672,97 @@ private:
     return std::nullopt;
   }
 
+  // Tagged-union discriminators are source-order integers independent from
+  // enum values. Keeping this small lookup in semantic checking makes switch
+  // labels scalar constants before MIR and prevents native lowering from
+  // comparing whole payload-bearing aggregate values.
+  [[nodiscard]] std::optional<std::uint64_t> union_discriminator(
+      TypeId union_type, SymbolId alternative) const {
+    const std::optional<SymbolId> owner = type_owner(union_type);
+    if (!owner.has_value()) return std::nullopt;
+    std::uint64_t discriminator = 0;
+    for (const AggregateMember &member : semantic_.aggregate_members) {
+      if (member.owner != *owner) continue;
+      if (member.member == alternative) return discriminator;
+      ++discriminator;
+    }
+    return std::nullopt;
+  }
+
+  // Checks a tagged-union case label as a pattern rather than as a value
+  // constructor. `.value(name)` introduces one case-local binding; `.value`
+  // and `.value(_)` both select the alternative while ignoring its payload.
+  [[nodiscard]] HirExpressionId check_union_case_label(
+      const SyntaxTree &tree,
+      NodeId label_id,
+      ScopeId case_scope,
+      TypeId subject_type,
+      HirSwitchCase &hir_case,
+      bool multiple_labels) {
+    const SyntaxNode &label = tree.node(label_id);
+    const std::vector<SourceName> names =
+        names_in_span(tree, label.token_begin, label.token_end);
+    if (label.kind != NodeKind::ContextualAlternativeExpression || names.empty()) {
+      diagnostics_.error(label.range, "tagged-union case requires a contextual alternative");
+      return invalid_expression(label.range);
+    }
+    const std::optional<SymbolId> alternative =
+        find_member(subject_type, names.front().text);
+    if (!alternative.has_value()) {
+      diagnostics_.error(
+          names.front().range, "unknown alternative '" + names.front().text + "'");
+      return invalid_expression(label.range);
+    }
+    const Symbol member = semantic_.symbols.symbol(*alternative);
+    const std::optional<std::uint64_t> discriminator =
+        union_discriminator(subject_type, *alternative);
+    if (!discriminator.has_value()) {
+      diagnostics_.error(label.range, "tagged-union alternative has no discriminator");
+      return invalid_expression(label.range);
+    }
+
+    HirExpression expression;
+    expression.kind = HirExpressionKind::Constant;
+    expression.range = label.range;
+    expression.type = semantic_.types.type(subject_type).element;
+    expression.symbol = *alternative;
+    expression.constant = ConstantValue::make_integer(
+        BigInteger::from_u64(*discriminator));
+
+    if (!label.children.empty()) {
+      if (multiple_labels) {
+        diagnostics_.error(
+            label.range,
+            "a payload-binding case cannot share its body with other labels");
+      }
+      if (member.type == semantic_.types.builtins().void_type) {
+        diagnostics_.error(label.range, "payload-free alternative cannot bind a value");
+      } else {
+        const std::optional<SourceName> binding =
+            single_name_expression(tree, label.children.front());
+        if (!binding.has_value()) {
+          diagnostics_.error(
+              tree.node(label.children.front()).range,
+              "tagged-union payload pattern must be a name or '_'");
+        } else {
+          hir_case.payload_alternative = *alternative;
+          if (binding->text != "_") {
+            Symbol symbol;
+            symbol.name = binding->text;
+            symbol.kind = SymbolKind::Local;
+            symbol.scope = case_scope;
+            symbol.type = member.type;
+            symbol.syntax = {tree.file(), label_id};
+            symbol.name_range = binding->range;
+            hir_case.payload_binding =
+                semantic_.symbols.declare(std::move(symbol), diagnostics_);
+          }
+        }
+      }
+    }
+    return hir_.add_expression(std::move(expression));
+  }
+
   // Returns one unqualified contextual name from an expression node. This is
   // used only for compiler-defined type values and intrinsic call syntax.
   [[nodiscard]] std::optional<SourceName> single_name_expression(
@@ -1824,9 +1915,12 @@ private:
       const std::vector<SourceName> names =
           names_in_span(tree, node.token_begin, node.token_end);
       if (names.empty()) return invalid_expression(node.range);
-      const std::optional<SymbolId> alternative = find_member(expected, names.back().text);
+      // The first name follows the leading dot. A payload expression may itself
+      // contain names, so using the last name would resolve `.some(value)` as an
+      // alternative named `value`.
+      const std::optional<SymbolId> alternative = find_member(expected, names.front().text);
       if (!alternative.has_value()) {
-        diagnostics_.error(names.back().range, "unknown alternative '" + names.back().text + "'");
+        diagnostics_.error(names.front().range, "unknown alternative '" + names.front().text + "'");
         return invalid_expression(node.range);
       }
       const Symbol member = semantic_.symbols.symbol(*alternative);
@@ -1835,15 +1929,19 @@ private:
       expression.range = node.range;
       expression.type = expected;
       expression.symbol = *alternative;
-      expression.constant = ConstantValue::make_enum_label(names.back().text);
+      expression.constant = ConstantValue::make_enum_label(names.front().text);
       if (expected_kind == TypeKind::TaggedUnion) {
+        // Both payload-bearing and payload-free alternatives are aggregate
+        // values. MIR inserts their source-order discriminator and optional
+        // payload; representing the latter as a scalar constant would lose the
+        // tagged union's physical storage type.
+        expression.kind = HirExpressionKind::Composite;
         const bool has_payload = member.type != semantic_.types.builtins().void_type;
         if (has_payload != !node.children.empty()) {
           diagnostics_.error(node.range, has_payload
               ? "tagged-union alternative requires a payload"
               : "payload-free alternative cannot carry a value");
         } else if (has_payload) {
-          expression.kind = HirExpressionKind::Composite;
           expression.operands.push_back(check_expression(
               tree, node.children.front(), scope, member.type));
         }
@@ -2438,6 +2536,8 @@ private:
           const SyntaxNode &case_node = tree.node(node.children[case_index]);
           if (case_node.kind != NodeKind::SwitchCase || case_node.children.empty()) continue;
           const NodeId list_id = case_node.children.back();
+          const ScopeId case_scope = semantic_.symbols.add_scope(
+              ScopeKind::Block, scope, case_node.range);
           HirSwitchCase hir_case;
           hir_case.first_label = statement.expressions.size();
           hir_case.is_default = case_node.children.size() == 1;
@@ -2445,8 +2545,18 @@ private:
           for (std::size_t label_index = 0;
                label_index + 1 < case_node.children.size();
                ++label_index) {
-            const HirExpressionId label = check_expression(
-                tree, case_node.children[label_index], scope, subject_type);
+            const HirExpressionId label =
+                !is_invalid_type(subject_type) &&
+                    semantic_.types.type(subject_type).kind == TypeKind::TaggedUnion
+                ? check_union_case_label(
+                      tree,
+                      case_node.children[label_index],
+                      case_scope,
+                      subject_type,
+                      hir_case,
+                      case_node.children.size() > 2)
+                : check_expression(
+                      tree, case_node.children[label_index], scope, subject_type);
             statement.expressions.push_back(label);
             ++hir_case.label_count;
             if (hir_.expression(label).symbol.is_valid()) {
@@ -2463,8 +2573,6 @@ private:
               }
             }
           }
-          const ScopeId case_scope = semantic_.symbols.add_scope(
-              ScopeKind::Block, scope, case_node.range);
           HirBlock case_block;
           case_block.scope = case_scope;
           case_block.range = case_node.range;

@@ -154,6 +154,11 @@ struct HirSwitchCase {
   std::size_t first_label = 0;
   std::size_t label_count = 0;
   HirBlockId body;
+  // A tagged-union payload binding belongs to exactly one case alternative.
+  // The alternative identifies the payload byte offset/type; the binding is
+  // invalid when the case ignores the payload or uses `_`.
+  SymbolId payload_alternative;
+  SymbolId payload_binding;
   bool is_default = false;
 };
 

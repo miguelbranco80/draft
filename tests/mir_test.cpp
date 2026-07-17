@@ -72,6 +72,11 @@ Mode :: enum {
     On,
 }
 
+Choice :: union {
+    none,
+    some: i64,
+}
+
 consume :: proc(value: i64) {
 }
 
@@ -83,6 +88,20 @@ choose :: proc(mode: Mode) -> i64 {
         return 20
     }
     return 0
+}
+
+unwrap :: proc(choice: Choice) -> i64 {
+    switch choice {
+    case .some(value):
+        return value
+    case .none:
+        return 0
+    }
+    return -1
+}
+
+wrap :: proc(value: i64) -> Choice {
+    return .some(value)
 }
 
 compute :: proc(values: []i64, flag: bool) -> i64 {
@@ -123,8 +142,8 @@ compute :: proc(values: []i64, flag: bool) -> i64 {
   EXPECT(state, source.bodies.ok);
   EXPECT(state, source.mir.ok);
   EXPECT(state, !source.diagnostics.has_errors());
-  EXPECT(state, source.mir.lowered_procedures == 3);
-  EXPECT(state, source.mir.program.procedures().size() == 3);
+  EXPECT(state, source.mir.lowered_procedures == 5);
+  EXPECT(state, source.mir.program.procedures().size() == 5);
 
   std::size_t conditional_branches = 0;
   std::size_t switches = 0;
@@ -154,11 +173,11 @@ compute :: proc(values: []i64, flag: bool) -> i64 {
     }
   }
   EXPECT(state, conditional_branches >= 6);
-  EXPECT(state, switches == 1);
+  EXPECT(state, switches == 2);
   EXPECT(state, calls == 1);
   EXPECT(state, bounds_checks == 1);
   EXPECT(state, stores >= 12);
-  EXPECT(state, extracted_members == 2);
+  EXPECT(state, extracted_members >= 4);
 }
 
 void test_unresolved_synthesis_stops_lowering(TestState &state) {

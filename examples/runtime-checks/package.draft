@@ -5,6 +5,28 @@ Code :: enum i16 {
     Seven = 7,
 }
 
+Outcome :: union {
+    empty,
+    value: i64,
+    failure: u32,
+}
+
+make_outcome :: proc(value: i64) -> Outcome {
+    return .value(value)
+}
+
+read_outcome :: proc(outcome: Outcome) -> i64 {
+    switch outcome {
+    case .value(payload):
+        return payload
+    case .failure(_):
+        return -1
+    case .empty:
+        return 0
+    }
+    return -2
+}
+
 divide :: proc(left, right: i64) -> i64 {
     return left / right
 }
@@ -43,6 +65,11 @@ main :: proc() {
     (left, _): (i64, i64) = (20, 0)
     (_, right): (i64, i64) = (0, 22)
     assert(left + right == 42)
+    assert(read_outcome(make_outcome(42)) == 42)
+    assert(read_outcome(.failure(7)) == -1)
+    assert(read_outcome(.empty) == 0)
+    zero_outcome: Outcome
+    assert(read_outcome(zero_outcome) == 0)
     assert(narrow(42.75) == 42)
     assert(cast[i64](to_rune(65)) == 65)
     assert(to_code(7) == .Seven)

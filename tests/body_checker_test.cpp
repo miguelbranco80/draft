@@ -73,6 +73,11 @@ Mode :: enum {
     On,
 }
 
+Choice :: union {
+    none,
+    some: i64,
+}
+
 consume :: proc(value: i64) {
 }
 
@@ -118,6 +123,16 @@ choose :: proc(mode: Mode) -> i64 {
     return -1
 }
 
+unwrap :: proc(choice: Choice) -> i64 {
+    switch choice {
+    case .some(value):
+        return value
+    case .none:
+        return 0
+    }
+    return -1
+}
+
 views :: proc() -> usize {
     local: [3]u64 = [3]u64{1, 2, 3}
     part := local[1:]
@@ -152,8 +167,8 @@ main :: proc() {
   EXPECT(state, source.semantics.ok);
   EXPECT(state, source.bodies.ok);
   EXPECT(state, !source.diagnostics.has_errors());
-  EXPECT(state, source.bodies.checked_procedures == 7);
-  EXPECT(state, source.bodies.program.procedures().size() == 7);
+  EXPECT(state, source.bodies.checked_procedures == 8);
+  EXPECT(state, source.bodies.program.procedures().size() == 8);
   EXPECT(state, source.bodies.program.expression_count() >= 55);
   EXPECT(state, source.bodies.program.statement_count() >= 28);
   EXPECT(state, source.bodies.program.block_count() >= 12);
@@ -168,6 +183,7 @@ main :: proc() {
   bool saw_compound_add = false;
   bool saw_switch_shape = false;
   bool saw_tuple_destructuring = false;
+  bool saw_union_payload_binding = false;
   for (std::size_t index = 0; index < source.bodies.program.expression_count(); ++index) {
     const draft::HirExpression &expression =
         source.bodies.program.expression(draft::HirExpressionId{
@@ -192,11 +208,16 @@ main :: proc() {
          statement.bindings.size() == 1 &&
          statement.binding_member_indices.size() == 1);
     if (statement.kind == draft::HirStatementKind::Switch) {
-      saw_switch_shape = statement.switch_cases.size() == 2 &&
+      saw_switch_shape = saw_switch_shape || (statement.switch_cases.size() == 2 &&
           statement.switch_cases[0].label_count == 1 &&
           statement.switch_cases[1].label_count == 1 &&
           !statement.switch_cases[0].is_default &&
-          !statement.switch_cases[1].is_default;
+          !statement.switch_cases[1].is_default);
+      for (const draft::HirSwitchCase &switch_case : statement.switch_cases) {
+        saw_union_payload_binding = saw_union_payload_binding ||
+            (switch_case.payload_alternative.is_valid() &&
+             switch_case.payload_binding.is_valid());
+      }
     }
   }
   EXPECT(state, saw_add);
@@ -204,6 +225,7 @@ main :: proc() {
   EXPECT(state, saw_compound_add);
   EXPECT(state, saw_switch_shape);
   EXPECT(state, saw_tuple_destructuring);
+  EXPECT(state, saw_union_payload_binding);
 }
 
 void test_body_diagnostics(TestState &state) {

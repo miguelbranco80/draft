@@ -868,6 +868,42 @@ private:
     return emit_value(std::move(instruction));
   }
 
+  [[nodiscard]] std::optional<std::uint64_t> union_discriminator(
+      SymbolId alternative) const {
+    if (!alternative.is_valid()) return std::nullopt;
+    const Symbol &member_symbol = semantic_.symbols.symbol(alternative);
+    std::uint64_t discriminator = 0;
+    for (const AggregateMember &member : semantic_.aggregate_members) {
+      const Symbol &candidate = semantic_.symbols.symbol(member.member);
+      if (candidate.scope != member_symbol.scope) continue;
+      if (member.member == alternative) return discriminator;
+      ++discriminator;
+    }
+    return std::nullopt;
+  }
+
+  [[nodiscard]] std::optional<std::uint64_t> aggregate_member_offset(
+      SymbolId member_id) const {
+    for (const AggregateMember &member : semantic_.aggregate_members) {
+      if (member.member == member_id) return member.offset;
+    }
+    return std::nullopt;
+  }
+
+  [[nodiscard]] MirValueId extract_member(
+      MirValueId aggregate,
+      TypeId member_type,
+      std::uint64_t offset,
+      SourceRange range) {
+    MirInstruction extract;
+    extract.kind = MirInstructionKind::ExtractMember;
+    extract.range = range;
+    extract.type = member_type;
+    extract.offset = offset;
+    extract.operands.push_back(aggregate);
+    return emit_value(std::move(extract));
+  }
+
   [[nodiscard]] std::uint64_t aggregate_operand_offset(
       const HirExpression &expression,
       std::size_t index) const {
@@ -1063,9 +1099,31 @@ private:
       instruction.range = expression.range;
       instruction.type = expression.type;
       instruction.symbol = expression.symbol;
+      const Type aggregate_type = semantic_.types.type(expression.type);
+      if (aggregate_type.kind == TypeKind::TaggedUnion) {
+        const std::optional<std::uint64_t> discriminator =
+            union_discriminator(expression.symbol);
+        if (!discriminator.has_value()) {
+          diagnostics_.error(
+              expression.range,
+              "tagged-union construction has no alternative discriminator");
+          return {};
+        }
+        instruction.operands.push_back(constant(
+            ConstantValue::make_integer(
+                BigInteger::from_u64(*discriminator)),
+            aggregate_type.element,
+            expression.range));
+        instruction.offsets.push_back(0);
+      }
       for (std::size_t index = 0; index < expression.operands.size(); ++index) {
         instruction.operands.push_back(lower_expression(expression.operands[index]));
-        instruction.offsets.push_back(aggregate_operand_offset(expression, index));
+        if (aggregate_type.kind == TypeKind::TaggedUnion) {
+          instruction.offsets.push_back(
+              aggregate_member_offset(expression.symbol).value_or(0));
+        } else {
+          instruction.offsets.push_back(aggregate_operand_offset(expression, index));
+        }
       }
       return emit_value(std::move(instruction));
     }
@@ -1447,7 +1505,17 @@ private:
       diagnostics_.error(statement.range, "switch HIR has no subject");
       return;
     }
+    const HirExpression &subject_expression =
+        hir_.expression(statement.expressions.front());
+    const Type subject_type = semantic_.types.type(subject_expression.type);
     const MirValueId subject = lower_expression(statement.expressions.front());
+    const MirValueId switch_subject = subject_type.kind == TypeKind::TaggedUnion
+        ? extract_member(
+              subject,
+              subject_type.element,
+              0,
+              subject_expression.range)
+        : subject;
     const MirBlockId join_block = procedure_.add_block(statement.range);
     std::vector<MirBlockId> case_blocks;
     case_blocks.reserve(statement.switch_cases.size());
@@ -1459,7 +1527,7 @@ private:
     MirTerminator terminator;
     terminator.kind = MirTerminatorKind::Switch;
     terminator.range = statement.range;
-    terminator.value = subject;
+    terminator.value = switch_subject;
     MirBlockId default_target = join_block;
     for (std::size_t case_index = 0;
          case_index < statement.switch_cases.size();
@@ -1482,7 +1550,24 @@ private:
     controls_.push_back({join_block, {}, defer_scopes_.size(), false});
     for (std::size_t case_index = 0; case_index < case_blocks.size(); ++case_index) {
       current_ = case_blocks[case_index];
-      lower_block(statement.switch_cases[case_index].body);
+      const HirSwitchCase &source_case = statement.switch_cases[case_index];
+      if (source_case.payload_binding.is_valid() &&
+          source_case.payload_alternative.is_valid()) {
+        const Symbol &payload =
+            semantic_.symbols.symbol(source_case.payload_alternative);
+        const std::optional<std::uint64_t> offset =
+            aggregate_member_offset(source_case.payload_alternative);
+        if (!offset.has_value()) {
+          diagnostics_.error(
+              statement.range, "tagged-union payload has no physical offset");
+        } else {
+          const MirValueId value = extract_member(
+              subject, payload.type, *offset, statement.range);
+          const MirLocalId binding = ensure_local(source_case.payload_binding);
+          store(local_address(binding, statement.range), value, statement.range);
+        }
+      }
+      lower_block(source_case.body);
       branch(join_block, statement.range);
     }
     controls_.pop_back();
