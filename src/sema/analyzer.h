@@ -104,6 +104,15 @@ struct ParametricInstanceRecord {
   SymbolId instance;
 };
 
+// Nominal type instances must survive the short-lived TypeResolver used for
+// later local annotations. Concrete argument TypeIds form the deterministic
+// cache key; the instance symbol owns the concrete member scope and TypeId.
+struct ParametricTypeInstanceRecord {
+  SymbolId source;
+  SymbolId instance;
+  std::vector<TypeId> arguments;
+};
+
 // ImportBinding retains the canonical source spelling of the imported package
 // path separately from the local alias symbol. Workspace resolution later maps
 // package_path to a root-qualified package identity and fills dependency edges.
@@ -230,6 +239,7 @@ struct SemanticPackage {
   std::vector<EnumMemberValue> enum_member_values;
   std::vector<ParametricParameterRecord> parametric_parameters;
   std::vector<ParametricInstanceRecord> parametric_instances;
+  std::vector<ParametricTypeInstanceRecord> parametric_type_instances;
   std::vector<ImportBinding> imports;
   std::vector<ImportedSymbol> imported_symbols;
   std::vector<ImportedType> imported_types;

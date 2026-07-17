@@ -107,6 +107,15 @@ Box[T: type] :: struct {
     value: ^T,
 }
 
+Concrete_Pair :: struct {
+    value: Pair[u32, u64],
+}
+
+Pair[T: type, U: type] :: struct {
+    first: T,
+    second: U,
+}
+
 take[T: type] :: proc(value: ^T) -> ^T {
     return value
 }
@@ -127,6 +136,7 @@ take[T: type] :: proc(value: ^T) -> ^T {
   const draft::Symbol *callback = find_symbol(source.semantic, "Callback");
   const draft::Symbol *transform = find_symbol(source.semantic, "transform");
   const draft::Symbol *box = find_symbol(source.semantic, "Box");
+  const draft::Symbol *concrete_pair = find_symbol(source.semantic, "Concrete_Pair");
   const draft::Symbol *take = find_symbol(source.semantic, "take");
   EXPECT(state, alias != nullptr);
   EXPECT(state, duration != nullptr);
@@ -138,12 +148,12 @@ take[T: type] :: proc(value: ^T) -> ^T {
   EXPECT(state, callback != nullptr);
   EXPECT(state, transform != nullptr);
   EXPECT(state, box != nullptr);
+  EXPECT(state, concrete_pair != nullptr);
   EXPECT(state, take != nullptr);
   if (alias == nullptr || duration == nullptr || header == nullptr ||
       overlay == nullptr || kind == nullptr || choice == nullptr ||
-      signed_kind == nullptr ||
-      callback == nullptr || transform == nullptr || box == nullptr ||
-      take == nullptr) {
+      signed_kind == nullptr || callback == nullptr || transform == nullptr ||
+      box == nullptr || concrete_pair == nullptr || take == nullptr) {
     return;
   }
 
@@ -207,7 +217,11 @@ take[T: type] :: proc(value: ^T) -> ^T {
 
   const draft::Type &box_type = source.semantic.types.type(box->type);
   EXPECT(state, box_type.layout == draft::TypeLayout({true, 8, 8}));
-  EXPECT(state, source.semantic.parametric_parameters.size() == 2);
+  const draft::Type &concrete_pair_type =
+      source.semantic.types.type(concrete_pair->type);
+  EXPECT(state, concrete_pair_type.layout == draft::TypeLayout({true, 16, 8}));
+  EXPECT(state, source.semantic.parametric_type_instances.size() == 1);
+  EXPECT(state, source.semantic.parametric_parameters.size() == 4);
   EXPECT(state, take->flags.parametric);
 }
 
@@ -226,6 +240,32 @@ Bad_Array :: struct {
       draft::render_diagnostics(source.sources, source.diagnostics);
   EXPECT(state, rendered.find("array length") != std::string::npos);
   EXPECT(state, rendered.find("unknown type name") != std::string::npos);
+}
+
+void test_parametric_type_diagnostics(TestState &state) {
+  SemanticSource source(R"draft(
+package types
+
+Number_Box[T: number] :: struct {
+    value: T,
+}
+
+Missing_Argument :: struct {
+    value: Number_Box,
+}
+
+Wrong_Constraint :: struct {
+    value: Number_Box[bool],
+}
+)draft");
+
+  EXPECT(state, source.diagnostics.error_count() == 2);
+  const std::string rendered =
+      draft::render_diagnostics(source.sources, source.diagnostics);
+  EXPECT(state, rendered.find("requires explicit type arguments") !=
+                    std::string::npos);
+  EXPECT(state, rendered.find("does not satisfy its parametric constraint") !=
+                    std::string::npos);
 }
 
 void test_invalid_enum_values(TestState &state) {
@@ -255,6 +295,7 @@ int main() {
   TestState state;
   test_types_signatures_and_layouts(state);
   test_invalid_lengths_and_unknown_types(state);
+  test_parametric_type_diagnostics(state);
   test_invalid_enum_values(state);
 
   if (state.failures != 0) {

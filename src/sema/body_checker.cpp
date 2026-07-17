@@ -783,7 +783,8 @@ private:
   [[nodiscard]] TypeId type_value_expression(
       const SyntaxTree &tree, NodeId node_id, ScopeId scope) {
     const SyntaxNode &node = tree.node(node_id);
-    if (node_is_type_syntax(node.kind)) {
+    if (node_is_type_syntax(node.kind) ||
+        node.kind == NodeKind::BracketExpression) {
       return substitute_active(resolve_type_syntax(
           sources_, loaded_, semantic_, selections_, tree, node_id, scope, diagnostics_));
     }

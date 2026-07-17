@@ -82,6 +82,29 @@ Outcome :: union {
     failure: u32,
 }
 
+Pair[T: type, U: type] :: struct {
+    first: T,
+    second: U,
+}
+
+Maybe[T: type] :: union {
+    none,
+    some: T,
+}
+
+pair_total :: proc(pair: Pair[i64, i64]) -> i64 {
+    return pair.first + pair.second
+}
+
+unwrap_maybe :: proc(value: Maybe[i64]) -> i64 {
+    switch value {
+    case .some(payload):
+        return payload
+    case .none:
+        return 0
+    }
+}
+
 make_outcome :: proc(value: i64) -> Outcome {
     return .value(value)
 }
@@ -122,6 +145,10 @@ main :: proc() -> i32 {
     assert(read_outcome(.empty) == 0)
     zero_outcome: Outcome
     assert(read_outcome(zero_outcome) == 0)
+    pair := Pair[i64, i64]{first = 20, second = 22}
+    assert(pair_total(pair) == 42)
+    assert(unwrap_maybe(.some(42)) == 42)
+    assert(unwrap_maybe(.none) == 0)
     assert(copy == 42)
     assert(inferred == 42)
     assert(small == 3)

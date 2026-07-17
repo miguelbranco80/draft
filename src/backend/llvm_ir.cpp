@@ -347,10 +347,23 @@ private:
     return "<invalid>";
   }
 
+  [[nodiscard]] bool is_parametric_template_type(TypeId id) const {
+    for (std::size_t index = 0; index < semantic_.symbols.symbol_count(); ++index) {
+      const Symbol &symbol = semantic_.symbols.symbol(
+          SymbolId{static_cast<std::uint32_t>(index)});
+      if (symbol.kind == SymbolKind::Type && symbol.flags.parametric &&
+          symbol.type == id) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   void emit_nominal_types() {
     for (std::size_t index = 0; index < semantic_.types.size(); ++index) {
       const TypeId id{static_cast<std::uint32_t>(index)};
       const Type &value = type(id);
+      if (is_parametric_template_type(id)) continue;
       if (value.kind == TypeKind::Struct) {
         output_ << "%draft.type." << index << " = type { ";
         for (std::size_t member = 0; member < value.members.size(); ++member) {

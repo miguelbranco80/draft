@@ -47,6 +47,11 @@ struct MemberData {
   bool incomplete = false;
 };
 
+struct ResolverTypeSubstitution {
+  TypeId parameter;
+  TypeId replacement;
+};
+
 // Mirrors the parser's contextual-name rule so semantic token-span extraction
 // accepts `c`, `type`, and constraint spellings where the grammar accepts them.
 [[nodiscard]] bool token_is_contextual_name(TokenKind kind) {
@@ -476,6 +481,293 @@ private:
     return value;
   }
 
+  [[nodiscard]] std::vector<ParametricParameterRecord> parameters_for(
+      SymbolId owner) const {
+    std::vector<ParametricParameterRecord> result;
+    for (const ParametricParameterRecord &parameter :
+         semantic_.parametric_parameters) {
+      if (parameter.owner == owner) result.push_back(parameter);
+    }
+    return result;
+  }
+
+  [[nodiscard]] bool type_satisfies_constraint(
+      TypeId argument, TypeConstraintKind constraint) const {
+    if (!argument.is_valid()) return false;
+    const TypeKind kind = semantic_.types.type(argument).kind;
+    if (kind == TypeKind::Invalid || kind == TypeKind::TypeParameter ||
+        kind == TypeKind::UntypedInteger || kind == TypeKind::UntypedFloat) {
+      return false;
+    }
+    if (constraint == TypeConstraintKind::AnyType) return true;
+    if (constraint == TypeConstraintKind::Integer) {
+      return semantic_.types.is_integer(argument);
+    }
+    if (constraint == TypeConstraintKind::Float) {
+      return semantic_.types.is_float(argument);
+    }
+    if (constraint == TypeConstraintKind::Number) {
+      return semantic_.types.is_number(argument);
+    }
+    return false;
+  }
+
+  [[nodiscard]] TypeId substitute_type(
+      TypeId source,
+      const std::vector<ResolverTypeSubstitution> &substitutions) {
+    for (const ResolverTypeSubstitution &substitution : substitutions) {
+      if (substitution.parameter == source) return substitution.replacement;
+    }
+    if (!source.is_valid()) return source;
+    const Type value = semantic_.types.type(source);
+    switch (value.kind) {
+    case TypeKind::Pointer:
+      return semantic_.types.pointer(substitute_type(value.element, substitutions));
+    case TypeKind::MultiPointer:
+      return semantic_.types.multi_pointer(
+          substitute_type(value.element, substitutions));
+    case TypeKind::Slice:
+      return semantic_.types.slice(substitute_type(value.element, substitutions));
+    case TypeKind::Array:
+      return semantic_.types.array(
+          substitute_type(value.element, substitutions), value.element_count);
+    case TypeKind::Simd:
+      return semantic_.types.simd(
+          substitute_type(value.element, substitutions), value.element_count);
+    case TypeKind::Tuple: {
+      std::vector<TypeId> members;
+      members.reserve(value.members.size());
+      for (TypeId member : value.members) {
+        members.push_back(substitute_type(member, substitutions));
+      }
+      return semantic_.types.tuple(members);
+    }
+    case TypeKind::Procedure: {
+      std::vector<TypeId> parameters;
+      if (!value.members.empty()) {
+        parameters.reserve(value.members.size() - 1);
+        for (std::size_t index = 0; index + 1 < value.members.size(); ++index) {
+          parameters.push_back(substitute_type(value.members[index], substitutions));
+        }
+      }
+      const TypeId result = value.members.empty()
+          ? semantic_.types.builtins().void_type
+          : substitute_type(value.members.back(), substitutions);
+      return semantic_.types.procedure(
+          parameters, result, value.c_calling_convention);
+    }
+    default:
+      return source;
+    }
+  }
+
+  [[nodiscard]] std::optional<SymbolId> type_symbol_in_span(
+      const SyntaxTree &tree,
+      std::uint32_t begin,
+      std::uint32_t end,
+      ScopeId scope) {
+    const std::vector<SourceName> names = names_in_span(tree, begin, end);
+    if (names.size() == 1) {
+      const std::optional<SymbolId> found =
+          semantic_.symbols.lookup(scope, names.front().text);
+      if (found.has_value() &&
+          static_cast<std::size_t>(found->value) < states_.size()) {
+        const Symbol &symbol = semantic_.symbols.symbol(*found);
+        if (symbol.kind == SymbolKind::UnresolvedDeclaration ||
+            (symbol.flags.parametric &&
+             states_[found->value] == ResolutionState::Unvisited &&
+             !owned_scope(*found, ScopeKind::Parametric).has_value())) {
+          resolve_symbol(*found);
+        }
+      }
+      return found;
+    }
+    if (names.size() != 2) return std::nullopt;
+    const std::optional<SymbolId> import =
+        semantic_.symbols.lookup(scope, names.front().text);
+    if (!import.has_value() ||
+        semantic_.symbols.symbol(*import).kind != SymbolKind::Import) {
+      return std::nullopt;
+    }
+    for (const OwnedSemanticScope &owned : semantic_.owned_scopes) {
+      if (owned.owner == *import &&
+          semantic_.symbols.scope(owned.scope).kind ==
+              ScopeKind::ImportedPackage) {
+        return semantic_.symbols.lookup_direct(owned.scope, names.back().text);
+      }
+    }
+    return std::nullopt;
+  }
+
+  [[nodiscard]] TypeId resolve_type_argument(
+      const SyntaxTree &tree, NodeId argument, ScopeId scope) {
+    const SyntaxNode &node = tree.node(argument);
+    if (node_is_type_syntax(node.kind) ||
+        node.kind == NodeKind::BracketExpression) {
+      return resolve_type(tree, argument, scope);
+    }
+    if (const std::optional<TypeId> named = try_named_type(tree, node, scope)) {
+      return *named;
+    }
+    if (const std::optional<TypeId> imported =
+            try_imported_type(tree, node, scope)) {
+      return *imported;
+    }
+    diagnostics_.error(node.range, "parametric type argument does not denote a type");
+    return semantic_.types.builtins().invalid;
+  }
+
+  [[nodiscard]] TypeId instantiate_parametric_type(
+      SymbolId source,
+      std::vector<TypeId> arguments,
+      SourceRange use_range) {
+    const Symbol template_symbol = semantic_.symbols.symbol(source);
+    const std::vector<ParametricParameterRecord> parameters =
+        parameters_for(source);
+    if (parameters.size() != arguments.size()) {
+      diagnostics_.error(
+          use_range, "parametric type application has the wrong number of arguments");
+      return semantic_.types.builtins().invalid;
+    }
+
+    std::vector<ResolverTypeSubstitution> substitutions;
+    substitutions.reserve(parameters.size());
+    for (std::size_t index = 0; index < parameters.size(); ++index) {
+      const ParametricParameterRecord &parameter = parameters[index];
+      if (parameter.constraint == TypeConstraintKind::CompileTimeValue) {
+        diagnostics_.error(
+            use_range,
+            "compile-time value type parameters are not yet instantiated");
+        return semantic_.types.builtins().invalid;
+      }
+      if (!type_satisfies_constraint(arguments[index], parameter.constraint)) {
+        diagnostics_.error(
+            use_range,
+            "type argument does not satisfy its parametric constraint");
+        return semantic_.types.builtins().invalid;
+      }
+      substitutions.push_back({
+          semantic_.symbols.symbol(parameter.parameter).type,
+          arguments[index],
+      });
+    }
+
+    for (const ParametricTypeInstanceRecord &instance :
+         semantic_.parametric_type_instances) {
+      if (instance.source == source && instance.arguments == arguments) {
+        return semantic_.symbols.symbol(instance.instance).type;
+      }
+    }
+
+    const Type template_type = semantic_.types.type(template_symbol.type);
+    if (template_type.kind != TypeKind::Struct &&
+        template_type.kind != TypeKind::Enum &&
+        template_type.kind != TypeKind::TaggedUnion &&
+        template_type.kind != TypeKind::RawUnion) {
+      // Parametric aliases are purely structural and therefore need no member
+      // scope or nominal instance identity.
+      return substitute_type(template_symbol.type, substitutions);
+    }
+
+    std::string instance_name = template_symbol.name + "$instance";
+    for (TypeId argument : arguments) {
+      instance_name += "$" + std::to_string(argument.value);
+    }
+    Symbol instance_symbol = template_symbol;
+    instance_symbol.name = instance_name;
+    instance_symbol.visibility = Visibility::Private;
+    instance_symbol.flags.parametric = false;
+    instance_symbol.type = {};
+    instance_symbol.name_range = use_range;
+    const SymbolId instance_id =
+        semantic_.symbols.declare(std::move(instance_symbol), diagnostics_);
+    if (!instance_id.is_valid()) return semantic_.types.builtins().invalid;
+
+    const TypeId concrete = semantic_.types.begin_nominal(
+        template_type.kind, instance_name, use_range);
+    semantic_.symbols.symbol_mut(instance_id).type = concrete;
+    const ScopeId member_scope = semantic_.symbols.add_scope(
+        ScopeKind::Type, template_symbol.scope, use_range);
+    semantic_.owned_scopes.push_back({instance_id, member_scope});
+
+    MemberData data;
+    for (const AggregateMember &member : semantic_.aggregate_members) {
+      if (member.owner != source) continue;
+      Symbol concrete_member = semantic_.symbols.symbol(member.member);
+      const SymbolId template_member = member.member;
+      concrete_member.scope = member_scope;
+      concrete_member.type = substitute_type(concrete_member.type, substitutions);
+      const SymbolId member_id =
+          semantic_.symbols.declare(std::move(concrete_member), diagnostics_);
+      if (!member_id.is_valid()) continue;
+      data.symbols.push_back(member_id);
+      data.types.push_back(semantic_.symbols.symbol(member_id).type);
+      data.offsets.push_back(0);
+      if (template_type.kind == TypeKind::Enum) {
+        std::optional<BigInteger> concrete_value;
+        for (const EnumMemberValue &value : semantic_.enum_member_values) {
+          if (value.member == template_member) {
+            concrete_value = value.value;
+            break;
+          }
+        }
+        if (concrete_value.has_value()) {
+          data.enum_values.push_back(*concrete_value);
+          semantic_.enum_member_values.push_back(
+              {member_id, std::move(*concrete_value)});
+        }
+      }
+    }
+
+    TypeLayout layout;
+    TypeId element = substitute_type(template_type.element, substitutions);
+    semantic_.types.type_mut(concrete).element = element;
+    if (template_type.kind == TypeKind::Struct) {
+      layout = struct_layout(data);
+    } else if (template_type.kind == TypeKind::RawUnion) {
+      layout = raw_union_layout(data);
+    } else if (template_type.kind == TypeKind::Enum) {
+      layout = semantic_.types.type(element).layout;
+    } else {
+      layout = tagged_union_layout(element, data);
+    }
+    semantic_.types.complete_nominal(
+        concrete, layout, data.types, data.offsets);
+    for (std::size_t index = 0; index < data.symbols.size(); ++index) {
+      semantic_.aggregate_members.push_back(
+          {instance_id, data.symbols[index], data.offsets[index]});
+    }
+    semantic_.parametric_type_instances.push_back(
+        {source, instance_id, std::move(arguments)});
+    return concrete;
+  }
+
+  [[nodiscard]] TypeId resolve_parametric_type_application(
+      const SyntaxTree &tree,
+      std::uint32_t base_begin,
+      std::uint32_t base_end,
+      const std::vector<NodeId> &argument_nodes,
+      ScopeId scope,
+      SourceRange range) {
+    const std::optional<SymbolId> found =
+        type_symbol_in_span(tree, base_begin, base_end, scope);
+    if (!found.has_value()) {
+      diagnostics_.error(range, "unknown parametric type name");
+      return semantic_.types.builtins().invalid;
+    }
+    const Symbol symbol = semantic_.symbols.symbol(*found);
+    if (symbol.kind != SymbolKind::Type || !symbol.flags.parametric) {
+      diagnostics_.error(range, "type is not parametric");
+      return semantic_.types.builtins().invalid;
+    }
+    std::vector<TypeId> arguments;
+    arguments.reserve(argument_nodes.size());
+    for (NodeId argument : argument_nodes) {
+      arguments.push_back(resolve_type_argument(tree, argument, scope));
+    }
+    return instantiate_parametric_type(*found, std::move(arguments), range);
+  }
+
   // Returns a single unqualified, unapplied name. Parenthesized grouping and
   // parametric/qualified names deliberately fail this narrow predicate.
   [[nodiscard]] std::optional<SourceName> simple_type_name(
@@ -568,10 +860,31 @@ private:
     const TypeId invalid = semantic_.types.builtins().invalid;
     switch (node.kind) {
     case NodeKind::NamedType: {
+      for (std::uint32_t index = node.token_begin; index < node.token_end; ++index) {
+        if (tree.token(index).kind == TokenKind::LeftBracket) {
+          return resolve_parametric_type_application(
+              tree,
+              node.token_begin,
+              index,
+              node.children,
+              scope,
+              node.range);
+        }
+      }
       // Parenthesized grouping retains the inner type as a child.
       for (NodeId child : node.children) {
         if (node_is_type_syntax(tree.node(child).kind)) {
           return resolve_type(tree, child, scope);
+        }
+      }
+      if (const std::optional<SourceName> name = simple_type_name(tree, node)) {
+        const std::optional<SymbolId> found =
+            semantic_.symbols.lookup(scope, name->text);
+        if (found.has_value() &&
+            semantic_.symbols.symbol(*found).flags.parametric) {
+          diagnostics_.error(
+              node.range, "parametric type requires explicit type arguments");
+          return invalid;
         }
       }
       if (const std::optional<TypeId> type = try_named_type(tree, node, scope)) {
@@ -582,6 +895,22 @@ private:
       }
       diagnostics_.error(node.range, "unknown type name");
       return invalid;
+    }
+
+    case NodeKind::BracketExpression: {
+      if (node.children.empty()) return invalid;
+      const SyntaxNode &base = tree.node(node.children.front());
+      std::vector<NodeId> arguments;
+      for (std::size_t index = 1; index < node.children.size(); ++index) {
+        arguments.push_back(node.children[index]);
+      }
+      return resolve_parametric_type_application(
+          tree,
+          base.token_begin,
+          base.token_end,
+          arguments,
+          scope,
+          node.range);
     }
 
     case NodeKind::PointerType:
