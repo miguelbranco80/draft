@@ -89,6 +89,11 @@ pub Point :: struct {
     y: i64,
 }
 
+pub C_Point :: @repr(C) @align(16) struct {
+    x: i64,
+    y: i64,
+}
+
 pub add :: proc(a, b: i64) -> i64 {
     return a + b
 }
@@ -159,14 +164,27 @@ main :: proc() {
     std::cerr << draft::render_diagnostics(sources, diagnostics);
   }
   EXPECT(state, dependency_semantics.ok);
-  EXPECT(state, dependency_interface.declarations.size() == 3);
+  EXPECT(state, dependency_interface.declarations.size() == 4);
   EXPECT(state, consumer_semantics.ok);
   EXPECT(state, bodies.ok);
   EXPECT(state, bodies.checked_procedures == 2);
-  EXPECT(state, consumer_semantics.package.imported_symbols.size() == 3);
-  EXPECT(state, consumer_semantics.package.imported_types.size() == 1);
+  EXPECT(state, consumer_semantics.package.imported_symbols.size() == 4);
+  EXPECT(state, consumer_semantics.package.imported_types.size() == 2);
   EXPECT(state, consumer_interface.declarations.size() == 1);
   EXPECT(state, !diagnostics.has_errors());
+
+  bool saw_c_point = false;
+  for (const draft::ImportedSymbol &imported :
+       consumer_semantics.package.imported_symbols) {
+    if (imported.public_name != "C_Point") continue;
+    saw_c_point = true;
+    const draft::Type &type = consumer_semantics.package.types.type(
+        consumer_semantics.package.symbols.symbol(imported.proxy).type);
+    EXPECT(state, type.c_representation);
+    EXPECT(state, type.requested_alignment == 16);
+    EXPECT(state, type.layout == draft::TypeLayout({true, 16, 16}));
+  }
+  EXPECT(state, saw_c_point);
 
   if (consumer_interface.declarations.empty()) {
     return;

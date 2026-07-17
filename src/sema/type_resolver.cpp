@@ -52,6 +52,14 @@ struct ResolverTypeSubstitution {
   TypeId replacement;
 };
 
+// Parsed representation attributes are kept small and explicit. Zero means no
+// requested alignment; C representation is independent so `@repr(C)` and
+// `@align(N)` compose without an attribute object hierarchy.
+struct AggregateAttributes {
+  bool c_representation = false;
+  std::uint32_t requested_alignment = 0;
+};
+
 // Mirrors the parser's contextual-name rule so semantic token-span extraction
 // accepts `c`, `type`, and constraint spellings where the grammar accepts them.
 [[nodiscard]] bool token_is_contextual_name(TokenKind kind) {
@@ -685,6 +693,10 @@ private:
 
     const TypeId concrete = semantic_.types.begin_nominal(
         template_type.kind, instance_name, use_range);
+    semantic_.types.type_mut(concrete).c_representation =
+        template_type.c_representation;
+    semantic_.types.type_mut(concrete).requested_alignment =
+        template_type.requested_alignment;
     semantic_.symbols.symbol_mut(instance_id).type = concrete;
     const ScopeId member_scope = semantic_.symbols.add_scope(
         ScopeKind::Type, template_symbol.scope, use_range);
@@ -731,6 +743,8 @@ private:
     } else {
       layout = tagged_union_layout(element, data);
     }
+    layout = apply_requested_alignment(
+        layout, template_type.requested_alignment, use_range);
     semantic_.types.complete_nominal(
         concrete, layout, data.types, data.offsets);
     for (std::size_t index = 0; index < data.symbols.size(); ++index) {
@@ -858,6 +872,18 @@ private:
       const SyntaxTree &tree, NodeId type_id, ScopeId scope) {
     const SyntaxNode &node = tree.node(type_id);
     const TypeId invalid = semantic_.types.builtins().invalid;
+    const bool has_attributes = node.token_begin < node.token_end &&
+        tree.token(node.token_begin).kind == TokenKind::At;
+    const bool aggregate = node.kind == NodeKind::StructType ||
+        node.kind == NodeKind::EnumType ||
+        node.kind == NodeKind::TaggedUnionType ||
+        node.kind == NodeKind::RawUnionType;
+    if (has_attributes && !aggregate) {
+      diagnostics_.error(
+          node.range,
+          "representation attributes are valid only on aggregate type constructors");
+      return invalid;
+    }
     switch (node.kind) {
     case NodeKind::NamedType: {
       for (std::uint32_t index = node.token_begin; index < node.token_end; ++index) {
@@ -1149,6 +1175,128 @@ private:
     default:
       return std::nullopt;
     }
+  }
+
+  // Validates the closed Draft 1 representation-attribute vocabulary. The
+  // parser deliberately accepts arbitrary attribute spellings so this phase
+  // can issue type-aware diagnostics and keep malformed declarations in the
+  // same recovery path as ordinary layout failures.
+  [[nodiscard]] AggregateAttributes aggregate_attributes(
+      const SyntaxTree &tree,
+      const SyntaxNode &aggregate,
+      TypeKind kind,
+      ScopeId scope) {
+    AggregateAttributes result;
+    bool saw_repr = false;
+    bool saw_align = false;
+    for (NodeId child_id : aggregate.children) {
+      const SyntaxNode &list = tree.node(child_id);
+      if (list.kind != NodeKind::AttributeList) {
+        continue;
+      }
+      for (NodeId attribute_id : list.children) {
+        const SyntaxNode &attribute = tree.node(attribute_id);
+        const std::vector<SourceName> names = names_in_span(
+            tree, attribute.token_begin, attribute.token_end);
+        if (names.empty()) {
+          diagnostics_.error(attribute.range, "attribute requires a name");
+          continue;
+        }
+        const std::string &name = names.front().text;
+        if (name == "repr") {
+          if (saw_repr) {
+            diagnostics_.error(attribute.range, "duplicate '@repr' attribute");
+            continue;
+          }
+          saw_repr = true;
+          if (kind != TypeKind::Struct && kind != TypeKind::RawUnion &&
+              kind != TypeKind::Enum) {
+            diagnostics_.error(
+                attribute.range,
+                "'@repr(C)' is valid only on structs, raw unions, and enums");
+            continue;
+          }
+          if (attribute.children.size() != 1) {
+            diagnostics_.error(
+                attribute.range, "'@repr' requires exactly one argument");
+            continue;
+          }
+          const SyntaxNode &argument = tree.node(attribute.children.front());
+          const std::vector<SourceName> argument_names = names_in_span(
+              tree, argument.token_begin, argument.token_end);
+          if (argument_names.size() != 1 || argument_names.front().text != "C") {
+            diagnostics_.error(
+                argument.range, "Draft 1 supports only '@repr(C)'");
+            continue;
+          }
+          result.c_representation = true;
+          continue;
+        }
+        if (name == "align") {
+          if (saw_align) {
+            diagnostics_.error(attribute.range, "duplicate '@align' attribute");
+            continue;
+          }
+          saw_align = true;
+          if (kind != TypeKind::Struct && kind != TypeKind::RawUnion) {
+            diagnostics_.error(
+                attribute.range,
+                "'@align' is valid only on structs and raw unions");
+            continue;
+          }
+          if (attribute.children.size() != 1) {
+            diagnostics_.error(
+                attribute.range, "'@align' requires exactly one argument");
+            continue;
+          }
+          const SyntaxNode &argument = tree.node(attribute.children.front());
+          const std::optional<BigInteger> value = enum_integer_expression(
+              tree, attribute.children.front(), scope);
+          const std::optional<std::uint64_t> alignment =
+              value.has_value() ? value->to_u64() : std::nullopt;
+          if (!alignment.has_value() || *alignment == 0 ||
+              (*alignment & (*alignment - 1)) != 0 ||
+              *alignment > std::numeric_limits<std::uint32_t>::max()) {
+            diagnostics_.error(
+                argument.range,
+                "'@align' requires a positive power-of-two compile-time usize");
+            continue;
+          }
+          result.requested_alignment =
+              static_cast<std::uint32_t>(*alignment);
+          continue;
+        }
+        diagnostics_.error(
+            names.front().range,
+            "unknown type representation attribute '@" + name + "'");
+      }
+    }
+    return result;
+  }
+
+  // Applies the post-layout alignment rule shared by source templates and
+  // concrete instantiations. A requested alignment cannot shrink the natural
+  // or C layout, and the final size is the array stride required by the spec.
+  [[nodiscard]] TypeLayout apply_requested_alignment(
+      TypeLayout layout,
+      std::uint32_t requested,
+      SourceRange range) {
+    if (!layout.known || requested == 0) {
+      return layout;
+    }
+    if (requested < layout.alignment) {
+      diagnostics_.error(
+          range, "'@align' cannot reduce the type's natural alignment");
+      return layout;
+    }
+    layout.alignment = requested;
+    const std::optional<std::uint64_t> size = round_up(layout.size, requested);
+    if (!size.has_value()) {
+      diagnostics_.error(range, "aligned aggregate size overflows u64");
+      return {};
+    }
+    layout.size = *size;
+    return layout;
   }
 
   void collect_enum_member(
@@ -1478,6 +1626,14 @@ private:
       scope = semantic_.symbols.add_scope(ScopeKind::Type, parent, aggregate.range);
     }
 
+    const TypeKind kind = semantic_.types.type(nominal).kind;
+    const AggregateAttributes attributes = aggregate_attributes(
+        tree, aggregate, kind, parent);
+    semantic_.types.type_mut(nominal).c_representation =
+        attributes.c_representation;
+    semantic_.types.type_mut(nominal).requested_alignment =
+        attributes.requested_alignment;
+
     std::optional<NodeId> list;
     std::optional<NodeId> explicit_backing;
     for (NodeId child : aggregate.children) {
@@ -1493,7 +1649,6 @@ private:
       return;
     }
 
-    const TypeKind kind = semantic_.types.type(nominal).kind;
     MemberData data;
     collect_member_list(owner, tree, *list, scope, data);
     if (data.symbols.empty() && !data.incomplete) {
@@ -1509,7 +1664,10 @@ private:
       } else if (kind == TypeKind::Enum) {
         TypeId backing = explicit_backing.has_value()
             ? resolve_type(tree, *explicit_backing, parent)
-            : inferred_enum_backing(data.enum_values);
+            : (attributes.c_representation
+                   ? semantic_.types.find_builtin("i32").value_or(
+                         semantic_.types.builtins().invalid)
+                   : inferred_enum_backing(data.enum_values));
         if (!semantic_.types.is_integer(backing)) {
           diagnostics_.error(aggregate.range, "enum backing type must be an integer type");
           backing = semantic_.types.builtins().invalid;
@@ -1541,6 +1699,9 @@ private:
         layout = tagged_union_layout(discriminator, data);
       }
     }
+
+    layout = apply_requested_alignment(
+        layout, attributes.requested_alignment, aggregate.range);
 
     semantic_.types.complete_nominal(
         nominal, layout, data.types, data.offsets);

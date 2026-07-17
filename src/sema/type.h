@@ -87,6 +87,9 @@ struct TypeLayout {
 // Procedure members always contain a final result TypeId; void procedures use
 // the canonical void type there. c_calling_convention distinguishes physical
 // procedure pointer identities because ordinary procedures carry Draft context.
+// c_representation and requested_alignment are meaningful only on nominal
+// aggregates. They remain on the type after layout so ABI validation and
+// package-interface reconstruction do not infer source attributes from bytes.
 struct Type {
   TypeKind kind = TypeKind::Invalid;
   std::string name;
@@ -97,6 +100,8 @@ struct Type {
   std::vector<TypeId> members;
   std::vector<std::uint64_t> member_offsets;
   bool c_calling_convention = false;
+  bool c_representation = false;
+  std::uint32_t requested_alignment = 0;
   SourceRange declaration;
 };
 

@@ -80,6 +80,20 @@ Overlay :: raw union {
     word: u64,
 }
 
+C_Header :: @repr(C) struct {
+    tag: u8,
+    value: u64,
+}
+
+C_Overlay :: @repr(C) @align(16) raw union {
+    byte: u8,
+    word: u64,
+}
+
+Aligned :: @align(64) struct {
+    bytes: [3]u8,
+}
+
 Kind :: enum u16 {
     First,
     Second = 7,
@@ -90,6 +104,11 @@ Signed :: enum {
     Below = -1,
     Zero,
     High = 130,
+}
+
+C_Kind :: @repr(C) enum {
+    First,
+    Second,
 }
 
 Choice :: union u16 {
@@ -116,6 +135,14 @@ Pair[T: type, U: type] :: struct {
     second: U,
 }
 
+Aligned_Box[T: type] :: @align(32) struct {
+    value: T,
+}
+
+Concrete_Aligned :: struct {
+    value: Aligned_Box[u8],
+}
+
 take[T: type] :: proc(value: ^T) -> ^T {
     return value
 }
@@ -130,30 +157,43 @@ take[T: type] :: proc(value: ^T) -> ^T {
   const draft::Symbol *duration = find_symbol(source.semantic, "Duration");
   const draft::Symbol *header = find_symbol(source.semantic, "Header");
   const draft::Symbol *overlay = find_symbol(source.semantic, "Overlay");
+  const draft::Symbol *c_header = find_symbol(source.semantic, "C_Header");
+  const draft::Symbol *c_overlay = find_symbol(source.semantic, "C_Overlay");
+  const draft::Symbol *aligned = find_symbol(source.semantic, "Aligned");
   const draft::Symbol *kind = find_symbol(source.semantic, "Kind");
+  const draft::Symbol *c_kind = find_symbol(source.semantic, "C_Kind");
   const draft::Symbol *choice = find_symbol(source.semantic, "Choice");
   const draft::Symbol *signed_kind = find_symbol(source.semantic, "Signed");
   const draft::Symbol *callback = find_symbol(source.semantic, "Callback");
   const draft::Symbol *transform = find_symbol(source.semantic, "transform");
   const draft::Symbol *box = find_symbol(source.semantic, "Box");
   const draft::Symbol *concrete_pair = find_symbol(source.semantic, "Concrete_Pair");
+  const draft::Symbol *concrete_aligned =
+      find_symbol(source.semantic, "Concrete_Aligned");
   const draft::Symbol *take = find_symbol(source.semantic, "take");
   EXPECT(state, alias != nullptr);
   EXPECT(state, duration != nullptr);
   EXPECT(state, header != nullptr);
   EXPECT(state, overlay != nullptr);
+  EXPECT(state, c_header != nullptr);
+  EXPECT(state, c_overlay != nullptr);
+  EXPECT(state, aligned != nullptr);
   EXPECT(state, kind != nullptr);
+  EXPECT(state, c_kind != nullptr);
   EXPECT(state, choice != nullptr);
   EXPECT(state, signed_kind != nullptr);
   EXPECT(state, callback != nullptr);
   EXPECT(state, transform != nullptr);
   EXPECT(state, box != nullptr);
   EXPECT(state, concrete_pair != nullptr);
+  EXPECT(state, concrete_aligned != nullptr);
   EXPECT(state, take != nullptr);
   if (alias == nullptr || duration == nullptr || header == nullptr ||
-      overlay == nullptr || kind == nullptr || choice == nullptr ||
+      overlay == nullptr || c_header == nullptr || c_overlay == nullptr ||
+      aligned == nullptr || kind == nullptr || c_kind == nullptr || choice == nullptr ||
       signed_kind == nullptr || callback == nullptr || transform == nullptr ||
-      box == nullptr || concrete_pair == nullptr || take == nullptr) {
+      box == nullptr || concrete_pair == nullptr ||
+      concrete_aligned == nullptr || take == nullptr) {
     return;
   }
 
@@ -180,12 +220,28 @@ take[T: type] :: proc(value: ^T) -> ^T {
   EXPECT(state, overlay_type.layout == draft::TypeLayout({true, 8, 8}));
   EXPECT(state, overlay_type.member_offsets == std::vector<std::uint64_t>({0, 0}));
 
+  const draft::Type &c_header_type = source.semantic.types.type(c_header->type);
+  EXPECT(state, c_header_type.c_representation);
+  EXPECT(state, c_header_type.layout == draft::TypeLayout({true, 16, 8}));
+  const draft::Type &c_overlay_type = source.semantic.types.type(c_overlay->type);
+  EXPECT(state, c_overlay_type.c_representation);
+  EXPECT(state, c_overlay_type.requested_alignment == 16);
+  EXPECT(state, c_overlay_type.layout == draft::TypeLayout({true, 16, 16}));
+  const draft::Type &aligned_type = source.semantic.types.type(aligned->type);
+  EXPECT(state, !aligned_type.c_representation);
+  EXPECT(state, aligned_type.requested_alignment == 64);
+  EXPECT(state, aligned_type.layout == draft::TypeLayout({true, 64, 64}));
+
   const draft::Type &kind_type = source.semantic.types.type(kind->type);
   EXPECT(state, kind_type.layout == draft::TypeLayout({true, 2, 2}));
   EXPECT(state, source.semantic.types.type(kind_type.element).name == "u16");
   const draft::Type &signed_type = source.semantic.types.type(signed_kind->type);
   EXPECT(state, signed_type.layout == draft::TypeLayout({true, 2, 2}));
   EXPECT(state, source.semantic.types.type(signed_type.element).name == "i16");
+  const draft::Type &c_kind_type = source.semantic.types.type(c_kind->type);
+  EXPECT(state, c_kind_type.c_representation);
+  EXPECT(state, c_kind_type.layout == draft::TypeLayout({true, 4, 4}));
+  EXPECT(state, source.semantic.types.type(c_kind_type.element).name == "i32");
   bool saw_second = false;
   bool saw_third = false;
   bool saw_below = false;
@@ -220,8 +276,19 @@ take[T: type] :: proc(value: ^T) -> ^T {
   const draft::Type &concrete_pair_type =
       source.semantic.types.type(concrete_pair->type);
   EXPECT(state, concrete_pair_type.layout == draft::TypeLayout({true, 16, 8}));
-  EXPECT(state, source.semantic.parametric_type_instances.size() == 1);
-  EXPECT(state, source.semantic.parametric_parameters.size() == 4);
+  const draft::Type &concrete_aligned_type =
+      source.semantic.types.type(concrete_aligned->type);
+  EXPECT(state, concrete_aligned_type.layout == draft::TypeLayout({true, 32, 32}));
+  EXPECT(state, concrete_aligned_type.members.size() == 1);
+  if (!concrete_aligned_type.members.empty()) {
+    const draft::Type &aligned_box =
+        source.semantic.types.type(concrete_aligned_type.members.front());
+    EXPECT(state, aligned_box.c_representation == false);
+    EXPECT(state, aligned_box.requested_alignment == 32);
+    EXPECT(state, aligned_box.layout == draft::TypeLayout({true, 32, 32}));
+  }
+  EXPECT(state, source.semantic.parametric_type_instances.size() == 2);
+  EXPECT(state, source.semantic.parametric_parameters.size() == 5);
   EXPECT(state, take->flags.parametric);
 }
 
@@ -289,6 +356,35 @@ Too_Wide :: enum u8 {
   EXPECT(state, rendered.find("not representable") != std::string::npos);
 }
 
+void test_invalid_representation_attributes(TestState &state) {
+  SemanticSource source(R"draft(
+package types
+
+Bad_Alignment :: @align(3) struct { value: u8, }
+Reduced_Alignment :: @align(2) struct { value: u64, }
+Aligned_Enum :: @align(8) enum { Value, }
+C_Union :: @repr(C) union { none, }
+Wrong_Repr :: @repr(Rust) struct { value: u8, }
+Unknown :: @packed struct { value: u8, }
+Attributed_Scalar :: @align(8) u64
+)draft");
+
+  EXPECT(state, source.diagnostics.has_errors());
+  const std::string rendered =
+      draft::render_diagnostics(source.sources, source.diagnostics);
+  EXPECT(state, rendered.find("positive power-of-two") != std::string::npos);
+  EXPECT(state, rendered.find("cannot reduce") != std::string::npos);
+  EXPECT(state, rendered.find("valid only on structs and raw unions") !=
+                    std::string::npos);
+  EXPECT(state, rendered.find("valid only on structs, raw unions, and enums") !=
+                    std::string::npos);
+  EXPECT(state, rendered.find("supports only '@repr(C)'") != std::string::npos);
+  EXPECT(state, rendered.find("unknown type representation attribute") !=
+                    std::string::npos);
+  EXPECT(state, rendered.find("valid only on aggregate type constructors") !=
+                    std::string::npos);
+}
+
 } // namespace
 
 int main() {
@@ -297,6 +393,7 @@ int main() {
   test_invalid_lengths_and_unknown_types(state);
   test_parametric_type_diagnostics(state);
   test_invalid_enum_values(state);
+  test_invalid_representation_attributes(state);
 
   if (state.failures != 0) {
     std::cerr << state.failures << " type resolver expectation(s) failed\n";

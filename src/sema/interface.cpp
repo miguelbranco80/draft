@@ -223,6 +223,8 @@ private:
     translated.element_count = source_type.element_count;
     translated.member_offsets = source_type.member_offsets;
     translated.c_calling_convention = source_type.c_calling_convention;
+    translated.c_representation = source_type.c_representation;
+    translated.requested_alignment = source_type.requested_alignment;
     set_nominal_identity(source, translated);
     bool retained_import_arguments = false;
     for (const ImportedType &imported : package_.imported_types) {
@@ -559,6 +561,10 @@ private:
           source.kind, qualified_name(source), SourceRange::invalid());
       cache.translated[source_id.value] = result;
       remember_nominal(source, result, nominal_arguments);
+      consumer_.types.type_mut(result).c_representation =
+          source.c_representation;
+      consumer_.types.type_mut(result).requested_alignment =
+          source.requested_alignment;
       TypeId element;
       if (source.element.is_valid()) {
         element = import_type(package, cache, source.element);

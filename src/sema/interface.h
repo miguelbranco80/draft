@@ -74,6 +74,8 @@ struct InterfaceType {
   std::vector<InterfaceTypeId> members;
   std::vector<std::uint64_t> member_offsets;
   bool c_calling_convention = false;
+  bool c_representation = false;
+  std::uint32_t requested_alignment = 0;
   std::vector<InterfaceMember> nominal_members;
   // A concrete nominal template application retains the template identity in
   // the nominal_* fields and its arguments here. This makes `dep.Maybe[i64]`

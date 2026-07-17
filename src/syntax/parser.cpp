@@ -550,8 +550,16 @@ private:
   }
 
   [[nodiscard]] NodeId parse_procedure(bool allow_body) {
-    const std::uint32_t start = position_;
-    std::vector<NodeId> children;
+    return parse_procedure(allow_body, position_, {});
+  }
+
+  // Type attributes are parsed before the constructor is known. Retaining the
+  // prefix on a procedure type lets semantic analysis reject the unsupported
+  // attribute instead of silently orphaning its syntax node.
+  [[nodiscard]] NodeId parse_procedure(
+      bool allow_body,
+      std::uint32_t start,
+      std::vector<NodeId> children) {
     (void)match(TokenKind::KeywordC);
     if (at(TokenKind::StringLiteral)) {
       advance(); // Optional exact linker symbol on foreign/export declarations.
@@ -631,7 +639,7 @@ private:
     }
     if (at(TokenKind::KeywordProc) ||
         (at(TokenKind::KeywordC) && lookahead(1).kind == TokenKind::KeywordProc)) {
-      return parse_procedure(false);
+      return parse_procedure(false, start, std::move(children));
     }
     if (match(TokenKind::KeywordDistinct)) {
       children.push_back(parse_type());
