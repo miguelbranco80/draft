@@ -1,0 +1,72 @@
+cmake_minimum_required(VERSION 3.24)
+
+project(
+  Draft
+  VERSION 0.1.0
+  DESCRIPTION "Bootstrap compiler for the Draft systems language"
+  LANGUAGES CXX
+)
+
+# The bootstrap compiler deliberately uses a small, uniform C++20 dialect. We
+# disable implementation extensions so a construct accepted by one host compiler
+# does not quietly become a portability dependency of the self-hosting path.
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+option(DRAFT_WARNINGS_AS_ERRORS "Treat bootstrap compiler warnings as errors" ON)
+option(DRAFT_ENABLE_SANITIZERS "Enable address and undefined-behavior sanitizers" OFF)
+
+# An interface target keeps the host-language policy identical for the compiler,
+# driver, and tests. Sanitizer link flags must reach final executables; placing
+# them only on the static compiler archive would instrument objects without
+# linking the sanitizer runtime.
+add_library(draft_build_options INTERFACE)
+
+add_library(
+  draft_compiler
+  src/source/diagnostic.cpp
+  src/source/source.cpp
+  src/syntax/lexer.cpp
+  src/syntax/token.cpp
+)
+
+target_include_directories(draft_compiler PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_link_libraries(draft_compiler PUBLIC draft_build_options)
+
+if(MSVC)
+  target_compile_options(draft_build_options INTERFACE /W4 /permissive- /GR- /EHs-c-)
+  if(DRAFT_WARNINGS_AS_ERRORS)
+    target_compile_options(draft_build_options INTERFACE /WX)
+  endif()
+else()
+  target_compile_options(
+    draft_build_options
+    INTERFACE
+      -Wall
+      -Wextra
+      -Wpedantic
+      -Wconversion
+      -Wsign-conversion
+      -Wshadow
+      -fno-exceptions
+      -fno-rtti
+  )
+  if(DRAFT_WARNINGS_AS_ERRORS)
+    target_compile_options(draft_build_options INTERFACE -Werror)
+  endif()
+  if(DRAFT_ENABLE_SANITIZERS)
+    target_compile_options(draft_build_options INTERFACE -fsanitize=address,undefined -fno-omit-frame-pointer)
+    target_link_options(draft_build_options INTERFACE -fsanitize=address,undefined)
+  endif()
+endif()
+
+add_executable(draftc src/driver/main.cpp)
+target_link_libraries(draftc PRIVATE draft_compiler)
+
+include(CTest)
+if(BUILD_TESTING)
+  add_executable(draft_lexer_tests tests/lexer_test.cpp)
+  target_link_libraries(draft_lexer_tests PRIVATE draft_compiler)
+  add_test(NAME draft_lexer_tests COMMAND draft_lexer_tests)
+endif()

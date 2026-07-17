@@ -1,0 +1,102 @@
+// Human-readable rendering for structured compiler diagnostics.
+//
+// The renderer computes display coordinates at the last responsible moment.
+// Internally every stage continues to use byte ranges. This is important for
+// exact slicing and hashing and prevents a tab width or Unicode display policy
+// from changing semantic identities.
+
+#include "source/diagnostic.h"
+
+#include <algorithm>
+#include <sstream>
+#include <utility>
+
+namespace draft {
+
+void DiagnosticSink::report(
+    DiagnosticSeverity severity, SourceRange range, std::string message) {
+  if (severity == DiagnosticSeverity::Error) {
+    ++error_count_;
+  }
+  diagnostics_.push_back({severity, range, std::move(message)});
+}
+
+void DiagnosticSink::error(SourceRange range, std::string message) {
+  report(DiagnosticSeverity::Error, range, std::move(message));
+}
+
+void DiagnosticSink::warning(SourceRange range, std::string message) {
+  report(DiagnosticSeverity::Warning, range, std::move(message));
+}
+
+void DiagnosticSink::note(SourceRange range, std::string message) {
+  report(DiagnosticSeverity::Note, range, std::move(message));
+}
+
+bool DiagnosticSink::has_errors() const {
+  return error_count_ != 0;
+}
+
+std::size_t DiagnosticSink::error_count() const {
+  return error_count_;
+}
+
+const std::vector<Diagnostic> &DiagnosticSink::diagnostics() const {
+  return diagnostics_;
+}
+
+std::string_view diagnostic_severity_name(DiagnosticSeverity severity) {
+  switch (severity) {
+  case DiagnosticSeverity::Error:
+    return "error";
+  case DiagnosticSeverity::Warning:
+    return "warning";
+  case DiagnosticSeverity::Note:
+    return "note";
+  }
+  return "unknown";
+}
+
+std::string render_diagnostics(
+    const SourceManager &sources, const DiagnosticSink &diagnostics) {
+  std::ostringstream output;
+  for (const Diagnostic &diagnostic : diagnostics.diagnostics()) {
+    if (!diagnostic.range.is_valid()) {
+      output << diagnostic_severity_name(diagnostic.severity) << ": "
+             << diagnostic.message << '\n';
+      continue;
+    }
+
+    const SourceLocation begin = diagnostic.range.begin;
+    const LineColumn coordinate = sources.line_column(begin);
+    const SourceFile &source = sources.file(begin.file);
+    output << source.display_path << ':' << coordinate.line << ':' << coordinate.column << ": "
+           << diagnostic_severity_name(diagnostic.severity) << ": "
+           << diagnostic.message << '\n';
+
+    const std::string_view line = sources.line_text(begin.file, coordinate.line);
+    output << line << '\n';
+    for (std::uint32_t column = 1; column < coordinate.column; ++column) {
+      output << ' ';
+    }
+
+    // A zero-width range still needs a visible caret. Wider source ranges use a
+    // short underline, clamped to the current line to keep diagnostics compact.
+    std::uint32_t width = 1;
+    if (diagnostic.range.end.file == begin.file &&
+        diagnostic.range.end.offset > begin.offset) {
+      const LineColumn end = sources.line_column(diagnostic.range.end);
+      if (end.line == coordinate.line && end.column > coordinate.column) {
+        width = std::min<std::uint32_t>(end.column - coordinate.column, 80);
+      }
+    }
+    output << '^';
+    for (std::uint32_t index = 1; index < width; ++index) {
+      output << '~';
+    }
+    output << '\n';
+  }
+  return output.str();
+}
+
+} // namespace draft
