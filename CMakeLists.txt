@@ -27,6 +27,9 @@ add_library(
   draft_compiler
   src/source/diagnostic.cpp
   src/source/source.cpp
+  src/sema/analyzer.cpp
+  src/sema/symbol.cpp
+  src/sema/type.cpp
   src/syntax/lexer.cpp
   src/syntax/parser.cpp
   src/syntax/syntax_tree.cpp
@@ -80,4 +83,12 @@ if(BUILD_TESTING)
   add_executable(draft_package_tests tests/package_test.cpp)
   target_link_libraries(draft_package_tests PRIVATE draft_compiler)
   add_test(NAME draft_package_tests COMMAND draft_package_tests)
+
+  add_executable(draft_sema_foundation_tests tests/sema_foundation_test.cpp)
+  target_link_libraries(draft_sema_foundation_tests PRIVATE draft_compiler)
+  add_test(NAME draft_sema_foundation_tests COMMAND draft_sema_foundation_tests)
+
+  add_executable(draft_declaration_tests tests/declaration_test.cpp)
+  target_link_libraries(draft_declaration_tests PRIVATE draft_compiler)
+  add_test(NAME draft_declaration_tests COMMAND draft_declaration_tests)
 endif()
