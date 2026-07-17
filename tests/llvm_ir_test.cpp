@@ -159,6 +159,8 @@ main :: proc() -> i32 {
     assert(inferred == 42)
     assert(last[3](values) == 42)
     assert(last(values) == 42)
+    assert('é' == '\u{e9}')
+    assert(cast[u32]('🙂') == 0x1f642)
     assert(small == 3)
     return cast[i32](value)
 }

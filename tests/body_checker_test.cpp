@@ -143,6 +143,11 @@ views :: proc() -> usize {
     return cast[usize](tuple.0) + cast[usize](first) + second
 }
 
+rune_value :: proc() -> rune {
+    assert('é' == '\u{e9}')
+    return '🙂'
+}
+
 main :: proc() {
     pair: Pair
     pair.left = 1
@@ -165,8 +170,8 @@ main :: proc() {
   EXPECT(state, source.semantics.ok);
   EXPECT(state, source.bodies.ok);
   EXPECT(state, !source.diagnostics.has_errors());
-  EXPECT(state, source.bodies.checked_procedures == 8);
-  EXPECT(state, source.bodies.program.procedures().size() == 8);
+  EXPECT(state, source.bodies.checked_procedures == 9);
+  EXPECT(state, source.bodies.program.procedures().size() == 9);
   EXPECT(state, source.bodies.program.expression_count() >= 55);
   EXPECT(state, source.bodies.program.statement_count() >= 28);
   EXPECT(state, source.bodies.program.block_count() >= 12);

@@ -1508,6 +1508,16 @@ private:
         }
         expression.type = semantic_.types.builtins().untyped_float;
         expression.constant = ConstantValue::make_float(*value);
+      } else if (token.kind == TokenKind::RuneLiteral) {
+        const std::optional<std::uint32_t> value =
+            decode_rune_literal(sources_.text(token.range));
+        if (!value.has_value()) {
+          diagnostics_.error(token.range, "invalid rune literal");
+          return invalid_expression(node.range);
+        }
+        expression.type = semantic_.types.builtins().rune_type;
+        expression.constant = ConstantValue::make_integer(
+            BigInteger::from_u64(*value));
       } else if (token.kind == TokenKind::StringLiteral ||
                  token.kind == TokenKind::RawStringLiteral) {
         expression.type = semantic_.types.builtins().string_type;

@@ -78,6 +78,7 @@ Has_Neon :: target.has_feature("neon")
 Bit_Value :: (2 << 5) | 1
 Huge :: 340282366920938463463374607431768211456 + 7
 Fraction :: 1.25 + 0.75
+Accent :: 'é'
 
 Header :: struct {
     tag: u8,
@@ -128,6 +129,10 @@ when Fraction == 2.0 {
 when size_of(Header) == 16 && align_of(Header) == 8 {
     Layout_Selected :: bool
 }
+
+when Accent == '\u{e9}' {
+    Rune_Selected :: bool
+}
 )draft");
 
   if (source.diagnostics.has_errors()) {
@@ -135,7 +140,7 @@ when size_of(Header) == 16 && align_of(Header) == 8 {
   }
   EXPECT(state, source.analysis.ok);
   EXPECT(state, !source.diagnostics.has_errors());
-  EXPECT(state, source.analysis.selections.entries.size() == 9);
+  EXPECT(state, source.analysis.selections.entries.size() == 10);
   EXPECT(state, find_symbol(source.analysis.package, "Word").has_value());
   EXPECT(state, find_symbol(source.analysis.package, "Platform_Value").has_value());
   EXPECT(state, find_symbol(source.analysis.package, "Nested").has_value());
@@ -143,6 +148,7 @@ when size_of(Header) == 16 && align_of(Header) == 8 {
   EXPECT(state, find_symbol(source.analysis.package, "Big_Selected").has_value());
   EXPECT(state, find_symbol(source.analysis.package, "Float_Selected").has_value());
   EXPECT(state, find_symbol(source.analysis.package, "Layout_Selected").has_value());
+  EXPECT(state, find_symbol(source.analysis.package, "Rune_Selected").has_value());
   EXPECT(state, !find_symbol(source.analysis.package, "Never").has_value());
   EXPECT(state, !find_symbol(source.analysis.package, "Broken").has_value());
 
@@ -187,6 +193,8 @@ when size_of(Header) == 16 && align_of(Header) == 8 {
       find_symbol(source.analysis.package, "Header_Size");
   const std::optional<draft::SymbolId> header_alignment =
       find_symbol(source.analysis.package, "Header_Alignment");
+  const std::optional<draft::SymbolId> accent =
+      find_symbol(source.analysis.package, "Accent");
   EXPECT(state, bits.has_value());
   EXPECT(state, derived.has_value());
   EXPECT(state, feature.has_value());
@@ -195,8 +203,9 @@ when size_of(Header) == 16 && align_of(Header) == 8 {
   EXPECT(state, fraction.has_value());
   EXPECT(state, header_size.has_value());
   EXPECT(state, header_alignment.has_value());
+  EXPECT(state, accent.has_value());
   if (bits && derived && feature && bit_value && huge && fraction &&
-      header_size && header_alignment) {
+      header_size && header_alignment && accent) {
     const draft::ConstantValue *bits_value = source.analysis.constants.find(*bits);
     const draft::ConstantValue *derived_value = source.analysis.constants.find(*derived);
     const draft::ConstantValue *feature_value = source.analysis.constants.find(*feature);
@@ -207,6 +216,8 @@ when size_of(Header) == 16 && align_of(Header) == 8 {
         source.analysis.constants.find(*header_size);
     const draft::ConstantValue *alignment_result =
         source.analysis.constants.find(*header_alignment);
+    const draft::ConstantValue *accent_result =
+        source.analysis.constants.find(*accent);
     EXPECT(state, bits_value != nullptr);
     EXPECT(state, derived_value != nullptr);
     EXPECT(state, feature_value != nullptr);
@@ -215,6 +226,7 @@ when size_of(Header) == 16 && align_of(Header) == 8 {
     EXPECT(state, fraction_result != nullptr);
     EXPECT(state, size_result != nullptr);
     EXPECT(state, alignment_result != nullptr);
+    EXPECT(state, accent_result != nullptr);
     if (bits_value) EXPECT(state, bits_value->integer.to_decimal() == "64");
     if (derived_value) EXPECT(state, derived_value->integer.to_decimal() == "42");
     if (feature_value) EXPECT(state, feature_value->boolean);
@@ -230,6 +242,11 @@ when size_of(Header) == 16 && align_of(Header) == 8 {
     if (size_result) EXPECT(state, size_result->integer.to_decimal() == "16");
     if (alignment_result) {
       EXPECT(state, alignment_result->integer.to_decimal() == "8");
+    }
+    if (accent_result) {
+      EXPECT(state, accent_result->integer.to_decimal() == "233");
+      EXPECT(state, source.analysis.package.symbols.symbol(*accent).type ==
+                        source.analysis.package.types.builtins().rune_type);
     }
   }
 }

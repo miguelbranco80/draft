@@ -272,6 +272,11 @@ private:
     return decode_string_literal(spelling, kind);
   }
 
+  [[nodiscard]] std::optional<std::uint32_t> rune_literal(
+      std::string_view spelling) const {
+    return decode_rune_literal(spelling);
+  }
+
   // Finds the binary operator token between the two immediate child spans. The
   // parser does not copy operators into nodes, but its nonoverlapping token spans
   // make this lookup unambiguous.
@@ -688,7 +693,13 @@ private:
       if (result.value.kind == ConstantKind::Bool) {
         type = semantic_.types.builtins().bool_type;
       } else if (result.value.kind == ConstantKind::Integer) {
-        type = semantic_.types.builtins().untyped_integer;
+        const SyntaxNode &expression_node = tree->node(expression);
+        const bool rune = expression_node.kind == NodeKind::LiteralExpression &&
+            expression_node.token_begin < expression_node.token_end &&
+            tree->token(expression_node.token_begin).kind == TokenKind::RuneLiteral;
+        type = rune
+            ? semantic_.types.builtins().rune_type
+            : semantic_.types.builtins().untyped_integer;
       } else if (result.value.kind == ConstantKind::Float) {
         type = semantic_.types.builtins().untyped_float;
       } else if (result.value.kind == ConstantKind::String) {
@@ -737,6 +748,14 @@ private:
           return fail(token.range, "invalid or excessive decimal floating literal", required);
         }
         return ready(ConstantValue::make_float(*value));
+      }
+      if (token.kind == TokenKind::RuneLiteral) {
+        const std::optional<std::uint32_t> value =
+            rune_literal(sources_.text(token.range));
+        if (!value.has_value()) {
+          return fail(token.range, "invalid rune literal", required);
+        }
+        return ready(ConstantValue::make_integer(BigInteger::from_u64(*value)));
       }
       if (token.kind == TokenKind::StringLiteral ||
           token.kind == TokenKind::RawStringLiteral) {
