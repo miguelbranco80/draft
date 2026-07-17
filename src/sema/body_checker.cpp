@@ -355,6 +355,84 @@ private:
     return nullptr;
   }
 
+  // Evaluates the integer-only HIR subset needed to prove source bounds. HIR
+  // operands are already type-checked, so this routine has no diagnostic role;
+  // an operation it cannot prove simply returns nullopt and leaves a runtime
+  // check in place. Arithmetic stays in BigInteger to avoid host overflow.
+  [[nodiscard]] std::optional<BigInteger> constant_integer_expression(
+      HirExpressionId expression_id) const {
+    const HirExpression &expression = hir_.expression(expression_id);
+    if (expression.kind == HirExpressionKind::Constant &&
+        expression.constant.kind == ConstantKind::Integer) {
+      return expression.constant.integer;
+    }
+    if (expression.kind == HirExpressionKind::Unary &&
+        expression.operands.size() == 1) {
+      const std::optional<BigInteger> operand =
+          constant_integer_expression(expression.operands.front());
+      if (!operand.has_value()) return std::nullopt;
+      if (expression.operation == HirOperation::Positive) return operand;
+      if (expression.operation == HirOperation::Negate) return operand->negated();
+      if (expression.operation == HirOperation::BitwiseNot) {
+        return operand->bitwise_not();
+      }
+      return std::nullopt;
+    }
+    if (expression.kind != HirExpressionKind::Binary ||
+        expression.operands.size() != 2) {
+      return std::nullopt;
+    }
+    const std::optional<BigInteger> left =
+        constant_integer_expression(expression.operands[0]);
+    const std::optional<BigInteger> right =
+        constant_integer_expression(expression.operands[1]);
+    if (!left.has_value() || !right.has_value()) return std::nullopt;
+    switch (expression.operation) {
+    case HirOperation::Add: return left->added(*right);
+    case HirOperation::Subtract: return left->subtracted(*right);
+    case HirOperation::Multiply: return left->multiplied(*right);
+    case HirOperation::Divide:
+    case HirOperation::Remainder: {
+      BigInteger quotient;
+      BigInteger remainder;
+      if (!left->divide(*right, quotient, remainder)) return std::nullopt;
+      return expression.operation == HirOperation::Divide
+          ? std::optional<BigInteger>(std::move(quotient))
+          : std::optional<BigInteger>(std::move(remainder));
+    }
+    case HirOperation::BitwiseAnd: return left->bitwise_and(*right);
+    case HirOperation::BitwiseOr: return left->bitwise_or(*right);
+    case HirOperation::BitwiseXor: return left->bitwise_xor(*right);
+    case HirOperation::ShiftLeft:
+    case HirOperation::ShiftRight: {
+      const std::optional<std::uint64_t> count = right->to_u64();
+      if (!count.has_value() || *count > std::numeric_limits<std::size_t>::max()) {
+        return std::nullopt;
+      }
+      return expression.operation == HirOperation::ShiftLeft
+          ? left->shifted_left(static_cast<std::size_t>(*count))
+          : left->shifted_right(static_cast<std::size_t>(*count));
+    }
+    default: return std::nullopt;
+    }
+  }
+
+  // Returns the length known from the base type itself. Arrays always qualify;
+  // strings qualify only when the base HIR node is the literal/constant value,
+  // whose length is the number of indexed bytes rather than Unicode scalars.
+  [[nodiscard]] std::optional<std::uint64_t> compile_time_length(
+      HirExpressionId base_id) const {
+    const HirExpression &base = hir_.expression(base_id);
+    const Type type = semantic_.types.type(base.type);
+    if (type.kind == TypeKind::Array) return type.element_count;
+    if (type.kind == TypeKind::String &&
+        base.kind == HirExpressionKind::Constant &&
+        base.constant.kind == ConstantKind::String) {
+      return static_cast<std::uint64_t>(base.constant.text.size());
+    }
+    return std::nullopt;
+  }
+
   // Applies Draft's initial expected-type rule: exact types match, and untyped
   // numeric constants may take a compatible concrete numeric type. Range checks
   // use the constant table/literal value in the completed numeric checker.
@@ -2120,6 +2198,23 @@ private:
           : base.element;
       expression.type = apply_expected_type(element, expected, node.range);
       expression.operands = {base_id, index_id};
+      if (const std::optional<std::uint64_t> length =
+              compile_time_length(base_id)) {
+        const std::optional<BigInteger> constant =
+            constant_integer_expression(index_id);
+        if (constant.has_value()) {
+          const std::optional<std::uint64_t> index = constant->to_u64();
+          if (index.has_value() && *index < *length) {
+            expression.bounds_proven = true;
+          } else if (index.has_value()) {
+            diagnostics_.error(
+                tree.node(node.children[1]).range,
+                "constant index " + std::to_string(*index) +
+                    " is out of bounds for length " +
+                    std::to_string(*length));
+          }
+        }
+      }
       // A string is an immutable byte view. Lowering still computes an address
       // internally to load the byte, but source code may not take that address
       // or use the indexed expression as an assignment target.
@@ -2181,6 +2276,33 @@ private:
         diagnostics_.error(
             node.range,
             "multi-pointer slicing requires the form 'pointer[:length]'");
+      }
+      if (const std::optional<std::uint64_t> length =
+              compile_time_length(base_id)) {
+        std::size_t operand_index = 1;
+        std::optional<std::uint64_t> low = 0;
+        std::optional<std::uint64_t> high = length;
+        if (expression.slice_has_low) {
+          const std::optional<BigInteger> value =
+              constant_integer_expression(expression.operands[operand_index++]);
+          low = value.has_value() ? value->to_u64() : std::nullopt;
+        }
+        if (expression.slice_has_high) {
+          const std::optional<BigInteger> value =
+              constant_integer_expression(expression.operands[operand_index]);
+          high = value.has_value() ? value->to_u64() : std::nullopt;
+        }
+        if (low.has_value() && high.has_value()) {
+          if (*low <= *high && *high <= *length) {
+            expression.bounds_proven = true;
+          } else {
+            diagnostics_.error(
+                node.range,
+                "constant slice bounds [" + std::to_string(*low) + ":" +
+                    std::to_string(*high) + "] are invalid for length " +
+                    std::to_string(*length));
+          }
+        }
       }
       return hir_.add_expression(std::move(expression));
     }

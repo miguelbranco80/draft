@@ -114,6 +114,10 @@ compute :: proc(values: []i64, flag: bool) -> i64 {
     (_, two): (i64, i64) = (0, 2)
     total += forty + two
     selected := total if flag else 2
+    fixed := [3]i64{10, 20, 30}
+    selected += fixed[1 + 1]
+    fixed_tail := fixed[1:3]
+    selected += cast[i64](len(fixed_tail))
     for i: i64 = 0; i < 3; i += 1 {
         selected += i
     }
@@ -147,6 +151,7 @@ compute :: proc(values: []i64, flag: bool) -> i64 {
   std::size_t switches = 0;
   std::size_t calls = 0;
   std::size_t bounds_checks = 0;
+  std::size_t slice_bounds_checks = 0;
   std::size_t stores = 0;
   std::size_t extracted_members = 0;
   for (const draft::MirProcedure &procedure : source.mir.program.procedures()) {
@@ -164,6 +169,9 @@ compute :: proc(values: []i64, flag: bool) -> i64 {
       if (instruction.kind == draft::MirInstructionKind::BoundsCheck) {
         ++bounds_checks;
       }
+      if (instruction.kind == draft::MirInstructionKind::SliceBoundsCheck) {
+        ++slice_bounds_checks;
+      }
       if (instruction.kind == draft::MirInstructionKind::Store) ++stores;
       if (instruction.kind == draft::MirInstructionKind::ExtractMember) {
         ++extracted_members;
@@ -174,6 +182,7 @@ compute :: proc(values: []i64, flag: bool) -> i64 {
   EXPECT(state, switches == 2);
   EXPECT(state, calls == 1);
   EXPECT(state, bounds_checks == 1);
+  EXPECT(state, slice_bounds_checks == 0);
   EXPECT(state, stores >= 12);
   EXPECT(state, extracted_members >= 4);
 }

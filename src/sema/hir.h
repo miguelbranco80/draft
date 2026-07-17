@@ -121,6 +121,10 @@ struct HirExpression {
   // distinguish `value[low:]` from `value[:high]`, so both bits survive HIR.
   bool slice_has_low = false;
   bool slice_has_high = false;
+  // True only when body checking evaluated every relevant bound against a
+  // compile-time-known length. MIR omits the runtime check in that case; false
+  // means either dynamic bounds or an unchecked source region decides later.
+  bool bounds_proven = false;
   bool addressable = false;
 };
 

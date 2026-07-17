@@ -377,6 +377,30 @@ main :: proc() {
                     std::string::npos);
 }
 
+void test_constant_bounds_diagnostics(TestState &state) {
+  CheckedSource source(R"draft(
+package bodies
+
+main :: proc() {
+    values := [3]u8{1, 2, 3}
+    bad_index := values[1 + 2]
+    bad_high := values[1:4]
+    reversed := values[2:1]
+}
+)draft");
+
+  EXPECT(state, !source.bodies.ok);
+  EXPECT(state, source.diagnostics.error_count() == 3);
+  const std::string rendered =
+      draft::render_diagnostics(source.sources, source.diagnostics);
+  EXPECT(state, rendered.find("constant index 3 is out of bounds for length 3") !=
+                    std::string::npos);
+  EXPECT(state, rendered.find("constant slice bounds [1:4]") !=
+                    std::string::npos);
+  EXPECT(state, rendered.find("constant slice bounds [2:1]") !=
+                    std::string::npos);
+}
+
 void test_parametric_procedure_value_diagnostics(TestState &state) {
   CheckedSource too_wide(R"draft(
 package bodies
@@ -621,6 +645,7 @@ int main() {
   test_parametric_procedure_instances(state);
   test_string_index_is_immutable(state);
   test_multi_pointer_slice_shape(state);
+  test_constant_bounds_diagnostics(state);
   test_parametric_procedure_value_diagnostics(state);
   test_definite_initialization(state);
   test_layout_intrinsics_and_static_assert(state);

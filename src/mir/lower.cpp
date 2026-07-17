@@ -759,13 +759,14 @@ private:
     // Keep these as separate statements: C++ function-argument evaluation order
     // is not the language contract of the compiler being implemented.
     const MirValueId index = lower_expression(expression.operands[1]);
-    if (base_type.kind == TypeKind::Array) {
+    if (base_type.kind == TypeKind::Array && !expression.bounds_proven) {
       bounds_check(
           index,
           usize_constant(base_type.element_count, expression.range),
           expression.range);
-    } else if (base_type.kind == TypeKind::Slice ||
-               base_type.kind == TypeKind::String) {
+    } else if ((base_type.kind == TypeKind::Slice ||
+                base_type.kind == TypeKind::String) &&
+               !expression.bounds_proven) {
       bounds_check(
           index, length(base, base_expression.type, expression.range), expression.range);
     }
@@ -958,7 +959,8 @@ private:
     } else {
       high = base_length;
     }
-    if (base_type.kind != TypeKind::MultiPointer && unchecked_depth_ == 0) {
+    if (base_type.kind != TypeKind::MultiPointer && !expression.bounds_proven &&
+        unchecked_depth_ == 0) {
       MirInstruction check;
       check.kind = MirInstructionKind::SliceBoundsCheck;
       check.range = expression.range;
