@@ -31,6 +31,7 @@ enum class EvalStatus {
 struct EvalResult {
   EvalStatus status = EvalStatus::Pending;
   ConstantValue value;
+  TypeId type;
 };
 
 enum class BindingState {
@@ -41,14 +42,47 @@ enum class BindingState {
   Error,
 };
 
+// Procedure evaluation uses an explicit control signal instead of exceptions
+// or host recursion for statement flow.  Failed carries the expression
+// evaluator's Ready/Pending/Error distinction so an exploratory semantic round
+// can still postpone a call whose dependency is not ready.
+enum class ExecutionSignal {
+  Normal,
+  Return,
+  Break,
+  Continue,
+  Failed,
+};
+
+struct ExecutionResult {
+  ExecutionSignal signal = ExecutionSignal::Normal;
+  EvalStatus failure = EvalStatus::Ready;
+  ConstantValue value;
+  TypeId type;
+};
+
+struct LocalBinding {
+  std::string name;
+  ConstantValue value;
+  TypeId type;
+};
+
+// A procedure call is a lexical boundary.  Its block scopes may see parameters
+// and their own ancestors, but never the caller's locals.  Keeping frames and
+// scopes as small vectors makes shadowing order explicit and deterministic.
+struct LocalFrame {
+  std::vector<std::vector<LocalBinding>> scopes;
+  std::vector<ConstantTypeBinding> type_bindings;
+};
+
 [[nodiscard]] bool token_is_contextual_name(TokenKind kind) {
   return kind == TokenKind::Identifier || kind == TokenKind::KeywordC ||
          kind == TokenKind::KeywordType || kind == TokenKind::KeywordInteger ||
          kind == TokenKind::KeywordFloat || kind == TokenKind::KeywordNumber;
 }
 
-[[nodiscard]] EvalResult ready(ConstantValue value) {
-  return {EvalStatus::Ready, std::move(value)};
+[[nodiscard]] EvalResult ready(ConstantValue value, TypeId type = {}) {
+  return {EvalStatus::Ready, std::move(value), type};
 }
 
 [[nodiscard]] EvalResult pending() {
@@ -56,7 +90,7 @@ enum class BindingState {
 }
 
 [[nodiscard]] EvalResult error_result() {
-  return {EvalStatus::Error, {}};
+  return {EvalStatus::Error, {}, {}};
 }
 
 // ConstantEvaluator is a phase-local view over immutable syntax and mutable
@@ -200,6 +234,92 @@ private:
     return semantic_.package_scope;
   }
 
+  [[nodiscard]] const ConstantValue *local_value(std::string_view name) const {
+    if (local_frames_.empty()) return nullptr;
+    const LocalFrame &frame = local_frames_.back();
+    for (std::size_t remaining = frame.scopes.size(); remaining > 0; --remaining) {
+      const std::vector<LocalBinding> &scope = frame.scopes[remaining - 1];
+      for (std::size_t index = scope.size(); index > 0; --index) {
+        if (scope[index - 1].name == name) return &scope[index - 1].value;
+      }
+    }
+    return nullptr;
+  }
+
+  [[nodiscard]] const LocalBinding *local_binding(
+      std::string_view name) const {
+    if (local_frames_.empty()) return nullptr;
+    const LocalFrame &frame = local_frames_.back();
+    for (std::size_t remaining = frame.scopes.size(); remaining > 0; --remaining) {
+      const std::vector<LocalBinding> &scope = frame.scopes[remaining - 1];
+      for (std::size_t index = scope.size(); index > 0; --index) {
+        if (scope[index - 1].name == name) return &scope[index - 1];
+      }
+    }
+    return nullptr;
+  }
+
+  [[nodiscard]] bool assign_local(
+      std::string_view name, ConstantValue value) {
+    if (local_frames_.empty()) return false;
+    LocalFrame &frame = local_frames_.back();
+    for (std::size_t remaining = frame.scopes.size(); remaining > 0; --remaining) {
+      std::vector<LocalBinding> &scope = frame.scopes[remaining - 1];
+      for (std::size_t index = scope.size(); index > 0; --index) {
+        if (scope[index - 1].name == name) {
+          scope[index - 1].value = std::move(value);
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  void declare_local(std::string name, ConstantValue value, TypeId type) {
+    if (local_frames_.empty()) return;
+    LocalFrame &frame = local_frames_.back();
+    if (frame.scopes.empty()) frame.scopes.emplace_back();
+    frame.scopes.back().push_back(
+        {std::move(name), std::move(value), type});
+  }
+
+  [[nodiscard]] std::vector<std::string> names_in_node(
+      const SyntaxTree &tree, const SyntaxNode &node) const {
+    std::vector<std::string> result;
+    for (std::uint32_t index = node.token_begin; index < node.token_end; ++index) {
+      const Token &token = tree.token(index);
+      if (token_is_contextual_name(token.kind)) {
+        result.emplace_back(sources_.text(token.range));
+      }
+    }
+    return result;
+  }
+
+  [[nodiscard]] bool consume_execution_step(
+      SourceRange range, bool required) {
+    if (execution_steps_remaining_ != 0) {
+      --execution_steps_remaining_;
+      return true;
+    }
+    if (required && !execution_limit_reported_) {
+      diagnostics_.error(range, "compile-time procedure step limit exceeded");
+      execution_limit_reported_ = true;
+    }
+    return false;
+  }
+
+  [[nodiscard]] ExecutionResult failed_execution(EvalStatus status) const {
+    ExecutionResult result;
+    result.signal = ExecutionSignal::Failed;
+    result.failure = status;
+    return result;
+  }
+
+  [[nodiscard]] ExecutionResult failed_execution(
+      const EvalResult &result) const {
+    return failed_execution(result.status);
+  }
+
   // Converts a semantic failure into Pending during discovery rounds and a
   // source diagnostic during the final no-progress round.
   [[nodiscard]] EvalResult fail(
@@ -316,6 +436,8 @@ private:
   }
 
   static constexpr std::size_t kMaximumConstantBits = 1000000;
+  static constexpr std::size_t kMaximumExecutionSteps = 1000000;
+  static constexpr std::size_t kMaximumProcedureCallDepth = 256;
 
   [[nodiscard]] EvalResult bounded_integer(
       BigInteger value, SourceRange range, bool required) {
@@ -332,6 +454,134 @@ private:
       return fail(range, "compile-time rational resource limit exceeded", required);
     }
     return ready(ConstantValue::make_float(std::move(value)));
+  }
+
+  [[nodiscard]] Type runtime_type(TypeId type_id) const {
+    Type result = semantic_.types.type(type_id);
+    while (result.kind == TypeKind::Distinct) {
+      result = semantic_.types.type(result.element);
+    }
+    return result;
+  }
+
+  [[nodiscard]] bool concrete_numeric(TypeId type_id) const {
+    if (!type_id.is_valid()) return false;
+    const TypeKind kind = runtime_type(type_id).kind;
+    return kind == TypeKind::SignedInteger ||
+        kind == TypeKind::UnsignedInteger || kind == TypeKind::Float;
+  }
+
+  [[nodiscard]] std::uint32_t integer_width(TypeId type_id) const {
+    const Type type = runtime_type(type_id);
+    if (type.kind == TypeKind::Enum) {
+      return static_cast<std::uint32_t>(type.layout.size * 8U);
+    }
+    return type.bit_width;
+  }
+
+  [[nodiscard]] bool integer_representable(
+      const BigInteger &value, TypeId type_id) const {
+    const Type type = runtime_type(type_id);
+    const std::uint32_t width = integer_width(type_id);
+    if (width == 0) return false;
+    if (type.kind == TypeKind::UnsignedInteger ||
+        type.kind == TypeKind::BooleanStorage ||
+        type.kind == TypeKind::EndianScalar) {
+      return !value.is_negative() && value.bit_count() <= width;
+    }
+    if (type.kind != TypeKind::SignedInteger && type.kind != TypeKind::Rune &&
+        type.kind != TypeKind::Enum) {
+      return false;
+    }
+    const BigInteger sign =
+        BigInteger::from_u64(1).shifted_left(width - 1U);
+    return value.compare(sign.negated()) >= 0 &&
+        value.compare(sign.subtracted(BigInteger::from_u64(1))) <= 0;
+  }
+
+  [[nodiscard]] BigInteger wrapped_integer(
+      const BigInteger &value, TypeId type_id) const {
+    const std::uint32_t width = integer_width(type_id);
+    if (width == 0) return value;
+    const BigInteger modulus =
+        BigInteger::from_u64(1).shifted_left(width);
+    BigInteger quotient;
+    BigInteger remainder;
+    if (!value.divide(modulus, quotient, remainder)) return value;
+    if (remainder.is_negative()) remainder = remainder.added(modulus);
+    const Type type = runtime_type(type_id);
+    const bool signed_value = type.kind == TypeKind::SignedInteger ||
+        type.kind == TypeKind::Rune || type.kind == TypeKind::Enum;
+    if (signed_value) {
+      const BigInteger sign =
+          BigInteger::from_u64(1).shifted_left(width - 1U);
+      if (remainder.compare(sign) >= 0) {
+        remainder = remainder.subtracted(modulus);
+      }
+    }
+    return remainder;
+  }
+
+  [[nodiscard]] EvalResult convert_to_type(
+      ConstantValue value,
+      TypeId type_id,
+      bool wrap_integer,
+      SourceRange range,
+      bool required) {
+    if (!type_id.is_valid()) return ready(std::move(value));
+    const Type type = runtime_type(type_id);
+    if (value.kind == ConstantKind::Integer &&
+        (type.kind == TypeKind::SignedInteger ||
+         type.kind == TypeKind::UnsignedInteger || type.kind == TypeKind::Rune ||
+         type.kind == TypeKind::BooleanStorage ||
+         type.kind == TypeKind::EndianScalar || type.kind == TypeKind::Enum)) {
+      if (!wrap_integer && !integer_representable(value.integer, type_id)) {
+        return fail(
+            range,
+            "compile-time integer is not representable in its required type",
+            required);
+      }
+      if (wrap_integer) value.integer = wrapped_integer(value.integer, type_id);
+      return ready(std::move(value), type_id);
+    }
+    if (value.kind == ConstantKind::Integer && type.kind == TypeKind::Float) {
+      return ready(
+          ConstantValue::make_float(ExactRational(value.integer)), type_id);
+    }
+    if (value.kind == ConstantKind::Float && type.kind == TypeKind::Float) {
+      // Exact rationals remain exact here.  The final target-format rounding
+      // adapter is shared with static emission; typed intermediate rounding is
+      // added with aggregate constants rather than using host floating point.
+      return ready(std::move(value), type_id);
+    }
+    if (value.kind == ConstantKind::Bool && type.kind == TypeKind::Bool) {
+      return ready(std::move(value), type_id);
+    }
+    if (value.kind == ConstantKind::String && type.kind == TypeKind::String) {
+      return ready(std::move(value), type_id);
+    }
+    if (value.kind == ConstantKind::Nil &&
+        (type.kind == TypeKind::RawPointer || type.kind == TypeKind::CString ||
+         type.kind == TypeKind::Pointer || type.kind == TypeKind::MultiPointer ||
+         type.kind == TypeKind::Procedure)) {
+      return ready(std::move(value), type_id);
+    }
+    return fail(
+        range,
+        "compile-time value is incompatible with its required type",
+        required);
+  }
+
+  [[nodiscard]] TypeId default_value_type(const ConstantValue &value) const {
+    switch (value.kind) {
+    case ConstantKind::Bool: return semantic_.types.builtins().bool_type;
+    case ConstantKind::Integer: return semantic_.types.builtins().int_type;
+    case ConstantKind::Float:
+      return semantic_.types.find_builtin("f64").value_or(
+          semantic_.types.builtins().invalid);
+    case ConstantKind::String: return semantic_.types.builtins().string_type;
+    default: return {};
+    }
   }
 
   // Applies arbitrary-precision integer arithmetic. Right shift and bitwise
@@ -458,6 +708,31 @@ private:
     return ready(ConstantValue::make_bool(equal));
   }
 
+  [[nodiscard]] EvalResult evaluate_binary_values(
+      TokenKind operation,
+      const ConstantValue &left,
+      const ConstantValue &right,
+      SourceRange range,
+      bool required) {
+    if (left.kind == ConstantKind::Integer &&
+        right.kind == ConstantKind::Integer) {
+      return evaluate_integer_binary(
+          operation, left.integer, right.integer, range, required);
+    }
+    if ((left.kind == ConstantKind::Integer || left.kind == ConstantKind::Float) &&
+        (right.kind == ConstantKind::Integer || right.kind == ConstantKind::Float)) {
+      const ExactRational left_float = left.kind == ConstantKind::Float
+          ? left.floating
+          : ExactRational(left.integer);
+      const ExactRational right_float = right.kind == ConstantKind::Float
+          ? right.floating
+          : ExactRational(right.integer);
+      return evaluate_float_binary(
+          operation, left_float, right_float, range, required);
+    }
+    return evaluate_scalar_equality(operation, left, right, range, required);
+  }
+
   // Evaluates a binary node with source-defined short circuiting. Right operands
   // of `&&` and `||` are not requested when the left value decides the result.
   [[nodiscard]] EvalResult evaluate_binary(
@@ -474,10 +749,14 @@ private:
         return fail(node.range, "logical operator requires bool operands", required);
       }
       if (operation == TokenKind::LogicalAnd && !left.value.boolean) {
-        return ready(ConstantValue::make_bool(false));
+        return ready(
+            ConstantValue::make_bool(false),
+            semantic_.types.builtins().bool_type);
       }
       if (operation == TokenKind::LogicalOr && left.value.boolean) {
-        return ready(ConstantValue::make_bool(true));
+        return ready(
+            ConstantValue::make_bool(true),
+            semantic_.types.builtins().bool_type);
       }
       const EvalResult right =
           evaluate_expression(tree, node.children[1], scope, required);
@@ -485,30 +764,57 @@ private:
       if (right.value.kind != ConstantKind::Bool) {
         return fail(node.range, "logical operator requires bool operands", required);
       }
-      return right;
+      return ready(
+          right.value, semantic_.types.builtins().bool_type);
     }
 
     const EvalResult right = evaluate_expression(tree, node.children[1], scope, required);
     if (right.status != EvalStatus::Ready) return right;
-    if (left.value.kind == ConstantKind::Integer &&
+    const bool comparison = operation == TokenKind::EqualEqual ||
+        operation == TokenKind::BangEqual || operation == TokenKind::Less ||
+        operation == TokenKind::LessEqual || operation == TokenKind::Greater ||
+        operation == TokenKind::GreaterEqual;
+    const TypeId result_type = concrete_numeric(left.type)
+        ? left.type
+        : (concrete_numeric(right.type) ? right.type : TypeId{});
+
+    if (result_type.is_valid() &&
+        (operation == TokenKind::ShiftLeft ||
+         operation == TokenKind::ShiftRight) &&
         right.value.kind == ConstantKind::Integer) {
-      return evaluate_integer_binary(
-          operation, left.value.integer, right.value.integer, node.range, required);
+      const std::optional<std::uint64_t> count = right.value.integer.to_u64();
+      if (!count.has_value() || *count >= integer_width(result_type)) {
+        return fail(node.range, "typed compile-time shift count traps", required);
+      }
     }
-    if ((left.value.kind == ConstantKind::Integer ||
-         left.value.kind == ConstantKind::Float) &&
-        (right.value.kind == ConstantKind::Integer ||
-         right.value.kind == ConstantKind::Float)) {
-      const ExactRational left_float = left.value.kind == ConstantKind::Float
-          ? left.value.floating
-          : ExactRational(left.value.integer);
-      const ExactRational right_float = right.value.kind == ConstantKind::Float
-          ? right.value.floating
-          : ExactRational(right.value.integer);
-      return evaluate_float_binary(
-          operation, left_float, right_float, node.range, required);
+    if (result_type.is_valid() && operation == TokenKind::Slash &&
+        left.value.kind == ConstantKind::Integer &&
+        right.value.kind == ConstantKind::Integer &&
+        runtime_type(result_type).kind == TypeKind::SignedInteger) {
+      const BigInteger minimum = BigInteger::from_u64(1)
+          .shifted_left(integer_width(result_type) - 1U)
+          .negated();
+      if (left.value.integer == minimum &&
+          right.value.integer == BigInteger::from_i64(-1)) {
+        return fail(
+            node.range,
+            "typed compile-time signed division overflow traps",
+            required);
+      }
     }
-    return evaluate_scalar_equality(operation, left.value, right.value, node.range, required);
+
+    EvalResult result = evaluate_binary_values(
+        operation, left.value, right.value, node.range, required);
+    if (result.status != EvalStatus::Ready) return result;
+    if (comparison) {
+      result.type = semantic_.types.builtins().bool_type;
+      return result;
+    }
+    if (result_type.is_valid()) {
+      return convert_to_type(
+          result.value, result_type, true, node.range, required);
+    }
+    return result;
   }
 
   // Maps the built-in target object's stable fields to scalar compile-time
@@ -604,6 +910,12 @@ private:
   }
 
   [[nodiscard]] TypeId substitute_local_type(TypeId source) const {
+    if (!local_frames_.empty()) {
+      for (const ConstantTypeBinding &binding :
+           local_frames_.back().type_bindings) {
+        if (binding.parameter == source) return binding.replacement;
+      }
+    }
     if (local_types_ == nullptr) return source;
     for (const ConstantTypeBinding &binding : *local_types_) {
       if (binding.parameter == source) return binding.replacement;
@@ -644,13 +956,952 @@ private:
     return ready(ConstantValue::make_integer(BigInteger::from_u64(value)));
   }
 
+  [[nodiscard]] bool is_type_syntax(NodeKind kind) const {
+    switch (kind) {
+    case NodeKind::NamedType:
+    case NodeKind::PointerType:
+    case NodeKind::MultiPointerType:
+    case NodeKind::SliceType:
+    case NodeKind::ArrayType:
+    case NodeKind::SimdType:
+    case NodeKind::TupleType:
+    case NodeKind::ProcedureType:
+    case NodeKind::DistinctType:
+    case NodeKind::StructType:
+    case NodeKind::EnumType:
+    case NodeKind::TaggedUnionType:
+    case NodeKind::RawUnionType:
+      return true;
+    default:
+      return false;
+    }
+  }
+
+  [[nodiscard]] std::optional<TypeId> named_type_from_syntax(
+      const SyntaxTree &tree, NodeId type_node, ScopeId scope) const {
+    const SyntaxNode &node = tree.node(type_node);
+    if (node.kind == NodeKind::DistinctType && !node.children.empty()) {
+      return named_type_from_syntax(tree, node.children.back(), scope);
+    }
+    if (node.kind != NodeKind::NamedType) return std::nullopt;
+    const std::optional<std::string> name = final_name(tree, node);
+    if (!name.has_value()) return std::nullopt;
+    if (const std::optional<TypeId> builtin = semantic_.types.find_builtin(*name)) {
+      return *builtin;
+    }
+    const std::optional<SymbolId> symbol = semantic_.symbols.lookup(scope, *name);
+    if (!symbol.has_value()) return std::nullopt;
+    const Symbol &found = semantic_.symbols.symbol(*symbol);
+    if (found.kind != SymbolKind::Type && found.kind != SymbolKind::TypeParameter) {
+      return std::nullopt;
+    }
+    return substitute_local_type(found.type);
+  }
+
+  [[nodiscard]] std::optional<ConstantValue> zero_value(TypeId type_id) const {
+    Type type = semantic_.types.type(type_id);
+    while (type.kind == TypeKind::Distinct) {
+      type = semantic_.types.type(type.element);
+    }
+    switch (type.kind) {
+    case TypeKind::Bool:
+      return ConstantValue::make_bool(false);
+    case TypeKind::BooleanStorage:
+    case TypeKind::SignedInteger:
+    case TypeKind::UnsignedInteger:
+    case TypeKind::Rune:
+    case TypeKind::EndianScalar:
+    case TypeKind::Enum:
+      return ConstantValue::make_integer(0);
+    case TypeKind::Float:
+      return ConstantValue::make_float(
+          ExactRational(BigInteger::from_u64(0)));
+    case TypeKind::RawPointer:
+    case TypeKind::CString:
+    case TypeKind::Pointer:
+    case TypeKind::MultiPointer:
+    case TypeKind::Procedure:
+      return ConstantValue::make_nil();
+    case TypeKind::String:
+      return ConstantValue::make_string({});
+    default:
+      return std::nullopt;
+    }
+  }
+
+  [[nodiscard]] std::optional<ConstantValue> zero_value_from_syntax(
+      const SyntaxTree &tree, NodeId type_node, ScopeId scope) const {
+    const SyntaxNode &node = tree.node(type_node);
+    if (node.kind == NodeKind::PointerType ||
+        node.kind == NodeKind::MultiPointerType ||
+        node.kind == NodeKind::ProcedureType) {
+      return ConstantValue::make_nil();
+    }
+    const std::optional<TypeId> resolved =
+        named_type_from_syntax(tree, type_node, scope);
+    return resolved.has_value() ? zero_value(*resolved) : std::nullopt;
+  }
+
+  [[nodiscard]] TokenKind assignment_operator(
+      const SyntaxTree &tree, const SyntaxNode &node) const {
+    for (std::uint32_t index = node.token_begin; index < node.token_end; ++index) {
+      switch (tree.token(index).kind) {
+      case TokenKind::Equal:
+      case TokenKind::PlusEqual:
+      case TokenKind::MinusEqual:
+      case TokenKind::StarEqual:
+      case TokenKind::SlashEqual:
+      case TokenKind::PercentEqual:
+      case TokenKind::AmpersandEqual:
+      case TokenKind::PipeEqual:
+      case TokenKind::CaretEqual:
+      case TokenKind::ShiftLeftEqual:
+      case TokenKind::ShiftRightEqual:
+        return tree.token(index).kind;
+      default:
+        break;
+      }
+    }
+    return TokenKind::Invalid;
+  }
+
+  [[nodiscard]] TokenKind binary_for_assignment(TokenKind operation) const {
+    switch (operation) {
+    case TokenKind::PlusEqual: return TokenKind::Plus;
+    case TokenKind::MinusEqual: return TokenKind::Minus;
+    case TokenKind::StarEqual: return TokenKind::Star;
+    case TokenKind::SlashEqual: return TokenKind::Slash;
+    case TokenKind::PercentEqual: return TokenKind::Percent;
+    case TokenKind::AmpersandEqual: return TokenKind::Ampersand;
+    case TokenKind::PipeEqual: return TokenKind::Pipe;
+    case TokenKind::CaretEqual: return TokenKind::Caret;
+    case TokenKind::ShiftLeftEqual: return TokenKind::ShiftLeft;
+    case TokenKind::ShiftRightEqual: return TokenKind::ShiftRight;
+    default: return TokenKind::Invalid;
+    }
+  }
+
+  [[nodiscard]] std::optional<ScopeId> procedure_scope(SymbolId owner) const {
+    for (const OwnedSemanticScope &owned : semantic_.owned_scopes) {
+      if (owned.owner == owner &&
+          semantic_.symbols.scope(owned.scope).kind == ScopeKind::Procedure) {
+        return owned.scope;
+      }
+    }
+    return std::nullopt;
+  }
+
+  [[nodiscard]] std::optional<NodeId> procedure_payload(
+      const SyntaxTree &tree, const Symbol &symbol) const {
+    if (!symbol.syntax.node.is_valid()) return std::nullopt;
+    const SyntaxNode &declaration = tree.node(symbol.syntax.node);
+    if (declaration.kind == NodeKind::Procedure) return symbol.syntax.node;
+    for (NodeId child : declaration.children) {
+      if (tree.node(child).kind == NodeKind::Procedure) return child;
+    }
+    return std::nullopt;
+  }
+
+  [[nodiscard]] std::vector<std::string> procedure_parameter_names(
+      const SyntaxTree &tree, const SyntaxNode &procedure) const {
+    std::vector<std::string> result;
+    for (NodeId child : procedure.children) {
+      const SyntaxNode &candidate = tree.node(child);
+      if (candidate.kind != NodeKind::ParameterList) continue;
+      for (NodeId parameter_id : candidate.children) {
+        const SyntaxNode &parameter = tree.node(parameter_id);
+        if (parameter.children.empty()) continue;
+        const SyntaxNode &name_list = tree.node(parameter.children.front());
+        const std::vector<std::string> names = names_in_node(tree, name_list);
+        result.insert(result.end(), names.begin(), names.end());
+      }
+      break;
+    }
+    return result;
+  }
+
+  [[nodiscard]] TypeId procedure_parameter_type(
+      ScopeId scope, std::string_view name) const {
+    const std::optional<SymbolId> symbol =
+        semantic_.symbols.lookup_direct(scope, name);
+    if (!symbol.has_value()) return semantic_.types.builtins().invalid;
+    const Symbol &parameter = semantic_.symbols.symbol(*symbol);
+    return parameter.kind == SymbolKind::Parameter
+        ? substitute_local_type(parameter.type)
+        : semantic_.types.builtins().invalid;
+  }
+
+  [[nodiscard]] std::vector<ParametricParameterRecord> parametric_parameters(
+      SymbolId owner) const {
+    std::vector<ParametricParameterRecord> result;
+    for (const ParametricParameterRecord &parameter :
+         semantic_.parametric_parameters) {
+      if (parameter.owner == owner) result.push_back(parameter);
+    }
+    return result;
+  }
+
+  [[nodiscard]] std::optional<NodeId> procedure_body(
+      const SyntaxTree &tree, const SyntaxNode &procedure) const {
+    for (NodeId child : procedure.children) {
+      if (tree.node(child).kind == NodeKind::Block) return child;
+    }
+    return std::nullopt;
+  }
+
+  [[nodiscard]] EvalResult evaluate_intrinsic_call(
+      const SyntaxTree &tree,
+      const SyntaxNode &call,
+      ScopeId scope,
+      bool required) {
+    if (call.children.empty()) return pending();
+    const SyntaxNode &callee = tree.node(call.children.front());
+    if (callee.kind != NodeKind::NameExpression) return pending();
+    const std::optional<std::string> name = final_name(tree, callee);
+    if (!name.has_value()) return pending();
+
+    if (*name == "len") {
+      if (call.children.size() != 2) {
+        return fail(call.range, "len requires one compile-time value", required);
+      }
+      const EvalResult argument =
+          evaluate_expression(tree, call.children[1], scope, required);
+      if (argument.status != EvalStatus::Ready) return argument;
+      if (argument.value.kind != ConstantKind::String) {
+        return fail(
+            call.range,
+            "compile-time len currently requires a string value",
+            required);
+      }
+      return ready(ConstantValue::make_integer(
+          BigInteger::from_u64(argument.value.text.size())));
+    }
+
+    if (*name == "static_assert") {
+      if (call.children.size() < 2 || call.children.size() > 3) {
+        return fail(
+            call.range,
+            "static_assert requires a bool and optional string",
+            required);
+      }
+      const EvalResult condition =
+          evaluate_expression(tree, call.children[1], scope, required);
+      if (condition.status != EvalStatus::Ready) return condition;
+      if (condition.value.kind != ConstantKind::Bool) {
+        return fail(call.range, "static_assert condition must be bool", required);
+      }
+      std::string message = "static assertion failed";
+      if (call.children.size() == 3) {
+        const EvalResult supplied =
+            evaluate_expression(tree, call.children[2], scope, required);
+        if (supplied.status != EvalStatus::Ready) return supplied;
+        if (supplied.value.kind != ConstantKind::String) {
+          return fail(
+              tree.node(call.children[2]).range,
+              "static_assert message must be a string",
+              required);
+        }
+        message += ": " + supplied.value.text;
+      }
+      if (!condition.value.boolean) return fail(call.range, message, required);
+      // The value is ignored by statement execution.  Returning true keeps the
+      // internal evaluator scalar-only without inventing a source-level void
+      // constant.
+      return ready(ConstantValue::make_bool(true));
+    }
+
+    if (*name == "assert") {
+      return fail(
+          call.range,
+          "runtime assert is unavailable during compile-time evaluation",
+          required);
+    }
+    return pending();
+  }
+
+  [[nodiscard]] EvalResult evaluate_procedure_call(
+      const SyntaxTree &tree,
+      const SyntaxNode &call,
+      ScopeId scope,
+      bool required) {
+    if (call.children.empty()) return pending();
+    const SyntaxNode &callee = tree.node(call.children.front());
+    NodeId base_callee = call.children.front();
+    std::vector<NodeId> compile_time_arguments;
+    if (callee.kind == NodeKind::BracketExpression && !callee.children.empty()) {
+      base_callee = callee.children.front();
+      compile_time_arguments.insert(
+          compile_time_arguments.end(),
+          callee.children.begin() + 1,
+          callee.children.end());
+    } else if (callee.kind != NodeKind::NameExpression) {
+      return pending();
+    }
+    const SyntaxNode &base = tree.node(base_callee);
+    if (base.kind != NodeKind::NameExpression) return pending();
+    const std::optional<std::string> name = final_name(tree, base);
+    if (!name.has_value()) return pending();
+    const std::optional<SymbolId> found = semantic_.symbols.lookup(scope, *name);
+    if (!found.has_value()) return pending();
+    const Symbol symbol = semantic_.symbols.symbol(*found);
+    if (symbol.kind != SymbolKind::Procedure) return pending();
+    if (symbol.flags.foreign) {
+      return fail(
+          call.range,
+          "foreign calls are unavailable during compile-time evaluation",
+          required);
+    }
+    if (procedure_call_depth_ >= kMaximumProcedureCallDepth) {
+      return fail(
+          call.range,
+          "compile-time procedure recursion limit exceeded",
+          required);
+    }
+    if (!consume_execution_step(call.range, required)) return error_result();
+
+    const SyntaxTree *procedure_tree = find_tree(symbol.syntax.file);
+    if (procedure_tree == nullptr) return pending();
+    const std::optional<NodeId> payload = procedure_payload(*procedure_tree, symbol);
+    if (!payload.has_value()) {
+      return fail(
+          call.range,
+          "compile-time call requires a procedure body",
+          required);
+    }
+    const SyntaxNode &procedure = procedure_tree->node(*payload);
+    const std::optional<NodeId> body = procedure_body(*procedure_tree, procedure);
+    if (!body.has_value()) {
+      return fail(
+          call.range,
+          "compile-time call requires a procedure body",
+          required);
+    }
+    const std::vector<std::string> parameters =
+        procedure_parameter_names(*procedure_tree, procedure);
+    if (call.children.size() - 1 != parameters.size()) {
+      return fail(
+          call.range,
+          "compile-time procedure argument count does not match its parameters",
+          required);
+    }
+    const std::vector<ParametricParameterRecord> compile_parameters =
+        parametric_parameters(*found);
+    if (compile_time_arguments.size() != compile_parameters.size()) {
+      return fail(
+          call.range,
+          "compile-time procedure argument count does not match its parametric parameters",
+          required);
+    }
+    const ScopeId body_scope =
+        procedure_scope(*found).value_or(file_scope(symbol.syntax.file));
+
+    // Evaluate every input in the caller before installing the callee frame.
+    // This preserves source evaluation order and prevents accidental dynamic
+    // scoping when a caller local shares a callee parameter name.
+    LocalFrame frame;
+    frame.scopes.emplace_back();
+    for (std::size_t index = 0; index < compile_parameters.size(); ++index) {
+      const ParametricParameterRecord &parameter = compile_parameters[index];
+      const Symbol &parameter_symbol =
+          semantic_.symbols.symbol(parameter.parameter);
+      if (parameter_symbol.kind == SymbolKind::TypeParameter) {
+        const std::optional<TypeId> supplied = type_value(
+            tree, compile_time_arguments[index], scope);
+        if (!supplied.has_value()) {
+          return fail(
+              tree.node(compile_time_arguments[index]).range,
+              "compile-time type parameter requires a type argument",
+              required);
+        }
+        frame.type_bindings.push_back({parameter_symbol.type, *supplied});
+        continue;
+      }
+      const EvalResult supplied = evaluate_expression(
+          tree, compile_time_arguments[index], scope, required);
+      if (supplied.status != EvalStatus::Ready) return supplied;
+      const EvalResult converted = convert_to_type(
+          supplied.value,
+          parameter_symbol.type,
+          false,
+          tree.node(compile_time_arguments[index]).range,
+          required);
+      if (converted.status != EvalStatus::Ready) return converted;
+      frame.scopes.back().push_back(
+          {parameter_symbol.name, converted.value, parameter_symbol.type});
+    }
+
+    std::vector<EvalResult> supplied_arguments;
+    supplied_arguments.reserve(parameters.size());
+    for (std::size_t index = 1; index < call.children.size(); ++index) {
+      const EvalResult argument =
+          evaluate_expression(tree, call.children[index], scope, required);
+      if (argument.status != EvalStatus::Ready) return argument;
+      supplied_arguments.push_back(argument);
+    }
+
+    local_frames_.push_back(std::move(frame));
+    for (std::size_t index = 0; index < supplied_arguments.size(); ++index) {
+      const TypeId parameter_type =
+          procedure_parameter_type(body_scope, parameters[index]);
+      const EvalResult &argument = supplied_arguments[index];
+      const EvalResult converted = parameter_type.is_valid() &&
+              parameter_type != semantic_.types.builtins().invalid
+          ? convert_to_type(
+                argument.value,
+                parameter_type,
+                false,
+                tree.node(call.children[index + 1]).range,
+                required)
+          : argument;
+      if (converted.status != EvalStatus::Ready) {
+        local_frames_.pop_back();
+        return converted;
+      }
+      local_frames_.back().scopes.back().push_back(
+          {parameters[index], converted.value, parameter_type});
+    }
+    ++procedure_call_depth_;
+    const ExecutionResult execution = execute_block(
+        *procedure_tree, *body, body_scope, required);
+    const Type &procedure_type = semantic_.types.type(symbol.type);
+    const TypeId result_type = procedure_type.members.empty()
+        ? semantic_.types.builtins().invalid
+        : substitute_local_type(procedure_type.members.back());
+    --procedure_call_depth_;
+    local_frames_.pop_back();
+
+    if (execution.signal == ExecutionSignal::Return) {
+      if (execution.value.kind == ConstantKind::Unavailable) {
+        return fail(
+            procedure.range,
+            "compile-time procedure returned no value",
+            required);
+      }
+      if (execution.type == result_type) {
+        return ready(execution.value, result_type);
+      }
+      return convert_to_type(
+          execution.value,
+          result_type,
+          false,
+          procedure.range,
+          required);
+    }
+    if (execution.signal == ExecutionSignal::Failed) {
+      return {execution.failure, {}, {}};
+    }
+    if (execution.signal == ExecutionSignal::Break ||
+        execution.signal == ExecutionSignal::Continue) {
+      return fail(
+          procedure.range,
+          "compile-time procedure has control flow escaping its body",
+          required);
+    }
+    return fail(
+        procedure.range,
+        "compile-time procedure completed without returning a value",
+        required);
+  }
+
+  [[nodiscard]] ExecutionResult execute_declaration(
+      const SyntaxTree &tree,
+      const SyntaxNode &declaration,
+      ScopeId scope,
+      bool required) {
+    if (declaration.children.empty()) {
+      return failed_execution(fail(
+          declaration.range, "malformed compile-time local declaration", required));
+    }
+    const SyntaxNode &pattern = tree.node(declaration.children.front());
+    if (pattern.children.empty()) {
+      return failed_execution(fail(
+          declaration.range, "compile-time local requires a name", required));
+    }
+    const std::vector<std::string> names =
+        names_in_node(tree, tree.node(pattern.children.front()));
+    if (names.size() != 1) {
+      return failed_execution(fail(
+          declaration.range,
+          "compile-time evaluator currently requires one local binding",
+          required));
+    }
+
+    std::optional<NodeId> declared_type;
+    std::optional<NodeId> initializer;
+    for (std::size_t index = 1; index < declaration.children.size(); ++index) {
+      const NodeId child = declaration.children[index];
+      const NodeKind kind = tree.node(child).kind;
+      if (is_type_syntax(kind)) {
+        declared_type = child;
+      } else if (kind != NodeKind::ParametricParameterList) {
+        initializer = child;
+      }
+    }
+
+    ConstantValue value;
+    TypeId local_type;
+    if (declared_type.has_value()) {
+      local_type = named_type_from_syntax(tree, *declared_type, scope).value_or(
+          semantic_.types.builtins().invalid);
+    }
+    if (initializer.has_value()) {
+      const EvalResult evaluated =
+          evaluate_expression(tree, *initializer, scope, required);
+      if (evaluated.status != EvalStatus::Ready) {
+        return failed_execution(evaluated);
+      }
+      if (declared_type.has_value() && local_type.is_valid() &&
+          local_type != semantic_.types.builtins().invalid) {
+        const EvalResult converted = convert_to_type(
+            evaluated.value,
+            local_type,
+            false,
+            tree.node(*initializer).range,
+            required);
+        if (converted.status != EvalStatus::Ready) {
+          return failed_execution(converted);
+        }
+        value = converted.value;
+      } else {
+        value = evaluated.value;
+        local_type = evaluated.type.is_valid()
+            ? evaluated.type
+            : default_value_type(evaluated.value);
+      }
+    } else if (declared_type.has_value()) {
+      const std::optional<ConstantValue> zero =
+          zero_value_from_syntax(tree, *declared_type, scope);
+      if (!zero.has_value()) {
+        return failed_execution(fail(
+            tree.node(*declared_type).range,
+            "compile-time local type has no supported scalar zero value",
+            required));
+      }
+      value = *zero;
+    } else {
+      return failed_execution(fail(
+          declaration.range,
+          "compile-time local requires a type or initializer",
+          required));
+    }
+
+    if (names.front() != "_") {
+      declare_local(names.front(), std::move(value), local_type);
+    }
+    return {};
+  }
+
+  [[nodiscard]] ExecutionResult execute_assignment(
+      const SyntaxTree &tree,
+      const SyntaxNode &assignment,
+      ScopeId scope,
+      bool required) {
+    if (assignment.children.size() != 2) {
+      return failed_execution(fail(
+          assignment.range,
+          "compile-time evaluator currently requires one assignment target",
+          required));
+    }
+    const SyntaxNode &target = tree.node(assignment.children.front());
+    if (target.kind != NodeKind::NameExpression) {
+      return failed_execution(fail(
+          target.range,
+          "compile-time assignment currently requires a local name",
+          required));
+    }
+    const std::optional<std::string> name = final_name(tree, target);
+    const LocalBinding *target_binding = name.has_value()
+        ? local_binding(*name)
+        : nullptr;
+    if (!name.has_value() || target_binding == nullptr) {
+      return failed_execution(fail(
+          target.range,
+          "compile-time assignment cannot write runtime or unknown storage",
+          required));
+    }
+    const LocalBinding target_snapshot = *target_binding;
+    const EvalResult right =
+        evaluate_expression(tree, assignment.children.back(), scope, required);
+    if (right.status != EvalStatus::Ready) return failed_execution(right);
+
+    ConstantValue stored = right.value;
+    const TokenKind operation = assignment_operator(tree, assignment);
+    if (operation != TokenKind::Equal) {
+      const TokenKind binary = binary_for_assignment(operation);
+      if (binary == TokenKind::Invalid) {
+        return failed_execution(fail(
+            assignment.range,
+            "invalid compile-time compound assignment",
+            required));
+      }
+      const EvalResult result = evaluate_binary_values(
+          binary,
+          target_snapshot.value,
+          right.value,
+          assignment.range,
+          required);
+      if (result.status != EvalStatus::Ready) return failed_execution(result);
+      const EvalResult converted = convert_to_type(
+          result.value,
+          target_snapshot.type,
+          true,
+          assignment.range,
+          required);
+      if (converted.status != EvalStatus::Ready) {
+        return failed_execution(converted);
+      }
+      stored = converted.value;
+    } else if (target_snapshot.type.is_valid() &&
+               target_snapshot.type != semantic_.types.builtins().invalid &&
+               right.type != target_snapshot.type) {
+      const EvalResult converted = convert_to_type(
+          right.value,
+          target_snapshot.type,
+          false,
+          assignment.range,
+          required);
+      if (converted.status != EvalStatus::Ready) {
+        return failed_execution(converted);
+      }
+      stored = converted.value;
+    }
+    (void)assign_local(*name, std::move(stored));
+    return {};
+  }
+
+  [[nodiscard]] EvalResult evaluate_statement_condition(
+      const SyntaxTree &tree,
+      NodeId condition,
+      ScopeId scope,
+      bool required) {
+    const SyntaxNode &node = tree.node(condition);
+    if (node.kind == NodeKind::ExpressionStatement && !node.children.empty()) {
+      condition = node.children.front();
+    }
+    const EvalResult result =
+        evaluate_expression(tree, condition, scope, required);
+    if (result.status != EvalStatus::Ready) return result;
+    if (result.value.kind != ConstantKind::Bool) {
+      return fail(
+          tree.node(condition).range,
+          "compile-time control-flow condition must be bool",
+          required);
+    }
+    return result;
+  }
+
+  [[nodiscard]] ExecutionResult execute_statement_list(
+      const SyntaxTree &tree,
+      const SyntaxNode &list,
+      ScopeId scope,
+      bool required) {
+    for (NodeId statement : list.children) {
+      const ExecutionResult result =
+          execute_statement(tree, statement, scope, required);
+      if (result.signal != ExecutionSignal::Normal) return result;
+    }
+    return {};
+  }
+
+  [[nodiscard]] ExecutionResult execute_block(
+      const SyntaxTree &tree,
+      NodeId block_id,
+      ScopeId scope,
+      bool required) {
+    const SyntaxNode &block = tree.node(block_id);
+    if (block.kind != NodeKind::Block || block.children.empty()) {
+      return failed_execution(fail(
+          block.range, "malformed compile-time procedure block", required));
+    }
+    local_frames_.back().scopes.emplace_back();
+    const ExecutionResult result = execute_statement_list(
+        tree, tree.node(block.children.front()), scope, required);
+    local_frames_.back().scopes.pop_back();
+    return result;
+  }
+
+  [[nodiscard]] ExecutionResult execute_if(
+      const SyntaxTree &tree,
+      const SyntaxNode &statement,
+      ScopeId scope,
+      bool required) {
+    if (statement.children.size() < 2) {
+      return failed_execution(fail(
+          statement.range, "malformed compile-time if statement", required));
+    }
+    const EvalResult condition = evaluate_statement_condition(
+        tree, statement.children[0], scope, required);
+    if (condition.status != EvalStatus::Ready) {
+      return failed_execution(condition);
+    }
+    if (condition.value.boolean) {
+      return execute_block(tree, statement.children[1], scope, required);
+    }
+    if (statement.children.size() == 2) return {};
+    const SyntaxNode &alternative = tree.node(statement.children[2]);
+    if (alternative.kind == NodeKind::IfStatement) {
+      return execute_if(tree, alternative, scope, required);
+    }
+    return execute_block(tree, statement.children[2], scope, required);
+  }
+
+  [[nodiscard]] ExecutionResult execute_for(
+      const SyntaxTree &tree,
+      const SyntaxNode &statement,
+      ScopeId scope,
+      bool required) {
+    if (statement.children.empty()) {
+      return failed_execution(fail(
+          statement.range, "malformed compile-time for statement", required));
+    }
+    const NodeId body = statement.children.back();
+    const SyntaxNode &header = tree.node(statement.children.front());
+
+    if (header.kind == NodeKind::IterationHeader) {
+      return failed_execution(fail(
+          header.range,
+          "compile-time array iteration requires aggregate constant support",
+          required));
+    }
+
+    local_frames_.back().scopes.emplace_back();
+    std::optional<NodeId> condition;
+    std::optional<NodeId> post;
+    if (header.kind == NodeKind::ForClause) {
+      if (!header.children.empty()) {
+        const ExecutionResult initialized =
+            execute_statement(tree, header.children[0], scope, required);
+        if (initialized.signal != ExecutionSignal::Normal) {
+          local_frames_.back().scopes.pop_back();
+          return initialized;
+        }
+      }
+      if (header.children.size() >= 3) {
+        condition = header.children[1];
+        post = header.children[2];
+      } else if (header.children.size() == 2) {
+        const NodeKind second = tree.node(header.children[1]).kind;
+        if (second == NodeKind::AssignmentStatement ||
+            second == NodeKind::ExpressionStatement) {
+          post = header.children[1];
+        } else {
+          condition = header.children[1];
+        }
+      }
+    } else if (statement.children.size() > 1) {
+      condition = statement.children.front();
+    }
+
+    while (true) {
+      if (!consume_execution_step(statement.range, required)) {
+        local_frames_.back().scopes.pop_back();
+        return failed_execution(EvalStatus::Error);
+      }
+      if (condition.has_value()) {
+        const EvalResult ready_condition = evaluate_statement_condition(
+            tree, *condition, scope, required);
+        if (ready_condition.status != EvalStatus::Ready) {
+          local_frames_.back().scopes.pop_back();
+          return failed_execution(ready_condition);
+        }
+        if (!ready_condition.value.boolean) break;
+      }
+
+      const ExecutionResult iteration =
+          execute_block(tree, body, scope, required);
+      if (iteration.signal == ExecutionSignal::Return ||
+          iteration.signal == ExecutionSignal::Failed) {
+        local_frames_.back().scopes.pop_back();
+        return iteration;
+      }
+      if (iteration.signal == ExecutionSignal::Break) break;
+      if (post.has_value()) {
+        const ExecutionResult advanced =
+            execute_statement(tree, *post, scope, required);
+        if (advanced.signal == ExecutionSignal::Return ||
+            advanced.signal == ExecutionSignal::Failed) {
+          local_frames_.back().scopes.pop_back();
+          return advanced;
+        }
+        if (advanced.signal == ExecutionSignal::Break) break;
+      }
+    }
+    local_frames_.back().scopes.pop_back();
+    return {};
+  }
+
+  [[nodiscard]] ExecutionResult execute_switch(
+      const SyntaxTree &tree,
+      const SyntaxNode &statement,
+      ScopeId scope,
+      bool required) {
+    if (statement.children.empty()) {
+      return failed_execution(fail(
+          statement.range, "malformed compile-time switch", required));
+    }
+    const EvalResult subject =
+        evaluate_expression(tree, statement.children.front(), scope, required);
+    if (subject.status != EvalStatus::Ready) return failed_execution(subject);
+
+    std::optional<NodeId> selected;
+    std::optional<NodeId> fallback;
+    for (std::size_t index = 1; index < statement.children.size(); ++index) {
+      const SyntaxNode &switch_case = tree.node(statement.children[index]);
+      if (switch_case.children.empty()) continue;
+      const NodeId statements = switch_case.children.back();
+      if (switch_case.children.size() == 1) {
+        fallback = statements;
+        continue;
+      }
+      for (std::size_t label = 0;
+           label + 1 < switch_case.children.size();
+           ++label) {
+        const EvalResult candidate = evaluate_expression(
+            tree, switch_case.children[label], scope, required);
+        if (candidate.status != EvalStatus::Ready) {
+          return failed_execution(candidate);
+        }
+        const EvalResult equal = evaluate_binary_values(
+            TokenKind::EqualEqual,
+            subject.value,
+            candidate.value,
+            tree.node(switch_case.children[label]).range,
+            required);
+        if (equal.status != EvalStatus::Ready) return failed_execution(equal);
+        if (equal.value.boolean) {
+          selected = statements;
+          break;
+        }
+      }
+      if (selected.has_value()) break;
+    }
+    if (!selected.has_value()) selected = fallback;
+    if (!selected.has_value()) return {};
+
+    local_frames_.back().scopes.emplace_back();
+    ExecutionResult result = execute_statement_list(
+        tree, tree.node(*selected), scope, required);
+    local_frames_.back().scopes.pop_back();
+    if (result.signal == ExecutionSignal::Break) result.signal = ExecutionSignal::Normal;
+    return result;
+  }
+
+  [[nodiscard]] ExecutionResult execute_when(
+      const SyntaxTree &tree,
+      const SyntaxNode &statement,
+      ScopeId scope,
+      bool required) {
+    // Body-level when is evaluated directly.  The ordinary body checker later
+    // uses the same constant engine and validates only the selected branch.
+    return execute_if(tree, statement, scope, required);
+  }
+
+  [[nodiscard]] ExecutionResult execute_statement(
+      const SyntaxTree &tree,
+      NodeId statement_id,
+      ScopeId scope,
+      bool required) {
+    const SyntaxNode &statement = tree.node(statement_id);
+    if (!consume_execution_step(statement.range, required)) {
+      return failed_execution(EvalStatus::Error);
+    }
+    switch (statement.kind) {
+    case NodeKind::Block:
+      return execute_block(tree, statement_id, scope, required);
+    case NodeKind::StatementList:
+      return execute_statement_list(tree, statement, scope, required);
+    case NodeKind::Declaration:
+      return execute_declaration(tree, statement, scope, required);
+    case NodeKind::DeclarationStatement:
+      if (!statement.children.empty()) {
+        return execute_statement(tree, statement.children.front(), scope, required);
+      }
+      return {};
+    case NodeKind::ExpressionStatement:
+      if (!statement.children.empty()) {
+        const EvalResult value =
+            evaluate_expression(tree, statement.children.front(), scope, required);
+        if (value.status != EvalStatus::Ready) return failed_execution(value);
+      }
+      return {};
+    case NodeKind::AssignmentStatement:
+      return execute_assignment(tree, statement, scope, required);
+    case NodeKind::ReturnStatement: {
+      ExecutionResult result;
+      result.signal = ExecutionSignal::Return;
+      if (!statement.children.empty()) {
+        const EvalResult value =
+            evaluate_expression(tree, statement.children.front(), scope, required);
+        if (value.status != EvalStatus::Ready) return failed_execution(value);
+        result.value = value.value;
+        result.type = value.type;
+      }
+      return result;
+    }
+    case NodeKind::BreakStatement: {
+      ExecutionResult result;
+      result.signal = ExecutionSignal::Break;
+      return result;
+    }
+    case NodeKind::ContinueStatement: {
+      ExecutionResult result;
+      result.signal = ExecutionSignal::Continue;
+      return result;
+    }
+    case NodeKind::IfStatement:
+      return execute_if(tree, statement, scope, required);
+    case NodeKind::ForStatement:
+      return execute_for(tree, statement, scope, required);
+    case NodeKind::SwitchStatement:
+      return execute_switch(tree, statement, scope, required);
+    case NodeKind::WhenStatement:
+      return execute_when(tree, statement, scope, required);
+    case NodeKind::DenyStatement:
+      if (!statement.children.empty()) {
+        return execute_block(tree, statement.children.back(), scope, required);
+      }
+      return {};
+    case NodeKind::UncheckedStatement:
+      if (!statement.children.empty()) {
+        return execute_block(tree, statement.children.front(), scope, required);
+      }
+      return {};
+    case NodeKind::Judgment:
+      return {};
+    case NodeKind::DeferStatement:
+      return failed_execution(fail(
+          statement.range,
+          "defer is unavailable during compile-time evaluation",
+          required));
+    case NodeKind::AsmStatement:
+    case NodeKind::AsmExpression:
+      return failed_execution(fail(
+          statement.range,
+          "native assembly is unavailable during compile-time evaluation",
+          required));
+    case NodeKind::SynthesisStatement:
+    case NodeKind::SynthesisExpression:
+      return failed_execution(fail(
+          statement.range,
+          "unresolved synthesis is unavailable during compile-time evaluation",
+          required));
+    default:
+      return failed_execution(fail(
+          statement.range,
+          "statement form is unavailable during compile-time evaluation",
+          required));
+    }
+  }
+
   // Resolves one package constant lazily. The Evaluating state detects cycles;
   // successfully computed scalar types are written back to the symbol for later
   // expected-type checking.
   [[nodiscard]] EvalResult evaluate_binding(SymbolId id, bool required) {
     if (static_cast<std::size_t>(id.value) >= states_.size()) return pending();
     BindingState &state = states_[id.value];
-    if (state == BindingState::Ready) return ready(values_[id.value]);
+    if (state == BindingState::Ready) {
+      return ready(values_[id.value], semantic_.symbols.symbol(id).type);
+    }
     if (state == BindingState::Pending) return pending();
     if (state == BindingState::Error) return error_result();
     const Symbol initial = semantic_.symbols.symbol(id);
@@ -667,7 +1918,7 @@ private:
       }
       state = BindingState::Ready;
       values_[id.value] = imported.constant;
-      return ready(imported.constant);
+      return ready(imported.constant, initial.type);
     }
     if (state == BindingState::Evaluating) {
       return fail(
@@ -785,6 +2036,9 @@ private:
       const std::optional<std::string> name = final_name(tree, node);
       if (!name.has_value()) return pending();
       if (*name == "target") return ready(ConstantValue::make_target());
+      if (const LocalBinding *local = local_binding(*name)) {
+        return ready(local->value, local->type);
+      }
       const std::optional<SymbolId> symbol = semantic_.symbols.lookup(scope, *name);
       if (!symbol.has_value()) return pending();
       // Procedure value parameters are not package constants and therefore do
@@ -792,7 +2046,7 @@ private:
       // supply their exact values through this phase-local overlay instead.
       if (local_constants_ != nullptr) {
         if (const ConstantValue *local = local_constants_->find(*symbol)) {
-          return ready(*local);
+          return ready(*local, semantic_.symbols.symbol(*symbol).type);
         }
       }
       return evaluate_binding(*symbol, required);
@@ -825,23 +2079,42 @@ private:
       if (operand.status != EvalStatus::Ready) return operand;
       const TokenKind operation = tree.token(node.token_begin).kind;
       if (operation == TokenKind::Bang && operand.value.kind == ConstantKind::Bool) {
-        return ready(ConstantValue::make_bool(!operand.value.boolean));
+        return ready(
+            ConstantValue::make_bool(!operand.value.boolean),
+            semantic_.types.builtins().bool_type);
       }
       if (operand.value.kind != ConstantKind::Integer) {
         if (operand.value.kind == ConstantKind::Float && operation == TokenKind::Plus) {
           return operand;
         }
         if (operand.value.kind == ConstantKind::Float && operation == TokenKind::Minus) {
-          return bounded_float(operand.value.floating.negated(), node.range, required);
+          EvalResult result =
+              bounded_float(operand.value.floating.negated(), node.range, required);
+          result.type = operand.type;
+          return result;
         }
         return fail(node.range, "unary operator uses an incompatible constant", required);
       }
       if (operation == TokenKind::Plus) return operand;
       if (operation == TokenKind::Minus) {
-        return bounded_integer(operand.value.integer.negated(), node.range, required);
+        EvalResult result =
+            bounded_integer(operand.value.integer.negated(), node.range, required);
+        if (result.status == EvalStatus::Ready && concrete_numeric(operand.type)) {
+          return convert_to_type(
+              result.value, operand.type, true, node.range, required);
+        }
+        result.type = operand.type;
+        return result;
       }
       if (operation == TokenKind::Tilde) {
-        return bounded_integer(operand.value.integer.bitwise_not(), node.range, required);
+        EvalResult result =
+            bounded_integer(operand.value.integer.bitwise_not(), node.range, required);
+        if (result.status == EvalStatus::Ready && concrete_numeric(operand.type)) {
+          return convert_to_type(
+              result.value, operand.type, true, node.range, required);
+        }
+        result.type = operand.type;
+        return result;
       }
       return pending();
     }
@@ -874,7 +2147,13 @@ private:
       const EvalResult layout =
           evaluate_layout_call(tree, node, scope, required);
       if (layout.status != EvalStatus::Pending) return layout;
-      return evaluate_target_call(tree, node, scope, required);
+      const EvalResult target_call =
+          evaluate_target_call(tree, node, scope, required);
+      if (target_call.status != EvalStatus::Pending) return target_call;
+      const EvalResult intrinsic =
+          evaluate_intrinsic_call(tree, node, scope, required);
+      if (intrinsic.status != EvalStatus::Pending) return intrinsic;
+      return evaluate_procedure_call(tree, node, scope, required);
     }
 
     case NodeKind::DenyExpression:
@@ -898,6 +2177,10 @@ private:
   const std::vector<ConstantTypeBinding> *local_types_ = nullptr;
   std::vector<BindingState> states_;
   std::vector<ConstantValue> values_;
+  std::vector<LocalFrame> local_frames_;
+  std::size_t execution_steps_remaining_ = kMaximumExecutionSteps;
+  std::size_t procedure_call_depth_ = 0;
+  bool execution_limit_reported_ = false;
 };
 
 } // namespace

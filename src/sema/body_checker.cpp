@@ -1416,12 +1416,24 @@ private:
         expression.type = semantic_.types.builtins().invalid;
       } else {
         TypeId queried = type_value_expression(tree, call.children[1], scope);
+        const bool defer_symbolic_layout =
+            !current_instance_index_.has_value() &&
+            expression_references_parametric_parameter(
+                tree, call.children[1], scope);
         if (is_invalid_type(queried) ||
             !semantic_.types.type(queried).layout.known) {
-          diagnostics_.error(
-              tree.node(call.children[1]).range,
-              *intrinsic + " requires a type with complete layout");
-          expression.type = semantic_.types.builtins().invalid;
+          if (defer_symbolic_layout) {
+            // A parametric template has no concrete size yet.  Preserve a
+            // typed intrinsic in its non-lowered template HIR; each concrete
+            // instance is checked again and replaces it with the exact value.
+            expression.type = apply_expected_type(
+                semantic_.types.builtins().usize_type, expected, call.range);
+          } else {
+            diagnostics_.error(
+                tree.node(call.children[1]).range,
+                *intrinsic + " requires a type with complete layout");
+            expression.type = semantic_.types.builtins().invalid;
+          }
         } else {
           const TypeLayout layout = semantic_.types.type(queried).layout;
           expression.kind = HirExpressionKind::Constant;
@@ -1985,9 +1997,6 @@ private:
                 NodeKind::ContextualAlternativeExpression ||
             right_is_nil) {
           right_expected = hir_.expression(left_id).type;
-        } else if (operation == TokenKind::ShiftLeft ||
-                   operation == TokenKind::ShiftRight) {
-          right_expected = semantic_.types.builtins().usize_type;
         }
         right_id = check_expression(
             tree, node.children[1], scope, right_expected);
@@ -2045,7 +2054,7 @@ private:
       expression.type = apply_expected_type(result, expected, node.range);
       expression.range = node.range;
       expression.operands = {left_id, right_id};
-      if (semantic_.types.is_number(result)) {
+      if (is_numeric(result)) {
         contextualize_numeric_expression(left_id, expression.type);
         contextualize_numeric_expression(right_id, expression.type);
       }

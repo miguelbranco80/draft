@@ -74,8 +74,10 @@ target-qualified folder-package loading. The semantic foundation now loads an
 acyclic, explicitly rooted package graph; derives public package interfaces;
 binds file-local imports without leaking package-local IDs; assigns stable
 scopes, symbols, and types; resolves signatures and aggregate layouts; evaluates
-arbitrary-precision integer and exact rational numeric constants; and selects
-declaration/member `when` branches through deterministic fixed-point rounds.
+arbitrary-precision integer and exact rational numeric constants; interprets
+required scalar compile-time procedures with bounded loops, recursion, switches,
+parametric values, and type/layout queries; and selects declaration/member `when`
+branches through deterministic fixed-point rounds.
 Provider-independent docs, judgments, and synthesis sites retain decoded text,
 typed expectations, secure package-relative attachments, and SHA-256 content
 identities; public docs cross package-interface boundaries. Procedure effect

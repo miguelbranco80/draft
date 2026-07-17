@@ -71,6 +71,53 @@ void test_constants_and_conditional_rounds(TestState &state) {
   AnalyzedSource source(R"draft(
 package conditions
 
+make_mask :: proc(bits: uint) -> uint {
+    result: uint
+    for i: uint = 0; i < bits; i += 1 {
+        if i % 2 == 0 {
+            continue
+        }
+        result |= 1 << i
+    }
+    return result
+}
+
+factorial :: proc(value: uint) -> uint {
+    if value <= 1 {
+        return 1
+    }
+    return value * factorial(value - 1)
+}
+
+classify :: proc(value: int) -> int {
+    switch value {
+    case 0:
+        return 10
+    case 1, 2:
+        return 20
+    case:
+        return 30
+    }
+}
+
+target_word :: proc() -> uint {
+    when target.pointer_bits == 64 {
+        static_assert(target.arch == .aarch64, "unexpected architecture")
+        return 64
+    } else {
+        return 32
+    }
+}
+
+increment_byte :: proc(value: u8) -> u8 {
+    return value + 1
+}
+
+measure[T: type, Extra: usize] :: proc(value: T) -> usize {
+    static_assert(size_of(T) > 0)
+    return size_of(T) + Extra
+}
+
 Bits :: target.pointer_bits
 Base :: 40
 Derived :: Base + 2
@@ -79,6 +126,13 @@ Bit_Value :: (2 << 5) | 1
 Huge :: 340282366920938463463374607431768211456 + 7
 Fraction :: 1.25 + 0.75
 Accent :: 'é'
+Odd_Mask :: make_mask(8)
+Factorial_10 :: factorial(10)
+Class_2 :: classify(2)
+Class_Default :: classify(9)
+Target_Word :: target_word()
+Wrapped_Byte :: increment_byte(255)
+Measured_U32 :: measure[u32, 7](0)
 
 Header :: struct {
     tag: u8,
@@ -140,7 +194,7 @@ when Accent == '\u{e9}' {
   }
   EXPECT(state, source.analysis.ok);
   EXPECT(state, !source.diagnostics.has_errors());
-  EXPECT(state, source.analysis.selections.entries.size() == 10);
+  EXPECT(state, source.analysis.selections.entries.size() == 11);
   EXPECT(state, find_symbol(source.analysis.package, "Word").has_value());
   EXPECT(state, find_symbol(source.analysis.package, "Platform_Value").has_value());
   EXPECT(state, find_symbol(source.analysis.package, "Nested").has_value());
@@ -195,6 +249,20 @@ when Accent == '\u{e9}' {
       find_symbol(source.analysis.package, "Header_Alignment");
   const std::optional<draft::SymbolId> accent =
       find_symbol(source.analysis.package, "Accent");
+  const std::optional<draft::SymbolId> odd_mask =
+      find_symbol(source.analysis.package, "Odd_Mask");
+  const std::optional<draft::SymbolId> factorial =
+      find_symbol(source.analysis.package, "Factorial_10");
+  const std::optional<draft::SymbolId> class_two =
+      find_symbol(source.analysis.package, "Class_2");
+  const std::optional<draft::SymbolId> class_default =
+      find_symbol(source.analysis.package, "Class_Default");
+  const std::optional<draft::SymbolId> target_word =
+      find_symbol(source.analysis.package, "Target_Word");
+  const std::optional<draft::SymbolId> wrapped_byte =
+      find_symbol(source.analysis.package, "Wrapped_Byte");
+  const std::optional<draft::SymbolId> measured_u32 =
+      find_symbol(source.analysis.package, "Measured_U32");
   EXPECT(state, bits.has_value());
   EXPECT(state, derived.has_value());
   EXPECT(state, feature.has_value());
@@ -204,8 +272,16 @@ when Accent == '\u{e9}' {
   EXPECT(state, header_size.has_value());
   EXPECT(state, header_alignment.has_value());
   EXPECT(state, accent.has_value());
+  EXPECT(state, odd_mask.has_value());
+  EXPECT(state, factorial.has_value());
+  EXPECT(state, class_two.has_value());
+  EXPECT(state, class_default.has_value());
+  EXPECT(state, target_word.has_value());
+  EXPECT(state, wrapped_byte.has_value());
+  EXPECT(state, measured_u32.has_value());
   if (bits && derived && feature && bit_value && huge && fraction &&
-      header_size && header_alignment && accent) {
+      header_size && header_alignment && accent && odd_mask && factorial &&
+      class_two && class_default && target_word && wrapped_byte && measured_u32) {
     const draft::ConstantValue *bits_value = source.analysis.constants.find(*bits);
     const draft::ConstantValue *derived_value = source.analysis.constants.find(*derived);
     const draft::ConstantValue *feature_value = source.analysis.constants.find(*feature);
@@ -218,6 +294,20 @@ when Accent == '\u{e9}' {
         source.analysis.constants.find(*header_alignment);
     const draft::ConstantValue *accent_result =
         source.analysis.constants.find(*accent);
+    const draft::ConstantValue *mask_result =
+        source.analysis.constants.find(*odd_mask);
+    const draft::ConstantValue *factorial_result =
+        source.analysis.constants.find(*factorial);
+    const draft::ConstantValue *class_two_result =
+        source.analysis.constants.find(*class_two);
+    const draft::ConstantValue *class_default_result =
+        source.analysis.constants.find(*class_default);
+    const draft::ConstantValue *target_word_result =
+        source.analysis.constants.find(*target_word);
+    const draft::ConstantValue *wrapped_byte_result =
+        source.analysis.constants.find(*wrapped_byte);
+    const draft::ConstantValue *measured_u32_result =
+        source.analysis.constants.find(*measured_u32);
     EXPECT(state, bits_value != nullptr);
     EXPECT(state, derived_value != nullptr);
     EXPECT(state, feature_value != nullptr);
@@ -227,6 +317,13 @@ when Accent == '\u{e9}' {
     EXPECT(state, size_result != nullptr);
     EXPECT(state, alignment_result != nullptr);
     EXPECT(state, accent_result != nullptr);
+    EXPECT(state, mask_result != nullptr);
+    EXPECT(state, factorial_result != nullptr);
+    EXPECT(state, class_two_result != nullptr);
+    EXPECT(state, class_default_result != nullptr);
+    EXPECT(state, target_word_result != nullptr);
+    EXPECT(state, wrapped_byte_result != nullptr);
+    EXPECT(state, measured_u32_result != nullptr);
     if (bits_value) EXPECT(state, bits_value->integer.to_decimal() == "64");
     if (derived_value) EXPECT(state, derived_value->integer.to_decimal() == "42");
     if (feature_value) EXPECT(state, feature_value->boolean);
@@ -247,6 +344,25 @@ when Accent == '\u{e9}' {
       EXPECT(state, accent_result->integer.to_decimal() == "233");
       EXPECT(state, source.analysis.package.symbols.symbol(*accent).type ==
                         source.analysis.package.types.builtins().rune_type);
+    }
+    if (mask_result) EXPECT(state, mask_result->integer.to_decimal() == "170");
+    if (factorial_result) {
+      EXPECT(state, factorial_result->integer.to_decimal() == "3628800");
+    }
+    if (class_two_result) {
+      EXPECT(state, class_two_result->integer.to_decimal() == "20");
+    }
+    if (class_default_result) {
+      EXPECT(state, class_default_result->integer.to_decimal() == "30");
+    }
+    if (target_word_result) {
+      EXPECT(state, target_word_result->integer.to_decimal() == "64");
+    }
+    if (wrapped_byte_result) {
+      EXPECT(state, wrapped_byte_result->integer.to_decimal() == "0");
+    }
+    if (measured_u32_result) {
+      EXPECT(state, measured_u32_result->integer.to_decimal() == "11");
     }
   }
 }
@@ -271,6 +387,51 @@ when Not_Bool {
   EXPECT(state, rendered.find("division by zero") != std::string::npos);
 }
 
+void test_invalid_procedural_constants(TestState &state) {
+  AnalyzedSource source(R"draft(
+package conditions
+
+bad_return :: proc() -> u8 {
+    return 256
+}
+
+bad_shift :: proc(value: u8) -> u8 {
+    return value << 8
+}
+
+bad_division :: proc(value: i8) -> i8 {
+    return value / -1
+}
+
+recursive :: proc(value: uint) -> uint {
+    return recursive(value + 1)
+}
+
+foreign system {
+    external :: c proc() -> i64
+}
+
+uses_foreign :: proc() -> i64 {
+    return external()
+}
+
+Bad_Return :: bad_return()
+Bad_Shift :: bad_shift(1)
+Bad_Division :: bad_division(-128)
+Bad_Recursion :: recursive(0)
+Bad_Foreign :: uses_foreign()
+)draft");
+
+  EXPECT(state, !source.analysis.ok);
+  const std::string rendered =
+      draft::render_diagnostics(source.sources, source.diagnostics);
+  EXPECT(state, rendered.find("not representable") != std::string::npos);
+  EXPECT(state, rendered.find("shift count traps") != std::string::npos);
+  EXPECT(state, rendered.find("division overflow traps") != std::string::npos);
+  EXPECT(state, rendered.find("recursion limit exceeded") != std::string::npos);
+  EXPECT(state, rendered.find("foreign calls are unavailable") != std::string::npos);
+}
+
 void test_global_initializers(TestState &state) {
   AnalyzedSource source(R"draft(
 package conditions
@@ -281,7 +442,12 @@ Mode :: enum i16 {
 }
 
 Answer :: 40 + 2
+answer_from_procedure :: proc() -> u64 {
+    return Answer
+}
+
 count: u64 = Answer
+computed: u64 = answer_from_procedure()
 inferred := 21
 ratio: f64 = 0.5
 enabled: bool = true
@@ -299,12 +465,15 @@ thread_local scratch: i32 = -7
       find_symbol(source.analysis.package, "count");
   const std::optional<draft::SymbolId> inferred =
       find_symbol(source.analysis.package, "inferred");
+  const std::optional<draft::SymbolId> computed =
+      find_symbol(source.analysis.package, "computed");
   const std::optional<draft::SymbolId> mode =
       find_symbol(source.analysis.package, "mode");
   const std::optional<draft::SymbolId> pointer =
       find_symbol(source.analysis.package, "pointer");
   EXPECT(state, count.has_value());
   EXPECT(state, inferred.has_value());
+  EXPECT(state, computed.has_value());
   EXPECT(state, mode.has_value());
   EXPECT(state, pointer.has_value());
   if (count.has_value()) {
@@ -317,6 +486,12 @@ thread_local scratch: i32 = -7
   if (inferred.has_value()) {
     EXPECT(state, source.analysis.package.symbols.symbol(*inferred).type ==
                       source.analysis.package.types.builtins().int_type);
+  }
+  if (computed.has_value()) {
+    const draft::ConstantValue *value =
+        source.analysis.global_initializers.find(*computed);
+    EXPECT(state, value != nullptr);
+    if (value != nullptr) EXPECT(state, value->integer.to_decimal() == "42");
   }
   if (mode.has_value()) {
     const draft::ConstantValue *value =
@@ -338,8 +513,10 @@ Mode :: enum {
     Off,
 }
 
+runtime_value: i64 = 1
+
 runtime :: proc() -> i64 {
-    return 1
+    return runtime_value
 }
 
 too_large: u8 = 256
@@ -365,6 +542,7 @@ int main() {
   TestState state;
   test_constants_and_conditional_rounds(state);
   test_invalid_required_constants(state);
+  test_invalid_procedural_constants(state);
   test_global_initializers(state);
 
   if (state.failures != 0) {

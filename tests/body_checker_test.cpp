@@ -562,10 +562,14 @@ Header :: struct {
     value: u64,
 }
 
+measure[T: type] :: proc() -> usize {
+    return size_of(T) + align_of(T)
+}
+
 main :: proc() -> usize {
     static_assert(size_of(Header) == 16)
     static_assert(align_of(Header) == 8, "Header alignment changed")
-    return size_of(Header) + align_of(Header)
+    return size_of(Header) + align_of(Header) + measure[u32]()
 }
 )draft");
   if (safe.diagnostics.has_errors()) {
@@ -755,6 +759,25 @@ bad_pointer_pair :: proc(left: ^u32, right: ^u64) -> isize {
                     std::string::npos);
 }
 
+void test_integer_shift_count_types(TestState &state) {
+  CheckedSource source(R"draft(
+package bodies
+
+mask :: proc(bits: uint) -> uint {
+    result: uint
+    for i: uint = 0; i < bits; i += 1 {
+        result |= 1 << i
+    }
+    return result
+}
+)draft");
+  if (source.diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(source.sources, source.diagnostics);
+  }
+  EXPECT(state, source.bodies.ok);
+  EXPECT(state, !source.diagnostics.has_errors());
+}
+
 } // namespace
 
 int main() {
@@ -770,6 +793,7 @@ int main() {
   test_layout_intrinsics_and_static_assert(state);
   test_checked_numeric_casts(state);
   test_storage_pointer_and_distinct_semantics(state);
+  test_integer_shift_count_types(state);
 
   if (state.failures != 0) {
     std::cerr << state.failures << " body checker expectation(s) failed\n";
