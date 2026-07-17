@@ -1,0 +1,15 @@
+package math
+
+// This package is intentionally small but exercises the public-interface path:
+// its nominal type, constant, and procedure are consumed without reading
+// private declarations through the importing package's semantic scope.
+pub Origin :: struct {
+    x: i64,
+    y: i64,
+}
+
+pub Unit :: 1
+
+pub translate :: proc(point: Origin, delta: i64) -> Origin {
+    return Origin{x = point.x + delta, y = point.y + delta}
+}

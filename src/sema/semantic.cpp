@@ -14,6 +14,16 @@ SemanticAnalysisResult analyze_package_semantics(
     const LoadedPackage &loaded,
     const TargetFacts &target,
     DiagnosticSink &diagnostics) {
+  const AvailablePackageImports imports;
+  return analyze_package_semantics(sources, loaded, target, imports, diagnostics);
+}
+
+SemanticAnalysisResult analyze_package_semantics(
+    const SourceManager &sources,
+    const LoadedPackage &loaded,
+    const TargetFacts &target,
+    const AvailablePackageImports &imports,
+    DiagnosticSink &diagnostics) {
   SemanticAnalysisResult result;
   const std::size_t initial_error_count = diagnostics.error_count();
 
@@ -25,6 +35,7 @@ SemanticAnalysisResult analyze_package_semantics(
     DiagnosticSink provisional_diagnostics;
     SemanticPackage provisional = collect_package_declarations(
         sources, loaded, result.selections, provisional_diagnostics);
+    bind_package_interfaces(provisional, imports, provisional_diagnostics);
     resolve_package_types(
         sources, loaded, provisional, result.selections, provisional_diagnostics);
     const CompileTimeRoundResult round = evaluate_compile_time_round(
@@ -45,6 +56,7 @@ SemanticAnalysisResult analyze_package_semantics(
   // HIR construction, so stable IDs cannot refer into discarded rounds.
   result.package = collect_package_declarations(
       sources, loaded, result.selections, diagnostics);
+  bind_package_interfaces(result.package, imports, diagnostics);
   resolve_package_types(
       sources, loaded, result.package, result.selections, diagnostics);
   CompileTimeRoundResult final_round = evaluate_compile_time_round(

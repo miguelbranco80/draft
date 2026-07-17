@@ -21,9 +21,11 @@
 
 #include <filesystem>
 #include <iostream>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <vector>
 
 namespace {
 
@@ -154,15 +156,48 @@ int check_package(const std::string &directory) {
   std::size_t procedure_count = 0;
   bool checked_all = loaded.ok;
   if (loaded.ok) {
+    std::vector<std::optional<draft::PackageInterface>> interfaces(
+        loaded.graph.packages.size());
     // DFS discovery places every dependency after its importer. Reversing that
     // order checks dependencies before consumers and is the order the canonical
     // interface pass will use to publish imported names.
     for (std::size_t remaining = loaded.graph.packages.size(); remaining > 0; --remaining) {
-      draft::WorkspacePackage &workspace_package = loaded.graph.packages[remaining - 1];
+      const std::size_t package_index = remaining - 1;
+      draft::WorkspacePackage &workspace_package = loaded.graph.packages[package_index];
+      draft::AvailablePackageImports available;
+      for (const draft::PackageImport &import : loaded.graph.imports) {
+        if (static_cast<std::size_t>(import.importing_package.value) != package_index) {
+          continue;
+        }
+        const std::size_t dependency_index =
+            static_cast<std::size_t>(import.imported_package.value);
+        if (dependency_index >= interfaces.size() ||
+            !interfaces[dependency_index].has_value()) {
+          diagnostics.error(
+              draft::SourceRange::invalid(),
+              "internal package order did not produce a dependency interface");
+          checked_all = false;
+          continue;
+        }
+        available.entries.push_back({
+            {import.file, import.syntax},
+            &*interfaces[dependency_index],
+        });
+      }
       draft::SemanticAnalysisResult semantics = draft::analyze_package_semantics(
-          sources, workspace_package.loaded, target.facts, diagnostics);
+          sources, workspace_package.loaded, target.facts, available, diagnostics);
       draft::BodyCheckResult bodies;
       if (semantics.ok) {
+        const std::size_t interface_errors = diagnostics.error_count();
+        const draft::PackageId package_id{static_cast<std::uint32_t>(package_index)};
+        interfaces[package_index] = draft::build_package_interface(
+            loaded.graph.package(package_id).identity,
+            semantics.package,
+            semantics.constants,
+            diagnostics);
+        if (diagnostics.error_count() != interface_errors) {
+          checked_all = false;
+        }
         bodies = draft::check_package_bodies(
             sources,
             workspace_package.loaded,

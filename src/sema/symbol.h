@@ -49,6 +49,7 @@ struct SymbolId {
 enum class ScopeKind {
   Package,
   File,
+  ImportedPackage,
   Type,
   Procedure,
   Block,

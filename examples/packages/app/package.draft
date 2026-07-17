@@ -1,0 +1,16 @@
+package app
+
+import lib/math as math
+
+when math.Unit == 1 {
+    Coordinate :: i64
+} else {
+    Coordinate :: Does_Not_Exist
+}
+
+main :: proc() {
+    origin := math.Origin{x = 3, y = 4}
+    delta: Coordinate = math.Unit
+    moved := math.translate(origin, delta)
+    assert(moved.x == 4)
+}

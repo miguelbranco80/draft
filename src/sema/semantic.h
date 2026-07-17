@@ -11,6 +11,7 @@
 
 #include "sema/analyzer.h"
 #include "sema/constant.h"
+#include "sema/interface.h"
 #include "source/diagnostic.h"
 #include "source/source.h"
 #include "workspace/package.h"
@@ -26,12 +27,22 @@ struct SemanticAnalysisResult {
 
 // Runs semantic rounds until no new declaration-level conditional becomes
 // ready, then performs one diagnostic final round. The returned package contains
-// only selected declarations. Member-level conditionals are retained as typed
-// incomplete aggregate sites until their selection pass is added.
+// only selected declarations and member regions. A conditional that depends on
+// an unavailable generic instantiation remains an explicit unresolved site.
 [[nodiscard]] SemanticAnalysisResult analyze_package_semantics(
     const SourceManager &sources,
     const LoadedPackage &loaded,
     const TargetFacts &target,
+    DiagnosticSink &diagnostics);
+
+// Workspace-aware form. Every source import must have a matching dependency
+// interface. Binding occurs in every provisional fixed-point round because the
+// imported constants and types can select `when` declarations.
+[[nodiscard]] SemanticAnalysisResult analyze_package_semantics(
+    const SourceManager &sources,
+    const LoadedPackage &loaded,
+    const TargetFacts &target,
+    const AvailablePackageImports &imports,
     DiagnosticSink &diagnostics);
 
 } // namespace draft

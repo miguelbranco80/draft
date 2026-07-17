@@ -520,19 +520,43 @@ private:
     return std::nullopt;
   }
 
-  // Detects a qualified name whose first component is a file-local import. Such
-  // an edge is incomplete until workspace package resolution provides the
-  // dependency interface; it is not an unknown-type diagnostic here.
-  [[nodiscard]] bool begins_with_import_alias(
-      const SyntaxTree &tree, const SyntaxNode &node, ScopeId scope) const {
+  // Resolves `alias.Public_Type` through the ImportedPackage scope installed by
+  // interface binding. The proxy's TypeId belongs to this package's TypeStore;
+  // no dependency-local integer ID crosses the interface boundary.
+  [[nodiscard]] std::optional<TypeId> try_imported_type(
+      const SyntaxTree &tree, const SyntaxNode &node, ScopeId scope) {
     const std::vector<SourceName> names = names_in_span(
         tree, node.token_begin, node.token_end);
-    if (names.size() < 2) {
-      return false;
+    if (names.size() != 2) {
+      return std::nullopt;
     }
     const std::optional<SymbolId> first = semantic_.symbols.lookup(scope, names.front().text);
-    return first.has_value() &&
-        semantic_.symbols.symbol(*first).kind == SymbolKind::Import;
+    if (!first.has_value() ||
+        semantic_.symbols.symbol(*first).kind != SymbolKind::Import) {
+      return std::nullopt;
+    }
+    for (const OwnedSemanticScope &owned : semantic_.owned_scopes) {
+      if (owned.owner != *first ||
+          semantic_.symbols.scope(owned.scope).kind != ScopeKind::ImportedPackage) {
+        continue;
+      }
+      const std::optional<SymbolId> member = semantic_.symbols.lookup_direct(
+          owned.scope, names.back().text);
+      if (!member.has_value()) {
+        diagnostics_.error(
+            names.back().range,
+            "imported package has no public type named '" + names.back().text + "'");
+        return semantic_.types.builtins().invalid;
+      }
+      const Symbol &symbol = semantic_.symbols.symbol(*member);
+      if (symbol.kind != SymbolKind::Type && symbol.kind != SymbolKind::TypeParameter) {
+        diagnostics_.error(names.back().range, "imported name does not denote a type");
+        return semantic_.types.builtins().invalid;
+      }
+      return symbol.type;
+    }
+    diagnostics_.error(names.front().range, "imported package interface is unavailable");
+    return semantic_.types.builtins().invalid;
   }
 
   // Recursively lowers one already-parsed type syntax node into a canonical
@@ -552,10 +576,8 @@ private:
       if (const std::optional<TypeId> type = try_named_type(tree, node, scope)) {
         return *type;
       }
-      if (begins_with_import_alias(tree, node, scope)) {
-        // Package graph resolution will replace this incomplete edge with the
-        // imported package's public type identity.
-        return invalid;
+      if (const std::optional<TypeId> type = try_imported_type(tree, node, scope)) {
+        return *type;
       }
       diagnostics_.error(node.range, "unknown type name");
       return invalid;

@@ -20,6 +20,7 @@
 #pragma once
 
 #include "sema/analyzer.h"
+#include "sema/constant_value.h"
 #include "source/diagnostic.h"
 #include "source/source.h"
 #include "workspace/package.h"
@@ -50,31 +51,6 @@ struct TargetFacts {
   std::uint64_t page_size = 0;
   std::vector<std::string> known_features;
   std::vector<std::string> features;
-};
-
-enum class ConstantKind {
-  Unavailable,
-  Bool,
-  Integer,
-  String,
-  EnumLabel,
-  Target,
-};
-
-// ConstantValue owns string payloads because values persist after expression
-// traversal. Only the field selected by kind is meaningful. Integer is signed
-// during this bootstrap stage; target's unsigned fields are checked to fit.
-struct ConstantValue {
-  ConstantKind kind = ConstantKind::Unavailable;
-  bool boolean = false;
-  std::int64_t integer = 0;
-  std::string text;
-
-  [[nodiscard]] static ConstantValue make_bool(bool value);
-  [[nodiscard]] static ConstantValue make_integer(std::int64_t value);
-  [[nodiscard]] static ConstantValue make_string(std::string value);
-  [[nodiscard]] static ConstantValue make_enum_label(std::string value);
-  [[nodiscard]] static ConstantValue make_target();
 };
 
 struct ConstantBinding {

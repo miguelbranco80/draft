@@ -31,6 +31,7 @@ add_library(
   src/sema/body_checker.cpp
   src/sema/constant.cpp
   src/sema/hir.cpp
+  src/sema/interface.cpp
   src/sema/semantic.cpp
   src/sema/symbol.cpp
   src/sema/type.cpp
@@ -106,6 +107,10 @@ if(BUILD_TESTING)
   add_executable(draft_type_resolver_tests tests/type_resolver_test.cpp)
   target_link_libraries(draft_type_resolver_tests PRIVATE draft_compiler)
   add_test(NAME draft_type_resolver_tests COMMAND draft_type_resolver_tests)
+
+  add_executable(draft_interface_tests tests/interface_test.cpp)
+  target_link_libraries(draft_interface_tests PRIVATE draft_compiler)
+  add_test(NAME draft_interface_tests COMMAND draft_interface_tests)
 
   add_executable(draft_constant_tests tests/constant_test.cpp)
   target_link_libraries(draft_constant_tests PRIVATE draft_compiler)

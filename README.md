@@ -70,11 +70,13 @@ subset under the rules in [AGENTS.md](AGENTS.md) and the sequencing in
 currently includes source ownership, structured diagnostics, the full lexical
 token vocabulary, UTF-8 and literal validation, Draft semicolon insertion, a
 complete surface syntax tree and recovering parser, and deterministic
-target-qualified folder-package loading. The semantic foundation now assigns
-stable scopes, symbols, and types; resolves signatures and aggregate layouts;
-evaluates the initial scalar constant subset; and selects declaration/member
-`when` branches through deterministic fixed-point rounds. The single AArch64
-macOS profile is explicit and versioned rather than inferred from the host.
+target-qualified folder-package loading. The semantic foundation now loads an
+acyclic, explicitly rooted package graph; derives public package interfaces;
+binds file-local imports without leaking package-local IDs; assigns stable
+scopes, symbols, and types; resolves signatures and aggregate layouts; evaluates
+the initial scalar constant subset; and selects declaration/member `when`
+branches through deterministic fixed-point rounds. The single AArch64 macOS
+profile is explicit and versioned rather than inferred from the host.
 
 Configure, build, and test the current compiler with:
 
@@ -89,6 +91,7 @@ semicolons were inserted by the compiler. `build/draftc syntax
 path/to/file.draft` prints the parsed grammar tree. `build/draftc target` prints
 the selected profile's key ABI, LLVM, and assembly facts. `build/draftc check
 path/to/package-directory` runs package loading, compile-time selection, type and
-layout resolution, and procedure-body HIR checking without an agent. Later
-compiler commands use the same source, diagnostic, syntax, package, and semantic
-layers.
+layout resolution, imported public-interface checking, and procedure-body HIR
+checking without an agent. `build/draftc check examples/packages/app` exercises
+the current multi-package path. Later compiler commands use the same source,
+diagnostic, syntax, package, and semantic layers.

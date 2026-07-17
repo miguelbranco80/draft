@@ -8,9 +8,9 @@
 // builtins and package-local type names; and computes target-natural layouts
 // whenever every required member layout is known.
 //
-// Imported-package member lookup and `when` selection are intentionally later
-// semantic graph operations. A type that depends on either remains incomplete
-// instead of receiving a guessed layout.
+// Imported-package member lookup consumes proxy scopes reconstructed from
+// canonical package interfaces before this pass begins. `when` selection is a
+// staged semantic graph operation; an unselected region remains incomplete.
 
 #pragma once
 

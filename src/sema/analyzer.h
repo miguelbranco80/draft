@@ -18,6 +18,7 @@
 
 #pragma once
 
+#include "sema/constant_value.h"
 #include "sema/symbol.h"
 #include "sema/type.h"
 #include "source/diagnostic.h"
@@ -84,6 +85,34 @@ struct ImportBinding {
   SyntaxReference syntax;
 };
 
+// ImportedSymbol connects a consumer-local proxy SymbolId to the file-local
+// import alias and the dependency's public declaration identity. proxy is used
+// in HIR exactly like a local symbol; later package/MIR lowering consults this
+// row to emit an inter-package reference instead of allocating local storage.
+// Ready public constants carry their value so `when` and runtime constant
+// folding do not reevaluate dependency source.
+struct ImportedSymbol {
+  SymbolId import_symbol;
+  SymbolId proxy;
+  std::string root_identity;
+  std::string root_relative_path;
+  std::string public_name;
+  bool has_constant = false;
+  ConstantValue constant;
+};
+
+// ImportedType preserves nominal identity after an interface type has been
+// reconstructed in a consumer-local TypeStore. This prevents a downstream
+// interface from rebaptizing `dep:T` as `consumer:T` when it merely exposes the
+// dependency type in a public signature. Structural types need no provenance;
+// their identity follows their recursively translated components.
+struct ImportedType {
+  TypeId type;
+  std::string root_identity;
+  std::string root_relative_path;
+  std::string public_name;
+};
+
 enum class SemanticSiteKind {
   Documentation,
   Judgment,
@@ -140,6 +169,8 @@ struct SemanticPackage {
   std::vector<AggregateMember> aggregate_members;
   std::vector<ParametricParameterRecord> parametric_parameters;
   std::vector<ImportBinding> imports;
+  std::vector<ImportedSymbol> imported_symbols;
+  std::vector<ImportedType> imported_types;
   std::vector<SemanticSite> sites;
   std::vector<NativeBinding> native_bindings;
 };

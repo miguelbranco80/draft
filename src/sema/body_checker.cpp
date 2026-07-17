@@ -275,6 +275,50 @@ private:
     return std::nullopt;
   }
 
+  // Resolves `alias.public_name` into the consumer-local proxy scope created by
+  // package-interface binding. The returned SymbolId belongs to semantic_ and
+  // is therefore safe to store in HIR; ImportedSymbol retains the dependency
+  // identity required by later MIR/package lowering.
+  [[nodiscard]] std::optional<SymbolId> imported_member(
+      const SyntaxTree &tree, const SyntaxNode &node, ScopeId scope) const {
+    if (node.kind != NodeKind::MemberExpression || node.children.empty()) {
+      return std::nullopt;
+    }
+    const SyntaxNode &base = tree.node(node.children.front());
+    if (base.kind != NodeKind::NameExpression) {
+      return std::nullopt;
+    }
+    const std::vector<SourceName> base_names =
+        names_in_span(tree, base.token_begin, base.token_end);
+    const std::vector<SourceName> all_names =
+        names_in_span(tree, node.token_begin, node.token_end);
+    if (base_names.size() != 1 || all_names.size() < 2) {
+      return std::nullopt;
+    }
+    const std::optional<SymbolId> import =
+        semantic_.symbols.lookup(scope, base_names.front().text);
+    if (!import.has_value() ||
+        semantic_.symbols.symbol(*import).kind != SymbolKind::Import) {
+      return std::nullopt;
+    }
+    for (const OwnedSemanticScope &owned : semantic_.owned_scopes) {
+      if (owned.owner == *import &&
+          semantic_.symbols.scope(owned.scope).kind == ScopeKind::ImportedPackage) {
+        return semantic_.symbols.lookup_direct(owned.scope, all_names.back().text);
+      }
+    }
+    return std::nullopt;
+  }
+
+  [[nodiscard]] const ConstantValue *imported_constant(SymbolId proxy) const {
+    for (const ImportedSymbol &imported : semantic_.imported_symbols) {
+      if (imported.proxy == proxy && imported.has_constant) {
+        return &imported.constant;
+      }
+    }
+    return nullptr;
+  }
+
   // Returns the declaration symbol owning a nominal type's Type scope.
   [[nodiscard]] std::optional<SymbolId> type_owner(TypeId type) const {
     for (const OwnedSemanticScope &owned : semantic_.owned_scopes) {
@@ -309,6 +353,14 @@ private:
     if (node_is_type_syntax(node.kind)) {
       return resolve_type_syntax(
           sources_, loaded_, semantic_, selections_, tree, node_id, scope, diagnostics_);
+    }
+    if (const std::optional<SymbolId> imported = imported_member(tree, node, scope)) {
+      const Symbol binding = semantic_.symbols.symbol(*imported);
+      if (binding.kind == SymbolKind::Type || binding.kind == SymbolKind::TypeParameter) {
+        return binding.type;
+      }
+      diagnostics_.error(node.range, "imported name does not denote a type");
+      return semantic_.types.builtins().invalid;
     }
     const std::optional<SourceName> name = single_name_expression(tree, node_id);
     if (!name.has_value()) return semantic_.types.builtins().invalid;
@@ -739,6 +791,25 @@ private:
 
     case NodeKind::MemberExpression: {
       if (node.children.empty()) return invalid_expression(node.range);
+      if (const std::optional<SymbolId> imported = imported_member(tree, node, scope)) {
+        const Symbol symbol = semantic_.symbols.symbol(*imported);
+        if (symbol.kind == SymbolKind::Type || symbol.kind == SymbolKind::TypeParameter ||
+            symbol.kind == SymbolKind::Import) {
+          diagnostics_.error(node.range, "imported name does not denote a runtime value");
+          return invalid_expression(node.range);
+        }
+        HirExpression expression;
+        expression.kind = HirExpressionKind::Symbol;
+        expression.range = node.range;
+        expression.symbol = *imported;
+        expression.type = apply_expected_type(symbol.type, expected, node.range);
+        expression.addressable = symbol.kind == SymbolKind::Variable;
+        if (const ConstantValue *constant = imported_constant(*imported)) {
+          expression.kind = HirExpressionKind::Constant;
+          expression.constant = *constant;
+        }
+        return hir_.add_expression(std::move(expression));
+      }
       const HirExpressionId base_id = check_expression(tree, node.children.front(), scope);
       const HirExpression base = hir_.expression(base_id);
       const Token &selector = tree.token(node.token_end - 1);

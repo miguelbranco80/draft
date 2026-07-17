@@ -114,6 +114,7 @@ std::string_view scope_kind_name(ScopeKind kind) {
   switch (kind) {
   case ScopeKind::Package: return "package";
   case ScopeKind::File: return "file";
+  case ScopeKind::ImportedPackage: return "imported package";
   case ScopeKind::Type: return "type";
   case ScopeKind::Procedure: return "procedure";
   case ScopeKind::Block: return "block";

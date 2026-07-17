@@ -99,8 +99,17 @@ public:
         continue;
       }
 
+      // Package declarations live in one package scope, but imports are
+      // intentionally file-local. A package-level `when` condition therefore
+      // starts lookup in its source file scope; member/statement conditions
+      // already carry a lexical scope whose parent chain begins at that file.
+      const ScopeId condition_scope =
+          site.kind == SemanticSiteKind::ConditionalDeclaration &&
+              site.scope == semantic_.package_scope
+          ? file_scope(site.syntax.file)
+          : site.scope;
       const EvalResult condition = evaluate_expression(
-          *tree, when.children.front(), site.scope, diagnose_unready_);
+          *tree, when.children.front(), condition_scope, diagnose_unready_);
       if (condition.status == EvalStatus::Ready &&
           condition.value.kind == ConstantKind::Bool) {
         selections.entries.push_back({site.syntax, condition.value.boolean});
@@ -196,6 +205,38 @@ private:
       }
     }
     return result;
+  }
+
+  // Resolves the special namespace operation `alias.public_name`. Package
+  // aliases are not runtime or compile-time values themselves; the member node
+  // is resolved directly into the consumer-local proxy installed from the
+  // dependency interface.
+  [[nodiscard]] std::optional<SymbolId> imported_member(
+      const SyntaxTree &tree, const SyntaxNode &node, ScopeId scope) const {
+    if (node.kind != NodeKind::MemberExpression || node.children.empty()) {
+      return std::nullopt;
+    }
+    const SyntaxNode &base = tree.node(node.children.front());
+    if (base.kind != NodeKind::NameExpression) {
+      return std::nullopt;
+    }
+    const std::optional<std::string> alias = final_name(tree, base);
+    const std::optional<std::string> member = final_name(tree, node);
+    if (!alias.has_value() || !member.has_value()) {
+      return std::nullopt;
+    }
+    const std::optional<SymbolId> import = semantic_.symbols.lookup(scope, *alias);
+    if (!import.has_value() ||
+        semantic_.symbols.symbol(*import).kind != SymbolKind::Import) {
+      return std::nullopt;
+    }
+    for (const OwnedSemanticScope &owned : semantic_.owned_scopes) {
+      if (owned.owner == *import &&
+          semantic_.symbols.scope(owned.scope).kind == ScopeKind::ImportedPackage) {
+        return semantic_.symbols.lookup_direct(owned.scope, *member);
+      }
+    }
+    return std::nullopt;
   }
 
   // Parses a positive source integer into the current bootstrap domain. Values
@@ -556,6 +597,21 @@ private:
     if (state == BindingState::Pending) return pending();
     if (state == BindingState::Error) return error_result();
     const Symbol initial = semantic_.symbols.symbol(id);
+    for (const ImportedSymbol &imported : semantic_.imported_symbols) {
+      if (imported.proxy != id) {
+        continue;
+      }
+      if (!imported.has_constant) {
+        state = BindingState::Pending;
+        return fail(
+            initial.name_range,
+            "imported declaration '" + imported.public_name + "' is not a constant",
+            required);
+      }
+      state = BindingState::Ready;
+      values_[id.value] = imported.constant;
+      return ready(imported.constant);
+    }
     if (state == BindingState::Evaluating) {
       return fail(
           initial.name_range,
@@ -658,6 +714,9 @@ private:
 
     case NodeKind::MemberExpression: {
       if (node.children.empty()) return pending();
+      if (const std::optional<SymbolId> imported = imported_member(tree, node, scope)) {
+        return evaluate_binding(*imported, required);
+      }
       const EvalResult base = evaluate_expression(tree, node.children.front(), scope, required);
       if (base.status != EvalStatus::Ready) return base;
       const std::optional<std::string> member = final_name(tree, node);
