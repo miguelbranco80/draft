@@ -140,6 +140,21 @@ struct SemanticPackage {
   std::vector<NativeBinding> native_bindings;
 };
 
+// One selection chooses the true or false branch of a particular parsed `when`.
+// References are stable while the owning SyntaxTree is unchanged. Keeping the
+// decision outside SyntaxTree permits deterministic semantic rounds without
+// mutating or cloning parsed source.
+struct ConditionalSelection {
+  SyntaxReference site;
+  bool select_true = false;
+};
+
+struct ConditionalSelections {
+  std::vector<ConditionalSelection> entries;
+
+  [[nodiscard]] const ConditionalSelection *find(SyntaxReference site) const;
+};
+
 // Collects declarations from every parsed Draft file in canonical package-file
 // order. Assembly files have no Draft declarations and remain in LoadedPackage
 // for the target assembly/link pass. Syntax errors may already exist; this pass
@@ -147,6 +162,15 @@ struct SemanticPackage {
 [[nodiscard]] SemanticPackage collect_package_declarations(
     const SourceManager &sources,
     const LoadedPackage &package,
+    DiagnosticSink &diagnostics);
+
+// Selection-aware form used by staged semantic analysis. A selected branch is
+// collected into the surrounding scope; an absent selection remains a pending
+// ConditionalDeclaration site and contributes no declarations.
+[[nodiscard]] SemanticPackage collect_package_declarations(
+    const SourceManager &sources,
+    const LoadedPackage &package,
+    const ConditionalSelections &selections,
     DiagnosticSink &diagnostics);
 
 [[nodiscard]] std::string_view semantic_site_kind_name(SemanticSiteKind kind);

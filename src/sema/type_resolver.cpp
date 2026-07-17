@@ -96,8 +96,10 @@ public:
       const SourceManager &sources,
       const LoadedPackage &loaded,
       SemanticPackage &semantic,
+      const ConditionalSelections &selections,
       DiagnosticSink &diagnostics)
-      : sources_(sources), loaded_(loaded), semantic_(semantic), diagnostics_(diagnostics),
+      : sources_(sources), loaded_(loaded), semantic_(semantic), selections_(selections),
+        diagnostics_(diagnostics),
         states_(semantic.symbols.symbol_count(), ResolutionState::Unvisited) {}
 
   // Resolves only the symbols originally installed in the package scope.
@@ -703,6 +705,40 @@ private:
     }
   }
 
+  // Selects one member-level `when` without introducing a scope. Recursive
+  // `else when` chains use the same operation, so arbitrary chain depth neither
+  // duplicates code nor treats a nested conditional as a member list.
+  void collect_conditional_member(
+      SymbolId owner,
+      const SyntaxTree &tree,
+      NodeId member_id,
+      ScopeId scope,
+      MemberData &data) {
+    const SyntaxNode &member = tree.node(member_id);
+    add_site(SemanticSiteKind::ConditionalMember, tree, member_id, scope, owner);
+    const ConditionalSelection *selection =
+        selections_.find({tree.file(), member_id});
+    if (selection == nullptr) {
+      data.incomplete = true;
+      return;
+    }
+    if (selection->select_true) {
+      if (member.children.size() >= 2) {
+        collect_member_list(owner, tree, member.children[1], scope, data);
+      }
+      return;
+    }
+    if (member.children.size() < 3) {
+      return;
+    }
+    const NodeId alternative = member.children[2];
+    if (tree.node(alternative).kind == NodeKind::WhenMember) {
+      collect_conditional_member(owner, tree, alternative, scope, data);
+    } else {
+      collect_member_list(owner, tree, alternative, scope, data);
+    }
+  }
+
   // Walks a member region in source order. Denials are transparent for name and
   // layout purposes; conditionals and synthesis keep the aggregate incomplete
   // until a later pass selects or supplies their members.
@@ -736,8 +772,7 @@ private:
         data.incomplete = true;
         break;
       case NodeKind::WhenMember:
-        add_site(SemanticSiteKind::ConditionalMember, tree, member_id, scope, owner);
-        data.incomplete = true;
+        collect_conditional_member(owner, tree, member_id, scope, data);
         break;
       case NodeKind::DenyMember:
         add_site(SemanticSiteKind::DenialMember, tree, member_id, scope, owner);
@@ -1037,6 +1072,7 @@ private:
   const SourceManager &sources_;
   const LoadedPackage &loaded_;
   SemanticPackage &semantic_;
+  const ConditionalSelections &selections_;
   DiagnosticSink &diagnostics_;
   std::vector<ResolutionState> states_;
 };
@@ -1048,7 +1084,18 @@ void resolve_package_types(
     const LoadedPackage &loaded,
     SemanticPackage &package,
     DiagnosticSink &diagnostics) {
-  TypeResolver resolver(sources, loaded, package, diagnostics);
+  const ConditionalSelections selections;
+  TypeResolver resolver(sources, loaded, package, selections, diagnostics);
+  resolver.resolve();
+}
+
+void resolve_package_types(
+    const SourceManager &sources,
+    const LoadedPackage &loaded,
+    SemanticPackage &package,
+    const ConditionalSelections &selections,
+    DiagnosticSink &diagnostics) {
+  TypeResolver resolver(sources, loaded, package, selections, diagnostics);
   resolver.resolve();
 }
 

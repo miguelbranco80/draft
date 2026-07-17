@@ -31,4 +31,13 @@ void resolve_package_types(
     SemanticPackage &package,
     DiagnosticSink &diagnostics);
 
+// Selection-aware form used by the semantic fixed-point driver. Selected
+// member-level `when` regions contribute directly to their owning type scope.
+void resolve_package_types(
+    const SourceManager &sources,
+    const LoadedPackage &loaded,
+    SemanticPackage &package,
+    const ConditionalSelections &selections,
+    DiagnosticSink &diagnostics);
+
 } // namespace draft

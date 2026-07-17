@@ -83,6 +83,8 @@ enum class Visibility {
 struct SyntaxReference {
   FileId file;
   NodeId node;
+
+  bool operator==(const SyntaxReference &) const = default;
 };
 
 // Symbol flags describe source-level storage or linkage properties orthogonal to

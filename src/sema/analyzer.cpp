@@ -72,8 +72,10 @@ public:
   DeclarationCollector(
       const SourceManager &sources,
       const LoadedPackage &loaded,
+      const ConditionalSelections &selections,
       DiagnosticSink &diagnostics)
-      : sources_(sources), loaded_(loaded), diagnostics_(diagnostics) {
+      : sources_(sources), loaded_(loaded), selections_(selections),
+        diagnostics_(diagnostics) {
     semantic_.short_name = loaded_.short_name;
   }
 
@@ -361,9 +363,29 @@ private:
       }
       return {};
 
-    case NodeKind::WhenDeclaration:
+    case NodeKind::WhenDeclaration: {
       add_site(SemanticSiteKind::ConditionalDeclaration, tree, node_id, scope);
+      const ConditionalSelection *selection =
+          selections_.find({tree.file(), node_id});
+      if (selection == nullptr) {
+        return {};
+      }
+      if (selection->select_true) {
+        if (node.children.size() >= 2) {
+          collect_declaration_list(tree, node.children[1], scope, context);
+        }
+        return {};
+      }
+      if (node.children.size() >= 3) {
+        const NodeId alternative = node.children[2];
+        if (tree.node(alternative).kind == NodeKind::WhenDeclaration) {
+          (void)collect_item(tree, alternative, scope, context);
+        } else {
+          collect_declaration_list(tree, alternative, scope, context);
+        }
+      }
       return {};
+    }
 
     case NodeKind::SynthesisDeclaration:
       add_site(SemanticSiteKind::SynthesisDeclaration, tree, node_id, scope);
@@ -489,6 +511,7 @@ private:
 
   const SourceManager &sources_;
   const LoadedPackage &loaded_;
+  const ConditionalSelections &selections_;
   DiagnosticSink &diagnostics_;
   SemanticPackage semantic_;
 };
@@ -499,8 +522,27 @@ SemanticPackage collect_package_declarations(
     const SourceManager &sources,
     const LoadedPackage &package,
     DiagnosticSink &diagnostics) {
-  DeclarationCollector collector(sources, package, diagnostics);
+  const ConditionalSelections selections;
+  DeclarationCollector collector(sources, package, selections, diagnostics);
   return collector.collect();
+}
+
+SemanticPackage collect_package_declarations(
+    const SourceManager &sources,
+    const LoadedPackage &package,
+    const ConditionalSelections &selections,
+    DiagnosticSink &diagnostics) {
+  DeclarationCollector collector(sources, package, selections, diagnostics);
+  return collector.collect();
+}
+
+const ConditionalSelection *ConditionalSelections::find(SyntaxReference site) const {
+  for (const ConditionalSelection &entry : entries) {
+    if (entry.site == site) {
+      return &entry;
+    }
+  }
+  return nullptr;
 }
 
 std::string_view semantic_site_kind_name(SemanticSiteKind kind) {

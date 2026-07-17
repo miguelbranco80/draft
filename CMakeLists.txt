@@ -28,6 +28,8 @@ add_library(
   src/source/diagnostic.cpp
   src/source/source.cpp
   src/sema/analyzer.cpp
+  src/sema/constant.cpp
+  src/sema/semantic.cpp
   src/sema/symbol.cpp
   src/sema/type.cpp
   src/sema/type_resolver.cpp
@@ -96,4 +98,8 @@ if(BUILD_TESTING)
   add_executable(draft_type_resolver_tests tests/type_resolver_test.cpp)
   target_link_libraries(draft_type_resolver_tests PRIVATE draft_compiler)
   add_test(NAME draft_type_resolver_tests COMMAND draft_type_resolver_tests)
+
+  add_executable(draft_constant_tests tests/constant_test.cpp)
+  target_link_libraries(draft_constant_tests PRIVATE draft_compiler)
+  add_test(NAME draft_constant_tests COMMAND draft_constant_tests)
 endif()
