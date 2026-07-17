@@ -3,8 +3,9 @@
 // The driver is intentionally thin: it owns process-facing argument and stream
 // behavior, while source loading, diagnostics, syntax, semantics, and codegen
 // remain reusable modules. The initial `lex` command is an inspectable front-end
-// probe and will remain useful after `check`, `build`, `resolve`, and `judge` are
-// added. It prints exact token spellings and marks inserted semicolons.
+// probes and will remain useful after `check`, `build`, `resolve`, and `judge`
+// are added. They print exact token spellings, grammar structure, or the complete
+// versioned target profile without embedding phase logic in this file.
 
 #include "source/diagnostic.h"
 #include "source/source.h"
@@ -12,6 +13,7 @@
 #include "syntax/parser.h"
 #include "syntax/syntax_tree.h"
 #include "syntax/token.h"
+#include "target/profile.h"
 
 #include <iostream>
 #include <string>
@@ -86,10 +88,36 @@ int parse_file(const std::string &path) {
   return diagnostics.has_errors() ? 1 : 0;
 }
 
+// Prints the profile in a stable line-oriented form suitable for inspection and
+// simple snapshot tests. This is not the eventual canonical serialized build
+// input, whose format will be versioned independently.
+int print_target() {
+  const draft::TargetProfile profile = draft::make_aarch64_macos_profile();
+  std::string reason;
+  if (!draft::validate_target_profile(profile, reason)) {
+    std::cerr << "error: invalid built-in target profile: " << reason << '\n';
+    return 1;
+  }
+  std::cout << "identity " << profile.facts.identity << '\n'
+            << "triple " << profile.llvm_triple << '\n'
+            << "data-layout " << profile.llvm_data_layout << '\n'
+            << "file-tag " << profile.facts.file_tag << '\n'
+            << "pointer-bits " << profile.facts.pointer_bits << '\n'
+            << "page-size " << profile.facts.page_size << '\n'
+            << "object-format " << profile.facts.object_format << '\n'
+            << "assembly-dialect " << profile.parsed_assembly_dialect << '\n'
+            << "relocation-model "
+            << draft::relocation_model_name(profile.relocation_model) << '\n'
+            << "code-model " << draft::code_model_name(profile.code_model) << '\n'
+            << "tls-model " << draft::tls_model_name(profile.tls_model) << '\n';
+  return 0;
+}
+
 void print_usage() {
   std::cerr << "usage:\n"
             << "  draftc lex <file.draft>\n"
-            << "  draftc syntax <file.draft>\n";
+            << "  draftc syntax <file.draft>\n"
+            << "  draftc target\n";
 }
 
 } // namespace
@@ -100,6 +128,9 @@ int main(int argc, char **argv) {
   }
   if (argc == 3 && std::string_view(argv[1]) == "syntax") {
     return parse_file(argv[2]);
+  }
+  if (argc == 2 && std::string_view(argv[1]) == "target") {
+    return print_target();
   }
   print_usage();
   return 2;

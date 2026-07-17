@@ -39,3 +39,22 @@ convention. The parser also accepts that token wherever an ordinary contextual
 name is required, because the specification deliberately uses `c` as the local
 alias in `import core/c as c` and in qualified names such as `c.int`. A line
 ending in the alias therefore receives ordinary identifier semicolon behavior.
+
+## Initial AArch64 macOS profile
+
+Status: bootstrap target contract; versioned as `draft-aarch64-macos-v1`.
+
+The first profile targets `arm64-apple-macosx14.0.0`, uses the generic AArch64
+CPU with baseline NEON, 64-bit little-endian pointers, 16 KiB pages, Mach-O,
+position-independent small-model code, general-dynamic TLS, and a macOS 14.0
+deployment floor. Its pinned LLVM data-layout string is:
+
+```text
+e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32
+```
+
+The parsed inline-assembly dialect identity is `draft-aarch64-apple-v1`.
+Package `.s`, `.S`, and `.asm` inputs all contain exact non-preprocessed bytes;
+in particular, `.S` does not inherit the host C driver's preprocessing rule.
+Changing any of these facts creates a new target-profile identity rather than
+silently changing the meaning of the existing profile.

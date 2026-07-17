@@ -37,6 +37,7 @@ add_library(
   src/syntax/parser.cpp
   src/syntax/syntax_tree.cpp
   src/syntax/token.cpp
+  src/target/profile.cpp
   src/workspace/package.cpp
 )
 
@@ -102,4 +103,8 @@ if(BUILD_TESTING)
   add_executable(draft_constant_tests tests/constant_test.cpp)
   target_link_libraries(draft_constant_tests PRIVATE draft_compiler)
   add_test(NAME draft_constant_tests COMMAND draft_constant_tests)
+
+  add_executable(draft_target_profile_tests tests/target_profile_test.cpp)
+  target_link_libraries(draft_target_profile_tests PRIVATE draft_compiler)
+  add_test(NAME draft_target_profile_tests COMMAND draft_target_profile_tests)
 endif()
