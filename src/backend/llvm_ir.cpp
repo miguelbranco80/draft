@@ -955,6 +955,9 @@ private:
     case ConstantKind::String:
       error(range, "string constant requires module string identity");
       return "zeroinitializer";
+    case ConstantKind::Aggregate:
+      error(range, "aggregate constant requires aggregate emission");
+      return "zeroinitializer";
     case ConstantKind::Target:
       error(range, "target pseudo-value reached runtime emission");
       return "zeroinitializer";

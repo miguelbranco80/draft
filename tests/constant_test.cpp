@@ -1,4 +1,4 @@
-// Scalar compile-time evaluation and fixed-point declaration `when` tests.
+// Compile-time evaluation and fixed-point declaration `when` tests.
 
 #include "sema/constant.h"
 #include "sema/semantic.h"
@@ -118,6 +118,23 @@ measure[T: type, Extra: usize] :: proc(value: T) -> usize {
     return size_of(T) + Extra
 }
 
+make_table :: proc() -> [4]u32 {
+    result: [4]u32
+    for i: usize = 0; i < len(result); i += 1 {
+        result[i] = cast[u32](i * i)
+    }
+    return result
+}
+
+sum_table :: proc(values: [4]u32) -> u32 {
+    result: u32
+    for value, index in values {
+        static_assert(index < 4)
+        result += value
+    }
+    return result
+}
+
 Bits :: target.pointer_bits
 Base :: 40
 Derived :: Base + 2
@@ -133,6 +150,8 @@ Class_Default :: classify(9)
 Target_Word :: target_word()
 Wrapped_Byte :: increment_byte(255)
 Measured_U32 :: measure[u32, 7](0)
+Table :: make_table()
+Table_Sum :: sum_table(Table)
 
 Header :: struct {
     tag: u8,
@@ -141,6 +160,8 @@ Header :: struct {
 
 Header_Size :: size_of(Header)
 Header_Alignment :: align_of(Header)
+Header_Value :: Header{tag = 1, value = 42}.value
+Tuple_Value :: (10, 32).1
 
 Conditional :: struct {
     when target.pointer_bits == 64 {
@@ -263,6 +284,14 @@ when Accent == '\u{e9}' {
       find_symbol(source.analysis.package, "Wrapped_Byte");
   const std::optional<draft::SymbolId> measured_u32 =
       find_symbol(source.analysis.package, "Measured_U32");
+  const std::optional<draft::SymbolId> table =
+      find_symbol(source.analysis.package, "Table");
+  const std::optional<draft::SymbolId> table_sum =
+      find_symbol(source.analysis.package, "Table_Sum");
+  const std::optional<draft::SymbolId> header_value =
+      find_symbol(source.analysis.package, "Header_Value");
+  const std::optional<draft::SymbolId> tuple_value =
+      find_symbol(source.analysis.package, "Tuple_Value");
   EXPECT(state, bits.has_value());
   EXPECT(state, derived.has_value());
   EXPECT(state, feature.has_value());
@@ -279,9 +308,14 @@ when Accent == '\u{e9}' {
   EXPECT(state, target_word.has_value());
   EXPECT(state, wrapped_byte.has_value());
   EXPECT(state, measured_u32.has_value());
+  EXPECT(state, table.has_value());
+  EXPECT(state, table_sum.has_value());
+  EXPECT(state, header_value.has_value());
+  EXPECT(state, tuple_value.has_value());
   if (bits && derived && feature && bit_value && huge && fraction &&
       header_size && header_alignment && accent && odd_mask && factorial &&
-      class_two && class_default && target_word && wrapped_byte && measured_u32) {
+      class_two && class_default && target_word && wrapped_byte && measured_u32 &&
+      table && table_sum && header_value && tuple_value) {
     const draft::ConstantValue *bits_value = source.analysis.constants.find(*bits);
     const draft::ConstantValue *derived_value = source.analysis.constants.find(*derived);
     const draft::ConstantValue *feature_value = source.analysis.constants.find(*feature);
@@ -308,6 +342,14 @@ when Accent == '\u{e9}' {
         source.analysis.constants.find(*wrapped_byte);
     const draft::ConstantValue *measured_u32_result =
         source.analysis.constants.find(*measured_u32);
+    const draft::ConstantValue *table_result =
+        source.analysis.constants.find(*table);
+    const draft::ConstantValue *table_sum_result =
+        source.analysis.constants.find(*table_sum);
+    const draft::ConstantValue *header_value_result =
+        source.analysis.constants.find(*header_value);
+    const draft::ConstantValue *tuple_value_result =
+        source.analysis.constants.find(*tuple_value);
     EXPECT(state, bits_value != nullptr);
     EXPECT(state, derived_value != nullptr);
     EXPECT(state, feature_value != nullptr);
@@ -324,6 +366,10 @@ when Accent == '\u{e9}' {
     EXPECT(state, target_word_result != nullptr);
     EXPECT(state, wrapped_byte_result != nullptr);
     EXPECT(state, measured_u32_result != nullptr);
+    EXPECT(state, table_result != nullptr);
+    EXPECT(state, table_sum_result != nullptr);
+    EXPECT(state, header_value_result != nullptr);
+    EXPECT(state, tuple_value_result != nullptr);
     if (bits_value) EXPECT(state, bits_value->integer.to_decimal() == "64");
     if (derived_value) EXPECT(state, derived_value->integer.to_decimal() == "42");
     if (feature_value) EXPECT(state, feature_value->boolean);
@@ -363,6 +409,22 @@ when Accent == '\u{e9}' {
     }
     if (measured_u32_result) {
       EXPECT(state, measured_u32_result->integer.to_decimal() == "11");
+    }
+    if (table_result) {
+      EXPECT(state, table_result->kind == draft::ConstantKind::Aggregate);
+      EXPECT(state, table_result->elements.size() == 4);
+      if (table_result->elements.size() == 4) {
+        EXPECT(state, table_result->elements[3].integer.to_decimal() == "9");
+      }
+    }
+    if (table_sum_result) {
+      EXPECT(state, table_sum_result->integer.to_decimal() == "14");
+    }
+    if (header_value_result) {
+      EXPECT(state, header_value_result->integer.to_decimal() == "42");
+    }
+    if (tuple_value_result) {
+      EXPECT(state, tuple_value_result->integer.to_decimal() == "32");
     }
   }
 }
@@ -441,9 +503,32 @@ Mode :: enum i16 {
     On = 7,
 }
 
+Header :: struct {
+    tag: u8,
+    value: u64,
+}
+
+Outcome :: union {
+    empty,
+    value: u32,
+}
+
+Overlay :: raw union {
+    byte: u8,
+    word: u64,
+}
+
 Answer :: 40 + 2
 answer_from_procedure :: proc() -> u64 {
     return Answer
+}
+
+make_table :: proc() -> [4]u32 {
+    result: [4]u32
+    for i: usize = 0; i < len(result); i += 1 {
+        result[i] = cast[u32](i + 1)
+    }
+    return result
 }
 
 count: u64 = Answer
@@ -454,6 +539,11 @@ enabled: bool = true
 message: string = "draft"
 mode: Mode = .On
 pointer: ^u64 = nil
+table: [4]u32 = make_table()
+header: Header = Header{tag = 1, value = 42}
+inferred_header := Header{tag = 2, value = 84}
+outcome: Outcome = .value(9)
+overlay: Overlay = Overlay{word = 0x1020304050607080}
 thread_local scratch: i32 = -7
 )draft");
   if (source.diagnostics.has_errors()) {
@@ -471,11 +561,26 @@ thread_local scratch: i32 = -7
       find_symbol(source.analysis.package, "mode");
   const std::optional<draft::SymbolId> pointer =
       find_symbol(source.analysis.package, "pointer");
+  const std::optional<draft::SymbolId> table =
+      find_symbol(source.analysis.package, "table");
+  const std::optional<draft::SymbolId> header =
+      find_symbol(source.analysis.package, "header");
+  const std::optional<draft::SymbolId> inferred_header =
+      find_symbol(source.analysis.package, "inferred_header");
+  const std::optional<draft::SymbolId> outcome =
+      find_symbol(source.analysis.package, "outcome");
+  const std::optional<draft::SymbolId> overlay =
+      find_symbol(source.analysis.package, "overlay");
   EXPECT(state, count.has_value());
   EXPECT(state, inferred.has_value());
   EXPECT(state, computed.has_value());
   EXPECT(state, mode.has_value());
   EXPECT(state, pointer.has_value());
+  EXPECT(state, table.has_value());
+  EXPECT(state, header.has_value());
+  EXPECT(state, inferred_header.has_value());
+  EXPECT(state, outcome.has_value());
+  EXPECT(state, overlay.has_value());
   if (count.has_value()) {
     EXPECT(state, source.analysis.constants.find(*count) == nullptr);
     const draft::ConstantValue *value =
@@ -504,6 +609,50 @@ thread_local scratch: i32 = -7
         source.analysis.global_initializers.find(*pointer);
     EXPECT(state, value != nullptr);
     if (value != nullptr) EXPECT(state, value->kind == draft::ConstantKind::Nil);
+  }
+  if (table.has_value()) {
+    const draft::ConstantValue *value =
+        source.analysis.global_initializers.find(*table);
+    EXPECT(state, value != nullptr);
+    if (value != nullptr) {
+      EXPECT(state, value->kind == draft::ConstantKind::Aggregate);
+      EXPECT(state, value->elements.size() == 4);
+      if (value->elements.size() == 4) {
+        EXPECT(state, value->elements[3].integer.to_decimal() == "4");
+      }
+    }
+  }
+  if (header.has_value()) {
+    const draft::ConstantValue *value =
+        source.analysis.global_initializers.find(*header);
+    EXPECT(state, value != nullptr);
+    if (value != nullptr && value->elements.size() == 2) {
+      EXPECT(state, value->elements[1].integer.to_decimal() == "42");
+    }
+  }
+  if (inferred_header.has_value()) {
+    const draft::Symbol &symbol =
+        source.analysis.package.symbols.symbol(*inferred_header);
+    EXPECT(state, source.analysis.package.types.type(symbol.type).kind ==
+                      draft::TypeKind::Struct);
+  }
+  if (outcome.has_value()) {
+    const draft::ConstantValue *value =
+        source.analysis.global_initializers.find(*outcome);
+    EXPECT(state, value != nullptr);
+    if (value != nullptr) {
+      EXPECT(state, value->variant_index == 1);
+      EXPECT(state, value->elements.size() == 1);
+    }
+  }
+  if (overlay.has_value()) {
+    const draft::ConstantValue *value =
+        source.analysis.global_initializers.find(*overlay);
+    EXPECT(state, value != nullptr);
+    if (value != nullptr) {
+      EXPECT(state, value->variant_index == 1);
+      EXPECT(state, value->elements.size() == 1);
+    }
   }
 
   AnalyzedSource invalid(R"draft(

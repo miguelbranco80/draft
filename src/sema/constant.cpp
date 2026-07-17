@@ -75,6 +75,18 @@ struct LocalFrame {
   std::vector<ConstantTypeBinding> type_bindings;
 };
 
+struct LocalTarget {
+  std::string root;
+  std::vector<std::size_t> path;
+  ConstantValue value;
+  TypeId type;
+};
+
+struct LocalTargetResult {
+  EvalStatus status = EvalStatus::Pending;
+  std::optional<LocalTarget> target;
+};
+
 [[nodiscard]] bool token_is_contextual_name(TokenKind kind) {
   return kind == TokenKind::Identifier || kind == TokenKind::KeywordC ||
          kind == TokenKind::KeywordType || kind == TokenKind::KeywordInteger ||
@@ -197,7 +209,7 @@ public:
     return result;
   }
 
-  [[nodiscard]] std::optional<ConstantValue> evaluate_required_expression(
+  [[nodiscard]] std::optional<EvaluatedConstant> evaluate_required_expression(
       const SyntaxTree &tree, NodeId expression, ScopeId scope) {
     const EvalResult result =
         evaluate_expression(tree, expression, scope, true);
@@ -208,7 +220,7 @@ public:
       return std::nullopt;
     }
     if (result.status != EvalStatus::Ready) return std::nullopt;
-    return result.value;
+    return EvaluatedConstant{result.value, result.type};
   }
 
 private:
@@ -437,7 +449,12 @@ private:
 
   static constexpr std::size_t kMaximumConstantBits = 1000000;
   static constexpr std::size_t kMaximumExecutionSteps = 1000000;
-  static constexpr std::size_t kMaximumProcedureCallDepth = 256;
+  // Procedure execution is deliberately recursive because that keeps source
+  // control flow obvious.  Stop well before the host C++ stack becomes the
+  // accidental resource limit; a Draft program gets a normal diagnostic
+  // instead of a compiler crash.  This limit can be raised after the evaluator
+  // moves to an explicit call stack.
+  static constexpr std::size_t kMaximumProcedureCallDepth = 64;
 
   [[nodiscard]] EvalResult bounded_integer(
       BigInteger value, SourceRange range, bool required) {
@@ -522,6 +539,32 @@ private:
     return remainder;
   }
 
+  [[nodiscard]] bool valid_rune(const BigInteger &value) const {
+    const BigInteger zero = BigInteger::from_u64(0);
+    const BigInteger surrogate_begin = BigInteger::from_u64(0xd800);
+    const BigInteger surrogate_end = BigInteger::from_u64(0xdfff);
+    const BigInteger maximum = BigInteger::from_u64(0x10ffff);
+    return value.compare(zero) >= 0 && value.compare(maximum) <= 0 &&
+        (value.compare(surrogate_begin) < 0 ||
+         value.compare(surrogate_end) > 0);
+  }
+
+  [[nodiscard]] bool valid_enum_value(
+      TypeId type_id, const BigInteger &value) const {
+    const std::optional<SymbolId> owner = aggregate_owner(type_id);
+    if (!owner.has_value()) return false;
+    for (const AggregateMember &member : semantic_.aggregate_members) {
+      if (member.owner != *owner) continue;
+      for (const EnumMemberValue &enumerator : semantic_.enum_member_values) {
+        if (enumerator.member == member.member &&
+            enumerator.value.compare(value) == 0) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
   [[nodiscard]] EvalResult convert_to_type(
       ConstantValue value,
       TypeId type_id,
@@ -565,6 +608,105 @@ private:
          type.kind == TypeKind::Pointer || type.kind == TypeKind::MultiPointer ||
          type.kind == TypeKind::Procedure)) {
       return ready(std::move(value), type_id);
+    }
+    if (value.kind == ConstantKind::Aggregate &&
+        (type.kind == TypeKind::Array || type.kind == TypeKind::Tuple ||
+         type.kind == TypeKind::Struct || type.kind == TypeKind::Simd)) {
+      const std::size_t expected_count =
+          type.kind == TypeKind::Array || type.kind == TypeKind::Simd
+          ? static_cast<std::size_t>(type.element_count)
+          : type.members.size();
+      if (value.elements.size() != expected_count) {
+        return fail(
+            range,
+            "compile-time aggregate has the wrong element count",
+            required);
+      }
+      for (std::size_t index = 0; index < value.elements.size(); ++index) {
+        const TypeId element_type =
+            type.kind == TypeKind::Array || type.kind == TypeKind::Simd
+            ? type.element
+            : type.members[index];
+        const EvalResult converted = convert_to_type(
+            value.elements[index], element_type, false, range, required);
+        if (converted.status != EvalStatus::Ready) return converted;
+        value.elements[index] = converted.value;
+      }
+      return ready(std::move(value), type_id);
+    }
+    if (value.kind == ConstantKind::Aggregate &&
+        (type.kind == TypeKind::RawUnion ||
+         type.kind == TypeKind::TaggedUnion)) {
+      if (value.variant_index >= type.members.size()) {
+        return fail(
+            range,
+            "compile-time union has an invalid selected member",
+            required);
+      }
+      const TypeId payload_type = type.members[value.variant_index];
+      const bool has_payload =
+          semantic_.types.type(payload_type).kind != TypeKind::Void;
+      // A zero-initialized raw union means all storage bytes are zero.  It does
+      // not semantically initialize the first member, which may itself be a
+      // non-void type, so it carries no payload value.
+      if (type.kind == TypeKind::RawUnion && value.elements.empty()) {
+        return ready(std::move(value), type_id);
+      }
+      if (has_payload != (value.elements.size() == 1)) {
+        return fail(
+            range,
+            "compile-time union payload does not match its selected member",
+            required);
+      }
+      if (has_payload) {
+        const EvalResult converted = convert_to_type(
+            value.elements.front(), payload_type, false, range, required);
+        if (converted.status != EvalStatus::Ready) return converted;
+        value.elements.front() = converted.value;
+      }
+      return ready(std::move(value), type_id);
+    }
+    if (value.kind == ConstantKind::EnumLabel && type.kind == TypeKind::Enum) {
+      const std::optional<BigInteger> member =
+          enum_member_value(type_id, value.text);
+      if (!member.has_value() || !value.elements.empty()) {
+        return fail(
+            range,
+            "compile-time enum initializer names no matching member",
+            required);
+      }
+      return ready(ConstantValue::make_integer(*member), type_id);
+    }
+    if (value.kind == ConstantKind::EnumLabel &&
+        type.kind == TypeKind::TaggedUnion) {
+      const std::optional<std::size_t> member =
+          aggregate_member_index(type_id, value.text);
+      if (!member.has_value() || *member >= type.members.size()) {
+        return fail(
+            range,
+            "compile-time union initializer names no matching alternative",
+            required);
+      }
+      const TypeId payload_type = type.members[*member];
+      const bool has_payload =
+          semantic_.types.type(payload_type).kind != TypeKind::Void;
+      if (has_payload != (value.elements.size() == 1)) {
+        return fail(
+            range,
+            has_payload
+                ? "compile-time union alternative requires a payload"
+                : "compile-time union alternative does not accept a payload",
+            required);
+      }
+      std::vector<ConstantValue> payload;
+      if (has_payload) {
+        const EvalResult converted = convert_to_type(
+            value.elements.front(), payload_type, false, range, required);
+        if (converted.status != EvalStatus::Ready) return converted;
+        payload.push_back(converted.value);
+      }
+      return ready(
+          ConstantValue::make_aggregate(std::move(payload), *member), type_id);
     }
     return fail(
         range,
@@ -882,6 +1024,64 @@ private:
   [[nodiscard]] std::optional<TypeId> type_value(
       const SyntaxTree &tree, NodeId expression_id, ScopeId scope) {
     const SyntaxNode &expression = tree.node(expression_id);
+    if (is_type_syntax(expression.kind)) {
+      if (expression.kind == NodeKind::NamedType) {
+        return named_type_from_syntax(tree, expression_id, scope);
+      }
+      if (expression.kind == NodeKind::PointerType &&
+          !expression.children.empty()) {
+        const std::optional<TypeId> element =
+            type_value(tree, expression.children.back(), scope);
+        return element.has_value()
+            ? std::optional<TypeId>(semantic_.types.pointer(*element))
+            : std::nullopt;
+      }
+      if (expression.kind == NodeKind::MultiPointerType &&
+          !expression.children.empty()) {
+        const std::optional<TypeId> element =
+            type_value(tree, expression.children.back(), scope);
+        return element.has_value()
+            ? std::optional<TypeId>(semantic_.types.multi_pointer(*element))
+            : std::nullopt;
+      }
+      if (expression.kind == NodeKind::SliceType &&
+          !expression.children.empty()) {
+        const std::optional<TypeId> element =
+            type_value(tree, expression.children.back(), scope);
+        return element.has_value()
+            ? std::optional<TypeId>(semantic_.types.slice(*element))
+            : std::nullopt;
+      }
+      if (expression.kind == NodeKind::ArrayType &&
+          expression.children.size() == 2) {
+        const EvalResult count = evaluate_expression(
+            tree, expression.children.front(), scope, true);
+        const std::optional<TypeId> element =
+            type_value(tree, expression.children.back(), scope);
+        if (count.status != EvalStatus::Ready ||
+            count.value.kind != ConstantKind::Integer || !element.has_value()) {
+          return std::nullopt;
+        }
+        const std::optional<std::uint64_t> length = count.value.integer.to_u64();
+        return length.has_value()
+            ? std::optional<TypeId>(semantic_.types.array(*element, *length))
+            : std::nullopt;
+      }
+      if (expression.kind == NodeKind::TupleType) {
+        std::vector<TypeId> members;
+        for (NodeId child : expression.children) {
+          const std::optional<TypeId> member = type_value(tree, child, scope);
+          if (!member.has_value()) return std::nullopt;
+          members.push_back(*member);
+        }
+        return semantic_.types.tuple(members);
+      }
+      if (expression.kind == NodeKind::DistinctType &&
+          !expression.children.empty()) {
+        return type_value(tree, expression.children.back(), scope);
+      }
+      return std::nullopt;
+    }
     if (const std::optional<SymbolId> imported =
             imported_member(tree, expression, scope)) {
       const Symbol &symbol = semantic_.symbols.symbol(*imported);
@@ -998,6 +1198,45 @@ private:
     return substitute_local_type(found.type);
   }
 
+  [[nodiscard]] std::optional<SymbolId> aggregate_owner(TypeId type_id) const {
+    for (const OwnedSemanticScope &owned : semantic_.owned_scopes) {
+      if (semantic_.symbols.scope(owned.scope).kind == ScopeKind::Type &&
+          semantic_.symbols.symbol(owned.owner).type == type_id) {
+        return owned.owner;
+      }
+    }
+    return std::nullopt;
+  }
+
+  [[nodiscard]] std::optional<std::size_t> aggregate_member_index(
+      TypeId type_id, std::string_view name) const {
+    const std::optional<SymbolId> owner = aggregate_owner(type_id);
+    if (!owner.has_value()) return std::nullopt;
+    std::size_t index = 0;
+    for (const AggregateMember &member : semantic_.aggregate_members) {
+      if (member.owner != *owner) continue;
+      if (semantic_.symbols.symbol(member.member).name == name) return index;
+      ++index;
+    }
+    return std::nullopt;
+  }
+
+  [[nodiscard]] std::optional<BigInteger> enum_member_value(
+      TypeId type_id, std::string_view name) const {
+    const std::optional<SymbolId> owner = aggregate_owner(type_id);
+    if (!owner.has_value()) return std::nullopt;
+    for (const AggregateMember &member : semantic_.aggregate_members) {
+      if (member.owner != *owner ||
+          semantic_.symbols.symbol(member.member).name != name) {
+        continue;
+      }
+      for (const EnumMemberValue &value : semantic_.enum_member_values) {
+        if (value.member == member.member) return value.value;
+      }
+    }
+    return std::nullopt;
+  }
+
   [[nodiscard]] std::optional<ConstantValue> zero_value(TypeId type_id) const {
     Type type = semantic_.types.type(type_id);
     while (type.kind == TypeKind::Distinct) {
@@ -1024,21 +1263,51 @@ private:
       return ConstantValue::make_nil();
     case TypeKind::String:
       return ConstantValue::make_string({});
+    case TypeKind::Array:
+    case TypeKind::Simd: {
+      const std::optional<ConstantValue> element = zero_value(type.element);
+      if (!element.has_value()) return std::nullopt;
+      std::vector<ConstantValue> elements(
+          static_cast<std::size_t>(type.element_count), *element);
+      return ConstantValue::make_aggregate(std::move(elements));
+    }
+    case TypeKind::Tuple:
+    case TypeKind::Struct: {
+      std::vector<ConstantValue> elements;
+      elements.reserve(type.members.size());
+      for (TypeId member : type.members) {
+        const std::optional<ConstantValue> value = zero_value(member);
+        if (!value.has_value()) return std::nullopt;
+        elements.push_back(*value);
+      }
+      return ConstantValue::make_aggregate(std::move(elements));
+    }
+    case TypeKind::RawUnion:
+      return ConstantValue::make_aggregate({}, 0);
+    case TypeKind::TaggedUnion: {
+      std::vector<ConstantValue> payload;
+      if (!type.members.empty() &&
+          semantic_.types.type(type.members.front()).kind != TypeKind::Void) {
+        const std::optional<ConstantValue> value = zero_value(type.members.front());
+        if (!value.has_value()) return std::nullopt;
+        payload.push_back(*value);
+      }
+      return ConstantValue::make_aggregate(std::move(payload), 0);
+    }
     default:
       return std::nullopt;
     }
   }
 
   [[nodiscard]] std::optional<ConstantValue> zero_value_from_syntax(
-      const SyntaxTree &tree, NodeId type_node, ScopeId scope) const {
+      const SyntaxTree &tree, NodeId type_node, ScopeId scope) {
     const SyntaxNode &node = tree.node(type_node);
     if (node.kind == NodeKind::PointerType ||
         node.kind == NodeKind::MultiPointerType ||
         node.kind == NodeKind::ProcedureType) {
       return ConstantValue::make_nil();
     }
-    const std::optional<TypeId> resolved =
-        named_type_from_syntax(tree, type_node, scope);
+    const std::optional<TypeId> resolved = type_value(tree, type_node, scope);
     return resolved.has_value() ? zero_value(*resolved) : std::nullopt;
   }
 
@@ -1156,6 +1425,107 @@ private:
       bool required) {
     if (call.children.empty()) return pending();
     const SyntaxNode &callee = tree.node(call.children.front());
+
+    // `cast[T](value)` is parsed as a call whose callee is a bracket
+    // expression.  Handle it before the direct-name intrinsics below.  Integer
+    // casts wrap modulo the destination width; float-to-integer casts truncate
+    // toward zero and trap when the result is not representable, matching the
+    // ordinary body checker without using host floating point.
+    if (callee.kind == NodeKind::BracketExpression &&
+        !callee.children.empty()) {
+      const SyntaxNode &base = tree.node(callee.children.front());
+      const std::optional<std::string> base_name =
+          base.kind == NodeKind::NameExpression
+              ? final_name(tree, base)
+              : std::nullopt;
+      if (base_name.has_value() && *base_name == "cast") {
+        if (callee.children.size() != 2 || call.children.size() != 2) {
+          return fail(
+              call.range,
+              "cast[T] requires one type and one compile-time value",
+              required);
+        }
+        const std::optional<TypeId> target =
+            type_value(tree, callee.children[1], scope);
+        if (!target.has_value()) {
+          return fail(
+              tree.node(callee.children[1]).range,
+              "compile-time cast target is not a type",
+              required);
+        }
+        const EvalResult argument =
+            evaluate_expression(tree, call.children[1], scope, required);
+        if (argument.status != EvalStatus::Ready) return argument;
+        const Type target_type = runtime_type(*target);
+
+        if (target_type.kind == TypeKind::Bool &&
+            argument.value.kind == ConstantKind::Integer) {
+          return ready(
+              ConstantValue::make_bool(!argument.value.integer.is_zero()),
+              *target);
+        }
+        if (target_type.kind == TypeKind::BooleanStorage &&
+            argument.value.kind == ConstantKind::Bool) {
+          return ready(
+              ConstantValue::make_integer(argument.value.boolean ? 1 : 0),
+              *target);
+        }
+
+        const bool integer_target =
+            target_type.kind == TypeKind::SignedInteger ||
+            target_type.kind == TypeKind::UnsignedInteger ||
+            target_type.kind == TypeKind::Rune ||
+            target_type.kind == TypeKind::Enum ||
+            target_type.kind == TypeKind::BooleanStorage ||
+            target_type.kind == TypeKind::EndianScalar;
+        if (integer_target &&
+            (argument.value.kind == ConstantKind::Integer ||
+             argument.value.kind == ConstantKind::Float)) {
+          BigInteger integer;
+          if (argument.value.kind == ConstantKind::Integer) {
+            integer = wrapped_integer(argument.value.integer, *target);
+          } else {
+            BigInteger remainder;
+            if (!argument.value.floating.numerator().divide(
+                    argument.value.floating.denominator(), integer, remainder) ||
+                !integer_representable(integer, *target)) {
+              return fail(
+                  call.range,
+                  "compile-time float-to-integer cast is out of range",
+                  required);
+            }
+          }
+          if (target_type.kind == TypeKind::Rune && !valid_rune(integer)) {
+            return fail(
+                call.range,
+                "compile-time cast does not produce a Unicode scalar",
+                required);
+          }
+          if (target_type.kind == TypeKind::Enum &&
+              !valid_enum_value(*target, integer)) {
+            return fail(
+                call.range,
+                "compile-time cast does not name an enum member",
+                required);
+          }
+          return ready(ConstantValue::make_integer(std::move(integer)), *target);
+        }
+        if (target_type.kind == TypeKind::Float &&
+            argument.value.kind == ConstantKind::Integer) {
+          return ready(
+              ConstantValue::make_float(
+                  ExactRational(argument.value.integer)),
+              *target);
+        }
+        if (target_type.kind == TypeKind::Float &&
+            argument.value.kind == ConstantKind::Float) {
+          return ready(argument.value, *target);
+        }
+
+        return convert_to_type(
+            argument.value, *target, true, call.range, required);
+      }
+    }
     if (callee.kind != NodeKind::NameExpression) return pending();
     const std::optional<std::string> name = final_name(tree, callee);
     if (!name.has_value()) return pending();
@@ -1167,14 +1537,24 @@ private:
       const EvalResult argument =
           evaluate_expression(tree, call.children[1], scope, required);
       if (argument.status != EvalStatus::Ready) return argument;
-      if (argument.value.kind != ConstantKind::String) {
-        return fail(
-            call.range,
-            "compile-time len currently requires a string value",
-            required);
+      if (argument.value.kind == ConstantKind::String) {
+        return ready(
+            ConstantValue::make_integer(
+                BigInteger::from_u64(argument.value.text.size())),
+            semantic_.types.builtins().usize_type);
       }
-      return ready(ConstantValue::make_integer(
-          BigInteger::from_u64(argument.value.text.size())));
+      if (argument.value.kind == ConstantKind::Aggregate &&
+          argument.type.is_valid() &&
+          semantic_.types.type(argument.type).kind == TypeKind::Array) {
+        return ready(
+            ConstantValue::make_integer(BigInteger::from_u64(
+                semantic_.types.type(argument.type).element_count)),
+            semantic_.types.builtins().usize_type);
+      }
+      return fail(
+          call.range,
+          "compile-time len requires a string or array value",
+          required);
     }
 
     if (*name == "static_assert") {
@@ -1204,9 +1584,8 @@ private:
         message += ": " + supplied.value.text;
       }
       if (!condition.value.boolean) return fail(call.range, message, required);
-      // The value is ignored by statement execution.  Returning true keeps the
-      // internal evaluator scalar-only without inventing a source-level void
-      // constant.
+      // The value is ignored by statement execution.  Returning true avoids
+      // inventing a source-level void constant solely for the interpreter.
       return ready(ConstantValue::make_bool(true));
     }
 
@@ -1441,7 +1820,7 @@ private:
     ConstantValue value;
     TypeId local_type;
     if (declared_type.has_value()) {
-      local_type = named_type_from_syntax(tree, *declared_type, scope).value_or(
+      local_type = type_value(tree, *declared_type, scope).value_or(
           semantic_.types.builtins().invalid);
     }
     if (initializer.has_value()) {
@@ -1474,7 +1853,7 @@ private:
       if (!zero.has_value()) {
         return failed_execution(fail(
             tree.node(*declared_type).range,
-            "compile-time local type has no supported scalar zero value",
+            "compile-time local type has no supported zero value",
             required));
       }
       value = *zero;
@@ -1491,6 +1870,130 @@ private:
     return {};
   }
 
+  [[nodiscard]] LocalTargetResult local_target(
+      const SyntaxTree &tree,
+      NodeId expression_id,
+      ScopeId scope,
+      bool required) {
+    const SyntaxNode &expression = tree.node(expression_id);
+    if (expression.kind == NodeKind::NameExpression) {
+      const std::optional<std::string> name = final_name(tree, expression);
+      const LocalBinding *binding =
+          name.has_value() ? local_binding(*name) : nullptr;
+      if (binding == nullptr) return {};
+      return {
+          EvalStatus::Ready,
+          LocalTarget{*name, {}, binding->value, binding->type}};
+    }
+    if ((expression.kind != NodeKind::BracketExpression &&
+         expression.kind != NodeKind::MemberExpression) ||
+        expression.children.empty()) {
+      return {};
+    }
+
+    LocalTargetResult base = local_target(
+        tree, expression.children.front(), scope, required);
+    if (base.status != EvalStatus::Ready || !base.target.has_value()) return base;
+    if (base.target->value.kind != ConstantKind::Aggregate ||
+        !base.target->type.is_valid()) {
+      const EvalResult failure = fail(
+          expression.range,
+          "compile-time assignment target is not aggregate storage",
+          required);
+      return {failure.status, std::nullopt};
+    }
+
+    const Type aggregate = semantic_.types.type(base.target->type);
+    std::optional<std::size_t> selected;
+    TypeId selected_type;
+    if (expression.kind == NodeKind::BracketExpression) {
+      if (expression.children.size() != 2 || aggregate.kind != TypeKind::Array) {
+        const EvalResult failure = fail(
+            expression.range,
+            "compile-time indexed assignment requires an array local",
+            required);
+        return {failure.status, std::nullopt};
+      }
+      const EvalResult index = evaluate_expression(
+          tree, expression.children[1], scope, required);
+      if (index.status != EvalStatus::Ready) {
+        return {index.status, std::nullopt};
+      }
+      const std::optional<std::uint64_t> value =
+          index.value.kind == ConstantKind::Integer
+          ? index.value.integer.to_u64()
+          : std::nullopt;
+      if (!value.has_value() || *value >= base.target->value.elements.size()) {
+        const EvalResult failure = fail(
+            expression.range,
+            "compile-time indexed assignment is out of bounds",
+            required);
+        return {failure.status, std::nullopt};
+      }
+      selected = static_cast<std::size_t>(*value);
+      selected_type = aggregate.element;
+    } else if (aggregate.kind == TypeKind::Struct) {
+      const std::optional<std::string> member = final_name(tree, expression);
+      if (member.has_value()) {
+        selected = aggregate_member_index(base.target->type, *member);
+      }
+      if (selected.has_value() && *selected < aggregate.members.size()) {
+        selected_type = aggregate.members[*selected];
+      }
+    } else if (aggregate.kind == TypeKind::Tuple) {
+      const SyntaxNode &base_node = tree.node(expression.children.front());
+      for (std::uint32_t token_index = base_node.token_end;
+           token_index < expression.token_end;
+           ++token_index) {
+        const Token &token = tree.token(token_index);
+        if (token.kind != TokenKind::IntegerLiteral) continue;
+        const std::optional<BigInteger> parsed =
+            integer_literal(sources_.text(token.range));
+        const std::optional<std::uint64_t> value =
+            parsed.has_value() ? parsed->to_u64() : std::nullopt;
+        if (value.has_value()) selected = static_cast<std::size_t>(*value);
+        break;
+      }
+      if (selected.has_value() && *selected < aggregate.members.size()) {
+        selected_type = aggregate.members[*selected];
+      }
+    }
+    if (!selected.has_value() ||
+        *selected >= base.target->value.elements.size() ||
+        !selected_type.is_valid()) {
+      const EvalResult failure = fail(
+          expression.range,
+          "compile-time assignment names no aggregate member",
+          required);
+      return {failure.status, std::nullopt};
+    }
+    base.target->path.push_back(*selected);
+    // Copy the selected value before replacing its owning aggregate.  Assigning
+    // directly from an element of `value` would invalidate the source while
+    // ConstantValue's vector assignment destroys the old aggregate storage.
+    ConstantValue selected_value = base.target->value.elements[*selected];
+    base.target->value = std::move(selected_value);
+    base.target->type = selected_type;
+    return base;
+  }
+
+  [[nodiscard]] bool store_local_target(
+      const LocalTarget &target, ConstantValue value) {
+    const LocalBinding *root_binding = local_binding(target.root);
+    if (root_binding == nullptr) return false;
+    ConstantValue root = root_binding->value;
+    ConstantValue *slot = &root;
+    for (std::size_t index : target.path) {
+      if (slot->kind != ConstantKind::Aggregate ||
+          index >= slot->elements.size()) {
+        return false;
+      }
+      slot = &slot->elements[index];
+    }
+    *slot = std::move(value);
+    return assign_local(target.root, std::move(root));
+  }
+
   [[nodiscard]] ExecutionResult execute_assignment(
       const SyntaxTree &tree,
       const SyntaxNode &assignment,
@@ -1502,24 +2005,21 @@ private:
           "compile-time evaluator currently requires one assignment target",
           required));
     }
-    const SyntaxNode &target = tree.node(assignment.children.front());
-    if (target.kind != NodeKind::NameExpression) {
+    const SyntaxNode &target_expression =
+        tree.node(assignment.children.front());
+    const LocalTargetResult resolved_target = local_target(
+        tree, assignment.children.front(), scope, required);
+    if (resolved_target.status != EvalStatus::Ready ||
+        !resolved_target.target.has_value()) {
+      if (resolved_target.status == EvalStatus::Error) {
+        return failed_execution(EvalStatus::Error);
+      }
       return failed_execution(fail(
-          target.range,
-          "compile-time assignment currently requires a local name",
-          required));
-    }
-    const std::optional<std::string> name = final_name(tree, target);
-    const LocalBinding *target_binding = name.has_value()
-        ? local_binding(*name)
-        : nullptr;
-    if (!name.has_value() || target_binding == nullptr) {
-      return failed_execution(fail(
-          target.range,
+          target_expression.range,
           "compile-time assignment cannot write runtime or unknown storage",
           required));
     }
-    const LocalBinding target_snapshot = *target_binding;
+    const LocalTarget target_snapshot = *resolved_target.target;
     const EvalResult right =
         evaluate_expression(tree, assignment.children.back(), scope, required);
     if (right.status != EvalStatus::Ready) return failed_execution(right);
@@ -1565,7 +2065,12 @@ private:
       }
       stored = converted.value;
     }
-    (void)assign_local(*name, std::move(stored));
+    if (!store_local_target(target_snapshot, std::move(stored))) {
+      return failed_execution(fail(
+          target_expression.range,
+          "compile-time assignment target became unavailable",
+          required));
+    }
     return {};
   }
 
@@ -1658,10 +2163,82 @@ private:
     const SyntaxNode &header = tree.node(statement.children.front());
 
     if (header.kind == NodeKind::IterationHeader) {
-      return failed_execution(fail(
-          header.range,
-          "compile-time array iteration requires aggregate constant support",
-          required));
+      if (header.children.size() != 1) {
+        return failed_execution(fail(
+            header.range, "malformed compile-time iteration header", required));
+      }
+      const EvalResult iterable = evaluate_expression(
+          tree, header.children.front(), scope, required);
+      if (iterable.status != EvalStatus::Ready) {
+        return failed_execution(iterable);
+      }
+      if (iterable.value.kind != ConstantKind::Aggregate ||
+          !iterable.type.is_valid() ||
+          semantic_.types.type(iterable.type).kind != TypeKind::Array) {
+        return failed_execution(fail(
+            header.range,
+            "compile-time iteration currently requires an array constant",
+            required));
+      }
+      std::vector<std::string> bindings;
+      const SyntaxNode &iterable_node = tree.node(header.children.front());
+      for (std::uint32_t token_index = header.token_begin;
+           token_index < iterable_node.token_begin;
+           ++token_index) {
+        const Token &token = tree.token(token_index);
+        if (token_is_contextual_name(token.kind)) {
+          bindings.emplace_back(sources_.text(token.range));
+        }
+      }
+      if (bindings.empty() || bindings.size() > 2) {
+        return failed_execution(fail(
+            header.range,
+            "compile-time array iteration requires one value and optional index binding",
+            required));
+      }
+
+      const Type array_type = semantic_.types.type(iterable.type);
+      local_frames_.back().scopes.emplace_back();
+      if (bindings.front() != "_") {
+        declare_local(
+            bindings.front(),
+            iterable.value.elements.empty()
+                ? zero_value(array_type.element).value_or(ConstantValue{})
+                : iterable.value.elements.front(),
+            array_type.element);
+      }
+      if (bindings.size() == 2 && bindings[1] != "_") {
+        declare_local(
+            bindings[1],
+            ConstantValue::make_integer(0),
+            semantic_.types.builtins().usize_type);
+      }
+      for (std::size_t index = 0;
+           index < iterable.value.elements.size();
+           ++index) {
+        if (!consume_execution_step(statement.range, required)) {
+          local_frames_.back().scopes.pop_back();
+          return failed_execution(EvalStatus::Error);
+        }
+        if (bindings.front() != "_") {
+          (void)assign_local(bindings.front(), iterable.value.elements[index]);
+        }
+        if (bindings.size() == 2 && bindings[1] != "_") {
+          (void)assign_local(
+              bindings[1],
+              ConstantValue::make_integer(BigInteger::from_u64(index)));
+        }
+        const ExecutionResult iteration =
+            execute_block(tree, body, scope, required);
+        if (iteration.signal == ExecutionSignal::Return ||
+            iteration.signal == ExecutionSignal::Failed) {
+          local_frames_.back().scopes.pop_back();
+          return iteration;
+        }
+        if (iteration.signal == ExecutionSignal::Break) break;
+      }
+      local_frames_.back().scopes.pop_back();
+      return {};
     }
 
     local_frames_.back().scopes.emplace_back();
@@ -1949,10 +2526,10 @@ private:
     if (result.status == EvalStatus::Ready) {
       states_[id.value] = BindingState::Ready;
       values_[id.value] = result.value;
-      TypeId type;
-      if (result.value.kind == ConstantKind::Bool) {
+      TypeId type = result.type;
+      if (!type.is_valid() && result.value.kind == ConstantKind::Bool) {
         type = semantic_.types.builtins().bool_type;
-      } else if (result.value.kind == ConstantKind::Integer) {
+      } else if (!type.is_valid() && result.value.kind == ConstantKind::Integer) {
         const SyntaxNode &expression_node = tree->node(expression);
         const bool rune = expression_node.kind == NodeKind::LiteralExpression &&
             expression_node.token_begin < expression_node.token_end &&
@@ -1960,9 +2537,9 @@ private:
         type = rune
             ? semantic_.types.builtins().rune_type
             : semantic_.types.builtins().untyped_integer;
-      } else if (result.value.kind == ConstantKind::Float) {
+      } else if (!type.is_valid() && result.value.kind == ConstantKind::Float) {
         type = semantic_.types.builtins().untyped_float;
-      } else if (result.value.kind == ConstantKind::String) {
+      } else if (!type.is_valid() && result.value.kind == ConstantKind::String) {
         type = semantic_.types.builtins().string_type;
       }
       if (type.is_valid()) semantic_.symbols.symbol_mut(id).type = type;
@@ -1974,7 +2551,7 @@ private:
     return result;
   }
 
-  // Evaluates the scalar expression subset in strict source evaluation order.
+  // Evaluates the deterministic expression subset in strict source order.
   // Unsupported forms return Pending; the final fixed-point caller supplies the
   // generic "not a ready constant" diagnostic rather than guessing semantics.
   [[nodiscard]] EvalResult evaluate_expression(
@@ -2055,7 +2632,14 @@ private:
     case NodeKind::ContextualAlternativeExpression: {
       const std::optional<std::string> name = final_name(tree, node);
       if (!name.has_value()) return pending();
-      return ready(ConstantValue::make_enum_label(*name));
+      std::vector<ConstantValue> payload;
+      for (NodeId child : node.children) {
+        const EvalResult value =
+            evaluate_expression(tree, child, scope, required);
+        if (value.status != EvalStatus::Ready) return value;
+        payload.push_back(value.value);
+      }
+      return ready(ConstantValue::make_enum_label(*name, std::move(payload)));
     }
 
     case NodeKind::MemberExpression: {
@@ -2068,6 +2652,35 @@ private:
       const std::optional<std::string> member = final_name(tree, node);
       if (base.value.kind == ConstantKind::Target && member.has_value()) {
         return evaluate_target_member(*member, node.range, required);
+      }
+      if (base.value.kind == ConstantKind::Aggregate && base.type.is_valid()) {
+        const Type aggregate = semantic_.types.type(base.type);
+        std::optional<std::size_t> index;
+        if (aggregate.kind == TypeKind::Struct && member.has_value()) {
+          index = aggregate_member_index(base.type, *member);
+        } else if (aggregate.kind == TypeKind::Tuple) {
+          const SyntaxNode &base_node = tree.node(node.children.front());
+          for (std::uint32_t token_index = base_node.token_end;
+               token_index < node.token_end;
+               ++token_index) {
+            const Token &token = tree.token(token_index);
+            if (token.kind != TokenKind::IntegerLiteral) continue;
+            const std::optional<BigInteger> parsed =
+                integer_literal(sources_.text(token.range));
+            const std::optional<std::uint64_t> value =
+                parsed.has_value() ? parsed->to_u64() : std::nullopt;
+            if (value.has_value()) index = static_cast<std::size_t>(*value);
+            break;
+          }
+        }
+        if (!index.has_value() || *index >= base.value.elements.size() ||
+            *index >= aggregate.members.size()) {
+          return fail(
+              node.range,
+              "constant aggregate member is out of range or unknown",
+              required);
+        }
+        return ready(base.value.elements[*index], aggregate.members[*index]);
       }
       return pending();
     }
@@ -2128,6 +2741,166 @@ private:
       }
       return pending();
 
+    case NodeKind::TupleExpression: {
+      std::vector<ConstantValue> elements;
+      std::vector<TypeId> member_types;
+      elements.reserve(node.children.size());
+      member_types.reserve(node.children.size());
+      for (NodeId child : node.children) {
+        const EvalResult member =
+            evaluate_expression(tree, child, scope, required);
+        if (member.status != EvalStatus::Ready) return member;
+        TypeId member_type = member.type.is_valid()
+            ? member.type
+            : default_value_type(member.value);
+        if (!member_type.is_valid() ||
+            member_type == semantic_.types.builtins().invalid) {
+          return fail(
+              tree.node(child).range,
+              "tuple constant member requires a concrete type",
+              required);
+        }
+        elements.push_back(member.value);
+        member_types.push_back(member_type);
+      }
+      const TypeId tuple_type = semantic_.types.tuple(member_types);
+      return ready(
+          ConstantValue::make_aggregate(std::move(elements)), tuple_type);
+    }
+
+    case NodeKind::CompositeExpression: {
+      if (node.children.empty()) return pending();
+      const std::optional<TypeId> composite_type =
+          type_value(tree, node.children.front(), scope);
+      if (!composite_type.has_value()) {
+        return fail(
+            tree.node(node.children.front()).range,
+            "constant composite literal requires a concrete type",
+            required);
+      }
+      const Type composite = semantic_.types.type(*composite_type);
+      if (composite.kind != TypeKind::Array &&
+          composite.kind != TypeKind::Tuple &&
+          composite.kind != TypeKind::Struct &&
+          composite.kind != TypeKind::RawUnion) {
+        return fail(
+            node.range,
+            "type does not support a constant composite literal",
+            required);
+      }
+      const std::optional<ConstantValue> zero = zero_value(*composite_type);
+      if (!zero.has_value() || zero->kind != ConstantKind::Aggregate) {
+        return fail(
+            node.range,
+            "constant composite type has no complete zero value",
+            required);
+      }
+      ConstantValue result = *zero;
+      std::vector<bool> initialized(
+          composite.kind == TypeKind::Array
+              ? static_cast<std::size_t>(composite.element_count)
+              : composite.members.size(),
+          false);
+      std::size_t positional_index = 0;
+      std::size_t explicit_union_members = 0;
+      for (std::size_t child_index = 1;
+           child_index < node.children.size();
+           ++child_index) {
+        const SyntaxNode &element = tree.node(node.children[child_index]);
+        if (element.children.empty()) continue;
+        const SyntaxNode &value_node = tree.node(element.children.front());
+        bool keyed = false;
+        std::optional<std::string> key;
+        for (std::uint32_t token_index = element.token_begin;
+             token_index < value_node.token_begin;
+             ++token_index) {
+          const Token &token = tree.token(token_index);
+          if (token.kind == TokenKind::Equal) keyed = true;
+          if (!key.has_value() && token_is_contextual_name(token.kind)) {
+            key = std::string(sources_.text(token.range));
+          }
+        }
+
+        std::optional<std::size_t> destination;
+        if (keyed) {
+          if (!key.has_value() || composite.kind == TypeKind::Array ||
+              composite.kind == TypeKind::Tuple) {
+            return fail(
+                element.range,
+                "keyed constant element requires a named aggregate member",
+                required);
+          }
+          destination = aggregate_member_index(*composite_type, *key);
+          if (!destination.has_value()) {
+            return fail(
+                element.range,
+                "constant composite literal names no matching member",
+                required);
+          }
+        } else {
+          destination = positional_index;
+          ++positional_index;
+        }
+        if (!destination.has_value() || *destination >= initialized.size()) {
+          return fail(
+              element.range,
+              "constant composite literal has too many elements",
+              required);
+        }
+        if (initialized[*destination]) {
+          return fail(
+              element.range,
+              "constant composite member is initialized more than once",
+              required);
+        }
+        initialized[*destination] = true;
+
+        const TypeId element_type = composite.kind == TypeKind::Array
+            ? composite.element
+            : composite.members[*destination];
+        const EvalResult evaluated = evaluate_expression(
+            tree, element.children.front(), scope, required);
+        if (evaluated.status != EvalStatus::Ready) return evaluated;
+        if (evaluated.type.is_valid() &&
+            evaluated.type != semantic_.types.builtins().invalid &&
+            evaluated.type != element_type) {
+          const Type source_type = runtime_type(evaluated.type);
+          const Type target_type = runtime_type(element_type);
+          const bool untyped_numeric =
+              source_type.kind == TypeKind::UntypedInteger ||
+              source_type.kind == TypeKind::UntypedFloat;
+          if (!untyped_numeric && source_type.kind != target_type.kind) {
+            return fail(
+                value_node.range,
+                "constant composite member has the wrong type",
+                required);
+          }
+        }
+        const EvalResult converted = convert_to_type(
+            evaluated.value,
+            element_type,
+            false,
+            value_node.range,
+            required);
+        if (converted.status != EvalStatus::Ready) return converted;
+
+        if (composite.kind == TypeKind::RawUnion) {
+          ++explicit_union_members;
+          if (explicit_union_members > 1) {
+            return fail(
+                element.range,
+                "raw union constant initializes more than one member",
+                required);
+          }
+          result = ConstantValue::make_aggregate(
+              {converted.value}, *destination);
+        } else {
+          result.elements[*destination] = converted.value;
+        }
+      }
+      return ready(std::move(result), *composite_type);
+    }
+
     case NodeKind::ConditionalExpression: {
       if (node.children.size() != 3) return pending();
       const EvalResult condition =
@@ -2141,6 +2914,41 @@ private:
           condition.value.boolean ? node.children[0] : node.children[2],
           scope,
           required);
+    }
+
+    case NodeKind::BracketExpression: {
+      if (node.children.size() != 2) return pending();
+      const EvalResult base =
+          evaluate_expression(tree, node.children.front(), scope, required);
+      if (base.status != EvalStatus::Ready) return base;
+      const EvalResult index =
+          evaluate_expression(tree, node.children[1], scope, required);
+      if (index.status != EvalStatus::Ready) return index;
+      if (index.value.kind != ConstantKind::Integer) {
+        return fail(node.range, "constant index must be an integer", required);
+      }
+      const std::optional<std::uint64_t> position = index.value.integer.to_u64();
+      if (!position.has_value()) {
+        return fail(node.range, "constant index is negative or excessive", required);
+      }
+      if (base.value.kind == ConstantKind::Aggregate && base.type.is_valid()) {
+        const Type aggregate = semantic_.types.type(base.type);
+        if (aggregate.kind != TypeKind::Array ||
+            *position >= base.value.elements.size()) {
+          return fail(node.range, "constant array index is out of bounds", required);
+        }
+        return ready(
+            base.value.elements[static_cast<std::size_t>(*position)],
+            aggregate.element);
+      }
+      if (base.value.kind == ConstantKind::String &&
+          *position < base.value.text.size()) {
+        return ready(
+            ConstantValue::make_integer(BigInteger::from_u64(
+                static_cast<unsigned char>(base.value.text[*position]))),
+            semantic_.types.builtins().u8_type);
+      }
+      return pending();
     }
 
     case NodeKind::CallExpression: {
@@ -2223,10 +3031,21 @@ ConstantValue ConstantValue::make_string(std::string value) {
   return result;
 }
 
-ConstantValue ConstantValue::make_enum_label(std::string value) {
+ConstantValue ConstantValue::make_aggregate(
+    std::vector<ConstantValue> elements, std::uint64_t variant_index) {
+  ConstantValue result;
+  result.kind = ConstantKind::Aggregate;
+  result.elements = std::move(elements);
+  result.variant_index = variant_index;
+  return result;
+}
+
+ConstantValue ConstantValue::make_enum_label(
+    std::string value, std::vector<ConstantValue> payload) {
   ConstantValue result;
   result.kind = ConstantKind::EnumLabel;
   result.text = std::move(value);
+  result.elements = std::move(payload);
   return result;
 }
 
@@ -2259,6 +3078,34 @@ CompileTimeRoundResult evaluate_compile_time_round(
 }
 
 std::optional<ConstantValue> evaluate_constant_expression(
+    const SourceManager &sources,
+    const LoadedPackage &loaded,
+    SemanticPackage &package,
+    const TargetFacts &target,
+    const SyntaxTree &tree,
+    NodeId expression,
+    ScopeId scope,
+    DiagnosticSink &diagnostics,
+    const ConstantTable *local_constants,
+    const std::vector<ConstantTypeBinding> *local_types) {
+  const std::optional<EvaluatedConstant> result =
+      evaluate_typed_constant_expression(
+          sources,
+          loaded,
+          package,
+          target,
+          tree,
+          expression,
+          scope,
+          diagnostics,
+          local_constants,
+          local_types);
+  return result.has_value()
+      ? std::optional<ConstantValue>(result->value)
+      : std::nullopt;
+}
+
+std::optional<EvaluatedConstant> evaluate_typed_constant_expression(
     const SourceManager &sources,
     const LoadedPackage &loaded,
     SemanticPackage &package,

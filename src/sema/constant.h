@@ -69,6 +69,11 @@ struct ConstantTable {
   [[nodiscard]] const ConstantValue *find(SymbolId symbol) const;
 };
 
+struct EvaluatedConstant {
+  ConstantValue value;
+  TypeId type;
+};
+
 // A required expression inside a concrete parametric procedure may query the
 // layout of a symbolic TypeParameter. This phase-local binding maps that unique
 // parameter TypeId to its concrete instantiation. It is never serialized or
@@ -106,6 +111,20 @@ struct CompileTimeRoundResult {
 // over declarations. local_types performs the analogous substitution for
 // layout queries such as `size_of(T)`. Both remain valid only for this call.
 [[nodiscard]] std::optional<ConstantValue> evaluate_constant_expression(
+    const SourceManager &sources,
+    const LoadedPackage &loaded,
+    SemanticPackage &package,
+    const TargetFacts &target,
+    const SyntaxTree &tree,
+    NodeId expression,
+    ScopeId scope,
+    DiagnosticSink &diagnostics,
+    const ConstantTable *local_constants = nullptr,
+    const std::vector<ConstantTypeBinding> *local_types = nullptr);
+
+// Typed form used by static storage and aggregate evaluation. Scalar callers
+// that need only the mathematical value use evaluate_constant_expression.
+[[nodiscard]] std::optional<EvaluatedConstant> evaluate_typed_constant_expression(
     const SourceManager &sources,
     const LoadedPackage &loaded,
     SemanticPackage &package,

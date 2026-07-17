@@ -148,10 +148,38 @@ private:
     return std::nullopt;
   }
 
+  [[nodiscard]] std::optional<std::size_t> aggregate_member_index(
+      TypeId type, std::string_view name) const {
+    std::optional<SymbolId> owner;
+    for (const OwnedSemanticScope &owned : package_.owned_scopes) {
+      if (package_.symbols.scope(owned.scope).kind == ScopeKind::Type &&
+          package_.symbols.symbol(owned.owner).type == type) {
+        owner = owned.owner;
+        break;
+      }
+    }
+    if (!owner.has_value()) return std::nullopt;
+    std::size_t index = 0;
+    for (const AggregateMember &member : package_.aggregate_members) {
+      if (member.owner != *owner) continue;
+      if (package_.symbols.symbol(member.member).name == name) return index;
+      ++index;
+    }
+    return std::nullopt;
+  }
+
   [[nodiscard]] TypeId inferred_type(
       const SyntaxTree &syntax,
       NodeId expression,
-      const ConstantValue &value) const {
+      const ConstantValue &value,
+      TypeId evaluated_type) const {
+    if (evaluated_type.is_valid()) {
+      const TypeKind kind = package_.types.type(evaluated_type).kind;
+      if (kind != TypeKind::Invalid && kind != TypeKind::UntypedInteger &&
+          kind != TypeKind::UntypedFloat) {
+        return evaluated_type;
+      }
+    }
     switch (value.kind) {
     case ConstantKind::Bool:
       return package_.types.builtins().bool_type;
@@ -169,6 +197,8 @@ private:
     }
     case ConstantKind::String:
       return package_.types.builtins().string_type;
+    case ConstantKind::Aggregate:
+      return package_.types.builtins().invalid;
     case ConstantKind::Nil:
     case ConstantKind::EnumLabel:
     case ConstantKind::Target:
@@ -217,6 +247,80 @@ private:
       if (integer.has_value()) return ConstantValue::make_integer(*integer);
       diagnostics_.error(range, "global enum initializer names no member");
       return std::nullopt;
+    } else if (value.kind == ConstantKind::EnumLabel &&
+               type.kind == TypeKind::TaggedUnion) {
+      const std::optional<std::size_t> member =
+          aggregate_member_index(target, value.text);
+      if (!member.has_value() || *member >= type.members.size()) {
+        diagnostics_.error(
+            range, "global union initializer names no alternative");
+        return std::nullopt;
+      }
+      const TypeId payload_type = type.members[*member];
+      const bool has_payload =
+          package_.types.type(payload_type).kind != TypeKind::Void;
+      if (has_payload != (value.elements.size() == 1)) {
+        diagnostics_.error(
+            range,
+            has_payload
+                ? "global union alternative requires a payload"
+                : "global union alternative does not accept a payload");
+        return std::nullopt;
+      }
+      std::vector<ConstantValue> payload;
+      if (has_payload) {
+        const std::optional<ConstantValue> converted =
+            convert(value.elements.front(), payload_type, range);
+        if (!converted.has_value()) return std::nullopt;
+        payload.push_back(*converted);
+      }
+      return ConstantValue::make_aggregate(std::move(payload), *member);
+    } else if (value.kind == ConstantKind::Aggregate &&
+               (type.kind == TypeKind::Array || type.kind == TypeKind::Tuple ||
+                type.kind == TypeKind::Struct || type.kind == TypeKind::Simd)) {
+      const std::size_t expected_count =
+          type.kind == TypeKind::Array || type.kind == TypeKind::Simd
+          ? static_cast<std::size_t>(type.element_count)
+          : type.members.size();
+      if (value.elements.size() != expected_count) {
+        diagnostics_.error(
+            range, "global aggregate initializer has the wrong element count");
+        return std::nullopt;
+      }
+      for (std::size_t index = 0; index < value.elements.size(); ++index) {
+        const TypeId element_type =
+            type.kind == TypeKind::Array || type.kind == TypeKind::Simd
+            ? type.element
+            : type.members[index];
+        const std::optional<ConstantValue> converted =
+            convert(value.elements[index], element_type, range);
+        if (!converted.has_value()) return std::nullopt;
+        value.elements[index] = *converted;
+      }
+      return value;
+    } else if (value.kind == ConstantKind::Aggregate &&
+               (type.kind == TypeKind::RawUnion ||
+                type.kind == TypeKind::TaggedUnion)) {
+      if (value.variant_index >= type.members.size()) {
+        diagnostics_.error(range, "global union initializer has no valid member");
+        return std::nullopt;
+      }
+      const TypeId payload_type = type.members[value.variant_index];
+      const bool has_payload =
+          package_.types.type(payload_type).kind != TypeKind::Void;
+      if (type.kind == TypeKind::RawUnion && value.elements.empty()) return value;
+      if (has_payload != (value.elements.size() == 1)) {
+        diagnostics_.error(
+            range, "global union initializer payload does not match its member");
+        return std::nullopt;
+      }
+      if (has_payload) {
+        const std::optional<ConstantValue> converted =
+            convert(value.elements.front(), payload_type, range);
+        if (!converted.has_value()) return std::nullopt;
+        value.elements.front() = *converted;
+      }
+      return value;
     }
     diagnostics_.error(
         range,
@@ -248,20 +352,22 @@ private:
           "'---' is valid only on an automatic local declaration");
       return;
     }
-    const std::optional<ConstantValue> evaluated = evaluate_constant_expression(
-        sources_,
-        loaded_,
-        package_,
-        target_,
-        *syntax,
-        *value_node,
-        file_scope(syntax->file()),
-        diagnostics_,
-        &constants_);
+    const std::optional<EvaluatedConstant> evaluated =
+        evaluate_typed_constant_expression(
+            sources_,
+            loaded_,
+            package_,
+            target_,
+            *syntax,
+            *value_node,
+            file_scope(syntax->file()),
+            diagnostics_,
+            &constants_);
     if (!evaluated.has_value()) return;
     if (!symbol.type.is_valid() ||
         package_.types.type(symbol.type).kind == TypeKind::Invalid) {
-      symbol.type = inferred_type(*syntax, *value_node, *evaluated);
+      symbol.type = inferred_type(
+          *syntax, *value_node, evaluated->value, evaluated->type);
       if (!symbol.type.is_valid() ||
           package_.types.type(symbol.type).kind == TypeKind::Invalid) {
         diagnostics_.error(
@@ -271,7 +377,7 @@ private:
       }
     }
     const std::optional<ConstantValue> converted = convert(
-        *evaluated, symbol.type, syntax->node(*value_node).range);
+        evaluated->value, symbol.type, syntax->node(*value_node).range);
     if (converted.has_value()) initializers.push_back({id, *converted});
   }
 
