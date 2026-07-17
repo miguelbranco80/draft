@@ -435,58 +435,15 @@ private:
         parameters, result, c_calling_convention(tree, procedure));
   }
 
-  // Parses the exact nonnegative integer-literal subset currently sufficient for
-  // array/SIMD lengths. General constant expressions are delegated to the next
-  // constant-evaluation pass rather than approximated here.
-  [[nodiscard]] std::optional<std::uint64_t> integer_literal(
-      const SyntaxTree &tree, NodeId expression_id) const {
-    const SyntaxNode &expression = tree.node(expression_id);
-    if (expression.kind != NodeKind::LiteralExpression ||
-        expression.token_begin >= expression.token_end) {
-      return std::nullopt;
-    }
-    const Token &token = tree.token(expression.token_begin);
-    if (token.kind != TokenKind::IntegerLiteral) {
-      return std::nullopt;
-    }
-    const std::string_view spelling = sources_.text(token.range);
-    std::size_t index = 0;
-    std::uint32_t base = 10;
-    if (spelling.size() >= 2 && spelling[0] == '0') {
-      if (spelling[1] == 'x' || spelling[1] == 'X') base = 16;
-      if (spelling[1] == 'o' || spelling[1] == 'O') base = 8;
-      if (spelling[1] == 'b' || spelling[1] == 'B') base = 2;
-      if (base != 10) index = 2;
-    }
-
-    std::uint64_t value = 0;
-    bool saw_digit = false;
-    for (; index < spelling.size(); ++index) {
-      const char character = spelling[index];
-      if (character == '_') {
-        continue;
-      }
-      std::uint32_t digit = 0;
-      if (character >= '0' && character <= '9') {
-        digit = static_cast<std::uint32_t>(character - '0');
-      } else if (character >= 'a' && character <= 'f') {
-        digit = static_cast<std::uint32_t>(character - 'a') + 10U;
-      } else if (character >= 'A' && character <= 'F') {
-        digit = static_cast<std::uint32_t>(character - 'A') + 10U;
-      } else {
-        return std::nullopt;
-      }
-      if (digit >= base ||
-          value > (std::numeric_limits<std::uint64_t>::max() - digit) / base) {
-        return std::nullopt;
-      }
-      value = value * base + digit;
-      saw_digit = true;
-    }
-    if (!saw_digit) {
-      return std::nullopt;
-    }
-    return value;
+  // Layout syntax accepts the same exact integer expression vocabulary used by
+  // enum values and @align. Conversion to u64 happens only after arbitrary-
+  // precision evaluation, so overflow and negative values never wrap through
+  // the bootstrap host.
+  [[nodiscard]] std::optional<std::uint64_t> layout_integer(
+      const SyntaxTree &tree, NodeId expression_id, ScopeId scope) {
+    const std::optional<BigInteger> value = integer_constant_expression(
+        tree, expression_id, scope);
+    return value.has_value() ? value->to_u64() : std::nullopt;
   }
 
   [[nodiscard]] std::vector<ParametricParameterRecord> parameters_for(
@@ -961,7 +918,8 @@ private:
       if (node.children.size() < 2) {
         return invalid;
       }
-      const std::optional<std::uint64_t> count = integer_literal(tree, node.children.front());
+      const std::optional<std::uint64_t> count =
+          layout_integer(tree, node.children.front(), scope);
       if (!count.has_value() || *count == 0) {
         diagnostics_.error(
             tree.node(node.children.front()).range,
@@ -976,7 +934,8 @@ private:
       if (node.children.size() < 2) {
         return invalid;
       }
-      const std::optional<std::uint64_t> lanes = integer_literal(tree, node.children.front());
+      const std::optional<std::uint64_t> lanes =
+          layout_integer(tree, node.children.front(), scope);
       if (!lanes.has_value() || *lanes == 0) {
         diagnostics_.error(
             tree.node(node.children.front()).range,
@@ -1096,10 +1055,55 @@ private:
     return TokenKind::Invalid;
   }
 
+  // Resolves one package or imported integer constant without requiring the
+  // later general constant table. Type layout is an input to that later pass,
+  // so required layout constants need this narrow acyclic evaluator rather than
+  // a circular "resolve types, then constants, then types" dependency.
+  [[nodiscard]] std::optional<BigInteger> named_integer_constant(
+      SymbolId symbol_id, SourceRange use_range) {
+    for (const ImportedSymbol &imported : semantic_.imported_symbols) {
+      if (imported.proxy != symbol_id || !imported.has_constant ||
+          imported.constant.kind != ConstantKind::Integer) {
+        continue;
+      }
+      return imported.constant.integer;
+    }
+
+    const Symbol &symbol = semantic_.symbols.symbol(symbol_id);
+    if (symbol.kind == SymbolKind::Variable || symbol.kind == SymbolKind::Procedure ||
+        symbol.kind == SymbolKind::Type || symbol.kind == SymbolKind::TypeParameter ||
+        symbol.kind == SymbolKind::ValueParameter) {
+      return std::nullopt;
+    }
+    if (std::find(
+            active_integer_constants_.begin(),
+            active_integer_constants_.end(),
+            symbol_id) != active_integer_constants_.end()) {
+      diagnostics_.error(
+          use_range, "cyclic integer constant required by type layout");
+      return std::nullopt;
+    }
+    const SyntaxTree *tree = find_tree(symbol.syntax.file);
+    if (tree == nullptr || !symbol.syntax.node.is_valid()) {
+      return std::nullopt;
+    }
+    const SyntaxNode &declaration = tree->node(symbol.syntax.node);
+    const std::optional<NodeId> payload = declaration_payload(*tree, declaration);
+    if (!payload.has_value()) {
+      return std::nullopt;
+    }
+
+    active_integer_constants_.push_back(symbol_id);
+    const std::optional<BigInteger> result = integer_constant_expression(
+        *tree, *payload, file_scope(tree->file()));
+    active_integer_constants_.pop_back();
+    return result;
+  }
+
   // Enum values participate in layout before the general constant pass runs.
-  // This evaluator covers the integer constant vocabulary and earlier members
-  // without introducing host-width arithmetic into backing-type selection.
-  [[nodiscard]] std::optional<BigInteger> enum_integer_expression(
+  // This evaluator covers their exact integer vocabulary plus named constants,
+  // array/SIMD lengths, and @align without host-width arithmetic.
+  [[nodiscard]] std::optional<BigInteger> integer_constant_expression(
       const SyntaxTree &tree, NodeId expression_id, ScopeId scope) {
     const SyntaxNode &expression = tree.node(expression_id);
     if (expression.kind == NodeKind::LiteralExpression &&
@@ -1110,7 +1114,7 @@ private:
     }
     if (expression.kind == NodeKind::GroupExpression &&
         !expression.children.empty()) {
-      return enum_integer_expression(tree, expression.children.front(), scope);
+      return integer_constant_expression(tree, expression.children.front(), scope);
     }
     if (expression.kind == NodeKind::NameExpression) {
       const std::vector<SourceName> names = names_in_span(
@@ -1122,12 +1126,36 @@ private:
       for (const EnumMemberValue &value : semantic_.enum_member_values) {
         if (value.member == *found) return value.value;
       }
+      return named_integer_constant(*found, names.front().range);
+    }
+    if (expression.kind == NodeKind::MemberExpression) {
+      const std::vector<SourceName> names = names_in_span(
+          tree, expression.token_begin, expression.token_end);
+      if (names.size() != 2) return std::nullopt;
+      const std::optional<SymbolId> package =
+          semantic_.symbols.lookup(scope, names.front().text);
+      if (!package.has_value() ||
+          semantic_.symbols.symbol(*package).kind != SymbolKind::Import) {
+        return std::nullopt;
+      }
+      for (const OwnedSemanticScope &owned : semantic_.owned_scopes) {
+        if (owned.owner != *package ||
+            semantic_.symbols.scope(owned.scope).kind !=
+                ScopeKind::ImportedPackage) {
+          continue;
+        }
+        const std::optional<SymbolId> member =
+            semantic_.symbols.lookup_direct(owned.scope, names.back().text);
+        return member.has_value()
+            ? named_integer_constant(*member, names.back().range)
+            : std::nullopt;
+      }
       return std::nullopt;
     }
     if (expression.kind == NodeKind::UnaryExpression &&
         !expression.children.empty()) {
       const std::optional<BigInteger> operand =
-          enum_integer_expression(tree, expression.children.front(), scope);
+          integer_constant_expression(tree, expression.children.front(), scope);
       if (!operand.has_value()) return std::nullopt;
       const TokenKind operation = tree.token(expression.token_begin).kind;
       if (operation == TokenKind::Plus) return *operand;
@@ -1140,9 +1168,9 @@ private:
       return std::nullopt;
     }
     const std::optional<BigInteger> left =
-        enum_integer_expression(tree, expression.children[0], scope);
+        integer_constant_expression(tree, expression.children[0], scope);
     const std::optional<BigInteger> right =
-        enum_integer_expression(tree, expression.children[1], scope);
+        integer_constant_expression(tree, expression.children[1], scope);
     if (!left.has_value() || !right.has_value()) return std::nullopt;
     switch (expression_binary_operator(tree, expression)) {
     case TokenKind::Plus: return left->added(*right);
@@ -1250,7 +1278,7 @@ private:
             continue;
           }
           const SyntaxNode &argument = tree.node(attribute.children.front());
-          const std::optional<BigInteger> value = enum_integer_expression(
+          const std::optional<BigInteger> value = integer_constant_expression(
               tree, attribute.children.front(), scope);
           const std::optional<std::uint64_t> alignment =
               value.has_value() ? value->to_u64() : std::nullopt;
@@ -1324,7 +1352,7 @@ private:
           : data.enum_values.back().added(BigInteger::from_u64(1));
       if (!member.children.empty()) {
         const std::optional<BigInteger> explicit_value =
-            enum_integer_expression(tree, member.children.front(), scope);
+            integer_constant_expression(tree, member.children.front(), scope);
         if (!explicit_value.has_value()) {
           diagnostics_.error(
               tree.node(member.children.front()).range,
@@ -1810,6 +1838,7 @@ private:
   const ConditionalSelections &selections_;
   DiagnosticSink &diagnostics_;
   std::vector<ResolutionState> states_;
+  std::vector<SymbolId> active_integer_constants_;
 };
 
 } // namespace

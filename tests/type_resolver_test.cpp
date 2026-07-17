@@ -66,13 +66,17 @@ void test_types_signatures_and_layouts(TestState &state) {
   SemanticSource source(R"draft(
 package types
 
+Base_Count :: 2
+Member_Count :: Base_Count + 1
+Cache_Alignment :: 1 << 6
+
 Alias :: u32
 Duration :: distinct i64
 
 Header :: struct {
     tag: u8,
     value: u64,
-    tail: [3]u16,
+    tail: [Member_Count]u16,
 }
 
 Overlay :: raw union {
@@ -90,7 +94,7 @@ C_Overlay :: @repr(C) @align(16) raw union {
     word: u64,
 }
 
-Aligned :: @align(64) struct {
+Aligned :: @align(Cache_Alignment) struct {
     bytes: [3]u8,
 }
 
@@ -385,6 +389,26 @@ Attributed_Scalar :: @align(8) u64
                     std::string::npos);
 }
 
+void test_cyclic_layout_constant(TestState &state) {
+  SemanticSource source(R"draft(
+package types
+
+First :: Second + 0
+Second :: First + 0
+
+Bad :: struct {
+    values: [First]u8,
+}
+)draft");
+
+  EXPECT(state, source.diagnostics.has_errors());
+  const std::string rendered =
+      draft::render_diagnostics(source.sources, source.diagnostics);
+  EXPECT(state, rendered.find("cyclic integer constant required by type layout") !=
+                    std::string::npos);
+  EXPECT(state, rendered.find("array length") != std::string::npos);
+}
+
 } // namespace
 
 int main() {
@@ -394,6 +418,7 @@ int main() {
   test_parametric_type_diagnostics(state);
   test_invalid_enum_values(state);
   test_invalid_representation_attributes(state);
+  test_cyclic_layout_constant(state);
 
   if (state.failures != 0) {
     std::cerr << state.failures << " type resolver expectation(s) failed\n";

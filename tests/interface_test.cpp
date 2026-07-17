@@ -130,6 +130,10 @@ pub echo :: proc(point: math.Point) -> math.Point {
     return copy
 }
 
+Sized :: struct {
+    bytes: [math.Count]u8,
+}
+
 main :: proc() {
     value := math.add(math.Count, 1)
     assert(value == 8)
@@ -172,6 +176,16 @@ main :: proc() {
   EXPECT(state, consumer_semantics.package.imported_types.size() == 2);
   EXPECT(state, consumer_interface.declarations.size() == 1);
   EXPECT(state, !diagnostics.has_errors());
+
+  const std::optional<draft::SymbolId> sized =
+      consumer_semantics.package.symbols.lookup_direct(
+          consumer_semantics.package.package_scope, "Sized");
+  EXPECT(state, sized.has_value());
+  if (sized.has_value()) {
+    const draft::Type &type = consumer_semantics.package.types.type(
+        consumer_semantics.package.symbols.symbol(*sized).type);
+    EXPECT(state, type.layout == draft::TypeLayout({true, 7, 1}));
+  }
 
   bool saw_c_point = false;
   for (const draft::ImportedSymbol &imported :
