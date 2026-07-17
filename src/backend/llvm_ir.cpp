@@ -8,6 +8,8 @@
 
 #include "backend/llvm_ir.h"
 
+#include "syntax/literal.h"
+
 #include <algorithm>
 #include <cctype>
 #include <cstddef>
@@ -411,7 +413,44 @@ private:
         encoded_name(identity.root_relative_path) + "." + encoded_name(name) + "\"";
   }
 
+  [[nodiscard]] std::string exact_linker_symbol(std::string_view name) const {
+    return "@\"" + llvm_bytes(name) + "\"";
+  }
+
+  [[nodiscard]] std::string decoded_linker_name(
+      std::string_view spelling) const {
+    if (spelling.size() >= 2 && spelling.front() == '"' && spelling.back() == '"') {
+      const std::optional<std::string> decoded =
+          decode_string_literal(spelling, TokenKind::StringLiteral);
+      return decoded.value_or(std::string());
+    }
+    return std::string(spelling);
+  }
+
+  [[nodiscard]] std::optional<std::string> native_symbol_name(
+      SymbolId symbol_id) const {
+    for (const NativeBinding &binding : semantic_.native_bindings) {
+      if (binding.symbol == symbol_id) {
+        const std::string decoded =
+            decoded_linker_name(binding.linker_name_spelling);
+        if (!decoded.empty()) return exact_linker_symbol(decoded);
+      }
+    }
+    for (const ImportedSymbol &imported : semantic_.imported_symbols) {
+      if (imported.proxy == symbol_id &&
+          !imported.native_linker_name_spelling.empty()) {
+        const std::string decoded =
+            decoded_linker_name(imported.native_linker_name_spelling);
+        if (!decoded.empty()) return exact_linker_symbol(decoded);
+      }
+    }
+    return std::nullopt;
+  }
+
   [[nodiscard]] std::string symbol_name(SymbolId symbol_id) const {
+    if (const std::optional<std::string> native = native_symbol_name(symbol_id)) {
+      return *native;
+    }
     for (const ImportedSymbol &imported : semantic_.imported_symbols) {
       if (imported.proxy == symbol_id) {
         return package_symbol_name(

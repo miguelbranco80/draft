@@ -96,6 +96,8 @@ assembly now has structural inputs, outputs, clobbers, and instruction rows; the
 initial fixed-register integer/barrier vocabulary validates register dataflow
 and declared effects before lowering to volatile inline assembly. The
 `examples/assembly` package exercises that path through a native executable.
+Scalar/pointer `c proc` imports and exports are checked at a separate C ABI
+boundary and retain exact linker names; `examples/c-interop` exercises both.
 
 Configure, build, and test the current compiler with:
 

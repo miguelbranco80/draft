@@ -49,6 +49,13 @@ public:
       declaration.kind = symbol.kind;
       declaration.flags = symbol.flags;
       declaration.type = translate_type(symbol.type);
+      for (const NativeBinding &binding : package_.native_bindings) {
+        if (binding.symbol == id) {
+          declaration.native_provider = binding.provider;
+          declaration.native_linker_name_spelling = binding.linker_name_spelling;
+          break;
+        }
+      }
       if (const ConstantValue *constant = constants_.find(id)) {
         declaration.has_constant = true;
         declaration.constant = *constant;
@@ -279,6 +286,8 @@ public:
           declaration.has_constant,
           declaration.constant,
           declaration.has_effect_summary,
+          declaration.native_provider,
+          declaration.native_linker_name_spelling,
       });
       for (const InterfaceDeclaration::Effect &effect : declaration.effects) {
         consumer_.imported_effects.push_back({

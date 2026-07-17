@@ -1,0 +1,14 @@
+package c_interop
+
+foreign libc {
+    labs :: c "labs" proc(value: i64) -> i64
+}
+
+export increment :: c "draft_increment" proc(value: i32) -> i32 {
+    return value + 1
+}
+
+main :: proc() {
+    assert(labs(-42) == 42)
+    assert(increment(41) == 42)
+}

@@ -115,6 +115,8 @@ struct ImportedSymbol {
   bool has_constant = false;
   ConstantValue constant;
   bool has_effect_summary = false;
+  std::string native_provider;
+  std::string native_linker_name_spelling;
 };
 
 // ImportedEffect is one canonical dependency effect attached to a public

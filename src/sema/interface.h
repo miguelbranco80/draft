@@ -87,6 +87,8 @@ struct InterfaceDeclaration {
   bool has_constant = false;
   ConstantValue constant;
   bool has_effect_summary = false;
+  std::string native_provider;
+  std::string native_linker_name_spelling;
   struct Effect {
     EffectKind kind = EffectKind::UnknownCall;
     std::string root_identity;

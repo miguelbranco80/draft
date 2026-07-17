@@ -89,6 +89,8 @@ CompileWorkspaceResult compile_workspace(
         diagnostics);
     package.effects = summarize_package_effects(
         package.semantics.package, package.bodies.program);
+    package.native_interop = validate_native_interop(
+        package.semantics.package, package.bodies.program, diagnostics);
     const bool denials_ok = check_package_denials(
         sources,
         workspace_package.loaded,
@@ -103,7 +105,7 @@ CompileWorkspaceResult compile_workspace(
         package.metadata,
         package.effects,
         diagnostics);
-    if (!package.metadata.ok || !denials_ok) continue;
+    if (!package.metadata.ok || !denials_ok || !package.native_interop.ok) continue;
 
     if (options.lower_mir || options.emit_llvm) {
       package.assembly = analyze_aarch64_assembly(
