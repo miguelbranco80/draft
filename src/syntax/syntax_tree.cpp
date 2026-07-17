@@ -162,6 +162,10 @@ std::string_view node_kind_name(NodeKind kind) {
   case NodeKind::UncheckedStatement: return "UncheckedStatement";
   case NodeKind::AsmStatement: return "AsmStatement";
   case NodeKind::AsmExpression: return "AsmExpression";
+  case NodeKind::AsmInput: return "AsmInput";
+  case NodeKind::AsmOutput: return "AsmOutput";
+  case NodeKind::AsmClobber: return "AsmClobber";
+  case NodeKind::AsmInstruction: return "AsmInstruction";
   case NodeKind::NameExpression: return "NameExpression";
   case NodeKind::LiteralExpression: return "LiteralExpression";
   case NodeKind::UninitializedExpression: return "UninitializedExpression";

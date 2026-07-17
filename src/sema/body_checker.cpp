@@ -1078,10 +1078,19 @@ private:
 
     case NodeKind::AsmExpression: {
       TypeId result = semantic_.types.builtins().invalid;
+      HirExpression expression;
+      expression.kind = HirExpressionKind::Assembly;
+      expression.range = node.range;
+      expression.syntax = {tree.file(), expression_id};
+      expression.scope = scope;
       for (NodeId child : node.children) {
         if (node_is_type_syntax(tree.node(child).kind)) {
           result = resolve_type_syntax(
               sources_, loaded_, semantic_, selections_, tree, child, scope, diagnostics_);
+        } else if (tree.node(child).kind == NodeKind::AsmInput &&
+                   !tree.node(child).children.empty()) {
+          expression.operands.push_back(check_expression(
+              tree, tree.node(child).children.front(), scope));
         } else if (tree.node(child).kind == NodeKind::SynthesisAssembly) {
           semantic_.sites.push_back(
               {SemanticSiteKind::SynthesisAssembly,
@@ -1091,9 +1100,6 @@ private:
                {}});
         }
       }
-      HirExpression expression;
-      expression.kind = HirExpressionKind::Assembly;
-      expression.range = node.range;
       expression.type = apply_expected_type(result, expected, node.range);
       return hir_.add_expression(std::move(expression));
     }
@@ -1552,7 +1558,11 @@ private:
     case NodeKind::AsmStatement:
       statement.kind = HirStatementKind::Assembly;
       for (NodeId child : node.children) {
-        if (tree.node(child).kind == NodeKind::SynthesisAssembly) {
+        if (tree.node(child).kind == NodeKind::AsmInput &&
+            !tree.node(child).children.empty()) {
+          statement.expressions.push_back(check_expression(
+              tree, tree.node(child).children.front(), scope));
+        } else if (tree.node(child).kind == NodeKind::SynthesisAssembly) {
           semantic_.sites.push_back(
               {SemanticSiteKind::SynthesisAssembly,
                {tree.file(), child},

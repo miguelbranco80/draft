@@ -116,6 +116,10 @@ enum class NodeKind {
   UncheckedStatement,
   AsmStatement,
   AsmExpression,
+  AsmInput,
+  AsmOutput,
+  AsmClobber,
+  AsmInstruction,
 
   NameExpression,
   LiteralExpression,

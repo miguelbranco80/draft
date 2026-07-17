@@ -233,6 +233,10 @@ compute :: proc(input: []u8) -> u64 {
   EXPECT(state, source.tree.count(draft::NodeKind::SynthesisAssembly) == 1);
   EXPECT(state, source.tree.count(draft::NodeKind::AsmStatement) == 1);
   EXPECT(state, source.tree.count(draft::NodeKind::AsmExpression) == 1);
+  EXPECT(state, source.tree.count(draft::NodeKind::AsmInput) == 1);
+  EXPECT(state, source.tree.count(draft::NodeKind::AsmOutput) == 1);
+  EXPECT(state, source.tree.count(draft::NodeKind::AsmClobber) == 1);
+  EXPECT(state, source.tree.count(draft::NodeKind::AsmInstruction) == 2);
   EXPECT(state, source.tree.count(draft::NodeKind::Attachment) == 3);
 }
 

@@ -22,6 +22,7 @@
 
 #include <cstdint>
 #include <limits>
+#include <string>
 #include <vector>
 
 namespace draft {
@@ -114,6 +115,8 @@ struct MirInstruction {
   // Aggregate construction may place each source operand at a different byte
   // offset. Other instructions leave this vector empty and use offset alone.
   std::vector<std::uint64_t> offsets;
+  std::string assembly_text;
+  std::string assembly_constraints;
   bool passes_context = false;
 };
 

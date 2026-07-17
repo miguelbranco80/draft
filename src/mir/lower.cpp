@@ -50,9 +50,10 @@ public:
       SemanticPackage &semantic,
       const HirProgram &hir,
       const HirProcedure &source,
+      const AssemblyProgram *assembly,
       DiagnosticSink &diagnostics)
       : semantic_(semantic), hir_(hir), source_(source),
-        diagnostics_(diagnostics) {}
+        assembly_(assembly), diagnostics_(diagnostics) {}
 
   [[nodiscard]] MirProcedure run() {
     procedure_.symbol = source_.symbol;
@@ -587,6 +588,42 @@ private:
     return emit_value(std::move(instruction));
   }
 
+  [[nodiscard]] MirValueId lower_assembly(
+      SyntaxReference syntax,
+      TypeId result_type,
+      const std::vector<HirExpressionId> &inputs,
+      SourceRange range) {
+    if (assembly_ == nullptr) {
+      diagnostics_.error(
+          range,
+          "parsed assembly requires the AArch64 validation phase before MIR lowering");
+      return {};
+    }
+    const AssemblyRegion *region = assembly_->find(syntax);
+    if (region == nullptr) {
+      diagnostics_.error(range, "validated assembly region is missing");
+      return {};
+    }
+    if (region->input_count != inputs.size() || region->result_type != result_type) {
+      diagnostics_.error(range, "validated assembly metadata differs from typed HIR");
+      return {};
+    }
+    MirInstruction instruction;
+    instruction.kind = MirInstructionKind::Assembly;
+    instruction.range = range;
+    instruction.type = result_type;
+    instruction.assembly_text = region->instruction_text;
+    instruction.assembly_constraints = region->llvm_constraints;
+    for (HirExpressionId input : inputs) {
+      instruction.operands.push_back(lower_expression(input));
+    }
+    if (result_type == semantic_.types.builtins().void_type) {
+      emit_void(std::move(instruction));
+      return {};
+    }
+    return emit_value(std::move(instruction));
+  }
+
   [[nodiscard]] MirValueId lower_expression(HirExpressionId expression_id) {
     const HirExpression &expression = hir_.expression(expression_id);
     switch (expression.kind) {
@@ -694,10 +731,11 @@ private:
           "unresolved synthesis expression prevents native lowering");
       return {};
     case HirExpressionKind::Assembly:
-      diagnostics_.error(
-          expression.range,
-          "parsed assembly is preserved but AArch64 instruction lowering is not implemented yet");
-      return {};
+      return lower_assembly(
+          expression.syntax,
+          expression.type,
+          expression.operands,
+          expression.range);
     case HirExpressionKind::Invalid:
       diagnostics_.error(expression.range, "invalid HIR expression reached MIR lowering");
       return {};
@@ -1110,9 +1148,11 @@ private:
           "unresolved synthesis statement prevents native lowering");
       break;
     case HirStatementKind::Assembly:
-      diagnostics_.error(
-          statement.range,
-          "parsed assembly is preserved but AArch64 instruction lowering is not implemented yet");
+      (void)lower_assembly(
+          statement.syntax,
+          semantic_.types.builtins().void_type,
+          statement.expressions,
+          statement.range);
       break;
     case HirStatementKind::Invalid:
       diagnostics_.error(statement.range, "invalid HIR statement reached MIR lowering");
@@ -1123,6 +1163,7 @@ private:
   SemanticPackage &semantic_;
   const HirProgram &hir_;
   const HirProcedure &source_;
+  const AssemblyProgram *assembly_ = nullptr;
   DiagnosticSink &diagnostics_;
   MirProcedure procedure_;
   MirBlockId current_;
@@ -1139,12 +1180,13 @@ private:
 MirLoweringResult lower_package_to_mir(
     SemanticPackage &semantic,
     const HirProgram &hir,
+    const AssemblyProgram *assembly,
     DiagnosticSink &diagnostics) {
   MirLoweringResult result;
   const std::size_t initial_errors = diagnostics.error_count();
   for (const HirProcedure &procedure : hir.procedures()) {
     MirProcedure lowered =
-        ProcedureLowerer(semantic, hir, procedure, diagnostics).run();
+        ProcedureLowerer(semantic, hir, procedure, assembly, diagnostics).run();
     if (lowered.valid) ++result.lowered_procedures;
     result.program.add_procedure(std::move(lowered));
   }
@@ -1152,6 +1194,21 @@ MirLoweringResult lower_package_to_mir(
     result.ok = verify_mir_program(result.program, semantic.types, diagnostics);
   }
   return result;
+}
+
+MirLoweringResult lower_package_to_mir(
+    SemanticPackage &semantic,
+    const HirProgram &hir,
+    DiagnosticSink &diagnostics) {
+  return lower_package_to_mir(semantic, hir, nullptr, diagnostics);
+}
+
+MirLoweringResult lower_package_to_mir(
+    SemanticPackage &semantic,
+    const HirProgram &hir,
+    const AssemblyProgram &assembly,
+    DiagnosticSink &diagnostics) {
+  return lower_package_to_mir(semantic, hir, &assembly, diagnostics);
 }
 
 } // namespace draft

@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include "assembly/aarch64.h"
 #include "backend/llvm_ir.h"
 #include "mir/lower.h"
 #include "sema/agent_metadata.h"
@@ -38,6 +39,7 @@ struct CompiledPackage {
   AgentMetadataResult metadata;
   EffectSummaryResult effects;
   PackageInterface interface;
+  AssemblyProgram assembly;
   MirLoweringResult mir;
   LlvmIrResult llvm;
 };

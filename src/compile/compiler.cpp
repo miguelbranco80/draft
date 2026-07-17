@@ -106,9 +106,18 @@ CompileWorkspaceResult compile_workspace(
     if (!package.metadata.ok || !denials_ok) continue;
 
     if (options.lower_mir || options.emit_llvm) {
+      package.assembly = analyze_aarch64_assembly(
+          sources,
+          workspace_package.loaded,
+          options.target,
+          package.semantics.package,
+          package.bodies.program,
+          diagnostics);
+      if (!package.assembly.ok) continue;
       package.mir = lower_package_to_mir(
           package.semantics.package,
           package.bodies.program,
+          package.assembly,
           diagnostics);
       if (!package.mir.ok) continue;
     }

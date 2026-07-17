@@ -91,7 +91,11 @@ block boundary before a native backend may consume it. The first backend emits
 deterministic opaque-pointer LLVM IR per package, then a version-gated toolchain
 adapter emits AArch64 Mach-O objects and links an executable. Normal builds
 require the pinned LLVM/Clang 22.1.x distribution; local bring-up can explicitly
-permit another host Clang without changing the target profile.
+permit another host Clang without changing the target profile. Parsed AArch64
+assembly now has structural inputs, outputs, clobbers, and instruction rows; the
+initial fixed-register integer/barrier vocabulary validates register dataflow
+and declared effects before lowering to volatile inline assembly. The
+`examples/assembly` package exercises that path through a native executable.
 
 Configure, build, and test the current compiler with:
 

@@ -65,10 +65,11 @@ Status: implementation sequence; Draft 1 scope is unchanged.
 
 The bootstrap front end preserves assembly statements, expressions, typed
 operands, synthesis sites, source ranges, effects, and denial interactions from
-the beginning. Target-independent MIR lowering rejects an assembly region with
-a precise diagnostic until ordinary Draft MIR has a working AArch64 macOS
-emission path. Instruction parsing, register/operand validation, clobber
-checking, and final lowering are then implemented against that same target
-profile. Parsed assembly remains required before the first complete agent-free
-Draft 1 implementation is declared finished; this staging only keeps it from
-blocking bring-up of ordinary calls, control flow, runtime checks, and linking.
+the beginning. Target-independent MIR originally rejected an assembly region
+until ordinary Draft MIR had a working AArch64 macOS emission path. That staging
+boundary has now been crossed: language-owned directives are structural syntax,
+the `draft-aarch64-apple-v1` analyzer validates the initial fixed-register
+integer and barrier vocabulary plus register/flags/memory declarations, and MIR
+lowers accepted regions as volatile assembly. Typed memory operands, SIMD/FP
+registers, and the remainder of the closed Draft 1 instruction vocabulary are
+still required before the agent-free implementation is declared complete.

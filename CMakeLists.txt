@@ -25,6 +25,7 @@ add_library(draft_build_options INTERFACE)
 
 add_library(
   draft_compiler
+  src/assembly/aarch64.cpp
   src/backend/llvm_ir.cpp
   src/backend/toolchain.cpp
   src/base/sha256.cpp
@@ -171,4 +172,8 @@ if(BUILD_TESTING)
     PRIVATE DRAFT_SOURCE_DIRECTORY="${CMAKE_CURRENT_SOURCE_DIR}"
   )
   add_test(NAME draft_compiler_tests COMMAND draft_compiler_tests)
+
+  add_executable(draft_assembly_tests tests/assembly_test.cpp)
+  target_link_libraries(draft_assembly_tests PRIVATE draft_compiler)
+  add_test(NAME draft_assembly_tests COMMAND draft_assembly_tests)
 endif()

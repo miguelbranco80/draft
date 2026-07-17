@@ -60,6 +60,25 @@ struct StringConstant {
   return result;
 }
 
+[[nodiscard]] std::string llvm_inline_assembly(std::string_view text) {
+  std::string result;
+  for (char character : text) {
+    if (character == '\n') {
+      result += "\\0A\\09";
+    } else if (character == '\\' || character == '"') {
+      result.push_back('\\');
+      result.push_back(character);
+    } else if (character == '$') {
+      // LLVM uses $N for operand substitution. Draft's fixed-register syntax
+      // has no placeholders, so a literal dollar must remain literal.
+      result += "$$";
+    } else {
+      result.push_back(character);
+    }
+  }
+  return result;
+}
+
 class Emitter {
 public:
   Emitter(
@@ -879,7 +898,19 @@ private:
       emit_aggregate(procedure, instruction, operands);
       break;
     case MirInstructionKind::Assembly:
-      error(instruction.range, "assembly MIR requires the parsed AArch64 emitter");
+      if (instruction.result.is_valid()) output_ << "  " << result << " = ";
+      else output_ << "  ";
+      output_ << "call " << llvm_type(instruction.type)
+              << " asm sideeffect \""
+              << llvm_inline_assembly(instruction.assembly_text) << "\", \""
+              << instruction.assembly_constraints << "\"(";
+      for (std::size_t index = 0; index < instruction.operands.size(); ++index) {
+        if (index != 0) output_ << ", ";
+        output_ << typed_operand(
+            procedure, operands, instruction.operands[index], instruction.range);
+      }
+      output_ << ")\n";
+      if (instruction.result.is_valid()) assign_alias(operands, instruction, result);
       break;
     case MirInstructionKind::Invalid:
       error(instruction.range, "invalid MIR instruction reached emission");

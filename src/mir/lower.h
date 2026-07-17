@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include "assembly/aarch64.h"
 #include "mir/mir.h"
 #include "sema/analyzer.h"
 #include "sema/hir.h"
@@ -23,6 +24,12 @@ struct MirLoweringResult {
 [[nodiscard]] MirLoweringResult lower_package_to_mir(
     SemanticPackage &semantic,
     const HirProgram &hir,
+    DiagnosticSink &diagnostics);
+
+[[nodiscard]] MirLoweringResult lower_package_to_mir(
+    SemanticPackage &semantic,
+    const HirProgram &hir,
+    const AssemblyProgram &assembly,
     DiagnosticSink &diagnostics);
 
 } // namespace draft

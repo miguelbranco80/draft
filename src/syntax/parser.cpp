@@ -13,11 +13,11 @@
 // token unless already at a caller-owned delimiter. These rules guarantee
 // progress without manufacturing source or silently changing program meaning.
 //
-// Assembly instruction tokens are preserved as the token span of AsmExpression
-// or AsmStatement. Synthesis sites inside the region become child nodes. The
-// AArch64 target parser will later interpret instructions and operands using the
-// selected versioned target profile; the target-independent parser must not
-// guess that grammar.
+// Assembly's language-owned in/out/clobber directives become structural child
+// nodes and their input values use the ordinary expression grammar. Individual
+// instruction rows retain raw token spans. The AArch64 parser later interprets
+// those rows under the versioned target profile; this parser does not guess an
+// instruction or register grammar.
 //
 // Relevant specification: 01-core-language.md sections 3-4 and the surface
 // constructs in 03-agent-synthesis.md, 04-native-interop.md, and
@@ -1316,25 +1316,65 @@ private:
     }
     (void)expect(TokenKind::LeftBrace, "expected '{' before assembly instructions");
 
-    std::uint32_t brace_depth = 1;
-    while (!at_end() && brace_depth != 0) {
+    while (!at_end() && !at(TokenKind::RightBrace)) {
+      if (match(TokenKind::Semicolon)) continue;
       if (at(TokenKind::Ellipsis)) {
         children.push_back(parse_synthesis(SynthesisPosition::Assembly, false));
         continue;
       }
-      if (at(TokenKind::LeftBrace)) {
-        ++brace_depth;
+      const std::uint32_t row_start = position_;
+      if (at(TokenKind::KeywordIn)) {
         advance();
-      } else if (at(TokenKind::RightBrace)) {
-        --brace_depth;
+        (void)expect_name("expected fixed register after assembly 'in'");
+        (void)expect(TokenKind::Equal, "expected '=' before assembly input value");
+        std::vector<NodeId> input_children{parse_expression(1, false)};
+        (void)match(TokenKind::Semicolon);
+        children.push_back(tree_.add_node(
+            NodeKind::AsmInput,
+            row_start,
+            position_,
+            std::move(input_children)));
+        continue;
+      }
+      if (at(TokenKind::KeywordOut)) {
         advance();
-      } else {
+        (void)expect_name("expected fixed register after assembly 'out'");
+        while (!at_end() && !at(TokenKind::Semicolon) &&
+               !at(TokenKind::RightBrace)) {
+          advance();
+        }
+        (void)match(TokenKind::Semicolon);
+        children.push_back(tree_.add_node(
+            NodeKind::AsmOutput, row_start, position_));
+        continue;
+      }
+      if (at(TokenKind::KeywordClobber)) {
+        advance();
+        while (!at_end() && !at(TokenKind::Semicolon) &&
+               !at(TokenKind::RightBrace)) {
+          advance();
+        }
+        (void)match(TokenKind::Semicolon);
+        children.push_back(tree_.add_node(
+            NodeKind::AsmClobber, row_start, position_));
+        continue;
+      }
+      // A target instruction is one semicolon-normalized source row. Braces
+      // are invalid in Draft 1 straight-line assembly and remain for recovery.
+      while (!at_end() && !at(TokenKind::Semicolon) &&
+             !at(TokenKind::RightBrace) && !at(TokenKind::Ellipsis)) {
         advance();
       }
+      if (position_ == row_start) {
+        error_here("expected assembly directive or instruction");
+        advance();
+      } else {
+        (void)match(TokenKind::Semicolon);
+        children.push_back(tree_.add_node(
+            NodeKind::AsmInstruction, row_start, position_));
+      }
     }
-    if (brace_depth != 0) {
-      error_here("expected '}' after assembly instructions");
-    }
+    (void)expect(TokenKind::RightBrace, "expected '}' after assembly instructions");
     if (statement_position && has_result) {
       diagnostics_.error(
           tree_.token(start).range,

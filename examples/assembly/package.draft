@@ -1,0 +1,16 @@
+package assembly
+
+// Small end-to-end parsed-assembly program. The fixed x0 input is tied to the
+// x0 output, and the instruction is validated before LLVM sees its text.
+increment :: proc(value: u64) -> u64 {
+    return asm aarch64 -> u64 {
+        in x0 = value
+        out x0
+
+        add x0, x0, #1
+    }
+}
+
+main :: proc() -> i32 {
+    return cast[i32](increment(40))
+}
