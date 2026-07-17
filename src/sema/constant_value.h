@@ -5,12 +5,13 @@
 // record separate from the evaluator prevents declaration and interface data
 // from depending on the evaluator's traversal machinery.
 //
-// The current integer payload is the explicitly documented bootstrap boundary:
-// it will become arbitrary precision before the semantic core is complete.
-// Values own their text so package interfaces and imported bindings do not
-// retain views into a SourceManager.
+// Integer and decimal-float payloads already use Draft's mathematical domains:
+// arbitrary precision and exact rational arithmetic. Values own their text so
+// package interfaces and imported bindings do not retain SourceManager views.
 
 #pragma once
+
+#include "sema/big_integer.h"
 
 #include <cstdint>
 #include <string>
@@ -21,6 +22,7 @@ enum class ConstantKind {
   Unavailable,
   Bool,
   Integer,
+  Float,
   String,
   EnumLabel,
   Target,
@@ -32,11 +34,14 @@ enum class ConstantKind {
 struct ConstantValue {
   ConstantKind kind = ConstantKind::Unavailable;
   bool boolean = false;
-  std::int64_t integer = 0;
+  BigInteger integer;
+  ExactRational floating;
   std::string text;
 
   [[nodiscard]] static ConstantValue make_bool(bool value);
   [[nodiscard]] static ConstantValue make_integer(std::int64_t value);
+  [[nodiscard]] static ConstantValue make_integer(BigInteger value);
+  [[nodiscard]] static ConstantValue make_float(ExactRational value);
   [[nodiscard]] static ConstantValue make_string(std::string value);
   [[nodiscard]] static ConstantValue make_enum_label(std::string value);
   [[nodiscard]] static ConstantValue make_target();

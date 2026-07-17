@@ -5,7 +5,6 @@
 #include "syntax/token.h"
 
 #include <algorithm>
-#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -239,46 +238,12 @@ private:
     return std::nullopt;
   }
 
-  // Parses a positive source integer into the current bootstrap domain. Values
-  // outside signed 64-bit are intentionally not truncated; they remain pending
-  // until the arbitrary-precision representation replaces this boundary.
-  [[nodiscard]] std::optional<std::int64_t> integer_literal(
+  // Integer and decimal-float token validation has already happened in the
+  // lexer. These conversions construct the mathematical compile-time value and
+  // never pass through a host floating or fixed-width integer representation.
+  [[nodiscard]] std::optional<BigInteger> integer_literal(
       std::string_view spelling) const {
-    std::size_t index = 0;
-    std::uint32_t base = 10;
-    if (spelling.size() >= 2 && spelling[0] == '0') {
-      if (spelling[1] == 'x' || spelling[1] == 'X') base = 16;
-      if (spelling[1] == 'o' || spelling[1] == 'O') base = 8;
-      if (spelling[1] == 'b' || spelling[1] == 'B') base = 2;
-      if (base != 10) index = 2;
-    }
-
-    std::uint64_t value = 0;
-    bool saw_digit = false;
-    for (; index < spelling.size(); ++index) {
-      const char character = spelling[index];
-      if (character == '_') continue;
-      std::uint32_t digit = 0;
-      if (character >= '0' && character <= '9') {
-        digit = static_cast<std::uint32_t>(character - '0');
-      } else if (character >= 'a' && character <= 'f') {
-        digit = static_cast<std::uint32_t>(character - 'a') + 10U;
-      } else if (character >= 'A' && character <= 'F') {
-        digit = static_cast<std::uint32_t>(character - 'A') + 10U;
-      } else {
-        return std::nullopt;
-      }
-      if (digit >= base ||
-          value > (static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()) -
-                   digit) /
-              base) {
-        return std::nullopt;
-      }
-      value = value * base + digit;
-      saw_digit = true;
-    }
-    if (!saw_digit) return std::nullopt;
-    return static_cast<std::int64_t>(value);
+    return BigInteger::parse_literal(spelling);
   }
 
   // Decodes the ordinary escapes needed by compile-time strings and preserves
@@ -351,111 +316,123 @@ private:
     return TokenKind::Invalid;
   }
 
-  // Implements overflow-detecting fixed-domain arithmetic. Overflow is not
-  // wrapping here because untyped Draft constants are mathematical integers.
-  [[nodiscard]] std::optional<std::int64_t> checked_add(
-      std::int64_t left, std::int64_t right) const {
-    if ((right > 0 && left > std::numeric_limits<std::int64_t>::max() - right) ||
-        (right < 0 && left < std::numeric_limits<std::int64_t>::min() - right)) {
-      return std::nullopt;
+  static constexpr std::size_t kMaximumConstantBits = 1000000;
+
+  [[nodiscard]] EvalResult bounded_integer(
+      BigInteger value, SourceRange range, bool required) {
+    if (value.bit_count() > kMaximumConstantBits) {
+      return fail(range, "compile-time integer resource limit exceeded", required);
     }
-    return left + right;
+    return ready(ConstantValue::make_integer(std::move(value)));
   }
 
-  [[nodiscard]] std::optional<std::int64_t> checked_subtract(
-      std::int64_t left, std::int64_t right) const {
-    if ((right < 0 && left > std::numeric_limits<std::int64_t>::max() + right) ||
-        (right > 0 && left < std::numeric_limits<std::int64_t>::min() + right)) {
-      return std::nullopt;
+  [[nodiscard]] EvalResult bounded_float(
+      ExactRational value, SourceRange range, bool required) {
+    if (value.numerator().bit_count() > kMaximumConstantBits ||
+        value.denominator().bit_count() > kMaximumConstantBits) {
+      return fail(range, "compile-time rational resource limit exceeded", required);
     }
-    return left - right;
+    return ready(ConstantValue::make_float(std::move(value)));
   }
 
-  [[nodiscard]] std::optional<std::int64_t> checked_multiply(
-      std::int64_t left, std::int64_t right) const {
-    if (left == 0 || right == 0) return 0;
-    if ((left == -1 && right == std::numeric_limits<std::int64_t>::min()) ||
-        (right == -1 && left == std::numeric_limits<std::int64_t>::min())) {
-      return std::nullopt;
-    }
-    if (left > 0) {
-      if ((right > 0 && left > std::numeric_limits<std::int64_t>::max() / right) ||
-          (right < 0 && right < std::numeric_limits<std::int64_t>::min() / left)) {
-        return std::nullopt;
-      }
-    } else if ((right > 0 && left < std::numeric_limits<std::int64_t>::min() / right) ||
-               (right < 0 && left < std::numeric_limits<std::int64_t>::max() / right)) {
-      return std::nullopt;
-    }
-    return left * right;
-  }
-
-  // Applies integer arithmetic, comparison, and infinite-two's-complement
-  // bitwise behavior within the currently representable 64-bit subset.
+  // Applies arbitrary-precision integer arithmetic. Right shift and bitwise
+  // operations delegate to BigInteger's infinite two's-complement domain.
   [[nodiscard]] EvalResult evaluate_integer_binary(
       TokenKind operation,
-      std::int64_t left,
-      std::int64_t right,
+      const BigInteger &left,
+      const BigInteger &right,
       SourceRange range,
       bool required) {
+    const int order = left.compare(right);
     switch (operation) {
-    case TokenKind::EqualEqual: return ready(ConstantValue::make_bool(left == right));
-    case TokenKind::BangEqual: return ready(ConstantValue::make_bool(left != right));
-    case TokenKind::Less: return ready(ConstantValue::make_bool(left < right));
-    case TokenKind::LessEqual: return ready(ConstantValue::make_bool(left <= right));
-    case TokenKind::Greater: return ready(ConstantValue::make_bool(left > right));
-    case TokenKind::GreaterEqual: return ready(ConstantValue::make_bool(left >= right));
+    case TokenKind::EqualEqual: return ready(ConstantValue::make_bool(order == 0));
+    case TokenKind::BangEqual: return ready(ConstantValue::make_bool(order != 0));
+    case TokenKind::Less: return ready(ConstantValue::make_bool(order < 0));
+    case TokenKind::LessEqual: return ready(ConstantValue::make_bool(order <= 0));
+    case TokenKind::Greater: return ready(ConstantValue::make_bool(order > 0));
+    case TokenKind::GreaterEqual: return ready(ConstantValue::make_bool(order >= 0));
     default:
       break;
     }
 
-    std::optional<std::int64_t> value;
-    if (operation == TokenKind::Plus) value = checked_add(left, right);
-    if (operation == TokenKind::Minus) value = checked_subtract(left, right);
-    if (operation == TokenKind::Star) value = checked_multiply(left, right);
+    if (operation == TokenKind::Plus) {
+      return bounded_integer(left.added(right), range, required);
+    }
+    if (operation == TokenKind::Minus) {
+      return bounded_integer(left.subtracted(right), range, required);
+    }
+    if (operation == TokenKind::Star) {
+      return bounded_integer(left.multiplied(right), range, required);
+    }
     if (operation == TokenKind::Slash || operation == TokenKind::Percent) {
-      if (right == 0) {
+      BigInteger quotient;
+      BigInteger remainder;
+      if (!left.divide(right, quotient, remainder)) {
         return fail(range, "division by zero in compile-time expression", required);
       }
-      if (left == std::numeric_limits<std::int64_t>::min() && right == -1) {
-        if (operation == TokenKind::Percent) return ready(ConstantValue::make_integer(0));
-        return fail(range, "compile-time integer result exceeds bootstrap range", required);
-      }
-      value = operation == TokenKind::Slash ? left / right : left % right;
+      return bounded_integer(
+          operation == TokenKind::Slash ? std::move(quotient) : std::move(remainder),
+          range,
+          required);
     }
-    if (operation == TokenKind::Ampersand || operation == TokenKind::Pipe ||
-        operation == TokenKind::Caret) {
-      const std::uint64_t left_bits = std::bit_cast<std::uint64_t>(left);
-      const std::uint64_t right_bits = std::bit_cast<std::uint64_t>(right);
-      std::uint64_t result_bits = left_bits & right_bits;
-      if (operation == TokenKind::Pipe) result_bits = left_bits | right_bits;
-      if (operation == TokenKind::Caret) result_bits = left_bits ^ right_bits;
-      value = std::bit_cast<std::int64_t>(result_bits);
+    if (operation == TokenKind::Ampersand) {
+      return bounded_integer(left.bitwise_and(right), range, required);
+    }
+    if (operation == TokenKind::Pipe) {
+      return bounded_integer(left.bitwise_or(right), range, required);
+    }
+    if (operation == TokenKind::Caret) {
+      return bounded_integer(left.bitwise_xor(right), range, required);
     }
     if (operation == TokenKind::ShiftLeft || operation == TokenKind::ShiftRight) {
-      if (right < 0 || right >= 64) {
-        return fail(range, "compile-time shift count is outside [0, 64)", required);
+      if (right.is_negative()) {
+        return fail(range, "compile-time shift count is negative", required);
       }
-      const std::uint32_t count = static_cast<std::uint32_t>(right);
-      if (operation == TokenKind::ShiftLeft) {
-        if (count >= 63) {
-          if (left == 0) return ready(ConstantValue::make_integer(0));
-          return fail(range, "compile-time integer result exceeds bootstrap range", required);
-        }
-        const std::int64_t factor =
-            static_cast<std::int64_t>(std::uint64_t{1} << count);
-        value = checked_multiply(left, factor);
-      } else {
-        const std::uint64_t bits = std::bit_cast<std::uint64_t>(left);
-        const std::uint64_t result_bits =
-            left >= 0 ? bits >> count : ~(~bits >> count);
-        value = std::bit_cast<std::int64_t>(result_bits);
+      const std::optional<std::uint64_t> count = right.to_u64();
+      if (!count.has_value() || *count > kMaximumConstantBits) {
+        return fail(range, "compile-time shift resource limit exceeded", required);
       }
+      const std::size_t host_count = static_cast<std::size_t>(*count);
+      return bounded_integer(
+          operation == TokenKind::ShiftLeft
+              ? left.shifted_left(host_count)
+              : left.shifted_right(host_count),
+          range,
+          required);
     }
-    if (!value.has_value()) {
-      return fail(range, "compile-time integer result exceeds bootstrap range", required);
+    return fail(range, "operator is not defined for integer constants", required);
+  }
+
+  [[nodiscard]] EvalResult evaluate_float_binary(
+      TokenKind operation,
+      const ExactRational &left,
+      const ExactRational &right,
+      SourceRange range,
+      bool required) {
+    const int order = left.compare(right);
+    switch (operation) {
+    case TokenKind::EqualEqual: return ready(ConstantValue::make_bool(order == 0));
+    case TokenKind::BangEqual: return ready(ConstantValue::make_bool(order != 0));
+    case TokenKind::Less: return ready(ConstantValue::make_bool(order < 0));
+    case TokenKind::LessEqual: return ready(ConstantValue::make_bool(order <= 0));
+    case TokenKind::Greater: return ready(ConstantValue::make_bool(order > 0));
+    case TokenKind::GreaterEqual: return ready(ConstantValue::make_bool(order >= 0));
+    case TokenKind::Plus:
+      return bounded_float(left.added(right), range, required);
+    case TokenKind::Minus:
+      return bounded_float(left.subtracted(right), range, required);
+    case TokenKind::Star:
+      return bounded_float(left.multiplied(right), range, required);
+    case TokenKind::Slash: {
+      ExactRational quotient;
+      if (!left.divide(right, quotient)) {
+        return fail(range, "division by zero in compile-time expression", required);
+      }
+      return bounded_float(std::move(quotient), range, required);
     }
-    return ready(ConstantValue::make_integer(*value));
+    default:
+      return fail(range, "operator is not valid for untyped floating constants", required);
+    }
   }
 
   // Evaluates equality for nonnumeric scalar compile-time values. Categorical
@@ -519,6 +496,19 @@ private:
       return evaluate_integer_binary(
           operation, left.value.integer, right.value.integer, node.range, required);
     }
+    if ((left.value.kind == ConstantKind::Integer ||
+         left.value.kind == ConstantKind::Float) &&
+        (right.value.kind == ConstantKind::Integer ||
+         right.value.kind == ConstantKind::Float)) {
+      const ExactRational left_float = left.value.kind == ConstantKind::Float
+          ? left.value.floating
+          : ExactRational(left.value.integer);
+      const ExactRational right_float = right.value.kind == ConstantKind::Float
+          ? right.value.floating
+          : ExactRational(right.value.integer);
+      return evaluate_float_binary(
+          operation, left_float, right_float, node.range, required);
+    }
     return evaluate_scalar_equality(operation, left.value, right.value, node.range, required);
   }
 
@@ -541,10 +531,7 @@ private:
       const std::uint64_t source = member == "pointer_bits"
           ? target_.pointer_bits
           : target_.page_size;
-      if (source > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())) {
-        return fail(range, "target integer field exceeds bootstrap range", required);
-      }
-      return ready(ConstantValue::make_integer(static_cast<std::int64_t>(source)));
+      return ready(ConstantValue::make_integer(BigInteger::from_u64(source)));
     }
     return fail(range, "unknown target field '" + std::string(member) + "'", required);
   }
@@ -646,6 +633,8 @@ private:
         type = semantic_.types.builtins().bool_type;
       } else if (result.value.kind == ConstantKind::Integer) {
         type = semantic_.types.builtins().untyped_integer;
+      } else if (result.value.kind == ConstantKind::Float) {
+        type = semantic_.types.builtins().untyped_float;
       } else if (result.value.kind == ConstantKind::String) {
         type = semantic_.types.builtins().string_type;
       }
@@ -678,12 +667,20 @@ private:
         return ready(ConstantValue::make_bool(false));
       }
       if (token.kind == TokenKind::IntegerLiteral) {
-        const std::optional<std::int64_t> value =
+        const std::optional<BigInteger> value =
             integer_literal(sources_.text(token.range));
         if (!value.has_value()) {
-          return fail(token.range, "integer literal exceeds bootstrap constant range", required);
+          return fail(token.range, "invalid integer literal", required);
         }
         return ready(ConstantValue::make_integer(*value));
+      }
+      if (token.kind == TokenKind::FloatLiteral) {
+        const std::optional<ExactRational> value =
+            ExactRational::parse_decimal(sources_.text(token.range));
+        if (!value.has_value()) {
+          return fail(token.range, "invalid or excessive decimal floating literal", required);
+        }
+        return ready(ConstantValue::make_float(*value));
       }
       if (token.kind == TokenKind::StringLiteral ||
           token.kind == TokenKind::RawStringLiteral) {
@@ -736,19 +733,20 @@ private:
         return ready(ConstantValue::make_bool(!operand.value.boolean));
       }
       if (operand.value.kind != ConstantKind::Integer) {
+        if (operand.value.kind == ConstantKind::Float && operation == TokenKind::Plus) {
+          return operand;
+        }
+        if (operand.value.kind == ConstantKind::Float && operation == TokenKind::Minus) {
+          return bounded_float(operand.value.floating.negated(), node.range, required);
+        }
         return fail(node.range, "unary operator uses an incompatible constant", required);
       }
       if (operation == TokenKind::Plus) return operand;
       if (operation == TokenKind::Minus) {
-        if (operand.value.integer == std::numeric_limits<std::int64_t>::min()) {
-          return fail(node.range, "compile-time integer result exceeds bootstrap range", required);
-        }
-        return ready(ConstantValue::make_integer(-operand.value.integer));
+        return bounded_integer(operand.value.integer.negated(), node.range, required);
       }
       if (operation == TokenKind::Tilde) {
-        const std::uint64_t bits = std::bit_cast<std::uint64_t>(operand.value.integer);
-        return ready(ConstantValue::make_integer(
-            std::bit_cast<std::int64_t>(~bits)));
+        return bounded_integer(operand.value.integer.bitwise_not(), node.range, required);
       }
       return pending();
     }
@@ -811,9 +809,20 @@ ConstantValue ConstantValue::make_bool(bool value) {
 }
 
 ConstantValue ConstantValue::make_integer(std::int64_t value) {
+  return make_integer(BigInteger::from_i64(value));
+}
+
+ConstantValue ConstantValue::make_integer(BigInteger value) {
   ConstantValue result;
   result.kind = ConstantKind::Integer;
-  result.integer = value;
+  result.integer = std::move(value);
+  return result;
+}
+
+ConstantValue ConstantValue::make_float(ExactRational value) {
+  ConstantValue result;
+  result.kind = ConstantKind::Float;
+  result.floating = std::move(value);
   return result;
 }
 

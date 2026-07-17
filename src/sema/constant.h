@@ -7,12 +7,12 @@
 // appends deterministic branch decisions without mutating syntax. The caller may
 // then rebuild declaration collection with those decisions and repeat.
 //
-// The current value representation covers booleans, signed 64-bit bootstrap
-// integers, strings, categorical target labels, and the built-in target object.
-// Arbitrary-precision integers, exact decimal rationals, aggregates, procedural
-// constant evaluation, and type/layout queries extend this same table before the
-// semantic core is considered complete; unsupported values remain Pending and
-// are never silently folded with host behavior.
+// The current value representation covers booleans, arbitrary-precision
+// integers, exact decimal rationals, strings, categorical target labels, and the
+// built-in target object. Aggregates, procedural constant evaluation, and
+// type/layout queries extend this same table before the semantic core is
+// considered complete; unsupported values remain Pending and are never silently
+// folded with host behavior.
 //
 // Relevant specification: 01-core-language.md "Constants and compile-time
 // evaluation" and "when"; 02-types-memory-runtime.md "Target profile".

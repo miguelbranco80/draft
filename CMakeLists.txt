@@ -28,6 +28,7 @@ add_library(
   src/source/diagnostic.cpp
   src/source/source.cpp
   src/sema/analyzer.cpp
+  src/sema/big_integer.cpp
   src/sema/body_checker.cpp
   src/sema/constant.cpp
   src/sema/hir.cpp
@@ -99,6 +100,10 @@ if(BUILD_TESTING)
   add_executable(draft_sema_foundation_tests tests/sema_foundation_test.cpp)
   target_link_libraries(draft_sema_foundation_tests PRIVATE draft_compiler)
   add_test(NAME draft_sema_foundation_tests COMMAND draft_sema_foundation_tests)
+
+  add_executable(draft_big_integer_tests tests/big_integer_test.cpp)
+  target_link_libraries(draft_big_integer_tests PRIVATE draft_compiler)
+  add_test(NAME draft_big_integer_tests COMMAND draft_big_integer_tests)
 
   add_executable(draft_declaration_tests tests/declaration_test.cpp)
   target_link_libraries(draft_declaration_tests PRIVATE draft_compiler)

@@ -76,6 +76,8 @@ Base :: 40
 Derived :: Base + 2
 Has_Neon :: target.has_feature("neon")
 Bit_Value :: (2 << 5) | 1
+Huge :: 340282366920938463463374607431768211456 + 7
+Fraction :: 1.25 + 0.75
 
 Conditional :: struct {
     when target.pointer_bits == 64 {
@@ -106,6 +108,14 @@ when false {
 } else {
     Good :: u8
 }
+
+when Huge > 340282366920938463463374607431768211456 {
+    Big_Selected :: bool
+}
+
+when Fraction == 2.0 {
+    Float_Selected :: bool
+}
 )draft");
 
   if (source.diagnostics.has_errors()) {
@@ -113,11 +123,13 @@ when false {
   }
   EXPECT(state, source.analysis.ok);
   EXPECT(state, !source.diagnostics.has_errors());
-  EXPECT(state, source.analysis.selections.entries.size() == 6);
+  EXPECT(state, source.analysis.selections.entries.size() == 8);
   EXPECT(state, find_symbol(source.analysis.package, "Word").has_value());
   EXPECT(state, find_symbol(source.analysis.package, "Platform_Value").has_value());
   EXPECT(state, find_symbol(source.analysis.package, "Nested").has_value());
   EXPECT(state, find_symbol(source.analysis.package, "Good").has_value());
+  EXPECT(state, find_symbol(source.analysis.package, "Big_Selected").has_value());
+  EXPECT(state, find_symbol(source.analysis.package, "Float_Selected").has_value());
   EXPECT(state, !find_symbol(source.analysis.package, "Never").has_value());
   EXPECT(state, !find_symbol(source.analysis.package, "Broken").has_value());
 
@@ -154,23 +166,41 @@ when false {
       find_symbol(source.analysis.package, "Has_Neon");
   const std::optional<draft::SymbolId> bit_value =
       find_symbol(source.analysis.package, "Bit_Value");
+  const std::optional<draft::SymbolId> huge =
+      find_symbol(source.analysis.package, "Huge");
+  const std::optional<draft::SymbolId> fraction =
+      find_symbol(source.analysis.package, "Fraction");
   EXPECT(state, bits.has_value());
   EXPECT(state, derived.has_value());
   EXPECT(state, feature.has_value());
   EXPECT(state, bit_value.has_value());
-  if (bits && derived && feature && bit_value) {
+  EXPECT(state, huge.has_value());
+  EXPECT(state, fraction.has_value());
+  if (bits && derived && feature && bit_value && huge && fraction) {
     const draft::ConstantValue *bits_value = source.analysis.constants.find(*bits);
     const draft::ConstantValue *derived_value = source.analysis.constants.find(*derived);
     const draft::ConstantValue *feature_value = source.analysis.constants.find(*feature);
     const draft::ConstantValue *bit_result = source.analysis.constants.find(*bit_value);
+    const draft::ConstantValue *huge_result = source.analysis.constants.find(*huge);
+    const draft::ConstantValue *fraction_result = source.analysis.constants.find(*fraction);
     EXPECT(state, bits_value != nullptr);
     EXPECT(state, derived_value != nullptr);
     EXPECT(state, feature_value != nullptr);
     EXPECT(state, bit_result != nullptr);
-    if (bits_value) EXPECT(state, bits_value->integer == 64);
-    if (derived_value) EXPECT(state, derived_value->integer == 42);
+    EXPECT(state, huge_result != nullptr);
+    EXPECT(state, fraction_result != nullptr);
+    if (bits_value) EXPECT(state, bits_value->integer.to_decimal() == "64");
+    if (derived_value) EXPECT(state, derived_value->integer.to_decimal() == "42");
     if (feature_value) EXPECT(state, feature_value->boolean);
-    if (bit_result) EXPECT(state, bit_result->integer == 65);
+    if (bit_result) EXPECT(state, bit_result->integer.to_decimal() == "65");
+    if (huge_result) {
+      EXPECT(state, huge_result->integer.to_decimal() ==
+                        "340282366920938463463374607431768211463");
+    }
+    if (fraction_result) {
+      EXPECT(state, fraction_result->kind == draft::ConstantKind::Float);
+      EXPECT(state, fraction_result->floating.to_fraction() == "2/1");
+    }
   }
 }
 

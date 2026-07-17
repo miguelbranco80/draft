@@ -222,44 +222,18 @@ private:
     return TokenKind::Invalid;
   }
 
-  // Decodes integer literals in the same currently representable subset as the
-  // constant evaluator. HIR stores the mathematical value, not source spelling.
+  // HIR stores the mathematical integer rather than source spelling. Narrowing
+  // is used only for grammar-defined indices such as tuple `.0`, never for an
+  // ordinary runtime literal.
+  [[nodiscard]] std::optional<BigInteger> big_integer_literal(
+      std::string_view spelling) const {
+    return BigInteger::parse_literal(spelling);
+  }
+
   [[nodiscard]] std::optional<std::int64_t> integer_literal(
       std::string_view spelling) const {
-    std::uint32_t base = 10;
-    std::size_t index = 0;
-    if (spelling.size() >= 2 && spelling[0] == '0') {
-      if (spelling[1] == 'x' || spelling[1] == 'X') base = 16;
-      if (spelling[1] == 'o' || spelling[1] == 'O') base = 8;
-      if (spelling[1] == 'b' || spelling[1] == 'B') base = 2;
-      if (base != 10) index = 2;
-    }
-    std::uint64_t value = 0;
-    bool saw_digit = false;
-    for (; index < spelling.size(); ++index) {
-      const char character = spelling[index];
-      if (character == '_') continue;
-      std::uint32_t digit = 0;
-      if (character >= '0' && character <= '9') {
-        digit = static_cast<std::uint32_t>(character - '0');
-      } else if (character >= 'a' && character <= 'f') {
-        digit = static_cast<std::uint32_t>(character - 'a') + 10U;
-      } else if (character >= 'A' && character <= 'F') {
-        digit = static_cast<std::uint32_t>(character - 'A') + 10U;
-      } else {
-        return std::nullopt;
-      }
-      if (digit >= base ||
-          value > (static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()) -
-                   digit) /
-              base) {
-        return std::nullopt;
-      }
-      value = value * base + digit;
-      saw_digit = true;
-    }
-    if (!saw_digit) return std::nullopt;
-    return static_cast<std::int64_t>(value);
+    const std::optional<BigInteger> value = big_integer_literal(spelling);
+    return value.has_value() ? value->to_i64() : std::nullopt;
   }
 
   // Resolves a member symbol by the nominal base type's owned Type scope.
@@ -500,15 +474,23 @@ private:
         expression.type = semantic_.types.builtins().bool_type;
         expression.constant = ConstantValue::make_bool(token.kind == TokenKind::KeywordTrue);
       } else if (token.kind == TokenKind::IntegerLiteral) {
-        const std::optional<std::int64_t> value = integer_literal(sources_.text(token.range));
+        const std::optional<BigInteger> value =
+            big_integer_literal(sources_.text(token.range));
         if (!value.has_value()) {
-          diagnostics_.error(token.range, "integer literal exceeds bootstrap HIR range");
+          diagnostics_.error(token.range, "invalid integer literal");
           return invalid_expression(node.range);
         }
         expression.type = semantic_.types.builtins().untyped_integer;
         expression.constant = ConstantValue::make_integer(*value);
       } else if (token.kind == TokenKind::FloatLiteral) {
+        const std::optional<ExactRational> value =
+            ExactRational::parse_decimal(sources_.text(token.range));
+        if (!value.has_value()) {
+          diagnostics_.error(token.range, "invalid or excessive decimal floating literal");
+          return invalid_expression(node.range);
+        }
         expression.type = semantic_.types.builtins().untyped_float;
+        expression.constant = ConstantValue::make_float(*value);
       } else if (token.kind == TokenKind::StringLiteral ||
                  token.kind == TokenKind::RawStringLiteral) {
         expression.type = semantic_.types.builtins().string_type;
