@@ -55,9 +55,23 @@ shift :: proc(value: u32, count: usize) -> u32 {
     return value << count
 }
 
+scale :: proc(value: f64) -> f64 {
+    return value * 0.5
+}
+
+tenth64 :: proc() -> f64 {
+    return 0.1
+}
+
+tenth32 :: proc() -> f32 {
+    return 0.1
+}
+
 main :: proc() -> i32 {
     value := add(20, 22)
+    small := 1 + 2
     assert(value == 42)
+    assert(small == 3)
     return cast[i32](value)
 }
 )draft");
@@ -107,6 +121,13 @@ main :: proc() -> i32 {
   EXPECT(state, module.text.find("sdiv i64") != std::string::npos);
   EXPECT(state, module.text.find("shl i32") != std::string::npos);
   EXPECT(state, module.text.find("call void @llvm.trap()") != std::string::npos);
+  EXPECT(state, module.text.find("fmul double") != std::string::npos);
+  EXPECT(state, module.text.find("bitcast (i64 4602678819172646912 to double)") !=
+      std::string::npos);
+  EXPECT(state, module.text.find("bitcast (i64 4591870180066957722 to double)") !=
+      std::string::npos);
+  EXPECT(state, module.text.find("bitcast (i32 1036831949 to float)") !=
+      std::string::npos);
 }
 
 } // namespace

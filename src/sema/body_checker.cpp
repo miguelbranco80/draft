@@ -210,6 +210,58 @@ private:
     return semantic_.types.builtins().invalid;
   }
 
+  [[nodiscard]] bool integer_representable(
+      const BigInteger &value, TypeId target) const {
+    const Type type = semantic_.types.type(target);
+    if (type.kind != TypeKind::SignedInteger &&
+        type.kind != TypeKind::UnsignedInteger) {
+      return true;
+    }
+    const std::uint32_t bits = type.bit_width;
+    if (bits == 0) return false;
+    if (type.kind == TypeKind::UnsignedInteger) {
+      return !value.is_negative() && value.bit_count() <= bits;
+    }
+    const BigInteger magnitude =
+        BigInteger::from_u64(1).shifted_left(static_cast<std::size_t>(bits - 1U));
+    const BigInteger minimum = magnitude.negated();
+    const BigInteger maximum = magnitude.subtracted(BigInteger::from_u64(1));
+    return value.compare(minimum) >= 0 && value.compare(maximum) <= 0;
+  }
+
+  void check_constant_range(
+      const ConstantValue &value, TypeId target, SourceRange range) {
+    if (value.kind == ConstantKind::Integer &&
+        !integer_representable(value.integer, target)) {
+      diagnostics_.error(
+          range,
+          "integer constant is not representable in expected type '" +
+              semantic_.types.type(target).name + "'");
+    }
+  }
+
+  // Applies a concrete numeric context to an already checked untyped tree.
+  // This is needed when `:=` chooses int/f64 after seeing the complete
+  // initializer. It changes semantic types only; exact constant payloads remain
+  // intact until LLVM conversion.
+  void contextualize_numeric_expression(
+      HirExpressionId expression_id, TypeId target) {
+    HirExpression &expression = hir_.expression_mut(expression_id);
+    const bool integer = expression.type == semantic_.types.builtins().untyped_integer &&
+        semantic_.types.is_integer(target);
+    const bool floating =
+        (expression.type == semantic_.types.builtins().untyped_integer ||
+         expression.type == semantic_.types.builtins().untyped_float) &&
+        semantic_.types.is_float(target);
+    if (!integer && !floating) return;
+    if (integer) check_constant_range(expression.constant, target, expression.range);
+    expression.type = target;
+    const std::vector<HirExpressionId> operands = expression.operands;
+    for (HirExpressionId operand : operands) {
+      contextualize_numeric_expression(operand, target);
+    }
+  }
+
   // Finds the source operator between the immediate child spans.
   [[nodiscard]] TokenKind binary_operator(
       const SyntaxTree &tree, const SyntaxNode &node) const {
@@ -561,6 +613,7 @@ private:
         return invalid_expression(node.range);
       }
       expression.type = apply_expected_type(expression.type, expected, node.range);
+      check_constant_range(expression.constant, expression.type, node.range);
       return hir_.add_expression(std::move(expression));
     }
 
@@ -590,6 +643,7 @@ private:
       if (const ConstantValue *constant = constants_.find(*found)) {
         expression.kind = HirExpressionKind::Constant;
         expression.constant = *constant;
+        check_constant_range(expression.constant, expression.type, node.range);
       }
       return hir_.add_expression(std::move(expression));
     }
@@ -739,6 +793,10 @@ private:
       expression.type = apply_expected_type(result, expected, node.range);
       expression.range = node.range;
       expression.operands.push_back(operand_id);
+      if ((is_untyped_integer(result) || is_untyped_float(result)) &&
+          semantic_.types.is_number(expression.type)) {
+        contextualize_numeric_expression(operand_id, expression.type);
+      }
       return hir_.add_expression(std::move(expression));
     }
 
@@ -793,6 +851,28 @@ private:
       expression.type = apply_expected_type(result, expected, node.range);
       expression.range = node.range;
       expression.operands = {left_id, right_id};
+      if (semantic_.types.is_number(result)) {
+        contextualize_numeric_expression(left_id, expression.type);
+        contextualize_numeric_expression(right_id, expression.type);
+      }
+      if (result == semantic_.types.builtins().bool_type &&
+          semantic_.types.is_number(left)) {
+        contextualize_numeric_expression(right_id, left);
+      } else if (result == semantic_.types.builtins().bool_type &&
+                 semantic_.types.is_number(right)) {
+        contextualize_numeric_expression(left_id, right);
+      } else if (result == semantic_.types.builtins().bool_type &&
+                 is_untyped_integer(left) && is_untyped_integer(right)) {
+        contextualize_numeric_expression(left_id, semantic_.types.builtins().int_type);
+        contextualize_numeric_expression(right_id, semantic_.types.builtins().int_type);
+      } else if (result == semantic_.types.builtins().bool_type &&
+                 (is_untyped_float(left) || is_untyped_float(right))) {
+        const std::optional<TypeId> f64 = semantic_.types.find_builtin("f64");
+        if (f64.has_value()) {
+          contextualize_numeric_expression(left_id, *f64);
+          contextualize_numeric_expression(right_id, *f64);
+        }
+      }
       return hir_.add_expression(std::move(expression));
     }
 
@@ -1203,6 +1283,7 @@ private:
           const std::optional<TypeId> f64 = semantic_.types.find_builtin("f64");
           declared_type = f64.value_or(semantic_.types.builtins().invalid);
         }
+        contextualize_numeric_expression(value, declared_type);
       }
     }
     if (!declared_type.is_valid()) {

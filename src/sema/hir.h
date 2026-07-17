@@ -213,6 +213,7 @@ public:
   void add_procedure(HirProcedure procedure);
 
   [[nodiscard]] const HirExpression &expression(HirExpressionId id) const;
+  [[nodiscard]] HirExpression &expression_mut(HirExpressionId id);
   [[nodiscard]] const HirStatement &statement(HirStatementId id) const;
   [[nodiscard]] const HirBlock &block(HirBlockId id) const;
   [[nodiscard]] const std::vector<HirProcedure> &procedures() const;

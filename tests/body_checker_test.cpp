@@ -201,6 +201,7 @@ void test_body_diagnostics(TestState &state) {
 package bodies
 
 bad :: proc(flag: int) -> int {
+    too_large: u8 = 256
     if flag {
         missing := unknown_name
     }
@@ -224,6 +225,7 @@ falls_through :: proc(flag: bool) -> int {
   EXPECT(state, rendered.find("not addressable") != std::string::npos);
   EXPECT(state, rendered.find("return requires a value") != std::string::npos);
   EXPECT(state, rendered.find("not every path returns") != std::string::npos);
+  EXPECT(state, rendered.find("not representable") != std::string::npos);
 }
 
 } // namespace

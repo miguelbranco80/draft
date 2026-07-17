@@ -12,6 +12,7 @@
 #include <cctype>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -27,6 +28,114 @@ struct StringConstant {
   std::size_t instruction = 0;
   std::string value;
 };
+
+struct IeeeFormat {
+  std::uint32_t exponent_bits = 0;
+  std::uint32_t fraction_bits = 0;
+};
+
+[[nodiscard]] std::optional<std::uint64_t> rounded_scaled_quotient(
+    const BigInteger &numerator,
+    const BigInteger &denominator,
+    std::int64_t binary_shift) {
+  BigInteger scaled_numerator = numerator;
+  BigInteger scaled_denominator = denominator;
+  if (binary_shift >= 0) {
+    scaled_numerator = scaled_numerator.shifted_left(
+        static_cast<std::size_t>(binary_shift));
+  } else {
+    scaled_denominator = scaled_denominator.shifted_left(
+        static_cast<std::size_t>(-binary_shift));
+  }
+  BigInteger quotient;
+  BigInteger remainder;
+  if (!scaled_numerator.divide(scaled_denominator, quotient, remainder)) {
+    return std::nullopt;
+  }
+  const BigInteger twice_remainder = remainder.shifted_left(1);
+  const int halfway = twice_remainder.compare(scaled_denominator);
+  const bool quotient_is_odd =
+      !quotient.bitwise_and(BigInteger::from_u64(1)).is_zero();
+  if (halfway > 0 || (halfway == 0 && quotient_is_odd)) {
+    quotient = quotient.added(BigInteger::from_u64(1));
+  }
+  return quotient.to_u64();
+}
+
+// Converts the mathematical rational directly to IEEE round-to-nearest,
+// ties-to-even bits. No host floating operation participates, so cross-builds
+// and the self-hosted compiler can reproduce the same constants exactly.
+[[nodiscard]] std::optional<std::uint64_t> ieee_bits(
+    const ExactRational &value, IeeeFormat format) {
+  const std::uint32_t total_bits =
+      1U + format.exponent_bits + format.fraction_bits;
+  if (total_bits > 64 || format.exponent_bits == 0) return std::nullopt;
+  if (value.is_zero()) return 0;
+  const bool negative = value.numerator().is_negative();
+  const BigInteger numerator = value.numerator().absolute();
+  const BigInteger denominator = value.denominator();
+  const std::size_t numerator_bits = numerator.bit_count();
+  const std::size_t denominator_bits = denominator.bit_count();
+  if (numerator_bits > static_cast<std::size_t>(
+                           std::numeric_limits<std::int64_t>::max()) ||
+      denominator_bits > static_cast<std::size_t>(
+                             std::numeric_limits<std::int64_t>::max())) {
+    return std::nullopt;
+  }
+  std::int64_t exponent = static_cast<std::int64_t>(numerator_bits) -
+      static_cast<std::int64_t>(denominator_bits);
+  if (exponent >= 0) {
+    if (numerator.compare(
+            denominator.shifted_left(static_cast<std::size_t>(exponent))) < 0) {
+      --exponent;
+    }
+  } else if (numerator.shifted_left(static_cast<std::size_t>(-exponent))
+                 .compare(denominator) < 0) {
+    --exponent;
+  }
+
+  const std::uint64_t bias =
+      (std::uint64_t{1} << (format.exponent_bits - 1U)) - 1U;
+  const std::int64_t minimum_exponent = 1 - static_cast<std::int64_t>(bias);
+  const std::int64_t maximum_exponent = static_cast<std::int64_t>(bias);
+  std::uint64_t exponent_field = 0;
+  std::uint64_t fraction_field = 0;
+  if (exponent >= minimum_exponent) {
+    if (exponent > maximum_exponent) return std::nullopt;
+    const std::int64_t shift =
+        static_cast<std::int64_t>(format.fraction_bits) - exponent;
+    std::optional<std::uint64_t> significand =
+        rounded_scaled_quotient(numerator, denominator, shift);
+    if (!significand.has_value()) return std::nullopt;
+    const std::uint64_t implicit = std::uint64_t{1} << format.fraction_bits;
+    if (*significand == (implicit << 1U)) {
+      ++exponent;
+      *significand = implicit;
+      if (exponent > maximum_exponent) return std::nullopt;
+    }
+    exponent_field = static_cast<std::uint64_t>(exponent) + bias;
+    fraction_field = *significand - implicit;
+  } else {
+    const std::int64_t shift =
+        static_cast<std::int64_t>(format.fraction_bits) - minimum_exponent;
+    const std::optional<std::uint64_t> significand =
+        rounded_scaled_quotient(numerator, denominator, shift);
+    if (!significand.has_value()) return std::nullopt;
+    const std::uint64_t implicit = std::uint64_t{1} << format.fraction_bits;
+    if (*significand >= implicit) {
+      exponent_field = 1;
+      fraction_field = 0;
+    } else {
+      fraction_field = *significand;
+    }
+  }
+  const std::uint64_t sign_field = negative
+      ? std::uint64_t{1} << (total_bits - 1U)
+      : 0;
+  return sign_field |
+      (exponent_field << format.fraction_bits) |
+      fraction_field;
+}
 
 [[nodiscard]] std::string encoded_name(std::string_view text) {
   static constexpr char digits[] = "0123456789ABCDEF";
@@ -422,9 +531,30 @@ private:
       // Contextual alternatives retain their SymbolId on MIR Constant rows;
       // instruction_constant handles the declaration-order discriminator.
       return "0";
-    case ConstantKind::Float:
-      error(range, "exact rational floating constants are not lowered yet");
-      return "0.0";
+    case ConstantKind::Float: {
+      Type float_type = type(type_id);
+      while (float_type.kind == TypeKind::Distinct) {
+        float_type = type(float_type.element);
+      }
+      IeeeFormat format;
+      if (float_type.kind == TypeKind::Float && float_type.bit_width == 16) {
+        format = {5, 10};
+      } else if (float_type.kind == TypeKind::Float && float_type.bit_width == 32) {
+        format = {8, 23};
+      } else if (float_type.kind == TypeKind::Float && float_type.bit_width == 64) {
+        format = {11, 52};
+      } else {
+        error(range, "floating constant has no supported IEEE format");
+        return "zeroinitializer";
+      }
+      const std::optional<std::uint64_t> bits = ieee_bits(value.floating, format);
+      if (!bits.has_value()) {
+        error(range, "floating constant is outside the finite target range");
+        return "zeroinitializer";
+      }
+      return "bitcast (i" + std::to_string(float_type.bit_width) + " " +
+          std::to_string(*bits) + " to " + llvm_type(type_id) + ")";
+    }
     case ConstantKind::String:
       error(range, "string constant requires module string identity");
       return "zeroinitializer";

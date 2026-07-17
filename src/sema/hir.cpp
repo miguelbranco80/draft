@@ -56,6 +56,12 @@ const HirExpression &HirProgram::expression(HirExpressionId id) const {
   return expressions_[id.value];
 }
 
+HirExpression &HirProgram::expression_mut(HirExpressionId id) {
+  assert(id.is_valid());
+  assert(static_cast<std::size_t>(id.value) < expressions_.size());
+  return expressions_[id.value];
+}
+
 const HirStatement &HirProgram::statement(HirStatementId id) const {
   assert(id.is_valid());
   assert(static_cast<std::size_t>(id.value) < statements_.size());
