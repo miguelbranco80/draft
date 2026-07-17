@@ -2,6 +2,7 @@
 
 #include "interop/native.h"
 
+#include "interop/aarch64_abi.h"
 #include "syntax/literal.h"
 
 #include <algorithm>
@@ -22,27 +23,6 @@ namespace {
       });
 }
 
-[[nodiscard]] bool scalar_c_type(const TypeStore &types, TypeId id) {
-  const Type &type = types.type(id);
-  switch (type.kind) {
-  case TypeKind::SignedInteger:
-  case TypeKind::UnsignedInteger:
-  case TypeKind::Float:
-  case TypeKind::Rune:
-  case TypeKind::BooleanStorage:
-  case TypeKind::EndianScalar:
-  case TypeKind::RawPointer:
-  case TypeKind::CString:
-  case TypeKind::Pointer:
-  case TypeKind::MultiPointer:
-    return true;
-  case TypeKind::Procedure:
-    return type.c_calling_convention;
-  default:
-    return false;
-  }
-}
-
 [[nodiscard]] bool valid_c_signature(const TypeStore &types, TypeId id) {
   const Type &procedure = types.type(id);
   if (procedure.kind != TypeKind::Procedure || !procedure.c_calling_convention ||
@@ -50,10 +30,15 @@ namespace {
     return false;
   }
   for (std::size_t index = 0; index + 1 < procedure.members.size(); ++index) {
-    if (!scalar_c_type(types, procedure.members[index])) return false;
+    if (classify_aarch64_darwin_c_type(types, procedure.members[index])
+            .classification == Aarch64CAbiClass::Illegal) {
+      return false;
+    }
   }
   const TypeId result = procedure.members.back();
-  return result == types.builtins().void_type || scalar_c_type(types, result);
+  return result == types.builtins().void_type ||
+      classify_aarch64_darwin_c_type(types, result).classification !=
+          Aarch64CAbiClass::Illegal;
 }
 
 [[nodiscard]] std::optional<std::string> decode_linker_name(

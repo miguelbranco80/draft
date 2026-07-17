@@ -121,12 +121,138 @@ foreign provider {
   EXPECT(state, rendered.find("C-ABI-legal 'c proc'") != std::string::npos);
 }
 
+void test_aggregate_c_abi_lowering(TestState &state) {
+  CheckedSource source(R"draft(
+package native
+
+C8 :: @repr(C) struct {
+    left: i32,
+    right: i32,
+}
+
+C3 :: @repr(C) struct {
+    bytes: [3]u8,
+}
+
+C16_Aligned :: @repr(C) @align(16) struct {
+    word: i64,
+}
+
+HF2 :: @repr(C) struct {
+    left: f32,
+    right: f32,
+}
+
+C24 :: @repr(C) struct {
+    words: [3]i64,
+}
+
+foreign provider {
+    small :: c "small" proc(value: C8) -> C8
+    odd :: c "odd" proc(value: C3) -> C3
+    aligned :: c "aligned" proc(value: C16_Aligned) -> C16_Aligned
+    floats :: c "floats" proc(value: HF2) -> HF2
+    large :: c "large" proc(value: C24) -> C24
+    narrow :: c "narrow" proc(signed: i8, unsigned: u16) -> i8
+}
+
+export wrap_small :: c "wrap_small" proc(value: C8) -> C8 {
+    return small(value)
+}
+
+export wrap_odd :: c "wrap_odd" proc(value: C3) -> C3 {
+    return odd(value)
+}
+
+export wrap_aligned :: c "wrap_aligned" proc(value: C16_Aligned) -> C16_Aligned {
+    return aligned(value)
+}
+
+export wrap_floats :: c "wrap_floats" proc(value: HF2) -> HF2 {
+    return floats(value)
+}
+
+export wrap_large :: c "wrap_large" proc(value: C24) -> C24 {
+    return large(value)
+}
+)draft");
+
+  const draft::NativeInteropResult native = draft::validate_native_interop(
+      source.semantics.package, source.bodies.program, source.diagnostics);
+  const draft::MirLoweringResult mir = draft::lower_package_to_mir(
+      source.semantics.package, source.bodies.program, source.diagnostics);
+  draft::LlvmIrOptions options;
+  options.package = {"workspace", "native"};
+  const draft::LlvmIrResult llvm = draft::emit_llvm_ir(
+      source.target,
+      source.sources,
+      options,
+      source.semantics.package,
+      source.semantics.constants,
+      mir.program,
+      source.diagnostics);
+  if (source.diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(source.sources, source.diagnostics);
+  }
+  EXPECT(state, native.ok);
+  EXPECT(state, mir.ok);
+  EXPECT(state, llvm.ok);
+  EXPECT(state, llvm.text.find("declare i64 @\"small\"(i64)") !=
+                    std::string::npos);
+  EXPECT(state, llvm.text.find("define i64 @\"wrap_small\"(i64 %arg0)") !=
+                    std::string::npos);
+  EXPECT(state, llvm.text.find("declare i24 @\"odd\"(i64)") !=
+                    std::string::npos);
+  EXPECT(state, llvm.text.find("define i24 @\"wrap_odd\"(i64 %arg0)") !=
+                    std::string::npos);
+  EXPECT(state, llvm.text.find("declare i128 @\"aligned\"(i128)") !=
+                    std::string::npos);
+  EXPECT(state, llvm.text.find("define i128 @\"wrap_aligned\"(i128 %arg0)") !=
+                    std::string::npos);
+  EXPECT(state, llvm.text.find("= type <{ i64, [8 x i8] }>") !=
+                    std::string::npos);
+  EXPECT(state, llvm.text.find("@\"floats\"([2 x float]") !=
+                    std::string::npos);
+  EXPECT(state, llvm.text.find("@\"wrap_floats\"([2 x float] %arg0)") !=
+                    std::string::npos);
+  EXPECT(state, llvm.text.find("declare void @\"large\"(ptr sret(") !=
+                    std::string::npos);
+  EXPECT(state, llvm.text.find("define void @\"wrap_large\"(ptr sret(") !=
+                    std::string::npos);
+  EXPECT(state, llvm.text.find(
+                    "declare signext i8 @\"narrow\"(i8 signext, i16 zeroext)") !=
+                    std::string::npos);
+  EXPECT(state, !source.diagnostics.has_errors());
+}
+
+void test_invalid_c_aggregate_member(TestState &state) {
+  CheckedSource source(R"draft(
+package native
+
+Bad :: @repr(C) struct {
+    view: []u8,
+}
+
+foreign provider {
+    consume :: c proc(value: Bad)
+}
+)draft");
+  const draft::NativeInteropResult native = draft::validate_native_interop(
+      source.semantics.package, source.bodies.program, source.diagnostics);
+  EXPECT(state, !native.ok);
+  const std::string rendered =
+      draft::render_diagnostics(source.sources, source.diagnostics);
+  EXPECT(state, rendered.find("C-ABI-legal 'c proc'") != std::string::npos);
+}
+
 } // namespace
 
 int main() {
   TestState state;
   test_valid_import_and_export(state);
   test_invalid_c_boundaries(state);
+  test_aggregate_c_abi_lowering(state);
+  test_invalid_c_aggregate_member(state);
   if (state.failures != 0) {
     std::cerr << state.failures << " native interop expectation(s) failed\n";
     return EXIT_FAILURE;

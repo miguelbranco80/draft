@@ -8,6 +8,7 @@
 
 #include "backend/llvm_ir.h"
 
+#include "interop/aarch64_abi.h"
 #include "syntax/literal.h"
 
 #include <algorithm>
@@ -365,12 +366,32 @@ private:
       const Type &value = type(id);
       if (is_parametric_template_type(id)) continue;
       if (value.kind == TypeKind::Struct) {
-        output_ << "%draft.type." << index << " = type { ";
+        // A packed LLVM body plus explicit byte fields reproduces the semantic
+        // offsets exactly. This is required for @align tail stride and for a
+        // nested over-aligned member; LLVM's implicit aggregate alignment does
+        // not know Draft's requested_alignment metadata.
+        output_ << "%draft.type." << index << " = type <{ ";
+        std::uint64_t cursor = 0;
+        bool emitted = false;
         for (std::size_t member = 0; member < value.members.size(); ++member) {
-          if (member != 0) output_ << ", ";
+          const std::uint64_t offset = member < value.member_offsets.size()
+              ? value.member_offsets[member]
+              : cursor;
+          if (offset > cursor) {
+            if (emitted) output_ << ", ";
+            output_ << '[' << offset - cursor << " x i8]";
+            emitted = true;
+          }
+          if (emitted) output_ << ", ";
           output_ << llvm_type(value.members[member]);
+          emitted = true;
+          cursor = offset + type(value.members[member]).layout.size;
         }
-        output_ << " }\n";
+        if (value.layout.known && value.layout.size > cursor) {
+          if (emitted) output_ << ", ";
+          output_ << '[' << value.layout.size - cursor << " x i8]";
+        }
+        output_ << " }>\n";
       } else if (value.kind == TypeKind::TaggedUnion ||
                  value.kind == TypeKind::RawUnion) {
         if (!value.layout.known) {
@@ -604,6 +625,96 @@ private:
         options_.package, semantic_.symbols.symbol(symbol_id).name);
   }
 
+  [[nodiscard]] std::string homogeneous_llvm_type(
+      const Aarch64CAbiType &abi) const {
+    std::string element = "<invalid-hfa>";
+    if (abi.homogeneous_element_bits == 16) element = "half";
+    if (abi.homogeneous_element_bits == 32) element = "float";
+    if (abi.homogeneous_element_bits == 64) element = "double";
+    return "[" + std::to_string(abi.homogeneous_element_count) + " x " +
+        element + "]";
+  }
+
+  [[nodiscard]] std::string integer_container_type(
+      std::uint32_t bits, std::uint32_t count) const {
+    if (count == 1) return "i" + std::to_string(bits);
+    return "[" + std::to_string(count) + " x i" +
+        std::to_string(bits) + "]";
+  }
+
+  [[nodiscard]] std::string c_parameter_type(TypeId type_id) const {
+    const Aarch64CAbiType abi = classify_aarch64_darwin_c_type(
+        semantic_.types, type_id);
+    switch (abi.classification) {
+    case Aarch64CAbiClass::Direct:
+      return llvm_type(type_id);
+    case Aarch64CAbiClass::HomogeneousFloatAggregate:
+      return homogeneous_llvm_type(abi);
+    case Aarch64CAbiClass::SmallAggregate:
+      return integer_container_type(
+          abi.argument_integer_bits, abi.argument_integer_count);
+    case Aarch64CAbiClass::Indirect:
+      return "ptr";
+    case Aarch64CAbiClass::Illegal:
+      return "<illegal-c-abi>";
+    }
+    return "<illegal-c-abi>";
+  }
+
+  // Darwin arm64 requires C integer values narrower than 32 bits to carry an
+  // explicit extension contract. These LLVM attributes affect register bits
+  // and therefore belong on declarations, definitions, and every call site.
+  [[nodiscard]] std::string c_integer_extension(TypeId type_id) const {
+    const Type &value = type(type_id);
+    if (value.bit_width >= 32) return {};
+    if (value.kind == TypeKind::SignedInteger) return "signext";
+    if (value.kind == TypeKind::UnsignedInteger ||
+        value.kind == TypeKind::BooleanStorage ||
+        value.kind == TypeKind::EndianScalar) {
+      return "zeroext";
+    }
+    return {};
+  }
+
+  [[nodiscard]] std::string c_result_type(TypeId type_id) const {
+    if (type_id == semantic_.types.builtins().void_type) return "void";
+    const Aarch64CAbiType abi = classify_aarch64_darwin_c_type(
+        semantic_.types, type_id);
+    switch (abi.classification) {
+    case Aarch64CAbiClass::Direct:
+      return llvm_type(type_id);
+    case Aarch64CAbiClass::HomogeneousFloatAggregate:
+      // Using the same explicit lane array for both directions avoids relying
+      // on LLVM to rediscover HFA shape through Draft's opaque raw-union
+      // storage or through nested source aggregate names.
+      return homogeneous_llvm_type(abi);
+    case Aarch64CAbiClass::SmallAggregate:
+      return integer_container_type(
+          abi.result_integer_bits, abi.result_integer_count);
+    case Aarch64CAbiClass::Indirect:
+      return "void";
+    case Aarch64CAbiClass::Illegal:
+      return "<illegal-c-abi>";
+    }
+    return "<illegal-c-abi>";
+  }
+
+  [[nodiscard]] Aarch64CAbiType function_result_abi(TypeId type_id) const {
+    const TypeId result = function_result(type_id);
+    if (result == semantic_.types.builtins().void_type) return {};
+    return classify_aarch64_darwin_c_type(semantic_.types, result);
+  }
+
+  [[nodiscard]] std::string llvm_function_result(TypeId type_id) const {
+    const Type &signature = type(type_id);
+    const TypeId result = function_result(type_id);
+    if (!signature.c_calling_convention) return llvm_type(result);
+    const std::string extension = c_integer_extension(result);
+    return extension.empty()
+        ? c_result_type(result)
+        : extension + " " + c_result_type(result);
+  }
+
   [[nodiscard]] std::string function_signature(
       TypeId type_id,
       bool with_names) const {
@@ -613,14 +724,30 @@ private:
         : signature.members.size() - 1;
     std::string result = "(";
     bool emitted = false;
-    if (!signature.c_calling_convention) {
+    if (signature.c_calling_convention) {
+      const TypeId logical_result = function_result(type_id);
+      const Aarch64CAbiType result_abi = function_result_abi(type_id);
+      if (result_abi.classification == Aarch64CAbiClass::Indirect) {
+        result += "ptr sret(" + llvm_type(logical_result) + ") align " +
+            std::to_string(result_abi.alignment);
+        if (with_names) result += " %sret";
+        emitted = true;
+      }
+    } else {
       result += "ptr";
       if (with_names) result += " %context";
       emitted = true;
     }
     for (std::size_t index = 0; index < parameter_count; ++index) {
       if (emitted) result += ", ";
-      result += llvm_type(signature.members[index]);
+      if (signature.c_calling_convention) {
+        result += c_parameter_type(signature.members[index]);
+        const std::string extension =
+            c_integer_extension(signature.members[index]);
+        if (!extension.empty()) result += " " + extension;
+      } else {
+        result += llvm_type(signature.members[index]);
+      }
       if (with_names) result += " %arg" + std::to_string(index);
       emitted = true;
     }
@@ -666,7 +793,7 @@ private:
     for (const ImportedSymbol &imported : semantic_.imported_symbols) {
       const Symbol &symbol = semantic_.symbols.symbol(imported.proxy);
       if (symbol.kind == SymbolKind::Procedure) {
-        output_ << "declare " << llvm_type(function_result(symbol.type)) << ' '
+        output_ << "declare " << llvm_function_result(symbol.type) << ' '
                 << symbol_name(imported.proxy)
                 << function_signature(symbol.type, false) << "\n";
       } else if (symbol.kind == SymbolKind::Variable) {
@@ -684,7 +811,7 @@ private:
       if (symbol.kind == SymbolKind::Procedure &&
           !symbol.flags.parametric &&
           !has_body(symbol_id)) {
-        output_ << "declare " << llvm_type(function_result(symbol.type)) << ' '
+        output_ << "declare " << llvm_function_result(symbol.type) << ' '
                 << symbol_name(symbol_id)
                 << function_signature(symbol.type, false) << "\n";
       }
@@ -827,6 +954,35 @@ private:
 
   [[nodiscard]] std::string auxiliary() {
     return "%a" + std::to_string(auxiliary_index_++);
+  }
+
+  [[nodiscard]] std::string abi_call_argument_scratch(
+      std::size_t instruction, std::size_t argument) const {
+    return "%abi.call." + std::to_string(instruction) + ".arg." +
+        std::to_string(argument);
+  }
+
+  [[nodiscard]] std::string abi_call_result_scratch(
+      std::size_t instruction) const {
+    return "%abi.call." + std::to_string(instruction) + ".result";
+  }
+
+  [[nodiscard]] std::uint64_t abi_argument_storage_size(
+      const Aarch64CAbiType &abi) const {
+    if (abi.classification == Aarch64CAbiClass::SmallAggregate) {
+      return static_cast<std::uint64_t>(abi.argument_integer_bits / 8U) *
+          abi.argument_integer_count;
+    }
+    return abi.size;
+  }
+
+  [[nodiscard]] std::uint64_t abi_result_storage_size(
+      const Aarch64CAbiType &abi) const {
+    if (abi.classification == Aarch64CAbiClass::SmallAggregate) {
+      return static_cast<std::uint64_t>(abi.result_integer_bits / 8U) *
+          abi.result_integer_count;
+    }
+    return abi.size;
   }
 
   void assign_alias(
@@ -1004,8 +1160,16 @@ private:
       const std::uint64_t stride = type(aggregate.element).layout.size;
       return stride == 0 ? 0 : static_cast<std::size_t>(offset / stride);
     }
+    std::size_t physical_index = 0;
+    std::uint64_t cursor = 0;
     for (std::size_t index = 0; index < aggregate.member_offsets.size(); ++index) {
-      if (aggregate.member_offsets[index] == offset) return index;
+      const std::uint64_t member_offset = aggregate.member_offsets[index];
+      if (member_offset > cursor) ++physical_index;
+      if (member_offset == offset) return physical_index;
+      ++physical_index;
+      if (index < aggregate.members.size()) {
+        cursor = member_offset + type(aggregate.members[index]).layout.size;
+      }
     }
     return 0;
   }
@@ -1094,6 +1258,122 @@ private:
         "%v" + std::to_string(instruction.result.value));
   }
 
+  void emit_c_call(
+      std::size_t instruction_index,
+      const MirProcedure &procedure,
+      const MirInstruction &instruction,
+      std::vector<std::string> &operands) {
+    const MirValueId callee = instruction.operands.front();
+    const TypeId signature_id = procedure.value(callee).type;
+    const Type &signature = type(signature_id);
+    const std::size_t parameter_count = signature.members.size() - 1;
+    std::vector<std::string> arguments;
+    arguments.reserve(parameter_count + 1);
+
+    const TypeId logical_result = signature.members.back();
+    const bool returns_void =
+        logical_result == semantic_.types.builtins().void_type;
+    const Aarch64CAbiType result_abi = returns_void
+        ? Aarch64CAbiType{}
+        : classify_aarch64_darwin_c_type(semantic_.types, logical_result);
+    if (result_abi.classification == Aarch64CAbiClass::Indirect) {
+      arguments.push_back(
+          "ptr sret(" + llvm_type(logical_result) + ") align " +
+          std::to_string(result_abi.alignment) + " " +
+          abi_call_result_scratch(instruction_index));
+    }
+
+    for (std::size_t index = 0; index < parameter_count; ++index) {
+      const TypeId logical_type = signature.members[index];
+      const MirValueId value = instruction.operands[index + 1];
+      const Aarch64CAbiType abi = classify_aarch64_darwin_c_type(
+          semantic_.types, logical_type);
+      if (abi.classification == Aarch64CAbiClass::Direct) {
+        std::string argument = llvm_type(logical_type);
+        const std::string extension = c_integer_extension(logical_type);
+        if (!extension.empty()) argument += " " + extension;
+        argument += " " + value_operand(
+            operands, value, instruction.range);
+        arguments.push_back(std::move(argument));
+        continue;
+      }
+      if (abi.classification == Aarch64CAbiClass::Illegal) {
+        error(instruction.range, "illegal C ABI call argument reached emission");
+        arguments.push_back("i8 poison");
+        continue;
+      }
+
+      const std::string scratch =
+          abi_call_argument_scratch(instruction_index, index);
+      const std::uint64_t storage = abi_argument_storage_size(abi);
+      if (abi.classification == Aarch64CAbiClass::SmallAggregate) {
+        output_ << "  store [" << storage
+                << " x i8] zeroinitializer, ptr " << scratch
+                << ", align " << abi.alignment << '\n';
+      }
+      output_ << "  store "
+              << typed_operand(procedure, operands, value, instruction.range)
+              << ", ptr " << scratch << ", align " << abi.alignment << '\n';
+      if (abi.classification == Aarch64CAbiClass::Indirect) {
+        arguments.push_back("ptr " + scratch);
+        continue;
+      }
+      const std::string physical = auxiliary();
+      const std::string physical_type = c_parameter_type(logical_type);
+      output_ << "  " << physical << " = load " << physical_type
+              << ", ptr " << scratch << ", align " << abi.alignment << '\n';
+      arguments.push_back(physical_type + " " + physical);
+    }
+
+    const std::string callee_operand =
+        value_operand(operands, callee, instruction.range);
+    const std::string result = instruction.result.is_valid()
+        ? "%v" + std::to_string(instruction.result.value)
+        : std::string();
+    if (returns_void || result_abi.classification == Aarch64CAbiClass::Indirect) {
+      output_ << "  call void " << callee_operand << '(';
+    } else if (result_abi.classification == Aarch64CAbiClass::SmallAggregate ||
+               result_abi.classification ==
+                   Aarch64CAbiClass::HomogeneousFloatAggregate) {
+      output_ << "  %abi.call." << instruction_index << ".physical = call "
+              << c_result_type(logical_result) << ' ' << callee_operand << '(';
+    } else {
+      const std::string extension = c_integer_extension(logical_result);
+      output_ << "  " << result << " = call ";
+      if (!extension.empty()) output_ << extension << ' ';
+      output_ << c_result_type(logical_result) << ' ' << callee_operand << '(';
+    }
+    for (std::size_t index = 0; index < arguments.size(); ++index) {
+      if (index != 0) output_ << ", ";
+      output_ << arguments[index];
+    }
+    output_ << ")\n";
+
+    if (returns_void) return;
+    if (result_abi.classification == Aarch64CAbiClass::SmallAggregate ||
+        result_abi.classification ==
+            Aarch64CAbiClass::HomogeneousFloatAggregate) {
+      const std::string scratch = abi_call_result_scratch(instruction_index);
+      const std::string physical =
+          "%abi.call." + std::to_string(instruction_index) + ".physical";
+      output_ << "  store " << c_result_type(logical_result) << ' ' << physical
+              << ", ptr " << scratch << ", align " << result_abi.alignment
+              << '\n'
+              << "  " << result << " = load " << llvm_type(logical_result)
+              << ", ptr " << scratch << ", align " << result_abi.alignment
+              << '\n';
+    } else if (result_abi.classification == Aarch64CAbiClass::Indirect) {
+      output_ << "  " << result << " = load " << llvm_type(logical_result)
+              << ", ptr " << abi_call_result_scratch(instruction_index)
+              << ", align " << result_abi.alignment << '\n';
+    } else if (result_abi.classification == Aarch64CAbiClass::Illegal) {
+      error(instruction.range, "illegal C ABI call result reached emission");
+    }
+    if (instruction.result.is_valid()) {
+      assign_alias(operands, instruction, result);
+    }
+  }
+
   void emit_instruction(
       std::size_t procedure_index,
       std::size_t instruction_index,
@@ -1151,6 +1431,14 @@ private:
       emit_convert(procedure, instruction, operands);
       break;
     case MirInstructionKind::Call: {
+      const Type &callee_signature = type(
+          procedure.value(instruction.operands.front()).type);
+      if (callee_signature.kind == TypeKind::Procedure &&
+          callee_signature.c_calling_convention) {
+        emit_c_call(
+            instruction_index, procedure, instruction, operands);
+        break;
+      }
       if (instruction.result.is_valid()) output_ << "  " << result << " = ";
       output_ << "call " << llvm_type(instruction.type) << ' '
               << value_operand(operands, instruction.operands[0], instruction.range)
@@ -1375,10 +1663,39 @@ private:
     switch (terminator.kind) {
     case MirTerminatorKind::Return:
       if (terminator.value.is_valid()) {
-        output_ << "  ret "
-                << typed_operand(
-                       procedure, operands, terminator.value, terminator.range)
-                << '\n';
+        const Type &signature = type(procedure.type);
+        const TypeId logical_result = procedure.value(terminator.value).type;
+        const Aarch64CAbiType abi = signature.c_calling_convention
+            ? classify_aarch64_darwin_c_type(
+                  semantic_.types, logical_result)
+            : Aarch64CAbiType{};
+        if (signature.c_calling_convention &&
+            abi.classification == Aarch64CAbiClass::Indirect) {
+          output_ << "  store "
+                  << typed_operand(
+                         procedure, operands, terminator.value, terminator.range)
+                  << ", ptr %sret, align " << abi.alignment << '\n'
+                  << "  ret void\n";
+        } else if (signature.c_calling_convention &&
+                   (abi.classification == Aarch64CAbiClass::SmallAggregate ||
+                    abi.classification ==
+                        Aarch64CAbiClass::HomogeneousFloatAggregate)) {
+          const std::string physical = auxiliary();
+          output_ << "  store "
+                  << typed_operand(
+                         procedure, operands, terminator.value, terminator.range)
+                  << ", ptr %abi.return, align " << abi.alignment << '\n'
+                  << "  " << physical << " = load "
+                  << c_result_type(logical_result)
+                  << ", ptr %abi.return, align " << abi.alignment << '\n'
+                  << "  ret " << c_result_type(logical_result)
+                  << ' ' << physical << '\n';
+        } else {
+          output_ << "  ret "
+                  << typed_operand(
+                         procedure, operands, terminator.value, terminator.range)
+                  << '\n';
+        }
       } else {
         output_ << "  ret void\n";
       }
@@ -1415,10 +1732,84 @@ private:
     }
   }
 
+  void emit_abi_scratch(
+      const std::string &name,
+      std::uint64_t size,
+      std::uint32_t alignment) {
+    output_ << "  " << name << " = alloca [" << size
+            << " x i8], align " << alignment << '\n';
+  }
+
+  // All ABI conversion storage is reserved in the entry block. A source call
+  // may execute repeatedly inside a loop; placing an alloca at the call site
+  // would grow the stack once per iteration even though one reusable slot is
+  // sufficient for each statically distinct MIR instruction.
+  void emit_c_abi_scratch_allocas(const MirProcedure &procedure) {
+    const Type &own_signature = type(procedure.type);
+    if (own_signature.c_calling_convention) {
+      const Aarch64CAbiType result_abi = function_result_abi(procedure.type);
+      if (result_abi.classification == Aarch64CAbiClass::SmallAggregate ||
+          result_abi.classification ==
+              Aarch64CAbiClass::HomogeneousFloatAggregate) {
+        emit_abi_scratch(
+            "%abi.return",
+            abi_result_storage_size(result_abi),
+            result_abi.alignment);
+      }
+    }
+
+    for (std::size_t instruction_index = 0;
+         instruction_index < procedure.instructions.size();
+         ++instruction_index) {
+      const MirInstruction &instruction =
+          procedure.instructions[instruction_index];
+      if (instruction.kind != MirInstructionKind::Call ||
+          instruction.operands.empty()) {
+        continue;
+      }
+      const MirValueId callee = instruction.operands.front();
+      if (!callee.is_valid() ||
+          static_cast<std::size_t>(callee.value) >= procedure.values.size()) {
+        continue;
+      }
+      const TypeId signature_id = procedure.value(callee).type;
+      const Type &signature = type(signature_id);
+      if (signature.kind != TypeKind::Procedure ||
+          !signature.c_calling_convention || signature.members.empty()) {
+        continue;
+      }
+      const std::size_t parameter_count = signature.members.size() - 1;
+      for (std::size_t argument = 0;
+           argument < parameter_count && argument + 1 < instruction.operands.size();
+           ++argument) {
+        const Aarch64CAbiType abi = classify_aarch64_darwin_c_type(
+            semantic_.types, signature.members[argument]);
+        if (abi.classification == Aarch64CAbiClass::Direct ||
+            abi.classification == Aarch64CAbiClass::Illegal) {
+          continue;
+        }
+        emit_abi_scratch(
+            abi_call_argument_scratch(instruction_index, argument),
+            abi_argument_storage_size(abi),
+            abi.alignment);
+      }
+      const Aarch64CAbiType result_abi = function_result_abi(signature_id);
+      if (result_abi.classification == Aarch64CAbiClass::SmallAggregate ||
+          result_abi.classification ==
+              Aarch64CAbiClass::HomogeneousFloatAggregate ||
+          result_abi.classification == Aarch64CAbiClass::Indirect) {
+        emit_abi_scratch(
+            abi_call_result_scratch(instruction_index),
+            abi_result_storage_size(result_abi),
+            result_abi.alignment);
+      }
+    }
+  }
+
   void emit_procedure(std::size_t procedure_index, const MirProcedure &procedure) {
     if (!procedure.valid) return;
     auxiliary_index_ = 0;
-    output_ << "define " << llvm_type(function_result(procedure.type)) << ' '
+    output_ << "define " << llvm_function_result(procedure.type) << ' '
             << symbol_name(procedure.symbol)
             << function_signature(procedure.type, true) << " {\n";
     std::vector<std::string> operands(procedure.values.size());
@@ -1436,11 +1827,63 @@ private:
                   << llvm_type(local.type) << ", align "
                   << type(local.type).layout.alignment << '\n';
           if (local.kind == MirLocalKind::Parameter) {
-            output_ << "  store " << llvm_type(local.type) << " %arg"
-                    << local.parameter_index << ", ptr %l" << local_index
-                    << ", align " << type(local.type).layout.alignment << '\n';
+            const Type &signature = type(procedure.type);
+            const std::string argument =
+                "%arg" + std::to_string(local.parameter_index);
+            if (!signature.c_calling_convention) {
+              output_ << "  store " << llvm_type(local.type) << ' ' << argument
+                      << ", ptr %l" << local_index << ", align "
+                      << type(local.type).layout.alignment << '\n';
+            } else {
+              const Aarch64CAbiType abi = classify_aarch64_darwin_c_type(
+                  semantic_.types, local.type);
+              if (abi.classification == Aarch64CAbiClass::Direct) {
+                output_ << "  store " << llvm_type(local.type) << ' ' << argument
+                        << ", ptr %l" << local_index << ", align "
+                        << type(local.type).layout.alignment << '\n';
+              } else if (abi.classification ==
+                         Aarch64CAbiClass::HomogeneousFloatAggregate) {
+                output_ << "  store " << homogeneous_llvm_type(abi) << ' '
+                        << argument << ", ptr %l" << local_index << ", align "
+                        << abi.alignment << '\n';
+              } else if (abi.classification ==
+                         Aarch64CAbiClass::SmallAggregate) {
+                const std::string scratch =
+                    "%abi.param." + std::to_string(local.parameter_index);
+                const std::uint64_t storage = abi_argument_storage_size(abi);
+                emit_abi_scratch(scratch, storage, abi.alignment);
+                output_ << "  store [" << storage
+                        << " x i8] zeroinitializer, ptr " << scratch
+                        << ", align " << abi.alignment << '\n'
+                        << "  store " << c_parameter_type(local.type) << ' '
+                        << argument << ", ptr " << scratch << ", align "
+                        << abi.alignment << '\n';
+                const std::string logical =
+                    "%abi.param." + std::to_string(local.parameter_index) +
+                    ".logical";
+                output_ << "  " << logical << " = load "
+                        << llvm_type(local.type) << ", ptr " << scratch
+                        << ", align " << abi.alignment << '\n'
+                        << "  store " << llvm_type(local.type) << ' ' << logical
+                        << ", ptr %l" << local_index << ", align "
+                        << type(local.type).layout.alignment << '\n';
+              } else if (abi.classification == Aarch64CAbiClass::Indirect) {
+                const std::string logical =
+                    "%abi.param." + std::to_string(local.parameter_index) +
+                    ".logical";
+                output_ << "  " << logical << " = load "
+                        << llvm_type(local.type) << ", ptr " << argument
+                        << ", align " << abi.alignment << '\n'
+                        << "  store " << llvm_type(local.type) << ' ' << logical
+                        << ", ptr %l" << local_index << ", align "
+                        << type(local.type).layout.alignment << '\n';
+              } else {
+                error(procedure.range, "illegal C ABI parameter reached emission");
+              }
+            }
           }
         }
+        emit_c_abi_scratch_allocas(procedure);
         // Union packing and extraction use one fixed scratch slot per MIR
         // instruction. Declaring these in the entry block avoids dynamic stack
         // growth when the source operation executes repeatedly inside a loop.
