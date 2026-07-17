@@ -222,6 +222,45 @@ private:
     return TokenKind::Invalid;
   }
 
+  // Converts the closed source operator vocabulary into the representation
+  // consumed by HIR and MIR. Invalid is deliberate for punctuation that is not
+  // an executable operator; callers have already emitted the contextual
+  // diagnostic when that can occur on malformed syntax.
+  [[nodiscard]] HirOperation hir_operation(TokenKind kind) const {
+    switch (kind) {
+    case TokenKind::Equal: return HirOperation::Assign;
+    case TokenKind::Plus: return HirOperation::Add;
+    case TokenKind::Minus: return HirOperation::Subtract;
+    case TokenKind::Star: return HirOperation::Multiply;
+    case TokenKind::Slash: return HirOperation::Divide;
+    case TokenKind::Percent: return HirOperation::Remainder;
+    case TokenKind::Ampersand: return HirOperation::BitwiseAnd;
+    case TokenKind::Pipe: return HirOperation::BitwiseOr;
+    case TokenKind::Caret: return HirOperation::BitwiseXor;
+    case TokenKind::ShiftLeft: return HirOperation::ShiftLeft;
+    case TokenKind::ShiftRight: return HirOperation::ShiftRight;
+    case TokenKind::LogicalAnd: return HirOperation::LogicalAnd;
+    case TokenKind::LogicalOr: return HirOperation::LogicalOr;
+    case TokenKind::EqualEqual: return HirOperation::Equal;
+    case TokenKind::BangEqual: return HirOperation::NotEqual;
+    case TokenKind::Less: return HirOperation::Less;
+    case TokenKind::LessEqual: return HirOperation::LessEqual;
+    case TokenKind::Greater: return HirOperation::Greater;
+    case TokenKind::GreaterEqual: return HirOperation::GreaterEqual;
+    case TokenKind::PlusEqual: return HirOperation::Add;
+    case TokenKind::MinusEqual: return HirOperation::Subtract;
+    case TokenKind::StarEqual: return HirOperation::Multiply;
+    case TokenKind::SlashEqual: return HirOperation::Divide;
+    case TokenKind::PercentEqual: return HirOperation::Remainder;
+    case TokenKind::AmpersandEqual: return HirOperation::BitwiseAnd;
+    case TokenKind::PipeEqual: return HirOperation::BitwiseOr;
+    case TokenKind::CaretEqual: return HirOperation::BitwiseXor;
+    case TokenKind::ShiftLeftEqual: return HirOperation::ShiftLeft;
+    case TokenKind::ShiftRightEqual: return HirOperation::ShiftRight;
+    default: return HirOperation::None;
+    }
+  }
+
   // HIR stores the mathematical integer rather than source spelling. Narrowing
   // is used only for grammar-defined indices such as tuple `.0`, never for an
   // ordinary runtime literal.
@@ -609,6 +648,7 @@ private:
         const SyntaxNode &element = tree.node(node.children[index]);
         if (element.children.empty()) continue;
         TypeId element_type;
+        SymbolId operand_member;
         bool keyed = false;
         for (std::uint32_t token_index = element.token_begin;
              token_index < tree.node(element.children.front()).token_begin;
@@ -624,6 +664,7 @@ private:
             const std::optional<SymbolId> member =
                 find_member(composite_type, names.front().text);
             if (member.has_value()) {
+              operand_member = *member;
               element_type = semantic_.symbols.symbol(*member).type;
             } else {
               diagnostics_.error(names.front().range, "unknown composite member");
@@ -638,6 +679,7 @@ private:
         }
         expression.operands.push_back(check_expression(
             tree, element.children.front(), scope, element_type));
+        expression.operand_members.push_back(operand_member);
         ++positional_index;
       }
       if (composite.kind == TypeKind::Array &&
@@ -679,6 +721,15 @@ private:
       }
       HirExpression expression;
       expression.kind = kind;
+      if (operation == TokenKind::Plus) {
+        expression.operation = HirOperation::Positive;
+      } else if (operation == TokenKind::Minus) {
+        expression.operation = HirOperation::Negate;
+      } else if (operation == TokenKind::Bang) {
+        expression.operation = HirOperation::LogicalNot;
+      } else if (operation == TokenKind::Tilde) {
+        expression.operation = HirOperation::BitwiseNot;
+      }
       expression.type = apply_expected_type(result, expected, node.range);
       expression.range = node.range;
       expression.operands.push_back(operand_id);
@@ -726,6 +777,7 @@ private:
       }
       HirExpression expression;
       expression.kind = HirExpressionKind::Binary;
+      expression.operation = hir_operation(operation);
       expression.type = apply_expected_type(result, expected, node.range);
       expression.range = node.range;
       expression.operands = {left_id, right_id};
@@ -892,12 +944,26 @@ private:
       expression.range = node.range;
       expression.type = apply_expected_type(result, expected, node.range);
       expression.operands.push_back(base_id);
+      std::optional<std::uint32_t> colon;
+      for (std::uint32_t token_index = node.token_begin;
+           token_index < node.token_end;
+           ++token_index) {
+        if (tree.token(token_index).kind == TokenKind::Colon) {
+          colon = token_index;
+          break;
+        }
+      }
       for (std::size_t index = 1; index < node.children.size(); ++index) {
         const HirExpressionId bound = check_expression(tree, node.children[index], scope);
         if (!is_integer(hir_.expression(bound).type)) {
           diagnostics_.error(tree.node(node.children[index]).range, "slice bound must be an integer");
         }
         expression.operands.push_back(bound);
+        if (colon.has_value() && tree.node(node.children[index]).token_end <= *colon) {
+          expression.slice_has_low = true;
+        } else {
+          expression.slice_has_high = true;
+        }
       }
       return hir_.add_expression(std::move(expression));
     }
@@ -1054,16 +1120,20 @@ private:
     const SyntaxNode &statement_node = tree.node(statement_id);
     if (statement_node.kind != NodeKind::Declaration &&
         statement_node.children.empty()) {
-      return hir_.add_statement(
-          {HirStatementKind::Invalid, statement_node.range, {}, {}, {}, {}, {}});
+      HirStatement invalid;
+      invalid.kind = HirStatementKind::Invalid;
+      invalid.range = statement_node.range;
+      return hir_.add_statement(std::move(invalid));
     }
     const NodeId declaration_id = statement_node.kind == NodeKind::Declaration
         ? statement_id
         : statement_node.children.front();
     const SyntaxNode &declaration = tree.node(declaration_id);
     if (declaration.children.empty()) {
-      return hir_.add_statement(
-          {HirStatementKind::Invalid, declaration.range, {}, {}, {}, {}, {}});
+      HirStatement invalid;
+      invalid.kind = HirStatementKind::Invalid;
+      invalid.range = declaration.range;
+      return hir_.add_statement(std::move(invalid));
     }
     const SyntaxNode &pattern = tree.node(declaration.children.front());
     if (pattern.kind == NodeKind::TuplePattern) {
@@ -1092,6 +1162,8 @@ private:
     HirStatement statement;
     statement.kind = HirStatementKind::LocalDeclaration;
     statement.range = declaration.range;
+    statement.local_is_uninitialized = initializer.has_value() &&
+        tree.node(*initializer).kind == NodeKind::UninitializedExpression;
     if (initializer.has_value() &&
         tree.node(*initializer).kind != NodeKind::UninitializedExpression) {
       const HirExpressionId value = check_expression(
@@ -1213,6 +1285,7 @@ private:
         diagnostics_.error(node.range, "assignment has no operator");
         break;
       }
+      statement.operation = hir_operation(tree.token(*operation).kind);
       std::size_t left_count = 0;
       for (NodeId child : node.children) {
         if (tree.node(child).token_end <= *operation) ++left_count;
@@ -1310,6 +1383,7 @@ private:
       statement.kind = HirStatementKind::For;
       if (node.children.empty()) break;
       if (tree.node(node.children.front()).kind == NodeKind::IterationHeader) {
+        statement.for_kind = HirForKind::Iteration;
         const NodeId header_id = node.children.front();
         const SyntaxNode &header = tree.node(header_id);
         if (header.children.empty()) break;
@@ -1352,6 +1426,7 @@ private:
               {depth.breakable + 1, depth.loops + 1}));
         }
       } else if (tree.node(node.children.front()).kind == NodeKind::ForClause) {
+        statement.for_kind = HirForKind::Clause;
         const SyntaxNode &clause = tree.node(node.children.front());
         const ScopeId loop_scope = semantic_.symbols.add_scope(
             ScopeKind::Block, scope, clause.range);
@@ -1369,6 +1444,7 @@ private:
               statement.header_statements.push_back(check_statement(
                   tree, header_child, loop_scope, result_type, depth));
             }
+            ++statement.for_initialization_count;
           } else if (separators.size() >= 2 && child.token_begin > separators.back()) {
             statement.header_statements.push_back(check_statement(
                 tree, header_child, loop_scope, result_type, depth));
@@ -1402,18 +1478,23 @@ private:
                     {depth.breakable + 1, depth.loops + 1}));
           } else if (tree.node(child).kind == NodeKind::ExpressionStatement &&
                      tree.node(child).children.size() == 1) {
+            statement.for_kind = HirForKind::Conditional;
             statement.expressions.push_back(check_expression(
                 tree,
                 tree.node(child).children.front(),
                 scope,
                 semantic_.types.builtins().bool_type));
           } else {
+            statement.for_kind = HirForKind::Conditional;
             statement.expressions.push_back(check_expression(
                 tree,
                 child,
                 scope,
                 semantic_.types.builtins().bool_type));
           }
+        }
+        if (statement.expressions.empty()) {
+          statement.for_kind = HirForKind::Infinite;
         }
       }
       break;
@@ -1510,13 +1591,17 @@ private:
           const SyntaxNode &case_node = tree.node(node.children[case_index]);
           if (case_node.kind != NodeKind::SwitchCase || case_node.children.empty()) continue;
           const NodeId list_id = case_node.children.back();
-          if (case_node.children.size() == 1) has_default = true;
+          HirSwitchCase hir_case;
+          hir_case.first_label = statement.expressions.size();
+          hir_case.is_default = case_node.children.size() == 1;
+          if (hir_case.is_default) has_default = true;
           for (std::size_t label_index = 0;
                label_index + 1 < case_node.children.size();
                ++label_index) {
             const HirExpressionId label = check_expression(
                 tree, case_node.children[label_index], scope, subject_type);
             statement.expressions.push_back(label);
+            ++hir_case.label_count;
             if (hir_.expression(label).symbol.is_valid()) {
               const SymbolId alternative = hir_.expression(label).symbol;
               if (std::find(
@@ -1543,7 +1628,9 @@ private:
               result_type,
               {depth.breakable + 1, depth.loops},
               case_block);
-          statement.blocks.push_back(hir_.add_block(std::move(case_block)));
+          hir_case.body = hir_.add_block(std::move(case_block));
+          statement.blocks.push_back(hir_case.body);
+          statement.switch_cases.push_back(hir_case);
         }
 
         const TypeKind subject_kind = is_invalid_type(subject_type)

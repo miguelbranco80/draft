@@ -158,6 +158,42 @@ main :: proc() {
     EXPECT(state, procedure.valid);
     EXPECT(state, procedure.body.is_valid());
   }
+
+
+  bool saw_add = false;
+  bool saw_greater = false;
+  bool saw_compound_add = false;
+  bool saw_switch_shape = false;
+  for (std::size_t index = 0; index < source.bodies.program.expression_count(); ++index) {
+    const draft::HirExpression &expression =
+        source.bodies.program.expression(draft::HirExpressionId{
+            static_cast<std::uint32_t>(index)});
+    saw_add = saw_add ||
+        (expression.kind == draft::HirExpressionKind::Binary &&
+         expression.operation == draft::HirOperation::Add);
+    saw_greater = saw_greater ||
+        (expression.kind == draft::HirExpressionKind::Binary &&
+         expression.operation == draft::HirOperation::Greater);
+  }
+  for (std::size_t index = 0; index < source.bodies.program.statement_count(); ++index) {
+    const draft::HirStatement &statement =
+        source.bodies.program.statement(draft::HirStatementId{
+            static_cast<std::uint32_t>(index)});
+    saw_compound_add = saw_compound_add ||
+        (statement.kind == draft::HirStatementKind::Assignment &&
+         statement.operation == draft::HirOperation::Add);
+    if (statement.kind == draft::HirStatementKind::Switch) {
+      saw_switch_shape = statement.switch_cases.size() == 2 &&
+          statement.switch_cases[0].label_count == 1 &&
+          statement.switch_cases[1].label_count == 1 &&
+          !statement.switch_cases[0].is_default &&
+          !statement.switch_cases[1].is_default;
+    }
+  }
+  EXPECT(state, saw_add);
+  EXPECT(state, saw_greater);
+  EXPECT(state, saw_compound_add);
+  EXPECT(state, saw_switch_shape);
 }
 
 void test_body_diagnostics(TestState &state) {

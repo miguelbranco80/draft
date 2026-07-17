@@ -65,12 +65,46 @@ enum class HirExpressionKind {
   Assembly,
 };
 
+// HirOperation is the executable meaning retained after source tokens have
+// served their parsing purpose. Keeping this vocabulary independent from
+// TokenKind prevents later passes from reaching back into a SyntaxTree merely
+// to discover whether a checked Binary node meant addition or comparison.
+// Assignment uses the same arithmetic operations for compound forms; Assign
+// denotes the plain `=` form.
+enum class HirOperation {
+  None,
+  Assign,
+  Positive,
+  Negate,
+  LogicalNot,
+  BitwiseNot,
+  Add,
+  Subtract,
+  Multiply,
+  Divide,
+  Remainder,
+  BitwiseAnd,
+  BitwiseOr,
+  BitwiseXor,
+  ShiftLeft,
+  ShiftRight,
+  LogicalAnd,
+  LogicalOr,
+  Equal,
+  NotEqual,
+  Less,
+  LessEqual,
+  Greater,
+  GreaterEqual,
+};
+
 // HirExpression operands are in source evaluation order. symbol is meaningful
 // for Symbol and Member nodes; constant is meaningful for Constant. addressable
 // records the language property checked by `&` and assignment, not whether MIR
 // later chooses a stack slot.
 struct HirExpression {
   HirExpressionKind kind = HirExpressionKind::Invalid;
+  HirOperation operation = HirOperation::None;
   TypeId type;
   SourceRange range;
   SyntaxReference syntax;
@@ -78,6 +112,15 @@ struct HirExpression {
   SymbolId symbol;
   ConstantValue constant;
   std::vector<HirExpressionId> operands;
+  // Composite operands may be positional or name-directed. This parallel
+  // vector contains an invalid SymbolId for a positional operand and the
+  // resolved field SymbolId for a keyed operand. Other expression kinds leave
+  // it empty.
+  std::vector<SymbolId> operand_members;
+  // Slice syntax permits either bound to be omitted. Operand count alone cannot
+  // distinguish `value[low:]` from `value[:high]`, so both bits survive HIR.
+  bool slice_has_low = false;
+  bool slice_has_high = false;
   bool addressable = false;
 };
 
@@ -102,6 +145,26 @@ enum class HirStatementKind {
   Assembly,
 };
 
+// A switch keeps its case boundaries explicitly. first_label indexes the
+// owning statement's expressions vector, whose element zero is always the
+// subject. A default case has label_count zero. body is also present in the
+// statement's blocks vector in source order, but retaining it here makes the
+// relationship unambiguous and cheap to consume during CFG lowering.
+struct HirSwitchCase {
+  std::size_t first_label = 0;
+  std::size_t label_count = 0;
+  HirBlockId body;
+  bool is_default = false;
+};
+
+enum class HirForKind {
+  None,
+  Infinite,
+  Conditional,
+  Clause,
+  Iteration,
+};
+
 // HirStatement owns references to evaluated expressions, nested structured
 // blocks, and any local symbols it introduces. Assignment lvalues precede their
 // right-hand expressions in expressions, preserving Draft evaluation order.
@@ -115,6 +178,13 @@ struct HirStatement {
   std::vector<HirBlockId> blocks;
   std::vector<SymbolId> bindings;
   std::vector<HirStatementId> header_statements;
+  HirOperation operation = HirOperation::None;
+  std::vector<HirSwitchCase> switch_cases;
+  HirForKind for_kind = HirForKind::None;
+  // Clause loops retain initialization and post statements in one ordered
+  // vector; this boundary tells CFG lowering where the post sequence begins.
+  std::size_t for_initialization_count = 0;
+  bool local_is_uninitialized = false;
 };
 
 // Every runtime block has one lexical ScopeId and an ordered statement list.

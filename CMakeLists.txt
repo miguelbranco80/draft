@@ -26,6 +26,9 @@ add_library(draft_build_options INTERFACE)
 add_library(
   draft_compiler
   src/base/sha256.cpp
+  src/mir/lower.cpp
+  src/mir/mir.cpp
+  src/mir/verify.cpp
   src/source/diagnostic.cpp
   src/source/source.cpp
   src/sema/analyzer.cpp
@@ -148,4 +151,8 @@ if(BUILD_TESTING)
   add_executable(draft_body_checker_tests tests/body_checker_test.cpp)
   target_link_libraries(draft_body_checker_tests PRIVATE draft_compiler)
   add_test(NAME draft_body_checker_tests COMMAND draft_body_checker_tests)
+
+  add_executable(draft_mir_tests tests/mir_test.cpp)
+  target_link_libraries(draft_mir_tests PRIVATE draft_compiler)
+  add_test(NAME draft_mir_tests COMMAND draft_mir_tests)
 endif()

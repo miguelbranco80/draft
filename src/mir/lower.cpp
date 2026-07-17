@@ -1,0 +1,1157 @@
+// Direct structured-HIR to CFG/MIR lowering.
+//
+// The implementation intentionally mirrors Draft evaluation order. It first
+// computes lvalue addresses, then right-hand values, and finally stores;
+// short-circuit and conditional expressions become branches; a defer captures
+// call operands at its source position and emits calls in reverse order on each
+// lexical exit. There is no optimization in this pass.
+
+#include "mir/lower.h"
+
+#include "mir/verify.h"
+
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include <optional>
+#include <string>
+#include <utility>
+#include <vector>
+
+namespace draft {
+namespace {
+
+struct LocalBinding {
+  SymbolId symbol;
+  MirLocalId local;
+};
+
+struct CapturedCall {
+  SourceRange range;
+  TypeId result_type;
+  std::vector<MirValueId> operands;
+  bool passes_context = false;
+};
+
+struct DeferScope {
+  std::vector<CapturedCall> calls;
+};
+
+struct ControlTarget {
+  MirBlockId break_target;
+  MirBlockId continue_target;
+  std::size_t defer_depth = 0;
+  bool is_loop = false;
+};
+
+class ProcedureLowerer {
+public:
+  ProcedureLowerer(
+      SemanticPackage &semantic,
+      const HirProgram &hir,
+      const HirProcedure &source,
+      DiagnosticSink &diagnostics)
+      : semantic_(semantic), hir_(hir), source_(source),
+        diagnostics_(diagnostics) {}
+
+  [[nodiscard]] MirProcedure run() {
+    procedure_.symbol = source_.symbol;
+    procedure_.type = source_.type;
+    procedure_.range = semantic_.symbols.symbol(source_.symbol).name_range;
+    procedure_.entry = procedure_.add_block(procedure_.range);
+    current_ = procedure_.entry;
+
+    if (!source_.valid) {
+      MirTerminator terminator;
+      terminator.kind = MirTerminatorKind::Unreachable;
+      terminator.range = procedure_.range;
+      procedure_.set_terminator(current_, std::move(terminator));
+      return std::move(procedure_);
+    }
+
+    add_parameters();
+    const Type signature = semantic_.types.type(source_.type);
+    if (!signature.c_calling_convention) {
+      MirInstruction context;
+      context.kind = MirInstructionKind::Context;
+      context.range = procedure_.range;
+      context.type = semantic_.types.builtins().rawptr_type;
+      context_ = emit_value(std::move(context));
+    }
+
+    lower_block(source_.body);
+    if (!terminated()) {
+      const TypeId result = procedure_result_type();
+      if (result != semantic_.types.builtins().void_type) {
+        diagnostics_.error(
+            procedure_.range,
+            "non-void procedure reaches MIR fallthrough without a return");
+        MirTerminator terminator;
+        terminator.kind = MirTerminatorKind::Unreachable;
+        terminator.range = procedure_.range;
+        procedure_.set_terminator(current_, std::move(terminator));
+      } else {
+        MirTerminator terminator;
+        terminator.kind = MirTerminatorKind::Return;
+        terminator.range = procedure_.range;
+        procedure_.set_terminator(current_, std::move(terminator));
+      }
+    }
+    procedure_.valid = diagnostics_.error_count() == initial_errors_;
+    return std::move(procedure_);
+  }
+
+private:
+  [[nodiscard]] TypeId procedure_result_type() const {
+    const Type signature = semantic_.types.type(source_.type);
+    return signature.members.empty()
+        ? semantic_.types.builtins().void_type
+        : signature.members.back();
+  }
+
+  void add_parameters() {
+    std::optional<ScopeId> parameter_scope;
+    for (const OwnedSemanticScope &owned : semantic_.owned_scopes) {
+      if (owned.owner == source_.symbol &&
+          semantic_.symbols.scope(owned.scope).kind == ScopeKind::Procedure) {
+        parameter_scope = owned.scope;
+        break;
+      }
+    }
+    if (!parameter_scope.has_value()) {
+      diagnostics_.error(procedure_.range, "procedure has no semantic parameter scope");
+      return;
+    }
+    std::uint32_t parameter_index = 0;
+    for (SymbolId symbol_id : semantic_.symbols.scope(*parameter_scope).symbols) {
+      const Symbol &symbol = semantic_.symbols.symbol(symbol_id);
+      if (symbol.kind != SymbolKind::Parameter) continue;
+      MirLocal local;
+      local.kind = MirLocalKind::Parameter;
+      local.symbol = symbol_id;
+      local.type = symbol.type;
+      local.range = symbol.name_range;
+      local.parameter_index = parameter_index;
+      const MirLocalId local_id = procedure_.add_local(std::move(local));
+      locals_.push_back({symbol_id, local_id});
+      ++parameter_index;
+    }
+  }
+
+  [[nodiscard]] bool terminated() const {
+    return procedure_.blocks[current_.value].terminator.kind !=
+        MirTerminatorKind::Invalid;
+  }
+
+  [[nodiscard]] MirValueId emit_value(MirInstruction instruction) {
+    const MirInstructionId id =
+        procedure_.add_instruction(current_, std::move(instruction), true);
+    return procedure_.instructions[id.value].result;
+  }
+
+  void emit_void(MirInstruction instruction) {
+    (void)procedure_.add_instruction(current_, std::move(instruction), false);
+  }
+
+  void branch(MirBlockId target, SourceRange range) {
+    if (terminated()) return;
+    MirTerminator terminator;
+    terminator.kind = MirTerminatorKind::Branch;
+    terminator.range = range;
+    terminator.targets.push_back(target);
+    procedure_.set_terminator(current_, std::move(terminator));
+  }
+
+  void conditional_branch(
+      MirValueId condition,
+      MirBlockId true_target,
+      MirBlockId false_target,
+      SourceRange range) {
+    MirTerminator terminator;
+    terminator.kind = MirTerminatorKind::ConditionalBranch;
+    terminator.range = range;
+    terminator.value = condition;
+    terminator.targets = {true_target, false_target};
+    procedure_.set_terminator(current_, std::move(terminator));
+  }
+
+  [[nodiscard]] MirLocalId find_local(SymbolId symbol) const {
+    for (const LocalBinding &binding : locals_) {
+      if (binding.symbol == symbol) return binding.local;
+    }
+    return {};
+  }
+
+  [[nodiscard]] MirLocalId ensure_local(SymbolId symbol_id) {
+    const MirLocalId existing = find_local(symbol_id);
+    if (existing.is_valid()) return existing;
+    const Symbol &symbol = semantic_.symbols.symbol(symbol_id);
+    MirLocal local;
+    local.kind = MirLocalKind::Automatic;
+    local.symbol = symbol_id;
+    local.type = symbol.type;
+    local.range = symbol.name_range;
+    const MirLocalId id = procedure_.add_local(std::move(local));
+    locals_.push_back({symbol_id, id});
+    return id;
+  }
+
+  [[nodiscard]] MirLocalId add_temporary(TypeId type, SourceRange range) {
+    MirLocal local;
+    local.kind = MirLocalKind::Temporary;
+    local.type = type;
+    local.range = range;
+    return procedure_.add_local(std::move(local));
+  }
+
+  [[nodiscard]] MirValueId local_address(
+      MirLocalId local_id, SourceRange range) {
+    MirInstruction instruction;
+    instruction.kind = MirInstructionKind::LocalAddress;
+    instruction.range = range;
+    instruction.local = local_id;
+    instruction.type = semantic_.types.pointer(procedure_.local(local_id).type);
+    return emit_value(std::move(instruction));
+  }
+
+  [[nodiscard]] MirValueId global_address(
+      SymbolId symbol_id, SourceRange range) {
+    MirInstruction instruction;
+    instruction.kind = MirInstructionKind::GlobalAddress;
+    instruction.range = range;
+    instruction.symbol = symbol_id;
+    instruction.type =
+        semantic_.types.pointer(semantic_.symbols.symbol(symbol_id).type);
+    return emit_value(std::move(instruction));
+  }
+
+  [[nodiscard]] MirValueId load(
+      MirValueId address, TypeId type, SourceRange range) {
+    MirInstruction instruction;
+    instruction.kind = MirInstructionKind::Load;
+    instruction.range = range;
+    instruction.type = type;
+    instruction.operands.push_back(address);
+    return emit_value(std::move(instruction));
+  }
+
+  void store(MirValueId address, MirValueId value, SourceRange range) {
+    MirInstruction instruction;
+    instruction.kind = MirInstructionKind::Store;
+    instruction.range = range;
+    instruction.type = semantic_.types.builtins().void_type;
+    instruction.operands = {address, value};
+    emit_void(std::move(instruction));
+  }
+
+  [[nodiscard]] MirValueId constant(
+      ConstantValue value, TypeId type, SourceRange range) {
+    MirInstruction instruction;
+    instruction.kind = MirInstructionKind::Constant;
+    instruction.range = range;
+    instruction.type = type;
+    instruction.constant = std::move(value);
+    return emit_value(std::move(instruction));
+  }
+
+  [[nodiscard]] MirValueId usize_constant(
+      std::uint64_t value, SourceRange range) {
+    return constant(
+        ConstantValue::make_integer(BigInteger::from_u64(value)),
+        semantic_.types.builtins().usize_type,
+        range);
+  }
+
+  [[nodiscard]] MirValueId zero(TypeId type, SourceRange range) {
+    MirInstruction instruction;
+    instruction.kind = MirInstructionKind::Zero;
+    instruction.range = range;
+    instruction.type = type;
+    return emit_value(std::move(instruction));
+  }
+
+  [[nodiscard]] MirValueId binary(
+      HirOperation operation,
+      MirValueId left,
+      MirValueId right,
+      TypeId type,
+      SourceRange range) {
+    MirInstruction instruction;
+    instruction.kind = MirInstructionKind::Binary;
+    instruction.range = range;
+    instruction.type = type;
+    instruction.operation = operation;
+    instruction.operands = {left, right};
+    return emit_value(std::move(instruction));
+  }
+
+  [[nodiscard]] std::uint64_t member_offset(
+      const HirExpression &expression) const {
+    if (expression.symbol.is_valid()) {
+      for (const AggregateMember &member : semantic_.aggregate_members) {
+        if (member.member == expression.symbol) return member.offset;
+      }
+    }
+    if (!expression.operands.empty()) {
+      const Type base_type =
+          semantic_.types.type(hir_.expression(expression.operands.front()).type);
+      const std::optional<std::uint64_t> index = expression.constant.integer.to_u64();
+      if (index.has_value() && *index < base_type.member_offsets.size()) {
+        return base_type.member_offsets[static_cast<std::size_t>(*index)];
+      }
+    }
+    return 0;
+  }
+
+  [[nodiscard]] MirValueId materialize(
+      MirValueId value, TypeId type, SourceRange range) {
+    const MirLocalId local_id = add_temporary(type, range);
+    const MirValueId address = local_address(local_id, range);
+    store(address, value, range);
+    return address;
+  }
+
+  [[nodiscard]] MirValueId lower_address(HirExpressionId expression_id) {
+    const HirExpression &expression = hir_.expression(expression_id);
+    switch (expression.kind) {
+    case HirExpressionKind::Symbol: {
+      const Symbol &symbol = semantic_.symbols.symbol(expression.symbol);
+      if (symbol.kind == SymbolKind::Local || symbol.kind == SymbolKind::Parameter) {
+        return local_address(ensure_local(expression.symbol), expression.range);
+      }
+      if (symbol.kind == SymbolKind::Variable) {
+        return global_address(expression.symbol, expression.range);
+      }
+      diagnostics_.error(expression.range, "MIR address requested for a non-storage symbol");
+      return {};
+    }
+    case HirExpressionKind::Dereference:
+      if (!expression.operands.empty()) {
+        return lower_expression(expression.operands.front());
+      }
+      break;
+    case HirExpressionKind::Member: {
+      if (expression.operands.empty()) break;
+      const HirExpression &base = hir_.expression(expression.operands.front());
+      MirValueId base_address;
+      if (base.addressable) {
+        base_address = lower_address(expression.operands.front());
+      } else {
+        base_address = materialize(
+            lower_expression(expression.operands.front()),
+            base.type,
+            base.range);
+      }
+      MirInstruction instruction;
+      instruction.kind = MirInstructionKind::MemberAddress;
+      instruction.range = expression.range;
+      instruction.type = semantic_.types.pointer(expression.type);
+      instruction.symbol = expression.symbol;
+      instruction.offset = member_offset(expression);
+      instruction.operands.push_back(base_address);
+      return emit_value(std::move(instruction));
+    }
+    case HirExpressionKind::Index:
+      return lower_index_address(expression);
+    case HirExpressionKind::Denial:
+      if (!expression.operands.empty()) {
+        return lower_address(expression.operands.front());
+      }
+      break;
+    default:
+      break;
+    }
+    diagnostics_.error(expression.range, "expression has no lowerable MIR address");
+    return {};
+  }
+
+  [[nodiscard]] MirValueId length(
+      MirValueId base, TypeId base_type, SourceRange range) {
+    const Type type = semantic_.types.type(base_type);
+    if (type.kind == TypeKind::Array) {
+      return usize_constant(type.element_count, range);
+    }
+    MirInstruction instruction;
+    instruction.kind = MirInstructionKind::Length;
+    instruction.range = range;
+    instruction.type = semantic_.types.builtins().usize_type;
+    instruction.operands.push_back(base);
+    return emit_value(std::move(instruction));
+  }
+
+  void bounds_check(
+      MirValueId index,
+      MirValueId length_value,
+      SourceRange range) {
+    if (unchecked_depth_ != 0) return;
+    MirInstruction instruction;
+    instruction.kind = MirInstructionKind::BoundsCheck;
+    instruction.range = range;
+    instruction.type = semantic_.types.builtins().void_type;
+    instruction.operands = {index, length_value};
+    emit_void(std::move(instruction));
+  }
+
+  [[nodiscard]] MirValueId lower_index_address(
+      const HirExpression &expression) {
+    if (expression.operands.size() != 2) {
+      diagnostics_.error(expression.range, "indexed HIR expression has wrong arity");
+      return {};
+    }
+    const HirExpressionId base_id = expression.operands[0];
+    const HirExpression &base_expression = hir_.expression(base_id);
+    const Type base_type = semantic_.types.type(base_expression.type);
+    MirValueId base;
+    if (base_type.kind == TypeKind::Array) {
+      base = base_expression.addressable
+          ? lower_address(base_id)
+          : materialize(
+                lower_expression(base_id), base_expression.type, base_expression.range);
+    } else {
+      base = lower_expression(base_id);
+    }
+    // Draft requires the base expression to be evaluated before the index.
+    // Keep these as separate statements: C++ function-argument evaluation order
+    // is not the language contract of the compiler being implemented.
+    const MirValueId index = lower_expression(expression.operands[1]);
+    if (base_type.kind == TypeKind::Array) {
+      bounds_check(
+          index,
+          usize_constant(base_type.element_count, expression.range),
+          expression.range);
+    } else if (base_type.kind == TypeKind::Slice) {
+      bounds_check(
+          index, length(base, base_expression.type, expression.range), expression.range);
+    }
+    MirInstruction instruction;
+    instruction.kind = MirInstructionKind::IndexAddress;
+    instruction.range = expression.range;
+    instruction.type = semantic_.types.pointer(expression.type);
+    instruction.operands = {base, index};
+    instruction.offset = semantic_.types.type(expression.type).layout.size;
+    return emit_value(std::move(instruction));
+  }
+
+  [[nodiscard]] MirValueId lower_short_circuit(
+      const HirExpression &expression) {
+    const MirValueId left = lower_expression(expression.operands[0]);
+    const MirLocalId result_local = add_temporary(expression.type, expression.range);
+    const MirValueId result_address = local_address(result_local, expression.range);
+    store(result_address, left, expression.range);
+
+    const MirBlockId right_block = procedure_.add_block(expression.range);
+    const MirBlockId join_block = procedure_.add_block(expression.range);
+    if (expression.operation == HirOperation::LogicalAnd) {
+      conditional_branch(left, right_block, join_block, expression.range);
+    } else {
+      conditional_branch(left, join_block, right_block, expression.range);
+    }
+    current_ = right_block;
+    const MirValueId right = lower_expression(expression.operands[1]);
+    store(result_address, right, expression.range);
+    branch(join_block, expression.range);
+    current_ = join_block;
+    return load(result_address, expression.type, expression.range);
+  }
+
+  [[nodiscard]] MirValueId lower_conditional_expression(
+      const HirExpression &expression) {
+    const MirValueId condition = lower_expression(expression.operands[0]);
+    const MirLocalId result_local = add_temporary(expression.type, expression.range);
+    const MirValueId result_address = local_address(result_local, expression.range);
+    const MirBlockId true_block = procedure_.add_block(expression.range);
+    const MirBlockId false_block = procedure_.add_block(expression.range);
+    const MirBlockId join_block = procedure_.add_block(expression.range);
+    conditional_branch(condition, true_block, false_block, expression.range);
+
+    current_ = true_block;
+    store(
+        result_address,
+        lower_expression(expression.operands[1]),
+        expression.range);
+    branch(join_block, expression.range);
+    current_ = false_block;
+    store(
+        result_address,
+        lower_expression(expression.operands[2]),
+        expression.range);
+    branch(join_block, expression.range);
+    current_ = join_block;
+    return load(result_address, expression.type, expression.range);
+  }
+
+  [[nodiscard]] CapturedCall capture_call(const HirExpression &expression) {
+    CapturedCall captured;
+    captured.range = expression.range;
+    captured.result_type = expression.type;
+    if (expression.operands.empty()) {
+      diagnostics_.error(expression.range, "call HIR has no callee");
+      return captured;
+    }
+    const HirExpression &callee_expression =
+        hir_.expression(expression.operands.front());
+    captured.operands.push_back(lower_expression(expression.operands.front()));
+    const Type signature = semantic_.types.type(callee_expression.type);
+    if (!signature.c_calling_convention) {
+      captured.passes_context = true;
+      if (!context_.is_valid()) {
+        diagnostics_.error(
+            expression.range,
+            "a C-convention procedure cannot call an ordinary Draft procedure "
+            "without establishing context");
+      } else {
+        captured.operands.push_back(context_);
+      }
+    }
+    for (std::size_t index = 1; index < expression.operands.size(); ++index) {
+      captured.operands.push_back(lower_expression(expression.operands[index]));
+    }
+    return captured;
+  }
+
+  [[nodiscard]] MirValueId emit_call(const CapturedCall &captured) {
+    MirInstruction instruction;
+    instruction.kind = MirInstructionKind::Call;
+    instruction.range = captured.range;
+    instruction.type = captured.result_type;
+    instruction.operands = captured.operands;
+    instruction.passes_context = captured.passes_context;
+    if (captured.result_type == semantic_.types.builtins().void_type) {
+      emit_void(std::move(instruction));
+      return {};
+    }
+    return emit_value(std::move(instruction));
+  }
+
+  [[nodiscard]] std::uint64_t aggregate_operand_offset(
+      const HirExpression &expression,
+      std::size_t index) const {
+    const Type type = semantic_.types.type(expression.type);
+    if (index < expression.operand_members.size() &&
+        expression.operand_members[index].is_valid()) {
+      for (const AggregateMember &member : semantic_.aggregate_members) {
+        if (member.member == expression.operand_members[index]) return member.offset;
+      }
+    }
+    if (type.kind == TypeKind::Array) {
+      return type.element_count == 0
+          ? 0
+          : semantic_.types.type(type.element).layout.size * index;
+    }
+    if (index < type.member_offsets.size()) return type.member_offsets[index];
+    return 0;
+  }
+
+  [[nodiscard]] MirValueId lower_slice(const HirExpression &expression) {
+    const HirExpressionId base_id = expression.operands.front();
+    const HirExpression &base_expression = hir_.expression(base_id);
+    const Type base_type = semantic_.types.type(base_expression.type);
+    MirValueId base;
+    if (base_type.kind == TypeKind::Array) {
+      base = base_expression.addressable
+          ? lower_address(base_id)
+          : materialize(
+                lower_expression(base_id), base_expression.type, base_expression.range);
+    } else {
+      base = lower_expression(base_id);
+    }
+    const MirValueId base_length = length(base, base_expression.type, expression.range);
+    std::size_t bound_index = 1;
+    const MirValueId low = expression.slice_has_low
+        ? lower_expression(expression.operands[bound_index++])
+        : usize_constant(0, expression.range);
+    MirValueId high;
+    if (expression.slice_has_high) {
+      high = lower_expression(expression.operands[bound_index]);
+    } else if (base_type.kind == TypeKind::MultiPointer) {
+      diagnostics_.error(
+          expression.range,
+          "multi-pointer slicing requires an explicit high bound");
+      high = low;
+    } else {
+      high = base_length;
+    }
+    if (unchecked_depth_ == 0) {
+      MirInstruction check;
+      check.kind = MirInstructionKind::SliceBoundsCheck;
+      check.range = expression.range;
+      check.type = semantic_.types.builtins().void_type;
+      check.operands = {low, high, base_length};
+      emit_void(std::move(check));
+    }
+    MirInstruction instruction;
+    instruction.kind = MirInstructionKind::Slice;
+    instruction.range = expression.range;
+    instruction.type = expression.type;
+    instruction.operands = {base, low, high};
+    return emit_value(std::move(instruction));
+  }
+
+  [[nodiscard]] MirValueId lower_expression(HirExpressionId expression_id) {
+    const HirExpression &expression = hir_.expression(expression_id);
+    switch (expression.kind) {
+    case HirExpressionKind::Constant:
+      return constant(expression.constant, expression.type, expression.range);
+    case HirExpressionKind::Symbol: {
+      const Symbol &symbol = semantic_.symbols.symbol(expression.symbol);
+      if (symbol.kind == SymbolKind::Procedure) {
+        MirInstruction instruction;
+        instruction.kind = MirInstructionKind::ProcedureReference;
+        instruction.range = expression.range;
+        instruction.type = expression.type;
+        instruction.symbol = expression.symbol;
+        return emit_value(std::move(instruction));
+      }
+      const MirValueId address = lower_address(expression_id);
+      return load(address, expression.type, expression.range);
+    }
+    case HirExpressionKind::Address:
+      return expression.operands.empty() ? MirValueId{}
+                                         : lower_address(expression.operands.front());
+    case HirExpressionKind::Dereference:
+    case HirExpressionKind::Member:
+    case HirExpressionKind::Index:
+      return load(lower_address(expression_id), expression.type, expression.range);
+    case HirExpressionKind::Unary: {
+      MirInstruction instruction;
+      instruction.kind = MirInstructionKind::Unary;
+      instruction.range = expression.range;
+      instruction.type = expression.type;
+      instruction.operation = expression.operation;
+      instruction.operands.push_back(lower_expression(expression.operands.front()));
+      return emit_value(std::move(instruction));
+    }
+    case HirExpressionKind::Binary:
+      if (expression.operation == HirOperation::LogicalAnd ||
+          expression.operation == HirOperation::LogicalOr) {
+        return lower_short_circuit(expression);
+      }
+      {
+        const MirValueId left = lower_expression(expression.operands[0]);
+        const MirValueId right = lower_expression(expression.operands[1]);
+        return binary(
+            expression.operation,
+            left,
+            right,
+            expression.type,
+            expression.range);
+      }
+    case HirExpressionKind::Call:
+      return emit_call(capture_call(expression));
+    case HirExpressionKind::Intrinsic: {
+      if (expression.constant.text == "len") {
+        const HirExpression &argument = hir_.expression(expression.operands.front());
+        return length(
+            lower_expression(expression.operands.front()),
+            argument.type,
+            expression.range);
+      }
+      if (expression.constant.text == "assert") {
+        MirInstruction instruction;
+        instruction.kind = MirInstructionKind::Assert;
+        instruction.range = expression.range;
+        instruction.type = semantic_.types.builtins().void_type;
+        for (HirExpressionId operand : expression.operands) {
+          instruction.operands.push_back(lower_expression(operand));
+        }
+        emit_void(std::move(instruction));
+        return {};
+      }
+      if (expression.constant.text == "cast") {
+        MirInstruction instruction;
+        instruction.kind = MirInstructionKind::Convert;
+        instruction.range = expression.range;
+        instruction.type = expression.type;
+        instruction.operands.push_back(lower_expression(expression.operands.front()));
+        return emit_value(std::move(instruction));
+      }
+      diagnostics_.error(expression.range, "unknown intrinsic reached MIR lowering");
+      return {};
+    }
+    case HirExpressionKind::Tuple:
+    case HirExpressionKind::Composite: {
+      MirInstruction instruction;
+      instruction.kind = MirInstructionKind::Aggregate;
+      instruction.range = expression.range;
+      instruction.type = expression.type;
+      instruction.symbol = expression.symbol;
+      for (std::size_t index = 0; index < expression.operands.size(); ++index) {
+        instruction.operands.push_back(lower_expression(expression.operands[index]));
+        instruction.offsets.push_back(aggregate_operand_offset(expression, index));
+      }
+      return emit_value(std::move(instruction));
+    }
+    case HirExpressionKind::Slice:
+      return lower_slice(expression);
+    case HirExpressionKind::Conditional:
+      return lower_conditional_expression(expression);
+    case HirExpressionKind::Denial:
+      return expression.operands.empty() ? MirValueId{}
+                                         : lower_expression(expression.operands.front());
+    case HirExpressionKind::Synthesis:
+      diagnostics_.error(
+          expression.range,
+          "unresolved synthesis expression prevents native lowering");
+      return {};
+    case HirExpressionKind::Assembly:
+      diagnostics_.error(
+          expression.range,
+          "parsed assembly is preserved but AArch64 instruction lowering is not implemented yet");
+      return {};
+    case HirExpressionKind::Invalid:
+      diagnostics_.error(expression.range, "invalid HIR expression reached MIR lowering");
+      return {};
+    }
+    diagnostics_.error(expression.range, "unhandled HIR expression reached MIR lowering");
+    return {};
+  }
+
+  void emit_deferred_call(const CapturedCall &call) {
+    (void)emit_call(call);
+  }
+
+  void emit_defers_to(std::size_t retained_depth) {
+    for (std::size_t scope_index = defer_scopes_.size();
+         scope_index > retained_depth;
+         --scope_index) {
+      const DeferScope &scope = defer_scopes_[scope_index - 1];
+      for (std::size_t call_index = scope.calls.size(); call_index > 0; --call_index) {
+        emit_deferred_call(scope.calls[call_index - 1]);
+      }
+    }
+  }
+
+  void lower_block(HirBlockId block_id) {
+    const HirBlock &block = hir_.block(block_id);
+    defer_scopes_.push_back({});
+    for (HirStatementId statement : block.statements) {
+      if (terminated()) break;
+      lower_statement(statement);
+    }
+    if (!terminated()) {
+      emit_defers_to(defer_scopes_.size() - 1);
+    }
+    defer_scopes_.pop_back();
+  }
+
+  void lower_local_declaration(const HirStatement &statement) {
+    std::vector<MirLocalId> locals;
+    for (SymbolId binding : statement.bindings) {
+      locals.push_back(ensure_local(binding));
+    }
+    if (statement.local_is_uninitialized) return;
+    if (!statement.expressions.empty()) {
+      const MirValueId initializer = lower_expression(statement.expressions.front());
+      for (MirLocalId local_id : locals) {
+        store(local_address(local_id, statement.range), initializer, statement.range);
+      }
+      return;
+    }
+    for (MirLocalId local_id : locals) {
+      store(
+          local_address(local_id, statement.range),
+          zero(procedure_.local(local_id).type, statement.range),
+          statement.range);
+    }
+  }
+
+  void lower_assignment(const HirStatement &statement) {
+    const std::size_t left_count = statement.expressions.size() / 2;
+    std::vector<MirValueId> addresses;
+    std::vector<MirValueId> left_values;
+    std::vector<MirValueId> right_values;
+    addresses.reserve(left_count);
+    for (std::size_t index = 0; index < left_count; ++index) {
+      addresses.push_back(lower_address(statement.expressions[index]));
+    }
+    if (statement.operation != HirOperation::Assign) {
+      for (std::size_t index = 0; index < left_count; ++index) {
+        const HirExpression &left = hir_.expression(statement.expressions[index]);
+        left_values.push_back(load(addresses[index], left.type, left.range));
+      }
+    }
+    for (std::size_t index = 0; index < left_count; ++index) {
+      right_values.push_back(
+          lower_expression(statement.expressions[left_count + index]));
+    }
+    for (std::size_t index = 0; index < left_count; ++index) {
+      MirValueId value = right_values[index];
+      if (statement.operation != HirOperation::Assign) {
+        value = binary(
+            statement.operation,
+            left_values[index],
+            value,
+            hir_.expression(statement.expressions[index]).type,
+            statement.range);
+      }
+      store(addresses[index], value, statement.range);
+    }
+  }
+
+  void lower_if(const HirStatement &statement) {
+    if (statement.expressions.empty() || statement.blocks.empty()) {
+      diagnostics_.error(statement.range, "if HIR is missing its condition or body");
+      return;
+    }
+    const MirValueId condition = lower_expression(statement.expressions.front());
+    const MirBlockId true_block = procedure_.add_block(statement.range);
+    const MirBlockId join_block = procedure_.add_block(statement.range);
+    const MirBlockId false_block = statement.blocks.size() > 1
+        ? procedure_.add_block(statement.range)
+        : join_block;
+    conditional_branch(condition, true_block, false_block, statement.range);
+
+    current_ = true_block;
+    lower_block(statement.blocks[0]);
+    branch(join_block, statement.range);
+    if (statement.blocks.size() > 1) {
+      current_ = false_block;
+      lower_block(statement.blocks[1]);
+      branch(join_block, statement.range);
+    }
+    current_ = join_block;
+  }
+
+  void lower_return(const HirStatement &statement) {
+    MirValueId result;
+    if (!statement.expressions.empty()) {
+      result = lower_expression(statement.expressions.front());
+    }
+    emit_defers_to(0);
+    MirTerminator terminator;
+    terminator.kind = MirTerminatorKind::Return;
+    terminator.range = statement.range;
+    terminator.value = result;
+    procedure_.set_terminator(current_, std::move(terminator));
+  }
+
+  void lower_control_exit(const HirStatement &statement, bool is_continue) {
+    for (std::size_t index = controls_.size(); index > 0; --index) {
+      const ControlTarget &target = controls_[index - 1];
+      if (is_continue && !target.is_loop) continue;
+      emit_defers_to(target.defer_depth);
+      branch(
+          is_continue ? target.continue_target : target.break_target,
+          statement.range);
+      return;
+    }
+    diagnostics_.error(statement.range, "control exit has no MIR target");
+  }
+
+  void lower_defer(const HirStatement &statement) {
+    if (defer_scopes_.empty() || statement.expressions.empty()) {
+      diagnostics_.error(statement.range, "defer HIR is missing a lexical scope or call");
+      return;
+    }
+    const HirExpression &call = hir_.expression(statement.expressions.front());
+    defer_scopes_.back().calls.push_back(capture_call(call));
+  }
+
+  void lower_clause_statements(
+      const HirStatement &statement, std::size_t begin, std::size_t end) {
+    for (std::size_t index = begin; index < end && !terminated(); ++index) {
+      lower_statement(statement.header_statements[index]);
+    }
+  }
+
+  void lower_regular_loop(const HirStatement &statement) {
+    const std::size_t initialization_count =
+        std::min(statement.for_initialization_count,
+                 statement.header_statements.size());
+    if (statement.for_kind == HirForKind::Clause) {
+      lower_clause_statements(statement, 0, initialization_count);
+    }
+    const MirBlockId condition_block = procedure_.add_block(statement.range);
+    const MirBlockId body_block = procedure_.add_block(statement.range);
+    const MirBlockId post_block = procedure_.add_block(statement.range);
+    const MirBlockId exit_block = procedure_.add_block(statement.range);
+    branch(condition_block, statement.range);
+
+    current_ = condition_block;
+    if (statement.for_kind == HirForKind::Infinite || statement.expressions.empty()) {
+      branch(body_block, statement.range);
+    } else {
+      conditional_branch(
+          lower_expression(statement.expressions.front()),
+          body_block,
+          exit_block,
+          statement.range);
+    }
+
+    controls_.push_back(
+        {exit_block, post_block, defer_scopes_.size(), true});
+    current_ = body_block;
+    if (!statement.blocks.empty()) lower_block(statement.blocks.front());
+    branch(post_block, statement.range);
+    controls_.pop_back();
+
+    current_ = post_block;
+    if (statement.for_kind == HirForKind::Clause) {
+      lower_clause_statements(
+          statement, initialization_count, statement.header_statements.size());
+    }
+    branch(condition_block, statement.range);
+    current_ = exit_block;
+  }
+
+  [[nodiscard]] MirValueId iteration_element(
+      MirLocalId iterable_local,
+      TypeId iterable_type,
+      MirValueId index,
+      SourceRange range) {
+    const Type type = semantic_.types.type(iterable_type);
+    MirValueId base;
+    if (type.kind == TypeKind::Array) {
+      base = local_address(iterable_local, range);
+    } else {
+      base = load(local_address(iterable_local, range), iterable_type, range);
+    }
+    MirInstruction address;
+    address.kind = MirInstructionKind::IndexAddress;
+    address.range = range;
+    address.type = semantic_.types.pointer(type.element);
+    address.operands = {base, index};
+    address.offset = semantic_.types.type(type.element).layout.size;
+    return load(emit_value(std::move(address)), type.element, range);
+  }
+
+  void lower_iteration_loop(const HirStatement &statement) {
+    if (statement.expressions.empty() || statement.blocks.empty()) {
+      diagnostics_.error(statement.range, "iteration loop HIR is incomplete");
+      return;
+    }
+    const HirExpression &iterable_expression =
+        hir_.expression(statement.expressions.front());
+    const Type iterable_type = semantic_.types.type(iterable_expression.type);
+    const MirLocalId iterable_local =
+        add_temporary(iterable_expression.type, statement.range);
+    const MirValueId iterable_value =
+        lower_expression(statement.expressions.front());
+    store(
+        local_address(iterable_local, statement.range),
+        iterable_value,
+        statement.range);
+    const MirLocalId index_local =
+        add_temporary(semantic_.types.builtins().usize_type, statement.range);
+    store(
+        local_address(index_local, statement.range),
+        usize_constant(0, statement.range),
+        statement.range);
+
+    const MirBlockId condition_block = procedure_.add_block(statement.range);
+    const MirBlockId body_block = procedure_.add_block(statement.range);
+    const MirBlockId post_block = procedure_.add_block(statement.range);
+    const MirBlockId exit_block = procedure_.add_block(statement.range);
+    branch(condition_block, statement.range);
+
+    current_ = condition_block;
+    const MirValueId index = load(
+        local_address(index_local, statement.range),
+        semantic_.types.builtins().usize_type,
+        statement.range);
+    MirValueId iterable_for_length = iterable_value;
+    if (iterable_type.kind == TypeKind::Slice) {
+      iterable_for_length = load(
+          local_address(iterable_local, statement.range),
+          iterable_expression.type,
+          statement.range);
+    }
+    const MirValueId count = length(
+        iterable_for_length, iterable_expression.type, statement.range);
+    const MirValueId condition = binary(
+        HirOperation::Less,
+        index,
+        count,
+        semantic_.types.builtins().bool_type,
+        statement.range);
+    conditional_branch(condition, body_block, exit_block, statement.range);
+
+    controls_.push_back(
+        {exit_block, post_block, defer_scopes_.size(), true});
+    current_ = body_block;
+    if (!statement.bindings.empty()) {
+      const MirLocalId value_local = ensure_local(statement.bindings[0]);
+      store(
+          local_address(value_local, statement.range),
+          iteration_element(
+              iterable_local, iterable_expression.type, index, statement.range),
+          statement.range);
+    }
+    if (statement.bindings.size() > 1) {
+      const MirLocalId source_index = ensure_local(statement.bindings[1]);
+      store(local_address(source_index, statement.range), index, statement.range);
+    }
+    lower_block(statement.blocks.front());
+    branch(post_block, statement.range);
+    controls_.pop_back();
+
+    current_ = post_block;
+    const MirValueId old_index = load(
+        local_address(index_local, statement.range),
+        semantic_.types.builtins().usize_type,
+        statement.range);
+    const MirValueId next_index = binary(
+        HirOperation::Add,
+        old_index,
+        usize_constant(1, statement.range),
+        semantic_.types.builtins().usize_type,
+        statement.range);
+    store(local_address(index_local, statement.range), next_index, statement.range);
+    branch(condition_block, statement.range);
+    current_ = exit_block;
+  }
+
+  void lower_loop(const HirStatement &statement) {
+    if (statement.for_kind == HirForKind::Iteration) {
+      lower_iteration_loop(statement);
+    } else {
+      lower_regular_loop(statement);
+    }
+  }
+
+  void lower_switch(const HirStatement &statement) {
+    if (statement.expressions.empty()) {
+      diagnostics_.error(statement.range, "switch HIR has no subject");
+      return;
+    }
+    const MirValueId subject = lower_expression(statement.expressions.front());
+    const MirBlockId join_block = procedure_.add_block(statement.range);
+    std::vector<MirBlockId> case_blocks;
+    case_blocks.reserve(statement.switch_cases.size());
+    for (const HirSwitchCase &source_case : statement.switch_cases) {
+      case_blocks.push_back(
+          procedure_.add_block(hir_.block(source_case.body).range));
+    }
+
+    MirTerminator terminator;
+    terminator.kind = MirTerminatorKind::Switch;
+    terminator.range = statement.range;
+    terminator.value = subject;
+    MirBlockId default_target = join_block;
+    for (std::size_t case_index = 0;
+         case_index < statement.switch_cases.size();
+         ++case_index) {
+      const HirSwitchCase &source_case = statement.switch_cases[case_index];
+      if (source_case.is_default) default_target = case_blocks[case_index];
+      for (std::size_t label_index = 0;
+           label_index < source_case.label_count;
+           ++label_index) {
+        const std::size_t expression_index =
+            source_case.first_label + label_index;
+        terminator.switch_arms.push_back(
+            {lower_expression(statement.expressions[expression_index]),
+             case_blocks[case_index]});
+      }
+    }
+    terminator.targets.push_back(default_target);
+    procedure_.set_terminator(current_, std::move(terminator));
+
+    controls_.push_back({join_block, {}, defer_scopes_.size(), false});
+    for (std::size_t case_index = 0; case_index < case_blocks.size(); ++case_index) {
+      current_ = case_blocks[case_index];
+      lower_block(statement.switch_cases[case_index].body);
+      branch(join_block, statement.range);
+    }
+    controls_.pop_back();
+    current_ = join_block;
+  }
+
+  void lower_statement(HirStatementId statement_id) {
+    const HirStatement &statement = hir_.statement(statement_id);
+    switch (statement.kind) {
+    case HirStatementKind::LocalDeclaration:
+      lower_local_declaration(statement);
+      break;
+    case HirStatementKind::Expression:
+      for (HirExpressionId expression : statement.expressions) {
+        (void)lower_expression(expression);
+      }
+      break;
+    case HirStatementKind::Assignment:
+      lower_assignment(statement);
+      break;
+    case HirStatementKind::Return:
+      lower_return(statement);
+      break;
+    case HirStatementKind::Break:
+      lower_control_exit(statement, false);
+      break;
+    case HirStatementKind::Continue:
+      lower_control_exit(statement, true);
+      break;
+    case HirStatementKind::Defer:
+      lower_defer(statement);
+      break;
+    case HirStatementKind::If:
+      lower_if(statement);
+      break;
+    case HirStatementKind::For:
+      lower_loop(statement);
+      break;
+    case HirStatementKind::Switch:
+      lower_switch(statement);
+      break;
+    case HirStatementKind::Block:
+    case HirStatementKind::Denial:
+    case HirStatementKind::CompileTimeSelection:
+      for (HirBlockId block : statement.blocks) lower_block(block);
+      break;
+    case HirStatementKind::Unchecked:
+      ++unchecked_depth_;
+      for (HirBlockId block : statement.blocks) lower_block(block);
+      --unchecked_depth_;
+      break;
+    case HirStatementKind::Judgment:
+      // A judgment is compile-time evidence and intentionally emits no MIR.
+      break;
+    case HirStatementKind::Synthesis:
+      diagnostics_.error(
+          statement.range,
+          "unresolved synthesis statement prevents native lowering");
+      break;
+    case HirStatementKind::Assembly:
+      diagnostics_.error(
+          statement.range,
+          "parsed assembly is preserved but AArch64 instruction lowering is not implemented yet");
+      break;
+    case HirStatementKind::Invalid:
+      diagnostics_.error(statement.range, "invalid HIR statement reached MIR lowering");
+      break;
+    }
+  }
+
+  SemanticPackage &semantic_;
+  const HirProgram &hir_;
+  const HirProcedure &source_;
+  DiagnosticSink &diagnostics_;
+  MirProcedure procedure_;
+  MirBlockId current_;
+  MirValueId context_;
+  std::vector<LocalBinding> locals_;
+  std::vector<DeferScope> defer_scopes_;
+  std::vector<ControlTarget> controls_;
+  std::size_t unchecked_depth_ = 0;
+  std::size_t initial_errors_ = diagnostics_.error_count();
+};
+
+} // namespace
+
+MirLoweringResult lower_package_to_mir(
+    SemanticPackage &semantic,
+    const HirProgram &hir,
+    DiagnosticSink &diagnostics) {
+  MirLoweringResult result;
+  const std::size_t initial_errors = diagnostics.error_count();
+  for (const HirProcedure &procedure : hir.procedures()) {
+    MirProcedure lowered =
+        ProcedureLowerer(semantic, hir, procedure, diagnostics).run();
+    if (lowered.valid) ++result.lowered_procedures;
+    result.program.add_procedure(std::move(lowered));
+  }
+  if (diagnostics.error_count() == initial_errors) {
+    result.ok = verify_mir_program(result.program, semantic.types, diagnostics);
+  }
+  return result;
+}
+
+} // namespace draft

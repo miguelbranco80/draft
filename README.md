@@ -83,7 +83,11 @@ summaries compose through local and imported calls, and lexical `deny` regions
 enforce `assert`, context, assembly, unchecked access, globals, packages, and
 named declarations transitively while rejecting unknown call edges. The single
 AArch64 macOS profile is explicit and versioned rather than inferred from the
-host.
+host. Checked procedure bodies now lower into a target-independent MIR with
+explicit locals, addresses, loads/stores, bounds checks, calls, lexical defer
+unwinding, and CFG terminators for short-circuit expressions, conditionals,
+loops, and switches. A defensive verifier checks every MIR table reference and
+block boundary before a native backend may consume it.
 
 Configure, build, and test the current compiler with:
 

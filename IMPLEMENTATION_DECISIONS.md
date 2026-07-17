@@ -58,3 +58,17 @@ Package `.s`, `.S`, and `.asm` inputs all contain exact non-preprocessed bytes;
 in particular, `.S` does not inherit the host C driver's preprocessing rule.
 Changing any of these facts creates a new target-profile identity rather than
 silently changing the meaning of the existing profile.
+
+## Parsed assembly staging
+
+Status: implementation sequence; Draft 1 scope is unchanged.
+
+The bootstrap front end preserves assembly statements, expressions, typed
+operands, synthesis sites, source ranges, effects, and denial interactions from
+the beginning. Target-independent MIR lowering rejects an assembly region with
+a precise diagnostic until ordinary Draft MIR has a working AArch64 macOS
+emission path. Instruction parsing, register/operand validation, clobber
+checking, and final lowering are then implemented against that same target
+profile. Parsed assembly remains required before the first complete agent-free
+Draft 1 implementation is declared finished; this staging only keeps it from
+blocking bring-up of ordinary calls, control flow, runtime checks, and linking.
