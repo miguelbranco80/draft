@@ -160,6 +160,10 @@ pointer_roundtrip :: proc(value: ^i64) -> bool {
     return cast[^i64](bits) == value
 }
 
+pointer_distance :: proc(value: [^]i64, count: isize) -> isize {
+    return ptr_sub(ptr_offset(value, count), value)
+}
+
 main :: proc() -> i32 {
     value := add(20, 22)
     (left, _): (i64, i64) = (20, 0)
@@ -186,6 +190,9 @@ main :: proc() -> i32 {
     assert(endian_roundtrip(21) == 42)
     assert(endian_float_roundtrip(0.5) == 0.5)
     assert(pointer_roundtrip(&values[0]))
+    multi := cast[[^]i64](&values[0])
+    assert(ptr_offset(multi, 2)^ == 42)
+    assert(pointer_distance(multi, 2) == 2)
     assert('é' == '\u{e9}')
     assert(cast[u32]('🙂') == 0x1f642)
     text := "draft"
@@ -269,6 +276,8 @@ main :: proc() -> i32 {
   EXPECT(state, module.text.find("bitcast double") != std::string::npos);
   EXPECT(state, module.text.find("ptrtoint ptr") != std::string::npos);
   EXPECT(state, module.text.find("inttoptr i64") != std::string::npos);
+  EXPECT(state, module.text.find("sdiv exact i64") != std::string::npos);
+  EXPECT(state, module.text.find("sub nsw i64") != std::string::npos);
   EXPECT(state, module.text.find("extractvalue { i64, i64 }") != std::string::npos);
   EXPECT(state, module.text.find("switch i8") != std::string::npos);
   EXPECT(state, module.text.find("getelementptr i8") != std::string::npos);

@@ -1389,7 +1389,8 @@ private:
             single_name_expression(tree, callee_id)) {
       if (name->text == "len" || name->text == "assert" ||
           name->text == "size_of" || name->text == "align_of" ||
-          name->text == "static_assert") {
+          name->text == "static_assert" || name->text == "ptr_offset" ||
+          name->text == "ptr_sub") {
         intrinsic = name->text;
       }
     } else if (callee.kind == NodeKind::BracketExpression &&
@@ -1491,6 +1492,78 @@ private:
                 (message.empty() ? std::string() : ": " + message));
       }
       expression.type = semantic_.types.builtins().void_type;
+    } else if (*intrinsic == "ptr_offset") {
+      if (argument_count != 2) {
+        diagnostics_.error(call.range, "ptr_offset requires a pointer and an isize count");
+        expression.type = semantic_.types.builtins().invalid;
+      } else {
+        const HirExpressionId pointer =
+            check_expression(tree, call.children[1], scope);
+        const TypeId pointer_type = hir_.expression(pointer).type;
+        const TypeKind pointer_kind = is_invalid_type(pointer_type)
+            ? TypeKind::Invalid
+            : semantic_.types.type(pointer_type).kind;
+        const HirExpressionId count = check_expression(
+            tree,
+            call.children[2],
+            scope,
+            semantic_.types.builtins().isize_type);
+        expression.operands = {pointer, count};
+        if (pointer_kind != TypeKind::Pointer &&
+            pointer_kind != TypeKind::MultiPointer) {
+          diagnostics_.error(
+              tree.node(call.children[1]).range,
+              "ptr_offset requires a ^T or [^]T pointer");
+          expression.type = semantic_.types.builtins().invalid;
+        } else {
+          const Type &pointee = semantic_.types.type(
+              semantic_.types.type(pointer_type).element);
+          if (!pointee.layout.known || pointee.layout.size == 0) {
+            diagnostics_.error(
+                tree.node(call.children[1]).range,
+                "ptr_offset requires a pointer to a complete nonempty type");
+            expression.type = semantic_.types.builtins().invalid;
+          } else {
+            expression.type = apply_expected_type(
+                pointer_type, expected, call.range);
+          }
+        }
+      }
+    } else if (*intrinsic == "ptr_sub") {
+      if (argument_count != 2) {
+        diagnostics_.error(call.range, "ptr_sub requires two matching pointers");
+        expression.type = semantic_.types.builtins().invalid;
+      } else {
+        const HirExpressionId left =
+            check_expression(tree, call.children[1], scope);
+        const TypeId left_type = hir_.expression(left).type;
+        const HirExpressionId right = check_expression(
+            tree, call.children[2], scope, left_type);
+        const TypeId right_type = hir_.expression(right).type;
+        expression.operands = {left, right};
+        const TypeKind left_kind = is_invalid_type(left_type)
+            ? TypeKind::Invalid
+            : semantic_.types.type(left_type).kind;
+        if ((left_kind != TypeKind::Pointer &&
+             left_kind != TypeKind::MultiPointer) ||
+            left_type != right_type) {
+          diagnostics_.error(
+              call.range, "ptr_sub requires two matching ^T or [^]T pointers");
+          expression.type = semantic_.types.builtins().invalid;
+        } else {
+          const Type &pointee = semantic_.types.type(
+              semantic_.types.type(left_type).element);
+          if (!pointee.layout.known || pointee.layout.size == 0) {
+            diagnostics_.error(
+                call.range,
+                "ptr_sub requires pointers to a complete nonempty type");
+            expression.type = semantic_.types.builtins().invalid;
+          } else {
+            expression.type = apply_expected_type(
+                semantic_.types.builtins().isize_type, expected, call.range);
+          }
+        }
+      }
     } else if (*intrinsic == "len") {
       if (argument_count != 1) {
         diagnostics_.error(call.range, "len requires exactly one argument");

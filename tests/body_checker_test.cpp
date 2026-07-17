@@ -682,6 +682,11 @@ same_pointer :: proc(left, right: ^u64) -> bool {
     return left == right || cast[^u64](address) == left
 }
 
+pointer_distance :: proc(base: [^]u64, count: isize) -> isize {
+    advanced := ptr_offset(base, count)
+    return ptr_sub(advanced, base)
+}
+
 increment :: proc(value: Counter) -> Counter {
     return value + 1
 }
@@ -724,13 +729,29 @@ bad_enum_pair :: proc(value: i64) -> Code {
 bad_distinct_pair :: proc(value: Counter) -> i64 {
     return cast[i64](value)
 }
+
+bad_pointer_kind :: proc(bits: rawptr) -> rawptr {
+    return ptr_offset(bits, 1)
+}
+
+bad_pointer_count :: proc(value: ^u32, count: usize) -> ^u32 {
+    return ptr_offset(value, count)
+}
+
+bad_pointer_pair :: proc(left: ^u32, right: ^u64) -> isize {
+    return ptr_sub(left, right)
+}
 )draft");
   EXPECT(state, !invalid.bodies.ok);
-  EXPECT(state, invalid.diagnostics.error_count() >= 5);
+  EXPECT(state, invalid.diagnostics.error_count() >= 8);
   const std::string rendered =
       draft::render_diagnostics(invalid.sources, invalid.diagnostics);
   EXPECT(state, rendered.find("comparison is not defined") != std::string::npos);
   EXPECT(state, rendered.find("cast source and target types are incompatible") !=
+                    std::string::npos);
+  EXPECT(state, rendered.find("ptr_offset requires a ^T or [^]T pointer") !=
+                    std::string::npos);
+  EXPECT(state, rendered.find("ptr_sub requires two matching") !=
                     std::string::npos);
 }
 

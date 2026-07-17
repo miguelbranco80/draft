@@ -1526,6 +1526,52 @@ private:
     case MirInstructionKind::Convert:
       emit_convert(procedure, instruction, operands);
       break;
+    case MirInstructionKind::PointerOffset: {
+      const std::string pointer = value_operand(
+          operands, instruction.operands[0], instruction.range);
+      std::string byte_count = value_operand(
+          operands, instruction.operands[1], instruction.range);
+      if (instruction.offset != 1) {
+        const std::string scaled = auxiliary();
+        output_ << "  " << scaled << " = mul "
+                << llvm_type(procedure.value(instruction.operands[1]).type)
+                << ' ' << byte_count << ", " << instruction.offset << '\n';
+        byte_count = scaled;
+      }
+      output_ << "  " << result << " = getelementptr i8, ptr " << pointer
+              << ", "
+              << llvm_type(procedure.value(instruction.operands[1]).type)
+              << ' ' << byte_count << '\n';
+      assign_alias(operands, instruction, result);
+      break;
+    }
+    case MirInstructionKind::PointerSubtract: {
+      const std::string integer_type = llvm_type(instruction.type);
+      const std::string left = auxiliary();
+      const std::string right = auxiliary();
+      output_ << "  " << left << " = ptrtoint ptr "
+              << value_operand(
+                     operands, instruction.operands[0], instruction.range)
+              << " to " << integer_type << '\n';
+      output_ << "  " << right << " = ptrtoint ptr "
+              << value_operand(
+                     operands, instruction.operands[1], instruction.range)
+              << " to " << integer_type << '\n';
+      const std::string difference = instruction.offset == 1
+          ? result
+          : auxiliary();
+      // Pointer subtraction is specified only when the mathematical byte
+      // difference fits isize. `nsw` and `exact` encode those source-level UB
+      // preconditions without adding hidden runtime checks to a primitive op.
+      output_ << "  " << difference << " = sub nsw " << integer_type << ' '
+              << left << ", " << right << '\n';
+      if (instruction.offset != 1) {
+        output_ << "  " << result << " = sdiv exact " << integer_type << ' '
+                << difference << ", " << instruction.offset << '\n';
+      }
+      assign_alias(operands, instruction, result);
+      break;
+    }
     case MirInstructionKind::Call: {
       const Type &callee_signature = type(
           procedure.value(instruction.operands.front()).type);

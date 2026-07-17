@@ -95,6 +95,8 @@ private:
       break;
     case MirInstructionKind::Store:
     case MirInstructionKind::Binary:
+    case MirInstructionKind::PointerOffset:
+    case MirInstructionKind::PointerSubtract:
     case MirInstructionKind::IndexAddress:
     case MirInstructionKind::BoundsCheck:
       if (arity != 2) error(instruction.range, "binary instruction has wrong arity");

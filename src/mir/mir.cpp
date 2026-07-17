@@ -113,6 +113,8 @@ const char *mir_instruction_kind_name(MirInstructionKind kind) {
   case MirInstructionKind::Unary: return "unary";
   case MirInstructionKind::Binary: return "binary";
   case MirInstructionKind::Convert: return "convert";
+  case MirInstructionKind::PointerOffset: return "pointer_offset";
+  case MirInstructionKind::PointerSubtract: return "pointer_subtract";
   case MirInstructionKind::Call: return "call";
   case MirInstructionKind::Length: return "length";
   case MirInstructionKind::Assert: return "assert";

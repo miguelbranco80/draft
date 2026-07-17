@@ -82,6 +82,8 @@ enum class MirInstructionKind {
   Unary,
   Binary,
   Convert,
+  PointerOffset,
+  PointerSubtract,
   Call,
   Length,
   Assert,
@@ -100,8 +102,8 @@ enum class MirInstructionKind {
 // value; Call uses callee, optional hidden context, then arguments; BoundsCheck
 // uses index then length; Slice uses base, low, then high after omitted bounds
 // have been materialized by lowering. offset is a byte offset for member access
-// and element_size for indexed access. A result-less instruction has an invalid
-// result and normally the canonical void TypeId.
+// and element_size for indexed access and pointer arithmetic. A result-less
+// instruction has an invalid result and normally the canonical void TypeId.
 struct MirInstruction {
   MirInstructionKind kind = MirInstructionKind::Invalid;
   SourceRange range;

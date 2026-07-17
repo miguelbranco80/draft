@@ -1091,6 +1091,23 @@ private:
         // invariant. It has no runtime value, effect, or control-flow edge.
         return {};
       }
+      if (expression.constant.text == "ptr_offset" ||
+          expression.constant.text == "ptr_sub") {
+        MirInstruction instruction;
+        instruction.kind = expression.constant.text == "ptr_offset"
+            ? MirInstructionKind::PointerOffset
+            : MirInstructionKind::PointerSubtract;
+        instruction.range = expression.range;
+        instruction.type = expression.type;
+        for (HirExpressionId operand : expression.operands) {
+          instruction.operands.push_back(lower_expression(operand));
+        }
+        const TypeId pointer_type =
+            hir_.expression(expression.operands.front()).type;
+        const Type &pointer = semantic_.types.type(pointer_type);
+        instruction.offset = semantic_.types.type(pointer.element).layout.size;
+        return emit_value(std::move(instruction));
+      }
       if (expression.constant.text == "cast") {
         return checked_conversion(
             lower_expression(expression.operands.front()),
