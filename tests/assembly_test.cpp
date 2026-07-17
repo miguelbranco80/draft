@@ -84,6 +84,39 @@ increment :: proc(value: u64) -> u64 {
     }
 }
 
+load_value :: proc(pointer: ^u64) -> u64 {
+    return asm aarch64 -> u64 {
+        in x0 = pointer
+        out x1
+        ldr x1, [x0]
+    }
+}
+
+store_value :: proc(pointer: ^u32, value: u32) {
+    asm aarch64 {
+        in x0 = pointer
+        in w1 = value
+        str w1, [x0]
+    }
+}
+
+add_float :: proc(left, right: f64) -> f64 {
+    return asm aarch64 -> f64 {
+        in d0 = left
+        in d1 = right
+        out d0
+        fadd d0, d0, d1
+    }
+}
+
+load_vector :: proc(pointer: ^#simd[2]u64) -> #simd[2]u64 {
+    return asm aarch64 -> #simd[2]u64 {
+        in x0 = pointer
+        out q0
+        ldr q0, [x0]
+    }
+}
+
 barrier :: proc() {
     asm aarch64 {
         clobber memory
@@ -103,12 +136,20 @@ main :: proc() -> i32 {
   EXPECT(state, source.bodies.ok);
   EXPECT(state, source.assembly.ok);
   EXPECT(state, !source.diagnostics.has_errors());
-  EXPECT(state, source.assembly.regions.size() == 2);
-  if (source.assembly.regions.size() == 2) {
+  EXPECT(state, source.assembly.regions.size() == 6);
+  if (source.assembly.regions.size() == 6) {
     EXPECT(state, source.assembly.regions[0].llvm_constraints == "={x0},0");
     EXPECT(state, source.assembly.regions[0].instruction_text ==
         "add x0, x0, #1");
-    EXPECT(state, source.assembly.regions[1].llvm_constraints == "~{memory}");
+    EXPECT(state, source.assembly.regions[1].llvm_constraints ==
+        "={x1},{x0},~{memory}");
+    EXPECT(state, source.assembly.regions[2].llvm_constraints ==
+        "={d0},0,{d1}");
+    EXPECT(state, source.assembly.regions[3].llvm_constraints ==
+        "={q0},{x0},~{memory}");
+    EXPECT(state, source.assembly.regions[4].llvm_constraints ==
+        "{x0},{w1},~{memory}");
+    EXPECT(state, source.assembly.regions[5].llvm_constraints == "~{memory}");
   }
 
   const draft::MirLoweringResult mir = draft::lower_package_to_mir(
@@ -135,6 +176,15 @@ main :: proc() -> i32 {
   EXPECT(state, llvm.text.find(
       "asm sideeffect \"dmb ish\", \"~{memory}\"") !=
       std::string::npos);
+  EXPECT(state, llvm.text.find(
+      "asm sideeffect \"ldr x1, [x0]\", \"={x1},{x0},~{memory}\"") !=
+      std::string::npos);
+  EXPECT(state, llvm.text.find(
+      "asm sideeffect \"fadd d0, d0, d1\", \"={d0},0,{d1}\"") !=
+      std::string::npos);
+  EXPECT(state, llvm.text.find(
+      "asm sideeffect \"ldr q0, [x0]\", \"={q0},{x0},~{memory}\"") !=
+      std::string::npos);
 }
 
 void test_invalid_effects_and_architecture(TestState &state) {
@@ -158,6 +208,22 @@ bad_effects :: proc(value: u64) -> u64 {
         b somewhere
     }
 }
+
+bad_untyped_memory :: proc(pointer: rawptr) -> u64 {
+    return asm aarch64 -> u64 {
+        in x0 = pointer
+        out x1
+        ldr x1, [x0]
+    }
+}
+
+bad_memory_width :: proc(pointer: ^u32) -> u64 {
+    return asm aarch64 -> u64 {
+        in x0 = pointer
+        out x1
+        ldr x1, [x0]
+    }
+}
 )draft");
 
   EXPECT(state, source.semantics.ok);
@@ -171,7 +237,9 @@ bad_effects :: proc(value: u64) -> u64 {
   EXPECT(state, rendered.find("without 'clobber flags'") != std::string::npos);
   EXPECT(state, rendered.find("unsupported instruction 'b'") != std::string::npos);
   EXPECT(state, rendered.find("output register is never written") !=
-      std::string::npos);
+                    std::string::npos);
+  EXPECT(state, rendered.find("memory access is not typed by a matching pointer") !=
+                    std::string::npos);
 }
 
 } // namespace

@@ -68,8 +68,9 @@ operands, synthesis sites, source ranges, effects, and denial interactions from
 the beginning. Target-independent MIR originally rejected an assembly region
 until ordinary Draft MIR had a working AArch64 macOS emission path. That staging
 boundary has now been crossed: language-owned directives are structural syntax,
-the `draft-aarch64-apple-v1` analyzer validates the initial fixed-register
-integer and barrier vocabulary plus register/flags/memory declarations, and MIR
-lowers accepted regions as volatile assembly. Typed memory operands, SIMD/FP
-registers, and the remainder of the closed Draft 1 instruction vocabulary are
-still required before the agent-free implementation is declared complete.
+the `draft-aarch64-apple-v1` analyzer validates fixed general, scalar FP, and
+fixed-vector registers, direct typed loads and stores, the initial integer/FP
+and barrier vocabulary, and register/flags/memory declarations. MIR lowers
+accepted regions as volatile assembly. More complex addressing, lane-qualified
+SIMD operations, and the remainder of the closed Draft 1 instruction vocabulary
+are still required before the agent-free implementation is declared complete.

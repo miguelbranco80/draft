@@ -18,11 +18,17 @@
 namespace draft {
 namespace {
 
+enum class RegisterClass {
+  General,
+  Vector,
+};
+
 struct Register {
   bool valid = false;
   bool zero = false;
   std::uint32_t index = 0;
   std::uint32_t bits = 0;
+  RegisterClass register_class = RegisterClass::General;
   std::string name;
 };
 
@@ -35,12 +41,14 @@ struct DeclaredRegister {
 struct ParsedInstruction {
   std::vector<Register> reads;
   std::vector<Register> writes;
+  std::vector<std::pair<Register, std::uint32_t>> memory_accesses;
   bool writes_flags = false;
 };
 
 [[nodiscard]] bool same_physical(Register left, Register right) {
   return left.valid && right.valid && left.index == right.index &&
-      left.zero == right.zero;
+      left.zero == right.zero &&
+      left.register_class == right.register_class;
 }
 
 [[nodiscard]] bool all_decimal(std::string_view text) {
@@ -60,17 +68,30 @@ struct ParsedInstruction {
     result.bits = text.front() == 'x' ? 64U : 32U;
     return result;
   }
-  if (text.size() < 2 || (text.front() != 'x' && text.front() != 'w') ||
-      !all_decimal(text.substr(1))) {
+  if (text.size() < 2 || !all_decimal(text.substr(1))) {
     return result;
   }
+  const char prefix = text.front();
+  const bool general = prefix == 'x' || prefix == 'w';
+  const bool vector = prefix == 'b' || prefix == 'h' || prefix == 's' ||
+      prefix == 'd' || prefix == 'q' || prefix == 'v';
+  if (!general && !vector) return result;
   const std::optional<BigInteger> number = BigInteger::parse_literal(text.substr(1));
   const std::optional<std::uint64_t> index =
       number.has_value() ? number->to_u64() : std::nullopt;
-  if (!index.has_value() || *index > 30) return result;
+  if (!index.has_value() || *index > (general ? 30U : 31U)) return result;
   result.valid = true;
   result.index = static_cast<std::uint32_t>(*index);
-  result.bits = text.front() == 'x' ? 64U : 32U;
+  result.register_class = general
+      ? RegisterClass::General
+      : RegisterClass::Vector;
+  if (prefix == 'x') result.bits = 64;
+  if (prefix == 'w') result.bits = 32;
+  if (prefix == 'b') result.bits = 8;
+  if (prefix == 'h') result.bits = 16;
+  if (prefix == 's') result.bits = 32;
+  if (prefix == 'd') result.bits = 64;
+  if (prefix == 'q' || prefix == 'v') result.bits = 128;
   return result;
 }
 
@@ -164,18 +185,77 @@ private:
     if (value.kind == TypeKind::Pointer || value.kind == TypeKind::MultiPointer ||
         value.kind == TypeKind::RawPointer || value.kind == TypeKind::CString ||
         value.kind == TypeKind::Procedure) {
-      return reg.bits == 64;
+      return reg.register_class == RegisterClass::General && reg.bits == 64;
     }
     if (value.kind == TypeKind::Enum) {
-      return value.layout.known && value.layout.size * 8U == reg.bits;
+      if (!value.layout.known || value.layout.size > 8) return false;
+      const std::uint32_t register_bits = value.layout.size <= 4 ? 32U : 64U;
+      return reg.register_class == RegisterClass::General &&
+          reg.bits == register_bits;
+    }
+    if (value.kind == TypeKind::Bool) {
+      return reg.register_class == RegisterClass::General && reg.bits == 32;
     }
     if (value.kind == TypeKind::SignedInteger ||
         value.kind == TypeKind::UnsignedInteger || value.kind == TypeKind::Rune ||
         value.kind == TypeKind::BooleanStorage ||
         value.kind == TypeKind::EndianScalar) {
-      return value.bit_width == reg.bits;
+      if (value.bit_width == 0 || value.bit_width > 64) return false;
+      const std::uint32_t register_bits = value.bit_width <= 32 ? 32U : 64U;
+      return reg.register_class == RegisterClass::General &&
+          reg.bits == register_bits;
+    }
+    if (value.kind == TypeKind::Float) {
+      return reg.register_class == RegisterClass::Vector &&
+          value.bit_width == reg.bits && reg.bits <= 64;
+    }
+    if (value.kind == TypeKind::Simd && value.layout.known) {
+      const std::uint64_t bits = value.layout.size * 8U;
+      return reg.register_class == RegisterClass::Vector &&
+          (bits == 64 || bits == 128) && bits == reg.bits;
     }
     return false;
+  }
+
+  [[nodiscard]] const DeclaredRegister *declared_input(
+      const std::vector<DeclaredRegister> &inputs, Register reg) const {
+    for (const DeclaredRegister &input : inputs) {
+      if (same_physical(input.reg, reg)) return &input;
+    }
+    return nullptr;
+  }
+
+  [[nodiscard]] bool memory_value_type(TypeId type_id, std::uint32_t bits) const {
+    Type value = semantic_.types.type(type_id);
+    while (value.kind == TypeKind::Distinct) {
+      value = semantic_.types.type(value.element);
+    }
+    const bool scalar = value.kind == TypeKind::Bool ||
+        value.kind == TypeKind::BooleanStorage ||
+        value.kind == TypeKind::SignedInteger ||
+        value.kind == TypeKind::UnsignedInteger ||
+        value.kind == TypeKind::Float || value.kind == TypeKind::Rune ||
+        value.kind == TypeKind::EndianScalar || value.kind == TypeKind::Enum;
+    const bool vector = value.kind == TypeKind::Simd &&
+        (bits == 64 || bits == 128);
+    return (scalar || vector) && value.layout.known &&
+        value.layout.size * 8U == bits;
+  }
+
+  [[nodiscard]] bool typed_memory_access(
+      const DeclaredRegister &address, std::uint32_t bits) const {
+    Type pointer = semantic_.types.type(address.type);
+    while (pointer.kind == TypeKind::Distinct) {
+      pointer = semantic_.types.type(pointer.element);
+    }
+    if (pointer.kind == TypeKind::CString) {
+      return bits == 8;
+    }
+    if (pointer.kind != TypeKind::Pointer &&
+        pointer.kind != TypeKind::MultiPointer) {
+      return false;
+    }
+    return memory_value_type(pointer.element, bits);
   }
 
   [[nodiscard]] bool contains_register(
@@ -202,6 +282,23 @@ private:
     }
     const Register reg = parse_register(token_text(syntax, operand.front()));
     return reg.valid ? std::optional<Register>(reg) : std::nullopt;
+  }
+
+  [[nodiscard]] std::optional<Register> memory_base_register(
+      const SyntaxTree &syntax,
+      const std::vector<std::uint32_t> &operand) const {
+    if (operand.size() != 3 ||
+        syntax.token(operand[0]).kind != TokenKind::LeftBracket ||
+        syntax.token(operand[2]).kind != TokenKind::RightBracket ||
+        syntax.token(operand[1]).kind != TokenKind::Identifier) {
+      return std::nullopt;
+    }
+    const Register base = parse_register(token_text(syntax, operand[1]));
+    if (!base.valid || base.zero ||
+        base.register_class != RegisterClass::General || base.bits != 64) {
+      return std::nullopt;
+    }
+    return base;
   }
 
   [[nodiscard]] bool immediate_operand(
@@ -274,6 +371,8 @@ private:
       }
       if (operands.size() != 3 || !destination.has_value() || !left.has_value() ||
           !third_valid || destination->bits != left->bits ||
+          destination->register_class != RegisterClass::General ||
+          left->register_class != RegisterClass::General ||
           (right.has_value() && right->bits != destination->bits)) {
         wrong_shape();
         return result;
@@ -289,7 +388,10 @@ private:
       const bool source_valid = source.has_value() ||
           (operands.size() == 2 && immediate_operand(syntax, operands[1], 65535));
       if (operands.size() != 2 || !destination.has_value() || !source_valid ||
-          (source.has_value() && source->bits != destination->bits)) {
+          destination->register_class != RegisterClass::General ||
+          (source.has_value() &&
+           (source->register_class != RegisterClass::General ||
+            source->bits != destination->bits))) {
         wrong_shape();
         return result;
       }
@@ -303,13 +405,98 @@ private:
       const bool right_valid = right.has_value() ||
           (operands.size() == 2 && immediate_operand(syntax, operands[1], 4095));
       if (operands.size() != 2 || !left.has_value() || !right_valid ||
-          (right.has_value() && right->bits != left->bits)) {
+          left->register_class != RegisterClass::General ||
+          (right.has_value() &&
+           (right->register_class != RegisterClass::General ||
+            right->bits != left->bits))) {
         wrong_shape();
         return result;
       }
       result.reads.push_back(*left);
       if (right.has_value()) result.reads.push_back(*right);
       result.writes_flags = true;
+      return result;
+    }
+    if (mnemonic == "fadd" || mnemonic == "fsub" || mnemonic == "fmul" ||
+        mnemonic == "fdiv") {
+      const std::optional<Register> destination = require_register(0);
+      const std::optional<Register> left = require_register(1);
+      const std::optional<Register> right = require_register(2);
+      if (operands.size() != 3 || !destination.has_value() ||
+          !left.has_value() || !right.has_value() ||
+          destination->register_class != RegisterClass::Vector ||
+          destination->bits > 64 || destination->bits != left->bits ||
+          destination->bits != right->bits) {
+        wrong_shape();
+        return result;
+      }
+      result.writes.push_back(*destination);
+      result.reads.push_back(*left);
+      result.reads.push_back(*right);
+      return result;
+    }
+    if (mnemonic == "fmov" || mnemonic == "fneg" || mnemonic == "fabs" ||
+        mnemonic == "fsqrt") {
+      const std::optional<Register> destination = require_register(0);
+      const std::optional<Register> source = require_register(1);
+      if (operands.size() != 2 || !destination.has_value() ||
+          !source.has_value() ||
+          destination->register_class != RegisterClass::Vector ||
+          source->register_class != RegisterClass::Vector ||
+          destination->bits > 64 || destination->bits != source->bits) {
+        wrong_shape();
+        return result;
+      }
+      result.writes.push_back(*destination);
+      result.reads.push_back(*source);
+      return result;
+    }
+    if (mnemonic == "fcmp") {
+      const std::optional<Register> left = require_register(0);
+      const std::optional<Register> right = require_register(1);
+      if (operands.size() != 2 || !left.has_value() || !right.has_value() ||
+          left->register_class != RegisterClass::Vector ||
+          right->register_class != RegisterClass::Vector ||
+          left->bits > 64 || left->bits != right->bits) {
+        wrong_shape();
+        return result;
+      }
+      result.reads.push_back(*left);
+      result.reads.push_back(*right);
+      result.writes_flags = true;
+      return result;
+    }
+    if (mnemonic == "ldr" || mnemonic == "str" || mnemonic == "ldar" ||
+        mnemonic == "stlr" || mnemonic == "ldrb" || mnemonic == "strb" ||
+        mnemonic == "ldrh" || mnemonic == "strh") {
+      const bool load = mnemonic == "ldr" || mnemonic == "ldar" ||
+          mnemonic == "ldrb" || mnemonic == "ldrh";
+      const std::optional<Register> value = require_register(0);
+      const std::optional<Register> base = operands.size() == 2
+          ? memory_base_register(syntax, operands[1])
+          : std::nullopt;
+      const bool byte_access = mnemonic == "ldrb" || mnemonic == "strb";
+      const bool half_access = mnemonic == "ldrh" || mnemonic == "strh";
+      const bool narrow_access = byte_access || half_access;
+      const bool atomic = mnemonic == "ldar" || mnemonic == "stlr";
+      if (operands.size() != 2 || !value.has_value() || !base.has_value() ||
+          (narrow_access &&
+           (value->register_class != RegisterClass::General ||
+            value->bits != 32)) ||
+          (atomic && value->register_class != RegisterClass::General)) {
+        wrong_shape();
+        return result;
+      }
+      const std::uint32_t access_bits = byte_access
+          ? 8U
+          : (half_access ? 16U : value->bits);
+      result.reads.push_back(*base);
+      if (load) {
+        result.writes.push_back(*value);
+      } else {
+        result.reads.push_back(*value);
+      }
+      result.memory_accesses.push_back({*base, access_bits});
       return result;
     }
     if (mnemonic == "dmb" || mnemonic == "dsb") {
@@ -480,10 +667,20 @@ private:
             outputs[index].range,
             "assembly output type does not match fixed register width");
       }
+      for (const DeclaredRegister &input : inputs) {
+        if (same_physical(input.reg, outputs[index].reg) &&
+            (input.reg.bits != outputs[index].reg.bits ||
+             input.type != expected_outputs[index])) {
+          diagnostics_.error(
+              outputs[index].range,
+              "tied assembly input and output must use one register view and type");
+        }
+      }
     }
 
     std::vector<Register> initialized;
     std::vector<Register> written;
+    bool typed_memory_dependency = false;
     for (const DeclaredRegister &input : inputs) initialized.push_back(input.reg);
     for (const SyntaxNode *instruction_node : instructions) {
       const ParsedInstruction instruction =
@@ -511,6 +708,17 @@ private:
         diagnostics_.error(
             instruction_node->range,
             "instruction writes condition flags without 'clobber flags'");
+      }
+      for (const auto &[base, bits] : instruction.memory_accesses) {
+        const DeclaredRegister *input = declared_input(inputs, base);
+        if (input != nullptr && typed_memory_access(*input, bits)) {
+          typed_memory_dependency = true;
+        } else if (!clobber_memory) {
+          diagnostics_.error(
+              instruction_node->range,
+              "assembly memory access is not typed by a matching pointer input; "
+              "declare 'clobber memory' for an untyped access");
+        }
       }
       if (!result.instruction_text.empty()) result.instruction_text += "\n\t";
       result.instruction_text += trimmed_source(sources_, instruction_node->range);
@@ -548,7 +756,9 @@ private:
       append_constraint("~{" + clobber.reg.name + "}");
     }
     if (clobber_flags) append_constraint("~{cc}");
-    if (clobber_memory) append_constraint("~{memory}");
+    if (clobber_memory || typed_memory_dependency) {
+      append_constraint("~{memory}");
+    }
     return result;
   }
 
