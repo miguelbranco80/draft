@@ -30,6 +30,7 @@ add_library(
   src/backend/toolchain.cpp
   src/base/sha256.cpp
   src/compile/compiler.cpp
+  src/interop/aarch64_abi.cpp
   src/interop/native.cpp
   src/mir/lower.cpp
   src/mir/mir.cpp
@@ -182,4 +183,8 @@ if(BUILD_TESTING)
   add_executable(draft_native_interop_tests tests/native_interop_test.cpp)
   target_link_libraries(draft_native_interop_tests PRIVATE draft_compiler)
   add_test(NAME draft_native_interop_tests COMMAND draft_native_interop_tests)
+
+  add_executable(draft_aarch64_abi_tests tests/aarch64_abi_test.cpp)
+  target_link_libraries(draft_aarch64_abi_tests PRIVATE draft_compiler)
+  add_test(NAME draft_aarch64_abi_tests COMMAND draft_aarch64_abi_tests)
 endif()
