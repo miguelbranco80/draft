@@ -31,6 +31,17 @@ struct StringConstant {
   std::size_t instruction = 0;
   std::string value;
   SymbolId global;
+  // One MIR/global constant may contain several strings nested inside arrays,
+  // tuples, structs, or union payloads.  The logical aggregate path gives each
+  // leaf a stable module identity without teaching ConstantValue about LLVM.
+  std::vector<std::size_t> path;
+};
+
+struct ConstantSite {
+  std::size_t procedure = std::numeric_limits<std::size_t>::max();
+  std::size_t instruction = std::numeric_limits<std::size_t>::max();
+  SymbolId global;
+  std::vector<std::size_t> path;
 };
 
 // Runtime assertions need source spellings that are not ordinary MIR string
@@ -421,17 +432,40 @@ private:
     output_ << '\n';
   }
 
+  void collect_constant_strings(
+      const ConstantValue &value,
+      std::size_t procedure,
+      std::size_t instruction,
+      SymbolId global,
+      std::vector<std::size_t> &path) {
+    if (value.kind == ConstantKind::String) {
+      strings_.push_back(
+          {procedure, instruction, value.text, global, path});
+      return;
+    }
+    if (value.kind != ConstantKind::Aggregate &&
+        value.kind != ConstantKind::EnumLabel) {
+      return;
+    }
+    for (std::size_t index = 0; index < value.elements.size(); ++index) {
+      path.push_back(index);
+      collect_constant_strings(
+          value.elements[index], procedure, instruction, global, path);
+      path.pop_back();
+    }
+  }
+
   void collect_strings() {
     for (const ConstantBinding &binding : global_initializers_.bindings) {
       const Symbol &symbol = semantic_.symbols.symbol(binding.symbol);
-      if (symbol.kind == SymbolKind::Variable &&
-          binding.value.kind == ConstantKind::String && !symbol.flags.foreign) {
-        strings_.push_back(
-            {std::numeric_limits<std::size_t>::max(),
-             std::numeric_limits<std::size_t>::max(),
-             binding.value.text,
-             binding.symbol});
-      }
+      if (symbol.kind != SymbolKind::Variable || symbol.flags.foreign) continue;
+      std::vector<std::size_t> path;
+      collect_constant_strings(
+          binding.value,
+          std::numeric_limits<std::size_t>::max(),
+          std::numeric_limits<std::size_t>::max(),
+          binding.symbol,
+          path);
     }
     const std::vector<MirProcedure> &procedures = mir_.procedures();
     for (std::size_t procedure_index = 0;
@@ -443,10 +477,14 @@ private:
            ++instruction_index) {
         const MirInstruction &instruction =
             procedure.instructions[instruction_index];
-        if (instruction.kind == MirInstructionKind::Constant &&
-            instruction.constant.kind == ConstantKind::String) {
-          strings_.push_back(
-              {procedure_index, instruction_index, instruction.constant.text, {}});
+        if (instruction.kind == MirInstructionKind::Constant) {
+          std::vector<std::size_t> path;
+          collect_constant_strings(
+              instruction.constant,
+              procedure_index,
+              instruction_index,
+              {},
+              path);
         }
         if (instruction.kind == MirInstructionKind::Assert &&
             !instruction.operands.empty()) {
@@ -479,12 +517,14 @@ private:
               {std::numeric_limits<std::size_t>::max(),
                std::numeric_limits<std::size_t>::max(),
                std::move(condition_text),
+               {},
                {}});
           const std::size_t file_string = strings_.size();
           strings_.push_back(
               {std::numeric_limits<std::size_t>::max(),
                std::numeric_limits<std::size_t>::max(),
                std::move(file_path),
+               {},
                {}});
           assertion_sites_.push_back(
               {procedure_index,
@@ -506,6 +546,7 @@ private:
               {std::numeric_limits<std::size_t>::max(),
                std::numeric_limits<std::size_t>::max(),
                std::move(file_path),
+               {},
                {}});
           bounds_sites_.push_back(
               {procedure_index, instruction_index, file_string, location});
@@ -816,16 +857,11 @@ private:
       if (symbol.flags.is_thread_local) output_ << "thread_local ";
       output_ << "global " << llvm_type(symbol.type) << ' ';
       const ConstantValue *initializer = global_initializers_.find(symbol_id);
-      if (initializer != nullptr && initializer->kind == ConstantKind::String) {
-        const std::optional<std::size_t> index = global_string_index(symbol_id);
-        if (index.has_value()) {
-          output_ << string_constant_operand(*index);
-        } else {
-          error(symbol.name_range, "global string initializer was not interned");
-          output_ << "zeroinitializer";
-        }
-      } else if (initializer != nullptr) {
-        output_ << scalar_constant(*initializer, symbol.type, symbol.name_range);
+      if (initializer != nullptr) {
+        ConstantSite site;
+        site.global = symbol_id;
+        output_ << constant_operand(
+            *initializer, symbol.type, std::move(site), symbol.name_range);
       } else {
         output_ << "zeroinitializer";
       }
@@ -869,10 +905,13 @@ private:
   }
 
   [[nodiscard]] std::optional<std::size_t> string_index(
-      std::size_t procedure, std::size_t instruction) const {
+      std::size_t procedure,
+      std::size_t instruction,
+      const std::vector<std::size_t> &path = {}) const {
     for (std::size_t index = 0; index < strings_.size(); ++index) {
       if (strings_[index].procedure == procedure &&
-          strings_[index].instruction == instruction) {
+          strings_[index].instruction == instruction &&
+          strings_[index].path == path) {
         return index;
       }
     }
@@ -880,11 +919,21 @@ private:
   }
 
   [[nodiscard]] std::optional<std::size_t> global_string_index(
-      SymbolId symbol) const {
+      SymbolId symbol,
+      const std::vector<std::size_t> &path = {}) const {
     for (std::size_t index = 0; index < strings_.size(); ++index) {
-      if (strings_[index].global == symbol) return index;
+      if (strings_[index].global == symbol && strings_[index].path == path) {
+        return index;
+      }
     }
     return std::nullopt;
+  }
+
+  [[nodiscard]] std::optional<std::size_t> constant_string_index(
+      const ConstantSite &site) const {
+    return site.global.is_valid()
+        ? global_string_index(site.global, site.path)
+        : string_index(site.procedure, site.instruction, site.path);
   }
 
   [[nodiscard]] const AssertionSite *assertion_site(
@@ -910,6 +959,346 @@ private:
   [[nodiscard]] std::string string_constant_operand(std::size_t index) const {
     return "{ ptr @.draft.string." + std::to_string(index) + ", i64 " +
         std::to_string(strings_[index].value.size()) + " }";
+  }
+
+  [[nodiscard]] bool target_uses_little_endian() const {
+    return target_.facts.byte_order == "little";
+  }
+
+  [[nodiscard]] bool scalar_uses_little_endian(TypeId type_id) const {
+    const Type &storage = type(runtime_scalar_id(type_id));
+    if (storage.kind == TypeKind::EndianScalar) {
+      return storage.scalar_byte_order != ScalarByteOrder::Big;
+    }
+    return target_uses_little_endian();
+  }
+
+  [[nodiscard]] std::optional<IeeeFormat> ieee_format(TypeId type_id) const {
+    Type value = type(runtime_scalar_id(type_id));
+    if (value.kind == TypeKind::EndianScalar && value.element.is_valid()) {
+      value = type(value.element);
+    }
+    if (value.kind != TypeKind::Float) return std::nullopt;
+    if (value.bit_width == 16) return IeeeFormat{5, 10};
+    if (value.bit_width == 32) return IeeeFormat{8, 23};
+    if (value.bit_width == 64) return IeeeFormat{11, 52};
+    return std::nullopt;
+  }
+
+  [[nodiscard]] bool write_integer_bytes(
+      const BigInteger &value,
+      TypeId type_id,
+      std::vector<std::uint8_t> &bytes,
+      std::uint64_t offset,
+      SourceRange range) {
+    const Type &storage = type(runtime_scalar_id(type_id));
+    const std::uint32_t bits = integer_bits(type_id);
+    const std::uint64_t size = storage.layout.size;
+    if (bits == 0 || size == 0 || offset > bytes.size() ||
+        size > bytes.size() - offset) {
+      error(range, "integer constant does not fit union storage");
+      return false;
+    }
+
+    // Convert negative mathematical integers to the finite-width two's-
+    // complement bit pattern before extracting bytes.  All values have already
+    // passed semantic range/conversion checks, so masking is defensive rather
+    // than a second language conversion.
+    const BigInteger modulus = BigInteger::from_u64(1).shifted_left(bits);
+    BigInteger encoded = value;
+    if (encoded.is_negative()) encoded = encoded.added(modulus);
+    BigInteger quotient;
+    BigInteger remainder;
+    if (!encoded.divide(modulus, quotient, remainder)) {
+      error(range, "could not encode integer constant bytes");
+      return false;
+    }
+    encoded = std::move(remainder);
+
+    const bool little = scalar_uses_little_endian(type_id);
+    for (std::uint64_t byte_index = 0; byte_index < size; ++byte_index) {
+      const std::optional<std::uint64_t> byte = encoded
+          .shifted_right(static_cast<std::size_t>(byte_index * 8U))
+          .bitwise_and(BigInteger::from_u64(0xffU))
+          .to_u64();
+      if (!byte.has_value()) {
+        error(range, "could not encode integer constant byte");
+        return false;
+      }
+      const std::uint64_t destination = little
+          ? offset + byte_index
+          : offset + size - byte_index - 1U;
+      bytes[static_cast<std::size_t>(destination)] =
+          static_cast<std::uint8_t>(*byte);
+    }
+    return true;
+  }
+
+  [[nodiscard]] bool write_float_bytes(
+      const ExactRational &value,
+      TypeId type_id,
+      std::vector<std::uint8_t> &bytes,
+      std::uint64_t offset,
+      SourceRange range) {
+    const Type &storage = type(runtime_scalar_id(type_id));
+    const std::optional<IeeeFormat> format = ieee_format(type_id);
+    const std::optional<std::uint64_t> bits = format.has_value()
+        ? ieee_bits(value, *format)
+        : std::nullopt;
+    if (!bits.has_value()) {
+      error(range, "floating constant has no finite union-storage encoding");
+      return false;
+    }
+    const std::uint64_t size = storage.layout.size;
+    if (offset > bytes.size() || size > bytes.size() - offset) {
+      error(range, "floating constant does not fit union storage");
+      return false;
+    }
+    const bool little = scalar_uses_little_endian(type_id);
+    for (std::uint64_t byte_index = 0; byte_index < size; ++byte_index) {
+      const std::uint64_t destination = little
+          ? offset + byte_index
+          : offset + size - byte_index - 1U;
+      bytes[static_cast<std::size_t>(destination)] =
+          static_cast<std::uint8_t>((*bits >> (byte_index * 8U)) & 0xffU);
+    }
+    return true;
+  }
+
+  [[nodiscard]] bool write_constant_bytes(
+      const ConstantValue &value,
+      TypeId type_id,
+      std::vector<std::uint8_t> &bytes,
+      std::uint64_t offset,
+      ConstantSite site,
+      SourceRange range) {
+    while (type(type_id).kind == TypeKind::Distinct) {
+      type_id = type(type_id).element;
+    }
+    const Type &storage = type(type_id);
+    if (!storage.layout.known || offset > bytes.size() ||
+        storage.layout.size > bytes.size() - offset) {
+      error(range, "constant does not fit aggregate byte storage");
+      return false;
+    }
+
+    if (value.kind == ConstantKind::Nil) {
+      return true;
+    }
+    if (value.kind == ConstantKind::Bool && storage.kind == TypeKind::Bool) {
+      bytes[static_cast<std::size_t>(offset)] = value.boolean ? 1U : 0U;
+      return true;
+    }
+    if (value.kind == ConstantKind::Integer && integer_kind(storage.kind)) {
+      return write_integer_bytes(value.integer, type_id, bytes, offset, range);
+    }
+    if (value.kind == ConstantKind::Float &&
+        (storage.kind == TypeKind::Float ||
+         storage.kind == TypeKind::EndianScalar)) {
+      return write_float_bytes(value.floating, type_id, bytes, offset, range);
+    }
+    if (value.kind == ConstantKind::String) {
+      // A relocatable pointer cannot be represented faithfully as independent
+      // i8 constants in the backend's opaque union storage.  Ordinary nested
+      // strings are emitted directly; only type-punned union payloads take this
+      // byte path.
+      error(range, "relocatable string payload is unsupported in a union constant");
+      return false;
+    }
+    if (value.kind != ConstantKind::Aggregate) {
+      error(range, "constant kind has no aggregate byte encoding");
+      return false;
+    }
+
+    if (storage.kind == TypeKind::Array || storage.kind == TypeKind::Simd) {
+      if (value.elements.size() != storage.element_count) {
+        error(range, "constant array has the wrong element count");
+        return false;
+      }
+      const std::uint64_t stride = type(storage.element).layout.size;
+      for (std::size_t index = 0; index < value.elements.size(); ++index) {
+        ConstantSite child = site;
+        child.path.push_back(index);
+        if (!write_constant_bytes(
+                value.elements[index],
+                storage.element,
+                bytes,
+                offset + static_cast<std::uint64_t>(index) * stride,
+                std::move(child),
+                range)) {
+          return false;
+        }
+      }
+      return true;
+    }
+    if (storage.kind == TypeKind::Tuple || storage.kind == TypeKind::Struct) {
+      if (value.elements.size() != storage.members.size()) {
+        error(range, "constant aggregate has the wrong member count");
+        return false;
+      }
+      for (std::size_t index = 0; index < value.elements.size(); ++index) {
+        const std::uint64_t member_offset =
+            index < storage.member_offsets.size()
+            ? storage.member_offsets[index]
+            : 0;
+        ConstantSite child = site;
+        child.path.push_back(index);
+        if (!write_constant_bytes(
+                value.elements[index],
+                storage.members[index],
+                bytes,
+                offset + member_offset,
+                std::move(child),
+                range)) {
+          return false;
+        }
+      }
+      return true;
+    }
+    if (storage.kind == TypeKind::RawUnion ||
+        storage.kind == TypeKind::TaggedUnion) {
+      if (value.variant_index >= storage.members.size()) {
+        error(range, "constant union has an invalid selected member");
+        return false;
+      }
+      if (storage.kind == TypeKind::TaggedUnion) {
+        if (!write_integer_bytes(
+                BigInteger::from_u64(value.variant_index),
+                storage.element,
+                bytes,
+                offset,
+                range)) {
+          return false;
+        }
+      }
+      if (value.elements.empty()) return true;
+      if (value.elements.size() != 1) {
+        error(range, "constant union has more than one payload");
+        return false;
+      }
+      const std::uint64_t payload_offset =
+          value.variant_index < storage.member_offsets.size()
+          ? storage.member_offsets[value.variant_index]
+          : 0;
+      ConstantSite child = std::move(site);
+      child.path.push_back(0);
+      return write_constant_bytes(
+          value.elements.front(),
+          storage.members[value.variant_index],
+          bytes,
+          offset + payload_offset,
+          std::move(child),
+          range);
+    }
+
+    error(range, "constant type has no aggregate byte encoding");
+    return false;
+  }
+
+  [[nodiscard]] std::string union_constant(
+      const ConstantValue &value,
+      TypeId type_id,
+      ConstantSite site,
+      SourceRange range) {
+    const Type &storage = type(type_id);
+    std::vector<std::uint8_t> bytes(
+        static_cast<std::size_t>(storage.layout.size), 0);
+    if (!write_constant_bytes(
+            value, type_id, bytes, 0, std::move(site), range)) {
+      return "zeroinitializer";
+    }
+    std::string result = "[";
+    for (std::size_t index = 0; index < bytes.size(); ++index) {
+      if (index != 0) result += ", ";
+      result += "i8 " + std::to_string(bytes[index]);
+    }
+    result += "]";
+    return result;
+  }
+
+  [[nodiscard]] std::string constant_operand(
+      const ConstantValue &value,
+      TypeId type_id,
+      ConstantSite site,
+      SourceRange range) {
+    if (value.kind == ConstantKind::String) {
+      const std::optional<std::size_t> index = constant_string_index(site);
+      if (!index.has_value()) {
+        error(range, "string constant was not interned");
+        return "zeroinitializer";
+      }
+      return string_constant_operand(*index);
+    }
+    if (value.kind != ConstantKind::Aggregate) {
+      return scalar_constant(value, type_id, range);
+    }
+
+    while (type(type_id).kind == TypeKind::Distinct) {
+      type_id = type(type_id).element;
+    }
+    const Type &aggregate = type(type_id);
+    if (aggregate.kind == TypeKind::TaggedUnion ||
+        aggregate.kind == TypeKind::RawUnion) {
+      return union_constant(value, type_id, std::move(site), range);
+    }
+
+    const bool homogeneous = aggregate.kind == TypeKind::Array ||
+        aggregate.kind == TypeKind::Simd;
+    const bool product = aggregate.kind == TypeKind::Tuple ||
+        aggregate.kind == TypeKind::Struct;
+    const std::size_t expected = homogeneous
+        ? static_cast<std::size_t>(aggregate.element_count)
+        : aggregate.members.size();
+    if ((!homogeneous && !product) || value.elements.size() != expected) {
+      error(range, "aggregate constant does not match its runtime type");
+      return "zeroinitializer";
+    }
+
+    std::string result;
+    if (aggregate.kind == TypeKind::Array) result = "[";
+    if (aggregate.kind == TypeKind::Simd) result = "<";
+    if (aggregate.kind == TypeKind::Tuple) result = "{ ";
+    if (aggregate.kind == TypeKind::Struct) result = "<{ ";
+    std::uint64_t cursor = 0;
+    bool emitted = false;
+    for (std::size_t index = 0; index < value.elements.size(); ++index) {
+      const TypeId element_type = homogeneous
+          ? aggregate.element
+          : aggregate.members[index];
+      if (aggregate.kind == TypeKind::Struct) {
+        const std::uint64_t member_offset =
+            index < aggregate.member_offsets.size()
+            ? aggregate.member_offsets[index]
+            : cursor;
+        if (member_offset > cursor) {
+          if (emitted) result += ", ";
+          result += "[" + std::to_string(member_offset - cursor) +
+              " x i8] zeroinitializer";
+          emitted = true;
+        }
+        cursor = member_offset + type(element_type).layout.size;
+      }
+      if (emitted) result += ", ";
+      ConstantSite child = site;
+      child.path.push_back(index);
+      result += llvm_type(element_type) + " " + constant_operand(
+          value.elements[index],
+          element_type,
+          std::move(child),
+          range);
+      emitted = true;
+    }
+    if (aggregate.kind == TypeKind::Struct &&
+        aggregate.layout.size > cursor) {
+      if (emitted) result += ", ";
+      result += "[" + std::to_string(aggregate.layout.size - cursor) +
+          " x i8] zeroinitializer";
+    }
+    if (aggregate.kind == TypeKind::Array) result += "]";
+    if (aggregate.kind == TypeKind::Simd) result += ">";
+    if (aggregate.kind == TypeKind::Tuple) result += " }";
+    if (aggregate.kind == TypeKind::Struct) result += " }>";
+    return result;
   }
 
   [[nodiscard]] std::string scalar_constant(
@@ -976,21 +1365,17 @@ private:
       std::size_t procedure_index,
       std::size_t instruction_index,
       const MirInstruction &instruction) {
-    if (instruction.constant.kind == ConstantKind::String) {
-      const std::optional<std::size_t> index =
-          string_index(procedure_index, instruction_index);
-      if (!index.has_value()) {
-        error(instruction.range, "string constant was not interned");
-        return "zeroinitializer";
-      }
-      return "{ ptr @.draft.string." + std::to_string(*index) + ", i64 " +
-          std::to_string(instruction.constant.text.size()) + " }";
-    }
     if (instruction.constant.kind == ConstantKind::EnumLabel) {
       return enum_value(instruction.symbol);
     }
-    return scalar_constant(
-        instruction.constant, instruction.type, instruction.range);
+    ConstantSite site;
+    site.procedure = procedure_index;
+    site.instruction = instruction_index;
+    return constant_operand(
+        instruction.constant,
+        instruction.type,
+        std::move(site),
+        instruction.range);
   }
 
   [[nodiscard]] std::string value_operand(

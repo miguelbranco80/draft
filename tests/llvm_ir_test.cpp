@@ -94,6 +94,29 @@ Pair[T: type, U: type] :: struct {
     second: U,
 }
 
+Header :: struct {
+    tag: u8,
+    value: u64,
+}
+
+Text_Count :: struct {
+    text: string,
+    count: u64,
+}
+
+Overlay :: raw union {
+    byte: u8,
+    word: u64,
+}
+
+Table :: ([4]u32{1, 4, 9, 16})
+global_table: [4]u32 = Table
+global_tuple: (i32, u64) = (7, 9)
+global_header: Header = Header{tag = 1, value = 42}
+global_text_count: Text_Count = Text_Count{text = "draft", count = 5}
+global_outcome: Outcome = .value(9)
+global_overlay: Overlay = Overlay{word = 0x1020304050607080}
+
 Maybe[T: type] :: union {
     none,
     some: T,
@@ -101,6 +124,10 @@ Maybe[T: type] :: union {
 
 pair_total :: proc(pair: Pair[i64, i64]) -> i64 {
     return pair.first + pair.second
+}
+
+constant_table_value :: proc() -> u32 {
+    return Table[3]
 }
 
 unwrap_maybe :: proc(value: Maybe[i64]) -> i64 {
@@ -178,6 +205,14 @@ main :: proc() -> i32 {
     assert(tls_value == -7)
     assert(len(global_text) == 5)
     assert(global_pointer == nil)
+    assert(global_table[3] == 16)
+    assert(global_tuple.0 == 7 && global_tuple.1 == 9)
+    assert(global_header.value == 42)
+    assert(len(global_text_count.text) == 5)
+    assert(global_text_count.count == 5)
+    assert(read_outcome(global_outcome) == 9)
+    assert(global_overlay.word == 0x1020304050607080)
+    assert(constant_table_value() == 16)
     value := add(20, 22)
     (left, _): (i64, i64) = (20, 0)
     (_, right): (i64, i64) = (0, 22)
@@ -278,6 +313,22 @@ main :: proc() -> i32 {
   EXPECT(state, module.text.find("global { ptr, i64 } { ptr @.draft.string.") !=
       std::string::npos);
   EXPECT(state, module.text.find("global ptr null") != std::string::npos);
+  EXPECT(state, module.text.find(
+      "global [4 x i32] [i32 1, i32 4, i32 9, i32 16]") !=
+      std::string::npos);
+  EXPECT(state, module.text.find(
+      "global { i32, i64 } { i32 7, i64 9 }") != std::string::npos);
+  EXPECT(state, module.text.find(
+      "<{ i8 1, [7 x i8] zeroinitializer, i64 42 }>") !=
+      std::string::npos);
+  EXPECT(state, module.text.find(
+      "<{ { ptr, i64 } { ptr @.draft.string.") != std::string::npos);
+  EXPECT(state, module.text.find(
+      "[i8 1, i8 0, i8 0, i8 0, i8 0, i8 0, i8 0, i8 0, i8 9") !=
+      std::string::npos);
+  EXPECT(state, module.text.find(
+      "[i8 128, i8 112, i8 96, i8 80, i8 64, i8 48, i8 32, i8 16]") !=
+      std::string::npos);
   EXPECT(state, module.text.find("identity_24instance") != std::string::npos);
   EXPECT(state, module.text.find("last_24instance_24v3") != std::string::npos);
   EXPECT(state, module.text.find("<type-parameter>") == std::string::npos);
