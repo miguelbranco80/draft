@@ -131,6 +131,7 @@ CompileWorkspaceResult compile_workspace(
           static_cast<std::size_t>(result.graph.root_package.value);
       package.llvm = emit_llvm_ir(
           options.target,
+          sources,
           llvm_options,
           package.semantics.package,
           package.semantics.constants,

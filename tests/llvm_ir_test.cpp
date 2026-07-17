@@ -94,6 +94,7 @@ main :: proc() -> i32 {
   options.emit_program_entry = true;
   const draft::LlvmIrResult module = draft::emit_llvm_ir(
       target,
+      sources,
       options,
       semantics.package,
       semantics.constants,
@@ -114,9 +115,14 @@ main :: proc() -> i32 {
   EXPECT(state, module.text.find(
       "define i64 @\"draft.workspace.native.add\"(ptr %context, i64 %arg0, i64 %arg1)") !=
       std::string::npos);
-  EXPECT(state, module.text.find("call void @__draft.assert(i1") != std::string::npos);
+  EXPECT(state, module.text.find(
+      "call void @__draft.assert(ptr %context, i1") != std::string::npos);
+  EXPECT(state, module.text.find("value == 42") != std::string::npos);
+  EXPECT(state, module.text.find("package.draft") != std::string::npos);
   EXPECT(state, module.text.find("define i32 @main(i32 %argc, ptr %argv)") !=
       std::string::npos);
+  EXPECT(state, module.text.find("ptr @__draft.root_context") != std::string::npos);
+  EXPECT(state, module.text.find("(ptr null)") == std::string::npos);
   EXPECT(state, module.text.find("trunc i64") != std::string::npos);
   EXPECT(state, module.text.find("sdiv i64") != std::string::npos);
   EXPECT(state, module.text.find("shl i32") != std::string::npos);

@@ -29,6 +29,7 @@ struct LlvmIrResult {
 // headers or libraries on the bootstrap compiler's build machine.
 [[nodiscard]] LlvmIrResult emit_llvm_ir(
     const TargetProfile &target,
+    const SourceManager &sources,
     const LlvmIrOptions &options,
     const SemanticPackage &semantic,
     const ConstantTable &constants,

@@ -81,6 +81,7 @@ export increment :: c "draft_increment" proc(value: i32) -> i32 {
   options.package = {"workspace", "native"};
   const draft::LlvmIrResult llvm = draft::emit_llvm_ir(
       source.target,
+      source.sources,
       options,
       source.semantics.package,
       source.semantics.constants,

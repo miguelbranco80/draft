@@ -120,6 +120,7 @@ main :: proc() -> i32 {
   options.emit_program_entry = true;
   const draft::LlvmIrResult llvm = draft::emit_llvm_ir(
       source.target,
+      source.sources,
       options,
       source.semantics.package,
       source.semantics.constants,

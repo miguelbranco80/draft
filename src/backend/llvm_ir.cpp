@@ -31,6 +31,24 @@ struct StringConstant {
   std::string value;
 };
 
+// Runtime assertions need source spellings that are not ordinary MIR string
+// values. The site table connects those module constants back to the Assert
+// instruction without adding target/runtime details to target-independent MIR.
+struct AssertionSite {
+  std::size_t procedure = 0;
+  std::size_t instruction = 0;
+  std::size_t condition_string = 0;
+  std::size_t file_string = 0;
+  LineColumn location;
+};
+
+struct BoundsSite {
+  std::size_t procedure = 0;
+  std::size_t instruction = 0;
+  std::size_t file_string = 0;
+  LineColumn location;
+};
+
 struct IeeeFormat {
   std::uint32_t exponent_bits = 0;
   std::uint32_t fraction_bits = 0;
@@ -194,12 +212,13 @@ class Emitter {
 public:
   Emitter(
       const TargetProfile &target,
+      const SourceManager &sources,
       const LlvmIrOptions &options,
       const SemanticPackage &semantic,
       const ConstantTable &constants,
       const MirProgram &mir,
       DiagnosticSink &diagnostics)
-      : target_(target), options_(options), semantic_(semantic),
+      : target_(target), sources_(sources), options_(options), semantic_(semantic),
         constants_(constants), mir_(mir), diagnostics_(diagnostics) {}
 
   [[nodiscard]] LlvmIrResult run() {
@@ -358,6 +377,65 @@ private:
           strings_.push_back(
               {procedure_index, instruction_index, instruction.constant.text});
         }
+        if (instruction.kind == MirInstructionKind::Assert &&
+            !instruction.operands.empty()) {
+          SourceRange condition_range = instruction.range;
+          const MirValueId condition = instruction.operands.front();
+          if (condition.is_valid() &&
+              static_cast<std::size_t>(condition.value) < procedure.values.size()) {
+            const MirInstructionId definition =
+                procedure.value(condition).definition;
+            if (definition.is_valid() &&
+                static_cast<std::size_t>(definition.value) <
+                    procedure.instructions.size()) {
+              condition_range = procedure.instruction(definition).range;
+            }
+          }
+
+          // Assertion MIR always originates in parsed source. Keeping a small
+          // defensive fallback makes malformed hand-built MIR diagnosable
+          // without dereferencing an invalid FileId in the backend.
+          std::string condition_text;
+          std::string file_path;
+          LineColumn location;
+          if (condition_range.is_valid() && instruction.range.is_valid()) {
+            condition_text = std::string(sources_.text(condition_range));
+            file_path = sources_.file(instruction.range.begin.file).display_path;
+            location = sources_.line_column(instruction.range.begin);
+          }
+          const std::size_t condition_string = strings_.size();
+          strings_.push_back(
+              {std::numeric_limits<std::size_t>::max(),
+               std::numeric_limits<std::size_t>::max(),
+               std::move(condition_text)});
+          const std::size_t file_string = strings_.size();
+          strings_.push_back(
+              {std::numeric_limits<std::size_t>::max(),
+               std::numeric_limits<std::size_t>::max(),
+               std::move(file_path)});
+          assertion_sites_.push_back(
+              {procedure_index,
+               instruction_index,
+               condition_string,
+               file_string,
+               location});
+        }
+        if (instruction.kind == MirInstructionKind::BoundsCheck ||
+            instruction.kind == MirInstructionKind::SliceBoundsCheck) {
+          std::string file_path;
+          LineColumn location;
+          if (instruction.range.is_valid()) {
+            file_path = sources_.file(instruction.range.begin.file).display_path;
+            location = sources_.line_column(instruction.range.begin);
+          }
+          const std::size_t file_string = strings_.size();
+          strings_.push_back(
+              {std::numeric_limits<std::size_t>::max(),
+               std::numeric_limits<std::size_t>::max(),
+               std::move(file_path)});
+          bounds_sites_.push_back(
+              {procedure_index, instruction_index, file_string, location});
+        }
       }
     }
   }
@@ -366,40 +444,81 @@ private:
     for (std::size_t index = 0; index < strings_.size(); ++index) {
       output_ << "@.draft.string." << index
               << " = private unnamed_addr constant ["
-              << strings_[index].value.size() << " x i8] c\""
-              << llvm_bytes(strings_[index].value) << "\", align 1\n";
+              << strings_[index].value.size() + 1 << " x i8] c\""
+              << llvm_bytes(strings_[index].value) << "\\00\", align 1\n";
     }
     if (!strings_.empty()) output_ << '\n';
   }
 
   void emit_runtime_declarations() {
-    output_ << "declare void @llvm.trap() cold noreturn nounwind\n\n"
-            << "define internal void @__draft.assert(i1 %condition) {\n"
+    // Until core/runtime is compiled as ordinary Draft source, the bootstrap
+    // context contains only the assertion callback needed by the implemented
+    // language subset. It is deliberately private: source-visible Context
+    // layout must come from core/runtime rather than becoming a backend fact.
+    output_ << "%draft.bootstrap.Context = type { ptr }\n"
+            << "@__draft.root_context = internal global %draft.bootstrap.Context "
+               "{ ptr @__draft.default_assertion_failure }, align 8\n\n"
+            << "declare void @llvm.trap() cold noreturn nounwind\n\n"
+            << "define internal void @__draft.default_assertion_failure("
+               "{ ptr, i64 } %condition_text, { ptr, i64 } %message, "
+               "{ ptr, i64 } %file, i64 %line, i64 %column) {\n"
+            << "entry:\n"
+            << "  ret void\n"
+            << "}\n\n"
+            << "define internal void @__draft.assert(ptr %context, i1 %condition, "
+               "{ ptr, i64 } %condition_text, { ptr, i64 } %message, "
+               "{ ptr, i64 } %file, i64 %line, i64 %column) {\n"
             << "entry:\n"
             << "  br i1 %condition, label %ok, label %fail\n"
             << "fail:\n"
+            << "  %has.context = icmp ne ptr %context, null\n"
+            << "  br i1 %has.context, label %load.handler, label %trap\n"
+            << "load.handler:\n"
+            << "  %handler.slot = getelementptr %draft.bootstrap.Context, "
+               "ptr %context, i32 0, i32 0\n"
+            << "  %handler = load ptr, ptr %handler.slot, align 8\n"
+            << "  %has.handler = icmp ne ptr %handler, null\n"
+            << "  br i1 %has.handler, label %call.handler, label %trap\n"
+            << "call.handler:\n"
+            << "  call void %handler({ ptr, i64 } %condition_text, "
+               "{ ptr, i64 } %message, { ptr, i64 } %file, i64 %line, "
+               "i64 %column)\n"
+            << "  br label %trap\n"
+            << "trap:\n"
             << "  call void @llvm.trap()\n"
             << "  unreachable\n"
             << "ok:\n"
             << "  ret void\n"
             << "}\n\n"
-            << "define internal void @__draft.bounds(i64 %index, i64 %length) {\n"
+            << "define internal void @__draft.bounds_failure(i8 %kind, "
+               "i64 %first, i64 %second, i64 %length, ptr %file, "
+               "i64 %line, i64 %column) {\n"
+            << "entry:\n"
+            << "  ret void\n"
+            << "}\n\n"
+            << "define internal void @__draft.bounds(i64 %index, i64 %length, "
+               "ptr %file, i64 %line, i64 %column) {\n"
             << "entry:\n"
             << "  %inside = icmp ult i64 %index, %length\n"
             << "  br i1 %inside, label %ok, label %fail\n"
             << "fail:\n"
+            << "  call void @__draft.bounds_failure(i8 0, i64 %index, i64 0, "
+               "i64 %length, ptr %file, i64 %line, i64 %column)\n"
             << "  call void @llvm.trap()\n"
             << "  unreachable\n"
             << "ok:\n"
             << "  ret void\n"
             << "}\n\n"
-            << "define internal void @__draft.slice_bounds(i64 %low, i64 %high, i64 %length) {\n"
+            << "define internal void @__draft.slice_bounds(i64 %low, i64 %high, "
+               "i64 %length, ptr %file, i64 %line, i64 %column) {\n"
             << "entry:\n"
             << "  %ordered = icmp ule i64 %low, %high\n"
             << "  %inside = icmp ule i64 %high, %length\n"
             << "  %valid = and i1 %ordered, %inside\n"
             << "  br i1 %valid, label %ok, label %fail\n"
             << "fail:\n"
+            << "  call void @__draft.bounds_failure(i8 1, i64 %low, i64 %high, "
+               "i64 %length, ptr %file, i64 %line, i64 %column)\n"
             << "  call void @llvm.trap()\n"
             << "  unreachable\n"
             << "ok:\n"
@@ -554,6 +673,31 @@ private:
       }
     }
     return std::nullopt;
+  }
+
+  [[nodiscard]] const AssertionSite *assertion_site(
+      std::size_t procedure, std::size_t instruction) const {
+    for (const AssertionSite &site : assertion_sites_) {
+      if (site.procedure == procedure && site.instruction == instruction) {
+        return &site;
+      }
+    }
+    return nullptr;
+  }
+
+  [[nodiscard]] const BoundsSite *bounds_site(
+      std::size_t procedure, std::size_t instruction) const {
+    for (const BoundsSite &site : bounds_sites_) {
+      if (site.procedure == procedure && site.instruction == instruction) {
+        return &site;
+      }
+    }
+    return nullptr;
+  }
+
+  [[nodiscard]] std::string string_constant_operand(std::size_t index) const {
+    return "{ ptr @.draft.string." + std::to_string(index) + ", i64 " +
+        std::to_string(strings_[index].value.size()) + " }";
   }
 
   [[nodiscard]] std::string scalar_constant(
@@ -956,12 +1100,30 @@ private:
       assign_alias(operands, instruction, result);
       break;
     }
-    case MirInstructionKind::Assert:
-      output_ << "  call void @__draft.assert("
+    case MirInstructionKind::Assert: {
+      const AssertionSite *site =
+          assertion_site(procedure_index, instruction_index);
+      if (site == nullptr) {
+        error(instruction.range, "assertion source metadata was not collected");
+        break;
+      }
+      output_ << "  call void @__draft.assert(ptr %context, "
               << typed_operand(
                      procedure, operands, instruction.operands[0], instruction.range)
-              << ")\n";
+              << ", { ptr, i64 } "
+              << string_constant_operand(site->condition_string) << ", ";
+      if (instruction.operands.size() == 2) {
+        output_ << typed_operand(
+            procedure, operands, instruction.operands[1], instruction.range);
+      } else {
+        output_ << "{ ptr, i64 } zeroinitializer";
+      }
+      output_ << ", { ptr, i64 } "
+              << string_constant_operand(site->file_string)
+              << ", i64 " << site->location.line
+              << ", i64 " << site->location.column << ")\n";
       break;
+    }
     case MirInstructionKind::MemberAddress:
       output_ << "  " << result << " = getelementptr i8, ptr "
               << value_operand(operands, instruction.operands[0], instruction.range)
@@ -1005,24 +1167,40 @@ private:
       assign_alias(operands, instruction, result);
       break;
     }
-    case MirInstructionKind::BoundsCheck:
+    case MirInstructionKind::BoundsCheck: {
+      const BoundsSite *site = bounds_site(procedure_index, instruction_index);
+      if (site == nullptr) {
+        error(instruction.range, "bounds-check source metadata was not collected");
+        break;
+      }
       output_ << "  call void @__draft.bounds("
               << typed_operand(
                      procedure, operands, instruction.operands[0], instruction.range)
               << ", "
               << typed_operand(
                      procedure, operands, instruction.operands[1], instruction.range)
-              << ")\n";
+              << ", ptr @.draft.string." << site->file_string
+              << ", i64 " << site->location.line
+              << ", i64 " << site->location.column << ")\n";
       break;
-    case MirInstructionKind::SliceBoundsCheck:
+    }
+    case MirInstructionKind::SliceBoundsCheck: {
+      const BoundsSite *site = bounds_site(procedure_index, instruction_index);
+      if (site == nullptr) {
+        error(instruction.range, "slice-check source metadata was not collected");
+        break;
+      }
       output_ << "  call void @__draft.slice_bounds(";
       for (std::size_t index = 0; index < 3; ++index) {
         if (index != 0) output_ << ", ";
         output_ << typed_operand(
             procedure, operands, instruction.operands[index], instruction.range);
       }
-      output_ << ")\n";
+      output_ << ", ptr @.draft.string." << site->file_string
+              << ", i64 " << site->location.line
+              << ", i64 " << site->location.column << ")\n";
       break;
+    }
     case MirInstructionKind::Slice: {
       const MirValueId base_id = instruction.operands[0];
       std::string data = value_operand(operands, base_id, instruction.range);
@@ -1213,11 +1391,12 @@ private:
     output_ << "define i32 @main(i32 %argc, ptr %argv) {\n"
             << "entry:\n";
     if (result_type == semantic_.types.builtins().void_type) {
-      output_ << "  call void " << symbol_name(*entry) << "(ptr null)\n"
+      output_ << "  call void " << symbol_name(*entry)
+              << "(ptr @__draft.root_context)\n"
               << "  ret i32 0\n";
     } else if (integer_kind(type(result_type).kind)) {
       output_ << "  %draft.result = call " << llvm_type(result_type) << ' '
-              << symbol_name(*entry) << "(ptr null)\n";
+              << symbol_name(*entry) << "(ptr @__draft.root_context)\n";
       const std::uint32_t bits = integer_bits(result_type);
       if (bits > 32) {
         output_ << "  %exit.result = trunc " << llvm_type(result_type)
@@ -1238,6 +1417,7 @@ private:
   }
 
   const TargetProfile &target_;
+  const SourceManager &sources_;
   const LlvmIrOptions &options_;
   const SemanticPackage &semantic_;
   const ConstantTable &constants_;
@@ -1245,6 +1425,8 @@ private:
   DiagnosticSink &diagnostics_;
   std::ostringstream output_;
   std::vector<StringConstant> strings_;
+  std::vector<AssertionSite> assertion_sites_;
+  std::vector<BoundsSite> bounds_sites_;
   std::size_t initial_errors_ = 0;
   std::size_t auxiliary_index_ = 0;
 };
@@ -1253,12 +1435,13 @@ private:
 
 LlvmIrResult emit_llvm_ir(
     const TargetProfile &target,
+    const SourceManager &sources,
     const LlvmIrOptions &options,
     const SemanticPackage &semantic,
     const ConstantTable &constants,
     const MirProgram &mir,
     DiagnosticSink &diagnostics) {
-  return Emitter(target, options, semantic, constants, mir, diagnostics).run();
+  return Emitter(target, sources, options, semantic, constants, mir, diagnostics).run();
 }
 
 } // namespace draft
