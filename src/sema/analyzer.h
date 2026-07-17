@@ -137,6 +137,10 @@ struct SemanticSite {
   SyntaxReference syntax;
   ScopeId scope;
   SymbolId anchor;
+  // Synthesis expressions receive their contextual result type during body
+  // checking. Other categories leave this invalid until their grammar-specific
+  // obligation builder computes a more detailed expected form.
+  TypeId expected_type;
 };
 
 enum class NativeBindingKind {

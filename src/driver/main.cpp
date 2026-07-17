@@ -9,6 +9,7 @@
 
 #include "source/diagnostic.h"
 #include "source/source.h"
+#include "sema/agent_metadata.h"
 #include "sema/body_checker.h"
 #include "sema/semantic.h"
 #include "syntax/lexer.h"
@@ -154,6 +155,7 @@ int check_package(const std::string &directory) {
   std::size_t symbol_count = 0;
   std::size_t type_count = 0;
   std::size_t procedure_count = 0;
+  std::size_t agent_record_count = 0;
   bool checked_all = loaded.ok;
   if (loaded.ok) {
     std::vector<std::optional<draft::PackageInterface>> interfaces(
@@ -188,16 +190,6 @@ int check_package(const std::string &directory) {
           sources, workspace_package.loaded, target.facts, available, diagnostics);
       draft::BodyCheckResult bodies;
       if (semantics.ok) {
-        const std::size_t interface_errors = diagnostics.error_count();
-        const draft::PackageId package_id{static_cast<std::uint32_t>(package_index)};
-        interfaces[package_index] = draft::build_package_interface(
-            loaded.graph.package(package_id).identity,
-            semantics.package,
-            semantics.constants,
-            diagnostics);
-        if (diagnostics.error_count() != interface_errors) {
-          checked_all = false;
-        }
         bodies = draft::check_package_bodies(
             sources,
             workspace_package.loaded,
@@ -205,6 +197,26 @@ int check_package(const std::string &directory) {
             semantics.package,
             semantics.constants,
             diagnostics);
+        if (bodies.ok) {
+          const draft::AttachmentPolicy attachment_policy;
+          const draft::AgentMetadataResult metadata = draft::collect_agent_metadata(
+              sources,
+              workspace_package.loaded,
+              semantics.package,
+              attachment_policy,
+              diagnostics);
+          const draft::PackageId package_id{static_cast<std::uint32_t>(package_index)};
+          interfaces[package_index] = draft::build_package_interface(
+              loaded.graph.package(package_id).identity,
+              semantics.package,
+              semantics.constants,
+              metadata,
+              diagnostics);
+          agent_record_count += metadata.records.size();
+          if (!metadata.ok) {
+            checked_all = false;
+          }
+        }
       }
       if (!semantics.ok || !bodies.ok) {
         checked_all = false;
@@ -220,7 +232,8 @@ int check_package(const std::string &directory) {
                 << loaded.graph.packages.size() << " packages, "
                 << symbol_count << " symbols, "
                 << type_count << " types, "
-                << procedure_count << " procedure bodies\n";
+                << procedure_count << " procedure bodies, "
+                << agent_record_count << " agent records\n";
     }
   }
 

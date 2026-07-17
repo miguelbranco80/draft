@@ -25,9 +25,11 @@ add_library(draft_build_options INTERFACE)
 
 add_library(
   draft_compiler
+  src/base/sha256.cpp
   src/source/diagnostic.cpp
   src/source/source.cpp
   src/sema/analyzer.cpp
+  src/sema/agent_metadata.cpp
   src/sema/big_integer.cpp
   src/sema/body_checker.cpp
   src/sema/constant.cpp
@@ -81,6 +83,10 @@ target_link_libraries(draftc PRIVATE draft_compiler)
 
 include(CTest)
 if(BUILD_TESTING)
+  add_executable(draft_sha256_tests tests/sha256_test.cpp)
+  target_link_libraries(draft_sha256_tests PRIVATE draft_compiler)
+  add_test(NAME draft_sha256_tests COMMAND draft_sha256_tests)
+
   add_executable(draft_lexer_tests tests/lexer_test.cpp)
   target_link_libraries(draft_lexer_tests PRIVATE draft_compiler)
   add_test(NAME draft_lexer_tests COMMAND draft_lexer_tests)
@@ -116,6 +122,10 @@ if(BUILD_TESTING)
   add_executable(draft_interface_tests tests/interface_test.cpp)
   target_link_libraries(draft_interface_tests PRIVATE draft_compiler)
   add_test(NAME draft_interface_tests COMMAND draft_interface_tests)
+
+  add_executable(draft_agent_metadata_tests tests/agent_metadata_test.cpp)
+  target_link_libraries(draft_agent_metadata_tests PRIVATE draft_compiler)
+  add_test(NAME draft_agent_metadata_tests COMMAND draft_agent_metadata_tests)
 
   add_executable(draft_constant_tests tests/constant_test.cpp)
   target_link_libraries(draft_constant_tests PRIVATE draft_compiler)

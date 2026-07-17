@@ -20,9 +20,10 @@ public:
       const PackageIdentity &identity,
       const SemanticPackage &package,
       const ConstantTable &constants,
+      const AgentMetadataResult *metadata,
       DiagnosticSink &diagnostics)
       : identity_(identity), package_(package), constants_(constants),
-        diagnostics_(diagnostics) {
+        metadata_(metadata), diagnostics_(diagnostics) {
     result_.identity = identity;
     result_.short_name = package.short_name;
     translated_.resize(package.types.size());
@@ -52,6 +53,22 @@ public:
         declaration.constant = *constant;
       }
       result_.declarations.push_back(std::move(declaration));
+    }
+    if (metadata_ != nullptr) {
+      for (const AgentRecord &record : metadata_->records) {
+        if (record.kind != AgentConstructKind::Documentation ||
+            !record.public_interface) {
+          continue;
+        }
+        InterfaceDocumentation documentation;
+        if (record.anchor.is_valid()) {
+          documentation.declaration = package_.symbols.symbol(record.anchor).name;
+        }
+        documentation.text = record.text;
+        documentation.files = record.files;
+        documentation.record_digest = record.record_digest;
+        result_.documentation.push_back(std::move(documentation));
+      }
     }
     return std::move(result_);
   }
@@ -168,6 +185,7 @@ private:
   PackageIdentity identity_;
   const SemanticPackage &package_;
   const ConstantTable &constants_;
+  const AgentMetadataResult *metadata_ = nullptr;
   DiagnosticSink &diagnostics_;
   PackageInterface result_;
   std::vector<InterfaceTypeId> translated_;
@@ -477,7 +495,17 @@ PackageInterface build_package_interface(
     const SemanticPackage &package,
     const ConstantTable &constants,
     DiagnosticSink &diagnostics) {
-  InterfaceBuilder builder(identity, package, constants, diagnostics);
+  InterfaceBuilder builder(identity, package, constants, nullptr, diagnostics);
+  return builder.run();
+}
+
+PackageInterface build_package_interface(
+    const PackageIdentity &identity,
+    const SemanticPackage &package,
+    const ConstantTable &constants,
+    const AgentMetadataResult &metadata,
+    DiagnosticSink &diagnostics) {
+  InterfaceBuilder builder(identity, package, constants, &metadata, diagnostics);
   return builder.run();
 }
 

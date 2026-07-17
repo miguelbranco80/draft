@@ -18,6 +18,7 @@
 
 #pragma once
 
+#include "sema/agent_metadata.h"
 #include "sema/analyzer.h"
 #include "sema/constant.h"
 #include "source/diagnostic.h"
@@ -86,11 +87,23 @@ struct InterfaceDeclaration {
   ConstantValue constant;
 };
 
+// InterfaceDocumentation contains only content-addressed public design context;
+// it intentionally omits FileId, SyntaxReference, and physical paths.
+// declaration is empty for package documentation and names the public anchor
+// otherwise. files are already canonical package-relative attachment records.
+struct InterfaceDocumentation {
+  std::string declaration;
+  std::string text;
+  std::vector<AttachedFile> files;
+  Sha256Digest record_digest;
+};
+
 struct PackageInterface {
   PackageIdentity identity;
   std::string short_name;
   std::vector<InterfaceType> types;
   std::vector<InterfaceDeclaration> declarations;
+  std::vector<InterfaceDocumentation> documentation;
 };
 
 // AvailablePackageImport binds one exact source import clause to the already
@@ -114,6 +127,15 @@ struct AvailablePackageImports {
     const PackageIdentity &identity,
     const SemanticPackage &package,
     const ConstantTable &constants,
+    DiagnosticSink &diagnostics);
+
+// Adds selected public documentation from the provider-independent metadata
+// pass. The first overload remains useful to semantic unit tests with no docs.
+[[nodiscard]] PackageInterface build_package_interface(
+    const PackageIdentity &identity,
+    const SemanticPackage &package,
+    const ConstantTable &constants,
+    const AgentMetadataResult &metadata,
     DiagnosticSink &diagnostics);
 
 // Reconstructs every available interface type in package.types, creates one

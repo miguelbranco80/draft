@@ -976,7 +976,8 @@ private:
           {SemanticSiteKind::SynthesisExpression,
            {tree.file(), expression_id},
            scope,
-           current_procedure_});
+           current_procedure_,
+           expected});
       HirExpression expression;
       expression.kind = HirExpressionKind::Synthesis;
       expression.range = node.range;
@@ -995,7 +996,8 @@ private:
               {SemanticSiteKind::SynthesisAssembly,
                {tree.file(), child},
                scope,
-               current_procedure_});
+               current_procedure_,
+               {}});
         }
       }
       HirExpression expression;
@@ -1423,7 +1425,11 @@ private:
     case NodeKind::Judgment:
       statement.kind = HirStatementKind::Judgment;
       semantic_.sites.push_back(
-          {SemanticSiteKind::Judgment, {tree.file(), statement_id}, scope, current_procedure_});
+          {SemanticSiteKind::Judgment,
+           {tree.file(), statement_id},
+           scope,
+           current_procedure_,
+           {}});
       break;
 
     case NodeKind::SynthesisStatement:
@@ -1432,7 +1438,8 @@ private:
           {SemanticSiteKind::SynthesisStatement,
            {tree.file(), statement_id},
            scope,
-           current_procedure_});
+           current_procedure_,
+           {}});
       break;
 
     case NodeKind::AsmStatement:
@@ -1443,7 +1450,8 @@ private:
               {SemanticSiteKind::SynthesisAssembly,
                {tree.file(), child},
                scope,
-               current_procedure_});
+               current_procedure_,
+               {}});
         }
       }
       break;
