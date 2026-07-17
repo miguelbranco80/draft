@@ -28,7 +28,9 @@ add_library(
   src/source/diagnostic.cpp
   src/source/source.cpp
   src/sema/analyzer.cpp
+  src/sema/body_checker.cpp
   src/sema/constant.cpp
+  src/sema/hir.cpp
   src/sema/semantic.cpp
   src/sema/symbol.cpp
   src/sema/type.cpp
@@ -107,4 +109,8 @@ if(BUILD_TESTING)
   add_executable(draft_target_profile_tests tests/target_profile_test.cpp)
   target_link_libraries(draft_target_profile_tests PRIVATE draft_compiler)
   add_test(NAME draft_target_profile_tests COMMAND draft_target_profile_tests)
+
+  add_executable(draft_body_checker_tests tests/body_checker_test.cpp)
+  target_link_libraries(draft_body_checker_tests PRIVATE draft_compiler)
+  add_test(NAME draft_body_checker_tests COMMAND draft_body_checker_tests)
 endif()

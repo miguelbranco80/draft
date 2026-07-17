@@ -114,6 +114,13 @@ public:
     }
   }
 
+  // Public single-node entry used by body checking after package declarations
+  // have already been resolved by resolve().
+  [[nodiscard]] TypeId resolve_one_type(
+      const SyntaxTree &tree, NodeId type, ScopeId scope) {
+    return resolve_type(tree, type, scope);
+  }
+
 private:
   // Finds the immutable parsed tree owning a SyntaxReference. LoadedPackage
   // keeps files in canonical order, making this linear scan deterministic.
@@ -1097,6 +1104,19 @@ void resolve_package_types(
     DiagnosticSink &diagnostics) {
   TypeResolver resolver(sources, loaded, package, selections, diagnostics);
   resolver.resolve();
+}
+
+TypeId resolve_type_syntax(
+    const SourceManager &sources,
+    const LoadedPackage &loaded,
+    SemanticPackage &package,
+    const ConditionalSelections &selections,
+    const SyntaxTree &tree,
+    NodeId type,
+    ScopeId scope,
+    DiagnosticSink &diagnostics) {
+  TypeResolver resolver(sources, loaded, package, selections, diagnostics);
+  return resolver.resolve_one_type(tree, type, scope);
 }
 
 } // namespace draft

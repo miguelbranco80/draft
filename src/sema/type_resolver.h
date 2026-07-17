@@ -31,6 +31,20 @@ void resolve_package_types(
     SemanticPackage &package,
     DiagnosticSink &diagnostics);
 
+// Resolves one type node encountered after package signature resolution, such as
+// a local declaration annotation. The caller supplies its lexical scope and the
+// active compile-time member selections. The operation may intern new structural
+// or anonymous types but does not revisit unrelated package declarations.
+[[nodiscard]] TypeId resolve_type_syntax(
+    const SourceManager &sources,
+    const LoadedPackage &loaded,
+    SemanticPackage &package,
+    const ConditionalSelections &selections,
+    const SyntaxTree &tree,
+    NodeId type,
+    ScopeId scope,
+    DiagnosticSink &diagnostics);
+
 // Selection-aware form used by the semantic fixed-point driver. Selected
 // member-level `when` regions contribute directly to their owning type scope.
 void resolve_package_types(
