@@ -1603,7 +1603,12 @@ private:
       const MirValueId low_id = instruction.operands[1];
       const MirValueId high_id = instruction.operands[2];
       const Type &slice_type = type(instruction.type);
-      const std::uint64_t stride = type(slice_type.element).layout.size;
+      // A Draft string is the same physical {data,len} view as []u8 but its
+      // immutability is represented by TypeKind::String rather than an element
+      // TypeId. Its byte stride is therefore explicit here.
+      const std::uint64_t stride = slice_type.kind == TypeKind::String
+          ? 1
+          : type(slice_type.element).layout.size;
       std::string adjusted = data;
       if (stride != 0) {
         const std::string byte_offset = auxiliary();

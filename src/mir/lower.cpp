@@ -764,7 +764,8 @@ private:
           index,
           usize_constant(base_type.element_count, expression.range),
           expression.range);
-    } else if (base_type.kind == TypeKind::Slice) {
+    } else if (base_type.kind == TypeKind::Slice ||
+               base_type.kind == TypeKind::String) {
       bounds_check(
           index, length(base, base_expression.type, expression.range), expression.range);
     }

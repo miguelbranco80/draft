@@ -161,6 +161,11 @@ main :: proc() -> i32 {
     assert(last(values) == 42)
     assert('é' == '\u{e9}')
     assert(cast[u32]('🙂') == 0x1f642)
+    text := "draft"
+    middle := text[1:4]
+    assert(text[0] == cast[u8]('d'))
+    assert(len(middle) == 3)
+    assert(middle[2] == cast[u8]('f'))
     assert(small == 3)
     return cast[i32](value)
 }

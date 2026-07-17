@@ -2093,13 +2093,15 @@ private:
         }
       }
       if (node.children.size() != 2) {
-        diagnostics_.error(node.range, "multi-index expressions are not yet supported");
+        diagnostics_.error(node.range, "indexing requires exactly one index");
         return invalid_expression(node.range);
       }
       const Type base = semantic_.types.type(base_expression.type);
       if (base.kind != TypeKind::Array && base.kind != TypeKind::Slice &&
-          base.kind != TypeKind::MultiPointer) {
-        diagnostics_.error(node.range, "indexing requires an array, slice, or multi-pointer");
+          base.kind != TypeKind::MultiPointer && base.kind != TypeKind::String) {
+        diagnostics_.error(
+            node.range,
+            "indexing requires an array, slice, string, or multi-pointer");
         return invalid_expression(node.range);
       }
       const HirExpressionId index_id = check_expression(
@@ -2113,9 +2115,15 @@ private:
       HirExpression expression;
       expression.kind = HirExpressionKind::Index;
       expression.range = node.range;
-      expression.type = apply_expected_type(base.element, expected, node.range);
+      const TypeId element = base.kind == TypeKind::String
+          ? semantic_.types.builtins().u8_type
+          : base.element;
+      expression.type = apply_expected_type(element, expected, node.range);
       expression.operands = {base_id, index_id};
-      expression.addressable = true;
+      // A string is an immutable byte view. Lowering still computes an address
+      // internally to load the byte, but source code may not take that address
+      // or use the indexed expression as an assignment target.
+      expression.addressable = base.kind != TypeKind::String;
       return hir_.add_expression(std::move(expression));
     }
 
@@ -2126,10 +2134,14 @@ private:
       TypeId result = semantic_.types.builtins().invalid;
       if (base.kind == TypeKind::Slice) {
         result = hir_.expression(base_id).type;
+      } else if (base.kind == TypeKind::String) {
+        result = semantic_.types.builtins().string_type;
       } else if (base.kind == TypeKind::Array || base.kind == TypeKind::MultiPointer) {
         result = semantic_.types.slice(base.element);
       } else {
-        diagnostics_.error(node.range, "slicing requires an array, slice, or multi-pointer");
+        diagnostics_.error(
+            node.range,
+            "slicing requires an array, slice, string, or multi-pointer");
       }
       HirExpression expression;
       expression.kind = HirExpressionKind::Slice;

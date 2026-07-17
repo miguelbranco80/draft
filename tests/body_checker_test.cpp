@@ -140,7 +140,10 @@ views :: proc() -> usize {
     tuple: (u64, usize) = (pair.left, len(part))
     (first, _) := (40, 2)
     (_, second): (u64, usize) = tuple
-    return cast[usize](tuple.0) + cast[usize](first) + second
+    text := "draft"
+    middle := text[1:4]
+    assert(text[0] == cast[u8]('d'))
+    return cast[usize](tuple.0) + cast[usize](first) + second + len(middle)
 }
 
 rune_value :: proc() -> rune {
@@ -330,6 +333,24 @@ main :: proc() -> i64 {
   }
   EXPECT(state, templates == 3);
   EXPECT(state, concrete_instances == 3);
+}
+
+void test_string_index_is_immutable(TestState &state) {
+  CheckedSource source(R"draft(
+package bodies
+
+main :: proc() {
+    text := "draft"
+    text[0] = cast[u8]('D')
+}
+)draft");
+
+  EXPECT(state, !source.bodies.ok);
+  EXPECT(state, source.diagnostics.error_count() == 1);
+  const std::string rendered =
+      draft::render_diagnostics(source.sources, source.diagnostics);
+  EXPECT(state, rendered.find("assignment target is not addressable") !=
+                    std::string::npos);
 }
 
 void test_parametric_procedure_value_diagnostics(TestState &state) {
@@ -574,6 +595,7 @@ int main() {
   test_common_typed_bodies(state);
   test_body_diagnostics(state);
   test_parametric_procedure_instances(state);
+  test_string_index_is_immutable(state);
   test_parametric_procedure_value_diagnostics(state);
   test_definite_initialization(state);
   test_layout_intrinsics_and_static_assert(state);
