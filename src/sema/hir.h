@@ -196,6 +196,13 @@ struct HirStatement {
   std::size_t for_initialization_count = 0;
   bool local_is_uninitialized = false;
   bool local_destructures_tuple = false;
+  // Set after semantic coverage checking. A default makes any switch
+  // exhaustive; enum and tagged-union switches are also exhaustive when every
+  // declared alternative is covered exactly once.
+  bool switch_is_exhaustive = false;
+  // True only when exhaustiveness holds and every checked case body definitely
+  // returns. MIR uses this to terminate its otherwise predecessor-free join.
+  bool switch_definitely_returns = false;
 };
 
 // Every runtime block has one lexical ScopeId and an ordered statement list.

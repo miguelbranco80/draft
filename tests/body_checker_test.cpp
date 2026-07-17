@@ -120,7 +120,6 @@ choose :: proc(mode: Mode) -> i64 {
     case .On:
         return 1
     }
-    return -1
 }
 
 unwrap :: proc(choice: Choice) -> i64 {
@@ -130,7 +129,6 @@ unwrap :: proc(choice: Choice) -> i64 {
     case .none:
         return 0
     }
-    return -1
 }
 
 views :: proc() -> usize {

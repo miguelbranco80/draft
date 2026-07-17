@@ -95,7 +95,6 @@ read_outcome :: proc(outcome: Outcome) -> i64 {
     case .empty:
         return 0
     }
-    return -2
 }
 
 truncate_checked :: proc(value: f64) -> i32 {

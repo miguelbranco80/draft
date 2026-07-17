@@ -87,7 +87,6 @@ choose :: proc(mode: Mode) -> i64 {
     case .On:
         return 20
     }
-    return 0
 }
 
 unwrap :: proc(choice: Choice) -> i64 {
@@ -97,7 +96,6 @@ unwrap :: proc(choice: Choice) -> i64 {
     case .none:
         return 0
     }
-    return -1
 }
 
 wrap :: proc(value: i64) -> Choice {

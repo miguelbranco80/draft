@@ -2591,6 +2591,7 @@ private:
         const TypeKind subject_kind = is_invalid_type(subject_type)
             ? TypeKind::Invalid
             : semantic_.types.type(subject_type).kind;
+        statement.switch_is_exhaustive = has_default;
         if (!has_default &&
             (subject_kind == TypeKind::Enum || subject_kind == TypeKind::TaggedUnion)) {
           const std::optional<SymbolId> owner = type_owner(subject_type);
@@ -2599,12 +2600,21 @@ private:
             for (const AggregateMember &member : semantic_.aggregate_members) {
               if (member.owner == *owner) ++alternative_count;
             }
-            if (covered_alternatives.size() != alternative_count) {
+            statement.switch_is_exhaustive =
+                covered_alternatives.size() == alternative_count;
+            if (!statement.switch_is_exhaustive) {
               diagnostics_.error(
                   node.range,
                   "switch over enum or tagged union is not exhaustive and has no default");
             }
           }
+        }
+        statement.switch_definitely_returns =
+            statement.switch_is_exhaustive && !statement.switch_cases.empty();
+        for (const HirSwitchCase &switch_case : statement.switch_cases) {
+          statement.switch_definitely_returns =
+              statement.switch_definitely_returns &&
+              block_definitely_returns(switch_case.body);
         }
       }
       break;
@@ -2617,21 +2627,37 @@ private:
     return hir_.add_statement(std::move(statement));
   }
 
-  // Conservative return analysis recognizes direct returns and if/else chains
-  // whose every branch definitely returns. Loops remain nonterminating-unknown.
-  [[nodiscard]] bool definitely_returns(const SyntaxTree &tree, NodeId node_id) const {
-    const SyntaxNode &node = tree.node(node_id);
-    if (node.kind == NodeKind::ReturnStatement) return true;
-    if (node.kind == NodeKind::Block && !node.children.empty()) {
-      return definitely_returns(tree, node.children.front());
+  [[nodiscard]] bool block_definitely_returns(HirBlockId block_id) const {
+    const HirBlock &block = hir_.block(block_id);
+    for (HirStatementId statement : block.statements) {
+      if (statement_definitely_returns(hir_.statement(statement))) return true;
     }
-    if (node.kind == NodeKind::StatementList) {
-      return !node.children.empty() && definitely_returns(tree, node.children.back());
+    return false;
+  }
+
+  // Return analysis consumes checked control-flow structure rather than
+  // reinterpreting syntax. In particular it can trust the exhaustiveness fact
+  // established while resolving enum/tagged-union case labels.
+  [[nodiscard]] bool statement_definitely_returns(
+      const HirStatement &statement) const {
+    if (statement.kind == HirStatementKind::Return) return true;
+    if (statement.kind == HirStatementKind::If) {
+      return statement.blocks.size() == 2 &&
+          block_definitely_returns(statement.blocks[0]) &&
+          block_definitely_returns(statement.blocks[1]);
     }
-    if (node.kind == NodeKind::IfStatement && node.children.size() == 3) {
-      return definitely_returns(tree, node.children[1]) &&
-             definitely_returns(tree, node.children[2]);
+    if (statement.kind == HirStatementKind::Switch) {
+      return statement.switch_definitely_returns;
     }
+    if (statement.kind == HirStatementKind::Block ||
+        statement.kind == HirStatementKind::Denial ||
+        statement.kind == HirStatementKind::Unchecked ||
+        statement.kind == HirStatementKind::CompileTimeSelection) {
+      return statement.blocks.size() == 1 &&
+          block_definitely_returns(statement.blocks.front());
+    }
+    // Loops remain conservative: even a syntactically infinite loop may exit
+    // through a break in a nested control-flow path.
     return false;
   }
 
@@ -2667,7 +2693,7 @@ private:
     const HirBlockId checked_body = check_block(
         *tree, *body, *parameter_scope, result_type, {});
     if (result_type != semantic_.types.builtins().void_type &&
-        !definitely_returns(*tree, *body)) {
+        !block_definitely_returns(checked_body)) {
       diagnostics_.error(procedure.range, "not every path returns a value");
     }
     hir_.add_procedure(

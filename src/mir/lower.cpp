@@ -1529,11 +1529,15 @@ private:
     terminator.range = statement.range;
     terminator.value = switch_subject;
     MirBlockId default_target = join_block;
+    bool has_default = false;
     for (std::size_t case_index = 0;
          case_index < statement.switch_cases.size();
          ++case_index) {
       const HirSwitchCase &source_case = statement.switch_cases[case_index];
-      if (source_case.is_default) default_target = case_blocks[case_index];
+      if (source_case.is_default) {
+        has_default = true;
+        default_target = case_blocks[case_index];
+      }
       for (std::size_t label_index = 0;
            label_index < source_case.label_count;
            ++label_index) {
@@ -1544,8 +1548,25 @@ private:
              case_blocks[case_index]});
       }
     }
+    MirBlockId impossible_default;
+    if (statement.switch_is_exhaustive && !has_default) {
+      // A complete enum/tagged-union switch has no semantic default value, but
+      // LLVM's switch terminator requires a default edge. Route impossible
+      // representations to an explicit unreachable block rather than making
+      // the ordinary join appear reachable.
+      impossible_default = procedure_.add_block(statement.range);
+      default_target = impossible_default;
+    }
     terminator.targets.push_back(default_target);
     procedure_.set_terminator(current_, std::move(terminator));
+
+    if (impossible_default.is_valid()) {
+      current_ = impossible_default;
+      MirTerminator unreachable;
+      unreachable.kind = MirTerminatorKind::Unreachable;
+      unreachable.range = statement.range;
+      procedure_.set_terminator(current_, std::move(unreachable));
+    }
 
     controls_.push_back({join_block, {}, defer_scopes_.size(), false});
     for (std::size_t case_index = 0; case_index < case_blocks.size(); ++case_index) {
@@ -1572,6 +1593,12 @@ private:
     }
     controls_.pop_back();
     current_ = join_block;
+    if (statement.switch_definitely_returns) {
+      MirTerminator unreachable;
+      unreachable.kind = MirTerminatorKind::Unreachable;
+      unreachable.range = statement.range;
+      procedure_.set_terminator(current_, std::move(unreachable));
+    }
   }
 
   void lower_statement(HirStatementId statement_id) {
