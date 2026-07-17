@@ -1,0 +1,14 @@
+package runtime_checks
+
+divide :: proc(left, right: i64) -> i64 {
+    return left / right
+}
+
+shift :: proc(value: u32, count: usize) -> u32 {
+    return value << count
+}
+
+main :: proc() {
+    assert(divide(84, 2) == 42)
+    assert(shift(1, 5) == 32)
+}

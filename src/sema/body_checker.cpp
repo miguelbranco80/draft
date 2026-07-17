@@ -744,11 +744,17 @@ private:
 
     case NodeKind::BinaryExpression: {
       if (node.children.size() != 2) return invalid_expression(node.range);
+      const TokenKind operation = binary_operator(tree, node);
       const HirExpressionId left_id = check_expression(tree, node.children[0], scope);
-      const HirExpressionId right_id = check_expression(tree, node.children[1], scope);
+      const HirExpressionId right_id = check_expression(
+          tree,
+          node.children[1],
+          scope,
+          operation == TokenKind::ShiftLeft || operation == TokenKind::ShiftRight
+              ? semantic_.types.builtins().usize_type
+              : TypeId{});
       const TypeId left = hir_.expression(left_id).type;
       const TypeId right = hir_.expression(right_id).type;
-      const TokenKind operation = binary_operator(tree, node);
       TypeId result = semantic_.types.builtins().invalid;
       if (operation == TokenKind::LogicalAnd || operation == TokenKind::LogicalOr) {
         if (is_bool(left) && is_bool(right)) {

@@ -124,6 +124,7 @@ const char *mir_instruction_kind_name(MirInstructionKind kind) {
   case MirInstructionKind::Slice: return "slice";
   case MirInstructionKind::Aggregate: return "aggregate";
   case MirInstructionKind::Assembly: return "assembly";
+  case MirInstructionKind::Trap: return "trap";
   }
   return "unknown";
 }

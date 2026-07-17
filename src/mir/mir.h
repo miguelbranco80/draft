@@ -93,6 +93,7 @@ enum class MirInstructionKind {
   Slice,
   Aggregate,
   Assembly,
+  Trap,
 };
 
 // Instructions list operands in evaluation/use order. Store uses address then

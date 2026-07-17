@@ -286,6 +286,163 @@ private:
     return emit_value(std::move(instruction));
   }
 
+  [[nodiscard]] Type runtime_scalar_type(TypeId type_id) const {
+    Type result = semantic_.types.type(type_id);
+    while (result.kind == TypeKind::Distinct) {
+      result = semantic_.types.type(result.element);
+    }
+    return result;
+  }
+
+  [[nodiscard]] bool signed_integer_type(TypeId type_id) const {
+    const Type type = runtime_scalar_type(type_id);
+    return type.kind == TypeKind::SignedInteger || type.kind == TypeKind::Rune;
+  }
+
+  [[nodiscard]] std::uint32_t integer_bit_width(TypeId type_id) const {
+    const Type type = runtime_scalar_type(type_id);
+    if (type.kind == TypeKind::Enum) {
+      return static_cast<std::uint32_t>(type.layout.size * 8U);
+    }
+    return type.bit_width;
+  }
+
+  // Emits an explicit failure edge rather than relying on LLVM's undefined or
+  // poison behavior. The safe block becomes the new insertion point.
+  void trap_unless(MirValueId condition, SourceRange range) {
+    const MirBlockId safe = procedure_.add_block(range);
+    const MirBlockId failure = procedure_.add_block(range);
+    conditional_branch(condition, safe, failure, range);
+    current_ = failure;
+    MirInstruction trap;
+    trap.kind = MirInstructionKind::Trap;
+    trap.range = range;
+    trap.type = semantic_.types.builtins().void_type;
+    emit_void(std::move(trap));
+    MirTerminator unreachable;
+    unreachable.kind = MirTerminatorKind::Unreachable;
+    unreachable.range = range;
+    procedure_.set_terminator(current_, std::move(unreachable));
+    current_ = safe;
+  }
+
+  [[nodiscard]] MirValueId checked_binary(
+      HirOperation operation,
+      MirValueId left,
+      MirValueId right,
+      TypeId result_type,
+      SourceRange range) {
+    const Type left_type = runtime_scalar_type(procedure_.value(left).type);
+    const bool integer = left_type.kind == TypeKind::SignedInteger ||
+        left_type.kind == TypeKind::UnsignedInteger ||
+        left_type.kind == TypeKind::Rune || left_type.kind == TypeKind::Enum ||
+        left_type.kind == TypeKind::BooleanStorage ||
+        left_type.kind == TypeKind::EndianScalar;
+    if (integer &&
+        (operation == HirOperation::Divide || operation == HirOperation::Remainder)) {
+      const TypeId operand_type = procedure_.value(right).type;
+      const MirValueId zero_value = constant(
+          ConstantValue::make_integer(0), operand_type, range);
+      MirValueId safe = binary(
+          HirOperation::NotEqual,
+          right,
+          zero_value,
+          semantic_.types.builtins().bool_type,
+          range);
+      if (operation == HirOperation::Divide &&
+          signed_integer_type(procedure_.value(left).type)) {
+        const std::uint32_t bits = integer_bit_width(procedure_.value(left).type);
+        if (bits != 0) {
+          const BigInteger minimum = BigInteger::from_u64(1)
+              .shifted_left(static_cast<std::size_t>(bits - 1U))
+              .negated();
+          const MirValueId minimum_value = constant(
+              ConstantValue::make_integer(minimum),
+              procedure_.value(left).type,
+              range);
+          const MirValueId negative_one = constant(
+              ConstantValue::make_integer(-1), operand_type, range);
+          const MirValueId left_is_minimum = binary(
+              HirOperation::Equal,
+              left,
+              minimum_value,
+              semantic_.types.builtins().bool_type,
+              range);
+          const MirValueId right_is_negative_one = binary(
+              HirOperation::Equal,
+              right,
+              negative_one,
+              semantic_.types.builtins().bool_type,
+              range);
+          const MirValueId overflow = binary(
+              HirOperation::BitwiseAnd,
+              left_is_minimum,
+              right_is_negative_one,
+              semantic_.types.builtins().bool_type,
+              range);
+          const MirValueId false_value = constant(
+              ConstantValue::make_bool(false),
+              semantic_.types.builtins().bool_type,
+              range);
+          const MirValueId no_overflow = binary(
+              HirOperation::Equal,
+              overflow,
+              false_value,
+              semantic_.types.builtins().bool_type,
+              range);
+          safe = binary(
+              HirOperation::BitwiseAnd,
+              safe,
+              no_overflow,
+              semantic_.types.builtins().bool_type,
+              range);
+        }
+      }
+      trap_unless(safe, range);
+    } else if (integer &&
+               (operation == HirOperation::ShiftLeft ||
+                operation == HirOperation::ShiftRight)) {
+      const TypeId count_type = procedure_.value(right).type;
+      const MirValueId width = constant(
+          ConstantValue::make_integer(
+              static_cast<std::int64_t>(integer_bit_width(procedure_.value(left).type))),
+          count_type,
+          range);
+      MirValueId safe = binary(
+          HirOperation::Less,
+          right,
+          width,
+          semantic_.types.builtins().bool_type,
+          range);
+      if (signed_integer_type(count_type)) {
+        const MirValueId zero_value = constant(
+            ConstantValue::make_integer(0), count_type, range);
+        const MirValueId nonnegative = binary(
+            HirOperation::GreaterEqual,
+            right,
+            zero_value,
+            semantic_.types.builtins().bool_type,
+            range);
+        safe = binary(
+            HirOperation::BitwiseAnd,
+            safe,
+            nonnegative,
+            semantic_.types.builtins().bool_type,
+            range);
+      }
+      trap_unless(safe, range);
+      if (procedure_.value(right).type != procedure_.value(left).type) {
+        MirInstruction conversion;
+        conversion.kind = MirInstructionKind::Convert;
+        conversion.range = range;
+        conversion.type = procedure_.value(left).type;
+        conversion.operands.push_back(right);
+        right = emit_value(std::move(conversion));
+      }
+    }
+    return binary(operation, left, right, result_type, range);
+  }
+
   [[nodiscard]] std::uint64_t member_offset(
       const HirExpression &expression) const {
     if (expression.symbol.is_valid()) {
@@ -666,7 +823,7 @@ private:
       {
         const MirValueId left = lower_expression(expression.operands[0]);
         const MirValueId right = lower_expression(expression.operands[1]);
-        return binary(
+        return checked_binary(
             expression.operation,
             left,
             right,
@@ -815,7 +972,7 @@ private:
     for (std::size_t index = 0; index < left_count; ++index) {
       MirValueId value = right_values[index];
       if (statement.operation != HirOperation::Assign) {
-        value = binary(
+        value = checked_binary(
             statement.operation,
             left_values[index],
             value,

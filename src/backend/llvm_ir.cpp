@@ -912,6 +912,9 @@ private:
       output_ << ")\n";
       if (instruction.result.is_valid()) assign_alias(operands, instruction, result);
       break;
+    case MirInstructionKind::Trap:
+      output_ << "  call void @llvm.trap()\n";
+      break;
     case MirInstructionKind::Invalid:
       error(instruction.range, "invalid MIR instruction reached emission");
       break;

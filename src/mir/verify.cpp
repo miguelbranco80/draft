@@ -114,6 +114,9 @@ private:
     case MirInstructionKind::Aggregate:
     case MirInstructionKind::Assembly:
       break;
+    case MirInstructionKind::Trap:
+      if (arity != 0) error(instruction.range, "trap has operands");
+      break;
     }
   }
 

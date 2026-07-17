@@ -47,6 +47,14 @@ add :: proc(left, right: i64) -> i64 {
     return left + right
 }
 
+divide :: proc(left, right: i64) -> i64 {
+    return left / right
+}
+
+shift :: proc(value: u32, count: usize) -> u32 {
+    return value << count
+}
+
 main :: proc() -> i32 {
     value := add(20, 22)
     assert(value == 42)
@@ -96,6 +104,9 @@ main :: proc() -> i32 {
   EXPECT(state, module.text.find("define i32 @main(i32 %argc, ptr %argv)") !=
       std::string::npos);
   EXPECT(state, module.text.find("trunc i64") != std::string::npos);
+  EXPECT(state, module.text.find("sdiv i64") != std::string::npos);
+  EXPECT(state, module.text.find("shl i32") != std::string::npos);
+  EXPECT(state, module.text.find("call void @llvm.trap()") != std::string::npos);
 }
 
 } // namespace

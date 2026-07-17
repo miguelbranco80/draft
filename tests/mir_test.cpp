@@ -170,12 +170,46 @@ main :: proc() -> i64 {
   EXPECT(state, rendered.find("unresolved synthesis expression") != std::string::npos);
 }
 
+void test_required_integer_traps_are_explicit(TestState &state) {
+  LoweredSource source(R"draft(
+package mir
+
+divide :: proc(left, right: i64) -> i64 {
+    return left / right
+}
+
+shift :: proc(value: u32, count: usize) -> u32 {
+    return value << count
+}
+)draft");
+
+  if (source.diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(source.sources, source.diagnostics);
+  }
+  EXPECT(state, source.mir.ok);
+  std::size_t traps = 0;
+  std::size_t unreachable = 0;
+  for (const draft::MirProcedure &procedure : source.mir.program.procedures()) {
+    for (const draft::MirInstruction &instruction : procedure.instructions) {
+      if (instruction.kind == draft::MirInstructionKind::Trap) ++traps;
+    }
+    for (const draft::MirBlock &block : procedure.blocks) {
+      if (block.terminator.kind == draft::MirTerminatorKind::Unreachable) {
+        ++unreachable;
+      }
+    }
+  }
+  EXPECT(state, traps == 2);
+  EXPECT(state, unreachable == 2);
+}
+
 } // namespace
 
 int main() {
   TestState state;
   test_structured_lowering(state);
   test_unresolved_synthesis_stops_lowering(state);
+  test_required_integer_traps_are_explicit(state);
 
   if (state.failures != 0) {
     std::cerr << state.failures << " MIR expectation(s) failed\n";
