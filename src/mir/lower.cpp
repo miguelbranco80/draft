@@ -1342,6 +1342,7 @@ MirLoweringResult lower_package_to_mir(
   MirLoweringResult result;
   const std::size_t initial_errors = diagnostics.error_count();
   for (const HirProcedure &procedure : hir.procedures()) {
+    if (procedure.parametric_template) continue;
     MirProcedure lowered =
         ProcedureLowerer(semantic, hir, procedure, assembly, diagnostics).run();
     if (lowered.valid) ++result.lowered_procedures;

@@ -203,6 +203,10 @@ struct HirProcedure {
   TypeId type;
   HirBlockId body;
   bool valid = false;
+  // A parametric declaration is checked once under its constraints so tools,
+  // denials, and synthesis see the symbolic body. Only concrete instance rows
+  // are executable and proceed to MIR.
+  bool parametric_template = false;
 };
 
 class HirProgram {

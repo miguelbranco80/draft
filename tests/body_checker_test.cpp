@@ -228,12 +228,75 @@ falls_through :: proc(flag: bool) -> int {
   EXPECT(state, rendered.find("not representable") != std::string::npos);
 }
 
+void test_parametric_procedure_instances(TestState &state) {
+  CheckedSource source(R"draft(
+package bodies
+
+identity[T: type] :: proc(value: ^T) -> ^T {
+    return value
+}
+
+sum[T: number] :: proc(values: []T) -> T {
+    result: T
+    for value in values {
+        result += value
+    }
+    return result
+}
+
+main :: proc() -> i64 {
+    value: u32 = 42
+    explicit := identity[u32](&value)
+    inferred := identity(&value)
+    values := [3]i64{1, 2, 3}
+    if explicit^ != inferred^ {
+        return 0
+    }
+    return sum[i64](values[:])
+}
+)draft");
+
+  if (source.diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(source.sources, source.diagnostics);
+  }
+  EXPECT(state, source.semantics.ok);
+  EXPECT(state, source.bodies.ok);
+  EXPECT(state, !source.diagnostics.has_errors());
+  EXPECT(state, source.bodies.checked_procedures == 5);
+  EXPECT(state, source.bodies.program.procedures().size() == 5);
+  std::size_t templates = 0;
+  std::size_t concrete_instances = 0;
+  for (const draft::HirProcedure &procedure :
+       source.bodies.program.procedures()) {
+    if (procedure.parametric_template) {
+      ++templates;
+    } else {
+      const draft::Symbol &symbol =
+          source.semantics.package.symbols.symbol(procedure.symbol);
+      if (symbol.name.find("$instance") != std::string::npos) {
+        ++concrete_instances;
+        const draft::Type &signature =
+            source.semantics.package.types.type(procedure.type);
+        for (draft::TypeId member : signature.members) {
+          EXPECT(
+              state,
+              source.semantics.package.types.type(member).kind !=
+                  draft::TypeKind::TypeParameter);
+        }
+      }
+    }
+  }
+  EXPECT(state, templates == 2);
+  EXPECT(state, concrete_instances == 2);
+}
+
 } // namespace
 
 int main() {
   TestState state;
   test_common_typed_bodies(state);
   test_body_diagnostics(state);
+  test_parametric_procedure_instances(state);
 
   if (state.failures != 0) {
     std::cerr << state.failures << " body checker expectation(s) failed\n";

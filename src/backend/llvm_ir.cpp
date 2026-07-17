@@ -655,7 +655,12 @@ private:
         semantic_.symbols.scope(semantic_.package_scope);
     for (SymbolId symbol_id : package_scope.symbols) {
       const Symbol &symbol = semantic_.symbols.symbol(symbol_id);
-      if (symbol.kind == SymbolKind::Procedure && !has_body(symbol_id)) {
+      // Parametric source declarations are symbolic templates. Concrete private
+      // instance symbols carry every executable body and are emitted below;
+      // declaring the template would leak TypeParameter pseudo-types into LLVM.
+      if (symbol.kind == SymbolKind::Procedure &&
+          !symbol.flags.parametric &&
+          !has_body(symbol_id)) {
         output_ << "declare " << llvm_type(function_result(symbol.type)) << ' '
                 << symbol_name(symbol_id)
                 << function_signature(symbol.type, false) << "\n";

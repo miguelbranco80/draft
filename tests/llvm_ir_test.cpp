@@ -67,10 +67,17 @@ tenth32 :: proc() -> f32 {
     return 0.1
 }
 
+identity[T: number] :: proc(value: T) -> T {
+    return value
+}
+
 main :: proc() -> i32 {
     value := add(20, 22)
+    copy := identity[i64](value)
+    inferred := identity(value)
     small := 1 + 2
-    assert(value == 42)
+    assert(copy == 42)
+    assert(inferred == 42)
     assert(small == 3)
     return cast[i32](value)
 }
@@ -115,9 +122,11 @@ main :: proc() -> i32 {
   EXPECT(state, module.text.find(
       "define i64 @\"draft.workspace.native.add\"(ptr %context, i64 %arg0, i64 %arg1)") !=
       std::string::npos);
+  EXPECT(state, module.text.find("identity_24instance") != std::string::npos);
+  EXPECT(state, module.text.find("<type-parameter>") == std::string::npos);
   EXPECT(state, module.text.find(
       "call void @__draft.assert(ptr %context, i1") != std::string::npos);
-  EXPECT(state, module.text.find("value == 42") != std::string::npos);
+  EXPECT(state, module.text.find("copy == 42") != std::string::npos);
   EXPECT(state, module.text.find("package.draft") != std::string::npos);
   EXPECT(state, module.text.find("define i32 @main(i32 %argc, ptr %argv)") !=
       std::string::npos);

@@ -59,6 +59,21 @@ struct ControlDepth {
   std::uint32_t loops = 0;
 };
 
+struct TypeSubstitution {
+  TypeId parameter;
+  TypeId replacement;
+};
+
+// One source template can produce several concrete procedure bodies. Instances
+// retain their substitution here while the permanent semantic graph owns the
+// concrete symbol, signature, and cloned parameter scope used by later passes.
+struct ProcedureInstance {
+  SymbolId source;
+  SymbolId symbol;
+  std::vector<TypeSubstitution> substitutions;
+  bool checked = false;
+};
+
 // BodyChecker is one sequential phase context. It owns only the HIR under
 // construction; source, syntax, semantic tables, constants, and selections are
 // caller-owned. SymbolTable may grow, so operations retain SymbolId values and
@@ -85,9 +100,21 @@ public:
       if (symbol.kind != SymbolKind::Procedure || !symbol.type.is_valid()) {
         continue;
       }
-      if (check_procedure(id)) {
+      if (check_procedure(id, symbol.flags.parametric)) {
         ++result.checked_procedures;
       }
+    }
+    // Checking an ordinary body can discover a first concrete use. A growing
+    // index loop is intentional: an instance body may instantiate another
+    // template, and every newly appended row is checked exactly once.
+    for (std::size_t index = 0; index < instances_.size(); ++index) {
+      current_instance_index_ = index;
+      if (!instances_[index].checked &&
+          check_procedure(instances_[index].symbol, false)) {
+        ++result.checked_procedures;
+        instances_[index].checked = true;
+      }
+      current_instance_index_.reset();
     }
     result.ok = diagnostics_.error_count() == initial_errors;
     result.program = std::move(hir_);
@@ -160,15 +187,90 @@ private:
     return type == semantic_.types.builtins().untyped_float;
   }
 
+  [[nodiscard]] std::optional<TypeConstraintKind> type_constraint(
+      TypeId type) const {
+    if (!type.is_valid() || semantic_.types.type(type).kind != TypeKind::TypeParameter) {
+      return std::nullopt;
+    }
+    for (const ParametricParameterRecord &parameter :
+         semantic_.parametric_parameters) {
+      const Symbol &symbol = semantic_.symbols.symbol(parameter.parameter);
+      if (symbol.type == type) return parameter.constraint;
+    }
+    return std::nullopt;
+  }
+
   [[nodiscard]] bool is_integer(TypeId type) const {
     if (is_invalid_type(type)) return false;
-    return is_untyped_integer(type) || semantic_.types.is_integer(type);
+    const std::optional<TypeConstraintKind> constraint = type_constraint(type);
+    return is_untyped_integer(type) || semantic_.types.is_integer(type) ||
+        constraint == TypeConstraintKind::Integer;
   }
 
   [[nodiscard]] bool is_numeric(TypeId type) const {
     if (is_invalid_type(type)) return false;
+    const std::optional<TypeConstraintKind> constraint = type_constraint(type);
     return is_untyped_integer(type) || is_untyped_float(type) ||
-           semantic_.types.is_number(type);
+           semantic_.types.is_number(type) ||
+        constraint == TypeConstraintKind::Integer ||
+        constraint == TypeConstraintKind::Float ||
+        constraint == TypeConstraintKind::Number;
+  }
+
+  [[nodiscard]] TypeId substitute_type(
+      TypeId source,
+      const std::vector<TypeSubstitution> &substitutions) {
+    if (!source.is_valid()) return source;
+    for (const TypeSubstitution &substitution : substitutions) {
+      if (substitution.parameter == source) return substitution.replacement;
+    }
+    const Type value = semantic_.types.type(source);
+    switch (value.kind) {
+    case TypeKind::Pointer:
+      return semantic_.types.pointer(substitute_type(value.element, substitutions));
+    case TypeKind::MultiPointer:
+      return semantic_.types.multi_pointer(
+          substitute_type(value.element, substitutions));
+    case TypeKind::Slice:
+      return semantic_.types.slice(substitute_type(value.element, substitutions));
+    case TypeKind::Array:
+      return semantic_.types.array(
+          substitute_type(value.element, substitutions), value.element_count);
+    case TypeKind::Simd:
+      return semantic_.types.simd(
+          substitute_type(value.element, substitutions), value.element_count);
+    case TypeKind::Tuple: {
+      std::vector<TypeId> members;
+      members.reserve(value.members.size());
+      for (TypeId member : value.members) {
+        members.push_back(substitute_type(member, substitutions));
+      }
+      return semantic_.types.tuple(members);
+    }
+    case TypeKind::Procedure: {
+      std::vector<TypeId> parameters;
+      if (!value.members.empty()) {
+        parameters.reserve(value.members.size() - 1);
+        for (std::size_t index = 0; index + 1 < value.members.size(); ++index) {
+          parameters.push_back(substitute_type(value.members[index], substitutions));
+        }
+      }
+      const TypeId result = value.members.empty()
+          ? semantic_.types.builtins().void_type
+          : substitute_type(value.members.back(), substitutions);
+      return semantic_.types.procedure(
+          parameters, result, value.c_calling_convention);
+    }
+    default:
+      return source;
+    }
+  }
+
+  [[nodiscard]] TypeId substitute_active(TypeId source) {
+    return !current_instance_index_.has_value()
+        ? source
+        : substitute_type(
+              source, instances_[*current_instance_index_].substitutions);
   }
 
   // Applies Draft's initial expected-type rule: exact types match, and untyped
@@ -180,9 +282,11 @@ private:
     if (!expected.is_valid() || is_invalid_type(expected) || actual == expected) {
       return actual;
     }
-    if ((is_untyped_integer(actual) && semantic_.types.is_integer(expected)) ||
+    if ((is_untyped_integer(actual) && is_integer(expected)) ||
         ((is_untyped_integer(actual) || is_untyped_float(actual)) &&
-         semantic_.types.is_float(expected))) {
+         (semantic_.types.is_float(expected) ||
+          type_constraint(expected) == TypeConstraintKind::Float ||
+          type_constraint(expected) == TypeConstraintKind::Number))) {
       return expected;
     }
     diagnostics_.error(
@@ -199,11 +303,11 @@ private:
       TypeId left, TypeId right, SourceRange range) {
     if (left == right && is_numeric(left)) return left;
     if ((is_untyped_integer(left) || is_untyped_float(left)) &&
-        semantic_.types.is_number(right)) {
+        is_numeric(right) && !is_untyped_integer(right) && !is_untyped_float(right)) {
       return right;
     }
     if ((is_untyped_integer(right) || is_untyped_float(right)) &&
-        semantic_.types.is_number(left)) {
+        is_numeric(left) && !is_untyped_integer(left) && !is_untyped_float(left)) {
       return left;
     }
     diagnostics_.error(range, "numeric operands require one common type");
@@ -417,13 +521,13 @@ private:
       const SyntaxTree &tree, NodeId node_id, ScopeId scope) {
     const SyntaxNode &node = tree.node(node_id);
     if (node_is_type_syntax(node.kind)) {
-      return resolve_type_syntax(
-          sources_, loaded_, semantic_, selections_, tree, node_id, scope, diagnostics_);
+      return substitute_active(resolve_type_syntax(
+          sources_, loaded_, semantic_, selections_, tree, node_id, scope, diagnostics_));
     }
     if (const std::optional<SymbolId> imported = imported_member(tree, node, scope)) {
       const Symbol binding = semantic_.symbols.symbol(*imported);
       if (binding.kind == SymbolKind::Type || binding.kind == SymbolKind::TypeParameter) {
-        return binding.type;
+        return substitute_active(binding.type);
       }
       diagnostics_.error(node.range, "imported name does not denote a type");
       return semantic_.types.builtins().invalid;
@@ -437,11 +541,230 @@ private:
     if (symbol.has_value()) {
       const Symbol binding = semantic_.symbols.symbol(*symbol);
       if (binding.kind == SymbolKind::Type || binding.kind == SymbolKind::TypeParameter) {
-        return binding.type;
+        return substitute_active(binding.type);
       }
     }
     diagnostics_.error(name->range, "name does not denote a type");
     return semantic_.types.builtins().invalid;
+  }
+
+  [[nodiscard]] std::vector<ParametricParameterRecord> parameters_for(
+      SymbolId owner) const {
+    std::vector<ParametricParameterRecord> result;
+    for (const ParametricParameterRecord &parameter :
+         semantic_.parametric_parameters) {
+      if (parameter.owner == owner) result.push_back(parameter);
+    }
+    return result;
+  }
+
+  [[nodiscard]] bool constraint_accepts(
+      TypeConstraintKind constraint, TypeId argument) const {
+    if (!argument.is_valid()) return false;
+    const TypeKind kind = semantic_.types.type(argument).kind;
+    if (kind == TypeKind::Invalid || kind == TypeKind::TypeParameter ||
+        kind == TypeKind::UntypedInteger || kind == TypeKind::UntypedFloat) {
+      return false;
+    }
+    switch (constraint) {
+    case TypeConstraintKind::AnyType:
+      return true;
+    case TypeConstraintKind::Integer:
+      return semantic_.types.is_integer(argument);
+    case TypeConstraintKind::Float:
+      return semantic_.types.is_float(argument);
+    case TypeConstraintKind::Number:
+      return semantic_.types.is_number(argument);
+    case TypeConstraintKind::CompileTimeValue:
+      return false;
+    }
+    return false;
+  }
+
+  [[nodiscard]] std::optional<std::size_t> substitution_index(
+      const std::vector<TypeSubstitution> &substitutions,
+      TypeId parameter) const {
+    for (std::size_t index = 0; index < substitutions.size(); ++index) {
+      if (substitutions[index].parameter == parameter) return index;
+    }
+    return std::nullopt;
+  }
+
+  // Unifies one symbolic signature type with an already checked argument type.
+  // Draft inference is deliberately unique and structural; it never chooses a
+  // default for an untyped literal or guesses a parameter visible only in the
+  // result type.
+  [[nodiscard]] bool infer_type_argument(
+      SymbolId owner,
+      TypeId pattern_id,
+      TypeId actual_id,
+      std::vector<TypeSubstitution> &substitutions) {
+    for (const ParametricParameterRecord &parameter : parameters_for(owner)) {
+      if (parameter.constraint == TypeConstraintKind::CompileTimeValue) continue;
+      const TypeId parameter_type =
+          semantic_.symbols.symbol(parameter.parameter).type;
+      if (pattern_id != parameter_type) continue;
+      const std::optional<std::size_t> existing =
+          substitution_index(substitutions, parameter_type);
+      if (existing.has_value()) {
+        return substitutions[*existing].replacement == actual_id;
+      }
+      if (!constraint_accepts(parameter.constraint, actual_id)) return false;
+      substitutions.push_back({parameter_type, actual_id});
+      return true;
+    }
+
+    if (pattern_id == actual_id) return true;
+    if (!pattern_id.is_valid() || !actual_id.is_valid()) return false;
+    const Type pattern = semantic_.types.type(pattern_id);
+    const Type actual = semantic_.types.type(actual_id);
+    if (pattern.kind != actual.kind) return false;
+    switch (pattern.kind) {
+    case TypeKind::Pointer:
+    case TypeKind::MultiPointer:
+    case TypeKind::Slice:
+      return infer_type_argument(
+          owner, pattern.element, actual.element, substitutions);
+    case TypeKind::Array:
+    case TypeKind::Simd:
+      return pattern.element_count == actual.element_count &&
+          infer_type_argument(owner, pattern.element, actual.element, substitutions);
+    case TypeKind::Tuple:
+    case TypeKind::Procedure:
+      if (pattern.members.size() != actual.members.size() ||
+          (pattern.kind == TypeKind::Procedure &&
+           pattern.c_calling_convention != actual.c_calling_convention)) {
+        return false;
+      }
+      for (std::size_t index = 0; index < pattern.members.size(); ++index) {
+        if (!infer_type_argument(
+                owner,
+                pattern.members[index],
+                actual.members[index],
+                substitutions)) {
+          return false;
+        }
+      }
+      return true;
+    default:
+      return false;
+    }
+  }
+
+  [[nodiscard]] std::optional<ScopeId> procedure_scope(SymbolId owner) const {
+    return owned_scope(owner, ScopeKind::Procedure);
+  }
+
+  [[nodiscard]] std::optional<ScopeId> parametric_scope(SymbolId owner) const {
+    return owned_scope(owner, ScopeKind::Parametric);
+  }
+
+  [[nodiscard]] SymbolId instantiate_procedure(
+      SymbolId source,
+      std::vector<TypeSubstitution> substitutions,
+      SourceRange use_range) {
+    const std::vector<ParametricParameterRecord> parameters =
+        parameters_for(source);
+    if (parameters.empty()) {
+      diagnostics_.error(use_range, "parametric procedure has no parameter metadata");
+      return {};
+    }
+    for (const ParametricParameterRecord &parameter : parameters) {
+      if (parameter.constraint == TypeConstraintKind::CompileTimeValue) {
+        diagnostics_.error(
+            use_range,
+            "compile-time value procedure parameters are not yet instantiated");
+        return {};
+      }
+      const TypeId parameter_type =
+          semantic_.symbols.symbol(parameter.parameter).type;
+      const std::optional<std::size_t> found =
+          substitution_index(substitutions, parameter_type);
+      if (!found.has_value()) {
+        diagnostics_.error(use_range, "procedure type arguments cannot be inferred uniquely");
+        return {};
+      }
+      if (!constraint_accepts(
+              parameter.constraint, substitutions[*found].replacement)) {
+        diagnostics_.error(use_range, "procedure type argument does not satisfy its constraint");
+        return {};
+      }
+    }
+
+    for (const ProcedureInstance &instance : instances_) {
+      if (instance.source != source ||
+          instance.substitutions.size() != substitutions.size()) {
+        continue;
+      }
+      bool same = true;
+      for (const TypeSubstitution &substitution : substitutions) {
+        const std::optional<std::size_t> found =
+            substitution_index(instance.substitutions, substitution.parameter);
+        if (!found.has_value() ||
+            instance.substitutions[*found].replacement != substitution.replacement) {
+          same = false;
+          break;
+        }
+      }
+      if (same) return instance.symbol;
+    }
+
+    const Symbol source_symbol = semantic_.symbols.symbol(source);
+    Symbol instance_symbol;
+    instance_symbol.name = source_symbol.name + "$instance";
+    for (const ParametricParameterRecord &parameter : parameters) {
+      const TypeId parameter_type =
+          semantic_.symbols.symbol(parameter.parameter).type;
+      const std::size_t index = *substitution_index(substitutions, parameter_type);
+      instance_symbol.name += "$" +
+          std::to_string(substitutions[index].replacement.value);
+    }
+    instance_symbol.kind = SymbolKind::Procedure;
+    instance_symbol.visibility = Visibility::Private;
+    instance_symbol.flags = source_symbol.flags;
+    instance_symbol.flags.parametric = false;
+    instance_symbol.flags.exported = false;
+    instance_symbol.scope = semantic_.package_scope;
+    instance_symbol.type = substitute_type(source_symbol.type, substitutions);
+    instance_symbol.syntax = source_symbol.syntax;
+    instance_symbol.name_range = source_symbol.name_range;
+    const SymbolId instance_id =
+        semantic_.symbols.declare(std::move(instance_symbol), diagnostics_);
+    if (!instance_id.is_valid()) return {};
+
+    const std::optional<ScopeId> source_parameters = procedure_scope(source);
+    const std::optional<ScopeId> compile_time_parameters = parametric_scope(source);
+    if (!source_parameters.has_value() || !compile_time_parameters.has_value()) {
+      diagnostics_.error(use_range, "parametric procedure scopes are incomplete");
+      return {};
+    }
+    const Scope source_scope = semantic_.symbols.scope(*source_parameters);
+    const ScopeId instance_scope = semantic_.symbols.add_scope(
+        ScopeKind::Procedure, *compile_time_parameters, source_scope.range);
+    semantic_.owned_scopes.push_back({instance_id, instance_scope});
+    const std::vector<SymbolId> source_parameter_symbols = source_scope.symbols;
+    for (SymbolId parameter_id : source_parameter_symbols) {
+      const Symbol parameter = semantic_.symbols.symbol(parameter_id);
+      if (parameter.kind != SymbolKind::Parameter) continue;
+      Symbol concrete = parameter;
+      concrete.scope = instance_scope;
+      concrete.type = substitute_type(parameter.type, substitutions);
+      (void)semantic_.symbols.declare(std::move(concrete), diagnostics_);
+    }
+    instances_.push_back(
+        {source, instance_id, std::move(substitutions), false});
+    semantic_.parametric_instances.push_back({source, instance_id});
+    return instance_id;
+  }
+
+  [[nodiscard]] HirExpressionId procedure_symbol_expression(
+      SymbolId symbol, SourceRange range) {
+    HirExpression expression;
+    expression.kind = HirExpressionKind::Symbol;
+    expression.range = range;
+    expression.symbol = symbol;
+    expression.type = semantic_.symbols.symbol(symbol).type;
+    return hir_.add_expression(std::move(expression));
   }
 
   // Recognizes the closed predeclared intrinsic vocabulary before ordinary name
@@ -637,7 +960,8 @@ private:
       expression.kind = HirExpressionKind::Symbol;
       expression.range = node.range;
       expression.symbol = *found;
-      expression.type = apply_expected_type(symbol.type, expected, node.range);
+      expression.type = apply_expected_type(
+          substitute_active(symbol.type), expected, node.range);
       expression.addressable = symbol.kind == SymbolKind::Variable ||
           symbol.kind == SymbolKind::Local || symbol.kind == SymbolKind::Parameter;
       if (const ConstantValue *constant = constants_.find(*found)) {
@@ -882,6 +1206,74 @@ private:
               check_intrinsic_call(tree, node, scope, expected)) {
         return *intrinsic;
       }
+      // A plain template name in callee position requests inference. Arguments
+      // are first checked without a guessed context; structural unification must
+      // discover one concrete type for every type parameter before an instance
+      // is created.
+      if (const std::optional<SourceName> callee_name =
+              single_name_expression(tree, node.children.front())) {
+        const std::optional<SymbolId> found =
+            semantic_.symbols.lookup(scope, callee_name->text);
+        if (found.has_value()) {
+          const Symbol candidate = semantic_.symbols.symbol(*found);
+          if (candidate.kind == SymbolKind::Procedure &&
+              candidate.flags.parametric) {
+            const Type template_signature =
+                semantic_.types.type(candidate.type);
+            const std::size_t parameter_count =
+                template_signature.members.empty()
+                ? 0
+                : template_signature.members.size() - 1;
+            if (node.children.size() - 1 != parameter_count) {
+              diagnostics_.error(
+                  node.range, "procedure call has the wrong number of arguments");
+              return invalid_expression(node.range);
+            }
+            std::vector<HirExpressionId> arguments;
+            std::vector<TypeSubstitution> substitutions;
+            for (std::size_t index = 0; index < parameter_count; ++index) {
+              const HirExpressionId argument =
+                  check_expression(tree, node.children[index + 1], scope);
+              arguments.push_back(argument);
+              if (!infer_type_argument(
+                      *found,
+                      template_signature.members[index],
+                      hir_.expression(argument).type,
+                      substitutions)) {
+                diagnostics_.error(
+                    tree.node(node.children[index + 1]).range,
+                    "procedure type arguments cannot be inferred uniquely");
+                return invalid_expression(node.range);
+              }
+            }
+            const SymbolId instance = instantiate_procedure(
+                *found, std::move(substitutions), node.range);
+            if (!instance.is_valid()) return invalid_expression(node.range);
+            const Type concrete_signature = semantic_.types.type(
+                semantic_.symbols.symbol(instance).type);
+            HirExpression expression;
+            expression.kind = HirExpressionKind::Call;
+            expression.range = node.range;
+            expression.operands.push_back(
+                procedure_symbol_expression(instance, tree.node(node.children.front()).range));
+            for (std::size_t index = 0; index < arguments.size(); ++index) {
+              HirExpression &argument = hir_.expression_mut(arguments[index]);
+              const TypeId concrete = apply_expected_type(
+                  argument.type,
+                  concrete_signature.members[index],
+                  argument.range);
+              contextualize_numeric_expression(arguments[index], concrete);
+              argument.type = concrete;
+              expression.operands.push_back(arguments[index]);
+            }
+            const TypeId result = concrete_signature.members.empty()
+                ? semantic_.types.builtins().void_type
+                : concrete_signature.members.back();
+            expression.type = apply_expected_type(result, expected, node.range);
+            return hir_.add_expression(std::move(expression));
+          }
+        }
+      }
       const HirExpressionId callee = check_expression(tree, node.children.front(), scope);
       const TypeId callee_type = hir_.expression(callee).type;
       if (is_invalid_type(callee_type) ||
@@ -928,7 +1320,8 @@ private:
         expression.kind = HirExpressionKind::Symbol;
         expression.range = node.range;
         expression.symbol = *imported;
-        expression.type = apply_expected_type(symbol.type, expected, node.range);
+        expression.type = apply_expected_type(
+            substitute_active(symbol.type), expected, node.range);
         expression.addressable = symbol.kind == SymbolKind::Variable;
         if (const ConstantValue *constant = imported_constant(*imported)) {
           expression.kind = HirExpressionKind::Constant;
@@ -971,7 +1364,8 @@ private:
       expression.kind = HirExpressionKind::Member;
       expression.range = node.range;
       expression.symbol = *member;
-      expression.type = apply_expected_type(member_symbol.type, expected, node.range);
+      expression.type = apply_expected_type(
+          substitute_active(member_symbol.type), expected, node.range);
       expression.operands.push_back(base_id);
       expression.addressable = base.addressable && member_symbol.kind == SymbolKind::Field;
       return hir_.add_expression(std::move(expression));
@@ -995,12 +1389,46 @@ private:
     }
 
     case NodeKind::BracketExpression: {
+      const HirExpressionId base_id = check_expression(tree, node.children[0], scope);
+      const HirExpression base_expression = hir_.expression(base_id);
+      if (base_expression.symbol.is_valid()) {
+        const Symbol base_symbol =
+            semantic_.symbols.symbol(base_expression.symbol);
+        if (base_symbol.kind == SymbolKind::Procedure &&
+            base_symbol.flags.parametric) {
+          const std::vector<ParametricParameterRecord> parameters =
+              parameters_for(base_expression.symbol);
+          if (node.children.size() - 1 != parameters.size()) {
+            diagnostics_.error(
+                node.range,
+                "parametric procedure application has the wrong number of arguments");
+            return invalid_expression(node.range);
+          }
+          std::vector<TypeSubstitution> substitutions;
+          for (std::size_t index = 0; index < parameters.size(); ++index) {
+            const ParametricParameterRecord &parameter = parameters[index];
+            if (parameter.constraint == TypeConstraintKind::CompileTimeValue) {
+              diagnostics_.error(
+                  tree.node(node.children[index + 1]).range,
+                  "compile-time value procedure parameters are not yet instantiated");
+              return invalid_expression(node.range);
+            }
+            const TypeId argument =
+                type_value_expression(tree, node.children[index + 1], scope);
+            substitutions.push_back(
+                {semantic_.symbols.symbol(parameter.parameter).type, argument});
+          }
+          const SymbolId instance = instantiate_procedure(
+              base_expression.symbol, std::move(substitutions), node.range);
+          if (!instance.is_valid()) return invalid_expression(node.range);
+          return procedure_symbol_expression(instance, node.range);
+        }
+      }
       if (node.children.size() != 2) {
         diagnostics_.error(node.range, "multi-index expressions are not yet supported");
         return invalid_expression(node.range);
       }
-      const HirExpressionId base_id = check_expression(tree, node.children[0], scope);
-      const Type base = semantic_.types.type(hir_.expression(base_id).type);
+      const Type base = semantic_.types.type(base_expression.type);
       if (base.kind != TypeKind::Array && base.kind != TypeKind::Slice &&
           base.kind != TypeKind::MultiPointer) {
         diagnostics_.error(node.range, "indexing requires an array, slice, or multi-pointer");
@@ -1260,6 +1688,7 @@ private:
       if (node_is_type_syntax(tree.node(child).kind)) {
         declared_type = resolve_type_syntax(
             sources_, loaded_, semantic_, selections_, tree, child, scope, diagnostics_);
+        declared_type = substitute_active(declared_type);
       } else if (tree.node(child).kind != NodeKind::ParametricParameterList) {
         initializer = child;
       }
@@ -1793,7 +2222,8 @@ private:
 
   // Checks one source procedure definition. Signature members contain parameters
   // followed by the result, and the prebuilt Procedure scope contains parameters.
-  [[nodiscard]] bool check_procedure(SymbolId id) {
+  [[nodiscard]] bool check_procedure(
+      SymbolId id, bool parametric_template) {
     const Symbol procedure_symbol = semantic_.symbols.symbol(id);
     const SyntaxTree *tree = find_tree(procedure_symbol.syntax.file);
     if (tree == nullptr) return false;
@@ -1829,7 +2259,8 @@ private:
         {id,
          procedure_symbol.type,
          checked_body,
-         diagnostics_.error_count() == initial_errors});
+         diagnostics_.error_count() == initial_errors,
+         parametric_template});
     current_procedure_ = {};
     return true;
   }
@@ -1842,6 +2273,8 @@ private:
   DiagnosticSink &diagnostics_;
   HirProgram hir_;
   SymbolId current_procedure_;
+  std::vector<ProcedureInstance> instances_;
+  std::optional<std::size_t> current_instance_index_;
 };
 
 } // namespace

@@ -58,7 +58,7 @@ public:
     for (const HirProcedure &procedure : hir_.procedures()) {
       std::vector<DeniedEntity> active;
       for (const DeclarationDenial &contract : package_.declaration_denials) {
-        if (contract.declaration == procedure.symbol) {
+        if (contract.declaration == declaration_source(procedure.symbol)) {
           append_denial(contract.denial, file_scope(contract.denial.file), active);
         }
       }
@@ -68,6 +68,14 @@ public:
   }
 
 private:
+  [[nodiscard]] SymbolId declaration_source(SymbolId procedure) const {
+    for (const ParametricInstanceRecord &instance :
+         package_.parametric_instances) {
+      if (instance.instance == procedure) return instance.source;
+    }
+    return procedure;
+  }
+
   [[nodiscard]] const SyntaxTree *find_tree(FileId file) const {
     for (const LoadedPackageFile &entry : loaded_.files) {
       if (entry.source == file && entry.syntax.has_value()) return &*entry.syntax;

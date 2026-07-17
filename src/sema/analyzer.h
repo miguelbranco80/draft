@@ -87,6 +87,15 @@ struct ParametricParameterRecord {
   TypeConstraintKind constraint = TypeConstraintKind::AnyType;
 };
 
+// Concrete procedure symbols are created during body checking, after the
+// declaration graph is stable. Retaining their source template relationship
+// lets denial and diagnostic passes apply declaration contracts to every
+// monomorphized body without copying policy records.
+struct ParametricInstanceRecord {
+  SymbolId source;
+  SymbolId instance;
+};
+
 // ImportBinding retains the canonical source spelling of the imported package
 // path separately from the local alias symbol. Workspace resolution later maps
 // package_path to a root-qualified package identity and fills dependency edges.
@@ -211,6 +220,7 @@ struct SemanticPackage {
   std::vector<OwnedSemanticScope> owned_scopes;
   std::vector<AggregateMember> aggregate_members;
   std::vector<ParametricParameterRecord> parametric_parameters;
+  std::vector<ParametricInstanceRecord> parametric_instances;
   std::vector<ImportBinding> imports;
   std::vector<ImportedSymbol> imported_symbols;
   std::vector<ImportedType> imported_types;

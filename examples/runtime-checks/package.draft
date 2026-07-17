@@ -12,8 +12,15 @@ scale :: proc(value: f64) -> f64 {
     return value * 0.5
 }
 
+identity[T: number] :: proc(value: T) -> T {
+    return value
+}
+
 main :: proc() {
     assert(divide(84, 2) == 42)
     assert(shift(1, 5) == 32)
     assert(scale(3.0) == 1.5)
+    assert(identity[i64](42) == 42)
+    value: u32 = 17
+    assert(identity(value) == 17)
 }
