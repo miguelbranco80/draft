@@ -2,6 +2,7 @@
 
 #include "sema/semantic.h"
 
+#include "sema/global_initializer.h"
 #include "sema/type_resolver.h"
 
 #include <cstddef>
@@ -68,6 +69,14 @@ SemanticAnalysisResult analyze_package_semantics(
       true,
       diagnostics);
   result.constants = std::move(final_round.constants);
+  (void)check_global_initializers(
+      sources,
+      loaded,
+      result.package,
+      target,
+      result.constants,
+      result.global_initializers,
+      diagnostics);
   result.ok = diagnostics.error_count() == initial_error_count &&
               final_round.unresolved_conditionals == 0;
   return result;

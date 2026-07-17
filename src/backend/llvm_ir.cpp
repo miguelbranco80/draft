@@ -30,6 +30,7 @@ struct StringConstant {
   std::size_t procedure = 0;
   std::size_t instruction = 0;
   std::string value;
+  SymbolId global;
 };
 
 // Runtime assertions need source spellings that are not ordinary MIR string
@@ -216,11 +217,12 @@ public:
       const SourceManager &sources,
       const LlvmIrOptions &options,
       const SemanticPackage &semantic,
-      const ConstantTable &constants,
+      const ConstantTable &global_initializers,
       const MirProgram &mir,
       DiagnosticSink &diagnostics)
       : target_(target), sources_(sources), options_(options), semantic_(semantic),
-        constants_(constants), mir_(mir), diagnostics_(diagnostics) {}
+        global_initializers_(global_initializers), mir_(mir),
+        diagnostics_(diagnostics) {}
 
   [[nodiscard]] LlvmIrResult run() {
     LlvmIrResult result;
@@ -420,6 +422,17 @@ private:
   }
 
   void collect_strings() {
+    for (const ConstantBinding &binding : global_initializers_.bindings) {
+      const Symbol &symbol = semantic_.symbols.symbol(binding.symbol);
+      if (symbol.kind == SymbolKind::Variable &&
+          binding.value.kind == ConstantKind::String && !symbol.flags.foreign) {
+        strings_.push_back(
+            {std::numeric_limits<std::size_t>::max(),
+             std::numeric_limits<std::size_t>::max(),
+             binding.value.text,
+             binding.symbol});
+      }
+    }
     const std::vector<MirProcedure> &procedures = mir_.procedures();
     for (std::size_t procedure_index = 0;
          procedure_index < procedures.size();
@@ -433,7 +446,7 @@ private:
         if (instruction.kind == MirInstructionKind::Constant &&
             instruction.constant.kind == ConstantKind::String) {
           strings_.push_back(
-              {procedure_index, instruction_index, instruction.constant.text});
+              {procedure_index, instruction_index, instruction.constant.text, {}});
         }
         if (instruction.kind == MirInstructionKind::Assert &&
             !instruction.operands.empty()) {
@@ -465,12 +478,14 @@ private:
           strings_.push_back(
               {std::numeric_limits<std::size_t>::max(),
                std::numeric_limits<std::size_t>::max(),
-               std::move(condition_text)});
+               std::move(condition_text),
+               {}});
           const std::size_t file_string = strings_.size();
           strings_.push_back(
               {std::numeric_limits<std::size_t>::max(),
                std::numeric_limits<std::size_t>::max(),
-               std::move(file_path)});
+               std::move(file_path),
+               {}});
           assertion_sites_.push_back(
               {procedure_index,
                instruction_index,
@@ -490,7 +505,8 @@ private:
           strings_.push_back(
               {std::numeric_limits<std::size_t>::max(),
                std::numeric_limits<std::size_t>::max(),
-               std::move(file_path)});
+               std::move(file_path),
+               {}});
           bounds_sites_.push_back(
               {procedure_index, instruction_index, file_string, location});
         }
@@ -792,12 +808,23 @@ private:
         semantic_.symbols.scope(semantic_.package_scope);
     for (SymbolId symbol_id : package_scope.symbols) {
       const Symbol &symbol = semantic_.symbols.symbol(symbol_id);
-      if (symbol.kind != SymbolKind::Variable || !symbol.type.is_valid()) continue;
+      if (symbol.kind != SymbolKind::Variable || symbol.flags.foreign ||
+          !symbol.type.is_valid()) {
+        continue;
+      }
       output_ << symbol_name(symbol_id) << " = ";
       if (symbol.flags.is_thread_local) output_ << "thread_local ";
       output_ << "global " << llvm_type(symbol.type) << ' ';
-      const ConstantValue *initializer = constants_.find(symbol_id);
-      if (initializer != nullptr) {
+      const ConstantValue *initializer = global_initializers_.find(symbol_id);
+      if (initializer != nullptr && initializer->kind == ConstantKind::String) {
+        const std::optional<std::size_t> index = global_string_index(symbol_id);
+        if (index.has_value()) {
+          output_ << string_constant_operand(*index);
+        } else {
+          error(symbol.name_range, "global string initializer was not interned");
+          output_ << "zeroinitializer";
+        }
+      } else if (initializer != nullptr) {
         output_ << scalar_constant(*initializer, symbol.type, symbol.name_range);
       } else {
         output_ << "zeroinitializer";
@@ -832,6 +859,10 @@ private:
         output_ << "declare " << llvm_function_result(symbol.type) << ' '
                 << symbol_name(symbol_id)
                 << function_signature(symbol.type, false) << "\n";
+      } else if (symbol.kind == SymbolKind::Variable && symbol.flags.foreign) {
+        output_ << symbol_name(symbol_id) << " = external ";
+        if (symbol.flags.is_thread_local) output_ << "thread_local ";
+        output_ << "global " << llvm_type(symbol.type) << "\n";
       }
     }
     output_ << '\n';
@@ -844,6 +875,14 @@ private:
           strings_[index].instruction == instruction) {
         return index;
       }
+    }
+    return std::nullopt;
+  }
+
+  [[nodiscard]] std::optional<std::size_t> global_string_index(
+      SymbolId symbol) const {
+    for (std::size_t index = 0; index < strings_.size(); ++index) {
+      if (strings_[index].global == symbol) return index;
     }
     return std::nullopt;
   }
@@ -879,6 +918,8 @@ private:
     case ConstantKind::Unavailable:
       if (llvm_type(type_id) == "ptr") return "null";
       return "zeroinitializer";
+    case ConstantKind::Nil:
+      return "null";
     case ConstantKind::Bool:
       return value.boolean ? "true" : "false";
     case ConstantKind::Integer:
@@ -2123,7 +2164,7 @@ private:
   const SourceManager &sources_;
   const LlvmIrOptions &options_;
   const SemanticPackage &semantic_;
-  const ConstantTable &constants_;
+  const ConstantTable &global_initializers_;
   const MirProgram &mir_;
   DiagnosticSink &diagnostics_;
   std::ostringstream output_;
@@ -2141,10 +2182,17 @@ LlvmIrResult emit_llvm_ir(
     const SourceManager &sources,
     const LlvmIrOptions &options,
     const SemanticPackage &semantic,
-    const ConstantTable &constants,
+    const ConstantTable &global_initializers,
     const MirProgram &mir,
     DiagnosticSink &diagnostics) {
-  return Emitter(target, sources, options, semantic, constants, mir, diagnostics).run();
+  return Emitter(
+      target,
+      sources,
+      options,
+      semantic,
+      global_initializers,
+      mir,
+      diagnostics).run();
 }
 
 } // namespace draft

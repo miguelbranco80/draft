@@ -22,7 +22,12 @@ struct SemanticAnalysisResult {
   bool ok = false;
   SemanticPackage package;
   ConditionalSelections selections;
+  // Named constants participate in language evaluation and interface export.
   ConstantTable constants;
+  // Global initializers are closed object-file values.  They live separately
+  // because a mutable variable must never become a language constant merely
+  // because its initial contents were known at compile time.
+  ConstantTable global_initializers;
 };
 
 // Runs semantic rounds until no new declaration-level conditional becomes

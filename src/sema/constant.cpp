@@ -742,6 +742,9 @@ private:
       if (token.kind == TokenKind::KeywordFalse) {
         return ready(ConstantValue::make_bool(false));
       }
+      if (token.kind == TokenKind::KeywordNil) {
+        return ready(ConstantValue::make_nil());
+      }
       if (token.kind == TokenKind::IntegerLiteral) {
         const std::optional<BigInteger> value =
             integer_literal(sources_.text(token.range));
@@ -903,6 +906,12 @@ ConstantValue ConstantValue::make_bool(bool value) {
   ConstantValue result;
   result.kind = ConstantKind::Bool;
   result.boolean = value;
+  return result;
+}
+
+ConstantValue ConstantValue::make_nil() {
+  ConstantValue result;
+  result.kind = ConstantKind::Nil;
   return result;
 }
 

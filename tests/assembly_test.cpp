@@ -165,7 +165,7 @@ main :: proc() -> i32 {
       source.sources,
       options,
       source.semantics.package,
-      source.semantics.constants,
+      source.semantics.global_initializers,
       mir.program,
       source.diagnostics);
   EXPECT(state, mir.ok);

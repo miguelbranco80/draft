@@ -43,6 +43,12 @@ void test_scalar_executable_module(TestState &state) {
   file.source = sources.add_source("package.draft", R"draft(
 package native
 
+global_answer: u64 = 40 + 2
+inferred_global := 21
+thread_local tls_value: i32 = -7
+global_text: string = "draft"
+global_pointer: ^i64 = nil
+
 add :: proc(left, right: i64) -> i64 {
     return left + right
 }
@@ -165,6 +171,13 @@ pointer_distance :: proc(value: [^]i64, count: isize) -> isize {
 }
 
 main :: proc() -> i32 {
+    assert(global_answer == 42)
+    global_answer = global_answer + 1
+    assert(global_answer == 43)
+    assert(inferred_global == 21)
+    assert(tls_value == -7)
+    assert(len(global_text) == 5)
+    assert(global_pointer == nil)
     value := add(20, 22)
     (left, _): (i64, i64) = (20, 0)
     (_, right): (i64, i64) = (0, 22)
@@ -231,7 +244,7 @@ main :: proc() -> i32 {
       sources,
       options,
       semantics.package,
-      semantics.constants,
+      semantics.global_initializers,
       mir.program,
       diagnostics);
 
@@ -249,6 +262,22 @@ main :: proc() -> i32 {
   EXPECT(state, module.text.find(
       "define i64 @\"draft.workspace.native.add\"(ptr %context, i64 %arg0, i64 %arg1)") !=
       std::string::npos);
+  EXPECT(state, module.text.find(
+      "@\"draft.workspace.native.global_5Fanswer\" = global i64 42") !=
+      std::string::npos);
+  EXPECT(state, module.text.find(
+      "load i64, ptr @\"draft.workspace.native.global_5Fanswer\"") !=
+      std::string::npos);
+  EXPECT(state, module.text.find(
+      "store i64 %v") != std::string::npos);
+  EXPECT(state, module.text.find(
+      "@\"draft.workspace.native.inferred_5Fglobal\" = global i64 21") !=
+      std::string::npos);
+  EXPECT(state, module.text.find("thread_local global i32 -7") !=
+      std::string::npos);
+  EXPECT(state, module.text.find("global { ptr, i64 } { ptr @.draft.string.") !=
+      std::string::npos);
+  EXPECT(state, module.text.find("global ptr null") != std::string::npos);
   EXPECT(state, module.text.find("identity_24instance") != std::string::npos);
   EXPECT(state, module.text.find("last_24instance_24v3") != std::string::npos);
   EXPECT(state, module.text.find("<type-parameter>") == std::string::npos);

@@ -1952,9 +1952,25 @@ private:
     case NodeKind::BinaryExpression: {
       if (node.children.size() != 2) return invalid_expression(node.range);
       const TokenKind operation = binary_operator(tree, node);
+      // nil has no standalone type.  A comparison such as `pointer == nil`
+      // therefore has to borrow the type of the other operand.  Do this here,
+      // where both operands are visible, instead of giving nil a magic raw
+      // pointer type that would weaken the rest of contextual type checking.
+      const auto is_nil_literal = [&tree](NodeId child) {
+        const SyntaxNode &candidate = tree.node(child);
+        return candidate.kind == NodeKind::LiteralExpression &&
+            candidate.token_begin < candidate.token_end &&
+            tree.token(candidate.token_begin).kind == TokenKind::KeywordNil;
+      };
+      const bool left_is_nil = is_nil_literal(node.children[0]);
+      const bool right_is_nil = is_nil_literal(node.children[1]);
       HirExpressionId left_id;
       HirExpressionId right_id;
-      if (tree.node(node.children[0]).kind ==
+      if (left_is_nil && !right_is_nil) {
+        right_id = check_expression(tree, node.children[1], scope);
+        left_id = check_expression(
+            tree, node.children[0], scope, hir_.expression(right_id).type);
+      } else if (tree.node(node.children[0]).kind ==
           NodeKind::ContextualAlternativeExpression) {
         right_id = check_expression(tree, node.children[1], scope);
         left_id = check_expression(
@@ -1966,7 +1982,8 @@ private:
         left_id = check_expression(tree, node.children[0], scope);
         TypeId right_expected;
         if (tree.node(node.children[1]).kind ==
-            NodeKind::ContextualAlternativeExpression) {
+                NodeKind::ContextualAlternativeExpression ||
+            right_is_nil) {
           right_expected = hir_.expression(left_id).type;
         } else if (operation == TokenKind::ShiftLeft ||
                    operation == TokenKind::ShiftRight) {

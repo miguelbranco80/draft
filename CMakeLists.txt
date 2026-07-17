@@ -44,6 +44,7 @@ add_library(
   src/sema/constant.cpp
   src/sema/denial.cpp
   src/sema/effect.cpp
+  src/sema/global_initializer.cpp
   src/sema/hir.cpp
   src/sema/initialization.cpp
   src/sema/interface.cpp

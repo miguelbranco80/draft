@@ -271,12 +271,101 @@ when Not_Bool {
   EXPECT(state, rendered.find("division by zero") != std::string::npos);
 }
 
+void test_global_initializers(TestState &state) {
+  AnalyzedSource source(R"draft(
+package conditions
+
+Mode :: enum i16 {
+    Off,
+    On = 7,
+}
+
+Answer :: 40 + 2
+count: u64 = Answer
+inferred := 21
+ratio: f64 = 0.5
+enabled: bool = true
+message: string = "draft"
+mode: Mode = .On
+pointer: ^u64 = nil
+thread_local scratch: i32 = -7
+)draft");
+  if (source.diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(source.sources, source.diagnostics);
+  }
+  EXPECT(state, source.analysis.ok);
+  EXPECT(state, !source.diagnostics.has_errors());
+  const std::optional<draft::SymbolId> count =
+      find_symbol(source.analysis.package, "count");
+  const std::optional<draft::SymbolId> inferred =
+      find_symbol(source.analysis.package, "inferred");
+  const std::optional<draft::SymbolId> mode =
+      find_symbol(source.analysis.package, "mode");
+  const std::optional<draft::SymbolId> pointer =
+      find_symbol(source.analysis.package, "pointer");
+  EXPECT(state, count.has_value());
+  EXPECT(state, inferred.has_value());
+  EXPECT(state, mode.has_value());
+  EXPECT(state, pointer.has_value());
+  if (count.has_value()) {
+    EXPECT(state, source.analysis.constants.find(*count) == nullptr);
+    const draft::ConstantValue *value =
+        source.analysis.global_initializers.find(*count);
+    EXPECT(state, value != nullptr);
+    if (value != nullptr) EXPECT(state, value->integer.to_decimal() == "42");
+  }
+  if (inferred.has_value()) {
+    EXPECT(state, source.analysis.package.symbols.symbol(*inferred).type ==
+                      source.analysis.package.types.builtins().int_type);
+  }
+  if (mode.has_value()) {
+    const draft::ConstantValue *value =
+        source.analysis.global_initializers.find(*mode);
+    EXPECT(state, value != nullptr);
+    if (value != nullptr) EXPECT(state, value->integer.to_decimal() == "7");
+  }
+  if (pointer.has_value()) {
+    const draft::ConstantValue *value =
+        source.analysis.global_initializers.find(*pointer);
+    EXPECT(state, value != nullptr);
+    if (value != nullptr) EXPECT(state, value->kind == draft::ConstantKind::Nil);
+  }
+
+  AnalyzedSource invalid(R"draft(
+package conditions
+
+Mode :: enum {
+    Off,
+}
+
+runtime :: proc() -> i64 {
+    return 1
+}
+
+too_large: u8 = 256
+not_constant: i64 = runtime()
+uninitialized: i64 = ---
+wrong_number: i32 = 1.5
+wrong_nil: i32 = nil
+wrong_mode: Mode = .Missing
+)draft");
+  EXPECT(state, !invalid.analysis.ok);
+  const std::string rendered =
+      draft::render_diagnostics(invalid.sources, invalid.diagnostics);
+  EXPECT(state, rendered.find("not representable") != std::string::npos);
+  EXPECT(state, rendered.find("not compile-time evaluable") != std::string::npos);
+  EXPECT(state, rendered.find("automatic local") != std::string::npos);
+  EXPECT(state, rendered.find("incompatible with global type") != std::string::npos);
+  EXPECT(state, rendered.find("names no member") != std::string::npos);
+}
+
 } // namespace
 
 int main() {
   TestState state;
   test_constants_and_conditional_rounds(state);
   test_invalid_required_constants(state);
+  test_global_initializers(state);
 
   if (state.failures != 0) {
     std::cerr << state.failures << " constant evaluation expectation(s) failed\n";

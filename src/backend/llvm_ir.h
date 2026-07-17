@@ -32,7 +32,7 @@ struct LlvmIrResult {
     const SourceManager &sources,
     const LlvmIrOptions &options,
     const SemanticPackage &semantic,
-    const ConstantTable &constants,
+    const ConstantTable &global_initializers,
     const MirProgram &mir,
     DiagnosticSink &diagnostics);
 

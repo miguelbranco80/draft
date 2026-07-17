@@ -20,6 +20,7 @@ namespace draft {
 
 enum class ConstantKind {
   Unavailable,
+  Nil,
   Bool,
   Integer,
   Float,
@@ -41,6 +42,7 @@ struct ConstantValue {
   bool operator==(const ConstantValue &) const = default;
 
   [[nodiscard]] static ConstantValue make_bool(bool value);
+  [[nodiscard]] static ConstantValue make_nil();
   [[nodiscard]] static ConstantValue make_integer(std::int64_t value);
   [[nodiscard]] static ConstantValue make_integer(BigInteger value);
   [[nodiscard]] static ConstantValue make_float(ExactRational value);

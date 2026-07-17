@@ -135,7 +135,7 @@ CompileWorkspaceResult compile_workspace(
           sources,
           llvm_options,
           package.semantics.package,
-          package.semantics.constants,
+          package.semantics.global_initializers,
           package.mir.program,
           diagnostics);
       if (!package.llvm.ok) continue;
