@@ -71,6 +71,14 @@ identity[T: number] :: proc(value: T) -> T {
     return value
 }
 
+truncate_checked :: proc(value: f64) -> i32 {
+    return cast[i32](value)
+}
+
+to_rune_checked :: proc(value: i64) -> rune {
+    return cast[rune](value)
+}
+
 main :: proc() -> i32 {
     value := add(20, 22)
     copy := identity[i64](value)
@@ -138,6 +146,9 @@ main :: proc() -> i32 {
   EXPECT(state, module.text.find("shl i32") != std::string::npos);
   EXPECT(state, module.text.find("call void @llvm.trap()") != std::string::npos);
   EXPECT(state, module.text.find("fmul double") != std::string::npos);
+  EXPECT(state, module.text.find("fcmp ogt double") != std::string::npos);
+  EXPECT(state, module.text.find("fcmp olt double") != std::string::npos);
+  EXPECT(state, module.text.find("fptosi double") != std::string::npos);
   EXPECT(state, module.text.find("bitcast (i64 4602678819172646912 to double)") !=
       std::string::npos);
   EXPECT(state, module.text.find("bitcast (i64 4591870180066957722 to double)") !=

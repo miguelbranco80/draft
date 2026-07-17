@@ -391,6 +391,52 @@ main :: proc() {
                     std::string::npos);
 }
 
+void test_checked_numeric_casts(TestState &state) {
+  CheckedSource safe(R"draft(
+package bodies
+
+small :: proc() -> i8 {
+    return cast[i8](127.9)
+}
+
+wrapped :: proc() -> u8 {
+    return cast[u8](256)
+}
+
+dynamic :: proc(value: f64) -> i32 {
+    return cast[i32](value)
+}
+
+scalar :: proc(value: i64) -> rune {
+    return cast[rune](value)
+}
+)draft");
+  if (safe.diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(safe.sources, safe.diagnostics);
+  }
+  EXPECT(state, safe.bodies.ok);
+  EXPECT(state, !safe.diagnostics.has_errors());
+
+  CheckedSource failing(R"draft(
+package bodies
+
+too_large :: proc() -> i8 {
+    return cast[i8](128.0)
+}
+
+surrogate :: proc() -> rune {
+    return cast[rune](0xd800)
+}
+)draft");
+  EXPECT(state, !failing.bodies.ok);
+  const std::string rendered =
+      draft::render_diagnostics(failing.sources, failing.diagnostics);
+  EXPECT(state, rendered.find("float-to-integer cast is out of range") !=
+                    std::string::npos);
+  EXPECT(state, rendered.find("does not produce a Unicode scalar") !=
+                    std::string::npos);
+}
+
 } // namespace
 
 int main() {
@@ -400,6 +446,7 @@ int main() {
   test_parametric_procedure_instances(state);
   test_definite_initialization(state);
   test_layout_intrinsics_and_static_assert(state);
+  test_checked_numeric_casts(state);
 
   if (state.failures != 0) {
     std::cerr << state.failures << " body checker expectation(s) failed\n";

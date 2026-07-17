@@ -16,6 +16,14 @@ identity[T: number] :: proc(value: T) -> T {
     return value
 }
 
+narrow :: proc(value: f64) -> i32 {
+    return cast[i32](value)
+}
+
+to_rune :: proc(value: i64) -> rune {
+    return cast[rune](value)
+}
+
 main :: proc() {
     assert(divide(84, 2) == 42)
     assert(shift(1, 5) == 32)
@@ -23,4 +31,6 @@ main :: proc() {
     assert(identity[i64](42) == 42)
     value: u32 = 17
     assert(identity(value) == 17)
+    assert(narrow(42.75) == 42)
+    assert(cast[i64](to_rune(65)) == 65)
 }

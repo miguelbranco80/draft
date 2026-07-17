@@ -296,6 +296,9 @@ private:
 
   [[nodiscard]] bool signed_integer_type(TypeId type_id) const {
     const Type type = runtime_scalar_type(type_id);
+    if (type.kind == TypeKind::Enum && type.element.is_valid()) {
+      return signed_integer_type(type.element);
+    }
     return type.kind == TypeKind::SignedInteger || type.kind == TypeKind::Rune;
   }
 
@@ -324,6 +327,180 @@ private:
     unreachable.range = range;
     procedure_.set_terminator(current_, std::move(unreachable));
     current_ = safe;
+  }
+
+  [[nodiscard]] MirValueId convert(
+      MirValueId source, TypeId target, SourceRange range) {
+    MirInstruction instruction;
+    instruction.kind = MirInstructionKind::Convert;
+    instruction.range = range;
+    instruction.type = target;
+    instruction.operands.push_back(source);
+    return emit_value(std::move(instruction));
+  }
+
+  [[nodiscard]] std::uint32_t floating_precision(TypeId type_id) const {
+    const Type type = runtime_scalar_type(type_id);
+    if (type.kind != TypeKind::Float) return 0;
+    if (type.bit_width == 16) return 11;
+    if (type.bit_width == 32) return 24;
+    if (type.bit_width == 64) return 53;
+    return 0;
+  }
+
+  // LLVM's fptosi/fptoui produce poison for NaN and out-of-range input. Draft
+  // requires a trap, so the conversion is reached only through ordered bounds
+  // checks. For wide signed targets the source format cannot represent min-1;
+  // comparing inclusively with the exactly representable minimum is equivalent
+  // and avoids rounding the lower threshold onto a valid value.
+  [[nodiscard]] MirValueId checked_conversion(
+      MirValueId source, TypeId target, SourceRange range) {
+    const Type source_type = runtime_scalar_type(procedure_.value(source).type);
+    const Type target_type = runtime_scalar_type(target);
+    const bool integer_target =
+        target_type.kind == TypeKind::SignedInteger ||
+        target_type.kind == TypeKind::UnsignedInteger ||
+        target_type.kind == TypeKind::Rune ||
+        target_type.kind == TypeKind::Enum;
+    if (source_type.kind == TypeKind::Float && integer_target) {
+      const std::uint32_t bits = integer_bit_width(target);
+      if (bits != 0) {
+        const TypeId comparison_type = procedure_.value(source).type;
+        const bool signed_target = signed_integer_type(target);
+        BigInteger lower;
+        HirOperation lower_operation = HirOperation::Greater;
+        if (signed_target) {
+          const BigInteger minimum = BigInteger::from_u64(1)
+              .shifted_left(static_cast<std::size_t>(bits - 1U))
+              .negated();
+          if (bits > floating_precision(comparison_type)) {
+            lower = minimum;
+            lower_operation = HirOperation::GreaterEqual;
+          } else {
+            lower = minimum.subtracted(BigInteger::from_u64(1));
+          }
+        } else {
+          lower = BigInteger::from_i64(-1);
+        }
+        const BigInteger upper = BigInteger::from_u64(1).shifted_left(
+            static_cast<std::size_t>(signed_target ? bits - 1U : bits));
+        const MirValueId lower_value = constant(
+            ConstantValue::make_float(ExactRational(lower)), comparison_type, range);
+        const MirValueId upper_value = constant(
+            ConstantValue::make_float(ExactRational(upper)), comparison_type, range);
+        const MirValueId above_lower = binary(
+            lower_operation,
+            source,
+            lower_value,
+            semantic_.types.builtins().bool_type,
+            range);
+        const MirValueId below_upper = binary(
+            HirOperation::Less,
+            source,
+            upper_value,
+            semantic_.types.builtins().bool_type,
+            range);
+        const MirValueId in_range = binary(
+            HirOperation::BitwiseAnd,
+            above_lower,
+            below_upper,
+            semantic_.types.builtins().bool_type,
+            range);
+        trap_unless(in_range, range);
+      }
+    }
+
+    const MirValueId converted = convert(source, target, range);
+    if (target_type.kind == TypeKind::Rune) {
+      const MirValueId zero = constant(
+          ConstantValue::make_integer(0), target, range);
+      const MirValueId maximum = constant(
+          ConstantValue::make_integer(0x10ffff), target, range);
+      const MirValueId surrogate_begin = constant(
+          ConstantValue::make_integer(0xd800), target, range);
+      const MirValueId surrogate_end = constant(
+          ConstantValue::make_integer(0xdfff), target, range);
+      const MirValueId nonnegative = binary(
+          HirOperation::GreaterEqual,
+          converted,
+          zero,
+          semantic_.types.builtins().bool_type,
+          range);
+      const MirValueId below_maximum = binary(
+          HirOperation::LessEqual,
+          converted,
+          maximum,
+          semantic_.types.builtins().bool_type,
+          range);
+      const MirValueId before_surrogates = binary(
+          HirOperation::Less,
+          converted,
+          surrogate_begin,
+          semantic_.types.builtins().bool_type,
+          range);
+      const MirValueId after_surrogates = binary(
+          HirOperation::Greater,
+          converted,
+          surrogate_end,
+          semantic_.types.builtins().bool_type,
+          range);
+      const MirValueId outside_surrogates = binary(
+          HirOperation::BitwiseOr,
+          before_surrogates,
+          after_surrogates,
+          semantic_.types.builtins().bool_type,
+          range);
+      const MirValueId scalar_range = binary(
+          HirOperation::BitwiseAnd,
+          nonnegative,
+          below_maximum,
+          semantic_.types.builtins().bool_type,
+          range);
+      const MirValueId valid = binary(
+          HirOperation::BitwiseAnd,
+          scalar_range,
+          outside_surrogates,
+          semantic_.types.builtins().bool_type,
+          range);
+      trap_unless(valid, range);
+    } else if (target_type.kind == TypeKind::Enum) {
+      MirValueId valid;
+      std::uint64_t discriminator = 0;
+      for (const AggregateMember &member : semantic_.aggregate_members) {
+        const Symbol &owner = semantic_.symbols.symbol(member.owner);
+        if (owner.type != target) continue;
+        const MirValueId candidate = constant(
+            ConstantValue::make_integer(
+                static_cast<std::int64_t>(discriminator)),
+            target,
+            range);
+        const MirValueId matches = binary(
+            HirOperation::Equal,
+            converted,
+            candidate,
+            semantic_.types.builtins().bool_type,
+            range);
+        if (!valid.is_valid()) {
+          valid = matches;
+        } else {
+          valid = binary(
+              HirOperation::BitwiseOr,
+              valid,
+              matches,
+              semantic_.types.builtins().bool_type,
+              range);
+        }
+        ++discriminator;
+      }
+      if (!valid.is_valid()) {
+        valid = constant(
+            ConstantValue::make_bool(false),
+            semantic_.types.builtins().bool_type,
+            range);
+      }
+      trap_unless(valid, range);
+    }
+    return converted;
   }
 
   [[nodiscard]] MirValueId checked_binary(
@@ -857,12 +1034,10 @@ private:
         return {};
       }
       if (expression.constant.text == "cast") {
-        MirInstruction instruction;
-        instruction.kind = MirInstructionKind::Convert;
-        instruction.range = expression.range;
-        instruction.type = expression.type;
-        instruction.operands.push_back(lower_expression(expression.operands.front()));
-        return emit_value(std::move(instruction));
+        return checked_conversion(
+            lower_expression(expression.operands.front()),
+            expression.type,
+            expression.range);
       }
       diagnostics_.error(expression.range, "unknown intrinsic reached MIR lowering");
       return {};

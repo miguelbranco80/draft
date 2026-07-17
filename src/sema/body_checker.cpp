@@ -319,7 +319,16 @@ private:
 
   [[nodiscard]] bool integer_representable(
       const BigInteger &value, TypeId target) const {
-    const Type type = semantic_.types.type(target);
+    Type type = semantic_.types.type(target);
+    while (type.kind == TypeKind::Distinct) {
+      type = semantic_.types.type(type.element);
+    }
+    if (type.kind == TypeKind::Enum && type.element.is_valid()) {
+      type = semantic_.types.type(type.element);
+    }
+    if (type.kind == TypeKind::Rune) {
+      type.kind = TypeKind::SignedInteger;
+    }
     if (type.kind != TypeKind::SignedInteger &&
         type.kind != TypeKind::UnsignedInteger) {
       return true;
@@ -334,6 +343,117 @@ private:
     const BigInteger minimum = magnitude.negated();
     const BigInteger maximum = magnitude.subtracted(BigInteger::from_u64(1));
     return value.compare(minimum) >= 0 && value.compare(maximum) <= 0;
+  }
+
+  [[nodiscard]] Type runtime_scalar_type(TypeId type_id) const {
+    Type type = semantic_.types.type(type_id);
+    while (type.kind == TypeKind::Distinct) {
+      type = semantic_.types.type(type.element);
+    }
+    return type;
+  }
+
+  [[nodiscard]] std::uint32_t integer_width(TypeId type_id) const {
+    const Type type = runtime_scalar_type(type_id);
+    if (type.kind == TypeKind::Enum) {
+      return static_cast<std::uint32_t>(type.layout.size * 8U);
+    }
+    return type.bit_width;
+  }
+
+  [[nodiscard]] bool signed_integer_target(TypeId type_id) const {
+    const Type type = runtime_scalar_type(type_id);
+    if (type.kind == TypeKind::Enum && type.element.is_valid()) {
+      return signed_integer_target(type.element);
+    }
+    return type.kind == TypeKind::SignedInteger || type.kind == TypeKind::Rune;
+  }
+
+  [[nodiscard]] BigInteger wrap_integer(
+      const BigInteger &value, TypeId target) const {
+    const std::uint32_t bits = integer_width(target);
+    if (bits == 0) return value;
+    const BigInteger modulus = BigInteger::from_u64(1).shifted_left(bits);
+    BigInteger quotient;
+    BigInteger remainder;
+    if (!value.divide(modulus, quotient, remainder)) return value;
+    if (remainder.is_negative()) remainder = remainder.added(modulus);
+    if (signed_integer_target(target)) {
+      const BigInteger sign = BigInteger::from_u64(1).shifted_left(bits - 1U);
+      if (remainder.compare(sign) >= 0) {
+        remainder = remainder.subtracted(modulus);
+      }
+    }
+    return remainder;
+  }
+
+  [[nodiscard]] bool valid_rune(const BigInteger &value) const {
+    const BigInteger zero = BigInteger::from_u64(0);
+    const BigInteger surrogate_begin = BigInteger::from_u64(0xd800);
+    const BigInteger surrogate_end = BigInteger::from_u64(0xdfff);
+    const BigInteger maximum = BigInteger::from_u64(0x10ffff);
+    return value.compare(zero) >= 0 && value.compare(maximum) <= 0 &&
+        (value.compare(surrogate_begin) < 0 || value.compare(surrogate_end) > 0);
+  }
+
+  [[nodiscard]] bool valid_enum_constant(
+      TypeId target, const BigInteger &value) const {
+    const std::optional<SymbolId> owner = type_owner(target);
+    if (!owner.has_value()) return false;
+    std::uint64_t discriminator = 0;
+    for (const AggregateMember &member : semantic_.aggregate_members) {
+      if (member.owner != *owner) continue;
+      if (value.compare(BigInteger::from_u64(discriminator)) == 0) return true;
+      ++discriminator;
+    }
+    return false;
+  }
+
+  // Folds numeric casts whose operand is still an exact compile-time value.
+  // This prevents untyped pseudo-types from reaching MIR and enforces the same
+  // trap conditions at compile time when the conversion is statically known.
+  [[nodiscard]] std::optional<ConstantValue> convert_numeric_constant(
+      const ConstantValue &value, TypeId target, SourceRange range) {
+    const Type target_type = runtime_scalar_type(target);
+    const bool integer_target =
+        target_type.kind == TypeKind::SignedInteger ||
+        target_type.kind == TypeKind::UnsignedInteger ||
+        target_type.kind == TypeKind::Rune ||
+        target_type.kind == TypeKind::Enum;
+    if (integer_target) {
+      BigInteger integer;
+      if (value.kind == ConstantKind::Integer) {
+        integer = wrap_integer(value.integer, target);
+      } else if (value.kind == ConstantKind::Float) {
+        BigInteger remainder;
+        if (!value.floating.numerator().divide(
+                value.floating.denominator(), integer, remainder) ||
+            !integer_representable(integer, target)) {
+          diagnostics_.error(
+              range, "compile-time float-to-integer cast is out of range");
+          return std::nullopt;
+        }
+      } else {
+        return std::nullopt;
+      }
+      if (target_type.kind == TypeKind::Rune && !valid_rune(integer)) {
+        diagnostics_.error(range, "compile-time cast does not produce a Unicode scalar");
+        return std::nullopt;
+      }
+      if (target_type.kind == TypeKind::Enum &&
+          !valid_enum_constant(target, integer)) {
+        diagnostics_.error(range, "compile-time cast does not name an enum member");
+        return std::nullopt;
+      }
+      return ConstantValue::make_integer(std::move(integer));
+    }
+    if (target_type.kind == TypeKind::Float) {
+      if (value.kind == ConstantKind::Integer) {
+        return ConstantValue::make_float(ExactRational(value.integer));
+      }
+      if (value.kind == ConstantKind::Float) return value;
+    }
+    return std::nullopt;
   }
 
   void check_constant_range(
@@ -921,11 +1041,24 @@ private:
             check_expression(tree, call.children[1], scope);
         expression.operands.push_back(argument);
         const TypeId source = hir_.expression(argument).type;
-        const bool numeric = is_numeric(source) &&
-            !is_invalid_type(cast_target) &&
-            (semantic_.types.is_number(cast_target) ||
-             semantic_.types.type(cast_target).kind == TypeKind::Distinct ||
-             semantic_.types.type(cast_target).kind == TypeKind::Enum);
+        const Type source_scalar = is_invalid_type(source)
+            ? Type{}
+            : runtime_scalar_type(source);
+        const Type target_scalar = is_invalid_type(cast_target)
+            ? Type{}
+            : runtime_scalar_type(cast_target);
+        const bool source_numeric = is_numeric(source) ||
+            source_scalar.kind == TypeKind::SignedInteger ||
+            source_scalar.kind == TypeKind::UnsignedInteger ||
+            source_scalar.kind == TypeKind::Float ||
+            source_scalar.kind == TypeKind::Rune ||
+            source_scalar.kind == TypeKind::Enum;
+        const bool target_numeric = target_scalar.kind == TypeKind::SignedInteger ||
+            target_scalar.kind == TypeKind::UnsignedInteger ||
+            target_scalar.kind == TypeKind::Float ||
+            target_scalar.kind == TypeKind::Rune ||
+            target_scalar.kind == TypeKind::Enum;
+        const bool numeric = source_numeric && target_numeric;
         const TypeKind source_kind = is_invalid_type(source)
             ? TypeKind::Invalid
             : semantic_.types.type(source).kind;
@@ -939,6 +1072,16 @@ private:
              target_kind == TypeKind::RawPointer || cast_target == semantic_.types.builtins().uintptr_type);
         if (!numeric && !pointers) {
           diagnostics_.error(call.range, "cast source and target types are incompatible");
+        }
+        if (numeric &&
+            hir_.expression(argument).kind == HirExpressionKind::Constant) {
+          const std::optional<ConstantValue> converted = convert_numeric_constant(
+              hir_.expression(argument).constant, cast_target, call.range);
+          if (converted.has_value()) {
+            expression.kind = HirExpressionKind::Constant;
+            expression.constant = *converted;
+            expression.operands.clear();
+          }
         }
       }
       expression.type = apply_expected_type(cast_target, expected, call.range);

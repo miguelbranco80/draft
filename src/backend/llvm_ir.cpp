@@ -264,7 +264,17 @@ private:
   [[nodiscard]] bool signed_integer(TypeId id) const {
     const Type &value = type(id);
     if (value.kind == TypeKind::Distinct) return signed_integer(value.element);
+    if (value.kind == TypeKind::Enum && value.element.is_valid()) {
+      return signed_integer(value.element);
+    }
     return value.kind == TypeKind::SignedInteger || value.kind == TypeKind::Rune;
+  }
+
+  [[nodiscard]] TypeKind runtime_scalar_kind(TypeId id) const {
+    const Type &value = type(id);
+    return value.kind == TypeKind::Distinct
+        ? runtime_scalar_kind(value.element)
+        : value.kind;
   }
 
   [[nodiscard]] std::uint32_t integer_bits(TypeId id) const {
@@ -941,8 +951,8 @@ private:
       std::vector<std::string> &operands) {
     const MirValueId source_id = instruction.operands.front();
     const TypeId source_type = procedure.value(source_id).type;
-    const TypeKind source_kind = type(source_type).kind;
-    const TypeKind target_kind = type(instruction.type).kind;
+    const TypeKind source_kind = runtime_scalar_kind(source_type);
+    const TypeKind target_kind = runtime_scalar_kind(instruction.type);
     const std::string source = value_operand(operands, source_id, instruction.range);
     if (llvm_type(source_type) == llvm_type(instruction.type)) {
       assign_alias(operands, instruction, source);
