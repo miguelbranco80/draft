@@ -937,7 +937,10 @@ private:
     } else {
       base = lower_expression(base_id);
     }
-    const MirValueId base_length = length(base, base_expression.type, expression.range);
+    MirValueId base_length;
+    if (base_type.kind != TypeKind::MultiPointer) {
+      base_length = length(base, base_expression.type, expression.range);
+    }
     std::size_t bound_index = 1;
     const MirValueId low = expression.slice_has_low
         ? lower_expression(expression.operands[bound_index++])
@@ -946,14 +949,16 @@ private:
     if (expression.slice_has_high) {
       high = lower_expression(expression.operands[bound_index]);
     } else if (base_type.kind == TypeKind::MultiPointer) {
+      // Body checking already rejects this source form. Keep recovery explicit
+      // so malformed HIR cannot make Length extract field 1 from a raw pointer.
       diagnostics_.error(
           expression.range,
-          "multi-pointer slicing requires an explicit high bound");
+          "multi-pointer slicing reached MIR without an explicit length");
       high = low;
     } else {
       high = base_length;
     }
-    if (unchecked_depth_ == 0) {
+    if (base_type.kind != TypeKind::MultiPointer && unchecked_depth_ == 0) {
       MirInstruction check;
       check.kind = MirInstructionKind::SliceBoundsCheck;
       check.range = expression.range;

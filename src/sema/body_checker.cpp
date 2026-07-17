@@ -2173,6 +2173,15 @@ private:
           expression.slice_has_high = true;
         }
       }
+      if (base.kind == TypeKind::MultiPointer &&
+          (expression.slice_has_low || !expression.slice_has_high)) {
+        // A multi-pointer carries no allocation length, so only `p[:length]`
+        // can establish a slice. Accepting `p[low:high]` would imply a bounds
+        // fact the pointer does not possess and would make `p[:]` unlowerable.
+        diagnostics_.error(
+            node.range,
+            "multi-pointer slicing requires the form 'pointer[:length]'");
+      }
       return hir_.add_expression(std::move(expression));
     }
 

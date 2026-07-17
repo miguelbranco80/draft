@@ -166,6 +166,10 @@ main :: proc() -> i32 {
     assert(text[0] == cast[u8]('d'))
     assert(len(middle) == 3)
     assert(middle[2] == cast[u8]('f'))
+    pointer := cast[[^]i64](&values[0])
+    pointer_view := pointer[:3]
+    assert(len(pointer_view) == 3)
+    assert(pointer_view[2] == 42)
     assert(small == 3)
     return cast[i32](value)
 }

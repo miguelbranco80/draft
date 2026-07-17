@@ -143,7 +143,11 @@ views :: proc() -> usize {
     text := "draft"
     middle := text[1:4]
     assert(text[0] == cast[u8]('d'))
-    return cast[usize](tuple.0) + cast[usize](first) + second + len(middle)
+    multi_pointer := cast[[^]u64](&local[0])
+    pointer_view := multi_pointer[:3]
+    assert(pointer_view[2] == 3)
+    return cast[usize](tuple.0) + cast[usize](first) + second +
+        len(middle) + len(pointer_view)
 }
 
 rune_value :: proc() -> rune {
@@ -350,6 +354,26 @@ main :: proc() {
   const std::string rendered =
       draft::render_diagnostics(source.sources, source.diagnostics);
   EXPECT(state, rendered.find("assignment target is not addressable") !=
+                    std::string::npos);
+}
+
+void test_multi_pointer_slice_shape(TestState &state) {
+  CheckedSource source(R"draft(
+package bodies
+
+main :: proc() {
+    values := [3]u8{1, 2, 3}
+    pointer := cast[[^]u8](&values[0])
+    missing_length := pointer[:]
+    offset_range := pointer[1:3]
+}
+)draft");
+
+  EXPECT(state, !source.bodies.ok);
+  EXPECT(state, source.diagnostics.error_count() == 2);
+  const std::string rendered =
+      draft::render_diagnostics(source.sources, source.diagnostics);
+  EXPECT(state, rendered.find("requires the form 'pointer[:length]'") !=
                     std::string::npos);
 }
 
@@ -596,6 +620,7 @@ int main() {
   test_body_diagnostics(state);
   test_parametric_procedure_instances(state);
   test_string_index_is_immutable(state);
+  test_multi_pointer_slice_shape(state);
   test_parametric_procedure_value_diagnostics(state);
   test_definite_initialization(state);
   test_layout_intrinsics_and_static_assert(state);
