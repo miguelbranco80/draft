@@ -67,6 +67,15 @@ struct ConstantTable {
   [[nodiscard]] const ConstantValue *find(SymbolId symbol) const;
 };
 
+// A required expression inside a concrete parametric procedure may query the
+// layout of a symbolic TypeParameter. This phase-local binding maps that unique
+// parameter TypeId to its concrete instantiation. It is never serialized or
+// added to the package TypeStore; both IDs already belong to that store.
+struct ConstantTypeBinding {
+  TypeId parameter;
+  TypeId replacement;
+};
+
 struct CompileTimeRoundResult {
   ConstantTable constants;
   std::size_t new_selections = 0;
@@ -92,7 +101,8 @@ struct CompileTimeRoundResult {
 // constants and `when`, avoiding a second arithmetic or target-fact model.
 // local_constants is an optional, caller-owned overlay for an instantiated
 // procedure's compile-time value parameters. Overlay bindings take precedence
-// over declarations and remain valid only for the duration of this call.
+// over declarations. local_types performs the analogous substitution for
+// layout queries such as `size_of(T)`. Both remain valid only for this call.
 [[nodiscard]] std::optional<ConstantValue> evaluate_constant_expression(
     const SourceManager &sources,
     const LoadedPackage &loaded,
@@ -102,6 +112,7 @@ struct CompileTimeRoundResult {
     NodeId expression,
     ScopeId scope,
     DiagnosticSink &diagnostics,
-    const ConstantTable *local_constants = nullptr);
+    const ConstantTable *local_constants = nullptr,
+    const std::vector<ConstantTypeBinding> *local_types = nullptr);
 
 } // namespace draft

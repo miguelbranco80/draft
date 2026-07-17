@@ -346,6 +346,16 @@ private:
     return result;
   }
 
+  [[nodiscard]] std::vector<ConstantTypeBinding> active_constant_types() const {
+    std::vector<ConstantTypeBinding> result;
+    if (!current_instance_index_.has_value()) return result;
+    for (const TypeSubstitution &substitution :
+         instances_[*current_instance_index_].type_substitutions) {
+      result.push_back({substitution.parameter, substitution.replacement});
+    }
+    return result;
+  }
+
   [[nodiscard]] const ConstantValue *active_constant(SymbolId symbol) const {
     if (!current_instance_index_.has_value()) return nullptr;
     for (const ValueSubstitution &substitution :
@@ -1407,6 +1417,8 @@ private:
             call.range, "static_assert requires a bool and optional string");
       }
       const ConstantTable active_constants = active_constant_table();
+      const std::vector<ConstantTypeBinding> active_types =
+          active_constant_types();
       const bool defer_symbolic_assertion =
           !current_instance_index_.has_value() && argument_count >= 1 &&
           expression_references_parametric_parameter(
@@ -1422,7 +1434,8 @@ private:
             call.children[1],
             scope,
             diagnostics_,
-            &active_constants);
+            &active_constants,
+            &active_types);
       }
       std::string message;
       if (argument_count >= 2 && !defer_symbolic_assertion) {
@@ -1436,7 +1449,8 @@ private:
                 call.children[2],
                 scope,
                 diagnostics_,
-                &active_constants);
+                &active_constants,
+                &active_types);
         if (evaluated_message.has_value() &&
             evaluated_message->kind == ConstantKind::String) {
           message = evaluated_message->text;

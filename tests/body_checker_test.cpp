@@ -275,6 +275,7 @@ void test_parametric_procedure_instances(TestState &state) {
 package bodies
 
 identity[T: type] :: proc(value: ^T) -> ^T {
+    static_assert(size_of(T) > 0)
     return value
 }
 
@@ -467,6 +468,23 @@ main :: proc() -> usize {
       failed_assertion.sources, failed_assertion.diagnostics);
   EXPECT(state, assertion_rendered.find(
                     "static assertion failed: N must be positive") !=
+                    std::string::npos);
+
+  CheckedSource failed_type_assertion(R"draft(
+package bodies
+
+four_bytes[T: type] :: proc() {
+    static_assert(size_of(T) == 4, "T must occupy four bytes")
+}
+main :: proc() {
+    four_bytes[u64]()
+}
+)draft");
+  EXPECT(state, !failed_type_assertion.bodies.ok);
+  const std::string type_assertion_rendered = draft::render_diagnostics(
+      failed_type_assertion.sources, failed_type_assertion.diagnostics);
+  EXPECT(state, type_assertion_rendered.find(
+                    "static assertion failed: T must occupy four bytes") !=
                     std::string::npos);
 }
 

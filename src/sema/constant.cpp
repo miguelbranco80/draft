@@ -72,10 +72,11 @@ public:
       const TargetFacts &target,
       bool diagnose_unready,
       DiagnosticSink &diagnostics,
-      const ConstantTable *local_constants = nullptr)
+      const ConstantTable *local_constants = nullptr,
+      const std::vector<ConstantTypeBinding> *local_types = nullptr)
       : sources_(sources), loaded_(loaded), semantic_(semantic), target_(target),
         diagnose_unready_(diagnose_unready), diagnostics_(diagnostics),
-        local_constants_(local_constants),
+        local_constants_(local_constants), local_types_(local_types),
         states_(semantic.symbols.symbol_count(), BindingState::Unvisited),
         values_(semantic.symbols.symbol_count()) {}
 
@@ -580,7 +581,7 @@ private:
       const Symbol &symbol = semantic_.symbols.symbol(*imported);
       if (symbol.kind == SymbolKind::Type ||
           symbol.kind == SymbolKind::TypeParameter) {
-        return symbol.type;
+        return substitute_local_type(symbol.type);
       }
       return std::nullopt;
     }
@@ -599,7 +600,15 @@ private:
         symbol.kind != SymbolKind::TypeParameter) {
       return std::nullopt;
     }
-    return symbol.type;
+    return substitute_local_type(symbol.type);
+  }
+
+  [[nodiscard]] TypeId substitute_local_type(TypeId source) const {
+    if (local_types_ == nullptr) return source;
+    for (const ConstantTypeBinding &binding : *local_types_) {
+      if (binding.parameter == source) return binding.replacement;
+    }
+    return source;
   }
 
   [[nodiscard]] EvalResult evaluate_layout_call(
@@ -883,6 +892,7 @@ private:
   bool diagnose_unready_ = false;
   DiagnosticSink &diagnostics_;
   const ConstantTable *local_constants_ = nullptr;
+  const std::vector<ConstantTypeBinding> *local_types_ = nullptr;
   std::vector<BindingState> states_;
   std::vector<ConstantValue> values_;
 };
@@ -965,9 +975,17 @@ std::optional<ConstantValue> evaluate_constant_expression(
     NodeId expression,
     ScopeId scope,
     DiagnosticSink &diagnostics,
-    const ConstantTable *local_constants) {
+    const ConstantTable *local_constants,
+    const std::vector<ConstantTypeBinding> *local_types) {
   ConstantEvaluator evaluator(
-      sources, loaded, package, target, true, diagnostics, local_constants);
+      sources,
+      loaded,
+      package,
+      target,
+      true,
+      diagnostics,
+      local_constants,
+      local_types);
   return evaluator.evaluate_required_expression(tree, expression, scope);
 }
 

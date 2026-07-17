@@ -68,6 +68,7 @@ tenth32 :: proc() -> f32 {
 }
 
 identity[T: number] :: proc(value: T) -> T {
+    static_assert(size_of(T) > 0)
     return value
 }
 
