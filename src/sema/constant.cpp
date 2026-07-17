@@ -2,6 +2,8 @@
 
 #include "sema/constant.h"
 
+#include "syntax/literal.h"
+
 #include "syntax/token.h"
 
 #include <algorithm>
@@ -251,32 +253,7 @@ private:
   // lexer's validated escape contract in the complete literal-value module.
   [[nodiscard]] std::optional<std::string> string_literal(
       std::string_view spelling, TokenKind kind) const {
-    if (spelling.size() < 2) return std::nullopt;
-    if (kind == TokenKind::RawStringLiteral) {
-      return std::string(spelling.substr(1, spelling.size() - 2));
-    }
-    std::string result;
-    for (std::size_t index = 1; index + 1 < spelling.size(); ++index) {
-      char character = spelling[index];
-      if (character != '\\') {
-        result.push_back(character);
-        continue;
-      }
-      ++index;
-      if (index + 1 >= spelling.size()) return std::nullopt;
-      character = spelling[index];
-      switch (character) {
-      case '\\': result.push_back('\\'); break;
-      case '"': result.push_back('"'); break;
-      case '\'': result.push_back('\''); break;
-      case 'n': result.push_back('\n'); break;
-      case 'r': result.push_back('\r'); break;
-      case 't': result.push_back('\t'); break;
-      case '0': result.push_back('\0'); break;
-      default: return std::nullopt;
-      }
-    }
-    return result;
+    return decode_string_literal(spelling, kind);
   }
 
   // Finds the binary operator token between the two immediate child spans. The

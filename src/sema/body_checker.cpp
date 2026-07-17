@@ -3,6 +3,7 @@
 #include "sema/body_checker.h"
 
 #include "sema/type_resolver.h"
+#include "syntax/literal.h"
 #include "syntax/token.h"
 
 #include <algorithm>
@@ -533,8 +534,13 @@ private:
       } else if (token.kind == TokenKind::StringLiteral ||
                  token.kind == TokenKind::RawStringLiteral) {
         expression.type = semantic_.types.builtins().string_type;
-        expression.constant.kind = ConstantKind::String;
-        expression.constant.text = std::string(sources_.text(token.range));
+        const std::optional<std::string> decoded =
+            decode_string_literal(sources_.text(token.range), token.kind);
+        if (!decoded.has_value()) {
+          diagnostics_.error(token.range, "invalid string literal");
+          return invalid_expression(node.range);
+        }
+        expression.constant = ConstantValue::make_string(*decoded);
       } else if (token.kind == TokenKind::KeywordNil) {
         if (!expected.is_valid() || is_invalid_type(expected)) {
           diagnostics_.error(node.range, "nil requires an expected pointer type");
@@ -914,7 +920,11 @@ private:
         diagnostics_.error(node.range, "indexing requires an array, slice, or multi-pointer");
         return invalid_expression(node.range);
       }
-      const HirExpressionId index_id = check_expression(tree, node.children[1], scope);
+      const HirExpressionId index_id = check_expression(
+          tree,
+          node.children[1],
+          scope,
+          semantic_.types.builtins().usize_type);
       if (!is_integer(hir_.expression(index_id).type)) {
         diagnostics_.error(tree.node(node.children[1]).range, "index must be an integer");
       }
@@ -954,7 +964,11 @@ private:
         }
       }
       for (std::size_t index = 1; index < node.children.size(); ++index) {
-        const HirExpressionId bound = check_expression(tree, node.children[index], scope);
+        const HirExpressionId bound = check_expression(
+            tree,
+            node.children[index],
+            scope,
+            semantic_.types.builtins().usize_type);
         if (!is_integer(hir_.expression(bound).type)) {
           diagnostics_.error(tree.node(node.children[index]).range, "slice bound must be an integer");
         }

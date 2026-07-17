@@ -25,7 +25,10 @@ add_library(draft_build_options INTERFACE)
 
 add_library(
   draft_compiler
+  src/backend/llvm_ir.cpp
+  src/backend/toolchain.cpp
   src/base/sha256.cpp
+  src/compile/compiler.cpp
   src/mir/lower.cpp
   src/mir/mir.cpp
   src/mir/verify.cpp
@@ -45,6 +48,7 @@ add_library(
   src/sema/type.cpp
   src/sema/type_resolver.cpp
   src/syntax/lexer.cpp
+  src/syntax/literal.cpp
   src/syntax/parser.cpp
   src/syntax/syntax_tree.cpp
   src/syntax/token.cpp
@@ -155,4 +159,16 @@ if(BUILD_TESTING)
   add_executable(draft_mir_tests tests/mir_test.cpp)
   target_link_libraries(draft_mir_tests PRIVATE draft_compiler)
   add_test(NAME draft_mir_tests COMMAND draft_mir_tests)
+
+  add_executable(draft_llvm_ir_tests tests/llvm_ir_test.cpp)
+  target_link_libraries(draft_llvm_ir_tests PRIVATE draft_compiler)
+  add_test(NAME draft_llvm_ir_tests COMMAND draft_llvm_ir_tests)
+
+  add_executable(draft_compiler_tests tests/compiler_test.cpp)
+  target_link_libraries(draft_compiler_tests PRIVATE draft_compiler)
+  target_compile_definitions(
+    draft_compiler_tests
+    PRIVATE DRAFT_SOURCE_DIRECTORY="${CMAKE_CURRENT_SOURCE_DIR}"
+  )
+  add_test(NAME draft_compiler_tests COMMAND draft_compiler_tests)
 endif()

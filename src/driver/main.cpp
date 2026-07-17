@@ -7,13 +7,10 @@
 // are added. They print exact token spellings, grammar structure, or the complete
 // versioned target profile without embedding phase logic in this file.
 
+#include "backend/toolchain.h"
+#include "compile/compiler.h"
 #include "source/diagnostic.h"
 #include "source/source.h"
-#include "sema/agent_metadata.h"
-#include "sema/body_checker.h"
-#include "sema/denial.h"
-#include "sema/effect.h"
-#include "sema/semantic.h"
 #include "syntax/lexer.h"
 #include "syntax/parser.h"
 #include "syntax/syntax_tree.h"
@@ -124,22 +121,13 @@ int print_target() {
   return 0;
 }
 
-// Runs the complete provider-free front end currently available for one root
-// package and all workspace-relative imports. Until the build manifest command
-// supplies an explicit workspace root, the parent of the requested package is
-// the command's canonical workspace root. No dependency or core roots are
-// inferred from the environment. `check` never invokes an agent, assembler,
-// linker, or network service.
-int check_package(const std::string &directory) {
+// Runs one dependency-ordered provider-free pipeline. Until a build manifest
+// supplies explicit roots, the requested package's parent is the workspace
+// root. `check` stops after typed HIR/interfaces; `emit-llvm` additionally
+// lowers MIR and prints each package module without invoking LLVM or a linker.
+int compile_package(const std::string &directory, bool emit_llvm) {
   draft::SourceManager sources;
   draft::DiagnosticSink diagnostics;
-  const draft::TargetProfile target = draft::make_aarch64_macos_profile();
-  std::string profile_error;
-  if (!draft::validate_target_profile(target, profile_error)) {
-    std::cerr << "error: invalid built-in target profile: " << profile_error << '\n';
-    return 1;
-  }
-
   std::error_code path_error;
   const std::filesystem::path absolute_directory =
       std::filesystem::absolute(directory, path_error);
@@ -149,102 +137,37 @@ int check_package(const std::string &directory) {
     return 1;
   }
 
-  draft::WorkspaceLoadOptions options;
-  options.workspace_directory = absolute_directory.parent_path().string();
-  options.package_options.file_tag = target.facts.file_tag;
-  draft::WorkspaceLoadResult loaded = draft::load_workspace(
-      sources, absolute_directory.string(), options, diagnostics);
+  draft::CompileWorkspaceOptions options;
+  options.target = draft::make_aarch64_macos_profile();
+  options.workspace.workspace_directory =
+      absolute_directory.parent_path().string();
+  options.lower_mir = emit_llvm;
+  options.emit_llvm = emit_llvm;
+  draft::CompileWorkspaceResult compiled = draft::compile_workspace(
+      sources, absolute_directory.string(), std::move(options), diagnostics);
   std::size_t symbol_count = 0;
   std::size_t type_count = 0;
   std::size_t procedure_count = 0;
   std::size_t agent_record_count = 0;
-  bool checked_all = loaded.ok;
-  if (loaded.ok) {
-    std::vector<std::optional<draft::PackageInterface>> interfaces(
-        loaded.graph.packages.size());
-    // DFS discovery places every dependency after its importer. Reversing that
-    // order checks dependencies before consumers and is the order the canonical
-    // interface pass will use to publish imported names.
-    for (std::size_t remaining = loaded.graph.packages.size(); remaining > 0; --remaining) {
-      const std::size_t package_index = remaining - 1;
-      draft::WorkspacePackage &workspace_package = loaded.graph.packages[package_index];
-      draft::AvailablePackageImports available;
-      for (const draft::PackageImport &import : loaded.graph.imports) {
-        if (static_cast<std::size_t>(import.importing_package.value) != package_index) {
-          continue;
-        }
-        const std::size_t dependency_index =
-            static_cast<std::size_t>(import.imported_package.value);
-        if (dependency_index >= interfaces.size() ||
-            !interfaces[dependency_index].has_value()) {
-          diagnostics.error(
-              draft::SourceRange::invalid(),
-              "internal package order did not produce a dependency interface");
-          checked_all = false;
-          continue;
-        }
-        available.entries.push_back({
-            {import.file, import.syntax},
-            &*interfaces[dependency_index],
-        });
+  if (compiled.ok) {
+    for (std::size_t index = 0; index < compiled.packages.size(); ++index) {
+      const draft::CompiledPackage &package = *compiled.packages[index];
+      symbol_count += package.semantics.package.symbols.symbol_count();
+      type_count += package.semantics.package.types.size();
+      procedure_count += package.bodies.checked_procedures;
+      agent_record_count += package.metadata.records.size();
+      if (emit_llvm) {
+        std::cout << "; ----- package "
+                  << draft::display_package_identity(package.identity)
+                  << " -----\n"
+                  << package.llvm.text;
       }
-      draft::SemanticAnalysisResult semantics = draft::analyze_package_semantics(
-          sources, workspace_package.loaded, target.facts, available, diagnostics);
-      draft::BodyCheckResult bodies;
-      if (semantics.ok) {
-        bodies = draft::check_package_bodies(
-            sources,
-            workspace_package.loaded,
-            semantics.selections,
-            semantics.package,
-            semantics.constants,
-            diagnostics);
-        if (bodies.ok) {
-          const draft::AttachmentPolicy attachment_policy;
-          const draft::AgentMetadataResult metadata = draft::collect_agent_metadata(
-              sources,
-              workspace_package.loaded,
-              semantics.package,
-              attachment_policy,
-              diagnostics);
-          const draft::EffectSummaryResult effects = draft::summarize_package_effects(
-              semantics.package, bodies.program);
-          const bool denials_ok = draft::check_package_denials(
-              sources,
-              workspace_package.loaded,
-              semantics.package,
-              bodies.program,
-              effects,
-              diagnostics);
-          const draft::PackageId package_id{static_cast<std::uint32_t>(package_index)};
-          interfaces[package_index] = draft::build_package_interface(
-              loaded.graph.package(package_id).identity,
-              semantics.package,
-              semantics.constants,
-              metadata,
-              effects,
-              diagnostics);
-          agent_record_count += metadata.records.size();
-          if (!metadata.ok) {
-            checked_all = false;
-          }
-          if (!denials_ok) {
-            checked_all = false;
-          }
-        }
-      }
-      if (!semantics.ok || !bodies.ok) {
-        checked_all = false;
-        continue;
-      }
-      symbol_count += semantics.package.symbols.symbol_count();
-      type_count += semantics.package.types.size();
-      procedure_count += bodies.checked_procedures;
     }
-    if (checked_all) {
-      const draft::WorkspacePackage &root = loaded.graph.package(loaded.graph.root_package);
+    if (!emit_llvm) {
+      const draft::WorkspacePackage &root =
+          compiled.graph.package(compiled.graph.root_package);
       std::cout << "checked package graph rooted at " << root.loaded.short_name << ": "
-                << loaded.graph.packages.size() << " packages, "
+                << compiled.graph.packages.size() << " packages, "
                 << symbol_count << " symbols, "
                 << type_count << " types, "
                 << procedure_count << " procedure bodies, "
@@ -258,11 +181,61 @@ int check_package(const std::string &directory) {
   return diagnostics.has_errors() ? 1 : 0;
 }
 
+int build_package(
+    const std::string &directory,
+    const std::optional<std::string> &requested_output,
+    bool allow_host_toolchain) {
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  std::error_code path_error;
+  const std::filesystem::path absolute_directory =
+      std::filesystem::absolute(directory, path_error);
+  if (path_error) {
+    std::cerr << "error: cannot make package path absolute: "
+              << path_error.message() << '\n';
+    return 1;
+  }
+  const draft::TargetProfile target = draft::make_aarch64_macos_profile();
+  draft::CompileWorkspaceOptions compile_options;
+  compile_options.target = target;
+  compile_options.workspace.workspace_directory =
+      absolute_directory.parent_path().string();
+  compile_options.lower_mir = true;
+  compile_options.emit_llvm = true;
+  const draft::CompileWorkspaceResult compiled = draft::compile_workspace(
+      sources,
+      absolute_directory.string(),
+      std::move(compile_options),
+      diagnostics);
+  if (compiled.ok) {
+    const std::filesystem::path build_directory =
+        absolute_directory / ".draft" / "build";
+    const std::filesystem::path output = requested_output.has_value()
+        ? std::filesystem::path(*requested_output)
+        : build_directory / absolute_directory.filename();
+    draft::NativeBuildOptions native_options;
+    native_options.build_directory = build_directory.string();
+    native_options.output_path = output.string();
+    native_options.allow_unpinned_toolchain = allow_host_toolchain;
+    const draft::NativeBuildResult built = draft::build_native_executable(
+        target, compiled, native_options, diagnostics);
+    if (built.ok) {
+      std::cout << "built " << built.output_path << '\n';
+    }
+  }
+  if (!diagnostics.diagnostics().empty()) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+  }
+  return diagnostics.has_errors() ? 1 : 0;
+}
+
 void print_usage() {
   std::cerr << "usage:\n"
             << "  draftc lex <file.draft>\n"
             << "  draftc syntax <file.draft>\n"
             << "  draftc check <package-directory>\n"
+            << "  draftc emit-llvm <package-directory>\n"
+            << "  draftc build <package-directory> [-o <output>] [--allow-host-toolchain]\n"
             << "  draftc target\n";
 }
 
@@ -276,7 +249,27 @@ int main(int argc, char **argv) {
     return parse_file(argv[2]);
   }
   if (argc == 3 && std::string_view(argv[1]) == "check") {
-    return check_package(argv[2]);
+    return compile_package(argv[2], false);
+  }
+  if (argc == 3 && std::string_view(argv[1]) == "emit-llvm") {
+    return compile_package(argv[2], true);
+  }
+  if (argc >= 3 && std::string_view(argv[1]) == "build") {
+    std::optional<std::string> output;
+    bool allow_host_toolchain = false;
+    for (int index = 3; index < argc; ++index) {
+      const std::string_view argument(argv[index]);
+      if (argument == "--allow-host-toolchain") {
+        allow_host_toolchain = true;
+      } else if (argument == "-o" && index + 1 < argc) {
+        ++index;
+        output = argv[index];
+      } else {
+        print_usage();
+        return 2;
+      }
+    }
+    return build_package(argv[2], output, allow_host_toolchain);
   }
   if (argc == 2 && std::string_view(argv[1]) == "target") {
     return print_target();

@@ -87,7 +87,11 @@ host. Checked procedure bodies now lower into a target-independent MIR with
 explicit locals, addresses, loads/stores, bounds checks, calls, lexical defer
 unwinding, and CFG terminators for short-circuit expressions, conditionals,
 loops, and switches. A defensive verifier checks every MIR table reference and
-block boundary before a native backend may consume it.
+block boundary before a native backend may consume it. The first backend emits
+deterministic opaque-pointer LLVM IR per package, then a version-gated toolchain
+adapter emits AArch64 Mach-O objects and links an executable. Normal builds
+require the pinned LLVM/Clang 22.1.x distribution; local bring-up can explicitly
+permit another host Clang without changing the target profile.
 
 Configure, build, and test the current compiler with:
 
@@ -104,5 +108,8 @@ the selected profile's key ABI, LLVM, and assembly facts. `build/draftc check
 path/to/package-directory` runs package loading, compile-time selection, type and
 layout resolution, imported public-interface checking, and procedure-body HIR
 checking without an agent. `build/draftc check examples/packages/app` exercises
-the current multi-package path. Later compiler commands use the same source,
-diagnostic, syntax, package, and semantic layers.
+the current multi-package path. `build/draftc emit-llvm examples/hello` prints
+the package module without invoking external tools. `build/draftc build
+examples/hello` uses the pinned native toolchain; `--allow-host-toolchain` is an
+explicit development-only escape hatch. All commands use the same
+dependency-ordered source, semantic, HIR, and MIR pipeline.
