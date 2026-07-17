@@ -556,6 +556,7 @@ std::string_view semantic_site_kind_name(SemanticSiteKind kind) {
   case SemanticSiteKind::SynthesisAssembly: return "assembly synthesis";
   case SemanticSiteKind::ConditionalDeclaration: return "conditional declaration";
   case SemanticSiteKind::ConditionalMember: return "conditional member";
+  case SemanticSiteKind::ConditionalStatement: return "conditional statement";
   case SemanticSiteKind::DenialDeclaration: return "declaration denial";
   case SemanticSiteKind::DenialMember: return "member denial";
   }

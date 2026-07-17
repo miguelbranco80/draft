@@ -89,6 +89,12 @@ main :: proc() {
     pair: Pair
     pair.left = 1
     value := add(20, 21)
+    when target.pointer_bits == 64 {
+        selected: u64 = pair.left
+    } else {
+        selected: Does_Not_Exist
+    }
+    pair.right = selected
     if value > 0 {
         pair.right = pair.left
     }

@@ -88,6 +88,7 @@ enum class HirStatementKind {
   Continue,
   Defer,
   If,
+  CompileTimeSelection,
   For,
   Switch,
   Judgment,

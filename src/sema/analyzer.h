@@ -94,6 +94,7 @@ enum class SemanticSiteKind {
   SynthesisAssembly,
   ConditionalDeclaration,
   ConditionalMember,
+  ConditionalStatement,
   DenialDeclaration,
   DenialMember,
 };

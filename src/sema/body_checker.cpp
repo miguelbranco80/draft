@@ -732,6 +732,26 @@ private:
     return hir_.add_block(std::move(block));
   }
 
+  // Checks a selected `when` brace region without creating a lexical ScopeId.
+  // The HIR block is an ordered container only; its scope intentionally equals
+  // the surrounding scope so selected declarations remain visible afterward.
+  [[nodiscard]] HirBlockId check_compile_time_block(
+      const SyntaxTree &tree,
+      NodeId block_id,
+      ScopeId scope,
+      TypeId result_type,
+      std::uint32_t loop_depth) {
+    const SyntaxNode &source_block = tree.node(block_id);
+    HirBlock block;
+    block.scope = scope;
+    block.range = source_block.range;
+    if (!source_block.children.empty()) {
+      const SyntaxNode &list = tree.node(source_block.children.front());
+      check_statement_list(tree, list, scope, result_type, loop_depth, block);
+    }
+    return hir_.add_block(std::move(block));
+  }
+
   // Checks the common structured statement forms. Complex iteration bindings,
   // switch exhaustiveness, and body-level compile-time `when` remain explicit
   // diagnostics until their dedicated data-flow passes are connected.
@@ -922,10 +942,31 @@ private:
       break;
 
     case NodeKind::WhenStatement:
-      statement.kind = HirStatementKind::Invalid;
-      diagnostics_.error(
-          node.range,
-          "body-level compile-time 'when' selection is not yet connected to HIR");
+      statement.kind = HirStatementKind::CompileTimeSelection;
+      if (const ConditionalSelection *selection =
+              selections_.find({tree.file(), statement_id})) {
+        if (selection->select_true) {
+          if (node.children.size() >= 2) {
+            statement.blocks.push_back(check_compile_time_block(
+                tree, node.children[1], scope, result_type, loop_depth));
+          }
+        } else if (node.children.size() >= 3) {
+          const NodeId alternative = node.children[2];
+          if (tree.node(alternative).kind == NodeKind::WhenStatement) {
+            HirBlock nested;
+            nested.scope = scope;
+            nested.range = tree.node(alternative).range;
+            nested.statements.push_back(check_statement(
+                tree, alternative, scope, result_type, loop_depth));
+            statement.blocks.push_back(hir_.add_block(std::move(nested)));
+          } else {
+            statement.blocks.push_back(check_compile_time_block(
+                tree, alternative, scope, result_type, loop_depth));
+          }
+        }
+      } else {
+        diagnostics_.error(node.range, "compile-time 'when' statement was not selected");
+      }
       break;
 
     case NodeKind::SwitchStatement:

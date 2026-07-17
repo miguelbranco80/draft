@@ -310,6 +310,50 @@ private:
     return false;
   }
 
+  // Discovers body-level `when` sites in regions that are present under the
+  // current selection set. Runtime branches are all scanned because all are
+  // type-checked; unselected compile-time branches are not scanned. Nested
+  // procedure declarations are separate owners and are deliberately skipped.
+  void scan_statement_conditionals(
+      SymbolId owner,
+      const SyntaxTree &tree,
+      NodeId node_id,
+      ScopeId scope) {
+    const SyntaxNode &node = tree.node(node_id);
+    if (node.kind == NodeKind::WhenStatement) {
+      add_site(SemanticSiteKind::ConditionalStatement, tree, node_id, scope, owner);
+      const ConditionalSelection *selection =
+          selections_.find({tree.file(), node_id});
+      if (selection == nullptr) return;
+      if (selection->select_true) {
+        if (node.children.size() >= 2) {
+          scan_statement_conditionals(owner, tree, node.children[1], scope);
+        }
+      } else if (node.children.size() >= 3) {
+        scan_statement_conditionals(owner, tree, node.children[2], scope);
+      }
+      return;
+    }
+
+    switch (node.kind) {
+    case NodeKind::Block:
+    case NodeKind::StatementList:
+    case NodeKind::IfStatement:
+    case NodeKind::ForStatement:
+    case NodeKind::ForClause:
+    case NodeKind::SwitchStatement:
+    case NodeKind::SwitchCase:
+    case NodeKind::DenyStatement:
+    case NodeKind::UncheckedStatement:
+      for (NodeId child : node.children) {
+        scan_statement_conditionals(owner, tree, child, scope);
+      }
+      break;
+    default:
+      break;
+    }
+  }
+
   // Builds one canonical procedure type. Named declaration procedures also get
   // a parameter scope and immutable Parameter symbols; standalone procedure
   // types contribute only their logical signature.
@@ -363,6 +407,14 @@ private:
         }
       } else if (child.kind == NodeKind::ResultClause && !child.children.empty()) {
         result = resolve_type(tree, child.children.front(), parent);
+      }
+    }
+    if (owner.has_value() && procedure.kind == NodeKind::Procedure) {
+      for (NodeId child_id : procedure.children) {
+        if (tree.node(child_id).kind == NodeKind::Block) {
+          scan_statement_conditionals(
+              *owner, tree, child_id, parameter_scope);
+        }
       }
     }
     return semantic_.types.procedure(

@@ -83,7 +83,8 @@ public:
     CompileTimeRoundResult result;
     for (const SemanticSite &site : semantic_.sites) {
       if ((site.kind != SemanticSiteKind::ConditionalDeclaration &&
-           site.kind != SemanticSiteKind::ConditionalMember) ||
+           site.kind != SemanticSiteKind::ConditionalMember &&
+           site.kind != SemanticSiteKind::ConditionalStatement) ||
           selections.find(site.syntax) != nullptr) {
         continue;
       }
@@ -99,7 +100,7 @@ public:
       }
 
       const EvalResult condition = evaluate_expression(
-          *tree, when.children.front(), file_scope(tree->file()), diagnose_unready_);
+          *tree, when.children.front(), site.scope, diagnose_unready_);
       if (condition.status == EvalStatus::Ready &&
           condition.value.kind == ConstantKind::Bool) {
         selections.entries.push_back({site.syntax, condition.value.boolean});
