@@ -1,0 +1,18 @@
+package hello
+
+// Small handwritten package used for front-end smoke testing while native
+// lowering is under construction. It intentionally needs no core imports or
+// synthesis provider.
+sum :: proc(values: []i64) -> i64 {
+    result: i64
+    for value in values {
+        result += value
+    }
+    return result
+}
+
+main :: proc() {
+    values := [4]i64{1, 2, 3, 4}
+    total := sum(values[:])
+    assert(total == 10, "unexpected sum")
+}

@@ -9,11 +9,14 @@
 
 #include "source/diagnostic.h"
 #include "source/source.h"
+#include "sema/body_checker.h"
+#include "sema/semantic.h"
 #include "syntax/lexer.h"
 #include "syntax/parser.h"
 #include "syntax/syntax_tree.h"
 #include "syntax/token.h"
 #include "target/profile.h"
+#include "workspace/package.h"
 
 #include <iostream>
 #include <string>
@@ -113,10 +116,55 @@ int print_target() {
   return 0;
 }
 
+// Runs the complete provider-free front end currently available for one folder
+// package. `check` never invokes an agent, assembler, linker, or network service;
+// later backend stages consume the returned semantic graph and HIR in memory.
+int check_package(const std::string &directory) {
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  const draft::TargetProfile target = draft::make_aarch64_macos_profile();
+  std::string profile_error;
+  if (!draft::validate_target_profile(target, profile_error)) {
+    std::cerr << "error: invalid built-in target profile: " << profile_error << '\n';
+    return 1;
+  }
+
+  draft::PackageLoadOptions options;
+  options.file_tag = target.facts.file_tag;
+  draft::PackageLoadResult loaded = draft::load_package(
+      sources, directory, options, diagnostics);
+  if (loaded.ok) {
+    draft::SemanticAnalysisResult semantics = draft::analyze_package_semantics(
+        sources, loaded.package, target.facts, diagnostics);
+    draft::BodyCheckResult bodies;
+    if (semantics.ok) {
+      bodies = draft::check_package_bodies(
+          sources,
+          loaded.package,
+          semantics.selections,
+          semantics.package,
+          semantics.constants,
+          diagnostics);
+    }
+    if (semantics.ok && bodies.ok) {
+      std::cout << "checked package " << loaded.package.short_name << ": "
+                << semantics.package.symbols.symbol_count() << " symbols, "
+                << semantics.package.types.size() << " types, "
+                << bodies.checked_procedures << " procedure bodies\n";
+    }
+  }
+
+  if (!diagnostics.diagnostics().empty()) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+  }
+  return diagnostics.has_errors() ? 1 : 0;
+}
+
 void print_usage() {
   std::cerr << "usage:\n"
             << "  draftc lex <file.draft>\n"
             << "  draftc syntax <file.draft>\n"
+            << "  draftc check <package-directory>\n"
             << "  draftc target\n";
 }
 
@@ -128,6 +176,9 @@ int main(int argc, char **argv) {
   }
   if (argc == 3 && std::string_view(argv[1]) == "syntax") {
     return parse_file(argv[2]);
+  }
+  if (argc == 3 && std::string_view(argv[1]) == "check") {
+    return check_package(argv[2]);
   }
   if (argc == 2 && std::string_view(argv[1]) == "target") {
     return print_target();

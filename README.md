@@ -87,5 +87,8 @@ ctest --test-dir build --output-on-failure
 `build/draftc lex path/to/file.draft` prints the token stream, including which
 semicolons were inserted by the compiler. `build/draftc syntax
 path/to/file.draft` prints the parsed grammar tree. `build/draftc target` prints
-the selected profile's key ABI, LLVM, and assembly facts. Later compiler
-commands use the same source, diagnostic, syntax, package, and semantic layers.
+the selected profile's key ABI, LLVM, and assembly facts. `build/draftc check
+path/to/package-directory` runs package loading, compile-time selection, type and
+layout resolution, and procedure-body HIR checking without an agent. Later
+compiler commands use the same source, diagnostic, syntax, package, and semantic
+layers.
