@@ -100,12 +100,15 @@ enum class HirStatementKind {
 // HirStatement owns references to evaluated expressions, nested structured
 // blocks, and any local symbols it introduces. Assignment lvalues precede their
 // right-hand expressions in expressions, preserving Draft evaluation order.
+// header_statements stores three-clause loop initialization and post operations
+// without pretending they are body statements.
 struct HirStatement {
   HirStatementKind kind = HirStatementKind::Invalid;
   SourceRange range;
   std::vector<HirExpressionId> expressions;
   std::vector<HirBlockId> blocks;
   std::vector<SymbolId> bindings;
+  std::vector<HirStatementId> header_statements;
 };
 
 // Every runtime block has one lexical ScopeId and an ordered statement list.

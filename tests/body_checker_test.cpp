@@ -67,6 +67,11 @@ Pair :: struct {
     right: u64,
 }
 
+Mode :: enum {
+    Off,
+    On,
+}
+
 consume :: proc(value: i64) {
 }
 
@@ -83,6 +88,33 @@ add :: proc(a, b: i64) -> i64 {
 
 read_left :: proc(pair: ^Pair) -> u64 {
     return pair^.left
+}
+
+loop_sum :: proc(values: []i64) -> i64 {
+    total: i64
+    for value, index in values {
+        total += value
+        if index > 10 {
+            break
+        }
+    }
+    for total < 100 {
+        total += 1
+    }
+    for i: i64 = 0; i < 3; i += 1 {
+        total += i
+    }
+    return total
+}
+
+choose :: proc(mode: Mode) -> i64 {
+    switch mode {
+    case .Off:
+        return 0
+    case .On:
+        return 1
+    }
+    return -1
 }
 
 main :: proc() {
@@ -107,11 +139,11 @@ main :: proc() {
   EXPECT(state, source.semantics.ok);
   EXPECT(state, source.bodies.ok);
   EXPECT(state, !source.diagnostics.has_errors());
-  EXPECT(state, source.bodies.checked_procedures == 4);
-  EXPECT(state, source.bodies.program.procedures().size() == 4);
-  EXPECT(state, source.bodies.program.expression_count() >= 20);
-  EXPECT(state, source.bodies.program.statement_count() >= 12);
-  EXPECT(state, source.bodies.program.block_count() >= 7);
+  EXPECT(state, source.bodies.checked_procedures == 6);
+  EXPECT(state, source.bodies.program.procedures().size() == 6);
+  EXPECT(state, source.bodies.program.expression_count() >= 35);
+  EXPECT(state, source.bodies.program.statement_count() >= 22);
+  EXPECT(state, source.bodies.program.block_count() >= 12);
   for (const draft::HirProcedure &procedure : source.bodies.program.procedures()) {
     EXPECT(state, procedure.valid);
     EXPECT(state, procedure.body.is_valid());

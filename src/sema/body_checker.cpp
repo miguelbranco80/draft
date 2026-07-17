@@ -51,6 +51,13 @@ struct SourceName {
   SourceRange range;
 };
 
+// Runtime control depth distinguishes switch/loop break targets from loop-only
+// continue targets.
+struct ControlDepth {
+  std::uint32_t breakable = 0;
+  std::uint32_t loops = 0;
+};
+
 // BodyChecker is one sequential phase context. It owns only the HIR under
 // construction; source, syntax, semantic tables, constants, and selections are
 // caller-owned. SymbolTable may grow, so operations retain SymbolId values and
@@ -263,6 +270,17 @@ private:
       const Symbol &owner = semantic_.symbols.symbol(owned.owner);
       if (owner.type == base) {
         return semantic_.symbols.lookup_direct(owned.scope, name);
+      }
+    }
+    return std::nullopt;
+  }
+
+  // Returns the declaration symbol owning a nominal type's Type scope.
+  [[nodiscard]] std::optional<SymbolId> type_owner(TypeId type) const {
+    for (const OwnedSemanticScope &owned : semantic_.owned_scopes) {
+      if (semantic_.symbols.scope(owned.scope).kind == ScopeKind::Type &&
+          semantic_.symbols.symbol(owned.owner).type == type) {
+        return owned.owner;
       }
     }
     return std::nullopt;
@@ -554,6 +572,46 @@ private:
       return hir_.add_expression(std::move(expression));
     }
 
+    case NodeKind::ContextualAlternativeExpression: {
+      if (!expected.is_valid() || is_invalid_type(expected)) {
+        diagnostics_.error(node.range, "contextual alternative requires an expected enum or union type");
+        return invalid_expression(node.range);
+      }
+      const TypeKind expected_kind = semantic_.types.type(expected).kind;
+      if (expected_kind != TypeKind::Enum && expected_kind != TypeKind::TaggedUnion) {
+        diagnostics_.error(node.range, "contextual alternative expected type is not an enum or tagged union");
+        return invalid_expression(node.range);
+      }
+      const std::vector<SourceName> names =
+          names_in_span(tree, node.token_begin, node.token_end);
+      if (names.empty()) return invalid_expression(node.range);
+      const std::optional<SymbolId> alternative = find_member(expected, names.back().text);
+      if (!alternative.has_value()) {
+        diagnostics_.error(names.back().range, "unknown alternative '" + names.back().text + "'");
+        return invalid_expression(node.range);
+      }
+      const Symbol member = semantic_.symbols.symbol(*alternative);
+      HirExpression expression;
+      expression.kind = HirExpressionKind::Constant;
+      expression.range = node.range;
+      expression.type = expected;
+      expression.symbol = *alternative;
+      expression.constant = ConstantValue::make_enum_label(names.back().text);
+      if (expected_kind == TypeKind::TaggedUnion) {
+        const bool has_payload = member.type != semantic_.types.builtins().void_type;
+        if (has_payload != !node.children.empty()) {
+          diagnostics_.error(node.range, has_payload
+              ? "tagged-union alternative requires a payload"
+              : "payload-free alternative cannot carry a value");
+        } else if (has_payload) {
+          expression.kind = HirExpressionKind::Composite;
+          expression.operands.push_back(check_expression(
+              tree, node.children.front(), scope, member.type));
+        }
+      }
+      return hir_.add_expression(std::move(expression));
+    }
+
     case NodeKind::DenyExpression:
       if (!node.children.empty()) {
         return check_expression(tree, node.children.back(), scope, expected);
@@ -628,13 +686,18 @@ private:
   [[nodiscard]] HirStatementId check_local_declaration(
       const SyntaxTree &tree, NodeId statement_id, ScopeId scope) {
     const SyntaxNode &statement_node = tree.node(statement_id);
-    if (statement_node.children.empty()) {
-      return hir_.add_statement({HirStatementKind::Invalid, statement_node.range, {}, {}, {}});
+    if (statement_node.kind != NodeKind::Declaration &&
+        statement_node.children.empty()) {
+      return hir_.add_statement(
+          {HirStatementKind::Invalid, statement_node.range, {}, {}, {}, {}});
     }
-    const NodeId declaration_id = statement_node.children.front();
+    const NodeId declaration_id = statement_node.kind == NodeKind::Declaration
+        ? statement_id
+        : statement_node.children.front();
     const SyntaxNode &declaration = tree.node(declaration_id);
     if (declaration.children.empty()) {
-      return hir_.add_statement({HirStatementKind::Invalid, declaration.range, {}, {}, {}});
+      return hir_.add_statement(
+          {HirStatementKind::Invalid, declaration.range, {}, {}, {}, {}});
     }
     const SyntaxNode &pattern = tree.node(declaration.children.front());
     if (pattern.kind == NodeKind::TuplePattern) {
@@ -704,11 +767,11 @@ private:
       const SyntaxNode &list,
       ScopeId scope,
       TypeId result_type,
-      std::uint32_t loop_depth,
+      ControlDepth depth,
       HirBlock &block) {
     for (NodeId statement : list.children) {
       block.statements.push_back(
-          check_statement(tree, statement, scope, result_type, loop_depth));
+          check_statement(tree, statement, scope, result_type, depth));
     }
   }
 
@@ -718,7 +781,7 @@ private:
       NodeId block_id,
       ScopeId parent,
       TypeId result_type,
-      std::uint32_t loop_depth) {
+      ControlDepth depth) {
     const SyntaxNode &source_block = tree.node(block_id);
     const ScopeId scope = semantic_.symbols.add_scope(
         ScopeKind::Block, parent, source_block.range);
@@ -727,7 +790,7 @@ private:
     block.range = source_block.range;
     if (!source_block.children.empty()) {
       const SyntaxNode &list = tree.node(source_block.children.front());
-      check_statement_list(tree, list, scope, result_type, loop_depth, block);
+      check_statement_list(tree, list, scope, result_type, depth, block);
     }
     return hir_.add_block(std::move(block));
   }
@@ -740,14 +803,14 @@ private:
       NodeId block_id,
       ScopeId scope,
       TypeId result_type,
-      std::uint32_t loop_depth) {
+      ControlDepth depth) {
     const SyntaxNode &source_block = tree.node(block_id);
     HirBlock block;
     block.scope = scope;
     block.range = source_block.range;
     if (!source_block.children.empty()) {
       const SyntaxNode &list = tree.node(source_block.children.front());
-      check_statement_list(tree, list, scope, result_type, loop_depth, block);
+      check_statement_list(tree, list, scope, result_type, depth, block);
     }
     return hir_.add_block(std::move(block));
   }
@@ -760,7 +823,7 @@ private:
       NodeId statement_id,
       ScopeId scope,
       TypeId result_type,
-      std::uint32_t loop_depth) {
+      ControlDepth depth) {
     const SyntaxNode &node = tree.node(statement_id);
     HirStatement statement;
     statement.range = node.range;
@@ -826,7 +889,7 @@ private:
     case NodeKind::Block:
       statement.kind = HirStatementKind::Block;
       statement.blocks.push_back(
-          check_block(tree, statement_id, scope, result_type, loop_depth));
+          check_block(tree, statement_id, scope, result_type, depth));
       break;
 
     case NodeKind::IfStatement:
@@ -842,14 +905,14 @@ private:
         const NodeId child = node.children[index];
         if (tree.node(child).kind == NodeKind::Block) {
           statement.blocks.push_back(
-              check_block(tree, child, scope, result_type, loop_depth));
+              check_block(tree, child, scope, result_type, depth));
         } else {
           HirBlock synthetic;
           synthetic.scope = semantic_.symbols.add_scope(
               ScopeKind::Block, scope, tree.node(child).range);
           synthetic.range = tree.node(child).range;
           synthetic.statements.push_back(
-              check_statement(tree, child, synthetic.scope, result_type, loop_depth));
+              check_statement(tree, child, synthetic.scope, result_type, depth));
           statement.blocks.push_back(hir_.add_block(std::move(synthetic)));
         }
       }
@@ -857,12 +920,12 @@ private:
 
     case NodeKind::BreakStatement:
       statement.kind = HirStatementKind::Break;
-      if (loop_depth == 0) diagnostics_.error(node.range, "break is outside a loop or switch");
+      if (depth.breakable == 0) diagnostics_.error(node.range, "break is outside a loop or switch");
       break;
 
     case NodeKind::ContinueStatement:
       statement.kind = HirStatementKind::Continue;
-      if (loop_depth == 0) diagnostics_.error(node.range, "continue is outside a loop");
+      if (depth.loops == 0) diagnostics_.error(node.range, "continue is outside a loop");
       break;
 
     case NodeKind::DeferStatement:
@@ -878,21 +941,112 @@ private:
 
     case NodeKind::ForStatement:
       statement.kind = HirStatementKind::For;
-      for (NodeId child : node.children) {
-        if (tree.node(child).kind == NodeKind::Block) {
-          statement.blocks.push_back(
-              check_block(tree, child, scope, result_type, loop_depth + 1));
-        } else if (tree.node(child).kind == NodeKind::IterationHeader ||
-                   tree.node(child).kind == NodeKind::ForClause) {
-          diagnostics_.error(
-              tree.node(child).range,
-              "iteration bindings and three-clause loops are not yet implemented in HIR");
+      if (node.children.empty()) break;
+      if (tree.node(node.children.front()).kind == NodeKind::IterationHeader) {
+        const NodeId header_id = node.children.front();
+        const SyntaxNode &header = tree.node(header_id);
+        if (header.children.empty()) break;
+        const ScopeId loop_scope = semantic_.symbols.add_scope(
+            ScopeKind::Block, scope, header.range);
+        const HirExpressionId iterable =
+            check_expression(tree, header.children.front(), scope);
+        statement.expressions.push_back(iterable);
+        const Type iterable_type = semantic_.types.type(hir_.expression(iterable).type);
+        TypeId element_type = semantic_.types.builtins().invalid;
+        if (iterable_type.kind == TypeKind::Array || iterable_type.kind == TypeKind::Slice) {
+          element_type = iterable_type.element;
         } else {
-          statement.expressions.push_back(check_expression(
+          diagnostics_.error(header.range, "iteration requires an array or slice");
+        }
+        const SyntaxNode &iterable_syntax = tree.node(header.children.front());
+        const std::vector<SourceName> names = names_in_span(
+            tree, header.token_begin, iterable_syntax.token_begin);
+        for (std::size_t index = 0; index < names.size() && index < 2; ++index) {
+          if (names[index].text == "_") continue;
+          Symbol binding;
+          binding.name = names[index].text;
+          binding.kind = SymbolKind::Local;
+          binding.scope = loop_scope;
+          binding.type = index == 0
+              ? element_type
+              : semantic_.types.builtins().usize_type;
+          binding.syntax = {tree.file(), header_id};
+          binding.name_range = names[index].range;
+          const SymbolId binding_id =
+              semantic_.symbols.declare(std::move(binding), diagnostics_);
+          if (binding_id.is_valid()) statement.bindings.push_back(binding_id);
+        }
+        if (node.children.size() >= 2) {
+          statement.blocks.push_back(check_block(
               tree,
-              child,
-              scope,
-              semantic_.types.builtins().bool_type));
+              node.children.back(),
+              loop_scope,
+              result_type,
+              {depth.breakable + 1, depth.loops + 1}));
+        }
+      } else if (tree.node(node.children.front()).kind == NodeKind::ForClause) {
+        const SyntaxNode &clause = tree.node(node.children.front());
+        const ScopeId loop_scope = semantic_.symbols.add_scope(
+            ScopeKind::Block, scope, clause.range);
+        std::vector<std::uint32_t> separators;
+        for (std::uint32_t index = clause.token_begin; index < clause.token_end; ++index) {
+          if (tree.token(index).kind == TokenKind::Semicolon) separators.push_back(index);
+        }
+        for (NodeId header_child : clause.children) {
+          const SyntaxNode &child = tree.node(header_child);
+          if (!separators.empty() && child.token_end <= separators.front()) {
+            if (child.kind == NodeKind::Declaration) {
+              statement.header_statements.push_back(
+                  check_local_declaration(tree, header_child, loop_scope));
+            } else {
+              statement.header_statements.push_back(check_statement(
+                  tree, header_child, loop_scope, result_type, depth));
+            }
+          } else if (separators.size() >= 2 && child.token_begin > separators.back()) {
+            statement.header_statements.push_back(check_statement(
+                tree, header_child, loop_scope, result_type, depth));
+          } else {
+            statement.expressions.push_back(check_expression(
+                tree,
+                header_child,
+                loop_scope,
+                semantic_.types.builtins().bool_type));
+          }
+        }
+        if (node.children.size() >= 2) {
+          statement.blocks.push_back(check_block(
+              tree,
+              node.children.back(),
+              loop_scope,
+              result_type,
+              {depth.breakable + 1, depth.loops + 1}));
+        }
+      } else {
+        // Infinite loops contain only a block; conditional loops contain a bool
+        // expression followed by the block.
+        for (NodeId child : node.children) {
+          if (tree.node(child).kind == NodeKind::Block) {
+            statement.blocks.push_back(
+                check_block(
+                    tree,
+                    child,
+                    scope,
+                    result_type,
+                    {depth.breakable + 1, depth.loops + 1}));
+          } else if (tree.node(child).kind == NodeKind::ExpressionStatement &&
+                     tree.node(child).children.size() == 1) {
+            statement.expressions.push_back(check_expression(
+                tree,
+                tree.node(child).children.front(),
+                scope,
+                semantic_.types.builtins().bool_type));
+          } else {
+            statement.expressions.push_back(check_expression(
+                tree,
+                child,
+                scope,
+                semantic_.types.builtins().bool_type));
+          }
         }
       }
       break;
@@ -901,7 +1055,7 @@ private:
       statement.kind = HirStatementKind::Block;
       if (!node.children.empty()) {
         statement.blocks.push_back(
-            check_block(tree, node.children.back(), scope, result_type, loop_depth));
+            check_block(tree, node.children.back(), scope, result_type, depth));
       }
       break;
 
@@ -909,7 +1063,7 @@ private:
       statement.kind = HirStatementKind::Unchecked;
       if (!node.children.empty()) {
         statement.blocks.push_back(
-            check_block(tree, node.children.back(), scope, result_type, loop_depth));
+            check_block(tree, node.children.back(), scope, result_type, depth));
       }
       break;
 
@@ -948,7 +1102,7 @@ private:
         if (selection->select_true) {
           if (node.children.size() >= 2) {
             statement.blocks.push_back(check_compile_time_block(
-                tree, node.children[1], scope, result_type, loop_depth));
+                tree, node.children[1], scope, result_type, depth));
           }
         } else if (node.children.size() >= 3) {
           const NodeId alternative = node.children[2];
@@ -957,11 +1111,11 @@ private:
             nested.scope = scope;
             nested.range = tree.node(alternative).range;
             nested.statements.push_back(check_statement(
-                tree, alternative, scope, result_type, loop_depth));
+                tree, alternative, scope, result_type, depth));
             statement.blocks.push_back(hir_.add_block(std::move(nested)));
           } else {
             statement.blocks.push_back(check_compile_time_block(
-                tree, alternative, scope, result_type, loop_depth));
+                tree, alternative, scope, result_type, depth));
           }
         }
       } else {
@@ -970,8 +1124,74 @@ private:
       break;
 
     case NodeKind::SwitchStatement:
-      statement.kind = HirStatementKind::Invalid;
-      diagnostics_.error(node.range, "switch checking is not yet connected to HIR");
+      statement.kind = HirStatementKind::Switch;
+      if (node.children.empty()) break;
+      {
+        const HirExpressionId subject =
+            check_expression(tree, node.children.front(), scope);
+        statement.expressions.push_back(subject);
+        const TypeId subject_type = hir_.expression(subject).type;
+        bool has_default = false;
+        std::vector<SymbolId> covered_alternatives;
+        for (std::size_t case_index = 1; case_index < node.children.size(); ++case_index) {
+          const SyntaxNode &case_node = tree.node(node.children[case_index]);
+          if (case_node.kind != NodeKind::SwitchCase || case_node.children.empty()) continue;
+          const NodeId list_id = case_node.children.back();
+          if (case_node.children.size() == 1) has_default = true;
+          for (std::size_t label_index = 0;
+               label_index + 1 < case_node.children.size();
+               ++label_index) {
+            const HirExpressionId label = check_expression(
+                tree, case_node.children[label_index], scope, subject_type);
+            statement.expressions.push_back(label);
+            if (hir_.expression(label).symbol.is_valid()) {
+              const SymbolId alternative = hir_.expression(label).symbol;
+              if (std::find(
+                      covered_alternatives.begin(),
+                      covered_alternatives.end(),
+                      alternative) != covered_alternatives.end()) {
+                diagnostics_.error(
+                    tree.node(case_node.children[label_index]).range,
+                    "duplicate switch alternative");
+              } else {
+                covered_alternatives.push_back(alternative);
+              }
+            }
+          }
+          const ScopeId case_scope = semantic_.symbols.add_scope(
+              ScopeKind::Block, scope, case_node.range);
+          HirBlock case_block;
+          case_block.scope = case_scope;
+          case_block.range = case_node.range;
+          check_statement_list(
+              tree,
+              tree.node(list_id),
+              case_scope,
+              result_type,
+              {depth.breakable + 1, depth.loops},
+              case_block);
+          statement.blocks.push_back(hir_.add_block(std::move(case_block)));
+        }
+
+        const TypeKind subject_kind = is_invalid_type(subject_type)
+            ? TypeKind::Invalid
+            : semantic_.types.type(subject_type).kind;
+        if (!has_default &&
+            (subject_kind == TypeKind::Enum || subject_kind == TypeKind::TaggedUnion)) {
+          const std::optional<SymbolId> owner = type_owner(subject_type);
+          if (owner.has_value()) {
+            std::size_t alternative_count = 0;
+            for (const AggregateMember &member : semantic_.aggregate_members) {
+              if (member.owner == *owner) ++alternative_count;
+            }
+            if (covered_alternatives.size() != alternative_count) {
+              diagnostics_.error(
+                  node.range,
+                  "switch over enum or tagged union is not exhaustive and has no default");
+            }
+          }
+        }
+      }
       break;
 
     default:
@@ -1029,7 +1249,7 @@ private:
     const std::size_t initial_errors = diagnostics_.error_count();
     current_procedure_ = id;
     const HirBlockId checked_body = check_block(
-        *tree, *body, *parameter_scope, result_type, 0);
+        *tree, *body, *parameter_scope, result_type, {});
     if (result_type != semantic_.types.builtins().void_type &&
         !definitely_returns(*tree, *body)) {
       diagnostics_.error(procedure.range, "not every path returns a value");
