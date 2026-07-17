@@ -105,6 +105,11 @@ unwrap_maybe :: proc(value: Maybe[i64]) -> i64 {
     }
 }
 
+last[N: usize] :: proc(values: [N]i64) -> i64 {
+    static_assert(N > 0)
+    return values[N - 1]
+}
+
 make_outcome :: proc(value: i64) -> Outcome {
     return .value(value)
 }
@@ -146,11 +151,14 @@ main :: proc() -> i32 {
     zero_outcome: Outcome
     assert(read_outcome(zero_outcome) == 0)
     pair := Pair[i64, i64]{first = 20, second = 22}
+    values := [3]i64{10, 20, 42}
     assert(pair_total(pair) == 42)
     assert(unwrap_maybe(.some(42)) == 42)
     assert(unwrap_maybe(.none) == 0)
     assert(copy == 42)
     assert(inferred == 42)
+    assert(last[3](values) == 42)
+    assert(last(values) == 42)
     assert(small == 3)
     return cast[i32](value)
 }
@@ -197,6 +205,7 @@ main :: proc() -> i32 {
       "define i64 @\"draft.workspace.native.add\"(ptr %context, i64 %arg0, i64 %arg1)") !=
       std::string::npos);
   EXPECT(state, module.text.find("identity_24instance") != std::string::npos);
+  EXPECT(state, module.text.find("last_24instance_24v3") != std::string::npos);
   EXPECT(state, module.text.find("<type-parameter>") == std::string::npos);
   EXPECT(state, module.text.find(
       "call void @__draft.assert(ptr %context, i1") != std::string::npos);

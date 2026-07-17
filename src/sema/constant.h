@@ -90,6 +90,9 @@ struct CompileTimeRoundResult {
 // Evaluates one required scalar expression in the already resolved semantic
 // graph. Body-level compile-time intrinsics use the same evaluator as package
 // constants and `when`, avoiding a second arithmetic or target-fact model.
+// local_constants is an optional, caller-owned overlay for an instantiated
+// procedure's compile-time value parameters. Overlay bindings take precedence
+// over declarations and remain valid only for the duration of this call.
 [[nodiscard]] std::optional<ConstantValue> evaluate_constant_expression(
     const SourceManager &sources,
     const LoadedPackage &loaded,
@@ -98,6 +101,7 @@ struct CompileTimeRoundResult {
     const SyntaxTree &tree,
     NodeId expression,
     ScopeId scope,
-    DiagnosticSink &diagnostics);
+    DiagnosticSink &diagnostics,
+    const ConstantTable *local_constants = nullptr);
 
 } // namespace draft

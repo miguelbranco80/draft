@@ -65,13 +65,26 @@ struct TypeSubstitution {
   TypeId replacement;
 };
 
+// Value substitutions use the actual ValueParameter symbol as their key. Type
+// parameters have unique TypeIds, while value parameters may share the same
+// declared type (`N: usize, M: usize`) and therefore cannot be keyed by type.
+// The exact value remains arbitrary precision until a dependent layout converts
+// it to the target-independent u64 array/SIMD count domain.
+struct ValueSubstitution {
+  SymbolId parameter;
+  ConstantValue value;
+};
+
 // One source template can produce several concrete procedure bodies. Instances
-// retain their substitution here while the permanent semantic graph owns the
-// concrete symbol, signature, and cloned parameter scope used by later passes.
+// retain both substitution kinds here while the permanent semantic graph owns
+// the concrete symbol, signature, and cloned runtime-parameter scope used by
+// later passes. Equality is semantic: types compare by canonical TypeId and
+// values compare by their exact ConstantValue representation.
 struct ProcedureInstance {
   SymbolId source;
   SymbolId symbol;
-  std::vector<TypeSubstitution> substitutions;
+  std::vector<TypeSubstitution> type_substitutions;
+  std::vector<ValueSubstitution> value_substitutions;
   bool checked = false;
 };
 
@@ -222,31 +235,62 @@ private:
 
   [[nodiscard]] TypeId substitute_type(
       TypeId source,
-      const std::vector<TypeSubstitution> &substitutions) {
+      const std::vector<TypeSubstitution> &type_substitutions,
+      const std::vector<ValueSubstitution> &value_substitutions,
+      SourceRange use_range) {
     if (!source.is_valid()) return source;
-    for (const TypeSubstitution &substitution : substitutions) {
+    for (const TypeSubstitution &substitution : type_substitutions) {
       if (substitution.parameter == source) return substitution.replacement;
     }
     const Type value = semantic_.types.type(source);
     switch (value.kind) {
     case TypeKind::Pointer:
-      return semantic_.types.pointer(substitute_type(value.element, substitutions));
+      return semantic_.types.pointer(substitute_type(
+          value.element, type_substitutions, value_substitutions, use_range));
     case TypeKind::MultiPointer:
-      return semantic_.types.multi_pointer(
-          substitute_type(value.element, substitutions));
+      return semantic_.types.multi_pointer(substitute_type(
+          value.element, type_substitutions, value_substitutions, use_range));
     case TypeKind::Slice:
-      return semantic_.types.slice(substitute_type(value.element, substitutions));
+      return semantic_.types.slice(substitute_type(
+          value.element, type_substitutions, value_substitutions, use_range));
     case TypeKind::Array:
-      return semantic_.types.array(
-          substitute_type(value.element, substitutions), value.element_count);
-    case TypeKind::Simd:
-      return semantic_.types.simd(
-          substitute_type(value.element, substitutions), value.element_count);
+    case TypeKind::Simd: {
+      std::uint64_t count = value.element_count;
+      if (value.element_count_parameter !=
+          std::numeric_limits<std::uint32_t>::max()) {
+        bool found = false;
+        for (const ValueSubstitution &substitution : value_substitutions) {
+          if (substitution.parameter.value != value.element_count_parameter) {
+            continue;
+          }
+          const std::optional<std::uint64_t> concrete =
+              substitution.value.integer.to_u64();
+          if (!concrete.has_value() || *concrete == 0) {
+            diagnostics_.error(
+                use_range,
+                "array and SIMD value parameters must instantiate to a nonzero u64");
+            return semantic_.types.builtins().invalid;
+          }
+          count = *concrete;
+          found = true;
+          break;
+        }
+        // Symbolic template checking intentionally retains the dependent row.
+        // Every concrete instance is separately validated to have all values.
+        if (!found) return source;
+      }
+      const TypeId element = substitute_type(
+          value.element, type_substitutions, value_substitutions, use_range);
+      return value.kind == TypeKind::Array
+          ? semantic_.types.array(element, count)
+          : semantic_.types.simd(element, count);
+    }
     case TypeKind::Tuple: {
       std::vector<TypeId> members;
       members.reserve(value.members.size());
       for (TypeId member : value.members) {
-        members.push_back(substitute_type(member, substitutions));
+        members.push_back(substitute_type(
+            member, type_substitutions, value_substitutions, use_range));
       }
       return semantic_.types.tuple(members);
     }
@@ -255,12 +299,20 @@ private:
       if (!value.members.empty()) {
         parameters.reserve(value.members.size() - 1);
         for (std::size_t index = 0; index + 1 < value.members.size(); ++index) {
-          parameters.push_back(substitute_type(value.members[index], substitutions));
+          parameters.push_back(substitute_type(
+              value.members[index],
+              type_substitutions,
+              value_substitutions,
+              use_range));
         }
       }
       const TypeId result = value.members.empty()
           ? semantic_.types.builtins().void_type
-          : substitute_type(value.members.back(), substitutions);
+          : substitute_type(
+                value.members.back(),
+                type_substitutions,
+                value_substitutions,
+                use_range);
       return semantic_.types.procedure(
           parameters, result, value.c_calling_convention);
     }
@@ -269,11 +321,38 @@ private:
     }
   }
 
-  [[nodiscard]] TypeId substitute_active(TypeId source) {
+  [[nodiscard]] TypeId substitute_active(
+      TypeId source, SourceRange use_range = SourceRange::invalid()) {
     return !current_instance_index_.has_value()
         ? source
         : substitute_type(
-              source, instances_[*current_instance_index_].substitutions);
+              source,
+              instances_[*current_instance_index_].type_substitutions,
+              instances_[*current_instance_index_].value_substitutions,
+              use_range);
+  }
+
+  // Presents the current instance's value parameters in the same SymbolId-keyed
+  // shape used by package constant evaluation. The table is deliberately built
+  // on demand: instances normally contain only one or two values, and avoiding
+  // a second mutable constant store keeps their ownership unambiguous.
+  [[nodiscard]] ConstantTable active_constant_table() const {
+    ConstantTable result;
+    if (!current_instance_index_.has_value()) return result;
+    for (const ValueSubstitution &substitution :
+         instances_[*current_instance_index_].value_substitutions) {
+      result.bindings.push_back({substitution.parameter, substitution.value});
+    }
+    return result;
+  }
+
+  [[nodiscard]] const ConstantValue *active_constant(SymbolId symbol) const {
+    if (!current_instance_index_.has_value()) return nullptr;
+    for (const ValueSubstitution &substitution :
+         instances_[*current_instance_index_].value_substitutions) {
+      if (substitution.parameter == symbol) return &substitution.value;
+    }
+    return nullptr;
   }
 
   // Applies Draft's initial expected-type rule: exact types match, and untyped
@@ -777,6 +856,37 @@ private:
     return names.front();
   }
 
+  // Detects whether a compile-time expression depends on a symbolic parameter
+  // from the current lexical scope. A parametric template must defer such a
+  // static assertion; reporting "not evaluable" during symbolic checking would
+  // reject every valid `static_assert(N > 0)` before an N exists. Concrete
+  // instances run the ordinary evaluator with their exact value overlay.
+  [[nodiscard]] bool expression_references_parametric_parameter(
+      const SyntaxTree &tree, NodeId node_id, ScopeId scope) const {
+    const SyntaxNode &node = tree.node(node_id);
+    if (node.kind == NodeKind::NameExpression) {
+      const std::optional<SourceName> name =
+          single_name_expression(tree, node_id);
+      if (name.has_value()) {
+        const std::optional<SymbolId> symbol =
+            semantic_.symbols.lookup(scope, name->text);
+        if (symbol.has_value()) {
+          const SymbolKind kind = semantic_.symbols.symbol(*symbol).kind;
+          if (kind == SymbolKind::TypeParameter ||
+              kind == SymbolKind::ValueParameter) {
+            return true;
+          }
+        }
+      }
+    }
+    for (NodeId child : node.children) {
+      if (expression_references_parametric_parameter(tree, child, scope)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   // Resolves a source expression that denotes a type. Type arguments to
   // `cast[T]` are parsed in expression brackets, so bare type names reach this
   // bridge rather than ordinary type syntax.
@@ -785,13 +895,16 @@ private:
     const SyntaxNode &node = tree.node(node_id);
     if (node_is_type_syntax(node.kind) ||
         node.kind == NodeKind::BracketExpression) {
-      return substitute_active(resolve_type_syntax(
-          sources_, loaded_, semantic_, selections_, tree, node_id, scope, diagnostics_));
+      return substitute_active(
+          resolve_type_syntax(
+              sources_, loaded_, semantic_, selections_, tree, node_id, scope,
+              diagnostics_),
+          node.range);
     }
     if (const std::optional<SymbolId> imported = imported_member(tree, node, scope)) {
       const Symbol binding = semantic_.symbols.symbol(*imported);
       if (binding.kind == SymbolKind::Type || binding.kind == SymbolKind::TypeParameter) {
-        return substitute_active(binding.type);
+        return substitute_active(binding.type, node.range);
       }
       diagnostics_.error(node.range, "imported name does not denote a type");
       return semantic_.types.builtins().invalid;
@@ -805,7 +918,7 @@ private:
     if (symbol.has_value()) {
       const Symbol binding = semantic_.symbols.symbol(*symbol);
       if (binding.kind == SymbolKind::Type || binding.kind == SymbolKind::TypeParameter) {
-        return substitute_active(binding.type);
+        return substitute_active(binding.type, node.range);
       }
     }
     diagnostics_.error(name->range, "name does not denote a type");
@@ -854,6 +967,49 @@ private:
     return std::nullopt;
   }
 
+  [[nodiscard]] std::optional<std::size_t> value_substitution_index(
+      const std::vector<ValueSubstitution> &substitutions,
+      SymbolId parameter) const {
+    for (std::size_t index = 0; index < substitutions.size(); ++index) {
+      if (substitutions[index].parameter == parameter) return index;
+    }
+    return std::nullopt;
+  }
+
+  // Binds a dependent array/SIMD count during call inference. The structural
+  // type already guarantees a concrete u64 count; this step additionally checks
+  // that the number fits the declared parameter type (for example `N: u8`).
+  // Repeated appearances of N must infer the same exact value.
+  [[nodiscard]] bool infer_value_argument(
+      SymbolId owner,
+      SymbolId parameter,
+      std::uint64_t value,
+      std::vector<ValueSubstitution> &substitutions) {
+    const std::vector<ParametricParameterRecord> parameters =
+        parameters_for(owner);
+    for (const ParametricParameterRecord &record : parameters) {
+      if (record.parameter != parameter ||
+          record.constraint != TypeConstraintKind::CompileTimeValue) {
+        continue;
+      }
+      const TypeId required_type = semantic_.symbols.symbol(parameter).type;
+      const ConstantValue constant = ConstantValue::make_integer(
+          BigInteger::from_u64(value));
+      if (!semantic_.types.is_integer(required_type) ||
+          !integer_representable(constant.integer, required_type)) {
+        return false;
+      }
+      const std::optional<std::size_t> existing =
+          value_substitution_index(substitutions, parameter);
+      if (existing.has_value()) {
+        return substitutions[*existing].value == constant;
+      }
+      substitutions.push_back({parameter, constant});
+      return true;
+    }
+    return false;
+  }
+
   // Unifies one symbolic signature type with an already checked argument type.
   // Draft inference is deliberately unique and structural; it never chooses a
   // default for an untyped literal or guesses a parameter visible only in the
@@ -862,19 +1018,20 @@ private:
       SymbolId owner,
       TypeId pattern_id,
       TypeId actual_id,
-      std::vector<TypeSubstitution> &substitutions) {
+      std::vector<TypeSubstitution> &type_substitutions,
+      std::vector<ValueSubstitution> &value_substitutions) {
     for (const ParametricParameterRecord &parameter : parameters_for(owner)) {
       if (parameter.constraint == TypeConstraintKind::CompileTimeValue) continue;
       const TypeId parameter_type =
           semantic_.symbols.symbol(parameter.parameter).type;
       if (pattern_id != parameter_type) continue;
       const std::optional<std::size_t> existing =
-          substitution_index(substitutions, parameter_type);
+          substitution_index(type_substitutions, parameter_type);
       if (existing.has_value()) {
-        return substitutions[*existing].replacement == actual_id;
+        return type_substitutions[*existing].replacement == actual_id;
       }
       if (!constraint_accepts(parameter.constraint, actual_id)) return false;
-      substitutions.push_back({parameter_type, actual_id});
+      type_substitutions.push_back({parameter_type, actual_id});
       return true;
     }
 
@@ -888,11 +1045,36 @@ private:
     case TypeKind::MultiPointer:
     case TypeKind::Slice:
       return infer_type_argument(
-          owner, pattern.element, actual.element, substitutions);
+          owner,
+          pattern.element,
+          actual.element,
+          type_substitutions,
+          value_substitutions);
     case TypeKind::Array:
-    case TypeKind::Simd:
-      return pattern.element_count == actual.element_count &&
-          infer_type_argument(owner, pattern.element, actual.element, substitutions);
+    case TypeKind::Simd: {
+      if (actual.element_count_parameter !=
+          std::numeric_limits<std::uint32_t>::max()) {
+        return false;
+      }
+      if (pattern.element_count_parameter !=
+          std::numeric_limits<std::uint32_t>::max()) {
+        if (!infer_value_argument(
+                owner,
+                SymbolId{pattern.element_count_parameter},
+                actual.element_count,
+                value_substitutions)) {
+          return false;
+        }
+      } else if (pattern.element_count != actual.element_count) {
+        return false;
+      }
+      return infer_type_argument(
+          owner,
+          pattern.element,
+          actual.element,
+          type_substitutions,
+          value_substitutions);
+    }
     case TypeKind::Tuple:
     case TypeKind::Procedure:
       if (pattern.members.size() != actual.members.size() ||
@@ -905,7 +1087,8 @@ private:
                 owner,
                 pattern.members[index],
                 actual.members[index],
-                substitutions)) {
+                type_substitutions,
+                value_substitutions)) {
           return false;
         }
       }
@@ -925,7 +1108,8 @@ private:
 
   [[nodiscard]] SymbolId instantiate_procedure(
       SymbolId source,
-      std::vector<TypeSubstitution> substitutions,
+      std::vector<TypeSubstitution> type_substitutions,
+      std::vector<ValueSubstitution> value_substitutions,
       SourceRange use_range) {
     const std::vector<ParametricParameterRecord> parameters =
         parameters_for(source);
@@ -935,21 +1119,37 @@ private:
     }
     for (const ParametricParameterRecord &parameter : parameters) {
       if (parameter.constraint == TypeConstraintKind::CompileTimeValue) {
-        diagnostics_.error(
-            use_range,
-            "compile-time value procedure parameters are not yet instantiated");
-        return {};
+        const std::optional<std::size_t> found = value_substitution_index(
+            value_substitutions, parameter.parameter);
+        if (!found.has_value()) {
+          diagnostics_.error(
+              use_range,
+              "procedure value arguments cannot be inferred uniquely");
+          return {};
+        }
+        const TypeId required_type =
+            semantic_.symbols.symbol(parameter.parameter).type;
+        const ValueSubstitution &substitution = value_substitutions[*found];
+        if (substitution.value.kind != ConstantKind::Integer ||
+            !semantic_.types.is_integer(required_type) ||
+            !integer_representable(substitution.value.integer, required_type)) {
+          diagnostics_.error(
+              use_range,
+              "compile-time value argument is not representable in its parameter type");
+          return {};
+        }
+        continue;
       }
       const TypeId parameter_type =
           semantic_.symbols.symbol(parameter.parameter).type;
       const std::optional<std::size_t> found =
-          substitution_index(substitutions, parameter_type);
+          substitution_index(type_substitutions, parameter_type);
       if (!found.has_value()) {
         diagnostics_.error(use_range, "procedure type arguments cannot be inferred uniquely");
         return {};
       }
       if (!constraint_accepts(
-              parameter.constraint, substitutions[*found].replacement)) {
+              parameter.constraint, type_substitutions[*found].replacement)) {
         diagnostics_.error(use_range, "procedure type argument does not satisfy its constraint");
         return {};
       }
@@ -957,15 +1157,28 @@ private:
 
     for (const ProcedureInstance &instance : instances_) {
       if (instance.source != source ||
-          instance.substitutions.size() != substitutions.size()) {
+          instance.type_substitutions.size() != type_substitutions.size() ||
+          instance.value_substitutions.size() != value_substitutions.size()) {
         continue;
       }
       bool same = true;
-      for (const TypeSubstitution &substitution : substitutions) {
+      for (const TypeSubstitution &substitution : type_substitutions) {
         const std::optional<std::size_t> found =
-            substitution_index(instance.substitutions, substitution.parameter);
+            substitution_index(
+                instance.type_substitutions, substitution.parameter);
         if (!found.has_value() ||
-            instance.substitutions[*found].replacement != substitution.replacement) {
+            instance.type_substitutions[*found].replacement !=
+                substitution.replacement) {
+          same = false;
+          break;
+        }
+      }
+      if (!same) continue;
+      for (const ValueSubstitution &substitution : value_substitutions) {
+        const std::optional<std::size_t> found = value_substitution_index(
+            instance.value_substitutions, substitution.parameter);
+        if (!found.has_value() ||
+            instance.value_substitutions[*found].value != substitution.value) {
           same = false;
           break;
         }
@@ -977,11 +1190,19 @@ private:
     Symbol instance_symbol;
     instance_symbol.name = source_symbol.name + "$instance";
     for (const ParametricParameterRecord &parameter : parameters) {
-      const TypeId parameter_type =
-          semantic_.symbols.symbol(parameter.parameter).type;
-      const std::size_t index = *substitution_index(substitutions, parameter_type);
-      instance_symbol.name += "$" +
-          std::to_string(substitutions[index].replacement.value);
+      if (parameter.constraint == TypeConstraintKind::CompileTimeValue) {
+        const std::size_t index = *value_substitution_index(
+            value_substitutions, parameter.parameter);
+        instance_symbol.name += "$v" +
+            value_substitutions[index].value.integer.to_decimal();
+      } else {
+        const TypeId parameter_type =
+            semantic_.symbols.symbol(parameter.parameter).type;
+        const std::size_t index = *substitution_index(
+            type_substitutions, parameter_type);
+        instance_symbol.name += "$t" +
+            std::to_string(type_substitutions[index].replacement.value);
+      }
     }
     instance_symbol.kind = SymbolKind::Procedure;
     instance_symbol.visibility = Visibility::Private;
@@ -989,7 +1210,11 @@ private:
     instance_symbol.flags.parametric = false;
     instance_symbol.flags.exported = false;
     instance_symbol.scope = semantic_.package_scope;
-    instance_symbol.type = substitute_type(source_symbol.type, substitutions);
+    instance_symbol.type = substitute_type(
+        source_symbol.type,
+        type_substitutions,
+        value_substitutions,
+        use_range);
     instance_symbol.syntax = source_symbol.syntax;
     instance_symbol.name_range = source_symbol.name_range;
     const SymbolId instance_id =
@@ -1012,11 +1237,20 @@ private:
       if (parameter.kind != SymbolKind::Parameter) continue;
       Symbol concrete = parameter;
       concrete.scope = instance_scope;
-      concrete.type = substitute_type(parameter.type, substitutions);
+      concrete.type = substitute_type(
+          parameter.type,
+          type_substitutions,
+          value_substitutions,
+          use_range);
       (void)semantic_.symbols.declare(std::move(concrete), diagnostics_);
     }
-    instances_.push_back(
-        {source, instance_id, std::move(substitutions), false});
+    instances_.push_back({
+        source,
+        instance_id,
+        std::move(type_substitutions),
+        std::move(value_substitutions),
+        false,
+    });
     semantic_.parametric_instances.push_back({source, instance_id});
     return instance_id;
   }
@@ -1094,8 +1328,13 @@ private:
         diagnostics_.error(
             call.range, "static_assert requires a bool and optional string");
       }
+      const ConstantTable active_constants = active_constant_table();
+      const bool defer_symbolic_assertion =
+          !current_instance_index_.has_value() && argument_count >= 1 &&
+          expression_references_parametric_parameter(
+              tree, call.children[1], scope);
       std::optional<ConstantValue> condition;
-      if (argument_count >= 1) {
+      if (argument_count >= 1 && !defer_symbolic_assertion) {
         condition = evaluate_constant_expression(
             sources_,
             loaded_,
@@ -1104,10 +1343,11 @@ private:
             tree,
             call.children[1],
             scope,
-            diagnostics_);
+            diagnostics_,
+            &active_constants);
       }
       std::string message;
-      if (argument_count >= 2) {
+      if (argument_count >= 2 && !defer_symbolic_assertion) {
         const std::optional<ConstantValue> evaluated_message =
             evaluate_constant_expression(
                 sources_,
@@ -1117,7 +1357,8 @@ private:
                 tree,
                 call.children[2],
                 scope,
-                diagnostics_);
+                diagnostics_,
+                &active_constants);
         if (evaluated_message.has_value() &&
             evaluated_message->kind == ConstantKind::String) {
           message = evaluated_message->text;
@@ -1322,12 +1563,19 @@ private:
       expression.range = node.range;
       expression.symbol = *found;
       expression.type = apply_expected_type(
-          substitute_active(symbol.type), expected, node.range);
+          substitute_active(symbol.type, node.range), expected, node.range);
       expression.addressable = symbol.kind == SymbolKind::Variable ||
           symbol.kind == SymbolKind::Local || symbol.kind == SymbolKind::Parameter;
       if (const ConstantValue *constant = constants_.find(*found)) {
         expression.kind = HirExpressionKind::Constant;
         expression.constant = *constant;
+        check_constant_range(expression.constant, expression.type, node.range);
+      } else if (const ConstantValue *instance_value = active_constant(*found)) {
+        // A compile-time value parameter has no runtime storage in a concrete
+        // monomorphization. Replacing its Symbol expression here prevents MIR
+        // from ever allocating or loading a phantom parameter.
+        expression.kind = HirExpressionKind::Constant;
+        expression.constant = *instance_value;
         check_constant_range(expression.constant, expression.type, node.range);
       }
       return hir_.add_expression(std::move(expression));
@@ -1614,7 +1862,8 @@ private:
               return invalid_expression(node.range);
             }
             std::vector<HirExpressionId> arguments;
-            std::vector<TypeSubstitution> substitutions;
+            std::vector<TypeSubstitution> type_substitutions;
+            std::vector<ValueSubstitution> value_substitutions;
             for (std::size_t index = 0; index < parameter_count; ++index) {
               const HirExpressionId argument =
                   check_expression(tree, node.children[index + 1], scope);
@@ -1623,7 +1872,8 @@ private:
                       *found,
                       template_signature.members[index],
                       hir_.expression(argument).type,
-                      substitutions)) {
+                      type_substitutions,
+                      value_substitutions)) {
                 diagnostics_.error(
                     tree.node(node.children[index + 1]).range,
                     "procedure type arguments cannot be inferred uniquely");
@@ -1631,7 +1881,10 @@ private:
               }
             }
             const SymbolId instance = instantiate_procedure(
-                *found, std::move(substitutions), node.range);
+                *found,
+                std::move(type_substitutions),
+                std::move(value_substitutions),
+                node.range);
             if (!instance.is_valid()) return invalid_expression(node.range);
             const Type concrete_signature = semantic_.types.type(
                 semantic_.symbols.symbol(instance).type);
@@ -1705,7 +1958,7 @@ private:
         expression.range = node.range;
         expression.symbol = *imported;
         expression.type = apply_expected_type(
-            substitute_active(symbol.type), expected, node.range);
+            substitute_active(symbol.type, node.range), expected, node.range);
         expression.addressable = symbol.kind == SymbolKind::Variable;
         if (const ConstantValue *constant = imported_constant(*imported)) {
           expression.kind = HirExpressionKind::Constant;
@@ -1749,7 +2002,7 @@ private:
       expression.range = node.range;
       expression.symbol = *member;
       expression.type = apply_expected_type(
-          substitute_active(member_symbol.type), expected, node.range);
+          substitute_active(member_symbol.type, node.range), expected, node.range);
       expression.operands.push_back(base_id);
       expression.addressable = base.addressable && member_symbol.kind == SymbolKind::Field;
       return hir_.add_expression(std::move(expression));
@@ -1788,22 +2041,43 @@ private:
                 "parametric procedure application has the wrong number of arguments");
             return invalid_expression(node.range);
           }
-          std::vector<TypeSubstitution> substitutions;
+          std::vector<TypeSubstitution> type_substitutions;
+          std::vector<ValueSubstitution> value_substitutions;
           for (std::size_t index = 0; index < parameters.size(); ++index) {
             const ParametricParameterRecord &parameter = parameters[index];
             if (parameter.constraint == TypeConstraintKind::CompileTimeValue) {
-              diagnostics_.error(
-                  tree.node(node.children[index + 1]).range,
-                  "compile-time value procedure parameters are not yet instantiated");
-              return invalid_expression(node.range);
+              const ConstantTable active_constants = active_constant_table();
+              const std::optional<ConstantValue> value =
+                  evaluate_constant_expression(
+                      sources_,
+                      loaded_,
+                      semantic_,
+                      target_,
+                      tree,
+                      node.children[index + 1],
+                      scope,
+                      diagnostics_,
+                      &active_constants);
+              if (!value.has_value()) return invalid_expression(node.range);
+              if (value->kind != ConstantKind::Integer) {
+                diagnostics_.error(
+                    tree.node(node.children[index + 1]).range,
+                    "procedure value argument must be a compile-time integer");
+                return invalid_expression(node.range);
+              }
+              value_substitutions.push_back({parameter.parameter, *value});
+              continue;
             }
             const TypeId argument =
                 type_value_expression(tree, node.children[index + 1], scope);
-            substitutions.push_back(
+            type_substitutions.push_back(
                 {semantic_.symbols.symbol(parameter.parameter).type, argument});
           }
           const SymbolId instance = instantiate_procedure(
-              base_expression.symbol, std::move(substitutions), node.range);
+              base_expression.symbol,
+              std::move(type_substitutions),
+              std::move(value_substitutions),
+              node.range);
           if (!instance.is_valid()) return invalid_expression(node.range);
           return procedure_symbol_expression(instance, node.range);
         }
@@ -2077,7 +2351,8 @@ private:
       if (node_is_type_syntax(tree.node(child).kind)) {
         declared_type = resolve_type_syntax(
             sources_, loaded_, semantic_, selections_, tree, child, scope, diagnostics_);
-        declared_type = substitute_active(declared_type);
+        declared_type = substitute_active(
+            declared_type, tree.node(child).range);
       } else if (tree.node(child).kind != NodeKind::ParametricParameterList) {
         initializer = child;
       }

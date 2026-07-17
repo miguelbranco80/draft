@@ -274,6 +274,11 @@ sum[T: number] :: proc(values: []T) -> T {
     return result
 }
 
+last[N: usize] :: proc(values: [N]i64) -> i64 {
+    static_assert(N > 0)
+    return values[N - 1]
+}
+
 main :: proc() -> i64 {
     value: u32 = 42
     explicit := identity[u32](&value)
@@ -282,7 +287,9 @@ main :: proc() -> i64 {
     if explicit^ != inferred^ {
         return 0
     }
-    return sum[i64](values[:])
+    explicit_last := last[3](values)
+    inferred_last := last(values)
+    return sum[i64](values[:]) + explicit_last + inferred_last
 }
 )draft");
 
@@ -292,8 +299,8 @@ main :: proc() -> i64 {
   EXPECT(state, source.semantics.ok);
   EXPECT(state, source.bodies.ok);
   EXPECT(state, !source.diagnostics.has_errors());
-  EXPECT(state, source.bodies.checked_procedures == 5);
-  EXPECT(state, source.bodies.program.procedures().size() == 5);
+  EXPECT(state, source.bodies.checked_procedures == 7);
+  EXPECT(state, source.bodies.program.procedures().size() == 7);
   std::size_t templates = 0;
   std::size_t concrete_instances = 0;
   for (const draft::HirProcedure &procedure :
@@ -316,8 +323,77 @@ main :: proc() -> i64 {
       }
     }
   }
-  EXPECT(state, templates == 2);
-  EXPECT(state, concrete_instances == 2);
+  EXPECT(state, templates == 3);
+  EXPECT(state, concrete_instances == 3);
+}
+
+void test_parametric_procedure_value_diagnostics(TestState &state) {
+  CheckedSource too_wide(R"draft(
+package bodies
+
+pick[N: u8] :: proc() -> u8 {
+    return N
+}
+main :: proc() -> u8 {
+    return pick[256]()
+}
+)draft");
+  EXPECT(state, !too_wide.bodies.ok);
+  const std::string wide_rendered =
+      draft::render_diagnostics(too_wide.sources, too_wide.diagnostics);
+  EXPECT(state, wide_rendered.find("not representable in its parameter type") !=
+                    std::string::npos);
+
+  CheckedSource runtime_value(R"draft(
+package bodies
+
+pick[N: usize] :: proc() -> usize {
+    return N
+}
+main :: proc(value: usize) -> usize {
+    return pick[value]()
+}
+)draft");
+  EXPECT(state, !runtime_value.bodies.ok);
+  const std::string runtime_rendered =
+      draft::render_diagnostics(runtime_value.sources, runtime_value.diagnostics);
+  EXPECT(state, runtime_rendered.find("not compile-time evaluable") !=
+                    std::string::npos);
+
+  CheckedSource ambiguous(R"draft(
+package bodies
+
+pick[N: usize] :: proc(value: i64) -> i64 {
+    return value
+}
+main :: proc(value: i64) -> i64 {
+    return pick(value)
+}
+)draft");
+  EXPECT(state, !ambiguous.bodies.ok);
+  const std::string ambiguous_rendered =
+      draft::render_diagnostics(ambiguous.sources, ambiguous.diagnostics);
+  EXPECT(state, ambiguous_rendered.find(
+                    "procedure value arguments cannot be inferred uniquely") !=
+                    std::string::npos);
+
+  CheckedSource failed_assertion(R"draft(
+package bodies
+
+positive[N: usize] :: proc() -> usize {
+    static_assert(N > 0, "N must be positive")
+    return N
+}
+main :: proc() -> usize {
+    return positive[0]()
+}
+)draft");
+  EXPECT(state, !failed_assertion.bodies.ok);
+  const std::string assertion_rendered = draft::render_diagnostics(
+      failed_assertion.sources, failed_assertion.diagnostics);
+  EXPECT(state, assertion_rendered.find(
+                    "static assertion failed: N must be positive") !=
+                    std::string::npos);
 }
 
 void test_definite_initialization(TestState &state) {
@@ -493,6 +569,7 @@ int main() {
   test_common_typed_bodies(state);
   test_body_diagnostics(state);
   test_parametric_procedure_instances(state);
+  test_parametric_procedure_value_diagnostics(state);
   test_definite_initialization(state);
   test_layout_intrinsics_and_static_assert(state);
   test_checked_numeric_casts(state);

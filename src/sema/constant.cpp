@@ -71,9 +71,11 @@ public:
       SemanticPackage &semantic,
       const TargetFacts &target,
       bool diagnose_unready,
-      DiagnosticSink &diagnostics)
+      DiagnosticSink &diagnostics,
+      const ConstantTable *local_constants = nullptr)
       : sources_(sources), loaded_(loaded), semantic_(semantic), target_(target),
         diagnose_unready_(diagnose_unready), diagnostics_(diagnostics),
+        local_constants_(local_constants),
         states_(semantic.symbols.symbol_count(), BindingState::Unvisited),
         values_(semantic.symbols.symbol_count()) {}
 
@@ -754,6 +756,14 @@ private:
       if (*name == "target") return ready(ConstantValue::make_target());
       const std::optional<SymbolId> symbol = semantic_.symbols.lookup(scope, *name);
       if (!symbol.has_value()) return pending();
+      // Procedure value parameters are not package constants and therefore do
+      // not have declaration syntax for evaluate_binding. An instantiation may
+      // supply their exact values through this phase-local overlay instead.
+      if (local_constants_ != nullptr) {
+        if (const ConstantValue *local = local_constants_->find(*symbol)) {
+          return ready(*local);
+        }
+      }
       return evaluate_binding(*symbol, required);
     }
 
@@ -853,6 +863,7 @@ private:
   const TargetFacts &target_;
   bool diagnose_unready_ = false;
   DiagnosticSink &diagnostics_;
+  const ConstantTable *local_constants_ = nullptr;
   std::vector<BindingState> states_;
   std::vector<ConstantValue> values_;
 };
@@ -934,9 +945,10 @@ std::optional<ConstantValue> evaluate_constant_expression(
     const SyntaxTree &tree,
     NodeId expression,
     ScopeId scope,
-    DiagnosticSink &diagnostics) {
+    DiagnosticSink &diagnostics,
+    const ConstantTable *local_constants) {
   ConstantEvaluator evaluator(
-      sources, loaded, package, target, true, diagnostics);
+      sources, loaded, package, target, true, diagnostics, local_constants);
   return evaluator.evaluate_required_expression(tree, expression, scope);
 }
 
