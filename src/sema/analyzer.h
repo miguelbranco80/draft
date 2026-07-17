@@ -104,13 +104,25 @@ struct ParametricInstanceRecord {
   SymbolId instance;
 };
 
+// A nominal template argument is either a concrete type or an exact compile-
+// time scalar. value_type is meaningful for values and records the declared
+// parameter type after import translation; type is meaningful for type args.
+struct ParametricArgument {
+  bool is_type = true;
+  TypeId type;
+  TypeId value_type;
+  ConstantValue value;
+
+  bool operator==(const ParametricArgument &) const = default;
+};
+
 // Nominal type instances must survive the short-lived TypeResolver used for
 // later local annotations. Concrete argument TypeIds form the deterministic
 // cache key; the instance symbol owns the concrete member scope and TypeId.
 struct ParametricTypeInstanceRecord {
   SymbolId source;
   SymbolId instance;
-  std::vector<TypeId> arguments;
+  std::vector<ParametricArgument> arguments;
 };
 
 // ImportBinding retains the canonical source spelling of the imported package
@@ -170,7 +182,7 @@ struct ImportedType {
   // Concrete nominal template applications keep their consumer-local type
   // arguments separately from the template's public identity. An empty vector
   // denotes an ordinary nominal or the unspecialized template declaration.
-  std::vector<TypeId> arguments;
+  std::vector<ParametricArgument> arguments;
 };
 
 // DeclarationDenial attaches a lexical `deny` contract to every declaration

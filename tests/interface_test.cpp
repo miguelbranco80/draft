@@ -275,6 +275,10 @@ pub Maybe[T: type] :: union {
     none,
     some: T,
 }
+
+pub Buffer[T: type, N: usize] :: struct {
+    data: [N]T,
+}
 )draft");
   draft::SemanticAnalysisResult dependency_semantics =
       draft::analyze_package_semantics(
@@ -299,6 +303,7 @@ import lib/option as option
 
 pub Holder :: struct {
     value: option.Maybe[i64],
+    bytes: option.Buffer[u16, 3],
 }
 
 pub unwrap :: proc(value: option.Maybe[i64]) -> i64 {
@@ -367,7 +372,7 @@ pub relay :: proc(holder: middle.Holder) -> i64 {
     std::cerr << draft::render_diagnostics(sources, diagnostics);
   }
   EXPECT(state, dependency_semantics.ok);
-  EXPECT(state, dependency_interface.declarations.size() == 1);
+  EXPECT(state, dependency_interface.declarations.size() == 2);
   if (!dependency_interface.declarations.empty()) {
     const draft::InterfaceDeclaration &maybe =
         dependency_interface.declarations.front();
@@ -380,10 +385,36 @@ pub relay :: proc(holder: middle.Holder) -> i64 {
                         draft::TypeConstraintKind::AnyType);
     }
   }
+  if (dependency_interface.declarations.size() == 2) {
+    const draft::InterfaceDeclaration &buffer =
+        dependency_interface.declarations[1];
+    EXPECT(state, buffer.name == "Buffer");
+    EXPECT(state, buffer.flags.parametric);
+    EXPECT(state, buffer.parameters.size() == 2);
+    if (buffer.parameters.size() == 2) {
+      EXPECT(state, buffer.parameters[1].name == "N");
+      EXPECT(state, buffer.parameters[1].kind ==
+                        draft::SymbolKind::ValueParameter);
+      EXPECT(state, buffer.parameters[1].constraint ==
+                        draft::TypeConstraintKind::CompileTimeValue);
+      const draft::InterfaceType &value_type =
+          dependency_interface.types[buffer.parameters[1].type.value];
+      EXPECT(state, value_type.name == "usize");
+    }
+    const draft::InterfaceType &buffer_type =
+        dependency_interface.types[buffer.type.value];
+    EXPECT(state, buffer_type.members.size() == 1);
+    if (!buffer_type.members.empty()) {
+      const draft::InterfaceType &data =
+          dependency_interface.types[buffer_type.members.front().value];
+      EXPECT(state, data.kind == draft::TypeKind::Array);
+      EXPECT(state, data.element_count_parameter == 1);
+    }
+  }
   EXPECT(state, consumer_semantics.ok);
   EXPECT(state, bodies.ok);
-  EXPECT(state, consumer_semantics.package.parametric_parameters.size() == 1);
-  EXPECT(state, consumer_semantics.package.parametric_type_instances.size() == 1);
+  EXPECT(state, consumer_semantics.package.parametric_parameters.size() == 3);
+  EXPECT(state, consumer_semantics.package.parametric_type_instances.size() == 2);
   EXPECT(state, final_semantics.ok);
   EXPECT(state, final_bodies.ok);
   EXPECT(state, !diagnostics.has_errors());
@@ -392,20 +423,38 @@ pub relay :: proc(holder: middle.Holder) -> i64 {
   // original template identity and its arguments. Rebaptizing it as a middle
   // package type would break equality in the next importing package.
   bool saw_maybe_specialization = false;
+  bool saw_buffer_specialization = false;
   for (const draft::InterfaceType &type : consumer_interface.types) {
-    if (type.kind != draft::TypeKind::TaggedUnion ||
-        type.nominal_public_name != "Maybe" ||
-        type.nominal_arguments.size() != 1) {
-      continue;
+    if (type.kind == draft::TypeKind::TaggedUnion &&
+        type.nominal_public_name == "Maybe" &&
+        type.nominal_arguments.size() == 1) {
+      saw_maybe_specialization = true;
+      EXPECT(state, type.nominal_root_identity == "workspace");
+      EXPECT(state, type.nominal_root_relative_path == "lib/option");
+      const draft::InterfaceType &argument =
+          consumer_interface.types[type.nominal_arguments.front().type.value];
+      EXPECT(state, argument.name == "i64");
     }
-    saw_maybe_specialization = true;
-    EXPECT(state, type.nominal_root_identity == "workspace");
-    EXPECT(state, type.nominal_root_relative_path == "lib/option");
-    const draft::InterfaceType &argument =
-        consumer_interface.types[type.nominal_arguments.front().value];
-    EXPECT(state, argument.name == "i64");
+    if (type.kind == draft::TypeKind::Struct &&
+        type.nominal_public_name == "Buffer" &&
+        type.nominal_arguments.size() == 2) {
+      saw_buffer_specialization = true;
+      EXPECT(state, type.nominal_root_identity == "workspace");
+      EXPECT(state, type.nominal_root_relative_path == "lib/option");
+      EXPECT(state, type.layout == draft::TypeLayout({true, 6, 2}));
+      EXPECT(state, type.nominal_arguments[0].is_type);
+      EXPECT(state, !type.nominal_arguments[1].is_type);
+      EXPECT(state, type.nominal_arguments[1].value.kind ==
+                        draft::ConstantKind::Integer);
+      EXPECT(state,
+             type.nominal_arguments[1].value.integer.to_decimal() == "3");
+      const draft::InterfaceType &argument =
+          consumer_interface.types[type.nominal_arguments[0].type.value];
+      EXPECT(state, argument.name == "u16");
+    }
   }
   EXPECT(state, saw_maybe_specialization);
+  EXPECT(state, saw_buffer_specialization);
 }
 
 void test_imported_parametric_constraint(TestState &state) {

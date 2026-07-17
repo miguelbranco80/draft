@@ -38,6 +38,8 @@ struct ConstantValue {
   ExactRational floating;
   std::string text;
 
+  bool operator==(const ConstantValue &) const = default;
+
   [[nodiscard]] static ConstantValue make_bool(bool value);
   [[nodiscard]] static ConstantValue make_integer(std::int64_t value);
   [[nodiscard]] static ConstantValue make_integer(BigInteger value);

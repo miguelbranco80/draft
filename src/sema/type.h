@@ -97,6 +97,10 @@ struct Type {
   std::uint32_t bit_width = 0;
   TypeId element;
   std::uint64_t element_count = 0;
+  // A dependent array/SIMD count names its owning ValueParameter SymbolId by
+  // stable numeric value. The max sentinel means element_count is concrete.
+  std::uint32_t element_count_parameter =
+      std::numeric_limits<std::uint32_t>::max();
   std::vector<TypeId> members;
   std::vector<std::uint64_t> member_offsets;
   bool c_calling_convention = false;
@@ -143,6 +147,10 @@ public:
   [[nodiscard]] TypeId slice(TypeId element);
   [[nodiscard]] TypeId array(TypeId element, std::uint64_t count);
   [[nodiscard]] TypeId simd(TypeId element, std::uint64_t lanes);
+  [[nodiscard]] TypeId parametric_array(
+      TypeId element, std::uint32_t value_parameter);
+  [[nodiscard]] TypeId parametric_simd(
+      TypeId element, std::uint32_t value_parameter);
   [[nodiscard]] TypeId tuple(const std::vector<TypeId> &members);
   [[nodiscard]] TypeId procedure(
       const std::vector<TypeId> &parameters, TypeId result, bool c_calling_convention);

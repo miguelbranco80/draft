@@ -147,6 +147,14 @@ Concrete_Aligned :: struct {
     value: Aligned_Box[u8],
 }
 
+Buffer[T: type, N: usize] :: struct {
+    data: [N]T,
+}
+
+Concrete_Buffer :: struct {
+    value: Buffer[u16, Member_Count],
+}
+
 take[T: type] :: proc(value: ^T) -> ^T {
     return value
 }
@@ -174,6 +182,8 @@ take[T: type] :: proc(value: ^T) -> ^T {
   const draft::Symbol *concrete_pair = find_symbol(source.semantic, "Concrete_Pair");
   const draft::Symbol *concrete_aligned =
       find_symbol(source.semantic, "Concrete_Aligned");
+  const draft::Symbol *concrete_buffer =
+      find_symbol(source.semantic, "Concrete_Buffer");
   const draft::Symbol *take = find_symbol(source.semantic, "take");
   EXPECT(state, alias != nullptr);
   EXPECT(state, duration != nullptr);
@@ -191,13 +201,15 @@ take[T: type] :: proc(value: ^T) -> ^T {
   EXPECT(state, box != nullptr);
   EXPECT(state, concrete_pair != nullptr);
   EXPECT(state, concrete_aligned != nullptr);
+  EXPECT(state, concrete_buffer != nullptr);
   EXPECT(state, take != nullptr);
   if (alias == nullptr || duration == nullptr || header == nullptr ||
       overlay == nullptr || c_header == nullptr || c_overlay == nullptr ||
       aligned == nullptr || kind == nullptr || c_kind == nullptr || choice == nullptr ||
       signed_kind == nullptr || callback == nullptr || transform == nullptr ||
       box == nullptr || concrete_pair == nullptr ||
-      concrete_aligned == nullptr || take == nullptr) {
+      concrete_aligned == nullptr || concrete_buffer == nullptr ||
+      take == nullptr) {
     return;
   }
 
@@ -291,8 +303,24 @@ take[T: type] :: proc(value: ^T) -> ^T {
     EXPECT(state, aligned_box.requested_alignment == 32);
     EXPECT(state, aligned_box.layout == draft::TypeLayout({true, 32, 32}));
   }
-  EXPECT(state, source.semantic.parametric_type_instances.size() == 2);
-  EXPECT(state, source.semantic.parametric_parameters.size() == 5);
+  const draft::Type &concrete_buffer_type =
+      source.semantic.types.type(concrete_buffer->type);
+  EXPECT(state, concrete_buffer_type.layout == draft::TypeLayout({true, 6, 2}));
+  EXPECT(state, concrete_buffer_type.members.size() == 1);
+  if (!concrete_buffer_type.members.empty()) {
+    const draft::Type &buffer =
+        source.semantic.types.type(concrete_buffer_type.members.front());
+    EXPECT(state, buffer.layout == draft::TypeLayout({true, 6, 2}));
+    EXPECT(state, buffer.members.size() == 1);
+    if (!buffer.members.empty()) {
+      const draft::Type &data = source.semantic.types.type(buffer.members.front());
+      EXPECT(state, data.kind == draft::TypeKind::Array);
+      EXPECT(state, data.element_count == 3);
+      EXPECT(state, source.semantic.types.type(data.element).name == "u16");
+    }
+  }
+  EXPECT(state, source.semantic.parametric_type_instances.size() == 3);
+  EXPECT(state, source.semantic.parametric_parameters.size() == 7);
   EXPECT(state, take->flags.parametric);
 }
 
@@ -336,6 +364,27 @@ Wrong_Constraint :: struct {
   EXPECT(state, rendered.find("requires explicit type arguments") !=
                     std::string::npos);
   EXPECT(state, rendered.find("does not satisfy its parametric constraint") !=
+                    std::string::npos);
+}
+
+void test_value_parameter_diagnostics(TestState &state) {
+  SemanticSource source(R"draft(
+package types
+
+Buffer[T: type, N: u8] :: struct {
+    data: [N]T,
+}
+
+Zero :: struct { value: Buffer[u8, 0], }
+Too_Wide :: struct { value: Buffer[u8, 256], }
+)draft");
+
+  EXPECT(state, source.diagnostics.error_count() == 2);
+  const std::string rendered =
+      draft::render_diagnostics(source.sources, source.diagnostics);
+  EXPECT(state, rendered.find("must instantiate to a nonzero u64") !=
+                    std::string::npos);
+  EXPECT(state, rendered.find("not representable in its parameter type") !=
                     std::string::npos);
 }
 
@@ -416,6 +465,7 @@ int main() {
   test_types_signatures_and_layouts(state);
   test_invalid_lengths_and_unknown_types(state);
   test_parametric_type_diagnostics(state);
+  test_value_parameter_diagnostics(state);
   test_invalid_enum_values(state);
   test_invalid_representation_attributes(state);
   test_cyclic_layout_constant(state);

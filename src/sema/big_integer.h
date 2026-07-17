@@ -29,6 +29,7 @@ namespace draft {
 class BigInteger {
 public:
   BigInteger() = default;
+  bool operator==(const BigInteger &) const = default;
 
   [[nodiscard]] static BigInteger from_i64(std::int64_t value);
   [[nodiscard]] static BigInteger from_u64(std::uint64_t value);
@@ -102,6 +103,7 @@ class ExactRational {
 public:
   ExactRational();
   explicit ExactRational(BigInteger integer);
+  bool operator==(const ExactRational &) const = default;
 
   [[nodiscard]] static std::optional<ExactRational> parse_decimal(
       std::string_view spelling);

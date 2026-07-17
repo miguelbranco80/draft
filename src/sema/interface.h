@@ -54,6 +54,13 @@ struct InterfaceMember {
   BigInteger enum_value;
 };
 
+struct InterfaceNominalArgument {
+  bool is_type = true;
+  InterfaceTypeId type;
+  InterfaceTypeId value_type;
+  ConstantValue value;
+};
+
 // InterfaceType is a package-independent type graph row. element and members
 // refer only to the same interface table. Nominal rows include member symbols;
 // structural rows leave nominal_members empty. name is a builtin spelling or a
@@ -71,6 +78,11 @@ struct InterfaceType {
   std::uint32_t bit_width = 0;
   InterfaceTypeId element;
   std::uint64_t element_count = 0;
+  // Dependent array/SIMD rows store the zero-based parameter ordinal from the
+  // owning declaration. A consumer replaces that ordinal with its own local
+  // ValueParameter SymbolId while rebuilding the template type graph.
+  std::uint32_t element_count_parameter =
+      std::numeric_limits<std::uint32_t>::max();
   std::vector<InterfaceTypeId> members;
   std::vector<std::uint64_t> member_offsets;
   bool c_calling_convention = false;
@@ -78,9 +90,10 @@ struct InterfaceType {
   std::uint32_t requested_alignment = 0;
   std::vector<InterfaceMember> nominal_members;
   // A concrete nominal template application retains the template identity in
-  // the nominal_* fields and its arguments here. This makes `dep.Maybe[i64]`
-  // the same nominal type when it crosses more than one package boundary.
-  std::vector<InterfaceTypeId> nominal_arguments;
+  // the nominal_* fields and its type/value arguments here. This makes both
+  // `dep.Maybe[i64]` and `dep.Buffer[u8, 64]` retain nominal identity when they
+  // cross more than one package boundary.
+  std::vector<InterfaceNominalArgument> nominal_arguments;
 };
 
 // Public parametric declarations carry an ordered, source-independent copy of

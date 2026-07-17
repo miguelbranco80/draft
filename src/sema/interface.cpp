@@ -166,6 +166,44 @@ private:
     return nullptr;
   }
 
+  // TypeStore keeps a dependent count as a package-local SymbolId. Interfaces
+  // cannot expose that number, so translate it to the parameter's declaration
+  // ordinal. Declaration parameter order is stable and already serialized.
+  [[nodiscard]] std::optional<std::uint32_t> parameter_ordinal(
+      std::uint32_t parameter_value) const {
+    std::optional<SymbolId> owner;
+    for (const ParametricParameterRecord &parameter :
+         package_.parametric_parameters) {
+      if (parameter.parameter.value == parameter_value) {
+        owner = parameter.owner;
+        break;
+      }
+    }
+    if (!owner.has_value()) return std::nullopt;
+
+    std::uint32_t ordinal = 0;
+    for (const ParametricParameterRecord &parameter :
+         package_.parametric_parameters) {
+      if (parameter.owner != *owner) continue;
+      if (parameter.parameter.value == parameter_value) return ordinal;
+      ++ordinal;
+    }
+    return std::nullopt;
+  }
+
+  [[nodiscard]] InterfaceNominalArgument translate_argument(
+      const ParametricArgument &argument) {
+    InterfaceNominalArgument translated;
+    translated.is_type = argument.is_type;
+    if (argument.is_type) {
+      translated.type = translate_type(argument.type);
+    } else {
+      translated.value_type = translate_type(argument.value_type);
+      translated.value = argument.value;
+    }
+    return translated;
+  }
+
   // Returns the original declaration identity of a nominal type. Locally
   // declared rows belong to the interface package; reconstructed rows retain
   // the dependency provenance recorded during import.
@@ -221,6 +259,18 @@ private:
     translated.layout = source_type.layout;
     translated.bit_width = source_type.bit_width;
     translated.element_count = source_type.element_count;
+    if (source_type.element_count_parameter !=
+        std::numeric_limits<std::uint32_t>::max()) {
+      const std::optional<std::uint32_t> ordinal =
+          parameter_ordinal(source_type.element_count_parameter);
+      if (ordinal.has_value()) {
+        translated.element_count_parameter = *ordinal;
+      } else {
+        diagnostics_.error(
+            source_type.declaration,
+            "dependent array or SIMD type has no owning value parameter");
+      }
+    }
     translated.member_offsets = source_type.member_offsets;
     translated.c_calling_convention = source_type.c_calling_convention;
     translated.c_representation = source_type.c_representation;
@@ -231,8 +281,8 @@ private:
       if (imported.type != source) {
         continue;
       }
-      for (TypeId argument : imported.arguments) {
-        translated.nominal_arguments.push_back(translate_type(argument));
+      for (const ParametricArgument &argument : imported.arguments) {
+        translated.nominal_arguments.push_back(translate_argument(argument));
       }
       retained_import_arguments = true;
       break;
@@ -256,8 +306,8 @@ private:
             break;
           }
         }
-        for (TypeId argument : instance.arguments) {
-          translated.nominal_arguments.push_back(translate_type(argument));
+        for (const ParametricArgument &argument : instance.arguments) {
+          translated.nominal_arguments.push_back(translate_argument(argument));
         }
         break;
       }
@@ -317,7 +367,7 @@ struct ImportedNominalCache {
   std::string root_identity;
   std::string root_relative_path;
   std::string public_name;
-  std::vector<TypeId> arguments;
+  std::vector<ParametricArgument> arguments;
   TypeId type;
 };
 
@@ -345,13 +395,25 @@ public:
       proxy.visibility = Visibility::Public;
       proxy.flags = declaration.flags;
       proxy.scope = imported_scope;
-      proxy.type = import_type(package, cache, declaration.type);
       proxy.syntax = binding.syntax;
       proxy.name_range = import_symbol.name_range;
       const SymbolId proxy_id = consumer_.symbols.declare(std::move(proxy), diagnostics_);
       if (!proxy_id.is_valid()) {
         continue;
       }
+
+      // Parameter symbols must exist before the declaration type is rebuilt:
+      // a dependent `[N]T` interface row stores N's ordinal, and reconstruction
+      // replaces it with this consumer's local ValueParameter SymbolId.
+      const std::vector<SymbolId> parameters = bind_parametric_parameters(
+          proxy_id, imported_scope, package, cache, declaration);
+      const std::vector<SymbolId> previous_parameters =
+          std::move(active_parameters_);
+      active_parameters_ = parameters;
+      consumer_.symbols.symbol_mut(proxy_id).type =
+          import_type(package, cache, declaration.type);
+      active_parameters_ = previous_parameters;
+
       consumer_.imported_symbols.push_back({
           binding.symbol,
           proxy_id,
@@ -374,8 +436,6 @@ public:
             effect.detail,
         });
       }
-      bind_parametric_parameters(
-          proxy_id, imported_scope, package, cache, declaration);
       if (declaration.kind == SymbolKind::Type) {
         bind_nominal_members(
             proxy_id, imported_scope, package, cache, declaration.type);
@@ -408,7 +468,7 @@ private:
 
   [[nodiscard]] std::optional<TypeId> find_nominal(
       const InterfaceType &source,
-      const std::vector<TypeId> &arguments) const {
+      const std::vector<ParametricArgument> &arguments) const {
     for (const ImportedNominalCache &nominal : nominals_) {
       if (nominal.kind == source.kind &&
           nominal.root_identity == source.nominal_root_identity &&
@@ -424,7 +484,7 @@ private:
   void remember_nominal(
       const InterfaceType &source,
       TypeId type,
-      std::vector<TypeId> arguments) {
+      std::vector<ParametricArgument> arguments) {
     nominals_.push_back({
         source.kind,
         source.nominal_root_identity,
@@ -472,14 +532,21 @@ private:
     }
     const InterfaceType source = package.types[source_id.value];
 
-    // Translate application arguments before nominal lookup. Structural types
-    // are canonical in TypeStore, so the resulting TypeId vector is a stable
-    // equality key inside this consumer even when two dependencies re-export
-    // the same specialization.
-    std::vector<TypeId> nominal_arguments;
+    // Translate application arguments before nominal lookup. Concrete TypeIds
+    // and exact values form a stable equality key inside this consumer even
+    // when two dependencies re-export the same specialization.
+    std::vector<ParametricArgument> nominal_arguments;
     nominal_arguments.reserve(source.nominal_arguments.size());
-    for (InterfaceTypeId argument : source.nominal_arguments) {
-      nominal_arguments.push_back(import_type(package, cache, argument));
+    for (const InterfaceNominalArgument &argument : source.nominal_arguments) {
+      ParametricArgument translated;
+      translated.is_type = argument.is_type;
+      if (argument.is_type) {
+        translated.type = import_type(package, cache, argument.type);
+      } else {
+        translated.value_type = import_type(package, cache, argument.value_type);
+        translated.value = argument.value;
+      }
+      nominal_arguments.push_back(std::move(translated));
     }
 
     const bool nominal = source.kind == TypeKind::Struct ||
@@ -511,12 +578,40 @@ private:
       result = consumer_.types.slice(import_type(package, cache, source.element));
       break;
     case TypeKind::Array:
-      result = consumer_.types.array(
-          import_type(package, cache, source.element), source.element_count);
+      if (source.element_count_parameter !=
+          std::numeric_limits<std::uint32_t>::max()) {
+        if (source.element_count_parameter >= active_parameters_.size()) {
+          diagnostics_.error(
+              SourceRange::invalid(),
+              "package interface contains an invalid value-parameter ordinal");
+          result = consumer_.types.builtins().invalid;
+          break;
+        }
+        result = consumer_.types.parametric_array(
+            import_type(package, cache, source.element),
+            active_parameters_[source.element_count_parameter].value);
+      } else {
+        result = consumer_.types.array(
+            import_type(package, cache, source.element), source.element_count);
+      }
       break;
     case TypeKind::Simd:
-      result = consumer_.types.simd(
-          import_type(package, cache, source.element), source.element_count);
+      if (source.element_count_parameter !=
+          std::numeric_limits<std::uint32_t>::max()) {
+        if (source.element_count_parameter >= active_parameters_.size()) {
+          diagnostics_.error(
+              SourceRange::invalid(),
+              "package interface contains an invalid value-parameter ordinal");
+          result = consumer_.types.builtins().invalid;
+          break;
+        }
+        result = consumer_.types.parametric_simd(
+            import_type(package, cache, source.element),
+            active_parameters_[source.element_count_parameter].value);
+      } else {
+        result = consumer_.types.simd(
+            import_type(package, cache, source.element), source.element_count);
+      }
       break;
     case TypeKind::Tuple: {
       std::vector<TypeId> members;
@@ -594,14 +689,16 @@ private:
   // symbols are ordinary consumer-local symbols whose TypeIds were translated
   // from the same interface graph as the template signature and members. This
   // shared translation is essential: substitution compares TypeIds directly.
-  void bind_parametric_parameters(
+  [[nodiscard]] std::vector<SymbolId> bind_parametric_parameters(
       SymbolId owner,
       ScopeId imported_scope,
       const PackageInterface &package,
       InterfaceImportCache &cache,
       const InterfaceDeclaration &declaration) {
+    std::vector<SymbolId> result;
+    result.reserve(declaration.parameters.size());
     if (declaration.parameters.empty()) {
-      return;
+      return result;
     }
     const ScopeId scope = consumer_.symbols.add_scope(
         ScopeKind::Parametric, imported_scope, SourceRange::invalid());
@@ -617,10 +714,12 @@ private:
       const SymbolId parameter_id =
           consumer_.symbols.declare(std::move(symbol), diagnostics_);
       if (parameter_id.is_valid()) {
+        result.push_back(parameter_id);
         consumer_.parametric_parameters.push_back(
             {owner, parameter_id, parameter.constraint});
       }
     }
+    return result;
   }
 
   // Creates the member scope used by ordinary body/member lookup. The interface
@@ -665,6 +764,9 @@ private:
   DiagnosticSink &diagnostics_;
   std::vector<InterfaceImportCache> caches_;
   std::vector<ImportedNominalCache> nominals_;
+  // Temporarily names the consumer-local parameters of the declaration whose
+  // type graph is being rebuilt. Only dependent array/SIMD rows consult it.
+  std::vector<SymbolId> active_parameters_;
 };
 
 } // namespace

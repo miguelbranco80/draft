@@ -52,6 +52,11 @@ struct ResolverTypeSubstitution {
   TypeId replacement;
 };
 
+struct ResolverValueSubstitution {
+  std::uint32_t parameter = std::numeric_limits<std::uint32_t>::max();
+  BigInteger replacement;
+};
+
 // Parsed representation attributes are kept small and explicit. Zero means no
 // requested alignment; C representation is independent so `@repr(C)` and
 // `@align(N)` compose without an attribute object hierarchy.
@@ -446,6 +451,22 @@ private:
     return value.has_value() ? value->to_u64() : std::nullopt;
   }
 
+  [[nodiscard]] std::optional<SymbolId> value_parameter_name(
+      const SyntaxTree &tree, NodeId expression_id, ScopeId scope) const {
+    const SyntaxNode &expression = tree.node(expression_id);
+    if (expression.kind != NodeKind::NameExpression) return std::nullopt;
+    const std::vector<SourceName> names = names_in_span(
+        tree, expression.token_begin, expression.token_end);
+    if (names.size() != 1) return std::nullopt;
+    const std::optional<SymbolId> found =
+        semantic_.symbols.lookup(scope, names.front().text);
+    if (!found.has_value() ||
+        semantic_.symbols.symbol(*found).kind != SymbolKind::ValueParameter) {
+      return std::nullopt;
+    }
+    return found;
+  }
+
   [[nodiscard]] std::vector<ParametricParameterRecord> parameters_for(
       SymbolId owner) const {
     std::vector<ParametricParameterRecord> result;
@@ -479,7 +500,9 @@ private:
 
   [[nodiscard]] TypeId substitute_type(
       TypeId source,
-      const std::vector<ResolverTypeSubstitution> &substitutions) {
+      const std::vector<ResolverTypeSubstitution> &substitutions,
+      const std::vector<ResolverValueSubstitution> &value_substitutions,
+      SourceRange use_range) {
     for (const ResolverTypeSubstitution &substitution : substitutions) {
       if (substitution.parameter == source) return substitution.replacement;
     }
@@ -487,23 +510,48 @@ private:
     const Type value = semantic_.types.type(source);
     switch (value.kind) {
     case TypeKind::Pointer:
-      return semantic_.types.pointer(substitute_type(value.element, substitutions));
+      return semantic_.types.pointer(substitute_type(
+          value.element, substitutions, value_substitutions, use_range));
     case TypeKind::MultiPointer:
-      return semantic_.types.multi_pointer(
-          substitute_type(value.element, substitutions));
+      return semantic_.types.multi_pointer(substitute_type(
+          value.element, substitutions, value_substitutions, use_range));
     case TypeKind::Slice:
-      return semantic_.types.slice(substitute_type(value.element, substitutions));
+      return semantic_.types.slice(substitute_type(
+          value.element, substitutions, value_substitutions, use_range));
     case TypeKind::Array:
-      return semantic_.types.array(
-          substitute_type(value.element, substitutions), value.element_count);
-    case TypeKind::Simd:
-      return semantic_.types.simd(
-          substitute_type(value.element, substitutions), value.element_count);
+    case TypeKind::Simd: {
+      std::uint64_t count = value.element_count;
+      if (value.element_count_parameter !=
+          std::numeric_limits<std::uint32_t>::max()) {
+        bool found = false;
+        for (const ResolverValueSubstitution &substitution : value_substitutions) {
+          if (substitution.parameter != value.element_count_parameter) continue;
+          const std::optional<std::uint64_t> concrete =
+              substitution.replacement.to_u64();
+          if (!concrete.has_value() || *concrete == 0) {
+            diagnostics_.error(
+                use_range,
+                "array and SIMD value parameters must instantiate to a nonzero u64");
+            return semantic_.types.builtins().invalid;
+          }
+          count = *concrete;
+          found = true;
+          break;
+        }
+        if (!found) return source;
+      }
+      const TypeId element = substitute_type(
+          value.element, substitutions, value_substitutions, use_range);
+      return value.kind == TypeKind::Array
+          ? semantic_.types.array(element, count)
+          : semantic_.types.simd(element, count);
+    }
     case TypeKind::Tuple: {
       std::vector<TypeId> members;
       members.reserve(value.members.size());
       for (TypeId member : value.members) {
-        members.push_back(substitute_type(member, substitutions));
+        members.push_back(substitute_type(
+            member, substitutions, value_substitutions, use_range));
       }
       return semantic_.types.tuple(members);
     }
@@ -512,12 +560,20 @@ private:
       if (!value.members.empty()) {
         parameters.reserve(value.members.size() - 1);
         for (std::size_t index = 0; index + 1 < value.members.size(); ++index) {
-          parameters.push_back(substitute_type(value.members[index], substitutions));
+          parameters.push_back(substitute_type(
+              value.members[index],
+              substitutions,
+              value_substitutions,
+              use_range));
         }
       }
       const TypeId result = value.members.empty()
           ? semantic_.types.builtins().void_type
-          : substitute_type(value.members.back(), substitutions);
+          : substitute_type(
+                value.members.back(),
+                substitutions,
+                value_substitutions,
+                use_range);
       return semantic_.types.procedure(
           parameters, result, value.c_calling_convention);
     }
@@ -584,7 +640,7 @@ private:
 
   [[nodiscard]] TypeId instantiate_parametric_type(
       SymbolId source,
-      std::vector<TypeId> arguments,
+      std::vector<ParametricArgument> arguments,
       SourceRange use_range) {
     const Symbol template_symbol = semantic_.symbols.symbol(source);
     const std::vector<ParametricParameterRecord> parameters =
@@ -596,16 +652,36 @@ private:
     }
 
     std::vector<ResolverTypeSubstitution> substitutions;
+    std::vector<ResolverValueSubstitution> value_substitutions;
     substitutions.reserve(parameters.size());
+    value_substitutions.reserve(parameters.size());
     for (std::size_t index = 0; index < parameters.size(); ++index) {
       const ParametricParameterRecord &parameter = parameters[index];
       if (parameter.constraint == TypeConstraintKind::CompileTimeValue) {
-        diagnostics_.error(
-            use_range,
-            "compile-time value type parameters are not yet instantiated");
-        return semantic_.types.builtins().invalid;
+        if (arguments[index].is_type ||
+            arguments[index].value.kind != ConstantKind::Integer) {
+          diagnostics_.error(
+              use_range, "value parameter requires a compile-time integer argument");
+          return semantic_.types.builtins().invalid;
+        }
+        const TypeId required_type =
+            semantic_.symbols.symbol(parameter.parameter).type;
+        if (!semantic_.types.is_integer(required_type) ||
+            !integer_fits_type(arguments[index].value.integer, required_type)) {
+          diagnostics_.error(
+              use_range,
+              "compile-time value argument is not representable in its parameter type");
+          return semantic_.types.builtins().invalid;
+        }
+        arguments[index].value_type = required_type;
+        value_substitutions.push_back({
+            parameter.parameter.value,
+            arguments[index].value.integer,
+        });
+        continue;
       }
-      if (!type_satisfies_constraint(arguments[index], parameter.constraint)) {
+      if (!arguments[index].is_type ||
+          !type_satisfies_constraint(arguments[index].type, parameter.constraint)) {
         diagnostics_.error(
             use_range,
             "type argument does not satisfy its parametric constraint");
@@ -613,7 +689,7 @@ private:
       }
       substitutions.push_back({
           semantic_.symbols.symbol(parameter.parameter).type,
-          arguments[index],
+          arguments[index].type,
       });
     }
 
@@ -631,12 +707,15 @@ private:
         template_type.kind != TypeKind::RawUnion) {
       // Parametric aliases are purely structural and therefore need no member
       // scope or nominal instance identity.
-      return substitute_type(template_symbol.type, substitutions);
+      return substitute_type(
+          template_symbol.type, substitutions, value_substitutions, use_range);
     }
 
     std::string instance_name = template_symbol.name + "$instance";
-    for (TypeId argument : arguments) {
-      instance_name += "$" + std::to_string(argument.value);
+    for (const ParametricArgument &argument : arguments) {
+      instance_name += argument.is_type
+          ? "$t" + std::to_string(argument.type.value)
+          : "$v" + argument.value.integer.to_decimal();
     }
     Symbol instance_symbol = template_symbol;
     instance_symbol.name = instance_name;
@@ -665,7 +744,11 @@ private:
       Symbol concrete_member = semantic_.symbols.symbol(member.member);
       const SymbolId template_member = member.member;
       concrete_member.scope = member_scope;
-      concrete_member.type = substitute_type(concrete_member.type, substitutions);
+      concrete_member.type = substitute_type(
+          concrete_member.type,
+          substitutions,
+          value_substitutions,
+          use_range);
       const SymbolId member_id =
           semantic_.symbols.declare(std::move(concrete_member), diagnostics_);
       if (!member_id.is_valid()) continue;
@@ -689,7 +772,8 @@ private:
     }
 
     TypeLayout layout;
-    TypeId element = substitute_type(template_type.element, substitutions);
+    TypeId element = substitute_type(
+        template_type.element, substitutions, value_substitutions, use_range);
     semantic_.types.type_mut(concrete).element = element;
     if (template_type.kind == TypeKind::Struct) {
       layout = struct_layout(data);
@@ -731,10 +815,38 @@ private:
       diagnostics_.error(range, "type is not parametric");
       return semantic_.types.builtins().invalid;
     }
-    std::vector<TypeId> arguments;
+    const std::vector<ParametricParameterRecord> parameters =
+        parameters_for(*found);
+    if (parameters.size() != argument_nodes.size()) {
+      diagnostics_.error(
+          range, "parametric type application has the wrong number of arguments");
+      return semantic_.types.builtins().invalid;
+    }
+    std::vector<ParametricArgument> arguments;
     arguments.reserve(argument_nodes.size());
-    for (NodeId argument : argument_nodes) {
-      arguments.push_back(resolve_type_argument(tree, argument, scope));
+    for (std::size_t index = 0; index < argument_nodes.size(); ++index) {
+      const NodeId argument_node = argument_nodes[index];
+      const ParametricParameterRecord &parameter = parameters[index];
+      if (parameter.constraint != TypeConstraintKind::CompileTimeValue) {
+        ParametricArgument argument;
+        argument.type = resolve_type_argument(tree, argument_node, scope);
+        arguments.push_back(std::move(argument));
+        continue;
+      }
+      const std::optional<BigInteger> value = integer_constant_expression(
+          tree, argument_node, scope);
+      if (!value.has_value()) {
+        diagnostics_.error(
+            tree.node(argument_node).range,
+            "value parameter argument must be a compile-time integer expression");
+        return semantic_.types.builtins().invalid;
+      }
+      ParametricArgument argument;
+      argument.is_type = false;
+      argument.value_type =
+          semantic_.symbols.symbol(parameter.parameter).type;
+      argument.value = ConstantValue::make_integer(*value);
+      arguments.push_back(std::move(argument));
     }
     return instantiate_parametric_type(*found, std::move(arguments), range);
   }
@@ -920,6 +1032,15 @@ private:
       }
       const std::optional<std::uint64_t> count =
           layout_integer(tree, node.children.front(), scope);
+      if (!count.has_value()) {
+        const std::optional<SymbolId> parameter = value_parameter_name(
+            tree, node.children.front(), scope);
+        if (parameter.has_value()) {
+          return semantic_.types.parametric_array(
+              resolve_type(tree, node.children.back(), scope),
+              parameter->value);
+        }
+      }
       if (!count.has_value() || *count == 0) {
         diagnostics_.error(
             tree.node(node.children.front()).range,
@@ -936,6 +1057,15 @@ private:
       }
       const std::optional<std::uint64_t> lanes =
           layout_integer(tree, node.children.front(), scope);
+      if (!lanes.has_value()) {
+        const std::optional<SymbolId> parameter = value_parameter_name(
+            tree, node.children.front(), scope);
+        if (parameter.has_value()) {
+          return semantic_.types.parametric_simd(
+              resolve_type(tree, node.children.back(), scope),
+              parameter->value);
+        }
+      }
       if (!lanes.has_value() || *lanes == 0) {
         diagnostics_.error(
             tree.node(node.children.front()).range,
