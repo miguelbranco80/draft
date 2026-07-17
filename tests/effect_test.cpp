@@ -84,6 +84,7 @@ invoke :: proc(callback: proc()) {
       semantics.selections,
       semantics.package,
       semantics.constants,
+      target.facts,
       diagnostics);
   const draft::EffectSummaryResult effects =
       draft::summarize_package_effects(semantics.package, bodies.program);

@@ -79,6 +79,7 @@ CompileWorkspaceResult compile_workspace(
         package.semantics.selections,
         package.semantics.package,
         package.semantics.constants,
+        options.target.facts,
         diagnostics);
     if (!package.bodies.ok) continue;
     package.metadata = collect_agent_metadata(

@@ -35,6 +35,7 @@ struct BodyCheckResult {
     const ConditionalSelections &selections,
     SemanticPackage &package,
     const ConstantTable &constants,
+    const TargetFacts &target,
     DiagnosticSink &diagnostics);
 
 } // namespace draft

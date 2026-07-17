@@ -146,6 +146,7 @@ main :: proc() {
       consumer_semantics.selections,
       consumer_semantics.package,
       consumer_semantics.constants,
+      target.facts,
       diagnostics);
   const draft::PackageIdentity consumer_identity{"workspace", "app"};
   draft::PackageInterface consumer_interface = draft::build_package_interface(

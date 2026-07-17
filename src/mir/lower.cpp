@@ -851,6 +851,11 @@ private:
         emit_void(std::move(instruction));
         return {};
       }
+      if (expression.constant.text == "static_assert") {
+        // The body checker has already evaluated and diagnosed this compile-time
+        // invariant. It has no runtime value, effect, or control-flow edge.
+        return {};
+      }
       if (expression.constant.text == "cast") {
         MirInstruction instruction;
         instruction.kind = MirInstructionKind::Convert;

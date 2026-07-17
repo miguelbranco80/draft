@@ -160,6 +160,20 @@ public:
     return result;
   }
 
+  [[nodiscard]] std::optional<ConstantValue> evaluate_required_expression(
+      const SyntaxTree &tree, NodeId expression, ScopeId scope) {
+    const EvalResult result =
+        evaluate_expression(tree, expression, scope, true);
+    if (result.status == EvalStatus::Pending) {
+      diagnostics_.error(
+          tree.node(expression).range,
+          "expression is not compile-time evaluable");
+      return std::nullopt;
+    }
+    if (result.status != EvalStatus::Ready) return std::nullopt;
+    return result.value;
+  }
+
 private:
   // Locates the immutable tree named by a syntax reference. Package file order
   // is already canonical, so the direct scan is predictable and sufficient.
@@ -551,6 +565,69 @@ private:
     return ready(ConstantValue::make_bool(enabled));
   }
 
+  [[nodiscard]] std::optional<TypeId> type_value(
+      const SyntaxTree &tree, NodeId expression_id, ScopeId scope) {
+    const SyntaxNode &expression = tree.node(expression_id);
+    if (const std::optional<SymbolId> imported =
+            imported_member(tree, expression, scope)) {
+      const Symbol &symbol = semantic_.symbols.symbol(*imported);
+      if (symbol.kind == SymbolKind::Type ||
+          symbol.kind == SymbolKind::TypeParameter) {
+        return symbol.type;
+      }
+      return std::nullopt;
+    }
+    if (expression.kind != NodeKind::NameExpression) return std::nullopt;
+    const std::optional<std::string> name = final_name(tree, expression);
+    if (!name.has_value()) return std::nullopt;
+    if (const std::optional<TypeId> builtin =
+            semantic_.types.find_builtin(*name)) {
+      return *builtin;
+    }
+    const std::optional<SymbolId> found =
+        semantic_.symbols.lookup(scope, *name);
+    if (!found.has_value()) return std::nullopt;
+    const Symbol &symbol = semantic_.symbols.symbol(*found);
+    if (symbol.kind != SymbolKind::Type &&
+        symbol.kind != SymbolKind::TypeParameter) {
+      return std::nullopt;
+    }
+    return symbol.type;
+  }
+
+  [[nodiscard]] EvalResult evaluate_layout_call(
+      const SyntaxTree &tree,
+      const SyntaxNode &call,
+      ScopeId scope,
+      bool required) {
+    if (call.children.size() != 2) return pending();
+    const SyntaxNode &callee = tree.node(call.children.front());
+    if (callee.kind != NodeKind::NameExpression) return pending();
+    const std::optional<std::string> name = final_name(tree, callee);
+    if (!name.has_value() || (*name != "size_of" && *name != "align_of")) {
+      return pending();
+    }
+    const std::optional<TypeId> queried =
+        type_value(tree, call.children[1], scope);
+    if (!queried.has_value()) {
+      return fail(
+          tree.node(call.children[1]).range,
+          *name + " requires one type argument",
+          required);
+    }
+    const TypeLayout layout = semantic_.types.type(*queried).layout;
+    if (!layout.known) {
+      return fail(
+          tree.node(call.children[1]).range,
+          *name + " requires a type with complete layout",
+          required);
+    }
+    const std::uint64_t value = *name == "size_of"
+        ? layout.size
+        : layout.alignment;
+    return ready(ConstantValue::make_integer(BigInteger::from_u64(value)));
+  }
+
   // Resolves one package constant lazily. The Evaluating state detects cycles;
   // successfully computed scalar types are written back to the symbol for later
   // expected-type checking.
@@ -752,8 +829,12 @@ private:
           required);
     }
 
-    case NodeKind::CallExpression:
+    case NodeKind::CallExpression: {
+      const EvalResult layout =
+          evaluate_layout_call(tree, node, scope, required);
+      if (layout.status != EvalStatus::Pending) return layout;
       return evaluate_target_call(tree, node, scope, required);
+    }
 
     case NodeKind::DenyExpression:
       if (!node.children.empty()) {
@@ -843,6 +924,20 @@ CompileTimeRoundResult evaluate_compile_time_round(
   ConstantEvaluator evaluator(
       sources, loaded, package, target, diagnose_unready, diagnostics);
   return evaluator.run(selections);
+}
+
+std::optional<ConstantValue> evaluate_constant_expression(
+    const SourceManager &sources,
+    const LoadedPackage &loaded,
+    SemanticPackage &package,
+    const TargetFacts &target,
+    const SyntaxTree &tree,
+    NodeId expression,
+    ScopeId scope,
+    DiagnosticSink &diagnostics) {
+  ConstantEvaluator evaluator(
+      sources, loaded, package, target, true, diagnostics);
+  return evaluator.evaluate_required_expression(tree, expression, scope);
 }
 
 } // namespace draft

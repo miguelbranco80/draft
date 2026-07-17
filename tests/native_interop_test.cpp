@@ -56,6 +56,7 @@ struct CheckedSource {
         semantics.selections,
         semantics.package,
         semantics.constants,
+        target.facts,
         diagnostics);
   }
 };

@@ -95,6 +95,7 @@ void test_agent_records(TestState &state) {
       semantics.selections,
       semantics.package,
       semantics.constants,
+      target.facts,
       diagnostics);
   const draft::AttachmentPolicy policy;
   const draft::AgentMetadataResult metadata = draft::collect_agent_metadata(

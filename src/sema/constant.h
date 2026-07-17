@@ -87,4 +87,17 @@ struct CompileTimeRoundResult {
     bool diagnose_unready,
     DiagnosticSink &diagnostics);
 
+// Evaluates one required scalar expression in the already resolved semantic
+// graph. Body-level compile-time intrinsics use the same evaluator as package
+// constants and `when`, avoiding a second arithmetic or target-fact model.
+[[nodiscard]] std::optional<ConstantValue> evaluate_constant_expression(
+    const SourceManager &sources,
+    const LoadedPackage &loaded,
+    SemanticPackage &package,
+    const TargetFacts &target,
+    const SyntaxTree &tree,
+    NodeId expression,
+    ScopeId scope,
+    DiagnosticSink &diagnostics);
+
 } // namespace draft

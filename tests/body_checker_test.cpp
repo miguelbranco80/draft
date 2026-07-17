@@ -54,6 +54,7 @@ struct CheckedSource {
         semantics.selections,
         semantics.package,
         semantics.constants,
+        target.facts,
         diagnostics);
   }
 };
@@ -355,6 +356,41 @@ compound_reads_first :: proc() -> int {
                     std::string::npos);
 }
 
+void test_layout_intrinsics_and_static_assert(TestState &state) {
+  CheckedSource safe(R"draft(
+package bodies
+
+Header :: struct {
+    tag: u8,
+    value: u64,
+}
+
+main :: proc() -> usize {
+    static_assert(size_of(Header) == 16)
+    static_assert(align_of(Header) == 8, "Header alignment changed")
+    return size_of(Header) + align_of(Header)
+}
+)draft");
+  if (safe.diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(safe.sources, safe.diagnostics);
+  }
+  EXPECT(state, safe.bodies.ok);
+  EXPECT(state, !safe.diagnostics.has_errors());
+
+  CheckedSource failing(R"draft(
+package bodies
+
+main :: proc() {
+    static_assert(size_of(u64) == 4, "u64 layout mismatch")
+}
+)draft");
+  EXPECT(state, !failing.bodies.ok);
+  const std::string rendered =
+      draft::render_diagnostics(failing.sources, failing.diagnostics);
+  EXPECT(state, rendered.find("static assertion failed: u64 layout mismatch") !=
+                    std::string::npos);
+}
+
 } // namespace
 
 int main() {
@@ -363,6 +399,7 @@ int main() {
   test_body_diagnostics(state);
   test_parametric_procedure_instances(state);
   test_definite_initialization(state);
+  test_layout_intrinsics_and_static_assert(state);
 
   if (state.failures != 0) {
     std::cerr << state.failures << " body checker expectation(s) failed\n";

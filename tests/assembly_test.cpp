@@ -58,6 +58,7 @@ struct CheckedAssembly {
         semantics.selections,
         semantics.package,
         semantics.constants,
+        target.facts,
         diagnostics);
     if (bodies.ok) {
       assembly = draft::analyze_aarch64_assembly(

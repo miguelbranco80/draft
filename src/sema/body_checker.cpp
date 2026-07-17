@@ -87,9 +87,11 @@ public:
       const ConditionalSelections &selections,
       SemanticPackage &semantic,
       const ConstantTable &constants,
+      const TargetFacts &target,
       DiagnosticSink &diagnostics)
       : sources_(sources), loaded_(loaded), selections_(selections),
-        semantic_(semantic), constants_(constants), diagnostics_(diagnostics) {}
+        semantic_(semantic), constants_(constants), target_(target),
+        diagnostics_(diagnostics) {}
 
   [[nodiscard]] BodyCheckResult run() {
     BodyCheckResult result;
@@ -782,7 +784,9 @@ private:
     TypeId cast_target;
     if (const std::optional<SourceName> name =
             single_name_expression(tree, callee_id)) {
-      if (name->text == "len" || name->text == "assert") {
+      if (name->text == "len" || name->text == "assert" ||
+          name->text == "size_of" || name->text == "align_of" ||
+          name->text == "static_assert") {
         intrinsic = name->text;
       }
     } else if (callee.kind == NodeKind::BracketExpression &&
@@ -801,7 +805,79 @@ private:
     expression.range = call.range;
     expression.constant = ConstantValue::make_string(*intrinsic);
     const std::size_t argument_count = call.children.size() - 1;
-    if (*intrinsic == "len") {
+    if (*intrinsic == "size_of" || *intrinsic == "align_of") {
+      if (argument_count != 1) {
+        diagnostics_.error(
+            call.range, *intrinsic + " requires exactly one type argument");
+        expression.type = semantic_.types.builtins().invalid;
+      } else {
+        TypeId queried = type_value_expression(tree, call.children[1], scope);
+        if (is_invalid_type(queried) ||
+            !semantic_.types.type(queried).layout.known) {
+          diagnostics_.error(
+              tree.node(call.children[1]).range,
+              *intrinsic + " requires a type with complete layout");
+          expression.type = semantic_.types.builtins().invalid;
+        } else {
+          const TypeLayout layout = semantic_.types.type(queried).layout;
+          expression.kind = HirExpressionKind::Constant;
+          expression.constant = ConstantValue::make_integer(
+              BigInteger::from_u64(
+                  *intrinsic == "size_of" ? layout.size : layout.alignment));
+          expression.type = apply_expected_type(
+              semantic_.types.builtins().usize_type, expected, call.range);
+        }
+      }
+    } else if (*intrinsic == "static_assert") {
+      if (argument_count < 1 || argument_count > 2) {
+        diagnostics_.error(
+            call.range, "static_assert requires a bool and optional string");
+      }
+      std::optional<ConstantValue> condition;
+      if (argument_count >= 1) {
+        condition = evaluate_constant_expression(
+            sources_,
+            loaded_,
+            semantic_,
+            target_,
+            tree,
+            call.children[1],
+            scope,
+            diagnostics_);
+      }
+      std::string message;
+      if (argument_count >= 2) {
+        const std::optional<ConstantValue> evaluated_message =
+            evaluate_constant_expression(
+                sources_,
+                loaded_,
+                semantic_,
+                target_,
+                tree,
+                call.children[2],
+                scope,
+                diagnostics_);
+        if (evaluated_message.has_value() &&
+            evaluated_message->kind == ConstantKind::String) {
+          message = evaluated_message->text;
+        } else if (evaluated_message.has_value()) {
+          diagnostics_.error(
+              tree.node(call.children[2]).range,
+              "static_assert message must be a compile-time string");
+        }
+      }
+      if (condition.has_value() && condition->kind != ConstantKind::Bool) {
+        diagnostics_.error(
+            tree.node(call.children[1]).range,
+            "static_assert condition must be a compile-time bool");
+      } else if (condition.has_value() && !condition->boolean) {
+        diagnostics_.error(
+            call.range,
+            "static assertion failed" +
+                (message.empty() ? std::string() : ": " + message));
+      }
+      expression.type = semantic_.types.builtins().void_type;
+    } else if (*intrinsic == "len") {
       if (argument_count != 1) {
         diagnostics_.error(call.range, "len requires exactly one argument");
         expression.type = semantic_.types.builtins().invalid;
@@ -2271,6 +2347,7 @@ private:
   const ConditionalSelections &selections_;
   SemanticPackage &semantic_;
   const ConstantTable &constants_;
+  const TargetFacts &target_;
   DiagnosticSink &diagnostics_;
   HirProgram hir_;
   SymbolId current_procedure_;
@@ -2286,9 +2363,10 @@ BodyCheckResult check_package_bodies(
     const ConditionalSelections &selections,
     SemanticPackage &package,
     const ConstantTable &constants,
+    const TargetFacts &target,
     DiagnosticSink &diagnostics) {
   BodyChecker checker(
-      sources, loaded, selections, package, constants, diagnostics);
+      sources, loaded, selections, package, constants, target, diagnostics);
   BodyCheckResult result = checker.run();
   if (result.ok &&
       !check_definite_initialization(package, result.program, diagnostics)) {

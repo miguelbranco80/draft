@@ -57,6 +57,7 @@ struct DenialSource {
         semantics.selections,
         semantics.package,
         semantics.constants,
+        target.facts,
         diagnostics);
     effects = draft::summarize_package_effects(semantics.package, bodies.program);
     denials_ok = draft::check_package_denials(

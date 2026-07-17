@@ -56,6 +56,7 @@ struct LoweredSource {
         semantics.selections,
         semantics.package,
         semantics.constants,
+        target.facts,
         diagnostics);
     mir = draft::lower_package_to_mir(
         semantics.package, bodies.program, diagnostics);

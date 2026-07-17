@@ -93,6 +93,7 @@ main :: proc() -> i32 {
       semantics.selections,
       semantics.package,
       semantics.constants,
+      target.facts,
       diagnostics);
   draft::MirLoweringResult mir = draft::lower_package_to_mir(
       semantics.package, bodies.program, diagnostics);
