@@ -64,6 +64,15 @@ enum class TypeKind {
   TypeParameter,
 };
 
+// Endian scalar rows retain their byte order as semantic data. Keeping this
+// fact out of the spelling avoids making the backend decode names such as
+// `u32be`, and gives later target profiles one direct place to consult it.
+enum class ScalarByteOrder {
+  Native,
+  Little,
+  Big,
+};
+
 // TypeLayout uses natural Draft layout before call-boundary ABI decomposition.
 // alignment is a positive power of two when known. A zero size remains valid for
 // a payload-free union alternative, but complete runtime types in Draft 1 are
@@ -78,7 +87,8 @@ struct TypeLayout {
 
 // Type is one canonical table row. Fields have meaning according to kind:
 //
-// - scalar kinds use bit_width and layout;
+// - scalar kinds use bit_width and layout; EndianScalar additionally uses
+//   element for its native counterpart and scalar_byte_order for storage order;
 // - Pointer, MultiPointer, Slice, Array, Simd, and Distinct use element;
 // - Array and Simd use element_count;
 // - Tuple and Procedure use members (procedure parameters followed by result);
@@ -96,6 +106,7 @@ struct Type {
   TypeLayout layout;
   std::uint32_t bit_width = 0;
   TypeId element;
+  ScalarByteOrder scalar_byte_order = ScalarByteOrder::Native;
   std::uint64_t element_count = 0;
   // A dependent array/SIMD count names its owning ValueParameter SymbolId by
   // stable numeric value. The max sentinel means element_count is concrete.

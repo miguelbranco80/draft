@@ -520,6 +520,18 @@ private:
     return type;
   }
 
+  [[nodiscard]] bool numeric_value_type(TypeId type_id) const {
+    const Type type = runtime_scalar_type(type_id);
+    return type.kind == TypeKind::SignedInteger ||
+        type.kind == TypeKind::UnsignedInteger ||
+        type.kind == TypeKind::Float || type.kind == TypeKind::Rune;
+  }
+
+  [[nodiscard]] bool data_pointer_kind(TypeKind kind) const {
+    return kind == TypeKind::Pointer || kind == TypeKind::MultiPointer ||
+        kind == TypeKind::RawPointer || kind == TypeKind::CString;
+  }
+
   [[nodiscard]] std::uint32_t integer_width(TypeId type_id) const {
     const Type type = runtime_scalar_type(type_id);
     if (type.kind == TypeKind::Enum) {
@@ -585,6 +597,14 @@ private:
   [[nodiscard]] std::optional<ConstantValue> convert_numeric_constant(
       const ConstantValue &value, TypeId target, SourceRange range) {
     const Type target_type = runtime_scalar_type(target);
+    if (target_type.kind == TypeKind::Bool &&
+        value.kind == ConstantKind::Integer) {
+      return ConstantValue::make_bool(!value.integer.is_zero());
+    }
+    if (target_type.kind == TypeKind::BooleanStorage &&
+        value.kind == ConstantKind::Bool) {
+      return ConstantValue::make_integer(value.boolean ? 1 : 0);
+    }
     const bool integer_target =
         target_type.kind == TypeKind::SignedInteger ||
         target_type.kind == TypeKind::UnsignedInteger ||
@@ -1515,39 +1535,60 @@ private:
             check_expression(tree, call.children[1], scope);
         expression.operands.push_back(argument);
         const TypeId source = hir_.expression(argument).type;
-        const Type source_scalar = is_invalid_type(source)
-            ? Type{}
-            : runtime_scalar_type(source);
-        const Type target_scalar = is_invalid_type(cast_target)
-            ? Type{}
-            : runtime_scalar_type(cast_target);
-        const bool source_numeric = is_numeric(source) ||
-            source_scalar.kind == TypeKind::SignedInteger ||
-            source_scalar.kind == TypeKind::UnsignedInteger ||
-            source_scalar.kind == TypeKind::Float ||
-            source_scalar.kind == TypeKind::Rune ||
-            source_scalar.kind == TypeKind::Enum;
-        const bool target_numeric = target_scalar.kind == TypeKind::SignedInteger ||
-            target_scalar.kind == TypeKind::UnsignedInteger ||
-            target_scalar.kind == TypeKind::Float ||
-            target_scalar.kind == TypeKind::Rune ||
-            target_scalar.kind == TypeKind::Enum;
-        const bool numeric = source_numeric && target_numeric;
         const TypeKind source_kind = is_invalid_type(source)
             ? TypeKind::Invalid
             : semantic_.types.type(source).kind;
         const TypeKind target_kind = is_invalid_type(cast_target)
             ? TypeKind::Invalid
             : semantic_.types.type(cast_target).kind;
+        const Type source_type = is_invalid_type(source)
+            ? Type{}
+            : semantic_.types.type(source);
+        const Type target_type = is_invalid_type(cast_target)
+            ? Type{}
+            : semantic_.types.type(cast_target);
+
+        // Cast categories are intentionally direct. In particular, a distinct
+        // or enum conversion cannot silently compose with a second numeric
+        // conversion; source code must spell both requested operations.
+        const bool distinct =
+            (source_kind == TypeKind::Distinct &&
+             source_type.element == cast_target) ||
+            (target_kind == TypeKind::Distinct && target_type.element == source);
+        const bool enumeration =
+            (source_kind == TypeKind::Enum && source_type.element == cast_target) ||
+            (target_kind == TypeKind::Enum && target_type.element == source);
+        const bool source_plain_numeric = source_kind != TypeKind::Distinct &&
+            source_kind != TypeKind::Enum &&
+            (numeric_value_type(source) || is_untyped_integer(source) ||
+             is_untyped_float(source));
+        const bool target_plain_numeric = target_kind != TypeKind::Distinct &&
+            target_kind != TypeKind::Enum && numeric_value_type(cast_target);
+        const bool numeric = source_plain_numeric && target_plain_numeric;
+        const bool boolean_storage =
+            (source_kind == TypeKind::Bool &&
+             target_kind == TypeKind::BooleanStorage) ||
+            (source_kind == TypeKind::BooleanStorage &&
+             target_kind == TypeKind::Bool);
+        const bool endian =
+            (source_kind == TypeKind::EndianScalar &&
+             source_type.element == cast_target) ||
+            (target_kind == TypeKind::EndianScalar &&
+             target_type.element == source);
+        const bool source_data_pointer = data_pointer_kind(source_kind);
+        const bool target_data_pointer = data_pointer_kind(target_kind);
         const bool pointers =
-            (source_kind == TypeKind::Pointer || source_kind == TypeKind::MultiPointer ||
-             source_kind == TypeKind::RawPointer) &&
-            (target_kind == TypeKind::Pointer || target_kind == TypeKind::MultiPointer ||
-             target_kind == TypeKind::RawPointer || cast_target == semantic_.types.builtins().uintptr_type);
-        if (!numeric && !pointers) {
+            (source_data_pointer && target_data_pointer) ||
+            (source_data_pointer &&
+             cast_target == semantic_.types.builtins().uintptr_type) ||
+            (source == semantic_.types.builtins().uintptr_type &&
+             target_data_pointer);
+        if (!numeric && !distinct && !enumeration && !boolean_storage &&
+            !endian && !pointers) {
           diagnostics_.error(call.range, "cast source and target types are incompatible");
         }
-        if (numeric &&
+        if ((numeric || boolean_storage ||
+             (enumeration && target_kind == TypeKind::Enum)) &&
             hir_.expression(argument).kind == HirExpressionKind::Constant) {
           const std::optional<ConstantValue> converted = convert_numeric_constant(
               hir_.expression(argument).constant, cast_target, call.range);
@@ -1873,17 +1914,22 @@ private:
       } else if (operation == TokenKind::EqualEqual || operation == TokenKind::BangEqual ||
                  operation == TokenKind::Less || operation == TokenKind::LessEqual ||
                  operation == TokenKind::Greater || operation == TokenKind::GreaterEqual) {
-        const TypeKind left_kind = is_invalid_type(left)
+        const TypeKind left_runtime_kind = is_invalid_type(left)
             ? TypeKind::Invalid
-            : semantic_.types.type(left).kind;
+            : runtime_scalar_type(left).kind;
         const bool equality_only = operation == TokenKind::EqualEqual ||
             operation == TokenKind::BangEqual;
+        const bool pointer_equality = data_pointer_kind(left_runtime_kind) ||
+            left_runtime_kind == TypeKind::Procedure;
+        const bool scalar_equality = left_runtime_kind == TypeKind::Bool ||
+            left_runtime_kind == TypeKind::BooleanStorage ||
+            left_runtime_kind == TypeKind::EndianScalar ||
+            left_runtime_kind == TypeKind::Enum || pointer_equality;
         if ((is_numeric(left) && is_numeric(right) &&
              !is_invalid_type(common_numeric_type(left, right, node.range))) ||
             (left == right &&
-             (is_bool(left) || left_kind == TypeKind::Enum ||
-              left_kind == TypeKind::Rune) &&
-             (equality_only || left_kind == TypeKind::Rune))) {
+             ((equality_only && scalar_equality) ||
+              left_runtime_kind == TypeKind::Rune))) {
           result = semantic_.types.builtins().bool_type;
         } else if (!is_numeric(left) || !is_numeric(right)) {
           diagnostics_.error(node.range, "comparison is not defined for operand types");

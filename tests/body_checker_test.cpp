@@ -614,7 +614,7 @@ scalar :: proc(value: i64) -> rune {
 }
 
 code :: proc(value: i64) -> Code {
-    return cast[Code](value)
+    return cast[Code](cast[i16](value))
 }
 )draft");
   if (safe.diagnostics.has_errors()) {
@@ -640,7 +640,7 @@ surrogate :: proc() -> rune {
 }
 
 invalid_code :: proc() -> Code {
-    return cast[Code](1)
+    return cast[Code](cast[i16](1))
 }
 )draft");
   EXPECT(state, !failing.bodies.ok);
@@ -651,6 +651,86 @@ invalid_code :: proc() -> Code {
   EXPECT(state, rendered.find("does not produce a Unicode scalar") !=
                     std::string::npos);
   EXPECT(state, rendered.find("does not name an enum member") !=
+                    std::string::npos);
+}
+
+void test_storage_pointer_and_distinct_semantics(TestState &state) {
+  CheckedSource safe(R"draft(
+package bodies
+
+Counter :: distinct u32
+
+storage_truth :: proc(flag: bool, bits: b32) -> bool {
+    encoded := cast[b32](flag)
+    return encoded == cast[b32](flag) && cast[bool](bits)
+}
+
+integer_endian :: proc(value: u32) -> u32 {
+    big := cast[u32be](value)
+    little := cast[u32le](value)
+    assert(big == cast[u32be](value))
+    return cast[u32](big) + cast[u32](little)
+}
+
+float_endian :: proc(value: f64) -> f64 {
+    stored := cast[f64be](value)
+    return cast[f64](stored)
+}
+
+same_pointer :: proc(left, right: ^u64) -> bool {
+    address := cast[uintptr](left)
+    return left == right || cast[^u64](address) == left
+}
+
+increment :: proc(value: Counter) -> Counter {
+    return value + 1
+}
+
+constant_storage :: proc() -> bool {
+    return cast[bool](cast[b64](true))
+}
+)draft");
+  if (safe.diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(safe.sources, safe.diagnostics);
+  }
+  EXPECT(state, safe.bodies.ok);
+  EXPECT(state, !safe.diagnostics.has_errors());
+
+  CheckedSource invalid(R"draft(
+package bodies
+
+Counter :: distinct u32
+
+Code :: enum i16 {
+    Zero,
+}
+
+bad_storage_order :: proc(left, right: b32) -> bool {
+    return left < right
+}
+
+bad_endian_order :: proc(left, right: u32be) -> bool {
+    return left < right
+}
+
+bad_endian_pair :: proc(value: u32) -> u64be {
+    return cast[u64be](value)
+}
+
+bad_enum_pair :: proc(value: i64) -> Code {
+    return cast[Code](value)
+}
+
+bad_distinct_pair :: proc(value: Counter) -> i64 {
+    return cast[i64](value)
+}
+)draft");
+  EXPECT(state, !invalid.bodies.ok);
+  EXPECT(state, invalid.diagnostics.error_count() >= 5);
+  const std::string rendered =
+      draft::render_diagnostics(invalid.sources, invalid.diagnostics);
+  EXPECT(state, rendered.find("comparison is not defined") != std::string::npos);
+  EXPECT(state, rendered.find("cast source and target types are incompatible") !=
                     std::string::npos);
 }
 
@@ -668,6 +748,7 @@ int main() {
   test_definite_initialization(state);
   test_layout_intrinsics_and_static_assert(state);
   test_checked_numeric_casts(state);
+  test_storage_pointer_and_distinct_semantics(state);
 
   if (state.failures != 0) {
     std::cerr << state.failures << " body checker expectation(s) failed\n";

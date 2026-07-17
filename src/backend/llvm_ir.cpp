@@ -278,6 +278,20 @@ private:
         : value.kind;
   }
 
+  [[nodiscard]] TypeId runtime_scalar_id(TypeId id) const {
+    while (type(id).kind == TypeKind::Distinct) id = type(id).element;
+    return id;
+  }
+
+  [[nodiscard]] bool endian_requires_swap(TypeId id) const {
+    const Type &storage = type(runtime_scalar_id(id));
+    if (storage.kind != TypeKind::EndianScalar) return false;
+    const bool target_is_little = target_.facts.byte_order == "little";
+    return (storage.scalar_byte_order == ScalarByteOrder::Little &&
+            !target_is_little) ||
+        (storage.scalar_byte_order == ScalarByteOrder::Big && target_is_little);
+  }
+
   [[nodiscard]] std::uint32_t integer_bits(TypeId id) const {
     const Type &value = type(id);
     if (value.kind == TypeKind::Bool) return 1;
@@ -502,7 +516,11 @@ private:
     output_ << "%draft.bootstrap.Context = type { ptr }\n"
             << "@__draft.root_context = internal global %draft.bootstrap.Context "
                "{ ptr @__draft.default_assertion_failure }, align 8\n\n"
-            << "declare void @llvm.trap() cold noreturn nounwind\n\n"
+            << "declare void @llvm.trap() cold noreturn nounwind\n"
+            << "declare i16 @llvm.bswap.i16(i16)\n"
+            << "declare i32 @llvm.bswap.i32(i32)\n"
+            << "declare i64 @llvm.bswap.i64(i64)\n"
+            << "declare i128 @llvm.bswap.i128(i128)\n\n"
             << "define internal void @__draft.default_assertion_failure("
                "{ ptr, i64 } %condition_text, { ptr, i64 } %message, "
                "{ ptr, i64 } %file, i64 %line, i64 %column) {\n"
@@ -1037,7 +1055,7 @@ private:
     }
     output_ << "  " << result << " = ";
     if (instruction.operation == HirOperation::Negate) {
-      if (type(instruction.type).kind == TypeKind::Float) {
+      if (runtime_scalar_kind(instruction.type) == TypeKind::Float) {
         output_ << "fneg " << value_type << ' ' << source_operand;
       } else {
         output_ << "sub " << value_type << " 0, " << source_operand;
@@ -1062,7 +1080,7 @@ private:
     const MirValueId left_id = instruction.operands[0];
     const MirValueId right_id = instruction.operands[1];
     const TypeId operand_type = procedure.value(left_id).type;
-    const TypeKind operand_kind = type(operand_type).kind;
+    const TypeKind operand_kind = runtime_scalar_kind(operand_type);
     const std::string value_type = llvm_type(operand_type);
     const std::string left = value_operand(operands, left_id, instruction.range);
     const std::string right = value_operand(operands, right_id, instruction.range);
@@ -1118,6 +1136,84 @@ private:
     const TypeKind source_kind = runtime_scalar_kind(source_type);
     const TypeKind target_kind = runtime_scalar_kind(instruction.type);
     const std::string source = value_operand(operands, source_id, instruction.range);
+
+    // `bool` is an i1 computation value, while b8/b16/b32/b64 retain every
+    // stored bit. Converting storage back to bool must therefore test for zero;
+    // truncation would incorrectly make a nonzero even value false.
+    if (source_kind == TypeKind::Bool &&
+        target_kind == TypeKind::BooleanStorage) {
+      const std::string result = "%v" +
+          std::to_string(instruction.result.value);
+      output_ << "  " << result << " = zext i1 " << source << " to "
+              << llvm_type(instruction.type) << '\n';
+      assign_alias(operands, instruction, result);
+      return;
+    }
+    if (source_kind == TypeKind::BooleanStorage &&
+        target_kind == TypeKind::Bool) {
+      const std::string result = "%v" +
+          std::to_string(instruction.result.value);
+      output_ << "  " << result << " = icmp ne " << llvm_type(source_type)
+              << ' ' << source << ", 0\n";
+      assign_alias(operands, instruction, result);
+      return;
+    }
+
+    // Endian scalars are integer-shaped storage in LLVM even when their native
+    // counterpart is floating point. A conversion first exposes the IEEE bits,
+    // swaps exactly when storage order differs from the target, and then restores
+    // the native scalar representation in the opposite direction.
+    const TypeId source_runtime = runtime_scalar_id(source_type);
+    const TypeId target_runtime = runtime_scalar_id(instruction.type);
+    if (target_kind == TypeKind::EndianScalar &&
+        type(target_runtime).element == source_runtime) {
+      const std::uint32_t bits = type(target_runtime).bit_width;
+      const std::string integer_type = "i" + std::to_string(bits);
+      std::string stored_bits = source;
+      if (source_kind == TypeKind::Float) {
+        const std::string bitcast = endian_requires_swap(target_runtime)
+            ? auxiliary()
+            : "%v" + std::to_string(instruction.result.value);
+        output_ << "  " << bitcast << " = bitcast " << llvm_type(source_type)
+                << ' ' << source << " to " << integer_type << '\n';
+        stored_bits = bitcast;
+      }
+      if (endian_requires_swap(target_runtime)) {
+        const std::string result = "%v" +
+            std::to_string(instruction.result.value);
+        output_ << "  " << result << " = call " << integer_type
+                << " @llvm.bswap." << integer_type << '(' << integer_type
+                << ' ' << stored_bits << ")\n";
+        stored_bits = result;
+      }
+      assign_alias(operands, instruction, stored_bits);
+      return;
+    }
+    if (source_kind == TypeKind::EndianScalar &&
+        type(source_runtime).element == target_runtime) {
+      const std::uint32_t bits = type(source_runtime).bit_width;
+      const std::string integer_type = "i" + std::to_string(bits);
+      std::string native_bits = source;
+      if (endian_requires_swap(source_runtime)) {
+        const std::string swapped = target_kind == TypeKind::Float
+            ? auxiliary()
+            : "%v" + std::to_string(instruction.result.value);
+        output_ << "  " << swapped << " = call " << integer_type
+                << " @llvm.bswap." << integer_type << '(' << integer_type
+                << ' ' << source << ")\n";
+        native_bits = swapped;
+      }
+      if (target_kind == TypeKind::Float) {
+        const std::string result = "%v" +
+            std::to_string(instruction.result.value);
+        output_ << "  " << result << " = bitcast " << integer_type << ' '
+                << native_bits << " to " << llvm_type(instruction.type) << '\n';
+        native_bits = result;
+      }
+      assign_alias(operands, instruction, native_bits);
+      return;
+    }
+
     if (llvm_type(source_type) == llvm_type(instruction.type)) {
       assign_alias(operands, instruction, source);
       return;

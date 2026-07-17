@@ -95,7 +95,8 @@ TypeStore::TypeStore(std::uint32_t pointer_bits) : pointer_bits_(pointer_bits) {
   builtins_.rune_type = add_scalar("rune", TypeKind::Rune, 32, 4);
 
   // Endian storage types have scalar size/alignment but a distinct operation
-  // category. The name determines signedness/float interpretation during casts.
+  // category. Each row points directly at its native value counterpart; code
+  // generation never needs to recover semantic facts from the type spelling.
   constexpr const char *endian_bases[] = {
       "i16", "i32", "i64", "i128", "u16", "u32", "u64", "u128",
       "f16", "f32", "f64"};
@@ -108,8 +109,14 @@ TypeStore::TypeStore(std::uint32_t pointer_bits) : pointer_bits_(pointer_bits) {
     // vector. Keeping scalar values here makes the lifetime boundary explicit.
     const std::uint32_t bit_width = type(*native).bit_width;
     const std::uint32_t alignment = type(*native).layout.alignment;
-    (void)add_scalar(base_name + "le", TypeKind::EndianScalar, bit_width, alignment);
-    (void)add_scalar(base_name + "be", TypeKind::EndianScalar, bit_width, alignment);
+    const TypeId little = add_scalar(
+        base_name + "le", TypeKind::EndianScalar, bit_width, alignment);
+    type_mut(little).element = *native;
+    type_mut(little).scalar_byte_order = ScalarByteOrder::Little;
+    const TypeId big = add_scalar(
+        base_name + "be", TypeKind::EndianScalar, bit_width, alignment);
+    type_mut(big).element = *native;
+    type_mut(big).scalar_byte_order = ScalarByteOrder::Big;
   }
 
   Type raw_pointer;
@@ -427,12 +434,16 @@ void TypeStore::complete_nominal(
 }
 
 bool TypeStore::is_integer(TypeId id) const {
-  const TypeKind kind = type(id).kind;
+  const Type &value = type(id);
+  if (value.kind == TypeKind::Distinct) return is_integer(value.element);
+  const TypeKind kind = value.kind;
   return kind == TypeKind::SignedInteger || kind == TypeKind::UnsignedInteger;
 }
 
 bool TypeStore::is_float(TypeId id) const {
-  return type(id).kind == TypeKind::Float;
+  const Type &value = type(id);
+  if (value.kind == TypeKind::Distinct) return is_float(value.element);
+  return value.kind == TypeKind::Float;
 }
 
 bool TypeStore::is_number(TypeId id) const {

@@ -135,7 +135,29 @@ to_rune_checked :: proc(value: i64) -> rune {
 }
 
 to_code_checked :: proc(value: i64) -> Code {
-    return cast[Code](value)
+    return cast[Code](cast[i16](value))
+}
+
+storage_roundtrip :: proc(flag: bool, bits: b32) -> bool {
+    encoded := cast[b32](flag)
+    return cast[bool](encoded) || cast[bool](bits)
+}
+
+endian_roundtrip :: proc(value: u32) -> u32 {
+    big := cast[u32be](value)
+    little := cast[u32le](value)
+    assert(big == cast[u32be](value))
+    return cast[u32](big) + cast[u32](little)
+}
+
+endian_float_roundtrip :: proc(value: f64) -> f64 {
+    big := cast[f64be](value)
+    return cast[f64](big)
+}
+
+pointer_roundtrip :: proc(value: ^i64) -> bool {
+    bits := cast[uintptr](value)
+    return cast[^i64](bits) == value
 }
 
 main :: proc() -> i32 {
@@ -160,6 +182,10 @@ main :: proc() -> i32 {
     assert(inferred == 42)
     assert(last[3](values) == 42)
     assert(last(values) == 42)
+    assert(storage_roundtrip(true, cast[b32](false)))
+    assert(endian_roundtrip(21) == 42)
+    assert(endian_float_roundtrip(0.5) == 0.5)
+    assert(pointer_roundtrip(&values[0]))
     assert('é' == '\u{e9}')
     assert(cast[u32]('🙂') == 0x1f642)
     text := "draft"
@@ -237,6 +263,12 @@ main :: proc() -> i32 {
   EXPECT(state, module.text.find("fptosi double") != std::string::npos);
   EXPECT(state, module.text.find("icmp eq i16") != std::string::npos);
   EXPECT(state, module.text.find(", 7") != std::string::npos);
+  EXPECT(state, module.text.find("icmp ne i32") != std::string::npos);
+  EXPECT(state, module.text.find("call i32 @llvm.bswap.i32") != std::string::npos);
+  EXPECT(state, module.text.find("call i64 @llvm.bswap.i64") != std::string::npos);
+  EXPECT(state, module.text.find("bitcast double") != std::string::npos);
+  EXPECT(state, module.text.find("ptrtoint ptr") != std::string::npos);
+  EXPECT(state, module.text.find("inttoptr i64") != std::string::npos);
   EXPECT(state, module.text.find("extractvalue { i64, i64 }") != std::string::npos);
   EXPECT(state, module.text.find("switch i8") != std::string::npos);
   EXPECT(state, module.text.find("getelementptr i8") != std::string::npos);
