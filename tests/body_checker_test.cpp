@@ -290,6 +290,71 @@ main :: proc() -> i64 {
   EXPECT(state, concrete_instances == 2);
 }
 
+void test_definite_initialization(TestState &state) {
+  CheckedSource safe(R"draft(
+package bodies
+
+fill :: proc(value: ^int) {
+}
+
+assigned :: proc() -> int {
+    value: int = ---
+    value = 42
+    return value
+}
+
+assigned_on_both_paths :: proc(flag: bool) -> int {
+    value: int = ---
+    if flag {
+        value = 1
+    } else {
+        value = 2
+    }
+    return value
+}
+
+address_may_initialize :: proc() -> int {
+    value: int = ---
+    fill(&value)
+    return value
+}
+)draft");
+  if (safe.diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(safe.sources, safe.diagnostics);
+  }
+  EXPECT(state, safe.bodies.ok);
+  EXPECT(state, !safe.diagnostics.has_errors());
+
+  CheckedSource unsafe(R"draft(
+package bodies
+
+direct :: proc() -> int {
+    value: int = ---
+    return value
+}
+
+loop_may_not_run :: proc(flag: bool) -> int {
+    value: int = ---
+    for flag {
+        value = 1
+    }
+    return value
+}
+
+compound_reads_first :: proc() -> int {
+    value: int = ---
+    value += 1
+    return value
+}
+)draft");
+  EXPECT(state, !unsafe.bodies.ok);
+  EXPECT(state, unsafe.diagnostics.error_count() == 3);
+  const std::string rendered =
+      draft::render_diagnostics(unsafe.sources, unsafe.diagnostics);
+  EXPECT(state, rendered.find("read of uninitialized local 'value'") !=
+                    std::string::npos);
+}
+
 } // namespace
 
 int main() {
@@ -297,6 +362,7 @@ int main() {
   test_common_typed_bodies(state);
   test_body_diagnostics(state);
   test_parametric_procedure_instances(state);
+  test_definite_initialization(state);
 
   if (state.failures != 0) {
     std::cerr << state.failures << " body checker expectation(s) failed\n";

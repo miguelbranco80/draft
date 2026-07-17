@@ -2,6 +2,7 @@
 
 #include "sema/body_checker.h"
 
+#include "sema/initialization.h"
 #include "sema/type_resolver.h"
 #include "syntax/literal.h"
 #include "syntax/token.h"
@@ -2288,7 +2289,12 @@ BodyCheckResult check_package_bodies(
     DiagnosticSink &diagnostics) {
   BodyChecker checker(
       sources, loaded, selections, package, constants, diagnostics);
-  return checker.run();
+  BodyCheckResult result = checker.run();
+  if (result.ok &&
+      !check_definite_initialization(package, result.program, diagnostics)) {
+    result.ok = false;
+  }
+  return result;
 }
 
 } // namespace draft

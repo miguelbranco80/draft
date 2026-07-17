@@ -44,6 +44,7 @@ add_library(
   src/sema/denial.cpp
   src/sema/effect.cpp
   src/sema/hir.cpp
+  src/sema/initialization.cpp
   src/sema/interface.cpp
   src/sema/semantic.cpp
   src/sema/symbol.cpp
