@@ -135,6 +135,7 @@ main :: proc() -> int {
     scratch: u32 = ---
     (_, initial): (bool, u32) = read_initial()
     sum = initial
+    sum += (sum, initial).1
 
     for value, index in values {
         sum += value

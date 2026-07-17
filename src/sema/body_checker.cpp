@@ -286,6 +286,148 @@ private:
     return std::nullopt;
   }
 
+  // Returns one unqualified contextual name from an expression node. This is
+  // used only for compiler-defined type values and intrinsic call syntax.
+  [[nodiscard]] std::optional<SourceName> single_name_expression(
+      const SyntaxTree &tree, NodeId node_id) const {
+    const SyntaxNode &node = tree.node(node_id);
+    if (node.kind != NodeKind::NameExpression && node.kind != NodeKind::NamedType) {
+      return std::nullopt;
+    }
+    const std::vector<SourceName> names =
+        names_in_span(tree, node.token_begin, node.token_end);
+    if (names.size() != 1) return std::nullopt;
+    return names.front();
+  }
+
+  // Resolves a source expression that denotes a type. Type arguments to
+  // `cast[T]` are parsed in expression brackets, so bare type names reach this
+  // bridge rather than ordinary type syntax.
+  [[nodiscard]] TypeId type_value_expression(
+      const SyntaxTree &tree, NodeId node_id, ScopeId scope) {
+    const SyntaxNode &node = tree.node(node_id);
+    if (node_is_type_syntax(node.kind)) {
+      return resolve_type_syntax(
+          sources_, loaded_, semantic_, selections_, tree, node_id, scope, diagnostics_);
+    }
+    const std::optional<SourceName> name = single_name_expression(tree, node_id);
+    if (!name.has_value()) return semantic_.types.builtins().invalid;
+    if (const std::optional<TypeId> builtin = semantic_.types.find_builtin(name->text)) {
+      return *builtin;
+    }
+    const std::optional<SymbolId> symbol = semantic_.symbols.lookup(scope, name->text);
+    if (symbol.has_value()) {
+      const Symbol binding = semantic_.symbols.symbol(*symbol);
+      if (binding.kind == SymbolKind::Type || binding.kind == SymbolKind::TypeParameter) {
+        return binding.type;
+      }
+    }
+    diagnostics_.error(name->range, "name does not denote a type");
+    return semantic_.types.builtins().invalid;
+  }
+
+  // Recognizes the closed predeclared intrinsic vocabulary before ordinary name
+  // lookup. Intrinsics are HIR operations, not hidden package declarations.
+  [[nodiscard]] std::optional<HirExpressionId> check_intrinsic_call(
+      const SyntaxTree &tree,
+      const SyntaxNode &call,
+      ScopeId scope,
+      TypeId expected) {
+    if (call.children.empty()) return std::nullopt;
+    const NodeId callee_id = call.children.front();
+    const SyntaxNode &callee = tree.node(callee_id);
+    std::optional<std::string> intrinsic;
+    TypeId cast_target;
+    if (const std::optional<SourceName> name =
+            single_name_expression(tree, callee_id)) {
+      if (name->text == "len" || name->text == "assert") {
+        intrinsic = name->text;
+      }
+    } else if (callee.kind == NodeKind::BracketExpression &&
+               callee.children.size() == 2) {
+      const std::optional<SourceName> base =
+          single_name_expression(tree, callee.children.front());
+      if (base.has_value() && base->text == "cast") {
+        intrinsic = "cast";
+        cast_target = type_value_expression(tree, callee.children[1], scope);
+      }
+    }
+    if (!intrinsic.has_value()) return std::nullopt;
+
+    HirExpression expression;
+    expression.kind = HirExpressionKind::Intrinsic;
+    expression.range = call.range;
+    expression.constant = ConstantValue::make_string(*intrinsic);
+    const std::size_t argument_count = call.children.size() - 1;
+    if (*intrinsic == "len") {
+      if (argument_count != 1) {
+        diagnostics_.error(call.range, "len requires exactly one argument");
+        expression.type = semantic_.types.builtins().invalid;
+      } else {
+        const HirExpressionId argument =
+            check_expression(tree, call.children[1], scope);
+        expression.operands.push_back(argument);
+        const Type type = semantic_.types.type(hir_.expression(argument).type);
+        if (type.kind != TypeKind::Array && type.kind != TypeKind::Slice &&
+            type.kind != TypeKind::String) {
+          diagnostics_.error(call.range, "len requires an array, slice, or string");
+        }
+        expression.type = apply_expected_type(
+            semantic_.types.builtins().usize_type, expected, call.range);
+      }
+    } else if (*intrinsic == "assert") {
+      if (argument_count < 1 || argument_count > 2) {
+        diagnostics_.error(call.range, "assert requires a bool and optional string");
+      }
+      if (argument_count >= 1) {
+        expression.operands.push_back(check_expression(
+            tree,
+            call.children[1],
+            scope,
+            semantic_.types.builtins().bool_type));
+      }
+      if (argument_count >= 2) {
+        expression.operands.push_back(check_expression(
+            tree,
+            call.children[2],
+            scope,
+            semantic_.types.builtins().string_type));
+      }
+      expression.type = semantic_.types.builtins().void_type;
+    } else {
+      if (argument_count != 1) {
+        diagnostics_.error(call.range, "cast[T] requires exactly one value argument");
+      }
+      if (argument_count >= 1) {
+        const HirExpressionId argument =
+            check_expression(tree, call.children[1], scope);
+        expression.operands.push_back(argument);
+        const TypeId source = hir_.expression(argument).type;
+        const bool numeric = is_numeric(source) &&
+            !is_invalid_type(cast_target) &&
+            (semantic_.types.is_number(cast_target) ||
+             semantic_.types.type(cast_target).kind == TypeKind::Distinct ||
+             semantic_.types.type(cast_target).kind == TypeKind::Enum);
+        const TypeKind source_kind = is_invalid_type(source)
+            ? TypeKind::Invalid
+            : semantic_.types.type(source).kind;
+        const TypeKind target_kind = is_invalid_type(cast_target)
+            ? TypeKind::Invalid
+            : semantic_.types.type(cast_target).kind;
+        const bool pointers =
+            (source_kind == TypeKind::Pointer || source_kind == TypeKind::MultiPointer ||
+             source_kind == TypeKind::RawPointer) &&
+            (target_kind == TypeKind::Pointer || target_kind == TypeKind::MultiPointer ||
+             target_kind == TypeKind::RawPointer || cast_target == semantic_.types.builtins().uintptr_type);
+        if (!numeric && !pointers) {
+          diagnostics_.error(call.range, "cast source and target types are incompatible");
+        }
+      }
+      expression.type = apply_expected_type(cast_target, expected, call.range);
+    }
+    return hir_.add_expression(std::move(expression));
+  }
+
   // Type-checks one expression recursively and returns a HIR node even after an
   // error. expected is an invalid TypeId when the surrounding syntax supplies no
   // context.
@@ -320,6 +462,21 @@ private:
         expression.type = semantic_.types.builtins().string_type;
         expression.constant.kind = ConstantKind::String;
         expression.constant.text = std::string(sources_.text(token.range));
+      } else if (token.kind == TokenKind::KeywordNil) {
+        if (!expected.is_valid() || is_invalid_type(expected)) {
+          diagnostics_.error(node.range, "nil requires an expected pointer type");
+          return invalid_expression(node.range);
+        }
+        const TypeKind expected_kind = semantic_.types.type(expected).kind;
+        if (expected_kind != TypeKind::Pointer &&
+            expected_kind != TypeKind::MultiPointer &&
+            expected_kind != TypeKind::RawPointer &&
+            expected_kind != TypeKind::CString &&
+            expected_kind != TypeKind::Procedure) {
+          diagnostics_.error(node.range, "nil is not valid for the expected type");
+          return invalid_expression(node.range);
+        }
+        expression.type = expected;
       } else {
         diagnostics_.error(node.range, "literal is not yet valid in a runtime expression");
         return invalid_expression(node.range);
@@ -363,6 +520,98 @@ private:
         return check_expression(tree, node.children.front(), scope, expected);
       }
       return invalid_expression(node.range);
+
+    case NodeKind::TupleExpression: {
+      std::vector<TypeId> member_types;
+      std::vector<TypeId> expected_members;
+      if (expected.is_valid() && !is_invalid_type(expected) &&
+          semantic_.types.type(expected).kind == TypeKind::Tuple) {
+        expected_members = semantic_.types.type(expected).members;
+        if (expected_members.size() != node.children.size()) {
+          diagnostics_.error(node.range, "tuple expression has the wrong arity");
+        }
+      }
+      HirExpression expression;
+      expression.kind = HirExpressionKind::Tuple;
+      expression.range = node.range;
+      for (std::size_t index = 0; index < node.children.size(); ++index) {
+        TypeId member_expected;
+        if (index < expected_members.size()) {
+          member_expected = expected_members[index];
+        }
+        const HirExpressionId member =
+            check_expression(tree, node.children[index], scope, member_expected);
+        expression.operands.push_back(member);
+        member_types.push_back(hir_.expression(member).type);
+      }
+      expression.type = !expected_members.empty()
+          ? expected
+          : semantic_.types.tuple(member_types);
+      return hir_.add_expression(std::move(expression));
+    }
+
+    case NodeKind::CompositeExpression: {
+      if (node.children.empty()) return invalid_expression(node.range);
+      TypeId composite_type =
+          type_value_expression(tree, node.children.front(), scope);
+      if (is_invalid_type(composite_type) && expected.is_valid()) {
+        composite_type = expected;
+      }
+      if (is_invalid_type(composite_type)) {
+        diagnostics_.error(node.range, "composite literal requires a concrete type");
+        return invalid_expression(node.range);
+      }
+      const Type composite = semantic_.types.type(composite_type);
+      if (composite.kind != TypeKind::Array && composite.kind != TypeKind::Struct &&
+          composite.kind != TypeKind::RawUnion && composite.kind != TypeKind::Tuple) {
+        diagnostics_.error(node.range, "type does not support a composite literal");
+      }
+      HirExpression expression;
+      expression.kind = HirExpressionKind::Composite;
+      expression.range = node.range;
+      expression.type = apply_expected_type(composite_type, expected, node.range);
+      std::size_t positional_index = 0;
+      for (std::size_t index = 1; index < node.children.size(); ++index) {
+        const SyntaxNode &element = tree.node(node.children[index]);
+        if (element.children.empty()) continue;
+        TypeId element_type;
+        bool keyed = false;
+        for (std::uint32_t token_index = element.token_begin;
+             token_index < tree.node(element.children.front()).token_begin;
+             ++token_index) {
+          if (tree.token(token_index).kind == TokenKind::Equal) keyed = true;
+        }
+        if (keyed) {
+          const std::vector<SourceName> names = names_in_span(
+              tree,
+              element.token_begin,
+              tree.node(element.children.front()).token_begin);
+          if (!names.empty()) {
+            const std::optional<SymbolId> member =
+                find_member(composite_type, names.front().text);
+            if (member.has_value()) {
+              element_type = semantic_.symbols.symbol(*member).type;
+            } else {
+              diagnostics_.error(names.front().range, "unknown composite member");
+            }
+          }
+        } else if (composite.kind == TypeKind::Array) {
+          element_type = composite.element;
+        } else if (positional_index < composite.members.size()) {
+          element_type = composite.members[positional_index];
+        } else {
+          diagnostics_.error(element.range, "too many positional composite elements");
+        }
+        expression.operands.push_back(check_expression(
+            tree, element.children.front(), scope, element_type));
+        ++positional_index;
+      }
+      if (composite.kind == TypeKind::Array &&
+          positional_index > composite.element_count) {
+        diagnostics_.error(node.range, "array literal has too many elements");
+      }
+      return hir_.add_expression(std::move(expression));
+    }
 
     case NodeKind::UnaryExpression: {
       if (node.children.empty()) return invalid_expression(node.range);
@@ -451,6 +700,10 @@ private:
 
     case NodeKind::CallExpression: {
       if (node.children.empty()) return invalid_expression(node.range);
+      if (const std::optional<HirExpressionId> intrinsic =
+              check_intrinsic_call(tree, node, scope, expected)) {
+        return *intrinsic;
+      }
       const HirExpressionId callee = check_expression(tree, node.children.front(), scope);
       const TypeId callee_type = hir_.expression(callee).type;
       if (is_invalid_type(callee_type) ||
@@ -488,6 +741,26 @@ private:
       if (node.children.empty()) return invalid_expression(node.range);
       const HirExpressionId base_id = check_expression(tree, node.children.front(), scope);
       const HirExpression base = hir_.expression(base_id);
+      const Token &selector = tree.token(node.token_end - 1);
+      if (selector.kind == TokenKind::IntegerLiteral) {
+        const Type tuple = semantic_.types.type(base.type);
+        const std::optional<std::int64_t> index =
+            integer_literal(sources_.text(selector.range));
+        if (tuple.kind != TypeKind::Tuple || !index.has_value() || *index < 0 ||
+            static_cast<std::uint64_t>(*index) >= tuple.members.size()) {
+          diagnostics_.error(selector.range, "tuple selector is invalid or out of range");
+          return invalid_expression(node.range);
+        }
+        HirExpression expression;
+        expression.kind = HirExpressionKind::Member;
+        expression.range = node.range;
+        expression.type = apply_expected_type(
+            tuple.members[static_cast<std::size_t>(*index)], expected, node.range);
+        expression.operands.push_back(base_id);
+        expression.constant = ConstantValue::make_integer(*index);
+        expression.addressable = base.addressable;
+        return hir_.add_expression(std::move(expression));
+      }
       const std::vector<SourceName> names =
           names_in_span(tree, node.token_begin, node.token_end);
       if (names.empty()) return invalid_expression(node.range);
@@ -546,6 +819,33 @@ private:
       expression.type = apply_expected_type(base.element, expected, node.range);
       expression.operands = {base_id, index_id};
       expression.addressable = true;
+      return hir_.add_expression(std::move(expression));
+    }
+
+    case NodeKind::SliceExpression: {
+      if (node.children.empty()) return invalid_expression(node.range);
+      const HirExpressionId base_id = check_expression(tree, node.children[0], scope);
+      const Type base = semantic_.types.type(hir_.expression(base_id).type);
+      TypeId result = semantic_.types.builtins().invalid;
+      if (base.kind == TypeKind::Slice) {
+        result = hir_.expression(base_id).type;
+      } else if (base.kind == TypeKind::Array || base.kind == TypeKind::MultiPointer) {
+        result = semantic_.types.slice(base.element);
+      } else {
+        diagnostics_.error(node.range, "slicing requires an array, slice, or multi-pointer");
+      }
+      HirExpression expression;
+      expression.kind = HirExpressionKind::Slice;
+      expression.range = node.range;
+      expression.type = apply_expected_type(result, expected, node.range);
+      expression.operands.push_back(base_id);
+      for (std::size_t index = 1; index < node.children.size(); ++index) {
+        const HirExpressionId bound = check_expression(tree, node.children[index], scope);
+        if (!is_integer(hir_.expression(bound).type)) {
+          diagnostics_.error(tree.node(node.children[index]).range, "slice bound must be an integer");
+        }
+        expression.operands.push_back(bound);
+      }
       return hir_.add_expression(std::move(expression));
     }
 

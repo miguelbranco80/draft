@@ -906,7 +906,14 @@ private:
         continue;
       }
       if (match(TokenKind::Dot)) {
-        (void)expect_name("expected member name after '.'");
+        // Tuple fields use decimal selectors such as `.0`; named aggregate and
+        // package members use contextual names. Semantic analysis rejects a
+        // numeric selector on a non-tuple and non-decimal/out-of-range forms.
+        if (at(TokenKind::IntegerLiteral)) {
+          advance();
+        } else {
+          (void)expect_name("expected member name or tuple index after '.'");
+        }
         std::vector<NodeId> children{expression};
         expression = tree_.add_node(NodeKind::MemberExpression, start, position_, std::move(children));
         continue;

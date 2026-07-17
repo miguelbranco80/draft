@@ -51,6 +51,7 @@ enum class HirExpressionKind {
   Unary,
   Binary,
   Call,
+  Intrinsic,
   Index,
   Slice,
   Member,

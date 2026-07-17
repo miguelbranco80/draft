@@ -117,6 +117,16 @@ choose :: proc(mode: Mode) -> i64 {
     return -1
 }
 
+views :: proc() -> usize {
+    local: [3]u64 = [3]u64{1, 2, 3}
+    part := local[1:]
+    assert(len(part) > 0, "slice must not be empty")
+    pointer: ^u64 = nil
+    pair := Pair{left = local[0], right = 2}
+    tuple: (u64, usize) = (pair.left, len(part))
+    return cast[usize](tuple.0)
+}
+
 main :: proc() {
     pair: Pair
     pair.left = 1
@@ -139,10 +149,10 @@ main :: proc() {
   EXPECT(state, source.semantics.ok);
   EXPECT(state, source.bodies.ok);
   EXPECT(state, !source.diagnostics.has_errors());
-  EXPECT(state, source.bodies.checked_procedures == 6);
-  EXPECT(state, source.bodies.program.procedures().size() == 6);
-  EXPECT(state, source.bodies.program.expression_count() >= 35);
-  EXPECT(state, source.bodies.program.statement_count() >= 22);
+  EXPECT(state, source.bodies.checked_procedures == 7);
+  EXPECT(state, source.bodies.program.procedures().size() == 7);
+  EXPECT(state, source.bodies.program.expression_count() >= 55);
+  EXPECT(state, source.bodies.program.statement_count() >= 28);
   EXPECT(state, source.bodies.program.block_count() >= 12);
   for (const draft::HirProcedure &procedure : source.bodies.program.procedures()) {
     EXPECT(state, procedure.valid);
