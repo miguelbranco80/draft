@@ -227,12 +227,215 @@ void test_private_name_is_not_imported(TestState &state) {
   EXPECT(state, rendered.find("no public type named 'Hidden'") != std::string::npos);
 }
 
+void test_imported_parametric_type(TestState &state) {
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  const draft::TargetProfile target = draft::make_aarch64_macos_profile();
+
+  draft::LoadedPackage dependency = parse_package(
+      sources,
+      diagnostics,
+      "option/package.draft",
+      "option",
+      R"draft(package option
+
+pub Maybe[T: type] :: union {
+    none,
+    some: T,
+}
+)draft");
+  draft::SemanticAnalysisResult dependency_semantics =
+      draft::analyze_package_semantics(
+          sources, dependency, target.facts, diagnostics);
+  draft::PackageInterface dependency_interface = draft::build_package_interface(
+      {"workspace", "lib/option"},
+      dependency_semantics.package,
+      dependency_semantics.constants,
+      diagnostics);
+
+  // The consumer sees no dependency syntax. Resolving the public field must
+  // rebuild Maybe's parameter scope from the interface and instantiate its
+  // concrete tagged-union member layout locally.
+  draft::LoadedPackage consumer = parse_package(
+      sources,
+      diagnostics,
+      "middle/package.draft",
+      "middle",
+      R"draft(package middle
+
+import lib/option as option
+
+pub Holder :: struct {
+    value: option.Maybe[i64],
+}
+
+pub unwrap :: proc(value: option.Maybe[i64]) -> i64 {
+    switch value {
+    case .some(payload):
+        return payload
+    case .none:
+        return 0
+    }
+}
+)draft");
+  const std::optional<draft::SyntaxReference> import = first_import(consumer);
+  EXPECT(state, import.has_value());
+  if (!import.has_value()) return;
+  draft::AvailablePackageImports available;
+  available.entries.push_back({*import, &dependency_interface});
+  draft::SemanticAnalysisResult consumer_semantics =
+      draft::analyze_package_semantics(
+          sources, consumer, target.facts, available, diagnostics);
+  draft::BodyCheckResult bodies = draft::check_package_bodies(
+      sources,
+      consumer,
+      consumer_semantics.selections,
+      consumer_semantics.package,
+      consumer_semantics.constants,
+      target.facts,
+      diagnostics);
+  draft::PackageInterface consumer_interface = draft::build_package_interface(
+      {"workspace", "middle"},
+      consumer_semantics.package,
+      consumer_semantics.constants,
+      diagnostics);
+
+  draft::LoadedPackage final_consumer = parse_package(
+      sources,
+      diagnostics,
+      "app/package.draft",
+      "app",
+      R"draft(package app
+
+import middle
+
+pub relay :: proc(holder: middle.Holder) -> i64 {
+    return middle.unwrap(holder.value)
+}
+)draft");
+  const std::optional<draft::SyntaxReference> final_import =
+      first_import(final_consumer);
+  EXPECT(state, final_import.has_value());
+  if (!final_import.has_value()) return;
+  draft::AvailablePackageImports final_available;
+  final_available.entries.push_back({*final_import, &consumer_interface});
+  draft::SemanticAnalysisResult final_semantics =
+      draft::analyze_package_semantics(
+          sources, final_consumer, target.facts, final_available, diagnostics);
+  draft::BodyCheckResult final_bodies = draft::check_package_bodies(
+      sources,
+      final_consumer,
+      final_semantics.selections,
+      final_semantics.package,
+      final_semantics.constants,
+      target.facts,
+      diagnostics);
+
+  if (diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+  }
+  EXPECT(state, dependency_semantics.ok);
+  EXPECT(state, dependency_interface.declarations.size() == 1);
+  if (!dependency_interface.declarations.empty()) {
+    const draft::InterfaceDeclaration &maybe =
+        dependency_interface.declarations.front();
+    EXPECT(state, maybe.flags.parametric);
+    EXPECT(state, maybe.parameters.size() == 1);
+    if (!maybe.parameters.empty()) {
+      EXPECT(state, maybe.parameters.front().name == "T");
+      EXPECT(state, maybe.parameters.front().kind == draft::SymbolKind::TypeParameter);
+      EXPECT(state, maybe.parameters.front().constraint ==
+                        draft::TypeConstraintKind::AnyType);
+    }
+  }
+  EXPECT(state, consumer_semantics.ok);
+  EXPECT(state, bodies.ok);
+  EXPECT(state, consumer_semantics.package.parametric_parameters.size() == 1);
+  EXPECT(state, consumer_semantics.package.parametric_type_instances.size() == 1);
+  EXPECT(state, final_semantics.ok);
+  EXPECT(state, final_bodies.ok);
+  EXPECT(state, !diagnostics.has_errors());
+
+  // A concrete specialization exported by the consumer must retain the
+  // original template identity and its arguments. Rebaptizing it as a middle
+  // package type would break equality in the next importing package.
+  bool saw_maybe_specialization = false;
+  for (const draft::InterfaceType &type : consumer_interface.types) {
+    if (type.kind != draft::TypeKind::TaggedUnion ||
+        type.nominal_public_name != "Maybe" ||
+        type.nominal_arguments.size() != 1) {
+      continue;
+    }
+    saw_maybe_specialization = true;
+    EXPECT(state, type.nominal_root_identity == "workspace");
+    EXPECT(state, type.nominal_root_relative_path == "lib/option");
+    const draft::InterfaceType &argument =
+        consumer_interface.types[type.nominal_arguments.front().value];
+    EXPECT(state, argument.name == "i64");
+  }
+  EXPECT(state, saw_maybe_specialization);
+}
+
+void test_imported_parametric_constraint(TestState &state) {
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  const draft::TargetProfile target = draft::make_aarch64_macos_profile();
+  draft::LoadedPackage dependency = parse_package(
+      sources,
+      diagnostics,
+      "number/package.draft",
+      "number",
+      R"draft(package number
+
+pub Box[T: number] :: struct {
+    value: T,
+}
+)draft");
+  draft::SemanticAnalysisResult dependency_semantics =
+      draft::analyze_package_semantics(
+          sources, dependency, target.facts, diagnostics);
+  draft::PackageInterface dependency_interface = draft::build_package_interface(
+      {"workspace", "number"},
+      dependency_semantics.package,
+      dependency_semantics.constants,
+      diagnostics);
+  draft::LoadedPackage consumer = parse_package(
+      sources,
+      diagnostics,
+      "bad/package.draft",
+      "bad",
+      R"draft(package bad
+
+import number
+
+Bad :: struct {
+    value: number.Box[bool],
+}
+)draft");
+  const std::optional<draft::SyntaxReference> import = first_import(consumer);
+  EXPECT(state, import.has_value());
+  if (!import.has_value()) return;
+  draft::AvailablePackageImports available;
+  available.entries.push_back({*import, &dependency_interface});
+  const draft::SemanticAnalysisResult semantics =
+      draft::analyze_package_semantics(
+          sources, consumer, target.facts, available, diagnostics);
+
+  EXPECT(state, dependency_semantics.ok);
+  EXPECT(state, !semantics.ok);
+  const std::string rendered = draft::render_diagnostics(sources, diagnostics);
+  EXPECT(state, rendered.find("does not satisfy its parametric constraint") !=
+                    std::string::npos);
+}
+
 } // namespace
 
 int main() {
   TestState state;
   test_imported_public_semantics(state);
   test_private_name_is_not_imported(state);
+  test_imported_parametric_type(state);
+  test_imported_parametric_constraint(state);
 
   if (state.failures != 0) {
     std::cerr << state.failures << " interface test expectation(s) failed\n";

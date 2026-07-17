@@ -49,6 +49,27 @@ public:
       declaration.kind = symbol.kind;
       declaration.flags = symbol.flags;
       declaration.type = translate_type(symbol.type);
+      for (const ParametricParameterRecord &parameter :
+           package_.parametric_parameters) {
+        if (parameter.owner != id) {
+          continue;
+        }
+        const Symbol &parameter_symbol =
+            package_.symbols.symbol(parameter.parameter);
+        if (!parameter_symbol.type.is_valid()) {
+          diagnostics_.error(
+              parameter_symbol.name_range,
+              "public parametric parameter '" + parameter_symbol.name +
+                  "' has no complete interface type");
+          continue;
+        }
+        declaration.parameters.push_back({
+            parameter_symbol.name,
+            parameter_symbol.kind,
+            parameter.constraint,
+            translate_type(parameter_symbol.type),
+        });
+      }
       for (const NativeBinding &binding : package_.native_bindings) {
         if (binding.symbol == id) {
           declaration.native_provider = binding.provider;
@@ -203,6 +224,42 @@ private:
     translated.member_offsets = source_type.member_offsets;
     translated.c_calling_convention = source_type.c_calling_convention;
     set_nominal_identity(source, translated);
+    bool retained_import_arguments = false;
+    for (const ImportedType &imported : package_.imported_types) {
+      if (imported.type != source) {
+        continue;
+      }
+      for (TypeId argument : imported.arguments) {
+        translated.nominal_arguments.push_back(translate_type(argument));
+      }
+      retained_import_arguments = true;
+      break;
+    }
+    if (!retained_import_arguments) {
+      for (const ParametricTypeInstanceRecord &instance :
+           package_.parametric_type_instances) {
+        if (package_.symbols.symbol(instance.instance).type != source) {
+          continue;
+        }
+        const Symbol &template_symbol =
+            package_.symbols.symbol(instance.source);
+        translated.nominal_root_identity = identity_.root_identity;
+        translated.nominal_root_relative_path = identity_.root_relative_path;
+        translated.nominal_public_name = template_symbol.name;
+        for (const ImportedSymbol &imported : package_.imported_symbols) {
+          if (imported.proxy == instance.source) {
+            translated.nominal_root_identity = imported.root_identity;
+            translated.nominal_root_relative_path = imported.root_relative_path;
+            translated.nominal_public_name = imported.public_name;
+            break;
+          }
+        }
+        for (TypeId argument : instance.arguments) {
+          translated.nominal_arguments.push_back(translate_type(argument));
+        }
+        break;
+      }
+    }
     if (source_type.element.is_valid()) {
       translated.element = translate_type(source_type.element);
     }
@@ -258,6 +315,7 @@ struct ImportedNominalCache {
   std::string root_identity;
   std::string root_relative_path;
   std::string public_name;
+  std::vector<TypeId> arguments;
   TypeId type;
 };
 
@@ -314,6 +372,8 @@ public:
             effect.detail,
         });
       }
+      bind_parametric_parameters(
+          proxy_id, imported_scope, package, cache, declaration);
       if (declaration.kind == SymbolKind::Type) {
         bind_nominal_members(
             proxy_id, imported_scope, package, cache, declaration.type);
@@ -344,24 +404,31 @@ private:
     return display_package_identity(identity) + "." + source.nominal_public_name;
   }
 
-  [[nodiscard]] std::optional<TypeId> find_nominal(const InterfaceType &source) const {
+  [[nodiscard]] std::optional<TypeId> find_nominal(
+      const InterfaceType &source,
+      const std::vector<TypeId> &arguments) const {
     for (const ImportedNominalCache &nominal : nominals_) {
       if (nominal.kind == source.kind &&
           nominal.root_identity == source.nominal_root_identity &&
           nominal.root_relative_path == source.nominal_root_relative_path &&
-          nominal.public_name == source.nominal_public_name) {
+          nominal.public_name == source.nominal_public_name &&
+          nominal.arguments == arguments) {
         return nominal.type;
       }
     }
     return std::nullopt;
   }
 
-  void remember_nominal(const InterfaceType &source, TypeId type) {
+  void remember_nominal(
+      const InterfaceType &source,
+      TypeId type,
+      std::vector<TypeId> arguments) {
     nominals_.push_back({
         source.kind,
         source.nominal_root_identity,
         source.nominal_root_relative_path,
         source.nominal_public_name,
+        arguments,
         type,
     });
     consumer_.imported_types.push_back({
@@ -369,6 +436,7 @@ private:
         source.nominal_root_identity,
         source.nominal_root_relative_path,
         source.nominal_public_name,
+        std::move(arguments),
     });
   }
 
@@ -402,12 +470,23 @@ private:
     }
     const InterfaceType source = package.types[source_id.value];
 
+    // Translate application arguments before nominal lookup. Structural types
+    // are canonical in TypeStore, so the resulting TypeId vector is a stable
+    // equality key inside this consumer even when two dependencies re-export
+    // the same specialization.
+    std::vector<TypeId> nominal_arguments;
+    nominal_arguments.reserve(source.nominal_arguments.size());
+    for (InterfaceTypeId argument : source.nominal_arguments) {
+      nominal_arguments.push_back(import_type(package, cache, argument));
+    }
+
     const bool nominal = source.kind == TypeKind::Struct ||
         source.kind == TypeKind::Enum || source.kind == TypeKind::TaggedUnion ||
         source.kind == TypeKind::RawUnion || source.kind == TypeKind::Distinct ||
         source.kind == TypeKind::TypeParameter;
     if (nominal) {
-      if (const std::optional<TypeId> existing = find_nominal(source)) {
+      if (const std::optional<TypeId> existing =
+              find_nominal(source, nominal_arguments)) {
         cache.translated[source_id.value] = *existing;
         return *existing;
       }
@@ -465,12 +544,12 @@ private:
           qualified_name(source),
           import_type(package, cache, source.element),
           SourceRange::invalid());
-      remember_nominal(source, result);
+      remember_nominal(source, result, nominal_arguments);
       break;
     case TypeKind::TypeParameter:
       result = consumer_.types.type_parameter(
           qualified_name(source), SourceRange::invalid());
-      remember_nominal(source, result);
+      remember_nominal(source, result, nominal_arguments);
       break;
     case TypeKind::Struct:
     case TypeKind::Enum:
@@ -479,7 +558,7 @@ private:
       result = consumer_.types.begin_nominal(
           source.kind, qualified_name(source), SourceRange::invalid());
       cache.translated[source_id.value] = result;
-      remember_nominal(source, result);
+      remember_nominal(source, result, nominal_arguments);
       TypeId element;
       if (source.element.is_valid()) {
         element = import_type(package, cache, source.element);
@@ -503,6 +582,39 @@ private:
     }
     cache.translated[source_id.value] = result;
     return result;
+  }
+
+  // Rebuilds the compile-time scope owned by an imported template. Parameter
+  // symbols are ordinary consumer-local symbols whose TypeIds were translated
+  // from the same interface graph as the template signature and members. This
+  // shared translation is essential: substitution compares TypeIds directly.
+  void bind_parametric_parameters(
+      SymbolId owner,
+      ScopeId imported_scope,
+      const PackageInterface &package,
+      InterfaceImportCache &cache,
+      const InterfaceDeclaration &declaration) {
+    if (declaration.parameters.empty()) {
+      return;
+    }
+    const ScopeId scope = consumer_.symbols.add_scope(
+        ScopeKind::Parametric, imported_scope, SourceRange::invalid());
+    consumer_.owned_scopes.push_back({owner, scope});
+    for (const InterfaceParameter &parameter : declaration.parameters) {
+      Symbol symbol;
+      symbol.name = parameter.name;
+      symbol.kind = parameter.kind;
+      symbol.scope = scope;
+      symbol.type = import_type(package, cache, parameter.type);
+      symbol.syntax = consumer_.symbols.symbol(owner).syntax;
+      symbol.name_range = consumer_.symbols.symbol(owner).name_range;
+      const SymbolId parameter_id =
+          consumer_.symbols.declare(std::move(symbol), diagnostics_);
+      if (parameter_id.is_valid()) {
+        consumer_.parametric_parameters.push_back(
+            {owner, parameter_id, parameter.constraint});
+      }
+    }
   }
 
   // Creates the member scope used by ordinary body/member lookup. The interface

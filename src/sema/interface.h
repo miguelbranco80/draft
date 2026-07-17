@@ -75,6 +75,22 @@ struct InterfaceType {
   std::vector<std::uint64_t> member_offsets;
   bool c_calling_convention = false;
   std::vector<InterfaceMember> nominal_members;
+  // A concrete nominal template application retains the template identity in
+  // the nominal_* fields and its arguments here. This makes `dep.Maybe[i64]`
+  // the same nominal type when it crosses more than one package boundary.
+  std::vector<InterfaceTypeId> nominal_arguments;
+};
+
+// Public parametric declarations carry an ordered, source-independent copy of
+// their compile-time parameter list. The parameter's interface type is either
+// its unique TypeParameter row or, for a future value parameter, the required
+// value type. Keeping this metadata on the declaration is what lets a consumer
+// check constraints and instantiate a template without dependency syntax.
+struct InterfaceParameter {
+  std::string name;
+  SymbolKind kind = SymbolKind::TypeParameter;
+  TypeConstraintKind constraint = TypeConstraintKind::AnyType;
+  InterfaceTypeId type;
 };
 
 // InterfaceDeclaration is one `pub` package binding in declaration order.
@@ -91,6 +107,7 @@ struct InterfaceDeclaration {
   bool has_effect_summary = false;
   std::string native_provider;
   std::string native_linker_name_spelling;
+  std::vector<InterfaceParameter> parameters;
   struct Effect {
     EffectKind kind = EffectKind::UnknownCall;
     std::string root_identity;

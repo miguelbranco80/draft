@@ -167,6 +167,10 @@ struct ImportedType {
   std::string root_identity;
   std::string root_relative_path;
   std::string public_name;
+  // Concrete nominal template applications keep their consumer-local type
+  // arguments separately from the template's public identity. An empty vector
+  // denotes an ordinary nominal or the unspecialized template declaration.
+  std::vector<TypeId> arguments;
 };
 
 // DeclarationDenial attaches a lexical `deny` contract to every declaration
