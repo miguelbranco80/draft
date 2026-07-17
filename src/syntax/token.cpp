@@ -136,6 +136,17 @@ bool token_can_end_statement(TokenKind kind) {
     return true;
   }
   switch (kind) {
+  // These spellings are contextual compiler names rather than unconditional
+  // statement operators. In particular, `c` is an ordinary import alias in the
+  // specification's `import core/c as c` examples, and flags/memory terminate
+  // assembly clobber lines just as register identifiers do.
+  case TokenKind::KeywordC:
+  case TokenKind::KeywordType:
+  case TokenKind::KeywordInteger:
+  case TokenKind::KeywordFloat:
+  case TokenKind::KeywordNumber:
+  case TokenKind::KeywordFlags:
+  case TokenKind::KeywordMemory:
   case TokenKind::KeywordBreak:
   case TokenKind::KeywordContinue:
   case TokenKind::KeywordReturn:

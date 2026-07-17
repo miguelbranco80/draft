@@ -9,6 +9,8 @@
 #include "source/diagnostic.h"
 #include "source/source.h"
 #include "syntax/lexer.h"
+#include "syntax/parser.h"
+#include "syntax/syntax_tree.h"
 #include "syntax/token.h"
 
 #include <iostream>
@@ -67,9 +69,27 @@ int lex_file(const std::string &path) {
   return diagnostics.has_errors() ? 1 : 0;
 }
 
+int parse_file(const std::string &path) {
+  draft::SourceManager sources;
+  const draft::LoadFileResult load = sources.load_file(path);
+  if (!load.ok) {
+    std::cerr << "error: " << load.error << '\n';
+    return 1;
+  }
+
+  draft::DiagnosticSink diagnostics;
+  const draft::SyntaxTree tree = draft::parse_source_file(sources, load.file, diagnostics);
+  std::cout << draft::dump_syntax_tree(tree);
+  if (!diagnostics.diagnostics().empty()) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+  }
+  return diagnostics.has_errors() ? 1 : 0;
+}
+
 void print_usage() {
   std::cerr << "usage:\n"
-            << "  draftc lex <file.draft>\n";
+            << "  draftc lex <file.draft>\n"
+            << "  draftc syntax <file.draft>\n";
 }
 
 } // namespace
@@ -77,6 +97,9 @@ void print_usage() {
 int main(int argc, char **argv) {
   if (argc == 3 && std::string_view(argv[1]) == "lex") {
     return lex_file(argv[2]);
+  }
+  if (argc == 3 && std::string_view(argv[1]) == "syntax") {
+    return parse_file(argv[2]);
   }
   print_usage();
   return 2;

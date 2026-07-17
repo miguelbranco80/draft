@@ -28,7 +28,10 @@ add_library(
   src/source/diagnostic.cpp
   src/source/source.cpp
   src/syntax/lexer.cpp
+  src/syntax/parser.cpp
+  src/syntax/syntax_tree.cpp
   src/syntax/token.cpp
+  src/workspace/package.cpp
 )
 
 target_include_directories(draft_compiler PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
@@ -69,4 +72,12 @@ if(BUILD_TESTING)
   add_executable(draft_lexer_tests tests/lexer_test.cpp)
   target_link_libraries(draft_lexer_tests PRIVATE draft_compiler)
   add_test(NAME draft_lexer_tests COMMAND draft_lexer_tests)
+
+  add_executable(draft_parser_tests tests/parser_test.cpp)
+  target_link_libraries(draft_parser_tests PRIVATE draft_compiler)
+  add_test(NAME draft_parser_tests COMMAND draft_parser_tests)
+
+  add_executable(draft_package_tests tests/package_test.cpp)
+  target_link_libraries(draft_package_tests PRIVATE draft_compiler)
+  add_test(NAME draft_package_tests COMMAND draft_package_tests)
 endif()

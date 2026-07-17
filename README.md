@@ -68,7 +68,9 @@ The bootstrap compiler is being implemented in a deliberately direct C++20
 subset under the rules in [AGENTS.md](AGENTS.md) and the sequencing in
 [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md). The checked-in implementation
 currently includes source ownership, structured diagnostics, the full lexical
-token vocabulary, UTF-8 and literal validation, and Draft semicolon insertion.
+token vocabulary, UTF-8 and literal validation, Draft semicolon insertion, a
+complete surface syntax tree and recovering parser, and deterministic
+target-qualified folder-package loading.
 
 Configure, build, and test the current compiler with:
 
@@ -79,5 +81,6 @@ ctest --test-dir build --output-on-failure
 ```
 
 `build/draftc lex path/to/file.draft` prints the token stream, including which
-semicolons were inserted by the compiler. Later compiler commands will use the
-same source, diagnostic, and syntax layers.
+semicolons were inserted by the compiler. `build/draftc syntax
+path/to/file.draft` prints the parsed grammar tree. Later compiler commands use
+the same source, diagnostic, syntax, and package layers.

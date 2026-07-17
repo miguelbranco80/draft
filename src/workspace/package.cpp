@@ -1,0 +1,224 @@
+// Target-qualified file selection and folder-package construction.
+//
+// Selection is based only on each direct child's filename. A qualifier is the
+// final `@tag` before a recognized extension; it participates only when tag
+// exactly equals PackageLoadOptions.file_tag. After removing that qualifier,
+// `_test.draft` and `_bench.draft` obey their command-specific switches.
+// Assembly extensions use the target profile's eventual assembler contract and
+// are loaded but not interpreted by the Draft parser.
+
+#include "workspace/package.h"
+
+#include "syntax/parser.h"
+
+#include <algorithm>
+#include <cstddef>
+#include <filesystem>
+#include <string_view>
+#include <system_error>
+#include <utility>
+#include <vector>
+
+namespace draft {
+namespace {
+
+struct SelectedFile {
+  std::string name;
+  PackageFileKind kind = PackageFileKind::DraftSource;
+};
+
+[[nodiscard]] bool ends_with(std::string_view value, std::string_view suffix) {
+  return value.size() >= suffix.size() &&
+         value.substr(value.size() - suffix.size()) == suffix;
+}
+
+[[nodiscard]] std::optional<PackageFileKind> recognized_kind(std::string_view extension) {
+  if (extension == ".draft") {
+    return PackageFileKind::DraftSource;
+  }
+  if (extension == ".s" || extension == ".S" || extension == ".asm") {
+    return PackageFileKind::AssemblySource;
+  }
+  return std::nullopt;
+}
+
+// Determines participation and returns the filename with a matching target
+// qualifier removed for test/benchmark classification. The physical selected
+// name remains unchanged in SelectedFile and diagnostics.
+[[nodiscard]] bool file_participates(
+    std::string_view filename,
+    PackageFileKind kind,
+    const PackageLoadOptions &options,
+    std::string &unqualified_stem) {
+  const std::size_t dot = filename.rfind('.');
+  if (dot == std::string_view::npos) {
+    return false;
+  }
+  std::string_view stem = filename.substr(0, dot);
+  const std::size_t qualifier = stem.rfind('@');
+  if (qualifier != std::string_view::npos) {
+    const std::string_view tag = stem.substr(qualifier + 1);
+    if (tag.empty() || tag != options.file_tag) {
+      return false;
+    }
+    stem = stem.substr(0, qualifier);
+  }
+  unqualified_stem.assign(stem);
+
+  if (kind != PackageFileKind::DraftSource) {
+    return true;
+  }
+  if (ends_with(stem, "_test")) {
+    return options.include_tests;
+  }
+  if (ends_with(stem, "_bench")) {
+    return options.include_benchmarks;
+  }
+  return true;
+}
+
+[[nodiscard]] std::optional<std::string> package_name_from_tree(
+    const SourceManager &sources, const SyntaxTree &tree) {
+  if (!tree.root().is_valid()) {
+    return std::nullopt;
+  }
+  const SyntaxNode &root = tree.node(tree.root());
+  if (root.children.empty()) {
+    return std::nullopt;
+  }
+  const SyntaxNode &package = tree.node(root.children.front());
+  if (package.kind != NodeKind::PackageClause || package.token_end <= package.token_begin + 1) {
+    return std::nullopt;
+  }
+  const Token &name = tree.token(package.token_begin + 1);
+  if (name.kind != TokenKind::Identifier) {
+    return std::nullopt;
+  }
+  return std::string(sources.text(name.range));
+}
+
+[[nodiscard]] SourceRange package_name_range(const SyntaxTree &tree) {
+  const SyntaxNode &root = tree.node(tree.root());
+  if (root.children.empty()) {
+    return SourceRange::invalid();
+  }
+  const SyntaxNode &package = tree.node(root.children.front());
+  if (package.token_end <= package.token_begin + 1) {
+    return package.range;
+  }
+  return tree.token(package.token_begin + 1).range;
+}
+
+} // namespace
+
+PackageLoadResult load_package(
+    SourceManager &sources,
+    const std::string &directory,
+    const PackageLoadOptions &options,
+    DiagnosticSink &diagnostics) {
+  PackageLoadResult result;
+  result.package.physical_directory = directory;
+  const std::size_t initial_error_count = diagnostics.error_count();
+
+  if (options.file_tag.empty()) {
+    diagnostics.error(SourceRange::invalid(), "target file tag must not be empty");
+    return result;
+  }
+
+  std::error_code error;
+  const std::filesystem::path directory_path(directory);
+  std::filesystem::directory_iterator iterator(directory_path, error);
+  if (error) {
+    diagnostics.error(
+        SourceRange::invalid(),
+        "cannot enumerate package directory '" + directory + "': " + error.message());
+    return result;
+  }
+
+  std::vector<SelectedFile> selected;
+  const std::filesystem::directory_iterator end;
+  for (; iterator != end; iterator.increment(error)) {
+    if (error) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "cannot enumerate package directory '" + directory + "': " + error.message());
+      return result;
+    }
+
+    std::error_code type_error;
+    if (!iterator->is_regular_file(type_error)) {
+      if (type_error) {
+        diagnostics.error(
+            SourceRange::invalid(),
+            "cannot inspect package entry '" + iterator->path().string() + "': " +
+                type_error.message());
+        return result;
+      }
+      continue;
+    }
+
+    const std::string name = iterator->path().filename().string();
+    const std::optional<PackageFileKind> kind =
+        recognized_kind(iterator->path().extension().string());
+    if (!kind.has_value()) {
+      continue;
+    }
+    std::string unqualified_stem;
+    if (file_participates(name, *kind, options, unqualified_stem)) {
+      selected.push_back({name, *kind});
+    }
+  }
+
+  // Bytewise filename order is the canonical source processing order. std::less
+  // on std::string provides that ordering independently of filesystem locale.
+  std::sort(selected.begin(), selected.end(), [](const SelectedFile &left, const SelectedFile &right) {
+    return left.name < right.name;
+  });
+
+  bool saw_draft_source = false;
+  for (const SelectedFile &selected_file : selected) {
+    const std::filesystem::path physical = directory_path / selected_file.name;
+    LoadFileResult load = sources.load_file(physical.string());
+    if (!load.ok) {
+      diagnostics.error(SourceRange::invalid(), std::move(load.error));
+      continue;
+    }
+
+    LoadedPackageFile file;
+    file.kind = selected_file.kind;
+    file.relative_name = selected_file.name;
+    file.source = load.file;
+    if (selected_file.kind == PackageFileKind::DraftSource) {
+      saw_draft_source = true;
+      file.syntax.emplace(parse_source_file(sources, load.file, diagnostics));
+      const std::optional<std::string> name = package_name_from_tree(sources, *file.syntax);
+      if (name.has_value()) {
+        if (result.package.short_name.empty()) {
+          result.package.short_name = *name;
+        } else if (result.package.short_name != *name) {
+          diagnostics.error(
+              package_name_range(*file.syntax),
+              "package name '" + *name + "' does not match package name '" +
+                  result.package.short_name + "' from another file in this directory");
+        }
+      }
+    }
+    result.package.files.push_back(std::move(file));
+  }
+
+  if (!saw_draft_source) {
+    diagnostics.error(
+        SourceRange::invalid(),
+        "package directory '" + directory + "' contains no selected .draft source files");
+  }
+  if (result.package.short_name.empty()) {
+    diagnostics.error(
+        SourceRange::invalid(),
+        "package directory '" + directory + "' has no valid package declaration");
+  }
+
+  result.ok = diagnostics.error_count() == initial_error_count;
+  return result;
+}
+
+} // namespace draft
