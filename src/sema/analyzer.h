@@ -32,6 +32,17 @@
 
 namespace draft {
 
+// EffectKind lives with semantic package records because imported interface
+// summaries must retain these tags before the HIR effect-composition pass runs.
+enum class EffectKind {
+  PackageGlobal,
+  RuntimeAssert,
+  ContextField,
+  Assembly,
+  Unchecked,
+  UnknownCall,
+};
+
 // FileSemanticScope connects one parsed file to the scope containing its import
 // aliases. Ordinary declarations live in package_scope and are therefore
 // visible through every file scope's parent link.
@@ -83,6 +94,10 @@ struct ImportBinding {
   SymbolId symbol;
   std::string package_path;
   SyntaxReference syntax;
+  // Filled by interface binding from WorkspaceGraph. Source collection leaves
+  // these empty because physical import spelling alone is not semantic identity.
+  std::string root_identity;
+  std::string root_relative_path;
 };
 
 // ImportedSymbol connects a consumer-local proxy SymbolId to the file-local
@@ -99,6 +114,19 @@ struct ImportedSymbol {
   std::string public_name;
   bool has_constant = false;
   ConstantValue constant;
+  bool has_effect_summary = false;
+};
+
+// ImportedEffect is one canonical dependency effect attached to a public
+// procedure proxy. Origin fields identify referenced dependency declarations
+// without importing their private SymbolIds into the consumer.
+struct ImportedEffect {
+  SymbolId procedure_proxy;
+  EffectKind kind = EffectKind::UnknownCall;
+  std::string root_identity;
+  std::string root_relative_path;
+  std::string declaration;
+  std::string detail;
 };
 
 // ImportedType preserves nominal identity after an interface type has been
@@ -111,6 +139,15 @@ struct ImportedType {
   std::string root_identity;
   std::string root_relative_path;
   std::string public_name;
+};
+
+// DeclarationDenial attaches a lexical `deny` contract to every declaration
+// contributed by that declaration region. The selector syntax is resolved only
+// after imports and declarations are complete; parametric instantiations retain
+// the same contract through their owner SymbolId.
+struct DeclarationDenial {
+  SymbolId declaration;
+  SyntaxReference denial;
 };
 
 enum class SemanticSiteKind {
@@ -175,6 +212,8 @@ struct SemanticPackage {
   std::vector<ImportBinding> imports;
   std::vector<ImportedSymbol> imported_symbols;
   std::vector<ImportedType> imported_types;
+  std::vector<ImportedEffect> imported_effects;
+  std::vector<DeclarationDenial> declaration_denials;
   std::vector<SemanticSite> sites;
   std::vector<NativeBinding> native_bindings;
 };

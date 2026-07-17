@@ -11,6 +11,8 @@
 #include "source/source.h"
 #include "sema/agent_metadata.h"
 #include "sema/body_checker.h"
+#include "sema/denial.h"
+#include "sema/effect.h"
 #include "sema/semantic.h"
 #include "syntax/lexer.h"
 #include "syntax/parser.h"
@@ -205,15 +207,28 @@ int check_package(const std::string &directory) {
               semantics.package,
               attachment_policy,
               diagnostics);
+          const draft::EffectSummaryResult effects = draft::summarize_package_effects(
+              semantics.package, bodies.program);
+          const bool denials_ok = draft::check_package_denials(
+              sources,
+              workspace_package.loaded,
+              semantics.package,
+              bodies.program,
+              effects,
+              diagnostics);
           const draft::PackageId package_id{static_cast<std::uint32_t>(package_index)};
           interfaces[package_index] = draft::build_package_interface(
               loaded.graph.package(package_id).identity,
               semantics.package,
               semantics.constants,
               metadata,
+              effects,
               diagnostics);
           agent_record_count += metadata.records.size();
           if (!metadata.ok) {
+            checked_all = false;
+          }
+          if (!denials_ok) {
             checked_all = false;
           }
         }

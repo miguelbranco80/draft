@@ -21,9 +21,10 @@ public:
       const SemanticPackage &package,
       const ConstantTable &constants,
       const AgentMetadataResult *metadata,
+      const EffectSummaryResult *effects,
       DiagnosticSink &diagnostics)
       : identity_(identity), package_(package), constants_(constants),
-        metadata_(metadata), diagnostics_(diagnostics) {
+        metadata_(metadata), effects_(effects), diagnostics_(diagnostics) {
     result_.identity = identity;
     result_.short_name = package.short_name;
     translated_.resize(package.types.size());
@@ -51,6 +52,39 @@ public:
       if (const ConstantValue *constant = constants_.find(id)) {
         declaration.has_constant = true;
         declaration.constant = *constant;
+      }
+      if (effects_ != nullptr && symbol.kind == SymbolKind::Procedure) {
+        if (const ProcedureEffectSummary *summary = effects_->find(id)) {
+          declaration.has_effect_summary = true;
+          for (const SemanticEffect &effect : summary->effects) {
+            InterfaceDeclaration::Effect interface_effect;
+            interface_effect.kind = effect.kind;
+            interface_effect.detail = effect.text;
+            if (!effect.root_identity.empty()) {
+              interface_effect.root_identity = effect.root_identity;
+              interface_effect.root_relative_path = effect.root_relative_path;
+              interface_effect.declaration = effect.declaration;
+            } else if (effect.symbol.is_valid()) {
+              bool imported_origin = false;
+              for (const ImportedSymbol &imported : package_.imported_symbols) {
+                if (imported.proxy == effect.symbol) {
+                  interface_effect.root_identity = imported.root_identity;
+                  interface_effect.root_relative_path = imported.root_relative_path;
+                  interface_effect.declaration = imported.public_name;
+                  imported_origin = true;
+                  break;
+                }
+              }
+              if (!imported_origin) {
+                interface_effect.root_identity = identity_.root_identity;
+                interface_effect.root_relative_path = identity_.root_relative_path;
+                interface_effect.declaration =
+                    package_.symbols.symbol(effect.symbol).name;
+              }
+            }
+            declaration.effects.push_back(std::move(interface_effect));
+          }
+        }
       }
       result_.declarations.push_back(std::move(declaration));
     }
@@ -186,6 +220,7 @@ private:
   const SemanticPackage &package_;
   const ConstantTable &constants_;
   const AgentMetadataResult *metadata_ = nullptr;
+  const EffectSummaryResult *effects_ = nullptr;
   DiagnosticSink &diagnostics_;
   PackageInterface result_;
   std::vector<InterfaceTypeId> translated_;
@@ -243,7 +278,18 @@ public:
           declaration.name,
           declaration.has_constant,
           declaration.constant,
+          declaration.has_effect_summary,
       });
+      for (const InterfaceDeclaration::Effect &effect : declaration.effects) {
+        consumer_.imported_effects.push_back({
+            proxy_id,
+            effect.kind,
+            effect.root_identity,
+            effect.root_relative_path,
+            effect.declaration,
+            effect.detail,
+        });
+      }
       if (declaration.kind == SymbolKind::Type) {
         bind_nominal_members(
             proxy_id, imported_scope, package, cache, declaration.type);
@@ -495,7 +541,7 @@ PackageInterface build_package_interface(
     const SemanticPackage &package,
     const ConstantTable &constants,
     DiagnosticSink &diagnostics) {
-  InterfaceBuilder builder(identity, package, constants, nullptr, diagnostics);
+  InterfaceBuilder builder(identity, package, constants, nullptr, nullptr, diagnostics);
   return builder.run();
 }
 
@@ -505,7 +551,19 @@ PackageInterface build_package_interface(
     const ConstantTable &constants,
     const AgentMetadataResult &metadata,
     DiagnosticSink &diagnostics) {
-  InterfaceBuilder builder(identity, package, constants, &metadata, diagnostics);
+  InterfaceBuilder builder(identity, package, constants, &metadata, nullptr, diagnostics);
+  return builder.run();
+}
+
+PackageInterface build_package_interface(
+    const PackageIdentity &identity,
+    const SemanticPackage &package,
+    const ConstantTable &constants,
+    const AgentMetadataResult &metadata,
+    const EffectSummaryResult &effects,
+    DiagnosticSink &diagnostics) {
+  InterfaceBuilder builder(
+      identity, package, constants, &metadata, &effects, diagnostics);
   return builder.run();
 }
 
@@ -514,7 +572,7 @@ void bind_package_interfaces(
     const AvailablePackageImports &available,
     DiagnosticSink &diagnostics) {
   InterfaceImporter importer(package, diagnostics);
-  for (const ImportBinding &binding : package.imports) {
+  for (ImportBinding &binding : package.imports) {
     const PackageInterface *interface = available.find(binding.syntax);
     if (interface == nullptr) {
       diagnostics.error(
@@ -523,6 +581,8 @@ void bind_package_interfaces(
               binding.package_path + "'");
       continue;
     }
+    binding.root_identity = interface->identity.root_identity;
+    binding.root_relative_path = interface->identity.root_relative_path;
     importer.bind(binding, *interface);
   }
 }

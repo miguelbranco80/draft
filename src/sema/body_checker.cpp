@@ -965,11 +965,22 @@ private:
       return hir_.add_expression(std::move(expression));
     }
 
-    case NodeKind::DenyExpression:
+    case NodeKind::DenyExpression: {
       if (!node.children.empty()) {
-        return check_expression(tree, node.children.back(), scope, expected);
+        const HirExpressionId value =
+            check_expression(tree, node.children.back(), scope, expected);
+        HirExpression expression;
+        expression.kind = HirExpressionKind::Denial;
+        expression.range = node.range;
+        expression.syntax = {tree.file(), expression_id};
+        expression.scope = scope;
+        expression.type = hir_.expression(value).type;
+        expression.operands.push_back(value);
+        expression.addressable = hir_.expression(value).addressable;
+        return hir_.add_expression(std::move(expression));
       }
       return invalid_expression(node.range);
+    }
 
     case NodeKind::SynthesisExpression: {
       semantic_.sites.push_back(
@@ -1044,7 +1055,7 @@ private:
     if (statement_node.kind != NodeKind::Declaration &&
         statement_node.children.empty()) {
       return hir_.add_statement(
-          {HirStatementKind::Invalid, statement_node.range, {}, {}, {}, {}});
+          {HirStatementKind::Invalid, statement_node.range, {}, {}, {}, {}, {}});
     }
     const NodeId declaration_id = statement_node.kind == NodeKind::Declaration
         ? statement_id
@@ -1052,7 +1063,7 @@ private:
     const SyntaxNode &declaration = tree.node(declaration_id);
     if (declaration.children.empty()) {
       return hir_.add_statement(
-          {HirStatementKind::Invalid, declaration.range, {}, {}, {}, {}});
+          {HirStatementKind::Invalid, declaration.range, {}, {}, {}, {}, {}});
     }
     const SyntaxNode &pattern = tree.node(declaration.children.front());
     if (pattern.kind == NodeKind::TuplePattern) {
@@ -1182,6 +1193,7 @@ private:
     const SyntaxNode &node = tree.node(statement_id);
     HirStatement statement;
     statement.range = node.range;
+    statement.syntax = {tree.file(), statement_id};
     switch (node.kind) {
     case NodeKind::DeclarationStatement:
       return check_local_declaration(tree, statement_id, scope);
@@ -1407,7 +1419,7 @@ private:
       break;
 
     case NodeKind::DenyStatement:
-      statement.kind = HirStatementKind::Block;
+      statement.kind = HirStatementKind::Denial;
       if (!node.children.empty()) {
         statement.blocks.push_back(
             check_block(tree, node.children.back(), scope, result_type, depth));

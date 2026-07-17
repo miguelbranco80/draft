@@ -28,6 +28,7 @@ struct SourceName {
 struct CollectionContext {
   SymbolFlags flags;
   std::string foreign_provider;
+  std::vector<SyntaxReference> denials;
 };
 
 [[nodiscard]] bool token_is_contextual_name(TokenKind kind) {
@@ -280,6 +281,9 @@ private:
       if (!id.is_valid()) {
         continue;
       }
+      for (SyntaxReference denial : context.denials) {
+        semantic_.declaration_denials.push_back({id, denial});
+      }
       declared.push_back(id);
 
       // Allocate nominal identity only after the binding succeeds. A duplicate
@@ -359,7 +363,9 @@ private:
     case NodeKind::DenyDeclaration:
       add_site(SemanticSiteKind::DenialDeclaration, tree, node_id, scope);
       if (!node.children.empty()) {
-        collect_declaration_list(tree, node.children.back(), scope, context);
+        CollectionContext nested = context;
+        nested.denials.push_back({tree.file(), node_id});
+        collect_declaration_list(tree, node.children.back(), scope, nested);
       }
       return {};
 
@@ -489,7 +495,8 @@ private:
     symbol.name_range = alias.range;
     const SymbolId id = semantic_.symbols.declare(std::move(symbol), diagnostics_);
     if (id.is_valid()) {
-      semantic_.imports.push_back({id, std::move(package_path), {tree.file(), import_id}});
+      semantic_.imports.push_back(
+          {id, std::move(package_path), {tree.file(), import_id}, {}, {}});
     }
   }
 

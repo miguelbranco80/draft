@@ -21,6 +21,7 @@
 #include "sema/agent_metadata.h"
 #include "sema/analyzer.h"
 #include "sema/constant.h"
+#include "sema/effect.h"
 #include "source/diagnostic.h"
 #include "workspace/workspace.h"
 
@@ -85,6 +86,15 @@ struct InterfaceDeclaration {
   InterfaceTypeId type;
   bool has_constant = false;
   ConstantValue constant;
+  bool has_effect_summary = false;
+  struct Effect {
+    EffectKind kind = EffectKind::UnknownCall;
+    std::string root_identity;
+    std::string root_relative_path;
+    std::string declaration;
+    std::string detail;
+  };
+  std::vector<Effect> effects;
 };
 
 // InterfaceDocumentation contains only content-addressed public design context;
@@ -136,6 +146,15 @@ struct AvailablePackageImports {
     const SemanticPackage &package,
     const ConstantTable &constants,
     const AgentMetadataResult &metadata,
+    DiagnosticSink &diagnostics);
+
+// Complete publication form used by the driver after HIR effect composition.
+[[nodiscard]] PackageInterface build_package_interface(
+    const PackageIdentity &identity,
+    const SemanticPackage &package,
+    const ConstantTable &constants,
+    const AgentMetadataResult &metadata,
+    const EffectSummaryResult &effects,
     DiagnosticSink &diagnostics);
 
 // Reconstructs every available interface type in package.types, creates one

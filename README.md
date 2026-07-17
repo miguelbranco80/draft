@@ -78,8 +78,12 @@ arbitrary-precision integer and exact rational numeric constants; and selects
 declaration/member `when` branches through deterministic fixed-point rounds.
 Provider-independent docs, judgments, and synthesis sites retain decoded text,
 typed expectations, secure package-relative attachments, and SHA-256 content
-identities; public docs cross package-interface boundaries. The single AArch64
-macOS profile is explicit and versioned rather than inferred from the host.
+identities; public docs cross package-interface boundaries. Procedure effect
+summaries compose through local and imported calls, and lexical `deny` regions
+enforce `assert`, context, assembly, unchecked access, globals, packages, and
+named declarations transitively while rejecting unknown call edges. The single
+AArch64 macOS profile is explicit and versioned rather than inferred from the
+host.
 
 Configure, build, and test the current compiler with:
 

@@ -33,6 +33,8 @@ add_library(
   src/sema/big_integer.cpp
   src/sema/body_checker.cpp
   src/sema/constant.cpp
+  src/sema/denial.cpp
+  src/sema/effect.cpp
   src/sema/hir.cpp
   src/sema/interface.cpp
   src/sema/semantic.cpp
@@ -126,6 +128,14 @@ if(BUILD_TESTING)
   add_executable(draft_agent_metadata_tests tests/agent_metadata_test.cpp)
   target_link_libraries(draft_agent_metadata_tests PRIVATE draft_compiler)
   add_test(NAME draft_agent_metadata_tests COMMAND draft_agent_metadata_tests)
+
+  add_executable(draft_effect_tests tests/effect_test.cpp)
+  target_link_libraries(draft_effect_tests PRIVATE draft_compiler)
+  add_test(NAME draft_effect_tests COMMAND draft_effect_tests)
+
+  add_executable(draft_denial_tests tests/denial_test.cpp)
+  target_link_libraries(draft_denial_tests PRIVATE draft_compiler)
+  add_test(NAME draft_denial_tests COMMAND draft_denial_tests)
 
   add_executable(draft_constant_tests tests/constant_test.cpp)
   target_link_libraries(draft_constant_tests PRIVATE draft_compiler)

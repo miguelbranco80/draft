@@ -60,6 +60,7 @@ enum class HirExpressionKind {
   Tuple,
   Composite,
   Conditional,
+  Denial,
   Synthesis,
   Assembly,
 };
@@ -72,6 +73,8 @@ struct HirExpression {
   HirExpressionKind kind = HirExpressionKind::Invalid;
   TypeId type;
   SourceRange range;
+  SyntaxReference syntax;
+  ScopeId scope;
   SymbolId symbol;
   ConstantValue constant;
   std::vector<HirExpressionId> operands;
@@ -90,6 +93,7 @@ enum class HirStatementKind {
   Defer,
   If,
   CompileTimeSelection,
+  Denial,
   For,
   Switch,
   Judgment,
@@ -106,6 +110,7 @@ enum class HirStatementKind {
 struct HirStatement {
   HirStatementKind kind = HirStatementKind::Invalid;
   SourceRange range;
+  SyntaxReference syntax;
   std::vector<HirExpressionId> expressions;
   std::vector<HirBlockId> blocks;
   std::vector<SymbolId> bindings;
