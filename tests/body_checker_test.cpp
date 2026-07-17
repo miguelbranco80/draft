@@ -125,7 +125,9 @@ views :: proc() -> usize {
     pointer: ^u64 = nil
     pair := Pair{left = local[0], right = 2}
     tuple: (u64, usize) = (pair.left, len(part))
-    return cast[usize](tuple.0)
+    (first, _) := (40, 2)
+    (_, second): (u64, usize) = tuple
+    return cast[usize](tuple.0) + cast[usize](first) + second
 }
 
 main :: proc() {
@@ -165,6 +167,7 @@ main :: proc() {
   bool saw_greater = false;
   bool saw_compound_add = false;
   bool saw_switch_shape = false;
+  bool saw_tuple_destructuring = false;
   for (std::size_t index = 0; index < source.bodies.program.expression_count(); ++index) {
     const draft::HirExpression &expression =
         source.bodies.program.expression(draft::HirExpressionId{
@@ -183,6 +186,11 @@ main :: proc() {
     saw_compound_add = saw_compound_add ||
         (statement.kind == draft::HirStatementKind::Assignment &&
          statement.operation == draft::HirOperation::Add);
+    saw_tuple_destructuring = saw_tuple_destructuring ||
+        (statement.kind == draft::HirStatementKind::LocalDeclaration &&
+         statement.local_destructures_tuple &&
+         statement.bindings.size() == 1 &&
+         statement.binding_member_indices.size() == 1);
     if (statement.kind == draft::HirStatementKind::Switch) {
       saw_switch_shape = statement.switch_cases.size() == 2 &&
           statement.switch_cases[0].label_count == 1 &&
@@ -195,6 +203,7 @@ main :: proc() {
   EXPECT(state, saw_greater);
   EXPECT(state, saw_compound_add);
   EXPECT(state, saw_switch_shape);
+  EXPECT(state, saw_tuple_destructuring);
 }
 
 void test_body_diagnostics(TestState &state) {

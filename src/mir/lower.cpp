@@ -1129,8 +1129,52 @@ private:
       locals.push_back(ensure_local(binding));
     }
     if (statement.local_is_uninitialized) return;
+    MirValueId initializer;
+    TypeId initializer_type;
     if (!statement.expressions.empty()) {
-      const MirValueId initializer = lower_expression(statement.expressions.front());
+      const HirExpression &source = hir_.expression(statement.expressions.front());
+      initializer_type = source.type;
+      initializer = lower_expression(statement.expressions.front());
+    } else if (statement.local_destructures_tuple) {
+      // The zero value of a tuple is the product of its member zero values. We
+      // can initialize the selected locals directly without constructing a
+      // temporary aggregate, and discarded members require no storage at all.
+      for (MirLocalId local_id : locals) {
+        store(
+            local_address(local_id, statement.range),
+            zero(procedure_.local(local_id).type, statement.range),
+            statement.range);
+      }
+      return;
+    }
+
+    if (statement.local_destructures_tuple && initializer.is_valid()) {
+      const Type tuple = semantic_.types.type(initializer_type);
+      if (tuple.kind != TypeKind::Tuple ||
+          statement.binding_member_indices.size() != locals.size()) {
+        diagnostics_.error(statement.range, "tuple destructuring HIR is inconsistent");
+        return;
+      }
+      for (std::size_t index = 0; index < locals.size(); ++index) {
+        const std::size_t member_index = statement.binding_member_indices[index];
+        if (member_index >= tuple.members.size() ||
+            member_index >= tuple.member_offsets.size()) {
+          diagnostics_.error(statement.range, "tuple binding index is out of range");
+          continue;
+        }
+        MirInstruction extract;
+        extract.kind = MirInstructionKind::ExtractMember;
+        extract.range = statement.range;
+        extract.type = tuple.members[member_index];
+        extract.offset = tuple.member_offsets[member_index];
+        extract.operands.push_back(initializer);
+        const MirValueId member = emit_value(std::move(extract));
+        store(local_address(locals[index], statement.range), member, statement.range);
+      }
+      return;
+    }
+
+    if (initializer.is_valid()) {
       for (MirLocalId local_id : locals) {
         store(local_address(local_id, statement.range), initializer, statement.range);
       }

@@ -177,6 +177,11 @@ struct HirStatement {
   std::vector<HirExpressionId> expressions;
   std::vector<HirBlockId> blocks;
   std::vector<SymbolId> bindings;
+  // A tuple-pattern declaration evaluates one aggregate initializer and gives
+  // each non-discard binding one selected member. This parallel vector records
+  // those source member indices; discarded `_` positions simply have no row.
+  // Ordinary declarations and iteration bindings leave it empty.
+  std::vector<std::size_t> binding_member_indices;
   std::vector<HirStatementId> header_statements;
   HirOperation operation = HirOperation::None;
   std::vector<HirSwitchCase> switch_cases;
@@ -185,6 +190,7 @@ struct HirStatement {
   // vector; this boundary tells CFG lowering where the post sequence begins.
   std::size_t for_initialization_count = 0;
   bool local_is_uninitialized = false;
+  bool local_destructures_tuple = false;
 };
 
 // Every runtime block has one lexical ScopeId and an ordered statement list.

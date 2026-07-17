@@ -93,6 +93,9 @@ compute :: proc(values: []i64, flag: bool) -> i64 {
     } else {
         total = 1
     }
+    (forty, _): (i64, i64) = (40, 0)
+    (_, two): (i64, i64) = (0, 2)
+    total += forty + two
     selected := total if flag else 2
     for i: i64 = 0; i < 3; i += 1 {
         selected += i
@@ -128,6 +131,7 @@ compute :: proc(values: []i64, flag: bool) -> i64 {
   std::size_t calls = 0;
   std::size_t bounds_checks = 0;
   std::size_t stores = 0;
+  std::size_t extracted_members = 0;
   for (const draft::MirProcedure &procedure : source.mir.program.procedures()) {
     EXPECT(state, procedure.valid);
     EXPECT(state, procedure.entry.is_valid());
@@ -144,6 +148,9 @@ compute :: proc(values: []i64, flag: bool) -> i64 {
         ++bounds_checks;
       }
       if (instruction.kind == draft::MirInstructionKind::Store) ++stores;
+      if (instruction.kind == draft::MirInstructionKind::ExtractMember) {
+        ++extracted_members;
+      }
     }
   }
   EXPECT(state, conditional_branches >= 6);
@@ -151,6 +158,7 @@ compute :: proc(values: []i64, flag: bool) -> i64 {
   EXPECT(state, calls == 1);
   EXPECT(state, bounds_checks == 1);
   EXPECT(state, stores >= 12);
+  EXPECT(state, extracted_members == 2);
 }
 
 void test_unresolved_synthesis_stops_lowering(TestState &state) {

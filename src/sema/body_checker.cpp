@@ -492,6 +492,52 @@ private:
     }
   }
 
+  // Inferred runtime bindings may not retain the untyped numeric pseudo-types.
+  // Apply the ordinary int/f64 defaults recursively to tuple members so
+  // `pair := (1, 2.0)` has a complete physical type just like two scalar `:=`
+  // declarations would.
+  [[nodiscard]] TypeId default_inferred_runtime_type(TypeId source) {
+    if (source == semantic_.types.builtins().untyped_integer) {
+      return semantic_.types.builtins().int_type;
+    }
+    if (source == semantic_.types.builtins().untyped_float) {
+      const std::optional<TypeId> f64 = semantic_.types.find_builtin("f64");
+      return f64.value_or(semantic_.types.builtins().invalid);
+    }
+    if (is_invalid_type(source)) return source;
+    const Type type = semantic_.types.type(source);
+    if (type.kind != TypeKind::Tuple) return source;
+    std::vector<TypeId> members;
+    members.reserve(type.members.size());
+    for (TypeId member : type.members) {
+      members.push_back(default_inferred_runtime_type(member));
+    }
+    return semantic_.types.tuple(members);
+  }
+
+  // Contextualize tuple elements individually after recursive defaulting. The
+  // existing scalar helper deliberately applies one target to an entire numeric
+  // expression tree; a tuple instead has one potentially different target per
+  // operand.
+  void contextualize_inferred_runtime_expression(
+      HirExpressionId expression_id, TypeId target) {
+    HirExpression &expression = hir_.expression_mut(expression_id);
+    if (!is_invalid_type(target) &&
+        semantic_.types.type(target).kind == TypeKind::Tuple &&
+        (expression.kind == HirExpressionKind::Tuple ||
+         expression.kind == HirExpressionKind::Composite)) {
+      const std::vector<TypeId> members = semantic_.types.type(target).members;
+      const std::vector<HirExpressionId> operands = expression.operands;
+      const std::size_t count = std::min(members.size(), operands.size());
+      for (std::size_t index = 0; index < count; ++index) {
+        contextualize_inferred_runtime_expression(operands[index], members[index]);
+      }
+      expression.type = target;
+      return;
+    }
+    contextualize_numeric_expression(expression_id, target);
+  }
+
   // Finds the source operator between the immediate child spans.
   [[nodiscard]] TokenKind binary_operator(
       const SyntaxTree &tree, const SyntaxNode &node) const {
@@ -1916,9 +1962,7 @@ private:
       return hir_.add_statement(std::move(invalid));
     }
     const SyntaxNode &pattern = tree.node(declaration.children.front());
-    if (pattern.kind == NodeKind::TuplePattern) {
-      diagnostics_.error(pattern.range, "tuple local destructuring is not yet implemented");
-    }
+    const bool destructures_tuple = pattern.kind == NodeKind::TuplePattern;
     std::vector<SourceName> names;
     for (NodeId child : pattern.children) {
       const SyntaxNode &name_list = tree.node(child);
@@ -1951,14 +1995,8 @@ private:
           tree, *initializer, scope, declared_type);
       statement.expressions.push_back(value);
       if (!declared_type.is_valid()) {
-        declared_type = hir_.expression(value).type;
-        if (is_untyped_integer(declared_type)) {
-          declared_type = semantic_.types.builtins().int_type;
-        } else if (is_untyped_float(declared_type)) {
-          const std::optional<TypeId> f64 = semantic_.types.find_builtin("f64");
-          declared_type = f64.value_or(semantic_.types.builtins().invalid);
-        }
-        contextualize_numeric_expression(value, declared_type);
+        declared_type = default_inferred_runtime_type(hir_.expression(value).type);
+        contextualize_inferred_runtime_expression(value, declared_type);
       }
     }
     if (!declared_type.is_valid()) {
@@ -1966,17 +2004,40 @@ private:
       declared_type = semantic_.types.builtins().invalid;
     }
 
-    for (const SourceName &name : names) {
+    std::vector<TypeId> binding_types(names.size(), declared_type);
+    if (destructures_tuple) {
+      statement.local_destructures_tuple = true;
+      if (is_invalid_type(declared_type) ||
+          semantic_.types.type(declared_type).kind != TypeKind::Tuple) {
+        diagnostics_.error(pattern.range, "tuple pattern requires a tuple value");
+      } else {
+        const std::vector<TypeId> &members =
+            semantic_.types.type(declared_type).members;
+        if (members.size() != names.size()) {
+          diagnostics_.error(pattern.range, "tuple pattern has the wrong arity");
+        }
+        const std::size_t count = std::min(members.size(), binding_types.size());
+        for (std::size_t index = 0; index < count; ++index) {
+          binding_types[index] = members[index];
+        }
+      }
+    }
+
+    for (std::size_t index = 0; index < names.size(); ++index) {
+      const SourceName &name = names[index];
       if (name.text == "_") continue;
       Symbol symbol;
       symbol.name = name.text;
       symbol.kind = SymbolKind::Local;
       symbol.scope = scope;
-      symbol.type = declared_type;
+      symbol.type = binding_types[index];
       symbol.syntax = {tree.file(), declaration_id};
       symbol.name_range = name.range;
       const SymbolId id = semantic_.symbols.declare(std::move(symbol), diagnostics_);
-      if (id.is_valid()) statement.bindings.push_back(id);
+      if (id.is_valid()) {
+        statement.bindings.push_back(id);
+        if (destructures_tuple) statement.binding_member_indices.push_back(index);
+      }
     }
     return hir_.add_statement(std::move(statement));
   }

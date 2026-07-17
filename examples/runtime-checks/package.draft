@@ -40,6 +40,9 @@ main :: proc() {
     assert(identity[i64](42) == 42)
     value: u32 = 17
     assert(identity(value) == 17)
+    (left, _): (i64, i64) = (20, 0)
+    (_, right): (i64, i64) = (0, 22)
+    assert(left + right == 42)
     assert(narrow(42.75) == 42)
     assert(cast[i64](to_rune(65)) == 65)
     assert(to_code(7) == .Seven)

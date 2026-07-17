@@ -1141,8 +1141,17 @@ private:
       assign_alias(operands, instruction, result);
       break;
     case MirInstructionKind::ExtractMember:
-      error(instruction.range, "extract-member MIR is not implemented");
-      assign_alias(operands, instruction, "undef");
+      {
+        const MirValueId aggregate_id = instruction.operands[0];
+        const TypeId aggregate_type = procedure.value(aggregate_id).type;
+        const std::size_t member = aggregate_index(
+            aggregate_type, instruction.offset);
+        output_ << "  " << result << " = extractvalue "
+                << typed_operand(
+                       procedure, operands, aggregate_id, instruction.range)
+                << ", " << member << '\n';
+        assign_alias(operands, instruction, result);
+      }
       break;
     case MirInstructionKind::IndexAddress: {
       const MirValueId base_id = instruction.operands[0];

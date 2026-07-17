@@ -90,9 +90,12 @@ to_code_checked :: proc(value: i64) -> Code {
 
 main :: proc() -> i32 {
     value := add(20, 22)
+    (left, _): (i64, i64) = (20, 0)
+    (_, right): (i64, i64) = (0, 22)
     copy := identity[i64](value)
     inferred := identity(value)
     small := 1 + 2
+    assert(left + right == 42)
     assert(copy == 42)
     assert(inferred == 42)
     assert(small == 3)
@@ -160,6 +163,7 @@ main :: proc() -> i32 {
   EXPECT(state, module.text.find("fptosi double") != std::string::npos);
   EXPECT(state, module.text.find("icmp eq i16") != std::string::npos);
   EXPECT(state, module.text.find(", 7") != std::string::npos);
+  EXPECT(state, module.text.find("extractvalue { i64, i64 }") != std::string::npos);
   EXPECT(state, module.text.find("bitcast (i64 4602678819172646912 to double)") !=
       std::string::npos);
   EXPECT(state, module.text.find("bitcast (i64 4591870180066957722 to double)") !=

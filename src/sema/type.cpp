@@ -317,6 +317,18 @@ TypeId TypeStore::tuple(const std::vector<TypeId> &members) {
   result.kind = TypeKind::Tuple;
   result.layout = aggregate_layout(members);
   result.members = members;
+  if (result.layout.known) {
+    std::uint64_t next_offset = 0;
+    result.member_offsets.reserve(members.size());
+    for (TypeId member : members) {
+      const TypeLayout member_layout = type(member).layout;
+      const std::optional<std::uint64_t> offset =
+          round_up(next_offset, member_layout.alignment);
+      assert(offset.has_value());
+      result.member_offsets.push_back(*offset);
+      next_offset = *offset + member_layout.size;
+    }
+  }
   return add(std::move(result));
 }
 
