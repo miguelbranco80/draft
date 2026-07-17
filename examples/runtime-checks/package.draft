@@ -1,5 +1,10 @@
 package runtime_checks
 
+Code :: enum i16 {
+    Zero,
+    Seven = 7,
+}
+
 divide :: proc(left, right: i64) -> i64 {
     return left / right
 }
@@ -24,6 +29,10 @@ to_rune :: proc(value: i64) -> rune {
     return cast[rune](value)
 }
 
+to_code :: proc(value: i64) -> Code {
+    return cast[Code](value)
+}
+
 main :: proc() {
     assert(divide(84, 2) == 42)
     assert(shift(1, 5) == 32)
@@ -33,4 +42,5 @@ main :: proc() {
     assert(identity(value) == 17)
     assert(narrow(42.75) == 42)
     assert(cast[i64](to_rune(65)) == 65)
+    assert(to_code(7) == .Seven)
 }

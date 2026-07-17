@@ -50,6 +50,8 @@ struct InterfaceMember {
   SymbolKind kind = SymbolKind::Field;
   InterfaceTypeId type;
   std::uint64_t offset = 0;
+  bool has_enum_value = false;
+  BigInteger enum_value;
 };
 
 // InterfaceType is a package-independent type graph row. element and members

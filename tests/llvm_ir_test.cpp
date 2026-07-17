@@ -71,12 +71,21 @@ identity[T: number] :: proc(value: T) -> T {
     return value
 }
 
+Code :: enum i16 {
+    Zero,
+    Seven = 7,
+}
+
 truncate_checked :: proc(value: f64) -> i32 {
     return cast[i32](value)
 }
 
 to_rune_checked :: proc(value: i64) -> rune {
     return cast[rune](value)
+}
+
+to_code_checked :: proc(value: i64) -> Code {
+    return cast[Code](value)
 }
 
 main :: proc() -> i32 {
@@ -149,6 +158,8 @@ main :: proc() -> i32 {
   EXPECT(state, module.text.find("fcmp ogt double") != std::string::npos);
   EXPECT(state, module.text.find("fcmp olt double") != std::string::npos);
   EXPECT(state, module.text.find("fptosi double") != std::string::npos);
+  EXPECT(state, module.text.find("icmp eq i16") != std::string::npos);
+  EXPECT(state, module.text.find(", 7") != std::string::npos);
   EXPECT(state, module.text.find("bitcast (i64 4602678819172646912 to double)") !=
       std::string::npos);
   EXPECT(state, module.text.find("bitcast (i64 4591870180066957722 to double)") !=

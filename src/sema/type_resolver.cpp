@@ -43,6 +43,7 @@ struct MemberData {
   std::vector<SymbolId> symbols;
   std::vector<TypeId> types;
   std::vector<std::uint64_t> offsets;
+  std::vector<BigInteger> enum_values;
   bool incomplete = false;
 };
 
@@ -728,6 +729,99 @@ private:
 
   // Declares an enum name now and fills its backing type after explicit/inferred
   // backing selection has seen the complete member count.
+  [[nodiscard]] TokenKind expression_binary_operator(
+      const SyntaxTree &tree, const SyntaxNode &expression) const {
+    if (expression.children.size() != 2) return TokenKind::Invalid;
+    const SyntaxNode &left = tree.node(expression.children.front());
+    const SyntaxNode &right = tree.node(expression.children.back());
+    for (std::uint32_t index = left.token_end; index < right.token_begin; ++index) {
+      const TokenKind kind = tree.token(index).kind;
+      if (kind != TokenKind::Semicolon && kind != TokenKind::Comma) return kind;
+    }
+    return TokenKind::Invalid;
+  }
+
+  // Enum values participate in layout before the general constant pass runs.
+  // This evaluator covers the integer constant vocabulary and earlier members
+  // without introducing host-width arithmetic into backing-type selection.
+  [[nodiscard]] std::optional<BigInteger> enum_integer_expression(
+      const SyntaxTree &tree, NodeId expression_id, ScopeId scope) {
+    const SyntaxNode &expression = tree.node(expression_id);
+    if (expression.kind == NodeKind::LiteralExpression &&
+        expression.token_begin < expression.token_end &&
+        tree.token(expression.token_begin).kind == TokenKind::IntegerLiteral) {
+      return BigInteger::parse_literal(
+          sources_.text(tree.token(expression.token_begin).range));
+    }
+    if (expression.kind == NodeKind::GroupExpression &&
+        !expression.children.empty()) {
+      return enum_integer_expression(tree, expression.children.front(), scope);
+    }
+    if (expression.kind == NodeKind::NameExpression) {
+      const std::vector<SourceName> names = names_in_span(
+          tree, expression.token_begin, expression.token_end);
+      if (names.size() != 1) return std::nullopt;
+      const std::optional<SymbolId> found =
+          semantic_.symbols.lookup(scope, names.front().text);
+      if (!found.has_value()) return std::nullopt;
+      for (const EnumMemberValue &value : semantic_.enum_member_values) {
+        if (value.member == *found) return value.value;
+      }
+      return std::nullopt;
+    }
+    if (expression.kind == NodeKind::UnaryExpression &&
+        !expression.children.empty()) {
+      const std::optional<BigInteger> operand =
+          enum_integer_expression(tree, expression.children.front(), scope);
+      if (!operand.has_value()) return std::nullopt;
+      const TokenKind operation = tree.token(expression.token_begin).kind;
+      if (operation == TokenKind::Plus) return *operand;
+      if (operation == TokenKind::Minus) return operand->negated();
+      if (operation == TokenKind::Tilde) return operand->bitwise_not();
+      return std::nullopt;
+    }
+    if (expression.kind != NodeKind::BinaryExpression ||
+        expression.children.size() != 2) {
+      return std::nullopt;
+    }
+    const std::optional<BigInteger> left =
+        enum_integer_expression(tree, expression.children[0], scope);
+    const std::optional<BigInteger> right =
+        enum_integer_expression(tree, expression.children[1], scope);
+    if (!left.has_value() || !right.has_value()) return std::nullopt;
+    switch (expression_binary_operator(tree, expression)) {
+    case TokenKind::Plus: return left->added(*right);
+    case TokenKind::Minus: return left->subtracted(*right);
+    case TokenKind::Star: return left->multiplied(*right);
+    case TokenKind::Ampersand: return left->bitwise_and(*right);
+    case TokenKind::Pipe: return left->bitwise_or(*right);
+    case TokenKind::Caret: return left->bitwise_xor(*right);
+    case TokenKind::Slash:
+    case TokenKind::Percent: {
+      BigInteger quotient;
+      BigInteger remainder;
+      if (!left->divide(*right, quotient, remainder)) return std::nullopt;
+      return expression_binary_operator(tree, expression) == TokenKind::Slash
+          ? std::optional<BigInteger>(std::move(quotient))
+          : std::optional<BigInteger>(std::move(remainder));
+    }
+    case TokenKind::ShiftLeft:
+    case TokenKind::ShiftRight: {
+      if (right->is_negative()) return std::nullopt;
+      const std::optional<std::uint64_t> count = right->to_u64();
+      if (!count.has_value() ||
+          *count > static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max())) {
+        return std::nullopt;
+      }
+      return expression_binary_operator(tree, expression) == TokenKind::ShiftLeft
+          ? left->shifted_left(static_cast<std::size_t>(*count))
+          : left->shifted_right(static_cast<std::size_t>(*count));
+    }
+    default:
+      return std::nullopt;
+    }
+  }
+
   void collect_enum_member(
       const SyntaxTree &tree,
       NodeId member_id,
@@ -748,9 +842,32 @@ private:
         SymbolKind::EnumMember,
         semantic_.types.builtins().invalid);
     if (symbol.has_value()) {
+      BigInteger value = data.enum_values.empty()
+          ? BigInteger::from_u64(0)
+          : data.enum_values.back().added(BigInteger::from_u64(1));
+      if (!member.children.empty()) {
+        const std::optional<BigInteger> explicit_value =
+            enum_integer_expression(tree, member.children.front(), scope);
+        if (!explicit_value.has_value()) {
+          diagnostics_.error(
+              tree.node(member.children.front()).range,
+              "enum value must be a compile-time integer expression");
+          data.incomplete = true;
+        } else {
+          value = *explicit_value;
+        }
+      }
+      for (const BigInteger &existing : data.enum_values) {
+        if (existing.compare(value) == 0) {
+          diagnostics_.error(member.range, "duplicate enum value");
+          break;
+        }
+      }
       data.symbols.push_back(*symbol);
       data.types.push_back(semantic_.types.builtins().invalid);
       data.offsets.push_back(0);
+      data.enum_values.push_back(value);
+      semantic_.enum_member_values.push_back({*symbol, std::move(value)});
     }
   }
 
@@ -930,6 +1047,45 @@ private:
     return u64.value_or(semantic_.types.builtins().invalid);
   }
 
+  [[nodiscard]] bool integer_fits_type(
+      const BigInteger &value, TypeId type_id) const {
+    const Type type = semantic_.types.type(type_id);
+    if (type.kind != TypeKind::SignedInteger &&
+        type.kind != TypeKind::UnsignedInteger) {
+      return false;
+    }
+    if (type.kind == TypeKind::UnsignedInteger) {
+      return !value.is_negative() && value.bit_count() <= type.bit_width;
+    }
+    const BigInteger magnitude = BigInteger::from_u64(1).shifted_left(
+        static_cast<std::size_t>(type.bit_width - 1U));
+    return value.compare(magnitude.negated()) >= 0 &&
+        value.compare(magnitude.subtracted(BigInteger::from_u64(1))) <= 0;
+  }
+
+  [[nodiscard]] TypeId inferred_enum_backing(
+      const std::vector<BigInteger> &values) const {
+    bool has_negative = false;
+    for (const BigInteger &value : values) {
+      has_negative = has_negative || value.is_negative();
+    }
+    static constexpr std::string_view unsigned_names[] = {
+        "u8", "u16", "u32", "u64", "u128"};
+    static constexpr std::string_view signed_names[] = {
+        "i8", "i16", "i32", "i64", "i128"};
+    const auto &names = has_negative ? signed_names : unsigned_names;
+    for (std::string_view name : names) {
+      const std::optional<TypeId> candidate = semantic_.types.find_builtin(name);
+      if (!candidate.has_value()) continue;
+      bool fits = true;
+      for (const BigInteger &value : values) {
+        fits = fits && integer_fits_type(value, *candidate);
+      }
+      if (fits) return *candidate;
+    }
+    return semantic_.types.builtins().invalid;
+  }
+
   // Applies the exact tagged-union formula from section 5. All alternatives use
   // the one computed payload offset; payload-free alternatives remain valid.
   [[nodiscard]] TypeLayout tagged_union_layout(
@@ -1024,10 +1180,18 @@ private:
       } else if (kind == TypeKind::Enum) {
         TypeId backing = explicit_backing.has_value()
             ? resolve_type(tree, *explicit_backing, parent)
-            : inferred_discriminator(data.symbols.size());
+            : inferred_enum_backing(data.enum_values);
         if (!semantic_.types.is_integer(backing)) {
           diagnostics_.error(aggregate.range, "enum backing type must be an integer type");
           backing = semantic_.types.builtins().invalid;
+        } else {
+          for (std::size_t index = 0; index < data.enum_values.size(); ++index) {
+            if (!integer_fits_type(data.enum_values[index], backing)) {
+              diagnostics_.error(
+                  semantic_.symbols.symbol(data.symbols[index]).name_range,
+                  "enum value is not representable in its backing type");
+            }
+          }
         }
         semantic_.types.type_mut(nominal).element = backing;
         layout = semantic_.types.type(backing).layout;

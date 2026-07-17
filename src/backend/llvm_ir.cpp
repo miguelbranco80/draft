@@ -763,16 +763,11 @@ private:
     return "zeroinitializer";
   }
 
-  [[nodiscard]] std::uint64_t enum_discriminator(SymbolId member) const {
-    if (!member.is_valid()) return 0;
-    const Symbol &member_symbol = semantic_.symbols.symbol(member);
-    std::uint64_t discriminator = 0;
-    for (const AggregateMember &entry : semantic_.aggregate_members) {
-      if (entry.member == member) return discriminator;
-      const Symbol &candidate = semantic_.symbols.symbol(entry.member);
-      if (candidate.scope == member_symbol.scope) ++discriminator;
+  [[nodiscard]] std::string enum_value(SymbolId member) const {
+    for (const EnumMemberValue &entry : semantic_.enum_member_values) {
+      if (entry.member == member) return entry.value.to_decimal();
     }
-    return 0;
+    return "0";
   }
 
   [[nodiscard]] std::string instruction_constant(
@@ -790,7 +785,7 @@ private:
           std::to_string(instruction.constant.text.size()) + " }";
     }
     if (instruction.constant.kind == ConstantKind::EnumLabel) {
-      return std::to_string(enum_discriminator(instruction.symbol));
+      return enum_value(instruction.symbol);
     }
     return scalar_constant(
         instruction.constant, instruction.type, instruction.range);

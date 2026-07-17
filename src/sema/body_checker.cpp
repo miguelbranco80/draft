@@ -400,11 +400,14 @@ private:
       TypeId target, const BigInteger &value) const {
     const std::optional<SymbolId> owner = type_owner(target);
     if (!owner.has_value()) return false;
-    std::uint64_t discriminator = 0;
     for (const AggregateMember &member : semantic_.aggregate_members) {
       if (member.owner != *owner) continue;
-      if (value.compare(BigInteger::from_u64(discriminator)) == 0) return true;
-      ++discriminator;
+      for (const EnumMemberValue &enum_value : semantic_.enum_member_values) {
+        if (enum_value.member == member.member &&
+            value.compare(enum_value.value) == 0) {
+          return true;
+        }
+      }
     }
     return false;
   }
@@ -1347,14 +1350,29 @@ private:
     case NodeKind::BinaryExpression: {
       if (node.children.size() != 2) return invalid_expression(node.range);
       const TokenKind operation = binary_operator(tree, node);
-      const HirExpressionId left_id = check_expression(tree, node.children[0], scope);
-      const HirExpressionId right_id = check_expression(
-          tree,
-          node.children[1],
-          scope,
-          operation == TokenKind::ShiftLeft || operation == TokenKind::ShiftRight
-              ? semantic_.types.builtins().usize_type
-              : TypeId{});
+      HirExpressionId left_id;
+      HirExpressionId right_id;
+      if (tree.node(node.children[0]).kind ==
+          NodeKind::ContextualAlternativeExpression) {
+        right_id = check_expression(tree, node.children[1], scope);
+        left_id = check_expression(
+            tree,
+            node.children[0],
+            scope,
+            hir_.expression(right_id).type);
+      } else {
+        left_id = check_expression(tree, node.children[0], scope);
+        TypeId right_expected;
+        if (tree.node(node.children[1]).kind ==
+            NodeKind::ContextualAlternativeExpression) {
+          right_expected = hir_.expression(left_id).type;
+        } else if (operation == TokenKind::ShiftLeft ||
+                   operation == TokenKind::ShiftRight) {
+          right_expected = semantic_.types.builtins().usize_type;
+        }
+        right_id = check_expression(
+            tree, node.children[1], scope, right_expected);
+      }
       const TypeId left = hir_.expression(left_id).type;
       const TypeId right = hir_.expression(right_id).type;
       TypeId result = semantic_.types.builtins().invalid;
@@ -1367,9 +1385,17 @@ private:
       } else if (operation == TokenKind::EqualEqual || operation == TokenKind::BangEqual ||
                  operation == TokenKind::Less || operation == TokenKind::LessEqual ||
                  operation == TokenKind::Greater || operation == TokenKind::GreaterEqual) {
+        const TypeKind left_kind = is_invalid_type(left)
+            ? TypeKind::Invalid
+            : semantic_.types.type(left).kind;
+        const bool equality_only = operation == TokenKind::EqualEqual ||
+            operation == TokenKind::BangEqual;
         if ((is_numeric(left) && is_numeric(right) &&
              !is_invalid_type(common_numeric_type(left, right, node.range))) ||
-            (left == right && is_bool(left))) {
+            (left == right &&
+             (is_bool(left) || left_kind == TypeKind::Enum ||
+              left_kind == TypeKind::Rune) &&
+             (equality_only || left_kind == TypeKind::Rune))) {
           result = semantic_.types.builtins().bool_type;
         } else if (!is_numeric(left) || !is_numeric(right)) {
           diagnostics_.error(node.range, "comparison is not defined for operand types");

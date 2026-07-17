@@ -246,12 +246,16 @@ private:
   }
 
   [[nodiscard]] MirValueId constant(
-      ConstantValue value, TypeId type, SourceRange range) {
+      ConstantValue value,
+      TypeId type,
+      SourceRange range,
+      SymbolId symbol = {}) {
     MirInstruction instruction;
     instruction.kind = MirInstructionKind::Constant;
     instruction.range = range;
     instruction.type = type;
     instruction.constant = std::move(value);
+    instruction.symbol = symbol;
     return emit_value(std::move(instruction));
   }
 
@@ -465,13 +469,20 @@ private:
       trap_unless(valid, range);
     } else if (target_type.kind == TypeKind::Enum) {
       MirValueId valid;
-      std::uint64_t discriminator = 0;
       for (const AggregateMember &member : semantic_.aggregate_members) {
         const Symbol &owner = semantic_.symbols.symbol(member.owner);
         if (owner.type != target) continue;
+        const EnumMemberValue *enum_value = nullptr;
+        for (const EnumMemberValue &candidate :
+             semantic_.enum_member_values) {
+          if (candidate.member == member.member) {
+            enum_value = &candidate;
+            break;
+          }
+        }
+        if (enum_value == nullptr) continue;
         const MirValueId candidate = constant(
-            ConstantValue::make_integer(
-                static_cast<std::int64_t>(discriminator)),
+            ConstantValue::make_integer(enum_value->value),
             target,
             range);
         const MirValueId matches = binary(
@@ -490,7 +501,6 @@ private:
               semantic_.types.builtins().bool_type,
               range);
         }
-        ++discriminator;
       }
       if (!valid.is_valid()) {
         valid = constant(
@@ -962,7 +972,11 @@ private:
     const HirExpression &expression = hir_.expression(expression_id);
     switch (expression.kind) {
     case HirExpressionKind::Constant:
-      return constant(expression.constant, expression.type, expression.range);
+      return constant(
+          expression.constant,
+          expression.type,
+          expression.range,
+          expression.symbol);
     case HirExpressionKind::Symbol: {
       const Symbol &symbol = semantic_.symbols.symbol(expression.symbol);
       if (symbol.kind == SymbolKind::Procedure) {

@@ -395,6 +395,11 @@ void test_checked_numeric_casts(TestState &state) {
   CheckedSource safe(R"draft(
 package bodies
 
+Code :: enum i16 {
+    Zero,
+    Seven = 7,
+}
+
 small :: proc() -> i8 {
     return cast[i8](127.9)
 }
@@ -410,6 +415,10 @@ dynamic :: proc(value: f64) -> i32 {
 scalar :: proc(value: i64) -> rune {
     return cast[rune](value)
 }
+
+code :: proc(value: i64) -> Code {
+    return cast[Code](value)
+}
 )draft");
   if (safe.diagnostics.has_errors()) {
     std::cerr << draft::render_diagnostics(safe.sources, safe.diagnostics);
@@ -420,12 +429,21 @@ scalar :: proc(value: i64) -> rune {
   CheckedSource failing(R"draft(
 package bodies
 
+Code :: enum i16 {
+    Zero,
+    Seven = 7,
+}
+
 too_large :: proc() -> i8 {
     return cast[i8](128.0)
 }
 
 surrogate :: proc() -> rune {
     return cast[rune](0xd800)
+}
+
+invalid_code :: proc() -> Code {
+    return cast[Code](1)
 }
 )draft");
   EXPECT(state, !failing.bodies.ok);
@@ -434,6 +452,8 @@ surrogate :: proc() -> rune {
   EXPECT(state, rendered.find("float-to-integer cast is out of range") !=
                     std::string::npos);
   EXPECT(state, rendered.find("does not produce a Unicode scalar") !=
+                    std::string::npos);
+  EXPECT(state, rendered.find("does not name an enum member") !=
                     std::string::npos);
 }
 

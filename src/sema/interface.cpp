@@ -137,6 +137,14 @@ private:
     return 0;
   }
 
+  [[nodiscard]] const EnumMemberValue *enum_member_value(
+      SymbolId member) const {
+    for (const EnumMemberValue &value : package_.enum_member_values) {
+      if (value.member == member) return &value;
+    }
+    return nullptr;
+  }
+
   // Returns the original declaration identity of a nominal type. Locally
   // declared rows belong to the interface package; reconstructed rows retain
   // the dependency provenance recorded during import.
@@ -211,12 +219,19 @@ private:
               "member '" + member.name + "' has no complete interface type");
           continue;
         }
-        translated.nominal_members.push_back({
+        InterfaceMember translated_member{
             member.name,
             member.kind,
             translate_type(member.type),
             member_offset(member_id),
-        });
+            false,
+            {},
+        };
+        if (const EnumMemberValue *value = enum_member_value(member_id)) {
+          translated_member.has_enum_value = true;
+          translated_member.enum_value = value->value;
+        }
+        translated.nominal_members.push_back(std::move(translated_member));
       }
     }
     result_.types[id.value] = std::move(translated);
@@ -520,6 +535,10 @@ private:
       const SymbolId member_id = consumer_.symbols.declare(std::move(symbol), diagnostics_);
       if (member_id.is_valid()) {
         consumer_.aggregate_members.push_back({owner, member_id, member.offset});
+        if (member.has_enum_value) {
+          consumer_.enum_member_values.push_back(
+              {member_id, member.enum_value});
+        }
       }
     }
   }

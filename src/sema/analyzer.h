@@ -70,6 +70,14 @@ struct AggregateMember {
   std::uint64_t offset = 0;
 };
 
+// Enum values are mathematical integers until backing selection has completed.
+// Keeping them beside member identity preserves explicit gaps and negative
+// values for constants, switches, casts, interfaces, and native emission.
+struct EnumMemberValue {
+  SymbolId member;
+  BigInteger value;
+};
+
 enum class TypeConstraintKind {
   AnyType,
   Integer,
@@ -219,6 +227,7 @@ struct SemanticPackage {
   std::vector<FileSemanticScope> files;
   std::vector<OwnedSemanticScope> owned_scopes;
   std::vector<AggregateMember> aggregate_members;
+  std::vector<EnumMemberValue> enum_member_values;
   std::vector<ParametricParameterRecord> parametric_parameters;
   std::vector<ParametricInstanceRecord> parametric_instances;
   std::vector<ImportBinding> imports;

@@ -83,6 +83,13 @@ Overlay :: raw union {
 Kind :: enum u16 {
     First,
     Second = 7,
+    Third,
+}
+
+Signed :: enum {
+    Below = -1,
+    Zero,
+    High = 130,
 }
 
 Choice :: union u16 {
@@ -116,6 +123,7 @@ take[T: type] :: proc(value: ^T) -> ^T {
   const draft::Symbol *overlay = find_symbol(source.semantic, "Overlay");
   const draft::Symbol *kind = find_symbol(source.semantic, "Kind");
   const draft::Symbol *choice = find_symbol(source.semantic, "Choice");
+  const draft::Symbol *signed_kind = find_symbol(source.semantic, "Signed");
   const draft::Symbol *callback = find_symbol(source.semantic, "Callback");
   const draft::Symbol *transform = find_symbol(source.semantic, "transform");
   const draft::Symbol *box = find_symbol(source.semantic, "Box");
@@ -126,12 +134,14 @@ take[T: type] :: proc(value: ^T) -> ^T {
   EXPECT(state, overlay != nullptr);
   EXPECT(state, kind != nullptr);
   EXPECT(state, choice != nullptr);
+  EXPECT(state, signed_kind != nullptr);
   EXPECT(state, callback != nullptr);
   EXPECT(state, transform != nullptr);
   EXPECT(state, box != nullptr);
   EXPECT(state, take != nullptr);
   if (alias == nullptr || duration == nullptr || header == nullptr ||
       overlay == nullptr || kind == nullptr || choice == nullptr ||
+      signed_kind == nullptr ||
       callback == nullptr || transform == nullptr || box == nullptr ||
       take == nullptr) {
     return;
@@ -163,6 +173,25 @@ take[T: type] :: proc(value: ^T) -> ^T {
   const draft::Type &kind_type = source.semantic.types.type(kind->type);
   EXPECT(state, kind_type.layout == draft::TypeLayout({true, 2, 2}));
   EXPECT(state, source.semantic.types.type(kind_type.element).name == "u16");
+  const draft::Type &signed_type = source.semantic.types.type(signed_kind->type);
+  EXPECT(state, signed_type.layout == draft::TypeLayout({true, 2, 2}));
+  EXPECT(state, source.semantic.types.type(signed_type.element).name == "i16");
+  bool saw_second = false;
+  bool saw_third = false;
+  bool saw_below = false;
+  for (const draft::EnumMemberValue &value :
+       source.semantic.enum_member_values) {
+    const std::string &name = source.semantic.symbols.symbol(value.member).name;
+    saw_second = saw_second ||
+        (name == "Second" && value.value.to_decimal() == "7");
+    saw_third = saw_third ||
+        (name == "Third" && value.value.to_decimal() == "8");
+    saw_below = saw_below ||
+        (name == "Below" && value.value.to_decimal() == "-1");
+  }
+  EXPECT(state, saw_second);
+  EXPECT(state, saw_third);
+  EXPECT(state, saw_below);
 
   const draft::Type &choice_type = source.semantic.types.type(choice->type);
   EXPECT(state, choice_type.layout == draft::TypeLayout({true, 8, 4}));
@@ -199,12 +228,34 @@ Bad_Array :: struct {
   EXPECT(state, rendered.find("unknown type name") != std::string::npos);
 }
 
+void test_invalid_enum_values(TestState &state) {
+  SemanticSource source(R"draft(
+package types
+
+Duplicate :: enum {
+    First = 4,
+    Second = 4,
+}
+
+Too_Wide :: enum u8 {
+    Value = 256,
+}
+)draft");
+
+  EXPECT(state, source.diagnostics.error_count() == 2);
+  const std::string rendered =
+      draft::render_diagnostics(source.sources, source.diagnostics);
+  EXPECT(state, rendered.find("duplicate enum value") != std::string::npos);
+  EXPECT(state, rendered.find("not representable") != std::string::npos);
+}
+
 } // namespace
 
 int main() {
   TestState state;
   test_types_signatures_and_layouts(state);
   test_invalid_lengths_and_unknown_types(state);
+  test_invalid_enum_values(state);
 
   if (state.failures != 0) {
     std::cerr << state.failures << " type resolver expectation(s) failed\n";
