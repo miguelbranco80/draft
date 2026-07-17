@@ -95,6 +95,7 @@ struct Type {
   TypeId element;
   std::uint64_t element_count = 0;
   std::vector<TypeId> members;
+  std::vector<std::uint64_t> member_offsets;
   bool c_calling_convention = false;
   SourceRange declaration;
 };
@@ -136,13 +137,19 @@ public:
   [[nodiscard]] TypeId multi_pointer(TypeId element);
   [[nodiscard]] TypeId slice(TypeId element);
   [[nodiscard]] TypeId array(TypeId element, std::uint64_t count);
+  [[nodiscard]] TypeId simd(TypeId element, std::uint64_t lanes);
   [[nodiscard]] TypeId tuple(const std::vector<TypeId> &members);
   [[nodiscard]] TypeId procedure(
       const std::vector<TypeId> &parameters, TypeId result, bool c_calling_convention);
   [[nodiscard]] TypeId distinct(std::string name, TypeId underlying, SourceRange declaration);
+  [[nodiscard]] TypeId type_parameter(std::string name, SourceRange declaration);
   [[nodiscard]] TypeId begin_nominal(
       TypeKind kind, std::string name, SourceRange declaration);
-  void complete_nominal(TypeId id, TypeLayout layout, std::vector<TypeId> members);
+  void complete_nominal(
+      TypeId id,
+      TypeLayout layout,
+      std::vector<TypeId> members,
+      std::vector<std::uint64_t> member_offsets = {});
 
   [[nodiscard]] bool is_integer(TypeId id) const;
   [[nodiscard]] bool is_float(TypeId id) const;

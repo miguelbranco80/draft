@@ -30,6 +30,7 @@ add_library(
   src/sema/analyzer.cpp
   src/sema/symbol.cpp
   src/sema/type.cpp
+  src/sema/type_resolver.cpp
   src/syntax/lexer.cpp
   src/syntax/parser.cpp
   src/syntax/syntax_tree.cpp
@@ -91,4 +92,8 @@ if(BUILD_TESTING)
   add_executable(draft_declaration_tests tests/declaration_test.cpp)
   target_link_libraries(draft_declaration_tests PRIVATE draft_compiler)
   add_test(NAME draft_declaration_tests COMMAND draft_declaration_tests)
+
+  add_executable(draft_type_resolver_tests tests/type_resolver_test.cpp)
+  target_link_libraries(draft_type_resolver_tests PRIVATE draft_compiler)
+  add_test(NAME draft_type_resolver_tests COMMAND draft_type_resolver_tests)
 endif()

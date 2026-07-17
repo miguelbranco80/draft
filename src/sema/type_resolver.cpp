@@ -1,0 +1,1055 @@
+// Source type and signature resolution for the bootstrap semantic graph.
+
+#include "sema/type_resolver.h"
+
+#include "syntax/token.h"
+
+#include <algorithm>
+#include <cassert>
+#include <cstddef>
+#include <cstdint>
+#include <limits>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
+
+namespace draft {
+namespace {
+
+// One entry per package declaration prevents alias recursion from repeatedly
+// walking the same syntax. Member and parameter symbols are appended later and
+// never enter this state table because their types resolve at declaration time.
+enum class ResolutionState {
+  Unvisited,
+  Resolving,
+  Resolved,
+  Failed,
+};
+
+// SourceName owns a copied spelling and retains the exact token range used for
+// duplicate and unknown-name diagnostics.
+struct SourceName {
+  std::string text;
+  SourceRange range;
+};
+
+// MemberData is the parallel-array work record for one aggregate. All vectors
+// contain only successfully declared members in the same order. `incomplete`
+// means a `when` or synthesis site still withholds part of the member list, so
+// no physical layout may be claimed even if the visible members are layable.
+struct MemberData {
+  std::vector<SymbolId> symbols;
+  std::vector<TypeId> types;
+  std::vector<std::uint64_t> offsets;
+  bool incomplete = false;
+};
+
+// Mirrors the parser's contextual-name rule so semantic token-span extraction
+// accepts `c`, `type`, and constraint spellings where the grammar accepts them.
+[[nodiscard]] bool token_is_contextual_name(TokenKind kind) {
+  return kind == TokenKind::Identifier || kind == TokenKind::KeywordC ||
+         kind == TokenKind::KeywordType || kind == TokenKind::KeywordInteger ||
+         kind == TokenKind::KeywordFloat || kind == TokenKind::KeywordNumber;
+}
+
+// Identifies syntax nodes that are unambiguously types before name resolution.
+[[nodiscard]] bool node_is_type_syntax(NodeKind kind) {
+  switch (kind) {
+  case NodeKind::NamedType:
+  case NodeKind::PointerType:
+  case NodeKind::MultiPointerType:
+  case NodeKind::SliceType:
+  case NodeKind::ArrayType:
+  case NodeKind::SimdType:
+  case NodeKind::TupleType:
+  case NodeKind::ProcedureType:
+  case NodeKind::DistinctType:
+  case NodeKind::StructType:
+  case NodeKind::EnumType:
+  case NodeKind::TaggedUnionType:
+  case NodeKind::RawUnionType:
+    return true;
+  default:
+    return false;
+  }
+}
+
+// Rounds a byte count to a power-of-two alignment without unsigned overflow.
+[[nodiscard]] std::optional<std::uint64_t> round_up(
+    std::uint64_t value, std::uint32_t alignment) {
+  assert(alignment != 0 && (alignment & (alignment - 1)) == 0);
+  const std::uint64_t mask = static_cast<std::uint64_t>(alignment - 1);
+  if (value > std::numeric_limits<std::uint64_t>::max() - mask) {
+    return std::nullopt;
+  }
+  return (value + mask) & ~mask;
+}
+
+// TypeResolver owns no source, syntax, or semantic tables. It is one mutable
+// phase context whose references remain valid for the duration of the call;
+// stable IDs, never table element pointers, cross operations that append rows.
+class TypeResolver {
+public:
+  TypeResolver(
+      const SourceManager &sources,
+      const LoadedPackage &loaded,
+      SemanticPackage &semantic,
+      DiagnosticSink &diagnostics)
+      : sources_(sources), loaded_(loaded), semantic_(semantic), diagnostics_(diagnostics),
+        states_(semantic.symbols.symbol_count(), ResolutionState::Unvisited) {}
+
+  // Resolves only the symbols originally installed in the package scope.
+  // Nested symbols are resolved synchronously as their owner is processed.
+  void resolve() {
+    // Copy the package symbol list because resolving aggregates and procedures
+    // appends member/parameter symbols to other scopes in the same table.
+    const std::vector<SymbolId> package_symbols =
+        semantic_.symbols.scope(semantic_.package_scope).symbols;
+    for (SymbolId symbol : package_symbols) {
+      resolve_symbol(symbol);
+    }
+  }
+
+private:
+  // Finds the immutable parsed tree owning a SyntaxReference. LoadedPackage
+  // keeps files in canonical order, making this linear scan deterministic.
+  [[nodiscard]] const SyntaxTree *find_tree(FileId file) const {
+    for (const LoadedPackageFile &loaded_file : loaded_.files) {
+      if (loaded_file.source == file && loaded_file.syntax.has_value()) {
+        return &*loaded_file.syntax;
+      }
+    }
+    return nullptr;
+  }
+
+  // Returns the file-local import scope for a source file. The package fallback
+  // is recovery for malformed manually assembled inputs, not normal behavior.
+  [[nodiscard]] ScopeId file_scope(FileId file) const {
+    for (const FileSemanticScope &entry : semantic_.files) {
+      if (entry.file == file) {
+        return entry.scope;
+      }
+    }
+    return semantic_.package_scope;
+  }
+
+  // Copies one name token because SourceManager views are non-owning and semantic
+  // records can outlive temporary traversal state.
+  [[nodiscard]] SourceName token_name(
+      const SyntaxTree &tree, std::uint32_t token_index) const {
+    const Token &token = tree.token(token_index);
+    return {std::string(sources_.text(token.range)), token.range};
+  }
+
+  // Collects contextual-name tokens in source order from a grammar-owned span.
+  // Callers choose spans that exclude nested type/value syntax where needed.
+  [[nodiscard]] std::vector<SourceName> names_in_span(
+      const SyntaxTree &tree, std::uint32_t begin, std::uint32_t end) const {
+    std::vector<SourceName> names;
+    for (std::uint32_t index = begin; index < end; ++index) {
+      if (token_is_contextual_name(tree.token(index).kind)) {
+        names.push_back(token_name(tree, index));
+      }
+    }
+    return names;
+  }
+
+  // Returns the declaration's semantic payload child after its binding pattern
+  // and optional parametric parameter list. Missing recovered syntax is empty.
+  [[nodiscard]] std::optional<NodeId> declaration_payload(
+      const SyntaxTree &tree, const SyntaxNode &declaration) const {
+    if (declaration.children.size() < 2) {
+      return std::nullopt;
+    }
+    const NodeId candidate = declaration.children.back();
+    const NodeKind kind = tree.node(candidate).kind;
+    if (kind == NodeKind::BindingPattern || kind == NodeKind::TuplePattern ||
+        kind == NodeKind::ParametricParameterList) {
+      return std::nullopt;
+    }
+    return candidate;
+  }
+
+  // Semantic invalid is a real canonical table row, while an invalid TypeId is
+  // the "not assigned yet" sentinel. Both represent failure at this boundary.
+  [[nodiscard]] bool is_error_type(TypeId type) const {
+    return !type.is_valid() || semantic_.types.type(type).kind == TypeKind::Invalid;
+  }
+
+  // Appends provider-independent metadata without changing runtime layout or
+  // control flow. owner is invalid only for an anonymous aggregate.
+  void add_site(
+      SemanticSiteKind kind,
+      const SyntaxTree &tree,
+      NodeId node,
+      ScopeId scope,
+      SymbolId owner) {
+    semantic_.sites.push_back({kind, {tree.file(), node}, scope, owner});
+  }
+
+  // Finds a previously created owner scope of the requested semantic kind.
+  // Reuse is required when aliases recursively request the same declaration.
+  [[nodiscard]] std::optional<ScopeId> owned_scope(
+      SymbolId owner, ScopeKind kind) const {
+    for (const OwnedSemanticScope &entry : semantic_.owned_scopes) {
+      if (entry.owner == owner && semantic_.symbols.scope(entry.scope).kind == kind) {
+        return entry.scope;
+      }
+    }
+    return std::nullopt;
+  }
+
+  // Maps the closed source constraint vocabulary to its semantic tag. `type`
+  // intentionally uses the default AnyType value.
+  [[nodiscard]] TypeConstraintKind constraint_kind(std::string_view name) const {
+    if (name == "integer") return TypeConstraintKind::Integer;
+    if (name == "float") return TypeConstraintKind::Float;
+    if (name == "number") return TypeConstraintKind::Number;
+    return TypeConstraintKind::AnyType;
+  }
+
+  // Creates and populates the declaration's compile-time parameter scope before
+  // resolving its body/signature. Earlier parameters are visible to later value
+  // parameter types. Duplicate parameter names do not allocate orphan types.
+  [[nodiscard]] ScopeId ensure_parametric_scope(
+      SymbolId owner,
+      const SyntaxTree &tree,
+      const SyntaxNode &declaration,
+      ScopeId parent) {
+    const std::optional<ScopeId> existing = owned_scope(owner, ScopeKind::Parametric);
+    if (existing.has_value()) {
+      return *existing;
+    }
+
+    std::optional<NodeId> parameters;
+    for (NodeId child : declaration.children) {
+      if (tree.node(child).kind == NodeKind::ParametricParameterList) {
+        parameters = child;
+        break;
+      }
+    }
+    if (!parameters.has_value()) {
+      return parent;
+    }
+
+    const SyntaxNode &list = tree.node(*parameters);
+    const ScopeId scope = semantic_.symbols.add_scope(
+        ScopeKind::Parametric, parent, list.range);
+    semantic_.owned_scopes.push_back({owner, scope});
+
+    for (NodeId parameter_id : list.children) {
+      const SyntaxNode &parameter = tree.node(parameter_id);
+      const std::vector<SourceName> names = names_in_span(
+          tree, parameter.token_begin, parameter.token_end);
+      if (names.empty() || parameter.children.empty()) {
+        continue;
+      }
+      const SourceName &name = names.front();
+      const NodeId constraint_node = parameter.children.back();
+      const SyntaxNode &constraint = tree.node(constraint_node);
+      const std::vector<SourceName> constraint_names = names_in_span(
+          tree, constraint.token_begin, constraint.token_end);
+      const std::string constraint_name = constraint_names.empty()
+          ? std::string()
+          : constraint_names.front().text;
+      const bool is_type_parameter = constraint_name == "type" ||
+          constraint_name == "integer" || constraint_name == "float" ||
+          constraint_name == "number";
+
+      Symbol symbol;
+      symbol.name = name.text;
+      symbol.kind = is_type_parameter
+          ? SymbolKind::TypeParameter
+          : SymbolKind::ValueParameter;
+      symbol.scope = scope;
+      symbol.syntax = {tree.file(), parameter_id};
+      symbol.name_range = name.range;
+      if (!is_type_parameter) {
+        symbol.type = resolve_type(tree, constraint_node, scope);
+      }
+      const SymbolId id = semantic_.symbols.declare(std::move(symbol), diagnostics_);
+      if (!id.is_valid()) {
+        continue;
+      }
+
+      TypeConstraintKind kind = TypeConstraintKind::CompileTimeValue;
+      if (is_type_parameter) {
+        kind = constraint_kind(constraint_name);
+        semantic_.symbols.symbol_mut(id).type =
+            semantic_.types.type_parameter(name.text, name.range);
+      }
+      semantic_.parametric_parameters.push_back({owner, id, kind});
+    }
+    return scope;
+  }
+
+  // Reads the calling-convention modifier only before `proc`; a later `c` token
+  // can be an import alias in a parameter or body and must not affect the ABI.
+  [[nodiscard]] bool c_calling_convention(
+      const SyntaxTree &tree, const SyntaxNode &procedure) const {
+    for (std::uint32_t index = procedure.token_begin; index < procedure.token_end; ++index) {
+      const TokenKind kind = tree.token(index).kind;
+      if (kind == TokenKind::KeywordC) {
+        return true;
+      }
+      if (kind == TokenKind::KeywordProc) {
+        return false;
+      }
+    }
+    return false;
+  }
+
+  // Builds one canonical procedure type. Named declaration procedures also get
+  // a parameter scope and immutable Parameter symbols; standalone procedure
+  // types contribute only their logical signature.
+  [[nodiscard]] TypeId resolve_procedure_type(
+      const SyntaxTree &tree,
+      NodeId procedure_id,
+      ScopeId parent,
+      std::optional<SymbolId> owner) {
+    const SyntaxNode &procedure = tree.node(procedure_id);
+    ScopeId parameter_scope = parent;
+    if (owner.has_value()) {
+      const std::optional<ScopeId> existing = owned_scope(*owner, ScopeKind::Procedure);
+      if (existing.has_value()) {
+        parameter_scope = *existing;
+      } else {
+        parameter_scope = semantic_.symbols.add_scope(
+            ScopeKind::Procedure, parent, procedure.range);
+        semantic_.owned_scopes.push_back({*owner, parameter_scope});
+      }
+    }
+
+    std::vector<TypeId> parameters;
+    TypeId result = semantic_.types.builtins().void_type;
+    for (NodeId child_id : procedure.children) {
+      const SyntaxNode &child = tree.node(child_id);
+      if (child.kind == NodeKind::ParameterList) {
+        for (NodeId parameter_id : child.children) {
+          const SyntaxNode &parameter = tree.node(parameter_id);
+          if (parameter.children.size() < 2) {
+            continue;
+          }
+          const SyntaxNode &name_list = tree.node(parameter.children.front());
+          const TypeId parameter_type =
+              resolve_type(tree, parameter.children.back(), parent);
+          const std::vector<SourceName> names = names_in_span(
+              tree, name_list.token_begin, name_list.token_end);
+          for (const SourceName &name : names) {
+            parameters.push_back(parameter_type);
+            if (!owner.has_value() || name.text == "_") {
+              continue;
+            }
+            Symbol symbol;
+            symbol.name = name.text;
+            symbol.kind = SymbolKind::Parameter;
+            symbol.scope = parameter_scope;
+            symbol.type = parameter_type;
+            symbol.syntax = {tree.file(), parameter_id};
+            symbol.name_range = name.range;
+            (void)semantic_.symbols.declare(std::move(symbol), diagnostics_);
+          }
+        }
+      } else if (child.kind == NodeKind::ResultClause && !child.children.empty()) {
+        result = resolve_type(tree, child.children.front(), parent);
+      }
+    }
+    return semantic_.types.procedure(
+        parameters, result, c_calling_convention(tree, procedure));
+  }
+
+  // Parses the exact nonnegative integer-literal subset currently sufficient for
+  // array/SIMD lengths. General constant expressions are delegated to the next
+  // constant-evaluation pass rather than approximated here.
+  [[nodiscard]] std::optional<std::uint64_t> integer_literal(
+      const SyntaxTree &tree, NodeId expression_id) const {
+    const SyntaxNode &expression = tree.node(expression_id);
+    if (expression.kind != NodeKind::LiteralExpression ||
+        expression.token_begin >= expression.token_end) {
+      return std::nullopt;
+    }
+    const Token &token = tree.token(expression.token_begin);
+    if (token.kind != TokenKind::IntegerLiteral) {
+      return std::nullopt;
+    }
+    const std::string_view spelling = sources_.text(token.range);
+    std::size_t index = 0;
+    std::uint32_t base = 10;
+    if (spelling.size() >= 2 && spelling[0] == '0') {
+      if (spelling[1] == 'x' || spelling[1] == 'X') base = 16;
+      if (spelling[1] == 'o' || spelling[1] == 'O') base = 8;
+      if (spelling[1] == 'b' || spelling[1] == 'B') base = 2;
+      if (base != 10) index = 2;
+    }
+
+    std::uint64_t value = 0;
+    bool saw_digit = false;
+    for (; index < spelling.size(); ++index) {
+      const char character = spelling[index];
+      if (character == '_') {
+        continue;
+      }
+      std::uint32_t digit = 0;
+      if (character >= '0' && character <= '9') {
+        digit = static_cast<std::uint32_t>(character - '0');
+      } else if (character >= 'a' && character <= 'f') {
+        digit = static_cast<std::uint32_t>(character - 'a') + 10U;
+      } else if (character >= 'A' && character <= 'F') {
+        digit = static_cast<std::uint32_t>(character - 'A') + 10U;
+      } else {
+        return std::nullopt;
+      }
+      if (digit >= base ||
+          value > (std::numeric_limits<std::uint64_t>::max() - digit) / base) {
+        return std::nullopt;
+      }
+      value = value * base + digit;
+      saw_digit = true;
+    }
+    if (!saw_digit) {
+      return std::nullopt;
+    }
+    return value;
+  }
+
+  // Returns a single unqualified, unapplied name. Parenthesized grouping and
+  // parametric/qualified names deliberately fail this narrow predicate.
+  [[nodiscard]] std::optional<SourceName> simple_type_name(
+      const SyntaxTree &tree, const SyntaxNode &node) const {
+    const std::vector<SourceName> names = names_in_span(
+        tree, node.token_begin, node.token_end);
+    if (names.size() != 1) {
+      return std::nullopt;
+    }
+    for (std::uint32_t index = node.token_begin; index < node.token_end; ++index) {
+      if (tree.token(index).kind == TokenKind::Dot ||
+          tree.token(index).kind == TokenKind::LeftBracket) {
+        return std::nullopt;
+      }
+    }
+    return names.front();
+  }
+
+  // Attempts a builtin, type-parameter, or package-local type lookup without
+  // diagnosing failure. This is used to disambiguate `Alias :: Existing_Name`
+  // from an ordinary constant whose value is another constant.
+  [[nodiscard]] std::optional<TypeId> try_named_type(
+      const SyntaxTree &tree, const SyntaxNode &node, ScopeId scope) {
+    const std::optional<SourceName> name = simple_type_name(tree, node);
+    if (!name.has_value()) {
+      return std::nullopt;
+    }
+    if (const std::optional<TypeId> builtin = semantic_.types.find_builtin(name->text)) {
+      return *builtin;
+    }
+    const std::optional<SymbolId> found = semantic_.symbols.lookup(scope, name->text);
+    if (!found.has_value()) {
+      return std::nullopt;
+    }
+    if (semantic_.symbols.symbol(*found).kind == SymbolKind::UnresolvedDeclaration) {
+      resolve_symbol(*found);
+    }
+    const Symbol &symbol = semantic_.symbols.symbol(*found);
+    if ((symbol.kind == SymbolKind::Type || symbol.kind == SymbolKind::TypeParameter) &&
+        symbol.type.is_valid()) {
+      return symbol.type;
+    }
+    return std::nullopt;
+  }
+
+  // Detects a qualified name whose first component is a file-local import. Such
+  // an edge is incomplete until workspace package resolution provides the
+  // dependency interface; it is not an unknown-type diagnostic here.
+  [[nodiscard]] bool begins_with_import_alias(
+      const SyntaxTree &tree, const SyntaxNode &node, ScopeId scope) const {
+    const std::vector<SourceName> names = names_in_span(
+        tree, node.token_begin, node.token_end);
+    if (names.size() < 2) {
+      return false;
+    }
+    const std::optional<SymbolId> first = semantic_.symbols.lookup(scope, names.front().text);
+    return first.has_value() &&
+        semantic_.symbols.symbol(*first).kind == SymbolKind::Import;
+  }
+
+  // Recursively lowers one already-parsed type syntax node into a canonical
+  // TypeId. User errors return the canonical invalid type and analysis continues.
+  [[nodiscard]] TypeId resolve_type(
+      const SyntaxTree &tree, NodeId type_id, ScopeId scope) {
+    const SyntaxNode &node = tree.node(type_id);
+    const TypeId invalid = semantic_.types.builtins().invalid;
+    switch (node.kind) {
+    case NodeKind::NamedType: {
+      // Parenthesized grouping retains the inner type as a child.
+      for (NodeId child : node.children) {
+        if (node_is_type_syntax(tree.node(child).kind)) {
+          return resolve_type(tree, child, scope);
+        }
+      }
+      if (const std::optional<TypeId> type = try_named_type(tree, node, scope)) {
+        return *type;
+      }
+      if (begins_with_import_alias(tree, node, scope)) {
+        // Package graph resolution will replace this incomplete edge with the
+        // imported package's public type identity.
+        return invalid;
+      }
+      diagnostics_.error(node.range, "unknown type name");
+      return invalid;
+    }
+
+    case NodeKind::PointerType:
+      if (!node.children.empty()) {
+        return semantic_.types.pointer(resolve_type(tree, node.children.back(), scope));
+      }
+      return invalid;
+
+    case NodeKind::MultiPointerType:
+      if (!node.children.empty()) {
+        return semantic_.types.multi_pointer(resolve_type(tree, node.children.back(), scope));
+      }
+      return invalid;
+
+    case NodeKind::SliceType:
+      if (!node.children.empty()) {
+        return semantic_.types.slice(resolve_type(tree, node.children.back(), scope));
+      }
+      return invalid;
+
+    case NodeKind::ArrayType: {
+      if (node.children.size() < 2) {
+        return invalid;
+      }
+      const std::optional<std::uint64_t> count = integer_literal(tree, node.children.front());
+      if (!count.has_value() || *count == 0) {
+        diagnostics_.error(
+            tree.node(node.children.front()).range,
+            "array length must be a nonzero compile-time u64 integer");
+        return invalid;
+      }
+      return semantic_.types.array(
+          resolve_type(tree, node.children.back(), scope), *count);
+    }
+
+    case NodeKind::SimdType: {
+      if (node.children.size() < 2) {
+        return invalid;
+      }
+      const std::optional<std::uint64_t> lanes = integer_literal(tree, node.children.front());
+      if (!lanes.has_value() || *lanes == 0) {
+        diagnostics_.error(
+            tree.node(node.children.front()).range,
+            "SIMD lane count must be a nonzero compile-time u64 integer");
+        return invalid;
+      }
+      return semantic_.types.simd(
+          resolve_type(tree, node.children.back(), scope), *lanes);
+    }
+
+    case NodeKind::TupleType: {
+      std::vector<TypeId> members;
+      for (NodeId child : node.children) {
+        if (node_is_type_syntax(tree.node(child).kind)) {
+          members.push_back(resolve_type(tree, child, scope));
+        }
+      }
+      if (members.size() < 2) {
+        diagnostics_.error(node.range, "tuple type requires at least two members");
+        return invalid;
+      }
+      return semantic_.types.tuple(members);
+    }
+
+    case NodeKind::ProcedureType:
+      return resolve_procedure_type(tree, type_id, scope, std::nullopt);
+
+    case NodeKind::DistinctType:
+      diagnostics_.error(node.range, "distinct type must be the value of a named type declaration");
+      return invalid;
+
+    case NodeKind::StructType:
+    case NodeKind::EnumType:
+    case NodeKind::TaggedUnionType:
+    case NodeKind::RawUnionType: {
+      TypeKind kind = TypeKind::Struct;
+      if (node.kind == NodeKind::EnumType) kind = TypeKind::Enum;
+      if (node.kind == NodeKind::TaggedUnionType) kind = TypeKind::TaggedUnion;
+      if (node.kind == NodeKind::RawUnionType) kind = TypeKind::RawUnion;
+      const TypeId anonymous = semantic_.types.begin_nominal(
+          kind, "<anonymous>", node.range);
+      resolve_aggregate({}, anonymous, tree, type_id, scope);
+      return anonymous;
+    }
+
+    default:
+      diagnostics_.error(node.range, "expected a type");
+      return invalid;
+    }
+  }
+
+  // Adds one member binding to its type scope. The caller appends parallel type
+  // and offset entries only when this declaration succeeds.
+  [[nodiscard]] std::optional<SymbolId> declare_member(
+      const SyntaxTree &tree,
+      NodeId syntax,
+      ScopeId scope,
+      const SourceName &name,
+      SymbolKind kind,
+      TypeId type) {
+    Symbol symbol;
+    symbol.name = name.text;
+    symbol.kind = kind;
+    symbol.scope = scope;
+    symbol.type = type;
+    symbol.syntax = {tree.file(), syntax};
+    symbol.name_range = name.range;
+    const SymbolId id = semantic_.symbols.declare(std::move(symbol), diagnostics_);
+    if (!id.is_valid()) {
+      return std::nullopt;
+    }
+    return id;
+  }
+
+  // Resolves a possibly grouped struct/raw-union field declaration. Every name
+  // shares the one parsed type and receives an independent member identity.
+  void collect_field_member(
+      const SyntaxTree &tree,
+      NodeId member_id,
+      ScopeId scope,
+      MemberData &data) {
+    const SyntaxNode &member = tree.node(member_id);
+    if (member.children.empty()) {
+      data.incomplete = true;
+      return;
+    }
+    const SyntaxNode &type_node = tree.node(member.children.back());
+    const TypeId type = resolve_type(tree, member.children.back(), scope);
+    const std::vector<SourceName> names = names_in_span(
+        tree, member.token_begin, type_node.token_begin);
+    for (const SourceName &name : names) {
+      if (name.text == "_") {
+        diagnostics_.error(name.range, "aggregate member cannot use the discard name '_'");
+        continue;
+      }
+      const std::optional<SymbolId> symbol = declare_member(
+          tree, member_id, scope, name, SymbolKind::Field, type);
+      if (symbol.has_value()) {
+        data.symbols.push_back(*symbol);
+        data.types.push_back(type);
+        data.offsets.push_back(0);
+      }
+    }
+  }
+
+  // Declares an enum name now and fills its backing type after explicit/inferred
+  // backing selection has seen the complete member count.
+  void collect_enum_member(
+      const SyntaxTree &tree,
+      NodeId member_id,
+      ScopeId scope,
+      MemberData &data) {
+    const SyntaxNode &member = tree.node(member_id);
+    const std::vector<SourceName> names = names_in_span(
+        tree, member.token_begin, member.token_end);
+    if (names.empty()) {
+      data.incomplete = true;
+      return;
+    }
+    const std::optional<SymbolId> symbol = declare_member(
+        tree,
+        member_id,
+        scope,
+        names.front(),
+        SymbolKind::EnumMember,
+        semantic_.types.builtins().invalid);
+    if (symbol.has_value()) {
+      data.symbols.push_back(*symbol);
+      data.types.push_back(semantic_.types.builtins().invalid);
+      data.offsets.push_back(0);
+    }
+  }
+
+  // Declares one tagged-union alternative. A payload-free alternative uses the
+  // canonical void type whose layout is zero bytes with alignment one.
+  void collect_union_alternative(
+      const SyntaxTree &tree,
+      NodeId member_id,
+      ScopeId scope,
+      MemberData &data) {
+    const SyntaxNode &member = tree.node(member_id);
+    const std::vector<SourceName> names = names_in_span(
+        tree, member.token_begin, member.token_end);
+    if (names.empty()) {
+      data.incomplete = true;
+      return;
+    }
+    TypeId type = semantic_.types.builtins().void_type;
+    if (!member.children.empty()) {
+      type = resolve_type(tree, member.children.back(), scope);
+    }
+    const std::optional<SymbolId> symbol = declare_member(
+        tree,
+        member_id,
+        scope,
+        names.front(),
+        SymbolKind::UnionAlternative,
+        type);
+    if (symbol.has_value()) {
+      data.symbols.push_back(*symbol);
+      data.types.push_back(type);
+      data.offsets.push_back(0);
+    }
+  }
+
+  // Walks a member region in source order. Denials are transparent for name and
+  // layout purposes; conditionals and synthesis keep the aggregate incomplete
+  // until a later pass selects or supplies their members.
+  void collect_member_list(
+      SymbolId owner,
+      const SyntaxTree &tree,
+      NodeId list_id,
+      ScopeId scope,
+      MemberData &data) {
+    const SyntaxNode &list = tree.node(list_id);
+    for (NodeId member_id : list.children) {
+      const SyntaxNode &member = tree.node(member_id);
+      switch (member.kind) {
+      case NodeKind::FieldMember:
+        collect_field_member(tree, member_id, scope, data);
+        break;
+      case NodeKind::EnumMember:
+        collect_enum_member(tree, member_id, scope, data);
+        break;
+      case NodeKind::UnionAlternative:
+        collect_union_alternative(tree, member_id, scope, data);
+        break;
+      case NodeKind::Documentation:
+        add_site(SemanticSiteKind::Documentation, tree, member_id, scope, owner);
+        break;
+      case NodeKind::Judgment:
+        add_site(SemanticSiteKind::Judgment, tree, member_id, scope, owner);
+        break;
+      case NodeKind::SynthesisMember:
+        add_site(SemanticSiteKind::SynthesisMember, tree, member_id, scope, owner);
+        data.incomplete = true;
+        break;
+      case NodeKind::WhenMember:
+        add_site(SemanticSiteKind::ConditionalMember, tree, member_id, scope, owner);
+        data.incomplete = true;
+        break;
+      case NodeKind::DenyMember:
+        add_site(SemanticSiteKind::DenialMember, tree, member_id, scope, owner);
+        if (!member.children.empty()) {
+          collect_member_list(
+              owner, tree, member.children.back(), scope, data);
+        }
+        break;
+      default:
+        break;
+      }
+    }
+  }
+
+  // Computes ordinary field-order layout and writes each field offset into the
+  // parallel work vector. Overflow or an unknown member yields unknown layout.
+  [[nodiscard]] TypeLayout struct_layout(MemberData &data) const {
+    TypeLayout result{true, 0, 1};
+    for (std::size_t index = 0; index < data.types.size(); ++index) {
+      const TypeLayout member = semantic_.types.type(data.types[index]).layout;
+      if (!member.known) {
+        return {};
+      }
+      const std::optional<std::uint64_t> offset = round_up(result.size, member.alignment);
+      if (!offset.has_value() ||
+          member.size > std::numeric_limits<std::uint64_t>::max() - *offset) {
+        return {};
+      }
+      data.offsets[index] = *offset;
+      result.size = *offset + member.size;
+      result.alignment = std::max(result.alignment, member.alignment);
+    }
+    const std::optional<std::uint64_t> size = round_up(result.size, result.alignment);
+    if (!size.has_value()) {
+      return {};
+    }
+    result.size = *size;
+    return result;
+  }
+
+  // Computes overlay layout: every field starts at zero, size is the rounded
+  // maximum member size, and alignment is the maximum member alignment.
+  [[nodiscard]] TypeLayout raw_union_layout(MemberData &data) const {
+    TypeLayout result{true, 0, 1};
+    for (std::size_t index = 0; index < data.types.size(); ++index) {
+      const TypeLayout member = semantic_.types.type(data.types[index]).layout;
+      if (!member.known) {
+        return {};
+      }
+      data.offsets[index] = 0;
+      result.size = std::max(result.size, member.size);
+      result.alignment = std::max(result.alignment, member.alignment);
+    }
+    const std::optional<std::uint64_t> size = round_up(result.size, result.alignment);
+    if (!size.has_value()) {
+      return {};
+    }
+    result.size = *size;
+    return result;
+  }
+
+  // Chooses the smallest fixed-width unsigned discriminator capable of naming
+  // every source-order alternative. Enum signedness is refined with values later.
+  [[nodiscard]] TypeId inferred_discriminator(std::size_t alternative_count) const {
+    if (alternative_count <= 0x100U) {
+      return semantic_.types.builtins().u8_type;
+    }
+    const std::optional<TypeId> u16 = semantic_.types.find_builtin("u16");
+    const std::optional<TypeId> u32 = semantic_.types.find_builtin("u32");
+    const std::optional<TypeId> u64 = semantic_.types.find_builtin("u64");
+    if (alternative_count <= 0x10000U && u16.has_value()) return *u16;
+    if (static_cast<std::uint64_t>(alternative_count) <= 0x100000000ULL &&
+        u32.has_value()) return *u32;
+    return u64.value_or(semantic_.types.builtins().invalid);
+  }
+
+  // Applies the exact tagged-union formula from section 5. All alternatives use
+  // the one computed payload offset; payload-free alternatives remain valid.
+  [[nodiscard]] TypeLayout tagged_union_layout(
+      TypeId discriminator, MemberData &data) const {
+    const TypeLayout discriminator_layout = semantic_.types.type(discriminator).layout;
+    if (!discriminator_layout.known) {
+      return {};
+    }
+    std::uint64_t payload_size = 0;
+    std::uint32_t payload_alignment = 1;
+    for (TypeId type : data.types) {
+      const TypeLayout payload = semantic_.types.type(type).layout;
+      if (!payload.known) {
+        return {};
+      }
+      payload_size = std::max(payload_size, payload.size);
+      payload_alignment = std::max(payload_alignment, payload.alignment);
+    }
+    const std::optional<std::uint64_t> rounded_payload =
+        round_up(payload_size, payload_alignment);
+    const std::optional<std::uint64_t> payload_offset =
+        round_up(discriminator_layout.size, payload_alignment);
+    if (!rounded_payload.has_value() || !payload_offset.has_value() ||
+        *rounded_payload >
+            std::numeric_limits<std::uint64_t>::max() - *payload_offset) {
+      return {};
+    }
+    for (std::uint64_t &offset : data.offsets) {
+      offset = *payload_offset;
+    }
+    const std::uint32_t alignment =
+        std::max(discriminator_layout.alignment, payload_alignment);
+    const std::optional<std::uint64_t> size = round_up(
+        *payload_offset + *rounded_payload, alignment);
+    if (!size.has_value()) {
+      return {};
+    }
+    return {true, *size, alignment};
+  }
+
+  // Resolves member names/types and completes one pre-interned nominal type.
+  // Completion may intentionally retain layout.known=false for generic,
+  // conditional, imported, erroneous, or synthesis-dependent members.
+  void resolve_aggregate(
+      SymbolId owner,
+      TypeId nominal,
+      const SyntaxTree &tree,
+      NodeId aggregate_id,
+      ScopeId parent) {
+    const SyntaxNode &aggregate = tree.node(aggregate_id);
+    ScopeId scope = parent;
+    if (owner.is_valid()) {
+      const std::optional<ScopeId> existing = owned_scope(owner, ScopeKind::Type);
+      if (existing.has_value()) {
+        scope = *existing;
+      } else {
+        scope = semantic_.symbols.add_scope(ScopeKind::Type, parent, aggregate.range);
+        semantic_.owned_scopes.push_back({owner, scope});
+      }
+    } else {
+      scope = semantic_.symbols.add_scope(ScopeKind::Type, parent, aggregate.range);
+    }
+
+    std::optional<NodeId> list;
+    std::optional<NodeId> explicit_backing;
+    for (NodeId child : aggregate.children) {
+      if (tree.node(child).kind == NodeKind::MemberList) {
+        list = child;
+      } else if (node_is_type_syntax(tree.node(child).kind)) {
+        explicit_backing = child;
+      }
+    }
+    if (!list.has_value()) {
+      diagnostics_.error(aggregate.range, "aggregate type has no member list");
+      semantic_.types.complete_nominal(nominal, {}, {});
+      return;
+    }
+
+    const TypeKind kind = semantic_.types.type(nominal).kind;
+    MemberData data;
+    collect_member_list(owner, tree, *list, scope, data);
+    if (data.symbols.empty() && !data.incomplete) {
+      diagnostics_.error(aggregate.range, "aggregate type requires at least one member");
+    }
+
+    TypeLayout layout;
+    if (!data.incomplete) {
+      if (kind == TypeKind::Struct) {
+        layout = struct_layout(data);
+      } else if (kind == TypeKind::RawUnion) {
+        layout = raw_union_layout(data);
+      } else if (kind == TypeKind::Enum) {
+        TypeId backing = explicit_backing.has_value()
+            ? resolve_type(tree, *explicit_backing, parent)
+            : inferred_discriminator(data.symbols.size());
+        if (!semantic_.types.is_integer(backing)) {
+          diagnostics_.error(aggregate.range, "enum backing type must be an integer type");
+          backing = semantic_.types.builtins().invalid;
+        }
+        semantic_.types.type_mut(nominal).element = backing;
+        layout = semantic_.types.type(backing).layout;
+        for (std::size_t index = 0; index < data.symbols.size(); ++index) {
+          data.types[index] = backing;
+          semantic_.symbols.symbol_mut(data.symbols[index]).type = backing;
+        }
+      } else if (kind == TypeKind::TaggedUnion) {
+        TypeId discriminator = explicit_backing.has_value()
+            ? resolve_type(tree, *explicit_backing, parent)
+            : inferred_discriminator(data.symbols.size());
+        if (!semantic_.types.is_integer(discriminator)) {
+          diagnostics_.error(
+              aggregate.range, "tagged-union discriminator must be an integer type");
+          discriminator = semantic_.types.builtins().invalid;
+        }
+        semantic_.types.type_mut(nominal).element = discriminator;
+        layout = tagged_union_layout(discriminator, data);
+      }
+    }
+
+    semantic_.types.complete_nominal(
+        nominal, layout, data.types, data.offsets);
+    for (std::size_t index = 0; index < data.symbols.size(); ++index) {
+      semantic_.aggregate_members.push_back(
+          {owner, data.symbols[index], data.offsets[index]});
+    }
+  }
+
+  // Resolves one package declaration with cycle detection. It copies the input
+  // Symbol before creating child scopes because SymbolTable's vector may grow
+  // and invalidate references; every mutation reacquires the symbol by ID.
+  void resolve_symbol(SymbolId id) {
+    if (static_cast<std::size_t>(id.value) >= states_.size()) {
+      return;
+    }
+    ResolutionState &state = states_[id.value];
+    if (state == ResolutionState::Resolved || state == ResolutionState::Failed) {
+      return;
+    }
+    const Symbol initial_symbol = semantic_.symbols.symbol(id);
+    if (state == ResolutionState::Resolving) {
+      diagnostics_.error(
+          initial_symbol.name_range,
+          "cyclic type declaration involving '" + initial_symbol.name + "'");
+      state = ResolutionState::Failed;
+      return;
+    }
+    state = ResolutionState::Resolving;
+
+    const SyntaxTree *tree_pointer = find_tree(initial_symbol.syntax.file);
+    if (tree_pointer == nullptr || !initial_symbol.syntax.node.is_valid()) {
+      state = ResolutionState::Failed;
+      return;
+    }
+    const SyntaxTree &tree = *tree_pointer;
+    const SyntaxNode &declaration = tree.node(initial_symbol.syntax.node);
+    if (declaration.kind != NodeKind::Declaration) {
+      state = ResolutionState::Resolved;
+      return;
+    }
+    const std::optional<NodeId> payload = declaration_payload(tree, declaration);
+    const ScopeId source_scope = file_scope(tree.file());
+    const ScopeId semantic_parent = ensure_parametric_scope(
+        id, tree, declaration, source_scope);
+
+    if (initial_symbol.kind == SymbolKind::Procedure && payload.has_value()) {
+      const TypeId type = resolve_procedure_type(
+          tree, *payload, semantic_parent, id);
+      semantic_.symbols.symbol_mut(id).type = type;
+    } else if (initial_symbol.kind == SymbolKind::Type && payload.has_value()) {
+      const SyntaxNode &type_node = tree.node(*payload);
+      if (type_node.kind == NodeKind::StructType ||
+          type_node.kind == NodeKind::EnumType ||
+          type_node.kind == NodeKind::TaggedUnionType ||
+          type_node.kind == NodeKind::RawUnionType) {
+        if (initial_symbol.type.is_valid()) {
+          resolve_aggregate(id, initial_symbol.type, tree, *payload, semantic_parent);
+        }
+      } else if (type_node.kind == NodeKind::DistinctType &&
+                 !type_node.children.empty()) {
+        const TypeId underlying =
+            resolve_type(tree, type_node.children.back(), semantic_parent);
+        semantic_.symbols.symbol_mut(id).type = semantic_.types.distinct(
+            initial_symbol.name, underlying, initial_symbol.name_range);
+      } else {
+        const TypeId type = resolve_type(tree, *payload, semantic_parent);
+        semantic_.symbols.symbol_mut(id).type = type;
+      }
+    } else if (initial_symbol.kind == SymbolKind::UnresolvedDeclaration &&
+               payload.has_value()) {
+      const SyntaxNode &value = tree.node(*payload);
+      if (value.kind == NodeKind::NameExpression) {
+        if (const std::optional<TypeId> type = try_named_type(tree, value, semantic_parent)) {
+          semantic_.symbols.symbol_mut(id).kind = SymbolKind::Type;
+          semantic_.symbols.symbol_mut(id).type = *type;
+        } else {
+          semantic_.symbols.symbol_mut(id).kind = SymbolKind::Constant;
+        }
+      } else {
+        semantic_.symbols.symbol_mut(id).kind = SymbolKind::Constant;
+      }
+    } else if (initial_symbol.kind == SymbolKind::Variable) {
+      // The first type child is the explicit declaration type. Inferred globals
+      // retain an invalid TypeId until expression checking supplies it.
+      for (NodeId child : declaration.children) {
+        if (node_is_type_syntax(tree.node(child).kind)) {
+          const TypeId type = resolve_type(tree, child, semantic_parent);
+          semantic_.symbols.symbol_mut(id).type = type;
+          break;
+        }
+      }
+    }
+
+    const Symbol &resolved_symbol = semantic_.symbols.symbol(id);
+    state = is_error_type(resolved_symbol.type) &&
+            (resolved_symbol.kind == SymbolKind::Type ||
+             resolved_symbol.kind == SymbolKind::Procedure)
+        ? ResolutionState::Failed
+        : ResolutionState::Resolved;
+  }
+
+  const SourceManager &sources_;
+  const LoadedPackage &loaded_;
+  SemanticPackage &semantic_;
+  DiagnosticSink &diagnostics_;
+  std::vector<ResolutionState> states_;
+};
+
+} // namespace
+
+void resolve_package_types(
+    const SourceManager &sources,
+    const LoadedPackage &loaded,
+    SemanticPackage &package,
+    DiagnosticSink &diagnostics) {
+  TypeResolver resolver(sources, loaded, package, diagnostics);
+  resolver.resolve();
+}
+
+} // namespace draft

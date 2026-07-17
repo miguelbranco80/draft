@@ -253,6 +253,36 @@ TypeId TypeStore::array(TypeId element, std::uint64_t count) {
   return add(std::move(result));
 }
 
+TypeId TypeStore::simd(TypeId element, std::uint64_t lanes) {
+  for (std::uint32_t index = 0; index < types_.size(); ++index) {
+    const Type &candidate = types_[index];
+    if (candidate.kind == TypeKind::Simd && candidate.element == element &&
+        candidate.element_count == lanes) {
+      return TypeId{index};
+    }
+  }
+
+  Type result;
+  result.kind = TypeKind::Simd;
+  result.element = element;
+  result.element_count = lanes;
+  const TypeLayout element_layout = type(element).layout;
+  if (element_layout.known && lanes != 0 &&
+      element_layout.size <= std::numeric_limits<std::uint64_t>::max() / lanes) {
+    const std::uint64_t size = element_layout.size * lanes;
+    // Target validation later rejects unsupported lane/type combinations. The
+    // canonical semantic size is still known. Alignment is the next power of
+    // two covering the value, capped at the initial target's 16-byte vector
+    // alignment, and therefore always satisfies the layout invariant.
+    std::uint32_t alignment = 1;
+    while (alignment < 16 && static_cast<std::uint64_t>(alignment) < size) {
+      alignment *= 2;
+    }
+    result.layout = {true, size, alignment};
+  }
+  return add(std::move(result));
+}
+
 TypeLayout TypeStore::aggregate_layout(const std::vector<TypeId> &members) const {
   TypeLayout result{true, 0, 1};
   for (TypeId member : members) {
@@ -320,6 +350,14 @@ TypeId TypeStore::distinct(std::string name, TypeId underlying, SourceRange decl
   return add(std::move(result));
 }
 
+TypeId TypeStore::type_parameter(std::string name, SourceRange declaration) {
+  Type result;
+  result.kind = TypeKind::TypeParameter;
+  result.name = std::move(name);
+  result.declaration = declaration;
+  return add(std::move(result));
+}
+
 TypeId TypeStore::begin_nominal(TypeKind kind, std::string name, SourceRange declaration) {
   assert(kind == TypeKind::Struct || kind == TypeKind::Enum ||
          kind == TypeKind::TaggedUnion || kind == TypeKind::RawUnion);
@@ -331,13 +369,17 @@ TypeId TypeStore::begin_nominal(TypeKind kind, std::string name, SourceRange dec
 }
 
 void TypeStore::complete_nominal(
-    TypeId id, TypeLayout layout, std::vector<TypeId> members) {
+    TypeId id,
+    TypeLayout layout,
+    std::vector<TypeId> members,
+    std::vector<std::uint64_t> member_offsets) {
   Type &nominal = type_mut(id);
   assert(nominal.kind == TypeKind::Struct || nominal.kind == TypeKind::Enum ||
          nominal.kind == TypeKind::TaggedUnion || nominal.kind == TypeKind::RawUnion);
   assert(!nominal.layout.known);
   nominal.layout = layout;
   nominal.members = std::move(members);
+  nominal.member_offsets = std::move(member_offsets);
 }
 
 bool TypeStore::is_integer(TypeId id) const {

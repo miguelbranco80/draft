@@ -24,6 +24,7 @@
 #include "source/source.h"
 #include "workspace/package.h"
 
+#include <cstdint>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -36,6 +37,42 @@ namespace draft {
 struct FileSemanticScope {
   FileId file;
   ScopeId scope;
+};
+
+// OwnedSemanticScope records the lexical scope introduced by a declaration.
+// Parametric declarations can own both a Parametric scope and a nested Type or
+// Procedure scope, so the same owner may appear more than once with distinct
+// ScopeKind values.
+struct OwnedSemanticScope {
+  SymbolId owner;
+  ScopeId scope;
+};
+
+// AggregateMember connects nominal type identity to the member symbol and its
+// byte offset. An invalid/unknown layout uses offset zero until instantiation or
+// compile-time selection completes it; callers must consult the owning Type's
+// layout.known bit before treating the offset as physical.
+struct AggregateMember {
+  SymbolId owner;
+  SymbolId member;
+  std::uint64_t offset = 0;
+};
+
+enum class TypeConstraintKind {
+  AnyType,
+  Integer,
+  Float,
+  Number,
+  CompileTimeValue,
+};
+
+// ParametricParameterRecord preserves the closed constraint vocabulary. Value
+// parameters use CompileTimeValue and carry their required value type on the
+// parameter Symbol. Type parameters carry a unique TypeParameter TypeId.
+struct ParametricParameterRecord {
+  SymbolId owner;
+  SymbolId parameter;
+  TypeConstraintKind constraint = TypeConstraintKind::AnyType;
 };
 
 // ImportBinding retains the canonical source spelling of the imported package
@@ -51,8 +88,11 @@ enum class SemanticSiteKind {
   Documentation,
   Judgment,
   SynthesisDeclaration,
+  SynthesisMember,
   ConditionalDeclaration,
+  ConditionalMember,
   DenialDeclaration,
+  DenialMember,
 };
 
 // A semantic site is a zero-runtime source construct anchored in a lexical
@@ -92,6 +132,9 @@ struct SemanticPackage {
   SymbolTable symbols;
   ScopeId package_scope;
   std::vector<FileSemanticScope> files;
+  std::vector<OwnedSemanticScope> owned_scopes;
+  std::vector<AggregateMember> aggregate_members;
+  std::vector<ParametricParameterRecord> parametric_parameters;
   std::vector<ImportBinding> imports;
   std::vector<SemanticSite> sites;
   std::vector<NativeBinding> native_bindings;

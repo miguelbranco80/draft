@@ -196,6 +196,11 @@ private:
     if (node_is_type_syntax(payload_kind)) {
       return SymbolKind::Type;
     }
+    // A bare name can denote either a type alias or a constant value. Preserve
+    // that ambiguity until the complete package declaration set is available.
+    if (payload_kind == NodeKind::NameExpression) {
+      return SymbolKind::UnresolvedDeclaration;
+    }
     return SymbolKind::Constant;
   }
 
@@ -503,8 +508,11 @@ std::string_view semantic_site_kind_name(SemanticSiteKind kind) {
   case SemanticSiteKind::Documentation: return "documentation";
   case SemanticSiteKind::Judgment: return "judgment";
   case SemanticSiteKind::SynthesisDeclaration: return "declaration synthesis";
+  case SemanticSiteKind::SynthesisMember: return "member synthesis";
   case SemanticSiteKind::ConditionalDeclaration: return "conditional declaration";
+  case SemanticSiteKind::ConditionalMember: return "conditional member";
   case SemanticSiteKind::DenialDeclaration: return "declaration denial";
+  case SemanticSiteKind::DenialMember: return "member denial";
   }
   return "unknown semantic site";
 }
