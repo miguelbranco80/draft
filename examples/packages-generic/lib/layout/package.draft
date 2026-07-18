@@ -1,0 +1,12 @@
+package layout
+
+// The implementation detail which determines the physical layout stays in
+// this package. A package which composes Buffer must request the concrete type
+// graph; it cannot evaluate this private procedure from imported source.
+increment :: proc(value: usize) -> usize {
+    return value + 1
+}
+
+pub Buffer[N: usize] :: struct {
+    values: [increment(N)]u8,
+}

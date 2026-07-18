@@ -2338,7 +2338,16 @@ private:
     }
 
     const Type template_type = semantic_.types.type(template_symbol.type);
-    if (imported_origin.has_value() &&
+    const bool concrete_arguments = std::none_of(
+        arguments.begin(),
+        arguments.end(),
+        [&](const ParametricArgument &argument) {
+          if (argument.is_type) return type_has_parameters(argument.type);
+          return argument.owner_evaluated_value ||
+              argument.value_expression.is_valid() ||
+              argument.value.kind != ConstantKind::Integer;
+        });
+    if (imported_origin.has_value() && concrete_arguments &&
         type_requires_owner_evaluation(template_symbol.type)) {
       bool already_requested = false;
       for (const ImportedTypeInstantiationRequest &request :

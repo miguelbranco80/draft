@@ -106,122 +106,6 @@ void hash_field(Sha256 &hash, std::string_view value) {
   return nullptr;
 }
 
-// Executes concrete generic-type layout requests in the package which owns the
-// template syntax and compile-time procedure bodies. The requester contributes
-// only canonical type graphs and exact scalar values. The returned concrete
-// graph is attached to the owner's interface, so the requester's next clean
-// semantic rebuild finds it through ordinary imported nominal identity.
-[[nodiscard]] std::size_t publish_type_instantiation_requests(
-    SourceManager &sources,
-    CompileWorkspaceResult &result,
-    const CompiledPackage &requester,
-    const TargetProfile &target,
-    DiagnosticSink &diagnostics) {
-  std::size_t published = 0;
-  for (const ImportedTypeInstantiationRequest &request :
-       requester.semantics.package.imported_type_instantiation_requests) {
-    const std::optional<std::size_t> owner_index = package_index_for(
-        result, request.root_identity, request.root_relative_path);
-    if (!owner_index.has_value() ||
-        !result.packages[*owner_index].has_value()) {
-      diagnostics.error(
-          SourceRange::invalid(),
-          "generic type owner is unavailable during layout instantiation");
-      continue;
-    }
-    CompiledPackage &owner = *result.packages[*owner_index];
-    const std::optional<SymbolId> source =
-        owner.semantics.package.symbols.lookup_direct(
-            owner.semantics.package.package_scope,
-            request.public_template_name);
-    if (!source.has_value()) {
-      diagnostics.error(
-          SourceRange::invalid(),
-          "generic type request names no public declaration '" +
-              request.public_template_name + "'");
-      continue;
-    }
-    const Symbol source_symbol =
-        owner.semantics.package.symbols.symbol(*source);
-    if (source_symbol.kind != SymbolKind::Type ||
-        !source_symbol.flags.parametric ||
-        source_symbol.visibility != Visibility::Public) {
-      diagnostics.error(
-          source_symbol.name_range,
-          "generic type layout request does not name a public parametric type");
-      continue;
-    }
-
-    std::vector<ParametricArgument> transferred_arguments;
-    transferred_arguments.reserve(request.arguments.size());
-    for (const ParametricArgument &argument : request.arguments) {
-      ParametricArgument transferred;
-      transferred.is_type = argument.is_type;
-      const TypeId argument_type = argument.is_type
-          ? argument.type
-          : argument.value_type;
-      const InterfaceTypeGraph graph = export_interface_type(
-          requester.identity,
-          requester.semantics.package,
-          argument_type,
-          diagnostics);
-      const TypeId imported = import_interface_type(
-          graph, owner.semantics.package, diagnostics);
-      if (argument.is_type) {
-        transferred.type = imported;
-      } else {
-        transferred.value_type = imported;
-        transferred.value = argument.value;
-      }
-      transferred_arguments.push_back(std::move(transferred));
-    }
-
-    const TypeId concrete = instantiate_parametric_type_application(
-        sources,
-        result.graph.packages[*owner_index].loaded,
-        owner.semantics.package,
-        owner.semantics.selections,
-        *source,
-        std::move(transferred_arguments),
-        source_symbol.name_range,
-        target.facts,
-        diagnostics);
-    if (!concrete.is_valid() ||
-        owner.semantics.package.types.type(concrete).kind == TypeKind::Invalid) {
-      continue;
-    }
-    const InterfaceTypeGraph graph = export_interface_type(
-        owner.identity,
-        owner.semantics.package,
-        concrete,
-        diagnostics);
-    bool still_deferred = false;
-    for (const InterfaceType &type : graph.types) {
-      still_deferred = still_deferred || type.owner_evaluated_element_count;
-    }
-    if (still_deferred) {
-      diagnostics.error(
-          source_symbol.name_range,
-          "generic type layout request did not produce a concrete owner result");
-      continue;
-    }
-    const Sha256Digest digest = hash_interface_type_graph(graph);
-    bool duplicate = false;
-    for (const InterfaceTypeGraph &existing :
-         owner.interface.instantiated_types) {
-      if (hash_interface_type_graph(existing) == digest) {
-        duplicate = true;
-        break;
-      }
-    }
-    if (!duplicate) {
-      owner.interface.instantiated_types.push_back(graph);
-      ++published;
-    }
-  }
-  return published;
-}
-
 // Resolution pins apply only to grammar-producing sites. Documentation and
 // judgments remain surface metadata and follow their separate evidence path.
 [[nodiscard]] bool is_synthesis_obligation(AgentConstructKind kind) {
@@ -267,6 +151,391 @@ void hash_field(Sha256 &hash, std::string_view value) {
       diagnostics);
   if (!context_package.ok) return {};
   return collect_agent_validation_context(sources, context_package.package);
+}
+
+// A concrete owner result may contain several nested nominal applications.
+// Every procedural count and full procedural value marker must be gone before
+// the graph is published to a consumer. Compact integer expressions are also
+// symbolic interface state; a concrete request must have reduced them to exact
+// scalar values.
+[[nodiscard]] bool owner_result_is_concrete(
+    const InterfaceTypeGraph &graph) {
+  for (const InterfaceType &type : graph.types) {
+    if (type.kind == TypeKind::TypeParameter ||
+        type.owner_evaluated_element_count ||
+        type.element_count_expression.is_valid()) {
+      return false;
+    }
+    for (const InterfaceNominalArgument &argument : type.nominal_arguments) {
+      if (!argument.is_type &&
+          (argument.owner_evaluated_value ||
+           argument.value_expression.is_valid())) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+// Requests are process-local rows, so progress cannot be judged by TypeId or
+// vector length across a semantic rebuild. This digest uses the same canonical
+// interface graphs which cross package boundaries and therefore remains stable
+// when a clean analysis assigns different local IDs.
+[[nodiscard]] Sha256Digest hash_type_instantiation_requests(
+    const CompiledPackage &requester,
+    DiagnosticSink &diagnostics) {
+  Sha256 hash;
+  hash_field(hash, "draft.type-instantiation-requests.v1");
+  for (const ImportedTypeInstantiationRequest &request :
+       requester.semantics.package.imported_type_instantiation_requests) {
+    hash_field(hash, request.root_identity);
+    hash_field(hash, request.root_relative_path);
+    hash_field(hash, request.public_template_name);
+    hash_u64(hash, static_cast<std::uint64_t>(request.arguments.size()));
+    for (const ParametricArgument &argument : request.arguments) {
+      hash_u64(hash, argument.is_type ? 1 : 0);
+      const TypeId type = argument.is_type
+          ? argument.type
+          : argument.value_type;
+      const InterfaceTypeGraph graph = export_interface_type(
+          requester.identity,
+          requester.semantics.package,
+          type,
+          diagnostics);
+      hash.update(hash_interface_type_graph(graph).bytes);
+      if (argument.is_type) continue;
+      hash_u64(hash, static_cast<std::uint64_t>(argument.value.kind));
+      hash_field(hash, argument.value.integer.to_decimal());
+      hash_u64(hash, argument.owner_evaluated_value ? 1 : 0);
+      hash_u64(hash, argument.value_expression.is_valid() ? 1 : 0);
+    }
+  }
+  return hash.finalize();
+}
+
+[[nodiscard]] bool collect_package_imports(
+    const CompileWorkspaceResult &result,
+    std::size_t package_index,
+    AvailablePackageImports &available,
+    DiagnosticSink &diagnostics) {
+  if (package_index >= result.graph.packages.size()) return false;
+  available.consumer_identity =
+      result.graph.packages[package_index].identity;
+  for (const PackageImport &import : result.graph.imports) {
+    if (static_cast<std::size_t>(import.importing_package.value) !=
+        package_index) {
+      continue;
+    }
+    const std::size_t dependency_index =
+        static_cast<std::size_t>(import.imported_package.value);
+    if (dependency_index >= result.packages.size() ||
+        !result.packages[dependency_index].has_value()) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "generic type owner dependency is unavailable during "
+          "semantic rebuild");
+      return false;
+    }
+    available.entries.push_back({
+        {import.file, import.syntax},
+        &result.packages[dependency_index]->interface,
+    });
+  }
+  return true;
+}
+
+void append_instantiated_type(
+    PackageInterface &interface,
+    const InterfaceTypeGraph &graph) {
+  const Sha256Digest digest = hash_interface_type_graph(graph);
+  for (const InterfaceTypeGraph &existing : interface.instantiated_types) {
+    if (hash_interface_type_graph(existing) == digest) return;
+  }
+  interface.instantiated_types.push_back(graph);
+}
+
+// A package imports a snapshot of each dependency interface into package-local
+// semantic IDs. When a deeper owner publishes a new concrete type graph, the
+// intermediate package must be rebuilt before retrying its outer request. The
+// public graphs already produced for earlier consumers are self-contained, so
+// they are retained across that clean declaration rebuild.
+[[nodiscard]] bool rebuild_declaration_package(
+    SourceManager &sources,
+    CompileWorkspaceResult &result,
+    std::size_t package_index,
+    const CompileWorkspaceOptions &options,
+    DiagnosticSink &diagnostics) {
+  if (package_index >= result.packages.size() ||
+      !result.packages[package_index].has_value()) {
+    return false;
+  }
+  AvailablePackageImports available;
+  if (!collect_package_imports(
+          result, package_index, available, diagnostics)) {
+    return false;
+  }
+
+  WorkspacePackage &workspace_package = result.graph.packages[package_index];
+  CompiledPackage &package = *result.packages[package_index];
+  std::vector<InterfaceTypeGraph> retained_instances =
+      package.interface.instantiated_types;
+  SemanticAnalysisResult semantics = analyze_package_semantics(
+      sources,
+      workspace_package.loaded,
+      options.target.facts,
+      available,
+      diagnostics);
+  if (!semantics.ok) return false;
+  AgentMetadataResult metadata = collect_agent_metadata(
+      sources,
+      workspace_package.loaded,
+      semantics.package,
+      options.attachments,
+      diagnostics);
+  if (!metadata.ok) return false;
+
+  std::vector<AgentValidationContext> validation_context =
+      package.validation_context;
+  if (validation_context.empty() && has_synthesis_record(metadata)) {
+    validation_context = load_validation_context(
+        sources, workspace_package, options.workspace, diagnostics);
+  }
+  PackageInterface interface = build_package_interface(
+      workspace_package.identity,
+      semantics.package,
+      semantics.constants,
+      metadata,
+      diagnostics);
+  for (const InterfaceTypeGraph &graph : retained_instances) {
+    append_instantiated_type(interface, graph);
+  }
+
+  AgentObligationResult obligations;
+  if (options.stage == CompileWorkspaceStage::DiscoverInterfaceSynthesis) {
+    obligations = build_agent_obligations(
+        workspace_package.identity,
+        sources,
+        workspace_package.loaded,
+        semantics.package,
+        semantics.constants,
+        metadata,
+        options.target,
+        diagnostics,
+        validation_context);
+    if (!obligations.ok) return false;
+  }
+
+  package.semantics = std::move(semantics);
+  package.metadata = std::move(metadata);
+  package.validation_context = std::move(validation_context);
+  package.interface = std::move(interface);
+  if (options.stage == CompileWorkspaceStage::DiscoverInterfaceSynthesis) {
+    package.obligations = std::move(obligations);
+  }
+  return true;
+}
+
+// Executes concrete generic-type requests in the package which owns the
+// template source and its private compile-time procedures. A concrete owner may
+// itself request a deeper owner. Because package imports form an acyclic graph,
+// recursively publishing those requests and rebuilding the intermediate
+// declaration graph reaches a deterministic fixed point.
+class TypeInstantiationPublisher {
+public:
+  TypeInstantiationPublisher(
+      SourceManager &sources,
+      CompileWorkspaceResult &result,
+      const CompileWorkspaceOptions &options,
+      DiagnosticSink &diagnostics)
+      : sources_(sources),
+        result_(result),
+        options_(options),
+        diagnostics_(diagnostics) {}
+
+  [[nodiscard]] bool publish(const CompiledPackage &requester) {
+    std::vector<std::size_t> owner_stack;
+    return publish_requests(requester, owner_stack);
+  }
+
+private:
+  [[nodiscard]] bool publish_requests(
+      const CompiledPackage &requester,
+      std::vector<std::size_t> &owner_stack) {
+    bool ok = true;
+    for (const ImportedTypeInstantiationRequest &request :
+         requester.semantics.package.imported_type_instantiation_requests) {
+      ok = publish_request(requester, request, owner_stack) && ok;
+    }
+    return ok;
+  }
+
+  [[nodiscard]] bool publish_request(
+      const CompiledPackage &requester,
+      const ImportedTypeInstantiationRequest &request,
+      std::vector<std::size_t> &owner_stack) {
+    const std::optional<std::size_t> owner_index = package_index_for(
+        result_, request.root_identity, request.root_relative_path);
+    if (!owner_index.has_value() ||
+        !result_.packages[*owner_index].has_value()) {
+      diagnostics_.error(
+          SourceRange::invalid(),
+          "generic type owner is unavailable during layout instantiation");
+      return false;
+    }
+    if (std::find(
+            owner_stack.begin(), owner_stack.end(), *owner_index) !=
+        owner_stack.end()) {
+      diagnostics_.error(
+          SourceRange::invalid(),
+          "generic type layout ownership forms a package cycle");
+      return false;
+    }
+    owner_stack.push_back(*owner_index);
+
+    std::vector<Sha256Digest> attempted_nested_requests;
+    for (;;) {
+      CompiledPackage &owner = *result_.packages[*owner_index];
+      const std::optional<SymbolId> source =
+          owner.semantics.package.symbols.lookup_direct(
+              owner.semantics.package.package_scope,
+              request.public_template_name);
+      if (!source.has_value()) {
+        diagnostics_.error(
+            SourceRange::invalid(),
+            "generic type request names no public declaration '" +
+                request.public_template_name + "'");
+        owner_stack.pop_back();
+        return false;
+      }
+      const Symbol source_symbol =
+          owner.semantics.package.symbols.symbol(*source);
+      if (source_symbol.kind != SymbolKind::Type ||
+          !source_symbol.flags.parametric ||
+          source_symbol.visibility != Visibility::Public) {
+        diagnostics_.error(
+            source_symbol.name_range,
+            "generic type layout request does not name a public parametric type");
+        owner_stack.pop_back();
+        return false;
+      }
+
+      std::vector<ParametricArgument> transferred_arguments;
+      transferred_arguments.reserve(request.arguments.size());
+      for (const ParametricArgument &argument : request.arguments) {
+        ParametricArgument transferred;
+        transferred.is_type = argument.is_type;
+        if (!argument.is_type &&
+            (argument.value.kind != ConstantKind::Integer ||
+             argument.owner_evaluated_value ||
+             argument.value_expression.is_valid())) {
+          diagnostics_.error(
+              source_symbol.name_range,
+              "generic type owner request contains a symbolic value argument");
+          owner_stack.pop_back();
+          return false;
+        }
+        const TypeId argument_type = argument.is_type
+            ? argument.type
+            : argument.value_type;
+        const InterfaceTypeGraph graph = export_interface_type(
+            requester.identity,
+            requester.semantics.package,
+            argument_type,
+            diagnostics_);
+        if (!owner_result_is_concrete(graph)) {
+          diagnostics_.error(
+              source_symbol.name_range,
+              "generic type owner request contains a symbolic type argument");
+          owner_stack.pop_back();
+          return false;
+        }
+        const TypeId imported = import_interface_type(
+            graph, owner.semantics.package, diagnostics_);
+        if (argument.is_type) {
+          transferred.type = imported;
+        } else {
+          transferred.value_type = imported;
+          transferred.value = argument.value;
+        }
+        transferred_arguments.push_back(std::move(transferred));
+      }
+
+      const TypeId concrete = instantiate_parametric_type_application(
+          sources_,
+          result_.graph.packages[*owner_index].loaded,
+          owner.semantics.package,
+          owner.semantics.selections,
+          *source,
+          std::move(transferred_arguments),
+          source_symbol.name_range,
+          options_.target.facts,
+          diagnostics_);
+      if (!concrete.is_valid() ||
+          owner.semantics.package.types.type(concrete).kind ==
+              TypeKind::Invalid) {
+        owner_stack.pop_back();
+        return false;
+      }
+      const InterfaceTypeGraph graph = export_interface_type(
+          owner.identity,
+          owner.semantics.package,
+          concrete,
+          diagnostics_);
+      if (owner_result_is_concrete(graph)) {
+        append_instantiated_type(owner.interface, graph);
+        owner_stack.pop_back();
+        return true;
+      }
+
+      if (owner.semantics.package
+              .imported_type_instantiation_requests.empty()) {
+        diagnostics_.error(
+            source_symbol.name_range,
+            "generic type layout request did not produce a concrete owner result");
+        owner_stack.pop_back();
+        return false;
+      }
+      const Sha256Digest nested_digest =
+          hash_type_instantiation_requests(owner, diagnostics_);
+      if (std::find(
+              attempted_nested_requests.begin(),
+              attempted_nested_requests.end(),
+              nested_digest) != attempted_nested_requests.end()) {
+        diagnostics_.error(
+            source_symbol.name_range,
+            "transitive generic type layout requests made no semantic progress");
+        owner_stack.pop_back();
+        return false;
+      }
+      attempted_nested_requests.push_back(nested_digest);
+
+      if (!publish_requests(owner, owner_stack) ||
+          !rebuild_declaration_package(
+              sources_,
+              result_,
+              *owner_index,
+              options_,
+              diagnostics_)) {
+        owner_stack.pop_back();
+        return false;
+      }
+    }
+  }
+
+  SourceManager &sources_;
+  CompileWorkspaceResult &result_;
+  const CompileWorkspaceOptions &options_;
+  DiagnosticSink &diagnostics_;
+};
+
+[[nodiscard]] bool publish_type_instantiation_requests(
+    SourceManager &sources,
+    CompileWorkspaceResult &result,
+    const CompiledPackage &requester,
+    const CompileWorkspaceOptions &options,
+    DiagnosticSink &diagnostics) {
+  TypeInstantiationPublisher publisher(sources, result, options, diagnostics);
+  return publisher.publish(requester);
 }
 
 // A dependency with pending generated declarations or members cannot publish a
@@ -699,12 +968,23 @@ CompileWorkspaceResult compile_workspace(
     // consumer supplies concrete arguments. Publish each owner result, then
     // rebuild this package from its unchanged source and the enriched dependency
     // interfaces. A successful rebuild contains no placeholder requests.
+    std::vector<Sha256Digest> attempted_type_request_sets;
     while (package.semantics.ok &&
            !package.semantics.package
                 .imported_type_instantiation_requests.empty()) {
-      const std::size_t published = publish_type_instantiation_requests(
-          sources, result, package, options.target, diagnostics);
-      if (published == 0) break;
+      const Sha256Digest request_digest =
+          hash_type_instantiation_requests(package, diagnostics);
+      if (std::find(
+              attempted_type_request_sets.begin(),
+              attempted_type_request_sets.end(),
+              request_digest) != attempted_type_request_sets.end()) {
+        break;
+      }
+      attempted_type_request_sets.push_back(request_digest);
+      if (!publish_type_instantiation_requests(
+              sources, result, package, options, diagnostics)) {
+        break;
+      }
       package.semantics = analyze_package_semantics(
           sources,
           workspace_package.loaded,

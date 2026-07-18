@@ -11,6 +11,7 @@ import lib/generic as generic
 // these aliases from imported constants and ordinary indexing expressions.
 Shared_Alias :: left.Shared_Value
 Box_Alias :: generic.Box[u64]
+Transitive_Procedural_Wrapper_Alias :: generic.Transitive_Procedural_Wrapper[1]
 Procedural_Buffer_Alias :: generic.Procedural_Buffer[2]
 Procedural_Wrapper_Alias :: generic.Procedural_Wrapper[1]
 
@@ -38,6 +39,8 @@ main :: proc() {
     assert(shared.value == 42)
     box: Box_Alias = generic.Box[u64]{value = 42}
     assert(box.value == 42)
+    transitive: Transitive_Procedural_Wrapper_Alias
+    assert(len(transitive.value.values) == 3)
     procedural: Procedural_Buffer_Alias
     assert(len(procedural.values) == 3)
     wrapped: Procedural_Wrapper_Alias

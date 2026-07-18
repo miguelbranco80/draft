@@ -676,30 +676,36 @@ void test_cross_package_generic_procedures(TestState &state) {
   }
   EXPECT(state, result.ok);
   EXPECT(state, !diagnostics.has_errors());
-  EXPECT(state, result.graph.packages.size() == 4);
+  EXPECT(state, result.graph.packages.size() == 5);
 
   const draft::CompiledPackage *app = nullptr;
   const draft::CompiledPackage *left = nullptr;
   const draft::CompiledPackage *right = nullptr;
   const draft::CompiledPackage *generic = nullptr;
+  const draft::CompiledPackage *layout = nullptr;
   for (const std::optional<draft::CompiledPackage> &package : result.packages) {
     if (!package.has_value()) continue;
     if (package->identity.root_relative_path == "app") app = &*package;
     if (package->identity.root_relative_path == "lib/left") left = &*package;
     if (package->identity.root_relative_path == "lib/right") right = &*package;
     if (package->identity.root_relative_path == "lib/generic") generic = &*package;
+    if (package->identity.root_relative_path == "lib/layout") layout = &*package;
   }
   EXPECT(state, app != nullptr);
   EXPECT(state, left != nullptr);
   EXPECT(state, right != nullptr);
   EXPECT(state, generic != nullptr);
-  if (app == nullptr || left == nullptr || right == nullptr || generic == nullptr) {
+  EXPECT(state, layout != nullptr);
+  if (app == nullptr || left == nullptr || right == nullptr ||
+      generic == nullptr || layout == nullptr) {
     return;
   }
 
   // The app requests a private nominal, u64, byte-size, and composed type/value
-  // template specializations in left. The concrete left bodies publish
-  // transitive identity[Private_Value] and plus_one[4] requests to generic.
+  // template specializations in left. One concrete generic type recursively
+  // requests Buffer[2] from lib/layout, then rebuilds generic against that
+  // owner-produced graph. The concrete left bodies publish transitive
+  // identity[Private_Value] and plus_one[4] requests to generic.
   // Both sibling packages also request identity[u64] and identity[Shared_Value].
   // The latter is local in left and imported in right, so both local display
   // spellings must hash to one canonical nominal identity. All sibling requests
@@ -716,7 +722,15 @@ void test_cross_package_generic_procedures(TestState &state) {
   EXPECT(state,
       app->semantics.package.imported_type_instantiation_requests.empty());
   EXPECT(state,
-      generic->semantics.package.parametric_type_instances.size() == 4);
+      generic->semantics.package
+          .imported_type_instantiation_requests.empty());
+  EXPECT(state,
+      layout->semantics.package
+          .imported_type_instantiation_requests.empty());
+  EXPECT(state,
+      generic->semantics.package.parametric_type_instances.size() == 6);
+  EXPECT(state,
+      layout->semantics.package.parametric_type_instances.size() == 1);
   EXPECT(state, app->llvm.text.find("_24mono_24") != std::string::npos);
   EXPECT(state, left->llvm.text.find("_24mono_24") != std::string::npos);
   EXPECT(state, right->llvm.text.find("_24mono_24") != std::string::npos);

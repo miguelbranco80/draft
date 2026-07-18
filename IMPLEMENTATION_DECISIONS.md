@@ -449,6 +449,14 @@ an unknown layout. Substitution composes the captured environment through nested
 templates; once concrete, it evaluates the argument and constructs the ordinary
 canonical nominal instance. Interfaces again export only the marker.
 
+Owner requests close transitively across package imports. If package A requests
+a concrete type from B and B's resulting layout requests a private recipe from
+C, the workspace publishes C's graph first, cleanly rebuilds B against the
+enriched C interface, and retries the original request. Canonical request
+digests detect a repeated non-progressing set, while an explicit owner stack
+guards the acyclic package invariant. Previously published type graphs are
+self-contained and remain attached to B's interface across the rebuild.
+
 ## Hosted process views and core threads
 
 Status: AArch64 macOS hosted runtime contract.

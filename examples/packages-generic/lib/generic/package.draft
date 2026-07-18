@@ -1,5 +1,7 @@
 package generic
 
+import lib/layout as layout
+
 // A public nominal template also exercises consumer-side type applications.
 pub Box[T: type] :: struct {
     value: T,
@@ -17,6 +19,12 @@ pub Procedural_Buffer[N: usize] :: struct {
 
 pub Procedural_Wrapper[N: usize] :: struct {
     value: Procedural_Buffer[layout_count(N)],
+}
+
+// Instantiating this template crosses two ownership boundaries. generic owns
+// layout_count, while lib/layout owns Buffer's private increment procedure.
+pub Transitive_Procedural_Wrapper[N: usize] :: struct {
+    value: layout.Buffer[layout_count(N)],
 }
 
 layout_for[T: type] :: proc(extra: usize) -> usize {
