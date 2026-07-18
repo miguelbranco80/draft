@@ -23,6 +23,11 @@ exist. Generated-source maps now reach hermetic LLVM operation locations and
 real native line tables, but pinned-toolchain DWARF/disassembly qualification
 and explicit coverage/profile correlation remain.
 
+The production audit now also proves byte-exact compile-time string indexing
+and every half-open string slice form. These operations preserve distinct
+string identity, enforce the same contextual-`usize` boundary as runtime
+views, and diagnose invalid constant ranges before native lowering.
+
 ## Requirement audit
 
 | Plan requirement | Current evidence | Assessment | Remaining proof or work |

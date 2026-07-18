@@ -97,7 +97,10 @@ summaries compose through local and imported calls, and lexical `deny` regions
 enforce `assert`, context, assembly, unchecked access, globals, packages, and
 named declarations transitively while rejecting unknown call edges. The single
 AArch64 macOS profile is explicit and versioned rather than inferred from the
-host. Checked procedure bodies now lower into a target-independent MIR with
+host. Compile-time evaluation includes byte-exact string indexing and all
+half-open string slice forms, with the same exact `usize` and bounds rules as
+runtime views. Checked procedure bodies now lower into a target-independent
+MIR with
 explicit locals, addresses, loads/stores, bounds checks, calls, lexical defer
 unwinding, and CFG terminators for short-circuit expressions, conditionals,
 loops, and switches. Switch labels are folded constants with duplicate and

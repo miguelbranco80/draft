@@ -64,6 +64,7 @@ Increment_Callback :: increment_value
 Switch_Base :: 40
 Untyped_One :: 1
 Untyped_Tuple :: (1, 2.5)
+Compile_Time_Text :: "draft"[1:4]
 global_callback: proc(value: i64) -> i64 = Increment_Callback
 global_table: [4]u32 = [4]u32{1, 4, 9, 16}
 global_partial_table: [3]i64 = [3]i64{42}
@@ -454,6 +455,9 @@ exercise_control_exit_defers :: proc(trace: [^]i64, count: ^usize) {
 }
 
 main :: proc() {
+    assert(len(Compile_Time_Text) == 3)
+    assert(Compile_Time_Text[0] == cast[u8]('r'))
+    assert(Compile_Time_Text[2] == cast[u8]('f'))
     assert(global_callback(41) == 42)
     assert(global_table[3] == 16)
     assert(global_partial_table[0] == 42 && global_partial_table[2] == 0)

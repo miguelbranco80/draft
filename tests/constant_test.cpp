@@ -937,6 +937,116 @@ From_Selection :: (increment if true else decrement)(41)
   }
 }
 
+void test_compile_time_string_views(TestState &state) {
+  AnalyzedSource valid(R"draft(
+package conditions
+
+Text :: distinct string
+
+Whole :: "dr\x61ft"
+Middle :: Whole[1:4]
+Prefix :: Whole[:2]
+Suffix :: Whole[2:]
+Copy :: Whole[:]
+Middle_Byte :: Middle[1]
+Exact_Bytes :: "A\0\u{e9}Z"[1:4]
+
+Low :: cast[usize](1)
+High :: cast[usize](4)
+Typed_Bounds :: Whole[Low:High]
+
+Wrapped :: cast[Text](Whole)
+Wrapped_Tail :: Wrapped[1:]
+
+select_middle :: proc() -> string {
+    return "abcdef"[1:4]
+}
+
+From_Procedure :: select_middle()
+)draft");
+  if (valid.diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(valid.sources, valid.diagnostics);
+  }
+  EXPECT(state, valid.analysis.ok);
+  EXPECT(state, !valid.diagnostics.has_errors());
+
+  const auto expect_string = [&](std::string_view name,
+                                 std::string_view expected) {
+    const std::optional<draft::SymbolId> symbol =
+        find_symbol(valid.analysis.package, name);
+    EXPECT(state, symbol.has_value());
+    const draft::ConstantValue *value = symbol.has_value()
+        ? valid.analysis.constants.find(*symbol)
+        : nullptr;
+    EXPECT(state, value != nullptr);
+    if (value != nullptr) {
+      EXPECT(state, value->kind == draft::ConstantKind::String);
+      EXPECT(state, value->text == expected);
+    }
+  };
+  expect_string("Middle", "raf");
+  expect_string("Prefix", "dr");
+  expect_string("Suffix", "aft");
+  expect_string("Copy", "draft");
+  expect_string("Typed_Bounds", "raf");
+  expect_string("Wrapped_Tail", "raft");
+  expect_string("From_Procedure", "bcd");
+  expect_string("Exact_Bytes", std::string_view("\0\xc3\xa9", 3));
+
+  const std::optional<draft::SymbolId> middle_byte =
+      find_symbol(valid.analysis.package, "Middle_Byte");
+  const draft::ConstantValue *byte_value = middle_byte.has_value()
+      ? valid.analysis.constants.find(*middle_byte)
+      : nullptr;
+  EXPECT(state, byte_value != nullptr);
+  if (byte_value != nullptr) {
+    EXPECT(state, byte_value->kind == draft::ConstantKind::Integer);
+    EXPECT(state, byte_value->integer.to_decimal() == "97");
+  }
+
+  const std::optional<draft::SymbolId> wrapped_tail =
+      find_symbol(valid.analysis.package, "Wrapped_Tail");
+  const std::optional<draft::SymbolId> text =
+      find_symbol(valid.analysis.package, "Text");
+  EXPECT(state, wrapped_tail.has_value());
+  EXPECT(state, text.has_value());
+  if (wrapped_tail.has_value() && text.has_value()) {
+    EXPECT(state, valid.analysis.package.symbols.symbol(*wrapped_tail).type ==
+                      valid.analysis.package.symbols.symbol(*text).type);
+  }
+
+  AnalyzedSource invalid(R"draft(
+package conditions
+
+Signed_Bound :: cast[i64](1)
+Bad_Index_Type :: "draft"[Signed_Bound]
+Bad_Bound_Type :: "draft"[Signed_Bound:]
+Bad_Index :: "draft"[5]
+Bad_High :: "draft"[:6]
+Bad_Order :: "draft"[3:2]
+Bad_Negative :: "draft"[-1:]
+)draft");
+  EXPECT(state, !invalid.analysis.ok);
+  const std::string rendered =
+      draft::render_diagnostics(invalid.sources, invalid.diagnostics);
+  EXPECT(state, rendered.find("constant index must have type usize") !=
+                    std::string::npos);
+  EXPECT(state, rendered.find("constant slice bound must have type usize") !=
+                    std::string::npos);
+  EXPECT(state, rendered.find(
+                    "constant index 5 is out of bounds for length 5") !=
+                    std::string::npos);
+  EXPECT(state, rendered.find(
+                    "constant slice bounds [0:6] are invalid for length 5") !=
+                    std::string::npos);
+  EXPECT(state, rendered.find(
+                    "constant slice bounds [3:2] are invalid for length 5") !=
+                    std::string::npos);
+  EXPECT(state, rendered.find(
+                    "constant slice bound is negative or excessive") !=
+                    std::string::npos);
+}
+
 void test_operator_type_boundaries(TestState &state) {
   AnalyzedSource valid(R"draft(
 package conditions
@@ -1314,6 +1424,7 @@ int main() {
   test_invalid_procedural_constants(state);
   test_compile_time_defer(state);
   test_compile_time_callee_expressions(state);
+  test_compile_time_string_views(state);
   test_operator_type_boundaries(state);
   test_global_initializers(state);
 

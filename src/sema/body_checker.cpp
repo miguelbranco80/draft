@@ -4268,8 +4268,12 @@ private:
           node.children[1],
           scope,
           semantic_.types.builtins().usize_type);
-      if (!is_integer(hir_.expression(index_id).type)) {
-        diagnostics_.error(tree.node(node.children[1]).range, "index must be an integer");
+      const TypeId index_type = hir_.expression(index_id).type;
+      if (!is_invalid_type(index_type) &&
+          index_type != semantic_.types.builtins().usize_type) {
+        diagnostics_.error(
+            tree.node(node.children[1]).range,
+            "index must have type usize");
       }
       HirExpression expression;
       expression.kind = HirExpressionKind::Index;
@@ -4358,8 +4362,12 @@ private:
             node.children[index],
             scope,
             semantic_.types.builtins().usize_type);
-        if (!is_integer(hir_.expression(bound).type)) {
-          diagnostics_.error(tree.node(node.children[index]).range, "slice bound must be an integer");
+        const TypeId bound_type = hir_.expression(bound).type;
+        if (!is_invalid_type(bound_type) &&
+            bound_type != semantic_.types.builtins().usize_type) {
+          diagnostics_.error(
+              tree.node(node.children[index]).range,
+              "slice bound must have type usize");
         }
         expression.operands.push_back(bound);
         if (colon.has_value() && tree.node(node.children[index]).token_end <= *colon) {

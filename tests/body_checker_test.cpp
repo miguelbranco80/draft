@@ -1042,11 +1042,17 @@ main :: proc() {
     bad_index := values[1 + 2]
     bad_high := values[1:4]
     reversed := values[2:1]
+    signed_index: i64 = 0
+    bad_index_type := values[signed_index]
+    bad_bound_type := values[signed_index:]
 }
 )draft");
 
   EXPECT(state, !source.bodies.ok);
-  EXPECT(state, source.diagnostics.error_count() == 3);
+  // Each typed i64 operand produces one contextual-type diagnostic. The
+  // checker must not follow it with a redundant "must be an integer" error:
+  // i64 is an integer, but the language boundary specifically requires usize.
+  EXPECT(state, source.diagnostics.error_count() == 5);
   const std::string rendered =
       draft::render_diagnostics(source.sources, source.diagnostics);
   EXPECT(state, rendered.find("constant index 3 is out of bounds for length 3") !=
@@ -1055,6 +1061,9 @@ main :: proc() {
                     std::string::npos);
   EXPECT(state, rendered.find("constant slice bounds [2:1]") !=
                     std::string::npos);
+  EXPECT(state,
+         rendered.find("does not match expected type 'unsigned integer'") !=
+             std::string::npos);
 }
 
 void test_parametric_procedure_value_diagnostics(TestState &state) {

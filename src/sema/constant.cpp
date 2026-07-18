@@ -581,6 +581,18 @@ private:
         kind == TypeKind::UnsignedInteger;
   }
 
+  // Index and slice-bound expressions have a deliberately narrower rule than
+  // ordinary integer operands. An untyped integer constant receives the
+  // surrounding `usize` context, while an already typed value must be exactly
+  // `usize`; Draft does not silently convert i64, u64, or a distinct wrapper at
+  // this boundary. Constant declarations and `when` conditions do not later
+  // pass through the runtime body checker, so the evaluator must enforce the
+  // same source-language rule itself.
+  [[nodiscard]] bool usize_index_operand(TypeId type_id) const {
+    return untyped_integer(type_id) ||
+        type_id == semantic_.types.builtins().usize_type;
+  }
+
   [[nodiscard]] bool numeric_operand(TypeId type_id) const {
     return untyped_integer(type_id) || untyped_float(type_id) ||
         concrete_numeric(type_id);
@@ -4368,16 +4380,32 @@ private:
       if (index.value.kind != ConstantKind::Integer) {
         return fail(node.range, "constant index must be an integer", required);
       }
+      if (!usize_index_operand(index.type)) {
+        return fail(
+            tree.node(node.children[1]).range,
+            "constant index must have type usize",
+            required);
+      }
       const std::optional<std::uint64_t> position = index.value.integer.to_u64();
       if (!position.has_value()) {
         return fail(node.range, "constant index is negative or excessive", required);
       }
       if (base.value.kind == ConstantKind::Aggregate && base.type.is_valid()) {
-        const Type aggregate = semantic_.types.type(base.type);
-        if ((aggregate.kind != TypeKind::Array &&
-             aggregate.kind != TypeKind::Simd) ||
-            *position >= base.value.elements.size()) {
-          return fail(node.range, "constant array index is out of bounds", required);
+        const Type aggregate = runtime_type(base.type);
+        if (aggregate.kind != TypeKind::Array &&
+            aggregate.kind != TypeKind::Simd) {
+          return fail(
+              node.range,
+              "compile-time indexing requires an array, SIMD value, or string",
+              required);
+        }
+        if (*position >= base.value.elements.size()) {
+          return fail(
+              node.range,
+              "constant index " + std::to_string(*position) +
+                  " is out of bounds for length " +
+                  std::to_string(base.value.elements.size()),
+              required);
         }
         const ConstantValue &selected =
             base.value.elements[static_cast<std::size_t>(*position)];
@@ -4396,7 +4424,102 @@ private:
                 static_cast<unsigned char>(base.value.text[*position]))),
             semantic_.types.builtins().u8_type);
       }
-      return pending();
+      if (base.value.kind == ConstantKind::String) {
+        return fail(
+            node.range,
+            "constant index " + std::to_string(*position) +
+                " is out of bounds for length " +
+                std::to_string(base.value.text.size()),
+            required);
+      }
+      return fail(
+          node.range,
+          "compile-time indexing requires an array, SIMD value, or string",
+          required);
+    }
+
+    case NodeKind::SliceExpression: {
+      if (node.children.empty()) return pending();
+      const EvalResult base =
+          evaluate_expression(tree, node.children.front(), scope, required);
+      if (base.status != EvalStatus::Ready) return base;
+
+      // A fixed-array constant has no source-level storage identity, and a
+      // slice would borrow storage. A string constant is different: its value
+      // already is an immutable byte sequence, so selecting a subrange remains
+      // a complete string constant and needs no runtime address. Slice only
+      // that closed value kind here.
+      if (base.value.kind != ConstantKind::String) {
+        return fail(
+            node.range,
+            "compile-time slicing requires a string constant",
+            required);
+      }
+
+      std::optional<std::uint32_t> colon;
+      for (std::uint32_t token_index = node.token_begin;
+           token_index < node.token_end;
+           ++token_index) {
+        if (tree.token(token_index).kind == TokenKind::Colon) {
+          colon = token_index;
+          break;
+        }
+      }
+      if (!colon.has_value()) return pending();
+
+      std::uint64_t low = 0;
+      std::uint64_t high = base.value.text.size();
+      for (std::size_t child_index = 1;
+           child_index < node.children.size();
+           ++child_index) {
+        const NodeId child = node.children[child_index];
+        const EvalResult bound =
+            evaluate_expression(tree, child, scope, required);
+        if (bound.status != EvalStatus::Ready) return bound;
+        if (bound.value.kind != ConstantKind::Integer) {
+          return fail(
+              tree.node(child).range,
+              "constant slice bound must be an integer",
+              required);
+        }
+        if (!usize_index_operand(bound.type)) {
+          return fail(
+              tree.node(child).range,
+              "constant slice bound must have type usize",
+              required);
+        }
+        const std::optional<std::uint64_t> value =
+            bound.value.integer.to_u64();
+        if (!value.has_value()) {
+          return fail(
+              tree.node(child).range,
+              "constant slice bound is negative or excessive",
+              required);
+        }
+        if (tree.node(child).token_end <= *colon) low = *value;
+        else high = *value;
+      }
+
+      if (low > high || high > base.value.text.size()) {
+        return fail(
+            node.range,
+            "constant slice bounds [" + std::to_string(low) + ":" +
+                std::to_string(high) + "] are invalid for length " +
+                std::to_string(base.value.text.size()),
+            required);
+      }
+
+      // std::string stores the exact Draft string bytes, including embedded
+      // NUL and non-ASCII UTF-8. Byte offsets and byte counts therefore match
+      // the language's immutable-byte-view semantics without host decoding.
+      const TypeId result_type = base.type.is_valid()
+          ? base.type
+          : semantic_.types.builtins().string_type;
+      return ready(
+          ConstantValue::make_string(base.value.text.substr(
+              static_cast<std::size_t>(low),
+              static_cast<std::size_t>(high - low))),
+          result_type);
     }
 
     case NodeKind::CallExpression: {
