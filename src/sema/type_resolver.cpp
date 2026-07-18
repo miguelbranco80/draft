@@ -55,10 +55,9 @@ struct ResolverTypeSubstitution {
 struct ResolverValueSubstitution {
   std::uint32_t parameter = std::numeric_limits<std::uint32_t>::max();
   BigInteger replacement;
-  // A template-to-template substitution retains the destination's local value
-  // parameter instead of manufacturing a concrete integer.
-  std::uint32_t symbolic_parameter =
-      std::numeric_limits<std::uint32_t>::max();
+  // A template-to-template substitution retains an expression over the
+  // destination's local value parameters instead of manufacturing an integer.
+  IntegerExpression symbolic_expression;
 };
 
 // Parsed representation attributes are kept small and explicit. Zero means no
@@ -67,6 +66,13 @@ struct ResolverValueSubstitution {
 struct AggregateAttributes {
   bool c_representation = false;
   std::uint32_t requested_alignment = 0;
+};
+
+struct BuiltIntegerExpressionNode {
+  bool valid = false;
+  std::uint32_t node = std::numeric_limits<std::uint32_t>::max();
+  TypeId type;
+  std::optional<BigInteger> constant;
 };
 
 // Mirrors the parser's contextual-name rule so semantic token-span extraction
@@ -146,6 +152,16 @@ public:
   [[nodiscard]] TypeId resolve_one_type(
       const SyntaxTree &tree, NodeId type, ScopeId scope) {
     return resolve_type(tree, type, scope);
+  }
+
+  [[nodiscard]] std::optional<IntegerExpression>
+  resolve_one_dependent_integer_expression(
+      const SyntaxTree &tree,
+      NodeId expression,
+      ScopeId scope,
+      TypeId contextual_type) {
+    return dependent_integer_expression(
+        tree, expression, scope, contextual_type);
   }
 
   [[nodiscard]] TypeId instantiate_one_type(
@@ -546,20 +562,344 @@ private:
     return value.has_value() ? value->to_u64() : std::nullopt;
   }
 
-  [[nodiscard]] std::optional<SymbolId> value_parameter_name(
-      const SyntaxTree &tree, NodeId expression_id, ScopeId scope) const {
-    const SyntaxNode &expression = tree.node(expression_id);
-    if (expression.kind != NodeKind::NameExpression) return std::nullopt;
+  [[nodiscard]] IntegerExpressionType integer_expression_type(
+      TypeId type_id) const {
+    const Type type = semantic_.types.type(type_id);
+    IntegerExpressionType result;
+    result.bit_width = type.bit_width;
+    if (type.kind == TypeKind::SignedInteger) {
+      result.representation = IntegerExpressionRepresentation::Signed;
+    } else if (type.kind == TypeKind::UnsignedInteger) {
+      result.representation = IntegerExpressionRepresentation::Unsigned;
+    }
+    return result;
+  }
+
+  [[nodiscard]] std::vector<IntegerExpressionReplacement>
+  integer_expression_replacements(
+      const std::vector<ResolverValueSubstitution> &substitutions) const {
+    std::vector<IntegerExpressionReplacement> result;
+    result.reserve(substitutions.size());
+    for (const ResolverValueSubstitution &substitution : substitutions) {
+      IntegerExpressionReplacement replacement;
+      replacement.parameter = substitution.parameter;
+      if (substitution.symbolic_expression.is_valid()) {
+        replacement.expression = substitution.symbolic_expression;
+      } else {
+        replacement.value = substitution.replacement;
+      }
+      result.push_back(std::move(replacement));
+    }
+    return result;
+  }
+
+  [[nodiscard]] std::optional<SymbolId> integer_expression_symbol(
+      const SyntaxTree &tree,
+      const SyntaxNode &expression,
+      ScopeId scope) const {
     const std::vector<SourceName> names = names_in_span(
         tree, expression.token_begin, expression.token_end);
-    if (names.size() != 1) return std::nullopt;
-    const std::optional<SymbolId> found =
-        semantic_.symbols.lookup(scope, names.front().text);
-    if (!found.has_value() ||
-        semantic_.symbols.symbol(*found).kind != SymbolKind::ValueParameter) {
+    if (expression.kind == NodeKind::NameExpression && names.size() == 1) {
+      return semantic_.symbols.lookup(scope, names.front().text);
+    }
+    if (expression.kind != NodeKind::MemberExpression || names.size() != 2) {
       return std::nullopt;
     }
-    return found;
+    const std::optional<SymbolId> import =
+        semantic_.symbols.lookup(scope, names.front().text);
+    if (!import.has_value() ||
+        semantic_.symbols.symbol(*import).kind != SymbolKind::Import) {
+      return std::nullopt;
+    }
+    for (const OwnedSemanticScope &owned : semantic_.owned_scopes) {
+      if (owned.owner == *import &&
+          semantic_.symbols.scope(owned.scope).kind ==
+              ScopeKind::ImportedPackage) {
+        return semantic_.symbols.lookup_direct(
+            owned.scope, names.back().text);
+      }
+    }
+    return std::nullopt;
+  }
+
+  [[nodiscard]] std::optional<IntegerExpressionOperation>
+  integer_expression_binary_operation(TokenKind operation) const {
+    switch (operation) {
+    case TokenKind::Plus: return IntegerExpressionOperation::Add;
+    case TokenKind::Minus: return IntegerExpressionOperation::Subtract;
+    case TokenKind::Star: return IntegerExpressionOperation::Multiply;
+    case TokenKind::Slash: return IntegerExpressionOperation::Divide;
+    case TokenKind::Percent: return IntegerExpressionOperation::Remainder;
+    case TokenKind::ShiftLeft: return IntegerExpressionOperation::ShiftLeft;
+    case TokenKind::ShiftRight: return IntegerExpressionOperation::ShiftRight;
+    case TokenKind::Ampersand: return IntegerExpressionOperation::BitwiseAnd;
+    case TokenKind::Pipe: return IntegerExpressionOperation::BitwiseOr;
+    case TokenKind::Caret: return IntegerExpressionOperation::BitwiseXor;
+    default: return std::nullopt;
+    }
+  }
+
+  [[nodiscard]] std::optional<BigInteger> evaluate_constant_integer_node(
+      IntegerExpressionOperation operation,
+      const BuiltIntegerExpressionNode &left,
+      const BuiltIntegerExpressionNode *right,
+      TypeId result_type,
+      std::string &error) const {
+    if (!left.constant.has_value() ||
+        (right != nullptr && !right->constant.has_value())) {
+      return std::nullopt;
+    }
+    IntegerExpression expression;
+    const std::uint32_t left_node = append_integer_constant(
+        expression,
+        *left.constant,
+        integer_expression_type(left.type));
+    if (right == nullptr) {
+      expression.root = append_integer_unary(
+          expression,
+          operation,
+          left_node,
+          integer_expression_type(result_type));
+    } else {
+      const std::uint32_t right_node = append_integer_constant(
+          expression,
+          *right->constant,
+          integer_expression_type(right->type));
+      expression.root = append_integer_binary(
+          expression,
+          operation,
+          left_node,
+          right_node,
+          integer_expression_type(result_type));
+    }
+    const IntegerExpressionResult evaluated =
+        evaluate_integer_expression(expression);
+    if (!evaluated.ok) {
+      error = evaluated.error;
+      return std::nullopt;
+    }
+    return evaluated.value;
+  }
+
+  [[nodiscard]] bool contextual_integer_constant_fits(
+      const BuiltIntegerExpressionNode &node, TypeId destination) const {
+    return node.type != semantic_.types.builtins().untyped_integer ||
+        (node.constant.has_value() &&
+         integer_fits_type(*node.constant, destination));
+  }
+
+  [[nodiscard]] bool contextualize_integer_expression(
+      IntegerExpression &expression,
+      TypeId destination,
+      SourceRange range) {
+    if (!semantic_.types.is_integer(destination)) return false;
+    const IntegerExpressionType concrete = integer_expression_type(destination);
+    for (IntegerExpressionNode &node : expression.nodes) {
+      if (node.type.representation !=
+          IntegerExpressionRepresentation::Untyped) {
+        continue;
+      }
+      // Context applies recursively to an untyped numeric expression. Reject
+      // an out-of-domain literal before changing its node type; otherwise a
+      // value such as 256 in a u8 expression would silently wrap merely because
+      // the surrounding expression also contains a value parameter.
+      if (node.operation == IntegerExpressionOperation::Constant &&
+          !integer_fits_type(node.constant, destination)) {
+        diagnostics_.error(
+            range,
+            "dependent integer constant is not representable in its contextual type");
+        return false;
+      }
+      node.type = concrete;
+    }
+    return true;
+  }
+
+  [[nodiscard]] BuiltIntegerExpressionNode build_integer_expression_node(
+      const SyntaxTree &tree,
+      NodeId expression_id,
+      ScopeId scope,
+      IntegerExpression &expression) {
+    const SyntaxNode &node = tree.node(expression_id);
+    if (node.kind == NodeKind::LiteralExpression &&
+        node.token_begin < node.token_end &&
+        tree.token(node.token_begin).kind == TokenKind::IntegerLiteral) {
+      const std::optional<BigInteger> value = BigInteger::parse_literal(
+          sources_.text(tree.token(node.token_begin).range));
+      if (!value.has_value()) return {};
+      return {
+          true,
+          append_integer_constant(expression, *value),
+          semantic_.types.builtins().untyped_integer,
+          *value,
+      };
+    }
+    if (node.kind == NodeKind::GroupExpression && !node.children.empty()) {
+      return build_integer_expression_node(
+          tree, node.children.front(), scope, expression);
+    }
+    if (node.kind == NodeKind::NameExpression ||
+        node.kind == NodeKind::MemberExpression) {
+      const std::optional<SymbolId> symbol =
+          integer_expression_symbol(tree, node, scope);
+      if (!symbol.has_value()) return {};
+      const Symbol binding = semantic_.symbols.symbol(*symbol);
+      if (binding.kind == SymbolKind::ValueParameter) {
+        // Value-parameter syntax is intentionally broad enough to diagnose a
+        // declaration such as `N: bool` semantically. It must not enter the
+        // integer-expression graph, whose node representation assumes an
+        // actual signed, unsigned, or untyped integer.
+        if (!semantic_.types.is_integer(binding.type)) return {};
+        return {
+            true,
+            append_integer_parameter(
+                expression,
+                symbol->value,
+                integer_expression_type(binding.type)),
+            binding.type,
+            std::nullopt,
+        };
+      }
+      const std::optional<BigInteger> value =
+          named_integer_constant(*symbol, node.range);
+      if (!value.has_value()) return {};
+      const TypeId value_type = binding.type.is_valid() &&
+              semantic_.types.is_integer(binding.type)
+          ? binding.type
+          : semantic_.types.builtins().untyped_integer;
+      return {
+          true,
+          append_integer_constant(
+              expression, *value, integer_expression_type(value_type)),
+          value_type,
+          *value,
+      };
+    }
+    if (node.kind == NodeKind::UnaryExpression && !node.children.empty()) {
+      const BuiltIntegerExpressionNode operand = build_integer_expression_node(
+          tree, node.children.front(), scope, expression);
+      if (!operand.valid) return {};
+      IntegerExpressionOperation operation;
+      const TokenKind token = tree.token(node.token_begin).kind;
+      if (token == TokenKind::Plus) {
+        operation = IntegerExpressionOperation::Positive;
+      } else if (token == TokenKind::Minus) {
+        operation = IntegerExpressionOperation::Negate;
+      } else if (token == TokenKind::Tilde) {
+        operation = IntegerExpressionOperation::BitwiseNot;
+      } else {
+        return {};
+      }
+      std::string error;
+      const std::optional<BigInteger> constant = evaluate_constant_integer_node(
+          operation, operand, nullptr, operand.type, error);
+      if (!error.empty()) {
+        diagnostics_.error(node.range, error);
+        return {};
+      }
+      return {
+          true,
+          append_integer_unary(
+              expression,
+              operation,
+              operand.node,
+              integer_expression_type(operand.type)),
+          operand.type,
+          constant,
+      };
+    }
+    if (node.kind != NodeKind::BinaryExpression ||
+        node.children.size() != 2) {
+      return {};
+    }
+
+    const BuiltIntegerExpressionNode left = build_integer_expression_node(
+        tree, node.children.front(), scope, expression);
+    const BuiltIntegerExpressionNode right = build_integer_expression_node(
+        tree, node.children.back(), scope, expression);
+    if (!left.valid || !right.valid) return {};
+    const TokenKind token = expression_binary_operator(tree, node);
+    const std::optional<IntegerExpressionOperation> operation =
+        integer_expression_binary_operation(token);
+    if (!operation.has_value()) return {};
+
+    TypeId result_type = left.type;
+    const bool shift = token == TokenKind::ShiftLeft ||
+        token == TokenKind::ShiftRight;
+    if (!shift) {
+      if (left.type == right.type) {
+        result_type = left.type;
+      } else if (left.type == semantic_.types.builtins().untyped_integer &&
+                 semantic_.types.is_integer(right.type) &&
+                 contextual_integer_constant_fits(left, right.type)) {
+        result_type = right.type;
+      } else if (right.type == semantic_.types.builtins().untyped_integer &&
+                 semantic_.types.is_integer(left.type) &&
+                 contextual_integer_constant_fits(right, left.type)) {
+        result_type = left.type;
+      } else {
+        diagnostics_.error(
+            node.range,
+            "dependent integer expression operands require one common type");
+        return {};
+      }
+    } else if (!semantic_.types.is_integer(left.type) &&
+               left.type != semantic_.types.builtins().untyped_integer) {
+      diagnostics_.error(
+          tree.node(node.children.front()).range,
+          "dependent shift left operand must be an integer");
+      return {};
+    }
+
+    std::string error;
+    const std::optional<BigInteger> constant = evaluate_constant_integer_node(
+        *operation, left, &right, result_type, error);
+    if (!error.empty()) {
+      diagnostics_.error(node.range, error);
+      return {};
+    }
+    return {
+        true,
+        append_integer_binary(
+            expression,
+            *operation,
+            left.node,
+            right.node,
+            integer_expression_type(result_type)),
+        result_type,
+        constant,
+    };
+  }
+
+  [[nodiscard]] std::optional<IntegerExpression>
+  dependent_integer_expression(
+      const SyntaxTree &tree,
+      NodeId expression_id,
+      ScopeId scope,
+      TypeId contextual_type) {
+    IntegerExpression expression;
+    const BuiltIntegerExpressionNode root = build_integer_expression_node(
+        tree, expression_id, scope, expression);
+    if (!root.valid || !integer_expression_has_parameters(expression)) {
+      return std::nullopt;
+    }
+    // A typed root keeps its inferred type here. An all-untyped root (for
+    // example `1 << N`) borrows the surrounding result type. Context then
+    // propagates through every still-untyped node, matching ordinary numeric
+    // body checking. Parameter leaves remain typed and are separately checked
+    // against a callee/template's exact declared value-parameter type.
+    expression.root = root.node;
+    const TypeId result_type =
+        root.type == semantic_.types.builtins().untyped_integer
+        ? contextual_type
+        : root.type;
+    if (!result_type.is_valid() ||
+        !contextualize_integer_expression(
+            expression, result_type, tree.node(expression_id).range)) {
+      return std::nullopt;
+    }
+    if (!expression.is_valid()) return std::nullopt;
+    return expression;
   }
 
   [[nodiscard]] std::vector<ParametricParameterRecord> parameters_for(
@@ -678,23 +1018,28 @@ private:
             argument.type = replacement;
             continue;
           }
-          if (!argument.value_parameter.is_valid()) continue;
-          for (const ResolverValueSubstitution &substitution :
-               value_substitutions) {
-            if (substitution.parameter != argument.value_parameter.value) {
-              continue;
+          if (!argument.value_expression.is_valid()) continue;
+          std::string error;
+          const std::optional<IntegerExpression> replacement =
+              substitute_integer_expression(
+                  argument.value_expression,
+                  integer_expression_replacements(value_substitutions),
+                  error);
+          if (!replacement.has_value()) {
+            diagnostics_.error(use_range, error);
+            return semantic_.types.builtins().invalid;
+          }
+          changed = changed || *replacement != argument.value_expression;
+          argument.value_expression = *replacement;
+          if (!integer_expression_has_parameters(argument.value_expression)) {
+            const IntegerExpressionResult evaluated =
+                evaluate_integer_expression(argument.value_expression);
+            if (!evaluated.ok) {
+              diagnostics_.error(use_range, evaluated.error);
+              return semantic_.types.builtins().invalid;
             }
-            if (substitution.symbolic_parameter !=
-                std::numeric_limits<std::uint32_t>::max()) {
-              argument.value_parameter =
-                  SymbolId{substitution.symbolic_parameter};
-            } else {
-              argument.value = ConstantValue::make_integer(
-                  substitution.replacement);
-              argument.value_parameter = {};
-            }
-            changed = true;
-            break;
+            argument.value = ConstantValue::make_integer(evaluated.value);
+            argument.value_expression = {};
           }
         }
         if (!changed) return source;
@@ -749,34 +1094,37 @@ private:
     case TypeKind::Array:
     case TypeKind::Simd: {
       std::uint64_t count = value.element_count;
-      if (value.element_count_parameter !=
-          std::numeric_limits<std::uint32_t>::max()) {
-        bool found = false;
-        for (const ResolverValueSubstitution &substitution : value_substitutions) {
-          if (substitution.parameter != value.element_count_parameter) continue;
-          if (substitution.symbolic_parameter !=
-              std::numeric_limits<std::uint32_t>::max()) {
-            const TypeId element = substitute_type(
-                value.element, substitutions, value_substitutions, use_range);
-            return value.kind == TypeKind::Array
-                ? semantic_.types.parametric_array(
-                      element, substitution.symbolic_parameter)
-                : semantic_.types.parametric_simd(
-                      element, substitution.symbolic_parameter);
-          }
-          const std::optional<std::uint64_t> concrete =
-              substitution.replacement.to_u64();
-          if (!concrete.has_value() || *concrete == 0) {
-            diagnostics_.error(
-                use_range,
-                "array and SIMD value parameters must instantiate to a nonzero u64");
-            return semantic_.types.builtins().invalid;
-          }
-          count = *concrete;
-          found = true;
-          break;
+      if (value.element_count_expression.is_valid()) {
+        std::string error;
+        const std::optional<IntegerExpression> replacement =
+            substitute_integer_expression(
+                value.element_count_expression,
+                integer_expression_replacements(value_substitutions),
+                error);
+        if (!replacement.has_value()) {
+          diagnostics_.error(use_range, error);
+          return semantic_.types.builtins().invalid;
         }
-        if (!found) return source;
+        const TypeId element = substitute_type(
+            value.element, substitutions, value_substitutions, use_range);
+        if (integer_expression_has_parameters(*replacement)) {
+          return value.kind == TypeKind::Array
+              ? semantic_.types.parametric_array(element, *replacement)
+              : semantic_.types.parametric_simd(element, *replacement);
+        }
+        const IntegerExpressionResult evaluated =
+            evaluate_integer_expression(*replacement);
+        const std::optional<std::uint64_t> concrete =
+            evaluated.ok ? evaluated.value.to_u64() : std::nullopt;
+        if (!evaluated.ok || !concrete.has_value() || *concrete == 0) {
+          diagnostics_.error(
+              use_range,
+              evaluated.ok
+                  ? "array and SIMD value expressions must instantiate to a nonzero u64"
+                  : evaluated.error);
+          return semantic_.types.builtins().invalid;
+        }
+        count = *concrete;
       }
       const TypeId element = substitute_type(
           value.element, substitutions, value_substitutions, use_range);
@@ -849,9 +1197,9 @@ private:
     for (const ParametricArgument &argument : arguments) {
       if (argument.is_type) {
         instance_name += "$t" + std::to_string(argument.type.value);
-      } else if (argument.value_parameter.is_valid()) {
-        instance_name += "$p" +
-            std::to_string(argument.value_parameter.value);
+      } else if (argument.value_expression.is_valid()) {
+        instance_name += "$e" +
+            integer_expression_identity(argument.value_expression);
       } else {
         instance_name += "$v" + argument.value.integer.to_decimal();
       }
@@ -1039,21 +1387,33 @@ private:
         }
         const TypeId required_type =
             semantic_.symbols.symbol(parameter.parameter).type;
-        if (arguments[index].value_parameter.is_valid()) {
-          const Symbol &supplied = semantic_.symbols.symbol(
-              arguments[index].value_parameter);
-          if (supplied.kind != SymbolKind::ValueParameter ||
-              supplied.type != required_type) {
-            diagnostics_.error(
-                use_range,
-                "symbolic type value argument has the wrong parameter type");
-            return semantic_.types.builtins().invalid;
+        if (arguments[index].value_expression.is_valid()) {
+          for (const IntegerExpressionNode &node :
+               arguments[index].value_expression.nodes) {
+            if (node.operation != IntegerExpressionOperation::Parameter) {
+              continue;
+            }
+            if (node.parameter >= semantic_.symbols.symbol_count()) {
+              diagnostics_.error(
+                  use_range,
+                  "symbolic type value argument names an invalid parameter");
+              return semantic_.types.builtins().invalid;
+            }
+            const Symbol &supplied =
+                semantic_.symbols.symbol(SymbolId{node.parameter});
+            if (supplied.kind != SymbolKind::ValueParameter ||
+                supplied.type != required_type) {
+              diagnostics_.error(
+                  use_range,
+                  "symbolic type value argument has the wrong parameter type");
+              return semantic_.types.builtins().invalid;
+            }
           }
           arguments[index].value_type = required_type;
           value_substitutions.push_back({
               parameter.parameter.value,
               {},
-              arguments[index].value_parameter.value,
+              arguments[index].value_expression,
           });
           continue;
         }
@@ -1073,7 +1433,7 @@ private:
         value_substitutions.push_back({
             parameter.parameter.value,
             arguments[index].value.integer,
-            std::numeric_limits<std::uint32_t>::max(),
+            {},
         });
         continue;
       }
@@ -1129,9 +1489,9 @@ private:
     for (const ParametricArgument &argument : arguments) {
       if (argument.is_type) {
         instance_name += "$t" + std::to_string(argument.type.value);
-      } else if (argument.value_parameter.is_valid()) {
-        instance_name += "$p" +
-            std::to_string(argument.value_parameter.value);
+      } else if (argument.value_expression.is_valid()) {
+        instance_name += "$e" +
+            integer_expression_identity(argument.value_expression);
       } else {
         instance_name += "$v" + argument.value.integer.to_decimal();
       }
@@ -1258,30 +1618,24 @@ private:
         arguments.push_back(std::move(argument));
         continue;
       }
+      const TypeId required =
+          semantic_.symbols.symbol(parameter.parameter).type;
       const std::optional<BigInteger> value = integer_constant_expression(
           tree, argument_node, scope);
       if (!value.has_value()) {
-        const std::optional<SymbolId> symbolic = value_parameter_name(
-            tree, argument_node, scope);
+        const std::optional<IntegerExpression> symbolic =
+            dependent_integer_expression(
+                tree, argument_node, scope, required);
         if (!symbolic.has_value()) {
           diagnostics_.error(
               tree.node(argument_node).range,
               "value parameter argument must be a compile-time integer expression");
           return semantic_.types.builtins().invalid;
         }
-        const TypeId required =
-            semantic_.symbols.symbol(parameter.parameter).type;
-        const TypeId supplied = semantic_.symbols.symbol(*symbolic).type;
-        if (required != supplied) {
-          diagnostics_.error(
-              tree.node(argument_node).range,
-              "symbolic type value argument has the wrong parameter type");
-          return semantic_.types.builtins().invalid;
-        }
         ParametricArgument argument;
         argument.is_type = false;
         argument.value_type = required;
-        argument.value_parameter = *symbolic;
+        argument.value_expression = *symbolic;
         arguments.push_back(std::move(argument));
         continue;
       }
@@ -1533,12 +1887,16 @@ private:
       const std::optional<std::uint64_t> count =
           layout_integer(tree, node.children.front(), scope);
       if (!count.has_value()) {
-        const std::optional<SymbolId> parameter = value_parameter_name(
-            tree, node.children.front(), scope);
-        if (parameter.has_value()) {
+        const std::optional<IntegerExpression> expression =
+            dependent_integer_expression(
+                tree,
+                node.children.front(),
+                scope,
+                semantic_.types.builtins().usize_type);
+        if (expression.has_value()) {
           return semantic_.types.parametric_array(
               resolve_type(tree, node.children.back(), scope),
-              parameter->value);
+              *expression);
         }
       }
       if (!count.has_value() || *count == 0) {
@@ -1558,12 +1916,16 @@ private:
       const std::optional<std::uint64_t> lanes =
           layout_integer(tree, node.children.front(), scope);
       if (!lanes.has_value()) {
-        const std::optional<SymbolId> parameter = value_parameter_name(
-            tree, node.children.front(), scope);
-        if (parameter.has_value()) {
+        const std::optional<IntegerExpression> expression =
+            dependent_integer_expression(
+                tree,
+                node.children.front(),
+                scope,
+                semantic_.types.builtins().usize_type);
+        if (expression.has_value()) {
           return semantic_.types.parametric_simd(
               resolve_type(tree, node.children.back(), scope),
-              parameter->value);
+              *expression);
         }
       }
       if (!lanes.has_value() || *lanes == 0) {
@@ -2534,6 +2896,29 @@ TypeId resolve_type_syntax(
     DiagnosticSink &diagnostics) {
   TypeResolver resolver(sources, loaded, package, selections, diagnostics);
   return resolver.resolve_one_type(tree, type, scope);
+}
+
+std::optional<IntegerExpression>
+resolve_dependent_integer_expression_syntax(
+    const SourceManager &sources,
+    const LoadedPackage &loaded,
+    SemanticPackage &package,
+    const ConditionalSelections &selections,
+    const SyntaxTree &tree,
+    NodeId expression,
+    ScopeId scope,
+    TypeId contextual_type,
+    const ConstantTable &active_constants,
+    DiagnosticSink &diagnostics) {
+  TypeResolver resolver(
+      sources,
+      loaded,
+      package,
+      selections,
+      diagnostics,
+      &active_constants);
+  return resolver.resolve_one_dependent_integer_expression(
+      tree, expression, scope, contextual_type);
 }
 
 TypeId resolve_local_procedure_signature(

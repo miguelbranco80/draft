@@ -45,15 +45,15 @@ Maybe[T: type] :: union {
 }
 
 Value_Buffer[N: usize] :: struct {
-    values: [N]i64,
+    values: [N + 1]i64,
 }
 
 Value_Envelope[N: usize] :: struct {
-    buffer: Value_Buffer[N],
+    buffer: Value_Buffer[N + 1],
 }
 
 last_enveloped[N: usize] :: proc(value: ^Value_Envelope[N]) -> i64 {
-    return value^.buffer.values[N - 1]
+    return value^.buffer.values[N + 1]
 }
 
 increment_value :: proc(value: i64) -> i64 {
@@ -483,8 +483,8 @@ main :: proc() {
     assert(identity[i64](42) == 42)
     value: u32 = 17
     assert(identity(value) == 17)
-    envelope: Value_Envelope[3]
-    envelope.buffer.values[2] = 42
+    envelope: Value_Envelope[2]
+    envelope.buffer.values[3] = 42
     assert(last_enveloped(&envelope) == 42)
     (left, _): (i64, i64) = (20, 0)
     (_, right): (i64, i64) = (0, 22)

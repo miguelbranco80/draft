@@ -383,6 +383,77 @@ Bad_Array :: struct {
   EXPECT(state, rendered.find("unknown type name") != std::string::npos);
 }
 
+void test_dependent_integer_expressions(TestState &state) {
+  SemanticSource source(R"draft(
+package types
+
+Buffer[N: usize] :: struct {
+    values: [N + 1]u16,
+}
+
+Envelope[N: usize, M: usize] :: struct {
+    buffer: Buffer[N + M],
+    mask: [1 << M]u8,
+}
+
+Concrete :: struct {
+    value: Envelope[1, 2],
+}
+)draft");
+
+  if (source.diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(source.sources, source.diagnostics);
+  }
+  EXPECT(state, !source.diagnostics.has_errors());
+
+  const draft::Symbol *concrete = find_symbol(source.semantic, "Concrete");
+  EXPECT(state, concrete != nullptr);
+  if (concrete == nullptr) return;
+  const draft::Type &concrete_type =
+      source.semantic.types.type(concrete->type);
+  EXPECT(state, concrete_type.layout == draft::TypeLayout({true, 12, 2}));
+  EXPECT(state, concrete_type.members.size() == 1);
+  if (concrete_type.members.size() != 1) return;
+
+  const draft::Type &envelope =
+      source.semantic.types.type(concrete_type.members.front());
+  EXPECT(state, envelope.layout == draft::TypeLayout({true, 12, 2}));
+  EXPECT(state, envelope.members.size() == 2);
+  if (envelope.members.size() != 2) return;
+  const draft::Type &buffer =
+      source.semantic.types.type(envelope.members.front());
+  EXPECT(state, buffer.layout == draft::TypeLayout({true, 8, 2}));
+  EXPECT(state, buffer.members.size() == 1);
+  if (buffer.members.size() == 1) {
+    const draft::Type &values =
+        source.semantic.types.type(buffer.members.front());
+    EXPECT(state, values.kind == draft::TypeKind::Array);
+    EXPECT(state, values.element_count == 4);
+  }
+  const draft::Type &mask = source.semantic.types.type(envelope.members.back());
+  EXPECT(state, mask.kind == draft::TypeKind::Array);
+  EXPECT(state, mask.element_count == 4);
+}
+
+void test_dependent_integer_expression_diagnostics(TestState &state) {
+  SemanticSource source(R"draft(
+package types
+
+Bad_Shift[N: usize] :: struct {
+    values: [(1 << N) / 2]u8,
+}
+
+Concrete :: struct {
+    value: Bad_Shift[64],
+}
+)draft");
+
+  EXPECT(state, source.diagnostics.has_errors());
+  const std::string rendered =
+      draft::render_diagnostics(source.sources, source.diagnostics);
+  EXPECT(state, rendered.find("out-of-range shift") != std::string::npos);
+}
+
 void test_parametric_type_diagnostics(TestState &state) {
   SemanticSource source(R"draft(
 package types
@@ -424,7 +495,7 @@ Buffer[T: type, N: u8] :: struct {
 }
 
 Mismatched[N: usize] :: struct {
-    value: Buffer[u8, N],
+    value: Buffer[u8, N + 1],
 }
 
 Zero :: struct { value: Buffer[u8, 0], }
@@ -543,6 +614,8 @@ int main() {
   TestState state;
   test_types_signatures_and_layouts(state);
   test_invalid_lengths_and_unknown_types(state);
+  test_dependent_integer_expressions(state);
+  test_dependent_integer_expression_diagnostics(state);
   test_parametric_type_diagnostics(state);
   test_value_parameter_diagnostics(state);
   test_invalid_enum_values(state);

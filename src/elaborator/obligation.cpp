@@ -149,11 +149,8 @@ void hash_field(Sha256 &hash, std::string_view value) {
   case TypeKind::Array:
   case TypeKind::Simd: {
     std::string count = std::to_string(type.element_count);
-    if (type.element_count_parameter !=
-            std::numeric_limits<std::uint32_t>::max() &&
-        type.element_count_parameter < package.symbols.symbol_count()) {
-      count = package.symbols.symbol(
-          SymbolId{type.element_count_parameter}).name;
+    if (type.element_count_expression.is_valid()) {
+      count = integer_expression_identity(type.element_count_expression);
     }
     const std::string prefix =
         type.kind == TypeKind::Simd ? "#simd[" : "[";
@@ -317,8 +314,10 @@ void append_constant_context(
     append_context_field(
         "TYPE_ELEMENT_COUNT", std::to_string(type.element_count), output);
     append_context_field(
-        "TYPE_ELEMENT_COUNT_PARAMETER",
-        std::to_string(type.element_count_parameter),
+        "TYPE_ELEMENT_COUNT_EXPRESSION",
+        type.element_count_expression.is_valid()
+            ? integer_expression_identity(type.element_count_expression)
+            : "none",
         output);
     append_context_field(
         "TYPE_C_CALLING_CONVENTION",
@@ -374,10 +373,10 @@ void append_constant_context(
           interface_id_text(argument.value_type),
           output);
       append_context_field(
-          "ARGUMENT_VALUE_PARAMETER",
-          argument.value_parameter == std::numeric_limits<std::uint32_t>::max()
-              ? "none"
-              : std::to_string(argument.value_parameter),
+          "ARGUMENT_VALUE_EXPRESSION",
+          argument.value_expression.is_valid()
+              ? integer_expression_identity(argument.value_expression)
+              : "none",
           output);
       append_constant_context(argument.value, output);
     }

@@ -43,8 +43,7 @@ bool validate_target_types(
     // concrete row. The element may likewise still be a constrained type
     // parameter in the generic declaration; its concrete substitution is the
     // representation-bearing type that the profile must name.
-    if (type.element_count_parameter !=
-            std::numeric_limits<std::uint32_t>::max() ||
+    if (type.element_count_expression.is_valid() ||
         !type.element.is_valid() ||
         types.type(type.element).kind == TypeKind::TypeParameter) {
       continue;

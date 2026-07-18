@@ -16,6 +16,7 @@
 
 #pragma once
 
+#include "sema/integer_expression.h"
 #include "source/source.h"
 
 #include <cstdint>
@@ -108,10 +109,10 @@ struct Type {
   TypeId element;
   ScalarByteOrder scalar_byte_order = ScalarByteOrder::Native;
   std::uint64_t element_count = 0;
-  // A dependent array/SIMD count names its owning ValueParameter SymbolId by
-  // stable numeric value. The max sentinel means element_count is concrete.
-  std::uint32_t element_count_parameter =
-      std::numeric_limits<std::uint32_t>::max();
+  // A dependent array/SIMD count retains the complete symbolic integer
+  // expression. Parameter leaves contain local ValueParameter SymbolIds.
+  // Concrete rows leave this invalid and use element_count above.
+  IntegerExpression element_count_expression;
   std::vector<TypeId> members;
   std::vector<std::uint64_t> member_offsets;
   bool c_calling_convention = false;
@@ -162,9 +163,9 @@ public:
       std::uint64_t lanes,
       SourceRange declaration = SourceRange::invalid());
   [[nodiscard]] TypeId parametric_array(
-      TypeId element, std::uint32_t value_parameter);
+      TypeId element, IntegerExpression count);
   [[nodiscard]] TypeId parametric_simd(
-      TypeId element, std::uint32_t value_parameter);
+      TypeId element, IntegerExpression lanes);
   [[nodiscard]] TypeId tuple(const std::vector<TypeId> &members);
   [[nodiscard]] TypeId procedure(
       const std::vector<TypeId> &parameters, TypeId result, bool c_calling_convention);

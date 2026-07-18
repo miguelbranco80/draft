@@ -79,7 +79,10 @@ binds file-local imports without leaking package-local IDs; assigns stable
 scopes, symbols, and types; rejects ignored declaration modifiers and limits
 `thread_local` to package variables and parametric lists to types/procedures;
 resolves signatures, aggregate layouts, and nested value-parametric nominal
-applications across package interfaces; evaluates
+applications across package interfaces; preserves typed dependent integer
+expressions such as `[N + 1]T`, `Buffer[N + M]`, and explicit
+`callee[N + 1]` applications through specialization and canonical interface
+ordinals; evaluates
 arbitrary-precision integers and exactly rounded IEEE floating-point constants;
 validates that every enum has a real all-zero member and that every tagged-union
 alternative fits its chosen discriminator;

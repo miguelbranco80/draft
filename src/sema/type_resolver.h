@@ -46,6 +46,24 @@ void resolve_package_types(
     ScopeId scope,
     DiagnosticSink &diagnostics);
 
+// Preserves one integer expression that still mentions compile-time value
+// parameters. Body checking uses the same builder as type syntax for explicit
+// procedure applications such as `take[N + 1](value)`. A fully concrete or
+// unsupported expression returns no value; ordinary constant evaluation then
+// remains the caller's fallback.
+[[nodiscard]] std::optional<IntegerExpression>
+resolve_dependent_integer_expression_syntax(
+    const SourceManager &sources,
+    const LoadedPackage &loaded,
+    SemanticPackage &package,
+    const ConditionalSelections &selections,
+    const SyntaxTree &tree,
+    NodeId expression,
+    ScopeId scope,
+    TypeId contextual_type,
+    const ConstantTable &active_constants,
+    DiagnosticSink &diagnostics);
+
 // Resolves one procedure declaration introduced in a lexical statement scope.
 // Body checking first declares owner so recursion can find the name, then calls
 // this routine to create its optional parametric scope, immutable parameter

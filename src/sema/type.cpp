@@ -261,18 +261,18 @@ TypeId TypeStore::array(TypeId element, std::uint64_t count) {
 }
 
 TypeId TypeStore::parametric_array(
-    TypeId element, std::uint32_t value_parameter) {
+    TypeId element, IntegerExpression count) {
   for (std::uint32_t index = 0; index < types_.size(); ++index) {
     const Type &candidate = types_[index];
     if (candidate.kind == TypeKind::Array && candidate.element == element &&
-        candidate.element_count_parameter == value_parameter) {
+        candidate.element_count_expression == count) {
       return TypeId{index};
     }
   }
   Type result;
   result.kind = TypeKind::Array;
   result.element = element;
-  result.element_count_parameter = value_parameter;
+  result.element_count_expression = std::move(count);
   return add(std::move(result));
 }
 
@@ -317,18 +317,18 @@ TypeId TypeStore::simd(
 }
 
 TypeId TypeStore::parametric_simd(
-    TypeId element, std::uint32_t value_parameter) {
+    TypeId element, IntegerExpression lanes) {
   for (std::uint32_t index = 0; index < types_.size(); ++index) {
     const Type &candidate = types_[index];
     if (candidate.kind == TypeKind::Simd && candidate.element == element &&
-        candidate.element_count_parameter == value_parameter) {
+        candidate.element_count_expression == lanes) {
       return TypeId{index};
     }
   }
   Type result;
   result.kind = TypeKind::Simd;
   result.element = element;
-  result.element_count_parameter = value_parameter;
+  result.element_count_expression = std::move(lanes);
   return add(std::move(result));
 }
 

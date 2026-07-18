@@ -314,11 +314,11 @@ pub Maybe[T: type] :: union {
 }
 
 pub Buffer[T: type, N: usize] :: struct {
-    data: [N]T,
+    data: [N + 1]T,
 }
 
 pub Packet[N: usize] :: struct {
-    bytes: Buffer[u8, N],
+    bytes: Buffer[u8, N + 1],
 }
 )draft");
   draft::SemanticAnalysisResult dependency_semantics =
@@ -450,7 +450,18 @@ pub relay :: proc(holder: middle.Holder) -> i64 {
       const draft::InterfaceType &data =
           dependency_interface.types[buffer_type.members.front().value];
       EXPECT(state, data.kind == draft::TypeKind::Array);
-      EXPECT(state, data.element_count_parameter == 1);
+      EXPECT(state, data.element_count_expression.is_valid());
+      if (data.element_count_expression.is_valid()) {
+        const draft::IntegerExpressionNode &root =
+            data.element_count_expression.nodes[
+                data.element_count_expression.root];
+        EXPECT(
+            state,
+            root.operation == draft::IntegerExpressionOperation::Add);
+        EXPECT(
+            state,
+            data.element_count_expression.nodes[root.left].parameter == 1);
+      }
     }
   }
   if (dependency_interface.declarations.size() == 3) {
@@ -469,7 +480,17 @@ pub relay :: proc(holder: middle.Holder) -> i64 {
         const draft::InterfaceNominalArgument &count =
             symbolic_buffer.nominal_arguments[1];
         EXPECT(state, !count.is_type);
-        EXPECT(state, count.value_parameter == 0);
+        EXPECT(state, count.value_expression.is_valid());
+        if (count.value_expression.is_valid()) {
+          const draft::IntegerExpressionNode &root =
+              count.value_expression.nodes[count.value_expression.root];
+          EXPECT(
+              state,
+              root.operation == draft::IntegerExpressionOperation::Add);
+          EXPECT(
+              state,
+              count.value_expression.nodes[root.left].parameter == 0);
+        }
       }
     }
   }
@@ -500,15 +521,14 @@ pub relay :: proc(holder: middle.Holder) -> i64 {
     if (type.kind == draft::TypeKind::Struct &&
         type.nominal_public_name == "Buffer" &&
         type.nominal_arguments.size() == 2 &&
-        type.nominal_arguments[1].value_parameter ==
-            std::numeric_limits<std::uint32_t>::max() &&
+        !type.nominal_arguments[1].value_expression.is_valid() &&
         type.nominal_arguments[1].value.kind ==
             draft::ConstantKind::Integer &&
         type.nominal_arguments[1].value.integer.to_decimal() == "3") {
       saw_buffer_specialization = true;
       EXPECT(state, type.nominal_root_identity == "workspace");
       EXPECT(state, type.nominal_root_relative_path == "lib/option");
-      EXPECT(state, type.layout == draft::TypeLayout({true, 6, 2}));
+      EXPECT(state, type.layout == draft::TypeLayout({true, 8, 2}));
       EXPECT(state, type.nominal_arguments[0].is_type);
       EXPECT(state, !type.nominal_arguments[1].is_type);
       EXPECT(state, type.nominal_arguments[1].value.kind ==

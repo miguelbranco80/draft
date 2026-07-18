@@ -50,13 +50,28 @@ void hash_type_id(Sha256 &hash, InterfaceTypeId id) {
   hash_u64(hash, id.is_valid() ? id.value : std::numeric_limits<std::uint32_t>::max());
 }
 
+void hash_integer_expression(
+    Sha256 &hash, const IntegerExpression &expression) {
+  hash_u64(hash, expression.root);
+  hash_u64(hash, static_cast<std::uint64_t>(expression.nodes.size()));
+  for (const IntegerExpressionNode &node : expression.nodes) {
+    hash_u64(hash, static_cast<std::uint64_t>(node.operation));
+    hash_u64(hash, static_cast<std::uint64_t>(node.type.representation));
+    hash_u64(hash, node.type.bit_width);
+    hash_field(hash, node.constant.to_decimal());
+    hash_u64(hash, node.parameter);
+    hash_u64(hash, node.left);
+    hash_u64(hash, node.right);
+  }
+}
+
 void hash_nominal_argument(
     Sha256 &hash, const InterfaceNominalArgument &argument) {
   hash_u64(hash, argument.is_type ? 1 : 0);
   hash_type_id(hash, argument.type);
   hash_type_id(hash, argument.value_type);
   hash_constant(hash, argument.value);
-  hash_u64(hash, argument.value_parameter);
+  hash_integer_expression(hash, argument.value_expression);
 }
 
 void hash_interface_type(Sha256 &hash, const InterfaceType &type) {
@@ -79,7 +94,7 @@ void hash_interface_type(Sha256 &hash, const InterfaceType &type) {
   hash_u64(hash, type.bit_width);
   hash_type_id(hash, type.element);
   hash_u64(hash, type.element_count);
-  hash_u64(hash, type.element_count_parameter);
+  hash_integer_expression(hash, type.element_count_expression);
   hash_u64(hash, static_cast<std::uint64_t>(type.members.size()));
   for (InterfaceTypeId member : type.members) hash_type_id(hash, member);
   hash_u64(hash, static_cast<std::uint64_t>(type.member_offsets.size()));
@@ -471,6 +486,31 @@ private:
     return std::nullopt;
   }
 
+  [[nodiscard]] std::optional<IntegerExpression> translate_integer_expression(
+      const IntegerExpression &expression,
+      SourceRange range) {
+    if (!expression.is_valid()) return IntegerExpression{};
+    std::vector<std::pair<std::uint32_t, std::uint32_t>> mapping;
+    for (const IntegerExpressionNode &node : expression.nodes) {
+      if (node.operation != IntegerExpressionOperation::Parameter) continue;
+      bool already_mapped = false;
+      for (const auto &entry : mapping) {
+        already_mapped = already_mapped || entry.first == node.parameter;
+      }
+      if (already_mapped) continue;
+      const std::optional<std::uint32_t> ordinal =
+          parameter_ordinal(node.parameter);
+      if (!ordinal.has_value()) {
+        diagnostics_.error(
+            range,
+            "dependent integer expression has no owning value parameter");
+        return std::nullopt;
+      }
+      mapping.push_back({node.parameter, *ordinal});
+    }
+    return remap_integer_expression(expression, mapping);
+  }
+
   [[nodiscard]] InterfaceNominalArgument translate_argument(
       const ParametricArgument &argument) {
     InterfaceNominalArgument translated;
@@ -480,15 +520,12 @@ private:
     } else {
       translated.value_type = translate_type(argument.value_type);
       translated.value = argument.value;
-      if (argument.value_parameter.is_valid()) {
-        const std::optional<std::uint32_t> ordinal =
-            parameter_ordinal(argument.value_parameter.value);
-        if (ordinal.has_value()) {
-          translated.value_parameter = *ordinal;
-        } else {
-          diagnostics_.error(
-              SourceRange::invalid(),
-              "symbolic nominal argument has no owning value parameter");
+      if (argument.value_expression.is_valid()) {
+        const std::optional<IntegerExpression> expression =
+            translate_integer_expression(
+                argument.value_expression, SourceRange::invalid());
+        if (expression.has_value()) {
+          translated.value_expression = *expression;
         }
       }
     }
@@ -550,16 +587,13 @@ private:
     translated.layout = source_type.layout;
     translated.bit_width = source_type.bit_width;
     translated.element_count = source_type.element_count;
-    if (source_type.element_count_parameter !=
-        std::numeric_limits<std::uint32_t>::max()) {
-      const std::optional<std::uint32_t> ordinal =
-          parameter_ordinal(source_type.element_count_parameter);
-      if (ordinal.has_value()) {
-        translated.element_count_parameter = *ordinal;
-      } else {
-        diagnostics_.error(
-            source_type.declaration,
-            "dependent array or SIMD type has no owning value parameter");
+    if (source_type.element_count_expression.is_valid()) {
+      const std::optional<IntegerExpression> expression =
+          translate_integer_expression(
+              source_type.element_count_expression,
+              source_type.declaration);
+      if (expression.has_value()) {
+        translated.element_count_expression = *expression;
       }
     }
     translated.member_offsets = source_type.member_offsets;
@@ -789,6 +823,32 @@ public:
   }
 
 private:
+  [[nodiscard]] std::optional<IntegerExpression> import_integer_expression(
+      const IntegerExpression &expression) {
+    if (!expression.is_valid()) return IntegerExpression{};
+    std::vector<std::pair<std::uint32_t, std::uint32_t>> mapping;
+    for (const IntegerExpressionNode &node : expression.nodes) {
+      if (node.operation != IntegerExpressionOperation::Parameter) continue;
+      if (node.parameter >= active_parameters_.size()) {
+        diagnostics_.error(
+            SourceRange::invalid(),
+            "package interface contains an invalid value-parameter ordinal");
+        return std::nullopt;
+      }
+      bool already_mapped = false;
+      for (const auto &entry : mapping) {
+        already_mapped = already_mapped || entry.first == node.parameter;
+      }
+      if (!already_mapped) {
+        mapping.push_back({
+            node.parameter,
+            active_parameters_[node.parameter].value,
+        });
+      }
+    }
+    return remap_integer_expression(expression, mapping);
+  }
+
   [[nodiscard]] ImportedFlowValue import_flow_value(
       SymbolId proxy,
       const InterfaceDeclaration::FlowValue &source) const {
@@ -945,15 +1005,11 @@ private:
       } else {
         translated.value_type = import_type(package, cache, argument.value_type);
         translated.value = argument.value;
-        if (argument.value_parameter !=
-            std::numeric_limits<std::uint32_t>::max()) {
-          if (argument.value_parameter >= active_parameters_.size()) {
-            diagnostics_.error(
-                SourceRange::invalid(),
-                "package interface contains an invalid nominal value-parameter ordinal");
-          } else {
-            translated.value_parameter =
-                active_parameters_[argument.value_parameter];
+        if (argument.value_expression.is_valid()) {
+          const std::optional<IntegerExpression> expression =
+              import_integer_expression(argument.value_expression);
+          if (expression.has_value()) {
+            translated.value_expression = *expression;
           }
         }
       }
@@ -989,36 +1045,32 @@ private:
       result = consumer_.types.slice(import_type(package, cache, source.element));
       break;
     case TypeKind::Array:
-      if (source.element_count_parameter !=
-          std::numeric_limits<std::uint32_t>::max()) {
-        if (source.element_count_parameter >= active_parameters_.size()) {
-          diagnostics_.error(
-              SourceRange::invalid(),
-              "package interface contains an invalid value-parameter ordinal");
+      if (source.element_count_expression.is_valid()) {
+        const std::optional<IntegerExpression> expression =
+            import_integer_expression(source.element_count_expression);
+        if (!expression.has_value()) {
           result = consumer_.types.builtins().invalid;
           break;
         }
         result = consumer_.types.parametric_array(
             import_type(package, cache, source.element),
-            active_parameters_[source.element_count_parameter].value);
+            *expression);
       } else {
         result = consumer_.types.array(
             import_type(package, cache, source.element), source.element_count);
       }
       break;
     case TypeKind::Simd:
-      if (source.element_count_parameter !=
-          std::numeric_limits<std::uint32_t>::max()) {
-        if (source.element_count_parameter >= active_parameters_.size()) {
-          diagnostics_.error(
-              SourceRange::invalid(),
-              "package interface contains an invalid value-parameter ordinal");
+      if (source.element_count_expression.is_valid()) {
+        const std::optional<IntegerExpression> expression =
+            import_integer_expression(source.element_count_expression);
+        if (!expression.has_value()) {
           result = consumer_.types.builtins().invalid;
           break;
         }
         result = consumer_.types.parametric_simd(
             import_type(package, cache, source.element),
-            active_parameters_[source.element_count_parameter].value);
+            *expression);
       } else {
         result = consumer_.types.simd(
             import_type(package, cache, source.element), source.element_count);

@@ -115,15 +115,15 @@ struct ParametricInstanceRecord {
 };
 
 // A nominal template argument is either a type or a compile-time scalar.
-// Concrete scalar applications own value; a template may instead retain the
-// ValueParameter symbol which will supply that scalar in each specialization.
-// value_type records the declared scalar type in both cases.
+// Concrete scalar applications own value; a template may instead retain a
+// symbolic integer expression whose parameter leaves are ValueParameter
+// SymbolIds. value_type records the declared scalar type in both cases.
 struct ParametricArgument {
   bool is_type = true;
   TypeId type;
   TypeId value_type;
   ConstantValue value;
-  SymbolId value_parameter;
+  IntegerExpression value_expression;
 
   bool operator==(const ParametricArgument &) const = default;
 };

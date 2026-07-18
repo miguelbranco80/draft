@@ -356,21 +356,25 @@ void test_value_parametric_nominal_composition(TestState &state) {
 package bodies
 
 Buffer[N: usize] :: struct {
-    values: [N]i64,
+    values: [N + 1]i64,
 }
 
 Envelope[N: usize] :: struct {
-    buffer: Buffer[N],
+    buffer: Buffer[N + 1],
 }
 
-last[N: usize] :: proc(value: ^Envelope[N]) -> i64 {
-    return value^.buffer.values[N - 1]
+last[N: usize] :: proc(value: ^Buffer[N]) -> i64 {
+    return value^.values[N]
+}
+
+last_enveloped[N: usize] :: proc(value: ^Envelope[N]) -> i64 {
+    return last[N + 1](&value^.buffer)
 }
 
 main :: proc() -> i64 {
-    value: Envelope[3]
-    value.buffer.values[2] = 42
-    return last(&value)
+    value: Envelope[2]
+    value.buffer.values[3] = 42
+    return last_enveloped(&value)
 }
 )draft");
 
@@ -388,14 +392,14 @@ main :: proc() -> i64 {
     const draft::Symbol &template_symbol =
         source.semantics.package.symbols.symbol(instance.source);
     if (template_symbol.name != "Envelope" || instance.arguments.size() != 1 ||
-        instance.arguments.front().value_parameter.is_valid()) {
+        instance.arguments.front().value_expression.is_valid()) {
       continue;
     }
     const draft::TypeId type =
         source.semantics.package.symbols.symbol(instance.instance).type;
     saw_concrete_envelope = true;
     EXPECT(state, source.semantics.package.types.type(type).layout ==
-                      draft::TypeLayout({true, 24, 8}));
+                      draft::TypeLayout({true, 32, 8}));
   }
   EXPECT(state, saw_concrete_envelope);
 }

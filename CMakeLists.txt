@@ -63,6 +63,7 @@ add_library(
   src/sema/ieee_float.cpp
   src/sema/initialization.cpp
   src/sema/interface.cpp
+  src/sema/integer_expression.cpp
   src/sema/runtime_context.cpp
   src/sema/semantic.cpp
   src/sema/symbol.cpp
@@ -160,6 +161,10 @@ if(BUILD_TESTING)
   add_executable(draft_big_integer_tests tests/big_integer_test.cpp)
   target_link_libraries(draft_big_integer_tests PRIVATE draft_compiler)
   add_test(NAME draft_big_integer_tests COMMAND draft_big_integer_tests)
+
+  add_executable(draft_integer_expression_tests tests/integer_expression_test.cpp)
+  target_link_libraries(draft_integer_expression_tests PRIVATE draft_compiler)
+  add_test(NAME draft_integer_expression_tests COMMAND draft_integer_expression_tests)
 
   add_executable(draft_declaration_tests tests/declaration_test.cpp)
   target_link_libraries(draft_declaration_tests PRIVATE draft_compiler)

@@ -59,10 +59,9 @@ struct InterfaceNominalArgument {
   InterfaceTypeId type;
   InterfaceTypeId value_type;
   ConstantValue value;
-  // Symbolic value arguments use their zero-based ordinal in the declaration
-  // which owns the surrounding type graph. Concrete values retain max here.
-  std::uint32_t value_parameter =
-      std::numeric_limits<std::uint32_t>::max();
+  // Parameter leaves use zero-based ordinals in the declaration which owns the
+  // surrounding type graph. Concrete arguments leave this expression invalid.
+  IntegerExpression value_expression;
 };
 
 // InterfaceType is a package-independent type graph row. element and members
@@ -82,11 +81,9 @@ struct InterfaceType {
   std::uint32_t bit_width = 0;
   InterfaceTypeId element;
   std::uint64_t element_count = 0;
-  // Dependent array/SIMD rows store the zero-based parameter ordinal from the
-  // owning declaration. A consumer replaces that ordinal with its own local
-  // ValueParameter SymbolId while rebuilding the template type graph.
-  std::uint32_t element_count_parameter =
-      std::numeric_limits<std::uint32_t>::max();
+  // Parameter leaves use zero-based declaration ordinals. A consumer remaps
+  // them to local ValueParameter SymbolIds while rebuilding the template graph.
+  IntegerExpression element_count_expression;
   std::vector<InterfaceTypeId> members;
   std::vector<std::uint64_t> member_offsets;
   bool c_calling_convention = false;
