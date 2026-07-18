@@ -124,6 +124,20 @@ void hash_field(Sha256 &hash, std::string_view value) {
   return false;
 }
 
+// A package with a ready interface-stage synthesis obligation cannot yet
+// publish public declaration types. In particular, a synthesized array count
+// leaves its public alias temporarily invalid. Consumers are suspended by
+// has_interface_synthesis(), so retain only package identity until the overlay
+// is installed and a clean round can build the complete canonical interface.
+[[nodiscard]] PackageInterface withheld_package_interface(
+    const PackageIdentity &identity,
+    const SemanticPackage &package) {
+  PackageInterface result;
+  result.identity = identity;
+  result.short_name = package.short_name;
+  return result;
+}
+
 // Only the interface scheduler may turn an evaluator stop into a provider
 // obligation. The complete body pass runs after all interface overlays and
 // therefore retains the ordinary rejecting semantic behavior.
@@ -361,12 +375,17 @@ void append_instantiated_type(
     validation_context = load_validation_context(
         sources, workspace_package, options.workspace, diagnostics);
   }
-  PackageInterface interface = build_package_interface(
-      workspace_package.identity,
-      semantics.package,
-      semantics.constants,
-      metadata,
-      diagnostics);
+  PackageInterface interface =
+      options.stage == CompileWorkspaceStage::DiscoverInterfaceSynthesis &&
+          has_synthesis_record(metadata)
+      ? withheld_package_interface(
+            workspace_package.identity, semantics.package)
+      : build_package_interface(
+            workspace_package.identity,
+            semantics.package,
+            semantics.constants,
+            metadata,
+            diagnostics);
   for (const InterfaceTypeGraph &graph : retained_instances) {
     append_instantiated_type(interface, graph);
   }
@@ -1099,12 +1118,17 @@ CompileWorkspaceResult compile_workspace(
       package.validation_context = load_validation_context(
           sources, workspace_package, options.workspace, diagnostics);
     }
-    package.interface = build_package_interface(
-        workspace_package.identity,
-        package.semantics.package,
-        package.semantics.constants,
-        package.metadata,
-        diagnostics);
+    package.interface =
+        options.stage == CompileWorkspaceStage::DiscoverInterfaceSynthesis &&
+            has_synthesis_record(package.metadata)
+        ? withheld_package_interface(
+              workspace_package.identity, package.semantics.package)
+        : build_package_interface(
+              workspace_package.identity,
+              package.semantics.package,
+              package.semantics.constants,
+              package.metadata,
+              diagnostics);
     if (options.stage == CompileWorkspaceStage::DiscoverInterfaceSynthesis) {
       package.obligations = build_agent_obligations(
           workspace_package.identity,

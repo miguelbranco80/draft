@@ -44,6 +44,7 @@ struct MemberData {
   std::vector<TypeId> types;
   std::vector<std::uint64_t> offsets;
   std::vector<BigInteger> enum_values;
+  TypeId enum_value_expected_type;
   bool incomplete = false;
 };
 
@@ -131,12 +132,14 @@ public:
       const ConstantTable *active_constants = nullptr,
       const std::vector<ConstantTypeBinding> *active_types = nullptr,
       const std::vector<ResolvedIntegerExpression> *resolved_integers = nullptr,
-      const TargetFacts *target = nullptr)
+      const TargetFacts *target = nullptr,
+      const std::vector<SyntaxReference> *blocked_integer_synthesis = nullptr)
       : sources_(sources), loaded_(loaded), semantic_(semantic), selections_(selections),
         diagnostics_(diagnostics),
         states_(semantic.symbols.symbol_count(), ResolutionState::Unvisited),
         active_constants_(active_constants), active_types_(active_types),
-        resolved_integers_(resolved_integers), target_(target) {}
+        resolved_integers_(resolved_integers), target_(target),
+        blocked_integer_synthesis_(blocked_integer_synthesis) {}
 
   // Resolves only the symbols originally installed in the package scope.
   // Nested symbols are resolved synchronously as their owner is processed.
@@ -669,13 +672,42 @@ private:
   // templates resolve, so source-key deduplication keeps each work item unique
   // without retaining an unstable semantic ID.
   void require_integer_expression(
-      const SyntaxTree &tree, NodeId expression, ScopeId scope) {
+      const SyntaxTree &tree,
+      NodeId expression,
+      ScopeId scope,
+      TypeId expected_type) {
     const SyntaxReference syntax{tree.file(), expression};
-    for (const RequiredIntegerExpression &entry :
+    for (RequiredIntegerExpression &entry :
          semantic_.required_integer_expressions) {
-      if (entry.syntax == syntax) return;
+      if (entry.syntax != syntax) continue;
+      if (!entry.expected_type.is_valid() && expected_type.is_valid()) {
+        entry.expected_type = expected_type;
+      } else if (entry.expected_type.is_valid() && expected_type.is_valid() &&
+                 entry.expected_type != expected_type) {
+        diagnostics_.error(
+            tree.node(expression).range,
+            "integer expression is required with inconsistent types");
+      }
+      if (!entry.anchor.is_valid() && !active_declaration_owners_.empty()) {
+        entry.anchor = active_declaration_owners_.back();
+      }
+      return;
     }
-    semantic_.required_integer_expressions.push_back({syntax, scope});
+    const SymbolId anchor = active_declaration_owners_.empty()
+        ? SymbolId{}
+        : active_declaration_owners_.back();
+    semantic_.required_integer_expressions.push_back(
+        {syntax, scope, anchor, expected_type});
+  }
+
+  [[nodiscard]] bool integer_synthesis_is_blocked(
+      const SyntaxTree &tree, NodeId expression) const {
+    if (blocked_integer_synthesis_ == nullptr) return false;
+    const SyntaxReference syntax{tree.file(), expression};
+    return std::find(
+               blocked_integer_synthesis_->begin(),
+               blocked_integer_synthesis_->end(),
+               syntax) != blocked_integer_synthesis_->end();
   }
 
   // The compact dependent-integer builder intentionally rejects calls and
@@ -2747,7 +2779,10 @@ private:
                 tree, argument_node, scope, required));
             continue;
           }
-          require_integer_expression(tree, argument_node, scope);
+          require_integer_expression(tree, argument_node, scope, required);
+          if (integer_synthesis_is_blocked(tree, argument_node)) {
+            return semantic_.types.builtins().invalid;
+          }
           diagnostics_.error(
               tree.node(argument_node).range,
               "value parameter argument must be a compile-time integer expression");
@@ -3049,7 +3084,14 @@ private:
               node.children.front(),
               scope);
         }
-        require_integer_expression(tree, node.children.front(), scope);
+        require_integer_expression(
+            tree,
+            node.children.front(),
+            scope,
+            semantic_.types.builtins().usize_type);
+        if (integer_synthesis_is_blocked(tree, node.children.front())) {
+          return invalid;
+        }
       }
       if (!count.has_value() || *count == 0) {
         diagnostics_.error(
@@ -3097,7 +3139,14 @@ private:
               node.children.front(),
               scope);
         }
-        require_integer_expression(tree, node.children.front(), scope);
+        require_integer_expression(
+            tree,
+            node.children.front(),
+            scope,
+            semantic_.types.builtins().usize_type);
+        if (integer_synthesis_is_blocked(tree, node.children.front())) {
+          return invalid;
+        }
       }
       if (!lanes.has_value() || *lanes == 0) {
         diagnostics_.error(
@@ -3474,7 +3523,14 @@ private:
               tree, attribute.children.front(), scope);
           if (!value.has_value()) {
             require_integer_expression(
-                tree, attribute.children.front(), scope);
+                tree,
+                attribute.children.front(),
+                scope,
+                semantic_.types.builtins().usize_type);
+            if (integer_synthesis_is_blocked(
+                    tree, attribute.children.front())) {
+              continue;
+            }
           }
           const std::optional<std::uint64_t> alignment =
               value.has_value() ? value->to_u64() : std::nullopt;
@@ -3560,10 +3616,16 @@ private:
             integer_constant_expression(tree, member.children.front(), scope);
         if (!explicit_value.has_value()) {
           require_integer_expression(
-              tree, member.children.front(), scope);
-          diagnostics_.error(
-              tree.node(member.children.front()).range,
-              "enum value must be a compile-time integer expression");
+              tree,
+              member.children.front(),
+              scope,
+              data.enum_value_expected_type);
+          if (!integer_synthesis_is_blocked(
+                  tree, member.children.front())) {
+            diagnostics_.error(
+                tree.node(member.children.front()).range,
+                "enum value must be a compile-time integer expression");
+          }
           data.incomplete = true;
         } else {
           value = *explicit_value;
@@ -3926,7 +3988,15 @@ private:
       return;
     }
 
+    TypeId explicit_backing_type;
+    if (explicit_backing.has_value()) {
+      explicit_backing_type = resolve_type(tree, *explicit_backing, parent);
+    }
+
     MemberData data;
+    if (kind == TypeKind::Enum) {
+      data.enum_value_expected_type = explicit_backing_type;
+    }
     collect_member_list(owner, tree, *list, scope, data);
     if (data.symbols.empty() && !data.incomplete) {
       diagnostics_.error(aggregate.range, "aggregate type requires at least one member");
@@ -3949,7 +4019,7 @@ private:
               "enum must declare a zero-valued member for its zero value");
         }
         TypeId backing = explicit_backing.has_value()
-            ? resolve_type(tree, *explicit_backing, parent)
+            ? explicit_backing_type
             : (attributes.c_representation
                    ? inferred_c_enum_backing(data.enum_values)
                    : inferred_enum_backing(data.enum_values));
@@ -3977,7 +4047,7 @@ private:
         }
       } else if (kind == TypeKind::TaggedUnion) {
         TypeId discriminator = explicit_backing.has_value()
-            ? resolve_type(tree, *explicit_backing, parent)
+            ? explicit_backing_type
             : inferred_discriminator(data.symbols.size());
         if (!semantic_.types.is_integer(discriminator)) {
           diagnostics_.error(
@@ -4043,6 +4113,7 @@ private:
       return;
     }
     const std::optional<NodeId> payload = declaration_payload(tree, declaration);
+    active_declaration_owners_.push_back(id);
     const ScopeId source_scope = file_scope(tree.file());
     const ScopeId semantic_parent = ensure_parametric_scope(
         id, tree, declaration, source_scope);
@@ -4103,6 +4174,7 @@ private:
     }
 
     const Symbol &resolved_symbol = semantic_.symbols.symbol(id);
+    active_declaration_owners_.pop_back();
     state = is_error_type(resolved_symbol.type) &&
             (resolved_symbol.kind == SymbolKind::Type ||
              resolved_symbol.kind == SymbolKind::Procedure)
@@ -4117,10 +4189,12 @@ private:
   DiagnosticSink &diagnostics_;
   std::vector<ResolutionState> states_;
   std::vector<SymbolId> active_integer_constants_;
+  std::vector<SymbolId> active_declaration_owners_;
   const ConstantTable *active_constants_ = nullptr;
   const std::vector<ConstantTypeBinding> *active_types_ = nullptr;
   const std::vector<ResolvedIntegerExpression> *resolved_integers_ = nullptr;
   const TargetFacts *target_ = nullptr;
+  const std::vector<SyntaxReference> *blocked_integer_synthesis_ = nullptr;
 };
 
 } // namespace
@@ -4132,6 +4206,29 @@ void resolve_package_types(
     DiagnosticSink &diagnostics) {
   const ConditionalSelections selections;
   TypeResolver resolver(sources, loaded, package, selections, diagnostics);
+  resolver.resolve();
+}
+
+void resolve_package_types(
+    const SourceManager &sources,
+    const LoadedPackage &loaded,
+    SemanticPackage &package,
+    const ConditionalSelections &selections,
+    const std::vector<ResolvedIntegerExpression> &resolved_integers,
+    const TargetFacts &target,
+    const std::vector<SyntaxReference> &blocked_synthesis,
+    DiagnosticSink &diagnostics) {
+  TypeResolver resolver(
+      sources,
+      loaded,
+      package,
+      selections,
+      diagnostics,
+      nullptr,
+      nullptr,
+      &resolved_integers,
+      &target,
+      &blocked_synthesis);
   resolver.resolve();
 }
 

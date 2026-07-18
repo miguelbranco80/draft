@@ -8,6 +8,7 @@
 #include "sema/target_validation.h"
 #include "sema/type_resolver.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <optional>
 #include <utility>
@@ -86,15 +87,46 @@ namespace {
 // small early layout evaluator cannot. Successful values are source-keyed and
 // consumed only by the next clean rebuild; no partially laid-out Type row is
 // mutated in place.
-[[nodiscard]] std::size_t resolve_required_integer_expressions(
+struct RequiredIntegerResolutionResult {
+  std::size_t resolved = 0;
+  std::size_t newly_blocked = 0;
+  std::vector<SymbolId> compile_time_procedures;
+};
+
+void remember_blocked_integer(
+    std::vector<SyntaxReference> &blocked,
+    SyntaxReference syntax,
+    std::size_t &newly_blocked) {
+  if (std::find(blocked.begin(), blocked.end(), syntax) != blocked.end()) {
+    return;
+  }
+  blocked.push_back(syntax);
+  ++newly_blocked;
+}
+
+void remember_compile_time_procedures(
+    std::vector<SymbolId> &destination,
+    const std::vector<SymbolId> &source) {
+  for (SymbolId procedure : source) {
+    if (std::find(destination.begin(), destination.end(), procedure) ==
+        destination.end()) {
+      destination.push_back(procedure);
+    }
+  }
+}
+
+[[nodiscard]] RequiredIntegerResolutionResult
+resolve_required_integer_expressions(
     const SourceManager &sources,
     const LoadedPackage &loaded,
     SemanticPackage &package,
     const TargetFacts &target,
     const ConstantTable &constants,
     std::vector<ResolvedIntegerExpression> &resolved,
+    CompileTimeSynthesisMode synthesis_mode,
+    std::vector<SyntaxReference> &blocked_synthesis,
     DiagnosticSink &diagnostics) {
-  std::size_t progress = 0;
+  RequiredIntegerResolutionResult result;
   // Copy each row before invoking the interpreter. Constant evaluation is
   // allowed to append semantic tables, so no reference into an append-only
   // vector may survive that call. Re-reading size also lets a newly discovered
@@ -107,17 +139,59 @@ namespace {
     if (already_resolved(resolved, required.syntax)) continue;
     const SyntaxTree *tree = find_tree(loaded, required.syntax.file);
     if (tree == nullptr || !required.syntax.node.is_valid()) continue;
-    const std::optional<EvaluatedConstant> value =
-        evaluate_typed_constant_expression(
-        sources,
-        loaded,
-        package,
-        target,
-        *tree,
-        required.syntax.node,
-        required.scope,
-        diagnostics,
-        &constants);
+    std::optional<EvaluatedConstant> value;
+    if (synthesis_mode == CompileTimeSynthesisMode::Discover) {
+      const std::size_t original_site_count = package.sites.size();
+      CompileTimeExpressionDiscoveryResult discovery =
+          discover_typed_constant_expression(
+              sources,
+              loaded,
+              package,
+              target,
+              *tree,
+              required.syntax.node,
+              required.scope,
+              &constants,
+              nullptr,
+              required.expected_type);
+      value = std::move(discovery.value);
+      if (discovery.blocked_by_synthesis) {
+        // Direct recipe synthesis is usually lexically in package scope (for
+        // example `[... ]u8`), but semantically belongs to the declaration
+        // whose type is incomplete. Procedure-body sites already carry their
+        // own procedure anchor and are not changed here.
+        for (std::size_t site_index = original_site_count;
+             site_index < package.sites.size();
+             ++site_index) {
+          SemanticSite &site = package.sites[site_index];
+          if (site.kind == SemanticSiteKind::SynthesisExpression &&
+              !site.anchor.is_valid() && required.anchor.is_valid()) {
+            site.anchor = required.anchor;
+          }
+        }
+        remember_blocked_integer(
+            blocked_synthesis,
+            required.syntax,
+            result.newly_blocked);
+        remember_compile_time_procedures(
+            result.compile_time_procedures,
+            discovery.compile_time_procedures);
+        continue;
+      }
+    } else {
+      value = evaluate_typed_constant_expression(
+          sources,
+          loaded,
+          package,
+          target,
+          *tree,
+          required.syntax.node,
+          required.scope,
+          diagnostics,
+          &constants,
+          nullptr,
+          required.expected_type);
+    }
     if (!value.has_value() ||
         value->value.kind != ConstantKind::Integer) {
       continue;
@@ -127,9 +201,9 @@ namespace {
         value->value.integer,
         integer_expression_type(package, value->type),
     });
-    ++progress;
+    ++result.resolved;
   }
-  return progress;
+  return result;
 }
 
 } // namespace
@@ -174,6 +248,7 @@ SemanticAnalysisResult analyze_package_semantics(
   SemanticAnalysisResult result;
   const std::size_t initial_error_count = diagnostics.error_count();
   std::vector<ResolvedIntegerExpression> resolved_integers;
+  std::vector<SyntaxReference> blocked_integer_synthesis;
 
   // Discover selections without copying provisional diagnostics into the user
   // sink. Each progress round adds at least one distinct SyntaxReference, and a
@@ -185,14 +260,26 @@ SemanticAnalysisResult analyze_package_semantics(
         sources, loaded, result.selections, provisional_diagnostics);
     provisional.identity = imports.consumer_identity;
     bind_package_interfaces(provisional, imports, provisional_diagnostics);
-    resolve_package_types(
-        sources,
-        loaded,
-        provisional,
-        result.selections,
-        resolved_integers,
-        target,
-        provisional_diagnostics);
+    if (synthesis_mode == CompileTimeSynthesisMode::Discover) {
+      resolve_package_types(
+          sources,
+          loaded,
+          provisional,
+          result.selections,
+          resolved_integers,
+          target,
+          blocked_integer_synthesis,
+          provisional_diagnostics);
+    } else {
+      resolve_package_types(
+          sources,
+          loaded,
+          provisional,
+          result.selections,
+          resolved_integers,
+          target,
+          provisional_diagnostics);
+    }
     const CompileTimeRoundResult round = evaluate_compile_time_round(
         sources,
         loaded,
@@ -202,15 +289,19 @@ SemanticAnalysisResult analyze_package_semantics(
         synthesis_mode,
         false,
         provisional_diagnostics);
-    const std::size_t new_integers = resolve_required_integer_expressions(
-        sources,
-        loaded,
-        provisional,
-        target,
-        round.constants,
-        resolved_integers,
-        provisional_diagnostics);
-    if (round.new_selections == 0 && new_integers == 0) {
+    const RequiredIntegerResolutionResult integer_round =
+        resolve_required_integer_expressions(
+            sources,
+            loaded,
+            provisional,
+            target,
+            round.constants,
+            resolved_integers,
+            synthesis_mode,
+            blocked_integer_synthesis,
+            provisional_diagnostics);
+    if (round.new_selections == 0 && integer_round.resolved == 0 &&
+        integer_round.newly_blocked == 0) {
       break;
     }
   }
@@ -222,21 +313,34 @@ SemanticAnalysisResult analyze_package_semantics(
       sources, loaded, result.selections, diagnostics);
   result.package.identity = imports.consumer_identity;
   bind_package_interfaces(result.package, imports, diagnostics);
-  resolve_package_types(
-      sources,
-      loaded,
-      result.package,
-      result.selections,
-      resolved_integers,
-      target,
-      diagnostics);
+  if (synthesis_mode == CompileTimeSynthesisMode::Discover) {
+    resolve_package_types(
+        sources,
+        loaded,
+        result.package,
+        result.selections,
+        resolved_integers,
+        target,
+        blocked_integer_synthesis,
+        diagnostics);
+  } else {
+    resolve_package_types(
+        sources,
+        loaded,
+        result.package,
+        result.selections,
+        resolved_integers,
+        target,
+        diagnostics);
+  }
   // Declaration/member synthesis runs before bodies. Install the built-in
   // Context now so those early requests receive the same typed field set as
   // later statement/expression synthesis.
   ensure_runtime_context_type(result.package, diagnostics);
   const bool defer_unready_compile_time_dependencies =
       synthesis_mode == CompileTimeSynthesisMode::Discover &&
-      has_structural_synthesis_site(result.package);
+      (has_structural_synthesis_site(result.package) ||
+       !blocked_integer_synthesis.empty());
   CompileTimeRoundResult final_round = evaluate_compile_time_round(
       sources,
       loaded,
@@ -250,6 +354,20 @@ SemanticAnalysisResult analyze_package_semantics(
   if (synthesis_mode == CompileTimeSynthesisMode::Discover) {
     result.compile_time_synthesis_procedures =
         std::move(final_round.compile_time_procedures);
+    RequiredIntegerResolutionResult integer_dependencies =
+        resolve_required_integer_expressions(
+            sources,
+            loaded,
+            result.package,
+            target,
+            result.constants,
+            resolved_integers,
+            synthesis_mode,
+            blocked_integer_synthesis,
+            diagnostics);
+    remember_compile_time_procedures(
+        result.compile_time_synthesis_procedures,
+        integer_dependencies.compile_time_procedures);
   }
   (void)check_global_initializers(
       sources,

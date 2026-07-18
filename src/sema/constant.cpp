@@ -277,6 +277,24 @@ public:
     return EvaluatedConstant{result.value, result.type};
   }
 
+  [[nodiscard]] CompileTimeExpressionDiscoveryResult
+  discover_required_expression(
+      const SyntaxTree &tree,
+      NodeId expression,
+      ScopeId scope,
+      TypeId expected = {}) {
+    CompileTimeExpressionDiscoveryResult discovered;
+    const EvalResult result =
+        evaluate_expression(tree, expression, scope, false, expected);
+    discovered.blocked_by_synthesis =
+        result.status == EvalStatus::BlockedBySynthesis;
+    discovered.compile_time_procedures = compile_time_procedures_;
+    if (result.status == EvalStatus::Ready) {
+      discovered.value = EvaluatedConstant{result.value, result.type};
+    }
+    return discovered;
+  }
+
 private:
   // Locates the immutable tree named by a syntax reference. Package file order
   // is already canonical, so the direct scan is predictable and sufficient.
@@ -5049,6 +5067,32 @@ std::optional<EvaluatedConstant> evaluate_typed_constant_expression(
       local_constants,
       local_types);
   return evaluator.evaluate_required_expression(
+      tree, expression, scope, expected);
+}
+
+CompileTimeExpressionDiscoveryResult discover_typed_constant_expression(
+    const SourceManager &sources,
+    const LoadedPackage &loaded,
+    SemanticPackage &package,
+    const TargetFacts &target,
+    const SyntaxTree &tree,
+    NodeId expression,
+    ScopeId scope,
+    const ConstantTable *local_constants,
+    const std::vector<ConstantTypeBinding> *local_types,
+    TypeId expected) {
+  DiagnosticSink ignored_diagnostics;
+  ConstantEvaluator evaluator(
+      sources,
+      loaded,
+      package,
+      target,
+      CompileTimeSynthesisMode::Discover,
+      false,
+      ignored_diagnostics,
+      local_constants,
+      local_types);
+  return evaluator.discover_required_expression(
       tree, expression, scope, expected);
 }
 

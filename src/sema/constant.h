@@ -120,6 +120,16 @@ struct CompileTimeRoundResult {
   std::vector<SymbolId> compile_time_procedures;
 };
 
+// Discovery result for one type/layout integer recipe. A blocked expression is
+// not a failed constant: interface resolution must replace the direct site or
+// the recorded procedure-body site before the recipe can be evaluated. The
+// procedure IDs belong to the supplied SemanticPackage round.
+struct CompileTimeExpressionDiscoveryResult {
+  std::optional<EvaluatedConstant> value;
+  bool blocked_by_synthesis = false;
+  std::vector<SymbolId> compile_time_procedures;
+};
+
 // Evaluates package constants needed by visible declaration-level `when` sites.
 // Ready boolean conditions append to selections; already selected sites are
 // skipped. When diagnose_unready is false, missing dependencies remain pending
@@ -165,6 +175,23 @@ struct CompileTimeRoundResult {
     NodeId expression,
     ScopeId scope,
     DiagnosticSink &diagnostics,
+    const ConstantTable *local_constants = nullptr,
+    const std::vector<ConstantTypeBinding> *local_types = nullptr,
+    TypeId expected = {});
+
+// Non-diagnosing interface-discovery form for a required scalar expression.
+// It uses the same interpreter as the rejecting API above, but returns the
+// synthesis dependency instead of treating unresolved source as a constant
+// evaluation error.
+[[nodiscard]] CompileTimeExpressionDiscoveryResult
+discover_typed_constant_expression(
+    const SourceManager &sources,
+    const LoadedPackage &loaded,
+    SemanticPackage &package,
+    const TargetFacts &target,
+    const SyntaxTree &tree,
+    NodeId expression,
+    ScopeId scope,
     const ConstantTable *local_constants = nullptr,
     const std::vector<ConstantTypeBinding> *local_types = nullptr,
     TypeId expected = {});

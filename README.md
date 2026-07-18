@@ -276,6 +276,13 @@ an interface round; only then can the constant select dependent declarations.
 Direct `when ...` conditions take the same path with an exact `bool` obligation.
 Offline builds reproduce those rounds from pinned expansion bytes.
 
+The same scheduler owns integer recipes used by types and layouts. Direct array
+and SIMD counts, generic value arguments, alignment attributes, and explicitly
+backed enum values receive their exact required integer type. If a recipe calls
+a compile-time procedure, only the reached body is checked early. A package
+with a pending public layout withholds its interface, so consumers cannot bind a
+partial type before the checked expansion is installed.
+
 `draftc build` defaults to an executable. `--kind object`, `--kind
 static-library`, `--kind dynamic-library`, and `--kind assembly` select a
 relocatable object, archive, dylib, or collision-free directory of assembly

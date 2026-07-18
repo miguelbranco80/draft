@@ -399,6 +399,14 @@ struct RequiredIntegerExpression {
   // serialized or included in an interface digest.
   SyntaxReference syntax;
   ScopeId scope;
+  // Owning package declaration when the recipe occurs in a signature or named
+  // type. Direct synthesis uses this stable semantic anchor even when the
+  // expression's lexical scope is the package rather than a type scope.
+  SymbolId anchor;
+  // The exact integer type required by the surrounding type syntax. Invalid is
+  // reserved for contexts such as an inferred enum backing where no concrete
+  // type exists until every value is known.
+  TypeId expected_type;
 };
 
 // One interpreter result carried between semantic rebuilds. SyntaxReference is

@@ -194,6 +194,83 @@ struct TemporaryWorkspace {
            << "}\n";
   }
 
+  // A direct synthesis expression can be the integer recipe that determines a
+  // type layout. The type resolver supplies usize context before the provider
+  // runs; the complete type is rebuilt only after the expansion is installed.
+  void write_direct_layout_dependency_source() const {
+    std::ofstream source(
+        package / "package.draft", std::ios::binary | std::ios::trunc);
+    source << "package app\n\n"
+           << "pub Buffer :: [... \"choose array length\"]u8\n\n"
+           << "main :: proc() {\n"
+           << "    value: Buffer\n"
+           << "}\n";
+  }
+
+  // The array length is produced by a full compile-time procedure. Its body is
+  // therefore an early type-layout dependency even though it would ordinarily
+  // be checked only after package interfaces were complete.
+  void write_procedure_layout_dependency_source() const {
+    std::ofstream source(
+        package / "package.draft", std::ios::binary | std::ios::trunc);
+    source << "package app\n\n"
+           << "compile_length :: proc() -> usize {\n"
+           << "    return ... \"compute array length\"\n"
+           << "}\n\n"
+           << "Buffer :: [compile_length()]u8\n\n"
+           << "main :: proc() {\n"
+           << "    value: Buffer\n"
+           << "}\n";
+  }
+
+  // The other fixed integer-recipe boundaries share the same discovery path:
+  // a generic value argument, aggregate alignment, and SIMD lane count each
+  // require an exact usize expansion before their types are complete.
+  void write_integer_recipe_boundaries_source() const {
+    std::ofstream source(
+        package / "package.draft", std::ios::binary | std::ios::trunc);
+    source << "package app\n\n"
+           << "Box[N: usize] :: struct {\n"
+           << "    values: [N]u8,\n"
+           << "}\n\n"
+           << "Applied :: Box[... \"choose value argument\"]\n\n"
+           << "Aligned :: @align(... \"choose alignment\") struct {\n"
+           << "    value: u8,\n"
+           << "}\n\n"
+           << "Vector :: #simd[... \"choose SIMD lanes\"]u32\n\n"
+           << "Mode :: enum u8 {\n"
+           << "    Zero = ... \"choose enum value\",\n"
+           << "}\n\n"
+           << "main :: proc() {\n"
+           << "    applied: Applied\n"
+           << "    aligned: Aligned\n"
+           << "    vector: Vector\n"
+           << "    mode: Mode\n"
+           << "}\n";
+  }
+
+  // A consumer must wait for a dependency whose public type layout is still a
+  // synthesis recipe. The dependency publishes no partial invalid interface;
+  // its complete Buffer type appears only on the next clean graph round.
+  void write_dependency_layout_source() const {
+    std::error_code error;
+    const std::filesystem::path dependency = root / "dep";
+    std::filesystem::create_directories(dependency, error);
+    if (error) std::exit(EXIT_FAILURE);
+    std::ofstream dependency_source(
+        dependency / "package.draft", std::ios::binary | std::ios::trunc);
+    dependency_source << "package dep\n\n"
+                      << "pub Buffer :: ["
+                         "... \"choose dependency array length\"]u8\n";
+    std::ofstream source(
+        package / "package.draft", std::ios::binary | std::ios::trunc);
+    source << "package app\n\n"
+           << "import dep\n\n"
+           << "main :: proc() {\n"
+           << "    value: dep.Buffer\n"
+           << "}\n";
+  }
+
   void write_complete_source() const {
     std::ofstream source(
         package / "package.draft", std::ios::binary | std::ios::trunc);
@@ -348,6 +425,12 @@ bool synthesize(
         response.source = "true";
       } else if (request.prompt == "compute compile-time increment") {
         response.source = "2";
+      } else if (request.prompt == "choose value argument" ||
+                 request.prompt == "choose alignment" ||
+                 request.prompt == "choose SIMD lanes") {
+        response.source = "4";
+      } else if (request.prompt == "choose enum value") {
+        response.source = "0";
       } else {
         response.source = "42";
       }
@@ -1022,6 +1105,200 @@ void test_structural_set_precedes_compile_time_body_dependency(
   EXPECT(state, !offline_diagnostics.has_errors());
 }
 
+void test_direct_synthesis_resolves_type_layout(TestState &state) {
+  TemporaryWorkspace workspace;
+  workspace.write_direct_layout_dependency_source();
+  FakeProviderState provider;
+  provider.staged_responses = true;
+
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  const draft::ResolveWorkspaceResult resolved = draft::resolve_workspace(
+      sources,
+      workspace.package.string(),
+      resolve_options(workspace, provider),
+      diagnostics);
+  if (!resolved.ok) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+  }
+  EXPECT(state, resolved.ok);
+  EXPECT(state, resolved.committed);
+  EXPECT(state, resolved.synthesized_sites == 1);
+  EXPECT(state, provider.kinds.size() == 1);
+  EXPECT(state, provider.expected_type_texts.size() == 1);
+  EXPECT(state, provider.anchor_names.size() == 1);
+  if (provider.kinds.size() == 1) {
+    EXPECT(state, provider.kinds[0] ==
+        draft::AgentConstructKind::SynthesisExpression);
+  }
+  if (provider.expected_type_texts.size() == 1) {
+    EXPECT(state, provider.expected_type_texts[0] == "usize");
+  }
+  if (provider.anchor_names.size() == 1) {
+    EXPECT(state, provider.anchor_names[0] == "Buffer");
+  }
+
+  draft::SourceManager offline_sources;
+  draft::DiagnosticSink offline_diagnostics;
+  const draft::CompileWorkspaceResult offline =
+      draft::compile_workspace_with_resolution(
+          offline_sources,
+          workspace.package.string(),
+          compile_options(workspace),
+          offline_diagnostics);
+  if (!offline.ok) {
+    std::cerr << draft::render_diagnostics(
+        offline_sources, offline_diagnostics);
+  }
+  EXPECT(state, offline.ok);
+  EXPECT(state, !offline_diagnostics.has_errors());
+}
+
+void test_procedure_synthesis_resolves_type_layout(TestState &state) {
+  TemporaryWorkspace workspace;
+  workspace.write_procedure_layout_dependency_source();
+  FakeProviderState provider;
+  provider.staged_responses = true;
+
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  const draft::ResolveWorkspaceResult resolved = draft::resolve_workspace(
+      sources,
+      workspace.package.string(),
+      resolve_options(workspace, provider),
+      diagnostics);
+  if (!resolved.ok) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+  }
+  EXPECT(state, resolved.ok);
+  EXPECT(state, resolved.committed);
+  EXPECT(state, resolved.synthesized_sites == 1);
+  EXPECT(state, provider.kinds.size() == 1);
+  EXPECT(state, provider.expected_type_texts.size() == 1);
+  EXPECT(state, provider.anchor_names.size() == 1);
+  if (provider.kinds.size() == 1) {
+    EXPECT(state, provider.kinds[0] ==
+        draft::AgentConstructKind::SynthesisExpression);
+  }
+  if (provider.expected_type_texts.size() == 1) {
+    EXPECT(state, provider.expected_type_texts[0] == "usize");
+  }
+  if (provider.anchor_names.size() == 1) {
+    EXPECT(state, provider.anchor_names[0] == "compile_length");
+  }
+
+  draft::SourceManager offline_sources;
+  draft::DiagnosticSink offline_diagnostics;
+  const draft::CompileWorkspaceResult offline =
+      draft::compile_workspace_with_resolution(
+          offline_sources,
+          workspace.package.string(),
+          compile_options(workspace),
+          offline_diagnostics);
+  if (!offline.ok) {
+    std::cerr << draft::render_diagnostics(
+        offline_sources, offline_diagnostics);
+  }
+  EXPECT(state, offline.ok);
+  EXPECT(state, !offline_diagnostics.has_errors());
+}
+
+void test_synthesis_resolves_integer_recipe_boundaries(TestState &state) {
+  TemporaryWorkspace workspace;
+  workspace.write_integer_recipe_boundaries_source();
+  FakeProviderState provider;
+  provider.staged_responses = true;
+
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  const draft::ResolveWorkspaceResult resolved = draft::resolve_workspace(
+      sources,
+      workspace.package.string(),
+      resolve_options(workspace, provider),
+      diagnostics);
+  if (!resolved.ok) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+  }
+  EXPECT(state, resolved.ok);
+  EXPECT(state, resolved.committed);
+  EXPECT(state, resolved.synthesized_sites == 4);
+  EXPECT(state, provider.kinds.size() == 4);
+  EXPECT(state, provider.expected_type_texts.size() == 4);
+  EXPECT(state, provider.anchor_names.size() == 4);
+  if (provider.kinds.size() == 4) {
+    for (draft::AgentConstructKind kind : provider.kinds) {
+      EXPECT(state, kind == draft::AgentConstructKind::SynthesisExpression);
+    }
+  }
+  if (provider.expected_type_texts.size() == 4) {
+    EXPECT(state, provider.expected_type_texts[0] == "usize");
+    EXPECT(state, provider.expected_type_texts[1] == "usize");
+    EXPECT(state, provider.expected_type_texts[2] == "usize");
+    EXPECT(state, provider.expected_type_texts[3] == "u8");
+  }
+  if (provider.anchor_names.size() == 4) {
+    EXPECT(state, provider.anchor_names[0] == "Applied");
+    EXPECT(state, provider.anchor_names[1] == "Aligned");
+    EXPECT(state, provider.anchor_names[2] == "Vector");
+    EXPECT(state, provider.anchor_names[3] == "Mode");
+  }
+
+  draft::SourceManager offline_sources;
+  draft::DiagnosticSink offline_diagnostics;
+  const draft::CompileWorkspaceResult offline =
+      draft::compile_workspace_with_resolution(
+          offline_sources,
+          workspace.package.string(),
+          compile_options(workspace),
+          offline_diagnostics);
+  if (!offline.ok) {
+    std::cerr << draft::render_diagnostics(
+        offline_sources, offline_diagnostics);
+  }
+  EXPECT(state, offline.ok);
+  EXPECT(state, !offline_diagnostics.has_errors());
+}
+
+void test_dependency_waits_for_synthesized_public_layout(TestState &state) {
+  TemporaryWorkspace workspace;
+  workspace.write_dependency_layout_source();
+  FakeProviderState provider;
+  provider.staged_responses = true;
+
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  const draft::ResolveWorkspaceResult resolved = draft::resolve_workspace(
+      sources,
+      workspace.package.string(),
+      resolve_options(workspace, provider),
+      diagnostics);
+  if (!resolved.ok) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+  }
+  EXPECT(state, resolved.ok);
+  EXPECT(state, resolved.committed);
+  EXPECT(state, resolved.synthesized_sites == 1);
+  EXPECT(state, provider.expected_type_texts.size() == 1);
+  if (provider.expected_type_texts.size() == 1) {
+    EXPECT(state, provider.expected_type_texts[0] == "usize");
+  }
+
+  draft::SourceManager offline_sources;
+  draft::DiagnosticSink offline_diagnostics;
+  const draft::CompileWorkspaceResult offline =
+      draft::compile_workspace_with_resolution(
+          offline_sources,
+          workspace.package.string(),
+          compile_options(workspace),
+          offline_diagnostics);
+  if (!offline.ok) {
+    std::cerr << draft::render_diagnostics(
+        offline_sources, offline_diagnostics);
+  }
+  EXPECT(state, offline.ok);
+  EXPECT(state, !offline_diagnostics.has_errors());
+}
+
 void test_tests_gate_manifest_commit(TestState &state) {
   TemporaryWorkspace workspace;
   workspace.write_source("candidate with tests");
@@ -1243,6 +1520,10 @@ int main() {
   test_compile_time_body_dependency_precedes_selected_declaration(state);
   test_direct_when_synthesis_precedes_selected_declaration(state);
   test_structural_set_precedes_compile_time_body_dependency(state);
+  test_direct_synthesis_resolves_type_layout(state);
+  test_procedure_synthesis_resolves_type_layout(state);
+  test_synthesis_resolves_integer_recipe_boundaries(state);
+  test_dependency_waits_for_synthesized_public_layout(state);
   test_tests_gate_manifest_commit(state);
   test_validation_context_stales_synthesis(state);
   test_cancelled_resolution_does_not_start_transaction(state);

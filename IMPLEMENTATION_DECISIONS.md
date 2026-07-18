@@ -280,6 +280,16 @@ same-kind site under the same file and anchor receives the lowest unused
 occurrence. Prompt and type content remain outside the identity and inside the
 staleness digest, while a later selected site cannot alias an earlier pin.
 
+Required type/layout integers retain their contextual TypeId alongside the
+source recipe. Interface discovery runs the full constant interpreter without
+diagnosing an ordinary fixed-point failure; only a recipe that actually reaches
+synthesis defers the generic type-resolution diagnostic. Direct array/SIMD
+counts, generic value arguments, alignment attributes, and explicitly backed
+enum values therefore publish typed expression obligations. Procedure-produced
+values publish the reached body site instead. While any such obligation is
+pending, the package interface is withheld rather than exporting an invalid
+public type, and dependency consumers resume only after a clean rebuilt round.
+
 Codex execution polls an embedding-owned cancellation callback alongside its
 fixed deadline. Cancellation never retries: the adapter kills and reaps the
 active child, emits one compiler diagnostic, and returns before its private
@@ -842,7 +852,7 @@ the readable subject type, and the same portable interface type graph used by
 other provider context. Source and duplicated digests are rechecked by the
 shared Codex renderer before either synthesis or judgment starts a child. The
 `draft-agent-obligation-v16`, synthesis request/prompt v17, judgment
-request/prompt v3, and compiler content v112 identities make these new facts a
+request/prompt v3, and compiler content v113 identities make these new facts a
 stale-pin and evidence input.
 
 Nested procedures are static and cannot capture runtime locals. Checking a
