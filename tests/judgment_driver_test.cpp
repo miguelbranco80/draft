@@ -51,6 +51,7 @@ struct TemporaryWorkspace {
   std::filesystem::path package;
   std::filesystem::path distribution;
   std::filesystem::path executable;
+  std::filesystem::path artifact;
 
   TemporaryWorkspace(std::string_view name, bool passed) {
     std::error_code error;
@@ -76,6 +77,13 @@ struct TemporaryWorkspace {
               "}\n";
     source.close();
     if (!source) std::exit(EXIT_FAILURE);
+
+    artifact = root / "review-object.bin";
+    std::ofstream artifact_stream(
+        artifact, std::ios::binary | std::ios::trunc);
+    artifact_stream << "public judgment artifact bytes";
+    artifact_stream.close();
+    if (!artifact_stream) std::exit(EXIT_FAILURE);
 
     executable = distribution / "fixture-codex";
     std::ofstream script(executable, std::ios::binary | std::ios::trunc);
@@ -173,6 +181,44 @@ void append_codex_arguments(
     append_codex_arguments(workspace, arguments);
   }
   return run_driver(std::move(arguments));
+}
+
+[[nodiscard]] int run_multi_judge(
+    const TemporaryWorkspace &workspace) {
+  return run_driver({
+      DRAFT_DRIVER_PATH,
+      "judge",
+      workspace.package.string(),
+      "--codex-distribution-root",
+      workspace.distribution.string(),
+      "--codex-executable",
+      workspace.executable.string(),
+      "--judge-validator",
+      "review-primary:fixture-primary",
+      "--judge-validator",
+      "review-secondary:fixture-secondary",
+      "--judge-artifact",
+      "object:" + workspace.artifact.string(),
+  });
+}
+
+[[nodiscard]] int run_multi_resolve(
+    const TemporaryWorkspace &workspace) {
+  return run_driver({
+      DRAFT_DRIVER_PATH,
+      "resolve",
+      workspace.package.string(),
+      "--codex-distribution-root",
+      workspace.distribution.string(),
+      "--codex-executable",
+      workspace.executable.string(),
+      "--judge-validator",
+      "review-primary:fixture-primary",
+      "--judge-validator",
+      "review-secondary:fixture-secondary",
+      "--judge-artifact",
+      "object:" + workspace.artifact.string(),
+  });
 }
 
 [[nodiscard]] int run_resolve(
@@ -348,6 +394,85 @@ void test_failing_command_leaves_manifest_missing(TestState &state) {
   EXPECT(state, !diagnostics.has_errors());
 }
 
+void test_public_multi_validator_artifact_policy(TestState &state) {
+  TemporaryWorkspace workspace("multi-policy", true);
+  EXPECT(state, run_multi_judge(workspace) == 0);
+
+  draft::DiagnosticSink diagnostics;
+  const draft::ResolutionManifestLoadResult loaded =
+      draft::load_resolution_manifest(workspace.root, diagnostics);
+  EXPECT(state,
+      loaded.state == draft::ResolutionManifestLoadState::Loaded);
+  EXPECT(state, loaded.manifest.evidence.size() == 2);
+
+  const draft::Sha256Digest artifact_digest =
+      draft::sha256("public judgment artifact bytes");
+  for (const draft::ResolutionEvidencePin &pin : loaded.manifest.evidence) {
+    draft::JudgmentEvidenceState evidence;
+    EXPECT(state, draft::load_judgment_evidence_state(
+        workspace.root, pin.key, evidence, diagnostics));
+    EXPECT(state, evidence.active_evidence.has_value());
+    if (evidence.active_evidence.has_value()) {
+      EXPECT(state, evidence.active_evidence->validators.size() == 2);
+      if (evidence.active_evidence->validators.size() == 2) {
+        EXPECT(state,
+            evidence.active_evidence->validators[0].validator_identity ==
+                "review-primary");
+        EXPECT(state,
+            evidence.active_evidence->validators[0].model_identity ==
+                "fixture-primary");
+        EXPECT(state,
+            evidence.active_evidence->validators[1].validator_identity ==
+                "review-secondary");
+        EXPECT(state,
+            evidence.active_evidence->validators[1].model_identity ==
+                "fixture-secondary");
+      }
+      EXPECT(state, evidence.active_evidence->artifacts.size() == 1);
+      if (evidence.active_evidence->artifacts.size() == 1) {
+        EXPECT(state,
+            evidence.active_evidence->artifacts.front().kind == "object");
+        EXPECT(state,
+            evidence.active_evidence->artifacts.front().content_digest ==
+                artifact_digest);
+      }
+    }
+  }
+
+  draft::SourceManager sources;
+  draft::DiagnosticSink verification_diagnostics;
+  const draft::CompileWorkspaceResult compiled = compile_resolved(
+      workspace, sources, verification_diagnostics);
+  draft::JudgmentVerificationPolicy policy;
+  policy.validator_identities = {"review-primary", "review-secondary"};
+  policy.artifacts = {{"object", artifact_digest}};
+  policy.identity = draft::judgment_policy_identity(
+      policy.validator_identities, policy.artifacts);
+  std::vector<draft::Sha256Digest> active;
+  EXPECT(state, draft::verify_active_judgment_evidence(
+      compiled,
+      workspace.root,
+      active,
+      verification_diagnostics,
+      policy));
+  EXPECT(state, active.size() == 2);
+  EXPECT(state, !diagnostics.has_errors());
+  EXPECT(state, !verification_diagnostics.has_errors());
+
+  // The same public policy flags also configure the precommit judgment runner
+  // in `resolve`; the absence of a synthesis model is valid for this complete
+  // handwritten program.
+  EXPECT(state, run_multi_resolve(workspace) == 0);
+  draft::DiagnosticSink after_resolve_diagnostics;
+  const draft::ResolutionManifestLoadResult after_resolve =
+      draft::load_resolution_manifest(
+          workspace.root, after_resolve_diagnostics);
+  EXPECT(state,
+      after_resolve.state == draft::ResolutionManifestLoadState::Loaded);
+  EXPECT(state, after_resolve.manifest.evidence.size() == 2);
+  EXPECT(state, !after_resolve_diagnostics.has_errors());
+}
+
 void test_resolution_profile_commits_judgments_atomically(TestState &state) {
   TemporaryWorkspace workspace("resolve-pass", true);
 
@@ -443,6 +568,7 @@ int main() {
   TestState state;
   test_passing_command_selects_evidence(state);
   test_failing_command_leaves_manifest_missing(state);
+  test_public_multi_validator_artifact_policy(state);
   test_resolution_profile_commits_judgments_atomically(state);
   test_failing_resolution_profile_leaves_manifest_missing(state);
   if (state.failures != 0) {

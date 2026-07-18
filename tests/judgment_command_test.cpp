@@ -3,6 +3,7 @@
 #include "judgment/command.h"
 
 #include "compile/compiler.h"
+#include "judgment/cli_policy.h"
 #include "judgment/evidence_store.h"
 #include "judgment/selection.h"
 #include "judgment/verification.h"
@@ -85,6 +86,60 @@ bool fake_judge(
   provider.judge = fake_judge;
   options.validators.push_back({"validator-0", std::move(provider)});
   return options;
+}
+
+void test_public_policy_input_helpers(TestState &state) {
+  std::string identity;
+  std::string model;
+  std::string reason;
+  EXPECT(state, draft::parse_judgment_validator(
+      "security:fixture-model", identity, model, reason));
+  EXPECT(state, identity == "security");
+  EXPECT(state, model == "fixture-model");
+  EXPECT(state, !draft::parse_judgment_validator(
+      "missing-model", identity, model, reason));
+
+  std::error_code error;
+  const std::filesystem::path root =
+      std::filesystem::temp_directory_path(error) /
+      "draft-judgment-policy-input-test";
+  EXPECT(state, !error);
+  std::filesystem::remove_all(root, error);
+  error.clear();
+  std::filesystem::create_directories(root, error);
+  EXPECT(state, !error);
+  if (error) return;
+  const std::filesystem::path object = root / "artifact.bin";
+  std::ofstream stream(object, std::ios::binary);
+  stream << "artifact bytes";
+  stream.close();
+  EXPECT(state, static_cast<bool>(stream));
+
+  draft::JudgmentArtifactPath input;
+  EXPECT(state, draft::parse_judgment_artifact_path(
+      "object:" + object.string(), input, reason));
+  std::vector<draft::JudgmentRequestArtifact> artifacts;
+  EXPECT(state, draft::read_judgment_artifacts(
+      {input}, artifacts, reason));
+  EXPECT(state, artifacts.size() == 1);
+  if (artifacts.size() == 1) {
+    EXPECT(state, artifacts.front().kind == "object");
+    EXPECT(state, artifacts.front().contents == "artifact bytes");
+    EXPECT(state,
+        artifacts.front().digest == draft::sha256("artifact bytes"));
+  }
+
+  draft::JudgmentArtifactIdentity artifact_identity;
+  EXPECT(state, draft::parse_judgment_artifact_identity(
+      "object:" + draft::sha256("artifact bytes").hex(),
+      artifact_identity,
+      reason));
+  EXPECT(state, artifact_identity.kind == "object");
+  EXPECT(state,
+      artifact_identity.content_digest == draft::sha256("artifact bytes"));
+  EXPECT(state, !draft::parse_judgment_artifact_identity(
+      "object:not-a-digest", artifact_identity, reason));
+  std::filesystem::remove_all(root, error);
 }
 
 void test_execution_revocation_and_reactivation(TestState &state) {
@@ -213,8 +268,6 @@ void test_execution_revocation_and_reactivation(TestState &state) {
   secondary_validator.failing_call = 99;
   draft::JudgmentCommandOptions multiple =
       command_options(root, primary_validator);
-  multiple.policy_identity =
-      "draft-judgment-policy-v2:validators=2:aggregate=all-pass:artifacts=object";
   multiple.validators.front().identity = "review-primary";
   draft::JudgmentProvider secondary = multiple.validators.front().provider;
   secondary.provider_identity = "independent-fake-judge-v1";
@@ -227,6 +280,12 @@ void test_execution_revocation_and_reactivation(TestState &state) {
   artifact.contents = "exact object bytes";
   artifact.digest = draft::sha256(artifact.contents);
   multiple.artifacts.push_back(artifact);
+  const std::vector<std::string> validator_identities = {
+      "review-primary", "review-secondary"};
+  const std::vector<draft::JudgmentArtifactIdentity> artifact_identities = {
+      {artifact.kind, artifact.digest}};
+  multiple.policy_identity = draft::judgment_policy_identity(
+      validator_identities, artifact_identities);
   const draft::JudgmentCommandResult multiple_result =
       draft::execute_judgment_command(
           compiled, std::move(multiple), diagnostics);
@@ -271,12 +330,10 @@ void test_execution_revocation_and_reactivation(TestState &state) {
   policy_manifest.evidence = multiple_result.evidence;
   compiled.resolution_manifest = std::move(policy_manifest);
   draft::JudgmentVerificationPolicy verification_policy;
-  verification_policy.identity =
-      "draft-judgment-policy-v2:validators=2:aggregate=all-pass:artifacts=object";
-  verification_policy.validator_identities = {
-      "review-primary", "review-secondary"};
-  verification_policy.artifacts.push_back(
-      {artifact.kind, artifact.digest});
+  verification_policy.identity = draft::judgment_policy_identity(
+      validator_identities, artifact_identities);
+  verification_policy.validator_identities = validator_identities;
+  verification_policy.artifacts = artifact_identities;
   std::vector<draft::Sha256Digest> active_evidence;
   EXPECT(state, draft::verify_active_judgment_evidence(
       compiled,
@@ -346,6 +403,7 @@ void test_execution_revocation_and_reactivation(TestState &state) {
 
 int main() {
   TestState state;
+  test_public_policy_input_helpers(state);
   test_execution_revocation_and_reactivation(state);
   return state.failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }

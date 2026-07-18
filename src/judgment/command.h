@@ -4,10 +4,12 @@
 
 #include "compile/compiler.h"
 #include "elaborator/resolution.h"
+#include "judgment/evidence.h"
 #include "judgment/provider.h"
 #include "source/diagnostic.h"
 
 #include <filesystem>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -54,6 +56,14 @@ struct JudgmentCommandResult {
   // testing/auditing the durable attempts possible.
   std::vector<ResolutionEvidencePin> evidence;
 };
+
+// Canonical identity for the public all-pass policy shape. Validator order is
+// semantic; artifact kinds are a set and are sorted internally. Concrete
+// provider/model identities and artifact content digests stay in the evidence
+// key rather than changing the abstract policy shape.
+[[nodiscard]] std::string judgment_policy_identity(
+    std::span<const std::string> validator_identities,
+    std::span<const JudgmentArtifactIdentity> artifacts);
 
 [[nodiscard]] JudgmentCommandResult execute_judgment_command(
     const CompileWorkspaceResult &compiled,

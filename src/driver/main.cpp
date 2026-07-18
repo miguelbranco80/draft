@@ -14,6 +14,7 @@
 #include "elaborator/codex_cli.h"
 #include "elaborator/resolution_store.h"
 #include "interop/c_header.h"
+#include "judgment/cli_policy.h"
 #include "judgment/codex_cli.h"
 #include "judgment/command.h"
 #include "judgment/selection.h"
@@ -42,6 +43,14 @@
 namespace {
 
 volatile std::sig_atomic_t cancellation_signal = 0;
+
+using draft::JudgmentArtifactPath;
+using draft::NamedCodexJudgmentValidator;
+using draft::configure_codex_judgment_policy;
+using draft::parse_judgment_artifact_identity;
+using draft::parse_judgment_artifact_path;
+using draft::parse_judgment_validator;
+using draft::read_judgment_artifacts;
 
 void request_cancellation(int signal) {
   (void)signal;
@@ -378,7 +387,8 @@ int build_package(
     const std::vector<draft::RuntimeAssetInput> &runtime_assets,
     bool require_test_evidence,
     bool require_benchmark_evidence,
-    bool require_judgment_evidence) {
+    bool require_judgment_evidence,
+    const draft::JudgmentVerificationPolicy &judgment_policy) {
   draft::SourceManager sources;
   draft::DiagnosticSink diagnostics;
   std::error_code path_error;
@@ -447,7 +457,8 @@ int build_package(
               compiled,
               absolute_directory.parent_path(),
               active,
-              diagnostics)) {
+              diagnostics,
+              judgment_policy)) {
         std::cout << "verified " << active.size()
                   << " judgment evidence objects\n";
       }
@@ -804,6 +815,8 @@ int run_agent_command(
     const std::vector<draft::ForeignProviderInput> &foreign_providers = {},
     const std::vector<draft::ForeignProviderSummaryInput> &provider_summaries = {},
     const std::vector<draft::RuntimeAssetInput> &runtime_assets = {},
+    const std::vector<NamedCodexJudgmentValidator> &judgment_validators = {},
+    const std::vector<draft::JudgmentRequestArtifact> &judgment_artifacts = {},
     const std::vector<std::string> &judgment_selectors = {},
     bool list_judgments = false,
     bool judge_during_resolution = false) {
@@ -897,23 +910,22 @@ int run_agent_command(
         return 1;
       }
     }
-    draft::CodexCliProviderState judgment_codex_state;
+    std::vector<draft::CodexCliProviderState> judgment_codex_states;
     ResolutionJudgmentRunnerState judgment_state;
     if (judge_during_resolution) {
       judgment_state.options.workspace_directory =
           absolute_directory.parent_path();
       judgment_state.options.target = resolve_options.compile.target;
       judgment_state.options.selectors = judgment_selectors;
-      if (codex.has_value()) {
-        draft::JudgmentProvider provider =
-            draft::configure_codex_cli_judgment_provider(
-                *codex, judgment_codex_state, diagnostics);
-        if (provider.judge == nullptr) {
-          std::cerr << draft::render_diagnostics(sources, diagnostics);
-          return 1;
-        }
-        judgment_state.options.validators.push_back(
-            {"validator-0", std::move(provider)});
+      if (!configure_codex_judgment_policy(
+              codex,
+              judgment_validators,
+              judgment_artifacts,
+              judgment_codex_states,
+              judgment_state.options,
+              diagnostics)) {
+        std::cerr << draft::render_diagnostics(sources, diagnostics);
+        return 1;
       }
       resolve_options.judgment_runner.state = &judgment_state;
       resolve_options.judgment_runner.run =
@@ -1011,22 +1023,21 @@ int run_agent_command(
     return 0;
   }
 
-  draft::CodexCliProviderState codex_state;
+  std::vector<draft::CodexCliProviderState> judgment_codex_states;
   draft::JudgmentCommandOptions judgment_options;
   judgment_options.workspace_directory =
       absolute_directory.parent_path();
   judgment_options.target = target;
   judgment_options.selectors = judgment_selectors;
-  if (codex.has_value()) {
-    draft::JudgmentProvider provider =
-        draft::configure_codex_cli_judgment_provider(
-            *codex, codex_state, diagnostics);
-    if (provider.judge == nullptr) {
-      std::cerr << draft::render_diagnostics(sources, diagnostics);
-      return 1;
-    }
-    judgment_options.validators.push_back(
-        {"validator-0", std::move(provider)});
+  if (!configure_codex_judgment_policy(
+          codex,
+          judgment_validators,
+          judgment_artifacts,
+          judgment_codex_states,
+          judgment_options,
+          diagnostics)) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+    return 1;
   }
   const draft::JudgmentCommandResult judged =
       draft::execute_judgment_command(
@@ -1096,6 +1107,8 @@ void print_usage() {
             << "      --toolchain-root <directory> --sdk-root <directory> [-o <output>]\n"
             << "      [--require-test-evidence] [--require-benchmark-evidence]\n"
             << "      [--require-judgment-evidence]\n"
+            << "      [--judge-validator <identity>]...\n"
+            << "      [--judge-artifact <kind>:<sha256>]...\n"
             << "  draftc test <package-directory> [--allow-host-toolchain]\n"
             << "      [--locked --toolchain-root <directory> --sdk-root <directory>]\n"
             << "      [--provider name=object|archive|shared-library:<path>]...\n"
@@ -1108,6 +1121,8 @@ void print_usage() {
             << "      [--runtime-asset name:<file-or-directory>]...\n"
             << "  draftc resolve <package-directory> [--revalidate] [--judge]\n"
             << "      [--judge-select <selector>]...\n"
+            << "      [--judge-validator <identity>:<model>]...\n"
+            << "      [--judge-artifact <kind>:<path>]...\n"
             << "      [--codex-distribution-root <directory>\n"
             << "       --codex-executable <path> --codex-model <model>]\n"
             << "      [--allow-host-toolchain]\n"
@@ -1116,6 +1131,8 @@ void print_usage() {
             << "      [--provider-summary name:<path>]...\n"
             << "      [--runtime-asset name:<file-or-directory>]...\n"
             << "  draftc judge <package-directory> [<selector>...] [--list]\n"
+            << "      [--judge-validator <identity>:<model>]...\n"
+            << "      [--judge-artifact <kind>:<path>]...\n"
             << "      [--codex-distribution-root <directory>\n"
             << "       --codex-executable <path> --codex-model <model>]\n"
             << "      [--provider name=object|archive|shared-library:<path>]...\n"
@@ -1160,6 +1177,8 @@ int main(int argc, char **argv) {
     std::vector<draft::ForeignProviderInput> foreign_providers;
     std::vector<draft::ForeignProviderSummaryInput> provider_summaries;
     std::vector<draft::RuntimeAssetInput> runtime_assets;
+    std::vector<NamedCodexJudgmentValidator> judgment_validators;
+    std::vector<JudgmentArtifactPath> judgment_artifact_paths;
     std::vector<std::string> judgment_selectors;
     for (int index = 3; index < argc; ++index) {
       const std::string_view argument(argv[index]);
@@ -1183,6 +1202,29 @@ int main(int argc, char **argv) {
       } else if (argument == "--codex-model" &&
                  !codex_model.has_value() && index + 1 < argc) {
         codex_model = argv[++index];
+      } else if (argument == "--judge-validator" && index + 1 < argc) {
+        NamedCodexJudgmentValidator validator;
+        std::string reason;
+        if (!parse_judgment_validator(
+                argv[++index],
+                validator.identity,
+                validator.codex.model,
+                reason)) {
+          std::cerr << "error: " << reason << '\n';
+          return 2;
+        }
+        judge_during_resolution = true;
+        judgment_validators.push_back(std::move(validator));
+      } else if (argument == "--judge-artifact" && index + 1 < argc) {
+        JudgmentArtifactPath artifact;
+        std::string reason;
+        if (!parse_judgment_artifact_path(
+                argv[++index], artifact, reason)) {
+          std::cerr << "error: " << reason << '\n';
+          return 2;
+        }
+        judge_during_resolution = true;
+        judgment_artifact_paths.push_back(std::move(artifact));
       } else if (argument == "--toolchain-root" &&
                  !toolchain_root.has_value() && index + 1 < argc) {
         toolchain_root = argv[++index];
@@ -1219,10 +1261,12 @@ int main(int argc, char **argv) {
         return 2;
       }
     }
-    if (codex_executable.has_value() != codex_model.has_value() ||
-        codex_executable.has_value() != codex_distribution_root.has_value() ||
+    const bool has_codex_models =
+        codex_model.has_value() || !judgment_validators.empty();
+    if (codex_executable.has_value() != codex_distribution_root.has_value() ||
+        codex_executable.has_value() != has_codex_models ||
         toolchain_root.has_value() != sdk_root.has_value() ||
-        (revalidate && codex_executable.has_value()) ||
+        (revalidate && has_codex_models) ||
         (revalidate && judge_during_resolution) ||
         (allow_host_toolchain && toolchain_root.has_value())) {
       print_usage();
@@ -1232,11 +1276,28 @@ int main(int argc, char **argv) {
     (void)std::signal(SIGINT, request_cancellation);
     std::optional<draft::CodexCliProviderOptions> codex;
     if (codex_executable.has_value()) {
-      codex.emplace();
-      codex->distribution_root = *codex_distribution_root;
-      codex->executable = *codex_executable;
-      codex->model = *codex_model;
-      codex->cancellation_requested = command_cancellation_requested;
+      if (codex_model.has_value()) {
+        codex.emplace();
+        codex->distribution_root = *codex_distribution_root;
+        codex->executable = *codex_executable;
+        codex->model = *codex_model;
+        codex->cancellation_requested = command_cancellation_requested;
+      }
+      for (NamedCodexJudgmentValidator &validator : judgment_validators) {
+        validator.codex.distribution_root = *codex_distribution_root;
+        validator.codex.executable = *codex_executable;
+        validator.codex.cancellation_requested =
+            command_cancellation_requested;
+      }
+    }
+    std::vector<draft::JudgmentRequestArtifact> judgment_artifacts;
+    std::string artifact_reason;
+    if (!read_judgment_artifacts(
+            judgment_artifact_paths,
+            judgment_artifacts,
+            artifact_reason)) {
+      std::cerr << "error: " << artifact_reason << '\n';
+      return 1;
     }
     std::optional<draft::LockedNativeInputRoots> locked_inputs;
     if (toolchain_root.has_value()) {
@@ -1258,6 +1319,8 @@ int main(int argc, char **argv) {
         foreign_providers,
         provider_summaries,
         runtime_assets,
+        judgment_validators,
+        judgment_artifacts,
         judgment_selectors,
         false,
         judge_during_resolution);
@@ -1268,6 +1331,8 @@ int main(int argc, char **argv) {
     std::optional<std::string> codex_model;
     bool list_judgments = false;
     std::vector<std::string> judgment_selectors;
+    std::vector<NamedCodexJudgmentValidator> judgment_validators;
+    std::vector<JudgmentArtifactPath> judgment_artifact_paths;
     std::vector<draft::ForeignProviderInput> foreign_providers;
     std::vector<draft::ForeignProviderSummaryInput> provider_summaries;
     for (int index = 3; index < argc; ++index) {
@@ -1281,6 +1346,27 @@ int main(int argc, char **argv) {
       } else if (argument == "--codex-model" &&
                  !codex_model.has_value() && index + 1 < argc) {
         codex_model = argv[++index];
+      } else if (argument == "--judge-validator" && index + 1 < argc) {
+        NamedCodexJudgmentValidator validator;
+        std::string reason;
+        if (!parse_judgment_validator(
+                argv[++index],
+                validator.identity,
+                validator.codex.model,
+                reason)) {
+          std::cerr << "error: " << reason << '\n';
+          return 2;
+        }
+        judgment_validators.push_back(std::move(validator));
+      } else if (argument == "--judge-artifact" && index + 1 < argc) {
+        JudgmentArtifactPath artifact;
+        std::string reason;
+        if (!parse_judgment_artifact_path(
+                argv[++index], artifact, reason)) {
+          std::cerr << "error: " << reason << '\n';
+          return 2;
+        }
+        judgment_artifact_paths.push_back(std::move(artifact));
       } else if (argument == "--list" && !list_judgments) {
         list_judgments = true;
       } else if (argument == "--select" && index + 1 < argc) {
@@ -1309,10 +1395,14 @@ int main(int argc, char **argv) {
         return 2;
       }
     }
-    if (codex_executable.has_value() != codex_model.has_value() ||
-        codex_executable.has_value() !=
+    const bool has_codex_models =
+        codex_model.has_value() || !judgment_validators.empty();
+    if (codex_executable.has_value() !=
             codex_distribution_root.has_value() ||
-        (list_judgments && codex_executable.has_value())) {
+        codex_executable.has_value() != has_codex_models ||
+        (codex_model.has_value() && !judgment_validators.empty()) ||
+        (list_judgments &&
+         (has_codex_models || !judgment_artifact_paths.empty()))) {
       print_usage();
       return 2;
     }
@@ -1320,11 +1410,28 @@ int main(int argc, char **argv) {
     (void)std::signal(SIGINT, request_cancellation);
     std::optional<draft::CodexCliProviderOptions> codex;
     if (codex_executable.has_value()) {
-      codex.emplace();
-      codex->distribution_root = *codex_distribution_root;
-      codex->executable = *codex_executable;
-      codex->model = *codex_model;
-      codex->cancellation_requested = command_cancellation_requested;
+      if (codex_model.has_value()) {
+        codex.emplace();
+        codex->distribution_root = *codex_distribution_root;
+        codex->executable = *codex_executable;
+        codex->model = *codex_model;
+        codex->cancellation_requested = command_cancellation_requested;
+      }
+      for (NamedCodexJudgmentValidator &validator : judgment_validators) {
+        validator.codex.distribution_root = *codex_distribution_root;
+        validator.codex.executable = *codex_executable;
+        validator.codex.cancellation_requested =
+            command_cancellation_requested;
+      }
+    }
+    std::vector<draft::JudgmentRequestArtifact> judgment_artifacts;
+    std::string artifact_reason;
+    if (!read_judgment_artifacts(
+            judgment_artifact_paths,
+            judgment_artifacts,
+            artifact_reason)) {
+      std::cerr << "error: " << artifact_reason << '\n';
+      return 1;
     }
     return run_agent_command(
         argv[2],
@@ -1336,6 +1443,8 @@ int main(int argc, char **argv) {
         foreign_providers,
         provider_summaries,
         {},
+        judgment_validators,
+        judgment_artifacts,
         judgment_selectors,
         list_judgments);
   }
@@ -1437,6 +1546,8 @@ int main(int argc, char **argv) {
     bool require_test_evidence = false;
     bool require_benchmark_evidence = false;
     bool require_judgment_evidence = false;
+    draft::JudgmentVerificationPolicy judgment_policy;
+    bool custom_judgment_validators = false;
     std::optional<std::string> toolchain_root;
     std::optional<std::string> sdk_root;
     std::vector<draft::ForeignProviderInput> foreign_providers;
@@ -1455,6 +1566,23 @@ int main(int argc, char **argv) {
       } else if (argument == "--require-judgment-evidence" &&
                  !require_judgment_evidence) {
         require_judgment_evidence = true;
+      } else if (argument == "--judge-validator" && index + 1 < argc) {
+        if (!custom_judgment_validators) {
+          judgment_policy.validator_identities.clear();
+          custom_judgment_validators = true;
+        }
+        require_judgment_evidence = true;
+        judgment_policy.validator_identities.emplace_back(argv[++index]);
+      } else if (argument == "--judge-artifact" && index + 1 < argc) {
+        draft::JudgmentArtifactIdentity artifact;
+        std::string reason;
+        if (!parse_judgment_artifact_identity(
+                argv[++index], artifact, reason)) {
+          std::cerr << "error: " << reason << '\n';
+          return 2;
+        }
+        require_judgment_evidence = true;
+        judgment_policy.artifacts.push_back(std::move(artifact));
       } else if (argument == "--kind" && !artifact_kind_set &&
                  index + 1 < argc) {
         const std::string_view spelling(argv[++index]);
@@ -1532,6 +1660,9 @@ int main(int argc, char **argv) {
         return 1;
       }
     }
+    judgment_policy.identity = draft::judgment_policy_identity(
+        judgment_policy.validator_identities,
+        judgment_policy.artifacts);
     return build_package(
         argv[2],
         output,
@@ -1543,7 +1674,8 @@ int main(int argc, char **argv) {
         runtime_assets,
         require_test_evidence,
         require_benchmark_evidence,
-        require_judgment_evidence);
+        require_judgment_evidence,
+        judgment_policy);
   }
   if (argc == 2 && std::string_view(argv[1]) == "target") {
     return print_target();

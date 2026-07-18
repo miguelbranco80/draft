@@ -345,9 +345,13 @@ validators and exact requested artifact bytes. It invokes every validator for
 each selected site and records one evidence object that passes only when all
 rows pass. Offline verification is given the same policy identity, validator
 order, and artifact digests, so it can reject mismatched evidence without a
-provider. The current command-line profile intentionally exposes the simpler
-one-validator/no-artifact policy while richer profile configuration is being
-defined.
+provider. Repeat `--judge-validator <identity>:<model>` to configure those
+ordered Codex slots and repeat `--judge-artifact <kind>:<path>` to attach exact
+files. `resolve` accepts the same flags for its precommit judgment profile.
+Locked `build` uses `--judge-validator <identity>` and
+`--judge-artifact <kind>:<sha256>` with `--require-judgment-evidence`, so offline
+verification receives only expected identities and digests, never ambient
+artifact paths.
 
 `draftc judge path/to/package --list` prints each exact stable `site-...`
 identity with its package, anchor, source file, and occurrence without
@@ -362,6 +366,17 @@ build/draftc judge path/to/root codec/jpeg:decode \
   --codex-distribution-root /absolute/codex-root \
   --codex-executable /absolute/codex-root/bin/codex \
   --codex-model <model>
+```
+
+For an independent two-validator/object policy:
+
+```sh
+build/draftc judge path/to/root \
+  --codex-distribution-root /absolute/codex-root \
+  --codex-executable /absolute/codex-root/bin/codex \
+  --judge-validator security:<model-a> \
+  --judge-validator correctness:<model-b> \
+  --judge-artifact object:/absolute/app.o
 ```
 
 The all-sites locked gate still requires complete coverage. Partial runs are

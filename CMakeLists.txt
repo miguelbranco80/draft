@@ -47,6 +47,7 @@ add_library(
   src/interop/c_header.cpp
   src/interop/native.cpp
   src/judgment/codex_cli.cpp
+  src/judgment/cli_policy.cpp
   src/judgment/command.cpp
   src/judgment/evidence.cpp
   src/judgment/evidence_store.cpp

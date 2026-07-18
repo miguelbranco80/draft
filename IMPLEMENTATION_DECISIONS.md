@@ -741,11 +741,14 @@ content is rehashed before any invocation.
 Offline verification receives the expected policy identity, validator order,
 and artifact content identities. It needs no provider installation or
 credentials, and rejects a selected object when any row, order, kind, or digest
-differs. The public CLI currently instantiates the explicit first profile: one
-`validator-0`, aggregate all-pass, with no requested artifacts. A later failing
-attempt revokes the key immediately, so an unchanged manifest that names the
-older pass fails offline verification until judgment succeeds and republishes
-selection.
+differs. The public `judge` and resolution profile accept repeatable
+`identity:model` validator slots and exact `kind:path` artifact inputs. The
+legacy `--codex-model` spelling selects the explicit first profile: one
+`validator-0`, aggregate all-pass, with no requested artifacts. Locked build
+verification receives the matching ordered identities and `kind:sha256` rows;
+it never reopens provider artifact files. A later failing attempt revokes the
+key immediately, so an unchanged manifest that names the older pass fails
+offline verification until judgment succeeds and republishes selection.
 
 ## Judgment discovery and partial selection
 
@@ -822,7 +825,7 @@ the readable subject type, and the same portable interface type graph used by
 other provider context. Source and duplicated digests are rechecked by the
 shared Codex renderer before either synthesis or judgment starts a child. The
 `draft-agent-obligation-v16`, synthesis request/prompt v17, judgment
-request/prompt v3, and compiler content v110 identities make these new facts a
+request/prompt v3, and compiler content v111 identities make these new facts a
 stale-pin and evidence input.
 
 Nested procedures are static and cannot capture runtime locals. Checking a

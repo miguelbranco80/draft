@@ -7,12 +7,29 @@
 #include "judgment/selection.h"
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
+#include <cstdint>
 #include <string>
+#include <string_view>
 #include <utility>
 
 namespace draft {
 namespace {
+
+void hash_u64(Sha256 &hash, std::uint64_t value) {
+  std::array<std::uint8_t, 8> bytes{};
+  for (std::size_t index = 0; index < bytes.size(); ++index) {
+    bytes[bytes.size() - 1 - index] =
+        static_cast<std::uint8_t>(value >> (index * 8U));
+  }
+  hash.update(bytes);
+}
+
+void hash_field(Sha256 &hash, std::string_view value) {
+  hash_u64(hash, static_cast<std::uint64_t>(value.size()));
+  hash.update(value);
+}
 
 [[nodiscard]] const AgentRecord *find_record(
     const CompiledPackage &package,
@@ -190,6 +207,35 @@ void append_validator_result(
 }
 
 } // namespace
+
+std::string judgment_policy_identity(
+    std::span<const std::string> validator_identities,
+    std::span<const JudgmentArtifactIdentity> artifacts) {
+  if (validator_identities.size() == 1 &&
+      validator_identities.front() == "validator-0" && artifacts.empty()) {
+    return std::string(kDefaultJudgmentPolicyIdentity);
+  }
+
+  std::vector<JudgmentArtifactIdentity> ordered_artifacts(
+      artifacts.begin(), artifacts.end());
+  std::sort(
+      ordered_artifacts.begin(), ordered_artifacts.end(),
+      [](const JudgmentArtifactIdentity &left,
+         const JudgmentArtifactIdentity &right) {
+        return left.kind < right.kind;
+      });
+  Sha256 hash;
+  hash_field(hash, "draft-judgment-all-pass-policy-v2");
+  hash_u64(hash, static_cast<std::uint64_t>(validator_identities.size()));
+  for (const std::string &identity : validator_identities) {
+    hash_field(hash, identity);
+  }
+  hash_u64(hash, static_cast<std::uint64_t>(ordered_artifacts.size()));
+  for (const JudgmentArtifactIdentity &artifact : ordered_artifacts) {
+    hash_field(hash, artifact.kind);
+  }
+  return "draft-judgment-policy-v2:" + hash.finalize().hex();
+}
 
 JudgmentCommandResult execute_judgment_command(
     const CompileWorkspaceResult &compiled,

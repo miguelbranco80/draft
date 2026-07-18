@@ -81,7 +81,7 @@ struct TemporaryFixture {
         "test \"$(cat \"$work/requested-artifact-00000000.bin\")\" = object-bytes || exit 28\n"
         "prompt=$(cat)\n"
         "case \"$prompt\" in\n"
-        "  *REQUEST_FORMAT*draft-judgment-request-v3*SITE*judgment-site*TARGET_IDENTITY*draft-aarch64-macos-v5*BRANCH_KIND*if-condition-entered-false*BRANCH_SUBJECT*validated*JUDGMENT_CLAIM*preserve-the-abi*ATTACHMENT_PATH*EVIDENCE.md*RESOLVED_PROGRAM_SHA256*COMPILER_IDENTITY*draft-bootstrap-cpp-v110*POLICY_IDENTITY*draft-judgment-policy-v1*VALIDATOR_IDENTITY*validator-0*REQUESTED_ARTIFACTS*ARTIFACT_KIND*object*ARTIFACT_FILE*requested-artifact-00000000.bin*ARTIFACT_SHA256*) ;;\n"
+        "  *REQUEST_FORMAT*draft-judgment-request-v3*SITE*judgment-site*TARGET_IDENTITY*draft-aarch64-macos-v5*BRANCH_KIND*if-condition-entered-false*BRANCH_SUBJECT*validated*JUDGMENT_CLAIM*preserve-the-abi*ATTACHMENT_PATH*EVIDENCE.md*RESOLVED_PROGRAM_SHA256*COMPILER_IDENTITY*draft-bootstrap-cpp-v111*POLICY_IDENTITY*draft-judgment-policy-v1*VALIDATOR_IDENTITY*validator-0*REQUESTED_ARTIFACTS*ARTIFACT_KIND*object*ARTIFACT_FILE*requested-artifact-00000000.bin*ARTIFACT_SHA256*) ;;\n"
         "  *) exit 29 ;;\n"
         "esac\n"
         "case \"$model\" in\n"
@@ -134,7 +134,7 @@ draft::JudgmentRequest make_request() {
   refinement.type_text = "bool";
   request.obligation.branch_refinements.push_back(std::move(refinement));
   request.resolved_program = draft::sha256("resolved program");
-  request.compiler_identity = "draft-bootstrap-cpp-v110";
+  request.compiler_identity = "draft-bootstrap-cpp-v111";
   request.policy_identity = "draft-judgment-policy-v1";
   request.validator_identity = "validator-0";
   request.claim = "preserve-the-abi";
