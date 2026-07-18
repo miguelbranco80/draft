@@ -294,6 +294,17 @@ Development-only resolution may add `--allow-host-toolchain`; release resolution
 supplies the pinned roots below. Packages without selected validation need no
 native runner.
 
+Add `--judge` to run every authored judgment after synthesis checking and native
+Test/Benchmark validation, but before the resolver's one final manifest commit.
+`--judge-select <selector>` repeats the same operation for an exact site,
+package, or `<package>:<anchor>` selection. Passing judgment attempts are
+durable immediately; their rows become visible only when every selected verdict
+passes and the complete resolution transaction commits. A failure leaves the
+previous manifest authoritative. Ordinary resolution preserves judgment rows
+only when the complete resolved-program digest is unchanged; otherwise it drops
+them as stale. This profile also works for wholly handwritten programs with no
+synthesis sites.
+
 `build/draftc judge path/to/package` accepts the same explicit
 `--codex-distribution-root`, `--codex-executable`, and `--codex-model` triple.
 It compiles the complete resolved program before making a provider call,

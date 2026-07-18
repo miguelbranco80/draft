@@ -492,7 +492,8 @@ ResolveWorkspaceResult resolve_workspace(
   // With no sites and no prior manifest there is no transaction to perform.
   // An existing manifest still proceeds so obsolete pins become an empty map.
   if (manifest.pins.empty() && manifest.external_inputs.empty() &&
-      loaded.state == ResolutionManifestLoadState::Missing) {
+      loaded.state == ResolutionManifestLoadState::Missing &&
+      options.judgment_runner.run == nullptr) {
     result.ok = diagnostics.error_count() == initial_errors;
     return result;
   }
@@ -518,6 +519,19 @@ ResolveWorkspaceResult resolve_workspace(
       options.compile.target,
       manifest,
       options.compile.compiler_content_identity);
+
+  // Existing judgment evidence remains meaningful only when this exact
+  // transaction reconstructed the same resolved program. Native validation
+  // rows are regenerated below; judgment rows may be expensive provider work,
+  // so an unchanged program preserves them unless a selected judgment runner
+  // explicitly replaces some or all rows.
+  if (loaded.state == ResolutionManifestLoadState::Loaded &&
+      loaded.manifest.resolved_program_digest ==
+          manifest.resolved_program_digest) {
+    for (const ResolutionEvidencePin &pin : loaded.manifest.evidence) {
+      if (pin.kind == "judgment") manifest.evidence.push_back(pin);
+    }
+  }
 
   // Validation-only files are deliberately absent from the ordinary surface
   // graph above. Select and compile each first-release suite only after the
@@ -596,6 +610,53 @@ ResolveWorkspaceResult resolve_workspace(
         evidence.key,
         evidence.content_digest,
     });
+  }
+
+  if (options.judgment_runner.run != nullptr) {
+    if (resolution_cancelled(options, diagnostics)) return result;
+    resolved.resolution_manifest = manifest;
+    resolved.resolved_program_digest = manifest.resolved_program_digest;
+    std::vector<ResolutionEvidencePin> judgment_evidence;
+    const std::size_t before_judgment = diagnostics.error_count();
+    if (!options.judgment_runner.run(
+            options.judgment_runner.state,
+            options.compile.target,
+            resolved,
+            judgment_evidence,
+            result.judged_sites,
+            diagnostics)) {
+      if (diagnostics.error_count() == before_judgment) {
+        diagnostics.error(
+            SourceRange::invalid(),
+            "resolution candidate judgment failed without a diagnostic");
+      }
+      return result;
+    }
+    for (const ResolutionEvidencePin &pin : judgment_evidence) {
+      if (pin.kind != "judgment") {
+        diagnostics.error(
+            SourceRange::invalid(),
+            "resolution judgment runner returned non-judgment evidence");
+        return result;
+      }
+    }
+    std::vector<ResolutionEvidencePin> retained;
+    for (const ResolutionEvidencePin &pin : manifest.evidence) {
+      if (pin.kind != "judgment") retained.push_back(pin);
+    }
+    retained.insert(
+        retained.end(), judgment_evidence.begin(), judgment_evidence.end());
+    manifest.evidence = std::move(retained);
+  }
+
+  // A requested judgment profile over a handwritten program with no judgment
+  // sites is still a true no-op. Do not create resolution.json merely because
+  // the caller asked the empty selector set to run.
+  if (manifest.pins.empty() && manifest.external_inputs.empty() &&
+      manifest.evidence.empty() &&
+      loaded.state == ResolutionManifestLoadState::Missing) {
+    result.ok = diagnostics.error_count() == initial_errors;
+    return result;
   }
   // This is the final cancellation boundary. Once commit_resolution starts it
   // performs one crash-safe object-before-manifest transaction and must not be

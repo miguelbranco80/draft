@@ -43,7 +43,7 @@ struct CompileWorkspaceOptions {
   // Versioned identity of the compiler semantics and manifest algorithm. It is
   // a resolved-program input and must change when an implementation change can
   // alter accepted meaning or emitted behavior for the same other inputs.
-  std::string compiler_content_identity = "draft-bootstrap-cpp-v105";
+  std::string compiler_content_identity = "draft-bootstrap-cpp-v106";
   CompileWorkspaceStage stage = CompileWorkspaceStage::Complete;
   bool lower_mir = false;
   bool emit_llvm = false;

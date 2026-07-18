@@ -1,4 +1,4 @@
-// End-to-end public `draftc judge` coverage with a local Codex executable.
+// End-to-end public judgment-command coverage with a local Codex executable.
 //
 // The test crosses argument parsing, provider configuration, typed compilation,
 // judgment execution, durable evidence history, and conditional manifest
@@ -114,33 +114,8 @@ struct TemporaryWorkspace {
   }
 };
 
-[[nodiscard]] int run_judge(
-    const TemporaryWorkspace &workspace,
-    const std::vector<std::string> &selectors = {},
-    bool list = false) {
+[[nodiscard]] int run_driver(std::vector<std::string> arguments) {
 #if defined(__APPLE__) || defined(__unix__)
-  std::vector<std::string> arguments{
-      DRAFT_DRIVER_PATH,
-      "judge",
-      workspace.package.string(),
-  };
-  for (const std::string &selector : selectors) {
-    arguments.push_back(selector);
-  }
-  if (list) {
-    arguments.push_back("--list");
-  } else {
-    arguments.insert(
-        arguments.end(),
-        {
-            "--codex-distribution-root",
-            workspace.distribution.string(),
-            "--codex-executable",
-            workspace.executable.string(),
-            "--codex-model",
-            "fixture-model",
-        });
-  }
   std::vector<char *> raw;
   raw.reserve(arguments.size() + 1);
   for (std::string &argument : arguments) raw.push_back(argument.data());
@@ -160,9 +135,67 @@ struct TemporaryWorkspace {
   if (waited != child || !WIFEXITED(status)) return -1;
   return WEXITSTATUS(status);
 #else
-  (void)workspace;
+  (void)arguments;
   return -1;
 #endif
+}
+
+void append_codex_arguments(
+    const TemporaryWorkspace &workspace,
+    std::vector<std::string> &arguments) {
+  arguments.insert(
+      arguments.end(),
+      {
+          "--codex-distribution-root",
+          workspace.distribution.string(),
+          "--codex-executable",
+          workspace.executable.string(),
+          "--codex-model",
+          "fixture-model",
+      });
+}
+
+[[nodiscard]] int run_judge(
+    const TemporaryWorkspace &workspace,
+    const std::vector<std::string> &selectors = {},
+    bool list = false) {
+  std::vector<std::string> arguments{
+      DRAFT_DRIVER_PATH,
+      "judge",
+      workspace.package.string(),
+  };
+  for (const std::string &selector : selectors) {
+    arguments.push_back(selector);
+  }
+  if (list) {
+    arguments.push_back("--list");
+  } else {
+    append_codex_arguments(workspace, arguments);
+  }
+  return run_driver(std::move(arguments));
+}
+
+[[nodiscard]] int run_resolve(
+    const TemporaryWorkspace &workspace,
+    bool judge,
+    const std::vector<std::string> &selectors = {}) {
+  std::vector<std::string> arguments{
+      DRAFT_DRIVER_PATH,
+      "resolve",
+      workspace.package.string(),
+  };
+  if (judge) {
+    if (selectors.empty()) {
+      arguments.push_back("--judge");
+    } else {
+      for (const std::string &selector : selectors) {
+        arguments.push_back("--judge-select");
+        arguments.push_back(selector);
+      }
+    }
+    append_codex_arguments(workspace, arguments);
+  }
+  return run_driver(std::move(arguments));
 }
 
 [[nodiscard]] draft::CompileWorkspaceResult compile_resolved(
@@ -315,12 +348,103 @@ void test_failing_command_leaves_manifest_missing(TestState &state) {
   EXPECT(state, !diagnostics.has_errors());
 }
 
+void test_resolution_profile_commits_judgments_atomically(TestState &state) {
+  TemporaryWorkspace workspace("resolve-pass", true);
+
+  draft::SourceManager discovery_sources;
+  draft::DiagnosticSink discovery_diagnostics;
+  const draft::CompileWorkspaceResult discovered = compile_resolved(
+      workspace, discovery_sources, discovery_diagnostics);
+  EXPECT(state, discovered.ok);
+  const std::vector<draft::JudgmentSiteDescription> sites =
+      draft::discover_judgment_sites(discovered);
+  EXPECT(state, sites.size() == 2);
+  if (sites.size() != 2) return;
+
+  // A selected resolution profile can publish a deliberately partial evidence
+  // set. A later complete profile replaces it with one row for every judgment,
+  // all in the resolver's single candidate-manifest transaction.
+  EXPECT(state,
+      run_resolve(workspace, true, {sites.front().site_identity}) == 0);
+  draft::DiagnosticSink diagnostics;
+  draft::ResolutionManifestLoadResult loaded =
+      draft::load_resolution_manifest(workspace.root, diagnostics);
+  EXPECT(state,
+      loaded.state == draft::ResolutionManifestLoadState::Loaded);
+  EXPECT(state, loaded.manifest.pins.empty());
+  EXPECT(state, loaded.manifest.evidence.size() == 1);
+
+  EXPECT(state, run_resolve(workspace, true) == 0);
+  diagnostics = {};
+  loaded = draft::load_resolution_manifest(workspace.root, diagnostics);
+  EXPECT(state,
+      loaded.state == draft::ResolutionManifestLoadState::Loaded);
+  EXPECT(state, loaded.manifest.evidence.size() == 2);
+
+  draft::SourceManager sources;
+  draft::DiagnosticSink verification_diagnostics;
+  const draft::CompileWorkspaceResult compiled = compile_resolved(
+      workspace, sources, verification_diagnostics);
+  std::vector<draft::Sha256Digest> active;
+  EXPECT(state, compiled.ok);
+  EXPECT(state,
+      draft::verify_active_judgment_evidence(
+          compiled,
+          workspace.root,
+          active,
+          verification_diagnostics));
+  EXPECT(state, active.size() == 2);
+
+  // Ordinary resolution keeps expensive judgment rows when the complete
+  // resolved-program digest is unchanged.
+  EXPECT(state, run_resolve(workspace, false) == 0);
+  diagnostics = {};
+  loaded = draft::load_resolution_manifest(workspace.root, diagnostics);
+  EXPECT(state, loaded.manifest.evidence.size() == 2);
+
+  // A source edit changes that digest. Provider-free resolution must drop the
+  // stale rows instead of carrying qualitative claims onto another program.
+  std::ofstream changed(
+      workspace.package / "package.draft",
+      std::ios::binary | std::ios::trunc);
+  changed << "package app\n\n"
+             "judge \"The package remains coherent.\"\n\n"
+             "main :: proc() {\n"
+             "    value := 43\n"
+             "    judge \"The typed local preserves the claim.\"\n"
+             "    _ = value\n"
+             "}\n";
+  changed.close();
+  EXPECT(state, static_cast<bool>(changed));
+  EXPECT(state, run_resolve(workspace, false) == 0);
+  diagnostics = {};
+  loaded = draft::load_resolution_manifest(workspace.root, diagnostics);
+  EXPECT(state,
+      loaded.state == draft::ResolutionManifestLoadState::Loaded);
+  EXPECT(state, loaded.manifest.evidence.empty());
+  EXPECT(state, !diagnostics.has_errors());
+}
+
+void test_failing_resolution_profile_leaves_manifest_missing(
+    TestState &state) {
+  TemporaryWorkspace workspace("resolve-fail", false);
+  EXPECT(state, run_resolve(workspace, true) == 1);
+  draft::DiagnosticSink diagnostics;
+  const draft::ResolutionManifestLoadResult loaded =
+      draft::load_resolution_manifest(workspace.root, diagnostics);
+  EXPECT(state,
+      loaded.state == draft::ResolutionManifestLoadState::Missing);
+  EXPECT(state, !diagnostics.has_errors());
+}
+
 } // namespace
 
 int main() {
   TestState state;
   test_passing_command_selects_evidence(state);
   test_failing_command_leaves_manifest_missing(state);
+  test_resolution_profile_commits_judgments_atomically(state);
+  test_failing_resolution_profile_leaves_manifest_missing(state);
   if (state.failures != 0) {
     std::cerr << state.failures
               << " judgment driver expectation(s) failed\n";

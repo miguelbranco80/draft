@@ -53,6 +53,24 @@ struct ResolutionValidationRunner {
   ResolutionValidationRunFunction run = nullptr;
 };
 
+// Judgment execution is also an embedding concern. It runs only after the
+// complete ordinary resolved graph and selected native validations pass. The
+// callback returns the complete judgment-row set to publish (including any
+// unchanged unselected rows it intentionally preserves); the resolver still
+// owns the one final manifest transaction.
+using ResolutionJudgmentRunFunction = bool (*)(
+    void *state,
+    const TargetProfile &target,
+    const CompileWorkspaceResult &compiled,
+    std::vector<ResolutionEvidencePin> &evidence,
+    std::size_t &selected_judgments,
+    DiagnosticSink &diagnostics);
+
+struct ResolutionJudgmentRunner {
+  void *state = nullptr;
+  ResolutionJudgmentRunFunction run = nullptr;
+};
+
 // Resolution cancellation is provider-neutral. The driver may source it from a
 // signal, while an embedding may use an atomic flag or task cancellation token.
 // The resolver polls only at transaction boundaries; provider adapters and
@@ -81,6 +99,10 @@ struct ResolveWorkspaceOptions {
   // is required and must accept them before the atomic pin-store commit. A
   // package with no selected validation remains provider/toolchain independent.
   ResolutionValidationRunner validation_runner;
+  // Optional resolution profile for qualitative judgments. The callback sees
+  // the final resolved program and may invoke a provider; ordinary resolution
+  // leaves this null and never contacts a judge.
+  ResolutionJudgmentRunner judgment_runner;
 };
 
 // Counts describe provider/reuse work performed by the attempt, including work
@@ -94,6 +116,7 @@ struct ResolveWorkspaceResult {
   std::size_t synthesized_sites = 0;
   std::size_t tested_procedures = 0;
   std::size_t benchmarked_procedures = 0;
+  std::size_t judged_sites = 0;
   ResolutionManifest manifest;
 };
 

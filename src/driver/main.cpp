@@ -651,6 +651,11 @@ struct ResolutionValidationRunnerState {
   draft::ValidationCommandResult result;
 };
 
+struct ResolutionJudgmentRunnerState {
+  draft::JudgmentCommandOptions options;
+  draft::JudgmentCommandResult result;
+};
+
 // Native execution remains outside the semantic resolver. This adapter accepts
 // its immutable typed candidate, runs the normal compiler-owned validation harness,
 // and records audit/revocation history before resolution commits. Only passing
@@ -692,12 +697,74 @@ bool run_resolution_candidate_validation(
   return true;
 }
 
+// A resolution profile judges the same in-memory candidate that the resolver
+// is about to publish. Evidence attempts become durable as they complete, but
+// this adapter returns rows only after the whole selected profile passes. The
+// resolver then folds those rows into its one final manifest transaction.
+bool run_resolution_candidate_judgment(
+    void *opaque,
+    const draft::TargetProfile &target,
+    const draft::CompileWorkspaceResult &compiled,
+    std::vector<draft::ResolutionEvidencePin> &evidence,
+    std::size_t &selected_judgments,
+    draft::DiagnosticSink &diagnostics) {
+  auto *state = static_cast<ResolutionJudgmentRunnerState *>(opaque);
+  state->options.target = target;
+  const std::size_t before = diagnostics.error_count();
+  state->result = draft::execute_judgment_command(
+      compiled, state->options, diagnostics);
+  selected_judgments = state->result.selected_judgments;
+  if (!state->result.completed) {
+    if (diagnostics.error_count() == before) {
+      diagnostics.error(
+          draft::SourceRange::invalid(),
+          "resolution candidate judgment could not complete");
+    }
+    return false;
+  }
+  if (!state->result.passed) {
+    diagnostics.error(
+        draft::SourceRange::invalid(),
+        "resolution candidate judgment failed for " +
+            std::to_string(state->result.selected_judgments) +
+            " selected judgments");
+    return false;
+  }
+
+  draft::JudgmentSelection selection;
+  if (!draft::select_judgment_sites(
+          compiled, state->options.selectors, selection, diagnostics)) {
+    return false;
+  }
+  std::vector<draft::ResolutionEvidencePin> current;
+  // An empty selector list is the complete profile, so it intentionally starts
+  // from an empty set. A partial profile may preserve unselected judgment rows,
+  // but only rows the resolver carried forward after proving the resolved
+  // program digest unchanged are visible here.
+  if (!state->options.selectors.empty() &&
+      compiled.resolution_manifest.has_value()) {
+    for (const draft::ResolutionEvidencePin &pin :
+         compiled.resolution_manifest->evidence) {
+      if (pin.kind == "judgment") current.push_back(pin);
+    }
+  }
+  return draft::replace_selected_judgment_evidence(
+      state->options.workspace_directory,
+      current,
+      selection,
+      state->result.evidence,
+      evidence,
+      diagnostics);
+}
+
 // Resolve and judge first run the complete provider-independent front end, so
 // malformed source, attachment-policy violations, and typed obligation errors
 // are reported before any model call. Resolve may receive one explicit Codex
-// adapter configuration; a program with only fresh pins still performs no
-// provider call. Judge runs only after the same provider-free compilation and
-// selects its all-pass evidence with an atomic manifest compare-and-replace.
+// adapter options; a program with only fresh pins still performs no synthesis
+// provider call. Resolve may additionally run a selected judgment profile over
+// its complete candidate before the one manifest commit. Judge runs only after
+// the same provider-free compilation and selects its all-pass evidence with an
+// atomic manifest compare-and-replace.
 int run_agent_command(
     const std::string &directory,
     AgentCommandKind command,
@@ -709,7 +776,8 @@ int run_agent_command(
     const std::vector<draft::ForeignProviderInput> &foreign_providers = {},
     const std::vector<draft::ForeignProviderSummaryInput> &provider_summaries = {},
     const std::vector<std::string> &judgment_selectors = {},
-    bool list_judgments = false) {
+    bool list_judgments = false,
+    bool judge_during_resolution = false) {
   draft::SourceManager sources;
   draft::DiagnosticSink diagnostics;
   std::error_code path_error;
@@ -792,6 +860,26 @@ int run_agent_command(
         return 1;
       }
     }
+    draft::CodexCliProviderState judgment_codex_state;
+    ResolutionJudgmentRunnerState judgment_state;
+    if (judge_during_resolution) {
+      judgment_state.options.workspace_directory =
+          absolute_directory.parent_path();
+      judgment_state.options.target = resolve_options.compile.target;
+      judgment_state.options.selectors = judgment_selectors;
+      if (codex.has_value()) {
+        judgment_state.options.provider =
+            draft::configure_codex_cli_judgment_provider(
+                *codex, judgment_codex_state, diagnostics);
+        if (judgment_state.options.provider.judge == nullptr) {
+          std::cerr << draft::render_diagnostics(sources, diagnostics);
+          return 1;
+        }
+      }
+      resolve_options.judgment_runner.state = &judgment_state;
+      resolve_options.judgment_runner.run =
+          run_resolution_candidate_judgment;
+    }
     ResolutionValidationRunnerState validation_state;
     validation_state.options.package_directory = absolute_directory;
     validation_state.options.target = resolve_options.compile.target;
@@ -811,14 +899,19 @@ int run_agent_command(
         diagnostics);
     if (resolved.ok) {
       if (!resolved.committed) {
-        std::cout << "no synthesis sites require resolution\n";
+        if (judge_during_resolution) {
+          std::cout << "no synthesis or judgment sites require resolution\n";
+        } else {
+          std::cout << "no synthesis sites require resolution\n";
+        }
       } else {
         std::cout << "resolved " << resolved.manifest.pins.size()
                   << " synthesis sites (" << resolved.synthesized_sites
                   << " synthesized, " << resolved.reused_sites
                   << " reused); passed " << resolved.tested_procedures
                   << " tests and " << resolved.benchmarked_procedures
-                  << " benchmarks before commit\n";
+                  << " benchmarks and " << resolved.judged_sites
+                  << " judgments before commit\n";
       }
     }
     if (!diagnostics.diagnostics().empty()) {
@@ -968,7 +1061,8 @@ void print_usage() {
             << "      [--locked --toolchain-root <directory> --sdk-root <directory>]\n"
             << "      [--provider name=object|archive|shared-library:<path>]...\n"
             << "      [--provider-summary name:<path>]...\n"
-            << "  draftc resolve <package-directory> [--revalidate]\n"
+            << "  draftc resolve <package-directory> [--revalidate] [--judge]\n"
+            << "      [--judge-select <selector>]...\n"
             << "      [--codex-distribution-root <directory>\n"
             << "       --codex-executable <path> --codex-model <model>]\n"
             << "      [--allow-host-toolchain]\n"
@@ -1010,6 +1104,7 @@ int main(int argc, char **argv) {
   }
   if (argc >= 3 && std::string_view(argv[1]) == "resolve") {
     bool revalidate = false;
+    bool judge_during_resolution = false;
     bool allow_host_toolchain = false;
     std::optional<std::string> codex_distribution_root;
     std::optional<std::string> codex_executable;
@@ -1018,10 +1113,17 @@ int main(int argc, char **argv) {
     std::optional<std::string> sdk_root;
     std::vector<draft::ForeignProviderInput> foreign_providers;
     std::vector<draft::ForeignProviderSummaryInput> provider_summaries;
+    std::vector<std::string> judgment_selectors;
     for (int index = 3; index < argc; ++index) {
       const std::string_view argument(argv[index]);
       if (argument == "--revalidate" && !revalidate) {
         revalidate = true;
+      } else if (argument == "--judge" &&
+                 !judge_during_resolution) {
+        judge_during_resolution = true;
+      } else if (argument == "--judge-select" && index + 1 < argc) {
+        judge_during_resolution = true;
+        judgment_selectors.emplace_back(argv[++index]);
       } else if (argument == "--allow-host-toolchain" &&
                  !allow_host_toolchain) {
         allow_host_toolchain = true;
@@ -1066,6 +1168,7 @@ int main(int argc, char **argv) {
         codex_executable.has_value() != codex_distribution_root.has_value() ||
         toolchain_root.has_value() != sdk_root.has_value() ||
         (revalidate && codex_executable.has_value()) ||
+        (revalidate && judge_during_resolution) ||
         (allow_host_toolchain && toolchain_root.has_value())) {
       print_usage();
       return 2;
@@ -1098,7 +1201,10 @@ int main(int argc, char **argv) {
         codex,
         locked_inputs,
         foreign_providers,
-        provider_summaries);
+        provider_summaries,
+        judgment_selectors,
+        false,
+        judge_during_resolution);
   }
   if (argc >= 3 && std::string_view(argv[1]) == "judge") {
     std::optional<std::string> codex_distribution_root;

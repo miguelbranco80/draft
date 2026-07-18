@@ -17,11 +17,14 @@ AArch64 macOS executables and library artifacts, link exact package assembly,
 resolve every synthesis grammar category through transactional pins, and
 consume those pins offline.
 
-The release acceptance test is still unproved. In particular, complete
-runtime/initial-core conformance and public/locked judgment evidence selection
-do not yet exist. Generated-source maps now reach hermetic LLVM operation locations and
-real native line tables, but pinned-toolchain DWARF/disassembly qualification
-and explicit coverage/profile correlation remain.
+The release acceptance test is still unproved. Complete runtime/initial-core
+conformance remains broader than the current representative surface. Public
+judgment execution, resolution-profile selection, and provider-free locked
+verification now exist, but have not been qualified against the selected
+release Codex distribution. Generated-source maps now reach hermetic LLVM
+operation locations and real native line tables, but pinned-toolchain
+DWARF/disassembly qualification and explicit coverage/profile correlation
+remain.
 
 The production audit now also proves byte-exact compile-time string indexing
 and every half-open string slice form. These operations preserve distinct
@@ -56,7 +59,11 @@ command now selects only all-pass rows through an atomic, stale-snapshot-safe
 manifest replacement. Locked builds can require exact active judgment evidence
 without configuring or invoking a provider. The public command lists stable
 site identities and accepts package, declaration-anchor, exact-site, and union
-selectors; partial success replaces only the selected manifest rows.
+selectors; partial success replaces only the selected manifest rows. Resolution
+can run the same all-site or selected judgment profile after synthesis and
+native validation, then publish synthesis pins and all passing evidence through
+one final manifest transaction. Provider-free resolution retains judgment rows
+only across an identical resolved-program digest.
 
 Dependent integer type/value expressions now use a canonical typed post-order
 tree rather than a one-parameter special case. Arithmetic expressions survive
@@ -114,10 +121,10 @@ not a private caller helper, reaches the callee's owner.
 | Provider-independent docs, judgments, and synthesis obligations | agent metadata/obligation modules, canonical expected/binding type spellings and visible constant values plus bounded comment-free private/local declaration definitions, complete referenced type graphs/layouts/members, compact visible imported-package interfaces with constants and effect contracts, ordered parametric constraints, explicit target/assembly context, persistent source coordinates, comment-free canonical enclosing declaration source plus a reduced typed parameter/result/member/layout skeleton, lexically active denial selectors, semantic-identity filtering of denied locals/declarations/import members/packages and their documentation, denial-filtered typed runtime `Context` fields even for early interface synthesis, package/enclosing/imported-public documentation and positionally guiding judgment claims with exact isolated attachments, canonical target-selected test/benchmark source, and tests | Implemented foundation | Context still lacks transitive on-demand narrowing of the direct declaration closure, semantic relevance narrowing and typed facts for tests/benchmarks, and typed branch refinements for judgment context. |
 | Dependency-ordered synthesis and opaque interface completeness sets | staged resolver/compiler passes and resolver tests, including symmetric captured-request proof that same-package sites cannot observe either generated name, plus a real provider-free AArch64 executable that combines declaration, member, expression, and statement expansions, rebuilds byte-identically, and exits successfully | Implemented for package dependency rounds | Add finer early compile-time dependencies inside one package. The final locked replay still requires the pinned release toolchain/SDK. |
 | Codex adapters behind provider-neutral boundaries | shared `src/elaborator/codex_cli_runtime.*`, synthesis and judgment adapters, complete common typed-context rendering, judgment-specific resolved-program/artifact inputs and strict verdict parsing, exact explicit distribution-tree plus root-relative launcher identity reverified before/after execution, fixed hashed timeout/retry policy, user/SIGINT cancellation with forced child kill-and-reap, and real process-boundary fixture tests | Implemented first adapters | Exercise both contracts against the selected release Codex distribution during release qualification. |
-| Content-addressed generated source and atomic manifest commit | v4 resolution manifests, resolution/store/overlay modules, workspace-serialized commits, stale-snapshot compare-and-replace for long-running judgments, typed-history mapping for partial selected-site replacement, interrupted-publish recovery, typed native precommit Test/Benchmark execution, and exact passing native/judgment evidence keys/content hashes | Implemented foundation | Extend resolution profiles to schedule selected judgments during synthesis resolution. |
+| Content-addressed generated source and atomic manifest commit | v4 resolution manifests, resolution/store/overlay modules, workspace-serialized commits, stale-snapshot compare-and-replace for long-running judgments, typed-history mapping for partial selected-site replacement, interrupted-publish recovery, typed native precommit Test/Benchmark execution, selected precommit judgment profiles, resolved-program-based judgment-row preservation/invalidation, and exact passing native/judgment evidence keys/content hashes | Implemented foundation | Extend the first policy to multiple validators and requested artifacts without weakening the one final manifest transaction. |
 | Ordinary offline builds consume pins without a provider | staged offline compiler path, resolver tests, locked executable/archive adapter tests, and byte-identical repeated real builds of all five output kinds | Implemented for the first host gate | Repeat the same proof with the pinned release toolchain/SDK. |
 | `draft build --locked` with no ambient external search | Versioned external-input rows, resolved-program binding, content-tree verification, explicit toolchain/SDK/provider/summary CLI roots, clean process environment, absolute Clang/linker/archiver paths, provider snapshots, consumed summary verification, SDK/link flags, optional exact-key test/benchmark evidence gates, and exact per-site active judgment-evidence verification with no provider call | Implemented through foreign link artifacts, audits, and judgment/native validation evidence | Add runtime-asset mappings; locked builds reject unsupported external roles. |
-| Tests, benchmarks, judgments, and validation evidence | Typed core-nominal discovery, target-qualified file selection, canonical package/declaration order, compiler-owned isolated native harnesses, resolution precommit Test/Benchmark execution, private result pipe, direct process runner, process-isolated benchmark warmup/sampling, provider-neutral deterministic judgment execution plus Codex adapter, stable site discovery, package/declaration/exact-site union selection, strict native and judgment evidence schemas, canonical content-addressed shared attempt storage, exact environment/tool/policy keys, append-only history, failure revocation, partial/all-pass atomic manifest selection, locked native and per-site judgment evidence gates, validation tests, and `examples/validation` | Implemented for tests, first benchmark profile, and explicit judgment execution | Add resolution-profile judgment scheduling, multiple-validator/artifact policies, then richer instrumentation profiles and statistical aggregation/tolerances. |
+| Tests, benchmarks, judgments, and validation evidence | Typed core-nominal discovery, target-qualified file selection, canonical package/declaration order, compiler-owned isolated native harnesses, resolution precommit Test/Benchmark and selected judgment execution, private result pipe, direct process runner, process-isolated benchmark warmup/sampling, provider-neutral deterministic judgment execution plus Codex adapter, stable site discovery, package/declaration/exact-site union selection, strict native and judgment evidence schemas, canonical content-addressed shared attempt storage, exact environment/tool/policy keys, append-only history, failure revocation, partial/all-pass atomic manifest selection, locked native and per-site judgment evidence gates, validation tests, and `examples/validation` | Implemented for tests, first benchmark profile, and first judgment policy | Add multiple-validator/artifact policies, then richer instrumentation profiles and statistical aggregation/tolerances. |
 | Generated-source diagnostics/source maps | Per-pin persistent surface/expansion byte maps, composed in-memory maps, diagnostic origin notes, and hermetic LLVM subprogram/operation locations that retain both the authored site and generated coordinate | Implemented through native debug line inputs | Qualify the mapping in the pinned toolchain's DWARF/disassembly and add explicit instrumentation coverage/profile correlation. |
 | Crash-safe and deterministic release verification | Atomic pin-store tests, injected stops at every staging/object-sync/manifest-visibility boundary with recovery, a real multi-process writer race over exclusive immutable-object installation and manifest replacement, serialized manifest writers and checked conditional updates, interrupted object-before-manifest recovery, rejection of redirected/non-regular/oversized store entries, strict UTF-8 manifest parsing, exhaustive truncation/NUL/invalid-byte/trailing-byte plus structural-delimiter/integer-shape mutation corpora, deterministic serializers, byte-identical repeated real builds of all five artifact kinds, and passing ordinary/sanitized 47-test suites | Implemented first-host foundation | Run the same matrix through the pinned LLVM 22.1/SDK distribution and repeat under release-scale filesystem fault infrastructure. |
 
@@ -126,12 +133,15 @@ not a private caller helper, reaches the callee's owner.
 The driver currently exposes `lex`, `syntax`, `target`, `check`, `emit-llvm`,
 `emit-c-header`, ordinary and locked `build` for executable, object, static
 library, dynamic library, and assembly-bundle kinds, `test`, `bench --verify`,
-`resolve`, and the provider-free `judge` boundary. Test and benchmark commands
+`resolve`, and the public provider-backed `judge` command. Resolution profiles
+can schedule selected judgments before publication. Test and benchmark commands
 compile their otherwise excluded files into a compiler-owned AArch64 macOS
 harness, execute selected procedures in canonical order, and append immutable
 evidence attempts under `.draft/evidence`. Locked builds may require matching
 active evidence with `--require-test-evidence` and
-`--require-benchmark-evidence`; they verify it without executing validation.
+`--require-benchmark-evidence`, plus all current judgments with
+`--require-judgment-evidence`; they verify it without executing validation or
+contacting a provider.
 
 ## Next release-critical slice
 
