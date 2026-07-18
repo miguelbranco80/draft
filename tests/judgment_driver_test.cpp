@@ -5,8 +5,11 @@
 // publication. No network service or release Codex installation is required.
 
 #include "elaborator/resolution_store.h"
+#include "compile/compiler.h"
 #include "judgment/evidence_store.h"
+#include "judgment/verification.h"
 #include "source/diagnostic.h"
+#include "target/profile.h"
 
 #include <cerrno>
 #include <cstdlib>
@@ -147,6 +150,19 @@ struct TemporaryWorkspace {
 #endif
 }
 
+[[nodiscard]] draft::CompileWorkspaceResult compile_resolved(
+    const TemporaryWorkspace &workspace,
+    draft::SourceManager &sources,
+    draft::DiagnosticSink &diagnostics) {
+  draft::CompileWorkspaceOptions options;
+  options.target = draft::make_aarch64_macos_profile();
+  options.workspace.workspace_directory = workspace.root.string();
+  options.workspace.core_directory = DRAFT_CORE_DIRECTORY;
+  options.workspace.core_content_identity = DRAFT_CORE_CONTENT_IDENTITY;
+  return draft::compile_workspace_with_resolution(
+      sources, workspace.package.string(), std::move(options), diagnostics);
+}
+
 void test_passing_command_selects_evidence(TestState &state) {
   TemporaryWorkspace workspace("pass", true);
   EXPECT(state, run_judge(workspace) == 0);
@@ -188,6 +204,53 @@ void test_passing_command_selects_evidence(TestState &state) {
     EXPECT(state, evidence.active_digest == pin.content_digest);
   }
   EXPECT(state, !diagnostics.has_errors());
+
+  // Locked verification consumes only the compiled obligations, selected
+  // manifest rows, and typed local evidence store. It has no provider object.
+  draft::SourceManager sources;
+  draft::DiagnosticSink verification_diagnostics;
+  const draft::CompileWorkspaceResult compiled = compile_resolved(
+      workspace, sources, verification_diagnostics);
+  EXPECT(state, compiled.ok);
+  std::vector<draft::Sha256Digest> active;
+  EXPECT(state,
+      draft::verify_active_judgment_evidence(
+          compiled,
+          workspace.root,
+          active,
+          verification_diagnostics));
+  EXPECT(state, active.size() == 2);
+  EXPECT(state, !verification_diagnostics.has_errors());
+
+  // A new failing attempt revokes one exact selected key. The manifest bytes
+  // remain unchanged, but an offline locked verifier must reject that stale
+  // selection without invoking the provider that produced either attempt.
+  if (!loaded.manifest.evidence.empty()) {
+    draft::JudgmentEvidenceState evidence;
+    EXPECT(state,
+        draft::load_judgment_evidence_state(
+            workspace.root,
+            loaded.manifest.evidence.front().key,
+            evidence,
+            verification_diagnostics));
+    if (evidence.active_evidence.has_value()) {
+      draft::JudgmentEvidence failed = *evidence.active_evidence;
+      failed.passed = false;
+      failed.validators.front().passed = false;
+      failed.validators.front().rationale = "fixture revocation";
+      const draft::JudgmentEvidenceCommitResult revoked =
+          draft::commit_judgment_evidence(
+              workspace.root, std::move(failed), verification_diagnostics);
+      EXPECT(state, revoked.ok);
+      EXPECT(state, !revoked.active);
+    }
+  }
+  draft::DiagnosticSink revoked_diagnostics;
+  active.clear();
+  EXPECT(state,
+      !draft::verify_active_judgment_evidence(
+          compiled, workspace.root, active, revoked_diagnostics));
+  EXPECT(state, revoked_diagnostics.has_errors());
 }
 
 void test_failing_command_leaves_manifest_missing(TestState &state) {

@@ -315,8 +315,17 @@ build/draftc resolve path/to/package \
 
 build/draftc build path/to/package --locked \
   --toolchain-root /absolute/path/to/llvm \
-  --sdk-root /absolute/path/to/MacOSX.sdk
+  --sdk-root /absolute/path/to/MacOSX.sdk \
+  --require-judgment-evidence
 ```
+
+`--require-judgment-evidence` makes a locked build require one exact active,
+manifest-selected passing object for every current judgment. Verification
+matches the compiled typed claim, resolved program, target, compiler, package,
+one-validator/no-artifact policy, and immutable attempt digest. It never starts
+Codex or any other provider. A missing row, stale context, changed compiler, or
+later failing attempt rejects the build. As with test and benchmark evidence,
+the flag is rejected outside `--locked` mode.
 
 The first toolchain layout requires executable `bin/clang`, `bin/ld64.lld`, and
 `bin/llvm-ar`. Relocating an unchanged tree preserves its identity; changing

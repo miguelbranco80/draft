@@ -16,6 +16,7 @@
 #include "interop/c_header.h"
 #include "judgment/codex_cli.h"
 #include "judgment/command.h"
+#include "judgment/verification.h"
 #include "source/diagnostic.h"
 #include "source/source.h"
 #include "syntax/lexer.h"
@@ -351,7 +352,8 @@ int build_package(
     const std::vector<draft::ForeignProviderInput> &foreign_providers,
     const std::vector<draft::ForeignProviderSummaryInput> &provider_summaries,
     bool require_test_evidence,
-    bool require_benchmark_evidence) {
+    bool require_benchmark_evidence,
+    bool require_judgment_evidence) {
   draft::SourceManager sources;
   draft::DiagnosticSink diagnostics;
   std::error_code path_error;
@@ -413,6 +415,17 @@ int build_package(
     }
     if (require_benchmark_evidence) {
       verify_evidence(draft::ValidationKind::Benchmark);
+    }
+    if (require_judgment_evidence) {
+      std::vector<draft::Sha256Digest> active;
+      if (draft::verify_active_judgment_evidence(
+              compiled,
+              absolute_directory.parent_path(),
+              active,
+              diagnostics)) {
+        std::cout << "verified " << active.size()
+                  << " judgment evidence objects\n";
+      }
     }
     const std::filesystem::path build_directory =
         absolute_directory / ".draft" / "build";
@@ -940,6 +953,7 @@ void print_usage() {
             << "  draftc build <package-directory> --locked\n"
             << "      --toolchain-root <directory> --sdk-root <directory> [-o <output>]\n"
             << "      [--require-test-evidence] [--require-benchmark-evidence]\n"
+            << "      [--require-judgment-evidence]\n"
             << "  draftc test <package-directory> [--allow-host-toolchain]\n"
             << "      [--locked --toolchain-root <directory> --sdk-root <directory>]\n"
             << "      [--provider name=object|archive|shared-library:<path>]...\n"
@@ -1232,6 +1246,7 @@ int main(int argc, char **argv) {
     bool locked = false;
     bool require_test_evidence = false;
     bool require_benchmark_evidence = false;
+    bool require_judgment_evidence = false;
     std::optional<std::string> toolchain_root;
     std::optional<std::string> sdk_root;
     std::vector<draft::ForeignProviderInput> foreign_providers;
@@ -1246,6 +1261,9 @@ int main(int argc, char **argv) {
       } else if (argument == "--require-benchmark-evidence" &&
                  !require_benchmark_evidence) {
         require_benchmark_evidence = true;
+      } else if (argument == "--require-judgment-evidence" &&
+                 !require_judgment_evidence) {
+        require_judgment_evidence = true;
       } else if (argument == "--kind" && !artifact_kind_set &&
                  index + 1 < argc) {
         const std::string_view spelling(argv[++index]);
@@ -1300,7 +1318,8 @@ int main(int argc, char **argv) {
     if (toolchain_root.has_value() != sdk_root.has_value() ||
         locked != toolchain_root.has_value() ||
         (locked && allow_host_toolchain) ||
-        ((require_test_evidence || require_benchmark_evidence) && !locked)) {
+        ((require_test_evidence || require_benchmark_evidence ||
+          require_judgment_evidence) && !locked)) {
       print_usage();
       return 2;
     }
@@ -1323,7 +1342,8 @@ int main(int argc, char **argv) {
         foreign_providers,
         provider_summaries,
         require_test_evidence,
-        require_benchmark_evidence);
+        require_benchmark_evidence,
+        require_judgment_evidence);
   }
   if (argc == 2 && std::string_view(argv[1]) == "target") {
     return print_target();

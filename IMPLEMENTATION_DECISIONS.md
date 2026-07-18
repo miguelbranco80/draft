@@ -706,3 +706,21 @@ while holding that same lock. A missing snapshot requires a still-missing
 manifest. This prevents a slow provider response for program A from overwriting
 or attaching evidence to concurrently resolved program B, while retaining the
 existing staged-object/fsync/manifest-last crash protocol.
+
+## Offline locked judgment evidence gate
+
+Status: first all-sites policy implemented.
+
+`draftc build --locked --require-judgment-evidence` never configures a judging
+provider. It starts from the already compiled resolved graph and requires one
+manifest judgment row for every current judgment obligation. Each row's store
+key must be active, passing, and still point at the exact immutable attempt
+selected by the manifest. The typed object must match the full stable claim and
+input digests, resolved program, target, compiler, package, and active policy.
+
+The first policy is explicitly one `validator-0`, aggregate all-pass, with no
+requested artifacts. Provider, model, and configuration remain exact nonempty
+identities inside the selected evidence object; the locked gate does not need
+provider installation or credentials to verify them. A later failing attempt
+revokes the key immediately, so an unchanged manifest that names the older pass
+fails offline verification until judgment succeeds and republishes selection.

@@ -9,9 +9,13 @@
 
 #include <filesystem>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace draft {
+
+inline constexpr std::string_view kDefaultJudgmentPolicyIdentity =
+    "draft-judgment-policy-v1:validators=1:aggregate=all-pass:artifacts=none";
 
 struct JudgmentCommandOptions {
   std::filesystem::path workspace_directory;
@@ -20,8 +24,7 @@ struct JudgmentCommandOptions {
   // v1 invokes exactly one validator per site and passes only when every site
   // passes. The explicit identity prevents a later count/aggregation change
   // from reusing evidence produced under this first policy.
-  std::string policy_identity =
-      "draft-judgment-policy-v1:validators=1:aggregate=all-pass";
+  std::string policy_identity = std::string(kDefaultJudgmentPolicyIdentity);
   std::vector<JudgmentRequestArtifact> artifacts;
 };
 

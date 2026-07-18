@@ -49,6 +49,7 @@ add_library(
   src/judgment/command.cpp
   src/judgment/evidence.cpp
   src/judgment/evidence_store.cpp
+  src/judgment/verification.cpp
   src/mir/lower.cpp
   src/mir/mir.cpp
   src/mir/verify.cpp
@@ -389,10 +390,25 @@ if(BUILD_TESTING)
   target_link_libraries(draft_judgment_driver_tests PRIVATE draft_compiler)
   target_compile_definitions(
     draft_judgment_driver_tests
-    PRIVATE DRAFT_DRIVER_PATH="$<TARGET_FILE:draftc>"
+    PRIVATE
+      DRAFT_DRIVER_PATH="$<TARGET_FILE:draftc>"
+      DRAFT_CORE_DIRECTORY="${CMAKE_CURRENT_SOURCE_DIR}/core"
+      DRAFT_CORE_CONTENT_IDENTITY="draft-core-bootstrap-v1"
   )
   add_dependencies(draft_judgment_driver_tests draftc)
   add_test(NAME draft_judgment_driver_tests COMMAND draft_judgment_driver_tests)
+
+  # Evidence requirements are meaningful only for locked builds. This checks
+  # the public flag boundary without invoking a native toolchain.
+  add_test(
+    NAME draft_judgment_evidence_requires_locked
+    COMMAND draftc build "${CMAKE_CURRENT_SOURCE_DIR}/examples/validation"
+      --require-judgment-evidence
+  )
+  set_tests_properties(
+    draft_judgment_evidence_requires_locked
+    PROPERTIES WILL_FAIL TRUE
+  )
 
   # Provider-free agent commands must recognize real typed sites but fail
   # before writing anything when no provider adapter is configured.
