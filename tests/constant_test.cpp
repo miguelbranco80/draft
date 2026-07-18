@@ -1023,6 +1023,16 @@ Mode :: enum {
     Off,
 }
 
+Record :: struct {
+    left: i64,
+    right: i64,
+}
+
+Overlay :: raw union {
+    signed: i64,
+    unsigned: u64,
+}
+
 runtime_value: i64 = 1
 
 runtime :: proc() -> i64 {
@@ -1035,6 +1045,12 @@ uninitialized: i64 = ---
 wrong_number: i32 = 1.5
 wrong_nil: i32 = nil
 wrong_mode: Mode = .Missing
+duplicate_record: Record = Record{left = 1, left = 2}
+positional_record: Record = Record{1, 2}
+keyed_array: [2]i64 = [2]i64{first = 1}
+empty_overlay: Overlay = Overlay{}
+multiple_overlay: Overlay = Overlay{signed = 1, unsigned = 2}
+positional_overlay: Overlay = Overlay{1}
 )draft");
   EXPECT(state, !invalid.analysis.ok);
   const std::string rendered =
@@ -1044,6 +1060,15 @@ wrong_mode: Mode = .Missing
   EXPECT(state, rendered.find("automatic local") != std::string::npos);
   EXPECT(state, rendered.find("incompatible with global type") != std::string::npos);
   EXPECT(state, rendered.find("names no member") != std::string::npos);
+  EXPECT(state, rendered.find("initialized more than once") != std::string::npos);
+  EXPECT(state, rendered.find("struct composite elements must name a field") !=
+                    std::string::npos);
+  EXPECT(state, rendered.find("keyed constant element requires a named aggregate member") !=
+                    std::string::npos);
+  EXPECT(state, rendered.find("must initialize exactly one field") !=
+                    std::string::npos);
+  EXPECT(state, rendered.find("raw union composite element must name a field") !=
+                    std::string::npos);
 }
 
 } // namespace

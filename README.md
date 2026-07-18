@@ -80,6 +80,8 @@ scopes, symbols, and types; resolves signatures and aggregate layouts; evaluates
 arbitrary-precision integers and exactly rounded IEEE floating-point constants;
 interprets scalar and aggregate compile-time procedures with locals, assignment,
 bounded loops, recursion, switches, parametric values, and type/layout queries;
+enforces positional array, named struct, and single-field raw-union literals
+with zero-filled omissions consistently at compile time and runtime;
 and selects declaration/member `when` branches through deterministic fixed-point
 rounds.
 Provider-independent docs, judgments, and synthesis sites retain decoded text,

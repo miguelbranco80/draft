@@ -3032,18 +3032,23 @@ private:
         return invalid_expression(node.range);
       }
       const Type composite = semantic_.types.type(composite_type);
-      if (composite.kind != TypeKind::Array && composite.kind != TypeKind::Struct &&
-          composite.kind != TypeKind::RawUnion && composite.kind != TypeKind::Tuple) {
+      if (composite.kind != TypeKind::Array &&
+          composite.kind != TypeKind::Struct &&
+          composite.kind != TypeKind::RawUnion) {
         diagnostics_.error(node.range, "type does not support a composite literal");
+        return invalid_expression(node.range);
       }
       HirExpression expression;
       expression.kind = HirExpressionKind::Composite;
       expression.range = node.range;
       expression.type = apply_expected_type(composite_type, expected, node.range);
       std::size_t positional_index = 0;
+      std::size_t element_count = 0;
+      std::vector<SymbolId> initialized_members;
       for (std::size_t index = 1; index < node.children.size(); ++index) {
         const SyntaxNode &element = tree.node(node.children[index]);
         if (element.children.empty()) continue;
+        ++element_count;
         TypeId element_type;
         SymbolId operand_member;
         bool keyed = false;
@@ -3052,7 +3057,24 @@ private:
              ++token_index) {
           if (tree.token(token_index).kind == TokenKind::Equal) keyed = true;
         }
-        if (keyed) {
+        if (composite.kind == TypeKind::Array) {
+          if (keyed) {
+            diagnostics_.error(
+                element.range,
+                "array composite elements must be positional");
+          }
+          if (positional_index >= composite.element_count) {
+            diagnostics_.error(element.range, "array literal has too many elements");
+          }
+          element_type = composite.element;
+          ++positional_index;
+        } else if (!keyed) {
+          diagnostics_.error(
+              element.range,
+              composite.kind == TypeKind::Struct
+                  ? "struct composite elements must name a field"
+                  : "raw union composite element must name a field");
+        } else {
           const std::vector<SourceName> names = names_in_span(
               tree,
               element.token_begin,
@@ -3063,25 +3085,29 @@ private:
             if (member.has_value()) {
               operand_member = *member;
               element_type = semantic_.symbols.symbol(*member).type;
+              if (std::find(
+                      initialized_members.begin(),
+                      initialized_members.end(),
+                      *member) != initialized_members.end()) {
+                diagnostics_.error(
+                    names.front().range,
+                    "composite member is initialized more than once");
+              } else {
+                initialized_members.push_back(*member);
+              }
             } else {
               diagnostics_.error(names.front().range, "unknown composite member");
             }
           }
-        } else if (composite.kind == TypeKind::Array) {
-          element_type = composite.element;
-        } else if (positional_index < composite.members.size()) {
-          element_type = composite.members[positional_index];
-        } else {
-          diagnostics_.error(element.range, "too many positional composite elements");
         }
         expression.operands.push_back(check_expression(
             tree, element.children.front(), scope, element_type));
         expression.operand_members.push_back(operand_member);
-        ++positional_index;
       }
-      if (composite.kind == TypeKind::Array &&
-          positional_index > composite.element_count) {
-        diagnostics_.error(node.range, "array literal has too many elements");
+      if (composite.kind == TypeKind::RawUnion && element_count != 1) {
+        diagnostics_.error(
+            node.range,
+            "raw union composite literal must initialize exactly one field");
       }
       return hir_.add_expression(std::move(expression));
     }

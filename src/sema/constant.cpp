@@ -3805,7 +3805,6 @@ private:
       const Type composite = semantic_.types.type(*composite_type);
       if (composite.kind != TypeKind::Array &&
           composite.kind != TypeKind::Simd &&
-          composite.kind != TypeKind::Tuple &&
           composite.kind != TypeKind::Struct &&
           composite.kind != TypeKind::RawUnion) {
         return fail(
@@ -3849,8 +3848,7 @@ private:
         std::optional<std::size_t> destination;
         if (keyed) {
           if (!key.has_value() || composite.kind == TypeKind::Array ||
-              composite.kind == TypeKind::Simd ||
-              composite.kind == TypeKind::Tuple) {
+              composite.kind == TypeKind::Simd) {
             return fail(
                 element.range,
                 "keyed constant element requires a named aggregate member",
@@ -3864,6 +3862,15 @@ private:
                 required);
           }
         } else {
+          if (composite.kind == TypeKind::Struct ||
+              composite.kind == TypeKind::RawUnion) {
+            return fail(
+                element.range,
+                composite.kind == TypeKind::Struct
+                    ? "constant struct composite elements must name a field"
+                    : "constant raw union composite element must name a field",
+                required);
+          }
           destination = positional_index;
           ++positional_index;
         }
@@ -3930,6 +3937,13 @@ private:
         } else {
           result.elements[*destination] = converted.value;
         }
+      }
+      if (composite.kind == TypeKind::RawUnion &&
+          explicit_union_members != 1) {
+        return fail(
+            node.range,
+            "constant raw union composite literal must initialize exactly one field",
+            required);
       }
       return ready(std::move(result), *composite_type);
     }

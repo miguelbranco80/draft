@@ -40,7 +40,9 @@ increment_value :: proc(value: i64) -> i64 {
 Increment_Callback :: increment_value
 global_callback: proc(value: i64) -> i64 = Increment_Callback
 global_table: [4]u32 = [4]u32{1, 4, 9, 16}
+global_partial_table: [3]i64 = [3]i64{42}
 global_tuple: (i32, u64) = (7, 9)
+global_partial_pair: Pair[i64, i64] = Pair[i64, i64]{second = 42}
 global_outcome: Outcome = .value(42)
 global_text_outcome: Text_Outcome = .value("draft")
 global_overlay: Overlay = Overlay{word = 0x1020304050607080}
@@ -273,7 +275,9 @@ exercise_control_exit_defers :: proc(trace: [^]i64, count: ^usize) {
 main :: proc() {
     assert(global_callback(41) == 42)
     assert(global_table[3] == 16)
+    assert(global_partial_table[0] == 42 && global_partial_table[2] == 0)
     assert(global_tuple.0 == 7 && global_tuple.1 == 9)
+    assert(global_partial_pair.first == 0 && global_partial_pair.second == 42)
     assert(read_outcome(global_outcome) == 42)
     assert(read_text_outcome(global_text_outcome) == 5)
     assert(global_overlay.word == 0x1020304050607080)
@@ -293,6 +297,10 @@ main :: proc() {
     assert(read_outcome(zero_outcome) == 0)
     pair := Pair[i64, i64]{first = 20, second = 22}
     assert(pair_total(pair) == 42)
+    partial_pair := Pair[i64, i64]{second = 42}
+    partial_table := [3]i64{42}
+    assert(partial_pair.first == 0 && partial_pair.second == 42)
+    assert(partial_table[0] == 42 && partial_table[2] == 0)
     assert(unwrap_maybe(.some(42)) == 42)
     assert(unwrap_maybe(.none) == 0)
     assert(narrow(42.75) == 42)

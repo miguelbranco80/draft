@@ -591,6 +591,105 @@ main :: proc() {
           std::string::npos);
 }
 
+void test_composite_literal_shapes(TestState &state) {
+  CheckedSource valid(R"draft(
+package bodies
+
+Record :: struct {
+    left: i64,
+    right: i64,
+}
+
+Bits :: raw union {
+    signed: i64,
+    unsigned: u64,
+}
+
+read :: proc(value: i64) -> i64 {
+    record := Record{right = value}
+    values := [3]i64{value}
+    bits := Bits{signed = value}
+    return record.left + record.right + values[1] + bits.signed
+}
+)draft");
+  if (valid.diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(valid.sources, valid.diagnostics);
+  }
+  EXPECT(state, valid.bodies.ok);
+  EXPECT(state, !valid.diagnostics.has_errors());
+
+  CheckedSource invalid(R"draft(
+package bodies
+
+Record :: struct {
+    left: i64,
+    right: i64,
+}
+
+Bits :: raw union {
+    signed: i64,
+    unsigned: u64,
+}
+
+Tuple_Alias :: (i64, i64)
+
+duplicate :: proc(value: i64) {
+    record := Record{left = value, left = 2}
+}
+
+positional_struct :: proc(value: i64) {
+    record := Record{value, 2}
+}
+
+keyed_array :: proc(value: i64) {
+    values := [2]i64{first = value}
+}
+
+empty_union :: proc() {
+    bits := Bits{}
+}
+
+multiple_union :: proc(value: i64) {
+    bits := Bits{signed = value, unsigned = 2}
+}
+
+positional_union :: proc(value: i64) {
+    bits := Bits{value}
+}
+
+tuple_composite :: proc(value: i64) {
+    tuple := Tuple_Alias{value, 2}
+}
+)draft");
+  EXPECT(state, !invalid.bodies.ok);
+  const std::string rendered =
+      draft::render_diagnostics(invalid.sources, invalid.diagnostics);
+  EXPECT(
+      state,
+      rendered.find("composite member is initialized more than once") !=
+          std::string::npos);
+  EXPECT(
+      state,
+      rendered.find("struct composite elements must name a field") !=
+          std::string::npos);
+  EXPECT(
+      state,
+      rendered.find("array composite elements must be positional") !=
+          std::string::npos);
+  EXPECT(
+      state,
+      rendered.find("raw union composite literal must initialize exactly one field") !=
+          std::string::npos);
+  EXPECT(
+      state,
+      rendered.find("raw union composite element must name a field") !=
+          std::string::npos);
+  EXPECT(
+      state,
+      rendered.find("type does not support a composite literal") !=
+          std::string::npos);
+}
+
 void test_local_type_declarations(TestState &state) {
   CheckedSource source(R"draft(
 package bodies
@@ -1174,6 +1273,7 @@ int main() {
   test_nested_procedures(state);
   test_nested_procedure_capture_diagnostics(state);
   test_assignment_discards_and_tuple_patterns(state);
+  test_composite_literal_shapes(state);
   test_local_type_declarations(state);
   test_string_index_is_immutable(state);
   test_multi_pointer_slice_shape(state);
