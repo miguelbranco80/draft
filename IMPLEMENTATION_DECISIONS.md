@@ -85,6 +85,28 @@ package and filename order. The explicit language selection is essential for
 Clang's conventional filename behavior. Symbols cross this boundary only
 through `foreign` and `export` C-ABI declarations.
 
+## Initial locked native input contract
+
+Status: bootstrap build contract; versioned by the resolution and content-tree
+formats.
+
+The first locked executable seam accepts exactly two external inputs: one LLVM
+toolchain tree named `llvm-aarch64-macos` and one SDK tree named `macos-sdk`.
+The LLVM tree exposes executable `bin/clang` and `bin/ld64.lld`; Clang is the
+manifest entry point and the linker location is fixed by this adapter version.
+Both complete trees are hashed as sorted relative path records including file
+kind, permission bits, exact regular-file bytes, and exact internal symlink
+spelling. Physical root paths are excluded. Absolute or escaping symlinks,
+root symlinks, and special files are rejected.
+
+Locked invocation uses the verified absolute Clang and linker paths, explicit
+`-isysroot`, `--no-default-config`, `--no-xcselect`, the target deployment
+floor, and no Mach-O UUID. The child environment contains fixed `LANG` and
+`LC_ALL` plus an empty `PATH`; it inherits no SDK, compiler, header, library,
+deployment, or package search variables. Other manifest external-input roles
+fail closed until their artifact-to-command mapping exists. Ordinary
+development builds retain the separate explicit host-toolchain escape hatch.
+
 ## Initial hosted runtime context layout
 
 Status: bootstrap runtime ABI; synchronized with `core/runtime` by tests.

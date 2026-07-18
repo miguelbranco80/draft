@@ -41,7 +41,7 @@ not yet exist.
 | Codex adapter behind a provider-neutral boundary | `src/elaborator/codex_cli.*` and adapter tests | Implemented first adapter | Pin the complete executable distribution identity, not merely the selected launcher bytes, and add bounded cancellation/timeout/retry policy. |
 | Content-addressed generated source and atomic manifest commit | resolution/store/overlay modules and tests | Implemented foundation | Add generated-source maps and evidence references to the manifest schema. |
 | Ordinary offline builds consume pins without a provider | staged offline compiler path and resolver tests | Implemented | Extend the proof through native artifact production under the exact locked inputs. |
-| `draft build --locked` with no ambient external search | Versioned external-input manifest rows, resolved-program binding, and `draft.content-tree.v1` hashing | Partially implemented | Add resolve/build CLI bindings, verify physical roots, require all selected artifacts/toolchain/SDK/runtime rows, pass explicit subprocess paths and SDK/link flags, and reject ambient search. |
+| `draft build --locked` with no ambient external search | Versioned external-input rows, resolved-program binding, content-tree verification, explicit toolchain/SDK CLI roots, clean process environment, absolute Clang/linker paths, and SDK/link flags | Implemented for the first executable seam | Add exact dependency/foreign object/archive/shared-library/runtime/provider-summary mappings as those input paths land; current locked native builds reject every unsupported external row. |
 | Tests, benchmarks, judgments, and validation evidence | Surface syntax and a provider-free `judge` diagnostic only | Missing | Implement discovery/harness commands, canonical execution order, evidence keys/store, verdict aggregation, revocation, and locked evidence verification. |
 | Generated-source diagnostics/source maps | Resolved whole-file overrides only | Missing | Preserve expansion-to-site mapping through diagnostics, debug locations, coverage, profiles, and disassembly; serialize maps in the manifest. |
 | Crash-safe and deterministic release verification | Atomic pin-store tests and deterministic serializers | Partially implemented | Add fault-injection recovery, byte-for-byte clean-workspace rebuild tests, malformed-store fuzz/conformance cases, and final sanitizer/native gates. |
@@ -49,15 +49,13 @@ not yet exist.
 ## Current executable commands
 
 The driver currently exposes `lex`, `syntax`, `target`, `check`, `emit-llvm`,
-`build`, `resolve`, and the provider-free `judge` boundary. The specification's
-`test`, `bench`, validation selection, artifact-output, and genuinely locked
-build modes are not implemented yet.
+ordinary and locked `build`, `resolve`, and the provider-free `judge` boundary.
+The specification's `test`, `bench`, validation selection, and additional
+artifact-output modes are not implemented yet.
 
 ## Next release-critical slice
 
-The next implementation slice connects the locked manifest contract to native
-building. It must accept explicit physical roots, verify them against canonical
-content identities, eliminate ambient tool/SDK/library search, and demonstrate
-that a resolved program rebuilds natively with provider access disabled. A
-version-only Clang gate is useful development protection but is not sufficient
-evidence for a locked build.
+The next implementation slice completes remaining Draft 1 runtime, core-library,
+assembly, and C ABI surfaces needed by representative programs. The validation
+and evidence harness then needs to exercise those complete programs through the
+locked native seam rather than relying only on unit-level compiler proofs.

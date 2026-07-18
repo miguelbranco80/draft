@@ -39,6 +39,26 @@ void configure_core_distribution(draft::WorkspaceLoadOptions &options) {
   options.core_content_identity = DRAFT_CORE_CONTENT_IDENTITY;
 }
 
+[[nodiscard]] bool absolute_locked_roots(
+    const std::string &toolchain,
+    const std::string &sdk,
+    draft::LockedNativeInputRoots &roots,
+    std::string &reason) {
+  std::error_code error;
+  roots.toolchain_root =
+      std::filesystem::absolute(toolchain, error).lexically_normal();
+  if (error) {
+    reason = "cannot make toolchain root absolute: " + error.message();
+    return false;
+  }
+  roots.sdk_root = std::filesystem::absolute(sdk, error).lexically_normal();
+  if (error) {
+    reason = "cannot make SDK root absolute: " + error.message();
+    return false;
+  }
+  return true;
+}
+
 [[nodiscard]] std::string escaped(std::string_view text) {
   std::string result;
   for (const char byte : text) {
@@ -199,7 +219,8 @@ int compile_package(const std::string &directory, bool emit_llvm) {
 int build_package(
     const std::string &directory,
     const std::optional<std::string> &requested_output,
-    bool allow_host_toolchain) {
+    bool allow_host_toolchain,
+    const std::optional<draft::LockedNativeInputRoots> &locked_inputs) {
   draft::SourceManager sources;
   draft::DiagnosticSink diagnostics;
   std::error_code path_error;
@@ -227,17 +248,30 @@ int build_package(
   if (compiled.ok) {
     const std::filesystem::path build_directory =
         absolute_directory / ".draft" / "build";
-    const std::filesystem::path output = requested_output.has_value()
-        ? std::filesystem::path(*requested_output)
-        : build_directory / absolute_directory.filename();
+    std::filesystem::path output = build_directory / absolute_directory.filename();
+    if (requested_output.has_value()) {
+      output = std::filesystem::absolute(*requested_output, path_error);
+      if (path_error) {
+        diagnostics.error(
+            draft::SourceRange::invalid(),
+            "cannot make native output path absolute: " +
+                path_error.message());
+      }
+    }
     draft::NativeBuildOptions native_options;
     native_options.build_directory = build_directory.string();
     native_options.output_path = output.string();
     native_options.allow_unpinned_toolchain = allow_host_toolchain;
-    const draft::NativeBuildResult built = draft::build_native_executable(
-        target, compiled, native_options, diagnostics);
-    if (built.ok) {
-      std::cout << "built " << built.output_path << '\n';
+    if (locked_inputs.has_value()) {
+      native_options.locked = true;
+      native_options.locked_inputs = *locked_inputs;
+    }
+    if (!diagnostics.has_errors()) {
+      const draft::NativeBuildResult built = draft::build_native_executable(
+          target, compiled, native_options, diagnostics);
+      if (built.ok) {
+        std::cout << "built " << built.output_path << '\n';
+      }
     }
   }
   if (!diagnostics.diagnostics().empty()) {
@@ -261,7 +295,9 @@ int run_agent_command(
     const std::string &directory,
     AgentCommandKind command,
     bool revalidate = false,
-    const std::optional<draft::CodexCliProviderOptions> &codex = std::nullopt) {
+    const std::optional<draft::CodexCliProviderOptions> &codex = std::nullopt,
+    const std::optional<draft::LockedNativeInputRoots> &locked_inputs =
+        std::nullopt) {
   draft::SourceManager sources;
   draft::DiagnosticSink diagnostics;
   std::error_code path_error;
@@ -282,6 +318,16 @@ int run_agent_command(
     draft::ResolveWorkspaceOptions resolve_options;
     resolve_options.compile = std::move(options);
     resolve_options.revalidate = revalidate;
+    if (locked_inputs.has_value()) {
+      resolve_options.external_inputs_configured = true;
+      if (!draft::pin_locked_native_inputs(
+              *locked_inputs,
+              resolve_options.external_inputs,
+              diagnostics)) {
+        std::cerr << draft::render_diagnostics(sources, diagnostics);
+        return 1;
+      }
+    }
     // State is a separate stack object because the function table deliberately
     // borrows it. Its lifetime encloses the entire synchronous resolver call.
     draft::CodexCliProviderState codex_state;
@@ -354,8 +400,11 @@ void print_usage() {
             << "  draftc check <package-directory>\n"
             << "  draftc emit-llvm <package-directory>\n"
             << "  draftc build <package-directory> [-o <output>] [--allow-host-toolchain]\n"
+            << "  draftc build <package-directory> --locked\n"
+            << "      --toolchain-root <directory> --sdk-root <directory> [-o <output>]\n"
             << "  draftc resolve <package-directory> [--revalidate]\n"
             << "      [--codex-executable <path> --codex-model <model>]\n"
+            << "      [--toolchain-root <directory> --sdk-root <directory>]\n"
             << "  draftc judge <package-directory>\n"
             << "  draftc target\n";
 }
@@ -379,6 +428,8 @@ int main(int argc, char **argv) {
     bool revalidate = false;
     std::optional<std::string> codex_executable;
     std::optional<std::string> codex_model;
+    std::optional<std::string> toolchain_root;
+    std::optional<std::string> sdk_root;
     for (int index = 3; index < argc; ++index) {
       const std::string_view argument(argv[index]);
       if (argument == "--revalidate" && !revalidate) {
@@ -389,12 +440,19 @@ int main(int argc, char **argv) {
       } else if (argument == "--codex-model" &&
                  !codex_model.has_value() && index + 1 < argc) {
         codex_model = argv[++index];
+      } else if (argument == "--toolchain-root" &&
+                 !toolchain_root.has_value() && index + 1 < argc) {
+        toolchain_root = argv[++index];
+      } else if (argument == "--sdk-root" &&
+                 !sdk_root.has_value() && index + 1 < argc) {
+        sdk_root = argv[++index];
       } else {
         print_usage();
         return 2;
       }
     }
     if (codex_executable.has_value() != codex_model.has_value() ||
+        toolchain_root.has_value() != sdk_root.has_value() ||
         (revalidate && codex_executable.has_value())) {
       print_usage();
       return 2;
@@ -405,8 +463,18 @@ int main(int argc, char **argv) {
       codex->executable = *codex_executable;
       codex->model = *codex_model;
     }
+    std::optional<draft::LockedNativeInputRoots> locked_inputs;
+    if (toolchain_root.has_value()) {
+      locked_inputs.emplace();
+      std::string reason;
+      if (!absolute_locked_roots(
+              *toolchain_root, *sdk_root, *locked_inputs, reason)) {
+        std::cerr << "error: " << reason << '\n';
+        return 1;
+      }
+    }
     return run_agent_command(
-        argv[2], AgentCommandKind::Resolve, revalidate, codex);
+        argv[2], AgentCommandKind::Resolve, revalidate, codex, locked_inputs);
   }
   if (argc == 3 && std::string_view(argv[1]) == "judge") {
     return run_agent_command(argv[2], AgentCommandKind::Judge);
@@ -414,10 +482,21 @@ int main(int argc, char **argv) {
   if (argc >= 3 && std::string_view(argv[1]) == "build") {
     std::optional<std::string> output;
     bool allow_host_toolchain = false;
+    bool locked = false;
+    std::optional<std::string> toolchain_root;
+    std::optional<std::string> sdk_root;
     for (int index = 3; index < argc; ++index) {
       const std::string_view argument(argv[index]);
       if (argument == "--allow-host-toolchain") {
         allow_host_toolchain = true;
+      } else if (argument == "--locked" && !locked) {
+        locked = true;
+      } else if (argument == "--toolchain-root" &&
+                 !toolchain_root.has_value() && index + 1 < argc) {
+        toolchain_root = argv[++index];
+      } else if (argument == "--sdk-root" &&
+                 !sdk_root.has_value() && index + 1 < argc) {
+        sdk_root = argv[++index];
       } else if (argument == "-o" && index + 1 < argc) {
         ++index;
         output = argv[index];
@@ -426,7 +505,24 @@ int main(int argc, char **argv) {
         return 2;
       }
     }
-    return build_package(argv[2], output, allow_host_toolchain);
+    if (toolchain_root.has_value() != sdk_root.has_value() ||
+        locked != toolchain_root.has_value() ||
+        (locked && allow_host_toolchain)) {
+      print_usage();
+      return 2;
+    }
+    std::optional<draft::LockedNativeInputRoots> locked_inputs;
+    if (locked) {
+      locked_inputs.emplace();
+      std::string reason;
+      if (!absolute_locked_roots(
+              *toolchain_root, *sdk_root, *locked_inputs, reason)) {
+        std::cerr << "error: " << reason << '\n';
+        return 1;
+      }
+    }
+    return build_package(
+        argv[2], output, allow_host_toolchain, locked_inputs);
   }
   if (argc == 2 && std::string_view(argv[1]) == "target") {
     return print_target();

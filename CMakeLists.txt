@@ -26,6 +26,7 @@ add_library(draft_build_options INTERFACE)
 add_library(
   draft_compiler
   src/assembly/aarch64.cpp
+  src/backend/locked_inputs.cpp
   src/backend/llvm_ir.cpp
   src/backend/toolchain.cpp
   src/base/content_tree.cpp

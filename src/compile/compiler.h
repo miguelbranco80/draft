@@ -5,6 +5,7 @@
 #include "assembly/aarch64.h"
 #include "backend/llvm_ir.h"
 #include "elaborator/obligation.h"
+#include "elaborator/resolution.h"
 #include "interop/native.h"
 #include "mir/lower.h"
 #include "sema/agent_metadata.h"
@@ -40,7 +41,7 @@ struct CompileWorkspaceOptions {
   // Versioned identity of the compiler semantics and manifest algorithm. It is
   // a resolved-program input and must change when an implementation change can
   // alter accepted meaning or emitted behavior for the same other inputs.
-  std::string compiler_content_identity = "draft-bootstrap-cpp-v2";
+  std::string compiler_content_identity = "draft-bootstrap-cpp-v3";
   CompileWorkspaceStage stage = CompileWorkspaceStage::Complete;
   bool lower_mir = false;
   bool emit_llvm = false;
@@ -83,6 +84,11 @@ struct CompileWorkspaceResult {
   // also leave a consumer empty while a dependency has pending generated
   // declarations; ok remains true when every produced ready row is valid.
   std::vector<std::optional<CompiledPackage>> packages;
+  // Present only when compile_workspace_with_resolution consumed and verified
+  // a manifest. Keeping the exact snapshot beside the compiled graph prevents
+  // native building from rereading a manifest that may have changed after
+  // semantic checking. Direct compiler phases leave this empty.
+  std::optional<ResolutionManifest> resolution_manifest;
 };
 
 // Loads a closed workspace graph and checks dependencies before their consumers.

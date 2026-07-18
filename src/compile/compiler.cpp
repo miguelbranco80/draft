@@ -887,6 +887,9 @@ CompileWorkspaceResult compile_workspace_with_resolution(
     }
   }
   resolved.ok = diagnostics.error_count() == initial_errors;
+  if (resolved.ok) {
+    resolved.resolution_manifest = loaded_manifest.manifest;
+  }
   return resolved;
 }
 

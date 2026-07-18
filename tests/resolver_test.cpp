@@ -237,6 +237,11 @@ void test_resolution_reuse_revalidation_and_failure(TestState &state) {
           offline_diagnostics);
   EXPECT(state, offline.ok);
   EXPECT(state, !offline_diagnostics.has_errors());
+  EXPECT(state, offline.resolution_manifest.has_value());
+  if (offline.resolution_manifest.has_value()) {
+    EXPECT(state,
+        offline.resolution_manifest->external_inputs.size() == 1);
+  }
 
   draft::SourceManager reuse_sources;
   draft::DiagnosticSink reuse_diagnostics;

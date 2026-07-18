@@ -47,6 +47,22 @@ struct TestState {
   return contents.str();
 }
 
+draft::CompileWorkspaceResult compile_fixture(
+    draft::SourceManager &sources,
+    draft::DiagnosticSink &diagnostics) {
+  draft::CompileWorkspaceOptions options;
+  options.target = draft::make_aarch64_macos_profile();
+  options.workspace.workspace_directory =
+      std::string(DRAFT_SOURCE_DIRECTORY) + "/examples";
+  options.lower_mir = true;
+  options.emit_llvm = true;
+  return draft::compile_workspace(
+      sources,
+      std::string(DRAFT_SOURCE_DIRECTORY) + "/examples/external-assembly",
+      std::move(options),
+      diagnostics);
+}
+
 void test_package_assembly_reaches_link(TestState &state) {
   std::error_code error;
   const std::filesystem::path temporary =
@@ -62,17 +78,8 @@ void test_package_assembly_reaches_link(TestState &state) {
   draft::SourceManager sources;
   draft::DiagnosticSink diagnostics;
   const draft::TargetProfile target = draft::make_aarch64_macos_profile();
-  draft::CompileWorkspaceOptions compile_options;
-  compile_options.target = target;
-  compile_options.workspace.workspace_directory =
-      std::string(DRAFT_SOURCE_DIRECTORY) + "/examples";
-  compile_options.lower_mir = true;
-  compile_options.emit_llvm = true;
-  const draft::CompileWorkspaceResult compiled = draft::compile_workspace(
-      sources,
-      std::string(DRAFT_SOURCE_DIRECTORY) + "/examples/external-assembly",
-      std::move(compile_options),
-      diagnostics);
+  const draft::CompileWorkspaceResult compiled =
+      compile_fixture(sources, diagnostics);
   EXPECT(state, compiled.ok);
   EXPECT(state, compiled.packages.size() == 1);
   if (!compiled.ok || compiled.packages.size() != 1 ||
@@ -137,11 +144,155 @@ void test_package_assembly_reaches_link(TestState &state) {
   std::filesystem::remove_all(temporary, error);
 }
 
+void test_locked_build_verifies_and_isolates_inputs(TestState &state) {
+  std::error_code error;
+  const std::filesystem::path temporary =
+      std::filesystem::temp_directory_path(error) /
+      "draft-locked-toolchain-test";
+  EXPECT(state, !error);
+  std::filesystem::remove_all(temporary, error);
+  error.clear();
+  const std::filesystem::path toolchain = temporary / "toolchain";
+  const std::filesystem::path sdk = temporary / "sdk";
+  std::filesystem::create_directories(toolchain / "bin", error);
+  EXPECT(state, !error);
+  std::filesystem::create_directories(sdk / "usr" / "lib", error);
+  EXPECT(state, !error);
+  if (error) return;
+
+  const std::filesystem::path log = temporary / "locked-arguments.log";
+  const std::filesystem::path clang = toolchain / "bin" / "clang";
+  {
+    std::ofstream script(clang, std::ios::binary);
+    script << "#!/bin/sh\n"
+              "is_version=''\n"
+              "for argument in \"$@\"; do\n"
+              "  if [ \"$argument\" = \"--version\" ]; then is_version=1; fi\n"
+              "done\n"
+              "if [ -n \"$is_version\" ]; then\n"
+              "  echo 'clang version 22.1.0'\n"
+              "  exit 0\n"
+              "fi\n"
+              "printf '%s\\n' '-- command --' \"$@\" >> '"
+           << log.string()
+           << "'\n"
+              "printf 'ENV:%s|%s|%s|%s\\n' \"$PATH\" \"${SDKROOT-unset}\" "
+              "\"${CPATH-unset}\" \"${LIBRARY_PATH-unset}\" >> '"
+           << log.string()
+           << "'\n"
+              "previous=''\n"
+              "for argument in \"$@\"; do\n"
+              "  if [ \"$previous\" = \"-o\" ]; then : > \"$argument\"; fi\n"
+              "  previous=\"$argument\"\n"
+              "done\n"
+              "exit 0\n";
+  }
+  const std::filesystem::path linker = toolchain / "bin" / "ld64.lld";
+  {
+    std::ofstream script(linker, std::ios::binary);
+    script << "#!/bin/sh\nexit 0\n";
+  }
+  std::ofstream(sdk / "usr" / "lib" / "libSystem.tbd", std::ios::binary)
+      << "pinned SDK bytes\n";
+  EXPECT(state, chmod(clang.c_str(), 0700) == 0);
+  EXPECT(state, chmod(linker.c_str(), 0700) == 0);
+
+  draft::LockedNativeInputRoots roots;
+  roots.toolchain_root = toolchain;
+  roots.sdk_root = sdk;
+  std::vector<draft::ExternalInputPin> pins;
+  draft::DiagnosticSink pin_diagnostics;
+  EXPECT(state,
+      draft::pin_locked_native_inputs(roots, pins, pin_diagnostics));
+  EXPECT(state, !pin_diagnostics.has_errors());
+  EXPECT(state, pins.size() == 2);
+
+  draft::SourceManager sources;
+  draft::DiagnosticSink compile_diagnostics;
+  draft::CompileWorkspaceResult compiled =
+      compile_fixture(sources, compile_diagnostics);
+  EXPECT(state, compiled.ok);
+  compiled.resolution_manifest.emplace();
+  compiled.resolution_manifest->target_identity =
+      draft::make_aarch64_macos_profile().facts.identity;
+  compiled.resolution_manifest->external_inputs = pins;
+
+  draft::NativeBuildOptions options;
+  options.locked = true;
+  options.locked_inputs = roots;
+  options.build_directory = (temporary / "build").string();
+  options.output_path = (temporary / "program").string();
+  draft::DiagnosticSink build_diagnostics;
+  const draft::NativeBuildResult built = draft::build_native_executable(
+      draft::make_aarch64_macos_profile(),
+      compiled,
+      options,
+      build_diagnostics);
+  if (!built.ok) {
+    std::cerr << draft::render_diagnostics(sources, build_diagnostics);
+  }
+  EXPECT(state, built.ok);
+  EXPECT(state, std::filesystem::exists(temporary / "program"));
+
+  const std::string arguments = read_file(log);
+  EXPECT(state,
+      arguments.find("\n--no-default-config\n") != std::string::npos);
+  EXPECT(state,
+      arguments.find("\n--no-xcselect\n") != std::string::npos);
+  const std::filesystem::path canonical_sdk =
+      std::filesystem::canonical(sdk, error);
+  const std::filesystem::path canonical_linker =
+      std::filesystem::canonical(linker, error);
+  EXPECT(state, !error);
+  EXPECT(state,
+      arguments.find("\n-isysroot\n" + canonical_sdk.string()) !=
+          std::string::npos);
+  EXPECT(state,
+      arguments.find("\n--ld-path=" + canonical_linker.string() + "\n") !=
+          std::string::npos);
+  EXPECT(state, arguments.find("\n-Wl,-no_uuid\n") != std::string::npos);
+  EXPECT(state,
+      arguments.find("ENV:|unset|unset|unset") != std::string::npos);
+
+  // Repeating the same build emits the exact same process arguments. Paths are
+  // intentionally unchanged here: output location is an explicit build input,
+  // while filesystem enumeration and the host environment are not.
+  draft::DiagnosticSink repeated_diagnostics;
+  const draft::NativeBuildResult repeated = draft::build_native_executable(
+      draft::make_aarch64_macos_profile(),
+      compiled,
+      options,
+      repeated_diagnostics);
+  EXPECT(state, repeated.ok);
+  EXPECT(state, !repeated_diagnostics.has_errors());
+  EXPECT(state, read_file(log) == arguments + arguments);
+
+  // A changed SDK is rejected before a second compiler process starts.
+  std::ofstream(sdk / "usr" / "lib" / "libSystem.tbd", std::ios::binary)
+      << "mutated SDK bytes\n";
+  const std::string log_before_failure = read_file(log);
+  draft::NativeBuildOptions stale_options = options;
+  stale_options.build_directory = (temporary / "stale-build").string();
+  stale_options.output_path = (temporary / "stale-program").string();
+  draft::DiagnosticSink stale_diagnostics;
+  const draft::NativeBuildResult stale = draft::build_native_executable(
+      draft::make_aarch64_macos_profile(),
+      compiled,
+      stale_options,
+      stale_diagnostics);
+  EXPECT(state, !stale.ok);
+  EXPECT(state, stale_diagnostics.has_errors());
+  EXPECT(state, read_file(log) == log_before_failure);
+
+  std::filesystem::remove_all(temporary, error);
+}
+
 } // namespace
 
 int main() {
   TestState state;
   test_package_assembly_reaches_link(state);
+  test_locked_build_verifies_and_isolates_inputs(state);
   if (state.failures != 0) {
     std::cerr << state.failures << " toolchain expectation(s) failed\n";
     return EXIT_FAILURE;
