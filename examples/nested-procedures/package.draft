@@ -26,6 +26,36 @@ last_of[T: type, N: usize] :: proc(values: [N]T) -> T {
     return identity[T](last(values))
 }
 
+// Types are also compile-time lexical bindings. The symbolic outer body keeps
+// enough shape to type-check, while each concrete specialization owns fresh
+// nominal identities and resolves its exact T/N-dependent physical layouts.
+local_layout[T: type, N: usize] :: proc(value: T, values: [N]T) -> T {
+    Extra :: N + 1
+    Alias :: T
+    Buffer :: [N]Alias
+    Pair :: struct {
+        head: Alias,
+        tail: Buffer,
+    }
+    Local_Box[U: type] :: struct {
+        outer: Alias,
+        inner: U,
+    }
+    read :: proc(pair: ^Pair, box: ^Local_Box[u32]) -> Alias {
+        if box^.inner > 0 {
+            return pair^.head
+        }
+        return box^.outer
+    }
+
+    pair := Pair{head = value, tail = values}
+    box: Local_Box[u32]
+    box.outer = value
+    box.inner = 1
+    static_assert(Extra > N)
+    return read(&pair, &box)
+}
+
 // Because no environment is captured, a nested procedure pointer can outlive
 // the invocation that exposed it and has the normal procedure-pointer shape.
 make_increment :: proc() -> proc(value: i64) -> i64 {
@@ -72,6 +102,10 @@ main :: proc() {
     assert(factorial(5) == 120, "nested recursion failed")
     assert(last_of(values) == 6, "enclosing compile-time parameters failed")
     assert(last_of(other) == 9, "second outer specialization failed")
+    assert(local_layout(values[0], values) == 4,
+        "local generic-dependent type layout failed")
+    assert(local_layout(other[0], other) == 8,
+        "second local type specialization failed")
     assert(callback(41) == 42, "escaping nested procedure pointer failed")
     assert(left() + right() == 42, "nested linkage names collided")
     assert(read_shared_and_context() == 15, "context propagation failed")

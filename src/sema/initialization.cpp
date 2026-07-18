@@ -283,6 +283,9 @@ private:
     case HirStatementKind::CompileTimeDeclaration:
       // Compile-time bindings have neither storage nor initialization state.
       break;
+    case HirStatementKind::TypeDeclaration:
+      // Types are compile-time semantic bindings and own no runtime storage.
+      break;
     case HirStatementKind::NestedProcedure:
       // Static procedure identity is available without runtime storage.
       break;

@@ -52,6 +52,16 @@ namespace {
   }
 }
 
+[[nodiscard]] std::optional<TypeKind> nominal_type_kind(NodeKind kind) {
+  switch (kind) {
+  case NodeKind::StructType: return TypeKind::Struct;
+  case NodeKind::EnumType: return TypeKind::Enum;
+  case NodeKind::TaggedUnionType: return TypeKind::TaggedUnion;
+  case NodeKind::RawUnionType: return TypeKind::RawUnion;
+  default: return std::nullopt;
+  }
+}
+
 struct SourceName {
   std::string text;
   SourceRange range;
@@ -1732,6 +1742,52 @@ private:
     }
     diagnostics_.error(name->range, "name does not denote a type");
     return semantic_.types.builtins().invalid;
+  }
+
+  // `::` accepts either a compile-time value expression or a type value. Most
+  // type constructors are syntactically unambiguous, but aliases and generic
+  // applications arrive through the ordinary expression grammar. Probe only
+  // already visible bindings here; malformed arguments are diagnosed later by
+  // TypeResolver after the declaration has been classified as a type.
+  [[nodiscard]] bool expression_denotes_type(
+      const SyntaxTree &tree, NodeId node_id, ScopeId scope) const {
+    const SyntaxNode &node = tree.node(node_id);
+    if (node_is_type_syntax(node.kind)) return true;
+    if (node.kind == NodeKind::GroupExpression && node.children.size() == 1) {
+      return expression_denotes_type(tree, node.children.front(), scope);
+    }
+    if (node.kind == NodeKind::MemberExpression) {
+      const std::optional<SymbolId> member = imported_member(tree, node, scope);
+      if (!member.has_value()) return false;
+      const Symbol &binding = semantic_.symbols.symbol(*member);
+      return binding.kind == SymbolKind::Type ||
+          binding.kind == SymbolKind::TypeParameter;
+    }
+    if (node.kind == NodeKind::BracketExpression && !node.children.empty()) {
+      const SyntaxNode &base = tree.node(node.children.front());
+      if (base.kind == NodeKind::MemberExpression) {
+        const std::optional<SymbolId> member = imported_member(tree, base, scope);
+        return member.has_value() &&
+            semantic_.symbols.symbol(*member).kind == SymbolKind::Type &&
+            semantic_.symbols.symbol(*member).flags.parametric;
+      }
+      const std::optional<SourceName> name =
+          single_name_expression(tree, node.children.front());
+      if (!name.has_value()) return false;
+      const std::optional<SymbolId> binding =
+          semantic_.symbols.lookup(scope, name->text);
+      return binding.has_value() &&
+          semantic_.symbols.symbol(*binding).kind == SymbolKind::Type &&
+          semantic_.symbols.symbol(*binding).flags.parametric;
+    }
+    const std::optional<SourceName> name = single_name_expression(tree, node_id);
+    if (!name.has_value()) return false;
+    if (semantic_.types.find_builtin(name->text).has_value()) return true;
+    const std::optional<SymbolId> binding =
+        semantic_.symbols.lookup(scope, name->text);
+    if (!binding.has_value()) return false;
+    const SymbolKind kind = semantic_.symbols.symbol(*binding).kind;
+    return kind == SymbolKind::Type || kind == SymbolKind::TypeParameter;
   }
 
   [[nodiscard]] std::vector<ParametricParameterRecord> parameters_for(
@@ -3853,6 +3909,74 @@ private:
     return std::nullopt;
   }
 
+  // Declares and resolves one lexical type. Like a package type declaration,
+  // its source name is installed before members are visited so recursive
+  // pointer fields and nested procedure signatures can refer to it. The HIR row
+  // records source ordering only; no runtime storage or initialization exists.
+  [[nodiscard]] HirStatementId check_local_type_declaration(
+      const SyntaxTree &tree,
+      NodeId declaration_id,
+      NodeId type_id,
+      ScopeId scope,
+      const std::vector<SourceName> &names) {
+    const SyntaxNode &declaration = tree.node(declaration_id);
+    HirStatement statement;
+    statement.kind = HirStatementKind::TypeDeclaration;
+    statement.range = declaration.range;
+    statement.syntax = {tree.file(), declaration_id};
+    if (names.size() != 1 || names.front().text == "_") {
+      diagnostics_.error(
+          declaration.range,
+          "local type declaration requires one non-discard binding name");
+      return hir_.add_statement(std::move(statement));
+    }
+
+    const SourceName &name = names.front();
+    Symbol symbol;
+    symbol.name = name.text;
+    symbol.kind = SymbolKind::Type;
+    symbol.visibility = Visibility::Private;
+    symbol.scope = scope;
+    symbol.syntax = {tree.file(), declaration_id};
+    symbol.name_range = name.range;
+    for (NodeId child : declaration.children) {
+      if (tree.node(child).kind == NodeKind::ParametricParameterList) {
+        symbol.flags.parametric = true;
+      }
+    }
+    const SymbolId id =
+        semantic_.symbols.declare(std::move(symbol), diagnostics_);
+    if (!id.is_valid()) return hir_.add_statement(std::move(statement));
+    statement.bindings.push_back(id);
+
+    // Nominal identity must exist before the resolver opens its member scope.
+    // Allocate it only after successful declaration so a duplicate name cannot
+    // perturb deterministic TypeId assignment.
+    if (const std::optional<TypeKind> nominal =
+            nominal_type_kind(tree.node(type_id).kind)) {
+      semantic_.symbols.symbol_mut(id).type = semantic_.types.begin_nominal(
+          *nominal, name.text, name.range);
+    }
+
+    const ConstantTable visible_constants = active_constant_table();
+    const std::vector<ConstantTypeBinding> visible_types =
+        active_constant_types();
+    (void)resolve_local_type_declaration(
+        sources_,
+        loaded_,
+        semantic_,
+        selections_,
+        tree,
+        declaration_id,
+        type_id,
+        scope,
+        id,
+        visible_constants,
+        visible_types,
+        diagnostics_);
+    return hir_.add_statement(std::move(statement));
+  }
+
   // Evaluates a lexical `::` declaration exactly once and retains its value by
   // SymbolId. Nested procedures may then use the binding because it represents
   // compile-time state, never storage from an enclosing invocation.
@@ -3885,6 +4009,20 @@ private:
         semantic_.symbols.declare(std::move(symbol), diagnostics_);
     if (!id.is_valid()) return hir_.add_statement(std::move(statement));
     statement.bindings.push_back(id);
+
+    // A symbolic generic body is checked before its exact value arguments are
+    // known. Retain the expression's semantic type now, then evaluate and fold
+    // the declaration when each concrete body is checked. The template HIR is
+    // never lowered, so this creates no phantom runtime storage.
+    if (current_procedure_is_template_ &&
+        expression_references_parametric_parameter(
+            tree, expression_id, scope)) {
+      const HirExpressionId typed =
+          check_expression(tree, expression_id, scope);
+      semantic_.symbols.symbol_mut(id).type =
+          default_inferred_runtime_type(hir_.expression(typed).type);
+      return hir_.add_statement(std::move(statement));
+    }
 
     const ConstantTable visible_constants = active_constant_table();
     const std::vector<ConstantTypeBinding> visible_types =
@@ -4079,7 +4217,11 @@ private:
       }
     }
     if (compile_time_declaration &&
-        !node_is_type_syntax(tree.node(payload).kind)) {
+        expression_denotes_type(tree, payload, scope)) {
+      return check_local_type_declaration(
+          tree, declaration_id, payload, scope, names);
+    }
+    if (compile_time_declaration) {
       return check_compile_time_declaration(
           tree, declaration_id, payload, scope, names);
     }

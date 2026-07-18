@@ -117,10 +117,13 @@ public:
       const LoadedPackage &loaded,
       SemanticPackage &semantic,
       const ConditionalSelections &selections,
-      DiagnosticSink &diagnostics)
+      DiagnosticSink &diagnostics,
+      const ConstantTable *active_constants = nullptr,
+      const std::vector<ConstantTypeBinding> *active_types = nullptr)
       : sources_(sources), loaded_(loaded), semantic_(semantic), selections_(selections),
         diagnostics_(diagnostics),
-        states_(semantic.symbols.symbol_count(), ResolutionState::Unvisited) {}
+        states_(semantic.symbols.symbol_count(), ResolutionState::Unvisited),
+        active_constants_(active_constants), active_types_(active_types) {}
 
   // Resolves only the symbols originally installed in the package scope.
   // Nested symbols are resolved synchronously as their owner is processed.
@@ -166,6 +169,72 @@ public:
         tree, procedure_id, semantic_parent, owner);
     semantic_.symbols.symbol_mut(owner).type = type;
     return type;
+  }
+
+  // Body-local named types are resolved synchronously because their visibility
+  // is source ordered. This mirrors resolve_symbol's package-type branch while
+  // retaining the lexical parent chosen by body checking and the enclosing
+  // procedure instance's concrete generic bindings.
+  [[nodiscard]] TypeId resolve_one_local_type(
+      const SyntaxTree &tree,
+      NodeId declaration_id,
+      NodeId type_id,
+      ScopeId parent,
+      SymbolId owner) {
+    const SyntaxNode &declaration = tree.node(declaration_id);
+    const ScopeId semantic_parent = ensure_parametric_scope(
+        owner, tree, declaration, parent);
+    const SyntaxNode &type_node = tree.node(type_id);
+    const Symbol initial = semantic_.symbols.symbol(owner);
+    TypeId result = semantic_.types.builtins().invalid;
+
+    if (type_node.kind == NodeKind::StructType ||
+        type_node.kind == NodeKind::EnumType ||
+        type_node.kind == NodeKind::TaggedUnionType ||
+        type_node.kind == NodeKind::RawUnionType) {
+      if (initial.type.is_valid()) {
+        resolve_aggregate(owner, initial.type, tree, type_id, semantic_parent);
+        result = initial.type;
+      }
+    } else if (type_node.kind == NodeKind::DistinctType &&
+               !type_node.children.empty()) {
+      const TypeId underlying =
+          resolve_type(tree, type_node.children.back(), semantic_parent);
+      result = semantic_.types.distinct(
+          initial.name, underlying, initial.name_range);
+    } else if (type_node.kind == NodeKind::NameExpression) {
+      result = try_named_type(tree, type_node, semantic_parent).value_or(
+          semantic_.types.builtins().invalid);
+      if (result == semantic_.types.builtins().invalid) {
+        diagnostics_.error(type_node.range, "name does not denote a type");
+      }
+    } else if (type_node.kind == NodeKind::MemberExpression) {
+      result = try_imported_type(tree, type_node, semantic_parent).value_or(
+          semantic_.types.builtins().invalid);
+      if (result == semantic_.types.builtins().invalid) {
+        diagnostics_.error(type_node.range, "name does not denote an imported type");
+      }
+    } else if (type_node.kind == NodeKind::GroupExpression &&
+               type_node.children.size() == 1) {
+      const SyntaxNode &grouped = tree.node(type_node.children.front());
+      if (grouped.kind == NodeKind::NameExpression) {
+        result = try_named_type(tree, grouped, semantic_parent).value_or(
+            semantic_.types.builtins().invalid);
+      } else if (grouped.kind == NodeKind::MemberExpression) {
+        result = try_imported_type(tree, grouped, semantic_parent).value_or(
+            semantic_.types.builtins().invalid);
+      } else {
+        result = resolve_type(
+            tree, type_node.children.front(), semantic_parent);
+      }
+      if (result == semantic_.types.builtins().invalid) {
+        diagnostics_.error(type_node.range, "grouped expression does not denote a type");
+      }
+    } else {
+      result = resolve_type(tree, type_id, semantic_parent);
+    }
+    semantic_.symbols.symbol_mut(owner).type = result;
+    return result;
   }
 
 private:
@@ -232,6 +301,18 @@ private:
   // the "not assigned yet" sentinel. Both represent failure at this boundary.
   [[nodiscard]] bool is_error_type(TypeId type) const {
     return !type.is_valid() || semantic_.types.type(type).kind == TypeKind::Invalid;
+  }
+
+  // Only unique TypeParameter rows are replaced here. Structural types are
+  // constructed recursively by resolve_type, so applying this at every named
+  // leaf produces a fully concrete local aggregate without cloning an already
+  // completed nominal type.
+  [[nodiscard]] TypeId active_type(TypeId type) const {
+    if (active_types_ == nullptr) return type;
+    for (const ConstantTypeBinding &binding : *active_types_) {
+      if (binding.parameter == type) return binding.replacement;
+    }
+    return type;
   }
 
   // Appends provider-independent metadata without changing runtime layout or
@@ -1181,7 +1262,7 @@ private:
     const Symbol &symbol = semantic_.symbols.symbol(*found);
     if ((symbol.kind == SymbolKind::Type || symbol.kind == SymbolKind::TypeParameter) &&
         symbol.type.is_valid()) {
-      return symbol.type;
+      return active_type(symbol.type);
     }
     return std::nullopt;
   }
@@ -1219,7 +1300,7 @@ private:
         diagnostics_.error(names.back().range, "imported name does not denote a type");
         return semantic_.types.builtins().invalid;
       }
-      return symbol.type;
+      return active_type(symbol.type);
     }
     diagnostics_.error(names.front().range, "imported package interface is unavailable");
     return semantic_.types.builtins().invalid;
@@ -1481,6 +1562,15 @@ private:
   // a circular "resolve types, then constants, then types" dependency.
   [[nodiscard]] std::optional<BigInteger> named_integer_constant(
       SymbolId symbol_id, SourceRange use_range) {
+    // Concrete outer value parameters and already evaluated lexical constants
+    // have no declaration payload that this layout-only evaluator can replay.
+    // Prefer the body checker's exact SymbolId-keyed overlay before classifying
+    // the source symbol kind.
+    if (active_constants_ != nullptr) {
+      if (const ConstantValue *active = active_constants_->find(symbol_id)) {
+        if (active->kind == ConstantKind::Integer) return active->integer;
+      }
+    }
     for (const ImportedSymbol &imported : semantic_.imported_symbols) {
       if (imported.proxy != symbol_id || !imported.has_constant ||
           imported.constant.kind != ConstantKind::Integer) {
@@ -2263,6 +2353,8 @@ private:
   DiagnosticSink &diagnostics_;
   std::vector<ResolutionState> states_;
   std::vector<SymbolId> active_integer_constants_;
+  const ConstantTable *active_constants_ = nullptr;
+  const std::vector<ConstantTypeBinding> *active_types_ = nullptr;
 };
 
 } // namespace
@@ -2314,6 +2406,31 @@ TypeId resolve_local_procedure_signature(
   TypeResolver resolver(sources, loaded, package, selections, diagnostics);
   return resolver.resolve_one_procedure(
       tree, declaration, procedure, scope, owner);
+}
+
+TypeId resolve_local_type_declaration(
+    const SourceManager &sources,
+    const LoadedPackage &loaded,
+    SemanticPackage &package,
+    const ConditionalSelections &selections,
+    const SyntaxTree &tree,
+    NodeId declaration,
+    NodeId type,
+    ScopeId scope,
+    SymbolId owner,
+    const ConstantTable &active_constants,
+    const std::vector<ConstantTypeBinding> &active_types,
+    DiagnosticSink &diagnostics) {
+  TypeResolver resolver(
+      sources,
+      loaded,
+      package,
+      selections,
+      diagnostics,
+      &active_constants,
+      &active_types);
+  return resolver.resolve_one_local_type(
+      tree, declaration, type, scope, owner);
 }
 
 TypeId instantiate_parametric_type_application(

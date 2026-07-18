@@ -1790,6 +1790,9 @@ private:
     case HirStatementKind::CompileTimeDeclaration:
       // The value was substituted into HIR uses during body checking.
       break;
+    case HirStatementKind::TypeDeclaration:
+      // The semantic TypeId and any member scope were completed before MIR.
+      break;
     case HirStatementKind::NestedProcedure:
       // Its HirProcedure row is lowered independently as a static function.
       // The lexical declaration itself has no runtime initialization.

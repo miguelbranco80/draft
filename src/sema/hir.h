@@ -154,6 +154,9 @@ enum class HirStatementKind {
   // storage. The binding remains in the semantic scope for later statements
   // and nested procedure bodies.
   CompileTimeDeclaration,
+  // A lexical type declaration extends semantic visibility but has no runtime
+  // initialization. Nominal member scopes and layouts live in SemanticPackage.
+  TypeDeclaration,
   // A nested procedure declaration changes lexical visibility but performs no
   // runtime operation. Its separately checked HirProcedure row is lowered as
   // an ordinary static function.

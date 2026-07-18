@@ -15,6 +15,7 @@
 #pragma once
 
 #include "sema/analyzer.h"
+#include "sema/constant.h"
 #include "source/diagnostic.h"
 #include "source/source.h"
 #include "workspace/package.h"
@@ -60,6 +61,27 @@ void resolve_package_types(
     NodeId procedure,
     ScopeId scope,
     SymbolId owner,
+    DiagnosticSink &diagnostics);
+
+// Resolves one named type declaration introduced by a procedure body. The
+// declaration owner already exists in the lexical Block scope and nominal
+// declarations already own an incomplete TypeId, exactly as package types do
+// after declaration collection. Active bindings make an enclosing generic
+// procedure concrete while member types, array counts, and representation
+// attributes are resolved; the local type itself may still introduce its own
+// independent parametric parameters.
+[[nodiscard]] TypeId resolve_local_type_declaration(
+    const SourceManager &sources,
+    const LoadedPackage &loaded,
+    SemanticPackage &package,
+    const ConditionalSelections &selections,
+    const SyntaxTree &tree,
+    NodeId declaration,
+    NodeId type,
+    ScopeId scope,
+    SymbolId owner,
+    const ConstantTable &active_constants,
+    const std::vector<ConstantTypeBinding> &active_types,
     DiagnosticSink &diagnostics);
 
 // Creates or reuses one nominal type application from already resolved,

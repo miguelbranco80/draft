@@ -123,10 +123,11 @@ calls made in that scope receive the copy as their hidden argument. The narrow
 context-free C callbacks acquire a compatible value and enter an ordinary Draft
 callback without exposing Context as a generally legal C aggregate. The
 `examples/nested-procedures` program covers lexical recursion, escaping
-procedure pointers, enclosing compile-time parameters and constants, hidden
-Context propagation, and collision-free native identities. Runtime parameters,
-locals, and iteration bindings from an enclosing invocation are rejected as
-captures and must be passed explicitly. The hosted temp allocator is
+procedure pointers, enclosing compile-time parameters and constants, lexical
+type aliases/nominals/local generics with specialization-specific layouts,
+hidden Context propagation, and collision-free native identities. Runtime
+parameters, locals, and iteration bindings from an enclosing invocation are
+rejected as captures and must be passed explicitly. The hosted temp allocator is
 independently owned per pthread, supports explicit group
 reset, and is destroyed at thread exit; a spawned child replaces rather than
 shares the parent's temporary provider state. The

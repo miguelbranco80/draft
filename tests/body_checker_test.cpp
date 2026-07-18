@@ -522,6 +522,100 @@ bad :: proc(parameter: i64) -> i64 {
   EXPECT(state, item_range);
 }
 
+void test_local_type_declarations(TestState &state) {
+  CheckedSource source(R"draft(
+package bodies
+
+local_types[T: type, N: usize] :: proc(value: T, values: [N]T) -> T {
+    // This value is symbolic in the template and exact in each concrete body.
+    Extra :: N + 1
+    Alias :: T
+    Buffer :: [N]Alias
+    Pair :: struct {
+        head: Alias,
+        tail: Buffer,
+    }
+    Mode :: enum {
+        Off,
+        On,
+    }
+    Choice :: union {
+        none,
+        some: Alias,
+    }
+    Bits :: raw union {
+        value: Alias,
+    }
+    Wrapped :: distinct Alias
+    Local_Box[U: type] :: struct {
+        outer: Alias,
+        inner: U,
+    }
+    read :: proc(pair: ^Pair, box: ^Local_Box[u32]) -> Alias {
+        if box^.inner > 0 {
+            return pair^.head
+        }
+        return box^.outer
+    }
+
+    pair := Pair{head = value, tail = values}
+    box: Local_Box[u32]
+    box.outer = value
+    box.inner = 1
+    static_assert(Extra > N)
+    return read(&pair, &box)
+}
+
+main :: proc() -> u64 {
+    values := [2]u64{40, 41}
+    return local_types(values[0], values)
+}
+)draft");
+
+  if (source.diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(source.sources, source.diagnostics);
+  }
+  EXPECT(state, source.semantics.ok);
+  EXPECT(state, source.bodies.ok);
+  EXPECT(state, !source.diagnostics.has_errors());
+
+  std::size_t local_types = 0;
+  std::size_t local_type_instances = 0;
+  std::size_t type_statements = 0;
+  for (std::size_t index = 0;
+       index < source.semantics.package.symbols.symbol_count();
+       ++index) {
+    const draft::Symbol &symbol = source.semantics.package.symbols.symbol(
+        draft::SymbolId{static_cast<std::uint32_t>(index)});
+    if (symbol.kind == draft::SymbolKind::Type &&
+        source.semantics.package.symbols.scope(symbol.scope).kind ==
+            draft::ScopeKind::Block) {
+      if (symbol.name.find("$instance") == std::string::npos) {
+        ++local_types;
+      } else {
+        ++local_type_instances;
+      }
+      EXPECT(state, symbol.type.is_valid());
+    }
+  }
+  for (std::size_t index = 0;
+       index < source.bodies.program.statement_count();
+       ++index) {
+    const draft::HirStatement &statement = source.bodies.program.statement(
+        draft::HirStatementId{static_cast<std::uint32_t>(index)});
+    if (statement.kind == draft::HirStatementKind::TypeDeclaration) {
+      ++type_statements;
+      EXPECT(state, statement.bindings.size() == 1);
+    }
+  }
+  // The template and its concrete u64/2 specialization each own a separate
+  // lexical declaration set. TypeIds and member scopes must never be shared
+  // across those two semantic bodies.
+  EXPECT(state, local_types == 16);
+  EXPECT(state, local_type_instances == 2);
+  EXPECT(state, type_statements == 16);
+}
+
 void test_string_index_is_immutable(TestState &state) {
   CheckedSource source(R"draft(
 package bodies
@@ -1008,6 +1102,7 @@ int main() {
   test_parametric_procedure_instances(state);
   test_nested_procedures(state);
   test_nested_procedure_capture_diagnostics(state);
+  test_local_type_declarations(state);
   test_string_index_is_immutable(state);
   test_multi_pointer_slice_shape(state);
   test_constant_bounds_diagnostics(state);
