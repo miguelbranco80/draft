@@ -690,6 +690,85 @@ tuple_composite :: proc(value: i64) {
           std::string::npos);
 }
 
+void test_switch_case_semantics(TestState &state) {
+  CheckedSource valid(R"draft(
+package bodies
+
+Base :: 40
+
+select_integer :: proc(value: i64) -> i64 {
+    switch value {
+    case Base + 2:
+        return 1
+    case:
+        return 0
+    }
+}
+
+select_float :: proc(value: f64) -> i64 {
+    switch value {
+    case 1.5:
+        return 1
+    case:
+        return 0
+    }
+}
+)draft");
+  if (valid.diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(valid.sources, valid.diagnostics);
+  }
+  EXPECT(state, valid.bodies.ok);
+  EXPECT(state, !valid.diagnostics.has_errors());
+
+  CheckedSource invalid(R"draft(
+package bodies
+
+runtime_label :: proc(subject, label: i64) {
+    switch subject {
+    case label:
+        return
+    case:
+        return
+    }
+}
+
+duplicate_value :: proc(subject: i64) {
+    switch subject {
+    case 1, 1:
+        return
+    case:
+        return
+    }
+}
+
+duplicate_default :: proc(subject: i64) {
+    switch subject {
+    case:
+        return
+    case:
+        return
+    }
+}
+
+unsupported_subject :: proc(subject: []i64) {
+    switch subject {
+    case:
+        return
+    }
+}
+)draft");
+  EXPECT(state, !invalid.bodies.ok);
+  const std::string rendered =
+      draft::render_diagnostics(invalid.sources, invalid.diagnostics);
+  EXPECT(state, rendered.find("compile-time") != std::string::npos);
+  EXPECT(state, rendered.find("duplicate switch case value") !=
+                    std::string::npos);
+  EXPECT(state, rendered.find("duplicate default switch case") !=
+                    std::string::npos);
+  EXPECT(state, rendered.find("does not have built-in scalar equality") !=
+                    std::string::npos);
+}
+
 void test_local_type_declarations(TestState &state) {
   CheckedSource source(R"draft(
 package bodies
@@ -1274,6 +1353,7 @@ int main() {
   test_nested_procedure_capture_diagnostics(state);
   test_assignment_discards_and_tuple_patterns(state);
   test_composite_literal_shapes(state);
+  test_switch_case_semantics(state);
   test_local_type_declarations(state);
   test_string_index_is_immutable(state);
   test_multi_pointer_slice_shape(state);

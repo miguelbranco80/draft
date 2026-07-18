@@ -763,6 +763,18 @@ private:
         kind == TypeKind::RawPointer || kind == TypeKind::CString;
   }
 
+  // A value switch is equality dispatch. Tagged unions compare their integer
+  // discriminator separately; every other accepted subject must have the
+  // built-in scalar equality defined by Draft 1. Strings and aggregates use
+  // library comparison and therefore cannot silently acquire switch equality.
+  [[nodiscard]] bool switch_subject_type(TypeId type_id) const {
+    const TypeKind kind = runtime_scalar_type(type_id).kind;
+    return numeric_value_type(type_id) || kind == TypeKind::Bool ||
+        kind == TypeKind::BooleanStorage || kind == TypeKind::EndianScalar ||
+        kind == TypeKind::Enum || kind == TypeKind::Procedure ||
+        data_pointer_kind(kind);
+  }
+
   [[nodiscard]] std::uint32_t integer_width(TypeId type_id) const {
     const Type type = runtime_scalar_type(type_id);
     if (type.kind == TypeKind::Enum) {
@@ -1659,6 +1671,60 @@ private:
       }
     }
     return hir_.add_expression(std::move(expression));
+  }
+
+  // Case labels are values known during compilation, never expressions that
+  // happen to be recomputed at runtime. Check the ordinary expression first so
+  // name/type diagnostics and enum-member symbols remain available, then fold
+  // its root into one typed HIR constant for MIR dispatch.
+  [[nodiscard]] HirExpressionId check_value_case_label(
+      const SyntaxTree &tree,
+      NodeId label_id,
+      ScopeId scope,
+      TypeId subject_type) {
+    const HirExpressionId checked =
+        check_expression(tree, label_id, scope, subject_type);
+    if (is_invalid_type(subject_type)) return checked;
+    const ConstantTable visible_constants = active_constant_table();
+    const std::vector<ConstantTypeBinding> visible_types =
+        active_constant_types();
+    const std::optional<EvaluatedConstant> evaluated =
+        evaluate_typed_constant_expression(
+            sources_,
+            loaded_,
+            semantic_,
+            target_,
+            tree,
+            label_id,
+            scope,
+            diagnostics_,
+            &visible_constants,
+            &visible_types,
+            subject_type);
+    if (!evaluated.has_value()) return checked;
+
+    HirExpression &expression = hir_.expression_mut(checked);
+    expression.kind = HirExpressionKind::Constant;
+    expression.type = subject_type;
+    expression.constant = evaluated->value;
+    expression.operands.clear();
+    expression.addressable = false;
+    return checked;
+  }
+
+  // An enum label written through a constant expression, for example
+  // `cast[Mode](1)`, still covers the source member carrying that value.
+  // Recovering the member keeps exhaustiveness independent of label spelling.
+  [[nodiscard]] std::optional<SymbolId> enum_member_for_value(
+      TypeId enum_type, const ConstantValue &value) const {
+    const std::optional<SymbolId> owner = type_owner(enum_type);
+    if (!owner.has_value()) return std::nullopt;
+    for (const AggregateMember &member : semantic_.aggregate_members) {
+      if (member.owner != *owner) continue;
+      const ConstantValue *candidate = constants_.find(member.member);
+      if (candidate != nullptr && *candidate == value) return member.member;
+    }
+    return std::nullopt;
   }
 
   // Returns one unqualified contextual name from an expression node. This is
@@ -4881,8 +4947,19 @@ private:
             check_expression(tree, node.children.front(), scope);
         statement.expressions.push_back(subject);
         const TypeId subject_type = hir_.expression(subject).type;
+        const TypeKind subject_kind = is_invalid_type(subject_type)
+            ? TypeKind::Invalid
+            : semantic_.types.type(subject_type).kind;
+        if (subject_kind != TypeKind::Invalid &&
+            subject_kind != TypeKind::TaggedUnion &&
+            !switch_subject_type(subject_type)) {
+          diagnostics_.error(
+              tree.node(node.children.front()).range,
+              "switch subject type does not have built-in scalar equality");
+        }
         bool has_default = false;
         std::vector<SymbolId> covered_alternatives;
+        std::vector<ConstantValue> covered_values;
         for (std::size_t case_index = 1; case_index < node.children.size(); ++case_index) {
           const SyntaxNode &case_node = tree.node(node.children[case_index]);
           if (case_node.kind != NodeKind::SwitchCase || case_node.children.empty()) continue;
@@ -4892,13 +4969,17 @@ private:
           HirSwitchCase hir_case;
           hir_case.first_label = statement.expressions.size();
           hir_case.is_default = case_node.children.size() == 1;
-          if (hir_case.is_default) has_default = true;
+          if (hir_case.is_default) {
+            if (has_default) {
+              diagnostics_.error(case_node.range, "duplicate default switch case");
+            }
+            has_default = true;
+          }
           for (std::size_t label_index = 0;
                label_index + 1 < case_node.children.size();
                ++label_index) {
             const HirExpressionId label =
-                !is_invalid_type(subject_type) &&
-                    semantic_.types.type(subject_type).kind == TypeKind::TaggedUnion
+                subject_kind == TypeKind::TaggedUnion
                 ? check_union_case_label(
                       tree,
                       case_node.children[label_index],
@@ -4906,21 +4987,48 @@ private:
                       subject_type,
                       hir_case,
                       case_node.children.size() > 2)
-                : check_expression(
+                : check_value_case_label(
                       tree, case_node.children[label_index], scope, subject_type);
             statement.expressions.push_back(label);
             ++hir_case.label_count;
-            if (hir_.expression(label).symbol.is_valid()) {
-              const SymbolId alternative = hir_.expression(label).symbol;
+            const HirExpression &label_expression = hir_.expression(label);
+            std::optional<SymbolId> alternative;
+            if ((subject_kind == TypeKind::Enum ||
+                 subject_kind == TypeKind::TaggedUnion) &&
+                label_expression.symbol.is_valid()) {
+              const SymbolKind kind = semantic_.symbols.symbol(
+                  label_expression.symbol).kind;
+              if (kind == SymbolKind::EnumMember ||
+                  kind == SymbolKind::UnionAlternative) {
+                alternative = label_expression.symbol;
+              }
+            }
+            if (!alternative.has_value() && subject_kind == TypeKind::Enum &&
+                label_expression.kind == HirExpressionKind::Constant) {
+              alternative = enum_member_for_value(
+                  subject_type, label_expression.constant);
+            }
+            if (alternative.has_value()) {
               if (std::find(
                       covered_alternatives.begin(),
                       covered_alternatives.end(),
-                      alternative) != covered_alternatives.end()) {
+                      *alternative) != covered_alternatives.end()) {
                 diagnostics_.error(
                     tree.node(case_node.children[label_index]).range,
                     "duplicate switch alternative");
               } else {
-                covered_alternatives.push_back(alternative);
+                covered_alternatives.push_back(*alternative);
+              }
+            } else if (label_expression.kind == HirExpressionKind::Constant) {
+              if (std::find(
+                      covered_values.begin(),
+                      covered_values.end(),
+                      label_expression.constant) != covered_values.end()) {
+                diagnostics_.error(
+                    tree.node(case_node.children[label_index]).range,
+                    "duplicate switch case value");
+              } else {
+                covered_values.push_back(label_expression.constant);
               }
             }
           }
@@ -4939,9 +5047,6 @@ private:
           statement.switch_cases.push_back(hir_case);
         }
 
-        const TypeKind subject_kind = is_invalid_type(subject_type)
-            ? TypeKind::Invalid
-            : semantic_.types.type(subject_type).kind;
         statement.switch_is_exhaustive = has_default;
         if (!has_default &&
             (subject_kind == TypeKind::Enum || subject_kind == TypeKind::TaggedUnion)) {

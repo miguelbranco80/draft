@@ -94,8 +94,11 @@ AArch64 macOS profile is explicit and versioned rather than inferred from the
 host. Checked procedure bodies now lower into a target-independent MIR with
 explicit locals, addresses, loads/stores, bounds checks, calls, lexical defer
 unwinding, and CFG terminators for short-circuit expressions, conditionals,
-loops, and switches. A defensive verifier checks every MIR table reference and
-block boundary before a native backend may consume it. The first backend emits
+loops, and switches. Switch labels are folded constants with duplicate and
+exhaustiveness checks; non-integer scalar subjects lower through ordered
+equality branches after one subject evaluation. A defensive verifier checks
+every MIR table reference and block boundary before a native backend may consume
+it. The first backend emits
 deterministic opaque-pointer LLVM IR per package with hermetic source locations;
 generated operations retain both their authored synthesis site and generated
 coordinate. A version-gated toolchain adapter then emits AArch64 Mach-O objects

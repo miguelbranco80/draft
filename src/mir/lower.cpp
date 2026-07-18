@@ -1730,6 +1730,17 @@ private:
     }
   }
 
+  // LLVM's switch terminator accepts integer conditions only. Draft value
+  // switches also permit the remaining scalar equality types, which are
+  // lowered below as ordered compare-and-branch chains.
+  [[nodiscard]] bool llvm_switch_subject(TypeId type_id) const {
+    const TypeKind kind = runtime_scalar_type(type_id).kind;
+    return kind == TypeKind::Bool || kind == TypeKind::BooleanStorage ||
+        kind == TypeKind::SignedInteger || kind == TypeKind::UnsignedInteger ||
+        kind == TypeKind::Rune || kind == TypeKind::EndianScalar ||
+        kind == TypeKind::Enum;
+  }
+
   void lower_switch(const HirStatement &statement) {
     if (statement.expressions.empty()) {
       diagnostics_.error(statement.range, "switch HIR has no subject");
@@ -1754,10 +1765,11 @@ private:
           procedure_.add_block(hir_.block(source_case.body).range));
     }
 
-    MirTerminator terminator;
-    terminator.kind = MirTerminatorKind::Switch;
-    terminator.range = statement.range;
-    terminator.value = switch_subject;
+    struct DispatchLabel {
+      HirExpressionId expression;
+      MirBlockId target;
+    };
+    std::vector<DispatchLabel> labels;
     MirBlockId default_target = join_block;
     bool has_default = false;
     for (std::size_t case_index = 0;
@@ -1773,9 +1785,8 @@ private:
            ++label_index) {
         const std::size_t expression_index =
             source_case.first_label + label_index;
-        terminator.switch_arms.push_back(
-            {lower_expression(statement.expressions[expression_index]),
-             case_blocks[case_index]});
+        labels.push_back(
+            {statement.expressions[expression_index], case_blocks[case_index]});
       }
     }
     MirBlockId impossible_default;
@@ -1787,8 +1798,45 @@ private:
       impossible_default = procedure_.add_block(statement.range);
       default_target = impossible_default;
     }
-    terminator.targets.push_back(default_target);
-    procedure_.set_terminator(current_, std::move(terminator));
+
+    const TypeId dispatch_type = subject_type.kind == TypeKind::TaggedUnion
+        ? subject_type.element
+        : subject_expression.type;
+    if (llvm_switch_subject(dispatch_type)) {
+      MirTerminator terminator;
+      terminator.kind = MirTerminatorKind::Switch;
+      terminator.range = statement.range;
+      terminator.value = switch_subject;
+      for (const DispatchLabel &label : labels) {
+        terminator.switch_arms.push_back(
+            {lower_expression(label.expression), label.target});
+      }
+      terminator.targets.push_back(default_target);
+      procedure_.set_terminator(current_, std::move(terminator));
+    } else if (labels.empty()) {
+      branch(default_target, statement.range);
+    } else {
+      // The subject was evaluated once above. Each label is a checked constant,
+      // so this chain preserves source-order dispatch without introducing a
+      // second evaluation or asking LLVM to accept a non-integer switch.
+      for (std::size_t index = 0; index < labels.size(); ++index) {
+        const DispatchLabel &label = labels[index];
+        const HirExpression &label_expression = hir_.expression(label.expression);
+        const MirValueId label_value = lower_expression(label.expression);
+        const MirValueId matches = binary(
+            HirOperation::Equal,
+            switch_subject,
+            label_value,
+            semantic_.types.builtins().bool_type,
+            label_expression.range);
+        const MirBlockId miss = index + 1 == labels.size()
+            ? default_target
+            : procedure_.add_block(label_expression.range);
+        conditional_branch(
+            matches, label.target, miss, label_expression.range);
+        if (index + 1 != labels.size()) current_ = miss;
+      }
+    }
 
     if (impossible_default.is_valid()) {
       current_ = impossible_default;
