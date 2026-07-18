@@ -38,6 +38,12 @@ multi-parameter composition, contextual shifts, malformed trees, resource
 limits, and declaration-ordinal remapping. Inferring a parameter by algebraic
 inversion of a nontrivial pattern (for example recovering N from `[N + 1]T`)
 is intentionally not claimed; direct parameter patterns remain inferable.
+Explicit integer casts are preserved as typed expression nodes, including
+casts whose source parameter has a different integer type. Cast operands keep
+their independent context, so explicit modulo conversion remains distinct from
+an out-of-range implicit contextual constant. Node types also retain exact
+integer identity, preventing same-width types such as `u64` and `usize` from
+becoming implicitly interchangeable.
 
 ## Requirement audit
 

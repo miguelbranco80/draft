@@ -391,6 +391,10 @@ Buffer[N: usize] :: struct {
     values: [N + 1]u16,
 }
 
+Narrow_Buffer[N: u8] :: struct {
+    values: [cast[usize](N) + cast[usize](cast[u8](256)) + 1]u8,
+}
+
 Envelope[N: usize, M: usize] :: struct {
     buffer: Buffer[N + M],
     mask: [1 << M]u8,
@@ -398,6 +402,14 @@ Envelope[N: usize, M: usize] :: struct {
 
 Concrete :: struct {
     value: Envelope[1, 2],
+}
+
+Narrow_Concrete :: struct {
+    value: Narrow_Buffer[3],
+}
+
+Explicit_Wrap :: struct {
+    values: [cast[u8](256) + 1]u8,
 }
 )draft");
 
@@ -407,8 +419,16 @@ Concrete :: struct {
   EXPECT(state, !source.diagnostics.has_errors());
 
   const draft::Symbol *concrete = find_symbol(source.semantic, "Concrete");
+  const draft::Symbol *narrow =
+      find_symbol(source.semantic, "Narrow_Concrete");
+  const draft::Symbol *explicit_wrap =
+      find_symbol(source.semantic, "Explicit_Wrap");
   EXPECT(state, concrete != nullptr);
-  if (concrete == nullptr) return;
+  EXPECT(state, narrow != nullptr);
+  EXPECT(state, explicit_wrap != nullptr);
+  if (concrete == nullptr || narrow == nullptr || explicit_wrap == nullptr) {
+    return;
+  }
   const draft::Type &concrete_type =
       source.semantic.types.type(concrete->type);
   EXPECT(state, concrete_type.layout == draft::TypeLayout({true, 12, 2}));
@@ -433,6 +453,14 @@ Concrete :: struct {
   const draft::Type &mask = source.semantic.types.type(envelope.members.back());
   EXPECT(state, mask.kind == draft::TypeKind::Array);
   EXPECT(state, mask.element_count == 4);
+
+  const draft::Type &narrow_concrete =
+      source.semantic.types.type(narrow->type);
+  EXPECT(state, narrow_concrete.layout == draft::TypeLayout({true, 4, 1}));
+  EXPECT(
+      state,
+      source.semantic.types.type(explicit_wrap->type).layout ==
+          draft::TypeLayout({true, 1, 1}));
 }
 
 void test_dependent_integer_expression_diagnostics(TestState &state) {
@@ -498,18 +526,26 @@ Mismatched[N: usize] :: struct {
     value: Buffer[u8, N + 1],
 }
 
+Word_Buffer[N: usize] :: struct {
+    data: [N]u8,
+}
+
+Same_Width_Mismatch[N: u64] :: struct {
+    value: Word_Buffer[N],
+}
+
 Zero :: struct { value: Buffer[u8, 0], }
 Too_Wide :: struct { value: Buffer[u8, 256], }
 )draft");
 
-  EXPECT(state, source.diagnostics.error_count() == 3);
+  EXPECT(state, source.diagnostics.error_count() == 4);
   const std::string rendered =
       draft::render_diagnostics(source.sources, source.diagnostics);
   EXPECT(state, rendered.find("must instantiate to a nonzero u64") !=
                     std::string::npos);
   EXPECT(state, rendered.find("not representable in its parameter type") !=
                     std::string::npos);
-  EXPECT(state, rendered.find("symbolic type value argument has the wrong parameter type") !=
+  EXPECT(state, rendered.find("symbolic type value argument has the wrong result type") !=
                     std::string::npos);
 }
 

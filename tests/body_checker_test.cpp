@@ -371,10 +371,16 @@ last_enveloped[N: usize] :: proc(value: ^Envelope[N]) -> i64 {
     return last[N + 1](&value^.buffer)
 }
 
+last_byte[N: u8] :: proc(value: ^Buffer[cast[usize](N)]) -> i64 {
+    return last[cast[usize](N)](value)
+}
+
 main :: proc() -> i64 {
     value: Envelope[2]
     value.buffer.values[3] = 42
-    return last_enveloped(&value)
+    byte_value: Buffer[3]
+    byte_value.values[3] = 7
+    return last_enveloped(&value) + last_byte[3](&byte_value)
 }
 )draft");
 

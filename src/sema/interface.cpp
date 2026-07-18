@@ -58,6 +58,7 @@ void hash_integer_expression(
     hash_u64(hash, static_cast<std::uint64_t>(node.operation));
     hash_u64(hash, static_cast<std::uint64_t>(node.type.representation));
     hash_u64(hash, node.type.bit_width);
+    hash_field(hash, node.type.identity);
     hash_field(hash, node.constant.to_decimal());
     hash_u64(hash, node.parameter);
     hash_u64(hash, node.left);

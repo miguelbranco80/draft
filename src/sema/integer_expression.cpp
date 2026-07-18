@@ -16,10 +16,11 @@ constexpr std::uint64_t kMaximumIntegerExpressionBits = 1'000'000;
 
 [[nodiscard]] bool valid_type(IntegerExpressionType type) {
   if (type.representation == IntegerExpressionRepresentation::Untyped) {
-    return type.bit_width == 0;
+    return type.bit_width == 0 && type.identity.empty();
   }
   return type.bit_width != 0 &&
-      type.bit_width <= kMaximumIntegerExpressionBits;
+      type.bit_width <= kMaximumIntegerExpressionBits &&
+      !type.identity.empty();
 }
 
 [[nodiscard]] bool typed(IntegerExpressionType type) {
@@ -107,11 +108,7 @@ constexpr std::uint64_t kMaximumIntegerExpressionBits = 1'000'000;
   if (type.representation == IntegerExpressionRepresentation::Untyped) {
     return "u";
   }
-  return std::string(
-             type.representation == IntegerExpressionRepresentation::Signed
-                 ? "i"
-                 : "u") +
-      std::to_string(type.bit_width);
+  return type.identity;
 }
 
 [[nodiscard]] std::uint32_t import_expression(

@@ -569,8 +569,10 @@ private:
     result.bit_width = type.bit_width;
     if (type.kind == TypeKind::SignedInteger) {
       result.representation = IntegerExpressionRepresentation::Signed;
+      result.identity = type.name;
     } else if (type.kind == TypeKind::UnsignedInteger) {
       result.representation = IntegerExpressionRepresentation::Unsigned;
+      result.identity = type.name;
     }
     return result;
   }
@@ -639,6 +641,42 @@ private:
     }
   }
 
+  // Recognizes only the intrinsic spelling `cast[T](value)`. An arbitrary
+  // bracketed procedure call is not a conversion and must remain available to
+  // the general compile-time evaluator rather than entering this compact
+  // dependent-integer tree.
+  [[nodiscard]] std::optional<std::pair<NodeId, NodeId>>
+  integer_cast_parts(
+      const SyntaxTree &tree, const SyntaxNode &call) const {
+    if (call.kind != NodeKind::CallExpression || call.children.size() != 2) {
+      return std::nullopt;
+    }
+    const SyntaxNode &callee = tree.node(call.children.front());
+    if (callee.kind != NodeKind::BracketExpression ||
+        callee.children.size() != 2) {
+      return std::nullopt;
+    }
+    const SyntaxNode &base = tree.node(callee.children.front());
+    const std::vector<SourceName> names = names_in_span(
+        tree, base.token_begin, base.token_end);
+    if (base.kind != NodeKind::NameExpression || names.size() != 1 ||
+        names.front().text != "cast") {
+      return std::nullopt;
+    }
+    return std::pair<NodeId, NodeId>{
+        callee.children.back(), call.children.back()};
+  }
+
+  [[nodiscard]] bool contains_integer_cast(
+      const SyntaxTree &tree, NodeId expression_id) const {
+    const SyntaxNode &node = tree.node(expression_id);
+    if (integer_cast_parts(tree, node).has_value()) return true;
+    for (NodeId child : node.children) {
+      if (contains_integer_cast(tree, child)) return true;
+    }
+    return false;
+  }
+
   [[nodiscard]] std::optional<BigInteger> evaluate_constant_integer_node(
       IntegerExpressionOperation operation,
       const BuiltIntegerExpressionNode &left,
@@ -688,29 +726,73 @@ private:
          integer_fits_type(*node.constant, destination));
   }
 
-  [[nodiscard]] bool contextualize_integer_expression(
+  [[nodiscard]] bool integer_fits_expression_type(
+      const BigInteger &value, IntegerExpressionType type) const {
+    if (type.representation == IntegerExpressionRepresentation::Untyped ||
+        type.bit_width == 0) {
+      return true;
+    }
+    if (type.representation == IntegerExpressionRepresentation::Unsigned) {
+      return !value.is_negative() && value.bit_count() <= type.bit_width;
+    }
+    const BigInteger magnitude = BigInteger::from_u64(1).shifted_left(
+        static_cast<std::size_t>(type.bit_width - 1U));
+    return value.compare(magnitude.negated()) >= 0 &&
+        value.compare(magnitude.subtracted(BigInteger::from_u64(1))) <= 0;
+  }
+
+  [[nodiscard]] bool contextualize_integer_expression_node(
       IntegerExpression &expression,
-      TypeId destination,
+      std::uint32_t index,
+      std::optional<IntegerExpressionType> context,
       SourceRange range) {
-    if (!semantic_.types.is_integer(destination)) return false;
-    const IntegerExpressionType concrete = integer_expression_type(destination);
-    for (IntegerExpressionNode &node : expression.nodes) {
-      if (node.type.representation !=
-          IntegerExpressionRepresentation::Untyped) {
-        continue;
-      }
+    IntegerExpressionNode &node = expression.nodes[index];
+    if (node.type.representation == IntegerExpressionRepresentation::Untyped &&
+        context.has_value()) {
       // Context applies recursively to an untyped numeric expression. Reject
       // an out-of-domain literal before changing its node type; otherwise a
       // value such as 256 in a u8 expression would silently wrap merely because
       // the surrounding expression also contains a value parameter.
       if (node.operation == IntegerExpressionOperation::Constant &&
-          !integer_fits_type(node.constant, destination)) {
+          !integer_fits_expression_type(node.constant, *context)) {
         diagnostics_.error(
             range,
             "dependent integer constant is not representable in its contextual type");
         return false;
       }
-      node.type = concrete;
+      node.type = *context;
+    }
+    const std::optional<IntegerExpressionType> node_context =
+        node.type.representation == IntegerExpressionRepresentation::Untyped
+        ? std::nullopt
+        : std::optional<IntegerExpressionType>(node.type);
+    if (node.operation == IntegerExpressionOperation::Constant ||
+        node.operation == IntegerExpressionOperation::Parameter) {
+      return true;
+    }
+
+    // An explicit cast supplies a result type, not an implicit source context.
+    // Preserve an all-untyped operand as mathematical arithmetic. If the
+    // operand already inferred a concrete type from one of its own parameters,
+    // propagate that independent type through its untyped children.
+    if (node.operation == IntegerExpressionOperation::Cast) {
+      const IntegerExpressionNode &operand = expression.nodes[node.left];
+      const std::optional<IntegerExpressionType> operand_context =
+          operand.type.representation ==
+              IntegerExpressionRepresentation::Untyped
+          ? std::nullopt
+          : std::optional<IntegerExpressionType>(operand.type);
+      return contextualize_integer_expression_node(
+          expression, node.left, operand_context, range);
+    }
+    if (!contextualize_integer_expression_node(
+            expression, node.left, node_context, range)) {
+      return false;
+    }
+    if (node.right != std::numeric_limits<std::uint32_t>::max() &&
+        !contextualize_integer_expression_node(
+            expression, node.right, node_context, range)) {
+      return false;
     }
     return true;
   }
@@ -773,6 +855,41 @@ private:
               expression, *value, integer_expression_type(value_type)),
           value_type,
           *value,
+      };
+    }
+    if (const std::optional<std::pair<NodeId, NodeId>> cast =
+            integer_cast_parts(tree, node)) {
+      const TypeId destination =
+          resolve_type_argument(tree, cast->first, scope);
+      if (!semantic_.types.is_integer(destination)) {
+        diagnostics_.error(
+            tree.node(cast->first).range,
+            "dependent integer cast requires an integer destination type");
+        return {};
+      }
+      const BuiltIntegerExpressionNode operand = build_integer_expression_node(
+          tree, cast->second, scope, expression);
+      if (!operand.valid) return {};
+      std::string error;
+      const std::optional<BigInteger> constant = evaluate_constant_integer_node(
+          IntegerExpressionOperation::Cast,
+          operand,
+          nullptr,
+          destination,
+          error);
+      if (!error.empty()) {
+        diagnostics_.error(node.range, error);
+        return {};
+      }
+      return {
+          true,
+          append_integer_unary(
+              expression,
+              IntegerExpressionOperation::Cast,
+              operand.node,
+              integer_expression_type(destination)),
+          destination,
+          constant,
       };
     }
     if (node.kind == NodeKind::UnaryExpression && !node.children.empty()) {
@@ -894,8 +1011,12 @@ private:
         ? contextual_type
         : root.type;
     if (!result_type.is_valid() ||
-        !contextualize_integer_expression(
-            expression, result_type, tree.node(expression_id).range)) {
+        !semantic_.types.is_integer(result_type) ||
+        !contextualize_integer_expression_node(
+            expression,
+            expression.root,
+            integer_expression_type(result_type),
+            tree.node(expression_id).range)) {
       return std::nullopt;
     }
     if (!expression.is_valid()) return std::nullopt;
@@ -1388,6 +1509,15 @@ private:
         const TypeId required_type =
             semantic_.symbols.symbol(parameter.parameter).type;
         if (arguments[index].value_expression.is_valid()) {
+          const IntegerExpressionNode &root =
+              arguments[index].value_expression.nodes[
+                  arguments[index].value_expression.root];
+          if (root.type != integer_expression_type(required_type)) {
+            diagnostics_.error(
+                use_range,
+                "symbolic type value argument has the wrong result type");
+            return semantic_.types.builtins().invalid;
+          }
           for (const IntegerExpressionNode &node :
                arguments[index].value_expression.nodes) {
             if (node.operation != IntegerExpressionOperation::Parameter) {
@@ -1401,11 +1531,10 @@ private:
             }
             const Symbol &supplied =
                 semantic_.symbols.symbol(SymbolId{node.parameter});
-            if (supplied.kind != SymbolKind::ValueParameter ||
-                supplied.type != required_type) {
+            if (supplied.kind != SymbolKind::ValueParameter) {
               diagnostics_.error(
                   use_range,
-                  "symbolic type value argument has the wrong parameter type");
+                  "symbolic type value argument names a non-parameter value");
               return semantic_.types.builtins().invalid;
             }
           }
@@ -2110,6 +2239,19 @@ private:
   // array/SIMD lengths, and @align without host-width arithmetic.
   [[nodiscard]] std::optional<BigInteger> integer_constant_expression(
       const SyntaxTree &tree, NodeId expression_id, ScopeId scope) {
+    // Use the typed builder first. Besides sharing exact fixed-width semantics
+    // with dependent expressions, this recognizes explicit integer casts.
+    // The legacy cases below still cover enum-member values and recovery paths
+    // that do not need a canonical expression tree.
+    if (contains_integer_cast(tree, expression_id)) {
+      IntegerExpression built;
+      const BuiltIntegerExpressionNode built_root =
+          build_integer_expression_node(tree, expression_id, scope, built);
+      if (built_root.valid && built_root.constant.has_value()) {
+        return built_root.constant;
+      }
+    }
+
     const SyntaxNode &expression = tree.node(expression_id);
     if (expression.kind == NodeKind::LiteralExpression &&
         expression.token_begin < expression.token_end &&

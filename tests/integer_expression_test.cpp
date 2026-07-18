@@ -20,11 +20,19 @@ struct TestState {
 #define EXPECT(state, expression) (state).expect((expression), #expression, __LINE__)
 
 draft::IntegerExpressionType unsigned_type(std::uint32_t bits) {
-  return {draft::IntegerExpressionRepresentation::Unsigned, bits};
+  return {
+      draft::IntegerExpressionRepresentation::Unsigned,
+      bits,
+      "u" + std::to_string(bits),
+  };
 }
 
 draft::IntegerExpressionType signed_type(std::uint32_t bits) {
-  return {draft::IntegerExpressionRepresentation::Signed, bits};
+  return {
+      draft::IntegerExpressionRepresentation::Signed,
+      bits,
+      "i" + std::to_string(bits),
+  };
 }
 
 void test_substitution_and_wrapping(TestState &state) {
@@ -150,7 +158,7 @@ void test_malformed_and_resource_limited_trees(TestState &state) {
   invalid_width.root = draft::append_integer_constant(
       invalid_width,
       draft::BigInteger::from_u64(1),
-      {draft::IntegerExpressionRepresentation::Unsigned, 0});
+      {draft::IntegerExpressionRepresentation::Unsigned, 0, "u0"});
   EXPECT(state, !invalid_width.is_valid());
 
   draft::IntegerExpression enormous_shift;
@@ -170,6 +178,21 @@ void test_malformed_and_resource_limited_trees(TestState &state) {
   EXPECT(state, result.error.find("out-of-range shift") != std::string::npos);
 }
 
+void test_explicit_integer_cast(TestState &state) {
+  draft::IntegerExpression expression;
+  const std::uint32_t value = draft::append_integer_constant(
+      expression, draft::BigInteger::from_u64(256));
+  expression.root = draft::append_integer_unary(
+      expression,
+      draft::IntegerExpressionOperation::Cast,
+      value,
+      unsigned_type(8));
+  const draft::IntegerExpressionResult result =
+      draft::evaluate_integer_expression(expression);
+  EXPECT(state, result.ok);
+  EXPECT(state, result.value == draft::BigInteger::from_u64(0));
+}
+
 } // namespace
 
 int main() {
@@ -178,6 +201,7 @@ int main() {
   test_composed_substitution_and_remapping(state);
   test_integer_traps(state);
   test_malformed_and_resource_limited_trees(state);
+  test_explicit_integer_cast(state);
   if (state.failures != 0) {
     std::cerr << state.failures << " integer-expression expectation(s) failed\n";
     return EXIT_FAILURE;

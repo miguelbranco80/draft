@@ -54,6 +54,12 @@ struct IntegerExpressionType {
   IntegerExpressionRepresentation representation =
       IntegerExpressionRepresentation::Untyped;
   std::uint32_t bit_width = 0;
+  // Concrete Draft integers with the same representation are still distinct:
+  // on AArch64, u64, uint, usize, and uintptr all have 64 unsigned bits. Keep
+  // the canonical semantic spelling so value-parameter checking never turns
+  // representation equality into an implicit conversion. Untyped nodes leave
+  // this empty.
+  std::string identity;
 
   bool operator==(const IntegerExpressionType &) const = default;
 };

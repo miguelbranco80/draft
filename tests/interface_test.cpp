@@ -318,7 +318,7 @@ pub Buffer[T: type, N: usize] :: struct {
 }
 
 pub Packet[N: usize] :: struct {
-    bytes: Buffer[u8, N + 1],
+    bytes: Buffer[u8, cast[usize](N) + 1],
 }
 )draft");
   draft::SemanticAnalysisResult dependency_semantics =
@@ -487,9 +487,14 @@ pub relay :: proc(holder: middle.Holder) -> i64 {
           EXPECT(
               state,
               root.operation == draft::IntegerExpressionOperation::Add);
+          const draft::IntegerExpressionNode &cast =
+              count.value_expression.nodes[root.left];
           EXPECT(
               state,
-              count.value_expression.nodes[root.left].parameter == 0);
+              cast.operation == draft::IntegerExpressionOperation::Cast);
+          EXPECT(
+              state,
+              count.value_expression.nodes[cast.left].parameter == 0);
         }
       }
     }

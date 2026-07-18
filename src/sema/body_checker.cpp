@@ -492,6 +492,21 @@ private:
         constraint == TypeConstraintKind::Number;
   }
 
+  [[nodiscard]] IntegerExpressionType integer_expression_type(
+      TypeId type_id) const {
+    const Type type = semantic_.types.type(type_id);
+    IntegerExpressionType result;
+    result.bit_width = type.bit_width;
+    if (type.kind == TypeKind::SignedInteger) {
+      result.representation = IntegerExpressionRepresentation::Signed;
+      result.identity = type.name;
+    } else if (type.kind == TypeKind::UnsignedInteger) {
+      result.representation = IntegerExpressionRepresentation::Unsigned;
+      result.identity = type.name;
+    }
+    return result;
+  }
+
   [[nodiscard]] std::vector<IntegerExpressionReplacement>
   integer_expression_replacements(
       const std::vector<ValueSubstitution> &substitutions) const {
@@ -4231,6 +4246,14 @@ private:
                         active_constants,
                         diagnostics_);
                 if (symbolic.has_value()) {
+                  const IntegerExpressionNode &symbolic_root =
+                      symbolic->nodes[symbolic->root];
+                  if (symbolic_root.type != integer_expression_type(required)) {
+                    diagnostics_.error(
+                        tree.node(node.children[index + 1]).range,
+                        "symbolic procedure value argument has the wrong result type");
+                    return invalid_expression(node.range);
+                  }
                   for (const IntegerExpressionNode &part : symbolic->nodes) {
                     if (part.operation !=
                         IntegerExpressionOperation::Parameter) {
@@ -4242,11 +4265,10 @@ private:
                         ? &semantic_.symbols.symbol(SymbolId{part.parameter})
                         : nullptr;
                     if (supplied == nullptr ||
-                        supplied->kind != SymbolKind::ValueParameter ||
-                        supplied->type != required) {
+                        supplied->kind != SymbolKind::ValueParameter) {
                       diagnostics_.error(
                           tree.node(node.children[index + 1]).range,
-                          "symbolic procedure value argument has the wrong type");
+                          "symbolic procedure value argument names a non-parameter value");
                       return invalid_expression(node.range);
                     }
                   }
