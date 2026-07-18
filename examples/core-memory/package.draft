@@ -12,19 +12,17 @@ main :: proc() {
     assert(provided.allocator.procedure != nil)
     assert(provided.temp_allocator.procedure != nil)
 
-    value := cast[^Aligned_Value](memory.allocate(
-        size_of(Aligned_Value),
-        align_of(Aligned_Value),
-    ))
+    value := memory.new[Aligned_Value]()
     assert(cast[uintptr](value) % 64 == 0)
     assert(value^.word == 0)
     value^.word = 42
     assert(value^.word == 42)
-    memory.free(
-        cast[rawptr](value),
-        size_of(Aligned_Value),
-        align_of(Aligned_Value),
-    )
+    memory.free(value)
+
+    explicit := memory.new_with_allocator[Aligned_Value](provided.allocator)
+    assert(cast[uintptr](explicit) % 64 == 0)
+    assert(explicit^.word == 0)
+    memory.free_with_allocator(explicit, provided.allocator)
 
     values := cast[[^]u64](memory.allocate(4 * size_of(u64), 64))
     view := values[:4]
@@ -41,5 +39,5 @@ main :: proc() {
     resized_view := resized[:8]
     assert(cast[uintptr](resized) % 64 == 0)
     assert(resized_view[3] == 99 && resized_view[7] == 0)
-    memory.free(resized_storage, 8 * size_of(u64), 64)
+    memory.free_bytes(resized_storage, 8 * size_of(u64), 64)
 }

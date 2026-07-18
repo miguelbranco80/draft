@@ -3,8 +3,10 @@ package memory
 import core/runtime
 
 // This package is the ordinary Draft substrate over the versioned allocator
-// ABI. Typed helpers, arenas, and owned buffers build on these byte operations;
-// they do not need another compiler or runtime calling convention.
+// ABI. The byte operations remain available for containers and arenas, while
+// new/free provide the common typed path without compiler-defined allocation
+// behavior. Explicit-allocator forms use distinct names because Draft 1 has no
+// declaration overloading or default procedure arguments.
 
 pub allocate :: proc(size, alignment: usize) -> rawptr {
     return allocate_with_allocator(size, alignment, context.allocator)
@@ -61,11 +63,11 @@ pub resize_with_allocator :: proc(
     return resized
 }
 
-pub free :: proc(storage: rawptr, size, alignment: usize) {
-    free_with_allocator(storage, size, alignment, context.allocator)
+pub free_bytes :: proc(storage: rawptr, size, alignment: usize) {
+    free_bytes_with_allocator(storage, size, alignment, context.allocator)
 }
 
-pub free_with_allocator :: proc(
+pub free_bytes_with_allocator :: proc(
     storage: rawptr,
     size, alignment: usize,
     allocator: runtime.Allocator,
@@ -80,5 +82,35 @@ pub free_with_allocator :: proc(
         size,
         0,
         alignment,
+    )
+}
+
+pub new[T: type] :: proc() -> ^T {
+    return cast[^T](allocate(size_of(T), align_of(T)))
+}
+
+pub new_with_allocator[T: type] :: proc(
+    allocator: runtime.Allocator,
+) -> ^T {
+    return cast[^T](allocate_with_allocator(
+        size_of(T),
+        align_of(T),
+        allocator,
+    ))
+}
+
+pub free[T: type] :: proc(storage: ^T) {
+    free_bytes(cast[rawptr](storage), size_of(T), align_of(T))
+}
+
+pub free_with_allocator[T: type] :: proc(
+    storage: ^T,
+    allocator: runtime.Allocator,
+) {
+    free_bytes_with_allocator(
+        cast[rawptr](storage),
+        size_of(T),
+        align_of(T),
+        allocator,
     )
 }

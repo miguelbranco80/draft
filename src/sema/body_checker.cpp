@@ -2597,18 +2597,22 @@ private:
               check_runtime_intrinsic_call(tree, node, scope, expected)) {
         return *intrinsic;
       }
-      // A plain template name in callee position requests inference. Arguments
-      // are first checked without a guessed context; structural unification must
-      // discover one concrete type for every type parameter before an instance
-      // is created.
+      // A plain or package-qualified template name in callee position requests
+      // inference. Arguments are first checked without a guessed context;
+      // structural unification must discover one concrete type for every type
+      // parameter before an instance is created.
+      std::optional<SymbolId> inferred_template;
       if (const std::optional<SourceName> callee_name =
               single_name_expression(tree, node.children.front())) {
-        const std::optional<SymbolId> found =
-            semantic_.symbols.lookup(scope, callee_name->text);
-        if (found.has_value()) {
-          const Symbol candidate = semantic_.symbols.symbol(*found);
-          if (candidate.kind == SymbolKind::Procedure &&
-              candidate.flags.parametric) {
+        inferred_template = semantic_.symbols.lookup(scope, callee_name->text);
+      } else {
+        const SyntaxNode &callee = tree.node(node.children.front());
+        inferred_template = imported_member(tree, callee, scope);
+      }
+      if (inferred_template.has_value()) {
+        const Symbol candidate = semantic_.symbols.symbol(*inferred_template);
+        if (candidate.kind == SymbolKind::Procedure &&
+            candidate.flags.parametric) {
             const Type template_signature =
                 semantic_.types.type(candidate.type);
             const std::size_t parameter_count =
@@ -2628,7 +2632,7 @@ private:
                   check_expression(tree, node.children[index + 1], scope);
               arguments.push_back(argument);
               if (!infer_type_argument(
-                      *found,
+                      *inferred_template,
                       template_signature.members[index],
                       hir_.expression(argument).type,
                       type_substitutions,
@@ -2640,7 +2644,7 @@ private:
               }
             }
             const SymbolId instance = instantiate_procedure(
-                *found,
+                *inferred_template,
                 std::move(type_substitutions),
                 std::move(value_substitutions),
                 node.range);
@@ -2667,7 +2671,6 @@ private:
                 : concrete_signature.members.back();
             expression.type = apply_expected_type(result, expected, node.range);
             return hir_.add_expression(std::move(expression));
-          }
         }
       }
       const HirExpressionId callee = check_expression(tree, node.children.front(), scope);

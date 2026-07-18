@@ -269,9 +269,27 @@ void test_compiler_distributed_memory(TestState &state) {
   EXPECT(state, root->llvm.text.find(
       ".memory.allocate\"") != std::string::npos);
   EXPECT(state, root->llvm.text.find(
+      ".memory.new_24mono_24") != std::string::npos);
+  EXPECT(state,
+      root->semantics.package.imported_procedure_instances.size() == 4);
+  EXPECT(state, root->llvm.text.find(
       "call ptr @realloc") != std::string::npos);
   EXPECT(state, root->llvm.text.find(
       "call i32 @posix_memalign") != std::string::npos);
+
+  const draft::CompiledPackage *memory = nullptr;
+  for (const std::optional<draft::CompiledPackage> &package : result.packages) {
+    if (package.has_value() &&
+        package->identity.root_relative_path == "memory") {
+      memory = &*package;
+      break;
+    }
+  }
+  EXPECT(state, memory != nullptr);
+  if (memory != nullptr) {
+    EXPECT(state,
+        memory->semantics.package.parametric_instances.size() == 4);
+  }
 }
 
 void test_cross_package_generic_procedures(TestState &state) {

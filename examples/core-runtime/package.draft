@@ -16,9 +16,9 @@ read_option :: proc(value: option.Option[i64]) -> i64 {
 
 read_result :: proc(value: result.Result[i64, c.int]) -> i64 {
     switch value {
-    case .success(payload):
+    case .ok(payload):
         return payload
-    case .failure(_):
+    case .err(_):
         return -1
     }
 }
@@ -69,5 +69,5 @@ main :: proc() {
     assert(context_is_compatible(context))
     assert(exercise_context_scopes() == 41)
     assert(read_option(.some(42)) == 42)
-    assert(read_result(.success(42)) == 42)
+    assert(read_result(.ok(42)) == 42)
 }

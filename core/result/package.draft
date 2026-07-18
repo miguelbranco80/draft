@@ -1,9 +1,8 @@
 package result
 
-// Result keeps success and failure types explicit.  The first alternative is
-// the zero value, so callers should choose T's zero value deliberately when a
-// default-initialized Result is meaningful.
+// Result keeps failure and success types explicit. The first alternative is
+// the zero value, so a default-initialized Result is always an error.
 pub Result[T: type, E: type] :: union {
-    success: T,
-    failure: E,
+    err: E,
+    ok: T,
 }

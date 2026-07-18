@@ -118,8 +118,9 @@ callback without exposing Context as a generally legal C aggregate. The
 compiler-distributed `core/runtime`, `core/c`, `core/option`, `core/result`, and
 `core/memory` packages are ordinary
 inspectable Draft source; `examples/core-runtime` checks their import, generic,
-layout, and native paths, while `examples/core-memory` checks zeroed allocation,
-explicit alignment, resize preservation, and release through the Context ABI.
+layout, and native paths, while `examples/core-memory` checks cross-package
+typed `new`/`free`, explicit allocators and alignment, resize preservation, and
+release through the Context ABI.
 
 Configure, build, and test the current compiler with:
 

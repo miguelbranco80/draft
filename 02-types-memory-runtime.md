@@ -538,12 +538,17 @@ supplied explicitly.
 ```draft
 import core/memory
 
-tree := memory.new[Tree]()                       // context.allocator
-defer memory.free(tree)                          // context.allocator
+tree := memory.new[Tree]()                                // context.allocator
+defer memory.free(tree)                                   // context.allocator
 
-arena_tree := memory.new[Tree](arena_allocator)  // explicit allocator
-defer memory.free(arena_tree, arena_allocator)
+arena_tree := memory.new_with_allocator[Tree](arena_allocator)
+defer memory.free_with_allocator(arena_tree, arena_allocator)
 ```
+
+The explicit forms use distinct names because Draft 1 has neither declaration
+overloading nor default procedure arguments. `allocate`, `resize`, and the
+corresponding `*_with_allocator` and `free_bytes*` operations expose the raw
+byte substrate used by containers and arenas.
 
 Owning growable arrays and maps are separate core-library types. Each initialized
 container stores its allocator; initialization and destruction are explicit.
