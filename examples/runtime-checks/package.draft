@@ -242,6 +242,14 @@ exercise_assignment_patterns :: proc() {
     assert(left == 22 && right == 20)
     _ = observe_assignment(&calls, 123)
     assert(calls == 5)
+
+    // A constant tuple is destructured after each exact member receives the
+    // declared or target binding type; the aggregate itself has no storage.
+    (constant_left, constant_right): (f64, f64) = Untyped_Tuple
+    assigned_left, assigned_right: f64
+    (assigned_left, assigned_right) = Untyped_Tuple
+    assert(constant_left + assigned_left == 2.0)
+    assert(constant_right + assigned_right == 5.0)
 }
 
 exercise_expression_control :: proc() {

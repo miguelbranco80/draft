@@ -1161,6 +1161,16 @@ private:
     HirExpression &expression = hir_.expression_mut(expression_id);
     if (!is_invalid_type(target) &&
         semantic_.types.type(target).kind == TypeKind::Tuple &&
+        expression.kind == HirExpressionKind::Constant &&
+        expression.constant.kind == ConstantKind::Aggregate) {
+      const TypeId source = expression.type;
+      contextualize_constant_value(
+          expression.constant, source, target, expression.range);
+      expression.type = target;
+      return;
+    }
+    if (!is_invalid_type(target) &&
+        semantic_.types.type(target).kind == TypeKind::Tuple &&
         (expression.kind == HirExpressionKind::Tuple ||
          expression.kind == HirExpressionKind::Composite)) {
       const std::vector<TypeId> members = semantic_.types.type(target).members;
@@ -4413,9 +4423,11 @@ private:
             tuple_expression.operands[index], concrete_members[index]);
       }
     }
+    const TypeId concrete_tuple = semantic_.types.tuple(concrete_members);
     if (tuple_expression.kind == HirExpressionKind::Tuple) {
-      hir_.expression_mut(value).type =
-          semantic_.types.tuple(concrete_members);
+      hir_.expression_mut(value).type = concrete_tuple;
+    } else if (tuple_expression.kind == HirExpressionKind::Constant) {
+      contextualize_inferred_runtime_expression(value, concrete_tuple);
     }
     return hir_.add_statement(std::move(statement));
   }

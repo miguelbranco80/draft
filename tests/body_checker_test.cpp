@@ -1499,6 +1499,13 @@ contextual_float_constants :: proc() -> f64 {
 contextual_tuple_constant :: proc() -> (f64, f64) {
     return Untyped_Tuple
 }
+
+destructure_tuple_constant :: proc() -> f64 {
+    (left, right): (f64, f64) = Untyped_Tuple
+    assigned_left, assigned_right: f64
+    (assigned_left, assigned_right) = Untyped_Tuple
+    return left + right + assigned_left + assigned_right
+}
 )draft");
   if (valid.diagnostics.has_errors()) {
     std::cerr << draft::render_diagnostics(valid.sources, valid.diagnostics);
