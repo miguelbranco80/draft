@@ -1382,6 +1382,17 @@ void test_early_synthesis_receives_permitted_context(TestState &state) {
       semantics.package,
       {},
       diagnostics);
+  draft::AgentValidationContext typed_validation;
+  typed_validation.kind = "test";
+  typed_validation.source_relative_path = "generated_test.draft";
+  typed_validation.source = "package early_context";
+  typed_validation.source_digest = draft::sha256(typed_validation.source);
+  typed_validation.typing_complete = true;
+  draft::AgentValidationProcedureContext validation_procedure;
+  validation_procedure.name = "test_generated";
+  typed_validation.procedures.push_back(std::move(validation_procedure));
+  const std::vector<draft::AgentValidationContext> validation_context{
+      std::move(typed_validation)};
   const draft::AgentObligationResult obligations =
       draft::build_agent_obligations(
           {"workspace", "early_context"},
@@ -1391,7 +1402,8 @@ void test_early_synthesis_receives_permitted_context(TestState &state) {
           semantics.constants,
           metadata,
           target,
-          diagnostics);
+          diagnostics,
+          validation_context);
   if (diagnostics.has_errors()) {
     std::cerr << draft::render_diagnostics(sources, diagnostics);
   }
@@ -1404,6 +1416,12 @@ void test_early_synthesis_receives_permitted_context(TestState &state) {
   bool saw_declaration = false;
   bool saw_member = false;
   for (const draft::AgentObligation &obligation : obligations.obligations) {
+    EXPECT(state, obligation.validation_context.size() == 1);
+    if (obligation.validation_context.size() == 1) {
+      EXPECT(state, !obligation.validation_context.front().typing_complete);
+      EXPECT(state,
+          obligation.validation_context.front().procedures.empty());
+    }
     EXPECT(state, obligation.context_fields.size() == 7);
     for (const draft::AgentContextField &field : obligation.context_fields) {
       EXPECT(state, field.name != "user_index");

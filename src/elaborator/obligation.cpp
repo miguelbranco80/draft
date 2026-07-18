@@ -6,6 +6,7 @@
 #include "sema/denial.h"
 #include "sema/hir.h"
 #include "sema/interface.h"
+#include "validation/discovery.h"
 
 #include <algorithm>
 #include <array>
@@ -1904,7 +1905,7 @@ struct ActiveDenialContext {
     const AgentObligation &obligation,
     const TargetProfile &target) {
   Sha256 hash;
-  hash_field(hash, "draft-agent-obligation-v17");
+  hash_field(hash, "draft-agent-obligation-v18");
   hash_field(hash, obligation.site_identity);
   hash.update(obligation.record_digest.bytes);
   hash.update(obligation.expected_type_digest.bytes);
@@ -2069,6 +2070,39 @@ struct ActiveDenialContext {
     hash_field(hash, validation.source_relative_path);
     hash.update(validation.source_digest.bytes);
     hash_field(hash, validation.source);
+    hash_u64(hash, validation.typing_complete ? 1 : 0);
+    hash_u64(
+        hash, static_cast<std::uint64_t>(validation.procedures.size()));
+    for (const AgentValidationProcedureContext &procedure :
+         validation.procedures) {
+      hash_field(hash, procedure.name);
+      hash.update(procedure.type_digest.bytes);
+      hash_field(hash, procedure.type_text);
+      hash.update(procedure.type_definition_digest.bytes);
+      hash_field(hash, procedure.type_definition);
+      hash_u64(hash, procedure.state_size);
+      hash_u64(hash, procedure.state_alignment);
+      hash_u64(hash, procedure.failure_offset);
+      hash_u64(hash, procedure.report_size);
+      hash_u64(
+          hash, static_cast<std::uint64_t>(procedure.references.size()));
+      for (const AgentValidationReferenceContext &reference :
+           procedure.references) {
+        hash_field(hash, reference.root_identity);
+        hash_field(hash, reference.root_relative_path);
+        hash_field(hash, reference.name);
+        hash_u64(hash, static_cast<std::uint64_t>(reference.kind));
+        hash.update(reference.type_digest.bytes);
+        hash_field(hash, reference.type_text);
+        hash.update(reference.type_definition_digest.bytes);
+        hash_field(hash, reference.type_definition);
+        hash_u64(hash, reference.has_constant ? 1 : 0);
+        if (reference.has_constant) {
+          hash.update(reference.constant_digest.bytes);
+          hash_field(hash, reference.constant_definition);
+        }
+      }
+    }
   }
   hash_field(hash, target.facts.identity);
   hash_u64(hash, static_cast<std::uint64_t>(target.facts.simd_shapes.size()));
@@ -2162,6 +2196,170 @@ std::vector<AgentValidationContext> collect_agent_validation_context(
     result.push_back(std::move(context));
   }
   return result;
+}
+
+bool enrich_agent_validation_context(
+    const PackageIdentity &identity,
+    const LoadedPackage &loaded,
+    const SemanticPackage &package,
+    const ConstantTable &constants,
+    const HirProgram &hir,
+    ValidationKind kind,
+    std::span<const ValidationEntry> entries,
+    std::vector<AgentValidationContext> &context,
+    DiagnosticSink &diagnostics) {
+  const std::size_t initial_errors = diagnostics.error_count();
+  const std::string kind_text(validation_kind_name(kind));
+  constexpr std::size_t maximum_references_per_procedure = 256;
+
+  // A successful validation compile proves every selected file of this kind,
+  // including helper-only files with no executable entry. Clear first so a
+  // repeated enrichment is a deterministic replacement rather than an append.
+  for (AgentValidationContext &file : context) {
+    if (file.kind != kind_text) continue;
+    file.typing_complete = true;
+    file.procedures.clear();
+  }
+
+  for (const ValidationEntry &entry : entries) {
+    if (entry.kind != kind || entry.package != identity) continue;
+    const std::optional<SymbolId> found = package.symbols.lookup_direct(
+        package.package_scope, entry.procedure);
+    if (!found.has_value()) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "typed validation entry has no checked procedure symbol");
+      continue;
+    }
+    const Symbol &symbol = package.symbols.symbol(*found);
+    const HirProcedure *procedure = find_hir_procedure(hir, *found);
+    if (procedure == nullptr || !procedure->valid) {
+      diagnostics.error(
+          symbol.name_range,
+          "typed validation entry has no valid checked body");
+      continue;
+    }
+    const std::string relative_path =
+        source_relative_path(loaded, symbol.syntax.file);
+    AgentValidationContext *file_context = nullptr;
+    for (AgentValidationContext &candidate : context) {
+      if (candidate.kind == kind_text &&
+          candidate.source_relative_path == relative_path) {
+        file_context = &candidate;
+        break;
+      }
+    }
+    if (file_context == nullptr) {
+      diagnostics.error(
+          symbol.name_range,
+          "typed validation entry has no matching source context row");
+      continue;
+    }
+
+    AgentValidationProcedureContext procedure_context;
+    procedure_context.name = symbol.name;
+    const InterfaceTypeGraph procedure_type = export_interface_type(
+        identity, package, symbol.type, diagnostics);
+    procedure_context.type_digest =
+        hash_interface_type_graph(procedure_type);
+    procedure_context.type_text = type_text(package, symbol.type);
+    procedure_context.type_definition = render_type_context(procedure_type);
+    procedure_context.type_definition_digest =
+        sha256(procedure_context.type_definition);
+    procedure_context.state_size = entry.state_size;
+    procedure_context.state_alignment = entry.state_alignment;
+    procedure_context.failure_offset = entry.failure_offset;
+    procedure_context.report_size = entry.report_size;
+
+    const std::vector<SymbolId> references =
+        hir_procedure_symbols(hir, *procedure);
+    for (SymbolId reference_id : references) {
+      if (!reference_id.is_valid()) continue;
+      const Symbol &reference = package.symbols.symbol(reference_id);
+      if (!reference.type.is_valid() ||
+          package.types.type(reference.type).kind == TypeKind::Invalid) {
+        continue;
+      }
+      AgentValidationReferenceContext reference_context;
+      reference_context.root_identity = identity.root_identity;
+      reference_context.root_relative_path = identity.root_relative_path;
+      reference_context.name = reference.name;
+      reference_context.kind = reference.kind;
+      for (const ImportedSymbol &imported : package.imported_symbols) {
+        if (imported.proxy != reference_id) continue;
+        reference_context.root_identity = imported.root_identity;
+        reference_context.root_relative_path = imported.root_relative_path;
+        reference_context.name = imported.public_name;
+        break;
+      }
+      const InterfaceTypeGraph reference_type = export_interface_type(
+          identity, package, reference.type, diagnostics);
+      reference_context.type_digest =
+          hash_interface_type_graph(reference_type);
+      reference_context.type_text = type_text(package, reference.type);
+      reference_context.type_definition = render_type_context(reference_type);
+      reference_context.type_definition_digest =
+          sha256(reference_context.type_definition);
+      if (const ConstantValue *constant = constants.find(reference_id)) {
+        reference_context.has_constant = true;
+        append_constant_context(
+            canonical_constant(identity, package, *constant),
+            reference_context.constant_definition);
+        reference_context.constant_digest =
+            sha256(reference_context.constant_definition);
+      }
+      procedure_context.references.push_back(std::move(reference_context));
+    }
+    std::sort(
+        procedure_context.references.begin(),
+        procedure_context.references.end(),
+        [](const AgentValidationReferenceContext &left,
+           const AgentValidationReferenceContext &right) {
+          if (left.root_identity != right.root_identity) {
+            return left.root_identity < right.root_identity;
+          }
+          if (left.root_relative_path != right.root_relative_path) {
+            return left.root_relative_path < right.root_relative_path;
+          }
+          if (left.name != right.name) return left.name < right.name;
+          if (left.kind != right.kind) {
+            return static_cast<std::uint32_t>(left.kind) <
+                static_cast<std::uint32_t>(right.kind);
+          }
+          return left.type_digest.hex() < right.type_digest.hex();
+        });
+    procedure_context.references.erase(
+        std::unique(
+            procedure_context.references.begin(),
+            procedure_context.references.end(),
+            [](const AgentValidationReferenceContext &left,
+               const AgentValidationReferenceContext &right) {
+              return left.root_identity == right.root_identity &&
+                  left.root_relative_path == right.root_relative_path &&
+                  left.name == right.name && left.kind == right.kind &&
+                  left.type_digest == right.type_digest;
+            }),
+        procedure_context.references.end());
+    if (procedure_context.references.size() >
+        maximum_references_per_procedure) {
+      diagnostics.error(
+          symbol.name_range,
+          "typed validation procedure exceeds the 256-reference context limit");
+      continue;
+    }
+    file_context->procedures.push_back(std::move(procedure_context));
+  }
+
+  for (AgentValidationContext &file : context) {
+    if (file.kind != kind_text) continue;
+    std::sort(
+        file.procedures.begin(), file.procedures.end(),
+        [](const AgentValidationProcedureContext &left,
+           const AgentValidationProcedureContext &right) {
+          return left.name < right.name;
+        });
+  }
+  return diagnostics.error_count() == initial_errors;
 }
 
 std::string_view agent_construct_kind_name(AgentConstructKind kind) {
@@ -2296,6 +2494,18 @@ AgentObligationResult build_agent_obligations(
     obligation.documentation = documentation_context(package, metadata, record);
     obligation.validation_context.assign(
         validation_context.begin(), validation_context.end());
+    if (record.kind == AgentConstructKind::SynthesisDeclaration ||
+        record.kind == AgentConstructKind::SynthesisMember) {
+      // Interface sites are proposed before validation bodies can name their
+      // generated declarations. Their final boundary must retain the same
+      // syntax-only validation input or a successful early pin would stale as
+      // soon as the complete candidate became type-checkable.
+      for (AgentValidationContext &validation :
+           obligation.validation_context) {
+        validation.typing_complete = false;
+        validation.procedures.clear();
+      }
+    }
     while (true) {
       obligation.site_identity =
           "site-" + site_identity_digest(obligation).hex();

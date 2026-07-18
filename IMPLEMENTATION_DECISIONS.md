@@ -204,7 +204,7 @@ An omitted symbol is unknown, and compiler-, package-assembly-, and target-owned
 providers cannot be overridden by an external audit.
 
 Provider requests never substitute hashes for information the synthesizer must
-understand. `draft-synthesis-request-v18` carries canonical Draft spellings for
+understand. `draft-synthesis-request-v19` carries canonical Draft spellings for
 the expected type and every visible binding, together with complete canonical
 values for visible compile-time constants and explicit target, SIMD, and
 parsed-assembly facts. Procedure-valued constants lose their process-local
@@ -234,12 +234,19 @@ exposed. Exceeding the bound is a compile error rather than a silently partial
 request.
 
 Target-selected `_test.draft` and `_bench.draft` files remain absent from the
-ordinary package graph, but a package containing synthesis sites receives a
-parallel syntax-only load with both validation roles enabled. Each such file is
-rendered in canonical filename order without comments, labeled as test or
-benchmark, and hashed into every obligation in that package. Invalid validation
-syntax fails resolution before provider execution; test-only imports and names
-still cannot leak into ordinary checking.
+ordinary package graph, but a package containing synthesis or judgment sites
+receives a parallel syntax load with both validation roles enabled. Each such
+file is rendered in canonical filename order without comments, labeled as test
+or benchmark, and hashed into every obligation in that package. Once interface
+synthesis is complete, the compiler also builds each selected validation role
+in a separate checked workspace graph. Body synthesis and judgments then carry
+the discovered procedure signatures, exact target validation-state layouts,
+and portable type/value facts for every resolved HIR reference used by those
+procedures. These facts remain under the validation row and never enter the
+ordinary visible-name set. Declaration/member sites retain the syntax-only form
+at their final boundary, keeping their earlier pins stable. Invalid validation
+syntax or signatures fail resolution before body-provider execution; test-only
+imports and names still cannot leak into ordinary checking.
 
 Public dependency documentation is published in the early package interface,
 alongside types and constants, rather than after consumers have already bound
@@ -867,8 +874,8 @@ Obligation construction converts them to comment-free canonical Draft source,
 the readable subject type, and the same portable interface type graph used by
 other provider context. Source and duplicated digests are rechecked by the
 shared Codex renderer before either synthesis or judgment starts a child. The
-`draft-agent-obligation-v17`, synthesis request/prompt v18, judgment
-request/prompt v3, and compiler content v116 identities make these new facts a
+`draft-agent-obligation-v18`, synthesis request/prompt v19, judgment
+request/prompt v3, and compiler content v117 identities make these new facts a
 stale-pin and evidence input.
 
 Nested procedures are static and cannot capture runtime locals. Checking a

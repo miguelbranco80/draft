@@ -29,6 +29,8 @@
 namespace draft {
 
 class HirProgram;
+enum class ValidationKind;
+struct ValidationEntry;
 
 // One binding visible at a synthesis/judgment program point. type_digest is the
 // complete canonical type graph rather than a package-local TypeId. kind stays
@@ -109,16 +111,54 @@ struct AgentDocumentationContext {
   Sha256Digest record_digest;
 };
 
+// One resolved name used by a checked validation procedure. Origin fields keep
+// same-spelled imports distinct without exposing a package-local SymbolId. The
+// complete portable type graph is repeated here because validation compilation
+// owns a separate semantic arena from the ordinary synthesis surface.
+struct AgentValidationReferenceContext {
+  std::string root_identity;
+  std::string root_relative_path;
+  std::string name;
+  SymbolKind kind = SymbolKind::UnresolvedDeclaration;
+  Sha256Digest type_digest;
+  std::string type_text;
+  Sha256Digest type_definition_digest;
+  std::string type_definition;
+  bool has_constant = false;
+  Sha256Digest constant_digest;
+  std::string constant_definition;
+};
+
+// A filename alone never makes a test executable. These rows come only from
+// validation/discovery after body checking has proved the exact core nominal
+// signature and target layout. References are the typed semantic names used by
+// that procedure body, not additions to the synthesis site's usable scope.
+struct AgentValidationProcedureContext {
+  std::string name;
+  Sha256Digest type_digest;
+  std::string type_text;
+  Sha256Digest type_definition_digest;
+  std::string type_definition;
+  std::uint64_t state_size = 0;
+  std::uint64_t state_alignment = 1;
+  std::uint64_t failure_offset = 0;
+  std::uint64_t report_size = 0;
+  std::vector<AgentValidationReferenceContext> references;
+};
+
 // Tests and benchmarks are not ordinary build inputs, but their selected
 // source is authoritative synthesis context. Each row is one target-selected
-// package file rendered from nontrivia syntax. Keeping the kind and relative
-// filename explicit makes this useful to a provider without exposing a host
-// path or quietly treating a benchmark as a test.
+// package file rendered from nontrivia syntax. Complete body-stage obligations
+// additionally carry checked procedures and resolved references. Keeping the
+// kind and relative filename explicit makes this useful to a provider without
+// exposing a host path or quietly treating a benchmark as a test.
 struct AgentValidationContext {
   std::string kind;
   std::string source_relative_path;
   std::string source;
   Sha256Digest source_digest;
+  bool typing_complete = false;
+  std::vector<AgentValidationProcedureContext> procedures;
 };
 
 // A body or member site is meaningful only inside its declaration. The
@@ -275,6 +315,20 @@ struct AgentObligationResult {
 collect_agent_validation_context(
     const SourceManager &sources,
     const LoadedPackage &loaded);
+
+// Adds checked test/benchmark facts from a separately compiled validation
+// package to matching syntax-only rows. entries may contain the whole workspace;
+// package identity and source-relative filename provide the stable join.
+[[nodiscard]] bool enrich_agent_validation_context(
+    const PackageIdentity &identity,
+    const LoadedPackage &loaded,
+    const SemanticPackage &package,
+    const ConstantTable &constants,
+    const HirProgram &hir,
+    ValidationKind kind,
+    std::span<const ValidationEntry> entries,
+    std::vector<AgentValidationContext> &context,
+    DiagnosticSink &diagnostics);
 
 // Builds obligations for judgments and every synthesis grammar category. Docs
 // remain inputs through AgentRecord and package interfaces but do not form

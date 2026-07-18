@@ -43,12 +43,13 @@ struct SynthesisRequestFile {
 // typed outer-to-inner branch refinements, parametric constraints, complete
 // referenced type graphs, positionally
 // available imported package interfaces and their explicit public documentation
-// bytes, judgment claims, canonical test and benchmark source, persistent
+// bytes, judgment claims, canonical test and benchmark source plus checked
+// validation signatures/layouts/references, persistent
 // source coordinates, the exact input
 // digest, and stable site identity. prompt and attachments contain
 // source-authored bounded context without exposing semantic arena IDs.
 struct SynthesisRequest {
-  std::string format = "draft-synthesis-request-v18";
+  std::string format = "draft-synthesis-request-v19";
   AgentObligation obligation;
   std::string prompt;
   std::vector<SynthesisRequestFile> attachments;

@@ -229,7 +229,14 @@ Package-wide and structurally dominating judgment claims can guide synthesis
 without being treated as passing verdicts. Package documentation reaches every
 site, and enclosing-declaration docs reach sites inside that declaration, with
 exact attachment bytes copied into the isolated request. Proposed and stored
-source is barred from introducing another `...` or `judge`. A successful
+source is barred from introducing another `...` or `judge`.
+Body-stage requests also receive separately checked test/benchmark procedure
+signatures, exact validation-state layouts, and portable typed facts for names
+their HIR bodies actually reference. Those validation-only imports and names
+remain labeled context and never join the generated program's visible scope.
+Interface declaration/member requests retain syntax-only validation rows so an
+early pin does not stale merely because its generated declaration later makes
+the validation graph type-checkable. A successful
 resolution writes exact content-addressed expansion bytes and one canonical
 manifest atomically; normal checks and builds reproduce both stages from pins
 without contacting a model. Before that manifest rename, the

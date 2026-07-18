@@ -11,6 +11,7 @@
 #include "source/source.h"
 #include "target/profile.h"
 
+#include <algorithm>
 #include <cstdlib>
 #include <cerrno>
 #include <cstdint>
@@ -339,6 +340,16 @@ struct TemporaryWorkspace {
            << "    testing.expect(test, answer() == 42)\n";
     if (!extra_statement.empty()) source << "    " << extra_statement << "\n";
     source << "}\n";
+  }
+
+  void write_invalid_test_source() const {
+    std::ofstream source(
+        package / "candidate_test.draft", std::ios::binary | std::ios::trunc);
+    source << "package app\n\n"
+           << "import core/testing\n\n"
+           << "test_invalid :: proc(test: ^testing.Test) -> i64 {\n"
+           << "    return 0\n"
+           << "}\n";
   }
 
   void write_benchmark_source() const {
@@ -1537,6 +1548,20 @@ void test_tests_gate_manifest_commit(TestState &state) {
         benchmark.source.find("bench_generated_answer") !=
             std::string::npos);
     EXPECT(state, draft::sha256(benchmark.source) == benchmark.source_digest);
+    EXPECT(state, benchmark.typing_complete);
+    EXPECT(state, benchmark.procedures.size() == 1);
+    if (benchmark.procedures.size() == 1) {
+      const draft::AgentValidationProcedureContext &procedure =
+          benchmark.procedures.front();
+      EXPECT(state, procedure.name == "bench_generated_answer");
+      EXPECT(state, !procedure.type_text.empty());
+      EXPECT(state,
+          draft::sha256(procedure.type_definition) ==
+              procedure.type_definition_digest);
+      EXPECT(state, procedure.state_size > 0);
+      EXPECT(state, procedure.state_alignment > 0);
+      EXPECT(state, procedure.report_size >= procedure.failure_offset);
+    }
     EXPECT(state, test.kind == "test");
     EXPECT(state, test.source_relative_path == "candidate_test.draft");
     EXPECT(state,
@@ -1544,6 +1569,59 @@ void test_tests_gate_manifest_commit(TestState &state) {
     EXPECT(state,
         test.source.find("Validation comments") == std::string::npos);
     EXPECT(state, draft::sha256(test.source) == test.source_digest);
+    EXPECT(state, test.typing_complete);
+    EXPECT(state, test.procedures.size() == 1);
+    if (test.procedures.size() == 1) {
+      const draft::AgentValidationProcedureContext &procedure =
+          test.procedures.front();
+      EXPECT(state, procedure.name == "test_generated_answer");
+      EXPECT(state, !procedure.type_text.empty());
+      EXPECT(state,
+          draft::sha256(procedure.type_definition) ==
+              procedure.type_definition_digest);
+      EXPECT(state, procedure.state_size > 0);
+      bool saw_answer = false;
+      bool saw_expect = false;
+      bool saw_test_parameter = false;
+      for (const draft::AgentValidationReferenceContext &reference :
+           procedure.references) {
+        EXPECT(state,
+            draft::sha256(reference.type_definition) ==
+                reference.type_definition_digest);
+        if (reference.name == "answer" &&
+            reference.root_identity == "workspace" &&
+            reference.root_relative_path == "app") {
+          saw_answer = true;
+        }
+        if (reference.name == "expect" &&
+            reference.root_identity == "draft-core-bootstrap-v1" &&
+            reference.root_relative_path == "testing") {
+          saw_expect = true;
+        }
+        if (reference.name == "test") saw_test_parameter = true;
+      }
+      EXPECT(state, saw_answer);
+      EXPECT(state, saw_expect);
+      EXPECT(state, saw_test_parameter);
+    }
+  }
+  EXPECT(state, !provider.visible_binding_names.empty());
+  if (!provider.visible_binding_names.empty()) {
+    const std::vector<std::string> &ordinary_names =
+        provider.visible_binding_names.back();
+    EXPECT(state,
+        std::find(
+            ordinary_names.begin(), ordinary_names.end(), "testing") ==
+            ordinary_names.end());
+    EXPECT(state,
+        std::find(
+            ordinary_names.begin(), ordinary_names.end(), "expect") ==
+            ordinary_names.end());
+    EXPECT(state,
+        std::find(
+            ordinary_names.begin(),
+            ordinary_names.end(),
+            "test_generated_answer") == ordinary_names.end());
   }
   EXPECT(state, missing_runner.tested_procedures == 1);
   EXPECT(state, missing_diagnostics.has_errors());
@@ -1631,6 +1709,27 @@ void test_tests_gate_manifest_commit(TestState &state) {
   EXPECT(state, after.state == draft::ResolutionManifestLoadState::Loaded);
   EXPECT(state,
       draft::serialize_resolution_manifest(after.manifest) == committed);
+}
+
+void test_invalid_validation_context_stops_before_provider(TestState &state) {
+  TemporaryWorkspace workspace;
+  workspace.write_source("must not reach provider");
+  workspace.write_invalid_test_source();
+  FakeProviderState provider;
+
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  const draft::ResolveWorkspaceResult resolved = draft::resolve_workspace(
+      sources,
+      workspace.package.string(),
+      resolve_options(workspace, provider),
+      diagnostics);
+  EXPECT(state, !resolved.ok);
+  EXPECT(state, !resolved.committed);
+  EXPECT(state, provider.calls == 0);
+  EXPECT(state,
+      draft::render_diagnostics(sources, diagnostics).find(
+          "must return void") != std::string::npos);
 }
 
 void test_validation_context_stales_synthesis(TestState &state) {
@@ -1732,6 +1831,7 @@ int main() {
   test_independent_member_and_compile_time_sites_share_round(state);
   test_member_dependent_compile_time_site_waits_for_next_round(state);
   test_tests_gate_manifest_commit(state);
+  test_invalid_validation_context_stops_before_provider(state);
   test_validation_context_stales_synthesis(state);
   test_cancelled_resolution_does_not_start_transaction(state);
   if (state.failures != 0) {

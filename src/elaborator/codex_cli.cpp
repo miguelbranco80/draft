@@ -613,6 +613,115 @@ void append_field(
     append_field(
         "VALIDATION_SOURCE_SHA256", validation.source_digest.hex(), prompt);
     append_field("VALIDATION_SOURCE", validation.source, prompt);
+    append_field(
+        "VALIDATION_TYPING_COMPLETE",
+        validation.typing_complete ? "true" : "false",
+        prompt);
+    prompt += "VALIDATION_PROCEDURES ";
+    append_u64(
+        static_cast<std::uint64_t>(validation.procedures.size()), prompt);
+    for (const AgentValidationProcedureContext &procedure :
+         validation.procedures) {
+      if (sha256(procedure.type_definition) !=
+          procedure.type_definition_digest) {
+        provider_error(
+            diagnostics,
+            "Codex validation procedure type identity is inconsistent");
+        return false;
+      }
+      append_field("VALIDATION_PROCEDURE_NAME", procedure.name, prompt);
+      append_field(
+          "VALIDATION_PROCEDURE_TYPE_SHA256",
+          procedure.type_digest.hex(),
+          prompt);
+      append_field(
+          "VALIDATION_PROCEDURE_TYPE_TEXT", procedure.type_text, prompt);
+      append_field(
+          "VALIDATION_PROCEDURE_TYPE_DEFINITION_SHA256",
+          procedure.type_definition_digest.hex(),
+          prompt);
+      append_field(
+          "VALIDATION_PROCEDURE_TYPE_DEFINITION",
+          procedure.type_definition,
+          prompt);
+      append_field(
+          "VALIDATION_STATE_SIZE",
+          std::to_string(procedure.state_size),
+          prompt);
+      append_field(
+          "VALIDATION_STATE_ALIGNMENT",
+          std::to_string(procedure.state_alignment),
+          prompt);
+      append_field(
+          "VALIDATION_FAILURE_OFFSET",
+          std::to_string(procedure.failure_offset),
+          prompt);
+      append_field(
+          "VALIDATION_REPORT_SIZE",
+          std::to_string(procedure.report_size),
+          prompt);
+      prompt += "VALIDATION_REFERENCES ";
+      append_u64(
+          static_cast<std::uint64_t>(procedure.references.size()), prompt);
+      for (const AgentValidationReferenceContext &reference :
+           procedure.references) {
+        if (sha256(reference.type_definition) !=
+            reference.type_definition_digest) {
+          provider_error(
+              diagnostics,
+              "Codex validation reference type identity is inconsistent");
+          return false;
+        }
+        append_field(
+            "VALIDATION_REFERENCE_ROOT_IDENTITY",
+            reference.root_identity,
+            prompt);
+        append_field(
+            "VALIDATION_REFERENCE_ROOT_RELATIVE_PATH",
+            reference.root_relative_path,
+            prompt);
+        append_field("VALIDATION_REFERENCE_NAME", reference.name, prompt);
+        append_field(
+            "VALIDATION_REFERENCE_KIND",
+            symbol_kind_name(reference.kind),
+            prompt);
+        append_field(
+            "VALIDATION_REFERENCE_TYPE_SHA256",
+            reference.type_digest.hex(),
+            prompt);
+        append_field(
+            "VALIDATION_REFERENCE_TYPE_TEXT", reference.type_text, prompt);
+        append_field(
+            "VALIDATION_REFERENCE_TYPE_DEFINITION_SHA256",
+            reference.type_definition_digest.hex(),
+            prompt);
+        append_field(
+            "VALIDATION_REFERENCE_TYPE_DEFINITION",
+            reference.type_definition,
+            prompt);
+        append_field(
+            "VALIDATION_REFERENCE_HAS_CONSTANT",
+            reference.has_constant ? "true" : "false",
+            prompt);
+        if (reference.has_constant) {
+          if (sha256(reference.constant_definition) !=
+              reference.constant_digest) {
+            provider_error(
+                diagnostics,
+                "Codex validation reference constant identity is inconsistent");
+            return false;
+          }
+          append_field(
+              "VALIDATION_REFERENCE_CONSTANT_SHA256",
+              reference.constant_digest.hex(),
+              prompt);
+          append_field(
+              "VALIDATION_REFERENCE_CONSTANT",
+              reference.constant_definition,
+              prompt);
+        }
+      }
+    }
   }
   append_field(primary_field_name, primary_field_value, prompt);
   prompt += "VISIBLE_BINDINGS ";

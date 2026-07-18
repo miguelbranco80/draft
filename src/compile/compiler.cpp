@@ -124,6 +124,14 @@ void hash_field(Sha256 &hash, std::string_view value) {
   return false;
 }
 
+[[nodiscard]] bool has_agent_obligation_record(
+    const AgentMetadataResult &metadata) {
+  for (const AgentRecord &record : metadata.records) {
+    if (record.kind != AgentConstructKind::Documentation) return true;
+  }
+  return false;
+}
+
 // A package with a ready interface-stage synthesis obligation cannot yet
 // publish public declaration types. In particular, a synthesized array count
 // leaves its public alias temporarily invalid. Consumers are suspended by
@@ -211,8 +219,9 @@ void hash_field(Sha256 &hash, std::string_view value) {
 
 // Validation files stay outside the ordinary workspace graph, so handwritten
 // builds do not acquire test-only imports or declarations. A package that has
-// synthesis sites gets one parallel target-selected load with both validation
-// roles enabled. Only its canonical test/benchmark rows survive this helper;
+// synthesis or judgment obligations gets one parallel target-selected load
+// with both validation roles enabled. Only its canonical test/benchmark rows
+// survive this helper;
 // host paths and the duplicate ordinary syntax do not enter obligations.
 [[nodiscard]] std::vector<AgentValidationContext> load_validation_context(
     SourceManager &sources,
@@ -391,7 +400,8 @@ void append_instantiated_type(
 
   std::vector<AgentValidationContext> validation_context =
       package.validation_context;
-  if (validation_context.empty() && has_synthesis_record(metadata)) {
+  if (options.validation_kind == ValidationKind::None &&
+      validation_context.empty() && has_agent_obligation_record(metadata)) {
     validation_context = load_validation_context(
         sources, workspace_package, options.workspace, diagnostics);
   }
@@ -1125,7 +1135,9 @@ CompileWorkspaceResult compile_workspace(
         package.semantics.package,
         options.attachments,
         diagnostics);
-    if (package.metadata.ok && has_synthesis_record(package.metadata)) {
+    if (options.validation_kind == ValidationKind::None &&
+        package.metadata.ok &&
+        has_agent_obligation_record(package.metadata)) {
       package.validation_context = load_validation_context(
           sources, workspace_package, options.workspace, diagnostics);
     }
@@ -1264,6 +1276,92 @@ CompileWorkspaceResult compile_workspace(
     }
   }
 
+  // Validation files are compiled in a parallel graph only after interface
+  // synthesis has resolved every declaration they may name. Runtime body holes
+  // remain legal checked HIR sites, so this pass can type tests before asking a
+  // body synthesizer while still keeping test-only imports out of the ordinary
+  // graph above. Its non-None validation kind is also the recursion guard: a
+  // validation compile never asks for another validation-context compile.
+  bool needs_test_context = false;
+  bool needs_benchmark_context = false;
+  for (std::size_t package_index = 0;
+       package_index < result.packages.size(); ++package_index) {
+    if (!result.packages[package_index].has_value()) continue;
+    CompiledPackage &package = *result.packages[package_index];
+    if (!package.bodies.ok) continue;
+    WorkspacePackage &workspace_package = result.graph.packages[package_index];
+    package.metadata = collect_agent_metadata(
+        sources,
+        workspace_package.loaded,
+        package.semantics.package,
+        options.attachments,
+        diagnostics);
+    if (!package.metadata.ok ||
+        !has_agent_obligation_record(package.metadata) ||
+        options.validation_kind != ValidationKind::None) {
+      continue;
+    }
+    if (package.validation_context.empty()) {
+      package.validation_context = load_validation_context(
+          sources, workspace_package, options.workspace, diagnostics);
+    }
+    for (const AgentValidationContext &validation :
+         package.validation_context) {
+      needs_test_context = needs_test_context || validation.kind == "test";
+      needs_benchmark_context =
+          needs_benchmark_context || validation.kind == "benchmark";
+    }
+  }
+
+  constexpr std::array typed_validation_kinds{
+      ValidationKind::Test,
+      ValidationKind::Benchmark,
+  };
+  for (ValidationKind kind : typed_validation_kinds) {
+    const bool needed = kind == ValidationKind::Test
+        ? needs_test_context
+        : needs_benchmark_context;
+    if (!needed) continue;
+    CompileWorkspaceOptions validation_options = options;
+    validation_options.validation_kind = kind;
+    validation_options.lower_mir = false;
+    validation_options.emit_llvm = false;
+    CompileWorkspaceResult validation = compile_workspace(
+        sources,
+        root_package_directory,
+        std::move(validation_options),
+        diagnostics);
+    if (!validation.ok) return result;
+
+    for (std::size_t package_index = 0;
+         package_index < result.packages.size(); ++package_index) {
+      if (!result.packages[package_index].has_value()) continue;
+      CompiledPackage &package = *result.packages[package_index];
+      const std::optional<std::size_t> validation_index = package_index_for(
+          validation,
+          package.identity.root_identity,
+          package.identity.root_relative_path);
+      if (!validation_index.has_value() ||
+          !validation.packages[*validation_index].has_value()) {
+        continue;
+      }
+      const CompiledPackage &typed_package =
+          *validation.packages[*validation_index];
+      if (!enrich_agent_validation_context(
+              typed_package.identity,
+              validation.graph.packages[*validation_index].loaded,
+              typed_package.semantics.package,
+              typed_package.semantics.constants,
+              typed_package.bodies.program,
+              kind,
+              validation.validation_entries,
+              package.validation_context,
+              diagnostics)) {
+        return result;
+      }
+    }
+  }
+
   // Phase 3: dependencies now have every requested concrete body. Publish
   // audited effects and complete interfaces dependency-first, then compose
   // consumer denials against those final summaries.
@@ -1276,22 +1374,6 @@ CompileWorkspaceResult compile_workspace(
     if (!package.bodies.ok) continue;
 
     refresh_imported_effects(package.semantics.package, result, diagnostics);
-    package.metadata = collect_agent_metadata(
-        sources,
-        workspace_package.loaded,
-        package.semantics.package,
-        options.attachments,
-        diagnostics);
-    // Expression, statement, and assembly sites are installed by body
-    // checking, so a package with only later-stage synthesis was not visible to
-    // the phase-1 guard above. Load its validation context now, before the final
-    // obligations are hashed. Early declaration/member packages reuse the rows
-    // they already collected.
-    if (package.metadata.ok && package.validation_context.empty() &&
-        has_synthesis_record(package.metadata)) {
-      package.validation_context = load_validation_context(
-          sources, workspace_package, options.workspace, diagnostics);
-    }
     package.obligations = build_agent_obligations(
         workspace_package.identity,
         sources,

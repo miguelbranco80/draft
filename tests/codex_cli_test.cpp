@@ -97,7 +97,7 @@ struct TemporaryFixture {
         "test \"$(cat \"$work/import-00000000-documentation-00000000-attachment-00000000.bin\")\" = imported-design-bytes || exit 34\n"
         "prompt=$(cat)\n"
         "case \"$prompt\" in\n"
-        "  *REQUEST_FORMAT*draft-synthesis-request-v18*ROOT_IDENTITY*workspace*SOURCE_RELATIVE_PATH*package.draft*ANCHOR_NAME*visible_name*EXPECTED_TYPE_TEXT*i64*TARGET_IDENTITY*draft-aarch64-macos-v5*ENCLOSING_DECLARATION_NAME*visible_name*ENCLOSING_DECLARATION_SOURCE*visible_name*ENCLOSING_SEMANTIC_SKELETON*fixture-skeleton*BRANCH_REFINEMENTS*BRANCH_KIND*loop-condition-entered*BRANCH_SUBJECT*ready*BRANCH_SUBJECT_TYPE_TEXT*bool*ACTIVE_DENIALS*DENIAL_SELECTOR*assert*PERMITTED_CONTEXT_FIELDS*CONTEXT_FIELD_NAME*allocator*CONTEXT_FIELD_TYPE_TEXT*runtime.Allocator*PARAMETRIC_PARAMETERS*PARAMETER_NAME*T*PARAMETER_CONSTRAINT*integer*PARAMETER_TYPE_TEXT*T*TYPE_CONTEXTS*TYPE_REFERENCE_SHA256*TYPE_DEFINITION*MEMBER_NAME*IMPORTED_PACKAGES*IMPORT_ALIAS*lib*IMPORT_DEFINITION*DECLARATION_NAME*make*IMPORT_DOCUMENTATION*IMPORT_DOC_ANCHOR*make*IMPORT_DOC_TEXT*imported-design*IMPORT_DOC_ATTACHMENT_PATH*IMPORTED.md*GUIDING_JUDGMENTS*JUDGMENT_ANCHOR*visible_name*JUDGMENT_CLAIM*preserve-invariant*JUDGMENT_ATTACHMENT_PATH*EVIDENCE.md*DOCUMENTATION*DOC_ANCHOR*visible_name*DOC_TEXT*design-context*DOC_ATTACHMENT_PATH*DESIGN.md*VALIDATION_CONTEXT*VALIDATION_KIND*test*VALIDATION_SOURCE_PATH*behavior_test.draft*VALIDATION_SOURCE*test_fixture*AUTHOR_PROMPT*make-answer*BINDING_NAME*visible_name*BINDING_TYPE_TEXT*u32*BINDING_HAS_CONSTANT*true*BINDING_CONSTANT*fixture-constant*RELEVANT_DECLARATIONS*DECLARATION_SOURCE_PATH*package.draft*DECLARATION_NAME*visible_name*DECLARATION_TYPE_TEXT*u32*DECLARATION_HAS_CONSTANT*true*DECLARATION_CONSTANT*fixture-constant*DECLARATION_SOURCE*visible_name*) ;;\n"
+        "  *REQUEST_FORMAT*draft-synthesis-request-v19*ROOT_IDENTITY*workspace*SOURCE_RELATIVE_PATH*package.draft*ANCHOR_NAME*visible_name*EXPECTED_TYPE_TEXT*i64*TARGET_IDENTITY*draft-aarch64-macos-v5*ENCLOSING_DECLARATION_NAME*visible_name*ENCLOSING_DECLARATION_SOURCE*visible_name*ENCLOSING_SEMANTIC_SKELETON*fixture-skeleton*BRANCH_REFINEMENTS*BRANCH_KIND*loop-condition-entered*BRANCH_SUBJECT*ready*BRANCH_SUBJECT_TYPE_TEXT*bool*ACTIVE_DENIALS*DENIAL_SELECTOR*assert*PERMITTED_CONTEXT_FIELDS*CONTEXT_FIELD_NAME*allocator*CONTEXT_FIELD_TYPE_TEXT*runtime.Allocator*PARAMETRIC_PARAMETERS*PARAMETER_NAME*T*PARAMETER_CONSTRAINT*integer*PARAMETER_TYPE_TEXT*T*TYPE_CONTEXTS*TYPE_REFERENCE_SHA256*TYPE_DEFINITION*MEMBER_NAME*IMPORTED_PACKAGES*IMPORT_ALIAS*lib*IMPORT_DEFINITION*DECLARATION_NAME*make*IMPORT_DOCUMENTATION*IMPORT_DOC_ANCHOR*make*IMPORT_DOC_TEXT*imported-design*IMPORT_DOC_ATTACHMENT_PATH*IMPORTED.md*GUIDING_JUDGMENTS*JUDGMENT_ANCHOR*visible_name*JUDGMENT_CLAIM*preserve-invariant*JUDGMENT_ATTACHMENT_PATH*EVIDENCE.md*DOCUMENTATION*DOC_ANCHOR*visible_name*DOC_TEXT*design-context*DOC_ATTACHMENT_PATH*DESIGN.md*VALIDATION_CONTEXT*VALIDATION_KIND*test*VALIDATION_SOURCE_PATH*behavior_test.draft*VALIDATION_SOURCE*test_fixture*VALIDATION_TYPING_COMPLETE*true*VALIDATION_PROCEDURE_NAME*test_fixture*VALIDATION_PROCEDURE_TYPE_TEXT*proc*VALIDATION_STATE_SIZE*24*VALIDATION_REFERENCE_NAME*visible_name*VALIDATION_REFERENCE_TYPE_TEXT*u32*VALIDATION_REFERENCE_HAS_CONSTANT*true*VALIDATION_REFERENCE_CONSTANT*fixture-constant*AUTHOR_PROMPT*make-answer*BINDING_NAME*visible_name*BINDING_TYPE_TEXT*u32*BINDING_HAS_CONSTANT*true*BINDING_CONSTANT*fixture-constant*RELEVANT_DECLARATIONS*DECLARATION_SOURCE_PATH*package.draft*DECLARATION_NAME*visible_name*DECLARATION_TYPE_TEXT*u32*DECLARATION_HAS_CONSTANT*true*DECLARATION_CONSTANT*fixture-constant*DECLARATION_SOURCE*visible_name*) ;;\n"
         "  *) exit 28 ;;\n"
         "esac\n"
         "printf '%s' '{\"source\":\"40 + 2\\n\"}' > \"$output\"\n";
@@ -233,6 +233,34 @@ draft::SynthesisRequest make_request() {
   validation.source_relative_path = "behavior_test.draft";
   validation.source = "test_fixture";
   validation.source_digest = draft::sha256(validation.source);
+  validation.typing_complete = true;
+  draft::AgentValidationProcedureContext typed_procedure;
+  typed_procedure.name = "test_fixture";
+  typed_procedure.type_digest = draft::sha256("validation-procedure-type");
+  typed_procedure.type_text = "proc";
+  typed_procedure.type_definition = "validation-procedure-definition";
+  typed_procedure.type_definition_digest =
+      draft::sha256(typed_procedure.type_definition);
+  typed_procedure.state_size = 24;
+  typed_procedure.state_alignment = 8;
+  typed_procedure.failure_offset = 8;
+  typed_procedure.report_size = 16;
+  draft::AgentValidationReferenceContext typed_reference;
+  typed_reference.root_identity = "workspace";
+  typed_reference.root_relative_path = "app";
+  typed_reference.name = "visible_name";
+  typed_reference.kind = draft::SymbolKind::Constant;
+  typed_reference.type_digest = draft::sha256("binding-type");
+  typed_reference.type_text = "u32";
+  typed_reference.type_definition = "validation-reference-definition";
+  typed_reference.type_definition_digest =
+      draft::sha256(typed_reference.type_definition);
+  typed_reference.has_constant = true;
+  typed_reference.constant_definition = "fixture-constant";
+  typed_reference.constant_digest =
+      draft::sha256(typed_reference.constant_definition);
+  typed_procedure.references.push_back(std::move(typed_reference));
+  validation.procedures.push_back(std::move(typed_procedure));
   request.obligation.validation_context.push_back(std::move(validation));
   draft::AgentVisibleBinding binding;
   binding.name = "visible_name";
@@ -319,6 +347,20 @@ void test_adapter_contract_and_identity(TestState &state) {
           invalid_declaration_response,
           invalid_declaration_diagnostics));
   EXPECT(state, invalid_declaration_diagnostics.error_count() == 1);
+
+  draft::SynthesisRequest invalid_validation = request;
+  invalid_validation.obligation.validation_context.front()
+      .procedures.front().type_definition_digest =
+      draft::sha256("different validation type");
+  draft::DiagnosticSink invalid_validation_diagnostics;
+  draft::SynthesisResponse invalid_validation_response;
+  EXPECT(state,
+      !provider.synthesize(
+          provider.state,
+          invalid_validation,
+          invalid_validation_response,
+          invalid_validation_diagnostics));
+  EXPECT(state, invalid_validation_diagnostics.error_count() == 1);
 
   // The launcher is not the distribution. Adding one sibling resource leaves
   // its bytes untouched but must invalidate the already configured provider
