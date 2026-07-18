@@ -409,6 +409,13 @@ main :: proc() -> int {
   EXPECT(state, module.text.find(
       "store ptr %argv, ptr @__draft.process_argv") != std::string::npos);
   EXPECT(state, module.text.find("ptr @__draft.root_context") != std::string::npos);
+  EXPECT(state, module.text.find(
+      "define internal void @__draft.default_logger") != std::string::npos);
+  EXPECT(state, module.text.find(
+      "define internal i1 @__draft.default_random") != std::string::npos);
+  EXPECT(state, module.text.find(
+      "define internal ptr @__draft.ensure_thread_context") !=
+      std::string::npos);
   EXPECT(state, module.text.find("(ptr null)") == std::string::npos);
   EXPECT(state, module.text.find("trunc i64") != std::string::npos);
   EXPECT(state, module.text.find("sdiv i64") != std::string::npos);

@@ -121,6 +121,10 @@ struct MirInstruction {
   std::string assembly_text;
   std::string assembly_constraints;
   bool passes_context = false;
+  // The explicit runtime.call_with_context bridge initializes Draft TLS before
+  // entering its ordinary callback. Normal ordinary calls already run on an
+  // attached Draft thread and leave this false.
+  bool establishes_thread_context = false;
 };
 
 struct MirValue {

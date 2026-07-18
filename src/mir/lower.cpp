@@ -1103,6 +1103,7 @@ private:
               lower_expression(expression.operands[index]));
         }
         instruction.passes_context = true;
+        instruction.establishes_thread_context = true;
         if (expression.type == semantic_.types.builtins().void_type) {
           emit_void(std::move(instruction));
           return {};

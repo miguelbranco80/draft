@@ -133,21 +133,24 @@ the copy, and leaving the block restores the surrounding pointer. A `c proc`
 has no implicit Context and may not name `context`.
 
 Two compiler-owned bridges cover that C boundary. `runtime.default_context`
-returns a copy of the executable root's process-default Context through the
-Darwin indirect aggregate-result convention. `runtime.call_with_context`
-statically checks a non-nil `^Context`, an ordinary Draft callback, and the
-callback's exact arguments, then lowers directly to that callback with the
-explicit hidden Context pointer. Named callbacks retain their ordinary effect
-summaries; indirect callbacks remain unknown edges. These are narrow versioned
-runtime exceptions, not permission to use Context in arbitrary C signatures.
-Per-thread attachment and a TLS-backed foreign-thread default are later runtime
-work; the current bridge deliberately exposes the process-default snapshot.
+lazily initializes Draft TLS from the process-default Context and returns the
+calling thread's snapshot through the Darwin indirect aggregate-result
+convention. `runtime.call_with_context` statically checks a non-nil `^Context`,
+an ordinary Draft callback, and the callback's exact arguments, initializes
+Draft TLS when entered from a foreign-created thread, then lowers directly to
+that callback with the explicit hidden Context pointer. Named callbacks retain
+their ordinary effect summaries; indirect callbacks remain unknown edges.
+These are narrow versioned runtime exceptions, not permission to use Context in
+arbitrary C signatures. The supplied pointer remains dynamic-call state and is
+not installed as the thread default.
 
 The hosted default allocator implements the three `core/runtime` operations
 against the Darwin heap. Fresh storage is zeroed, alignments through 16 use the
 ordinary allocator, larger alignments use `posix_memalign`, and aligned resize
 allocates/copies/releases while preserving the old allocation on failure. The
-root Context currently uses this provider for both general and temporary
-allocation. A thread-owned resettable temporary arena remains part of the TLS
-runtime work; `core/memory` currently exposes the honest byte-level substrate
-and explicit allocator forms without pretending that arena policy exists.
+root and each lazy thread Context currently use this provider for both general
+and temporary allocation. The hosted runtime now installs a stderr logger and
+`arc4random_buf` random provider rather than empty records. A thread-owned
+resettable temporary arena remains runtime work; `core/memory` currently
+exposes the honest byte-level substrate and explicit allocator forms without
+pretending that arena policy exists.

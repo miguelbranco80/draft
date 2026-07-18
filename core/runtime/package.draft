@@ -70,14 +70,16 @@ pub Context :: @repr(C) struct {
     _internal: rawptr,
 }
 
-// The implementation is supplied by the compiler's hosted runtime object.  It
-// is a context-free C-ABI bridge so a foreign callback can acquire compatible
-// state before it enters an ordinary Draft procedure.
+// The implementation is supplied by the compiler's hosted runtime object. It
+// is a context-free C-ABI bridge so a foreign callback can lazily establish
+// Draft TLS and acquire its thread-local default Context snapshot before it
+// enters an ordinary Draft procedure.
 foreign draft_runtime {
     pub default_context :: c "__draft.runtime.default_context" proc() -> Context
     // The surface declaration is a stable capability name. The compiler checks
     // and specializes the callback's complete parameter/result signature at
-    // each call site, so no erased or variadic runtime ABI is involved.
+    // each call site, so no erased or variadic runtime ABI is involved. The
+    // compiler also attaches a foreign-created thread before the direct call.
     pub call_with_context :: c "__draft.runtime.call_with_context" proc()
 }
 

@@ -478,7 +478,8 @@ private:
                  "{ ptr, i64 }, { ptr, i64 }, i64, i64)\n"
               << "declare hidden void @__draft.bounds(i64, i64, ptr, i64, i64)\n"
               << "declare hidden void @__draft.slice_bounds("
-                 "i64, i64, i64, ptr, i64, i64)\n\n";
+                 "i64, i64, i64, ptr, i64, i64)\n"
+              << "declare hidden void @\"__draft.runtime.attach_thread\"()\n\n";
       return;
     }
 
@@ -502,9 +503,13 @@ private:
                "%draft.runtime.Allocator { ptr @__draft.default_allocator, "
                "ptr null }, "
                "ptr @__draft.default_assertion_failure, "
-               "%draft.runtime.Logger zeroinitializer, "
-               "%draft.runtime.RandomGenerator zeroinitializer, "
-               "ptr null, i64 0, ptr null }, align 8\n\n";
+               "%draft.runtime.Logger { ptr @__draft.default_logger, ptr null }, "
+               "%draft.runtime.RandomGenerator { ptr @__draft.default_random, "
+               "ptr null }, ptr null, i64 0, ptr null }, align 8\n"
+            << "@__draft.thread_context = internal thread_local global "
+               "%draft.runtime.Context zeroinitializer, align 8\n"
+            << "@__draft.thread_context_initialized = internal thread_local "
+               "global i1 false, align 1\n\n";
 
     const std::string assertion_prefix = "Draft assertion failed: ";
     const std::string bounds_prefix = "Draft bounds check failed";
@@ -522,6 +527,7 @@ private:
             << "declare ptr @realloc(ptr, i64)\n"
             << "declare void @free(ptr)\n"
             << "declare i32 @posix_memalign(ptr, i64, i64)\n"
+            << "declare void @arc4random_buf(ptr, i64)\n"
             << "declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)\n"
             << "declare void @llvm.memset.p0.i64(ptr, i8, i64, i1)\n\n"
             // The runtime allocator is an ordinary Draft procedure pointer:
@@ -558,6 +564,30 @@ private:
             << "  ret ptr null\n"
             << "empty:\n"
             << "  ret ptr null\n"
+            << "}\n\n"
+            // The default logger deliberately owns no formatting policy beyond
+            // a trailing newline. Applications can replace the context field
+            // with any ordinary Draft provider record.
+            << "define internal void @__draft.default_logger("
+               "ptr %context, ptr %user, i8 %level, "
+               "{ ptr, i64 } %message) {\n"
+            << "entry:\n"
+            << "  %message.pointer = extractvalue { ptr, i64 } %message, 0\n"
+            << "  %message.length = extractvalue { ptr, i64 } %message, 1\n"
+            << "  %write.message = call i64 @write("
+               "i32 2, ptr %message.pointer, i64 %message.length)\n"
+            << "  %write.newline = call i64 @write("
+               "i32 2, ptr @.draft.runtime.newline, i64 1)\n"
+            << "  ret void\n"
+            << "}\n\n"
+            // arc4random_buf is supplied by the pinned macOS runtime. It has
+            // no failure result; the Draft provider therefore returns true
+            // after filling the requested byte range, including an empty one.
+            << "define internal i1 @__draft.default_random("
+               "ptr %context, ptr %user, ptr %output, i64 %count) {\n"
+            << "entry:\n"
+            << "  call void @arc4random_buf(ptr %output, i64 %count)\n"
+            << "  ret i1 true\n"
             << "}\n\n"
             << "define internal ptr @__draft.default_allocator("
                "ptr %context, ptr %user, i8 %operation, ptr %old_memory, "
@@ -704,12 +734,39 @@ private:
     }
     const std::string context_type =
         llvm_type(semantic_.runtime_context_type);
-    output_ << "define hidden void @\"__draft.runtime.default_context\"("
+    // Foreign-created threads lazily acquire a private Context snapshot. The
+    // bridge's explicit Context pointer remains dynamic-call state; this TLS
+    // copy is the persistent thread attachment used by later default-context
+    // requests and future thread-owned runtime facilities.
+    output_ << "define internal ptr @__draft.ensure_thread_context() {\n"
+            << "entry:\n"
+            << "  %initialized = load i1, ptr "
+               "@__draft.thread_context_initialized, align 1\n"
+            << "  br i1 %initialized, label %ready, label %initialize\n"
+            << "initialize:\n"
+            << "  %root = load %draft.runtime.Context, "
+               "ptr @__draft.root_context, align 8\n"
+            << "  store %draft.runtime.Context %root, "
+               "ptr @__draft.thread_context, align 8\n"
+            << "  store i1 true, ptr @__draft.thread_context_initialized, "
+               "align 1\n"
+            << "  br label %ready\n"
+            << "ready:\n"
+            << "  ret ptr @__draft.thread_context\n"
+            << "}\n\n"
+            << "define hidden void @\"__draft.runtime.attach_thread\"() {\n"
+            << "entry:\n"
+            << "  %thread.context = call ptr @__draft.ensure_thread_context()\n"
+            << "  ret void\n"
+            << "}\n\n"
+            << "define hidden void @\"__draft.runtime.default_context\"("
                "ptr sret(" << context_type << ") align 8 %result) {\n"
             << "entry:\n"
-            << "  %root = load " << context_type
-            << ", ptr @__draft.root_context, align 8\n"
-            << "  store " << context_type << " %root, ptr %result, align 8\n"
+            << "  %thread.context = call ptr @__draft.ensure_thread_context()\n"
+            << "  %snapshot = load " << context_type
+            << ", ptr %thread.context, align 8\n"
+            << "  store " << context_type
+            << " %snapshot, ptr %result, align 8\n"
             << "  ret void\n"
             << "}\n\n";
   }
@@ -2290,6 +2347,9 @@ private:
         emit_c_call(
             instruction_index, procedure, instruction, operands);
         break;
+      }
+      if (instruction.establishes_thread_context) {
+        output_ << "  call void @\"__draft.runtime.attach_thread\"()\n";
       }
       if (instruction.result.is_valid()) output_ << "  " << result << " = ";
       output_ << "call " << llvm_type(instruction.type) << ' '

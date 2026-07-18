@@ -155,6 +155,18 @@ void test_compiler_distributed_core(TestState &state) {
           "%draft.runtime.Allocator { ptr @__draft.default_allocator, "
           "ptr null }") != std::string::npos);
       EXPECT(state, root_package->llvm.text.find(
+          "%draft.runtime.Logger { ptr @__draft.default_logger, ptr null }") !=
+          std::string::npos);
+      EXPECT(state, root_package->llvm.text.find(
+          "%draft.runtime.RandomGenerator { ptr @__draft.default_random, "
+          "ptr null }") != std::string::npos);
+      EXPECT(state, root_package->llvm.text.find(
+          "@__draft.thread_context = internal thread_local global") !=
+          std::string::npos);
+      EXPECT(state, root_package->llvm.text.find(
+          "call void @\"__draft.runtime.attach_thread\"()") !=
+          std::string::npos);
+      EXPECT(state, root_package->llvm.text.find(
           "call void @\"__draft.runtime.default_context\"") !=
           std::string::npos);
       EXPECT(state, root_package->llvm.text.find(
