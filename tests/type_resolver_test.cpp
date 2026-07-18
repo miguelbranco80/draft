@@ -409,7 +409,7 @@ Narrow_Concrete :: struct {
 }
 
 Explicit_Wrap :: struct {
-    values: [cast[u8](256) + 1]u8,
+    values: [cast[usize](cast[u8](256) + 1)]u8,
 }
 )draft");
 
@@ -480,6 +480,33 @@ Concrete :: struct {
   const std::string rendered =
       draft::render_diagnostics(source.sources, source.diagnostics);
   EXPECT(state, rendered.find("out-of-range shift") != std::string::npos);
+}
+
+void test_layout_integer_context_diagnostics(TestState &state) {
+  SemanticSource source(R"draft(
+package types
+
+Bad_Array :: struct {
+    values: [cast[u64](4)]u8,
+}
+
+Bad_Vector :: #simd[cast[u64](4)]u32
+
+Bad_Aligned :: @align(cast[u64](4)) struct {
+    value: u8,
+}
+)draft");
+
+  EXPECT(state, source.diagnostics.error_count() == 3);
+  const std::string rendered =
+      draft::render_diagnostics(source.sources, source.diagnostics);
+  EXPECT(state, rendered.find("package.draft:5:14") != std::string::npos);
+  EXPECT(state, rendered.find("array length must have type 'usize'") !=
+                    std::string::npos);
+  EXPECT(state, rendered.find("SIMD lane count must have type 'usize'") !=
+                    std::string::npos);
+  EXPECT(state, rendered.find("'@align' argument must have type 'usize'") !=
+                    std::string::npos);
 }
 
 void test_parametric_type_diagnostics(TestState &state) {
@@ -652,6 +679,7 @@ int main() {
   test_invalid_lengths_and_unknown_types(state);
   test_dependent_integer_expressions(state);
   test_dependent_integer_expression_diagnostics(state);
+  test_layout_integer_context_diagnostics(state);
   test_parametric_type_diagnostics(state);
   test_value_parameter_diagnostics(state);
   test_invalid_enum_values(state);

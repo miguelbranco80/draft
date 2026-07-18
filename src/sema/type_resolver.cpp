@@ -577,30 +577,53 @@ private:
     return nullptr;
   }
 
-  // Enforces the contextual type of an integer result returned by the full
-  // interpreter. Untyped integers convert at the context boundary; a concrete
-  // integer must already have the exact required Draft identity. A missing
-  // descriptor denotes an integer-shaped non-integer such as an enum value.
-  [[nodiscard]] bool resolved_integer_matches(
+  // Enforces the contextual type of one ready layout integer. Full-interpreter
+  // results carry their round-independent descriptor explicitly. Expressions
+  // handled by the early builder recover the same information from their
+  // canonical root, so `cast[u64](4)` cannot become a usize merely because both
+  // types have the same AArch64 representation. Untyped integers remain
+  // contextually convertible; integer-shaped non-integers such as enums fail.
+  [[nodiscard]] bool integer_constant_matches(
       const SyntaxTree &tree,
       NodeId expression,
+      ScopeId scope,
       TypeId expected,
       std::string_view description) {
     const ResolvedIntegerExpression *resolved =
         resolved_integer(tree, expression);
-    if (resolved == nullptr) return true;
-    if (!resolved->type.has_value()) {
+    std::optional<IntegerExpressionType> supplied_type;
+    bool type_is_known = false;
+    if (resolved != nullptr) {
+      type_is_known = true;
+      supplied_type = resolved->type;
+    } else {
+      IntegerExpression built;
+      const BuiltIntegerExpressionNode root = build_integer_expression_node(
+          tree, expression, scope, built);
+      if (root.valid && root.constant.has_value() && root.type.is_valid()) {
+        type_is_known = true;
+        const TypeKind kind = semantic_.types.type(root.type).kind;
+        if (kind == TypeKind::UntypedInteger) {
+          supplied_type = IntegerExpressionType{};
+        } else if (kind == TypeKind::SignedInteger ||
+                   kind == TypeKind::UnsignedInteger) {
+          supplied_type = integer_expression_type(root.type);
+        }
+      }
+    }
+    if (!type_is_known) return true;
+    if (!supplied_type.has_value()) {
       diagnostics_.error(
           tree.node(expression).range,
           std::string(description) + " must have an integer type");
       return false;
     }
-    if (resolved->type->representation ==
+    if (supplied_type->representation ==
         IntegerExpressionRepresentation::Untyped) {
       return true;
     }
     const IntegerExpressionType required = integer_expression_type(expected);
-    if (*resolved->type == required) return true;
+    if (*supplied_type == required) return true;
     diagnostics_.error(
         tree.node(expression).range,
         std::string(description) + " must have type '" + required.identity + "'");
@@ -2112,9 +2135,10 @@ private:
       const std::optional<std::uint64_t> count =
           layout_integer(tree, node.children.front(), scope);
       if (count.has_value() &&
-          !resolved_integer_matches(
+          !integer_constant_matches(
               tree,
               node.children.front(),
+              scope,
               semantic_.types.builtins().usize_type,
               "array length")) {
         return invalid;
@@ -2150,9 +2174,10 @@ private:
       const std::optional<std::uint64_t> lanes =
           layout_integer(tree, node.children.front(), scope);
       if (lanes.has_value() &&
-          !resolved_integer_matches(
+          !integer_constant_matches(
               tree,
               node.children.front(),
+              scope,
               semantic_.types.builtins().usize_type,
               "SIMD lane count")) {
         return invalid;
@@ -2552,9 +2577,10 @@ private:
           const std::optional<std::uint64_t> alignment =
               value.has_value() ? value->to_u64() : std::nullopt;
           if (alignment.has_value() &&
-              !resolved_integer_matches(
+              !integer_constant_matches(
                   tree,
                   attribute.children.front(),
+                  scope,
                   semantic_.types.builtins().usize_type,
                   "'@align' argument")) {
             continue;

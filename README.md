@@ -92,6 +92,8 @@ lexical `defer`, parametric values, and type/layout queries;
 uses the same full interpreter for concrete array/SIMD lengths, alignments, enum
 values, and nominal value arguments after a deterministic signature/layout
 fixed point, so those required constants may also call procedures and branch;
+preserves exact concrete integer identity at layout boundaries, requiring
+`usize` rather than accepting a same-width `u64` or narrower cast by accident;
 enforces positional array, named struct, and single-field raw-union literals
 with zero-filled omissions consistently at compile time and runtime;
 and selects declaration/member `when` branches through deterministic fixed-point
