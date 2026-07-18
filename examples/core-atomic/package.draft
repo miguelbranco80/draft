@@ -1,0 +1,59 @@
+package core_atomic
+
+import core/atomic
+
+counter: atomic.Value[u64]
+
+main :: proc() {
+    atomic.init(&counter, 1)
+
+    atomic.store(&counter, 2, .release)
+    assert(atomic.load(&counter, .acquire) == 2)
+
+    previous := atomic.fetch_add(&counter, 3, .acquire_release)
+    assert(previous == 2)
+    assert(atomic.exchange(&counter, 11, .sequentially_consistent) == 5)
+
+    assert(atomic.fetch_or(&counter, 4, .relaxed) == 11)
+    assert(atomic.fetch_and(&counter, 7, .relaxed) == 15)
+    assert(atomic.fetch_xor(&counter, 3, .relaxed) == 7)
+    assert(atomic.fetch_sub(&counter, 1, .relaxed) == 4)
+
+    expected: u64 = 3
+    assert(atomic.compare_exchange(
+        &counter,
+        &expected,
+        19,
+        .acquire_release,
+        .acquire,
+    ))
+    assert(atomic.load(&counter, .relaxed) == 19)
+    atomic.fence(.relaxed)
+    atomic.fence(.sequentially_consistent)
+
+    left: u64 = 1
+    right: u64 = 2
+    pointer: atomic.Value[^u64]
+    atomic.init(&pointer, &left)
+    assert(atomic.load(&pointer, .relaxed) == &left)
+    atomic.store(&pointer, &right, .release)
+    pointer_expected: ^u64 = &right
+    assert(atomic.compare_exchange(
+        &pointer,
+        &pointer_expected,
+        &left,
+        .acquire_release,
+        .acquire,
+    ))
+    assert(atomic.load(&pointer, .acquire) == &left)
+
+    wrong: ^u64 = &right
+    assert(!atomic.compare_exchange(
+        &pointer,
+        &wrong,
+        &right,
+        .relaxed,
+        .relaxed,
+    ))
+    assert(wrong == &left)
+}

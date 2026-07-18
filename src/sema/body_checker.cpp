@@ -1284,6 +1284,327 @@ private:
     return hir_.add_expression(std::move(expression));
   }
 
+  // Recognizes only operations whose proxy came from the compiler-distributed
+  // core/atomic package. Matching both canonical package provenance and the
+  // closed public-name set prevents an unrelated package from acquiring
+  // privileged lowering merely by spelling a procedure `atomic.load`.
+  [[nodiscard]] std::optional<ImportedSymbol> atomic_intrinsic(
+      SymbolId proxy) const {
+    for (const ImportedSymbol &imported : semantic_.imported_symbols) {
+      if (imported.proxy != proxy || imported.root_relative_path != "atomic") {
+        continue;
+      }
+      const bool known = imported.public_name == "load" ||
+          imported.public_name == "store" ||
+          imported.public_name == "exchange" ||
+          imported.public_name == "fetch_add" ||
+          imported.public_name == "fetch_sub" ||
+          imported.public_name == "fetch_and" ||
+          imported.public_name == "fetch_or" ||
+          imported.public_name == "fetch_xor" ||
+          imported.public_name == "compare_exchange" ||
+          imported.public_name == "fence";
+      if (!known) continue;
+      for (const ImportBinding &binding : semantic_.imports) {
+        if (binding.symbol == imported.import_symbol &&
+            binding.package_path == "core/atomic") {
+          return imported;
+        }
+      }
+    }
+    return std::nullopt;
+  }
+
+  // Finds Order through the same imported package scope that supplied the
+  // operation. This preserves nominal identity even when the source import uses
+  // an alias, and avoids treating another five-member enum as a memory order.
+  [[nodiscard]] std::optional<TypeId> atomic_order_type(
+      const ImportedSymbol &intrinsic) const {
+    for (const OwnedSemanticScope &owned : semantic_.owned_scopes) {
+      if (owned.owner != intrinsic.import_symbol ||
+          semantic_.symbols.scope(owned.scope).kind !=
+              ScopeKind::ImportedPackage) {
+        continue;
+      }
+      const std::optional<SymbolId> order =
+          semantic_.symbols.lookup_direct(owned.scope, "Order");
+      if (order.has_value()) return semantic_.symbols.symbol(*order).type;
+    }
+    return std::nullopt;
+  }
+
+  // Type-checks and folds one order argument. Orders intentionally disappear
+  // as runtime operands: a dynamic order would force backend dispatch and make
+  // invalid load/store order combinations reachable only at runtime.
+  [[nodiscard]] std::optional<AtomicMemoryOrder> checked_atomic_order(
+      const SyntaxTree &tree,
+      NodeId expression_id,
+      ScopeId scope,
+      TypeId order_type) {
+    const HirExpressionId checked =
+        check_expression(tree, expression_id, scope, order_type);
+    const HirExpression &expression = hir_.expression(checked);
+    std::optional<BigInteger> integer;
+    if (expression.kind == HirExpressionKind::Constant &&
+        expression.constant.kind == ConstantKind::Integer) {
+      integer = expression.constant.integer;
+    } else if (expression.kind == HirExpressionKind::Constant &&
+               expression.constant.kind == ConstantKind::EnumLabel &&
+               expression.symbol.is_valid()) {
+      // Contextual enum syntax such as `.acquire` keeps its member identity in
+      // HIR. Resolve that member's declared integer here; lowering never needs
+      // to materialize the Order value because orders are compile-time only.
+      for (const EnumMemberValue &member : semantic_.enum_member_values) {
+        if (member.member == expression.symbol) {
+          integer = member.value;
+          break;
+        }
+      }
+    }
+    if (!integer.has_value()) {
+      diagnostics_.error(
+          expression.range,
+          "atomic memory order must be a compile-time core/atomic.Order value");
+      return std::nullopt;
+    }
+    const std::optional<std::uint64_t> value = integer->to_u64();
+    if (!value.has_value() || *value > 4) {
+      diagnostics_.error(expression.range, "atomic memory order is invalid");
+      return std::nullopt;
+    }
+    return static_cast<AtomicMemoryOrder>(*value);
+  }
+
+  // The initial AArch64 target exposes naturally lock-free scalar widths only.
+  // Symbolic procedure instances are deferred because their concrete instance
+  // is checked again before lowering.
+  [[nodiscard]] bool atomic_scalar_supported(TypeId type) const {
+    if (!type.is_valid() || is_invalid_type(type)) return false;
+    const Type value = semantic_.types.type(type);
+    if (value.kind == TypeKind::TypeParameter) {
+      // A `T: type` wrapper may be instantiated with either an integer or a
+      // pointer, and Draft has no union constraint spelling for that set. Each
+      // concrete procedure instance is checked again, where unsupported T is
+      // rejected before MIR exists.
+      return true;
+    }
+    if (semantic_.types.is_integer(type)) {
+      return value.layout.known &&
+          (value.layout.size == 1 || value.layout.size == 2 ||
+           value.layout.size == 4 || value.layout.size == 8);
+    }
+    return value.kind == TypeKind::Pointer ||
+        value.kind == TypeKind::MultiPointer ||
+        value.kind == TypeKind::RawPointer || value.kind == TypeKind::CString;
+  }
+
+  // Proves that an object argument is exactly ^core/atomic.Value[T], then
+  // returns T. Layout equivalence is deliberately insufficient: ordinary
+  // structs with one integer field do not acquire atomic semantics.
+  [[nodiscard]] std::optional<TypeId> atomic_value_element(
+      TypeId pointer_type,
+      const ImportedSymbol &intrinsic,
+      SourceRange range) const {
+    if (!pointer_type.is_valid() || is_invalid_type(pointer_type) ||
+        semantic_.types.type(pointer_type).kind != TypeKind::Pointer) {
+      diagnostics_.error(range, "atomic operation requires ^atomic.Value[T]");
+      return std::nullopt;
+    }
+    const TypeId value_type = semantic_.types.type(pointer_type).element;
+    const std::optional<NominalApplication> application =
+        nominal_application(value_type);
+    const std::optional<NominalOrigin> origin = application.has_value()
+        ? nominal_origin(*application)
+        : std::nullopt;
+    if (!application.has_value() || !origin.has_value() ||
+        origin->root_identity != intrinsic.root_identity ||
+        origin->root_relative_path != intrinsic.root_relative_path ||
+        origin->public_name != "Value" ||
+        application->arguments->size() != 1 ||
+        !application->arguments->front().is_type) {
+      diagnostics_.error(range, "atomic operation requires ^atomic.Value[T]");
+      return std::nullopt;
+    }
+    const TypeId element = application->arguments->front().type;
+    if (!atomic_scalar_supported(element)) {
+      diagnostics_.error(
+          range,
+          "atomic value type must be a supported integer or pointer type");
+      return std::nullopt;
+    }
+    return element;
+  }
+
+  // Enforces the single-order restrictions shared by C11 and LLVM. Exchange
+  // and read/modify/write accept all five orders; load and store exclude orders
+  // containing a direction they cannot perform.
+  [[nodiscard]] bool valid_atomic_order_for_operation(
+      std::string_view operation,
+      AtomicMemoryOrder order,
+      SourceRange range) {
+    const bool load = operation == "load";
+    const bool store = operation == "store";
+    if (load && (order == AtomicMemoryOrder::Release ||
+                 order == AtomicMemoryOrder::AcquireRelease)) {
+      diagnostics_.error(range, "atomic load cannot use a release order");
+      return false;
+    }
+    if (store && (order == AtomicMemoryOrder::Acquire ||
+                  order == AtomicMemoryOrder::AcquireRelease)) {
+      diagnostics_.error(range, "atomic store cannot use an acquire order");
+      return false;
+    }
+    return true;
+  }
+
+  // Compare-exchange has two orders because failure performs only a load. The
+  // failure order therefore cannot release and cannot be stronger than the
+  // success order. Diagnostics point at the failure argument, where the pair
+  // becomes invalid.
+  [[nodiscard]] bool valid_compare_exchange_orders(
+      AtomicMemoryOrder success,
+      AtomicMemoryOrder failure,
+      SourceRange range) {
+    if (failure == AtomicMemoryOrder::Release ||
+        failure == AtomicMemoryOrder::AcquireRelease) {
+      diagnostics_.error(
+          range, "compare-exchange failure order cannot release");
+      return false;
+    }
+    const bool allowed =
+        failure == AtomicMemoryOrder::Relaxed ||
+        (failure == AtomicMemoryOrder::Acquire &&
+         (success == AtomicMemoryOrder::Acquire ||
+          success == AtomicMemoryOrder::AcquireRelease ||
+          success == AtomicMemoryOrder::SequentiallyConsistent)) ||
+        (failure == AtomicMemoryOrder::SequentiallyConsistent &&
+         success == AtomicMemoryOrder::SequentiallyConsistent);
+    if (!allowed) {
+      diagnostics_.error(
+          range,
+          "compare-exchange failure order is stronger than its success order");
+    }
+    return allowed;
+  }
+
+  // Converts a direct core/atomic call into one typed Intrinsic HIR node. Source
+  // evaluation order is retained for the object and data operands while the
+  // compile-time order operands are recorded as fields. A nullopt return means
+  // the callee was not a privileged atomic operation and normal call checking
+  // must continue.
+  [[nodiscard]] std::optional<HirExpressionId> check_atomic_intrinsic_call(
+      const SyntaxTree &tree,
+      const SyntaxNode &call,
+      ScopeId scope,
+      TypeId expected) {
+    if (call.children.empty()) return std::nullopt;
+    const std::optional<SymbolId> symbol =
+        imported_member(tree, tree.node(call.children.front()), scope);
+    if (!symbol.has_value()) return std::nullopt;
+    const std::optional<ImportedSymbol> intrinsic = atomic_intrinsic(*symbol);
+    if (!intrinsic.has_value()) return std::nullopt;
+
+    HirExpression expression;
+    expression.kind = HirExpressionKind::Intrinsic;
+    expression.range = call.range;
+    expression.constant = ConstantValue::make_string(
+        "atomic." + intrinsic->public_name);
+    const std::optional<TypeId> order_type = atomic_order_type(*intrinsic);
+    if (!order_type.has_value()) {
+      diagnostics_.error(call.range, "core/atomic interface has no Order type");
+      expression.type = semantic_.types.builtins().invalid;
+      return hir_.add_expression(std::move(expression));
+    }
+
+    const std::string &operation = intrinsic->public_name;
+    if (operation == "fence") {
+      if (call.children.size() != 2) {
+        diagnostics_.error(call.range, "atomic.fence requires one order argument");
+      } else if (const std::optional<AtomicMemoryOrder> order =
+                     checked_atomic_order(
+                         tree, call.children[1], scope, *order_type)) {
+        expression.atomic_order = *order;
+      }
+      expression.type = apply_expected_type(
+          semantic_.types.builtins().void_type, expected, call.range);
+      return hir_.add_expression(std::move(expression));
+    }
+
+    std::size_t required_arguments = 5;
+    if (operation == "load") {
+      required_arguments = 2;
+    } else if (operation == "store" || operation == "exchange" ||
+               operation.rfind("fetch_", 0) == 0) {
+      required_arguments = 3;
+    }
+    if (call.children.size() != required_arguments + 1) {
+      diagnostics_.error(
+          call.range, "atomic operation has the wrong number of arguments");
+      expression.type = semantic_.types.builtins().invalid;
+      return hir_.add_expression(std::move(expression));
+    }
+
+    const HirExpressionId object =
+        check_expression(tree, call.children[1], scope);
+    expression.operands.push_back(object);
+    const std::optional<TypeId> element = atomic_value_element(
+        hir_.expression(object).type, *intrinsic, hir_.expression(object).range);
+    if (!element.has_value()) {
+      expression.type = semantic_.types.builtins().invalid;
+      return hir_.add_expression(std::move(expression));
+    }
+
+    if (operation == "compare_exchange") {
+      const HirExpressionId expected_pointer = check_expression(
+          tree,
+          call.children[2],
+          scope,
+          semantic_.types.pointer(*element));
+      const HirExpressionId desired =
+          check_expression(tree, call.children[3], scope, *element);
+      expression.operands.push_back(expected_pointer);
+      expression.operands.push_back(desired);
+      const std::optional<AtomicMemoryOrder> success = checked_atomic_order(
+          tree, call.children[4], scope, *order_type);
+      const std::optional<AtomicMemoryOrder> failure = checked_atomic_order(
+          tree, call.children[5], scope, *order_type);
+      if (success.has_value() && failure.has_value()) {
+        expression.atomic_order = *success;
+        expression.atomic_failure_order = *failure;
+        (void)valid_compare_exchange_orders(
+            *success, *failure, tree.node(call.children[5]).range);
+      }
+      expression.type = apply_expected_type(
+          semantic_.types.builtins().bool_type, expected, call.range);
+      return hir_.add_expression(std::move(expression));
+    }
+
+    std::size_t order_index = 2;
+    if (operation != "load") {
+      expression.operands.push_back(
+          check_expression(tree, call.children[2], scope, *element));
+      order_index = 3;
+    }
+    const std::optional<AtomicMemoryOrder> order = checked_atomic_order(
+        tree, call.children[order_index], scope, *order_type);
+    if (order.has_value()) {
+      expression.atomic_order = *order;
+      (void)valid_atomic_order_for_operation(
+          operation, *order, tree.node(call.children[order_index]).range);
+    }
+    if (operation.rfind("fetch_", 0) == 0 &&
+        !semantic_.types.is_integer(*element) &&
+        semantic_.types.type(*element).kind != TypeKind::TypeParameter) {
+      diagnostics_.error(
+          call.range, "atomic fetch operation requires an integer type");
+    }
+    const TypeId result = operation == "store"
+        ? semantic_.types.builtins().void_type
+        : *element;
+    expression.type = apply_expected_type(result, expected, call.range);
+    return hir_.add_expression(std::move(expression));
+  }
+
   // Returns the declaration symbol owning a nominal type's Type scope.
   [[nodiscard]] std::optional<SymbolId> type_owner(TypeId type) const {
     for (const OwnedSemanticScope &owned : semantic_.owned_scopes) {
@@ -2867,6 +3188,10 @@ private:
               check_runtime_intrinsic_call(tree, node, scope, expected)) {
         return *intrinsic;
       }
+      if (const std::optional<HirExpressionId> intrinsic =
+              check_atomic_intrinsic_call(tree, node, scope, expected)) {
+        return *intrinsic;
+      }
       // A plain or package-qualified template name in callee position requests
       // inference. Arguments are first checked without a guessed context;
       // structural unification must discover one concrete type for every type
@@ -3011,6 +3336,17 @@ private:
     case NodeKind::MemberExpression: {
       if (node.children.empty()) return invalid_expression(node.range);
       if (const std::optional<SymbolId> imported = imported_member(tree, node, scope)) {
+        // Atomic operations carry compile-time order and storage information in
+        // HIR/MIR, so they are intentionally not first-class procedure values
+        // in this initial interface. Direct calls were consumed by the atomic
+        // recognizer above; reaching this branch means the operation was taken
+        // as a value or explicitly specialized instead.
+        if (atomic_intrinsic(*imported).has_value()) {
+          diagnostics_.error(
+              node.range,
+              "core/atomic operations must be called directly");
+          return invalid_expression(node.range);
+        }
         const Symbol symbol = semantic_.symbols.symbol(*imported);
         if (symbol.kind == SymbolKind::Type || symbol.kind == SymbolKind::TypeParameter ||
             symbol.kind == SymbolKind::Import) {

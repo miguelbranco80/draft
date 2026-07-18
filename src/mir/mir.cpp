@@ -110,6 +110,12 @@ const char *mir_instruction_kind_name(MirInstructionKind kind) {
   case MirInstructionKind::ProcedureReference: return "procedure_reference";
   case MirInstructionKind::Load: return "load";
   case MirInstructionKind::Store: return "store";
+  case MirInstructionKind::AtomicLoad: return "atomic_load";
+  case MirInstructionKind::AtomicStore: return "atomic_store";
+  case MirInstructionKind::AtomicExchange: return "atomic_exchange";
+  case MirInstructionKind::AtomicReadModifyWrite: return "atomic_read_modify_write";
+  case MirInstructionKind::AtomicCompareExchange: return "atomic_compare_exchange";
+  case MirInstructionKind::AtomicFence: return "atomic_fence";
   case MirInstructionKind::Unary: return "unary";
   case MirInstructionKind::Binary: return "binary";
   case MirInstructionKind::Convert: return "convert";

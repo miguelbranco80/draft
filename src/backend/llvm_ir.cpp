@@ -119,6 +119,35 @@ struct BoundsSite {
   return result;
 }
 
+// LLVM names the weakest portable atomic order `monotonic`; Draft spells that
+// order `relaxed`, following the terminology programmers usually see in source
+// languages.  Keep the translation in one small, exhaustive function so every
+// atomic instruction uses exactly the same mapping.
+[[nodiscard]] const char *atomic_order_name(AtomicMemoryOrder order) {
+  switch (order) {
+  case AtomicMemoryOrder::Relaxed: return "monotonic";
+  case AtomicMemoryOrder::Acquire: return "acquire";
+  case AtomicMemoryOrder::Release: return "release";
+  case AtomicMemoryOrder::AcquireRelease: return "acq_rel";
+  case AtomicMemoryOrder::SequentiallyConsistent: return "seq_cst";
+  }
+  return "seq_cst";
+}
+
+// Atomic read/modify/write operations reuse the ordinary HIR operation enum.
+// Semantic checking has already restricted this field to the five operations
+// below, so the fallback is unreachable for a verified MIR program.
+[[nodiscard]] const char *atomic_rmw_name(HirOperation operation) {
+  switch (operation) {
+  case HirOperation::Add: return "add";
+  case HirOperation::Subtract: return "sub";
+  case HirOperation::BitwiseAnd: return "and";
+  case HirOperation::BitwiseOr: return "or";
+  case HirOperation::BitwiseXor: return "xor";
+  default: return "add";
+  }
+}
+
 class Emitter {
 public:
   Emitter(
@@ -285,11 +314,40 @@ private:
     return false;
   }
 
+  [[nodiscard]] bool contains_type_parameter(
+      TypeId id, std::vector<TypeId> &active) const {
+    if (!id.is_valid()) return false;
+    if (std::find(active.begin(), active.end(), id) != active.end()) {
+      return false;
+    }
+    const Type &value = type(id);
+    if (value.kind == TypeKind::TypeParameter) return true;
+    active.push_back(id);
+    bool result = value.element.is_valid() &&
+        contains_type_parameter(value.element, active);
+    for (TypeId member : value.members) {
+      result = result || contains_type_parameter(member, active);
+    }
+    active.pop_back();
+    return result;
+  }
+
+  [[nodiscard]] bool contains_type_parameter(TypeId id) const {
+    std::vector<TypeId> active;
+    return contains_type_parameter(id, active);
+  }
+
   void emit_nominal_types() {
     for (std::size_t index = 0; index < semantic_.types.size(); ++index) {
       const TypeId id{static_cast<std::uint32_t>(index)};
       const Type &value = type(id);
-      if (is_parametric_template_type(id)) continue;
+      // Semantic interning also contains intermediate symbolic applications
+      // such as Value[T] from a generic procedure signature. They are useful
+      // while checking the template, but are not physical target types and may
+      // never leak the TypeParameter pseudo-type into LLVM IR.
+      if (is_parametric_template_type(id) || contains_type_parameter(id)) {
+        continue;
+      }
       if (value.kind == TypeKind::Struct) {
         // A packed LLVM body plus explicit byte fields reproduces the semantic
         // offsets exactly. This is required for @align tail stride and for a
@@ -1885,6 +1943,11 @@ private:
     return "%a" + std::to_string(auxiliary_index_++);
   }
 
+  [[nodiscard]] std::string auxiliary_label(std::string_view purpose) {
+    return "atomic." + std::string(purpose) + "." +
+        std::to_string(auxiliary_index_++);
+  }
+
   [[nodiscard]] std::string abi_call_argument_scratch(
       std::size_t instruction, std::size_t argument) const {
     return "%abi.call." + std::to_string(instruction) + ".arg." +
@@ -2427,6 +2490,100 @@ private:
               << type(procedure.value(value_id).type).layout.alignment << '\n';
       break;
     }
+    case MirInstructionKind::AtomicLoad:
+      output_ << "  " << result << " = load atomic "
+              << llvm_type(instruction.type) << ", ptr "
+              << value_operand(
+                     operands, instruction.operands[0], instruction.range)
+              << ' ' << atomic_order_name(instruction.atomic_order)
+              << ", align " << type(instruction.type).layout.alignment << '\n';
+      assign_alias(operands, instruction, result);
+      break;
+    case MirInstructionKind::AtomicStore: {
+      const MirValueId value_id = instruction.operands[1];
+      output_ << "  store atomic "
+              << typed_operand(procedure, operands, value_id, instruction.range)
+              << ", ptr "
+              << value_operand(
+                     operands, instruction.operands[0], instruction.range)
+              << ' ' << atomic_order_name(instruction.atomic_order)
+              << ", align "
+              << type(procedure.value(value_id).type).layout.alignment << '\n';
+      break;
+    }
+    case MirInstructionKind::AtomicExchange: {
+      const MirValueId value_id = instruction.operands[1];
+      output_ << "  " << result << " = atomicrmw xchg ptr "
+              << value_operand(
+                     operands, instruction.operands[0], instruction.range)
+              << ", "
+              << typed_operand(procedure, operands, value_id, instruction.range)
+              << ' ' << atomic_order_name(instruction.atomic_order) << '\n';
+      assign_alias(operands, instruction, result);
+      break;
+    }
+    case MirInstructionKind::AtomicReadModifyWrite: {
+      const MirValueId value_id = instruction.operands[1];
+      output_ << "  " << result << " = atomicrmw "
+              << atomic_rmw_name(instruction.operation) << " ptr "
+              << value_operand(
+                     operands, instruction.operands[0], instruction.range)
+              << ", "
+              << typed_operand(procedure, operands, value_id, instruction.range)
+              << ' ' << atomic_order_name(instruction.atomic_order) << '\n';
+      assign_alias(operands, instruction, result);
+      break;
+    }
+    case MirInstructionKind::AtomicCompareExchange: {
+      const MirValueId expected_pointer_id = instruction.operands[1];
+      const MirValueId desired_id = instruction.operands[2];
+      const TypeId value_type = procedure.value(desired_id).type;
+      const std::string expected = auxiliary();
+      const std::string pair = auxiliary();
+      const std::string observed = auxiliary();
+      const std::string failure = auxiliary_label("compare.failure");
+      const std::string continuation = auxiliary_label("compare.continue");
+      output_ << "  " << expected << " = load " << llvm_type(value_type)
+              << ", ptr "
+              << value_operand(
+                     operands, expected_pointer_id, instruction.range)
+              << ", align " << type(value_type).layout.alignment << '\n'
+              << "  " << pair << " = cmpxchg ptr "
+              << value_operand(
+                     operands, instruction.operands[0], instruction.range)
+              << ", " << llvm_type(value_type) << ' ' << expected << ", "
+              << typed_operand(
+                     procedure, operands, desired_id, instruction.range)
+              << ' ' << atomic_order_name(instruction.atomic_order) << ' '
+              << atomic_order_name(instruction.atomic_failure_order) << '\n'
+              << "  " << observed << " = extractvalue { "
+              << llvm_type(value_type) << ", i1 } " << pair << ", 0\n"
+              << "  " << result << " = extractvalue { "
+              << llvm_type(value_type) << ", i1 } " << pair << ", 1\n"
+              << "  br i1 " << result << ", label %" << continuation
+              << ", label %" << failure << '\n'
+              << failure << ":\n"
+              << "  store " << llvm_type(value_type) << ' ' << observed
+              << ", ptr "
+              << value_operand(
+                     operands, expected_pointer_id, instruction.range)
+              << ", align " << type(value_type).layout.alignment << '\n'
+              << "  br label %" << continuation << '\n'
+              << continuation << ":\n";
+      assign_alias(operands, instruction, result);
+      break;
+    }
+    case MirInstructionKind::AtomicFence:
+      // C11 permits a relaxed thread fence, but assigns it no synchronization
+      // effect. LLVM intentionally has no `fence monotonic` spelling, so retain
+      // the verified MIR operation as an explanatory no-op in emitted text.
+      if (instruction.atomic_order == AtomicMemoryOrder::Relaxed) {
+        output_ << "  ; relaxed atomic fence has no effect\n";
+      } else {
+        output_ << "  fence " << atomic_order_name(instruction.atomic_order)
+                << '\n';
+      }
+      break;
     case MirInstructionKind::Unary:
       emit_unary(procedure, instruction, operands);
       break;

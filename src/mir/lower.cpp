@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -1104,6 +1105,50 @@ private:
         }
         instruction.passes_context = true;
         instruction.establishes_thread_context = true;
+        if (expression.type == semantic_.types.builtins().void_type) {
+          emit_void(std::move(instruction));
+          return {};
+        }
+        return emit_value(std::move(instruction));
+      }
+      if (expression.constant.text.rfind("atomic.", 0) == 0) {
+        const std::string_view operation(expression.constant.text);
+        MirInstruction instruction;
+        instruction.range = expression.range;
+        instruction.type = expression.type;
+        instruction.atomic_order = expression.atomic_order;
+        instruction.atomic_failure_order = expression.atomic_failure_order;
+        if (operation == "atomic.load") {
+          instruction.kind = MirInstructionKind::AtomicLoad;
+        } else if (operation == "atomic.store") {
+          instruction.kind = MirInstructionKind::AtomicStore;
+        } else if (operation == "atomic.exchange") {
+          instruction.kind = MirInstructionKind::AtomicExchange;
+        } else if (operation == "atomic.compare_exchange") {
+          instruction.kind = MirInstructionKind::AtomicCompareExchange;
+        } else if (operation == "atomic.fence") {
+          instruction.kind = MirInstructionKind::AtomicFence;
+        } else {
+          instruction.kind = MirInstructionKind::AtomicReadModifyWrite;
+          if (operation == "atomic.fetch_add") {
+            instruction.operation = HirOperation::Add;
+          } else if (operation == "atomic.fetch_sub") {
+            instruction.operation = HirOperation::Subtract;
+          } else if (operation == "atomic.fetch_and") {
+            instruction.operation = HirOperation::BitwiseAnd;
+          } else if (operation == "atomic.fetch_or") {
+            instruction.operation = HirOperation::BitwiseOr;
+          } else if (operation == "atomic.fetch_xor") {
+            instruction.operation = HirOperation::BitwiseXor;
+          } else {
+            diagnostics_.error(
+                expression.range, "unknown atomic intrinsic reached MIR lowering");
+            return {};
+          }
+        }
+        for (HirExpressionId operand : expression.operands) {
+          instruction.operands.push_back(lower_expression(operand));
+        }
         if (expression.type == semantic_.types.builtins().void_type) {
           emit_void(std::move(instruction));
           return {};

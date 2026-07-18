@@ -1,0 +1,101 @@
+package atomic
+
+// Order is deliberately a closed enum rather than an integer bit mask. The
+// compiler requires every order argument to be a compile-time enum constant,
+// rejects combinations that LLVM and the hardware cannot implement, and maps
+// these five values onto the target-independent MIR atomic operations.
+pub Order :: enum u8 {
+    relaxed,
+    acquire,
+    release,
+    acquire_release,
+    sequentially_consistent,
+}
+
+// Value owns one naturally aligned atomic object. Programs must access storage
+// through this package after the value becomes visible to another thread. The
+// named field exists because Draft data layout is explicit; it is not an escape
+// hatch for mixing ordinary and atomic access to a shared object.
+pub Value[T: type] :: struct {
+    storage: T,
+}
+
+// init is an ordinary, non-atomic initialization step. It is valid only while
+// the caller has exclusive ownership, before publishing value to other threads.
+pub init[T: type] :: proc(value: ^Value[T], initial: T) {
+    value^.storage = initial
+}
+
+// The operations below are compiler intrinsics when called directly through
+// the core/atomic package. Their source bodies make the package interface fully
+// representable in Draft while also turning an unsupported indirect call into
+// an immediate failure instead of silently performing a non-atomic operation.
+pub load[T: type] :: proc(value: ^Value[T], order: Order) -> T {
+    assert(false, "atomic load was not lowered as a compiler intrinsic")
+    result: T
+    return result
+}
+
+pub store[T: type] :: proc(value: ^Value[T], replacement: T, order: Order) {
+    assert(false, "atomic store was not lowered as a compiler intrinsic")
+}
+
+pub exchange[T: type] :: proc(
+    value: ^Value[T],
+    replacement: T,
+    order: Order,
+) -> T {
+    assert(false, "atomic exchange was not lowered as a compiler intrinsic")
+    result: T
+    return result
+}
+
+pub fetch_add[T: type] :: proc(value: ^Value[T], operand: T, order: Order) -> T {
+    assert(false, "atomic fetch_add was not lowered as a compiler intrinsic")
+    result: T
+    return result
+}
+
+pub fetch_sub[T: type] :: proc(value: ^Value[T], operand: T, order: Order) -> T {
+    assert(false, "atomic fetch_sub was not lowered as a compiler intrinsic")
+    result: T
+    return result
+}
+
+pub fetch_and[T: type] :: proc(value: ^Value[T], operand: T, order: Order) -> T {
+    assert(false, "atomic fetch_and was not lowered as a compiler intrinsic")
+    result: T
+    return result
+}
+
+pub fetch_or[T: type] :: proc(value: ^Value[T], operand: T, order: Order) -> T {
+    assert(false, "atomic fetch_or was not lowered as a compiler intrinsic")
+    result: T
+    return result
+}
+
+pub fetch_xor[T: type] :: proc(value: ^Value[T], operand: T, order: Order) -> T {
+    assert(false, "atomic fetch_xor was not lowered as a compiler intrinsic")
+    result: T
+    return result
+}
+
+// On failure compare_exchange replaces expected with the value observed in the
+// atomic object. The failure order may be relaxed, acquire, or sequentially
+// consistent; it may not be stronger than the success order.
+pub compare_exchange[T: type] :: proc(
+    value: ^Value[T],
+    expected: ^T,
+    desired: T,
+    success: Order,
+    failure: Order,
+) -> bool {
+    assert(false,
+        "atomic compare_exchange was not lowered as a compiler intrinsic")
+    return false
+}
+
+pub fence :: proc(order: Order) {
+    // A relaxed fence is valid and has no synchronization effect.
+    assert(false, "atomic fence was not lowered as a compiler intrinsic")
+}

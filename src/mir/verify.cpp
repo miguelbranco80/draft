@@ -43,6 +43,129 @@ private:
     diagnostics_.error(range, "invalid MIR: " + message);
   }
 
+  // Atomic object and expected-value operands are addresses in MIR. This small
+  // predicate guards table and type bounds before the shape checks inspect
+  // pointee information, so malformed test/fuzz MIR remains diagnostic-only.
+  [[nodiscard]] bool pointer_value(
+      const MirProcedure &procedure, MirValueId value) const {
+    return valid_value(procedure, value) &&
+        valid_type(procedure.value(value).type) &&
+        types_.type(procedure.value(value).type).kind == TypeKind::Pointer;
+  }
+
+  // Enum fields can still contain an invalid underlying value in hand-built
+  // MIR. Verify the closed semantic vocabulary before the backend maps names.
+  [[nodiscard]] bool valid_atomic_order(AtomicMemoryOrder order) const {
+    switch (order) {
+    case AtomicMemoryOrder::Relaxed:
+    case AtomicMemoryOrder::Acquire:
+    case AtomicMemoryOrder::Release:
+    case AtomicMemoryOrder::AcquireRelease:
+    case AtomicMemoryOrder::SequentiallyConsistent:
+      return true;
+    }
+    return false;
+  }
+
+  // Mirrors semantic checking at the phase boundary. The duplicate check is
+  // intentional: MIR may eventually be deserialized or constructed by tools
+  // that do not run the source body checker.
+  [[nodiscard]] bool valid_compare_exchange_orders(
+      AtomicMemoryOrder success, AtomicMemoryOrder failure) const {
+    if (failure == AtomicMemoryOrder::Release ||
+        failure == AtomicMemoryOrder::AcquireRelease) {
+      return false;
+    }
+    return failure == AtomicMemoryOrder::Relaxed ||
+        (failure == AtomicMemoryOrder::Acquire &&
+         (success == AtomicMemoryOrder::Acquire ||
+          success == AtomicMemoryOrder::AcquireRelease ||
+          success == AtomicMemoryOrder::SequentiallyConsistent)) ||
+        (failure == AtomicMemoryOrder::SequentiallyConsistent &&
+         success == AtomicMemoryOrder::SequentiallyConsistent);
+  }
+
+  // Checks invariants shared by the six atomic instruction kinds after generic
+  // operand-table validation. It does not rediscover core/atomic nominal
+  // identity; that language-level proof belongs to semantic checking.
+  void verify_atomic_shape(
+      const MirProcedure &procedure, const MirInstruction &instruction) {
+    const std::size_t arity = instruction.operands.size();
+    if (!valid_atomic_order(instruction.atomic_order)) {
+      error(instruction.range, "atomic operation has an unknown memory order");
+    }
+    if (instruction.kind != MirInstructionKind::AtomicFence && arity != 0 &&
+        !pointer_value(procedure, instruction.operands.front())) {
+      error(instruction.range, "atomic object operand is not a pointer");
+    }
+    switch (instruction.kind) {
+    case MirInstructionKind::AtomicLoad:
+      if (instruction.atomic_order == AtomicMemoryOrder::Release ||
+          instruction.atomic_order == AtomicMemoryOrder::AcquireRelease) {
+        error(instruction.range, "atomic load has an invalid memory order");
+      }
+      break;
+    case MirInstructionKind::AtomicStore:
+      if (instruction.type != types_.builtins().void_type) {
+        error(instruction.range, "atomic store produces a result");
+      }
+      if (instruction.atomic_order == AtomicMemoryOrder::Acquire ||
+          instruction.atomic_order == AtomicMemoryOrder::AcquireRelease) {
+        error(instruction.range, "atomic store has an invalid memory order");
+      }
+      break;
+    case MirInstructionKind::AtomicExchange:
+    case MirInstructionKind::AtomicReadModifyWrite:
+      if (arity == 2 && valid_value(procedure, instruction.operands[1]) &&
+          procedure.value(instruction.operands[1]).type != instruction.type) {
+        error(instruction.range, "atomic update value differs from result type");
+      }
+      if (instruction.kind == MirInstructionKind::AtomicReadModifyWrite &&
+          instruction.operation != HirOperation::Add &&
+          instruction.operation != HirOperation::Subtract &&
+          instruction.operation != HirOperation::BitwiseAnd &&
+          instruction.operation != HirOperation::BitwiseOr &&
+          instruction.operation != HirOperation::BitwiseXor) {
+        error(instruction.range, "atomic read/modify/write operation is invalid");
+      }
+      break;
+    case MirInstructionKind::AtomicCompareExchange:
+      if (instruction.type != types_.builtins().bool_type) {
+        error(instruction.range, "compare-exchange result is not bool");
+      }
+      if (arity == 3 && valid_value(procedure, instruction.operands[1]) &&
+          valid_value(procedure, instruction.operands[2])) {
+        const TypeId expected_pointer =
+            procedure.value(instruction.operands[1]).type;
+        const TypeId desired = procedure.value(instruction.operands[2]).type;
+        if (!valid_type(expected_pointer) || !valid_type(desired) ||
+            types_.type(expected_pointer).kind != TypeKind::Pointer ||
+            types_.type(expected_pointer).element != desired) {
+          error(
+              instruction.range,
+              "compare-exchange expected pointer and desired value disagree");
+        }
+      }
+      if (!valid_atomic_order(instruction.atomic_failure_order)) {
+        error(
+            instruction.range,
+            "compare-exchange has an unknown failure memory order");
+      }
+      if (!valid_compare_exchange_orders(
+              instruction.atomic_order, instruction.atomic_failure_order)) {
+        error(instruction.range, "compare-exchange memory orders are invalid");
+      }
+      break;
+    case MirInstructionKind::AtomicFence:
+      if (instruction.type != types_.builtins().void_type) {
+        error(instruction.range, "atomic fence produces a result");
+      }
+      break;
+    default:
+      break;
+    }
+  }
+
   void verify_instruction(
       const MirProcedure &procedure,
       MirInstructionId id,
@@ -76,7 +199,11 @@ private:
     case MirInstructionKind::Context:
     case MirInstructionKind::GlobalAddress:
     case MirInstructionKind::ProcedureReference:
+    case MirInstructionKind::AtomicFence:
       if (arity != 0) error(instruction.range, "leaf instruction has operands");
+      if (instruction.kind == MirInstructionKind::AtomicFence) {
+        verify_atomic_shape(procedure, instruction);
+      }
       break;
     case MirInstructionKind::LocalAddress:
       if (!instruction.local.is_valid() ||
@@ -91,7 +218,11 @@ private:
     case MirInstructionKind::Length:
     case MirInstructionKind::ExtractMember:
     case MirInstructionKind::MemberAddress:
+    case MirInstructionKind::AtomicLoad:
       if (arity != 1) error(instruction.range, "unary instruction has wrong arity");
+      if (instruction.kind == MirInstructionKind::AtomicLoad) {
+        verify_atomic_shape(procedure, instruction);
+      }
       break;
     case MirInstructionKind::Store:
     case MirInstructionKind::Binary:
@@ -99,7 +230,21 @@ private:
     case MirInstructionKind::PointerSubtract:
     case MirInstructionKind::IndexAddress:
     case MirInstructionKind::BoundsCheck:
+    case MirInstructionKind::AtomicStore:
+    case MirInstructionKind::AtomicExchange:
+    case MirInstructionKind::AtomicReadModifyWrite:
       if (arity != 2) error(instruction.range, "binary instruction has wrong arity");
+      if (instruction.kind == MirInstructionKind::AtomicStore ||
+          instruction.kind == MirInstructionKind::AtomicExchange ||
+          instruction.kind == MirInstructionKind::AtomicReadModifyWrite) {
+        verify_atomic_shape(procedure, instruction);
+      }
+      break;
+    case MirInstructionKind::AtomicCompareExchange:
+      if (arity != 3) {
+        error(instruction.range, "compare-exchange requires object, expected, desired");
+      }
+      verify_atomic_shape(procedure, instruction);
       break;
     case MirInstructionKind::SliceBoundsCheck:
     case MirInstructionKind::Slice:

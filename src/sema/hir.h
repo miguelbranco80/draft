@@ -99,6 +99,18 @@ enum class HirOperation {
   GreaterEqual,
 };
 
+// Atomic order is semantic data, not a runtime enum value after checking.
+// Direct core/atomic calls require a compile-time Order argument, allowing MIR
+// and every backend to retain the exact language memory model without target
+// library calls or host-compiler builtins.
+enum class AtomicMemoryOrder {
+  Relaxed,
+  Acquire,
+  Release,
+  AcquireRelease,
+  SequentiallyConsistent,
+};
+
 // HirExpression operands are in source evaluation order. symbol is meaningful
 // for Symbol and Member nodes; constant is meaningful for Constant. addressable
 // records the language property checked by `&` and assignment, not whether MIR
@@ -112,6 +124,11 @@ struct HirExpression {
   ScopeId scope;
   SymbolId symbol;
   ConstantValue constant;
+  // Only core/atomic Intrinsic nodes use these fields. The failure order is
+  // meaningful only for compare-exchange; all other nodes retain the default.
+  AtomicMemoryOrder atomic_order = AtomicMemoryOrder::SequentiallyConsistent;
+  AtomicMemoryOrder atomic_failure_order =
+      AtomicMemoryOrder::SequentiallyConsistent;
   std::vector<HirExpressionId> operands;
   // Composite operands may be positional or name-directed. This parallel
   // vector contains an invalid SymbolId for a positional operand and the

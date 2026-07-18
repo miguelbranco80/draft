@@ -518,6 +518,114 @@ void test_compiler_distributed_thread(TestState &state) {
   }
 }
 
+void test_compiler_distributed_atomic(TestState &state) {
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  draft::CompileWorkspaceOptions options;
+  options.target = draft::make_aarch64_macos_profile();
+  options.workspace.workspace_directory =
+      std::string(DRAFT_SOURCE_DIRECTORY) + "/examples";
+  options.workspace.core_directory =
+      std::string(DRAFT_SOURCE_DIRECTORY) + "/core";
+  options.workspace.core_content_identity = "draft-core-test-v1";
+  options.lower_mir = true;
+  options.emit_llvm = true;
+  const draft::CompileWorkspaceResult result = draft::compile_workspace(
+      sources,
+      std::string(DRAFT_SOURCE_DIRECTORY) + "/examples/core-atomic",
+      std::move(options),
+      diagnostics);
+  if (diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+  }
+  EXPECT(state, result.ok);
+  EXPECT(state, !diagnostics.has_errors());
+  EXPECT(state, result.graph.packages.size() == 2);
+  if (!result.ok || !result.graph.root_package.is_valid()) return;
+
+  const std::optional<draft::CompiledPackage> &root =
+      result.packages[result.graph.root_package.value];
+  EXPECT(state, root.has_value());
+  if (!root.has_value()) return;
+  const std::string &llvm = root->llvm.text;
+  EXPECT(state, root->llvm.ok);
+  EXPECT(state, llvm.find("store atomic i64 2") != std::string::npos);
+  EXPECT(state, llvm.find("load atomic i64") != std::string::npos);
+  EXPECT(state, llvm.find("atomicrmw add") != std::string::npos);
+  EXPECT(state, llvm.find("atomicrmw sub") != std::string::npos);
+  EXPECT(state, llvm.find("atomicrmw and") != std::string::npos);
+  EXPECT(state, llvm.find("atomicrmw or") != std::string::npos);
+  EXPECT(state, llvm.find("atomicrmw xor") != std::string::npos);
+  EXPECT(state, llvm.find("atomicrmw xchg") != std::string::npos);
+  EXPECT(state, llvm.find("cmpxchg ptr") != std::string::npos);
+  EXPECT(state, llvm.find("fence seq_cst") != std::string::npos);
+  EXPECT(state, llvm.find("relaxed atomic fence has no effect") !=
+      std::string::npos);
+  EXPECT(state, llvm.find("<type-parameter>") == std::string::npos);
+}
+
+void test_atomic_diagnostics(TestState &state) {
+  std::error_code error;
+  const std::filesystem::path root = std::filesystem::temp_directory_path(error) /
+      "draft-bootstrap-atomic-diagnostics-test";
+  EXPECT(state, !error);
+  std::filesystem::remove_all(root, error);
+  error.clear();
+  std::filesystem::create_directories(root / "app", error);
+  EXPECT(state, !error);
+  if (error) return;
+
+  std::ofstream source(root / "app" / "package.draft", std::ios::binary);
+  source << "package app\n"
+            "import core/atomic\n"
+            "word: atomic.Value[u64]\n"
+            "pointer_word: atomic.Value[rawptr]\n"
+            "main :: proc() {\n"
+            "    order: atomic.Order = .relaxed\n"
+            "    loader := atomic.load\n"
+            "    atomic.load(&word, order)\n"
+            "    atomic.load(&word, .release)\n"
+            "    atomic.store(&word, 1, .acquire)\n"
+            "    expected: u64 = 0\n"
+            "    atomic.compare_exchange(\n"
+            "        &word, &expected, 1, .relaxed, .acquire)\n"
+            "    atomic.fetch_add(&pointer_word, nil, .relaxed)\n"
+            "    atomic.fence(.relaxed)\n"
+            "}\n";
+  source.close();
+  EXPECT(state, source.good());
+
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  draft::CompileWorkspaceOptions options;
+  options.target = draft::make_aarch64_macos_profile();
+  options.workspace.workspace_directory = root.string();
+  options.workspace.core_directory =
+      std::string(DRAFT_SOURCE_DIRECTORY) + "/core";
+  options.workspace.core_content_identity = "draft-core-test-v1";
+  options.lower_mir = true;
+  options.emit_llvm = true;
+  const draft::CompileWorkspaceResult result = draft::compile_workspace(
+      sources, (root / "app").string(), std::move(options), diagnostics);
+  EXPECT(state, !result.ok);
+  const std::string rendered = draft::render_diagnostics(sources, diagnostics);
+  EXPECT(state, rendered.find("must be a compile-time core/atomic.Order value") !=
+      std::string::npos);
+  EXPECT(state, rendered.find("core/atomic operations must be called directly") !=
+      std::string::npos);
+  EXPECT(state, rendered.find("atomic load cannot use a release order") !=
+      std::string::npos);
+  EXPECT(state, rendered.find("atomic store cannot use an acquire order") !=
+      std::string::npos);
+  EXPECT(state, rendered.find(
+      "compare-exchange failure order is stronger than its success order") !=
+      std::string::npos);
+  EXPECT(state, rendered.find("atomic fetch operation requires an integer type") !=
+      std::string::npos);
+
+  std::filesystem::remove_all(root, error);
+}
+
 void test_cross_package_generic_procedures(TestState &state) {
   draft::SourceManager sources;
   draft::DiagnosticSink diagnostics;
@@ -639,6 +747,8 @@ int main() {
   test_compiler_distributed_map(state);
   test_compiler_distributed_os(state);
   test_compiler_distributed_thread(state);
+  test_compiler_distributed_atomic(state);
+  test_atomic_diagnostics(state);
   test_cross_package_generic_procedures(state);
   test_runtime_context_bridge_diagnostics(state);
   if (state.failures != 0) {

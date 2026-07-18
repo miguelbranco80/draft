@@ -1,0 +1,29 @@
+package core_atomic_thread
+
+import core/atomic
+import core/thread
+
+Work :: struct {
+    counter: ^atomic.Value[u64],
+    iterations: u64,
+}
+
+increment :: proc(user: rawptr) {
+    work := cast[^Work](user)
+    for index: u64 = 0; index < work^.iterations; index += 1 {
+        atomic.fetch_add(work^.counter, 1, .relaxed)
+    }
+}
+
+main :: proc() {
+    counter: atomic.Value[u64]
+    atomic.init(&counter, 0)
+    work := Work{counter = &counter, iterations = 10000}
+
+    (left, left_started) := thread.spawn(increment, cast[rawptr](&work))
+    (right, right_started) := thread.spawn(increment, cast[rawptr](&work))
+    assert(left_started && right_started)
+    assert(thread.join(&left))
+    assert(thread.join(&right))
+    assert(atomic.load(&counter, .acquire) == 20000)
+}

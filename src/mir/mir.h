@@ -79,6 +79,12 @@ enum class MirInstructionKind {
   ProcedureReference,
   Load,
   Store,
+  AtomicLoad,
+  AtomicStore,
+  AtomicExchange,
+  AtomicReadModifyWrite,
+  AtomicCompareExchange,
+  AtomicFence,
   Unary,
   Binary,
   Convert,
@@ -110,6 +116,12 @@ struct MirInstruction {
   TypeId type;
   MirValueId result;
   HirOperation operation = HirOperation::None;
+  // Atomic instructions carry orders as semantic enum values. They never use a
+  // runtime operand for an order, which makes invalid target spellings
+  // impossible after MIR verification.
+  AtomicMemoryOrder atomic_order = AtomicMemoryOrder::SequentiallyConsistent;
+  AtomicMemoryOrder atomic_failure_order =
+      AtomicMemoryOrder::SequentiallyConsistent;
   std::vector<MirValueId> operands;
   MirLocalId local;
   SymbolId symbol;

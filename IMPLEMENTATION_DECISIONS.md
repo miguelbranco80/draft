@@ -203,3 +203,29 @@ and `runtime.default_context` agree. Join clears the owning handle. Mutex and
 condition storage uses the target-profile Darwin LP64 layouts (64 and 48 bytes,
 including their eight-byte signatures) and is accessed only through pthread
 operations.
+
+## Initial compiler-backed atomic interface
+
+Status: first AArch64 macOS core surface; C11 memory semantics are normative.
+
+`core/atomic.Value[T]` is an ordinary, naturally aligned nominal wrapper whose
+storage may be initialized non-atomically only before publication. After
+publication, all access uses the package operations. The first target accepts
+one-, two-, four-, and eight-byte integer objects plus pointer objects; read,
+write, exchange, integer read/modify/write, compare-exchange, and thread fences
+lower to dedicated target-independent MIR instructions. LLVM emission uses
+`load atomic`, `store atomic`, `atomicrmw`, `cmpxchg`, and `fence` rather than
+foreign calls or pthread locks.
+
+Every order argument is a compile-time `atomic.Order` value. Semantic checking
+rejects release loads, acquire stores, releasing failure orders, and a
+compare-exchange failure order stronger than its success order. A relaxed fence
+is valid under the adopted C11 rules but has no synchronization effect; MIR
+retains it and LLVM text emits an explicit no-op comment because LLVM has no
+`fence monotonic` instruction.
+
+The initial operations must be called directly through the imported package (an
+alias is fine). Taking one as a procedure value or explicitly specializing it
+is diagnosed because its order and storage facts belong in atomic HIR/MIR, not
+in the ordinary calling convention. The Draft source bodies are interface
+records and defensive traps only; no valid compiled call reaches them.
