@@ -91,6 +91,7 @@ add_library(
   src/validation/evidence.cpp
   src/validation/evidence_store.cpp
   src/validation/evidence_store_core.cpp
+  src/validation/instrumentation.cpp
   src/validation/runner.cpp
   src/workspace/package.cpp
   src/workspace/workspace.cpp
@@ -359,6 +360,18 @@ if(BUILD_TESTING)
   target_link_libraries(draft_validation_runner_tests PRIVATE draft_compiler)
   add_test(NAME draft_validation_runner_tests COMMAND draft_validation_runner_tests)
 
+  add_executable(
+    draft_validation_instrumentation_tests
+    tests/validation_instrumentation_test.cpp
+  )
+  target_link_libraries(
+    draft_validation_instrumentation_tests PRIVATE draft_compiler
+  )
+  add_test(
+    NAME draft_validation_instrumentation_tests
+    COMMAND draft_validation_instrumentation_tests
+  )
+
   add_executable(draft_validation_evidence_tests tests/validation_evidence_test.cpp)
   target_link_libraries(draft_validation_evidence_tests PRIVATE draft_compiler)
   add_test(NAME draft_validation_evidence_tests COMMAND draft_validation_evidence_tests)
@@ -415,6 +428,19 @@ if(BUILD_TESTING)
       "-DSOURCE_PACKAGE=${CMAKE_CURRENT_SOURCE_DIR}/examples/hello"
       "-DTEST_ROOT=${CMAKE_CURRENT_BINARY_DIR}/driver-symlink-path-test"
       -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/driver_symlink_path_test.cmake"
+  )
+
+  # The first target exposes the complete instrumentation request vocabulary
+  # but owns no versioned diagnostic runtime yet. A request must fail before a
+  # native toolchain is probed rather than silently running uninstrumented.
+  add_test(
+    NAME draft_validation_instrumentation_unavailable
+    COMMAND draftc test "${CMAKE_CURRENT_SOURCE_DIR}/examples/validation"
+      --instrument address
+  )
+  set_tests_properties(
+    draft_validation_instrumentation_unavailable
+    PROPERTIES WILL_FAIL TRUE
   )
 
   # Evidence requirements are meaningful only for locked builds. This checks

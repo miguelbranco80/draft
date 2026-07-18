@@ -8,6 +8,7 @@
 #include "source/source.h"
 #include "target/profile.h"
 #include "validation/discovery.h"
+#include "validation/instrumentation.h"
 #include "workspace/workspace.h"
 
 #include <cstddef>
@@ -23,6 +24,10 @@ struct ValidationCommandOptions {
   TargetProfile target;
   WorkspaceLoadOptions workspace;
   ValidationKind kind = ValidationKind::None;
+  // Requests are checked before semantic compilation or native tool probing.
+  // When a target first supports one, its complete selection identity must
+  // also enter ValidationEvidence before this boundary may accept it.
+  std::vector<ValidationInstrumentationKind> instrumentation;
   bool allow_unpinned_toolchain = false;
   bool locked = false;
   LockedNativeInputRoots locked_inputs;
@@ -67,6 +72,9 @@ struct ValidationEvidenceRequirement {
   TargetProfile target;
   WorkspaceLoadOptions workspace;
   ValidationKind kind = ValidationKind::None;
+  // Locked verification uses the same request vocabulary and availability
+  // gate. It never substitutes uninstrumented evidence for a requested kind.
+  std::vector<ValidationInstrumentationKind> instrumentation;
   std::vector<ForeignProviderAudit> foreign_provider_audits;
 };
 

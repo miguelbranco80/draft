@@ -959,3 +959,22 @@ relocatable provider artifacts, runtime assets, and locked toolchain/SDK roots
 keep their separate explicit policies. A public `resolve` regression reaches a
 copied package through a symlinked parent, pins dummy native roots, and proves
 that the manifest is published under the canonical real workspace.
+
+## Validation instrumentation request boundary
+
+Status: closed vocabulary and fail-closed availability implemented; the first
+target supports no diagnostic instrument yet.
+
+Validation profiles request instrumentation through typed kinds rather than
+ambient Clang flags. Draft 1 names `address`, `lifetime`,
+`undefined-operation`, `allocator-poisoning`, and `race`. Duplicate requests are
+errors. Standalone validation, resolution precommit validation, and locked
+evidence verification all use the same target-availability gate.
+
+`draft-aarch64-macos-v5` currently rejects every nonempty set before semantic
+compilation or native tool probing. Supporting a kind requires a versioned
+compiler pass, option schema, runtime, and tool identity, followed by a
+validation-evidence format/key revision. Language-level traps and the bootstrap
+compiler's own ASan/UBSan suite do not satisfy that contract. This preserves the
+specification rule that unavailable required instrumentation fails rather than
+being silently omitted.

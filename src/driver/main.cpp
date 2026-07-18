@@ -551,6 +551,7 @@ int build_package(
 int validate_package(
     const std::string &directory,
     draft::ValidationKind kind,
+    const std::vector<draft::ValidationInstrumentationKind> &instrumentation,
     bool allow_host_toolchain,
     const std::optional<draft::LockedNativeInputRoots> &locked_inputs,
     const std::vector<draft::ForeignProviderInput> &foreign_providers,
@@ -582,6 +583,7 @@ int validate_package(
     return 1;
   }
   options.kind = kind;
+  options.instrumentation = instrumentation;
   options.allow_unpinned_toolchain = allow_host_toolchain;
   options.foreign_providers = foreign_providers;
   options.runtime_assets = runtime_assets;
@@ -1138,11 +1140,13 @@ void print_usage() {
             << "      [--judge-validator <identity>]...\n"
             << "      [--judge-artifact <kind>:<sha256>]...\n"
             << "  draftc test <package-directory> [--allow-host-toolchain]\n"
+            << "      [--instrument address|lifetime|undefined-operation|allocator-poisoning|race]...\n"
             << "      [--locked --toolchain-root <directory> --sdk-root <directory>]\n"
             << "      [--provider name=object|archive|shared-library:<path>]...\n"
             << "      [--provider-summary name:<path>]...\n"
             << "      [--runtime-asset name:<file-or-directory>]...\n"
             << "  draftc bench <package-directory> [--verify] [--allow-host-toolchain]\n"
+            << "      [--instrument address|lifetime|undefined-operation|allocator-poisoning|race]...\n"
             << "      [--locked --toolchain-root <directory> --sdk-root <directory>]\n"
             << "      [--provider name=object|archive|shared-library:<path>]...\n"
             << "      [--provider-summary name:<path>]...\n"
@@ -1491,6 +1495,7 @@ int main(int argc, char **argv) {
     std::vector<draft::ForeignProviderInput> foreign_providers;
     std::vector<draft::ForeignProviderSummaryInput> provider_summaries;
     std::vector<draft::RuntimeAssetInput> runtime_assets;
+    std::vector<draft::ValidationInstrumentationKind> instrumentation;
     for (int index = 3; index < argc; ++index) {
       const std::string_view argument(argv[index]);
       if (argument == "--allow-host-toolchain" && !allow_host_toolchain) {
@@ -1534,6 +1539,16 @@ int main(int argc, char **argv) {
           return 2;
         }
         runtime_assets.push_back(std::move(asset));
+      } else if (argument == "--instrument" && index + 1 < argc) {
+        const std::string_view spelling(argv[++index]);
+        const std::optional<draft::ValidationInstrumentationKind> parsed =
+            draft::parse_validation_instrumentation(spelling);
+        if (!parsed.has_value()) {
+          std::cerr << "error: unknown validation instrumentation '"
+                    << spelling << "'\n";
+          return 2;
+        }
+        instrumentation.push_back(*parsed);
       } else {
         print_usage();
         return 2;
@@ -1558,6 +1573,7 @@ int main(int argc, char **argv) {
     return validate_package(
         argv[2],
         validation_kind,
+        instrumentation,
         allow_host_toolchain,
         locked_inputs,
         foreign_providers,

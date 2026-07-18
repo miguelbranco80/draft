@@ -360,6 +360,12 @@ ValidationCommandResult execute_validation_command(
         "validation command requires a package and test or benchmark kind");
     return {};
   }
+  if (!validate_validation_instrumentation(
+          options.target,
+          options.instrumentation,
+          diagnostics)) {
+    return {};
+  }
   CompileWorkspaceResult compiled = compile_validation(
       sources,
       options.package_directory,
@@ -385,6 +391,12 @@ ValidationCommandResult execute_precommit_validation(
         "precommit validation requires a package and concrete kind");
     return {};
   }
+  if (!validate_validation_instrumentation(
+          options.target,
+          options.instrumentation,
+          diagnostics)) {
+    return {};
+  }
   return execute_compiled_validation(
       compiled, std::move(options), diagnostics);
 }
@@ -399,6 +411,12 @@ bool verify_active_validation_evidence(
     diagnostics.error(
         SourceRange::invalid(),
         "validation evidence requirement needs a package and concrete kind");
+    return false;
+  }
+  if (!validate_validation_instrumentation(
+          requirement.target,
+          requirement.instrumentation,
+          diagnostics)) {
     return false;
   }
   CompileWorkspaceResult validation = compile_validation(

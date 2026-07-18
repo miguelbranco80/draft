@@ -195,6 +195,15 @@ graph, definitions, target, compiler/toolchain, runner environment, artifact,
 and policy. Failed attempts revoke prior passing evidence for only that key;
 locked builds can verify required active evidence without rerunning it.
 
+`draft test` and `draft bench` accept repeatable `--instrument` requests from
+the closed set `address`, `lifetime`, `undefined-operation`,
+`allocator-poisoning`, and `race`. The first AArch64 macOS target currently
+supports none of them: a request fails before semantic compilation or native
+tool probing with an exact target diagnostic. This is intentional. An
+instrument becomes available only when its compiler pass, option schema,
+runtime, and tool versions can all enter the evidence identity; an ordinary
+uninstrumented run is never accepted as instrumented evidence.
+
 On Apple hosts, the test suite also compiles, links, launches, and requires a
 zero exit from 17 handwritten programs spanning the runtime/core facilities,
 multi-package generics, parsed and package assembly, C interop, atomics, and
