@@ -134,6 +134,7 @@ struct CompileTimeRoundResult {
     ScopeId scope,
     DiagnosticSink &diagnostics,
     const ConstantTable *local_constants = nullptr,
-    const std::vector<ConstantTypeBinding> *local_types = nullptr);
+    const std::vector<ConstantTypeBinding> *local_types = nullptr,
+    TypeId expected = {});
 
 } // namespace draft

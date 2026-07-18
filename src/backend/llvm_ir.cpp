@@ -9,6 +9,7 @@
 #include "backend/llvm_ir.h"
 
 #include "interop/aarch64_abi.h"
+#include "sema/ieee_float.h"
 #include "syntax/literal.h"
 
 #include <algorithm>
@@ -61,114 +62,6 @@ struct BoundsSite {
   std::size_t file_string = 0;
   LineColumn location;
 };
-
-struct IeeeFormat {
-  std::uint32_t exponent_bits = 0;
-  std::uint32_t fraction_bits = 0;
-};
-
-[[nodiscard]] std::optional<std::uint64_t> rounded_scaled_quotient(
-    const BigInteger &numerator,
-    const BigInteger &denominator,
-    std::int64_t binary_shift) {
-  BigInteger scaled_numerator = numerator;
-  BigInteger scaled_denominator = denominator;
-  if (binary_shift >= 0) {
-    scaled_numerator = scaled_numerator.shifted_left(
-        static_cast<std::size_t>(binary_shift));
-  } else {
-    scaled_denominator = scaled_denominator.shifted_left(
-        static_cast<std::size_t>(-binary_shift));
-  }
-  BigInteger quotient;
-  BigInteger remainder;
-  if (!scaled_numerator.divide(scaled_denominator, quotient, remainder)) {
-    return std::nullopt;
-  }
-  const BigInteger twice_remainder = remainder.shifted_left(1);
-  const int halfway = twice_remainder.compare(scaled_denominator);
-  const bool quotient_is_odd =
-      !quotient.bitwise_and(BigInteger::from_u64(1)).is_zero();
-  if (halfway > 0 || (halfway == 0 && quotient_is_odd)) {
-    quotient = quotient.added(BigInteger::from_u64(1));
-  }
-  return quotient.to_u64();
-}
-
-// Converts the mathematical rational directly to IEEE round-to-nearest,
-// ties-to-even bits. No host floating operation participates, so cross-builds
-// and the self-hosted compiler can reproduce the same constants exactly.
-[[nodiscard]] std::optional<std::uint64_t> ieee_bits(
-    const ExactRational &value, IeeeFormat format) {
-  const std::uint32_t total_bits =
-      1U + format.exponent_bits + format.fraction_bits;
-  if (total_bits > 64 || format.exponent_bits == 0) return std::nullopt;
-  if (value.is_zero()) return 0;
-  const bool negative = value.numerator().is_negative();
-  const BigInteger numerator = value.numerator().absolute();
-  const BigInteger denominator = value.denominator();
-  const std::size_t numerator_bits = numerator.bit_count();
-  const std::size_t denominator_bits = denominator.bit_count();
-  if (numerator_bits > static_cast<std::size_t>(
-                           std::numeric_limits<std::int64_t>::max()) ||
-      denominator_bits > static_cast<std::size_t>(
-                             std::numeric_limits<std::int64_t>::max())) {
-    return std::nullopt;
-  }
-  std::int64_t exponent = static_cast<std::int64_t>(numerator_bits) -
-      static_cast<std::int64_t>(denominator_bits);
-  if (exponent >= 0) {
-    if (numerator.compare(
-            denominator.shifted_left(static_cast<std::size_t>(exponent))) < 0) {
-      --exponent;
-    }
-  } else if (numerator.shifted_left(static_cast<std::size_t>(-exponent))
-                 .compare(denominator) < 0) {
-    --exponent;
-  }
-
-  const std::uint64_t bias =
-      (std::uint64_t{1} << (format.exponent_bits - 1U)) - 1U;
-  const std::int64_t minimum_exponent = 1 - static_cast<std::int64_t>(bias);
-  const std::int64_t maximum_exponent = static_cast<std::int64_t>(bias);
-  std::uint64_t exponent_field = 0;
-  std::uint64_t fraction_field = 0;
-  if (exponent >= minimum_exponent) {
-    if (exponent > maximum_exponent) return std::nullopt;
-    const std::int64_t shift =
-        static_cast<std::int64_t>(format.fraction_bits) - exponent;
-    std::optional<std::uint64_t> significand =
-        rounded_scaled_quotient(numerator, denominator, shift);
-    if (!significand.has_value()) return std::nullopt;
-    const std::uint64_t implicit = std::uint64_t{1} << format.fraction_bits;
-    if (*significand == (implicit << 1U)) {
-      ++exponent;
-      *significand = implicit;
-      if (exponent > maximum_exponent) return std::nullopt;
-    }
-    exponent_field = static_cast<std::uint64_t>(exponent) + bias;
-    fraction_field = *significand - implicit;
-  } else {
-    const std::int64_t shift =
-        static_cast<std::int64_t>(format.fraction_bits) - minimum_exponent;
-    const std::optional<std::uint64_t> significand =
-        rounded_scaled_quotient(numerator, denominator, shift);
-    if (!significand.has_value()) return std::nullopt;
-    const std::uint64_t implicit = std::uint64_t{1} << format.fraction_bits;
-    if (*significand >= implicit) {
-      exponent_field = 1;
-      fraction_field = 0;
-    } else {
-      fraction_field = *significand;
-    }
-  }
-  const std::uint64_t sign_field = negative
-      ? std::uint64_t{1} << (total_bits - 1U)
-      : 0;
-  return sign_field |
-      (exponent_field << format.fraction_bits) |
-      fraction_field;
-}
 
 [[nodiscard]] std::string encoded_name(std::string_view text) {
   static constexpr char digits[] = "0123456789ABCDEF";
@@ -973,16 +866,15 @@ private:
     return target_uses_little_endian();
   }
 
-  [[nodiscard]] std::optional<IeeeFormat> ieee_format(TypeId type_id) const {
+  [[nodiscard]] std::optional<IeeeBinaryFormat> ieee_format(
+      TypeId type_id) const {
     Type value = type(runtime_scalar_id(type_id));
     if (value.kind == TypeKind::EndianScalar && value.element.is_valid()) {
       value = type(value.element);
     }
-    if (value.kind != TypeKind::Float) return std::nullopt;
-    if (value.bit_width == 16) return IeeeFormat{5, 10};
-    if (value.bit_width == 32) return IeeeFormat{8, 23};
-    if (value.bit_width == 64) return IeeeFormat{11, 52};
-    return std::nullopt;
+    return value.kind == TypeKind::Float
+        ? ieee_format_for_width(value.bit_width)
+        : std::nullopt;
   }
 
   [[nodiscard]] bool write_integer_bytes(
@@ -1035,18 +927,24 @@ private:
   }
 
   [[nodiscard]] bool write_float_bytes(
-      const ExactRational &value,
+      const ConstantValue &value,
       TypeId type_id,
       std::vector<std::uint8_t> &bytes,
       std::uint64_t offset,
       SourceRange range) {
     const Type &storage = type(runtime_scalar_id(type_id));
-    const std::optional<IeeeFormat> format = ieee_format(type_id);
-    const std::optional<std::uint64_t> bits = format.has_value()
-        ? ieee_bits(value, *format)
-        : std::nullopt;
+    const std::optional<IeeeBinaryFormat> format = ieee_format(type_id);
+    const std::uint32_t bit_width = format.has_value()
+        ? 1U + format->exponent_bits + format->fraction_bits
+        : 0;
+    const std::optional<std::uint64_t> bits =
+        value.float_bit_width != 0 && value.float_bit_width == bit_width
+        ? std::optional<std::uint64_t>(value.float_bits)
+        : (format.has_value()
+               ? round_ieee_bits(value.floating, *format)
+               : std::nullopt);
     if (!bits.has_value()) {
-      error(range, "floating constant has no finite union-storage encoding");
+      error(range, "floating constant has no union-storage encoding");
       return false;
     }
     const std::uint64_t size = storage.layout.size;
@@ -1095,7 +993,7 @@ private:
     if (value.kind == ConstantKind::Float &&
         (storage.kind == TypeKind::Float ||
          storage.kind == TypeKind::EndianScalar)) {
-      return write_float_bytes(value.floating, type_id, bytes, offset, range);
+      return write_float_bytes(value, type_id, bytes, offset, range);
     }
     if (value.kind == ConstantKind::String) {
       // A relocatable pointer cannot be represented faithfully as independent
@@ -1318,25 +1216,43 @@ private:
       // instruction_constant handles the declaration-order discriminator.
       return "0";
     case ConstantKind::Float: {
-      Type float_type = type(type_id);
-      while (float_type.kind == TypeKind::Distinct) {
-        float_type = type(float_type.element);
+      Type storage_type = type(type_id);
+      while (storage_type.kind == TypeKind::Distinct) {
+        storage_type = type(storage_type.element);
       }
-      IeeeFormat format;
-      if (float_type.kind == TypeKind::Float && float_type.bit_width == 16) {
-        format = {5, 10};
-      } else if (float_type.kind == TypeKind::Float && float_type.bit_width == 32) {
-        format = {8, 23};
-      } else if (float_type.kind == TypeKind::Float && float_type.bit_width == 64) {
-        format = {11, 52};
-      } else {
+      Type float_type = storage_type;
+      if (storage_type.kind == TypeKind::EndianScalar &&
+          storage_type.element.is_valid()) {
+        float_type = type(storage_type.element);
+      }
+      const std::optional<IeeeBinaryFormat> format =
+          float_type.kind == TypeKind::Float
+          ? ieee_format_for_width(float_type.bit_width)
+          : std::nullopt;
+      if (!format.has_value()) {
         error(range, "floating constant has no supported IEEE format");
         return "zeroinitializer";
       }
-      const std::optional<std::uint64_t> bits = ieee_bits(value.floating, format);
+      const std::optional<std::uint64_t> bits =
+          value.float_bit_width != 0 &&
+              value.float_bit_width == float_type.bit_width
+          ? std::optional<std::uint64_t>(value.float_bits)
+          : round_ieee_bits(value.floating, *format);
       if (!bits.has_value()) {
-        error(range, "floating constant is outside the finite target range");
+        error(range, "floating constant could not be rounded for the target");
         return "zeroinitializer";
+      }
+      if (storage_type.kind == TypeKind::EndianScalar) {
+        std::uint64_t storage_bits = *bits;
+        if (endian_requires_swap(type_id)) {
+          std::uint64_t swapped = 0;
+          const std::uint32_t byte_count = float_type.bit_width / 8U;
+          for (std::uint32_t index = 0; index < byte_count; ++index) {
+            swapped = (swapped << 8U) | ((storage_bits >> (index * 8U)) & 0xffU);
+          }
+          storage_bits = swapped;
+        }
+        return std::to_string(storage_bits);
       }
       return "bitcast (i" + std::to_string(float_type.bit_width) + " " +
           std::to_string(*bits) + " to " + llvm_type(type_id) + ")";

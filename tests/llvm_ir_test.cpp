@@ -78,6 +78,21 @@ identity[T: number] :: proc(value: T) -> T {
     return value
 }
 
+compile_time_infinity :: proc() -> f32 {
+    zero: f32
+    return 1.0 / zero
+}
+
+compile_time_nan :: proc() -> f32 {
+    zero: f32
+    return zero / zero
+}
+
+compile_time_negative_zero :: proc() -> f32 {
+    zero: f32
+    return -zero
+}
+
 Code :: enum i16 {
     Zero,
     Seven = 7,
@@ -116,6 +131,9 @@ global_header: Header = Header{tag = 1, value = 42}
 global_text_count: Text_Count = Text_Count{text = "draft", count = 5}
 global_outcome: Outcome = .value(9)
 global_overlay: Overlay = Overlay{word = 0x1020304050607080}
+global_infinity: f32 = compile_time_infinity()
+global_nan: f32 = compile_time_nan()
+global_negative_zero: f32 = compile_time_negative_zero()
 
 Maybe[T: type] :: union {
     none,
@@ -213,6 +231,9 @@ main :: proc() -> i32 {
     assert(read_outcome(global_outcome) == 9)
     assert(global_overlay.word == 0x1020304050607080)
     assert(constant_table_value() == 16)
+    assert(global_infinity > 1e30)
+    assert(global_nan != global_nan)
+    assert(global_negative_zero == 0.0)
     value := add(20, 22)
     (left, _): (i64, i64) = (20, 0)
     (_, right): (i64, i64) = (0, 22)
@@ -329,6 +350,12 @@ main :: proc() -> i32 {
   EXPECT(state, module.text.find(
       "[i8 128, i8 112, i8 96, i8 80, i8 64, i8 48, i8 32, i8 16]") !=
       std::string::npos);
+  EXPECT(state, module.text.find(
+      "bitcast (i32 2139095040 to float)") != std::string::npos);
+  EXPECT(state, module.text.find(
+      "bitcast (i32 2143289344 to float)") != std::string::npos);
+  EXPECT(state, module.text.find(
+      "bitcast (i32 2147483648 to float)") != std::string::npos);
   EXPECT(state, module.text.find("identity_24instance") != std::string::npos);
   EXPECT(state, module.text.find("last_24instance_24v3") != std::string::npos);
   EXPECT(state, module.text.find("<type-parameter>") == std::string::npos);

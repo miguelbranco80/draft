@@ -6,6 +6,7 @@
 
 #include "sema/global_initializer.h"
 
+#include "sema/ieee_float.h"
 #include "syntax/syntax_tree.h"
 
 #include <algorithm>
@@ -208,9 +209,75 @@ private:
     return package_.types.builtins().invalid;
   }
 
+  [[nodiscard]] std::optional<ConstantValue> convert_float(
+      const ConstantValue &value, TypeId target, SourceRange range) {
+    Type floating_type = runtime_type(target);
+    if (floating_type.kind == TypeKind::EndianScalar &&
+        floating_type.element.is_valid()) {
+      floating_type = runtime_type(floating_type.element);
+    }
+    const std::optional<IeeeBinaryFormat> format =
+        floating_type.kind == TypeKind::Float
+        ? ieee_format_for_width(floating_type.bit_width)
+        : std::nullopt;
+    if (!format.has_value()) {
+      diagnostics_.error(range, "global float type has no supported IEEE format");
+      return std::nullopt;
+    }
+
+    std::uint64_t bits = 0;
+    if (value.kind == ConstantKind::Integer) {
+      const std::optional<std::uint64_t> rounded =
+          round_ieee_bits(ExactRational(value.integer), *format);
+      if (!rounded.has_value()) return std::nullopt;
+      bits = *rounded;
+    } else if (value.kind == ConstantKind::Float &&
+               value.float_bit_width == 0) {
+      const std::optional<std::uint64_t> rounded =
+          round_ieee_bits(value.floating, *format);
+      if (!rounded.has_value()) return std::nullopt;
+      bits = *rounded;
+    } else if (value.kind == ConstantKind::Float) {
+      const std::optional<IeeeBinaryFormat> source_format =
+          ieee_format_for_width(value.float_bit_width);
+      const std::optional<DecodedIeeeValue> decoded = source_format.has_value()
+          ? decode_ieee_bits(value.float_bits, *source_format)
+          : std::nullopt;
+      if (!decoded.has_value()) return std::nullopt;
+      if (decoded->kind == IeeeValueKind::NaN) {
+        bits = ieee_nan_bits(*format);
+      } else if (decoded->kind == IeeeValueKind::Infinity) {
+        bits = ieee_infinity_bits(*format, decoded->negative);
+      } else if (decoded->finite.is_zero() && decoded->negative) {
+        bits = ieee_zero_bits(*format, true);
+      } else {
+        const std::optional<std::uint64_t> rounded =
+            round_ieee_bits(decoded->finite, *format);
+        if (!rounded.has_value()) return std::nullopt;
+        bits = *rounded;
+      }
+    } else {
+      return std::nullopt;
+    }
+
+    const std::optional<DecodedIeeeValue> decoded =
+        decode_ieee_bits(bits, *format);
+    if (!decoded.has_value()) return std::nullopt;
+    return ConstantValue::make_ieee_float(
+        floating_type.bit_width,
+        bits,
+        decoded->kind == IeeeValueKind::Finite
+            ? decoded->finite
+            : ExactRational{});
+  }
+
   [[nodiscard]] std::optional<ConstantValue> convert(
       ConstantValue value, TypeId target, SourceRange range) {
     const Type type = runtime_type(target);
+    const TypeKind endian_value_kind =
+        type.kind == TypeKind::EndianScalar && type.element.is_valid()
+        ? runtime_type(type.element).kind
+        : TypeKind::Invalid;
     if (value.kind == ConstantKind::Nil) {
       if (type.kind == TypeKind::Pointer || type.kind == TypeKind::MultiPointer ||
           type.kind == TypeKind::RawPointer || type.kind == TypeKind::CString ||
@@ -235,12 +302,11 @@ private:
         return std::nullopt;
       }
       return value;
-    } else if (value.kind == ConstantKind::Integer &&
-               type.kind == TypeKind::Float) {
-      return ConstantValue::make_float(ExactRational(value.integer));
-    } else if (value.kind == ConstantKind::Float &&
-               type.kind == TypeKind::Float) {
-      return value;
+    } else if ((value.kind == ConstantKind::Integer ||
+                value.kind == ConstantKind::Float) &&
+               (type.kind == TypeKind::Float ||
+                endian_value_kind == TypeKind::Float)) {
+      return convert_float(value, target, range);
     } else if (value.kind == ConstantKind::EnumLabel &&
                type.kind == TypeKind::Enum) {
       const std::optional<BigInteger> integer = enum_value(target, value.text);
@@ -362,7 +428,9 @@ private:
             *value_node,
             file_scope(syntax->file()),
             diagnostics_,
-            &constants_);
+            &constants_,
+            nullptr,
+            symbol.type);
     if (!evaluated.has_value()) return;
     if (!symbol.type.is_valid() ||
         package_.types.type(symbol.type).kind == TypeKind::Invalid) {

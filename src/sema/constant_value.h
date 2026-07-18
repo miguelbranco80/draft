@@ -40,6 +40,12 @@ struct ConstantValue {
   bool boolean = false;
   BigInteger integer;
   ExactRational floating;
+  // Untyped decimal constants keep float_bit_width zero and use `floating` as
+  // their exact mathematical value. Concrete IEEE constants additionally keep
+  // their target-format bits so signed zero, infinity, and NaN survive semantic
+  // evaluation and no operation accidentally regains excess precision.
+  std::uint32_t float_bit_width = 0;
+  std::uint64_t float_bits = 0;
   std::string text;
   // Aggregate elements use logical source order. Arrays, tuples, and structs
   // contain every element including recursively constructed zero defaults.
@@ -55,6 +61,10 @@ struct ConstantValue {
   [[nodiscard]] static ConstantValue make_integer(std::int64_t value);
   [[nodiscard]] static ConstantValue make_integer(BigInteger value);
   [[nodiscard]] static ConstantValue make_float(ExactRational value);
+  [[nodiscard]] static ConstantValue make_ieee_float(
+      std::uint32_t bit_width,
+      std::uint64_t bits,
+      ExactRational finite_value = {});
   [[nodiscard]] static ConstantValue make_string(std::string value);
   [[nodiscard]] static ConstantValue make_aggregate(
       std::vector<ConstantValue> elements,

@@ -2,6 +2,7 @@
 
 #include "sema/body_checker.h"
 
+#include "sema/ieee_float.h"
 #include "sema/initialization.h"
 #include "sema/type_resolver.h"
 #include "syntax/literal.h"
@@ -615,9 +616,24 @@ private:
       if (value.kind == ConstantKind::Integer) {
         integer = wrap_integer(value.integer, target);
       } else if (value.kind == ConstantKind::Float) {
+        ExactRational source = value.floating;
+        if (value.float_bit_width != 0) {
+          const std::optional<IeeeBinaryFormat> format =
+              ieee_format_for_width(value.float_bit_width);
+          const std::optional<DecodedIeeeValue> decoded = format.has_value()
+              ? decode_ieee_bits(value.float_bits, *format)
+              : std::nullopt;
+          if (!decoded.has_value() ||
+              decoded->kind != IeeeValueKind::Finite) {
+            diagnostics_.error(
+                range, "compile-time non-finite float-to-integer cast traps");
+            return std::nullopt;
+          }
+          source = decoded->finite;
+        }
         BigInteger remainder;
-        if (!value.floating.numerator().divide(
-                value.floating.denominator(), integer, remainder) ||
+        if (!source.numerator().divide(
+                source.denominator(), integer, remainder) ||
             !integer_representable(integer, target)) {
           diagnostics_.error(
               range, "compile-time float-to-integer cast is out of range");
@@ -638,10 +654,52 @@ private:
       return ConstantValue::make_integer(std::move(integer));
     }
     if (target_type.kind == TypeKind::Float) {
+      const std::optional<IeeeBinaryFormat> format =
+          ieee_format_for_width(target_type.bit_width);
+      if (!format.has_value()) return std::nullopt;
+      std::uint64_t bits = 0;
       if (value.kind == ConstantKind::Integer) {
-        return ConstantValue::make_float(ExactRational(value.integer));
+        const std::optional<std::uint64_t> rounded =
+            round_ieee_bits(ExactRational(value.integer), *format);
+        if (!rounded.has_value()) return std::nullopt;
+        bits = *rounded;
+      } else if (value.kind == ConstantKind::Float &&
+                 value.float_bit_width == 0) {
+        const std::optional<std::uint64_t> rounded =
+            round_ieee_bits(value.floating, *format);
+        if (!rounded.has_value()) return std::nullopt;
+        bits = *rounded;
+      } else if (value.kind == ConstantKind::Float) {
+        const std::optional<IeeeBinaryFormat> source_format =
+            ieee_format_for_width(value.float_bit_width);
+        const std::optional<DecodedIeeeValue> decoded = source_format.has_value()
+            ? decode_ieee_bits(value.float_bits, *source_format)
+            : std::nullopt;
+        if (!decoded.has_value()) return std::nullopt;
+        if (decoded->kind == IeeeValueKind::NaN) {
+          bits = ieee_nan_bits(*format);
+        } else if (decoded->kind == IeeeValueKind::Infinity) {
+          bits = ieee_infinity_bits(*format, decoded->negative);
+        } else if (decoded->finite.is_zero() && decoded->negative) {
+          bits = ieee_zero_bits(*format, true);
+        } else {
+          const std::optional<std::uint64_t> rounded =
+              round_ieee_bits(decoded->finite, *format);
+          if (!rounded.has_value()) return std::nullopt;
+          bits = *rounded;
+        }
+      } else {
+        return std::nullopt;
       }
-      if (value.kind == ConstantKind::Float) return value;
+      const std::optional<DecodedIeeeValue> decoded =
+          decode_ieee_bits(bits, *format);
+      if (!decoded.has_value()) return std::nullopt;
+      return ConstantValue::make_ieee_float(
+          target_type.bit_width,
+          bits,
+          decoded->kind == IeeeValueKind::Finite
+              ? decoded->finite
+              : ExactRational{});
     }
     return std::nullopt;
   }

@@ -1,7 +1,8 @@
-// Deterministic scalar constant evaluation and declaration-level `when` discovery.
+// Deterministic constant evaluation and declaration-level `when` discovery.
 
 #include "sema/constant.h"
 
+#include "sema/ieee_float.h"
 #include "syntax/literal.h"
 
 #include "syntax/token.h"
@@ -73,6 +74,7 @@ struct LocalBinding {
 struct LocalFrame {
   std::vector<std::vector<LocalBinding>> scopes;
   std::vector<ConstantTypeBinding> type_bindings;
+  TypeId result_type;
 };
 
 struct LocalTarget {
@@ -210,9 +212,12 @@ public:
   }
 
   [[nodiscard]] std::optional<EvaluatedConstant> evaluate_required_expression(
-      const SyntaxTree &tree, NodeId expression, ScopeId scope) {
+      const SyntaxTree &tree,
+      NodeId expression,
+      ScopeId scope,
+      TypeId expected = {}) {
     const EvalResult result =
-        evaluate_expression(tree, expression, scope, true);
+        evaluate_expression(tree, expression, scope, true, expected);
     if (result.status == EvalStatus::Pending) {
       diagnostics_.error(
           tree.node(expression).range,
@@ -488,6 +493,218 @@ private:
         kind == TypeKind::UnsignedInteger || kind == TypeKind::Float;
   }
 
+  // Finds a concrete numeric type without evaluating the expression.  This is
+  // intentionally a small syntactic query, not a second type checker.  Its job
+  // is to discover context supplied by the opposite operand before source-order
+  // evaluation begins.  For example, in `(large + 1.0) == F32_Zero`, the name
+  // on the right makes every operation in the left operand an f32 operation.
+  // Looking at its declared type is safe; evaluating the right operand early
+  // would violate the language's observable evaluation order.
+  [[nodiscard]] TypeId numeric_type_hint(
+      const SyntaxTree &tree, NodeId expression_id, ScopeId scope) {
+    const SyntaxNode &expression = tree.node(expression_id);
+    if (expression.kind == NodeKind::NameExpression) {
+      const std::optional<std::string> name = final_name(tree, expression);
+      if (!name.has_value()) return {};
+      if (const LocalBinding *local = local_binding(*name)) {
+        return concrete_numeric(local->type) ? local->type : TypeId{};
+      }
+      const std::optional<SymbolId> found =
+          semantic_.symbols.lookup(scope, *name);
+      if (!found.has_value()) return {};
+      const Symbol &symbol = semantic_.symbols.symbol(*found);
+      TypeId type = substitute_local_type(symbol.type);
+      if (!concrete_numeric(type) &&
+          (symbol.kind == SymbolKind::Constant ||
+           symbol.kind == SymbolKind::UnresolvedDeclaration)) {
+        // Asking for another declaration's value is safe here: constants have
+        // no observable evaluation effects.  It also makes forward references
+        // supply the same context as already-evaluated declarations.  Cycles
+        // remain guarded by evaluate_binding's Evaluating state.
+        const EvalResult value = evaluate_binding(*found, false);
+        if (value.status == EvalStatus::Ready) {
+          type = substitute_local_type(value.type);
+        }
+      }
+      return concrete_numeric(type) ? type : TypeId{};
+    }
+    if (expression.kind == NodeKind::MemberExpression) {
+      if (const std::optional<SymbolId> imported =
+              imported_member(tree, expression, scope)) {
+        const TypeId type = substitute_local_type(
+            semantic_.symbols.symbol(*imported).type);
+        return concrete_numeric(type) ? type : TypeId{};
+      }
+      return {};
+    }
+    if ((expression.kind == NodeKind::GroupExpression ||
+         expression.kind == NodeKind::UnaryExpression ||
+         expression.kind == NodeKind::DenyExpression) &&
+        !expression.children.empty()) {
+      return numeric_type_hint(
+          tree, expression.children.back(), scope);
+    }
+    if (expression.kind == NodeKind::ConditionalExpression &&
+        expression.children.size() == 3) {
+      const TypeId left = numeric_type_hint(
+          tree, expression.children.front(), scope);
+      const TypeId right = numeric_type_hint(
+          tree, expression.children.back(), scope);
+      if (left.is_valid() && right.is_valid() && left != right) return {};
+      return left.is_valid() ? left : right;
+    }
+    if (expression.kind == NodeKind::BinaryExpression &&
+        expression.children.size() == 2) {
+      const TokenKind operation = binary_operator(tree, expression);
+      if (operation == TokenKind::EqualEqual ||
+          operation == TokenKind::BangEqual || operation == TokenKind::Less ||
+          operation == TokenKind::LessEqual ||
+          operation == TokenKind::Greater ||
+          operation == TokenKind::GreaterEqual ||
+          operation == TokenKind::LogicalAnd ||
+          operation == TokenKind::LogicalOr) {
+        return {};
+      }
+      const TypeId left = numeric_type_hint(
+          tree, expression.children.front(), scope);
+      const TypeId right = numeric_type_hint(
+          tree, expression.children.back(), scope);
+      if (left.is_valid() && right.is_valid() && left != right) return {};
+      return left.is_valid() ? left : right;
+    }
+    if (expression.kind != NodeKind::CallExpression ||
+        expression.children.empty()) {
+      return {};
+    }
+
+    const SyntaxNode &callee = tree.node(expression.children.front());
+    if (callee.kind == NodeKind::BracketExpression &&
+        callee.children.size() == 2) {
+      const SyntaxNode &base = tree.node(callee.children.front());
+      const std::optional<std::string> name = final_name(tree, base);
+      if (name.has_value() && *name == "cast") {
+        const std::optional<TypeId> target =
+            type_value(tree, callee.children.back(), scope);
+        return target.has_value() && concrete_numeric(*target)
+            ? *target
+            : TypeId{};
+      }
+    }
+
+    NodeId procedure_name = expression.children.front();
+    if (callee.kind == NodeKind::BracketExpression &&
+        !callee.children.empty()) {
+      procedure_name = callee.children.front();
+    }
+    const SyntaxNode &name_node = tree.node(procedure_name);
+    if (name_node.kind != NodeKind::NameExpression) return {};
+    const std::optional<std::string> name = final_name(tree, name_node);
+    const std::optional<SymbolId> found = name.has_value()
+        ? semantic_.symbols.lookup(scope, *name)
+        : std::nullopt;
+    if (!found.has_value()) return {};
+    const Type procedure = semantic_.types.type(
+        semantic_.symbols.symbol(*found).type);
+    if (procedure.kind != TypeKind::Procedure || procedure.members.empty()) {
+      return {};
+    }
+    const TypeId result = substitute_local_type(procedure.members.back());
+    return concrete_numeric(result) ? result : TypeId{};
+  }
+
+  [[nodiscard]] std::optional<IeeeBinaryFormat> float_format(
+      TypeId type_id) const {
+    Type type = runtime_type(type_id);
+    if (type.kind == TypeKind::EndianScalar && type.element.is_valid()) {
+      type = runtime_type(type.element);
+    }
+    return type.kind == TypeKind::Float
+        ? ieee_format_for_width(type.bit_width)
+        : std::nullopt;
+  }
+
+  [[nodiscard]] std::optional<ConstantValue> float_from_bits(
+      std::uint64_t bits, std::uint32_t bit_width) const {
+    const std::optional<IeeeBinaryFormat> format =
+        ieee_format_for_width(bit_width);
+    if (!format.has_value()) return std::nullopt;
+    const std::optional<DecodedIeeeValue> decoded =
+        decode_ieee_bits(bits, *format);
+    if (!decoded.has_value()) return std::nullopt;
+    return ConstantValue::make_ieee_float(
+        bit_width,
+        bits,
+        decoded->kind == IeeeValueKind::Finite
+            ? decoded->finite
+            : ExactRational{});
+  }
+
+  [[nodiscard]] EvalResult convert_float_to_type(
+      const ConstantValue &value,
+      TypeId type_id,
+      SourceRange range,
+      bool required) {
+    const std::optional<IeeeBinaryFormat> target_format =
+        float_format(type_id);
+    if (!target_format.has_value()) {
+      return fail(range, "floating type has no supported IEEE format", required);
+    }
+    const std::uint32_t target_width =
+        1U + target_format->exponent_bits + target_format->fraction_bits;
+
+    std::uint64_t bits = 0;
+    if (value.kind == ConstantKind::Integer) {
+      const std::optional<std::uint64_t> rounded = round_ieee_bits(
+          ExactRational(value.integer), *target_format);
+      if (!rounded.has_value()) {
+        return fail(range, "compile-time float conversion exceeded resources", required);
+      }
+      bits = *rounded;
+    } else if (value.kind == ConstantKind::Float &&
+               value.float_bit_width == 0) {
+      const std::optional<std::uint64_t> rounded =
+          round_ieee_bits(value.floating, *target_format);
+      if (!rounded.has_value()) {
+        return fail(range, "compile-time float conversion exceeded resources", required);
+      }
+      bits = *rounded;
+    } else if (value.kind == ConstantKind::Float) {
+      const std::optional<IeeeBinaryFormat> source_format =
+          ieee_format_for_width(value.float_bit_width);
+      const std::optional<DecodedIeeeValue> source = source_format.has_value()
+          ? decode_ieee_bits(value.float_bits, *source_format)
+          : std::nullopt;
+      if (!source.has_value()) {
+        return fail(range, "compile-time float has an invalid encoding", required);
+      }
+      if (source->kind == IeeeValueKind::NaN) {
+        bits = ieee_nan_bits(*target_format);
+      } else if (source->kind == IeeeValueKind::Infinity) {
+        bits = ieee_infinity_bits(*target_format, source->negative);
+      } else if (source->finite.is_zero() && source->negative) {
+        bits = ieee_zero_bits(*target_format, true);
+      } else {
+        const std::optional<std::uint64_t> rounded =
+            round_ieee_bits(source->finite, *target_format);
+        if (!rounded.has_value()) {
+          return fail(
+              range, "compile-time float conversion exceeded resources", required);
+        }
+        bits = *rounded;
+      }
+    } else {
+      return fail(
+          range, "compile-time value is not numeric", required);
+    }
+
+    const std::optional<ConstantValue> result =
+        float_from_bits(bits, target_width);
+    if (!result.has_value()) {
+      return fail(range, "compile-time float encoding failed", required);
+    }
+    return ready(*result, type_id);
+  }
+
   [[nodiscard]] std::uint32_t integer_width(TypeId type_id) const {
     const Type type = runtime_type(type_id);
     if (type.kind == TypeKind::Enum) {
@@ -498,12 +715,14 @@ private:
 
   [[nodiscard]] bool integer_representable(
       const BigInteger &value, TypeId type_id) const {
-    const Type type = runtime_type(type_id);
+    Type type = runtime_type(type_id);
+    if (type.kind == TypeKind::EndianScalar && type.element.is_valid()) {
+      type = runtime_type(type.element);
+    }
     const std::uint32_t width = integer_width(type_id);
     if (width == 0) return false;
     if (type.kind == TypeKind::UnsignedInteger ||
-        type.kind == TypeKind::BooleanStorage ||
-        type.kind == TypeKind::EndianScalar) {
+        type.kind == TypeKind::BooleanStorage) {
       return !value.is_negative() && value.bit_count() <= width;
     }
     if (type.kind != TypeKind::SignedInteger && type.kind != TypeKind::Rune &&
@@ -526,7 +745,10 @@ private:
     BigInteger remainder;
     if (!value.divide(modulus, quotient, remainder)) return value;
     if (remainder.is_negative()) remainder = remainder.added(modulus);
-    const Type type = runtime_type(type_id);
+    Type type = runtime_type(type_id);
+    if (type.kind == TypeKind::EndianScalar && type.element.is_valid()) {
+      type = runtime_type(type.element);
+    }
     const bool signed_value = type.kind == TypeKind::SignedInteger ||
         type.kind == TypeKind::Rune || type.kind == TypeKind::Enum;
     if (signed_value) {
@@ -573,11 +795,17 @@ private:
       bool required) {
     if (!type_id.is_valid()) return ready(std::move(value));
     const Type type = runtime_type(type_id);
+    const TypeKind endian_value_kind =
+        type.kind == TypeKind::EndianScalar && type.element.is_valid()
+        ? runtime_type(type.element).kind
+        : TypeKind::Invalid;
     if (value.kind == ConstantKind::Integer &&
         (type.kind == TypeKind::SignedInteger ||
          type.kind == TypeKind::UnsignedInteger || type.kind == TypeKind::Rune ||
          type.kind == TypeKind::BooleanStorage ||
-         type.kind == TypeKind::EndianScalar || type.kind == TypeKind::Enum)) {
+         endian_value_kind == TypeKind::SignedInteger ||
+         endian_value_kind == TypeKind::UnsignedInteger ||
+         type.kind == TypeKind::Enum)) {
       if (!wrap_integer && !integer_representable(value.integer, type_id)) {
         return fail(
             range,
@@ -587,15 +815,15 @@ private:
       if (wrap_integer) value.integer = wrapped_integer(value.integer, type_id);
       return ready(std::move(value), type_id);
     }
-    if (value.kind == ConstantKind::Integer && type.kind == TypeKind::Float) {
-      return ready(
-          ConstantValue::make_float(ExactRational(value.integer)), type_id);
+    if (value.kind == ConstantKind::Integer &&
+        (type.kind == TypeKind::Float ||
+         endian_value_kind == TypeKind::Float)) {
+      return convert_float_to_type(value, type_id, range, required);
     }
-    if (value.kind == ConstantKind::Float && type.kind == TypeKind::Float) {
-      // Exact rationals remain exact here.  The final target-format rounding
-      // adapter is shared with static emission; typed intermediate rounding is
-      // added with aggregate constants rather than using host floating point.
-      return ready(std::move(value), type_id);
+    if (value.kind == ConstantKind::Float &&
+        (type.kind == TypeKind::Float ||
+         endian_value_kind == TypeKind::Float)) {
+      return convert_float_to_type(value, type_id, range, required);
     }
     if (value.kind == ConstantKind::Bool && type.kind == TypeKind::Bool) {
       return ready(std::move(value), type_id);
@@ -826,6 +1054,161 @@ private:
     }
   }
 
+  [[nodiscard]] EvalResult evaluate_typed_float_binary(
+      TokenKind operation,
+      const ConstantValue &left_value,
+      const ConstantValue &right_value,
+      TypeId result_type,
+      SourceRange range,
+      bool required) {
+    const std::optional<IeeeBinaryFormat> format = float_format(result_type);
+    if (!format.has_value()) {
+      return fail(range, "typed float has no supported IEEE format", required);
+    }
+    const std::uint32_t bit_width =
+        1U + format->exponent_bits + format->fraction_bits;
+    const EvalResult converted_left = convert_float_to_type(
+        left_value, result_type, range, required);
+    if (converted_left.status != EvalStatus::Ready) return converted_left;
+    const EvalResult converted_right = convert_float_to_type(
+        right_value, result_type, range, required);
+    if (converted_right.status != EvalStatus::Ready) return converted_right;
+    const std::optional<DecodedIeeeValue> left = decode_ieee_bits(
+        converted_left.value.float_bits, *format);
+    const std::optional<DecodedIeeeValue> decoded_right = decode_ieee_bits(
+        converted_right.value.float_bits, *format);
+    if (!left.has_value() || !decoded_right.has_value()) {
+      return fail(range, "typed float has an invalid encoding", required);
+    }
+
+    const bool comparison = operation == TokenKind::EqualEqual ||
+        operation == TokenKind::BangEqual || operation == TokenKind::Less ||
+        operation == TokenKind::LessEqual || operation == TokenKind::Greater ||
+        operation == TokenKind::GreaterEqual;
+    if (comparison) {
+      if (left->kind == IeeeValueKind::NaN ||
+          decoded_right->kind == IeeeValueKind::NaN) {
+        return ready(
+            ConstantValue::make_bool(operation == TokenKind::BangEqual),
+            semantic_.types.builtins().bool_type);
+      }
+      int order = 0;
+      if (left->kind == IeeeValueKind::Infinity &&
+          decoded_right->kind == IeeeValueKind::Infinity) {
+        order = left->negative == decoded_right->negative
+            ? 0
+            : (left->negative ? -1 : 1);
+      } else if (left->kind == IeeeValueKind::Infinity) {
+        order = left->negative ? -1 : 1;
+      } else if (decoded_right->kind == IeeeValueKind::Infinity) {
+        order = decoded_right->negative ? 1 : -1;
+      } else {
+        order = left->finite.compare(decoded_right->finite);
+      }
+      bool result = false;
+      if (operation == TokenKind::EqualEqual) result = order == 0;
+      if (operation == TokenKind::BangEqual) result = order != 0;
+      if (operation == TokenKind::Less) result = order < 0;
+      if (operation == TokenKind::LessEqual) result = order <= 0;
+      if (operation == TokenKind::Greater) result = order > 0;
+      if (operation == TokenKind::GreaterEqual) result = order >= 0;
+      return ready(
+          ConstantValue::make_bool(result),
+          semantic_.types.builtins().bool_type);
+    }
+
+    DecodedIeeeValue right = *decoded_right;
+    if (operation == TokenKind::Minus) {
+      right.negative = !right.negative;
+      if (right.kind == IeeeValueKind::Finite) {
+        right.finite = right.finite.negated();
+      }
+    }
+    const auto special = [&](std::uint64_t bits) -> EvalResult {
+      const std::optional<ConstantValue> value =
+          float_from_bits(bits, bit_width);
+      return value.has_value()
+          ? ready(*value, result_type)
+          : fail(range, "typed float encoding failed", required);
+    };
+    const auto finite = [&](ExactRational value, bool negative_zero) -> EvalResult {
+      if (value.numerator().bit_count() > kMaximumConstantBits ||
+          value.denominator().bit_count() > kMaximumConstantBits) {
+        return fail(
+            range, "compile-time rational resource limit exceeded", required);
+      }
+      const std::optional<std::uint64_t> bits =
+          round_ieee_bits(value, *format);
+      if (!bits.has_value()) {
+        return fail(
+            range, "compile-time float rounding exceeded resources", required);
+      }
+      return special(value.is_zero() && negative_zero
+          ? ieee_zero_bits(*format, true)
+          : *bits);
+    };
+    if (left->kind == IeeeValueKind::NaN || right.kind == IeeeValueKind::NaN) {
+      return special(ieee_nan_bits(*format));
+    }
+
+    if (operation == TokenKind::Plus || operation == TokenKind::Minus) {
+      if (left->kind == IeeeValueKind::Infinity &&
+          right.kind == IeeeValueKind::Infinity &&
+          left->negative != right.negative) {
+        return special(ieee_nan_bits(*format));
+      }
+      if (left->kind == IeeeValueKind::Infinity) {
+        return special(ieee_infinity_bits(*format, left->negative));
+      }
+      if (right.kind == IeeeValueKind::Infinity) {
+        return special(ieee_infinity_bits(*format, right.negative));
+      }
+      const ExactRational result = left->finite.added(right.finite);
+      const bool negative_zero = left->finite.is_zero() &&
+          right.finite.is_zero() && left->negative && right.negative;
+      return finite(result, negative_zero);
+    }
+
+    const bool negative = left->negative != right.negative;
+    const bool left_zero = left->kind == IeeeValueKind::Finite &&
+        left->finite.is_zero();
+    const bool right_zero = right.kind == IeeeValueKind::Finite &&
+        right.finite.is_zero();
+    if (operation == TokenKind::Star) {
+      if ((left->kind == IeeeValueKind::Infinity && right_zero) ||
+          (right.kind == IeeeValueKind::Infinity && left_zero)) {
+        return special(ieee_nan_bits(*format));
+      }
+      if (left->kind == IeeeValueKind::Infinity ||
+          right.kind == IeeeValueKind::Infinity) {
+        return special(ieee_infinity_bits(*format, negative));
+      }
+      return finite(left->finite.multiplied(right.finite), negative);
+    }
+    if (operation == TokenKind::Slash) {
+      if ((left->kind == IeeeValueKind::Infinity &&
+           right.kind == IeeeValueKind::Infinity) ||
+          (left_zero && right_zero)) {
+        return special(ieee_nan_bits(*format));
+      }
+      if (left->kind == IeeeValueKind::Infinity) {
+        return special(ieee_infinity_bits(*format, negative));
+      }
+      if (right.kind == IeeeValueKind::Infinity) {
+        return special(ieee_zero_bits(*format, negative));
+      }
+      if (right_zero) {
+        return special(ieee_infinity_bits(*format, negative));
+      }
+      ExactRational quotient;
+      if (!left->finite.divide(right.finite, quotient)) {
+        return fail(range, "typed float division failed", required);
+      }
+      return finite(std::move(quotient), negative);
+    }
+    return fail(range, "operator is not valid for typed floats", required);
+  }
+
   // Evaluates equality for nonnumeric scalar compile-time values. Categorical
   // target labels compare only with matching categorical labels.
   [[nodiscard]] EvalResult evaluate_scalar_equality(
@@ -881,10 +1264,22 @@ private:
       const SyntaxTree &tree,
       const SyntaxNode &node,
       ScopeId scope,
-      bool required) {
+      bool required,
+      TypeId expected) {
     if (node.children.size() != 2) return pending();
     const TokenKind operation = binary_operator(tree, node);
-    const EvalResult left = evaluate_expression(tree, node.children[0], scope, required);
+    const TypeId left_hint = numeric_type_hint(
+        tree, node.children.front(), scope);
+    const TypeId right_hint = numeric_type_hint(
+        tree, node.children.back(), scope);
+    TypeId numeric_context = concrete_numeric(expected) ? expected : TypeId{};
+    if (!numeric_context.is_valid() &&
+        (!left_hint.is_valid() || !right_hint.is_valid() ||
+         left_hint == right_hint)) {
+      numeric_context = left_hint.is_valid() ? left_hint : right_hint;
+    }
+    const EvalResult left = evaluate_expression(
+        tree, node.children[0], scope, required, numeric_context);
     if (left.status != EvalStatus::Ready) return left;
     if (operation == TokenKind::LogicalAnd || operation == TokenKind::LogicalOr) {
       if (left.value.kind != ConstantKind::Bool) {
@@ -910,15 +1305,45 @@ private:
           right.value, semantic_.types.builtins().bool_type);
     }
 
-    const EvalResult right = evaluate_expression(tree, node.children[1], scope, required);
+    TypeId right_context = numeric_context;
+    if (!right_context.is_valid() && concrete_numeric(left.type) &&
+        !right_hint.is_valid()) {
+      right_context = left.type;
+    }
+    const EvalResult right = evaluate_expression(
+        tree,
+        node.children[1],
+        scope,
+        required,
+        operation == TokenKind::ShiftLeft ||
+                operation == TokenKind::ShiftRight
+            ? TypeId{}
+            : right_context);
     if (right.status != EvalStatus::Ready) return right;
     const bool comparison = operation == TokenKind::EqualEqual ||
         operation == TokenKind::BangEqual || operation == TokenKind::Less ||
         operation == TokenKind::LessEqual || operation == TokenKind::Greater ||
         operation == TokenKind::GreaterEqual;
-    const TypeId result_type = concrete_numeric(left.type)
-        ? left.type
-        : (concrete_numeric(right.type) ? right.type : TypeId{});
+    const TypeId result_type = numeric_context.is_valid()
+        ? numeric_context
+        : (concrete_numeric(left.type)
+               ? left.type
+               : (concrete_numeric(right.type) ? right.type : TypeId{}));
+
+    if (result_type.is_valid() &&
+        runtime_type(result_type).kind == TypeKind::Float &&
+        (left.value.kind == ConstantKind::Integer ||
+         left.value.kind == ConstantKind::Float) &&
+        (right.value.kind == ConstantKind::Integer ||
+         right.value.kind == ConstantKind::Float)) {
+      return evaluate_typed_float_binary(
+          operation,
+          left.value,
+          right.value,
+          result_type,
+          node.range,
+          required);
+    }
 
     if (result_type.is_valid() &&
         (operation == TokenKind::ShiftLeft ||
@@ -1249,12 +1674,21 @@ private:
     case TypeKind::SignedInteger:
     case TypeKind::UnsignedInteger:
     case TypeKind::Rune:
-    case TypeKind::EndianScalar:
     case TypeKind::Enum:
       return ConstantValue::make_integer(0);
-    case TypeKind::Float:
-      return ConstantValue::make_float(
-          ExactRational(BigInteger::from_u64(0)));
+    case TypeKind::EndianScalar:
+      if (!type.element.is_valid() ||
+          runtime_type(type.element).kind != TypeKind::Float) {
+        return ConstantValue::make_integer(0);
+      }
+      [[fallthrough]];
+    case TypeKind::Float: {
+      const std::optional<IeeeBinaryFormat> format = float_format(type_id);
+      if (!format.has_value()) return std::nullopt;
+      const std::uint32_t width =
+          1U + format->exponent_bits + format->fraction_bits;
+      return float_from_bits(ieee_zero_bits(*format, false), width);
+    }
     case TypeKind::RawPointer:
     case TypeKind::CString:
     case TypeKind::Pointer:
@@ -1471,13 +1905,19 @@ private:
               *target);
         }
 
+        const TypeKind endian_value_kind =
+            target_type.kind == TypeKind::EndianScalar &&
+                target_type.element.is_valid()
+            ? runtime_type(target_type.element).kind
+            : TypeKind::Invalid;
         const bool integer_target =
             target_type.kind == TypeKind::SignedInteger ||
             target_type.kind == TypeKind::UnsignedInteger ||
             target_type.kind == TypeKind::Rune ||
             target_type.kind == TypeKind::Enum ||
             target_type.kind == TypeKind::BooleanStorage ||
-            target_type.kind == TypeKind::EndianScalar;
+            endian_value_kind == TypeKind::SignedInteger ||
+            endian_value_kind == TypeKind::UnsignedInteger;
         if (integer_target &&
             (argument.value.kind == ConstantKind::Integer ||
              argument.value.kind == ConstantKind::Float)) {
@@ -1485,9 +1925,26 @@ private:
           if (argument.value.kind == ConstantKind::Integer) {
             integer = wrapped_integer(argument.value.integer, *target);
           } else {
+            ExactRational source = argument.value.floating;
+            if (argument.value.float_bit_width != 0) {
+              const std::optional<IeeeBinaryFormat> source_format =
+                  ieee_format_for_width(argument.value.float_bit_width);
+              const std::optional<DecodedIeeeValue> decoded =
+                  source_format.has_value()
+                  ? decode_ieee_bits(argument.value.float_bits, *source_format)
+                  : std::nullopt;
+              if (!decoded.has_value() ||
+                  decoded->kind != IeeeValueKind::Finite) {
+                return fail(
+                    call.range,
+                    "compile-time non-finite float-to-integer cast traps",
+                    required);
+              }
+              source = decoded->finite;
+            }
             BigInteger remainder;
-            if (!argument.value.floating.numerator().divide(
-                    argument.value.floating.denominator(), integer, remainder) ||
+            if (!source.numerator().divide(
+                    source.denominator(), integer, remainder) ||
                 !integer_representable(integer, *target)) {
               return fail(
                   call.range,
@@ -1510,16 +1967,12 @@ private:
           }
           return ready(ConstantValue::make_integer(std::move(integer)), *target);
         }
-        if (target_type.kind == TypeKind::Float &&
-            argument.value.kind == ConstantKind::Integer) {
-          return ready(
-              ConstantValue::make_float(
-                  ExactRational(argument.value.integer)),
-              *target);
-        }
-        if (target_type.kind == TypeKind::Float &&
-            argument.value.kind == ConstantKind::Float) {
-          return ready(argument.value, *target);
+        if ((target_type.kind == TypeKind::Float ||
+             endian_value_kind == TypeKind::Float) &&
+            (argument.value.kind == ConstantKind::Integer ||
+             argument.value.kind == ConstantKind::Float)) {
+          return convert_float_to_type(
+              argument.value, *target, call.range, required);
         }
 
         return convert_to_type(
@@ -1709,19 +2162,35 @@ private:
           {parameter_symbol.name, converted.value, parameter_symbol.type});
     }
 
+    std::vector<TypeId> parameter_types;
+    parameter_types.reserve(parameters.size());
+    for (const std::string &parameter_name : parameters) {
+      TypeId parameter_type = procedure_parameter_type(
+          body_scope, parameter_name);
+      for (const ConstantTypeBinding &binding : frame.type_bindings) {
+        if (binding.parameter == parameter_type) {
+          parameter_type = binding.replacement;
+          break;
+        }
+      }
+      parameter_types.push_back(parameter_type);
+    }
+
     std::vector<EvalResult> supplied_arguments;
     supplied_arguments.reserve(parameters.size());
     for (std::size_t index = 1; index < call.children.size(); ++index) {
-      const EvalResult argument =
-          evaluate_expression(tree, call.children[index], scope, required);
+      const TypeId expected = index - 1U < parameter_types.size()
+          ? parameter_types[index - 1U]
+          : TypeId{};
+      const EvalResult argument = evaluate_expression(
+          tree, call.children[index], scope, required, expected);
       if (argument.status != EvalStatus::Ready) return argument;
       supplied_arguments.push_back(argument);
     }
 
     local_frames_.push_back(std::move(frame));
     for (std::size_t index = 0; index < supplied_arguments.size(); ++index) {
-      const TypeId parameter_type =
-          procedure_parameter_type(body_scope, parameters[index]);
+      const TypeId parameter_type = parameter_types[index];
       const EvalResult &argument = supplied_arguments[index];
       const EvalResult converted = parameter_type.is_valid() &&
               parameter_type != semantic_.types.builtins().invalid
@@ -1739,13 +2208,14 @@ private:
       local_frames_.back().scopes.back().push_back(
           {parameters[index], converted.value, parameter_type});
     }
+    const Type &procedure_type = semantic_.types.type(symbol.type);
+    local_frames_.back().result_type = procedure_type.members.empty()
+        ? semantic_.types.builtins().invalid
+        : substitute_local_type(procedure_type.members.back());
     ++procedure_call_depth_;
     const ExecutionResult execution = execute_block(
         *procedure_tree, *body, body_scope, required);
-    const Type &procedure_type = semantic_.types.type(symbol.type);
-    const TypeId result_type = procedure_type.members.empty()
-        ? semantic_.types.builtins().invalid
-        : substitute_local_type(procedure_type.members.back());
+    const TypeId result_type = local_frames_.back().result_type;
     --procedure_call_depth_;
     local_frames_.pop_back();
 
@@ -1825,7 +2295,12 @@ private:
     }
     if (initializer.has_value()) {
       const EvalResult evaluated =
-          evaluate_expression(tree, *initializer, scope, required);
+          evaluate_expression(
+              tree,
+              *initializer,
+              scope,
+              required,
+              declared_type.has_value() ? local_type : TypeId{});
       if (evaluated.status != EvalStatus::Ready) {
         return failed_execution(evaluated);
       }
@@ -2021,7 +2496,12 @@ private:
     }
     const LocalTarget target_snapshot = *resolved_target.target;
     const EvalResult right =
-        evaluate_expression(tree, assignment.children.back(), scope, required);
+        evaluate_expression(
+            tree,
+            assignment.children.back(),
+            scope,
+            required,
+            target_snapshot.type);
     if (right.status != EvalStatus::Ready) return failed_execution(right);
 
     ConstantValue stored = right.value;
@@ -2034,12 +2514,21 @@ private:
             "invalid compile-time compound assignment",
             required));
       }
-      const EvalResult result = evaluate_binary_values(
-          binary,
-          target_snapshot.value,
-          right.value,
-          assignment.range,
-          required);
+      const EvalResult result =
+          runtime_type(target_snapshot.type).kind == TypeKind::Float
+          ? evaluate_typed_float_binary(
+                binary,
+                target_snapshot.value,
+                right.value,
+                target_snapshot.type,
+                assignment.range,
+                required)
+          : evaluate_binary_values(
+                binary,
+                target_snapshot.value,
+                right.value,
+                assignment.range,
+                required);
       if (result.status != EvalStatus::Ready) return failed_execution(result);
       const EvalResult converted = convert_to_type(
           result.value,
@@ -2338,12 +2827,22 @@ private:
         if (candidate.status != EvalStatus::Ready) {
           return failed_execution(candidate);
         }
-        const EvalResult equal = evaluate_binary_values(
-            TokenKind::EqualEqual,
-            subject.value,
-            candidate.value,
-            tree.node(switch_case.children[label]).range,
-            required);
+        const EvalResult equal =
+            subject.type.is_valid() &&
+                runtime_type(subject.type).kind == TypeKind::Float
+            ? evaluate_typed_float_binary(
+                  TokenKind::EqualEqual,
+                  subject.value,
+                  candidate.value,
+                  subject.type,
+                  tree.node(switch_case.children[label]).range,
+                  required)
+            : evaluate_binary_values(
+                  TokenKind::EqualEqual,
+                  subject.value,
+                  candidate.value,
+                  tree.node(switch_case.children[label]).range,
+                  required);
         if (equal.status != EvalStatus::Ready) return failed_execution(equal);
         if (equal.value.boolean) {
           selected = statements;
@@ -2407,8 +2906,16 @@ private:
       ExecutionResult result;
       result.signal = ExecutionSignal::Return;
       if (!statement.children.empty()) {
+        const TypeId expected = local_frames_.empty()
+            ? TypeId{}
+            : local_frames_.back().result_type;
         const EvalResult value =
-            evaluate_expression(tree, statement.children.front(), scope, required);
+            evaluate_expression(
+                tree,
+                statement.children.front(),
+                scope,
+                required,
+                expected);
         if (value.status != EvalStatus::Ready) return failed_execution(value);
         result.value = value.value;
         result.type = value.type;
@@ -2471,7 +2978,7 @@ private:
   }
 
   // Resolves one package constant lazily. The Evaluating state detects cycles;
-  // successfully computed scalar types are written back to the symbol for later
+  // successfully computed result types are written back to the symbol for later
   // expected-type checking.
   [[nodiscard]] EvalResult evaluate_binding(SymbolId id, bool required) {
     if (static_cast<std::size_t>(id.value) >= states_.size()) return pending();
@@ -2558,7 +3065,8 @@ private:
       const SyntaxTree &tree,
       NodeId expression_id,
       ScopeId scope,
-      bool required) {
+      bool required,
+      TypeId expected = {}) {
     const SyntaxNode &node = tree.node(expression_id);
     switch (node.kind) {
     case NodeKind::LiteralExpression: {
@@ -2632,10 +3140,21 @@ private:
     case NodeKind::ContextualAlternativeExpression: {
       const std::optional<std::string> name = final_name(tree, node);
       if (!name.has_value()) return pending();
+      TypeId payload_type;
+      if (expected.is_valid() &&
+          runtime_type(expected).kind == TypeKind::TaggedUnion) {
+        const std::optional<std::size_t> alternative =
+            aggregate_member_index(expected, *name);
+        const Type union_type = runtime_type(expected);
+        if (alternative.has_value() &&
+            *alternative < union_type.members.size()) {
+          payload_type = union_type.members[*alternative];
+        }
+      }
       std::vector<ConstantValue> payload;
       for (NodeId child : node.children) {
-        const EvalResult value =
-            evaluate_expression(tree, child, scope, required);
+        const EvalResult value = evaluate_expression(
+            tree, child, scope, required, payload_type);
         if (value.status != EvalStatus::Ready) return value;
         payload.push_back(value.value);
       }
@@ -2688,7 +3207,8 @@ private:
     case NodeKind::UnaryExpression: {
       if (node.children.empty()) return pending();
       const EvalResult operand =
-          evaluate_expression(tree, node.children.front(), scope, required);
+          evaluate_expression(
+              tree, node.children.front(), scope, required, expected);
       if (operand.status != EvalStatus::Ready) return operand;
       const TokenKind operation = tree.token(node.token_begin).kind;
       if (operation == TokenKind::Bang && operand.value.kind == ConstantKind::Bool) {
@@ -2701,6 +3221,18 @@ private:
           return operand;
         }
         if (operand.value.kind == ConstantKind::Float && operation == TokenKind::Minus) {
+          if (operand.value.float_bit_width != 0) {
+            const std::uint64_t sign = std::uint64_t{1} <<
+                (operand.value.float_bit_width - 1U);
+            const std::optional<ConstantValue> negated = float_from_bits(
+                operand.value.float_bits ^ sign,
+                operand.value.float_bit_width);
+            if (!negated.has_value()) {
+              return fail(
+                  node.range, "typed float negation failed", required);
+            }
+            return ready(*negated, operand.type);
+          }
           EvalResult result =
               bounded_float(operand.value.floating.negated(), node.range, required);
           result.type = operand.type;
@@ -2733,22 +3265,32 @@ private:
     }
 
     case NodeKind::BinaryExpression:
-      return evaluate_binary(tree, node, scope, required);
+      return evaluate_binary(tree, node, scope, required, expected);
 
     case NodeKind::GroupExpression:
       if (!node.children.empty()) {
-        return evaluate_expression(tree, node.children.front(), scope, required);
+        return evaluate_expression(
+            tree, node.children.front(), scope, required, expected);
       }
       return pending();
 
     case NodeKind::TupleExpression: {
       std::vector<ConstantValue> elements;
       std::vector<TypeId> member_types;
+      std::vector<TypeId> expected_members;
+      if (expected.is_valid() &&
+          semantic_.types.type(expected).kind == TypeKind::Tuple) {
+        expected_members = semantic_.types.type(expected).members;
+      }
       elements.reserve(node.children.size());
       member_types.reserve(node.children.size());
-      for (NodeId child : node.children) {
-        const EvalResult member =
-            evaluate_expression(tree, child, scope, required);
+      for (std::size_t index = 0; index < node.children.size(); ++index) {
+        const NodeId child = node.children[index];
+        const TypeId member_context = index < expected_members.size()
+            ? expected_members[index]
+            : TypeId{};
+        const EvalResult member = evaluate_expression(
+            tree, child, scope, required, member_context);
         if (member.status != EvalStatus::Ready) return member;
         TypeId member_type = member.type.is_valid()
             ? member.type
@@ -2763,7 +3305,10 @@ private:
         elements.push_back(member.value);
         member_types.push_back(member_type);
       }
-      const TypeId tuple_type = semantic_.types.tuple(member_types);
+      const TypeId tuple_type = !expected_members.empty() &&
+              expected_members.size() == member_types.size()
+          ? expected
+          : semantic_.types.tuple(member_types);
       return ready(
           ConstantValue::make_aggregate(std::move(elements)), tuple_type);
     }
@@ -2859,7 +3404,11 @@ private:
             ? composite.element
             : composite.members[*destination];
         const EvalResult evaluated = evaluate_expression(
-            tree, element.children.front(), scope, required);
+            tree,
+            element.children.front(),
+            scope,
+            required,
+            element_type);
         if (evaluated.status != EvalStatus::Ready) return evaluated;
         if (evaluated.type.is_valid() &&
             evaluated.type != semantic_.types.builtins().invalid &&
@@ -2913,7 +3462,8 @@ private:
           tree,
           condition.value.boolean ? node.children[0] : node.children[2],
           scope,
-          required);
+          required,
+          expected);
     }
 
     case NodeKind::BracketExpression: {
@@ -2966,7 +3516,8 @@ private:
 
     case NodeKind::DenyExpression:
       if (!node.children.empty()) {
-        return evaluate_expression(tree, node.children.back(), scope, required);
+        return evaluate_expression(
+            tree, node.children.back(), scope, required, expected);
       }
       return pending();
 
@@ -3021,6 +3572,18 @@ ConstantValue ConstantValue::make_float(ExactRational value) {
   ConstantValue result;
   result.kind = ConstantKind::Float;
   result.floating = std::move(value);
+  return result;
+}
+
+ConstantValue ConstantValue::make_ieee_float(
+    std::uint32_t bit_width,
+    std::uint64_t bits,
+    ExactRational finite_value) {
+  ConstantValue result;
+  result.kind = ConstantKind::Float;
+  result.floating = std::move(finite_value);
+  result.float_bit_width = bit_width;
+  result.float_bits = bits;
   return result;
 }
 
@@ -3099,7 +3662,8 @@ std::optional<ConstantValue> evaluate_constant_expression(
           scope,
           diagnostics,
           local_constants,
-          local_types);
+          local_types,
+          {});
   return result.has_value()
       ? std::optional<ConstantValue>(result->value)
       : std::nullopt;
@@ -3115,7 +3679,8 @@ std::optional<EvaluatedConstant> evaluate_typed_constant_expression(
     ScopeId scope,
     DiagnosticSink &diagnostics,
     const ConstantTable *local_constants,
-    const std::vector<ConstantTypeBinding> *local_types) {
+    const std::vector<ConstantTypeBinding> *local_types,
+    TypeId expected) {
   ConstantEvaluator evaluator(
       sources,
       loaded,
@@ -3125,7 +3690,8 @@ std::optional<EvaluatedConstant> evaluate_typed_constant_expression(
       diagnostics,
       local_constants,
       local_types);
-  return evaluator.evaluate_required_expression(tree, expression, scope);
+  return evaluator.evaluate_required_expression(
+      tree, expression, scope, expected);
 }
 
 } // namespace draft

@@ -46,6 +46,7 @@ add_library(
   src/sema/effect.cpp
   src/sema/global_initializer.cpp
   src/sema/hir.cpp
+  src/sema/ieee_float.cpp
   src/sema/initialization.cpp
   src/sema/interface.cpp
   src/sema/semantic.cpp

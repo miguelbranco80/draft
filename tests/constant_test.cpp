@@ -135,6 +135,29 @@ sum_table :: proc(values: [4]u32) -> u32 {
     return result
 }
 
+round_each_step :: proc() -> f32 {
+    value: f32 = 16777216.0
+    return value + 1.0
+}
+
+round_contextual_tree :: proc() -> f32 {
+    return (16777216.0 + 1.0) - 16777216.0
+}
+
+make_infinity :: proc() -> f32 {
+    zero: f32
+    return 1.0 / zero
+}
+
+make_nan :: proc() -> f32 {
+    zero: f32
+    return zero / zero
+}
+
+make_negative_zero :: proc() -> f32 {
+    return -1.0 / make_infinity()
+}
+
 Bits :: target.pointer_bits
 Base :: 40
 Derived :: Base + 2
@@ -152,6 +175,18 @@ Wrapped_Byte :: increment_byte(255)
 Measured_U32 :: measure[u32, 7](0)
 Table :: make_table()
 Table_Sum :: sum_table(Table)
+Rounded_F32 :: round_each_step()
+Contextual_Rounded_F32 :: round_contextual_tree()
+Sibling_Context_Left :: Contextual_Rounded_F32 ==
+    ((16777216.0 + 1.0) - 16777216.0)
+Sibling_Context_Right :: ((16777216.0 + 1.0) - 16777216.0) ==
+    Contextual_Rounded_F32
+Forward_Sibling_Context :: ((16777216.0 + 1.0) - 16777216.0) ==
+    Forward_Zero_F32
+Forward_Zero_F32 :: round_contextual_tree()
+Infinity_F32 :: make_infinity()
+Nan_Differs :: make_nan() != make_nan()
+Negative_Zero_F32 :: make_negative_zero()
 
 Header :: struct {
     tag: u8,
@@ -292,6 +327,22 @@ when Accent == '\u{e9}' {
       find_symbol(source.analysis.package, "Header_Value");
   const std::optional<draft::SymbolId> tuple_value =
       find_symbol(source.analysis.package, "Tuple_Value");
+  const std::optional<draft::SymbolId> rounded_f32 =
+      find_symbol(source.analysis.package, "Rounded_F32");
+  const std::optional<draft::SymbolId> contextual_rounded_f32 =
+      find_symbol(source.analysis.package, "Contextual_Rounded_F32");
+  const std::optional<draft::SymbolId> sibling_context_left =
+      find_symbol(source.analysis.package, "Sibling_Context_Left");
+  const std::optional<draft::SymbolId> sibling_context_right =
+      find_symbol(source.analysis.package, "Sibling_Context_Right");
+  const std::optional<draft::SymbolId> forward_sibling_context =
+      find_symbol(source.analysis.package, "Forward_Sibling_Context");
+  const std::optional<draft::SymbolId> infinity_f32 =
+      find_symbol(source.analysis.package, "Infinity_F32");
+  const std::optional<draft::SymbolId> nan_differs =
+      find_symbol(source.analysis.package, "Nan_Differs");
+  const std::optional<draft::SymbolId> negative_zero_f32 =
+      find_symbol(source.analysis.package, "Negative_Zero_F32");
   EXPECT(state, bits.has_value());
   EXPECT(state, derived.has_value());
   EXPECT(state, feature.has_value());
@@ -312,6 +363,14 @@ when Accent == '\u{e9}' {
   EXPECT(state, table_sum.has_value());
   EXPECT(state, header_value.has_value());
   EXPECT(state, tuple_value.has_value());
+  EXPECT(state, rounded_f32.has_value());
+  EXPECT(state, contextual_rounded_f32.has_value());
+  EXPECT(state, sibling_context_left.has_value());
+  EXPECT(state, sibling_context_right.has_value());
+  EXPECT(state, forward_sibling_context.has_value());
+  EXPECT(state, infinity_f32.has_value());
+  EXPECT(state, nan_differs.has_value());
+  EXPECT(state, negative_zero_f32.has_value());
   if (bits && derived && feature && bit_value && huge && fraction &&
       header_size && header_alignment && accent && odd_mask && factorial &&
       class_two && class_default && target_word && wrapped_byte && measured_u32 &&
@@ -350,6 +409,34 @@ when Accent == '\u{e9}' {
         source.analysis.constants.find(*header_value);
     const draft::ConstantValue *tuple_value_result =
         source.analysis.constants.find(*tuple_value);
+    const draft::ConstantValue *rounded_f32_result = rounded_f32
+        ? source.analysis.constants.find(*rounded_f32)
+        : nullptr;
+    const draft::ConstantValue *contextual_rounded_f32_result =
+        contextual_rounded_f32
+        ? source.analysis.constants.find(*contextual_rounded_f32)
+        : nullptr;
+    const draft::ConstantValue *sibling_context_left_result =
+        sibling_context_left
+        ? source.analysis.constants.find(*sibling_context_left)
+        : nullptr;
+    const draft::ConstantValue *sibling_context_right_result =
+        sibling_context_right
+        ? source.analysis.constants.find(*sibling_context_right)
+        : nullptr;
+    const draft::ConstantValue *forward_sibling_context_result =
+        forward_sibling_context
+        ? source.analysis.constants.find(*forward_sibling_context)
+        : nullptr;
+    const draft::ConstantValue *infinity_f32_result = infinity_f32
+        ? source.analysis.constants.find(*infinity_f32)
+        : nullptr;
+    const draft::ConstantValue *nan_differs_result = nan_differs
+        ? source.analysis.constants.find(*nan_differs)
+        : nullptr;
+    const draft::ConstantValue *negative_zero_f32_result = negative_zero_f32
+        ? source.analysis.constants.find(*negative_zero_f32)
+        : nullptr;
     EXPECT(state, bits_value != nullptr);
     EXPECT(state, derived_value != nullptr);
     EXPECT(state, feature_value != nullptr);
@@ -370,6 +457,14 @@ when Accent == '\u{e9}' {
     EXPECT(state, table_sum_result != nullptr);
     EXPECT(state, header_value_result != nullptr);
     EXPECT(state, tuple_value_result != nullptr);
+    EXPECT(state, rounded_f32_result != nullptr);
+    EXPECT(state, contextual_rounded_f32_result != nullptr);
+    EXPECT(state, sibling_context_left_result != nullptr);
+    EXPECT(state, sibling_context_right_result != nullptr);
+    EXPECT(state, forward_sibling_context_result != nullptr);
+    EXPECT(state, infinity_f32_result != nullptr);
+    EXPECT(state, nan_differs_result != nullptr);
+    EXPECT(state, negative_zero_f32_result != nullptr);
     if (bits_value) EXPECT(state, bits_value->integer.to_decimal() == "64");
     if (derived_value) EXPECT(state, derived_value->integer.to_decimal() == "42");
     if (feature_value) EXPECT(state, feature_value->boolean);
@@ -425,6 +520,32 @@ when Accent == '\u{e9}' {
     }
     if (tuple_value_result) {
       EXPECT(state, tuple_value_result->integer.to_decimal() == "32");
+    }
+    if (rounded_f32_result) {
+      EXPECT(state, rounded_f32_result->float_bit_width == 32);
+      EXPECT(state, rounded_f32_result->float_bits == 0x4b800000U);
+    }
+    if (contextual_rounded_f32_result) {
+      EXPECT(state, contextual_rounded_f32_result->float_bit_width == 32);
+      EXPECT(state, contextual_rounded_f32_result->float_bits == 0U);
+    }
+    if (sibling_context_left_result) {
+      EXPECT(state, sibling_context_left_result->boolean);
+    }
+    if (sibling_context_right_result) {
+      EXPECT(state, sibling_context_right_result->boolean);
+    }
+    if (forward_sibling_context_result) {
+      EXPECT(state, forward_sibling_context_result->boolean);
+    }
+    if (infinity_f32_result) {
+      EXPECT(state, infinity_f32_result->float_bit_width == 32);
+      EXPECT(state, infinity_f32_result->float_bits == 0x7f800000U);
+    }
+    if (nan_differs_result) EXPECT(state, nan_differs_result->boolean);
+    if (negative_zero_f32_result) {
+      EXPECT(state, negative_zero_f32_result->float_bit_width == 32);
+      EXPECT(state, negative_zero_f32_result->float_bits == 0x80000000U);
     }
   }
 }
@@ -513,6 +634,11 @@ Outcome :: union {
     value: u32,
 }
 
+Float_Outcome :: union {
+    empty,
+    value: f32,
+}
+
 Overlay :: raw union {
     byte: u8,
     word: u64,
@@ -535,6 +661,7 @@ count: u64 = Answer
 computed: u64 = answer_from_procedure()
 inferred := 21
 ratio: f64 = 0.5
+contextual_rounding: f32 = (16777216.0 + 1.0) - 16777216.0
 enabled: bool = true
 message: string = "draft"
 mode: Mode = .On
@@ -543,6 +670,8 @@ table: [4]u32 = make_table()
 header: Header = Header{tag = 1, value = 42}
 inferred_header := Header{tag = 2, value = 84}
 outcome: Outcome = .value(9)
+float_outcome: Float_Outcome =
+    .value((16777216.0 + 1.0) - 16777216.0)
 overlay: Overlay = Overlay{word = 0x1020304050607080}
 thread_local scratch: i32 = -7
 )draft");
@@ -557,6 +686,8 @@ thread_local scratch: i32 = -7
       find_symbol(source.analysis.package, "inferred");
   const std::optional<draft::SymbolId> computed =
       find_symbol(source.analysis.package, "computed");
+  const std::optional<draft::SymbolId> contextual_rounding =
+      find_symbol(source.analysis.package, "contextual_rounding");
   const std::optional<draft::SymbolId> mode =
       find_symbol(source.analysis.package, "mode");
   const std::optional<draft::SymbolId> pointer =
@@ -569,17 +700,21 @@ thread_local scratch: i32 = -7
       find_symbol(source.analysis.package, "inferred_header");
   const std::optional<draft::SymbolId> outcome =
       find_symbol(source.analysis.package, "outcome");
+  const std::optional<draft::SymbolId> float_outcome =
+      find_symbol(source.analysis.package, "float_outcome");
   const std::optional<draft::SymbolId> overlay =
       find_symbol(source.analysis.package, "overlay");
   EXPECT(state, count.has_value());
   EXPECT(state, inferred.has_value());
   EXPECT(state, computed.has_value());
+  EXPECT(state, contextual_rounding.has_value());
   EXPECT(state, mode.has_value());
   EXPECT(state, pointer.has_value());
   EXPECT(state, table.has_value());
   EXPECT(state, header.has_value());
   EXPECT(state, inferred_header.has_value());
   EXPECT(state, outcome.has_value());
+  EXPECT(state, float_outcome.has_value());
   EXPECT(state, overlay.has_value());
   if (count.has_value()) {
     EXPECT(state, source.analysis.constants.find(*count) == nullptr);
@@ -597,6 +732,15 @@ thread_local scratch: i32 = -7
         source.analysis.global_initializers.find(*computed);
     EXPECT(state, value != nullptr);
     if (value != nullptr) EXPECT(state, value->integer.to_decimal() == "42");
+  }
+  if (contextual_rounding.has_value()) {
+    const draft::ConstantValue *value =
+        source.analysis.global_initializers.find(*contextual_rounding);
+    EXPECT(state, value != nullptr);
+    if (value != nullptr) {
+      EXPECT(state, value->float_bit_width == 32);
+      EXPECT(state, value->float_bits == 0U);
+    }
   }
   if (mode.has_value()) {
     const draft::ConstantValue *value =
@@ -643,6 +787,15 @@ thread_local scratch: i32 = -7
     if (value != nullptr) {
       EXPECT(state, value->variant_index == 1);
       EXPECT(state, value->elements.size() == 1);
+    }
+  }
+  if (float_outcome.has_value()) {
+    const draft::ConstantValue *value =
+        source.analysis.global_initializers.find(*float_outcome);
+    EXPECT(state, value != nullptr);
+    if (value != nullptr && value->elements.size() == 1) {
+      EXPECT(state, value->elements.front().float_bit_width == 32);
+      EXPECT(state, value->elements.front().float_bits == 0U);
     }
   }
   if (overlay.has_value()) {

@@ -596,6 +596,12 @@ std::optional<ExactRational> ExactRational::parse_decimal(std::string_view spell
       BigInteger::from_u64(1));
 }
 
+std::optional<ExactRational> ExactRational::from_fraction(
+    BigInteger numerator, BigInteger denominator) {
+  if (denominator.is_zero()) return std::nullopt;
+  return ExactRational(std::move(numerator), std::move(denominator));
+}
+
 const BigInteger &ExactRational::numerator() const { return numerator_; }
 const BigInteger &ExactRational::denominator() const { return denominator_; }
 bool ExactRational::is_zero() const { return numerator_.is_zero(); }

@@ -107,6 +107,8 @@ public:
 
   [[nodiscard]] static std::optional<ExactRational> parse_decimal(
       std::string_view spelling);
+  [[nodiscard]] static std::optional<ExactRational> from_fraction(
+      BigInteger numerator, BigInteger denominator);
 
   [[nodiscard]] const BigInteger &numerator() const;
   [[nodiscard]] const BigInteger &denominator() const;
