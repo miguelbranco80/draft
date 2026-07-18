@@ -1440,6 +1440,43 @@ bad :: proc() {
                     std::string::npos);
 }
 
+void test_numeric_context_boundaries(TestState &state) {
+  CheckedSource valid(R"draft(
+package bodies
+
+floating :: proc(value: f32) -> f32 {
+    return value + 1
+}
+)draft");
+  if (valid.diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(valid.sources, valid.diagnostics);
+  }
+  EXPECT(state, valid.bodies.ok);
+  EXPECT(state, !valid.diagnostics.has_errors());
+
+  CheckedSource invalid(R"draft(
+package bodies
+
+integer_and_decimal :: proc(value: i32) -> i32 {
+    return value + 1.5
+}
+
+mixed_concrete :: proc(left: f32, right: f64) -> f64 {
+    return left + right
+}
+
+generic_decimal[T: number] :: proc(value: T) -> T {
+    return value + 1.5
+}
+)draft");
+  EXPECT(state, !invalid.bodies.ok);
+  EXPECT(state, invalid.diagnostics.error_count() == 3);
+  const std::string rendered =
+      draft::render_diagnostics(invalid.sources, invalid.diagnostics);
+  EXPECT(state, rendered.find("numeric operands require one common type") !=
+                    std::string::npos);
+}
+
 void test_builtin_context_value(TestState &state) {
   CheckedSource valid(R"draft(
 package bodies
@@ -1516,6 +1553,7 @@ int main() {
   test_storage_pointer_and_distinct_semantics(state);
   test_integer_shift_count_types(state);
   test_compound_assignment_operators(state);
+  test_numeric_context_boundaries(state);
   test_builtin_context_value(state);
 
   if (state.failures != 0) {

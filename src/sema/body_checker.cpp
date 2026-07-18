@@ -683,11 +683,14 @@ private:
     if (!expected.is_valid() || is_invalid_type(expected) || actual == expected) {
       return actual;
     }
+    const std::optional<TypeConstraintKind> constraint =
+        type_constraint(expected);
     if ((is_untyped_integer(actual) && is_integer(expected)) ||
         ((is_untyped_integer(actual) || is_untyped_float(actual)) &&
          (semantic_.types.is_float(expected) ||
-          type_constraint(expected) == TypeConstraintKind::Float ||
-          type_constraint(expected) == TypeConstraintKind::Number))) {
+          constraint == TypeConstraintKind::Float)) ||
+        (is_untyped_integer(actual) &&
+         constraint == TypeConstraintKind::Number)) {
       return expected;
     }
     diagnostics_.error(
@@ -703,14 +706,20 @@ private:
   [[nodiscard]] TypeId common_numeric_type(
       TypeId left, TypeId right, SourceRange range) {
     if (left == right && is_numeric(left)) return left;
-    if ((is_untyped_integer(left) || is_untyped_float(left)) &&
-        is_numeric(right) && !is_untyped_integer(right) && !is_untyped_float(right)) {
+    if (is_untyped_integer(left) && is_numeric(right) &&
+        !is_untyped_integer(right) && !is_untyped_float(right)) {
       return right;
     }
-    if ((is_untyped_integer(right) || is_untyped_float(right)) &&
-        is_numeric(left) && !is_untyped_integer(left) && !is_untyped_float(left)) {
+    if (is_untyped_integer(right) && is_numeric(left) &&
+        !is_untyped_integer(left) && !is_untyped_float(left)) {
       return left;
     }
+    const auto accepts_untyped_float = [&](TypeId concrete) {
+      return semantic_.types.is_float(concrete) ||
+          type_constraint(concrete) == TypeConstraintKind::Float;
+    };
+    if (is_untyped_float(left) && accepts_untyped_float(right)) return right;
+    if (is_untyped_float(right) && accepts_untyped_float(left)) return left;
     diagnostics_.error(range, "numeric operands require one common type");
     return semantic_.types.builtins().invalid;
   }

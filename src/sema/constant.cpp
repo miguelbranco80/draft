@@ -548,6 +548,115 @@ private:
         kind == TypeKind::UnsignedInteger || kind == TypeKind::Float;
   }
 
+  [[nodiscard]] bool untyped_integer(TypeId type_id) const {
+    return type_id.is_valid() &&
+        semantic_.types.type(type_id).kind == TypeKind::UntypedInteger;
+  }
+
+  [[nodiscard]] bool untyped_float(TypeId type_id) const {
+    return type_id.is_valid() &&
+        semantic_.types.type(type_id).kind == TypeKind::UntypedFloat;
+  }
+
+  [[nodiscard]] bool integer_operand(TypeId type_id) const {
+    if (untyped_integer(type_id)) return true;
+    if (!type_id.is_valid()) return false;
+    const TypeKind kind = runtime_type(type_id).kind;
+    return kind == TypeKind::SignedInteger ||
+        kind == TypeKind::UnsignedInteger;
+  }
+
+  [[nodiscard]] bool numeric_operand(TypeId type_id) const {
+    return untyped_integer(type_id) || untyped_float(type_id) ||
+        concrete_numeric(type_id);
+  }
+
+  [[nodiscard]] bool common_numeric_operands(
+      TypeId left, TypeId right) const {
+    if (!numeric_operand(left) || !numeric_operand(right)) return false;
+    const bool left_concrete = concrete_numeric(left);
+    const bool right_concrete = concrete_numeric(right);
+    if (left_concrete && right_concrete) return left == right;
+    if (untyped_float(left) && right_concrete) {
+      return runtime_type(right).kind == TypeKind::Float;
+    }
+    if (untyped_float(right) && left_concrete) {
+      return runtime_type(left).kind == TypeKind::Float;
+    }
+    return true;
+  }
+
+  [[nodiscard]] bool equality_scalar(TypeId type_id) const {
+    if (!type_id.is_valid()) return false;
+    const TypeKind kind = runtime_type(type_id).kind;
+    return kind == TypeKind::Bool || kind == TypeKind::BooleanStorage ||
+        kind == TypeKind::EndianScalar || kind == TypeKind::Enum ||
+        kind == TypeKind::Rune || kind == TypeKind::RawPointer ||
+        kind == TypeKind::CString || kind == TypeKind::Pointer ||
+        kind == TypeKind::MultiPointer || kind == TypeKind::Procedure;
+  }
+
+  // `when` conditions and data constants do not subsequently pass through the
+  // runtime body checker. Validate the same closed operator/type table here so
+  // compile-time execution cannot acquire extra operators merely because two
+  // values share an internal ConstantKind representation.
+  [[nodiscard]] std::optional<EvalResult> invalid_binary_types(
+      TokenKind operation,
+      TypeId left,
+      TypeId right,
+      SourceRange range,
+      bool required) {
+    if (!left.is_valid() || !right.is_valid()) return std::nullopt;
+    const TypeKind left_kind = semantic_.types.type(left).kind;
+    const TypeKind right_kind = semantic_.types.type(right).kind;
+    if (left_kind == TypeKind::Invalid || right_kind == TypeKind::Invalid) {
+      return std::nullopt;
+    }
+
+    const bool equality = operation == TokenKind::EqualEqual ||
+        operation == TokenKind::BangEqual;
+    const bool ordering = operation == TokenKind::Less ||
+        operation == TokenKind::LessEqual ||
+        operation == TokenKind::Greater ||
+        operation == TokenKind::GreaterEqual;
+    const bool shift = operation == TokenKind::ShiftLeft ||
+        operation == TokenKind::ShiftRight;
+    const bool integer_only = operation == TokenKind::Percent ||
+        operation == TokenKind::Ampersand || operation == TokenKind::Pipe ||
+        operation == TokenKind::Caret;
+    const bool arithmetic = operation == TokenKind::Plus ||
+        operation == TokenKind::Minus || operation == TokenKind::Star ||
+        operation == TokenKind::Slash;
+
+    bool valid = false;
+    if (shift) {
+      // Shift counts intentionally need not share the left operand's concrete
+      // integer type.
+      valid = integer_operand(left) && integer_operand(right);
+    } else if (integer_only) {
+      valid = integer_operand(left) && integer_operand(right) &&
+          common_numeric_operands(left, right);
+    } else if (arithmetic) {
+      valid = common_numeric_operands(left, right);
+    } else if (equality || ordering) {
+      valid = common_numeric_operands(left, right);
+      if (!valid && left == right) {
+        const TypeKind runtime_kind = runtime_type(left).kind;
+        valid = (equality && equality_scalar(left)) ||
+            (runtime_kind == TypeKind::Rune && ordering);
+      }
+    } else {
+      // Logical operators are checked before the right operand is evaluated.
+      return std::nullopt;
+    }
+
+    if (valid) return std::nullopt;
+    return fail(
+        range,
+        "compile-time operator is not defined for operand types",
+        required);
+  }
+
   // Finds a concrete numeric type without evaluating the expression.  This is
   // intentionally a small syntactic query, not a second type checker.  Its job
   // is to discover context supplied by the opposite operand before source-order
@@ -1400,6 +1509,10 @@ private:
             ? TypeId{}
             : right_context);
     if (right.status != EvalStatus::Ready) return right;
+    if (std::optional<EvalResult> invalid = invalid_binary_types(
+            operation, left.type, right.type, node.range, required)) {
+      return std::move(*invalid);
+    }
     const bool comparison = operation == TokenKind::EqualEqual ||
         operation == TokenKind::BangEqual || operation == TokenKind::Less ||
         operation == TokenKind::LessEqual || operation == TokenKind::Greater ||
@@ -1468,7 +1581,11 @@ private:
   // values. Unknown fields are diagnosed only when the expression is required.
   [[nodiscard]] EvalResult evaluate_target_member(
       std::string_view member, SourceRange range, bool required) {
-    if (member == "identity") return ready(ConstantValue::make_string(target_.identity));
+    if (member == "identity") {
+      return ready(
+          ConstantValue::make_string(target_.identity),
+          semantic_.types.builtins().string_type);
+    }
     if (member == "arch") return ready(ConstantValue::make_enum_label(target_.arch));
     if (member == "os") return ready(ConstantValue::make_enum_label(target_.os));
     if (member == "abi") return ready(ConstantValue::make_enum_label(target_.abi));
@@ -1478,12 +1595,18 @@ private:
     if (member == "object_format") {
       return ready(ConstantValue::make_enum_label(target_.object_format));
     }
-    if (member == "file_tag") return ready(ConstantValue::make_string(target_.file_tag));
+    if (member == "file_tag") {
+      return ready(
+          ConstantValue::make_string(target_.file_tag),
+          semantic_.types.builtins().string_type);
+    }
     if (member == "pointer_bits" || member == "page_size") {
       const std::uint64_t source = member == "pointer_bits"
           ? target_.pointer_bits
           : target_.page_size;
-      return ready(ConstantValue::make_integer(BigInteger::from_u64(source)));
+      return ready(
+          ConstantValue::make_integer(BigInteger::from_u64(source)),
+          semantic_.types.builtins().usize_type);
     }
     return fail(range, "unknown target field '" + std::string(member) + "'", required);
   }
@@ -1523,7 +1646,9 @@ private:
     }
     const bool enabled = std::binary_search(
         target_.features.begin(), target_.features.end(), argument.value.text);
-    return ready(ConstantValue::make_bool(enabled));
+    return ready(
+        ConstantValue::make_bool(enabled),
+        semantic_.types.builtins().bool_type);
   }
 
   [[nodiscard]] std::optional<TypeId> type_value(
@@ -3523,13 +3648,17 @@ private:
       if (node.token_begin >= node.token_end) return pending();
       const Token &token = tree.token(node.token_begin);
       if (token.kind == TokenKind::KeywordTrue) {
-        return ready(ConstantValue::make_bool(true));
+        return ready(
+            ConstantValue::make_bool(true),
+            semantic_.types.builtins().bool_type);
       }
       if (token.kind == TokenKind::KeywordFalse) {
-        return ready(ConstantValue::make_bool(false));
+        return ready(
+            ConstantValue::make_bool(false),
+            semantic_.types.builtins().bool_type);
       }
       if (token.kind == TokenKind::KeywordNil) {
-        return ready(ConstantValue::make_nil());
+        return ready(ConstantValue::make_nil(), expected);
       }
       if (token.kind == TokenKind::IntegerLiteral) {
         const std::optional<BigInteger> value =
@@ -3537,7 +3666,9 @@ private:
         if (!value.has_value()) {
           return fail(token.range, "invalid integer literal", required);
         }
-        return ready(ConstantValue::make_integer(*value));
+        return ready(
+            ConstantValue::make_integer(*value),
+            semantic_.types.builtins().untyped_integer);
       }
       if (token.kind == TokenKind::FloatLiteral) {
         const std::optional<ExactRational> value =
@@ -3545,7 +3676,9 @@ private:
         if (!value.has_value()) {
           return fail(token.range, "invalid or excessive decimal floating literal", required);
         }
-        return ready(ConstantValue::make_float(*value));
+        return ready(
+            ConstantValue::make_float(*value),
+            semantic_.types.builtins().untyped_float);
       }
       if (token.kind == TokenKind::RuneLiteral) {
         const std::optional<std::uint32_t> value =
@@ -3553,7 +3686,9 @@ private:
         if (!value.has_value()) {
           return fail(token.range, "invalid rune literal", required);
         }
-        return ready(ConstantValue::make_integer(BigInteger::from_u64(*value)));
+        return ready(
+            ConstantValue::make_integer(BigInteger::from_u64(*value)),
+            semantic_.types.builtins().rune_type);
       }
       if (token.kind == TokenKind::StringLiteral ||
           token.kind == TokenKind::RawStringLiteral) {
@@ -3562,7 +3697,9 @@ private:
         if (!value.has_value()) {
           return fail(token.range, "unsupported string escape in constant", required);
         }
-        return ready(ConstantValue::make_string(*value));
+        return ready(
+            ConstantValue::make_string(*value),
+            semantic_.types.builtins().string_type);
       }
       return pending();
     }

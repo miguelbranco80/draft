@@ -793,6 +793,49 @@ Bad_Uninitialized :: reads_uninitialized()
   EXPECT(state, rendered.find("reads an uninitialized local") != std::string::npos);
 }
 
+void test_operator_type_boundaries(TestState &state) {
+  AnalyzedSource valid(R"draft(
+package conditions
+
+Distance :: distinct i64
+Good :: cast[Distance](cast[i64](40)) + 2
+)draft");
+  if (valid.diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(valid.sources, valid.diagnostics);
+  }
+  EXPECT(state, valid.analysis.ok);
+  EXPECT(state, !valid.diagnostics.has_errors());
+
+  AnalyzedSource invalid(R"draft(
+package conditions
+
+Mode :: enum {
+    Zero,
+    One,
+}
+
+Bad_String :: "draft" == "draft"
+Bad_Target_String :: target.file_tag == "aarch64-macos"
+Bad_Mixed_Numeric :: cast[u32](1) + cast[u64](2)
+Bad_Endian_Order ::
+    cast[u32be](cast[u32](1)) < cast[u32be](cast[u32](2))
+Bad_Enum_Arithmetic ::
+    cast[Mode](cast[int](1)) + cast[Mode](cast[int](1))
+Bad_Rune_Arithmetic :: 'a' + 'b'
+)draft");
+  if (invalid.diagnostics.error_count() < 6) {
+    std::cerr << draft::render_diagnostics(
+        invalid.sources, invalid.diagnostics);
+  }
+  EXPECT(state, !invalid.analysis.ok);
+  EXPECT(state, invalid.diagnostics.error_count() >= 6);
+  const std::string rendered =
+      draft::render_diagnostics(invalid.sources, invalid.diagnostics);
+  EXPECT(state, rendered.find(
+                    "compile-time operator is not defined for operand types") !=
+                    std::string::npos);
+}
+
 void test_global_initializers(TestState &state) {
   AnalyzedSource source(R"draft(
 package conditions
@@ -1078,6 +1121,7 @@ int main() {
   test_constants_and_conditional_rounds(state);
   test_invalid_required_constants(state);
   test_invalid_procedural_constants(state);
+  test_operator_type_boundaries(state);
   test_global_initializers(state);
 
   if (state.failures != 0) {
