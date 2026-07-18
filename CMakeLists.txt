@@ -59,6 +59,7 @@ add_library(
   src/source/diagnostic.cpp
   src/source/source.cpp
   src/sema/analyzer.cpp
+  src/sema/agent_flow.cpp
   src/sema/agent_metadata.cpp
   src/sema/big_integer.cpp
   src/sema/body_checker.cpp

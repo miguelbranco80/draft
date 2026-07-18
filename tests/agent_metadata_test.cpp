@@ -663,6 +663,50 @@ work :: proc(flag: bool, value: i64, values: []i64) {
         judge "iteration loop"
         break
     }
+    for element, index in values {
+        generated: i64 = ... "iteration expression"
+        _ = element
+        _ = index
+        _ = generated
+        break
+    }
+    for element, index in values {
+        _ = element
+        judge "iteration before direct mutation"
+        index = 7
+        judge "iteration after direct mutation"
+        break
+    }
+    for element, index in values {
+        pointer := &index
+        _ = element
+        _ = pointer
+        judge "iteration escaped index"
+        break
+    }
+    for element, index in values {
+        _ = element
+        deny index {
+            judge "iteration denied index"
+        }
+        break
+    }
+    for element, outer_index in values {
+        _ = element
+        for flag {
+            outer_index = 3
+            break
+        }
+        judge "iteration after nested mutation"
+        break
+    }
+    for mutable_index: i64 = 0;
+        mutable_index < value;
+        mutable_index += 1 {
+        judge "mutable clause before mutation"
+        mutable_index += 1
+        break
+    }
     switch value {
     case 1, 2:
         judge "selected values"
@@ -729,6 +773,23 @@ work :: proc(flag: bool, value: i64, values: []i64) {
     }
     return nullptr;
   };
+  const auto obligation_for_synthesis = [&metadata, &obligations](
+                                            std::string_view prompt)
+      -> const draft::AgentObligation * {
+    for (const draft::AgentRecord &record : metadata.records) {
+      if (record.kind != draft::AgentConstructKind::SynthesisExpression ||
+          record.text != prompt) {
+        continue;
+      }
+      for (const draft::AgentObligation &obligation :
+           obligations.obligations) {
+        if (obligation.record_digest == record.record_digest) {
+          return &obligation;
+        }
+      }
+    }
+    return nullptr;
+  };
 
   const draft::AgentObligation *positive =
       obligation_for_claim("positive");
@@ -746,6 +807,20 @@ work :: proc(flag: bool, value: i64, values: []i64) {
       obligation_for_claim("clause loop");
   const draft::AgentObligation *iteration_loop =
       obligation_for_claim("iteration loop");
+  const draft::AgentObligation *iteration_expression =
+      obligation_for_synthesis("iteration expression");
+  const draft::AgentObligation *iteration_before_mutation =
+      obligation_for_claim("iteration before direct mutation");
+  const draft::AgentObligation *iteration_after_mutation =
+      obligation_for_claim("iteration after direct mutation");
+  const draft::AgentObligation *iteration_escaped =
+      obligation_for_claim("iteration escaped index");
+  const draft::AgentObligation *iteration_denied =
+      obligation_for_claim("iteration denied index");
+  const draft::AgentObligation *iteration_after_nested_mutation =
+      obligation_for_claim("iteration after nested mutation");
+  const draft::AgentObligation *mutable_clause =
+      obligation_for_claim("mutable clause before mutation");
   EXPECT(state, positive != nullptr);
   EXPECT(state, negative != nullptr);
   EXPECT(state, nested != nullptr);
@@ -754,6 +829,13 @@ work :: proc(flag: bool, value: i64, values: []i64) {
   EXPECT(state, conditional_loop != nullptr);
   EXPECT(state, clause_loop != nullptr);
   EXPECT(state, iteration_loop != nullptr);
+  EXPECT(state, iteration_expression != nullptr);
+  EXPECT(state, iteration_before_mutation != nullptr);
+  EXPECT(state, iteration_after_mutation != nullptr);
+  EXPECT(state, iteration_escaped != nullptr);
+  EXPECT(state, iteration_denied != nullptr);
+  EXPECT(state, iteration_after_nested_mutation != nullptr);
+  EXPECT(state, mutable_clause != nullptr);
 
   if (positive != nullptr) {
     EXPECT(state, positive->branch_refinements.size() == 2);
@@ -840,6 +922,18 @@ work :: proc(flag: bool, value: i64, values: []i64) {
       EXPECT(state, refinement.subject == "index < value");
       EXPECT(state, refinement.type_text == "bool");
     }
+    EXPECT(state, clause_loop->loop_ranges.size() == 1);
+    if (clause_loop->loop_ranges.size() == 1) {
+      const draft::AgentLoopRange &range = clause_loop->loop_ranges.front();
+      EXPECT(state,
+          range.kind == draft::AgentLoopRangeKind::HeaderEntryValue);
+      EXPECT(state, range.binding_name == "index");
+      EXPECT(state, range.binding_type_text == "i64");
+      EXPECT(state, range.lower_bound == "0");
+      EXPECT(state, range.upper == "value");
+      EXPECT(state, range.upper_type_text == "i64");
+      EXPECT(state, range.upper_digest == draft::sha256(range.upper));
+    }
   }
   if (iteration_loop != nullptr) {
     EXPECT(state, iteration_loop->branch_refinements.size() == 1);
@@ -852,6 +946,52 @@ work :: proc(flag: bool, value: i64, values: []i64) {
       EXPECT(state, refinement.subject == "values");
       EXPECT(state, refinement.type_text == "[]i64");
     }
+    EXPECT(state, iteration_loop->loop_ranges.size() == 1);
+    if (iteration_loop->loop_ranges.size() == 1) {
+      const draft::AgentLoopRange &range =
+          iteration_loop->loop_ranges.front();
+      EXPECT(state,
+          range.kind ==
+              draft::AgentLoopRangeKind::CapturedIterationLength);
+      EXPECT(state, range.binding_name == "index");
+      EXPECT(state, range.binding_type_text == "usize");
+      EXPECT(state, range.lower_bound == "0");
+      EXPECT(state, range.upper == "values");
+      EXPECT(state, range.upper_type_text == "[]i64");
+      EXPECT(state, range.upper_digest == draft::sha256(range.upper));
+    }
+  }
+  if (iteration_expression != nullptr) {
+    EXPECT(state, iteration_expression->loop_ranges.size() == 1);
+    if (iteration_expression->loop_ranges.size() == 1) {
+      EXPECT(state,
+          iteration_expression->loop_ranges.front().binding_name == "index");
+    }
+  }
+  if (iteration_before_mutation != nullptr) {
+    EXPECT(state, iteration_before_mutation->loop_ranges.size() == 1);
+    if (iteration_before_mutation->loop_ranges.size() == 1) {
+      EXPECT(state,
+          iteration_before_mutation->loop_ranges.front().binding_name ==
+              "index");
+    }
+  }
+  if (iteration_after_mutation != nullptr) {
+    EXPECT(state, iteration_after_mutation->loop_ranges.empty());
+  }
+  if (iteration_escaped != nullptr) {
+    EXPECT(state, iteration_escaped->loop_ranges.empty());
+  }
+  if (iteration_denied != nullptr) {
+    EXPECT(state, iteration_denied->loop_ranges.empty());
+  }
+  if (iteration_after_nested_mutation != nullptr) {
+    EXPECT(state, iteration_after_nested_mutation->loop_ranges.empty());
+  }
+  if (mutable_clause != nullptr) {
+    // A write in the body changes the next clause iteration's induction state,
+    // so the static site cannot receive a fact valid on every execution.
+    EXPECT(state, mutable_clause->loop_ranges.empty());
   }
 }
 

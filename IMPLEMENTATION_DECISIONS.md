@@ -204,7 +204,7 @@ An omitted symbol is unknown, and compiler-, package-assembly-, and target-owned
 providers cannot be overridden by an external audit.
 
 Provider requests never substitute hashes for information the synthesizer must
-understand. `draft-synthesis-request-v19` carries canonical Draft spellings for
+understand. `draft-synthesis-request-v20` carries canonical Draft spellings for
 the expected type and every visible binding, together with complete canonical
 values for visible compile-time constants and explicit target, SIMD, and
 parsed-assembly facts. Procedure-valued constants lose their process-local
@@ -850,9 +850,10 @@ publish only newly judged sites. This keeps qualitative evidence attached to
 the exact program it evaluated without requiring a provider on routine
 unchanged resolution.
 
-## Typed branch facts in agent obligations
+## Typed branch and loop-range facts in agent obligations
 
-Status: conditional, switch, and loop-entry decisions implemented.
+Status: structured entry decisions and conservative mutable-loop ranges
+implemented.
 
 The body checker snapshots static control-flow facts at every body judgment and
 synthesis site while it is already traversing structured HIR. Runtime `if`
@@ -874,13 +875,36 @@ Obligation construction converts them to comment-free canonical Draft source,
 the readable subject type, and the same portable interface type graph used by
 other provider context. Source and duplicated digests are rechecked by the
 shared Codex renderer before either synthesis or judgment starts a child. The
-`draft-agent-obligation-v18`, synthesis request/prompt v19, judgment
-request/prompt v3, and compiler content v117 identities make these new facts a
-stale-pin and evidence input.
+structured entry rows remain historical rather than current-value assertions.
+
+After HIR is complete, the separate `sema/agent_flow` pass computes current
+loop-binding facts. Its state is a small ordered vector, branches merge by
+intersection, and every loop repeats analysis until its backedge reaches a
+monotone fixed point. Direct stores remove the affected binding. Taking its
+address removes it and, for a source iteration index, suppresses the static fact
+for the whole body because an escaped pointer could survive the backedge.
+Consequently a site before a direct index store may retain the fact while a site
+afterward does not; a mutation in one branch or nested loop removes the fact at
+the join/fixed point.
+
+Array/slice iteration proves `0 <= index < captured_len(iterable)`: MIR captures
+the iterable once and resets the source index from its hidden induction slot on
+every body entry. A three-clause loop proves
+`0 <= index < header_value(upper)` only for the canonical
+`index = 0; index < upper; index += 1` shape, only when `upper` does not depend
+on `index`, and only when the body neither mutates nor exposes `index`. The two
+explicit snapshot terms are provider vocabulary; neither promises that mutable
+upper source re-evaluates to the displayed value at the site. Other loop shapes
+produce no inferred range.
+
+`draft-agent-obligation-v19`, synthesis request v20 / prompt v18, judgment
+request/prompt v4, and compiler content v118 identities make these new facts a
+stale-pin and evidence input. Both Codex adapters use provider identity
+`openai-codex-cli-v22` and recheck the canonical upper-source digest before a
+child starts. Obligation construction also drops a range when the binding or
+any resolved upper-expression input is hidden by an active denial.
 
 Nested procedures are static and cannot capture runtime locals. Checking a
 nested body therefore clears the declaration point's active branch stack and
 restores it afterward; only branches inside that procedure refine its sites.
-Package and type-member sites have an empty stack. Mutable-state fixed-point
-facts and inferred iteration ranges remain a separate context extension because
-they require loop data-flow, not merely structured entry ancestry.
+Package and type-member sites have an empty stack and no loop ranges.

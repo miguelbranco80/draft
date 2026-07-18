@@ -209,6 +209,31 @@ struct AgentBranchRefinement {
   std::vector<Sha256Digest> value_digests;
 };
 
+// A current loop-binding range that survived the compiler's structured
+// data-flow fixed point. Both kinds use lower_bound == "0" and an exclusive
+// upper bound. CapturedIterationLength refers to the iterable length saved once
+// before iteration begins; HeaderEntryValue refers to the bound value observed
+// by the canonical clause condition for the admitted iteration. The explicit
+// vocabulary prevents a provider from reading either row as a promise that the
+// authored upper expression still evaluates to the same value at the site.
+enum class AgentLoopRangeKind {
+  CapturedIterationLength,
+  HeaderEntryValue,
+};
+
+struct AgentLoopRange {
+  AgentLoopRangeKind kind =
+      AgentLoopRangeKind::CapturedIterationLength;
+  std::string binding_name;
+  Sha256Digest binding_type_digest;
+  std::string binding_type_text;
+  std::string lower_bound = "0";
+  std::string upper;
+  Sha256Digest upper_digest;
+  Sha256Digest upper_type_digest;
+  std::string upper_type_text;
+};
+
 // One source-authored selector from a lexically enclosing deny region. The
 // spelling is canonical nontrivia Draft source such as `assert`, `asm`, or
 // `context.allocator`. Semantic denial checking remains authoritative; this
@@ -293,6 +318,7 @@ struct AgentObligation {
   AgentTargetContext target;
   AgentEnclosingDeclarationContext enclosing_declaration;
   std::vector<AgentBranchRefinement> branch_refinements;
+  std::vector<AgentLoopRange> loop_ranges;
   std::vector<AgentActiveDenial> active_denials;
   std::vector<AgentContextField> context_fields;
   std::vector<AgentParametricParameter> parametric_parameters;
@@ -351,5 +377,7 @@ collect_agent_validation_context(
 
 [[nodiscard]] std::string_view agent_branch_refinement_kind_name(
     AgentBranchRefinementKind kind);
+[[nodiscard]] std::string_view agent_loop_range_kind_name(
+    AgentLoopRangeKind kind);
 
 } // namespace draft

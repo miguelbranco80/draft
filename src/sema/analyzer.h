@@ -369,6 +369,39 @@ struct SemanticBranchRefinement {
   std::vector<SyntaxReference> values;
 };
 
+// A current-value fact proved for one loop binding at an agent site. Unlike a
+// SemanticBranchRefinement, this survives only while data-flow analysis proves
+// that the binding has not been assigned or allowed to escape by address.
+//
+// Both initial forms deliberately describe an exclusive range with an implicit
+// lower bound of zero:
+//
+//   IterationIndex:     0 <= binding < captured_len(upper)
+//   CanonicalInduction: 0 <= binding < header_value(upper)
+//
+// `captured_len` is the length retained when an array/slice iteration begins.
+// `header_value` is the value observed by the clause condition for the current
+// admitted iteration. Neither form claims that re-evaluating mutable `upper`
+// source at the agent site would produce the same value.
+enum class SemanticLoopRangeKind {
+  IterationIndex,
+  CanonicalInduction,
+};
+
+struct SemanticLoopRange {
+  SemanticLoopRangeKind kind = SemanticLoopRangeKind::IterationIndex;
+  SymbolId binding;
+  SyntaxReference upper;
+  TypeId upper_type;
+  // Resolved symbols read by the upper expression. This phase-local list lets
+  // obligation construction suppress the complete fact when an enclosing
+  // denial hides any input, rather than leaking the hidden source through a
+  // derived range row.
+  std::vector<SymbolId> upper_symbols;
+
+  bool operator==(const SemanticLoopRange &) const = default;
+};
+
 // A semantic site is a zero-runtime source construct anchored in a lexical
 // scope. Documentation may additionally anchor to the first symbol of the
 // immediately following declaration. An invalid anchor means package-level or
@@ -386,6 +419,10 @@ struct SemanticSite {
   // static path facts for judgments and body synthesis before leaving their
   // lexical branch; these facts never affect runtime lowering or reachability.
   std::vector<SemanticBranchRefinement> branch_refinements;
+  // Populated after complete HIR construction by the conservative loop
+  // data-flow pass. Early declaration/member sites and sites outside a loop
+  // retain an empty vector.
+  std::vector<SemanticLoopRange> loop_ranges;
 };
 
 // Type resolution necessarily starts before the full compile-time interpreter:

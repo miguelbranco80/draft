@@ -1265,6 +1265,82 @@ imported_package_context(
   return result;
 }
 
+[[nodiscard]] AgentLoopRangeKind loop_range_kind(
+    SemanticLoopRangeKind kind) {
+  switch (kind) {
+  case SemanticLoopRangeKind::IterationIndex:
+    return AgentLoopRangeKind::CapturedIterationLength;
+  case SemanticLoopRangeKind::CanonicalInduction:
+    return AgentLoopRangeKind::HeaderEntryValue;
+  }
+  return AgentLoopRangeKind::CapturedIterationLength;
+}
+
+// Converts process-local range proofs into canonical provider rows. The source
+// digest names the authored upper expression, while the kind supplies its
+// snapshot semantics. Binding and upper types join the same complete type graph
+// table used by ordinary visible bindings and branch subjects.
+[[nodiscard]] std::vector<AgentLoopRange> loop_range_context(
+    const PackageIdentity &identity,
+    const SourceManager &sources,
+    const LoadedPackage &loaded,
+    const SemanticPackage &package,
+    const AgentRecord &record,
+    std::span<const ResolvedDenialSelector> denials,
+    std::vector<AgentTypeContext> &type_contexts,
+    DiagnosticSink &diagnostics) {
+  std::vector<AgentLoopRange> result;
+  for (const SemanticLoopRange &semantic : record.loop_ranges) {
+    const bool hidden_input = denies_symbol(denials, semantic.binding) ||
+        std::any_of(
+            semantic.upper_symbols.begin(),
+            semantic.upper_symbols.end(),
+            [&](SymbolId symbol) { return denies_symbol(denials, symbol); });
+    if (hidden_input) continue;
+    if (!semantic.binding.is_valid() ||
+        !semantic.upper.file.is_valid() ||
+        !semantic.upper.node.is_valid() ||
+        !semantic.upper_type.is_valid()) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "agent loop range has incomplete semantic routes");
+      continue;
+    }
+    const Symbol &binding = package.symbols.symbol(semantic.binding);
+    const SyntaxTree *upper_tree = find_tree(loaded, semantic.upper.file);
+    if (upper_tree == nullptr ||
+        package.types.type(binding.type).kind == TypeKind::Invalid ||
+        package.types.type(semantic.upper_type).kind == TypeKind::Invalid) {
+      diagnostics.error(
+          binding.name_range,
+          "agent loop range has incomplete source or type context");
+      continue;
+    }
+
+    const InterfaceTypeGraph binding_type = export_interface_type(
+        identity, package, binding.type, diagnostics);
+    const InterfaceTypeGraph upper_type = export_interface_type(
+        identity, package, semantic.upper_type, diagnostics);
+    add_type_context(binding_type, type_contexts);
+    add_type_context(upper_type, type_contexts);
+
+    AgentLoopRange range;
+    range.kind = loop_range_kind(semantic.kind);
+    range.binding_name = binding.name;
+    range.binding_type_digest = hash_interface_type_graph(binding_type);
+    range.binding_type_text = type_text(package, binding.type);
+    range.upper = canonical_token_source(
+        sources,
+        *upper_tree,
+        upper_tree->node(semantic.upper.node));
+    range.upper_digest = sha256(range.upper);
+    range.upper_type_digest = hash_interface_type_graph(upper_type);
+    range.upper_type_text = type_text(package, semantic.upper_type);
+    result.push_back(std::move(range));
+  }
+  return result;
+}
+
 [[nodiscard]] std::string_view validation_context_kind(
     std::string_view relative_name) {
   const std::size_t dot = relative_name.rfind('.');
@@ -1905,7 +1981,7 @@ struct ActiveDenialContext {
     const AgentObligation &obligation,
     const TargetProfile &target) {
   Sha256 hash;
-  hash_field(hash, "draft-agent-obligation-v18");
+  hash_field(hash, "draft-agent-obligation-v19");
   hash_field(hash, obligation.site_identity);
   hash.update(obligation.record_digest.bytes);
   hash.update(obligation.expected_type_digest.bytes);
@@ -1974,6 +2050,18 @@ struct ActiveDenialContext {
     for (const Sha256Digest &digest : refinement.value_digests) {
       hash.update(digest.bytes);
     }
+  }
+  hash_u64(hash, static_cast<std::uint64_t>(obligation.loop_ranges.size()));
+  for (const AgentLoopRange &range : obligation.loop_ranges) {
+    hash_field(hash, agent_loop_range_kind_name(range.kind));
+    hash_field(hash, range.binding_name);
+    hash.update(range.binding_type_digest.bytes);
+    hash_field(hash, range.binding_type_text);
+    hash_field(hash, range.lower_bound);
+    hash_field(hash, range.upper);
+    hash.update(range.upper_digest.bytes);
+    hash.update(range.upper_type_digest.bytes);
+    hash_field(hash, range.upper_type_text);
   }
   hash_u64(hash, static_cast<std::uint64_t>(obligation.active_denials.size()));
   for (const AgentActiveDenial &denial : obligation.active_denials) {
@@ -2394,6 +2482,16 @@ std::string_view agent_branch_refinement_kind_name(
   return "invalid";
 }
 
+std::string_view agent_loop_range_kind_name(AgentLoopRangeKind kind) {
+  switch (kind) {
+  case AgentLoopRangeKind::CapturedIterationLength:
+    return "captured-iteration-length";
+  case AgentLoopRangeKind::HeaderEntryValue:
+    return "header-entry-value";
+  }
+  return "invalid";
+}
+
 AgentObligationResult build_agent_obligations(
     const PackageIdentity &identity,
     const SourceManager &sources,
@@ -2485,6 +2583,15 @@ AgentObligationResult build_agent_obligations(
         loaded,
         package,
         record,
+        obligation.type_contexts,
+        diagnostics);
+    obligation.loop_ranges = loop_range_context(
+        identity,
+        sources,
+        loaded,
+        package,
+        record,
+        denials.resolved,
         obligation.type_contexts,
         diagnostics);
     obligation.parametric_parameters = parametric_context(

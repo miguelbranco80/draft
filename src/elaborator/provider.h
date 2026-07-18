@@ -40,7 +40,8 @@ struct SynthesisRequestFile {
 // relevant-declaration closure, explicit target and
 // assembly facts, enclosing documentation, canonical enclosing declaration
 // source and typed semantic skeleton, active denial selectors,
-// typed outer-to-inner branch refinements, parametric constraints, complete
+// typed outer-to-inner branch refinements, conservative current loop ranges,
+// parametric constraints, complete
 // referenced type graphs, positionally
 // available imported package interfaces and their explicit public documentation
 // bytes, judgment claims, canonical test and benchmark source plus checked
@@ -49,7 +50,7 @@ struct SynthesisRequestFile {
 // digest, and stable site identity. prompt and attachments contain
 // source-authored bounded context without exposing semantic arena IDs.
 struct SynthesisRequest {
-  std::string format = "draft-synthesis-request-v19";
+  std::string format = "draft-synthesis-request-v20";
   AgentObligation obligation;
   std::string prompt;
   std::vector<SynthesisRequestFile> attachments;

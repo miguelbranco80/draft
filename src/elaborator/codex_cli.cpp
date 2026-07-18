@@ -45,7 +45,7 @@ namespace {
 constexpr std::uintmax_t kMaximumCodexOutputBytes = 64U * 1024U * 1024U;
 constexpr std::uintmax_t kMaximumCodexLogBytes = 4U * 1024U * 1024U;
 constexpr std::string_view kPromptContractIdentity =
-    "draft-codex-synthesis-prompt-v17";
+    "draft-codex-synthesis-prompt-v18";
 constexpr std::string_view kOutputSchema =
     "{\n"
     "  \"type\": \"object\",\n"
@@ -398,6 +398,36 @@ void append_field(
           prompt);
       append_field("BRANCH_VALUE", refinement.values[index], prompt);
     }
+  }
+  prompt += "LOOP_RANGES ";
+  append_u64(
+      static_cast<std::uint64_t>(obligation.loop_ranges.size()), prompt);
+  for (const AgentLoopRange &range : obligation.loop_ranges) {
+    if (range.binding_name.empty() || range.lower_bound != "0" ||
+        range.upper.empty() || sha256(range.upper) != range.upper_digest) {
+      provider_error(
+          diagnostics, "Codex loop range identity is inconsistent");
+      return false;
+    }
+    append_field(
+        "LOOP_RANGE_KIND",
+        agent_loop_range_kind_name(range.kind),
+        prompt);
+    append_field("LOOP_RANGE_BINDING", range.binding_name, prompt);
+    append_field(
+        "LOOP_RANGE_BINDING_TYPE_SHA256",
+        range.binding_type_digest.hex(),
+        prompt);
+    append_field(
+        "LOOP_RANGE_BINDING_TYPE_TEXT", range.binding_type_text, prompt);
+    append_field("LOOP_RANGE_LOWER_INCLUSIVE", range.lower_bound, prompt);
+    append_field("LOOP_RANGE_UPPER_SHA256", range.upper_digest.hex(), prompt);
+    append_field("LOOP_RANGE_UPPER", range.upper, prompt);
+    append_field(
+        "LOOP_RANGE_UPPER_TYPE_SHA256",
+        range.upper_type_digest.hex(),
+        prompt);
+    append_field("LOOP_RANGE_UPPER_TYPE_TEXT", range.upper_type_text, prompt);
   }
   prompt += "ACTIVE_DENIALS ";
   append_u64(
@@ -1367,7 +1397,7 @@ SynthesisProvider configure_codex_cli_provider(
   }
 
   SynthesisProvider provider;
-  provider.provider_identity = "openai-codex-cli-v21";
+  provider.provider_identity = "openai-codex-cli-v22";
   provider.model_identity = state.model;
   provider.configuration_identity = state.configuration_identity;
   provider.state = &state;

@@ -205,6 +205,7 @@ public:
       record.anchor = site.anchor;
       record.expected_type = site.expected_type;
       record.branch_refinements = site.branch_refinements;
+      record.loop_ranges = site.loop_ranges;
       record.public_interface =
           is_public_documentation(site, package_documentation);
       decode_text(*tree, node, record);

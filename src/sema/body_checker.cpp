@@ -2,6 +2,7 @@
 
 #include "sema/body_checker.h"
 
+#include "sema/agent_flow.h"
 #include "sema/ieee_float.h"
 #include "sema/initialization.h"
 #include "sema/runtime_context.h"
@@ -4949,6 +4950,7 @@ private:
            scope,
            current_procedure_,
            {},
+           {},
            {}});
       if (!node.children.empty()) {
         const HirExpressionId value =
@@ -4975,6 +4977,8 @@ private:
       HirExpression expression;
       expression.kind = HirExpressionKind::Synthesis;
       expression.range = node.range;
+      expression.syntax = {tree.file(), expression_id};
+      expression.scope = scope;
       expression.type = expected;
       return hir_.add_expression(std::move(expression));
     }
@@ -5971,6 +5975,7 @@ private:
            scope,
            current_procedure_,
            {},
+           {},
            {}});
       if (!node.children.empty()) {
         active_statement_denials_.push_back({tree.file(), statement_id});
@@ -6422,6 +6427,7 @@ BodyCheckResult check_package_bodies(
       !check_definite_initialization(package, result.program, diagnostics)) {
     result.ok = false;
   }
+  infer_agent_loop_ranges(loaded, package, result.program);
   return result;
 }
 
@@ -6456,6 +6462,7 @@ BodyCheckResult check_compile_time_procedure_bodies(
       !check_definite_initialization(package, result.program, diagnostics)) {
     result.ok = false;
   }
+  infer_agent_loop_ranges(loaded, package, result.program);
   return result;
 }
 

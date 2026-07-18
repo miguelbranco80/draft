@@ -100,7 +100,12 @@ and selects declaration/member `when` branches through deterministic fixed-point
 rounds.
 Provider-independent docs, judgments, and synthesis sites retain decoded text,
 typed expectations, secure package-relative attachments, and SHA-256 content
-identities; public docs cross package-interface boundaries. Procedure effect
+identities; public docs cross package-interface boundaries. Body-level agent
+context includes typed structured-entry decisions plus conservative current
+loop ranges computed by a post-HIR fixed point: iteration indices are related
+to the captured iterable length, canonical zero-based clause indices are
+related to the header-observed upper value, and stores or address escape remove
+facts rather than exposing optimistic assumptions. Procedure effect
 summaries compose through local and imported calls, and lexical `deny` regions
 enforce `assert`, context, assembly, unchecked access, globals, packages, and
 named declarations transitively while rejecting unknown call edges. The single

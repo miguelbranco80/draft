@@ -348,7 +348,7 @@ private:
   void add_site(
       SemanticSiteKind kind, const SyntaxTree &tree, NodeId node, ScopeId scope) {
     semantic_.sites.push_back(
-        {kind, {tree.file(), node}, scope, {}, {}, {}});
+        {kind, {tree.file(), node}, scope, {}, {}, {}, {}});
   }
 
   [[nodiscard]] std::vector<SymbolId> collect_item(

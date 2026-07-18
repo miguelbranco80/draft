@@ -85,6 +85,7 @@ struct AgentRecord {
   // Still package-local at this phase. The elaborator converts these typed
   // semantic routes into source-readable, content-addressed provider context.
   std::vector<SemanticBranchRefinement> branch_refinements;
+  std::vector<SemanticLoopRange> loop_ranges;
 };
 
 struct AgentMetadataResult {
