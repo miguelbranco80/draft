@@ -164,6 +164,51 @@ wide_shift_right :: proc(value: u128, count: i8) -> u128 {
     return value >> count
 }
 
+integer_operator_matrix[T: integer] :: proc(
+    left, right: T,
+    count: u8,
+) -> bool {
+    // Six and three keep every mathematical result representable in the
+    // narrowest signed type while still distinguishing every binary integer
+    // operation. Applying unary negation twice also checks unsigned modular
+    // negation without requiring an unrepresentable negative literal.
+    return left + right == 9 &&
+        left - right == 3 &&
+        left * right == 18 &&
+        left / right == 2 &&
+        left % right == 0 &&
+        (left & right) == 2 &&
+        (left | right) == 7 &&
+        left ^ right == 5 &&
+        left << count == 12 &&
+        left >> count == 3 &&
+        +left == left &&
+        -(-left) == left &&
+        ~(~left) == left &&
+        left != right &&
+        left > right &&
+        left >= right &&
+        right < left &&
+        right <= left
+}
+
+float_operator_matrix[T: float] :: proc(left, right: T) -> bool {
+    // These values and results are exactly representable even in f16, so this
+    // checks the operations themselves rather than a format-specific rounding
+    // threshold. IEEE exceptional behavior has separate constant/runtime tests.
+    return left + right == 9.0 &&
+        left - right == 3.0 &&
+        left * right == 18.0 &&
+        left / right == 2.0 &&
+        +left == left &&
+        -(-left) == left &&
+        left != right &&
+        left > right &&
+        left >= right &&
+        right < left &&
+        right <= left
+}
+
 scale :: proc(value: f64) -> f64 {
     return value * 0.5
 }
@@ -562,6 +607,27 @@ main :: proc() {
         170141183460469231731687303715884105728,
         127,
     ) == 1)
+    // Instantiate the same closed operator vocabulary at every integer
+    // identity, including the pointer-sized identities that share a physical
+    // width but remain distinct source types.
+    assert(integer_operator_matrix[i8](6, 3, 1))
+    assert(integer_operator_matrix[i16](6, 3, 1))
+    assert(integer_operator_matrix[i32](6, 3, 1))
+    assert(integer_operator_matrix[i64](6, 3, 1))
+    assert(integer_operator_matrix[i128](6, 3, 1))
+    assert(integer_operator_matrix[u8](6, 3, 1))
+    assert(integer_operator_matrix[u16](6, 3, 1))
+    assert(integer_operator_matrix[u32](6, 3, 1))
+    assert(integer_operator_matrix[u64](6, 3, 1))
+    assert(integer_operator_matrix[u128](6, 3, 1))
+    assert(integer_operator_matrix[int](6, 3, 1))
+    assert(integer_operator_matrix[uint](6, 3, 1))
+    assert(integer_operator_matrix[isize](6, 3, 1))
+    assert(integer_operator_matrix[usize](6, 3, 1))
+    assert(integer_operator_matrix[uintptr](6, 3, 1))
+    assert(float_operator_matrix[f16](6.0, 3.0))
+    assert(float_operator_matrix[f32](6.0, 3.0))
+    assert(float_operator_matrix[f64](6.0, 3.0))
     assert(scale(3.0) == 1.5)
     assert(mixed_untyped_numeric(true) == 3.5)
     assert(mixed_untyped_numeric(false) == 5.0)

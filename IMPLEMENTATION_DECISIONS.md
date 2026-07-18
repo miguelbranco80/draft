@@ -24,11 +24,14 @@ right
 ```
 
 The bootstrap lexer treats `^` at a semicolon-eligible newline or EOF as postfix,
-following the specification's explicit statement-ending list. Consequently a
-binary XOR may not continue after `^` across an outermost newline; it can remain
-on one line or be continued inside parentheses, where semicolon insertion is
-suppressed. This rule is deterministic and makes the common dereference form
-work, but the normative specification should state the disambiguation directly.
+following the specification's explicit statement-ending list. During parsing,
+`^` is binary when the next token directly begins a primary operand, synthesis,
+assembly, denial expression, or unary-only `!`/`~` operand. It is postfix before
+a delimiter, postfix continuation, or another binary operator. Thus `left ^
+right` works inside parentheses (where no semicolon is inserted), `pointer^ + 1`
+dereferences before addition, and an ambiguous unary operand is made explicit as
+`left ^ (-right)`. This rule is deterministic and whitespace-independent, but
+the normative specification should state the disambiguation directly.
 
 ## Contextual `c`
 

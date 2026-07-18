@@ -875,6 +875,35 @@ private:
     }
   }
 
+  // `^` is both postfix dereference and binary XOR. Postfix parsing must leave
+  // the token for the precedence loop when the next token directly begins an
+  // XOR right operand. A following binary operator or postfix continuation
+  // instead closes a dereference: `pointer^ + 1`, `pointer^.field`, and
+  // `pointer^^` therefore keep their ordinary postfix meaning.
+  //
+  // `+`, `-`, and `&` are themselves binary operators as well as prefixes, so
+  // the unparenthesized form chooses postfix dereference. An XOR with one of
+  // those unary operands is written `left ^ (-right)`. `!` and `~` are only
+  // prefixes and can begin the XOR operand directly. This rule depends only on
+  // token kinds; whitespace other than semicolon insertion never changes it.
+  [[nodiscard]] bool caret_begins_binary_operation() const {
+    assert(at(TokenKind::Caret));
+    const TokenKind next = lookahead(1).kind;
+    if (is_contextual_name(next) || token_is_literal(next)) return true;
+    switch (next) {
+    case TokenKind::Uninitialized:
+    case TokenKind::Ellipsis:
+    case TokenKind::KeywordAsm:
+    case TokenKind::KeywordDeny:
+    case TokenKind::LeftParen:
+    case TokenKind::Bang:
+    case TokenKind::Tilde:
+      return true;
+    default:
+      return false;
+    }
+  }
+
   [[nodiscard]] NodeId parse_postfix_expression(bool allow_composite) {
     const std::uint32_t start = position_;
     NodeId expression = parse_primary_expression();
@@ -929,7 +958,8 @@ private:
         expression = tree_.add_node(NodeKind::MemberExpression, start, position_, std::move(children));
         continue;
       }
-      if (match(TokenKind::Caret)) {
+      if (at(TokenKind::Caret) && !caret_begins_binary_operation()) {
+        advance();
         std::vector<NodeId> children{expression};
         expression = tree_.add_node(
             NodeKind::DereferenceExpression, start, position_, std::move(children));

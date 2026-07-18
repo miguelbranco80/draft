@@ -193,6 +193,21 @@ main :: proc() -> int {
   EXPECT(state, source.tree.count(draft::NodeKind::Judgment) == 1);
 }
 
+void test_binary_xor_and_postfix_dereference(TestState &state) {
+  ParsedSource source(R"draft(
+package operators
+
+combine :: proc(left, right: u32, pointer: ^u32) -> u32 {
+    bits := (left ^ right)
+    return bits + pointer^
+}
+)draft");
+
+  expect_clean(state, source);
+  EXPECT(state, source.tree.count(draft::NodeKind::BinaryExpression) == 2);
+  EXPECT(state, source.tree.count(draft::NodeKind::DereferenceExpression) == 1);
+}
+
 void test_synthesis_and_assembly_surface(TestState &state) {
   ParsedSource source(R"draft(
 package generated
@@ -270,6 +285,7 @@ int main() {
   TestState state;
   test_types_declarations_and_interop(state);
   test_procedure_control_flow_and_expressions(state);
+  test_binary_xor_and_postfix_dereference(state);
   test_synthesis_and_assembly_surface(state);
   test_recovery_builds_a_tree(state);
 
