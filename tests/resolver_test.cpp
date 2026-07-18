@@ -14,6 +14,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -117,6 +118,16 @@ struct TemporaryWorkspace {
            << "main :: proc() {\n"
            << "}\n";
   }
+
+  void write_test_source() const {
+    std::ofstream source(
+        package / "candidate_test.draft", std::ios::binary | std::ios::trunc);
+    source << "package app\n\n"
+           << "import core/testing\n\n"
+           << "test_generated_answer :: proc(test: ^testing.Test) {\n"
+           << "    testing.expect(test, answer() == 42)\n"
+           << "}\n";
+  }
 };
 
 struct FakeProviderState {
@@ -127,6 +138,35 @@ struct FakeProviderState {
   bool staged_responses = false;
   std::vector<draft::AgentConstructKind> kinds;
 };
+
+struct FakeTestRunnerState {
+  std::size_t calls = 0;
+  std::size_t selected_procedures = 0;
+  bool pass = true;
+  bool saw_program_identity = false;
+  bool saw_manifest = false;
+  bool saw_llvm = false;
+};
+
+bool run_candidate_tests(
+    void *opaque,
+    const draft::TargetProfile &target,
+    const draft::CompileWorkspaceResult &compiled,
+    draft::DiagnosticSink &diagnostics) {
+  (void)diagnostics;
+  auto *state = static_cast<FakeTestRunnerState *>(opaque);
+  ++state->calls;
+  state->selected_procedures = compiled.validation_entries.size();
+  state->saw_program_identity = compiled.resolved_program_digest.has_value();
+  state->saw_manifest = compiled.resolution_manifest.has_value();
+  for (const std::optional<draft::CompiledPackage> &package :
+       compiled.packages) {
+    if (package.has_value() && package->llvm.ok && !package->llvm.text.empty()) {
+      state->saw_llvm = true;
+    }
+  }
+  return target.facts.identity == "draft-aarch64-macos-v5" && state->pass;
+}
 
 // The fake intentionally performs no language validation. This proves the
 // resolver, rather than the provider, is responsible for accepting a proposal.
@@ -171,6 +211,9 @@ draft::CompileWorkspaceOptions compile_options(
   draft::CompileWorkspaceOptions options;
   options.target = draft::make_aarch64_macos_profile();
   options.workspace.workspace_directory = workspace.root.string();
+  options.workspace.core_directory =
+      std::string(DRAFT_SOURCE_DIRECTORY) + "/core";
+  options.workspace.core_content_identity = "draft-core-bootstrap-v1";
   return options;
 }
 
@@ -483,6 +526,93 @@ void test_dependency_interface_rounds(TestState &state) {
   EXPECT(state, !offline_diagnostics.has_errors());
 }
 
+void test_tests_gate_manifest_commit(TestState &state) {
+  TemporaryWorkspace workspace;
+  workspace.write_source("candidate with tests");
+  workspace.write_test_source();
+  FakeProviderState provider;
+
+  // Merely type-checking the generated expression is insufficient when the
+  // selected package contains typed tests. With no execution boundary the
+  // resolver must reject the transaction and leave no visible manifest.
+  draft::SourceManager missing_sources;
+  draft::DiagnosticSink missing_diagnostics;
+  const draft::ResolveWorkspaceResult missing_runner =
+      draft::resolve_workspace(
+          missing_sources,
+          workspace.package.string(),
+          resolve_options(workspace, provider),
+          missing_diagnostics);
+  EXPECT(state, !missing_runner.ok);
+  EXPECT(state, !missing_runner.committed);
+  EXPECT(state, missing_runner.tested_procedures == 1);
+  EXPECT(state, missing_diagnostics.has_errors());
+  draft::DiagnosticSink missing_manifest_diagnostics;
+  const draft::ResolutionManifestLoadResult missing_manifest =
+      draft::load_resolution_manifest(
+          workspace.root, missing_manifest_diagnostics);
+  EXPECT(state,
+      missing_manifest.state == draft::ResolutionManifestLoadState::Missing);
+
+  FakeTestRunnerState runner;
+  draft::ResolveWorkspaceOptions passing = resolve_options(workspace, provider);
+  passing.test_runner.state = &runner;
+  passing.test_runner.run = run_candidate_tests;
+  draft::SourceManager passing_sources;
+  draft::DiagnosticSink passing_diagnostics;
+  const draft::ResolveWorkspaceResult accepted = draft::resolve_workspace(
+      passing_sources,
+      workspace.package.string(),
+      std::move(passing),
+      passing_diagnostics);
+  if (!accepted.ok) {
+    std::cerr << draft::render_diagnostics(
+        passing_sources, passing_diagnostics);
+  }
+  EXPECT(state, accepted.ok);
+  EXPECT(state, accepted.committed);
+  EXPECT(state, accepted.tested_procedures == 1);
+  EXPECT(state, runner.calls == 1);
+  EXPECT(state, runner.selected_procedures == 1);
+  EXPECT(state, runner.saw_program_identity);
+  EXPECT(state, runner.saw_manifest);
+  EXPECT(state, runner.saw_llvm);
+
+  draft::DiagnosticSink before_diagnostics;
+  const draft::ResolutionManifestLoadResult before =
+      draft::load_resolution_manifest(workspace.root, before_diagnostics);
+  EXPECT(state, before.state == draft::ResolutionManifestLoadState::Loaded);
+  const std::string committed =
+      draft::serialize_resolution_manifest(before.manifest);
+
+  // A later failing test run rejects a newly typed candidate after provider
+  // work but before the one authoritative manifest rename.
+  workspace.write_source("changed candidate rejected by tests");
+  runner.pass = false;
+  draft::ResolveWorkspaceOptions failing = resolve_options(workspace, provider);
+  failing.test_runner.state = &runner;
+  failing.test_runner.run = run_candidate_tests;
+  draft::SourceManager failing_sources;
+  draft::DiagnosticSink failing_diagnostics;
+  const draft::ResolveWorkspaceResult rejected = draft::resolve_workspace(
+      failing_sources,
+      workspace.package.string(),
+      std::move(failing),
+      failing_diagnostics);
+  EXPECT(state, !rejected.ok);
+  EXPECT(state, !rejected.committed);
+  EXPECT(state, rejected.tested_procedures == 1);
+  EXPECT(state, runner.calls == 2);
+  EXPECT(state, failing_diagnostics.has_errors());
+
+  draft::DiagnosticSink after_diagnostics;
+  const draft::ResolutionManifestLoadResult after =
+      draft::load_resolution_manifest(workspace.root, after_diagnostics);
+  EXPECT(state, after.state == draft::ResolutionManifestLoadState::Loaded);
+  EXPECT(state,
+      draft::serialize_resolution_manifest(after.manifest) == committed);
+}
+
 } // namespace
 
 int main() {
@@ -491,6 +621,7 @@ int main() {
   test_external_inputs_commit_without_synthesis(state);
   test_interface_sites_precede_dependent_bodies(state);
   test_dependency_interface_rounds(state);
+  test_tests_gate_manifest_commit(state);
   if (state.failures != 0) {
     std::cerr << state.failures << " resolver expectation(s) failed\n";
     return EXIT_FAILURE;

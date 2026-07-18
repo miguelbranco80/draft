@@ -28,6 +28,22 @@
 
 namespace draft {
 
+// The resolver owns candidate construction and semantic validation, but it
+// deliberately does not own processes or native toolchains. An embedding
+// driver supplies this narrow callback to execute the already typed Test graph
+// before the manifest becomes visible. The callback may inspect only the
+// immutable compilation and report diagnostics; it cannot alter pins.
+using ResolutionTestRunFunction = bool (*)(
+    void *state,
+    const TargetProfile &target,
+    const CompileWorkspaceResult &compiled,
+    DiagnosticSink &diagnostics);
+
+struct ResolutionTestRunner {
+  void *state = nullptr;
+  ResolutionTestRunFunction run = nullptr;
+};
+
 // Options own the provider adapter values but borrow provider.state. Native
 // lowering flags are ignored because resolution validates source/semantics and
 // commits before any separate requested artifact build.
@@ -44,6 +60,10 @@ struct ResolveWorkspaceOptions {
   // vector replaces it; an explicitly empty vector therefore removes the lock.
   bool external_inputs_configured = false;
   std::vector<ExternalInputPin> external_inputs;
+  // When the candidate selects typed test procedures, this runner is required
+  // and must accept them before the atomic pin-store commit. A package with no
+  // selected tests remains provider/toolchain independent.
+  ResolutionTestRunner test_runner;
 };
 
 // Counts describe provider/reuse work performed by the attempt, including work
@@ -55,6 +75,7 @@ struct ResolveWorkspaceResult {
   bool committed = false;
   std::size_t reused_sites = 0;
   std::size_t synthesized_sites = 0;
+  std::size_t tested_procedures = 0;
   ResolutionManifest manifest;
 };
 

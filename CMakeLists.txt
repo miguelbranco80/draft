@@ -190,6 +190,10 @@ if(BUILD_TESTING)
 
   add_executable(draft_resolver_tests tests/resolver_test.cpp)
   target_link_libraries(draft_resolver_tests PRIVATE draft_compiler)
+  target_compile_definitions(
+    draft_resolver_tests
+    PRIVATE DRAFT_SOURCE_DIRECTORY="${CMAKE_CURRENT_SOURCE_DIR}"
+  )
   add_test(NAME draft_resolver_tests COMMAND draft_resolver_tests)
 
   add_executable(draft_codex_cli_tests tests/codex_cli_test.cpp)

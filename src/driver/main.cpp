@@ -617,6 +617,43 @@ enum class AgentCommandKind {
   Judge,
 };
 
+struct ResolutionTestRunnerState {
+  draft::ValidationCommandOptions options;
+  draft::ValidationCommandResult result;
+};
+
+// Native execution remains outside the semantic resolver. This adapter accepts
+// its immutable typed candidate, runs the normal compiler-owned Test harness,
+// and deliberately leaves evidence untouched until resolution has committed.
+bool run_resolution_candidate_tests(
+    void *opaque,
+    const draft::TargetProfile &target,
+    const draft::CompileWorkspaceResult &compiled,
+    draft::DiagnosticSink &diagnostics) {
+  auto *state = static_cast<ResolutionTestRunnerState *>(opaque);
+  state->options.target = target;
+  const std::size_t before = diagnostics.error_count();
+  state->result = draft::execute_precommit_validation(
+      compiled, state->options, diagnostics);
+  if (!state->result.completed) {
+    if (diagnostics.error_count() == before) {
+      diagnostics.error(
+          draft::SourceRange::invalid(),
+          "resolution candidate tests could not complete");
+    }
+    return false;
+  }
+  if (!state->result.passed) {
+    diagnostics.error(
+        draft::SourceRange::invalid(),
+        "resolution candidate tests failed for " +
+            std::to_string(state->result.selected_procedures) +
+            " selected procedures");
+    return false;
+  }
+  return true;
+}
+
 // Resolve and judge first run the complete provider-independent front end, so
 // malformed source, attachment-policy violations, and typed obligation errors
 // are reported before any model call. Resolve may receive one explicit Codex
@@ -627,6 +664,7 @@ int run_agent_command(
     const std::string &directory,
     AgentCommandKind command,
     bool revalidate = false,
+    bool allow_host_toolchain = false,
     const std::optional<draft::CodexCliProviderOptions> &codex = std::nullopt,
     const std::optional<draft::LockedNativeInputRoots> &locked_inputs =
         std::nullopt,
@@ -713,6 +751,18 @@ int run_agent_command(
         return 1;
       }
     }
+    ResolutionTestRunnerState test_state;
+    test_state.options.package_directory = absolute_directory;
+    test_state.options.target = resolve_options.compile.target;
+    test_state.options.kind = draft::ValidationKind::Test;
+    test_state.options.allow_unpinned_toolchain = allow_host_toolchain;
+    test_state.options.foreign_providers = foreign_providers;
+    if (locked_inputs.has_value()) {
+      test_state.options.locked = true;
+      test_state.options.locked_inputs = *locked_inputs;
+    }
+    resolve_options.test_runner.state = &test_state;
+    resolve_options.test_runner.run = run_resolution_candidate_tests;
     const draft::ResolveWorkspaceResult resolved = draft::resolve_workspace(
         sources,
         absolute_directory.string(),
@@ -725,7 +775,8 @@ int run_agent_command(
         std::cout << "resolved " << resolved.manifest.pins.size()
                   << " synthesis sites (" << resolved.synthesized_sites
                   << " synthesized, " << resolved.reused_sites
-                  << " reused)\n";
+                  << " reused); passed " << resolved.tested_procedures
+                  << " precommit tests\n";
       }
     }
     if (!diagnostics.diagnostics().empty()) {
@@ -792,6 +843,7 @@ void print_usage() {
             << "      [--provider-summary name:<path>]...\n"
             << "  draftc resolve <package-directory> [--revalidate]\n"
             << "      [--codex-executable <path> --codex-model <model>]\n"
+            << "      [--allow-host-toolchain]\n"
             << "      [--toolchain-root <directory> --sdk-root <directory>]\n"
             << "      [--provider name=object|archive|shared-library:<path>]...\n"
             << "      [--provider-summary name:<path>]...\n"
@@ -826,6 +878,7 @@ int main(int argc, char **argv) {
   }
   if (argc >= 3 && std::string_view(argv[1]) == "resolve") {
     bool revalidate = false;
+    bool allow_host_toolchain = false;
     std::optional<std::string> codex_executable;
     std::optional<std::string> codex_model;
     std::optional<std::string> toolchain_root;
@@ -836,6 +889,9 @@ int main(int argc, char **argv) {
       const std::string_view argument(argv[index]);
       if (argument == "--revalidate" && !revalidate) {
         revalidate = true;
+      } else if (argument == "--allow-host-toolchain" &&
+                 !allow_host_toolchain) {
+        allow_host_toolchain = true;
       } else if (argument == "--codex-executable" &&
                  !codex_executable.has_value() && index + 1 < argc) {
         codex_executable = argv[++index];
@@ -872,7 +928,8 @@ int main(int argc, char **argv) {
     }
     if (codex_executable.has_value() != codex_model.has_value() ||
         toolchain_root.has_value() != sdk_root.has_value() ||
-        (revalidate && codex_executable.has_value())) {
+        (revalidate && codex_executable.has_value()) ||
+        (allow_host_toolchain && toolchain_root.has_value())) {
       print_usage();
       return 2;
     }
@@ -896,6 +953,7 @@ int main(int argc, char **argv) {
         argv[2],
         AgentCommandKind::Resolve,
         revalidate,
+        allow_host_toolchain,
         codex,
         locked_inputs,
         foreign_providers,

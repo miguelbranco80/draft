@@ -111,11 +111,14 @@ root symlinks, and special files are rejected.
 
 Locked invocation uses the verified absolute Clang and linker paths, explicit
 `-isysroot`, `--no-default-config`, `--no-xcselect`, the target deployment
-floor, and no Mach-O UUID. The child environment contains fixed `LANG` and
-`LC_ALL` plus an empty `PATH`; it inherits no SDK, compiler, header, library,
-deployment, or package search variables. Other manifest external-input roles
-fail closed until their artifact-to-command mapping exists. Ordinary
-development builds retain the separate explicit host-toolchain escape hatch.
+floor, and the linker's content-derived Mach-O UUID. Current macOS requires the
+UUID load command for executable launch; a real integration gate proves two
+complete links to the same explicit output identity are byte-for-byte equal.
+The child environment contains fixed `LANG` and `LC_ALL` plus an empty `PATH`;
+it inherits no SDK, compiler, header, library, deployment, or package search
+variables. Other manifest external-input roles fail closed until their
+artifact-to-command mapping exists. Ordinary development builds retain the
+separate explicit host-toolchain escape hatch.
 
 The target profile maps the logical `darwin` and `libc` providers to the SDK's
 explicit `System` library. `draft_runtime` is owned by the root LLVM module and

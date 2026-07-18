@@ -216,37 +216,26 @@ void initialize_claim(
       sources, package_directory.string(), std::move(options), diagnostics);
 }
 
-} // namespace
-
-ValidationCommandResult execute_validation_command(
-    SourceManager &sources,
+[[nodiscard]] ValidationCommandResult execute_compiled_validation(
+    const CompileWorkspaceResult &compiled,
     ValidationCommandOptions options,
+    bool record_evidence,
     DiagnosticSink &diagnostics) {
   ValidationCommandResult result;
-  if (options.kind == ValidationKind::None ||
-      options.package_directory.empty()) {
-    diagnostics.error(
-        SourceRange::invalid(),
-        "validation command requires a package and test or benchmark kind");
-    return result;
-  }
-  CompileWorkspaceResult compiled = compile_validation(
-      sources,
-      options.package_directory,
-      options.target,
-      options.workspace,
-      options.kind,
-      options.foreign_provider_audits,
-      true,
-      diagnostics);
   result.selected_procedures = compiled.validation_entries.size();
   if (!compiled.ok || !compiled.resolved_program_digest.has_value()) {
-    if (compiled.ok) {
+    diagnostics.error(
+        SourceRange::invalid(),
+        "prepared validation compilation has no resolved-program identity");
+    return result;
+  }
+  for (const ValidationEntry &entry : compiled.validation_entries) {
+    if (entry.kind != options.kind) {
       diagnostics.error(
           SourceRange::invalid(),
-          "validation compilation did not publish a resolved-program identity");
+          "prepared validation entry kind does not match its command");
+      return result;
     }
-    return result;
   }
 
   const std::string command(validation_kind_name(options.kind));
@@ -329,6 +318,14 @@ ValidationCommandResult execute_validation_command(
   const bool passed = observations_complete &&
       aggregate_signal == 0 && aggregate_exit_code == 0;
 
+  result.passed = passed;
+  result.exit_code = aggregate_exit_code;
+  result.signal = aggregate_signal;
+  if (!record_evidence) {
+    result.completed = true;
+    return result;
+  }
+
   ValidationEvidence evidence;
   initialize_claim(
       evidence,
@@ -348,12 +345,51 @@ ValidationCommandResult execute_validation_command(
   if (!committed.ok) return result;
 
   result.completed = true;
-  result.passed = passed;
   result.evidence_digest = committed.evidence_digest;
   result.attempt = committed.attempt;
-  result.exit_code = aggregate_exit_code;
-  result.signal = aggregate_signal;
   return result;
+}
+
+} // namespace
+
+ValidationCommandResult execute_validation_command(
+    SourceManager &sources,
+    ValidationCommandOptions options,
+    DiagnosticSink &diagnostics) {
+  if (options.kind == ValidationKind::None ||
+      options.package_directory.empty()) {
+    diagnostics.error(
+        SourceRange::invalid(),
+        "validation command requires a package and test or benchmark kind");
+    return {};
+  }
+  CompileWorkspaceResult compiled = compile_validation(
+      sources,
+      options.package_directory,
+      options.target,
+      options.workspace,
+      options.kind,
+      options.foreign_provider_audits,
+      true,
+      diagnostics);
+  if (!compiled.ok) return {};
+  return execute_compiled_validation(
+      compiled, std::move(options), true, diagnostics);
+}
+
+ValidationCommandResult execute_precommit_validation(
+    const CompileWorkspaceResult &compiled,
+    ValidationCommandOptions options,
+    DiagnosticSink &diagnostics) {
+  if (options.kind == ValidationKind::None ||
+      options.package_directory.empty()) {
+    diagnostics.error(
+        SourceRange::invalid(),
+        "precommit validation requires a package and concrete kind");
+    return {};
+  }
+  return execute_compiled_validation(
+      compiled, std::move(options), false, diagnostics);
 }
 
 bool verify_active_validation_evidence(

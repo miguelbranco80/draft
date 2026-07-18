@@ -491,6 +491,50 @@ ResolveWorkspaceResult resolve_workspace(
       options.compile.target,
       manifest,
       options.compile.compiler_content_identity);
+
+  // Test files are deliberately absent from the ordinary surface graph above.
+  // Select and compile them only after the complete candidate exists, using
+  // the same in-memory overrides that were semantically accepted. This makes
+  // native test execution a true precommit gate without publishing provisional
+  // expansion bytes through resolution.json.
+  CompileWorkspaceOptions test_options = options.compile;
+  test_options.validation_kind = ValidationKind::Test;
+  test_options.lower_mir = true;
+  test_options.emit_llvm = true;
+  test_options.emit_program_entry = true;
+  CompileWorkspaceResult tests = compile_workspace(
+      sources, root_package_directory, std::move(test_options), diagnostics);
+  if (!tests.ok) return result;
+  tests.resolution_manifest = manifest;
+  tests.resolved_program_digest = hash_resolved_program(
+      sources,
+      tests.graph,
+      options.compile.target,
+      manifest,
+      options.compile.compiler_content_identity);
+  result.tested_procedures = tests.validation_entries.size();
+  if (!tests.validation_entries.empty()) {
+    if (options.test_runner.run == nullptr) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "resolution candidate contains tests but no precommit test runner "
+          "is configured");
+      return result;
+    }
+    const std::size_t before_tests = diagnostics.error_count();
+    if (!options.test_runner.run(
+            options.test_runner.state,
+            options.compile.target,
+            tests,
+            diagnostics)) {
+      if (diagnostics.error_count() == before_tests) {
+        diagnostics.error(
+            SourceRange::invalid(),
+            "resolution candidate tests failed without a diagnostic");
+      }
+      return result;
+    }
+  }
   if (!commit_resolution(
           options.compile.workspace.workspace_directory,
           manifest,

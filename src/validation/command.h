@@ -49,6 +49,15 @@ struct ValidationCommandResult {
     ValidationCommandOptions options,
     DiagnosticSink &diagnostics);
 
+// Executes an already compiled candidate without writing evidence. Resolution
+// uses this before its manifest commit: failed tests reject the transaction,
+// while a passed but subsequently uncommitted candidate cannot leave an active
+// evidence claim for a program that was never made visible.
+[[nodiscard]] ValidationCommandResult execute_precommit_validation(
+    const CompileWorkspaceResult &compiled,
+    ValidationCommandOptions options,
+    DiagnosticSink &diagnostics);
+
 struct ValidationEvidenceRequirement {
   std::filesystem::path package_directory;
   TargetProfile target;
