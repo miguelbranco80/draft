@@ -9,3 +9,7 @@ pub identity[T: type] :: proc(value: T) -> T {
 pub byte_size[T: type] :: proc() -> usize {
     return size_of(T)
 }
+
+pub plus_one[N: usize] :: proc() -> usize {
+    return N + 1
+}

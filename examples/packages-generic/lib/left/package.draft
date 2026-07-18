@@ -6,6 +6,17 @@ pub Shared_Value :: struct {
     value: u64,
 }
 
+// This public template composes a template from another package. Its symbolic
+// body is checked without emitting code; each concrete instance publishes the
+// transitive request to lib/generic.
+pub through_generic[T: type] :: proc(input: T) -> T {
+    return generic.identity[T](input)
+}
+
+pub composed_count[N: usize] :: proc() -> usize {
+    return generic.plus_one[N]()
+}
+
 pub value :: proc() -> u64 {
     copy := generic.identity[Shared_Value](Shared_Value{value = 11})
     return generic.identity[u64](copy.value)

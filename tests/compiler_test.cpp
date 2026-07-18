@@ -332,19 +332,22 @@ void test_cross_package_generic_procedures(TestState &state) {
     return;
   }
 
-  // The app requests a private nominal, u64, and a byte-size specialization.
+  // The app requests a private nominal, u64, byte-size, and composed type/value
+  // template specializations in left. The concrete left bodies publish
+  // transitive identity[Private_Value] and plus_one[4] requests to generic.
   // Both sibling packages also request identity[u64] and identity[Shared_Value].
   // The latter is local in left and imported in right, so both local display
   // spellings must hash to one canonical nominal identity. All sibling requests
   // must share owner symbols even though lib/generic was discovered before the
   // second sibling in the physical workspace traversal.
   EXPECT(state,
-      app->semantics.package.imported_procedure_instances.size() == 3);
+      app->semantics.package.imported_procedure_instances.size() == 5);
   EXPECT(state,
-      left->semantics.package.imported_procedure_instances.size() == 2);
+      left->semantics.package.imported_procedure_instances.size() == 4);
   EXPECT(state,
       right->semantics.package.imported_procedure_instances.size() == 2);
-  EXPECT(state, generic->semantics.package.parametric_instances.size() == 4);
+  EXPECT(state, generic->semantics.package.parametric_instances.size() == 5);
+  EXPECT(state, left->semantics.package.parametric_instances.size() == 2);
   EXPECT(state, app->llvm.text.find("_24mono_24") != std::string::npos);
   EXPECT(state, left->llvm.text.find("_24mono_24") != std::string::npos);
   EXPECT(state, right->llvm.text.find("_24mono_24") != std::string::npos);

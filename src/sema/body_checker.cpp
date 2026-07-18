@@ -75,6 +75,10 @@ struct TypeSubstitution {
 struct ValueSubstitution {
   SymbolId parameter;
   ConstantValue value;
+  // During non-lowered template checking, one callee value parameter may map
+  // to a caller value parameter rather than an integer. Concrete instances
+  // leave this invalid and carry the exact value above.
+  SymbolId symbolic_parameter;
 };
 
 // One source template can produce several concrete procedure bodies. Instances
@@ -185,7 +189,8 @@ private:
             valid = false;
             break;
           }
-          value_substitutions.push_back({parameter.parameter, argument.value});
+          value_substitutions.push_back(
+              {parameter.parameter, argument.value, {}});
         } else {
           if (!argument.is_type) {
             valid = false;
@@ -462,6 +467,18 @@ private:
         for (const ValueSubstitution &substitution : value_substitutions) {
           if (substitution.parameter.value != value.element_count_parameter) {
             continue;
+          }
+          const TypeId element = substitute_type(
+              value.element,
+              type_substitutions,
+              value_substitutions,
+              use_range);
+          if (substitution.symbolic_parameter.is_valid()) {
+            return value.kind == TypeKind::Array
+                ? semantic_.types.parametric_array(
+                      element, substitution.symbolic_parameter.value)
+                : semantic_.types.parametric_simd(
+                      element, substitution.symbolic_parameter.value);
           }
           const std::optional<std::uint64_t> concrete =
               substitution.value.integer.to_u64();
@@ -1406,9 +1423,24 @@ private:
       TypeConstraintKind constraint, TypeId argument) const {
     if (!argument.is_valid()) return false;
     const TypeKind kind = semantic_.types.type(argument).kind;
-    if (kind == TypeKind::Invalid || kind == TypeKind::TypeParameter ||
-        kind == TypeKind::UntypedInteger || kind == TypeKind::UntypedFloat) {
+    if (kind == TypeKind::Invalid || kind == TypeKind::UntypedInteger ||
+        kind == TypeKind::UntypedFloat) {
       return false;
+    }
+    // Symbolic template checking may pass its own parameter to another
+    // template. Accept that only when the caller's constraint is at least as
+    // strong as the callee's requirement. Every concrete instance is checked
+    // again, so this rule never substitutes a symbolic type into native code.
+    if (kind == TypeKind::TypeParameter) {
+      const std::optional<TypeConstraintKind> actual = type_constraint(argument);
+      if (!actual.has_value()) return false;
+      if (constraint == TypeConstraintKind::AnyType) return true;
+      if (constraint == TypeConstraintKind::Number) {
+        return *actual == TypeConstraintKind::Integer ||
+            *actual == TypeConstraintKind::Float ||
+            *actual == TypeConstraintKind::Number;
+      }
+      return *actual == constraint;
     }
     switch (constraint) {
     case TypeConstraintKind::AnyType:
@@ -1421,6 +1453,26 @@ private:
       return semantic_.types.is_number(argument);
     case TypeConstraintKind::CompileTimeValue:
       return false;
+    }
+    return false;
+  }
+
+  [[nodiscard]] bool has_symbolic_type_substitution(
+      const std::vector<TypeSubstitution> &substitutions) const {
+    for (const TypeSubstitution &substitution : substitutions) {
+      if (substitution.replacement.is_valid() &&
+          semantic_.types.type(substitution.replacement).kind ==
+              TypeKind::TypeParameter) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  [[nodiscard]] bool has_symbolic_value_substitution(
+      const std::vector<ValueSubstitution> &substitutions) const {
+    for (const ValueSubstitution &substitution : substitutions) {
+      if (substitution.symbolic_parameter.is_valid()) return true;
     }
     return false;
   }
@@ -1471,7 +1523,7 @@ private:
       if (existing.has_value()) {
         return substitutions[*existing].value == constant;
       }
-      substitutions.push_back({parameter, constant});
+      substitutions.push_back({parameter, constant, {}});
       return true;
     }
     return false;
@@ -2643,19 +2695,38 @@ private:
                 return invalid_expression(node.range);
               }
             }
-            const SymbolId instance = instantiate_procedure(
-                *inferred_template,
-                std::move(type_substitutions),
-                std::move(value_substitutions),
-                node.range);
-            if (!instance.is_valid()) return invalid_expression(node.range);
-            const Type concrete_signature = semantic_.types.type(
-                semantic_.symbols.symbol(instance).type);
+            const bool symbolic = !current_instance_index_.has_value() &&
+                has_symbolic_type_substitution(type_substitutions);
+            SymbolId callee_symbol = *inferred_template;
+            TypeId concrete_signature_id;
+            if (symbolic) {
+              concrete_signature_id = substitute_type(
+                  candidate.type,
+                  type_substitutions,
+                  value_substitutions,
+                  node.range);
+            } else {
+              callee_symbol = instantiate_procedure(
+                  *inferred_template,
+                  std::move(type_substitutions),
+                  std::move(value_substitutions),
+                  node.range);
+              if (!callee_symbol.is_valid()) return invalid_expression(node.range);
+              concrete_signature_id =
+                  semantic_.symbols.symbol(callee_symbol).type;
+            }
+            const Type concrete_signature =
+                semantic_.types.type(concrete_signature_id);
             HirExpression expression;
             expression.kind = HirExpressionKind::Call;
             expression.range = node.range;
-            expression.operands.push_back(
-                procedure_symbol_expression(instance, tree.node(node.children.front()).range));
+            const HirExpressionId checked_callee = procedure_symbol_expression(
+                callee_symbol, tree.node(node.children.front()).range);
+            // Symbolic template-to-template calls keep the original declaration
+            // identity for effect composition while using the substituted
+            // signature for this non-lowered HIR row.
+            hir_.expression_mut(checked_callee).type = concrete_signature_id;
+            expression.operands.push_back(checked_callee);
             for (std::size_t index = 0; index < arguments.size(); ++index) {
               HirExpression &argument = hir_.expression_mut(arguments[index]);
               const TypeId concrete = apply_expected_type(
@@ -2808,6 +2879,31 @@ private:
           for (std::size_t index = 0; index < parameters.size(); ++index) {
             const ParametricParameterRecord &parameter = parameters[index];
             if (parameter.constraint == TypeConstraintKind::CompileTimeValue) {
+              if (!current_instance_index_.has_value()) {
+                const std::optional<SourceName> symbolic_name =
+                    single_name_expression(tree, node.children[index + 1]);
+                if (symbolic_name.has_value()) {
+                  const std::optional<SymbolId> symbolic =
+                      semantic_.symbols.lookup(scope, symbolic_name->text);
+                  if (symbolic.has_value() &&
+                      semantic_.symbols.symbol(*symbolic).kind ==
+                          SymbolKind::ValueParameter) {
+                    const TypeId required =
+                        semantic_.symbols.symbol(parameter.parameter).type;
+                    const TypeId supplied =
+                        semantic_.symbols.symbol(*symbolic).type;
+                    if (required != supplied) {
+                      diagnostics_.error(
+                          tree.node(node.children[index + 1]).range,
+                          "symbolic procedure value argument has the wrong type");
+                      return invalid_expression(node.range);
+                    }
+                    value_substitutions.push_back(
+                        {parameter.parameter, {}, *symbolic});
+                    continue;
+                  }
+                }
+              }
               const ConstantTable active_constants = active_constant_table();
               const std::optional<ConstantValue> value =
                   evaluate_constant_expression(
@@ -2827,13 +2923,33 @@ private:
                     "procedure value argument must be a compile-time integer");
                 return invalid_expression(node.range);
               }
-              value_substitutions.push_back({parameter.parameter, *value});
+              value_substitutions.push_back(
+                  {parameter.parameter, *value, {}});
               continue;
             }
             const TypeId argument =
                 type_value_expression(tree, node.children[index + 1], scope);
+            if (!constraint_accepts(parameter.constraint, argument)) {
+              diagnostics_.error(
+                  tree.node(node.children[index + 1]).range,
+                  "procedure type argument does not satisfy its constraint");
+              return invalid_expression(node.range);
+            }
             type_substitutions.push_back(
                 {semantic_.symbols.symbol(parameter.parameter).type, argument});
+          }
+          if (!current_instance_index_.has_value() &&
+              (has_symbolic_type_substitution(type_substitutions) ||
+               has_symbolic_value_substitution(value_substitutions))) {
+            const TypeId symbolic_signature = substitute_type(
+                base_symbol.type,
+                type_substitutions,
+                value_substitutions,
+                node.range);
+            const HirExpressionId application = procedure_symbol_expression(
+                base_expression.symbol, node.range);
+            hir_.expression_mut(application).type = symbolic_signature;
+            return application;
           }
           const SymbolId instance = instantiate_procedure(
               base_expression.symbol,

@@ -19,6 +19,9 @@ main :: proc() {
     assert(copy.value == 42)
     assert(generic.identity[u64](9) == 9)
     assert(generic.byte_size[Private_Value]() == 8)
+    through := left.through_generic[Private_Value](original)
+    assert(through.value == 42)
+    assert(left.composed_count[4]() == 5)
     assert(left.value() == 11)
     assert(right.value() == 22)
 }

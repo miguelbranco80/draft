@@ -86,14 +86,23 @@ void hash_interface_type(Sha256 &hash, const InterfaceType &type) {
   hash_u64(hash, type.c_calling_convention ? 1 : 0);
   hash_u64(hash, type.c_representation ? 1 : 0);
   hash_u64(hash, type.requested_alignment);
-  hash_u64(hash, static_cast<std::uint64_t>(type.nominal_members.size()));
-  for (const InterfaceMember &member : type.nominal_members) {
-    hash_field(hash, member.name);
-    hash_u64(hash, static_cast<std::uint64_t>(member.kind));
-    hash_type_id(hash, member.type);
-    hash_u64(hash, member.offset);
-    hash_u64(hash, member.has_enum_value ? 1 : 0);
-    hash_field(hash, member.enum_value.to_decimal());
+  // A concrete type packet imported solely for monomorphization does not bind
+  // source-level member symbols in the destination package. Its Type row still
+  // retains the exact layout, ordered member types, offsets, and nominal
+  // identity. Hash only those semantic facts so the defining package and any
+  // number of re-exporting consumers derive the same instance name.
+  hash_u64(
+      hash,
+      nominal ? 0 : static_cast<std::uint64_t>(type.nominal_members.size()));
+  if (!nominal) {
+    for (const InterfaceMember &member : type.nominal_members) {
+      hash_field(hash, member.name);
+      hash_u64(hash, static_cast<std::uint64_t>(member.kind));
+      hash_type_id(hash, member.type);
+      hash_u64(hash, member.offset);
+      hash_u64(hash, member.has_enum_value ? 1 : 0);
+      hash_field(hash, member.enum_value.to_decimal());
+    }
   }
   hash_u64(hash, static_cast<std::uint64_t>(type.nominal_arguments.size()));
   for (const InterfaceNominalArgument &argument : type.nominal_arguments) {
@@ -990,7 +999,7 @@ TypeId import_interface_type(
 
 Sha256Digest hash_interface_type_graph(const InterfaceTypeGraph &graph) {
   Sha256 hash;
-  hash_field(hash, "draft.interface-type-graph.v1");
+  hash_field(hash, "draft.interface-type-graph.v2");
   // The exporting package identity is transport context, not necessarily part
   // of the type. Builtins and purely structural types must hash identically in
   // every requester. Locally declared nominal rows already contain their exact
