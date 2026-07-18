@@ -1,6 +1,6 @@
-// Typed test/benchmark adapter for the shared evidence attempt store.
+// Typed judgment adapter for the shared evidence attempt store.
 
-#include "validation/evidence_store.h"
+#include "judgment/evidence_store.h"
 
 #include "validation/evidence_store_core.h"
 
@@ -11,56 +11,55 @@
 namespace draft {
 namespace {
 
-struct ValidationCodecState {
-  ValidationEvidence *pending = nullptr;
-  ValidationEvidence decoded;
+struct JudgmentCodecState {
+  JudgmentEvidence *pending = nullptr;
+  JudgmentEvidence decoded;
 };
 
-[[nodiscard]] bool encode_validation_attempt(
+[[nodiscard]] bool encode_judgment_attempt(
     void *opaque,
     const Sha256Digest &key,
     std::uint64_t attempt,
     std::string &bytes,
     bool &passed,
     DiagnosticSink &diagnostics) {
-  auto *state = static_cast<ValidationCodecState *>(opaque);
+  auto *state = static_cast<JudgmentCodecState *>(opaque);
   if (state == nullptr || state->pending == nullptr) {
     diagnostics.error(
-        SourceRange::invalid(),
-        "validation evidence encoder has no pending attempt");
+        SourceRange::invalid(), "judgment evidence encoder has no pending attempt");
     return false;
   }
   state->pending->key = key;
   state->pending->attempt = attempt;
-  bytes = serialize_validation_evidence(*state->pending);
+  bytes = serialize_judgment_evidence(*state->pending);
   passed = state->pending->passed;
   return true;
 }
 
-[[nodiscard]] bool decode_validation_attempt(
+[[nodiscard]] bool decode_judgment_attempt(
     void *opaque,
     std::string_view bytes,
     const Sha256Digest &key,
     std::uint64_t attempt,
     bool &passed,
     DiagnosticSink &diagnostics) {
-  auto *state = static_cast<ValidationCodecState *>(opaque);
+  auto *state = static_cast<JudgmentCodecState *>(opaque);
   if (state == nullptr) {
     diagnostics.error(
-        SourceRange::invalid(), "validation evidence decoder has no state");
+        SourceRange::invalid(), "judgment evidence decoder has no state");
     return false;
   }
-  ValidationEvidence parsed;
-  if (!parse_validation_evidence(bytes, parsed, diagnostics)) return false;
-  if (serialize_validation_evidence(parsed) != bytes) {
+  JudgmentEvidence parsed;
+  if (!parse_judgment_evidence(bytes, parsed, diagnostics)) return false;
+  if (serialize_judgment_evidence(parsed) != bytes) {
     diagnostics.error(
-        SourceRange::invalid(), "validation evidence object is noncanonical");
+        SourceRange::invalid(), "judgment evidence object is noncanonical");
     return false;
   }
   if (parsed.key != key || parsed.attempt != attempt) {
     diagnostics.error(
         SourceRange::invalid(),
-        "validation evidence history key or ordinal is inconsistent");
+        "judgment evidence history key or ordinal is inconsistent");
     return false;
   }
   passed = parsed.passed;
@@ -68,31 +67,31 @@ struct ValidationCodecState {
   return true;
 }
 
-[[nodiscard]] EvidenceAttemptCodec codec(ValidationCodecState &state) {
-  return {&state, encode_validation_attempt, decode_validation_attempt};
+[[nodiscard]] EvidenceAttemptCodec codec(JudgmentCodecState &state) {
+  return {&state, encode_judgment_attempt, decode_judgment_attempt};
 }
 
-[[nodiscard]] ValidationEvidenceStateStatus typed_status(
+[[nodiscard]] JudgmentEvidenceStateStatus typed_status(
     EvidenceAttemptStateStatus status) {
   switch (status) {
   case EvidenceAttemptStateStatus::Missing:
-    return ValidationEvidenceStateStatus::Missing;
+    return JudgmentEvidenceStateStatus::Missing;
   case EvidenceAttemptStateStatus::Active:
-    return ValidationEvidenceStateStatus::Active;
+    return JudgmentEvidenceStateStatus::Active;
   case EvidenceAttemptStateStatus::Revoked:
-    return ValidationEvidenceStateStatus::Revoked;
+    return JudgmentEvidenceStateStatus::Revoked;
   }
-  return ValidationEvidenceStateStatus::Missing;
+  return JudgmentEvidenceStateStatus::Missing;
 }
 
 } // namespace
 
-bool load_validation_evidence_state(
+bool load_judgment_evidence_state(
     const std::filesystem::path &workspace_directory,
     const Sha256Digest &key,
-    ValidationEvidenceState &state,
+    JudgmentEvidenceState &state,
     DiagnosticSink &diagnostics) {
-  ValidationCodecState codec_state;
+  JudgmentCodecState codec_state;
   EvidenceAttemptState raw;
   if (!load_evidence_attempt_state(
           workspace_directory,
@@ -102,7 +101,7 @@ bool load_validation_evidence_state(
           diagnostics)) {
     return false;
   }
-  ValidationEvidenceState result;
+  JudgmentEvidenceState result;
   result.status = typed_status(raw.status);
   result.key = raw.key;
   result.attempts = std::move(raw.attempts);
@@ -114,19 +113,19 @@ bool load_validation_evidence_state(
   return true;
 }
 
-ValidationEvidenceCommitResult commit_validation_evidence(
+JudgmentEvidenceCommitResult commit_judgment_evidence(
     const std::filesystem::path &workspace_directory,
-    ValidationEvidence evidence,
+    JudgmentEvidence evidence,
     DiagnosticSink &diagnostics) {
-  evidence.key = hash_validation_evidence_key(evidence);
-  ValidationCodecState codec_state;
+  evidence.key = hash_judgment_evidence_key(evidence);
+  JudgmentCodecState codec_state;
   codec_state.pending = &evidence;
   const EvidenceAttemptCommitResult raw = commit_evidence_attempt(
       workspace_directory,
       evidence.key,
       codec(codec_state),
       diagnostics);
-  ValidationEvidenceCommitResult result;
+  JudgmentEvidenceCommitResult result;
   result.ok = raw.ok;
   result.key = raw.key;
   result.evidence_digest = raw.evidence_digest;

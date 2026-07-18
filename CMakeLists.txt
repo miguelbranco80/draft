@@ -46,6 +46,7 @@ add_library(
   src/interop/c_header.cpp
   src/interop/native.cpp
   src/judgment/evidence.cpp
+  src/judgment/evidence_store.cpp
   src/mir/lower.cpp
   src/mir/mir.cpp
   src/mir/verify.cpp
@@ -81,6 +82,7 @@ add_library(
   src/validation/command.cpp
   src/validation/evidence.cpp
   src/validation/evidence_store.cpp
+  src/validation/evidence_store_core.cpp
   src/validation/runner.cpp
   src/workspace/package.cpp
   src/workspace/workspace.cpp
@@ -353,6 +355,18 @@ if(BUILD_TESTING)
   add_test(
     NAME draft_validation_evidence_store_tests
     COMMAND draft_validation_evidence_store_tests
+  )
+
+  add_executable(
+    draft_judgment_evidence_store_tests
+    tests/judgment_evidence_store_test.cpp
+  )
+  target_link_libraries(
+    draft_judgment_evidence_store_tests PRIVATE draft_compiler
+  )
+  add_test(
+    NAME draft_judgment_evidence_store_tests
+    COMMAND draft_judgment_evidence_store_tests
   )
 
   # Provider-free agent commands must recognize real typed sites but fail

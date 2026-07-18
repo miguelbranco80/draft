@@ -637,3 +637,21 @@ alias is fine). Taking one as a procedure value or explicitly specializing it
 is diagnosed because its order and storage facts belong in atomic HIR/MIR, not
 in the ordinary calling convention. The Draft source bodies are interface
 records and defensive traps only; no valid compiled call reaches them.
+
+## Shared evidence attempt storage
+
+Status: implemented persistence foundation for native validation and judgments.
+
+Test, benchmark, and judgment evidence use distinct canonical typed objects but
+share one content-addressed attempt store. A typed codec owns serialization and
+semantic validation; the store alone owns the interprocess lock, immutable
+object installation, ordered attempt state, pass activation, failure
+revocation, and the fsync-before-reference publication sequence. This avoids a
+second durability protocol for qualitative judgments without pretending their
+validator verdicts and rationales are native counter reports.
+
+The state header is `draft-evidence-state-v1`. Changing the prior
+validation-specific header also advances the compiler content identity: an old
+evidence state is rejected instead of being silently reinterpreted by a locked
+build. Evidence-object keys remain domain-separated by their typed formats, so
+both kinds safely occupy the same `.draft/evidence` object namespace.
