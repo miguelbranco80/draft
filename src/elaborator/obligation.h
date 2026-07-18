@@ -97,6 +97,8 @@ struct AgentEnclosingDeclarationContext {
   SymbolKind kind = SymbolKind::UnresolvedDeclaration;
   std::string source;
   Sha256Digest source_digest;
+  std::string semantic_skeleton;
+  Sha256Digest semantic_skeleton_digest;
 };
 
 // One source-authored selector from a lexically enclosing deny region. The

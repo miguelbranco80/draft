@@ -43,7 +43,7 @@ namespace {
 constexpr std::uintmax_t kMaximumCodexOutputBytes = 64U * 1024U * 1024U;
 constexpr std::uintmax_t kMaximumCodexLogBytes = 4U * 1024U * 1024U;
 constexpr std::string_view kPromptContractIdentity =
-    "draft-codex-synthesis-prompt-v12";
+    "draft-codex-synthesis-prompt-v13";
 constexpr std::string_view kOutputSchema =
     "{\n"
     "  \"type\": \"object\",\n"
@@ -343,6 +343,21 @@ void append_field(
         enclosing.source_digest.hex(),
         prompt);
     append_field("ENCLOSING_DECLARATION_SOURCE", enclosing.source, prompt);
+    if (sha256(enclosing.semantic_skeleton) !=
+        enclosing.semantic_skeleton_digest) {
+      provider_error(
+          diagnostics,
+          "Codex enclosing semantic skeleton identity is inconsistent");
+      return false;
+    }
+    append_field(
+        "ENCLOSING_SEMANTIC_SKELETON_SHA256",
+        enclosing.semantic_skeleton_digest.hex(),
+        prompt);
+    append_field(
+        "ENCLOSING_SEMANTIC_SKELETON",
+        enclosing.semantic_skeleton,
+        prompt);
   }
   prompt += "ACTIVE_DENIALS ";
   append_u64(
@@ -935,7 +950,7 @@ SynthesisProvider configure_codex_cli_provider(
   if (!executable_digest.has_value()) return {};
 
   Sha256 configuration;
-  configuration.update("draft.codex-cli-provider.v7");
+  configuration.update("draft.codex-cli-provider.v8");
   configuration.update(executable_digest->bytes);
   configuration.update(options.model);
   configuration.update(";timeout-ms=");
@@ -955,7 +970,7 @@ SynthesisProvider configure_codex_cli_provider(
       "codex-config-" + configuration.finalize().hex();
 
   SynthesisProvider provider;
-  provider.provider_identity = "openai-codex-cli-v13";
+  provider.provider_identity = "openai-codex-cli-v14";
   provider.model_identity = state.model;
   provider.configuration_identity = state.configuration_identity;
   provider.state = &state;

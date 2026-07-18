@@ -171,7 +171,7 @@ An omitted symbol is unknown, and compiler-, package-assembly-, and target-owned
 providers cannot be overridden by an external audit.
 
 Provider requests never substitute hashes for information the synthesizer must
-understand. `draft-synthesis-request-v12` carries canonical Draft spellings for
+understand. `draft-synthesis-request-v13` carries canonical Draft spellings for
 the expected type and every visible binding, together with complete canonical
 values for visible compile-time constants and explicit target, SIMD, and
 parsed-assembly facts. Procedure-valued constants lose their process-local
@@ -200,6 +200,13 @@ and the synthesis site's exact structural surroundings remain readable. The
 rendering and its digest are obligation inputs; package-level declaration
 synthesis explicitly has no enclosing declaration instead of receiving an
 unbounded source-file dump.
+
+An enclosing declaration also has a separate typed semantic skeleton. It is a
+small length-framed contract containing declaration flags, checked type and
+layout, named runtime parameters and result type, and aggregate members with
+their checked offsets. It deliberately contains no body statements, comments,
+or semantic arena IDs. This keeps exact source structure available without
+forcing a provider to reverse-engineer basic checked facts from that source.
 
 Every lexically enclosing `deny` region contributes its exact canonical selector
 spellings in outer-to-inner order. These facts are readable policy instructions

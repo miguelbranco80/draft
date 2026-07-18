@@ -220,6 +220,20 @@ void test_agent_records(TestState &state) {
         draft::sha256(
             synthesis_obligation.enclosing_declaration.source) ==
             synthesis_obligation.enclosing_declaration.source_digest);
+    EXPECT(state,
+        draft::sha256(
+            synthesis_obligation.enclosing_declaration.semantic_skeleton) ==
+            synthesis_obligation.enclosing_declaration
+                .semantic_skeleton_digest);
+    EXPECT(state,
+        synthesis_obligation.enclosing_declaration.semantic_skeleton.find(
+            "PARAMETER_NAME 6\nvalues") != std::string::npos);
+    EXPECT(state,
+        synthesis_obligation.enclosing_declaration.semantic_skeleton.find(
+            "DECLARATION_RESULT_TYPE 3\ni64") != std::string::npos);
+    EXPECT(state,
+        synthesis_obligation.enclosing_declaration.semantic_skeleton.find(
+            "produce the answer") == std::string::npos);
     EXPECT(state, synthesis_obligation.active_denials.size() == 4);
     if (synthesis_obligation.active_denials.size() == 4) {
       EXPECT(state,
@@ -855,6 +869,12 @@ void test_early_synthesis_receives_permitted_context(TestState &state) {
       "package early_context\n"
       "deny context.user_index {\n"
       "    ... \"declare helpers\"\n"
+      "}\n"
+      "Packet :: struct {\n"
+      "    prefix: u32,\n"
+      "    deny context.user_index {\n"
+      "        ... \"declare fields\"\n"
+      "    }\n"
       "}\n");
 
   draft::SourceManager sources;
@@ -890,17 +910,32 @@ void test_early_synthesis_receives_permitted_context(TestState &state) {
   EXPECT(state, metadata.ok);
   EXPECT(state, obligations.ok);
   EXPECT(state, !diagnostics.has_errors());
-  EXPECT(state, obligations.obligations.size() == 1);
-  if (obligations.obligations.size() == 1) {
-    const draft::AgentObligation &obligation = obligations.obligations.front();
-    EXPECT(state,
-        obligation.kind ==
-            draft::AgentConstructKind::SynthesisDeclaration);
+  EXPECT(state, obligations.obligations.size() == 2);
+  bool saw_declaration = false;
+  bool saw_member = false;
+  for (const draft::AgentObligation &obligation : obligations.obligations) {
     EXPECT(state, obligation.context_fields.size() == 7);
     for (const draft::AgentContextField &field : obligation.context_fields) {
       EXPECT(state, field.name != "user_index");
     }
+    if (obligation.kind ==
+        draft::AgentConstructKind::SynthesisDeclaration) {
+      saw_declaration = true;
+    }
+    if (obligation.kind == draft::AgentConstructKind::SynthesisMember) {
+      saw_member = true;
+      EXPECT(state, obligation.enclosing_declaration.present);
+      EXPECT(state, obligation.enclosing_declaration.name == "Packet");
+      EXPECT(state,
+          obligation.enclosing_declaration.semantic_skeleton.find(
+              "MEMBER_NAME 6\nprefix") != std::string::npos);
+      EXPECT(state,
+          obligation.enclosing_declaration.semantic_skeleton.find(
+              "MEMBER_TYPE 3\nu32") != std::string::npos);
+    }
   }
+  EXPECT(state, saw_declaration);
+  EXPECT(state, saw_member);
 }
 
 } // namespace

@@ -860,6 +860,116 @@ imported_package_context(
   result.kind = anchor.kind;
   result.source = canonical_token_source(sources, *tree, declaration);
   result.source_digest = sha256(result.source);
+
+  // The token rendering above preserves exact structural surroundings. This
+  // parallel skeleton is deliberately smaller and semantic: every type and
+  // offset comes from checked tables, and no body statement or local arena ID
+  // appears. Providers can read the contract without reconstructing it from
+  // syntax, while the full source remains available when structure matters.
+  append_context_field("DECLARATION_NAME", anchor.name, result.semantic_skeleton);
+  append_context_field(
+      "DECLARATION_KIND",
+      std::string(symbol_kind_name(anchor.kind)),
+      result.semantic_skeleton);
+  append_context_field(
+      "DECLARATION_VISIBILITY",
+      anchor.visibility == Visibility::Public ? "public" : "private",
+      result.semantic_skeleton);
+  append_context_field(
+      "DECLARATION_PARAMETRIC",
+      anchor.flags.parametric ? "true" : "false",
+      result.semantic_skeleton);
+  append_context_field(
+      "DECLARATION_FOREIGN",
+      anchor.flags.foreign ? "true" : "false",
+      result.semantic_skeleton);
+  append_context_field(
+      "DECLARATION_EXPORTED",
+      anchor.flags.exported ? "true" : "false",
+      result.semantic_skeleton);
+  append_context_field(
+      "DECLARATION_THREAD_LOCAL",
+      anchor.flags.is_thread_local ? "true" : "false",
+      result.semantic_skeleton);
+  if (anchor.type.is_valid()) {
+    const Type &type = package.types.type(anchor.type);
+    append_context_field(
+        "DECLARATION_TYPE", type_text(package, anchor.type),
+        result.semantic_skeleton);
+    append_context_field(
+        "DECLARATION_LAYOUT_KNOWN",
+        type.layout.known ? "true" : "false",
+        result.semantic_skeleton);
+    append_context_field(
+        "DECLARATION_LAYOUT_SIZE",
+        std::to_string(type.layout.size),
+        result.semantic_skeleton);
+    append_context_field(
+        "DECLARATION_LAYOUT_ALIGNMENT",
+        std::to_string(type.layout.alignment),
+        result.semantic_skeleton);
+    if (type.kind == TypeKind::Procedure && !type.members.empty()) {
+      append_context_field(
+          "DECLARATION_RESULT_TYPE",
+          type_text(package, type.members.back()),
+          result.semantic_skeleton);
+    }
+  }
+
+  std::vector<SymbolId> parameters;
+  for (const OwnedSemanticScope &owned : package.owned_scopes) {
+    if (owned.owner == record.anchor &&
+        package.symbols.scope(owned.scope).kind == ScopeKind::Procedure) {
+      parameters = package.symbols.scope(owned.scope).symbols;
+      break;
+    }
+  }
+  result.semantic_skeleton += "DECLARATION_PARAMETERS ";
+  append_context_u64(
+      static_cast<std::uint64_t>(parameters.size()),
+      result.semantic_skeleton);
+  for (SymbolId parameter_id : parameters) {
+    const Symbol &parameter = package.symbols.symbol(parameter_id);
+    append_context_field(
+        "PARAMETER_NAME", parameter.name, result.semantic_skeleton);
+    append_context_field(
+        "PARAMETER_KIND",
+        std::string(symbol_kind_name(parameter.kind)),
+        result.semantic_skeleton);
+    append_context_field(
+        "PARAMETER_TYPE",
+        parameter.type.is_valid()
+            ? type_text(package, parameter.type)
+            : std::string("<invalid>"),
+        result.semantic_skeleton);
+  }
+
+  std::vector<AggregateMember> members;
+  for (const AggregateMember &member : package.aggregate_members) {
+    if (member.owner == record.anchor) members.push_back(member);
+  }
+  result.semantic_skeleton += "DECLARATION_MEMBERS ";
+  append_context_u64(
+      static_cast<std::uint64_t>(members.size()),
+      result.semantic_skeleton);
+  for (const AggregateMember &member : members) {
+    const Symbol &field = package.symbols.symbol(member.member);
+    append_context_field("MEMBER_NAME", field.name, result.semantic_skeleton);
+    append_context_field(
+        "MEMBER_KIND",
+        std::string(symbol_kind_name(field.kind)),
+        result.semantic_skeleton);
+    append_context_field(
+        "MEMBER_TYPE",
+        field.type.is_valid()
+            ? type_text(package, field.type)
+            : std::string("<invalid>"),
+        result.semantic_skeleton);
+    append_context_field(
+        "MEMBER_OFFSET", std::to_string(member.offset),
+        result.semantic_skeleton);
+  }
+  result.semantic_skeleton_digest = sha256(result.semantic_skeleton);
   return result;
 }
 
@@ -1261,7 +1371,7 @@ struct ActiveDenialContext {
     const AgentObligation &obligation,
     const TargetProfile &target) {
   Sha256 hash;
-  hash_field(hash, "draft-agent-obligation-v11");
+  hash_field(hash, "draft-agent-obligation-v12");
   hash_field(hash, obligation.site_identity);
   hash.update(obligation.record_digest.bytes);
   hash.update(obligation.expected_type_digest.bytes);
@@ -1304,6 +1414,9 @@ struct ActiveDenialContext {
         static_cast<std::uint64_t>(obligation.enclosing_declaration.kind));
     hash_field(hash, obligation.enclosing_declaration.source);
     hash.update(obligation.enclosing_declaration.source_digest.bytes);
+    hash_field(hash, obligation.enclosing_declaration.semantic_skeleton);
+    hash.update(
+        obligation.enclosing_declaration.semantic_skeleton_digest.bytes);
   }
   hash_u64(hash, static_cast<std::uint64_t>(obligation.active_denials.size()));
   for (const AgentActiveDenial &denial : obligation.active_denials) {
