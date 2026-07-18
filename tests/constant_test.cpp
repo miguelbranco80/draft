@@ -135,6 +135,21 @@ sum_table :: proc(values: [4]u32) -> u32 {
     return result
 }
 
+increment_value :: proc(value: u32) -> u32 {
+    return value + 1
+}
+
+decrement_value :: proc(value: u32) -> u32 {
+    return value - 1
+}
+
+apply_operation :: proc(
+    operation: proc(value: u32) -> u32,
+    value: u32,
+) -> u32 {
+    return operation(value)
+}
+
 round_each_step :: proc() -> f32 {
     value: f32 = 16777216.0
     return value + 1.0
@@ -175,6 +190,10 @@ Wrapped_Byte :: increment_byte(255)
 Measured_U32 :: measure[u32, 7](0)
 Table :: make_table()
 Table_Sum :: sum_table(Table)
+Increment_Procedure :: increment_value
+Applied_Procedure :: apply_operation(Increment_Procedure, 41)
+Same_Procedure :: Increment_Procedure == increment_value
+Different_Procedure :: Increment_Procedure != decrement_value
 Rounded_F32 :: round_each_step()
 Contextual_Rounded_F32 :: round_contextual_tree()
 Sibling_Context_Left :: Contextual_Rounded_F32 ==
@@ -327,6 +346,14 @@ when Accent == '\u{e9}' {
       find_symbol(source.analysis.package, "Header_Value");
   const std::optional<draft::SymbolId> tuple_value =
       find_symbol(source.analysis.package, "Tuple_Value");
+  const std::optional<draft::SymbolId> increment_procedure =
+      find_symbol(source.analysis.package, "Increment_Procedure");
+  const std::optional<draft::SymbolId> applied_procedure =
+      find_symbol(source.analysis.package, "Applied_Procedure");
+  const std::optional<draft::SymbolId> same_procedure =
+      find_symbol(source.analysis.package, "Same_Procedure");
+  const std::optional<draft::SymbolId> different_procedure =
+      find_symbol(source.analysis.package, "Different_Procedure");
   const std::optional<draft::SymbolId> rounded_f32 =
       find_symbol(source.analysis.package, "Rounded_F32");
   const std::optional<draft::SymbolId> contextual_rounded_f32 =
@@ -363,6 +390,10 @@ when Accent == '\u{e9}' {
   EXPECT(state, table_sum.has_value());
   EXPECT(state, header_value.has_value());
   EXPECT(state, tuple_value.has_value());
+  EXPECT(state, increment_procedure.has_value());
+  EXPECT(state, applied_procedure.has_value());
+  EXPECT(state, same_procedure.has_value());
+  EXPECT(state, different_procedure.has_value());
   EXPECT(state, rounded_f32.has_value());
   EXPECT(state, contextual_rounded_f32.has_value());
   EXPECT(state, sibling_context_left.has_value());
@@ -409,6 +440,18 @@ when Accent == '\u{e9}' {
         source.analysis.constants.find(*header_value);
     const draft::ConstantValue *tuple_value_result =
         source.analysis.constants.find(*tuple_value);
+    const draft::ConstantValue *increment_procedure_result = increment_procedure
+        ? source.analysis.constants.find(*increment_procedure)
+        : nullptr;
+    const draft::ConstantValue *applied_procedure_result = applied_procedure
+        ? source.analysis.constants.find(*applied_procedure)
+        : nullptr;
+    const draft::ConstantValue *same_procedure_result = same_procedure
+        ? source.analysis.constants.find(*same_procedure)
+        : nullptr;
+    const draft::ConstantValue *different_procedure_result = different_procedure
+        ? source.analysis.constants.find(*different_procedure)
+        : nullptr;
     const draft::ConstantValue *rounded_f32_result = rounded_f32
         ? source.analysis.constants.find(*rounded_f32)
         : nullptr;
@@ -457,6 +500,10 @@ when Accent == '\u{e9}' {
     EXPECT(state, table_sum_result != nullptr);
     EXPECT(state, header_value_result != nullptr);
     EXPECT(state, tuple_value_result != nullptr);
+    EXPECT(state, increment_procedure_result != nullptr);
+    EXPECT(state, applied_procedure_result != nullptr);
+    EXPECT(state, same_procedure_result != nullptr);
+    EXPECT(state, different_procedure_result != nullptr);
     EXPECT(state, rounded_f32_result != nullptr);
     EXPECT(state, contextual_rounded_f32_result != nullptr);
     EXPECT(state, sibling_context_left_result != nullptr);
@@ -520,6 +567,20 @@ when Accent == '\u{e9}' {
     }
     if (tuple_value_result) {
       EXPECT(state, tuple_value_result->integer.to_decimal() == "32");
+    }
+    if (increment_procedure_result) {
+      EXPECT(state,
+             increment_procedure_result->kind == draft::ConstantKind::Procedure);
+      EXPECT(state,
+             increment_procedure_result->symbol_index <
+                 source.analysis.package.symbols.symbol_count());
+    }
+    if (applied_procedure_result) {
+      EXPECT(state, applied_procedure_result->integer.to_decimal() == "42");
+    }
+    if (same_procedure_result) EXPECT(state, same_procedure_result->boolean);
+    if (different_procedure_result) {
+      EXPECT(state, different_procedure_result->boolean);
     }
     if (rounded_f32_result) {
       EXPECT(state, rounded_f32_result->float_bit_width == 32);
@@ -648,6 +709,7 @@ Answer :: 40 + 2
 answer_from_procedure :: proc() -> u64 {
     return Answer
 }
+Answer_Procedure :: answer_from_procedure
 
 make_table :: proc() -> [4]u32 {
     result: [4]u32
@@ -659,6 +721,8 @@ make_table :: proc() -> [4]u32 {
 
 count: u64 = Answer
 computed: u64 = answer_from_procedure()
+callback: proc() -> u64 = Answer_Procedure
+inferred_callback := answer_from_procedure
 inferred := 21
 ratio: f64 = 0.5
 contextual_rounding: f32 = (16777216.0 + 1.0) - 16777216.0
@@ -686,6 +750,10 @@ thread_local scratch: i32 = -7
       find_symbol(source.analysis.package, "inferred");
   const std::optional<draft::SymbolId> computed =
       find_symbol(source.analysis.package, "computed");
+  const std::optional<draft::SymbolId> callback =
+      find_symbol(source.analysis.package, "callback");
+  const std::optional<draft::SymbolId> inferred_callback =
+      find_symbol(source.analysis.package, "inferred_callback");
   const std::optional<draft::SymbolId> contextual_rounding =
       find_symbol(source.analysis.package, "contextual_rounding");
   const std::optional<draft::SymbolId> mode =
@@ -707,6 +775,8 @@ thread_local scratch: i32 = -7
   EXPECT(state, count.has_value());
   EXPECT(state, inferred.has_value());
   EXPECT(state, computed.has_value());
+  EXPECT(state, callback.has_value());
+  EXPECT(state, inferred_callback.has_value());
   EXPECT(state, contextual_rounding.has_value());
   EXPECT(state, mode.has_value());
   EXPECT(state, pointer.has_value());
@@ -732,6 +802,27 @@ thread_local scratch: i32 = -7
         source.analysis.global_initializers.find(*computed);
     EXPECT(state, value != nullptr);
     if (value != nullptr) EXPECT(state, value->integer.to_decimal() == "42");
+  }
+  if (callback.has_value()) {
+    const draft::ConstantValue *value =
+        source.analysis.global_initializers.find(*callback);
+    EXPECT(state, value != nullptr);
+    if (value != nullptr) {
+      EXPECT(state, value->kind == draft::ConstantKind::Procedure);
+    }
+  }
+  if (inferred_callback.has_value()) {
+    const draft::Symbol &symbol =
+        source.analysis.package.symbols.symbol(*inferred_callback);
+    EXPECT(state,
+           source.analysis.package.types.type(symbol.type).kind ==
+               draft::TypeKind::Procedure);
+    const draft::ConstantValue *value =
+        source.analysis.global_initializers.find(*inferred_callback);
+    EXPECT(state, value != nullptr);
+    if (value != nullptr) {
+      EXPECT(state, value->kind == draft::ConstantKind::Procedure);
+    }
   }
   if (contextual_rounding.has_value()) {
     const draft::ConstantValue *value =

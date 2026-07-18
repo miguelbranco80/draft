@@ -79,7 +79,7 @@ public:
       }
       if (const ConstantValue *constant = constants_.find(id)) {
         declaration.has_constant = true;
-        declaration.constant = *constant;
+        declaration.constant = canonical_constant(*constant);
       }
       if (effects_ != nullptr && symbol.kind == SymbolKind::Procedure) {
         if (const ProcedureEffectSummary *summary = effects_->find(id)) {
@@ -136,6 +136,35 @@ public:
   }
 
 private:
+  [[nodiscard]] ConstantValue canonical_constant(ConstantValue value) const {
+    for (ConstantValue &element : value.elements) {
+      element = canonical_constant(std::move(element));
+    }
+    if (value.kind != ConstantKind::Procedure) return value;
+
+    if (value.root_identity.empty() &&
+        value.symbol_index != std::numeric_limits<std::uint32_t>::max() &&
+        value.symbol_index < package_.symbols.symbol_count()) {
+      const SymbolId referenced{value.symbol_index};
+      bool imported_identity = false;
+      for (const ImportedSymbol &imported : package_.imported_symbols) {
+        if (imported.proxy != referenced) continue;
+        value.root_identity = imported.root_identity;
+        value.root_relative_path = imported.root_relative_path;
+        value.text = imported.public_name;
+        imported_identity = true;
+        break;
+      }
+      if (!imported_identity) {
+        value.root_identity = identity_.root_identity;
+        value.root_relative_path = identity_.root_relative_path;
+        value.text = package_.symbols.symbol(referenced).name;
+      }
+    }
+    value.symbol_index = std::numeric_limits<std::uint32_t>::max();
+    return value;
+  }
+
   // Finds any type-declaration scope for a nominal TypeId. Aliases can make
   // several package symbols share a TypeId; member contents are identical, so
   // the first declaration-order owner is canonical for interface extraction.

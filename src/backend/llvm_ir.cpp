@@ -593,6 +593,39 @@ private:
         options_.package, semantic_.symbols.symbol(symbol_id).name);
   }
 
+  [[nodiscard]] std::optional<std::string> procedure_constant_name(
+      const ConstantValue &value) const {
+    if (value.symbol_index != std::numeric_limits<std::uint32_t>::max() &&
+        value.symbol_index < semantic_.symbols.symbol_count()) {
+      const SymbolId symbol{value.symbol_index};
+      if (semantic_.symbols.symbol(symbol).kind == SymbolKind::Procedure) {
+        return symbol_name(symbol);
+      }
+    }
+    if (value.root_identity.empty() || value.text.empty()) {
+      return std::nullopt;
+    }
+    for (const ImportedSymbol &imported : semantic_.imported_symbols) {
+      if (imported.root_identity == value.root_identity &&
+          imported.root_relative_path == value.root_relative_path &&
+          imported.public_name == value.text &&
+          semantic_.symbols.symbol(imported.proxy).kind == SymbolKind::Procedure) {
+        return symbol_name(imported.proxy);
+      }
+    }
+    if (value.root_identity == options_.package.root_identity &&
+        value.root_relative_path == options_.package.root_relative_path) {
+      const std::optional<SymbolId> local = semantic_.symbols.lookup_direct(
+          semantic_.package_scope, value.text);
+      if (local.has_value() &&
+          semantic_.symbols.symbol(*local).kind == SymbolKind::Procedure) {
+        return symbol_name(*local);
+      }
+    }
+    return package_symbol_name(
+        {value.root_identity, value.root_relative_path}, value.text);
+  }
+
   [[nodiscard]] std::string homogeneous_llvm_type(
       const Aarch64CAbiType &abi) const {
     std::string element = "<invalid-hfa>";
@@ -1003,6 +1036,12 @@ private:
       error(range, "relocatable string payload is unsupported in a union constant");
       return false;
     }
+    if (value.kind == ConstantKind::Procedure) {
+      error(
+          range,
+          "relocatable procedure identity is unsupported in opaque union storage");
+      return false;
+    }
     if (value.kind != ConstantKind::Aggregate) {
       error(range, "constant kind has no aggregate byte encoding");
       return false;
@@ -1263,6 +1302,14 @@ private:
     case ConstantKind::Aggregate:
       error(range, "aggregate constant requires aggregate emission");
       return "zeroinitializer";
+    case ConstantKind::Procedure: {
+      const std::optional<std::string> name = procedure_constant_name(value);
+      if (!name.has_value()) {
+        error(range, "procedure constant has no resolvable identity");
+        return "null";
+      }
+      return *name;
+    }
     case ConstantKind::Target:
       error(range, "target pseudo-value reached runtime emission");
       return "zeroinitializer";

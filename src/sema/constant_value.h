@@ -29,6 +29,7 @@ enum class ConstantKind {
   String,
   Aggregate,
   EnumLabel,
+  Procedure,
   Target,
 };
 
@@ -47,6 +48,14 @@ struct ConstantValue {
   std::uint32_t float_bit_width = 0;
   std::uint64_t float_bits = 0;
   std::string text;
+  // A procedure identity is local while a package is being checked and
+  // canonical once it crosses a package interface. symbol_index names the
+  // current SemanticPackage entry; the two package fields plus `text` name the
+  // source declaration independently of process-local table indices. Interface
+  // construction clears symbol_index after filling the canonical fields.
+  std::uint32_t symbol_index = std::numeric_limits<std::uint32_t>::max();
+  std::string root_identity;
+  std::string root_relative_path;
   // Aggregate elements use logical source order. Arrays, tuples, and structs
   // contain every element including recursively constructed zero defaults.
   // Tagged/raw unions use variant_index to identify the selected member and
@@ -71,6 +80,11 @@ struct ConstantValue {
       std::uint64_t variant_index = std::numeric_limits<std::uint64_t>::max());
   [[nodiscard]] static ConstantValue make_enum_label(
       std::string value, std::vector<ConstantValue> payload = {});
+  [[nodiscard]] static ConstantValue make_procedure(
+      std::uint32_t symbol_index,
+      std::string name,
+      std::string root_identity = {},
+      std::string root_relative_path = {});
   [[nodiscard]] static ConstantValue make_target();
 };
 

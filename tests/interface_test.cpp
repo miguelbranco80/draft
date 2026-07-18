@@ -16,7 +16,9 @@
 #include "workspace/package.h"
 
 #include <cstdlib>
+#include <cstdint>
 #include <iostream>
+#include <limits>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -98,6 +100,8 @@ pub add :: proc(a, b: i64) -> i64 {
     return a + b
 }
 
+pub Add_Procedure :: add
+
 Hidden :: struct { value: u64, }
 )draft");
   draft::SemanticAnalysisResult dependency_semantics =
@@ -130,6 +134,8 @@ pub echo :: proc(point: math.Point) -> math.Point {
     return copy
 }
 
+callback: proc(a, b: i64) -> i64 = math.Add_Procedure
+
 Sized :: struct {
     bytes: [math.Count]u8,
 }
@@ -137,6 +143,7 @@ Sized :: struct {
 main :: proc() {
     value := math.add(math.Count, 1)
     assert(value == 8)
+    assert(callback(20, 22) == 42)
 }
 )draft");
   const std::optional<draft::SyntaxReference> import = first_import(consumer);
@@ -168,14 +175,37 @@ main :: proc() {
     std::cerr << draft::render_diagnostics(sources, diagnostics);
   }
   EXPECT(state, dependency_semantics.ok);
-  EXPECT(state, dependency_interface.declarations.size() == 4);
+  EXPECT(state, dependency_interface.declarations.size() == 5);
   EXPECT(state, consumer_semantics.ok);
   EXPECT(state, bodies.ok);
   EXPECT(state, bodies.checked_procedures == 2);
-  EXPECT(state, consumer_semantics.package.imported_symbols.size() == 4);
+  EXPECT(state, consumer_semantics.package.imported_symbols.size() == 5);
   EXPECT(state, consumer_semantics.package.imported_types.size() == 2);
   EXPECT(state, consumer_interface.declarations.size() == 1);
   EXPECT(state, !diagnostics.has_errors());
+
+  const draft::InterfaceDeclaration *procedure_constant = nullptr;
+  for (const draft::InterfaceDeclaration &declaration :
+       dependency_interface.declarations) {
+    if (declaration.name == "Add_Procedure") {
+      procedure_constant = &declaration;
+      break;
+    }
+  }
+  EXPECT(state, procedure_constant != nullptr);
+  if (procedure_constant != nullptr) {
+    EXPECT(state, procedure_constant->has_constant);
+    EXPECT(state,
+           procedure_constant->constant.kind == draft::ConstantKind::Procedure);
+    EXPECT(state,
+           procedure_constant->constant.root_identity == "workspace");
+    EXPECT(state,
+           procedure_constant->constant.root_relative_path == "lib/math");
+    EXPECT(state, procedure_constant->constant.text == "add");
+    EXPECT(state,
+           procedure_constant->constant.symbol_index ==
+               std::numeric_limits<std::uint32_t>::max());
+  }
 
   const std::optional<draft::SymbolId> sized =
       consumer_semantics.package.symbols.lookup_direct(

@@ -200,6 +200,8 @@ private:
       return package_.types.builtins().string_type;
     case ConstantKind::Aggregate:
       return package_.types.builtins().invalid;
+    case ConstantKind::Procedure:
+      return package_.types.builtins().invalid;
     case ConstantKind::Nil:
     case ConstantKind::EnumLabel:
     case ConstantKind::Target:
@@ -285,6 +287,9 @@ private:
         return value;
       }
     } else if (value.kind == ConstantKind::Bool && type.kind == TypeKind::Bool) {
+      return value;
+    } else if (value.kind == ConstantKind::Procedure &&
+               type.kind == TypeKind::Procedure) {
       return value;
     } else if (value.kind == ConstantKind::String &&
                type.kind == TypeKind::String) {
@@ -443,6 +448,13 @@ private:
             "global initializer requires an explicit type");
         return;
       }
+    }
+    if (evaluated->value.kind == ConstantKind::Procedure &&
+        evaluated->type.is_valid() && evaluated->type != symbol.type) {
+      diagnostics_.error(
+          syntax->node(*value_node).range,
+          "procedure initializer has a different procedure type");
+      return;
     }
     const std::optional<ConstantValue> converted = convert(
         evaluated->value, symbol.type, syntax->node(*value_node).range);

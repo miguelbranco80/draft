@@ -394,6 +394,47 @@ private:
     return std::nullopt;
   }
 
+  // Keeps a consumer-local SymbolId for immediate lowering and also records an
+  // imported procedure's canonical origin. Local identities are canonicalized
+  // later by the interface builder, which is the first phase that owns the
+  // current package's workspace identity.
+  [[nodiscard]] ConstantValue procedure_value(SymbolId symbol_id) const {
+    const Symbol &symbol = semantic_.symbols.symbol(symbol_id);
+    for (const ImportedSymbol &imported : semantic_.imported_symbols) {
+      if (imported.proxy == symbol_id) {
+        return ConstantValue::make_procedure(
+            symbol_id.value,
+            imported.public_name,
+            imported.root_identity,
+            imported.root_relative_path);
+      }
+    }
+    return ConstantValue::make_procedure(symbol_id.value, symbol.name);
+  }
+
+  [[nodiscard]] std::optional<SymbolId> procedure_symbol(
+      const ConstantValue &value) const {
+    if (value.kind != ConstantKind::Procedure) return std::nullopt;
+    if (value.symbol_index != std::numeric_limits<std::uint32_t>::max() &&
+        value.symbol_index < semantic_.symbols.symbol_count()) {
+      const SymbolId symbol{value.symbol_index};
+      if (semantic_.symbols.symbol(symbol).kind == SymbolKind::Procedure) {
+        return symbol;
+      }
+    }
+    if (!value.root_identity.empty()) {
+      for (const ImportedSymbol &imported : semantic_.imported_symbols) {
+        if (imported.root_identity == value.root_identity &&
+            imported.root_relative_path == value.root_relative_path &&
+            imported.public_name == value.text &&
+            semantic_.symbols.symbol(imported.proxy).kind == SymbolKind::Procedure) {
+          return imported.proxy;
+        }
+      }
+    }
+    return std::nullopt;
+  }
+
   // Integer and decimal-float token validation has already happened in the
   // lexer. These conversions construct the mathematical compile-time value and
   // never pass through a host floating or fixed-width integer representation.
@@ -837,6 +878,10 @@ private:
          type.kind == TypeKind::Procedure)) {
       return ready(std::move(value), type_id);
     }
+    if (value.kind == ConstantKind::Procedure &&
+        type.kind == TypeKind::Procedure) {
+      return ready(std::move(value), type_id);
+    }
     if (value.kind == ConstantKind::Aggregate &&
         (type.kind == TypeKind::Array || type.kind == TypeKind::Tuple ||
          type.kind == TypeKind::Struct || type.kind == TypeKind::Simd)) {
@@ -950,6 +995,7 @@ private:
       return semantic_.types.find_builtin("f64").value_or(
           semantic_.types.builtins().invalid);
     case ConstantKind::String: return semantic_.types.builtins().string_type;
+    case ConstantKind::Procedure: return {};
     default: return {};
     }
   }
@@ -1226,6 +1272,23 @@ private:
     } else if (left.kind == ConstantKind::EnumLabel &&
                right.kind == ConstantKind::EnumLabel) {
       equal = left.text == right.text;
+    } else if (left.kind == ConstantKind::Procedure &&
+               right.kind == ConstantKind::Procedure) {
+      if (!left.root_identity.empty() || !right.root_identity.empty()) {
+        equal = left.root_identity == right.root_identity &&
+            left.root_relative_path == right.root_relative_path &&
+            left.text == right.text;
+      } else {
+        equal = left.symbol_index == right.symbol_index;
+      }
+    } else if ((left.kind == ConstantKind::Procedure &&
+                right.kind == ConstantKind::Nil) ||
+               (left.kind == ConstantKind::Nil &&
+                right.kind == ConstantKind::Procedure)) {
+      equal = false;
+    } else if (left.kind == ConstantKind::Nil &&
+               right.kind == ConstantKind::Nil) {
+      equal = true;
     } else {
       return fail(range, "comparison uses incompatible compile-time values", required);
     }
@@ -2073,10 +2136,31 @@ private:
     if (base.kind != NodeKind::NameExpression) return pending();
     const std::optional<std::string> name = final_name(tree, base);
     if (!name.has_value()) return pending();
-    const std::optional<SymbolId> found = semantic_.symbols.lookup(scope, *name);
-    if (!found.has_value()) return pending();
+    std::optional<SymbolId> found;
+    if (const LocalBinding *local = local_binding(*name)) {
+      found = procedure_symbol(local->value);
+    }
+    if (!found.has_value()) {
+      const std::optional<SymbolId> named =
+          semantic_.symbols.lookup(scope, *name);
+      if (!named.has_value()) return pending();
+      const Symbol &binding = semantic_.symbols.symbol(*named);
+      if (binding.kind == SymbolKind::Procedure) {
+        found = *named;
+      } else if (binding.kind == SymbolKind::Constant ||
+                 binding.kind == SymbolKind::UnresolvedDeclaration) {
+        const EvalResult value = evaluate_binding(*named, required);
+        if (value.status != EvalStatus::Ready) return value;
+        found = procedure_symbol(value.value);
+      }
+    }
+    if (!found.has_value()) {
+      return fail(
+          call.range,
+          "compile-time call target is not a concrete procedure identity",
+          required);
+    }
     const Symbol symbol = semantic_.symbols.symbol(*found);
-    if (symbol.kind != SymbolKind::Procedure) return pending();
     if (symbol.flags.foreign) {
       return fail(
           call.range,
@@ -2192,6 +2276,15 @@ private:
     for (std::size_t index = 0; index < supplied_arguments.size(); ++index) {
       const TypeId parameter_type = parameter_types[index];
       const EvalResult &argument = supplied_arguments[index];
+      if (argument.value.kind == ConstantKind::Procedure &&
+          parameter_type.is_valid() && argument.type.is_valid() &&
+          argument.type != parameter_type) {
+        local_frames_.pop_back();
+        return fail(
+            tree.node(call.children[index + 1]).range,
+            "compile-time procedure argument has a different procedure type",
+            required);
+      }
       const EvalResult converted = parameter_type.is_valid() &&
               parameter_type != semantic_.types.builtins().invalid
           ? convert_to_type(
@@ -2228,6 +2321,12 @@ private:
       }
       if (execution.type == result_type) {
         return ready(execution.value, result_type);
+      }
+      if (execution.value.kind == ConstantKind::Procedure) {
+        return fail(
+            procedure.range,
+            "compile-time procedure returned a different procedure type",
+            required);
       }
       return convert_to_type(
           execution.value,
@@ -2306,6 +2405,13 @@ private:
       }
       if (declared_type.has_value() && local_type.is_valid() &&
           local_type != semantic_.types.builtins().invalid) {
+        if (evaluated.value.kind == ConstantKind::Procedure &&
+            evaluated.type.is_valid() && evaluated.type != local_type) {
+          return failed_execution(fail(
+              tree.node(*initializer).range,
+              "compile-time local has a different procedure type",
+              required));
+        }
         const EvalResult converted = convert_to_type(
             evaluated.value,
             local_type,
@@ -2543,6 +2649,12 @@ private:
     } else if (target_snapshot.type.is_valid() &&
                target_snapshot.type != semantic_.types.builtins().invalid &&
                right.type != target_snapshot.type) {
+      if (right.value.kind == ConstantKind::Procedure) {
+        return failed_execution(fail(
+            assignment.range,
+            "compile-time assignment has a different procedure type",
+            required));
+      }
       const EvalResult converted = convert_to_type(
           right.value,
           target_snapshot.type,
@@ -3126,6 +3238,10 @@ private:
       }
       const std::optional<SymbolId> symbol = semantic_.symbols.lookup(scope, *name);
       if (!symbol.has_value()) return pending();
+      const Symbol &binding = semantic_.symbols.symbol(*symbol);
+      if (binding.kind == SymbolKind::Procedure) {
+        return ready(procedure_value(*symbol), binding.type);
+      }
       // Procedure value parameters are not package constants and therefore do
       // not have declaration syntax for evaluate_binding. An instantiation may
       // supply their exact values through this phase-local overlay instead.
@@ -3164,6 +3280,10 @@ private:
     case NodeKind::MemberExpression: {
       if (node.children.empty()) return pending();
       if (const std::optional<SymbolId> imported = imported_member(tree, node, scope)) {
+        const Symbol &binding = semantic_.symbols.symbol(*imported);
+        if (binding.kind == SymbolKind::Procedure) {
+          return ready(procedure_value(*imported), binding.type);
+        }
         return evaluate_binding(*imported, required);
       }
       const EvalResult base = evaluate_expression(tree, node.children.front(), scope, required);
@@ -3418,7 +3538,9 @@ private:
           const bool untyped_numeric =
               source_type.kind == TypeKind::UntypedInteger ||
               source_type.kind == TypeKind::UntypedFloat;
-          if (!untyped_numeric && source_type.kind != target_type.kind) {
+          if ((!untyped_numeric && source_type.kind != target_type.kind) ||
+              (evaluated.value.kind == ConstantKind::Procedure &&
+               evaluated.type != element_type)) {
             return fail(
                 value_node.range,
                 "constant composite member has the wrong type",
@@ -3609,6 +3731,20 @@ ConstantValue ConstantValue::make_enum_label(
   result.kind = ConstantKind::EnumLabel;
   result.text = std::move(value);
   result.elements = std::move(payload);
+  return result;
+}
+
+ConstantValue ConstantValue::make_procedure(
+    std::uint32_t symbol_index,
+    std::string name,
+    std::string root_identity,
+    std::string root_relative_path) {
+  ConstantValue result;
+  result.kind = ConstantKind::Procedure;
+  result.symbol_index = symbol_index;
+  result.text = std::move(name);
+  result.root_identity = std::move(root_identity);
+  result.root_relative_path = std::move(root_relative_path);
   return result;
 }
 

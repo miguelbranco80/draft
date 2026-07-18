@@ -53,6 +53,13 @@ add :: proc(left, right: i64) -> i64 {
     return left + right
 }
 
+increment_value :: proc(value: u32) -> u32 {
+    return value + 1
+}
+
+Increment_Callback :: increment_value
+global_callback: proc(value: u32) -> u32 = Increment_Callback
+
 divide :: proc(left, right: i64) -> i64 {
     return left / right
 }
@@ -216,6 +223,7 @@ pointer_distance :: proc(value: [^]i64, count: isize) -> isize {
 }
 
 main :: proc() -> i32 {
+    assert(global_callback(41) == 42)
     assert(global_answer == 42)
     global_answer = global_answer + 1
     assert(global_answer == 43)
@@ -334,6 +342,9 @@ main :: proc() -> i32 {
   EXPECT(state, module.text.find("global { ptr, i64 } { ptr @.draft.string.") !=
       std::string::npos);
   EXPECT(state, module.text.find("global ptr null") != std::string::npos);
+  EXPECT(state, module.text.find(
+      "global ptr @\"draft.workspace.native.increment_5Fvalue\"") !=
+      std::string::npos);
   EXPECT(state, module.text.find(
       "global [4 x i32] [i32 1, i32 4, i32 9, i32 16]") !=
       std::string::npos);
