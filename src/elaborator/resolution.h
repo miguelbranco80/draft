@@ -1,0 +1,56 @@
+// Canonical resolution pins and manifest serialization.
+//
+// A manifest is the committed mapping from stable synthesis-site identities to
+// checked, content-addressed generated Draft source. This module owns the plain
+// data format and deterministic JSON encoding only. It does not invoke a model,
+// apply an expansion to syntax, or write files; transaction I/O remains a
+// separate layer so failed checking cannot partially update a workspace.
+//
+// The parser accepts the exact versioned schema while permitting insignificant
+// JSON whitespace. Unknown, missing, reordered, or duplicate fields are rejected
+// deliberately: compiler-owned canonical inputs should never be silently
+// reinterpreted. Relevant specification: 03-agent-synthesis.md section 10.
+
+#pragma once
+
+#include "base/sha256.h"
+#include "sema/agent_metadata.h"
+#include "source/diagnostic.h"
+
+#include <string>
+#include <string_view>
+#include <vector>
+
+namespace draft {
+
+struct ResolutionPin {
+  std::string site_identity;
+  AgentConstructKind kind = AgentConstructKind::SynthesisExpression;
+  Sha256Digest input_digest;
+  Sha256Digest expansion_digest;
+  std::string provider_identity;
+  std::string model_identity;
+};
+
+struct ResolutionManifest {
+  std::string format = "draft-resolution-v1";
+  std::string target_identity;
+  Sha256Digest resolved_program_digest;
+  std::vector<ResolutionPin> pins;
+};
+
+// Returns canonical UTF-8 JSON ending in one newline. Pins are sorted by site
+// identity in the serialized form; the caller's vector is not mutated.
+[[nodiscard]] std::string serialize_resolution_manifest(
+    const ResolutionManifest &manifest);
+
+// Parses the versioned canonical schema. Digest strings must contain exactly 64
+// hexadecimal digits and site identities must be unique. User-facing failures
+// are reported as diagnostics with no source range because the manifest is not
+// a Draft source buffer.
+[[nodiscard]] bool parse_resolution_manifest(
+    std::string_view json,
+    ResolutionManifest &manifest,
+    DiagnosticSink &diagnostics);
+
+} // namespace draft

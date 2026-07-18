@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <span>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -21,6 +22,8 @@ struct Sha256Digest {
 
   bool operator==(const Sha256Digest &) const = default;
   [[nodiscard]] std::string hex() const;
+  [[nodiscard]] static std::optional<Sha256Digest> from_hex(
+      std::string_view text);
 };
 
 class Sha256 {

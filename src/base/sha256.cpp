@@ -58,6 +58,30 @@ std::string Sha256Digest::hex() const {
   return result;
 }
 
+std::optional<Sha256Digest> Sha256Digest::from_hex(std::string_view text) {
+  if (text.size() != 64) return std::nullopt;
+  const auto nibble = [](char value) -> std::optional<std::uint8_t> {
+    if (value >= '0' && value <= '9') {
+      return static_cast<std::uint8_t>(value - '0');
+    }
+    if (value >= 'a' && value <= 'f') {
+      return static_cast<std::uint8_t>(value - 'a' + 10);
+    }
+    if (value >= 'A' && value <= 'F') {
+      return static_cast<std::uint8_t>(value - 'A' + 10);
+    }
+    return std::nullopt;
+  };
+  Sha256Digest result;
+  for (std::size_t index = 0; index < result.bytes.size(); ++index) {
+    const std::optional<std::uint8_t> high = nibble(text[index * 2]);
+    const std::optional<std::uint8_t> low = nibble(text[index * 2 + 1]);
+    if (!high.has_value() || !low.has_value()) return std::nullopt;
+    result.bytes[index] = static_cast<std::uint8_t>((*high << 4U) | *low);
+  }
+  return result;
+}
+
 Sha256::Sha256()
     : state_{
           0x6a09e667U,
