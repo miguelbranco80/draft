@@ -39,6 +39,27 @@ Float_Pair :: @repr(C) struct {
     right: f32,
 }
 
+// A three-lane half-precision record is still an HFA. Its six-byte physical
+// payload is especially useful here: treating it as an ordinary small record
+// would put the argument in an integer register and disagree with Clang.
+Half_Triple :: @repr(C) struct {
+    values: [3]f16,
+}
+
+// Darwin's homogeneous-aggregate rule composes through C unions and nested
+// records. Union alternatives overlap, so their lane count is the maximum of
+// the alternatives rather than their sum. Nested_Floats is therefore four
+// f32 lanes: two from overlay plus two from tail.
+Float_Overlay :: @repr(C) raw union {
+    scalar: f32,
+    pair: [2]f32,
+}
+
+Nested_Floats :: @repr(C) struct {
+    overlay: Float_Overlay,
+    tail: [2]f32,
+}
+
 Large_Record :: @repr(C) struct {
     words: [3]i64,
 }
@@ -82,6 +103,24 @@ export aligned_word_identity :: c "draft_aligned_word_identity" proc(
 export float_pair_identity :: c "draft_float_pair_identity" proc(
     value: Float_Pair,
 ) -> Float_Pair {
+    return value
+}
+
+export half_triple_identity :: c "draft_half_triple_identity" proc(
+    value: Half_Triple,
+) -> Half_Triple {
+    return value
+}
+
+export float_overlay_identity :: c "draft_float_overlay_identity" proc(
+    value: Float_Overlay,
+) -> Float_Overlay {
+    return value
+}
+
+export nested_floats_identity :: c "draft_nested_floats_identity" proc(
+    value: Nested_Floats,
+) -> Nested_Floats {
     return value
 }
 

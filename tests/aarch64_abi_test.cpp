@@ -71,6 +71,7 @@ C16 :: @repr(C) struct { words: [2]i64, }
 C16_Aligned :: @repr(C) @align(16) struct { word: i64, }
 C24 :: @repr(C) struct { words: [3]i64, }
 HF2 :: @repr(C) struct { first: f32, second: f32, }
+HH3 :: @repr(C) struct { values: [3]f16, }
 HD4 :: @repr(C) struct { values: [4]f64, }
 HD5 :: @repr(C) struct { values: [5]f64, }
 HF2_Aligned :: @repr(C) @align(16) struct { first: f32, second: f32, }
@@ -125,6 +126,11 @@ Recursive_Callback_Record :: @repr(C) struct {
                     draft::Aarch64CAbiClass::HomogeneousFloatAggregate);
   EXPECT(state, hf2.homogeneous_element_bits == 32);
   EXPECT(state, hf2.homogeneous_element_count == 2);
+  const draft::Aarch64CAbiType hh3 = classify("HH3");
+  EXPECT(state, hh3.classification ==
+                    draft::Aarch64CAbiClass::HomogeneousFloatAggregate);
+  EXPECT(state, hh3.homogeneous_element_bits == 16);
+  EXPECT(state, hh3.homogeneous_element_count == 3);
   const draft::Aarch64CAbiType hd4 = classify("HD4");
   EXPECT(state, hd4.homogeneous_element_bits == 64);
   EXPECT(state, hd4.homogeneous_element_count == 4);

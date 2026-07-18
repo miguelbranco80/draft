@@ -51,6 +51,36 @@ int main(void) {
     floats = draft_float_pair_identity(floats);
     if (floats.left != 1.25f || floats.right != -2.5f) return 7;
 
+    // `_Float16` has a native Darwin arm64 ABI. This six-byte aggregate must
+    // use three FP lanes on both the Clang caller and Draft callee sides.
+    draft_c_library_Half_Triple halves = {{(_Float16)0.5, (_Float16)-1.5,
+                                            (_Float16)3.25}};
+    halves = draft_half_triple_identity(halves);
+    if (halves.values[0] != (_Float16)0.5 ||
+        halves.values[1] != (_Float16)-1.5 ||
+        halves.values[2] != (_Float16)3.25) {
+        return 17;
+    }
+
+    // The largest union alternative controls its HFA lane count. Nesting that
+    // union beside another pair must preserve all four FP-register lanes.
+    draft_c_library_Float_Overlay overlay;
+    overlay.pair[0] = 4.5f;
+    overlay.pair[1] = -6.25f;
+    overlay = draft_float_overlay_identity(overlay);
+    if (overlay.pair[0] != 4.5f || overlay.pair[1] != -6.25f) return 18;
+
+    draft_c_library_Nested_Floats nested = {
+        {.pair = {7.5f, 8.25f}},
+        {-9.5f, 10.75f},
+    };
+    nested = draft_nested_floats_identity(nested);
+    if (nested.overlay.pair[0] != 7.5f ||
+        nested.overlay.pair[1] != 8.25f ||
+        nested.tail[0] != -9.5f || nested.tail[1] != 10.75f) {
+        return 19;
+    }
+
     // Records larger than sixteen bytes use an indirect result and an indirect
     // by-value argument. The copies must remain value copies on both sides.
     draft_c_library_Large_Record large = {{11, 22, 33}};

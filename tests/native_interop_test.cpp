@@ -143,6 +143,10 @@ HF2 :: @repr(C) struct {
     right: f32,
 }
 
+HH3 :: @repr(C) struct {
+    values: [3]f16,
+}
+
 Float_Overlay :: @repr(C) raw union {
     scalar: f32,
     pair: [2]f32,
@@ -168,6 +172,7 @@ foreign provider {
     odd :: c "odd" proc(value: C3) -> C3
     aligned :: c "aligned" proc(value: C16_Aligned) -> C16_Aligned
     floats :: c "floats" proc(value: HF2) -> HF2
+    halves :: c "halves" proc(value: HH3) -> HH3
     float_overlay :: c "float_overlay" proc(value: Float_Overlay) -> Float_Overlay
     unsigned_code :: c "unsigned_code" proc(value: Unsigned_Code) -> Unsigned_Code
     signed_code :: c "signed_code" proc(value: Signed_Code) -> Signed_Code
@@ -189,6 +194,10 @@ export wrap_aligned :: c "wrap_aligned" proc(value: C16_Aligned) -> C16_Aligned 
 
 export wrap_floats :: c "wrap_floats" proc(value: HF2) -> HF2 {
     return floats(value)
+}
+
+export wrap_halves :: c "wrap_halves" proc(value: HH3) -> HH3 {
+    return halves(value)
 }
 
 export wrap_float_overlay :: c "wrap_float_overlay" proc(
@@ -251,6 +260,10 @@ export wrap_large :: c "wrap_large" proc(value: C24) -> C24 {
   EXPECT(state, llvm.text.find("@\"floats\"([2 x float]") !=
                     std::string::npos);
   EXPECT(state, llvm.text.find("@\"wrap_floats\"([2 x float] %arg0)") !=
+                    std::string::npos);
+  EXPECT(state, llvm.text.find("@\"halves\"([3 x half]") !=
+                    std::string::npos);
+  EXPECT(state, llvm.text.find("@\"wrap_halves\"([3 x half] %arg0)") !=
                     std::string::npos);
   EXPECT(state, llvm.text.find("@\"float_overlay\"([2 x float]") !=
                     std::string::npos);
