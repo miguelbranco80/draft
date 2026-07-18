@@ -14,6 +14,7 @@
 
 #include <array>
 #include <cerrno>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -24,11 +25,13 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <thread>
 #include <utility>
 #include <vector>
 
 #if defined(__APPLE__) || defined(__unix__)
 #include <fcntl.h>
+#include <signal.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -483,7 +486,7 @@ private:
 
 // Starts exactly one documented non-interactive Codex process. All arguments
 // are separate execv entries and the prompt is an already-opened regular file.
-[[nodiscard]] bool run_codex(
+[[nodiscard]] bool run_codex_once(
     const CodexCliProviderState &state,
     const std::filesystem::path &directory,
     DiagnosticSink &diagnostics) {
@@ -532,16 +535,38 @@ private:
     ::_exit(127);
   }
 
+  // Polling keeps the implementation simple and gives the parent an exact
+  // deadline without installing process-global signal handlers. Ten
+  // milliseconds is negligible relative to provider latency and keeps tests
+  // responsive. A timeout always reaps the child before returning.
+  const auto timeout = std::chrono::milliseconds(
+      static_cast<std::chrono::milliseconds::rep>(
+          state.timeout_milliseconds));
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
   int status = 0;
-  pid_t waited = -1;
-  do {
-    waited = ::waitpid(child, &status, 0);
-  } while (waited < 0 && errno == EINTR);
-  if (waited < 0) {
-    provider_error(
-        diagnostics, "cannot wait for Codex CLI: " +
-            std::string(std::strerror(errno)));
-    return false;
+  while (true) {
+    const pid_t waited = ::waitpid(child, &status, WNOHANG);
+    if (waited == child) break;
+    if (waited < 0 && errno != EINTR) {
+      // Reaping can overwrite errno, so preserve the wait failure that the
+      // diagnostic is meant to report.
+      const int wait_error = errno;
+      (void)::kill(child, SIGKILL);
+      while (::waitpid(child, &status, 0) < 0 && errno == EINTR) {
+      }
+      provider_error(
+          diagnostics, "cannot wait for Codex CLI: " +
+              std::string(std::strerror(wait_error)));
+      return false;
+    }
+    if (std::chrono::steady_clock::now() >= deadline) {
+      (void)::kill(child, SIGKILL);
+      while (::waitpid(child, &status, 0) < 0 && errno == EINTR) {
+      }
+      provider_error(diagnostics, "Codex CLI attempt timed out");
+      return false;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
   }
   if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
     std::string log_contents;
@@ -574,8 +599,32 @@ private:
   std::string prompt;
   if (!prepare_request(request, temporary.path(), prompt, diagnostics) ||
       !write_file(temporary.path() / "schema.json", kOutputSchema, diagnostics) ||
-      !write_file(temporary.path() / "prompt.txt", prompt, diagnostics) ||
-      !run_codex(*state, temporary.path(), diagnostics)) {
+      !write_file(temporary.path() / "prompt.txt", prompt, diagnostics)) {
+    return false;
+  }
+  bool completed = false;
+  std::string last_failure;
+  for (std::uint32_t attempt = 0; attempt < state->maximum_attempts; ++attempt) {
+    // A failed process may have left a partial final message. Removing it makes
+    // each attempt independent and prevents a later successful exit from
+    // accidentally consuming stale bytes.
+    std::error_code ignored;
+    std::filesystem::remove(temporary.path() / "response.json", ignored);
+    DiagnosticSink attempt_diagnostics;
+    if (run_codex_once(*state, temporary.path(), attempt_diagnostics)) {
+      completed = true;
+      break;
+    }
+    if (!attempt_diagnostics.diagnostics().empty()) {
+      last_failure = attempt_diagnostics.diagnostics().back().message;
+    }
+  }
+  if (!completed) {
+    provider_error(
+        diagnostics,
+        "Codex provider failed after " +
+            std::to_string(state->maximum_attempts) + " attempt(s): " +
+            (last_failure.empty() ? "no diagnostic" : last_failure));
     return false;
   }
   std::string json;
@@ -635,6 +684,13 @@ SynthesisProvider configure_codex_cli_provider(
     provider_error(diagnostics, "Codex provider model identity must not be empty");
     return {};
   }
+  if (options.timeout_milliseconds == 0 || options.maximum_attempts == 0 ||
+      options.maximum_attempts > 8) {
+    provider_error(
+        diagnostics,
+        "Codex timeout must be positive and attempts must be between 1 and 8");
+    return {};
+  }
   std::error_code error;
   const std::filesystem::path executable =
       std::filesystem::canonical(options.executable, error);
@@ -649,9 +705,13 @@ SynthesisProvider configure_codex_cli_provider(
   if (!executable_digest.has_value()) return {};
 
   Sha256 configuration;
-  configuration.update("draft.codex-cli-provider.v3");
+  configuration.update("draft.codex-cli-provider.v4");
   configuration.update(executable_digest->bytes);
   configuration.update(options.model);
+  configuration.update(";timeout-ms=");
+  configuration.update(std::to_string(options.timeout_milliseconds));
+  configuration.update(";attempts=");
+  configuration.update(std::to_string(options.maximum_attempts));
   configuration.update(kPromptContractIdentity);
   configuration.update(kOutputSchema);
   configuration.update(
@@ -659,11 +719,13 @@ SynthesisProvider configure_codex_cli_provider(
       "ignore-rules;color=never;stdin;output-schema;output-last-message");
   state.executable = executable;
   state.model = options.model;
+  state.timeout_milliseconds = options.timeout_milliseconds;
+  state.maximum_attempts = options.maximum_attempts;
   state.configuration_identity =
       "codex-config-" + configuration.finalize().hex();
 
   SynthesisProvider provider;
-  provider.provider_identity = "openai-codex-cli-v3";
+  provider.provider_identity = "openai-codex-cli-v4";
   provider.model_identity = state.model;
   provider.configuration_identity = state.configuration_identity;
   provider.state = &state;

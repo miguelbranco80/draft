@@ -77,6 +77,7 @@ struct TemporaryFixture {
         "    *) exit 23 ;;\n"
         "  esac\n"
         "done\n"
+        "if test \"$model\" = slow-model; then while :; do :; done; fi\n"
         "test \"$model\" = fixture-model || exit 24\n"
         "test -f \"$schema\" || exit 25\n"
         "test -f \"$work/attachment-00000000.bin\" || exit 26\n"
@@ -161,7 +162,7 @@ void test_adapter_contract_and_identity(TestState &state) {
   const draft::SynthesisProvider provider =
       draft::configure_codex_cli_provider(options, provider_state, diagnostics);
   EXPECT(state, provider.synthesize != nullptr);
-  EXPECT(state, provider.provider_identity == "openai-codex-cli-v3");
+  EXPECT(state, provider.provider_identity == "openai-codex-cli-v4");
   EXPECT(state, provider.model_identity == "fixture-model");
   EXPECT(state, provider.configuration_identity ==
       provider_state.configuration_identity);
@@ -187,6 +188,38 @@ void test_adapter_contract_and_identity(TestState &state) {
   EXPECT(state, changed.configuration_identity !=
       provider.configuration_identity);
   EXPECT(state, !changed_diagnostics.has_errors());
+
+  // A provider process cannot hold resolution indefinitely. Each failed
+  // attempt is killed and reaped, then the fixed retry budget ends with one
+  // compiler-owned diagnostic rather than leaking partial adapter errors.
+  draft::CodexCliProviderOptions slow_options;
+  slow_options.executable = fixture.executable;
+  slow_options.model = "slow-model";
+  slow_options.timeout_milliseconds = 25;
+  slow_options.maximum_attempts = 2;
+  draft::DiagnosticSink slow_diagnostics;
+  draft::CodexCliProviderState slow_state;
+  const draft::SynthesisProvider slow =
+      draft::configure_codex_cli_provider(
+          slow_options, slow_state, slow_diagnostics);
+  EXPECT(state, slow.synthesize != nullptr);
+  EXPECT(state, !slow_diagnostics.has_errors());
+  draft::SynthesisResponse slow_response;
+  EXPECT(state,
+      !slow.synthesize(
+          slow.state,
+          request,
+          slow_response,
+          slow_diagnostics));
+  EXPECT(state, slow_diagnostics.error_count() == 1);
+  if (!slow_diagnostics.diagnostics().empty()) {
+    EXPECT(state,
+        slow_diagnostics.diagnostics().front().message.find(
+            "failed after 2 attempt(s)") != std::string::npos);
+    EXPECT(state,
+        slow_diagnostics.diagnostics().front().message.find("timed out") !=
+            std::string::npos);
+  }
 }
 
 } // namespace

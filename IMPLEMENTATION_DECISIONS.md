@@ -176,6 +176,11 @@ pin without installing its original provider. When `draft resolve` explicitly
 selects a provider, however, provider, model, and complete adapter-configuration
 identities must match the pin; any changed selection regenerates the expansion.
 
+The first Codex adapter permits two attempts, each with a five-minute deadline.
+That policy is part of adapter configuration identity. A timed-out child is
+killed and reaped before another attempt starts, and only a successful complete
+response can reach the compiler-owned resolution transaction.
+
 ## Native artifact ownership and visibility
 
 Status: first AArch64 macOS artifact contract.

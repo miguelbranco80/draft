@@ -19,6 +19,7 @@
 #include "elaborator/provider.h"
 #include "source/diagnostic.h"
 
+#include <cstdint>
 #include <filesystem>
 #include <string>
 
@@ -30,6 +31,11 @@ struct CodexCliProviderOptions {
   // defines provider configuration identity.
   std::filesystem::path executable;
   std::string model;
+  // Resolution must never wait forever on an external provider. The defaults
+  // are conservative for real model work; tests and embedding tools may select
+  // a smaller explicit policy. Both values are configuration identity inputs.
+  std::uint32_t timeout_milliseconds = 5U * 60U * 1000U;
+  std::uint32_t maximum_attempts = 2;
 };
 
 // State owns every string referenced by the callback and must outlive the
@@ -39,6 +45,8 @@ struct CodexCliProviderState {
   std::filesystem::path executable;
   std::string model;
   std::string configuration_identity;
+  std::uint32_t timeout_milliseconds = 0;
+  std::uint32_t maximum_attempts = 0;
 };
 
 // Validates and hashes the exact adapter configuration, initializes state, and
