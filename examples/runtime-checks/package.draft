@@ -16,9 +16,34 @@ Text_Outcome :: union {
     value: string,
 }
 
+Callback_Outcome :: union {
+    empty,
+    value: proc(value: i64) -> i64,
+}
+
 Overlay :: raw union {
     byte: u8,
     word: u64,
+}
+
+Text_Overlay :: raw union {
+    text: string,
+    words: [2]u64,
+}
+
+// Relocatable values deliberately sit behind both product and union layers.
+// A global initializer must retain their linker relocations at the exact Draft
+// offsets; flattening a union to raw bytes is not sufficient for these fields.
+Relocation_Box :: struct {
+    marker: u8,
+    text: Text_Outcome,
+    callback: Callback_Outcome,
+    overlay: Text_Overlay,
+}
+
+Relocation_Envelope :: union {
+    empty,
+    value: Relocation_Box,
 }
 
 Distance :: distinct i64
@@ -97,6 +122,12 @@ increment_value :: proc(value: i64) -> i64 {
 }
 
 Increment_Callback :: increment_value
+Compile_Time_Relocation_Box :: Relocation_Box{
+    marker = 8,
+    text = .value("constant"),
+    callback = .value(Increment_Callback),
+    overlay = Text_Overlay{text = "local"},
+}
 Switch_Base :: 40
 Untyped_One :: 1
 Untyped_Tuple :: (1, 2.5)
@@ -109,6 +140,32 @@ global_partial_pair: Pair[i64, i64] = Pair[i64, i64]{second = 42}
 global_outcome: Outcome = .value(42)
 global_text_outcome: Text_Outcome = .value("draft")
 global_overlay: Overlay = Overlay{word = 0x1020304050607080}
+global_relocation_box: Relocation_Box = Relocation_Box{
+    marker = 7,
+    text = .value("nested"),
+    callback = .value(Increment_Callback),
+    overlay = Text_Overlay{text = "overlay"},
+}
+global_text_outcomes: [2]Text_Outcome = [2]Text_Outcome{
+    .value("first"),
+    .value("second"),
+}
+global_relocation_tuple: (Text_Outcome, Callback_Outcome) = (
+    .value("tuple"),
+    .value(Increment_Callback),
+)
+global_relocation_envelope: Relocation_Envelope = .value(Relocation_Box{
+    marker = 9,
+    text = .value("envelope"),
+    callback = .value(Increment_Callback),
+    overlay = Text_Overlay{text = "inside"},
+})
+thread_local tls_relocation_box: Relocation_Box = Relocation_Box{
+    marker = 10,
+    text = .value("thread"),
+    callback = .value(Increment_Callback),
+    overlay = Text_Overlay{text = "local"},
+}
 
 pair_total :: proc(pair: Pair[i64, i64]) -> i64 {
     return pair.first + pair.second
@@ -288,6 +345,27 @@ read_text_outcome :: proc(value: Text_Outcome) -> usize {
     switch value {
     case .value(payload):
         return len(payload)
+    case .empty:
+        return 0
+    }
+}
+
+call_callback_outcome :: proc(value: Callback_Outcome, argument: i64) -> i64 {
+    switch value {
+    case .value(callback):
+        return callback(argument)
+    case .empty:
+        return argument
+    }
+}
+
+read_relocation_envelope :: proc(value: Relocation_Envelope) -> i64 {
+    switch value {
+    case .value(box):
+        return cast[i64](box.marker) +
+            cast[i64](read_text_outcome(box.text)) +
+            call_callback_outcome(box.callback, 0) +
+            cast[i64](len(box.overlay.text))
     case .empty:
         return 0
     }
@@ -595,6 +673,24 @@ main :: proc() {
     assert(read_outcome(global_outcome) == 42)
     assert(read_text_outcome(global_text_outcome) == 5)
     assert(global_overlay.word == 0x1020304050607080)
+    assert(global_relocation_box.marker == 7)
+    assert(read_text_outcome(global_relocation_box.text) == 6)
+    assert(call_callback_outcome(global_relocation_box.callback, 41) == 42)
+    assert(len(global_relocation_box.overlay.text) == 7)
+    assert(read_text_outcome(global_text_outcomes[0]) == 5)
+    assert(read_text_outcome(global_text_outcomes[1]) == 6)
+    assert(read_text_outcome(global_relocation_tuple.0) == 5)
+    assert(call_callback_outcome(global_relocation_tuple.1, 41) == 42)
+    assert(read_relocation_envelope(global_relocation_envelope) == 24)
+    assert(tls_relocation_box.marker == 10)
+    assert(read_text_outcome(tls_relocation_box.text) == 6)
+    assert(call_callback_outcome(tls_relocation_box.callback, 41) == 42)
+    assert(len(tls_relocation_box.overlay.text) == 5)
+    local_relocation_box := Compile_Time_Relocation_Box
+    assert(local_relocation_box.marker == 8)
+    assert(read_text_outcome(local_relocation_box.text) == 8)
+    assert(call_callback_outcome(local_relocation_box.callback, 41) == 42)
+    assert(len(local_relocation_box.overlay.text) == 5)
     assert(divide(84, 2) == 42)
     minimum: i64 = -9223372036854775807 - 1
     assert(remainder(minimum, -1) == 0)

@@ -241,6 +241,11 @@ Text_Outcome :: union {
     value: string,
 }
 
+Callback_Outcome :: union {
+    empty,
+    value: proc(value: u32) -> u32,
+}
+
 Pair[T: type, U: type] :: struct {
     first: T,
     second: U,
@@ -261,6 +266,18 @@ Overlay :: raw union {
     word: u64,
 }
 
+Text_Overlay :: raw union {
+    text: string,
+    words: [2]u64,
+}
+
+Relocation_Box :: struct {
+    marker: u8,
+    text: Text_Outcome,
+    callback: Callback_Outcome,
+    overlay: Text_Overlay,
+}
+
 Table :: ([4]u32{1, 4, 9, 16})
 global_table: [4]u32 = Table
 global_tuple: (i32, u64) = (7, 9)
@@ -269,6 +286,22 @@ global_text_count: Text_Count = Text_Count{text = "draft", count = 5}
 global_outcome: Outcome = .value(9)
 global_text_outcome: Text_Outcome = .value("draft")
 global_overlay: Overlay = Overlay{word = 0x1020304050607080}
+global_relocation_box: Relocation_Box = Relocation_Box{
+    marker = 7,
+    text = .value("nested"),
+    callback = .value(Increment_Callback),
+    overlay = Text_Overlay{text = "overlay"},
+}
+global_text_outcomes: [2]Text_Outcome = [2]Text_Outcome{
+    .value("first"),
+    .value("second"),
+}
+Compile_Time_Relocation_Box :: Relocation_Box{
+    marker = 8,
+    text = .value("constant"),
+    callback = .value(Increment_Callback),
+    overlay = Text_Overlay{text = "local"},
+}
 global_infinity: f32 = compile_time_infinity()
 global_nan: f32 = compile_time_nan()
 global_negative_zero: f32 = compile_time_negative_zero()
@@ -321,6 +354,15 @@ read_text_outcome :: proc(outcome: Text_Outcome) -> usize {
         return len(payload)
     case .empty:
         return 0
+    }
+}
+
+call_callback_outcome :: proc(value: Callback_Outcome, argument: u32) -> u32 {
+    switch value {
+    case .value(callback):
+        return callback(argument)
+    case .empty:
+        return argument
     }
 }
 
@@ -379,6 +421,17 @@ main :: proc() -> int {
     assert(read_outcome(global_outcome) == 9)
     assert(read_text_outcome(global_text_outcome) == 5)
     assert(global_overlay.word == 0x1020304050607080)
+    assert(global_relocation_box.marker == 7)
+    assert(read_text_outcome(global_relocation_box.text) == 6)
+    assert(call_callback_outcome(global_relocation_box.callback, 41) == 42)
+    assert(len(global_relocation_box.overlay.text) == 7)
+    assert(read_text_outcome(global_text_outcomes[0]) == 5)
+    assert(read_text_outcome(global_text_outcomes[1]) == 6)
+    local_relocation_box := Compile_Time_Relocation_Box
+    assert(local_relocation_box.marker == 8)
+    assert(read_text_outcome(local_relocation_box.text) == 8)
+    assert(call_callback_outcome(local_relocation_box.callback, 41) == 42)
+    assert(len(local_relocation_box.overlay.text) == 5)
     assert(constant_table_value() == 16)
     assert(global_infinity > 1e30)
     assert(global_nan != global_nan)
@@ -500,9 +553,18 @@ main :: proc() -> int {
       "[i8 1, i8 0, i8 0, i8 0, i8 0, i8 0, i8 0, i8 0, i8 9") !=
       std::string::npos);
   EXPECT(state, module.text.find(
-      "global <{ [8 x i8], { ptr, i64 }, [0 x i8] }> <{ [8 x i8] "
+      "global <{ [8 x i8], { ptr, i64 } }> <{ [8 x i8] "
       "[i8 1, i8 0, i8 0, i8 0, i8 0, i8 0, i8 0, i8 0], "
       "{ ptr, i64 } { ptr @.draft.string.") != std::string::npos);
+  EXPECT(state, module.text.find(
+      "@\"draft.workspace.native.global_5Frelocation_5Fbox\" = hidden "
+      "global <{") != std::string::npos);
+  EXPECT(state, module.text.find(
+      "@\"draft.workspace.native.global_5Ftext_5Foutcomes\" = hidden "
+      "global <{") != std::string::npos);
+  EXPECT(state, module.text.find("@.draft.constant.") != std::string::npos);
+  EXPECT(state, module.text.find(" = private constant <{") !=
+      std::string::npos);
   EXPECT(state, module.text.find(
       "[i8 128, i8 112, i8 96, i8 80, i8 64, i8 48, i8 32, i8 16]") !=
       std::string::npos);

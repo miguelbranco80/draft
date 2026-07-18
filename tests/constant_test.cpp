@@ -1459,6 +1459,7 @@ table: [4]u32 = make_table()
 header: Header = Header{tag = 1, value = 42}
 inferred_header := Header{tag = 2, value = 84}
 outcome: Outcome = .value(9)
+tuple_outcomes: (Outcome, Mode) = (.value(11), .On)
 float_outcome: Float_Outcome =
     .value((16777216.0 + 1.0) - 16777216.0)
 overlay: Overlay = Overlay{word = 0x1020304050607080}
@@ -1493,6 +1494,8 @@ thread_local scratch: i32 = -7
       find_symbol(source.analysis.package, "inferred_header");
   const std::optional<draft::SymbolId> outcome =
       find_symbol(source.analysis.package, "outcome");
+  const std::optional<draft::SymbolId> tuple_outcomes =
+      find_symbol(source.analysis.package, "tuple_outcomes");
   const std::optional<draft::SymbolId> float_outcome =
       find_symbol(source.analysis.package, "float_outcome");
   const std::optional<draft::SymbolId> overlay =
@@ -1509,6 +1512,7 @@ thread_local scratch: i32 = -7
   EXPECT(state, header.has_value());
   EXPECT(state, inferred_header.has_value());
   EXPECT(state, outcome.has_value());
+  EXPECT(state, tuple_outcomes.has_value());
   EXPECT(state, float_outcome.has_value());
   EXPECT(state, overlay.has_value());
   if (count.has_value()) {
@@ -1603,6 +1607,18 @@ thread_local scratch: i32 = -7
     if (value != nullptr) {
       EXPECT(state, value->variant_index == 1);
       EXPECT(state, value->elements.size() == 1);
+    }
+  }
+  if (tuple_outcomes.has_value()) {
+    const draft::ConstantValue *value =
+        source.analysis.global_initializers.find(*tuple_outcomes);
+    EXPECT(state, value != nullptr);
+    if (value != nullptr && value->elements.size() == 2) {
+      EXPECT(state, value->elements[0].kind == draft::ConstantKind::Aggregate);
+      EXPECT(state, value->elements[0].variant_index == 1);
+      EXPECT(state, value->elements[0].elements.size() == 1);
+      EXPECT(state, value->elements[1].kind == draft::ConstantKind::Integer);
+      EXPECT(state, value->elements[1].integer.to_decimal() == "7");
     }
   }
   if (float_outcome.has_value()) {

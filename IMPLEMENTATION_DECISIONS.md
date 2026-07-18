@@ -97,6 +97,25 @@ package and filename order. The explicit language selection is essential for
 Clang's conventional filename behavior. Symbols cross this boundary only
 through `foreign` and `export` C-ABI declarations.
 
+## Relocatable aggregate constants
+
+Status: bootstrap backend representation; language layout is unchanged.
+
+Strings and concrete procedure identities contain linker relocations and cannot
+be flattened into the byte-array storage used for unions. An array, tuple,
+struct, tagged union, or raw union constant may contain those values at any
+nesting depth.
+The LLVM backend walks the checked Draft layout, writes every non-relocatable
+subtree as exact bytes, and retains each string or procedure leaf as a typed
+field at its semantic byte offset. The allocation uses an initializer-specific
+packed LLVM type; opaque pointers let all reads and external declarations keep
+using the canonical Draft type. This representation changes neither size,
+alignment, offsets, nor the public ABI and avoids imposing an LLVM aggregate
+shape on the language type system. Global initializers use that storage
+directly. A relocation-bearing MIR constant receives equivalent private module
+storage and a canonical typed load at its source operation, because LLVM SSA
+literals cannot carry the initializer-specific packed type.
+
 ## Initial locked native input contract
 
 Status: bootstrap build contract; versioned by the resolution and content-tree

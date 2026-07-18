@@ -28,6 +28,14 @@ and every half-open string slice form. These operations preserve distinct
 string identity, enforce the same contextual-`usize` boundary as runtime
 views, and diagnose invalid constant ranges before native lowering.
 
+Aggregate constant emission now preserves string and concrete-procedure
+relocations through arbitrary array, tuple, struct, tagged-union, and raw-union
+nesting in both globals and procedure-local uses. A native fixture reads and
+calls those values after the backend places each relocation at its checked Draft
+layout offset. Explicit tuple member types also contextualize symbolic enum and
+tagged-union alternatives during constant evaluation before aggregate
+conversion.
+
 Dependent integer type/value expressions now use a canonical typed post-order
 tree rather than a one-parameter special case. Arithmetic expressions survive
 nested nominal substitution, explicit parametric procedure applications, and

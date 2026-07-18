@@ -4330,9 +4330,16 @@ private:
         const EvalResult member = evaluate_expression(
             tree, child, scope, required, member_context);
         if (member.status != EvalStatus::Ready) return member;
+        // A contextual alternative deliberately remains a symbolic EnumLabel
+        // until the enclosing value is converted. Its explicit tuple member
+        // context is nevertheless the concrete type of this position. Retain
+        // that type so the tuple can be formed without prematurely converting
+        // the label (compile-time switch comparison still owns that boundary).
         TypeId member_type = member.type.is_valid()
             ? member.type
-            : default_value_type(member.value);
+            : (member_context.is_valid()
+                   ? member_context
+                   : default_value_type(member.value));
         if (!member_type.is_valid() ||
             member_type == semantic_.types.builtins().invalid) {
           return fail(

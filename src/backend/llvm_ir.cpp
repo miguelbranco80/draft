@@ -50,6 +50,18 @@ struct TypedConstantOperand {
   std::string value;
 };
 
+// A relocatable scalar cannot be flattened into the byte array used for a
+// union's ordinary storage constant.  The module instead gives the allocation
+// an initializer-specific packed type and places each such scalar at its exact
+// Draft byte offset.  LLVM opaque pointers let later loads continue to use the
+// canonical Draft type.  Keeping the field record this small makes the layout
+// algorithm below a direct byte-offset walk rather than an LLVM type rewrite.
+struct RelocatableConstantField {
+  std::uint64_t offset = 0;
+  std::uint64_t size = 0;
+  TypedConstantOperand operand;
+};
+
 // Runtime assertions need source spellings that are not ordinary MIR string
 // values. The site table connects those module constants back to the Assert
 // instruction without adding target/runtime details to target-independent MIR.
@@ -262,6 +274,7 @@ public:
     emit_strings();
     emit_runtime_declarations();
     emit_globals();
+    emit_relocatable_constants();
     emit_external_declarations();
     emit_validation_declarations();
     emit_procedures();
@@ -1765,13 +1778,13 @@ private:
         ConstantSite site;
         site.global = symbol_id;
         const std::optional<TypedConstantOperand> relocatable =
-            relocatable_union_constant(
+            relocatable_aggregate_constant(
                 *initializer, symbol.type, site, symbol.name_range);
         if (relocatable.has_value()) {
           // Opaque LLVM pointers let the allocation use an initializer-specific
           // packed storage type while every Draft load still uses the canonical
-          // union value type.  The packed field keeps pointer/string relocations
-          // intact at the exact language-defined payload offset.
+          // value type. The packed fields keep pointer/string relocations intact
+          // at their exact language-defined offsets, however deeply nested.
           output_ << relocatable->type << ' ' << relocatable->value;
         } else {
           output_ << llvm_type(symbol.type) << ' ' << constant_operand(
@@ -2061,17 +2074,13 @@ private:
       return write_float_bytes(value, type_id, bytes, offset, range);
     }
     if (value.kind == ConstantKind::String) {
-      // A relocatable pointer cannot be represented faithfully as independent
-      // i8 constants in the backend's opaque union storage.  Ordinary nested
-      // strings are emitted directly; only type-punned union payloads take this
-      // byte path.
-      error(range, "relocatable string payload is unsupported in a union constant");
+      // Correct callers route a relocation-bearing subtree through the packed
+      // aggregate collector before reaching this byte-only encoder.
+      error(range, "string relocation reached byte-only constant encoding");
       return false;
     }
     if (value.kind == ConstantKind::Procedure) {
-      error(
-          range,
-          "relocatable procedure identity is unsupported in opaque union storage");
+      error(range, "procedure relocation reached byte-only constant encoding");
       return false;
     }
     if (value.kind != ConstantKind::Aggregate) {
@@ -2176,6 +2185,18 @@ private:
     return false;
   }
 
+  [[nodiscard]] bool requires_relocatable_aggregate_storage(
+      const ConstantValue &value, TypeId type_id) const {
+    while (type(type_id).kind == TypeKind::Distinct) {
+      type_id = type(type_id).element;
+    }
+    const TypeKind kind = type(type_id).kind;
+    const bool aggregate = kind == TypeKind::Array || kind == TypeKind::Tuple ||
+        kind == TypeKind::Struct || kind == TypeKind::TaggedUnion ||
+        kind == TypeKind::RawUnion;
+    return aggregate && contains_relocation(value);
+  }
+
   [[nodiscard]] std::string byte_array_constant(
       const std::vector<std::uint8_t> &bytes) const {
     std::string result = "[";
@@ -2187,7 +2208,148 @@ private:
     return result;
   }
 
-  [[nodiscard]] std::optional<TypedConstantOperand> relocatable_union_constant(
+  // Writes every ordinary leaf into `bytes` and records every relocation leaf
+  // as a typed field. The same walk handles arrays, tuples, structs, tagged
+  // unions, raw unions, and any nesting of those forms. This is intentionally
+  // driven by Draft's checked layouts rather than by LLVM's aggregate layout:
+  // the semantic type store is the authority for offsets, padding, and size.
+  [[nodiscard]] bool collect_relocatable_constant_fields(
+      const ConstantValue &value,
+      TypeId type_id,
+      std::vector<std::uint8_t> &bytes,
+      std::uint64_t offset,
+      ConstantSite site,
+      SourceRange range,
+      std::vector<RelocatableConstantField> &fields) {
+    while (type(type_id).kind == TypeKind::Distinct) {
+      type_id = type(type_id).element;
+    }
+    const Type &storage = type(type_id);
+    if (!storage.layout.known || offset > bytes.size() ||
+        storage.layout.size > bytes.size() - offset) {
+      error(range, "relocatable constant does not fit aggregate storage");
+      return false;
+    }
+
+    // A subtree without a relocation can use the existing byte encoder. Doing
+    // this at the largest possible subtree keeps the typed field list limited
+    // to actual linker-visible addresses and retains exact endian encodings for
+    // every ordinary scalar.
+    if (!contains_relocation(value)) {
+      return write_constant_bytes(
+          value, type_id, bytes, offset, std::move(site), range);
+    }
+
+    if (value.kind == ConstantKind::String ||
+        value.kind == ConstantKind::Procedure) {
+      fields.push_back(RelocatableConstantField{
+          offset,
+          storage.layout.size,
+          TypedConstantOperand{
+              llvm_type(type_id),
+              constant_operand(value, type_id, std::move(site), range),
+          },
+      });
+      return true;
+    }
+    if (value.kind != ConstantKind::Aggregate) {
+      error(range, "relocatable constant has no aggregate representation");
+      return false;
+    }
+
+    if (storage.kind == TypeKind::Array || storage.kind == TypeKind::Simd) {
+      if (value.elements.size() != storage.element_count ||
+          !type(storage.element).layout.known) {
+        error(range, "relocatable array constant has the wrong shape");
+        return false;
+      }
+      const std::uint64_t stride = type(storage.element).layout.size;
+      for (std::size_t index = 0; index < value.elements.size(); ++index) {
+        ConstantSite child = site;
+        child.path.push_back(index);
+        if (!collect_relocatable_constant_fields(
+                value.elements[index],
+                storage.element,
+                bytes,
+                offset + static_cast<std::uint64_t>(index) * stride,
+                std::move(child),
+                range,
+                fields)) {
+          return false;
+        }
+      }
+      return true;
+    }
+
+    if (storage.kind == TypeKind::Tuple || storage.kind == TypeKind::Struct) {
+      if (value.elements.size() != storage.members.size()) {
+        error(range, "relocatable product constant has the wrong shape");
+        return false;
+      }
+      for (std::size_t index = 0; index < value.elements.size(); ++index) {
+        if (!type(storage.members[index]).layout.known) {
+          error(range, "relocatable product member has no physical layout");
+          return false;
+        }
+        const std::uint64_t member_offset =
+            index < storage.member_offsets.size()
+            ? storage.member_offsets[index]
+            : 0;
+        ConstantSite child = site;
+        child.path.push_back(index);
+        if (!collect_relocatable_constant_fields(
+                value.elements[index],
+                storage.members[index],
+                bytes,
+                offset + member_offset,
+                std::move(child),
+                range,
+                fields)) {
+          return false;
+        }
+      }
+      return true;
+    }
+
+    if (storage.kind == TypeKind::TaggedUnion ||
+        storage.kind == TypeKind::RawUnion) {
+      if (value.variant_index >= storage.members.size() ||
+          value.elements.size() != 1) {
+        error(range, "relocatable union constant has an invalid payload");
+        return false;
+      }
+      if (storage.kind == TypeKind::TaggedUnion &&
+          !write_integer_bytes(
+              BigInteger::from_u64(value.variant_index),
+              storage.element,
+              bytes,
+              offset,
+              range)) {
+        return false;
+      }
+      const TypeId payload_type = storage.members[value.variant_index];
+      const std::uint64_t payload_offset =
+          value.variant_index < storage.member_offsets.size()
+          ? storage.member_offsets[value.variant_index]
+          : 0;
+      ConstantSite child = std::move(site);
+      child.path.push_back(0);
+      return collect_relocatable_constant_fields(
+          value.elements.front(),
+          payload_type,
+          bytes,
+          offset + payload_offset,
+          std::move(child),
+          range,
+          fields);
+    }
+
+    error(range, "relocatable constant has an unsupported aggregate type");
+    return false;
+  }
+
+  [[nodiscard]] std::optional<TypedConstantOperand>
+  relocatable_aggregate_constant(
       const ConstantValue &value,
       TypeId type_id,
       ConstantSite site,
@@ -2196,73 +2358,137 @@ private:
       type_id = type(type_id).element;
     }
     const Type &storage = type(type_id);
-    if ((storage.kind != TypeKind::TaggedUnion &&
-         storage.kind != TypeKind::RawUnion) ||
-        !contains_relocation(value)) {
+    if (!requires_relocatable_aggregate_storage(value, type_id)) {
       return std::nullopt;
     }
-    if (value.kind != ConstantKind::Aggregate ||
-        value.variant_index >= storage.members.size() ||
-        value.elements.size() != 1) {
-      error(range, "relocatable union constant has an invalid payload");
+    if (!storage.layout.known) {
+      error(range, "relocatable aggregate constant has no physical layout");
       return TypedConstantOperand{llvm_type(type_id), "zeroinitializer"};
     }
 
-    const TypeId payload_type = storage.members[value.variant_index];
-    const std::uint64_t payload_offset =
-        value.variant_index < storage.member_offsets.size()
-        ? storage.member_offsets[value.variant_index]
-        : 0;
-    const std::uint64_t payload_size = type(payload_type).layout.size;
-    if (!storage.layout.known || !type(payload_type).layout.known ||
-        payload_offset > storage.layout.size ||
-        payload_size > storage.layout.size - payload_offset) {
-      error(range, "relocatable union payload does not fit its storage");
-      return TypedConstantOperand{llvm_type(type_id), "zeroinitializer"};
-    }
-
-    std::vector<std::uint8_t> prefix(
-        static_cast<std::size_t>(payload_offset), 0);
-    if (storage.kind == TypeKind::TaggedUnion &&
-        !write_integer_bytes(
-            BigInteger::from_u64(value.variant_index),
-            storage.element,
-            prefix,
+    std::vector<std::uint8_t> bytes(
+        static_cast<std::size_t>(storage.layout.size), 0);
+    std::vector<RelocatableConstantField> fields;
+    if (!collect_relocatable_constant_fields(
+            value,
+            type_id,
+            bytes,
             0,
-            range)) {
+            std::move(site),
+            range,
+            fields)) {
       return TypedConstantOperand{llvm_type(type_id), "zeroinitializer"};
     }
-    std::vector<std::uint8_t> suffix(
-        static_cast<std::size_t>(
-            storage.layout.size - payload_offset - payload_size),
-        0);
+    std::sort(
+        fields.begin(),
+        fields.end(),
+        [](const RelocatableConstantField &left,
+           const RelocatableConstantField &right) {
+          return left.offset < right.offset;
+        });
 
-    ConstantSite child = site;
-    child.path.push_back(0);
-    const std::optional<TypedConstantOperand> nested =
-        relocatable_union_constant(
-            value.elements.front(), payload_type, child, range);
-    const std::string payload_llvm_type = nested.has_value()
-        ? nested->type
-        : llvm_type(payload_type);
-    const std::string payload = nested.has_value()
-        ? nested->value
-        : constant_operand(
-              value.elements.front(),
-              payload_type,
-              std::move(child),
-              range);
-    const std::string prefix_type =
-        "[" + std::to_string(prefix.size()) + " x i8]";
-    const std::string suffix_type =
-        "[" + std::to_string(suffix.size()) + " x i8]";
-    return TypedConstantOperand{
-        "<{ " + prefix_type + ", " + payload_llvm_type + ", " +
-            suffix_type + " }>",
-        "<{ " + prefix_type + " " + byte_array_constant(prefix) + ", " +
-            payload_llvm_type + " " + payload + ", " + suffix_type + " " +
-            byte_array_constant(suffix) + " }>",
+    // Each packed component is either a byte-exact ordinary segment or one
+    // typed relocation. Packed LLVM storage suppresses any ambient padding;
+    // the explicit offsets and final tail therefore reproduce Draft's complete
+    // allocation size independently of the selected payload types.
+    std::string initializer_type = "<{ ";
+    std::string initializer_value = "<{ ";
+    bool emitted = false;
+    auto append_component = [&](std::string component_type,
+                                std::string component_value) {
+      if (emitted) {
+        initializer_type += ", ";
+        initializer_value += ", ";
+      }
+      initializer_type += component_type;
+      initializer_value += component_type + " " + component_value;
+      emitted = true;
     };
+    auto append_bytes = [&](std::uint64_t begin, std::uint64_t end) {
+      if (begin == end) return;
+      std::vector<std::uint8_t> segment(
+          bytes.begin() + static_cast<std::ptrdiff_t>(begin),
+          bytes.begin() + static_cast<std::ptrdiff_t>(end));
+      append_component(
+          "[" + std::to_string(segment.size()) + " x i8]",
+          byte_array_constant(segment));
+    };
+
+    std::uint64_t cursor = 0;
+    for (const RelocatableConstantField &field : fields) {
+      if (field.offset < cursor || field.offset > storage.layout.size ||
+          field.size > storage.layout.size - field.offset) {
+        error(range, "relocatable aggregate fields overlap or exceed storage");
+        return TypedConstantOperand{llvm_type(type_id), "zeroinitializer"};
+      }
+      append_bytes(cursor, field.offset);
+      append_component(field.operand.type, field.operand.value);
+      cursor = field.offset + field.size;
+    }
+    append_bytes(cursor, storage.layout.size);
+    if (!emitted) {
+      error(range, "relocatable aggregate contains no relocation fields");
+      return TypedConstantOperand{llvm_type(type_id), "zeroinitializer"};
+    }
+    initializer_type += " }>";
+    initializer_value += " }>";
+    return TypedConstantOperand{
+        std::move(initializer_type), std::move(initializer_value)};
+  }
+
+  [[nodiscard]] std::string relocatable_constant_name(
+      std::size_t procedure, std::size_t instruction) const {
+    return "@.draft.constant." + std::to_string(procedure) + "." +
+        std::to_string(instruction);
+  }
+
+  // A relocatable aggregate cannot be an SSA literal with the canonical union
+  // byte-array type: LLVM relocations must remain typed. Materialize one private
+  // constant per MIR site with the initializer-specific packed type, then load
+  // it through an opaque pointer when the Constant instruction executes. The
+  // loaded value has the ordinary Draft LLVM type, so all later MIR operations
+  // remain unaware of this storage representation.
+  void emit_relocatable_constants() {
+    bool emitted = false;
+    const std::vector<MirProcedure> &procedures = mir_.procedures();
+    for (std::size_t procedure_index = 0;
+         procedure_index < procedures.size();
+         ++procedure_index) {
+      const MirProcedure &procedure = procedures[procedure_index];
+      for (std::size_t instruction_index = 0;
+           instruction_index < procedure.instructions.size();
+           ++instruction_index) {
+        const MirInstruction &instruction =
+            procedure.instructions[instruction_index];
+        if (instruction.kind != MirInstructionKind::Constant ||
+            !requires_relocatable_aggregate_storage(
+                instruction.constant, instruction.type)) {
+          continue;
+        }
+        ConstantSite site;
+        site.procedure = procedure_index;
+        site.instruction = instruction_index;
+        const std::optional<TypedConstantOperand> initializer =
+            relocatable_aggregate_constant(
+                instruction.constant,
+                instruction.type,
+                std::move(site),
+                instruction.range);
+        if (!initializer.has_value()) {
+          error(
+              instruction.range,
+              "relocatable MIR constant has no storage initializer");
+          continue;
+        }
+        output_ << relocatable_constant_name(
+                       procedure_index, instruction_index)
+                << " = private constant " << initializer->type << ' '
+                << initializer->value << ", align "
+                << type(instruction.type).layout.alignment << '\n';
+        emitted = true;
+      }
+    }
+    if (emitted) output_ << '\n';
   }
 
   [[nodiscard]] std::string union_constant(
@@ -3017,10 +3243,20 @@ private:
         : std::string();
     switch (instruction.kind) {
     case MirInstructionKind::Constant:
-      assign_alias(
-          operands,
-          instruction,
-          instruction_constant(procedure_index, instruction_index, instruction));
+      if (requires_relocatable_aggregate_storage(
+              instruction.constant, instruction.type)) {
+        output_ << "  " << result << " = load " << llvm_type(instruction.type)
+                << ", ptr " << relocatable_constant_name(
+                       procedure_index, instruction_index)
+                << ", align " << type(instruction.type).layout.alignment << '\n';
+        assign_alias(operands, instruction, result);
+      } else {
+        assign_alias(
+            operands,
+            instruction,
+            instruction_constant(
+                procedure_index, instruction_index, instruction));
+      }
       break;
     case MirInstructionKind::Zero:
       assign_alias(operands, instruction, "zeroinitializer");
