@@ -115,6 +115,19 @@ struct ProcedureArgumentSummary {
   bool operator==(const ProcedureArgumentSummary &) const = default;
 };
 
+// One procedure leaf written through a typed pointer parameter. indirection is
+// the number of dereferences from that parameter and path is relative to the
+// reached object. Value origins use the writing procedure's formal parameters
+// and are substituted at its call site.
+struct ProcedureFieldWriteSummary {
+  std::uint32_t parameter = std::numeric_limits<std::uint32_t>::max();
+  std::uint32_t indirection = 0;
+  std::vector<std::string> path;
+  ProcedureValueSummary value;
+
+  bool operator==(const ProcedureFieldWriteSummary &) const = default;
+};
+
 // A direct named invocation retains the procedure-valued actual arguments
 // needed to substitute the callee's FlowCall effects. Non-procedure arguments
 // have empty known value sets and are never consulted by a valid FlowCall row.
@@ -151,6 +164,8 @@ struct ProcedureEffectSummary {
   // Procedure leaves returned by this procedure, keyed relative to the result
   // root. A direct procedure result uses the empty path.
   std::vector<ProcedureFieldValueSummary> return_values;
+  // Procedure leaves assigned into caller-owned typed storage.
+  std::vector<ProcedureFieldWriteSummary> field_writes;
   std::vector<SemanticEffect> effects;
 };
 

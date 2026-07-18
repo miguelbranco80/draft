@@ -150,6 +150,19 @@ struct InterfaceDeclaration {
     bool unknown = false;
   };
   std::vector<ReturnValue> return_values;
+  // A canonical write-back contract for one public procedure. The destination
+  // is a formal parameter plus a dereference count and typed field path; the
+  // value uses the same provider-neutral representation as a returned value.
+  struct FieldWrite {
+    std::uint32_t parameter =
+        std::numeric_limits<std::uint32_t>::max();
+    std::uint32_t indirection = 0;
+    std::vector<std::string> path;
+    std::vector<ReturnFlowSlot> value_flow_slots;
+    std::vector<Effect> value_contract_effects;
+    bool value_unknown = false;
+  };
+  std::vector<FieldWrite> field_writes;
 };
 
 // InterfaceDocumentation contains only content-addressed public design context;

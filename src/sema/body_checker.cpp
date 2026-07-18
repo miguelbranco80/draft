@@ -2274,6 +2274,17 @@ private:
       }
       semantic_.imported_returns.push_back(std::move(concrete_return));
     }
+    const std::vector<ImportedProcedureWrite> existing_writes =
+        semantic_.imported_writes;
+    for (const ImportedProcedureWrite &write : existing_writes) {
+      if (write.procedure_proxy != source) continue;
+      ImportedProcedureWrite concrete_write = write;
+      concrete_write.procedure_proxy = instance_id;
+      for (ImportedEffect &effect : concrete_write.value_contract_effects) {
+        effect.procedure_proxy = instance_id;
+      }
+      semantic_.imported_writes.push_back(std::move(concrete_write));
+    }
     semantic_.imported_procedure_instances.push_back({
         source,
         instance_id,

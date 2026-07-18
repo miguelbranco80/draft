@@ -174,6 +174,7 @@ void refresh_imported_effects(
     DiagnosticSink &diagnostics) {
   package.imported_effects.clear();
   package.imported_returns.clear();
+  package.imported_writes.clear();
   for (ImportedSymbol &imported : package.imported_symbols) {
     std::string_view declaration_name = imported.public_name;
     for (const ImportedProcedureInstance &instance :
@@ -241,6 +242,35 @@ void refresh_imported_effects(
         });
       }
       package.imported_returns.push_back(std::move(imported_return));
+    }
+    for (const InterfaceDeclaration::FieldWrite &write :
+         declaration->field_writes) {
+      ImportedProcedureWrite imported_write;
+      imported_write.procedure_proxy = imported.proxy;
+      imported_write.parameter = write.parameter;
+      imported_write.indirection = write.indirection;
+      imported_write.path = write.path;
+      imported_write.value_unknown = write.value_unknown;
+      for (const InterfaceDeclaration::ReturnFlowSlot &slot :
+           write.value_flow_slots) {
+        imported_write.value_flow_slots.push_back(
+            {slot.parameter, slot.path, slot.context});
+      }
+      for (const InterfaceDeclaration::Effect &effect :
+           write.value_contract_effects) {
+        imported_write.value_contract_effects.push_back({
+            imported.proxy,
+            effect.kind,
+            effect.root_identity,
+            effect.root_relative_path,
+            effect.declaration,
+            effect.detail,
+            effect.flow_parameter,
+            effect.flow_path,
+            effect.flow_context,
+        });
+      }
+      package.imported_writes.push_back(std::move(imported_write));
     }
   }
 }

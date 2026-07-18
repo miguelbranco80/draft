@@ -156,7 +156,9 @@ public:
         seed_parameter_slots(procedure.symbol);
         visit_block(procedure.body);
         if (result_.procedures[index].return_values !=
-            discovered.return_values) {
+                discovered.return_values ||
+            result_.procedures[index].field_writes !=
+                discovered.field_writes) {
           returns_changed = true;
         }
         result_.procedures[index] = std::move(discovered);
@@ -222,6 +224,11 @@ private:
     SymbolId symbol;
     std::vector<std::string> fields;
     bool context = false;
+    // Dereference adds one and address-of removes one. A positive balance
+    // rooted at a parameter reaches storage owned by the caller; zero or less
+    // names storage local to this procedure even when its address is passed to
+    // another procedure.
+    int indirection = 0;
   };
 
   struct StoredProcedureValue {
@@ -345,10 +352,19 @@ private:
       }
       return std::nullopt;
     }
-    if ((expression.kind == HirExpressionKind::Dereference ||
-         expression.kind == HirExpressionKind::Address) &&
+    if (expression.kind == HirExpressionKind::Address &&
         !expression.operands.empty()) {
-      return storage_path(expression.operands.front());
+      std::optional<StoragePath> result =
+          storage_path(expression.operands.front());
+      if (result.has_value()) --result->indirection;
+      return result;
+    }
+    if (expression.kind == HirExpressionKind::Dereference &&
+        !expression.operands.empty()) {
+      std::optional<StoragePath> result =
+          storage_path(expression.operands.front());
+      if (result.has_value()) ++result->indirection;
+      return result;
     }
     if (expression.kind != HirExpressionKind::Member ||
         expression.operands.empty()) {
@@ -583,6 +599,127 @@ private:
     return substitute_return_value(canonical, arguments);
   }
 
+  [[nodiscard]] ProcedureValueSummary imported_write_value(
+      const ImportedProcedureWrite &write,
+      const std::vector<ProcedureArgumentSummary> &arguments) const {
+    ProcedureValueSummary canonical;
+    canonical.unknown = write.value_unknown;
+    for (const ImportedReturnFlowSlot &slot : write.value_flow_slots) {
+      canonical.flow_slots.push_back(
+          {slot.parameter, slot.path, slot.context});
+    }
+    for (const ImportedEffect &effect : write.value_contract_effects) {
+      add_effect(
+          canonical.contract_effects,
+          {effect.kind,
+           {},
+           effect.detail,
+           effect.root_identity,
+           effect.root_relative_path,
+           effect.declaration,
+           effect.flow_parameter,
+           effect.flow_path,
+           effect.flow_context});
+    }
+    return substitute_return_value(canonical, arguments);
+  }
+
+  void apply_value_write(
+      StoragePath destination,
+      const std::vector<std::string> &relative_path,
+      const ProcedureValueSummary &value) {
+    destination.fields.insert(
+        destination.fields.end(), relative_path.begin(), relative_path.end());
+    // A call can itself be the statement that makes a pointer write escape
+    // from the current procedure. Publish that transitive write before
+    // updating the current procedure's local value environment.
+    merge_field_write(destination, destination.fields, value);
+    if (stored_value(
+            destination.symbol,
+            destination.fields,
+            destination.context) == nullptr) {
+      ProcedureValueSummary original;
+      if (destination.context) {
+        original.flow_slots.push_back({
+            std::numeric_limits<std::uint32_t>::max(),
+            destination.fields,
+            true});
+      } else if (destination.symbol.is_valid() &&
+                 package_.symbols.symbol(destination.symbol).kind ==
+                     SymbolKind::Parameter) {
+        const std::optional<std::uint32_t> ordinal =
+            parameter_ordinal(destination.symbol);
+        if (ordinal.has_value()) {
+          original.flow_slots.push_back(
+              {*ordinal, destination.fields, false});
+        }
+      }
+      if (!value_is_empty(original)) {
+        merge_stored_value(
+            destination.symbol,
+            destination.fields,
+            original,
+            destination.context);
+      }
+    }
+    merge_stored_value(
+        destination.symbol,
+        std::move(destination.fields),
+        value,
+        destination.context);
+  }
+
+  void apply_call_writes(
+      const HirExpression &call,
+      SymbolId callee,
+      const std::vector<ProcedureArgumentSummary> &arguments) {
+    auto apply = [&](std::uint32_t parameter,
+                     std::uint32_t indirection,
+                     const std::vector<std::string> &path,
+                     const ProcedureValueSummary &value) {
+      if (call.operands.empty() ||
+          parameter >= call.operands.size() - 1U) {
+        return;
+      }
+      std::optional<StoragePath> destination =
+          storage_path(call.operands[parameter + 1U]);
+      if (!destination.has_value()) return;
+      // Apply every dereference performed from the callee's formal parameter.
+      // Explicit address operations already contributed negative balances.
+      destination->indirection += static_cast<int>(indirection);
+      apply_value_write(
+          std::move(*destination),
+          path,
+          substitute_return_value(value, arguments));
+    };
+
+    if (const ProcedureEffectSummary *summary = result_.find(callee)) {
+      for (const ProcedureFieldWriteSummary &write : summary->field_writes) {
+        apply(
+            write.parameter,
+            write.indirection,
+            write.path,
+            write.value);
+      }
+      return;
+    }
+    for (const ImportedProcedureWrite &write : package_.imported_writes) {
+      if (write.procedure_proxy != callee) continue;
+      if (call.operands.empty() ||
+          write.parameter >= call.operands.size() - 1U) {
+        continue;
+      }
+      std::optional<StoragePath> destination =
+          storage_path(call.operands[write.parameter + 1U]);
+      if (!destination.has_value()) continue;
+      destination->indirection += static_cast<int>(write.indirection);
+      apply_value_write(
+          std::move(*destination),
+          write.path,
+          imported_write_value(write, arguments));
+    }
+  }
+
   [[nodiscard]] ProcedureValueSummary call_return_value(
       const HirExpression &call,
       const std::vector<std::string> &path) const {
@@ -733,6 +870,35 @@ private:
     return procedure_value_at(id, {});
   }
 
+  void merge_field_write(
+      const StoragePath &destination,
+      const std::vector<std::string> &path,
+      const ProcedureValueSummary &value) {
+    if (destination.context || destination.indirection <= 0 ||
+        !destination.symbol.is_valid() ||
+        package_.symbols.symbol(destination.symbol).kind !=
+            SymbolKind::Parameter) {
+      return;
+    }
+    const std::optional<std::uint32_t> ordinal =
+        parameter_ordinal(destination.symbol);
+    if (!ordinal.has_value()) return;
+    for (ProcedureFieldWriteSummary &write : current_->field_writes) {
+      if (write.parameter == *ordinal &&
+          write.indirection ==
+              static_cast<std::uint32_t>(destination.indirection) &&
+          write.path == path) {
+        merge_value(write.value, value);
+        return;
+      }
+    }
+    current_->field_writes.push_back({
+        *ordinal,
+        static_cast<std::uint32_t>(destination.indirection),
+        path,
+        value});
+  }
+
   void merge_assignment_value(
       StoragePath destination,
       TypeId destination_type,
@@ -765,10 +931,13 @@ private:
               destination.context);
         }
       }
+      const ProcedureValueSummary assigned =
+          procedure_value_at(source, relative);
+      merge_field_write(destination, complete, assigned);
       merge_stored_value(
           destination.symbol,
           std::move(complete),
-          procedure_value_at(source, relative),
+          assigned,
           destination.context);
     }
   }
@@ -830,6 +999,7 @@ private:
       }
       current_->direct_invocations.push_back(
           {call_id, callee.symbol, arguments});
+      apply_call_writes(call, callee.symbol, arguments);
       return;
     }
     ProcedureFlowInvocationSummary invocation{

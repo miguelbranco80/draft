@@ -217,6 +217,19 @@ struct ImportedProcedureReturn {
   bool unknown = false;
 };
 
+// Consumer-local form of a public procedure's typed write-back contract.
+// Symbols inside value effects have already been rebound to the imported
+// procedure proxy; origin slots still name that procedure's formal parameters.
+struct ImportedProcedureWrite {
+  SymbolId procedure_proxy;
+  std::uint32_t parameter = std::numeric_limits<std::uint32_t>::max();
+  std::uint32_t indirection = 0;
+  std::vector<std::string> path;
+  std::vector<ImportedReturnFlowSlot> value_flow_slots;
+  std::vector<ImportedEffect> value_contract_effects;
+  bool value_unknown = false;
+};
+
 // ImportedType preserves nominal identity after an interface type has been
 // reconstructed in a consumer-local TypeStore. This prevents a downstream
 // interface from rebaptizing `dep:T` as `consumer:T` when it merely exposes the
@@ -314,6 +327,7 @@ struct SemanticPackage {
   std::vector<ImportedType> imported_types;
   std::vector<ImportedEffect> imported_effects;
   std::vector<ImportedProcedureReturn> imported_returns;
+  std::vector<ImportedProcedureWrite> imported_writes;
   std::vector<DeclarationDenial> declaration_denials;
   std::vector<SemanticSite> sites;
   std::vector<NativeBinding> native_bindings;

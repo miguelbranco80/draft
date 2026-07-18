@@ -136,9 +136,12 @@ declaration reaches through helpers and procedure-valued fields. This is a
 semantic may-target set: all source assignments are unioned, and optimization
 is never allowed to narrow it. Returned procedure leaves carry either their
 factory-input slots or a flattened imported call contract, keeping those two
-parameter scopes distinct across package interfaces. Writes that must flow back
-through a separate callee and nested higher-order callback arguments remain the
-next closure extension.
+parameter scopes distinct across package interfaces. Typed pointer-field writes
+carry the same value contracts back through local or imported callees; a signed
+address/dereference balance prevents writes to an addressed local copy from
+being misreported as caller mutation. Body replay makes chained write-through
+helpers independent of declaration order. Nested higher-order callback
+arguments remain the next closure extension.
 
 External artifact summaries use the strict
 `draft-provider-denial-summary-v1` line format documented in section 12. The

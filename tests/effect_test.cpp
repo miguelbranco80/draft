@@ -543,6 +543,174 @@ through_return :: proc() {
       !has_effect(*caller_summary, draft::EffectKind::UnknownCall));
 }
 
+void test_pointer_field_write_flow(TestState &state) {
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  draft::LoadedPackage loaded;
+  loaded.short_name = "write_effects";
+  draft::LoadedPackageFile file;
+  file.kind = draft::PackageFileKind::DraftSource;
+  file.relative_name = "package.draft";
+  file.source = sources.add_source(
+      "package.draft",
+      R"draft(package write_effects
+
+Callback_Box :: struct {
+    callback: proc(),
+}
+
+// This deliberately precedes install. Effect discovery must replay procedure
+// bodies until the write-through contract is independent of source order.
+forward_install :: proc(destination: ^Callback_Box, callback: proc()) {
+    install(destination, callback)
+}
+
+// A two-level contract must retain both dereferences. Taking the address of the
+// pointer parameter below removes one level, leaving a normal one-level write
+// contract for callers of deep_forward.
+deep_forward :: proc(destination: ^Callback_Box, callback: proc()) {
+    deep_install(&destination, callback)
+}
+
+install :: proc(destination: ^Callback_Box, callback: proc()) {
+    destination^.callback = callback
+}
+
+deep_install :: proc(destination: ^^Callback_Box, callback: proc()) {
+    destination^^.callback = callback
+}
+
+// A value parameter is local storage. Assigning it does not change the value
+// held by the caller and therefore must not publish a write-back contract.
+local_only :: proc(box: Callback_Box, callback: proc()) {
+    box.callback = callback
+}
+
+// Taking the address of a value parameter still only exposes this procedure's
+// local copy. The address and the install contract's dereference cancel.
+install_local_copy :: proc(box: Callback_Box, callback: proc()) {
+    install(&box, callback)
+}
+
+danger :: proc() {
+    assert(true)
+}
+
+through_install :: proc() {
+    box: Callback_Box
+    forward_install(&box, danger)
+    box.callback()
+    deep_box: Callback_Box
+    deep_forward(&deep_box, danger)
+    deep_box.callback()
+}
+)draft");
+  file.syntax.emplace(draft::parse_source_file(sources, file.source, diagnostics));
+  loaded.files.push_back(std::move(file));
+  const draft::TargetProfile target = draft::make_aarch64_macos_profile();
+  draft::SemanticAnalysisResult semantics = draft::analyze_package_semantics(
+      sources, loaded, target.facts, diagnostics);
+  draft::BodyCheckResult bodies = draft::check_package_bodies(
+      sources,
+      loaded,
+      semantics.selections,
+      semantics.package,
+      semantics.constants,
+      target.facts,
+      diagnostics);
+  const draft::EffectSummaryResult effects =
+      draft::summarize_package_effects(
+          semantics.package, bodies.program, &target);
+  if (diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+  }
+  EXPECT(state, semantics.ok);
+  EXPECT(state, bodies.ok);
+
+  const std::optional<draft::SymbolId> install =
+      symbol(semantics.package, "install");
+  const std::optional<draft::SymbolId> forward_install =
+      symbol(semantics.package, "forward_install");
+  const std::optional<draft::SymbolId> deep_install =
+      symbol(semantics.package, "deep_install");
+  const std::optional<draft::SymbolId> deep_forward =
+      symbol(semantics.package, "deep_forward");
+  const std::optional<draft::SymbolId> local_only =
+      symbol(semantics.package, "local_only");
+  const std::optional<draft::SymbolId> install_local_copy =
+      symbol(semantics.package, "install_local_copy");
+  const std::optional<draft::SymbolId> through_install =
+      symbol(semantics.package, "through_install");
+  EXPECT(state, install.has_value());
+  EXPECT(state, forward_install.has_value());
+  EXPECT(state, deep_install.has_value());
+  EXPECT(state, deep_forward.has_value());
+  EXPECT(state, local_only.has_value());
+  EXPECT(state, install_local_copy.has_value());
+  EXPECT(state, through_install.has_value());
+  if (!install || !forward_install || !deep_install || !deep_forward ||
+      !local_only || !install_local_copy || !through_install) {
+    return;
+  }
+
+  const draft::ProcedureEffectSummary *install_summary = effects.find(*install);
+  const draft::ProcedureEffectSummary *forward_summary =
+      effects.find(*forward_install);
+  const draft::ProcedureEffectSummary *deep_summary =
+      effects.find(*deep_install);
+  const draft::ProcedureEffectSummary *deep_forward_summary =
+      effects.find(*deep_forward);
+  const draft::ProcedureEffectSummary *local_summary = effects.find(*local_only);
+  const draft::ProcedureEffectSummary *local_call_summary =
+      effects.find(*install_local_copy);
+  const draft::ProcedureEffectSummary *caller_summary =
+      effects.find(*through_install);
+  EXPECT(state, install_summary != nullptr);
+  EXPECT(state, forward_summary != nullptr);
+  EXPECT(state, deep_summary != nullptr);
+  EXPECT(state, deep_forward_summary != nullptr);
+  EXPECT(state, local_summary != nullptr);
+  EXPECT(state, local_call_summary != nullptr);
+  EXPECT(state, caller_summary != nullptr);
+  if (install_summary == nullptr || forward_summary == nullptr ||
+      deep_summary == nullptr || deep_forward_summary == nullptr ||
+      local_summary == nullptr || local_call_summary == nullptr ||
+      caller_summary == nullptr) {
+    return;
+  }
+
+  EXPECT(state, install_summary->field_writes.size() == 1);
+  if (install_summary->field_writes.size() == 1) {
+    const draft::ProcedureFieldWriteSummary &write =
+        install_summary->field_writes.front();
+    EXPECT(state, write.parameter == 0);
+    EXPECT(state, write.indirection == 1);
+    EXPECT(state,
+        write.path == std::vector<std::string>{"callback"});
+    EXPECT(state, write.value.flow_slots.size() == 1);
+    if (write.value.flow_slots.size() == 1) {
+      EXPECT(state, write.value.flow_slots.front().parameter == 1);
+      EXPECT(state, write.value.flow_slots.front().path.empty());
+    }
+  }
+  EXPECT(state, forward_summary->field_writes.size() == 1);
+  EXPECT(state, deep_summary->field_writes.size() == 1);
+  if (deep_summary->field_writes.size() == 1) {
+    EXPECT(state, deep_summary->field_writes.front().indirection == 2);
+  }
+  EXPECT(state, deep_forward_summary->field_writes.size() == 1);
+  if (deep_forward_summary->field_writes.size() == 1) {
+    EXPECT(state,
+        deep_forward_summary->field_writes.front().indirection == 1);
+  }
+  EXPECT(state, local_summary->field_writes.empty());
+  EXPECT(state, local_call_summary->field_writes.empty());
+  EXPECT(state,
+      has_effect(*caller_summary, draft::EffectKind::RuntimeAssert));
+  EXPECT(state,
+      !has_effect(*caller_summary, draft::EffectKind::UnknownCall));
+}
+
 } // namespace
 
 int main() {
@@ -551,6 +719,7 @@ int main() {
   test_target_and_package_assembly_summaries(state);
   test_typed_and_context_flow_paths(state);
   test_returned_procedure_flow(state);
+  test_pointer_field_write_flow(state);
   if (state.failures != 0) {
     std::cerr << state.failures << " effect summary expectation(s) failed\n";
     return EXIT_FAILURE;

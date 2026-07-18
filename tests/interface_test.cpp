@@ -566,6 +566,10 @@ pub invoke_box :: proc(box: Callback_Box) {
     box.callback()
 }
 
+pub install :: proc(destination: ^Callback_Box, callback: proc()) {
+    destination^.callback = callback
+}
+
 pub identity_return :: proc(callback: proc()) -> proc() {
     return callback
 }
@@ -643,6 +647,29 @@ pub make_assert :: proc() -> proc() {
       }
     }
   }
+  const auto install_interface = std::find_if(
+      dependency_interface.declarations.begin(),
+      dependency_interface.declarations.end(),
+      [](const draft::InterfaceDeclaration &declaration) {
+        return declaration.name == "install";
+      });
+  EXPECT(state, install_interface != dependency_interface.declarations.end());
+  if (install_interface != dependency_interface.declarations.end()) {
+    EXPECT(state, install_interface->field_writes.size() == 1);
+    if (install_interface->field_writes.size() == 1) {
+      const draft::InterfaceDeclaration::FieldWrite &write =
+          install_interface->field_writes.front();
+      EXPECT(state, write.parameter == 0);
+      EXPECT(state, write.indirection == 1);
+      EXPECT(state,
+          write.path == std::vector<std::string>{"callback"});
+      EXPECT(state, write.value_flow_slots.size() == 1);
+      if (write.value_flow_slots.size() == 1) {
+        EXPECT(state, write.value_flow_slots.front().parameter == 1);
+        EXPECT(state, write.value_flow_slots.front().path.empty());
+      }
+    }
+  }
 
   draft::LoadedPackage consumer = parse_package(
       sources,
@@ -662,6 +689,8 @@ caller :: proc() {
     box: callbacks.Callback_Box
     box.callback = danger
     callbacks.invoke_box(box)
+    callbacks.install(&box, danger)
+    box.callback()
     selected := callbacks.identity_return(danger)
     selected()
     provided := callbacks.make_assert()

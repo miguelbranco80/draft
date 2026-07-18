@@ -190,73 +190,25 @@ public:
                summary->return_values) {
             InterfaceDeclaration::ReturnValue interface_return;
             interface_return.path = returned.path;
-            interface_return.unknown = returned.value.unknown;
-            for (const ProcedureFlowSlot &slot : returned.value.flow_slots) {
-              interface_return.flow_slots.push_back(
-                  {slot.parameter, slot.path, slot.context});
-            }
-            std::vector<SemanticEffect> contract =
-                returned.value.contract_effects;
-            for (SymbolId target : returned.value.targets) {
-              const SemanticEffect declaration_effect{
-                  EffectKind::Declaration,
-                  target,
-                  "returned procedure",
-                  {},
-                  {},
-                  {}};
-              if (std::find(contract.begin(), contract.end(),
-                            declaration_effect) == contract.end()) {
-                contract.push_back(declaration_effect);
-              }
-              if (const ProcedureEffectSummary *target_summary =
-                      effects_->find(target)) {
-                for (const SemanticEffect &effect : target_summary->effects) {
-                  if (std::find(contract.begin(), contract.end(), effect) ==
-                      contract.end()) {
-                    contract.push_back(effect);
-                  }
-                }
-              } else {
-                bool imported_known = false;
-                for (const ImportedSymbol &imported :
-                     package_.imported_symbols) {
-                  if (imported.proxy == target) {
-                    imported_known = imported.has_effect_summary;
-                    break;
-                  }
-                }
-                if (imported_known) {
-                  for (const ImportedEffect &effect :
-                       package_.imported_effects) {
-                    if (effect.procedure_proxy != target) continue;
-                    const SemanticEffect semantic_effect{
-                        effect.kind,
-                        {},
-                        effect.detail,
-                        effect.root_identity,
-                        effect.root_relative_path,
-                        effect.declaration,
-                        effect.flow_parameter,
-                        effect.flow_path,
-                        effect.flow_context};
-                    if (std::find(
-                            contract.begin(),
-                            contract.end(),
-                            semantic_effect) == contract.end()) {
-                      contract.push_back(semantic_effect);
-                    }
-                  }
-                } else {
-                  interface_return.unknown = true;
-                }
-              }
-            }
-            for (const SemanticEffect &effect : contract) {
-              interface_return.contract_effects.push_back(
-                  translate_effect(effect));
-            }
+            translate_procedure_value(
+                returned.value,
+                interface_return.flow_slots,
+                interface_return.contract_effects,
+                interface_return.unknown);
             declaration.return_values.push_back(std::move(interface_return));
+          }
+          for (const ProcedureFieldWriteSummary &write :
+               summary->field_writes) {
+            InterfaceDeclaration::FieldWrite interface_write;
+            interface_write.parameter = write.parameter;
+            interface_write.indirection = write.indirection;
+            interface_write.path = write.path;
+            translate_procedure_value(
+                write.value,
+                interface_write.value_flow_slots,
+                interface_write.value_contract_effects,
+                interface_write.value_unknown);
+            declaration.field_writes.push_back(std::move(interface_write));
           }
         }
       }
@@ -322,6 +274,72 @@ private:
     result.root_relative_path = identity_.root_relative_path;
     result.declaration = package_.symbols.symbol(effect.symbol).name;
     return result;
+  }
+
+  void translate_procedure_value(
+      const ProcedureValueSummary &source,
+      std::vector<InterfaceDeclaration::ReturnFlowSlot> &flow_slots,
+      std::vector<InterfaceDeclaration::Effect> &contract_effects,
+      bool &unknown) const {
+    unknown = source.unknown;
+    for (const ProcedureFlowSlot &slot : source.flow_slots) {
+      flow_slots.push_back({slot.parameter, slot.path, slot.context});
+    }
+    std::vector<SemanticEffect> contract = source.contract_effects;
+    for (SymbolId target : source.targets) {
+      const SemanticEffect declaration_effect{
+          EffectKind::Declaration,
+          target,
+          "stored procedure",
+          {},
+          {},
+          {}};
+      if (std::find(contract.begin(), contract.end(), declaration_effect) ==
+          contract.end()) {
+        contract.push_back(declaration_effect);
+      }
+      if (const ProcedureEffectSummary *target_summary =
+              effects_->find(target)) {
+        for (const SemanticEffect &effect : target_summary->effects) {
+          if (std::find(contract.begin(), contract.end(), effect) ==
+              contract.end()) {
+            contract.push_back(effect);
+          }
+        }
+        continue;
+      }
+      bool imported_known = false;
+      for (const ImportedSymbol &imported : package_.imported_symbols) {
+        if (imported.proxy == target) {
+          imported_known = imported.has_effect_summary;
+          break;
+        }
+      }
+      if (!imported_known) {
+        unknown = true;
+        continue;
+      }
+      for (const ImportedEffect &effect : package_.imported_effects) {
+        if (effect.procedure_proxy != target) continue;
+        const SemanticEffect semantic_effect{
+            effect.kind,
+            {},
+            effect.detail,
+            effect.root_identity,
+            effect.root_relative_path,
+            effect.declaration,
+            effect.flow_parameter,
+            effect.flow_path,
+            effect.flow_context};
+        if (std::find(contract.begin(), contract.end(), semantic_effect) ==
+            contract.end()) {
+          contract.push_back(semantic_effect);
+        }
+      }
+    }
+    for (const SemanticEffect &effect : contract) {
+      contract_effects.push_back(translate_effect(effect));
+    }
   }
 
   [[nodiscard]] ConstantValue canonical_constant(ConstantValue value) const {
@@ -690,6 +708,35 @@ public:
           });
         }
         consumer_.imported_returns.push_back(std::move(imported_return));
+      }
+      for (const InterfaceDeclaration::FieldWrite &write :
+           declaration.field_writes) {
+        ImportedProcedureWrite imported_write;
+        imported_write.procedure_proxy = proxy_id;
+        imported_write.parameter = write.parameter;
+        imported_write.indirection = write.indirection;
+        imported_write.path = write.path;
+        imported_write.value_unknown = write.value_unknown;
+        for (const InterfaceDeclaration::ReturnFlowSlot &slot :
+             write.value_flow_slots) {
+          imported_write.value_flow_slots.push_back(
+              {slot.parameter, slot.path, slot.context});
+        }
+        for (const InterfaceDeclaration::Effect &effect :
+             write.value_contract_effects) {
+          imported_write.value_contract_effects.push_back({
+              proxy_id,
+              effect.kind,
+              effect.root_identity,
+              effect.root_relative_path,
+              effect.declaration,
+              effect.detail,
+              effect.flow_parameter,
+              effect.flow_path,
+              effect.flow_context,
+          });
+        }
+        consumer_.imported_writes.push_back(std::move(imported_write));
       }
       if (declaration.kind == SymbolKind::Type) {
         bind_nominal_members(
