@@ -16,55 +16,11 @@
 
 #pragma once
 
+#include "elaborator/codex_cli_runtime.h"
 #include "elaborator/provider.h"
 #include "source/diagnostic.h"
 
-#include <cstdint>
-#include <filesystem>
-#include <string>
-
 namespace draft {
-
-// Embeddings and the command-line driver own the cancellation source. The
-// adapter polls this tiny callback while a provider child is active; it never
-// assumes a process-global signal policy or retains ownership of callback state.
-using CodexCancellationRequested = bool (*)(void *state);
-
-struct CodexCliProviderOptions {
-  // distribution_root is the exact immutable installation tree. The executable
-  // must resolve inside it. Hashing only a launcher is insufficient because
-  // scripts, dynamic resources, and bundled helper binaries can change model
-  // behavior without changing that one file.
-  std::filesystem::path distribution_root;
-  // executable must resolve to an existing regular file. Symlinks are
-  // canonicalized before execution; its root-relative target path and the full
-  // non-followed distribution tree define provider configuration identity.
-  std::filesystem::path executable;
-  std::string model;
-  // Resolution must never wait forever on an external provider. The defaults
-  // are conservative for real model work; tests and embedding tools may select
-  // a smaller explicit policy. Both values are configuration identity inputs.
-  std::uint32_t timeout_milliseconds = 5U * 60U * 1000U;
-  std::uint32_t maximum_attempts = 2;
-  void *cancellation_state = nullptr;
-  CodexCancellationRequested cancellation_requested = nullptr;
-};
-
-// State owns every string referenced by the callback and must outlive the
-// SynthesisProvider returned from configure_codex_cli_provider. Callers normally
-// keep both values in one driver stack frame for the entire resolver call.
-struct CodexCliProviderState {
-  std::filesystem::path distribution_root;
-  std::filesystem::path executable;
-  std::string executable_relative_path;
-  Sha256Digest distribution_digest;
-  std::string model;
-  std::string configuration_identity;
-  std::uint32_t timeout_milliseconds = 0;
-  std::uint32_t maximum_attempts = 0;
-  void *cancellation_state = nullptr;
-  CodexCancellationRequested cancellation_requested = nullptr;
-};
 
 // Validates and hashes the exact adapter configuration, initializes state, and
 // returns a synchronous provider function table. Failure leaves state cleared

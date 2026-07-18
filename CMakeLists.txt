@@ -45,6 +45,7 @@ add_library(
   src/interop/aarch64_abi.cpp
   src/interop/c_header.cpp
   src/interop/native.cpp
+  src/judgment/codex_cli.cpp
   src/judgment/command.cpp
   src/judgment/evidence.cpp
   src/judgment/evidence_store.cpp
@@ -209,6 +210,16 @@ if(BUILD_TESTING)
   add_executable(draft_codex_cli_tests tests/codex_cli_test.cpp)
   target_link_libraries(draft_codex_cli_tests PRIVATE draft_compiler)
   add_test(NAME draft_codex_cli_tests COMMAND draft_codex_cli_tests)
+
+  add_executable(
+    draft_judgment_codex_cli_tests
+    tests/judgment_codex_cli_test.cpp
+  )
+  target_link_libraries(draft_judgment_codex_cli_tests PRIVATE draft_compiler)
+  add_test(
+    NAME draft_judgment_codex_cli_tests
+    COMMAND draft_judgment_codex_cli_tests
+  )
 
   add_executable(draft_effect_tests tests/effect_test.cpp)
   target_link_libraries(draft_effect_tests PRIVATE draft_compiler)

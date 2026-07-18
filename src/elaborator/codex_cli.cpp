@@ -13,6 +13,7 @@
 #include "base/sha256.h"
 #include "sema/symbol.h"
 
+#include <algorithm>
 #include <array>
 #include <cerrno>
 #include <chrono>
@@ -233,101 +234,101 @@ void append_field(
       padded(attachment_index) + ".bin";
 }
 
-// Constructs the complete model instruction. The output contract is repeated
-// in prose as well as enforced by the CLI JSON Schema. No surface or generated
-// workspace path is exposed.
-[[nodiscard]] bool prepare_request(
-    const SynthesisRequest &request,
-    const std::filesystem::path &directory,
+// Constructs the complete common agent context. Provider-specific callers own
+// the leading instruction, primary authored field, output schema, and response
+// interpretation. No surface or generated workspace path is exposed.
+[[nodiscard]] bool prepare_agent_request_impl(
+    std::string_view provider_instruction,
+    std::string_view request_format,
+    const AgentObligation &obligation,
+    std::string_view primary_field_name,
+    std::string_view primary_field_value,
+    std::span<const CodexAgentRequestFile> attachments,
+    std::vector<CodexCliInputFile> &files,
     std::string &prompt,
     DiagnosticSink &diagnostics) {
-  prompt =
-      "You are the Draft language synthesis provider. Produce exactly one "
-      "ordinary Draft source fragment for the supplied grammar category. "
-      "Return only a JSON object with one string field named source. The "
-      "source must contain no judge construct and no unresolved ... synthesis "
-      "site. Do not edit files. Do not inspect paths outside this isolated "
-      "request directory.\n";
-  append_field("REQUEST_FORMAT", request.format, prompt);
-  append_field("SITE", request.obligation.site_identity, prompt);
-  append_field("ROOT_IDENTITY", request.obligation.root_identity, prompt);
+  prompt.assign(provider_instruction);
+  if (prompt.empty() || prompt.back() != '\n') prompt.push_back('\n');
+  append_field("REQUEST_FORMAT", request_format, prompt);
+  append_field("SITE", obligation.site_identity, prompt);
+  append_field("ROOT_IDENTITY", obligation.root_identity, prompt);
   append_field(
-      "ROOT_RELATIVE_PATH", request.obligation.root_relative_path, prompt);
+      "ROOT_RELATIVE_PATH", obligation.root_relative_path, prompt);
   append_field(
-      "SOURCE_RELATIVE_PATH", request.obligation.source_relative_path, prompt);
-  append_field("ANCHOR_NAME", request.obligation.anchor_name, prompt);
+      "SOURCE_RELATIVE_PATH", obligation.source_relative_path, prompt);
+  append_field("ANCHOR_NAME", obligation.anchor_name, prompt);
   append_field(
       "SITE_OCCURRENCE",
-      std::to_string(request.obligation.occurrence),
+      std::to_string(obligation.occurrence),
       prompt);
   append_field(
       "GRAMMAR",
-      agent_construct_kind_name(request.obligation.kind),
+      agent_construct_kind_name(obligation.kind),
       prompt);
-  append_field("INPUT_SHA256", request.obligation.input_digest.hex(), prompt);
-  append_field("RECORD_SHA256", request.obligation.record_digest.hex(), prompt);
+  append_field("INPUT_SHA256", obligation.input_digest.hex(), prompt);
+  append_field("RECORD_SHA256", obligation.record_digest.hex(), prompt);
   append_field(
       "EXPECTED_TYPE_SHA256",
-      request.obligation.expected_type_digest.hex(),
+      obligation.expected_type_digest.hex(),
       prompt);
   append_field(
       "EXPECTED_TYPE_TEXT",
-      request.obligation.expected_type_text,
+      obligation.expected_type_text,
       prompt);
-  append_field("TARGET_IDENTITY", request.obligation.target.identity, prompt);
-  append_field("TARGET_ARCH", request.obligation.target.arch, prompt);
-  append_field("TARGET_OS", request.obligation.target.os, prompt);
-  append_field("TARGET_ABI", request.obligation.target.abi, prompt);
+  append_field("TARGET_IDENTITY", obligation.target.identity, prompt);
+  append_field("TARGET_ARCH", obligation.target.arch, prompt);
+  append_field("TARGET_OS", obligation.target.os, prompt);
+  append_field("TARGET_ABI", obligation.target.abi, prompt);
   append_field(
-      "TARGET_BYTE_ORDER", request.obligation.target.byte_order, prompt);
+      "TARGET_BYTE_ORDER", obligation.target.byte_order, prompt);
   append_field(
-      "TARGET_OBJECT_FORMAT", request.obligation.target.object_format, prompt);
-  append_field("TARGET_FILE_TAG", request.obligation.target.file_tag, prompt);
+      "TARGET_OBJECT_FORMAT", obligation.target.object_format, prompt);
+  append_field("TARGET_FILE_TAG", obligation.target.file_tag, prompt);
   append_field(
       "TARGET_POINTER_BITS",
-      std::to_string(request.obligation.target.pointer_bits),
+      std::to_string(obligation.target.pointer_bits),
       prompt);
   append_field(
       "TARGET_PAGE_SIZE",
-      std::to_string(request.obligation.target.page_size),
+      std::to_string(obligation.target.page_size),
       prompt);
   prompt += "TARGET_FEATURES ";
   append_u64(
-      static_cast<std::uint64_t>(request.obligation.target.features.size()),
+      static_cast<std::uint64_t>(obligation.target.features.size()),
       prompt);
-  for (const std::string &feature : request.obligation.target.features) {
+  for (const std::string &feature : obligation.target.features) {
     append_field("TARGET_FEATURE", feature, prompt);
   }
   prompt += "TARGET_SIMD_SHAPES ";
   append_u64(
-      static_cast<std::uint64_t>(request.obligation.target.simd_shapes.size()),
+      static_cast<std::uint64_t>(obligation.target.simd_shapes.size()),
       prompt);
-  for (const TargetSimdShape &shape : request.obligation.target.simd_shapes) {
+  for (const TargetSimdShape &shape : obligation.target.simd_shapes) {
     append_field("TARGET_SIMD_ELEMENT", shape.element, prompt);
     append_field("TARGET_SIMD_LANES", std::to_string(shape.lanes), prompt);
   }
   append_field(
       "ASSEMBLY_ARCHITECTURE",
-      request.obligation.target.assembly_architecture,
+      obligation.target.assembly_architecture,
       prompt);
   append_field(
-      "ASSEMBLY_DIALECT", request.obligation.target.assembly_dialect, prompt);
+      "ASSEMBLY_DIALECT", obligation.target.assembly_dialect, prompt);
   prompt += "ASSEMBLY_INSTRUCTIONS ";
   append_u64(
       static_cast<std::uint64_t>(
-          request.obligation.target.assembly_instructions.size()),
+          obligation.target.assembly_instructions.size()),
       prompt);
   for (const std::string &instruction :
-       request.obligation.target.assembly_instructions) {
+       obligation.target.assembly_instructions) {
     append_field("ASSEMBLY_INSTRUCTION", instruction, prompt);
   }
   append_field(
       "ENCLOSING_DECLARATION_PRESENT",
-      request.obligation.enclosing_declaration.present ? "true" : "false",
+      obligation.enclosing_declaration.present ? "true" : "false",
       prompt);
-  if (request.obligation.enclosing_declaration.present) {
+  if (obligation.enclosing_declaration.present) {
     const AgentEnclosingDeclarationContext &enclosing =
-        request.obligation.enclosing_declaration;
+        obligation.enclosing_declaration;
     if (sha256(enclosing.source) != enclosing.source_digest) {
       provider_error(
           diagnostics,
@@ -362,10 +363,10 @@ void append_field(
   }
   prompt += "ACTIVE_DENIALS ";
   append_u64(
-      static_cast<std::uint64_t>(request.obligation.active_denials.size()),
+      static_cast<std::uint64_t>(obligation.active_denials.size()),
       prompt);
   for (const AgentActiveDenial &denial :
-       request.obligation.active_denials) {
+       obligation.active_denials) {
     if (sha256(denial.selector) != denial.selector_digest) {
       provider_error(
           diagnostics, "Codex active denial identity is inconsistent");
@@ -376,9 +377,9 @@ void append_field(
   }
   prompt += "PERMITTED_CONTEXT_FIELDS ";
   append_u64(
-      static_cast<std::uint64_t>(request.obligation.context_fields.size()),
+      static_cast<std::uint64_t>(obligation.context_fields.size()),
       prompt);
-  for (const AgentContextField &field : request.obligation.context_fields) {
+  for (const AgentContextField &field : obligation.context_fields) {
     append_field("CONTEXT_FIELD_NAME", field.name, prompt);
     append_field("CONTEXT_FIELD_OFFSET", std::to_string(field.offset), prompt);
     append_field("CONTEXT_FIELD_TYPE_SHA256", field.type_digest.hex(), prompt);
@@ -387,10 +388,10 @@ void append_field(
   prompt += "PARAMETRIC_PARAMETERS ";
   append_u64(
       static_cast<std::uint64_t>(
-          request.obligation.parametric_parameters.size()),
+          obligation.parametric_parameters.size()),
       prompt);
   for (const AgentParametricParameter &parameter :
-       request.obligation.parametric_parameters) {
+       obligation.parametric_parameters) {
     append_field("PARAMETER_NAME", parameter.name, prompt);
     append_field(
         "PARAMETER_KIND", symbol_kind_name(parameter.kind), prompt);
@@ -400,9 +401,9 @@ void append_field(
   }
   prompt += "TYPE_CONTEXTS ";
   append_u64(
-      static_cast<std::uint64_t>(request.obligation.type_contexts.size()),
+      static_cast<std::uint64_t>(obligation.type_contexts.size()),
       prompt);
-  for (const AgentTypeContext &type : request.obligation.type_contexts) {
+  for (const AgentTypeContext &type : obligation.type_contexts) {
     if (sha256(type.definition) != type.definition_digest) {
       provider_error(
           diagnostics, "Codex type context identity is inconsistent");
@@ -414,13 +415,13 @@ void append_field(
   }
   prompt += "IMPORTED_PACKAGES ";
   append_u64(
-      static_cast<std::uint64_t>(request.obligation.imported_packages.size()),
+      static_cast<std::uint64_t>(obligation.imported_packages.size()),
       prompt);
   for (std::size_t package_index = 0;
-       package_index < request.obligation.imported_packages.size();
+       package_index < obligation.imported_packages.size();
        ++package_index) {
     const AgentImportedPackageContext &package =
-        request.obligation.imported_packages[package_index];
+        obligation.imported_packages[package_index];
     if (sha256(package.definition) != package.definition_digest) {
       provider_error(
           diagnostics, "Codex imported package identity is inconsistent");
@@ -469,7 +470,7 @@ void append_field(
         }
         const std::string name = imported_documentation_attachment_name(
             package_index, documentation_index, attachment_index);
-        if (!write_file(directory / name, contents, diagnostics)) return false;
+        files.push_back({name, contents});
         append_field("IMPORT_DOC_ATTACHMENT_PATH", file.relative_path, prompt);
         append_field("IMPORT_DOC_ATTACHMENT_FILE", name, prompt);
         append_field(
@@ -480,13 +481,13 @@ void append_field(
   prompt += "GUIDING_JUDGMENTS ";
   append_u64(
       static_cast<std::uint64_t>(
-          request.obligation.guiding_judgments.size()),
+          obligation.guiding_judgments.size()),
       prompt);
   for (std::size_t judgment_index = 0;
-       judgment_index < request.obligation.guiding_judgments.size();
+       judgment_index < obligation.guiding_judgments.size();
        ++judgment_index) {
     const AgentJudgmentContext &judgment =
-        request.obligation.guiding_judgments[judgment_index];
+        obligation.guiding_judgments[judgment_index];
     if (judgment.files.size() != judgment.file_contents.size()) {
       provider_error(
           diagnostics, "Codex judgment attachment identities are inconsistent");
@@ -509,7 +510,7 @@ void append_field(
       }
       const std::string name = judgment_attachment_name(
           judgment_index, attachment_index);
-      if (!write_file(directory / name, contents, diagnostics)) return false;
+      files.push_back({name, contents});
       append_field("JUDGMENT_ATTACHMENT_PATH", file.relative_path, prompt);
       append_field("JUDGMENT_ATTACHMENT_FILE", name, prompt);
       append_field("JUDGMENT_ATTACHMENT_SHA256", file.digest.hex(), prompt);
@@ -517,13 +518,13 @@ void append_field(
   }
   prompt += "DOCUMENTATION ";
   append_u64(
-      static_cast<std::uint64_t>(request.obligation.documentation.size()),
+      static_cast<std::uint64_t>(obligation.documentation.size()),
       prompt);
   for (std::size_t documentation_index = 0;
-       documentation_index < request.obligation.documentation.size();
+       documentation_index < obligation.documentation.size();
        ++documentation_index) {
     const AgentDocumentationContext &documentation =
-        request.obligation.documentation[documentation_index];
+        obligation.documentation[documentation_index];
     if (documentation.files.size() != documentation.file_contents.size()) {
       provider_error(
           diagnostics,
@@ -550,7 +551,7 @@ void append_field(
       }
       const std::string name = documentation_attachment_name(
           documentation_index, attachment_index);
-      if (!write_file(directory / name, contents, diagnostics)) return false;
+      files.push_back({name, contents});
       append_field("DOC_ATTACHMENT_PATH", file.relative_path, prompt);
       append_field("DOC_ATTACHMENT_FILE", name, prompt);
       append_field("DOC_ATTACHMENT_SHA256", file.digest.hex(), prompt);
@@ -559,10 +560,10 @@ void append_field(
   prompt += "VALIDATION_CONTEXT ";
   append_u64(
       static_cast<std::uint64_t>(
-          request.obligation.validation_context.size()),
+          obligation.validation_context.size()),
       prompt);
   for (const AgentValidationContext &validation :
-       request.obligation.validation_context) {
+       obligation.validation_context) {
     if (sha256(validation.source) != validation.source_digest) {
       provider_error(
           diagnostics, "Codex validation context identity is inconsistent");
@@ -575,13 +576,13 @@ void append_field(
         "VALIDATION_SOURCE_SHA256", validation.source_digest.hex(), prompt);
     append_field("VALIDATION_SOURCE", validation.source, prompt);
   }
-  append_field("AUTHOR_PROMPT", request.prompt, prompt);
+  append_field(primary_field_name, primary_field_value, prompt);
   prompt += "VISIBLE_BINDINGS ";
   append_u64(
-      static_cast<std::uint64_t>(request.obligation.visible_bindings.size()),
+      static_cast<std::uint64_t>(obligation.visible_bindings.size()),
       prompt);
   for (const AgentVisibleBinding &binding :
-       request.obligation.visible_bindings) {
+       obligation.visible_bindings) {
     append_field("BINDING_NAME", binding.name, prompt);
     append_field("BINDING_KIND", symbol_kind_name(binding.kind), prompt);
     append_field("BINDING_TYPE_SHA256", binding.type_digest.hex(), prompt);
@@ -622,9 +623,9 @@ void append_field(
     }
   }
   prompt += "ATTACHMENTS ";
-  append_u64(static_cast<std::uint64_t>(request.attachments.size()), prompt);
-  for (std::size_t index = 0; index < request.attachments.size(); ++index) {
-    const SynthesisRequestFile &attachment = request.attachments[index];
+  append_u64(static_cast<std::uint64_t>(attachments.size()), prompt);
+  for (std::size_t index = 0; index < attachments.size(); ++index) {
+    const CodexAgentRequestFile &attachment = attachments[index];
     if (attachment.contents.size() != attachment.size ||
         sha256(attachment.contents) != attachment.digest) {
       provider_error(
@@ -632,9 +633,7 @@ void append_field(
       return false;
     }
     const std::string name = attachment_name(index);
-    if (!write_file(directory / name, attachment.contents, diagnostics)) {
-      return false;
-    }
+    files.push_back({name, attachment.contents});
     append_field("ATTACHMENT_PATH", attachment.relative_path, prompt);
     append_field("ATTACHMENT_FILE", name, prompt);
     append_field("ATTACHMENT_SHA256", attachment.digest.hex(), prompt);
@@ -931,54 +930,40 @@ private:
     SynthesisResponse &response,
     DiagnosticSink &diagnostics) {
   auto *state = static_cast<CodexCliProviderState *>(opaque);
-  if (!verify_codex_distribution(*state, diagnostics)) return false;
-  TemporaryDirectory temporary;
-  if (!temporary.create(diagnostics)) return false;
+  std::vector<CodexAgentRequestFile> attachments;
+  attachments.reserve(request.attachments.size());
+  for (const SynthesisRequestFile &attachment : request.attachments) {
+    attachments.push_back({
+        attachment.relative_path,
+        attachment.size,
+        attachment.digest,
+        attachment.contents,
+    });
+  }
+  std::vector<CodexCliInputFile> files;
   std::string prompt;
-  if (!prepare_request(request, temporary.path(), prompt, diagnostics) ||
-      !write_file(temporary.path() / "schema.json", kOutputSchema, diagnostics) ||
-      !write_file(temporary.path() / "prompt.txt", prompt, diagnostics)) {
-    return false;
-  }
-  bool completed = false;
-  std::string last_failure;
-  for (std::uint32_t attempt = 0; attempt < state->maximum_attempts; ++attempt) {
-    if (cancellation_requested(*state)) {
-      provider_error(diagnostics, "Codex provider cancelled");
-      return false;
-    }
-    // A failed process may have left a partial final message. Removing it makes
-    // each attempt independent and prevents a later successful exit from
-    // accidentally consuming stale bytes.
-    std::error_code ignored;
-    std::filesystem::remove(temporary.path() / "response.json", ignored);
-    DiagnosticSink attempt_diagnostics;
-    if (run_codex_once(*state, temporary.path(), attempt_diagnostics)) {
-      completed = true;
-      break;
-    }
-    if (cancellation_requested(*state)) {
-      provider_error(diagnostics, "Codex provider cancelled");
-      return false;
-    }
-    if (!attempt_diagnostics.diagnostics().empty()) {
-      last_failure = attempt_diagnostics.diagnostics().back().message;
-    }
-  }
-  if (!completed) {
-    provider_error(
-        diagnostics,
-        "Codex provider failed after " +
-            std::to_string(state->maximum_attempts) + " attempt(s): " +
-            (last_failure.empty() ? "no diagnostic" : last_failure));
+  constexpr std::string_view instruction =
+      "You are the Draft language synthesis provider. Produce exactly one "
+      "ordinary Draft source fragment for the supplied grammar category. "
+      "Return only a JSON object with one string field named source. The "
+      "source must contain no judge construct and no unresolved ... synthesis "
+      "site. Do not edit files. Do not inspect paths outside this isolated "
+      "request directory.";
+  if (!prepare_agent_request_impl(
+          instruction,
+          request.format,
+          request.obligation,
+          "AUTHOR_PROMPT",
+          request.prompt,
+          attachments,
+          files,
+          prompt,
+          diagnostics)) {
     return false;
   }
   std::string json;
-  if (!read_file(
-          temporary.path() / "response.json",
-          kMaximumCodexOutputBytes,
-          json,
-          diagnostics)) {
+  if (!invoke_codex_cli_runtime(
+          *state, kOutputSchema, prompt, files, json, diagnostics)) {
     return false;
   }
   SourceResponseParser parser(json);
@@ -987,29 +972,54 @@ private:
         diagnostics, "Codex final response does not match the source schema");
     return false;
   }
-  // A preflight hash prevents known-stale execution; the second hash rejects a
-  // distribution that changed while the child was active. Only a response from
-  // the exact configured tree can cross the provider boundary.
-  return verify_codex_distribution(*state, diagnostics);
+  return true;
 }
 
 } // namespace
 
-SynthesisProvider configure_codex_cli_provider(
+bool prepare_codex_agent_request(
+    std::string_view instruction,
+    std::string_view request_format,
+    const AgentObligation &obligation,
+    std::string_view primary_field_name,
+    std::string_view primary_field_value,
+    std::span<const CodexAgentRequestFile> attachments,
+    std::vector<CodexCliInputFile> &files,
+    std::string &prompt,
+    DiagnosticSink &diagnostics) {
+  files.clear();
+  return prepare_agent_request_impl(
+      instruction,
+      request_format,
+      obligation,
+      primary_field_name,
+      primary_field_value,
+      attachments,
+      files,
+      prompt,
+      diagnostics);
+}
+
+bool configure_codex_cli_runtime(
     const CodexCliProviderOptions &options,
+    std::string_view prompt_contract_identity,
+    std::string_view output_schema,
     CodexCliProviderState &state,
     DiagnosticSink &diagnostics) {
   state = {};
-  if (options.model.empty()) {
-    provider_error(diagnostics, "Codex provider model identity must not be empty");
-    return {};
+  if (options.model.empty() || prompt_contract_identity.empty() ||
+      output_schema.empty()) {
+    provider_error(
+        diagnostics,
+        "Codex provider model, prompt, and schema identities must not be empty");
+    return false;
   }
   if (options.timeout_milliseconds == 0 || options.maximum_attempts == 0 ||
       options.maximum_attempts > 8) {
     provider_error(
         diagnostics,
         "Codex timeout must be positive and attempts must be between 1 and 8");
-    return {};
+    return false;
   }
   std::error_code error;
   const std::filesystem::file_status root_status =
@@ -1020,7 +1030,7 @@ SynthesisProvider configure_codex_cli_provider(
         diagnostics,
         "Codex distribution root is invalid: '" +
             options.distribution_root.string() + "'");
-    return {};
+    return false;
   }
   const std::filesystem::path distribution_root =
       std::filesystem::canonical(options.distribution_root, error);
@@ -1029,7 +1039,7 @@ SynthesisProvider configure_codex_cli_provider(
         diagnostics,
         "Codex distribution root cannot be canonicalized: '" +
             options.distribution_root.string() + "'");
-    return {};
+    return false;
   }
   const std::filesystem::path executable =
       std::filesystem::canonical(options.executable, error);
@@ -1037,7 +1047,7 @@ SynthesisProvider configure_codex_cli_provider(
     provider_error(
         diagnostics,
         "Codex executable path is invalid: '" + options.executable.string() + "'");
-    return {};
+    return false;
   }
   const std::filesystem::path relative_executable =
       executable.lexically_relative(distribution_root);
@@ -1049,26 +1059,27 @@ SynthesisProvider configure_codex_cli_provider(
   if (!executable_is_inside) {
     provider_error(
         diagnostics, "Codex executable is outside its distribution root");
-    return {};
+    return false;
   }
   Sha256Digest distribution_digest;
   if (!hash_codex_distribution(
           distribution_root, distribution_digest, diagnostics)) {
-    return {};
+    return false;
   }
 
   Sha256 configuration;
-  configuration.update("draft.codex-cli-provider.v12");
+  configuration.update("draft.codex-cli-runtime.v1");
   configuration.update(distribution_digest.bytes);
-  configuration.update(
-      sha256(relative_executable.generic_string()).bytes);
+  configuration.update(sha256(relative_executable.generic_string()).bytes);
   configuration.update(options.model);
   configuration.update(";timeout-ms=");
   configuration.update(std::to_string(options.timeout_milliseconds));
   configuration.update(";attempts=");
   configuration.update(std::to_string(options.maximum_attempts));
-  configuration.update(kPromptContractIdentity);
-  configuration.update(kOutputSchema);
+  configuration.update(";prompt-contract-sha256=");
+  configuration.update(sha256(prompt_contract_identity).bytes);
+  configuration.update(";output-schema-sha256=");
+  configuration.update(sha256(output_schema).bytes);
   configuration.update(
       "exec;ephemeral;sandbox=read-only;skip-git;ignore-user-config;"
       "ignore-rules;color=never;stdin;output-schema;output-last-message");
@@ -1076,6 +1087,7 @@ SynthesisProvider configure_codex_cli_provider(
   state.executable = executable;
   state.executable_relative_path = relative_executable.generic_string();
   state.distribution_digest = distribution_digest;
+  state.output_schema_digest = sha256(output_schema);
   state.model = options.model;
   state.timeout_milliseconds = options.timeout_milliseconds;
   state.maximum_attempts = options.maximum_attempts;
@@ -1083,9 +1095,105 @@ SynthesisProvider configure_codex_cli_provider(
   state.cancellation_requested = options.cancellation_requested;
   state.configuration_identity =
       "codex-config-" + configuration.finalize().hex();
+  return true;
+}
+
+bool invoke_codex_cli_runtime(
+    const CodexCliProviderState &state,
+    std::string_view output_schema,
+    std::string_view prompt,
+    std::span<const CodexCliInputFile> files,
+    std::string &response_json,
+    DiagnosticSink &diagnostics) {
+  if (sha256(output_schema) != state.output_schema_digest) {
+    provider_error(
+        diagnostics,
+        "Codex output schema does not match configured runtime identity");
+    return false;
+  }
+  if (!verify_codex_distribution(state, diagnostics)) return false;
+  TemporaryDirectory temporary;
+  if (!temporary.create(diagnostics)) return false;
+  std::vector<std::string> names;
+  for (const CodexCliInputFile &file : files) {
+    const bool reserved = file.name == "schema.json" ||
+        file.name == "prompt.txt" || file.name == "response.json" ||
+        file.name == "codex.log";
+    if (file.name.empty() || file.name == "." || file.name == ".." ||
+        reserved ||
+        file.name.find('/') != std::string::npos ||
+        file.name.find('\\') != std::string::npos ||
+        std::find(names.begin(), names.end(), file.name) != names.end()) {
+      provider_error(
+          diagnostics, "Codex input filename is invalid or duplicated");
+      return false;
+    }
+    names.push_back(file.name);
+    if (!write_file(temporary.path() / file.name, file.contents, diagnostics)) {
+      return false;
+    }
+  }
+  if (!write_file(
+          temporary.path() / "schema.json", output_schema, diagnostics) ||
+      !write_file(temporary.path() / "prompt.txt", prompt, diagnostics)) {
+    return false;
+  }
+
+  bool completed = false;
+  std::string last_failure;
+  for (std::uint32_t attempt = 0; attempt < state.maximum_attempts; ++attempt) {
+    if (cancellation_requested(state)) {
+      provider_error(diagnostics, "Codex provider cancelled");
+      return false;
+    }
+    std::error_code ignored;
+    std::filesystem::remove(temporary.path() / "response.json", ignored);
+    DiagnosticSink attempt_diagnostics;
+    if (run_codex_once(state, temporary.path(), attempt_diagnostics)) {
+      completed = true;
+      break;
+    }
+    if (cancellation_requested(state)) {
+      provider_error(diagnostics, "Codex provider cancelled");
+      return false;
+    }
+    if (!attempt_diagnostics.diagnostics().empty()) {
+      last_failure = attempt_diagnostics.diagnostics().back().message;
+    }
+  }
+  if (!completed) {
+    provider_error(
+        diagnostics,
+        "Codex provider failed after " +
+            std::to_string(state.maximum_attempts) + " attempt(s): " +
+            (last_failure.empty() ? "no diagnostic" : last_failure));
+    return false;
+  }
+  if (!read_file(
+          temporary.path() / "response.json",
+          kMaximumCodexOutputBytes,
+          response_json,
+          diagnostics)) {
+    return false;
+  }
+  return verify_codex_distribution(state, diagnostics);
+}
+
+SynthesisProvider configure_codex_cli_provider(
+    const CodexCliProviderOptions &options,
+    CodexCliProviderState &state,
+    DiagnosticSink &diagnostics) {
+  if (!configure_codex_cli_runtime(
+          options,
+          kPromptContractIdentity,
+          kOutputSchema,
+          state,
+          diagnostics)) {
+    return {};
+  }
 
   SynthesisProvider provider;
-  provider.provider_identity = "openai-codex-cli-v18";
+  provider.provider_identity = "openai-codex-cli-v19";
   provider.model_identity = state.model;
   provider.configuration_identity = state.configuration_identity;
   provider.state = &state;

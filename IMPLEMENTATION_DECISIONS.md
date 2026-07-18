@@ -664,3 +664,24 @@ persisted immediately. A semantic failure therefore revokes prior evidence even
 when the aggregate command fails, while an invocation or protocol failure does
 not fabricate a qualitative verdict. Only an all-pass completed aggregate may
 publish its returned rows into a resolution manifest.
+
+## Shared Codex runtime for synthesis and judgment
+
+Status: first synthesis and judging adapters implemented.
+
+Both adapters use one complete `AgentObligation` renderer and one hardened
+Codex child-process runtime. The shared boundary owns the explicit immutable
+distribution identity, compiler-generated private filenames, output schema
+identity, fixed argv, read-only isolated directory, retry deadline,
+cancellation, child reaping, bounded output, and pre/post distribution checks.
+Synthesis and judgment retain separate prompt contracts, output schemas,
+response parsers, configured state, and provider-neutral function tables.
+
+The judgment adapter adds the resolved-program, compiler, aggregation-policy,
+validator, and requested-artifact identities after rendering the common typed
+context. Artifact bytes are rehashed immediately before entering the private
+request directory. Its exact two-field JSON parser accepts member order as JSON
+semantics require, but rejects duplicates, unknown fields, malformed Unicode,
+unknown verdicts, empty rationales, and trailing bytes. A verdict remains only
+a provider response: the compiler-owned command constructs and durably records
+evidence, and only the later all-pass manifest operation may select it.
