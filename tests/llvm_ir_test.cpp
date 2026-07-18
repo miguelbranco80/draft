@@ -15,6 +15,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 namespace {
 
@@ -41,7 +42,9 @@ struct EmittedFixture {
 // Runs the complete agent-free semantic/MIR/LLVM path for one in-memory file.
 // Keeping this helper local makes byte-for-byte comparisons independent from
 // filesystem order and from the native toolchain adapter.
-[[nodiscard]] EmittedFixture emit_fixture(std::string text) {
+[[nodiscard]] EmittedFixture emit_fixture(
+    std::string text,
+    std::vector<draft::SourceExpansionMap> expansion_maps = {}) {
   draft::SourceManager sources;
   draft::DiagnosticSink diagnostics;
   draft::LoadedPackage loaded;
@@ -49,7 +52,8 @@ struct EmittedFixture {
   draft::LoadedPackageFile file;
   file.kind = draft::PackageFileKind::DraftSource;
   file.relative_name = "package.draft";
-  file.source = sources.add_source("package.draft", std::move(text));
+  file.source = sources.add_source(
+      "package.draft [resolved]", std::move(text), std::move(expansion_maps));
   file.syntax.emplace(draft::parse_source_file(sources, file.source, diagnostics));
   loaded.files.push_back(std::move(file));
 
@@ -83,6 +87,44 @@ struct EmittedFixture {
   result.text = std::move(module.text);
   result.diagnostics = draft::render_diagnostics(sources, diagnostics);
   return result;
+}
+
+void test_generated_debug_locations_are_hermetic(TestState &state) {
+  std::string source = R"draft(package generated_debug
+
+generated :: proc() -> i64 {
+    return 7
+}
+)draft";
+  const std::size_t begin = source.find("generated ::");
+  const std::size_t end = source.find("}\n", begin) + 1;
+  std::vector<draft::SourceExpansionMap> maps;
+  maps.push_back({
+      static_cast<std::uint32_t>(begin),
+      static_cast<std::uint32_t>(end),
+      "/private/checkout-that-must-not-leak/surface.draft",
+      {41, 7},
+      {41, 10},
+      "workspace:generated-debug:surface.draft:declaration:0",
+  });
+  const EmittedFixture emitted = emit_fixture(std::move(source), std::move(maps));
+  if (!emitted.ok) std::cerr << emitted.diagnostics;
+  EXPECT(state, emitted.ok);
+  EXPECT(state, emitted.text.find(
+      "!DIFile(filename: \"surface.draft\", directory: "
+      "\"draft/workspace/agent_2Dnoop\")") != std::string::npos);
+  EXPECT(state, emitted.text.find(
+      "!DILocation(line: 41, column: 7") != std::string::npos);
+  EXPECT(state, emitted.text.find(", !dbg !") != std::string::npos);
+  EXPECT(state, emitted.text.find("draft.debug.begin") == std::string::npos);
+  EXPECT(state, emitted.text.find("draft.debug.end") == std::string::npos);
+  EXPECT(state, emitted.text.find(
+      "draft.generated:workspace:generated-debug:surface.draft:declaration:0") !=
+      std::string::npos);
+  EXPECT(state, emitted.text.find("checkout-that-must-not-leak") ==
+      std::string::npos);
+  EXPECT(state, emitted.text.find("package.draft [resolved]") ==
+      std::string::npos);
 }
 
 void test_agent_constructs_have_no_runtime_footprint(TestState &state) {
@@ -563,6 +605,7 @@ main :: proc() -> int {
 int main() {
   TestState state;
   test_agent_constructs_have_no_runtime_footprint(state);
+  test_generated_debug_locations_are_hermetic(state);
   test_scalar_executable_module(state);
   if (state.failures != 0) {
     std::cerr << state.failures << " LLVM IR expectation(s) failed\n";

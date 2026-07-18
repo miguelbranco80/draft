@@ -68,6 +68,35 @@ struct BoundsSite {
   LineColumn location;
 };
 
+// LLVM debug metadata is kept deliberately smaller than the semantic source
+// model. A coordinate names one stable logical file, its user-facing location,
+// and, for synthesized bytes, the exact generated location and persistent site
+// identity. The latter two are retained in a zero-cost debug label while the
+// DILocation points tools at the authored synthesis site.
+struct DebugCoordinate {
+  std::string file_name;
+  LineColumn surface;
+  LineColumn generated;
+  std::string site_identity;
+  bool synthesized = false;
+};
+
+struct DebugMetadataNode {
+  std::size_t id = 0;
+  std::string body;
+};
+
+struct DebugFile {
+  std::string name;
+  std::size_t metadata = 0;
+};
+
+struct DebugScope {
+  std::size_t subprogram = 0;
+  std::size_t file = 0;
+  std::size_t metadata = 0;
+};
+
 [[nodiscard]] std::string encoded_name(std::string_view text) {
   static constexpr char digits[] = "0123456789ABCDEF";
   std::string result;
@@ -119,6 +148,61 @@ struct BoundsSite {
   return result;
 }
 
+// The MIR printer emits one small begin/end comment pair around each operation
+// because many operation cases print directly to the shared module stream. This
+// final linear pass removes those internal comments and attaches the operation's
+// location to its first real LLVM instruction. Keeping that mechanical concern
+// here avoids threading punctuation through every load, store, call, and ABI
+// expansion case. A switch is the only multiline LLVM instruction we emit; its
+// metadata belongs after the closing bracket rather than after the first line.
+[[nodiscard]] std::string attach_debug_locations(std::string_view module) {
+  static constexpr std::string_view begin_prefix =
+      "  ; draft.debug.begin !";
+  static constexpr std::string_view end_marker = "  ; draft.debug.end";
+  std::string result;
+  result.reserve(module.size());
+  std::string location;
+  bool waiting_for_switch_end = false;
+  std::size_t cursor = 0;
+  while (cursor < module.size()) {
+    const std::size_t newline = module.find('\n', cursor);
+    const std::size_t end = newline == std::string_view::npos
+        ? module.size()
+        : newline;
+    const std::string_view line = module.substr(cursor, end - cursor);
+    if (line.starts_with(begin_prefix)) {
+      location.assign(line.substr(begin_prefix.size()));
+      waiting_for_switch_end = false;
+    } else if (line == end_marker) {
+      location.clear();
+      waiting_for_switch_end = false;
+    } else {
+      bool attach = false;
+      if (!location.empty() && line.starts_with("  ")) {
+        const std::string_view instruction = line.substr(2);
+        if (waiting_for_switch_end) {
+          attach = instruction == "]";
+        } else if (instruction.starts_with("switch ")) {
+          waiting_for_switch_end = true;
+        } else if (!instruction.empty() && !instruction.starts_with(";")) {
+          attach = true;
+        }
+      }
+      result.append(line);
+      if (attach) {
+        result += ", !dbg !";
+        result += location;
+        location.clear();
+        waiting_for_switch_end = false;
+      }
+      if (newline != std::string_view::npos) result.push_back('\n');
+    }
+    if (newline == std::string_view::npos) break;
+    cursor = newline + 1;
+  }
+  return result;
+}
+
 // LLVM names the weakest portable atomic order `monotonic`; Draft spells that
 // order `relaxed`, following the terminology programmers usually see in source
 // languages.  Keep the translation in one small, exhaustive function so every
@@ -166,6 +250,7 @@ public:
     LlvmIrResult result;
     initial_errors_ = diagnostics_.error_count();
     collect_strings();
+    initialize_debug_metadata();
 
     output_ << "; Draft bootstrap LLVM module\n"
             << "source_filename = \"draft:"
@@ -187,9 +272,10 @@ public:
         emit_validation_entry();
       }
     }
+    emit_debug_metadata();
 
     result.ok = diagnostics_.error_count() == initial_errors_;
-    result.text = output_.str();
+    result.text = attach_debug_locations(output_.str());
     return result;
   }
 
@@ -204,6 +290,157 @@ private:
 
   [[nodiscard]] bool owns_runtime_support() const {
     return options_.emit_runtime_support || options_.emit_program_entry;
+  }
+
+  [[nodiscard]] std::string debug_directory() const {
+    // Physical workspace paths are diagnostic data, not artifact identities.
+    // A package-qualified virtual directory keeps same-named files from two
+    // packages distinct and makes LLVM output reproducible across checkouts.
+    return "draft/" + encoded_name(options_.package.root_identity) + "/" +
+        encoded_name(options_.package.root_relative_path);
+  }
+
+  [[nodiscard]] static std::string debug_file_name(std::string path) {
+    static constexpr std::string_view resolved_suffix = " [resolved]";
+    if (path.size() >= resolved_suffix.size() &&
+        std::string_view(path).substr(path.size() - resolved_suffix.size()) ==
+            resolved_suffix) {
+      path.resize(path.size() - resolved_suffix.size());
+    }
+    const std::size_t separator = path.find_last_of("/\\");
+    if (separator != std::string::npos) path.erase(0, separator + 1);
+    return path.empty() ? std::string("source.draft") : std::move(path);
+  }
+
+  [[nodiscard]] std::size_t add_debug_metadata(std::string body) {
+    const std::size_t id = debug_metadata_.size();
+    debug_metadata_.push_back({id, std::move(body)});
+    return id;
+  }
+
+  [[nodiscard]] std::size_t debug_file(std::string name) {
+    for (const DebugFile &file : debug_files_) {
+      if (file.name == name) return file.metadata;
+    }
+    const std::size_t metadata = add_debug_metadata(
+        "!DIFile(filename: \"" + llvm_bytes(name) + "\", directory: \"" +
+        llvm_bytes(debug_directory()) + "\")");
+    debug_files_.push_back({std::move(name), metadata});
+    return metadata;
+  }
+
+  void initialize_debug_metadata() {
+    const std::size_t compile_file = debug_file("package.draft");
+    const std::size_t type_list = add_debug_metadata("!{null}");
+    debug_subroutine_type_ = add_debug_metadata(
+        "!DISubroutineType(types: !" + std::to_string(type_list) + ")");
+    debug_compile_unit_ = add_debug_metadata(
+        "distinct !DICompileUnit(language: DW_LANG_C11, file: !" +
+        std::to_string(compile_file) +
+        ", producer: \"Draft bootstrap compiler\", isOptimized: false, "
+        "runtimeVersion: 0, emissionKind: FullDebug)");
+    debug_dwarf_flag_ = add_debug_metadata(
+        "!{i32 7, !\"Dwarf Version\", i32 4}");
+    debug_info_flag_ = add_debug_metadata(
+        "!{i32 2, !\"Debug Info Version\", i32 3}");
+  }
+
+  [[nodiscard]] DebugCoordinate debug_coordinate(SourceRange range) const {
+    DebugCoordinate result;
+    if (!range.is_valid()) {
+      result.file_name = "compiler.draft";
+      return result;
+    }
+    result.generated = sources_.line_column(range.begin);
+    const SourceExpansionMap *expansion = sources_.expansion_map(range.begin);
+    if (expansion == nullptr) {
+      result.file_name =
+          debug_file_name(sources_.file(range.begin.file).display_path);
+      result.surface = result.generated;
+      return result;
+    }
+    result.file_name = debug_file_name(expansion->surface_display_path);
+    result.surface = expansion->surface_begin;
+    result.site_identity = expansion->site_identity;
+    result.synthesized = true;
+    return result;
+  }
+
+  [[nodiscard]] std::size_t debug_subprogram(const MirProcedure &procedure) {
+    const DebugCoordinate coordinate = debug_coordinate(procedure.range);
+    const std::size_t file = debug_file(coordinate.file_name);
+    const Symbol &symbol = semantic_.symbols.symbol(procedure.symbol);
+    return add_debug_metadata(
+        "distinct !DISubprogram(name: \"" + llvm_bytes(symbol.name) +
+        "\", scope: !" + std::to_string(file) + ", file: !" +
+        std::to_string(file) + ", line: " +
+        std::to_string(coordinate.surface.line) + ", type: !" +
+        std::to_string(debug_subroutine_type_) + ", scopeLine: " +
+        std::to_string(coordinate.surface.line) +
+        ", spFlags: DISPFlagDefinition, unit: !" +
+        std::to_string(debug_compile_unit_) + ", retainedNodes: !{})");
+  }
+
+  [[nodiscard]] std::size_t debug_scope(
+      std::size_t subprogram,
+      std::size_t file) {
+    for (const DebugScope &scope : debug_scopes_) {
+      if (scope.subprogram == subprogram && scope.file == file) {
+        return scope.metadata;
+      }
+    }
+    const std::size_t metadata = add_debug_metadata(
+        "!DILexicalBlockFile(scope: !" + std::to_string(subprogram) +
+        ", file: !" + std::to_string(file) + ", discriminator: 0)");
+    debug_scopes_.push_back({subprogram, file, metadata});
+    return metadata;
+  }
+
+  [[nodiscard]] std::optional<std::size_t> emit_debug_marker(
+      SourceRange range) {
+    if (!range.is_valid() ||
+        current_debug_subprogram_ == std::numeric_limits<std::size_t>::max()) {
+      return std::nullopt;
+    }
+    const DebugCoordinate coordinate = debug_coordinate(range);
+    const std::size_t file = debug_file(coordinate.file_name);
+    const std::size_t scope = debug_scope(current_debug_subprogram_, file);
+    std::string label_name = coordinate.synthesized
+        ? "draft.generated:" + coordinate.site_identity
+        : "draft.source";
+    label_name += ":" + std::to_string(coordinate.generated.line) + ":" +
+        std::to_string(coordinate.generated.column) + ":" +
+        std::to_string(debug_marker_index_++);
+    const std::size_t label = add_debug_metadata(
+        "!DILabel(scope: !" + std::to_string(scope) + ", name: \"" +
+        llvm_bytes(label_name) + "\", file: !" + std::to_string(file) +
+        ", line: " + std::to_string(coordinate.surface.line) + ")");
+    const std::size_t location = add_debug_metadata(
+        "!DILocation(line: " + std::to_string(coordinate.surface.line) +
+        ", column: " + std::to_string(coordinate.surface.column) +
+        ", scope: !" + std::to_string(scope) + ")");
+    output_ << "  call void @llvm.dbg.label(metadata !" << label
+            << "), !dbg !" << location << '\n';
+    return location;
+  }
+
+  void begin_debug_operation(const std::optional<std::size_t> &location) {
+    if (location.has_value()) {
+      output_ << "  ; draft.debug.begin !" << *location << '\n';
+    }
+  }
+
+  void end_debug_operation(const std::optional<std::size_t> &location) {
+    if (location.has_value()) output_ << "  ; draft.debug.end\n";
+  }
+
+  void emit_debug_metadata() {
+    output_ << "!llvm.dbg.cu = !{!" << debug_compile_unit_ << "}\n"
+            << "!llvm.module.flags = !{!" << debug_dwarf_flag_ << ", !"
+            << debug_info_flag_ << "}\n\n";
+    for (const DebugMetadataNode &metadata : debug_metadata_) {
+      output_ << '!' << metadata.id << " = " << metadata.body << '\n';
+    }
   }
 
   [[nodiscard]] bool integer_kind(TypeKind kind) const {
@@ -538,6 +775,7 @@ private:
     // declare them, while the executable root owns their single definitions
     // and the one process-wide root context.
     output_ << "declare void @llvm.trap() cold noreturn nounwind\n"
+            << "declare void @llvm.dbg.label(metadata)\n"
             << "declare i16 @llvm.bswap.i16(i16)\n"
             << "declare i32 @llvm.bswap.i32(i32)\n"
             << "declare i64 @llvm.bswap.i64(i64)\n"
@@ -2758,6 +2996,12 @@ private:
       const MirProcedure &procedure,
       const MirInstruction &instruction,
       std::vector<std::string> &operands) {
+    // One intrinsic marker per MIR operation makes every source operation
+    // addressable by line-table consumers without adding runtime behavior.
+    // It also covers constant/alias MIR rows that do not print an LLVM value.
+    const std::optional<std::size_t> debug_location =
+        emit_debug_marker(instruction.range);
+    begin_debug_operation(debug_location);
     const std::string result = instruction.result.is_valid()
         ? "%v" + std::to_string(instruction.result.value)
         : std::string();
@@ -3180,12 +3424,16 @@ private:
       error(instruction.range, "invalid MIR instruction reached emission");
       break;
     }
+    end_debug_operation(debug_location);
   }
 
   void emit_terminator(
       const MirProcedure &procedure,
       const MirTerminator &terminator,
       const std::vector<std::string> &operands) {
+    const std::optional<std::size_t> debug_location =
+        emit_debug_marker(terminator.range);
+    begin_debug_operation(debug_location);
     switch (terminator.kind) {
     case MirTerminatorKind::Return:
       if (terminator.value.is_valid()) {
@@ -3255,6 +3503,7 @@ private:
       output_ << "  unreachable\n";
       break;
     }
+    end_debug_operation(debug_location);
   }
 
   void emit_abi_scratch(
@@ -3334,11 +3583,14 @@ private:
   void emit_procedure(std::size_t procedure_index, const MirProcedure &procedure) {
     if (!procedure.valid) return;
     auxiliary_index_ = 0;
+    debug_marker_index_ = 0;
+    current_debug_subprogram_ = debug_subprogram(procedure);
     output_ << "define ";
     if (!is_c_export(procedure.symbol)) output_ << "hidden ";
     output_ << llvm_function_result(procedure.type) << ' '
             << symbol_name(procedure.symbol)
-            << function_signature(procedure.type, true) << " {\n";
+            << function_signature(procedure.type, true) << " !dbg !"
+            << current_debug_subprogram_ << " {\n";
     std::vector<std::string> operands(procedure.values.size());
     for (std::size_t block_index = 0;
          block_index < procedure.blocks.size();
@@ -3435,6 +3687,7 @@ private:
       emit_terminator(procedure, block.terminator, operands);
     }
     output_ << "}\n\n";
+    current_debug_subprogram_ = std::numeric_limits<std::size_t>::max();
   }
 
   void emit_procedures() {
@@ -3565,6 +3818,16 @@ private:
   std::vector<StringConstant> strings_;
   std::vector<AssertionSite> assertion_sites_;
   std::vector<BoundsSite> bounds_sites_;
+  std::vector<DebugMetadataNode> debug_metadata_;
+  std::vector<DebugFile> debug_files_;
+  std::vector<DebugScope> debug_scopes_;
+  std::size_t debug_subroutine_type_ = 0;
+  std::size_t debug_compile_unit_ = 0;
+  std::size_t debug_dwarf_flag_ = 0;
+  std::size_t debug_info_flag_ = 0;
+  std::size_t current_debug_subprogram_ =
+      std::numeric_limits<std::size_t>::max();
+  std::size_t debug_marker_index_ = 0;
   std::size_t initial_errors_ = 0;
   std::size_t auxiliary_index_ = 0;
 };

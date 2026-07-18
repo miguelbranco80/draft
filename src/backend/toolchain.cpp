@@ -717,8 +717,10 @@ NativeBuildResult build_native_artifact(
   }
   // Keep the Mach-O UUID load command. Current macOS loaders require it for an
   // executable, and Apple's linker derives it deterministically from the link
-  // result. The native determinism integration test verifies that contract by
-  // comparing two complete outputs at the same explicit path.
+  // result. Reproducible mode additionally prevents debug-map bookkeeping such
+  // as input object timestamps from perturbing that result once source-line
+  // metadata is present. The native integration gate compares complete output
+  // bytes, including the content-derived UUID, across identical rebuilds.
   link_arguments.push_back("-target");
   link_arguments.push_back(target.llvm_triple);
   link_arguments.push_back(
@@ -743,6 +745,10 @@ NativeBuildResult build_native_artifact(
   } else if (options.artifact_kind == NativeArtifactKind::Executable) {
     link_arguments.push_back("-nostdlib");
   }
+  // Every artifact reaching this point invokes the linker. Relocatable object
+  // output also owns a Mach-O debug map, so it needs the same timestamp-
+  // ignoring policy as a final executable or dynamic library.
+  link_arguments.push_back("-Wl,-reproducible");
   link_arguments.insert(link_arguments.end(), objects.begin(), objects.end());
   if (options.artifact_kind == NativeArtifactKind::Object) {
     for (const VerifiedForeignProviderInput &provider : foreign_providers) {

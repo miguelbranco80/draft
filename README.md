@@ -93,8 +93,11 @@ explicit locals, addresses, loads/stores, bounds checks, calls, lexical defer
 unwinding, and CFG terminators for short-circuit expressions, conditionals,
 loops, and switches. A defensive verifier checks every MIR table reference and
 block boundary before a native backend may consume it. The first backend emits
-deterministic opaque-pointer LLVM IR per package, then a version-gated toolchain
-adapter emits AArch64 Mach-O objects and links an executable. Normal builds
+deterministic opaque-pointer LLVM IR per package with hermetic source locations;
+generated operations retain both their authored synthesis site and generated
+coordinate. A version-gated toolchain adapter then emits AArch64 Mach-O objects
+and links them in reproducible mode without discarding the content-derived UUID.
+Normal builds
 require the pinned LLVM/Clang 22.1.x distribution; local bring-up can explicitly
 permit another host Clang without changing the target profile. Parsed AArch64
 assembly now has structural inputs, outputs, clobbers, and instruction rows; the

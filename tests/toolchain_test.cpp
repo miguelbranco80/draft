@@ -245,6 +245,7 @@ void test_all_native_artifact_kinds(TestState &state) {
   const std::string arguments = read_file(log);
   EXPECT(state, arguments.find("\n-Wl,-r\n") != std::string::npos);
   EXPECT(state, arguments.find("\n-Wl,-no_uuid\n") == std::string::npos);
+  EXPECT(state, arguments.find("\n-Wl,-reproducible\n") != std::string::npos);
   EXPECT(state, arguments.find("\n-dynamiclib\n") != std::string::npos);
   EXPECT(state,
       arguments.find("\n-- ar --\n-static\n-D\n-o\n") != std::string::npos);
@@ -452,6 +453,7 @@ void test_locked_build_verifies_and_isolates_inputs(TestState &state) {
       arguments.find("\n--ld-path=" + canonical_linker.string() + "\n") !=
           std::string::npos);
   EXPECT(state, arguments.find("\n-Wl,-no_uuid\n") == std::string::npos);
+  EXPECT(state, arguments.find("\n-Wl,-reproducible\n") != std::string::npos);
   EXPECT(state,
       arguments.find("ENV:|unset|unset|unset") != std::string::npos);
 

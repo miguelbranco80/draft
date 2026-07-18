@@ -19,8 +19,9 @@ consume those pins offline.
 
 The release acceptance test is still unproved. In particular, complete
 runtime/initial-core conformance and judgment-provider evidence do not yet
-exist; generated-source maps now cover manifests and diagnostics but not every
-downstream debug/profile artifact.
+exist. Generated-source maps now reach hermetic LLVM operation locations and
+real native line tables, but pinned-toolchain DWARF/disassembly qualification
+and explicit coverage/profile correlation remain.
 
 ## Requirement audit
 
@@ -40,10 +41,10 @@ downstream debug/profile artifact.
 | Dependency-ordered synthesis and opaque interface completeness sets | staged resolver/compiler passes and resolver tests, including symmetric captured-request proof that same-package sites cannot observe either generated name, plus a real provider-free AArch64 executable that combines declaration, member, expression, and statement expansions, rebuilds byte-identically, and exits successfully | Implemented for package dependency rounds | Add finer early compile-time dependencies inside one package. The final locked replay still requires the pinned release toolchain/SDK. |
 | Codex adapter behind a provider-neutral boundary | `src/elaborator/codex_cli.*`, exact explicit distribution-tree plus root-relative launcher identity reverified before/after execution, fixed hashed timeout/retry policy, user/SIGINT cancellation with forced child kill-and-reap, and adapter tests | Implemented first adapter | Exercise the contract against the selected release Codex distribution during release qualification. |
 | Content-addressed generated source and atomic manifest commit | v4 resolution manifests, resolution/store/overlay modules, interrupted-publish recovery, typed native precommit Test/Benchmark execution, and exact passing evidence keys/content hashes | Implemented foundation | Add judgment evidence rows when its provider is activated. |
-| Ordinary offline builds consume pins without a provider | staged offline compiler path, resolver tests, and locked executable/archive adapter tests | Implemented | Extend byte-for-byte release proof across every output kind. |
+| Ordinary offline builds consume pins without a provider | staged offline compiler path, resolver tests, locked executable/archive adapter tests, and byte-identical repeated real builds of all five output kinds | Implemented for the first host gate | Repeat the same proof with the pinned release toolchain/SDK. |
 | `draft build --locked` with no ambient external search | Versioned external-input rows, resolved-program binding, content-tree verification, explicit toolchain/SDK/provider/summary CLI roots, clean process environment, absolute Clang/linker/archiver paths, provider snapshots, consumed summary verification, SDK/link flags, and optional exact-key test/benchmark evidence gates | Implemented through foreign link artifacts, audits, and validation evidence | Add runtime-asset mappings; locked builds reject unsupported external roles. |
 | Tests, benchmarks, judgments, and validation evidence | Typed core-nominal discovery, target-qualified file selection, canonical package/declaration order, compiler-owned isolated native harnesses, resolution precommit Test/Benchmark execution, private result pipe, direct process runner, process-isolated benchmark warmup/sampling, canonical content-addressed evidence, exact environment/tool/policy keys, append-only attempt history, failure revocation, locked evidence gates, validation tests, and `examples/validation` | Implemented for tests and first benchmark profile | Judgment execution remains the provider-free typed boundary described by the initial plan. Add richer instrumentation profiles, statistical aggregation/tolerances, and Codex judgment evidence. |
-| Generated-source diagnostics/source maps | Per-pin persistent surface/expansion byte maps, composed in-memory maps, and diagnostic origin notes | Implemented foundation | Carry the same mapping into emitted debug locations, coverage, profiles, and disassembly. |
+| Generated-source diagnostics/source maps | Per-pin persistent surface/expansion byte maps, composed in-memory maps, diagnostic origin notes, and hermetic LLVM subprogram/operation locations that retain both the authored site and generated coordinate | Implemented through native debug line inputs | Qualify the mapping in the pinned toolchain's DWARF/disassembly and add explicit instrumentation coverage/profile correlation. |
 | Crash-safe and deterministic release verification | Atomic pin-store tests, interrupted object-before-manifest recovery, rejection of redirected/non-regular/oversized store entries, strict UTF-8 manifest parsing, exhaustive truncation/NUL/invalid-byte/trailing-byte mutation coverage, deterministic serializers, byte-identical repeated real builds of all five artifact kinds, and passing ordinary/sanitized 40-test suites | Implemented foundation | Expand transaction fault injection and structure-aware malformed-store fuzzing, then run the same gates through the pinned LLVM 22.1/SDK distribution. |
 
 ## Current executable commands
@@ -60,7 +61,6 @@ active evidence with `--require-test-evidence` and
 
 ## Next release-critical slice
 
-The next implementation slice expands the bounded provider semantic closure,
-then returns to the final release gates: pinned-native execution, wider
-malformed-store coverage, downstream generated-source mapping, and the
-judgment-provider boundary.
+The next implementation slice returns to language/runtime conformance and the
+final release gates: pinned-native execution, wider malformed-store coverage,
+coverage/profile source correlation, and the judgment-provider boundary.
