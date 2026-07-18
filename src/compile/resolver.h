@@ -53,12 +53,20 @@ struct ResolutionValidationRunner {
   ResolutionValidationRunFunction run = nullptr;
 };
 
+// Resolution cancellation is provider-neutral. The driver may source it from a
+// signal, while an embedding may use an atomic flag or task cancellation token.
+// The resolver polls only at transaction boundaries; provider adapters and
+// validation runners remain responsible for interrupting their own child work.
+using ResolutionCancellationRequested = bool (*)(void *state);
+
 // Options own the provider adapter values but borrow provider.state. Caller
 // lowering flags do not control resolution; the resolver performs semantic
 // candidate checks and requests native validation graphs explicitly.
 struct ResolveWorkspaceOptions {
   CompileWorkspaceOptions compile;
   SynthesisProvider provider;
+  void *cancellation_state = nullptr;
+  ResolutionCancellationRequested cancellation_requested = nullptr;
   // Revalidation never invokes provider.synthesize. A stale site must retain an
   // existing expansion object, which is checked under its current obligation
   // and re-pinned only if the entire working program succeeds.

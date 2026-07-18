@@ -25,6 +25,7 @@
 #include "workspace/package.h"
 #include "workspace/workspace.h"
 
+#include <csignal>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -35,6 +36,18 @@
 #include <vector>
 
 namespace {
+
+volatile std::sig_atomic_t cancellation_signal = 0;
+
+void request_cancellation(int signal) {
+  (void)signal;
+  cancellation_signal = 1;
+}
+
+[[nodiscard]] bool command_cancellation_requested(void *state) {
+  (void)state;
+  return cancellation_signal != 0;
+}
 
 // The bootstrap binary is built together with its core source tree.  Installed
 // distributions will replace this build-time path with their versioned resource
@@ -699,6 +712,7 @@ int run_agent_command(
     draft::ResolveWorkspaceOptions resolve_options;
     resolve_options.compile = std::move(options);
     resolve_options.revalidate = revalidate;
+    resolve_options.cancellation_requested = command_cancellation_requested;
     const bool external_inputs_configured = locked_inputs.has_value() ||
         !foreign_providers.empty() || !provider_summaries.empty();
     if (!external_inputs_configured) {
@@ -943,11 +957,14 @@ int main(int argc, char **argv) {
       print_usage();
       return 2;
     }
+    cancellation_signal = 0;
+    (void)std::signal(SIGINT, request_cancellation);
     std::optional<draft::CodexCliProviderOptions> codex;
     if (codex_executable.has_value()) {
       codex.emplace();
       codex->executable = *codex_executable;
       codex->model = *codex_model;
+      codex->cancellation_requested = command_cancellation_requested;
     }
     std::optional<draft::LockedNativeInputRoots> locked_inputs;
     if (toolchain_root.has_value()) {

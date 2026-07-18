@@ -9,6 +9,8 @@
 #include "elaborator/provider.h"
 #include "source/diagnostic.h"
 
+#include <atomic>
+#include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -16,6 +18,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <thread>
 #include <utility>
 
 #if defined(__APPLE__) || defined(__unix__)
@@ -37,6 +40,10 @@ struct TestState {
 };
 
 #define EXPECT(state, expression) (state).expect((expression), #expression, __LINE__)
+
+[[nodiscard]] bool atomic_cancellation_requested(void *opaque) {
+  return static_cast<std::atomic_bool *>(opaque)->load();
+}
 
 struct TemporaryFixture {
   std::filesystem::path root;
@@ -254,7 +261,7 @@ void test_adapter_contract_and_identity(TestState &state) {
   const draft::SynthesisProvider provider =
       draft::configure_codex_cli_provider(options, provider_state, diagnostics);
   EXPECT(state, provider.synthesize != nullptr);
-  EXPECT(state, provider.provider_identity == "openai-codex-cli-v16");
+  EXPECT(state, provider.provider_identity == "openai-codex-cli-v17");
   EXPECT(state, provider.model_identity == "fixture-model");
   EXPECT(state, provider.configuration_identity ==
       provider_state.configuration_identity);
@@ -310,6 +317,46 @@ void test_adapter_contract_and_identity(TestState &state) {
             "failed after 2 attempt(s)") != std::string::npos);
     EXPECT(state,
         slow_diagnostics.diagnostics().front().message.find("timed out") !=
+            std::string::npos);
+  }
+
+  // Cancellation is distinct from a short timeout: the external signal can
+  // become true while the child is running, and the adapter must kill/reap that
+  // child without spending the remaining retry budget.
+  std::atomic_bool cancelled = false;
+  draft::CodexCliProviderOptions cancelled_options;
+  cancelled_options.executable = fixture.executable;
+  cancelled_options.model = "slow-model";
+  cancelled_options.timeout_milliseconds = 5000;
+  cancelled_options.maximum_attempts = 2;
+  cancelled_options.cancellation_state = &cancelled;
+  cancelled_options.cancellation_requested = atomic_cancellation_requested;
+  draft::DiagnosticSink cancelled_diagnostics;
+  draft::CodexCliProviderState cancelled_state;
+  const draft::SynthesisProvider cancellable =
+      draft::configure_codex_cli_provider(
+          cancelled_options, cancelled_state, cancelled_diagnostics);
+  EXPECT(state, cancellable.synthesize != nullptr);
+  std::thread canceller([&cancelled]() {
+    std::this_thread::sleep_for(std::chrono::milliseconds(30));
+    cancelled.store(true);
+  });
+  const auto cancellation_started = std::chrono::steady_clock::now();
+  draft::SynthesisResponse cancelled_response;
+  EXPECT(state,
+      !cancellable.synthesize(
+          cancellable.state,
+          request,
+          cancelled_response,
+          cancelled_diagnostics));
+  const auto cancellation_elapsed =
+      std::chrono::steady_clock::now() - cancellation_started;
+  canceller.join();
+  EXPECT(state, cancellation_elapsed < std::chrono::seconds(1));
+  EXPECT(state, cancelled_diagnostics.error_count() == 1);
+  if (!cancelled_diagnostics.diagnostics().empty()) {
+    EXPECT(state,
+        cancelled_diagnostics.diagnostics().front().message.find("cancelled") !=
             std::string::npos);
   }
 }

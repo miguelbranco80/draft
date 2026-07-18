@@ -144,6 +144,17 @@ namespace {
   return true;
 }
 
+[[nodiscard]] bool resolution_cancelled(
+    const ResolveWorkspaceOptions &options,
+    DiagnosticSink &diagnostics) {
+  if (options.cancellation_requested == nullptr ||
+      !options.cancellation_requested(options.cancellation_state)) {
+    return false;
+  }
+  diagnostics.error(SourceRange::invalid(), "resolution cancelled");
+  return true;
+}
+
 // One elaboration stage owns exactly the synthesis sites visible in its input
 // compilation. Interface discovery contains declaration/member sites; the body
 // compilation after those edits contains statement/expression/assembly sites.
@@ -186,6 +197,7 @@ struct ResolvedStage {
     for (const AgentObligation &obligation :
          package.obligations.obligations) {
       if (!is_synthesis(obligation.kind)) continue;
+      if (resolution_cancelled(options, diagnostics)) return stage;
       const ResolutionPin *existing = find_pin(loaded, obligation.site_identity);
       // Provider-free operation intentionally accepts a content-fresh pin: it
       // is the offline path. Once a caller explicitly configures a provider,
@@ -361,6 +373,7 @@ ResolveWorkspaceResult resolve_workspace(
     DiagnosticSink &diagnostics) {
   ResolveWorkspaceResult result;
   const std::size_t initial_errors = diagnostics.error_count();
+  if (resolution_cancelled(options, diagnostics)) return result;
 
   const ResolutionManifestLoadResult loaded = load_resolution_manifest(
       options.compile.workspace.workspace_directory, diagnostics);
@@ -400,6 +413,7 @@ ResolveWorkspaceResult resolve_workspace(
   // provider site, and generated-source validation forbids adding another, so
   // the finite source graph guarantees termination without an iteration cap.
   while (true) {
+    if (resolution_cancelled(options, diagnostics)) return result;
     CompileWorkspaceOptions interface_options = options.compile;
     interface_options.stage =
         CompileWorkspaceStage::DiscoverInterfaceSynthesis;
@@ -448,6 +462,7 @@ ResolveWorkspaceResult resolve_workspace(
   // Stage 2 type-checks bodies only after all interface edits are installed.
   // Its obligations therefore include exact expected expression types and
   // visible locals together with the generated interface dependencies.
+  if (resolution_cancelled(options, diagnostics)) return result;
   CompileWorkspaceOptions body_options = options.compile;
   body_options.stage = CompileWorkspaceStage::Complete;
   body_options.lower_mir = false;
@@ -489,6 +504,7 @@ ResolveWorkspaceResult resolve_workspace(
   options.compile.lower_mir = false;
   options.compile.emit_llvm = false;
   options.compile.workspace.source_overrides = std::move(complete_overrides);
+  if (resolution_cancelled(options, diagnostics)) return result;
   CompileWorkspaceResult resolved = compile_workspace(
       sources, root_package_directory, options.compile, diagnostics);
   if (!resolved.ok || !validate_resolved_agent_boundaries(
@@ -513,6 +529,7 @@ ResolveWorkspaceResult resolve_workspace(
       ValidationKind::Benchmark,
   };
   for (ValidationKind validation_kind : validation_kinds) {
+    if (resolution_cancelled(options, diagnostics)) return result;
     CompileWorkspaceOptions validation_options = options.compile;
     validation_options.validation_kind = validation_kind;
     validation_options.lower_mir = true;
@@ -563,6 +580,7 @@ ResolveWorkspaceResult resolve_workspace(
       }
       return result;
     }
+    if (resolution_cancelled(options, diagnostics)) return result;
     if (!evidence.recorded) {
       diagnostics.error(
           SourceRange::invalid(),
@@ -579,6 +597,10 @@ ResolveWorkspaceResult resolve_workspace(
         evidence.content_digest,
     });
   }
+  // This is the final cancellation boundary. Once commit_resolution starts it
+  // performs one crash-safe object-before-manifest transaction and must not be
+  // interrupted by a cooperative flag halfway through its atomic publication.
+  if (resolution_cancelled(options, diagnostics)) return result;
   if (!commit_resolution(
           options.compile.workspace.workspace_directory,
           manifest,

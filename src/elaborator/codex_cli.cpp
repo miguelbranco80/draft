@@ -769,6 +769,12 @@ private:
   std::string key_;
 };
 
+[[nodiscard]] bool cancellation_requested(
+    const CodexCliProviderState &state) {
+  return state.cancellation_requested != nullptr &&
+      state.cancellation_requested(state.cancellation_state);
+}
+
 // Starts exactly one documented non-interactive Codex process. All arguments
 // are separate execv entries and the prompt is an already-opened regular file.
 [[nodiscard]] bool run_codex_once(
@@ -776,6 +782,10 @@ private:
     const std::filesystem::path &directory,
     DiagnosticSink &diagnostics) {
 #if defined(__APPLE__) || defined(__unix__)
+  if (cancellation_requested(state)) {
+    provider_error(diagnostics, "Codex CLI attempt cancelled");
+    return false;
+  }
   const std::filesystem::path prompt = directory / "prompt.txt";
   const std::filesystem::path schema = directory / "schema.json";
   const std::filesystem::path output = directory / "response.json";
@@ -851,6 +861,16 @@ private:
       provider_error(diagnostics, "Codex CLI attempt timed out");
       return false;
     }
+    if (cancellation_requested(state)) {
+      // Cancellation has the same ownership rule as timeout: the adapter that
+      // created the child is responsible for killing and reaping it before any
+      // resolver stack object or temporary request directory is destroyed.
+      (void)::kill(child, SIGKILL);
+      while (::waitpid(child, &status, 0) < 0 && errno == EINTR) {
+      }
+      provider_error(diagnostics, "Codex CLI attempt cancelled");
+      return false;
+    }
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
   }
   if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
@@ -890,6 +910,10 @@ private:
   bool completed = false;
   std::string last_failure;
   for (std::uint32_t attempt = 0; attempt < state->maximum_attempts; ++attempt) {
+    if (cancellation_requested(*state)) {
+      provider_error(diagnostics, "Codex provider cancelled");
+      return false;
+    }
     // A failed process may have left a partial final message. Removing it makes
     // each attempt independent and prevents a later successful exit from
     // accidentally consuming stale bytes.
@@ -899,6 +923,10 @@ private:
     if (run_codex_once(*state, temporary.path(), attempt_diagnostics)) {
       completed = true;
       break;
+    }
+    if (cancellation_requested(*state)) {
+      provider_error(diagnostics, "Codex provider cancelled");
+      return false;
     }
     if (!attempt_diagnostics.diagnostics().empty()) {
       last_failure = attempt_diagnostics.diagnostics().back().message;
@@ -990,7 +1018,7 @@ SynthesisProvider configure_codex_cli_provider(
   if (!executable_digest.has_value()) return {};
 
   Sha256 configuration;
-  configuration.update("draft.codex-cli-provider.v10");
+  configuration.update("draft.codex-cli-provider.v11");
   configuration.update(executable_digest->bytes);
   configuration.update(options.model);
   configuration.update(";timeout-ms=");
@@ -1006,11 +1034,13 @@ SynthesisProvider configure_codex_cli_provider(
   state.model = options.model;
   state.timeout_milliseconds = options.timeout_milliseconds;
   state.maximum_attempts = options.maximum_attempts;
+  state.cancellation_state = options.cancellation_state;
+  state.cancellation_requested = options.cancellation_requested;
   state.configuration_identity =
       "codex-config-" + configuration.finalize().hex();
 
   SynthesisProvider provider;
-  provider.provider_identity = "openai-codex-cli-v16";
+  provider.provider_identity = "openai-codex-cli-v17";
   provider.model_identity = state.model;
   provider.configuration_identity = state.configuration_identity;
   provider.state = &state;

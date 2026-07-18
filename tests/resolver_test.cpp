@@ -187,6 +187,10 @@ struct FakeTestRunnerState {
   bool saw_llvm = false;
 };
 
+[[nodiscard]] bool boolean_cancellation_requested(void *opaque) {
+  return *static_cast<bool *>(opaque);
+}
+
 bool run_candidate_tests(
     void *opaque,
     const draft::TargetProfile &target,
@@ -953,6 +957,36 @@ void test_validation_context_stales_synthesis(TestState &state) {
   EXPECT(state, provider.calls == 2);
 }
 
+void test_cancelled_resolution_does_not_start_transaction(TestState &state) {
+  TemporaryWorkspace workspace;
+  workspace.write_source("must not reach provider");
+  FakeProviderState provider;
+  bool cancelled = true;
+  draft::ResolveWorkspaceOptions options = resolve_options(workspace, provider);
+  options.cancellation_state = &cancelled;
+  options.cancellation_requested = boolean_cancellation_requested;
+
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  const draft::ResolveWorkspaceResult resolved = draft::resolve_workspace(
+      sources,
+      workspace.package.string(),
+      std::move(options),
+      diagnostics);
+  EXPECT(state, !resolved.ok);
+  EXPECT(state, !resolved.committed);
+  EXPECT(state, provider.calls == 0);
+  EXPECT(state, diagnostics.error_count() == 1);
+  if (!diagnostics.diagnostics().empty()) {
+    EXPECT(state,
+        diagnostics.diagnostics().front().message == "resolution cancelled");
+  }
+  draft::DiagnosticSink manifest_diagnostics;
+  const draft::ResolutionManifestLoadResult manifest =
+      draft::load_resolution_manifest(workspace.root, manifest_diagnostics);
+  EXPECT(state, manifest.state == draft::ResolutionManifestLoadState::Missing);
+}
+
 } // namespace
 
 int main() {
@@ -964,6 +998,7 @@ int main() {
   test_same_interface_set_is_opaque(state);
   test_tests_gate_manifest_commit(state);
   test_validation_context_stales_synthesis(state);
+  test_cancelled_resolution_does_not_start_transaction(state);
   if (state.failures != 0) {
     std::cerr << state.failures << " resolver expectation(s) failed\n";
     return EXIT_FAILURE;

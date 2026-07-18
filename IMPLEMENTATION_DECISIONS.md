@@ -230,6 +230,15 @@ the complete set of returned source only afterward. A resolver acceptance test
 captures both same-package request binding sets, proves neither contains either
 generated name, then requires their merged pins to compile provider-free.
 
+Codex execution polls an embedding-owned cancellation callback alongside its
+fixed deadline. Cancellation never retries: the adapter kills and reaps the
+active child, emits one compiler diagnostic, and returns before its private
+request directory is destroyed. The resolver also polls the same source before
+each compilation, validation, provider, and final-commit boundary, so fresh-pin
+or pre-provider work cannot ignore cancellation. `draftc resolve` maps SIGINT to
+both callbacks; the reusable adapter installs no process-global signal handler
+itself.
+
 Every lexically enclosing `deny` region contributes its exact canonical selector
 spellings in outer-to-inner order. These facts are readable policy instructions
 and obligation hash inputs. Ordinary semantic denial checking still resolves

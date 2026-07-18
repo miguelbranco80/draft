@@ -25,6 +25,11 @@
 
 namespace draft {
 
+// Embeddings and the command-line driver own the cancellation source. The
+// adapter polls this tiny callback while a provider child is active; it never
+// assumes a process-global signal policy or retains ownership of callback state.
+using CodexCancellationRequested = bool (*)(void *state);
+
 struct CodexCliProviderOptions {
   // executable must resolve to an existing regular file. Symlinks are
   // canonicalized before hashing and execution so their target, not spelling,
@@ -36,6 +41,8 @@ struct CodexCliProviderOptions {
   // a smaller explicit policy. Both values are configuration identity inputs.
   std::uint32_t timeout_milliseconds = 5U * 60U * 1000U;
   std::uint32_t maximum_attempts = 2;
+  void *cancellation_state = nullptr;
+  CodexCancellationRequested cancellation_requested = nullptr;
 };
 
 // State owns every string referenced by the callback and must outlive the
@@ -47,6 +54,8 @@ struct CodexCliProviderState {
   std::string configuration_identity;
   std::uint32_t timeout_milliseconds = 0;
   std::uint32_t maximum_attempts = 0;
+  void *cancellation_state = nullptr;
+  CodexCancellationRequested cancellation_requested = nullptr;
 };
 
 // Validates and hashes the exact adapter configuration, initializes state, and
