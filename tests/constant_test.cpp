@@ -937,6 +937,167 @@ From_Selection :: (increment if true else decrement)(41)
   }
 }
 
+void test_procedural_layout_constants(TestState &state) {
+  AnalyzedSource valid(R"draft(
+package conditions
+
+plus_one :: proc(value: usize) -> usize {
+    return value + 1
+}
+
+choose_size :: proc(wide: bool) -> usize {
+    if wide {
+        return 4
+    }
+    return 8
+}
+
+enum_value :: proc() -> i16 {
+    return 7
+}
+
+small_count :: proc() -> u8 {
+    return 3
+}
+
+Sized[N: usize] :: struct {
+    values: [N]u8,
+}
+
+Small[N: u8] :: struct {
+    values: [cast[usize](N)]u8,
+}
+
+Computed_Vector :: #simd[choose_size(true)]u32
+
+Buffer :: struct {
+    direct: [plus_one(2)]u8,
+    selected: [choose_size(true)]u8,
+    nested: Sized[plus_one(2)],
+    small: Small[small_count()],
+}
+
+// This value cannot be known in the first semantic round: Buffer itself needs
+// procedure evaluation before it has a layout. It exercises real fixed-point
+// progress instead of several independent calls that happen to finish together.
+Measured :: struct {
+    bytes: [size_of(Buffer)]u8,
+}
+
+when size_of(Measured) == 13 {
+    Layout_Selected :: bool
+} else {
+    Wrong_Layout_Selected :: bool
+}
+
+Aligned :: @align(choose_size(false)) struct {
+    value: u8,
+}
+
+Code :: enum i16 {
+    Zero,
+    Seven = enum_value(),
+}
+)draft");
+  if (valid.diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(valid.sources, valid.diagnostics);
+  }
+  EXPECT(state, valid.analysis.ok);
+  EXPECT(state, !valid.diagnostics.has_errors());
+
+  const std::optional<draft::SymbolId> buffer =
+      find_symbol(valid.analysis.package, "Buffer");
+  const std::optional<draft::SymbolId> aligned =
+      find_symbol(valid.analysis.package, "Aligned");
+  const std::optional<draft::SymbolId> measured =
+      find_symbol(valid.analysis.package, "Measured");
+  const std::optional<draft::SymbolId> computed_vector =
+      find_symbol(valid.analysis.package, "Computed_Vector");
+  EXPECT(state, buffer.has_value());
+  EXPECT(state, aligned.has_value());
+  EXPECT(state, measured.has_value());
+  EXPECT(state, computed_vector.has_value());
+  EXPECT(state, find_symbol(
+                    valid.analysis.package, "Layout_Selected").has_value());
+  EXPECT(state, !find_symbol(
+                    valid.analysis.package, "Wrong_Layout_Selected").has_value());
+  if (buffer.has_value()) {
+    const draft::Type &type = valid.analysis.package.types.type(
+        valid.analysis.package.symbols.symbol(*buffer).type);
+    EXPECT(state, type.layout == draft::TypeLayout({true, 13, 1}));
+  }
+  if (aligned.has_value()) {
+    const draft::Type &type = valid.analysis.package.types.type(
+        valid.analysis.package.symbols.symbol(*aligned).type);
+    EXPECT(state, type.layout == draft::TypeLayout({true, 8, 8}));
+  }
+  if (measured.has_value()) {
+    const draft::Type &type = valid.analysis.package.types.type(
+        valid.analysis.package.symbols.symbol(*measured).type);
+    EXPECT(state, type.layout == draft::TypeLayout({true, 13, 1}));
+  }
+  if (computed_vector.has_value()) {
+    const draft::Type &type = valid.analysis.package.types.type(
+        valid.analysis.package.symbols.symbol(*computed_vector).type);
+    EXPECT(state, type.kind == draft::TypeKind::Simd);
+    EXPECT(state, type.element_count == 4);
+  }
+  EXPECT(state,
+         valid.analysis.package.required_integer_expressions.empty());
+
+  bool saw_seven = false;
+  for (const draft::EnumMemberValue &member :
+       valid.analysis.package.enum_member_values) {
+    const draft::Symbol &symbol =
+        valid.analysis.package.symbols.symbol(member.member);
+    saw_seven = saw_seven ||
+        (symbol.name == "Seven" && member.value.to_decimal() == "7");
+  }
+  EXPECT(state, saw_seven);
+
+  // u64 and usize happen to have the same machine representation on the first
+  // target, but Draft value parameters do not gain an implicit conversion from
+  // that coincidence. The typed fixed-point result must retain this boundary.
+  AnalyzedSource invalid(R"draft(
+package conditions
+
+wrong_count :: proc() -> u64 {
+    return 4
+}
+
+Sized[N: usize] :: struct {
+    values: [N]u8,
+}
+
+Bad :: struct {
+    value: Sized[wrong_count()],
+}
+
+Bad_Array :: struct {
+    values: [wrong_count()]u8,
+}
+
+Bad_Vector :: #simd[wrong_count()]u32
+
+Bad_Aligned :: @align(wrong_count()) struct {
+    value: u8,
+}
+)draft");
+  EXPECT(state, !invalid.analysis.ok);
+  const std::string rendered =
+      draft::render_diagnostics(invalid.sources, invalid.diagnostics);
+  EXPECT(state, rendered.find("package.draft:13:18") != std::string::npos);
+  EXPECT(state, rendered.find(
+                    "compile-time value argument has the wrong concrete integer type") !=
+                    std::string::npos);
+  EXPECT(state, rendered.find("array length must have type 'usize'") !=
+                    std::string::npos);
+  EXPECT(state, rendered.find("SIMD lane count must have type 'usize'") !=
+                    std::string::npos);
+  EXPECT(state, rendered.find("'@align' argument must have type 'usize'") !=
+                    std::string::npos);
+}
+
 void test_compile_time_string_views(TestState &state) {
   AnalyzedSource valid(R"draft(
 package conditions
@@ -1424,6 +1585,7 @@ int main() {
   test_invalid_procedural_constants(state);
   test_compile_time_defer(state);
   test_compile_time_callee_expressions(state);
+  test_procedural_layout_constants(state);
   test_compile_time_string_views(state);
   test_operator_type_boundaries(state);
   test_global_initializers(state);

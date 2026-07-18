@@ -89,6 +89,9 @@ alternative fits its chosen discriminator;
 interprets scalar and aggregate compile-time procedures with locals, assignment,
 bounded loops, recursion, switches, procedure-valued callees, saved-argument
 lexical `defer`, parametric values, and type/layout queries;
+uses the same full interpreter for concrete array/SIMD lengths, alignments, enum
+values, and nominal value arguments after a deterministic signature/layout
+fixed point, so those required constants may also call procedures and branch;
 enforces positional array, named struct, and single-field raw-union literals
 with zero-filled omissions consistently at compile time and runtime;
 and selects declaration/member `when` branches through deterministic fixed-point

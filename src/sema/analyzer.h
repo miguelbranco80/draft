@@ -28,6 +28,7 @@
 
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -328,6 +329,34 @@ struct SemanticSite {
   TypeId expected_type;
 };
 
+// Type resolution necessarily starts before the full compile-time interpreter:
+// signatures and nominal identities are inputs to that interpreter. A required
+// integer expression which the narrow layout evaluator cannot finish is kept
+// here for the semantic fixed-point driver. The driver evaluates it after the
+// first complete signature pass and rebuilds the graph with the exact result.
+struct RequiredIntegerExpression {
+  // The parsed expression and its lexical name-resolution scope remain valid
+  // only for the owning LoadedPackage/SemanticPackage round. They are never
+  // serialized or included in an interface digest.
+  SyntaxReference syntax;
+  ScopeId scope;
+};
+
+// One interpreter result carried between semantic rebuilds. SyntaxReference is
+// the stable key because every rebuild reassigns semantic IDs but reuses the
+// immutable parsed trees. value remains arbitrary precision until the ordinary
+// consumer checks its required range. type retains the exact concrete Draft
+// integer identity—usize and u64 are not interchangeable merely because the
+// first target gives both 64 unsigned bits. A missing type means the interpreter
+// produced an integer-shaped value such as an enum whose language type is not
+// a Draft integer and lets the consuming context issue the precise diagnostic.
+// Entries are discovery state, not a returned package-interface table.
+struct ResolvedIntegerExpression {
+  SyntaxReference syntax;
+  BigInteger value;
+  std::optional<IntegerExpressionType> type;
+};
+
 enum class NativeBindingKind {
   ForeignImport,
   CExport,
@@ -374,6 +403,7 @@ struct SemanticPackage {
   std::vector<ImportedProcedureWrite> imported_writes;
   std::vector<DeclarationDenial> declaration_denials;
   std::vector<SemanticSite> sites;
+  std::vector<RequiredIntegerExpression> required_integer_expressions;
   std::vector<NativeBinding> native_bindings;
 };
 

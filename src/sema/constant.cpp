@@ -1871,7 +1871,12 @@ private:
     const std::uint64_t value = *name == "size_of"
         ? layout.size
         : layout.alignment;
-    return ready(ConstantValue::make_integer(BigInteger::from_u64(value)));
+    // Layout queries are concrete usize values, not merely integer-shaped
+    // constants. Retaining that type is required when the query itself feeds a
+    // second layout boundary such as `[size_of(Header)]u8`.
+    return ready(
+        ConstantValue::make_integer(BigInteger::from_u64(value)),
+        semantic_.types.builtins().usize_type);
   }
 
   [[nodiscard]] bool is_type_syntax(NodeKind kind) const {

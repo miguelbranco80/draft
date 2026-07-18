@@ -129,11 +129,13 @@ public:
       const ConditionalSelections &selections,
       DiagnosticSink &diagnostics,
       const ConstantTable *active_constants = nullptr,
-      const std::vector<ConstantTypeBinding> *active_types = nullptr)
+      const std::vector<ConstantTypeBinding> *active_types = nullptr,
+      const std::vector<ResolvedIntegerExpression> *resolved_integers = nullptr)
       : sources_(sources), loaded_(loaded), semantic_(semantic), selections_(selections),
         diagnostics_(diagnostics),
         states_(semantic.symbols.symbol_count(), ResolutionState::Unvisited),
-        active_constants_(active_constants), active_types_(active_types) {}
+        active_constants_(active_constants), active_types_(active_types),
+        resolved_integers_(resolved_integers) {}
 
   // Resolves only the symbols originally installed in the package scope.
   // Nested symbols are resolved synchronously as their owner is processed.
@@ -560,6 +562,63 @@ private:
     const std::optional<BigInteger> value = integer_constant_expression(
         tree, expression_id, scope);
     return value.has_value() ? value->to_u64() : std::nullopt;
+  }
+
+  // Looks up a full-interpreter result produced by a prior semantic round.
+  // Returning a pointer is safe only until the resolver returns: the driver
+  // keeps the supplied vector immutable for the entire clean rebuild.
+  [[nodiscard]] const ResolvedIntegerExpression *resolved_integer(
+      const SyntaxTree &tree, NodeId expression) const {
+    if (resolved_integers_ == nullptr) return nullptr;
+    const SyntaxReference wanted{tree.file(), expression};
+    for (const ResolvedIntegerExpression &entry : *resolved_integers_) {
+      if (entry.syntax == wanted) return &entry;
+    }
+    return nullptr;
+  }
+
+  // Enforces the contextual type of an integer result returned by the full
+  // interpreter. Untyped integers convert at the context boundary; a concrete
+  // integer must already have the exact required Draft identity. A missing
+  // descriptor denotes an integer-shaped non-integer such as an enum value.
+  [[nodiscard]] bool resolved_integer_matches(
+      const SyntaxTree &tree,
+      NodeId expression,
+      TypeId expected,
+      std::string_view description) {
+    const ResolvedIntegerExpression *resolved =
+        resolved_integer(tree, expression);
+    if (resolved == nullptr) return true;
+    if (!resolved->type.has_value()) {
+      diagnostics_.error(
+          tree.node(expression).range,
+          std::string(description) + " must have an integer type");
+      return false;
+    }
+    if (resolved->type->representation ==
+        IntegerExpressionRepresentation::Untyped) {
+      return true;
+    }
+    const IntegerExpressionType required = integer_expression_type(expected);
+    if (*resolved->type == required) return true;
+    diagnostics_.error(
+        tree.node(expression).range,
+        std::string(description) + " must have type '" + required.identity + "'");
+    return false;
+  }
+
+  // Records one exact syntax site which needs the full interpreter. Multiple
+  // type-resolution paths can encounter the same expression while aliases and
+  // templates resolve, so source-key deduplication keeps each work item unique
+  // without retaining an unstable semantic ID.
+  void require_integer_expression(
+      const SyntaxTree &tree, NodeId expression, ScopeId scope) {
+    const SyntaxReference syntax{tree.file(), expression};
+    for (const RequiredIntegerExpression &entry :
+         semantic_.required_integer_expressions) {
+      if (entry.syntax == syntax) return;
+    }
+    semantic_.required_integer_expressions.push_back({syntax, scope});
   }
 
   [[nodiscard]] IntegerExpressionType integer_expression_type(
@@ -1749,13 +1808,39 @@ private:
       }
       const TypeId required =
           semantic_.symbols.symbol(parameter.parameter).type;
-      const std::optional<BigInteger> value = integer_constant_expression(
-          tree, argument_node, scope);
+      std::optional<BigInteger> value;
+      std::optional<IntegerExpressionType> supplied_type;
+      if (const ResolvedIntegerExpression *resolved =
+              resolved_integer(tree, argument_node)) {
+        value = resolved->value;
+        if (!resolved->type.has_value()) {
+          diagnostics_.error(
+              tree.node(argument_node).range,
+              "compile-time value argument must have an integer type");
+          return semantic_.types.builtins().invalid;
+        }
+        supplied_type = *resolved->type;
+      } else {
+        // The typed builder covers literals, names, arithmetic, and casts. It
+        // lets this value-parameter boundary distinguish same-width concrete
+        // integer identities; the legacy evaluator remains the fallback for
+        // enum members and other early-layout recovery cases.
+        IntegerExpression built;
+        const BuiltIntegerExpressionNode root = build_integer_expression_node(
+            tree, argument_node, scope, built);
+        if (root.valid && root.constant.has_value()) {
+          value = root.constant;
+          supplied_type = integer_expression_type(root.type);
+        } else {
+          value = integer_constant_expression(tree, argument_node, scope);
+        }
+      }
       if (!value.has_value()) {
         const std::optional<IntegerExpression> symbolic =
             dependent_integer_expression(
                 tree, argument_node, scope, required);
         if (!symbolic.has_value()) {
+          require_integer_expression(tree, argument_node, scope);
           diagnostics_.error(
               tree.node(argument_node).range,
               "value parameter argument must be a compile-time integer expression");
@@ -1767,6 +1852,17 @@ private:
         argument.value_expression = *symbolic;
         arguments.push_back(std::move(argument));
         continue;
+      }
+      const IntegerExpressionType expected_type =
+          integer_expression_type(required);
+      if (supplied_type.has_value() &&
+          supplied_type->representation !=
+              IntegerExpressionRepresentation::Untyped &&
+          *supplied_type != expected_type) {
+        diagnostics_.error(
+            tree.node(argument_node).range,
+            "compile-time value argument has the wrong concrete integer type");
+        return semantic_.types.builtins().invalid;
       }
       ParametricArgument argument;
       argument.is_type = false;
@@ -2015,6 +2111,14 @@ private:
       }
       const std::optional<std::uint64_t> count =
           layout_integer(tree, node.children.front(), scope);
+      if (count.has_value() &&
+          !resolved_integer_matches(
+              tree,
+              node.children.front(),
+              semantic_.types.builtins().usize_type,
+              "array length")) {
+        return invalid;
+      }
       if (!count.has_value()) {
         const std::optional<IntegerExpression> expression =
             dependent_integer_expression(
@@ -2027,11 +2131,12 @@ private:
               resolve_type(tree, node.children.back(), scope),
               *expression);
         }
+        require_integer_expression(tree, node.children.front(), scope);
       }
       if (!count.has_value() || *count == 0) {
         diagnostics_.error(
             tree.node(node.children.front()).range,
-            "array length must be a nonzero compile-time u64 integer");
+            "array length must be a nonzero compile-time usize");
         return invalid;
       }
       return semantic_.types.array(
@@ -2044,6 +2149,14 @@ private:
       }
       const std::optional<std::uint64_t> lanes =
           layout_integer(tree, node.children.front(), scope);
+      if (lanes.has_value() &&
+          !resolved_integer_matches(
+              tree,
+              node.children.front(),
+              semantic_.types.builtins().usize_type,
+              "SIMD lane count")) {
+        return invalid;
+      }
       if (!lanes.has_value()) {
         const std::optional<IntegerExpression> expression =
             dependent_integer_expression(
@@ -2056,11 +2169,12 @@ private:
               resolve_type(tree, node.children.back(), scope),
               *expression);
         }
+        require_integer_expression(tree, node.children.front(), scope);
       }
       if (!lanes.has_value() || *lanes == 0) {
         diagnostics_.error(
             tree.node(node.children.front()).range,
-            "SIMD lane count must be a nonzero compile-time u64 integer");
+            "SIMD lane count must be a nonzero compile-time usize");
         return invalid;
       }
       return semantic_.types.simd(
@@ -2239,6 +2353,10 @@ private:
   // array/SIMD lengths, and @align without host-width arithmetic.
   [[nodiscard]] std::optional<BigInteger> integer_constant_expression(
       const SyntaxTree &tree, NodeId expression_id, ScopeId scope) {
+    if (const ResolvedIntegerExpression *resolved =
+            resolved_integer(tree, expression_id)) {
+      return resolved->value;
+    }
     // Use the typed builder first. Besides sharing exact fixed-width semantics
     // with dependent expressions, this recognizes explicit integer casts.
     // The legacy cases below still cover enum-member values and recovery paths
@@ -2427,8 +2545,20 @@ private:
           const SyntaxNode &argument = tree.node(attribute.children.front());
           const std::optional<BigInteger> value = integer_constant_expression(
               tree, attribute.children.front(), scope);
+          if (!value.has_value()) {
+            require_integer_expression(
+                tree, attribute.children.front(), scope);
+          }
           const std::optional<std::uint64_t> alignment =
               value.has_value() ? value->to_u64() : std::nullopt;
+          if (alignment.has_value() &&
+              !resolved_integer_matches(
+                  tree,
+                  attribute.children.front(),
+                  semantic_.types.builtins().usize_type,
+                  "'@align' argument")) {
+            continue;
+          }
           if (!alignment.has_value() || *alignment == 0 ||
               (*alignment & (*alignment - 1)) != 0 ||
               *alignment > std::numeric_limits<std::uint32_t>::max()) {
@@ -2501,6 +2631,8 @@ private:
         const std::optional<BigInteger> explicit_value =
             integer_constant_expression(tree, member.children.front(), scope);
         if (!explicit_value.has_value()) {
+          require_integer_expression(
+              tree, member.children.front(), scope);
           diagnostics_.error(
               tree.node(member.children.front()).range,
               "enum value must be a compile-time integer expression");
@@ -3003,6 +3135,7 @@ private:
   std::vector<SymbolId> active_integer_constants_;
   const ConstantTable *active_constants_ = nullptr;
   const std::vector<ConstantTypeBinding> *active_types_ = nullptr;
+  const std::vector<ResolvedIntegerExpression> *resolved_integers_ = nullptr;
 };
 
 } // namespace
@@ -3014,6 +3147,25 @@ void resolve_package_types(
     DiagnosticSink &diagnostics) {
   const ConditionalSelections selections;
   TypeResolver resolver(sources, loaded, package, selections, diagnostics);
+  resolver.resolve();
+}
+
+void resolve_package_types(
+    const SourceManager &sources,
+    const LoadedPackage &loaded,
+    SemanticPackage &package,
+    const ConditionalSelections &selections,
+    const std::vector<ResolvedIntegerExpression> &resolved_integers,
+    DiagnosticSink &diagnostics) {
+  TypeResolver resolver(
+      sources,
+      loaded,
+      package,
+      selections,
+      diagnostics,
+      nullptr,
+      nullptr,
+      &resolved_integers);
   resolver.resolve();
 }
 

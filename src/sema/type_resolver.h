@@ -126,4 +126,15 @@ void resolve_package_types(
     const ConditionalSelections &selections,
     DiagnosticSink &diagnostics);
 
+// Fixed-point form. Values were evaluated by the full compile-time interpreter
+// against a prior deterministic semantic graph and are keyed only by stable
+// source syntax; this clean rebuild consumes them before computing layouts.
+void resolve_package_types(
+    const SourceManager &sources,
+    const LoadedPackage &loaded,
+    SemanticPackage &package,
+    const ConditionalSelections &selections,
+    const std::vector<ResolvedIntegerExpression> &resolved_integers,
+    DiagnosticSink &diagnostics);
+
 } // namespace draft

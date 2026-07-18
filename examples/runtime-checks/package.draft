@@ -56,6 +56,34 @@ Narrow_Value_Buffer[N: u8] :: struct {
     values: [cast[usize](N) + 1]i64,
 }
 
+computed_layout_count :: proc(value: usize) -> usize {
+    return value + 1
+}
+
+computed_layout_choice :: proc(wide: bool) -> usize {
+    if wide {
+        return 4
+    }
+    return 8
+}
+
+computed_enum_value :: proc() -> i16 {
+    return 7
+}
+
+Computed_Layout_Buffer :: struct {
+    values: [computed_layout_count(2)]i64,
+}
+
+Computed_Aligned :: @align(computed_layout_choice(false)) struct {
+    value: u8,
+}
+
+Computed_Code :: enum i16 {
+    Zero,
+    Seven = computed_enum_value(),
+}
+
 last_enveloped[N: usize] :: proc(value: ^Value_Envelope[N]) -> i64 {
     return value^.buffer.values[N + 1]
 }
@@ -497,6 +525,13 @@ main :: proc() {
     narrow_envelope: Narrow_Value_Buffer[2]
     narrow_envelope.values[2] = 42
     assert(last_narrow(&narrow_envelope) == 42)
+    computed_layout: Computed_Layout_Buffer
+    computed_layout.values[2] = 42
+    assert(computed_layout.values[2] == 42)
+    static_assert(size_of(Computed_Layout_Buffer) == 24)
+    static_assert(align_of(Computed_Aligned) == 8)
+    computed_code: Computed_Code = .Seven
+    assert(computed_code == .Seven)
     (left, _): (i64, i64) = (20, 0)
     (_, right): (i64, i64) = (0, 22)
     assert(left + right == 42)
