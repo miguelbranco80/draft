@@ -822,6 +822,21 @@ imported_package_context(
   return result;
 }
 
+[[nodiscard]] std::string_view validation_context_kind(
+    std::string_view relative_name) {
+  const std::size_t dot = relative_name.rfind('.');
+  if (dot == std::string_view::npos ||
+      relative_name.substr(dot) != ".draft") {
+    return {};
+  }
+  std::string_view stem = relative_name.substr(0, dot);
+  const std::size_t qualifier = stem.rfind('@');
+  if (qualifier != std::string_view::npos) stem = stem.substr(0, qualifier);
+  if (stem.ends_with("_test")) return "test";
+  if (stem.ends_with("_bench")) return "benchmark";
+  return {};
+}
+
 [[nodiscard]] AgentEnclosingDeclarationContext enclosing_declaration_context(
     const SourceManager &sources,
     const LoadedPackage &loaded,
@@ -1399,7 +1414,7 @@ struct ActiveDenialContext {
     const AgentObligation &obligation,
     const TargetProfile &target) {
   Sha256 hash;
-  hash_field(hash, "draft-agent-obligation-v13");
+  hash_field(hash, "draft-agent-obligation-v14");
   hash_field(hash, obligation.site_identity);
   hash.update(obligation.record_digest.bytes);
   hash.update(obligation.expected_type_digest.bytes);
@@ -1532,6 +1547,16 @@ struct ActiveDenialContext {
       hash.update(file.digest.bytes);
     }
   }
+  hash_u64(
+      hash,
+      static_cast<std::uint64_t>(obligation.validation_context.size()));
+  for (const AgentValidationContext &validation :
+       obligation.validation_context) {
+    hash_field(hash, validation.kind);
+    hash_field(hash, validation.source_relative_path);
+    hash.update(validation.source_digest.bytes);
+    hash_field(hash, validation.source);
+  }
   hash_field(hash, target.facts.identity);
   hash_u64(hash, static_cast<std::uint64_t>(target.facts.simd_shapes.size()));
   for (const TargetSimdShape &shape : target.facts.simd_shapes) {
@@ -1593,6 +1618,25 @@ struct ActiveDenialContext {
 
 } // namespace
 
+std::vector<AgentValidationContext> collect_agent_validation_context(
+    const SourceManager &sources,
+    const LoadedPackage &loaded) {
+  std::vector<AgentValidationContext> result;
+  for (const LoadedPackageFile &file : loaded.files) {
+    if (!file.syntax.has_value() || !file.syntax->root().is_valid()) continue;
+    const std::string_view kind = validation_context_kind(file.relative_name);
+    if (kind.empty()) continue;
+    AgentValidationContext context;
+    context.kind = kind;
+    context.source_relative_path = file.relative_name;
+    context.source = canonical_token_source(
+        sources, *file.syntax, file.syntax->node(file.syntax->root()));
+    context.source_digest = sha256(context.source);
+    result.push_back(std::move(context));
+  }
+  return result;
+}
+
 std::string_view agent_construct_kind_name(AgentConstructKind kind) {
   switch (kind) {
   case AgentConstructKind::Documentation: return "documentation";
@@ -1614,7 +1658,8 @@ AgentObligationResult build_agent_obligations(
     const ConstantTable &constants,
     const AgentMetadataResult &metadata,
     const TargetProfile &target,
-    DiagnosticSink &diagnostics) {
+    DiagnosticSink &diagnostics,
+    std::span<const AgentValidationContext> validation_context) {
   AgentObligationResult result;
   const std::size_t initial_errors = diagnostics.error_count();
   for (std::size_t index = 0; index < metadata.records.size(); ++index) {
@@ -1677,6 +1722,8 @@ AgentObligationResult build_agent_obligations(
     obligation.guiding_judgments = guiding_judgment_context(
         loaded, package, metadata, record);
     obligation.documentation = documentation_context(package, metadata, record);
+    obligation.validation_context.assign(
+        validation_context.begin(), validation_context.end());
     obligation.site_identity = "site-" + site_identity_digest(obligation).hex();
     obligation.input_digest = input_digest(obligation, target);
     result.obligations.push_back(std::move(obligation));

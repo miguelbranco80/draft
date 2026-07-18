@@ -22,6 +22,7 @@
 #include "workspace/workspace.h"
 
 #include <cstdint>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -92,6 +93,18 @@ struct AgentDocumentationContext {
   std::vector<AttachedFile> files;
   std::vector<std::string> file_contents;
   Sha256Digest record_digest;
+};
+
+// Tests and benchmarks are not ordinary build inputs, but their selected
+// source is authoritative synthesis context. Each row is one target-selected
+// package file rendered from nontrivia syntax. Keeping the kind and relative
+// filename explicit makes this useful to a provider without exposing a host
+// path or quietly treating a benchmark as a test.
+struct AgentValidationContext {
+  std::string kind;
+  std::string source_relative_path;
+  std::string source;
+  Sha256Digest source_digest;
 };
 
 // A body or member site is meaningful only inside its declaration. The
@@ -195,12 +208,21 @@ struct AgentObligation {
   std::vector<AgentImportedPackageContext> imported_packages;
   std::vector<AgentJudgmentContext> guiding_judgments;
   std::vector<AgentDocumentationContext> documentation;
+  std::vector<AgentValidationContext> validation_context;
 };
 
 struct AgentObligationResult {
   bool ok = false;
   std::vector<AgentObligation> obligations;
 };
+
+// Collects target-selected `_test.draft` and `_bench.draft` files from a
+// package load performed with both validation switches enabled. The returned
+// rows are canonical, comment-free syntax and preserve package filename order.
+[[nodiscard]] std::vector<AgentValidationContext>
+collect_agent_validation_context(
+    const SourceManager &sources,
+    const LoadedPackage &loaded);
 
 // Builds obligations for judgments and every synthesis grammar category. Docs
 // remain inputs through AgentRecord and package interfaces but do not form
@@ -214,7 +236,8 @@ struct AgentObligationResult {
     const ConstantTable &constants,
     const AgentMetadataResult &metadata,
     const TargetProfile &target,
-    DiagnosticSink &diagnostics);
+    DiagnosticSink &diagnostics,
+    std::span<const AgentValidationContext> validation_context = {});
 
 [[nodiscard]] std::string_view agent_construct_kind_name(
     AgentConstructKind kind);

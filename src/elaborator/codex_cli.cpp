@@ -43,7 +43,7 @@ namespace {
 constexpr std::uintmax_t kMaximumCodexOutputBytes = 64U * 1024U * 1024U;
 constexpr std::uintmax_t kMaximumCodexLogBytes = 4U * 1024U * 1024U;
 constexpr std::string_view kPromptContractIdentity =
-    "draft-codex-synthesis-prompt-v14";
+    "draft-codex-synthesis-prompt-v15";
 constexpr std::string_view kOutputSchema =
     "{\n"
     "  \"type\": \"object\",\n"
@@ -555,6 +555,25 @@ void append_field(
       append_field("DOC_ATTACHMENT_SHA256", file.digest.hex(), prompt);
     }
   }
+  prompt += "VALIDATION_CONTEXT ";
+  append_u64(
+      static_cast<std::uint64_t>(
+          request.obligation.validation_context.size()),
+      prompt);
+  for (const AgentValidationContext &validation :
+       request.obligation.validation_context) {
+    if (sha256(validation.source) != validation.source_digest) {
+      provider_error(
+          diagnostics, "Codex validation context identity is inconsistent");
+      return false;
+    }
+    append_field("VALIDATION_KIND", validation.kind, prompt);
+    append_field(
+        "VALIDATION_SOURCE_PATH", validation.source_relative_path, prompt);
+    append_field(
+        "VALIDATION_SOURCE_SHA256", validation.source_digest.hex(), prompt);
+    append_field("VALIDATION_SOURCE", validation.source, prompt);
+  }
   append_field("AUTHOR_PROMPT", request.prompt, prompt);
   prompt += "VISIBLE_BINDINGS ";
   append_u64(
@@ -971,7 +990,7 @@ SynthesisProvider configure_codex_cli_provider(
   if (!executable_digest.has_value()) return {};
 
   Sha256 configuration;
-  configuration.update("draft.codex-cli-provider.v9");
+  configuration.update("draft.codex-cli-provider.v10");
   configuration.update(executable_digest->bytes);
   configuration.update(options.model);
   configuration.update(";timeout-ms=");
@@ -991,7 +1010,7 @@ SynthesisProvider configure_codex_cli_provider(
       "codex-config-" + configuration.finalize().hex();
 
   SynthesisProvider provider;
-  provider.provider_identity = "openai-codex-cli-v15";
+  provider.provider_identity = "openai-codex-cli-v16";
   provider.model_identity = state.model;
   provider.configuration_identity = state.configuration_identity;
   provider.state = &state;

@@ -43,7 +43,7 @@ struct CompileWorkspaceOptions {
   // Versioned identity of the compiler semantics and manifest algorithm. It is
   // a resolved-program input and must change when an implementation change can
   // alter accepted meaning or emitted behavior for the same other inputs.
-  std::string compiler_content_identity = "draft-bootstrap-cpp-v42";
+  std::string compiler_content_identity = "draft-bootstrap-cpp-v43";
   CompileWorkspaceStage stage = CompileWorkspaceStage::Complete;
   bool lower_mir = false;
   bool emit_llvm = false;
@@ -79,6 +79,7 @@ struct CompiledPackage {
   BodyCheckResult bodies;
   AgentMetadataResult metadata;
   AgentObligationResult obligations;
+  std::vector<AgentValidationContext> validation_context;
   EffectSummaryResult effects;
   PackageInterface interface;
   NativeInteropResult native_interop;

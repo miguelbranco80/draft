@@ -115,6 +115,43 @@ void hash_field(Sha256 &hash, std::string_view value) {
       kind == AgentConstructKind::SynthesisAssembly;
 }
 
+[[nodiscard]] bool has_synthesis_record(
+    const AgentMetadataResult &metadata) {
+  for (const AgentRecord &record : metadata.records) {
+    if (is_synthesis_obligation(record.kind)) return true;
+  }
+  return false;
+}
+
+// Validation files stay outside the ordinary workspace graph, so handwritten
+// builds do not acquire test-only imports or declarations. A package that has
+// synthesis sites gets one parallel target-selected load with both validation
+// roles enabled. Only its canonical test/benchmark rows survive this helper;
+// host paths and the duplicate ordinary syntax do not enter obligations.
+[[nodiscard]] std::vector<AgentValidationContext> load_validation_context(
+    SourceManager &sources,
+    const WorkspacePackage &workspace_package,
+    const WorkspaceLoadOptions &workspace_options,
+    DiagnosticSink &diagnostics) {
+  PackageLoadOptions context_options = workspace_options.package_options;
+  context_options.include_tests = true;
+  context_options.include_benchmarks = true;
+  context_options.source_overrides.clear();
+  for (const WorkspaceSourceOverride &source_override :
+       workspace_options.source_overrides) {
+    if (source_override.identity == workspace_package.identity) {
+      context_options.source_overrides.push_back(source_override.source);
+    }
+  }
+  PackageLoadResult context_package = load_package(
+      sources,
+      workspace_package.loaded.physical_directory,
+      context_options,
+      diagnostics);
+  if (!context_package.ok) return {};
+  return collect_agent_validation_context(sources, context_package.package);
+}
+
 // A dependency with pending generated declarations or members cannot publish a
 // complete interface to consumers. Discovery conservatively suspends every
 // consumer until the dependency is overlaid and recompiled; this avoids making
@@ -553,6 +590,10 @@ CompileWorkspaceResult compile_workspace(
         package.semantics.package,
         options.attachments,
         diagnostics);
+    if (package.metadata.ok && has_synthesis_record(package.metadata)) {
+      package.validation_context = load_validation_context(
+          sources, workspace_package, options.workspace, diagnostics);
+    }
     package.interface = build_package_interface(
         workspace_package.identity,
         package.semantics.package,
@@ -568,7 +609,8 @@ CompileWorkspaceResult compile_workspace(
           package.semantics.constants,
           package.metadata,
           options.target,
-          diagnostics);
+          diagnostics,
+          package.validation_context);
     }
     result.packages[package_index] = std::move(package);
   }
@@ -700,6 +742,16 @@ CompileWorkspaceResult compile_workspace(
         package.semantics.package,
         options.attachments,
         diagnostics);
+    // Expression, statement, and assembly sites are installed by body
+    // checking, so a package with only later-stage synthesis was not visible to
+    // the phase-1 guard above. Load its validation context now, before the final
+    // obligations are hashed. Early declaration/member packages reuse the rows
+    // they already collected.
+    if (package.metadata.ok && package.validation_context.empty() &&
+        has_synthesis_record(package.metadata)) {
+      package.validation_context = load_validation_context(
+          sources, workspace_package, options.workspace, diagnostics);
+    }
     package.obligations = build_agent_obligations(
         workspace_package.identity,
         sources,
@@ -708,7 +760,8 @@ CompileWorkspaceResult compile_workspace(
         package.semantics.constants,
         package.metadata,
         options.target,
-        diagnostics);
+        diagnostics,
+        package.validation_context);
     package.effects = summarize_package_effects(
         package.semantics.package,
         package.bodies.program,

@@ -142,14 +142,16 @@ struct TemporaryWorkspace {
            << "}\n";
   }
 
-  void write_test_source() const {
+  void write_test_source(std::string_view extra_statement = {}) const {
     std::ofstream source(
         package / "candidate_test.draft", std::ios::binary | std::ios::trunc);
     source << "package app\n\n"
            << "import core/testing\n\n"
            << "test_generated_answer :: proc(test: ^testing.Test) {\n"
-           << "    testing.expect(test, answer() == 42)\n"
-           << "}\n";
+           << "    // Validation comments are not semantic agent context.\n"
+           << "    testing.expect(test, answer() == 42)\n";
+    if (!extra_statement.empty()) source << "    " << extra_statement << "\n";
+    source << "}\n";
   }
 
   void write_benchmark_source() const {
@@ -171,6 +173,7 @@ struct FakeProviderState {
   bool opaque_interface_responses = false;
   std::vector<draft::AgentConstructKind> kinds;
   std::vector<std::vector<std::string>> visible_binding_names;
+  std::vector<draft::AgentValidationContext> last_validation_context;
 };
 
 struct FakeTestRunnerState {
@@ -235,6 +238,7 @@ bool synthesize(
   state->last_attachment = request.attachments.empty()
       ? std::string()
       : request.attachments[0].contents;
+  state->last_validation_context = request.obligation.validation_context;
   std::vector<std::string> visible_names;
   for (const draft::AgentVisibleBinding &binding :
        request.obligation.visible_bindings) {
@@ -790,6 +794,27 @@ void test_tests_gate_manifest_commit(TestState &state) {
           missing_diagnostics);
   EXPECT(state, !missing_runner.ok);
   EXPECT(state, !missing_runner.committed);
+  EXPECT(state, provider.last_validation_context.size() == 2);
+  if (provider.last_validation_context.size() == 2) {
+    const draft::AgentValidationContext &benchmark =
+        provider.last_validation_context[0];
+    const draft::AgentValidationContext &test =
+        provider.last_validation_context[1];
+    EXPECT(state, benchmark.kind == "benchmark");
+    EXPECT(state,
+        benchmark.source_relative_path == "candidate_bench.draft");
+    EXPECT(state,
+        benchmark.source.find("bench_generated_answer") !=
+            std::string::npos);
+    EXPECT(state, draft::sha256(benchmark.source) == benchmark.source_digest);
+    EXPECT(state, test.kind == "test");
+    EXPECT(state, test.source_relative_path == "candidate_test.draft");
+    EXPECT(state,
+        test.source.find("test_generated_answer") != std::string::npos);
+    EXPECT(state,
+        test.source.find("Validation comments") == std::string::npos);
+    EXPECT(state, draft::sha256(test.source) == test.source_digest);
+  }
   EXPECT(state, missing_runner.tested_procedures == 1);
   EXPECT(state, missing_diagnostics.has_errors());
   draft::DiagnosticSink missing_manifest_diagnostics;
@@ -878,6 +903,56 @@ void test_tests_gate_manifest_commit(TestState &state) {
       draft::serialize_resolution_manifest(after.manifest) == committed);
 }
 
+void test_validation_context_stales_synthesis(TestState &state) {
+  TemporaryWorkspace workspace;
+  workspace.write_source("validation context freshness");
+  workspace.write_test_source();
+  FakeProviderState provider;
+  FakeTestRunnerState runner;
+
+  auto options = [&]() {
+    draft::ResolveWorkspaceOptions value = resolve_options(workspace, provider);
+    value.validation_runner.state = &runner;
+    value.validation_runner.run = run_candidate_tests;
+    return value;
+  };
+
+  draft::SourceManager first_sources;
+  draft::DiagnosticSink first_diagnostics;
+  const draft::ResolveWorkspaceResult first = draft::resolve_workspace(
+      first_sources,
+      workspace.package.string(),
+      options(),
+      first_diagnostics);
+  if (!first.ok) {
+    std::cerr << draft::render_diagnostics(first_sources, first_diagnostics);
+  }
+  EXPECT(state, first.ok);
+  EXPECT(state, first.synthesized_sites == 1);
+  EXPECT(state, provider.calls == 1);
+
+  // The surface program and author prompt are unchanged. Altering a selected
+  // test statement alone must change the obligation and force a new proposal;
+  // otherwise a pin could survive after its authoritative acceptance context
+  // changed.
+  workspace.write_test_source("testing.expect(test, answer() >= 0)");
+  draft::SourceManager changed_sources;
+  draft::DiagnosticSink changed_diagnostics;
+  const draft::ResolveWorkspaceResult changed = draft::resolve_workspace(
+      changed_sources,
+      workspace.package.string(),
+      options(),
+      changed_diagnostics);
+  if (!changed.ok) {
+    std::cerr << draft::render_diagnostics(
+        changed_sources, changed_diagnostics);
+  }
+  EXPECT(state, changed.ok);
+  EXPECT(state, changed.synthesized_sites == 1);
+  EXPECT(state, changed.reused_sites == 0);
+  EXPECT(state, provider.calls == 2);
+}
+
 } // namespace
 
 int main() {
@@ -888,6 +963,7 @@ int main() {
   test_dependency_interface_rounds(state);
   test_same_interface_set_is_opaque(state);
   test_tests_gate_manifest_commit(state);
+  test_validation_context_stales_synthesis(state);
   if (state.failures != 0) {
     std::cerr << state.failures << " resolver expectation(s) failed\n";
     return EXIT_FAILURE;

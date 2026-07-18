@@ -42,12 +42,13 @@ struct SynthesisRequestFile {
 // source and typed semantic skeleton, active denial selectors,
 // parametric constraints, complete referenced type graphs, positionally
 // available imported package interfaces and their explicit public documentation
-// bytes, judgment claims, persistent source coordinates, the exact input
+// bytes, judgment claims, canonical test and benchmark source, persistent
+// source coordinates, the exact input
 // digest, and stable site identity. prompt and
 // attachments contain source-authored bounded context. Later transitive closure
 // rows can extend this versioned struct without exposing semantic arena IDs.
 struct SynthesisRequest {
-  std::string format = "draft-synthesis-request-v14";
+  std::string format = "draft-synthesis-request-v15";
   AgentObligation obligation;
   std::string prompt;
   std::vector<SynthesisRequestFile> attachments;
