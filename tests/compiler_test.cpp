@@ -161,6 +161,15 @@ void test_compiler_distributed_core(TestState &state) {
           "%draft.runtime.RandomGenerator { ptr @__draft.default_random, "
           "ptr null }") != std::string::npos);
       EXPECT(state, root_package->llvm.text.find(
+          "%draft.runtime.Allocator { ptr @__draft.temp_allocator, "
+          "ptr null }") != std::string::npos);
+      EXPECT(state, root_package->llvm.text.find(
+          "define hidden void "
+          "@\"__draft.runtime.reset_temporary_allocator\"") !=
+          std::string::npos);
+      EXPECT(state, root_package->llvm.text.find(
+          "call i32 @pthread_key_create") != std::string::npos);
+      EXPECT(state, root_package->llvm.text.find(
           "@__draft.thread_context = internal thread_local global") !=
           std::string::npos);
       EXPECT(state, root_package->llvm.text.find(
@@ -283,7 +292,7 @@ void test_compiler_distributed_memory(TestState &state) {
   EXPECT(state, root->llvm.text.find(
       ".memory.new_24mono_24") != std::string::npos);
   EXPECT(state,
-      root->semantics.package.imported_procedure_instances.size() == 4);
+      root->semantics.package.imported_procedure_instances.size() == 5);
   EXPECT(state, root->llvm.text.find(
       "call ptr @realloc") != std::string::npos);
   EXPECT(state, root->llvm.text.find(
@@ -300,7 +309,10 @@ void test_compiler_distributed_memory(TestState &state) {
   EXPECT(state, memory != nullptr);
   if (memory != nullptr) {
     EXPECT(state,
-        memory->semantics.package.parametric_instances.size() == 4);
+        memory->semantics.package.parametric_instances.size() == 5);
+    EXPECT(state, memory->llvm.text.find(
+        "@\"__draft.runtime.reset_temporary_allocator\"") !=
+        std::string::npos);
   }
 }
 
@@ -515,6 +527,8 @@ void test_compiler_distributed_thread(TestState &state) {
         std::string::npos);
     EXPECT(state, thread->llvm.text.find("@\"pthread_mutex_lock\"") !=
         std::string::npos);
+    EXPECT(state, thread->llvm.text.find(
+        "@\"__draft.runtime.default_context\"") != std::string::npos);
   }
 }
 

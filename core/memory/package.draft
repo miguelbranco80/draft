@@ -114,3 +114,19 @@ pub free_with_allocator[T: type] :: proc(
         allocator,
     )
 }
+
+// Temporary allocation uses the active Context's thread-owned resettable
+// allocator. Individual frees are intentionally unnecessary: values remain
+// live until reset_temporary or thread exit. Callers must not retain a returned
+// pointer across either boundary.
+pub temporary_allocate :: proc(size, alignment: usize) -> rawptr {
+    return allocate_with_allocator(size, alignment, context.temp_allocator)
+}
+
+pub temporary_new[T: type] :: proc() -> ^T {
+    return cast[^T](temporary_allocate(size_of(T), align_of(T)))
+}
+
+pub reset_temporary :: proc() {
+    runtime.reset_temporary_allocator()
+}

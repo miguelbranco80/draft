@@ -77,11 +77,16 @@ pub Context :: @repr(C) struct {
 foreign draft_runtime {
     pub default_context :: c "__draft.runtime.default_context" proc() -> Context
     // core/thread uses this context-free C bridge before entering its ordinary
-    // callback. It replaces the calling thread's TLS snapshot with the exact
-    // spawning Context copy; foreign hosts normally use the lazy default path.
+    // callback. It replaces the calling thread's TLS snapshot with the
+    // spawning Context fields and a fresh hosted temporary allocator; foreign
+    // hosts normally use the lazy default path.
     pub install_thread_context :: c "__draft.runtime.install_thread_context" proc(
         value: ^Context,
     )
+    // Releases every allocation owned by the calling thread's hosted temporary
+    // allocator. Existing pointers into that storage become invalid. The next
+    // temporary allocation lazily reuses the empty per-thread state.
+    pub reset_temporary_allocator :: c "__draft.runtime.reset_temporary_allocator" proc()
     // The surface declaration is a stable capability name. The compiler checks
     // and specializes the callback's complete parameter/result signature at
     // each call site, so no erased or variadic runtime ABI is involved. The

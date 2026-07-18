@@ -1,11 +1,13 @@
 package core_thread
 
 import core/thread
+import core/memory
 import core/runtime
 
 Observation :: struct {
     value: u64,
     context_index: int,
+    temporary_is_thread_owned: bool,
 }
 
 worker :: proc(user: rawptr) {
@@ -13,16 +15,25 @@ worker :: proc(user: rawptr) {
     snapshot := runtime.default_context()
     observation^.value = 42
     observation^.context_index = snapshot.user_index
+    observation^.temporary_is_thread_owned =
+        snapshot.temp_allocator.procedure != snapshot.allocator.procedure
+    temporary := memory.temporary_new[u64]()
+    temporary^ = 91
+    assert(temporary^ == 91)
 }
 
 main :: proc() {
     context.user_index = 73
+    // A child must not inherit this deliberately non-temporary provider. The
+    // hosted runtime replaces it with state owned by the new OS thread.
+    context.temp_allocator = context.allocator
     observation: Observation
     (child, started) := thread.spawn(worker, cast[rawptr](&observation))
     assert(started)
     assert(thread.join(&child))
     assert(observation.value == 42)
     assert(observation.context_index == 73)
+    assert(observation.temporary_is_thread_owned)
     assert(thread.current_id() != 0)
 
     mutex: thread.Mutex

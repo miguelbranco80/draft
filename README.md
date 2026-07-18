@@ -114,7 +114,10 @@ field (or takes a Context-field address) receives a lexical copy, and ordinary
 calls made in that scope receive the copy as their hidden argument. The narrow
 `runtime.default_context` and `runtime.call_with_context` bridges let
 context-free C callbacks acquire a compatible value and enter an ordinary Draft
-callback without exposing Context as a generally legal C aggregate. The
+callback without exposing Context as a generally legal C aggregate. The hosted
+temp allocator is independently owned per pthread, supports explicit group
+reset, and is destroyed at thread exit; a spawned child replaces rather than
+shares the parent's temporary provider state. The
 compiler-distributed `core/runtime`, `core/c`, `core/option`, `core/result`,
 `core/memory`, `core/heap`, `core/array`, `core/map`, `core/io`, `core/testing`,
 `core/benchmark`, `core/time`, `core/os`, `core/atomic`, and `core/thread`

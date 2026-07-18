@@ -148,12 +148,15 @@ The hosted default allocator implements the three `core/runtime` operations
 against the Darwin heap. Fresh storage is zeroed, alignments through 16 use the
 ordinary allocator, larger alignments use `posix_memalign`, and aligned resize
 allocates/copies/releases while preserving the old allocation on failure. The
-root and each lazy thread Context currently use this provider for both general
-and temporary allocation. The hosted runtime now installs a stderr logger and
-`arc4random_buf` random provider rather than empty records. A thread-owned
-resettable temporary arena remains runtime work; `core/memory` currently
-exposes the honest byte-level substrate and explicit allocator forms without
-pretending that arena policy exists.
+root and each lazy thread Context use this provider for general allocation. The
+temporary provider instead owns a pthread-key state containing a direct list of
+separately aligned allocations. Individual free is a no-op, resize allocates and
+preserves the live prefix, explicit reset releases the whole list, pthread key
+destruction releases it on thread return, and hosted main releases its state
+before process-view teardown. `core/memory` exposes temporary byte/typed helpers
+and explicit reset without hiding a call-boundary reset. The runtime also
+installs a stderr logger and `arc4random_buf` random provider rather than empty
+records.
 
 ## Nominal generic inference and transitive interfaces
 
@@ -198,11 +201,12 @@ because Draft 1 deliberately rejects variadic C imports.
 
 `core/thread` uses pthreads through fixed C signatures. Spawn state owns a copy
 of the active Context. The C trampoline installs that copy as the child TLS
-default before entering the ordinary Draft callback, so ordinary calls, defers,
-and `runtime.default_context` agree. Join clears the owning handle. Mutex and
-condition storage uses the target-profile Darwin LP64 layouts (64 and 48 bytes,
-including their eight-byte signatures) and is accessed only through pthread
-operations.
+default before entering the ordinary Draft callback, replacing temp_allocator
+with a provider whose state belongs to that OS thread, so ordinary calls,
+defers, and `runtime.default_context` agree. Join clears the owning handle. Mutex
+and condition storage uses the target-profile Darwin LP64 layouts (64 and 48
+bytes, including their eight-byte signatures) and is accessed only through
+pthread operations.
 
 ## Initial compiler-backed atomic interface
 

@@ -40,4 +40,21 @@ main :: proc() {
     assert(cast[uintptr](resized) % 64 == 0)
     assert(resized_view[3] == 99 && resized_view[7] == 0)
     memory.free_bytes(resized_storage, 8 * size_of(u64), 64)
+
+    // Temporary storage is zeroed and honors the same target alignment rules,
+    // but is reclaimed as one thread-owned lifetime group.
+    temporary := memory.temporary_new[Aligned_Value]()
+    assert(cast[uintptr](temporary) % 64 == 0)
+    assert(temporary^.word == 0)
+    temporary^.word = 73
+    temp_resized := memory.resize_with_allocator(
+        cast[rawptr](temporary),
+        size_of(Aligned_Value),
+        2 * size_of(Aligned_Value),
+        align_of(Aligned_Value),
+        context.temp_allocator,
+    )
+    assert(cast[uintptr](temp_resized) % 64 == 0)
+    assert(cast[^Aligned_Value](temp_resized)^.word == 73)
+    memory.reset_temporary()
 }

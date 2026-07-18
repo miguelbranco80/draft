@@ -30,7 +30,7 @@ generated-source maps, and several ABI artifact/output paths do not yet exist.
 | Symbols, scopes, types, constants, layouts, parametrics, and `when` | `src/sema` and semantic/type/constant/interface tests | Broadly implemented | Audit every Draft 1 operator/type combination and complete any missing target validation, especially SIMD and C-layout edge cases. |
 | Canonical interfaces and transitive denials | `src/sema/interface.*`, `effect.*`, `denial.*` and tests | Partially implemented | Flow-through procedure slots and exact foreign-provider summaries/artifact binding are absent. |
 | Complete handwritten language through HIR, MIR, LLVM, and native execution | `src/sema/body_checker.*`, `src/mir`, `src/backend`, native examples | Partially implemented | Complete the closed parsed-assembly vocabulary, foreign aggregate ABI coverage, runtime/core surface, and release-native conformance matrix. |
-| Runtime context, entry, TLS, failures, allocator, and OS support | entry/runtime lowering, lazy foreign-thread attachment, explicit child-thread Context installation, stable process argument/environment views with teardown, default allocator/logger/random providers, `core/runtime`, and `core/memory` | Partially implemented | A thread-owned temporary arena remains missing; the current OS file seam begins at fixed descriptors because Darwin open(2) requires a locked fixed-signature wrapper artifact. |
+| Runtime context, entry, TLS, failures, allocator, and OS support | entry/runtime lowering, lazy foreign-thread attachment, explicit child-thread Context installation, pthread-key-owned temporary allocation/reset/destruction, stable process argument/environment views with teardown, default allocator/logger/random providers, `core/runtime`, and `core/memory` | Partially implemented | The current OS file seam begins at fixed descriptors because Darwin open(2) requires a locked fixed-signature wrapper artifact; richer runtime/internal-state and virtual-memory facilities remain to be completed. |
 | Initial core package set from specification section 7 | Every named package exists as inspectable Draft source; container, OS, pthread, compiler-backed atomic, and concurrent atomic examples check, lower, and execute natively | Implemented foundation | Complete memory arenas/owned buffers/strings/virtual memory and the full test/benchmark runners. Expand package APIs from the representative first surface as conformance programs require them. |
 | Parsed inline assembly plus package assembly | `src/assembly`, `examples/assembly`, `examples/external-assembly`, assembly/toolchain tests | Partially implemented | External assembly is complete for the first seam. Inline assembly still needs the remainder of the target profile's closed instruction/addressing/SIMD vocabulary. Labels and calls intentionally remain external-file features. |
 | C imports/exports and native artifacts | `src/interop`, scalar and aggregate Darwin ABI tests, `examples/c-interop` | Partially implemented | Exact provider-to-library mapping and object/static/shared-library/C-header/assembly artifact commands are missing. |
@@ -53,8 +53,7 @@ artifact-output modes are not implemented yet.
 
 ## Next release-critical slice
 
-The next implementation slice completes the thread-owned temporary arena and
-the remaining Draft 1 runtime, assembly, and C ABI surfaces needed by
-representative programs. The validation and evidence harness then needs to
-exercise those complete programs through the locked native seam rather than
-relying only on unit-level compiler proofs.
+The next implementation slice completes the remaining Draft 1 memory, assembly,
+and C ABI surfaces needed by representative programs. The validation and
+evidence harness then needs to exercise those complete programs through the
+locked native seam rather than relying only on unit-level compiler proofs.

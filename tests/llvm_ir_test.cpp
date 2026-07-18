@@ -423,6 +423,19 @@ main :: proc() -> int {
   EXPECT(state, module.text.find(
       "define internal ptr @__draft.ensure_thread_context") !=
       std::string::npos);
+  EXPECT(state, module.text.find(
+      "@__draft.temp_key_once = internal global "
+      "%draft.runtime.PthreadOnce { i64 816954554") !=
+      std::string::npos);
+  EXPECT(state, module.text.find(
+      "define internal ptr @__draft.temp_allocator") != std::string::npos);
+  EXPECT(state, module.text.find(
+      "define hidden void "
+      "@\"__draft.runtime.reset_temporary_allocator\"") !=
+      std::string::npos);
+  EXPECT(state, module.text.find(
+      "call void @__draft.destroy_current_temp_state()") !=
+      std::string::npos);
   EXPECT(state, module.text.find("(ptr null)") == std::string::npos);
   EXPECT(state, module.text.find("trunc i64") != std::string::npos);
   EXPECT(state, module.text.find("sdiv i64") != std::string::npos);

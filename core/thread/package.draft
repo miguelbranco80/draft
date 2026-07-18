@@ -44,13 +44,17 @@ release_start_state :: proc(state: ^Start_State) {
 thread_trampoline :: c proc(user: rawptr) -> rawptr {
     state := cast[^Start_State](user)
     runtime.install_thread_context(&state^.thread_context)
+    // Installation replaces the copied temp_allocator with the hosted
+    // thread-owned provider. Use the installed snapshot for every ordinary
+    // child call rather than the pre-install spawn record.
+    thread_context := runtime.default_context()
     runtime.call_with_context(
-        &state^.thread_context,
+        &thread_context,
         state^.entry,
         state^.user,
     )
     runtime.call_with_context(
-        &state^.thread_context,
+        &thread_context,
         release_start_state,
         state,
     )
