@@ -43,7 +43,7 @@ namespace {
 constexpr std::uintmax_t kMaximumCodexOutputBytes = 64U * 1024U * 1024U;
 constexpr std::uintmax_t kMaximumCodexLogBytes = 4U * 1024U * 1024U;
 constexpr std::string_view kPromptContractIdentity =
-    "draft-codex-synthesis-prompt-v11";
+    "draft-codex-synthesis-prompt-v12";
 constexpr std::string_view kOutputSchema =
     "{\n"
     "  \"type\": \"object\",\n"
@@ -551,6 +551,19 @@ void append_field(
     append_field("BINDING_KIND", symbol_kind_name(binding.kind), prompt);
     append_field("BINDING_TYPE_SHA256", binding.type_digest.hex(), prompt);
     append_field("BINDING_TYPE_TEXT", binding.type_text, prompt);
+    append_field(
+        "BINDING_HAS_CONSTANT", binding.has_constant ? "true" : "false", prompt);
+    if (binding.has_constant) {
+      if (sha256(binding.constant_definition) != binding.constant_digest) {
+        provider_error(
+            diagnostics, "Codex visible constant identity is inconsistent");
+        return false;
+      }
+      append_field(
+          "BINDING_CONSTANT_SHA256", binding.constant_digest.hex(), prompt);
+      append_field(
+          "BINDING_CONSTANT", binding.constant_definition, prompt);
+    }
   }
   prompt += "ATTACHMENTS ";
   append_u64(static_cast<std::uint64_t>(request.attachments.size()), prompt);
@@ -922,7 +935,7 @@ SynthesisProvider configure_codex_cli_provider(
   if (!executable_digest.has_value()) return {};
 
   Sha256 configuration;
-  configuration.update("draft.codex-cli-provider.v6");
+  configuration.update("draft.codex-cli-provider.v7");
   configuration.update(executable_digest->bytes);
   configuration.update(options.model);
   configuration.update(";timeout-ms=");
@@ -942,7 +955,7 @@ SynthesisProvider configure_codex_cli_provider(
       "codex-config-" + configuration.finalize().hex();
 
   SynthesisProvider provider;
-  provider.provider_identity = "openai-codex-cli-v12";
+  provider.provider_identity = "openai-codex-cli-v13";
   provider.model_identity = state.model;
   provider.configuration_identity = state.configuration_identity;
   provider.state = &state;

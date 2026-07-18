@@ -171,10 +171,13 @@ An omitted symbol is unknown, and compiler-, package-assembly-, and target-owned
 providers cannot be overridden by an external audit.
 
 Provider requests never substitute hashes for information the synthesizer must
-understand. `draft-synthesis-request-v11` carries canonical Draft spellings for
-the expected type and every visible binding, together with explicit target,
-SIMD, and parsed-assembly facts. It also carries the checked runtime `Context`
-fields with exact offsets and types. Active denials resolve through the ordinary
+understand. `draft-synthesis-request-v12` carries canonical Draft spellings for
+the expected type and every visible binding, together with complete canonical
+values for visible compile-time constants and explicit target, SIMD, and
+parsed-assembly facts. Procedure-valued constants lose their process-local
+symbol index and gain the same package-qualified identity used by interfaces.
+It also carries the checked runtime `Context` fields with exact offsets and
+types. Active denials resolve through the ordinary
 semantic symbol table: denied bindings and packages are removed, a denied
 import member is redacted from its compact package interface, and `context` or
 `context.field` removes the matching usable field rows without erasing the

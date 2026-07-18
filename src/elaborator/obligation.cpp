@@ -244,6 +244,40 @@ void append_constant_context(
   }
 }
 
+// Procedure constants contain a process-local SymbolId while semantic checking
+// is in progress. Canonical provider context uses the same package-qualified
+// identity rule as public interfaces and clears that local index recursively.
+[[nodiscard]] ConstantValue canonical_constant(
+    const PackageIdentity &identity,
+    const SemanticPackage &package,
+    ConstantValue value) {
+  for (ConstantValue &element : value.elements) {
+    element = canonical_constant(identity, package, std::move(element));
+  }
+  if (value.kind != ConstantKind::Procedure) return value;
+  if (value.root_identity.empty() &&
+      value.symbol_index != std::numeric_limits<std::uint32_t>::max() &&
+      value.symbol_index < package.symbols.symbol_count()) {
+    const SymbolId referenced{value.symbol_index};
+    bool imported_identity = false;
+    for (const ImportedSymbol &imported : package.imported_symbols) {
+      if (imported.proxy != referenced) continue;
+      value.root_identity = imported.root_identity;
+      value.root_relative_path = imported.root_relative_path;
+      value.text = imported.public_name;
+      imported_identity = true;
+      break;
+    }
+    if (!imported_identity) {
+      value.root_identity = identity.root_identity;
+      value.root_relative_path = identity.root_relative_path;
+      value.text = package.symbols.symbol(referenced).name;
+    }
+  }
+  value.symbol_index = std::numeric_limits<std::uint32_t>::max();
+  return value;
+}
+
 // This is deliberately a labeled, length-prefixed text format rather than a
 // JSON dependency. It is readable in a provider prompt, unambiguous for strings
 // containing whitespace, and simple enough to keep beside the type graph whose
@@ -1092,6 +1126,7 @@ struct ActiveDenialContext {
     const PackageIdentity &identity,
     const LoadedPackage &loaded,
     const SemanticPackage &package,
+    const ConstantTable &constants,
     const AgentRecord &record,
     std::span<const ResolvedDenialSelector> denials,
     std::vector<AgentTypeContext> &type_contexts,
@@ -1123,12 +1158,19 @@ struct ActiveDenialContext {
       const InterfaceTypeGraph type = export_interface_type(
           identity, package, symbol.type, diagnostics);
       add_type_context(type, type_contexts);
-      result.push_back({
-          symbol.name,
-          symbol.kind,
-          hash_interface_type_graph(type),
-          type_text(package, symbol.type),
-      });
+      AgentVisibleBinding binding;
+      binding.name = symbol.name;
+      binding.kind = symbol.kind;
+      binding.type_digest = hash_interface_type_graph(type);
+      binding.type_text = type_text(package, symbol.type);
+      if (const ConstantValue *constant = constants.find(symbol_id)) {
+        binding.has_constant = true;
+        append_constant_context(
+            canonical_constant(identity, package, *constant),
+            binding.constant_definition);
+        binding.constant_digest = sha256(binding.constant_definition);
+      }
+      result.push_back(std::move(binding));
     }
     scope = current.parent;
   }
@@ -1219,7 +1261,7 @@ struct ActiveDenialContext {
     const AgentObligation &obligation,
     const TargetProfile &target) {
   Sha256 hash;
-  hash_field(hash, "draft-agent-obligation-v10");
+  hash_field(hash, "draft-agent-obligation-v11");
   hash_field(hash, obligation.site_identity);
   hash.update(obligation.record_digest.bytes);
   hash.update(obligation.expected_type_digest.bytes);
@@ -1394,6 +1436,11 @@ struct ActiveDenialContext {
     hash_u64(hash, static_cast<std::uint64_t>(binding.kind));
     hash.update(binding.type_digest.bytes);
     hash_field(hash, binding.type_text);
+    hash_u64(hash, binding.has_constant ? 1 : 0);
+    if (binding.has_constant) {
+      hash.update(binding.constant_digest.bytes);
+      hash_field(hash, binding.constant_definition);
+    }
   }
   return hash.finalize();
 }
@@ -1418,6 +1465,7 @@ AgentObligationResult build_agent_obligations(
     const SourceManager &sources,
     const LoadedPackage &loaded,
     const SemanticPackage &package,
+    const ConstantTable &constants,
     const AgentMetadataResult &metadata,
     const TargetProfile &target,
     DiagnosticSink &diagnostics) {
@@ -1461,6 +1509,7 @@ AgentObligationResult build_agent_obligations(
         identity,
         loaded,
         package,
+        constants,
         record,
         denials.resolved,
         obligation.type_contexts,

@@ -565,6 +565,7 @@ CompileWorkspaceResult compile_workspace(
           sources,
           workspace_package.loaded,
           package.semantics.package,
+          package.semantics.constants,
           package.metadata,
           options.target,
           diagnostics);
@@ -704,6 +705,7 @@ CompileWorkspaceResult compile_workspace(
         sources,
         workspace_package.loaded,
         package.semantics.package,
+        package.semantics.constants,
         package.metadata,
         options.target,
         diagnostics);

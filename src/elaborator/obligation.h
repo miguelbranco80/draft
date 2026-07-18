@@ -15,6 +15,7 @@
 #pragma once
 
 #include "sema/agent_metadata.h"
+#include "sema/constant.h"
 #include "source/diagnostic.h"
 #include "source/source.h"
 #include "target/profile.h"
@@ -38,6 +39,9 @@ struct AgentVisibleBinding {
   // canonical Draft spelling is the actual type contract presented in a
   // synthesis request. It is hashed with the rest of the obligation.
   std::string type_text;
+  bool has_constant = false;
+  Sha256Digest constant_digest;
+  std::string constant_definition;
 };
 
 // One source-visible field of the compiler-managed runtime Context. Active
@@ -197,6 +201,7 @@ struct AgentObligationResult {
     const SourceManager &sources,
     const LoadedPackage &loaded,
     const SemanticPackage &package,
+    const ConstantTable &constants,
     const AgentMetadataResult &metadata,
     const TargetProfile &target,
     DiagnosticSink &diagnostics);

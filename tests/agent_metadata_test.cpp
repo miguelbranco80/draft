@@ -142,6 +142,7 @@ void test_agent_records(TestState &state) {
           sources,
           loaded.package,
           semantics.package,
+          semantics.constants,
           metadata,
           target,
           diagnostics);
@@ -299,6 +300,7 @@ void test_agent_records(TestState &state) {
     bool saw_callback = false;
     bool saw_shadowed_blocked = false;
     bool saw_denied_secret = false;
+    bool saw_package_version = false;
     for (const draft::AgentVisibleBinding &binding :
          synthesis_obligation.visible_bindings) {
       if (binding.name == "values") {
@@ -315,11 +317,22 @@ void test_agent_records(TestState &state) {
         saw_shadowed_blocked = true;
       }
       if (binding.name == "secret") saw_denied_secret = true;
+      if (binding.name == "Package_Context_Version") {
+        EXPECT(state, binding.has_constant);
+        EXPECT(state,
+            draft::sha256(binding.constant_definition) ==
+                binding.constant_digest);
+        EXPECT(state,
+            binding.constant_definition.find("CONSTANT_INTEGER 1\n1\n") !=
+                std::string::npos);
+        saw_package_version = true;
+      }
     }
     EXPECT(state, saw_values);
     EXPECT(state, saw_callback);
     EXPECT(state, saw_shadowed_blocked);
     EXPECT(state, !saw_denied_secret);
+    EXPECT(state, saw_package_version);
     EXPECT(state,
         synthesis_obligation.target.identity == "draft-aarch64-macos-v5");
     EXPECT(state, synthesis_obligation.target.arch == "aarch64");
@@ -368,6 +381,7 @@ void test_agent_records(TestState &state) {
             sources,
             loaded.package,
             semantics.package,
+            semantics.constants,
             changed_metadata,
             target,
             diagnostics);
@@ -428,6 +442,7 @@ void test_agent_records(TestState &state) {
                 member_sources,
                 member_loaded.package,
                 member_semantics.package,
+                member_semantics.constants,
                 member_metadata,
                 target,
                 member_diagnostics);
@@ -556,6 +571,7 @@ work :: proc() -> i64 {
           sources,
           loaded.package,
           semantics.package,
+          semantics.constants,
           metadata,
           target,
           diagnostics);
@@ -862,6 +878,7 @@ void test_early_synthesis_receives_permitted_context(TestState &state) {
           sources,
           loaded.package,
           semantics.package,
+          semantics.constants,
           metadata,
           target,
           diagnostics);
