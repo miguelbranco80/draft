@@ -756,16 +756,45 @@ unsupported_subject :: proc(subject: []i64) {
         return
     }
 }
+
+duplicate_float_zero :: proc(subject: f64) {
+    switch subject {
+    case 0.0, -0.0:
+        return
+    case:
+        return
+    }
+}
+
+make_nan :: proc() -> f64 {
+    return cast[f64](0) / cast[f64](0)
+}
+
+unreachable_nan :: proc(subject: f64) {
+    switch subject {
+    case make_nan():
+        return
+    case:
+        return
+    }
+}
 )draft");
   EXPECT(state, !invalid.bodies.ok);
   const std::string rendered =
       draft::render_diagnostics(invalid.sources, invalid.diagnostics);
   EXPECT(state, rendered.find("compile-time") != std::string::npos);
-  EXPECT(state, rendered.find("duplicate switch case value") !=
-                    std::string::npos);
+  const std::size_t first_duplicate =
+      rendered.find("duplicate switch case value");
+  EXPECT(state, first_duplicate != std::string::npos);
+  EXPECT(state, first_duplicate != std::string::npos &&
+                    rendered.find(
+                        "duplicate switch case value", first_duplicate + 1) !=
+                        std::string::npos);
   EXPECT(state, rendered.find("duplicate default switch case") !=
                     std::string::npos);
   EXPECT(state, rendered.find("does not have built-in scalar equality") !=
+                    std::string::npos);
+  EXPECT(state, rendered.find("NaN switch case value can never match") !=
                     std::string::npos);
 }
 

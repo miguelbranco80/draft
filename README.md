@@ -99,7 +99,8 @@ host. Checked procedure bodies now lower into a target-independent MIR with
 explicit locals, addresses, loads/stores, bounds checks, calls, lexical defer
 unwinding, and CFG terminators for short-circuit expressions, conditionals,
 loops, and switches. Switch labels are folded constants with duplicate and
-exhaustiveness checks; non-integer scalar subjects lower through ordered
+exhaustiveness checks, including IEEE equality for signed zero and rejection of
+unmatchable NaN labels; non-integer scalar subjects lower through ordered
 equality branches after one subject evaluation. A defensive verifier checks
 every MIR table reference and block boundary before a native backend may consume
 it. The first backend emits

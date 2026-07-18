@@ -784,6 +784,68 @@ private:
         data_pointer_kind(kind);
   }
 
+  // Duplicate switch labels are defined by the subject's equality operation,
+  // not by byte-for-byte equality of ConstantValue's storage record. IEEE
+  // positive and negative zero have different encodings but compare equal at
+  // runtime, so accepting both would make the second label unreachable. NaN
+  // has the opposite property: even an identical NaN never compares equal.
+  //
+  // Every value label has already been contextualized to the subject type.
+  // Untyped floats are nevertheless handled as a defensive fallback so this
+  // helper remains correct if an earlier diagnostic leaves partial HIR behind.
+  [[nodiscard]] bool switch_case_values_equal(
+      TypeId subject_type,
+      const ConstantValue &left,
+      const ConstantValue &right) const {
+    const Type type = runtime_scalar_type(subject_type);
+    if (type.kind != TypeKind::Float ||
+        left.kind != ConstantKind::Float ||
+        right.kind != ConstantKind::Float) {
+      return left == right;
+    }
+    if (left.float_bit_width == 0 || right.float_bit_width == 0) {
+      return left.float_bit_width == right.float_bit_width &&
+          left.floating == right.floating;
+    }
+    if (left.float_bit_width != right.float_bit_width) return false;
+    const std::optional<IeeeBinaryFormat> format =
+        ieee_format_for_width(left.float_bit_width);
+    if (!format.has_value()) return left == right;
+    const std::optional<DecodedIeeeValue> left_value =
+        decode_ieee_bits(left.float_bits, *format);
+    const std::optional<DecodedIeeeValue> right_value =
+        decode_ieee_bits(right.float_bits, *format);
+    if (!left_value.has_value() || !right_value.has_value()) return left == right;
+    if (left_value->kind == IeeeValueKind::NaN ||
+        right_value->kind == IeeeValueKind::NaN) {
+      return false;
+    }
+    if (left_value->kind != right_value->kind) return false;
+    if (left_value->kind == IeeeValueKind::Infinity) {
+      return left_value->negative == right_value->negative;
+    }
+    return left_value->finite == right_value->finite;
+  }
+
+  // A NaN equality label is not merely unusual: the ordered equality emitted
+  // for a float switch can never select it. Diagnose the dead label instead of
+  // quietly generating a case that no runtime subject can reach.
+  [[nodiscard]] bool switch_case_value_is_nan(
+      TypeId subject_type, const ConstantValue &value) const {
+    const Type type = runtime_scalar_type(subject_type);
+    if (type.kind != TypeKind::Float ||
+        value.kind != ConstantKind::Float ||
+        value.float_bit_width == 0) {
+      return false;
+    }
+    const std::optional<IeeeBinaryFormat> format =
+        ieee_format_for_width(value.float_bit_width);
+    const std::optional<DecodedIeeeValue> decoded = format.has_value()
+        ? decode_ieee_bits(value.float_bits, *format)
+        : std::nullopt;
+    return decoded.has_value() && decoded->kind == IeeeValueKind::NaN;
+  }
+
   [[nodiscard]] bool current_procedure_uses_c_abi() const {
     if (!current_procedure_.is_valid()) return false;
     const TypeId type = semantic_.symbols.symbol(current_procedure_).type;
@@ -5145,10 +5207,20 @@ private:
                 covered_alternatives.push_back(*alternative);
               }
             } else if (label_expression.kind == HirExpressionKind::Constant) {
-              if (std::find(
-                      covered_values.begin(),
-                      covered_values.end(),
-                      label_expression.constant) != covered_values.end()) {
+              if (switch_case_value_is_nan(
+                      subject_type, label_expression.constant)) {
+                diagnostics_.error(
+                    tree.node(case_node.children[label_index]).range,
+                    "NaN switch case value can never match");
+              } else if (std::find_if(
+                             covered_values.begin(),
+                             covered_values.end(),
+                             [&](const ConstantValue &covered) {
+                               return switch_case_values_equal(
+                                   subject_type,
+                                   covered,
+                                   label_expression.constant);
+                             }) != covered_values.end()) {
                 diagnostics_.error(
                     tree.node(case_node.children[label_index]).range,
                     "duplicate switch case value");

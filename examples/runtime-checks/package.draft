@@ -142,6 +142,8 @@ switch_float :: proc(value: f64) -> i64 {
     switch value {
     case 1.5:
         return 1
+    case 0.0:
+        return 2
     case:
         return 0
     }
@@ -356,6 +358,9 @@ main :: proc() {
     assert(endian_roundtrip(21) == 42)
     assert(switch_integer(42) == 1 && switch_integer(41) == 0)
     assert(switch_float(1.5) == 1 && switch_float(2.0) == 0)
+    // IEEE negative zero compares equal to positive zero, including in the
+    // ordered equality chain used for floating-point switch dispatch.
+    assert(switch_float(-0.0) == 2)
 
     pointer_subject: i64 = 42
     assert(switch_pointer(&pointer_subject) == 1)
