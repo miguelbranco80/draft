@@ -17,8 +17,8 @@ AArch64 macOS executables and library artifacts, link exact package assembly,
 resolve every synthesis grammar category through transactional pins, and
 consume those pins offline.
 
-The release acceptance test is still unproved. In particular,
-validation/evidence commands, the complete runtime and initial-core surfaces,
+The release acceptance test is still unproved. In particular, persistent
+validation evidence/revocation, the complete runtime and initial-core surfaces,
 and generated-source maps do not yet exist.
 
 ## Requirement audit
@@ -32,7 +32,7 @@ and generated-source maps do not yet exist.
 | Canonical interfaces and transitive denials | `src/sema/interface.*`, `effect.*`, `denial.*`, artifact-summary parser/verifier, and tests; target v4 system-symbol summaries | Implemented first-release closure | Direct, returned, typed-field, interprocedural write-back, hidden-Context, and recursively higher-order flows compose at exact call sites and across package interfaces. Transitive declarations, compiler/runtime bridges, target System symbols, package assembly, and artifact-bound external audits are included. Expand malformed-contract and deep-recursion conformance coverage. |
 | Complete handwritten language through HIR, MIR, LLVM, and native execution | `src/sema/body_checker.*`, `src/mir`, `src/backend`, native examples | Partially implemented | Complete the runtime/core surface and release-native conformance matrix. |
 | Runtime context, entry, TLS, failures, allocator, and OS support | entry/runtime lowering, lazy foreign-thread attachment, explicit child-thread Context installation, pthread-key-owned temporary allocation/reset/destruction, stable process argument/environment views with teardown, default allocator/logger/random providers, virtual-memory mappings, typed pathname open/read/write/close/remove through a package-assembly ABI shim, `core/runtime`, and `core/memory` | Partially implemented | Richer runtime/internal-state facilities and a release-native conformance matrix remain to be completed. |
-| Initial core package set from specification section 7 | Every named package exists as inspectable Draft source; allocator-explicit arenas/buffers/owned strings, virtual memory, containers, OS, pthread, compiler-backed atomic, and concurrent atomic examples check, lower, and execute natively | Implemented foundation | Complete the full test/benchmark runners and expand package APIs from the representative first surface as conformance programs require them. |
+| Initial core package set from specification section 7 | Every named package exists as inspectable Draft source; allocator-explicit arenas/buffers/owned strings, virtual memory, containers, OS, pthread, compiler-backed atomic, concurrent atomic, and validation examples check, lower, and execute natively | Implemented foundation | Expand package APIs from the representative first surface as conformance programs require them. |
 | Parsed inline assembly plus package assembly | `src/assembly`, `AARCH64_ASSEMBLY_PROFILE.md`, `examples/assembly`, `examples/external-assembly`, assembly/toolchain tests | Implemented for the first profile | `draft-aarch64-apple-v2` fixes and validates the closed straight-line scalar, memory, selection, conversion, baseline NEON, and barrier grammar. Labels, branches, calls, stack changes, and unwinding intentionally remain external-file features. |
 | C imports/exports and native artifacts | `src/interop`, `src/backend/foreign_inputs.*`, `foreign_summaries.*`, scalar/aggregate Darwin ABI and generated-header tests, `examples/c-interop`, `examples/c-library`, `examples/foreign-provider`, native artifact tests | Implemented for first target | All output kinds work. Built-in providers are profile-owned and have closed symbol summaries; every other logical provider maps to one exact pinned object/archive/dylib and optional exact summary, both reverified before use. |
 | Provider-independent docs, judgments, and synthesis obligations | agent metadata/obligation modules and tests | Implemented foundation | Context still lacks the full bounded semantic dependency closure, active denial facts, enclosing skeletons, tests, benchmarks, and dominating judgment claims. |
@@ -41,7 +41,7 @@ and generated-source maps do not yet exist.
 | Content-addressed generated source and atomic manifest commit | resolution/store/overlay modules and tests | Implemented foundation | Add generated-source maps and evidence references to the manifest schema. |
 | Ordinary offline builds consume pins without a provider | staged offline compiler path, resolver tests, and locked executable/archive adapter tests | Implemented | Extend byte-for-byte release proof across every output kind. |
 | `draft build --locked` with no ambient external search | Versioned external-input rows, resolved-program binding, content-tree verification, explicit toolchain/SDK/provider/summary CLI roots, clean process environment, absolute Clang/linker/archiver paths, provider snapshots, consumed summary verification, and SDK/link flags | Implemented through foreign link artifacts and audits | Add runtime-asset mappings; locked builds reject unsupported external roles. |
-| Tests, benchmarks, judgments, and validation evidence | Surface syntax and a provider-free `judge` diagnostic only | Missing | Implement discovery/harness commands, canonical execution order, evidence keys/store, verdict aggregation, revocation, and locked evidence verification. |
+| Tests, benchmarks, judgments, and validation evidence | Typed core-nominal discovery, target-qualified file selection, canonical package/declaration order, compiler-owned isolated native harnesses, direct process runner, `draft test`, `draft bench --verify`, validation tests, and `examples/validation` | Implemented execution foundation | Add evidence keys/store, benchmark distributions and runner policy, attempt history/revocation, judgment aggregation, and locked evidence verification. |
 | Generated-source diagnostics/source maps | Resolved whole-file overrides only | Missing | Preserve expansion-to-site mapping through diagnostics, debug locations, coverage, profiles, and disassembly; serialize maps in the manifest. |
 | Crash-safe and deterministic release verification | Atomic pin-store tests and deterministic serializers | Partially implemented | Add fault-injection recovery, byte-for-byte clean-workspace rebuild tests, malformed-store fuzz/conformance cases, and final sanitizer/native gates. |
 
@@ -49,12 +49,13 @@ and generated-source maps do not yet exist.
 
 The driver currently exposes `lex`, `syntax`, `target`, `check`, `emit-llvm`,
 `emit-c-header`, ordinary and locked `build` for executable, object, static
-library, dynamic library, and assembly-bundle kinds, `resolve`, and the
-provider-free `judge` boundary. The specification's `test`, `bench`, and
-validation-selection commands are not implemented yet.
+library, dynamic library, and assembly-bundle kinds, `test`, `bench --verify`,
+`resolve`, and the provider-free `judge` boundary. Test and benchmark commands
+compile their otherwise excluded files into a compiler-owned AArch64 macOS
+harness and execute selected procedures in canonical order.
 
 ## Next release-critical slice
 
-The next implementation slice is the validation and evidence harness. It needs
-to discover and run complete-program tests, benchmarks, and judgments through
-the locked native seam rather than relying only on unit-level compiler proofs.
+The next implementation slice is persistent validation evidence. It must bind
+every attempt to the resolved program, selected definitions, target, tools, and
+runner policy; failed attempts must revoke passing evidence for the exact key.

@@ -1,0 +1,4 @@
+package validation
+
+// Ordinary builds ignore the adjacent validation sources and use this entry.
+main :: proc() {}

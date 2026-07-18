@@ -7,9 +7,11 @@
 #include "sema/constant.h"
 #include "source/diagnostic.h"
 #include "target/profile.h"
+#include "validation/discovery.h"
 #include "workspace/workspace.h"
 
 #include <string>
+#include <vector>
 
 namespace draft {
 
@@ -19,6 +21,11 @@ struct LlvmIrOptions {
   // Executables additionally own the hosted C `main`; libraries do not.
   bool emit_runtime_support = false;
   bool emit_program_entry = false;
+  // A validation executable has a compiler-owned entry point. The entries are
+  // already signature- and layout-checked; LLVM emission only materializes
+  // isolated state and calls their stable package symbols in canonical order.
+  ValidationKind validation_kind = ValidationKind::None;
+  std::vector<ValidationEntry> validation_entries;
 };
 
 struct LlvmIrResult {

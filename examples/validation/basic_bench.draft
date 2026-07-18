@@ -1,0 +1,13 @@
+package validation
+
+import core/benchmark
+import core/time
+
+noop :: proc() {}
+
+bench_noop :: proc(benchmark_state: ^benchmark.Benchmark) {
+    // The generous bound makes this a wiring example, not a claim about the
+    // performance of a particular development machine.
+    benchmark.require_max_time(benchmark_state, time.second)
+    benchmark.measure(benchmark_state, noop)
+}

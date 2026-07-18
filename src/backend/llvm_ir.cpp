@@ -178,8 +178,15 @@ public:
     emit_runtime_declarations();
     emit_globals();
     emit_external_declarations();
+    emit_validation_declarations();
     emit_procedures();
-    if (options_.emit_program_entry) emit_entry();
+    if (options_.emit_program_entry) {
+      if (options_.validation_kind == ValidationKind::None) {
+        emit_entry();
+      } else {
+        emit_validation_entry();
+      }
+    }
 
     result.ok = diagnostics_.error_count() == initial_errors_;
     result.text = output_.str();
@@ -1549,6 +1556,42 @@ private:
       }
     }
     output_ << '\n';
+  }
+
+  [[nodiscard]] bool has_imported_validation_declaration(
+      const ValidationEntry &entry) const {
+    for (const ImportedSymbol &imported : semantic_.imported_symbols) {
+      if (imported.root_identity != entry.package.root_identity ||
+          imported.root_relative_path != entry.package.root_relative_path ||
+          imported.public_name != entry.procedure) {
+        continue;
+      }
+      const Symbol &symbol = semantic_.symbols.symbol(imported.proxy);
+      return symbol.kind == SymbolKind::Procedure && !symbol.flags.parametric;
+    }
+    return false;
+  }
+
+  void emit_validation_declarations() {
+    if (!options_.emit_program_entry ||
+        options_.validation_kind == ValidationKind::None) {
+      return;
+    }
+    bool emitted = false;
+    for (const ValidationEntry &entry : options_.validation_entries) {
+      if (entry.package == options_.package ||
+          has_imported_validation_declaration(entry)) {
+        continue;
+      }
+      // Validation procedures always have the ordinary Draft hidden Context
+      // argument followed by their one source-visible state pointer. Their
+      // exact signature was proved during discovery, before this module exists.
+      output_ << "declare hidden void "
+              << package_symbol_name(entry.package, entry.procedure)
+              << "(ptr, ptr)\n";
+      emitted = true;
+    }
+    if (emitted) output_ << '\n';
   }
 
   [[nodiscard]] std::optional<std::size_t> string_index(
@@ -3433,6 +3476,54 @@ private:
       output_ << "  ret i32 1\n";
     }
     output_ << "}\n\n";
+  }
+
+  void emit_validation_entry() {
+    // The harness is deliberately straight-line. Each procedure receives a
+    // fresh zeroed state object, contributes its failure counter, and is
+    // followed by a temporary-allocation epoch reset. A trap or signal still
+    // terminates the process and is classified by the outer runner.
+    output_ << "define i32 @main(i32 %argc, ptr %argv, ptr %envp) {\n"
+            << "entry:\n"
+            << "  store i32 %argc, ptr @__draft.process_argc, align 4\n"
+            << "  store ptr %argv, ptr @__draft.process_argv, align 8\n"
+            << "  store ptr %envp, ptr @__draft.process_envp, align 8\n"
+            << "  call void @__draft.initialize_process_views("
+               "i32 %argc, ptr %argv, ptr %envp)\n";
+
+    std::string accumulated = "false";
+    for (std::size_t index = 0;
+         index < options_.validation_entries.size(); ++index) {
+      const ValidationEntry &entry = options_.validation_entries[index];
+      const std::string suffix = std::to_string(index);
+      output_ << "  %validation.state." << suffix << " = alloca ["
+              << entry.state_size << " x i8], align "
+              << entry.state_alignment << '\n'
+              << "  call void @llvm.memset.p0.i64(ptr %validation.state."
+              << suffix << ", i8 0, i64 " << entry.state_size
+              << ", i1 false)\n"
+              << "  call void "
+              << package_symbol_name(entry.package, entry.procedure)
+              << "(ptr @__draft.root_context, ptr %validation.state."
+              << suffix << ")\n"
+              << "  %validation.failures.address." << suffix
+              << " = getelementptr i8, ptr %validation.state." << suffix
+              << ", i64 " << entry.failure_offset << '\n'
+              << "  %validation.failures." << suffix
+              << " = load i64, ptr %validation.failures.address." << suffix
+              << ", align 8\n"
+              << "  %validation.failed." << suffix
+              << " = icmp ne i64 %validation.failures." << suffix << ", 0\n"
+              << "  %validation.any_failed." << suffix << " = or i1 "
+              << accumulated << ", %validation.failed." << suffix << '\n'
+              << "  call void "
+                 "@\"__draft.runtime.reset_temporary_allocator\"()\n";
+      accumulated = "%validation.any_failed." + suffix;
+    }
+    output_ << "  call void @__draft.shutdown_process_views()\n"
+            << "  %validation.exit = zext i1 " << accumulated << " to i32\n"
+            << "  ret i32 %validation.exit\n"
+            << "}\n\n";
   }
 
   const TargetProfile &target_;

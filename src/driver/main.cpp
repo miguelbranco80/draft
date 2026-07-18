@@ -21,6 +21,7 @@
 #include "syntax/syntax_tree.h"
 #include "syntax/token.h"
 #include "target/profile.h"
+#include "validation/runner.h"
 #include "workspace/package.h"
 #include "workspace/workspace.h"
 
@@ -418,6 +419,102 @@ int build_package(
   return diagnostics.has_errors() ? 1 : 0;
 }
 
+int validate_package(
+    const std::string &directory,
+    draft::ValidationKind kind,
+    bool allow_host_toolchain,
+    const std::optional<draft::LockedNativeInputRoots> &locked_inputs,
+    const std::vector<draft::ForeignProviderInput> &foreign_providers,
+    const std::vector<draft::ForeignProviderSummaryInput> &provider_summaries) {
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  std::error_code path_error;
+  const std::filesystem::path absolute_directory =
+      std::filesystem::absolute(directory, path_error).lexically_normal();
+  if (path_error) {
+    std::cerr << "error: cannot make package path absolute: "
+              << path_error.message() << '\n';
+    return 1;
+  }
+
+  const draft::TargetProfile target = draft::make_aarch64_macos_profile();
+  draft::CompileWorkspaceOptions compile_options;
+  compile_options.target = target;
+  compile_options.workspace.workspace_directory =
+      absolute_directory.parent_path().string();
+  configure_core_distribution(compile_options.workspace);
+  if (!load_foreign_provider_audits(
+          compile_options.workspace.workspace_directory,
+          provider_summaries,
+          foreign_providers,
+          compile_options.foreign_provider_audits,
+          diagnostics)) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+    return 1;
+  }
+  compile_options.validation_kind = kind;
+  compile_options.lower_mir = true;
+  compile_options.emit_llvm = true;
+  compile_options.emit_program_entry = true;
+  const draft::CompileWorkspaceResult compiled =
+      draft::compile_workspace_with_resolution(
+          sources,
+          absolute_directory.string(),
+          std::move(compile_options),
+          diagnostics);
+
+  draft::NativeBuildResult built;
+  if (compiled.ok) {
+    const std::string command(draft::validation_kind_name(kind));
+    const std::filesystem::path build_directory =
+        absolute_directory / ".draft" / "build" / command;
+    const std::filesystem::path output =
+        absolute_directory / ".draft" / "build" /
+        (absolute_directory.filename().string() + "-" + command);
+    draft::NativeBuildOptions native_options;
+    native_options.build_directory = build_directory.string();
+    native_options.output_path = output.string();
+    native_options.artifact_kind = draft::NativeArtifactKind::Executable;
+    native_options.allow_unpinned_toolchain = allow_host_toolchain;
+    native_options.foreign_providers = foreign_providers;
+    if (locked_inputs.has_value()) {
+      native_options.locked = true;
+      native_options.locked_inputs = *locked_inputs;
+    }
+    built = draft::build_native_executable(
+        target, compiled, native_options, diagnostics);
+  }
+
+  draft::ValidationRunResult run;
+  if (built.ok && !diagnostics.has_errors()) {
+    draft::ValidationRunOptions run_options;
+    run_options.executable = built.output_path;
+    run_options.working_directory = absolute_directory.string();
+    run = draft::run_validation_executable(run_options, diagnostics);
+  }
+  if (!diagnostics.diagnostics().empty()) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+  }
+  if (diagnostics.has_errors() || !built.ok || !run.started) return 1;
+
+  const std::string_view command = draft::validation_kind_name(kind);
+  if (!run.exited) {
+    std::cerr << command << " process terminated by signal "
+              << run.signal << '\n';
+    return 1;
+  }
+  if (run.exit_code != 0) {
+    std::cerr << command << " failed: "
+              << compiled.validation_entries.size()
+              << " selected procedures, exit " << run.exit_code << '\n';
+    return 1;
+  }
+  std::cout << command << " passed: "
+            << compiled.validation_entries.size()
+            << " selected procedures\n";
+  return 0;
+}
+
 int emit_c_header_package(
     const std::string &directory,
     const std::optional<std::string> &requested_output) {
@@ -683,6 +780,14 @@ void print_usage() {
             << "      [--provider-summary name:<path>]...\n"
             << "  draftc build <package-directory> --locked\n"
             << "      --toolchain-root <directory> --sdk-root <directory> [-o <output>]\n"
+            << "  draftc test <package-directory> [--allow-host-toolchain]\n"
+            << "      [--locked --toolchain-root <directory> --sdk-root <directory>]\n"
+            << "      [--provider name=object|archive|shared-library:<path>]...\n"
+            << "      [--provider-summary name:<path>]...\n"
+            << "  draftc bench <package-directory> [--verify] [--allow-host-toolchain]\n"
+            << "      [--locked --toolchain-root <directory> --sdk-root <directory>]\n"
+            << "      [--provider name=object|archive|shared-library:<path>]...\n"
+            << "      [--provider-summary name:<path>]...\n"
             << "  draftc resolve <package-directory> [--revalidate]\n"
             << "      [--codex-executable <path> --codex-model <model>]\n"
             << "      [--toolchain-root <directory> --sdk-root <directory>]\n"
@@ -796,6 +901,84 @@ int main(int argc, char **argv) {
   }
   if (argc == 3 && std::string_view(argv[1]) == "judge") {
     return run_agent_command(argv[2], AgentCommandKind::Judge);
+  }
+  if (argc >= 3 &&
+      (std::string_view(argv[1]) == "test" ||
+       std::string_view(argv[1]) == "bench")) {
+    const draft::ValidationKind validation_kind =
+        std::string_view(argv[1]) == "test"
+        ? draft::ValidationKind::Test
+        : draft::ValidationKind::Benchmark;
+    bool allow_host_toolchain = false;
+    bool locked = false;
+    bool verify = false;
+    std::optional<std::string> toolchain_root;
+    std::optional<std::string> sdk_root;
+    std::vector<draft::ForeignProviderInput> foreign_providers;
+    std::vector<draft::ForeignProviderSummaryInput> provider_summaries;
+    for (int index = 3; index < argc; ++index) {
+      const std::string_view argument(argv[index]);
+      if (argument == "--allow-host-toolchain" && !allow_host_toolchain) {
+        allow_host_toolchain = true;
+      } else if (argument == "--locked" && !locked) {
+        locked = true;
+      } else if (argument == "--verify" && !verify &&
+                 validation_kind == draft::ValidationKind::Benchmark) {
+        // Bench currently always executes its selected budgets. Accepting the
+        // explicit spelling now keeps the release/CI command stable when
+        // reusable benchmark evidence is added below this adapter.
+        verify = true;
+      } else if (argument == "--toolchain-root" &&
+                 !toolchain_root.has_value() && index + 1 < argc) {
+        toolchain_root = argv[++index];
+      } else if (argument == "--sdk-root" &&
+                 !sdk_root.has_value() && index + 1 < argc) {
+        sdk_root = argv[++index];
+      } else if (argument == "--provider" && index + 1 < argc) {
+        draft::ForeignProviderInput provider;
+        std::string reason;
+        if (!parse_foreign_provider(argv[++index], provider, reason)) {
+          std::cerr << "error: " << reason << '\n';
+          return 2;
+        }
+        foreign_providers.push_back(std::move(provider));
+      } else if (argument == "--provider-summary" && index + 1 < argc) {
+        draft::ForeignProviderSummaryInput summary;
+        std::string reason;
+        if (!parse_foreign_provider_summary(
+                argv[++index], summary, reason)) {
+          std::cerr << "error: " << reason << '\n';
+          return 2;
+        }
+        provider_summaries.push_back(std::move(summary));
+      } else {
+        print_usage();
+        return 2;
+      }
+    }
+    if (toolchain_root.has_value() != sdk_root.has_value() ||
+        locked != toolchain_root.has_value() ||
+        (locked && allow_host_toolchain)) {
+      print_usage();
+      return 2;
+    }
+    std::optional<draft::LockedNativeInputRoots> locked_inputs;
+    if (locked) {
+      locked_inputs.emplace();
+      std::string reason;
+      if (!absolute_locked_roots(
+              *toolchain_root, *sdk_root, *locked_inputs, reason)) {
+        std::cerr << "error: " << reason << '\n';
+        return 1;
+      }
+    }
+    return validate_package(
+        argv[2],
+        validation_kind,
+        allow_host_toolchain,
+        locked_inputs,
+        foreign_providers,
+        provider_summaries);
   }
   if (argc >= 3 && std::string_view(argv[1]) == "build") {
     std::optional<std::string> output;

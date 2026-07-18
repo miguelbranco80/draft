@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <iterator>
 #include <optional>
 #include <span>
 #include <string>
@@ -435,6 +436,13 @@ CompileWorkspaceResult compile_workspace(
         SourceRange::invalid(), "invalid target profile: " + profile_error);
     return result;
   }
+  if (options.validation_kind == ValidationKind::Test) {
+    options.workspace.package_options.include_tests = true;
+    options.workspace.package_options.include_benchmarks = false;
+  } else if (options.validation_kind == ValidationKind::Benchmark) {
+    options.workspace.package_options.include_tests = false;
+    options.workspace.package_options.include_benchmarks = true;
+  }
   options.workspace.package_options.file_tag = options.target.facts.file_tag;
   WorkspaceLoadResult loaded = load_workspace(
       sources,
@@ -704,6 +712,35 @@ CompileWorkspaceResult compile_workspace(
 
   // Phase 4: provider-free target lowering. No package reaches a backend until
   // every cross-package generic proxy has an exact defining symbol.
+  //
+  // Validation discovery belongs between semantic closure and lowering. A
+  // filename or spelling alone never becomes an executable call: every entry
+  // below has a checked body, exact core nominal parameter, and target layout.
+  if (options.validation_kind != ValidationKind::None) {
+    for (std::size_t package_index = 0;
+         package_index < result.packages.size(); ++package_index) {
+      if (!result.packages[package_index].has_value()) continue;
+      CompiledPackage &package = *result.packages[package_index];
+      if (!package.bodies.ok || !package.metadata.ok ||
+          !package.obligations.ok || !package.native_interop.ok) {
+        continue;
+      }
+      std::vector<ValidationEntry> discovered = discover_validation_entries(
+          options.validation_kind,
+          options.workspace.core_content_identity,
+          package.identity,
+          result.graph.packages[package_index].loaded,
+          package.semantics.package,
+          package.bodies.program,
+          diagnostics);
+      result.validation_entries.insert(
+          result.validation_entries.end(),
+          std::make_move_iterator(discovered.begin()),
+          std::make_move_iterator(discovered.end()));
+    }
+    sort_validation_entries(result.validation_entries);
+  }
+
   for (auto position = consumer_order.rbegin();
        position != consumer_order.rend(); ++position) {
     const std::size_t package_index = *position;
@@ -739,6 +776,10 @@ CompileWorkspaceResult compile_workspace(
           static_cast<std::size_t>(result.graph.root_package.value);
       llvm_options.emit_program_entry =
           options.emit_program_entry && llvm_options.emit_runtime_support;
+      if (llvm_options.emit_runtime_support) {
+        llvm_options.validation_kind = options.validation_kind;
+        llvm_options.validation_entries = result.validation_entries;
+      }
       package.llvm = emit_llvm_ir(
           options.target,
           sources,

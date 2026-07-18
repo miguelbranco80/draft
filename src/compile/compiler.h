@@ -17,6 +17,7 @@
 #include "source/diagnostic.h"
 #include "source/source.h"
 #include "target/profile.h"
+#include "validation/discovery.h"
 #include "workspace/workspace.h"
 
 #include <optional>
@@ -42,13 +43,16 @@ struct CompileWorkspaceOptions {
   // Versioned identity of the compiler semantics and manifest algorithm. It is
   // a resolved-program input and must change when an implementation change can
   // alter accepted meaning or emitted behavior for the same other inputs.
-  std::string compiler_content_identity = "draft-bootstrap-cpp-v18";
+  std::string compiler_content_identity = "draft-bootstrap-cpp-v19";
   CompileWorkspaceStage stage = CompileWorkspaceStage::Complete;
   bool lower_mir = false;
   bool emit_llvm = false;
   // Library and object artifacts lower a complete root without synthesizing a
   // hosted `main`. The root still owns runtime support in either mode.
   bool emit_program_entry = true;
+  // Test and benchmark compilations select their otherwise excluded source
+  // files and replace the hosted source main with a checked compiler harness.
+  ValidationKind validation_kind = ValidationKind::None;
   // Already content-verified artifact-bound summaries. Paths are consumed by
   // the driver/backend verifier and never enter semantic package state.
   std::vector<ForeignProviderAudit> foreign_provider_audits;
@@ -99,6 +103,9 @@ struct CompileWorkspaceResult {
   // Retained so the native adapter can prove that manifest ProviderSummary
   // rows were consumed by this exact semantic compilation.
   std::vector<ForeignProviderAudit> foreign_provider_audits;
+  // Canonically ordered, target-checked procedures selected for a validation
+  // command. These facts are also the semantic input to evidence generation.
+  std::vector<ValidationEntry> validation_entries;
 };
 
 // Loads a closed workspace graph and checks dependencies before their consumers.

@@ -1,0 +1,7 @@
+package validation
+
+import core/testing
+
+test_arithmetic :: proc(test: ^testing.Test) {
+    testing.expect(test, 20 + 22 == 42)
+}

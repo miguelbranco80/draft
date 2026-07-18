@@ -142,6 +142,9 @@ joins it, and exercises the fixed AArch64 Darwin mutex/condition layouts.
 `examples/core-atomic` exercises compiler-owned integer and pointer atomics and
 every memory-order spelling through LLVM IR and native execution;
 `examples/core-atomic-thread` proves the same operations across two pthreads.
+`examples/validation` is selected only by `draft test` or `draft bench`; those
+commands prove exact `^testing.Test`/`^benchmark.Benchmark` signatures, generate
+an isolated native harness in canonical order, and execute it without a shell.
 
 Synthesis resolution now has a provider-neutral transaction and an explicit
 Codex CLI adapter. Declaration and aggregate-member sites form an early opaque

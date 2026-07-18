@@ -73,6 +73,8 @@ add_library(
   src/syntax/syntax_tree.cpp
   src/syntax/token.cpp
   src/target/profile.cpp
+  src/validation/discovery.cpp
+  src/validation/runner.cpp
   src/workspace/package.cpp
   src/workspace/workspace.cpp
 )
@@ -249,6 +251,24 @@ if(BUILD_TESTING)
     PRIVATE DRAFT_SOURCE_DIRECTORY="${CMAKE_CURRENT_SOURCE_DIR}"
   )
   add_test(NAME draft_toolchain_tests COMMAND draft_toolchain_tests)
+
+  add_executable(
+    draft_validation_discovery_tests
+    tests/validation_discovery_test.cpp
+  )
+  target_link_libraries(draft_validation_discovery_tests PRIVATE draft_compiler)
+  target_compile_definitions(
+    draft_validation_discovery_tests
+    PRIVATE DRAFT_SOURCE_DIRECTORY="${CMAKE_CURRENT_SOURCE_DIR}"
+  )
+  add_test(
+    NAME draft_validation_discovery_tests
+    COMMAND draft_validation_discovery_tests
+  )
+
+  add_executable(draft_validation_runner_tests tests/validation_runner_test.cpp)
+  target_link_libraries(draft_validation_runner_tests PRIVATE draft_compiler)
+  add_test(NAME draft_validation_runner_tests COMMAND draft_validation_runner_tests)
 
   # Provider-free agent commands must recognize real typed sites but fail
   # before writing anything when no provider adapter is configured.
