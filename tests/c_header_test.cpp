@@ -57,6 +57,31 @@ Choice :: @repr(C) enum {
     first = 2,
 }
 
+Unsigned_Choice :: @repr(C) enum {
+    none,
+    largest = 4294967295,
+}
+
+Wide_Choice :: @repr(C) enum {
+    none,
+    large = 4294967296,
+}
+
+Maximum_Choice :: @repr(C) enum {
+    none,
+    maximum = 18446744073709551615,
+}
+
+Minimum_Choice :: @repr(C) enum {
+    minimum = -9223372036854775808,
+    none = 0,
+}
+
+Huge_Choice :: @repr(C) enum u128 {
+    none,
+    huge = 340282366920938463463374607431768211455,
+}
+
 Number :: @repr(C) raw union {
     integer: i64,
     decimal: f64,
@@ -81,6 +106,11 @@ export inspect :: c "draft.inspect" proc(
     pair: ^Pair,
     aligned: Aligned,
     choice: Choice,
+    unsigned_choice: Unsigned_Choice,
+    wide_choice: Wide_Choice,
+    maximum_choice: Maximum_Choice,
+    minimum_choice: Minimum_Choice,
+    huge_choice: Huge_Choice,
     number: Number,
 ) -> i32 {
     return 0
@@ -160,8 +190,30 @@ export echo_rune :: c "draft_echo_rune" proc(value: rune) -> rune {
   EXPECT(state, header.text.find(
       "typedef int32_t draft_c_library_Choice;") != std::string::npos);
   EXPECT(state, header.text.find(
-      "DRAFT_C_LIBRARY_CHOICE_NEITHER ((draft_c_library_Choice)-1)") !=
+      "typedef uint32_t draft_c_library_Unsigned_Choice;") !=
+                    std::string::npos);
+  EXPECT(state, header.text.find(
+      "typedef uint64_t draft_c_library_Wide_Choice;") !=
+                    std::string::npos);
+  EXPECT(state, header.text.find(
+      "DRAFT_C_LIBRARY_CHOICE_NEITHER ((draft_c_library_Choice)"
+      "(-INT32_C(1)))") !=
       std::string::npos);
+  EXPECT(state, header.text.find(
+      "DRAFT_C_LIBRARY_MAXIMUM_CHOICE_MAXIMUM "
+      "((draft_c_library_Maximum_Choice)UINT64_C(18446744073709551615))") !=
+                    std::string::npos);
+  EXPECT(state, header.text.find(
+      "DRAFT_C_LIBRARY_MINIMUM_CHOICE_MINIMUM "
+      "((draft_c_library_Minimum_Choice)"
+      "(-INT64_C(9223372036854775807) - INT64_C(1)))") !=
+                    std::string::npos);
+  EXPECT(state, header.text.find(
+      "typedef unsigned __int128 draft_c_library_Huge_Choice;") !=
+                    std::string::npos);
+  EXPECT(state, header.text.find(
+      "(unsigned __int128)UINT64_C(18446744073709551615) << 64") !=
+                    std::string::npos);
   EXPECT(state, header.text.find(
       "typedef int32_t (*draft_c_library_proc_") != std::string::npos);
   EXPECT(state, header.text.find(

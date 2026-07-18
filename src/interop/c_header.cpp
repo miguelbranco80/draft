@@ -406,6 +406,77 @@ private:
     if (!procedure_types_.empty()) output_ << '\n';
   }
 
+  // Renders an exact, warning-free C integer constant for an enum macro. Plain
+  // decimal text is insufficient at the boundaries: 2^64-1 has no signed C
+  // literal type, and spelling -2^63 first forms an out-of-range positive
+  // token. The stdint constant macros make every <=64-bit case explicit.
+  //
+  // C has no INT128_C macro. For a fixed 128-bit backing, assemble the value
+  // from two UINT64_C halves in unsigned __int128 and cast only after the bit
+  // pattern is complete. A negative signed minimum uses -(magnitude - 1) - 1,
+  // so no unrepresentable positive signed intermediate is ever formed.
+  [[nodiscard]] std::optional<std::string> enum_integer_expression(
+      const BigInteger &integer, TypeId backing) const {
+    const Type &storage = type(backing);
+    const bool signed_value = storage.kind == TypeKind::SignedInteger;
+    const std::uint32_t bits = storage.bit_width;
+    const BigInteger magnitude = integer.absolute();
+
+    if (bits <= 64 && (signed_value ||
+                       storage.kind == TypeKind::UnsignedInteger)) {
+      const std::optional<std::uint64_t> value = magnitude.to_u64();
+      if (!value.has_value()) return std::nullopt;
+      const std::string macro =
+          std::string(signed_value ? "INT" : "UINT") +
+          std::to_string(bits) + "_C";
+      if (!integer.is_negative()) {
+        return macro + "(" + std::to_string(*value) + ")";
+      }
+      const BigInteger signed_minimum_magnitude =
+          BigInteger::from_u64(1).shifted_left(bits - 1U);
+      if (magnitude == signed_minimum_magnitude) {
+        return "(-" + macro + "(" + std::to_string(*value - 1U) +
+            ") - " + macro + "(1))";
+      }
+      return "(-" + macro + "(" + std::to_string(*value) + "))";
+    }
+
+    if (bits == 128 && (signed_value ||
+                        storage.kind == TypeKind::UnsignedInteger)) {
+      const auto unsigned_128 = [](const BigInteger &value)
+          -> std::optional<std::string> {
+        const BigInteger base = BigInteger::from_u64(1).shifted_left(64);
+        BigInteger high;
+        BigInteger low;
+        if (!value.divide(base, high, low)) return std::nullopt;
+        const std::optional<std::uint64_t> high_u64 = high.to_u64();
+        const std::optional<std::uint64_t> low_u64 = low.to_u64();
+        if (!high_u64.has_value() || !low_u64.has_value()) {
+          return std::nullopt;
+        }
+        return "(((unsigned __int128)UINT64_C(" +
+            std::to_string(*high_u64) + ") << 64) | " +
+            "(unsigned __int128)UINT64_C(" +
+            std::to_string(*low_u64) + "))";
+      };
+      if (!signed_value) return unsigned_128(magnitude);
+      if (!integer.is_negative()) {
+        const std::optional<std::string> positive = unsigned_128(magnitude);
+        return positive.has_value()
+            ? std::optional<std::string>("((__int128)" + *positive + ")")
+            : std::nullopt;
+      }
+      const BigInteger one = BigInteger::from_u64(1);
+      const std::optional<std::string> lowered =
+          unsigned_128(magnitude.subtracted(one));
+      return lowered.has_value()
+          ? std::optional<std::string>(
+                "(-((__int128)" + *lowered + ") - 1)")
+          : std::nullopt;
+    }
+    return std::nullopt;
+  }
+
   void emit_enum(TypeId id) {
     const Type &value = type(id);
     output_ << "typedef " << base_type(value.element) << ' ' << nominal_name(id)
@@ -414,9 +485,18 @@ private:
       const Symbol &symbol = semantic_.symbols.symbol(member);
       const std::optional<BigInteger> integer = enum_value(member);
       if (!integer.has_value()) continue;
+      const std::optional<std::string> expression =
+          enum_integer_expression(*integer, value.element);
+      if (!expression.has_value()) {
+        diagnostics_.error(
+            symbol.name_range,
+            "cannot render enum value in the generated C header");
+        continue;
+      }
       output_ << "#define " << upper_identifier(nominal_name(id)) << '_'
               << upper_identifier(symbol.name) << " ((" << nominal_name(id)
-              << ")" << integer->to_decimal() << ")\n";
+              << ")" << *expression
+              << ")\n";
     }
     output_ << "DRAFT_STATIC_ASSERT(sizeof(" << nominal_name(id) << ") == "
             << value.layout.size << ", \"Draft enum size mismatch\");\n\n";

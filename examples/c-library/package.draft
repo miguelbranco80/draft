@@ -17,6 +17,38 @@ Choice :: @repr(C) enum {
     right = 2,
 }
 
+// C's default enum backing never narrows below `int` width. A nonnegative set
+// uses the unsigned form, and a value beyond u32 widens to unsigned long on the
+// Darwin arm64 ABI. These two types keep that target rule visible in the real
+// generated-header and C-client boundary below.
+Unsigned_Choice :: @repr(C) enum {
+    none,
+    largest = 4294967295,
+}
+
+Wide_Choice :: @repr(C) enum {
+    none,
+    large = 4294967296,
+}
+
+Maximum_Choice :: @repr(C) enum {
+    none,
+    maximum = 18446744073709551615,
+}
+
+Minimum_Choice :: @repr(C) enum {
+    minimum = -9223372036854775808,
+    none = 0,
+}
+
+// Explicit fixed backings use the same C scalar ABI. The generated header has
+// to construct 128-bit constants from two exact 64-bit halves because C has no
+// portable `__int128` literal suffix or INT128_C macro.
+Huge_Choice :: @repr(C) enum u128 {
+    none,
+    huge = 340282366920938463463374607431768211455,
+}
+
 Number :: @repr(C) raw union {
     integer: i64,
     decimal: f64,
@@ -81,6 +113,36 @@ export pair_identity :: c "draft_pair_identity" proc(value: Pair) -> Pair {
 }
 
 export choice_identity :: c "draft_choice_identity" proc(value: Choice) -> Choice {
+    return value
+}
+
+export unsigned_choice_identity :: c "draft_unsigned_choice_identity" proc(
+    value: Unsigned_Choice,
+) -> Unsigned_Choice {
+    return value
+}
+
+export wide_choice_identity :: c "draft_wide_choice_identity" proc(
+    value: Wide_Choice,
+) -> Wide_Choice {
+    return value
+}
+
+export maximum_choice_identity :: c "draft_maximum_choice_identity" proc(
+    value: Maximum_Choice,
+) -> Maximum_Choice {
+    return value
+}
+
+export minimum_choice_identity :: c "draft_minimum_choice_identity" proc(
+    value: Minimum_Choice,
+) -> Minimum_Choice {
+    return value
+}
+
+export huge_choice_identity :: c "draft_huge_choice_identity" proc(
+    value: Huge_Choice,
+) -> Huge_Choice {
     return value
 }
 

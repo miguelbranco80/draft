@@ -26,6 +26,29 @@ int main(void) {
     if (pair.left != 19 || pair.right != 23) return 1;
     if (draft_choice_identity(DRAFT_C_LIBRARY_CHOICE_RIGHT) !=
         DRAFT_C_LIBRARY_CHOICE_RIGHT) return 2;
+    if (draft_unsigned_choice_identity(
+            DRAFT_C_LIBRARY_UNSIGNED_CHOICE_LARGEST) !=
+        DRAFT_C_LIBRARY_UNSIGNED_CHOICE_LARGEST) {
+        return 20;
+    }
+    if (draft_wide_choice_identity(DRAFT_C_LIBRARY_WIDE_CHOICE_LARGE) !=
+        DRAFT_C_LIBRARY_WIDE_CHOICE_LARGE) {
+        return 21;
+    }
+    if (draft_maximum_choice_identity(
+            DRAFT_C_LIBRARY_MAXIMUM_CHOICE_MAXIMUM) !=
+        DRAFT_C_LIBRARY_MAXIMUM_CHOICE_MAXIMUM) {
+        return 22;
+    }
+    if (draft_minimum_choice_identity(
+            DRAFT_C_LIBRARY_MINIMUM_CHOICE_MINIMUM) !=
+        DRAFT_C_LIBRARY_MINIMUM_CHOICE_MINIMUM) {
+        return 23;
+    }
+    if (draft_huge_choice_identity(DRAFT_C_LIBRARY_HUGE_CHOICE_HUGE) !=
+        DRAFT_C_LIBRARY_HUGE_CHOICE_HUGE) {
+        return 24;
+    }
 
     draft_c_library_Number number;
     number.integer = 42;

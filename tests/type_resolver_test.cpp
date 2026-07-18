@@ -299,7 +299,7 @@ take[T: type] :: proc(value: ^T) -> ^T {
   const draft::Type &c_kind_type = source.semantic.types.type(c_kind->type);
   EXPECT(state, c_kind_type.c_representation);
   EXPECT(state, c_kind_type.layout == draft::TypeLayout({true, 4, 4}));
-  EXPECT(state, source.semantic.types.type(c_kind_type.element).name == "i32");
+  EXPECT(state, source.semantic.types.type(c_kind_type.element).name == "u32");
   bool saw_second = false;
   bool saw_third = false;
   bool saw_below = false;
@@ -594,15 +594,65 @@ Too_Wide :: enum u8 {
 Missing_Zero :: enum {
     Only = 1,
 }
+
+Too_Wide_C :: @repr(C) enum {
+    Zero,
+    Value = 18446744073709551616,
+}
 )draft");
 
-  EXPECT(state, source.diagnostics.error_count() == 3);
+  EXPECT(state, source.diagnostics.error_count() == 4);
   const std::string rendered =
       draft::render_diagnostics(source.sources, source.diagnostics);
   EXPECT(state, rendered.find("duplicate enum value") != std::string::npos);
   EXPECT(state, rendered.find("not representable") != std::string::npos);
   EXPECT(state, rendered.find("must declare a zero-valued member") !=
                     std::string::npos);
+  EXPECT(state, rendered.find("do not fit the target C ABI's default backing") !=
+                    std::string::npos);
+}
+
+void test_c_enum_default_backing(TestState &state) {
+  SemanticSource source(R"draft(
+package types
+
+Positive :: @repr(C) enum {
+    Zero,
+    Largest_Int = 2147483647,
+}
+
+Negative :: @repr(C) enum {
+    Minimum_Int = -2147483648,
+    Zero = 0,
+}
+
+Wide_Positive :: @repr(C) enum {
+    Zero,
+    Beyond_U32 = 4294967296,
+}
+
+Wide_Negative :: @repr(C) enum {
+    Beyond_I32 = -2147483649,
+    Zero = 0,
+}
+)draft");
+
+  if (source.diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(source.sources, source.diagnostics);
+  }
+  const auto backing_name = [&](std::string_view name) -> std::string {
+    const draft::Symbol *symbol = find_symbol(source.semantic, name);
+    if (symbol == nullptr) return {};
+    const draft::Type &enumeration =
+        source.semantic.types.type(symbol->type);
+    if (!enumeration.element.is_valid()) return {};
+    return source.semantic.types.type(enumeration.element).name;
+  };
+  EXPECT(state, !source.diagnostics.has_errors());
+  EXPECT(state, backing_name("Positive") == "u32");
+  EXPECT(state, backing_name("Negative") == "i32");
+  EXPECT(state, backing_name("Wide_Positive") == "u64");
+  EXPECT(state, backing_name("Wide_Negative") == "i64");
 }
 
 void test_tagged_union_discriminator_capacity(TestState &state) {
@@ -683,6 +733,7 @@ int main() {
   test_parametric_type_diagnostics(state);
   test_value_parameter_diagnostics(state);
   test_invalid_enum_values(state);
+  test_c_enum_default_backing(state);
   test_tagged_union_discriminator_capacity(state);
   test_invalid_representation_attributes(state);
   test_cyclic_layout_constant(state);

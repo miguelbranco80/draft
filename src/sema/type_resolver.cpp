@@ -3797,6 +3797,48 @@ private:
     return semantic_.types.builtins().invalid;
   }
 
+  // Selects the compatible integer type used by an unfixed C enum on the
+  // initial Darwin arm64 target. Apple Clang keeps an enum at C `int` width
+  // even when every enumerator would fit in u8 or u16. At that width it uses
+  // unsigned int for a wholly nonnegative set and signed int when any member
+  // is negative. Values outside 32 bits widen by the same signedness rule to
+  // unsigned long or signed long, both 64 bits in this target ABI.
+  //
+  // Do not reuse inferred_enum_backing(): Draft's ordinary enum rule chooses
+  // the smallest fixed-width representation, while @repr(C) explicitly asks
+  // for the target C ABI's default. The target ABI identity is already part of
+  // every resolved program. A future second target must add its own complete
+  // profile and select its corresponding C-enum rule here.
+  [[nodiscard]] TypeId inferred_c_enum_backing(
+      const std::vector<BigInteger> &values) const {
+    if (target_ != nullptr && !target_->abi.empty() &&
+        target_->abi != "darwin_arm64") {
+      // Applying Darwin's rule to a second ABI would silently manufacture the
+      // wrong public type. Fail closed until that profile supplies a complete
+      // rule alongside its ABI classifier and header lowering.
+      return semantic_.types.builtins().invalid;
+    }
+    bool has_negative = false;
+    for (const BigInteger &value : values) {
+      has_negative = has_negative || value.is_negative();
+    }
+    static constexpr std::string_view unsigned_names[] = {"u32", "u64"};
+    static constexpr std::string_view signed_names[] = {"i32", "i64"};
+    const auto &names = has_negative ? signed_names : unsigned_names;
+    for (std::string_view name : names) {
+      const std::optional<TypeId> candidate = semantic_.types.find_builtin(name);
+      if (!candidate.has_value()) continue;
+      const bool fits = std::all_of(
+          values.begin(),
+          values.end(),
+          [&](const BigInteger &value) {
+            return integer_fits_type(value, *candidate);
+          });
+      if (fits) return *candidate;
+    }
+    return semantic_.types.builtins().invalid;
+  }
+
   // Applies the exact tagged-union formula from section 5. All alternatives use
   // the one computed payload offset; payload-free alternatives remain valid.
   [[nodiscard]] TypeLayout tagged_union_layout(
@@ -3908,11 +3950,14 @@ private:
         TypeId backing = explicit_backing.has_value()
             ? resolve_type(tree, *explicit_backing, parent)
             : (attributes.c_representation
-                   ? semantic_.types.find_builtin("i32").value_or(
-                         semantic_.types.builtins().invalid)
+                   ? inferred_c_enum_backing(data.enum_values)
                    : inferred_enum_backing(data.enum_values));
         if (!semantic_.types.is_integer(backing)) {
-          diagnostics_.error(aggregate.range, "enum backing type must be an integer type");
+          diagnostics_.error(
+              aggregate.range,
+              attributes.c_representation && !explicit_backing.has_value()
+                  ? "enum values do not fit the target C ABI's default backing types"
+                  : "enum backing type must be an integer type");
           backing = semantic_.types.builtins().invalid;
         } else {
           for (std::size_t index = 0; index < data.enum_values.size(); ++index) {

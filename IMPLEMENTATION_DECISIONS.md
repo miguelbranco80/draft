@@ -307,6 +307,18 @@ Generated C headers cover root-package exports and transitively required C
 records, raw unions, enums, fixed-array fields, and callback types. Layout
 assertions make size, alignment, and field-offset disagreement a C compile error.
 
+An `@repr(C)` enum without an explicit backing follows Apple Clang's default
+enum rule for this target instead of Draft's smallest-fitting rule. Its backing
+is at least 32 bits: a wholly nonnegative member set uses `u32`, a set containing
+a negative member uses `i32`, and either widens with the same signedness to 64
+bits when required. Values that do not fit `u64` or `i64` are rejected. The
+generated header exposes the selected fixed-width typedef, so C and Draft agree
+on both the physical ABI and the backing value domain. An explicit backing
+continues to use the separately validated fixed-backing C-enum contract. Enum
+macros use the `<stdint.h>` exact-width constant forms through 64 bits; 128-bit
+values are assembled from two `UINT64_C` halves, avoiding out-of-range decimal
+tokens and the nonexistent `INT128_C` facility.
+
 ## Initial hosted runtime context layout
 
 Status: bootstrap runtime ABI; synchronized with `core/runtime` by tests.
