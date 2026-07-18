@@ -685,3 +685,24 @@ semantics require, but rejects duplicates, unknown fields, malformed Unicode,
 unknown verdicts, empty rationales, and trailing bytes. A verdict remains only
 a provider response: the compiler-owned command constructs and durably records
 evidence, and only the later all-pass manifest operation may select it.
+
+## Conditional judgment-manifest publication
+
+Status: public default judgment command implemented.
+
+`draftc judge` first compiles the complete provider-free resolved program, then
+evaluates every authored judgment in canonical package/obligation order. Each
+provider verdict reaches the crash-safe attempt history immediately, including
+failures that revoke an exact prior key. Only a completed all-pass aggregate is
+eligible for manifest selection. The default command replaces all judgment rows
+because it selects all sites; synthesis pins, external inputs, and native
+evidence rows are copied unchanged. Fine-grained selectors will instead replace
+only their selected site keys.
+
+All resolution-manifest writers now hold an interprocess lock on the workspace
+directory. Judgment publication additionally compares the currently visible
+canonical manifest with the exact optional snapshot retained by compilation
+while holding that same lock. A missing snapshot requires a still-missing
+manifest. This prevents a slow provider response for program A from overwriting
+or attaching evidence to concurrently resolved program B, while retaining the
+existing staged-object/fsync/manifest-last crash protocol.

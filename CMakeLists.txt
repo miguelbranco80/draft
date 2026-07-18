@@ -385,6 +385,15 @@ if(BUILD_TESTING)
   target_link_libraries(draft_judgment_command_tests PRIVATE draft_compiler)
   add_test(NAME draft_judgment_command_tests COMMAND draft_judgment_command_tests)
 
+  add_executable(draft_judgment_driver_tests tests/judgment_driver_test.cpp)
+  target_link_libraries(draft_judgment_driver_tests PRIVATE draft_compiler)
+  target_compile_definitions(
+    draft_judgment_driver_tests
+    PRIVATE DRAFT_DRIVER_PATH="$<TARGET_FILE:draftc>"
+  )
+  add_dependencies(draft_judgment_driver_tests draftc)
+  add_test(NAME draft_judgment_driver_tests COMMAND draft_judgment_driver_tests)
+
   # Provider-free agent commands must recognize real typed sites but fail
   # before writing anything when no provider adapter is configured.
   add_test(

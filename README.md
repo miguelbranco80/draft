@@ -294,6 +294,18 @@ Development-only resolution may add `--allow-host-toolchain`; release resolution
 supplies the pinned roots below. Packages without selected validation need no
 native runner.
 
+`build/draftc judge path/to/package` accepts the same explicit
+`--codex-distribution-root`, `--codex-executable`, and `--codex-model` triple.
+It compiles the complete resolved program before making a provider call,
+evaluates every current judgment in canonical package/site order, and durably
+records every pass or fail. Only an all-pass aggregate updates
+`resolution.json`; that update replaces all judgment rows for the checked
+program while preserving synthesis pins, external inputs, and native validation
+evidence. The manifest is replaced only if the exact snapshot compiled before
+the model calls is still current, so concurrent resolution cannot attach a
+verdict to a different program. A failing aggregate never selects its rows and
+revokes any prior active evidence for the same exact claim keys.
+
 Pin native inputs during resolution, then reproduce them without a provider:
 
 ```sh

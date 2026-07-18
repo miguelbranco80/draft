@@ -19,6 +19,7 @@
 #include "source/diagnostic.h"
 
 #include <filesystem>
+#include <optional>
 #include <span>
 #include <string>
 
@@ -102,5 +103,17 @@ struct ResolutionManifestLoadResult {
     std::span<const GeneratedExpansion> expansions,
     DiagnosticSink &diagnostics,
     ResolutionCommitControl control = {});
+
+// Atomically replaces only the manifest when the currently visible manifest
+// still equals expected. A null expected value requires that no manifest exist.
+// The comparison and replacement share the same interprocess lock as ordinary
+// resolution commits, so a long-running judgment cannot select evidence for a
+// program other than the exact snapshot it checked. Existing generated objects
+// are reverified by the normal transaction before publication.
+[[nodiscard]] bool commit_resolution_manifest_if_unchanged(
+    const std::filesystem::path &workspace_directory,
+    const std::optional<ResolutionManifest> &expected,
+    const ResolutionManifest &replacement,
+    DiagnosticSink &diagnostics);
 
 } // namespace draft

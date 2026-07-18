@@ -14,6 +14,8 @@
 #include "elaborator/codex_cli.h"
 #include "elaborator/resolution_store.h"
 #include "interop/c_header.h"
+#include "judgment/codex_cli.h"
+#include "judgment/command.h"
 #include "source/diagnostic.h"
 #include "source/source.h"
 #include "syntax/lexer.h"
@@ -25,6 +27,7 @@
 #include "workspace/package.h"
 #include "workspace/workspace.h"
 
+#include <algorithm>
 #include <csignal>
 #include <filesystem>
 #include <fstream>
@@ -680,8 +683,8 @@ bool run_resolution_candidate_validation(
 // malformed source, attachment-policy violations, and typed obligation errors
 // are reported before any model call. Resolve may receive one explicit Codex
 // adapter configuration; a program with only fresh pins still performs no
-// provider call. Judge remains a typed no-op boundary until its separate
-// evidence protocol is implemented.
+// provider call. Judge runs only after the same provider-free compilation and
+// selects its all-pass evidence with an atomic manifest compare-and-replace.
 int run_agent_command(
     const std::string &directory,
     AgentCommandKind command,
@@ -809,33 +812,113 @@ int run_agent_command(
     return resolved.ok && !diagnostics.has_errors() ? 0 : 1;
   }
 
+  if (!load_foreign_provider_audits(
+          options.workspace.workspace_directory,
+          provider_summaries,
+          foreign_providers,
+          options.foreign_provider_audits,
+          diagnostics)) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+    return 1;
+  }
+  const draft::TargetProfile target = options.target;
   const draft::CompileWorkspaceResult compiled =
       draft::compile_workspace_with_resolution(
           sources,
           absolute_directory.string(),
           std::move(options),
           diagnostics);
+  if (!compiled.ok) {
+    if (!diagnostics.diagnostics().empty()) {
+      std::cerr << draft::render_diagnostics(sources, diagnostics);
+    }
+    return 1;
+  }
+  if (!compiled.resolution_manifest.has_value() &&
+      (!foreign_providers.empty() || !provider_summaries.empty())) {
+    diagnostics.error(
+        draft::SourceRange::invalid(),
+        "judgment cannot introduce external-input pins for a handwritten "
+        "program; run 'draftc resolve' with those inputs first");
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+    return 1;
+  }
+
   std::size_t matching_sites = 0;
-  if (compiled.ok) {
-    for (const std::optional<draft::CompiledPackage> &package :
-         compiled.packages) {
-      if (!package.has_value()) continue;
-      for (const draft::AgentObligation &obligation :
-           package->obligations.obligations) {
-        if (command == AgentCommandKind::Judge &&
-            obligation.kind == draft::AgentConstructKind::Judgment) {
-          ++matching_sites;
-        }
+  for (const std::optional<draft::CompiledPackage> &package :
+       compiled.packages) {
+    if (!package.has_value()) continue;
+    for (const draft::AgentObligation &obligation :
+         package->obligations.obligations) {
+      if (obligation.kind == draft::AgentConstructKind::Judgment) {
+        ++matching_sites;
       }
     }
-    if (matching_sites == 0) {
-      std::cout << "no judgment sites require execution\n";
-    } else {
-      diagnostics.error(
-          draft::SourceRange::invalid(),
-          "judgment provider is not configured");
+  }
+  if (matching_sites == 0) {
+    std::cout << "no judgment sites require execution\n";
+    return 0;
+  }
+
+  draft::CodexCliProviderState codex_state;
+  draft::JudgmentCommandOptions judgment_options;
+  judgment_options.workspace_directory =
+      absolute_directory.parent_path();
+  judgment_options.target = target;
+  if (codex.has_value()) {
+    judgment_options.provider =
+        draft::configure_codex_cli_judgment_provider(
+            *codex, codex_state, diagnostics);
+    if (judgment_options.provider.judge == nullptr) {
+      std::cerr << draft::render_diagnostics(sources, diagnostics);
+      return 1;
     }
   }
+  const draft::JudgmentCommandResult judged =
+      draft::execute_judgment_command(
+          compiled, std::move(judgment_options), diagnostics);
+  if (!judged.completed) {
+    if (!diagnostics.diagnostics().empty()) {
+      std::cerr << draft::render_diagnostics(sources, diagnostics);
+    }
+    return 1;
+  }
+  if (!judged.passed) {
+    std::cerr << "judge failed: " << judged.selected_judgments
+              << " selected judgments; resolution manifest unchanged\n";
+    return 1;
+  }
+
+  draft::ResolutionManifest replacement;
+  if (compiled.resolution_manifest.has_value()) {
+    replacement = *compiled.resolution_manifest;
+  } else {
+    replacement.target_identity = target.facts.identity;
+    replacement.resolved_program_digest = *compiled.resolved_program_digest;
+  }
+  replacement.evidence.erase(
+      std::remove_if(
+          replacement.evidence.begin(),
+          replacement.evidence.end(),
+          [](const draft::ResolutionEvidencePin &pin) {
+            return pin.kind == "judgment";
+          }),
+      replacement.evidence.end());
+  replacement.evidence.insert(
+      replacement.evidence.end(),
+      judged.evidence.begin(),
+      judged.evidence.end());
+  if (!draft::commit_resolution_manifest_if_unchanged(
+          absolute_directory.parent_path(),
+          compiled.resolution_manifest,
+          replacement,
+          diagnostics)) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+    return 1;
+  }
+  std::cout << "judge passed: " << judged.selected_judgments
+            << " selected judgments; selected " << judged.evidence.size()
+            << " evidence rows in resolution manifest\n";
   if (!diagnostics.diagnostics().empty()) {
     std::cerr << draft::render_diagnostics(sources, diagnostics);
   }
@@ -873,6 +956,10 @@ void print_usage() {
             << "      [--provider name=object|archive|shared-library:<path>]...\n"
             << "      [--provider-summary name:<path>]...\n"
             << "  draftc judge <package-directory>\n"
+            << "      [--codex-distribution-root <directory>\n"
+            << "       --codex-executable <path> --codex-model <model>]\n"
+            << "      [--provider name=object|archive|shared-library:<path>]...\n"
+            << "      [--provider-summary name:<path>]...\n"
             << "  draftc target\n";
 }
 
@@ -993,8 +1080,70 @@ int main(int argc, char **argv) {
         foreign_providers,
         provider_summaries);
   }
-  if (argc == 3 && std::string_view(argv[1]) == "judge") {
-    return run_agent_command(argv[2], AgentCommandKind::Judge);
+  if (argc >= 3 && std::string_view(argv[1]) == "judge") {
+    std::optional<std::string> codex_distribution_root;
+    std::optional<std::string> codex_executable;
+    std::optional<std::string> codex_model;
+    std::vector<draft::ForeignProviderInput> foreign_providers;
+    std::vector<draft::ForeignProviderSummaryInput> provider_summaries;
+    for (int index = 3; index < argc; ++index) {
+      const std::string_view argument(argv[index]);
+      if (argument == "--codex-executable" &&
+          !codex_executable.has_value() && index + 1 < argc) {
+        codex_executable = argv[++index];
+      } else if (argument == "--codex-distribution-root" &&
+                 !codex_distribution_root.has_value() && index + 1 < argc) {
+        codex_distribution_root = argv[++index];
+      } else if (argument == "--codex-model" &&
+                 !codex_model.has_value() && index + 1 < argc) {
+        codex_model = argv[++index];
+      } else if (argument == "--provider" && index + 1 < argc) {
+        draft::ForeignProviderInput provider;
+        std::string reason;
+        if (!parse_foreign_provider(argv[++index], provider, reason)) {
+          std::cerr << "error: " << reason << '\n';
+          return 2;
+        }
+        foreign_providers.push_back(std::move(provider));
+      } else if (argument == "--provider-summary" && index + 1 < argc) {
+        draft::ForeignProviderSummaryInput summary;
+        std::string reason;
+        if (!parse_foreign_provider_summary(
+                argv[++index], summary, reason)) {
+          std::cerr << "error: " << reason << '\n';
+          return 2;
+        }
+        provider_summaries.push_back(std::move(summary));
+      } else {
+        print_usage();
+        return 2;
+      }
+    }
+    if (codex_executable.has_value() != codex_model.has_value() ||
+        codex_executable.has_value() !=
+            codex_distribution_root.has_value()) {
+      print_usage();
+      return 2;
+    }
+    cancellation_signal = 0;
+    (void)std::signal(SIGINT, request_cancellation);
+    std::optional<draft::CodexCliProviderOptions> codex;
+    if (codex_executable.has_value()) {
+      codex.emplace();
+      codex->distribution_root = *codex_distribution_root;
+      codex->executable = *codex_executable;
+      codex->model = *codex_model;
+      codex->cancellation_requested = command_cancellation_requested;
+    }
+    return run_agent_command(
+        argv[2],
+        AgentCommandKind::Judge,
+        false,
+        false,
+        codex,
+        std::nullopt,
+        foreign_providers,
+        provider_summaries);
   }
   if (argc >= 3 &&
       (std::string_view(argv[1]) == "test" ||
