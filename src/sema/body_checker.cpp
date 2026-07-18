@@ -791,12 +791,19 @@ private:
     return value.compare(minimum) >= 0 && value.compare(maximum) <= 0;
   }
 
-  [[nodiscard]] Type runtime_scalar_type(TypeId type_id) const {
-    Type type = semantic_.types.type(type_id);
-    while (type.kind == TypeKind::Distinct) {
-      type = semantic_.types.type(type.element);
+  // Returns the type whose operator vocabulary a distinct value inherits.
+  // Keep the source TypeId separately whenever an operation returns the same
+  // distinct type (for example ptr_offset); this helper is only the semantic
+  // view used to validate and decompose the operation.
+  [[nodiscard]] TypeId underlying_type_id(TypeId type_id) const {
+    while (semantic_.types.type(type_id).kind == TypeKind::Distinct) {
+      type_id = semantic_.types.type(type_id).element;
     }
-    return type;
+    return type_id;
+  }
+
+  [[nodiscard]] Type runtime_scalar_type(TypeId type_id) const {
+    return semantic_.types.type(underlying_type_id(type_id));
   }
 
   [[nodiscard]] bool numeric_value_type(TypeId type_id) const {
@@ -2958,9 +2965,10 @@ private:
         const HirExpressionId pointer =
             check_expression(tree, call.children[1], scope);
         const TypeId pointer_type = hir_.expression(pointer).type;
-        const TypeKind pointer_kind = is_invalid_type(pointer_type)
-            ? TypeKind::Invalid
-            : semantic_.types.type(pointer_type).kind;
+        const Type pointer_view = is_invalid_type(pointer_type)
+            ? Type{}
+            : runtime_scalar_type(pointer_type);
+        const TypeKind pointer_kind = pointer_view.kind;
         const HirExpressionId count = check_expression(
             tree,
             call.children[2],
@@ -2974,8 +2982,7 @@ private:
               "ptr_offset requires a ^T or [^]T pointer");
           expression.type = semantic_.types.builtins().invalid;
         } else {
-          const Type &pointee = semantic_.types.type(
-              semantic_.types.type(pointer_type).element);
+          const Type &pointee = semantic_.types.type(pointer_view.element);
           if (!pointee.layout.known || pointee.layout.size == 0) {
             diagnostics_.error(
                 tree.node(call.children[1]).range,
@@ -2999,9 +3006,10 @@ private:
             tree, call.children[2], scope, left_type);
         const TypeId right_type = hir_.expression(right).type;
         expression.operands = {left, right};
-        const TypeKind left_kind = is_invalid_type(left_type)
-            ? TypeKind::Invalid
-            : semantic_.types.type(left_type).kind;
+        const Type left_view = is_invalid_type(left_type)
+            ? Type{}
+            : runtime_scalar_type(left_type);
+        const TypeKind left_kind = left_view.kind;
         if ((left_kind != TypeKind::Pointer &&
              left_kind != TypeKind::MultiPointer) ||
             left_type != right_type) {
@@ -3009,8 +3017,7 @@ private:
               call.range, "ptr_sub requires two matching ^T or [^]T pointers");
           expression.type = semantic_.types.builtins().invalid;
         } else {
-          const Type &pointee = semantic_.types.type(
-              semantic_.types.type(left_type).element);
+          const Type &pointee = semantic_.types.type(left_view.element);
           if (!pointee.layout.known || pointee.layout.size == 0) {
             diagnostics_.error(
                 call.range,
@@ -3767,11 +3774,11 @@ private:
       // argument diagnostic. Do not obscure it with a second complaint that
       // the resulting invalid placeholder is not callable.
       if (is_invalid_type(callee_type)) return invalid_expression(node.range);
-      if (semantic_.types.type(callee_type).kind != TypeKind::Procedure) {
+      if (runtime_scalar_type(callee_type).kind != TypeKind::Procedure) {
         diagnostics_.error(node.range, "called expression does not have procedure type");
         return invalid_expression(node.range);
       }
-      const Type signature = semantic_.types.type(callee_type);
+      const Type signature = runtime_scalar_type(callee_type);
       if (current_procedure_uses_c_abi() &&
           !signature.c_calling_convention) {
         diagnostics_.error(
@@ -3912,7 +3919,7 @@ private:
     case NodeKind::DereferenceExpression: {
       if (node.children.empty()) return invalid_expression(node.range);
       const HirExpressionId pointer_id = check_expression(tree, node.children.front(), scope);
-      const Type pointer = semantic_.types.type(hir_.expression(pointer_id).type);
+      const Type pointer = runtime_scalar_type(hir_.expression(pointer_id).type);
       if (pointer.kind != TypeKind::Pointer && pointer.kind != TypeKind::MultiPointer) {
         diagnostics_.error(node.range, "dereference requires a typed data pointer");
         return invalid_expression(node.range);
@@ -4033,7 +4040,7 @@ private:
         diagnostics_.error(node.range, "indexing requires exactly one index");
         return invalid_expression(node.range);
       }
-      const Type base = semantic_.types.type(base_expression.type);
+      const Type base = runtime_scalar_type(base_expression.type);
       if (base.kind != TypeKind::Array && base.kind != TypeKind::Slice &&
           base.kind != TypeKind::MultiPointer && base.kind != TypeKind::String) {
         diagnostics_.error(
@@ -4086,7 +4093,7 @@ private:
     case NodeKind::SliceExpression: {
       if (node.children.empty()) return invalid_expression(node.range);
       const HirExpressionId base_id = check_expression(tree, node.children[0], scope);
-      const Type base = semantic_.types.type(hir_.expression(base_id).type);
+      const Type base = runtime_scalar_type(hir_.expression(base_id).type);
       TypeId result = semantic_.types.builtins().invalid;
       if (base.kind == TypeKind::Slice) {
         result = hir_.expression(base_id).type;

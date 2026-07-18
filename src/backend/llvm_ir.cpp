@@ -3195,8 +3195,8 @@ private:
       break;
     }
     case MirInstructionKind::Call: {
-      const Type &callee_signature = type(
-          procedure.value(instruction.operands.front()).type);
+      const Type &callee_signature = type(runtime_scalar_id(
+          procedure.value(instruction.operands.front()).type));
       if (callee_signature.kind == TypeKind::Procedure &&
           callee_signature.c_calling_convention) {
         emit_c_call(
@@ -3292,7 +3292,8 @@ private:
     case MirInstructionKind::IndexAddress: {
       const MirValueId base_id = instruction.operands[0];
       std::string base = value_operand(operands, base_id, instruction.range);
-      const TypeKind base_kind = type(procedure.value(base_id).type).kind;
+      const TypeKind base_kind = runtime_scalar_kind(
+          procedure.value(base_id).type);
       if (base_kind == TypeKind::Slice || base_kind == TypeKind::String) {
         const std::string data = auxiliary();
         output_ << "  " << data << " = extractvalue "
@@ -3359,7 +3360,8 @@ private:
     case MirInstructionKind::Slice: {
       const MirValueId base_id = instruction.operands[0];
       std::string data = value_operand(operands, base_id, instruction.range);
-      const TypeKind base_kind = type(procedure.value(base_id).type).kind;
+      const TypeKind base_kind = runtime_scalar_kind(
+          procedure.value(base_id).type);
       if (base_kind == TypeKind::Slice || base_kind == TypeKind::String) {
         const std::string extracted = auxiliary();
         output_ << "  " << extracted << " = extractvalue "

@@ -24,6 +24,7 @@ Overlay :: raw union {
 Distance :: distinct i64
 Truth :: distinct bool
 Handle :: distinct ^i64
+Multi_Handle :: distinct [^]i64
 Callback_Handle :: distinct proc(value: i64) -> i64
 
 Pair[T: type, U: type] :: struct {
@@ -437,14 +438,22 @@ main :: proc() {
     pointee: i64 = 42
     handle := cast[Handle](&pointee)
     assert(!nil_handle(handle))
+    assert(ptr_offset(handle, 0)^ == 42)
     assert(switch_handle(handle) == 1)
     empty_handle: Handle = nil
     assert(nil_handle(empty_handle))
     assert(switch_handle(empty_handle) == 0)
     callback_handle := cast[Callback_Handle](increment_value)
     assert(!nil_callback_handle(callback_handle))
+    assert(callback_handle(41) == 42)
     empty_callback_handle: Callback_Handle = nil
     assert(nil_callback_handle(empty_callback_handle))
+    pointer_values := [3]i64{10, 20, 42}
+    multi := cast[[^]i64](&pointer_values[0])
+    multi_handle := cast[Multi_Handle](multi)
+    assert(multi_handle[2] == 42)
+    assert(ptr_sub(ptr_offset(multi_handle, 2), multi_handle) == 2)
+    assert(multi_handle[:3][1] == 20)
     assert(endian_roundtrip(21) == 42)
     assert(switch_integer(42) == 1 && switch_integer(41) == 0)
     assert(switch_float(1.5) == 1 && switch_float(2.0) == 0)
@@ -463,8 +472,6 @@ main :: proc() {
     distance += 2
     assert(cast[i64](distance) == 42)
 
-    pointer_values := [3]i64{10, 20, 42}
-    multi := cast[[^]i64](&pointer_values[0])
     assert(ptr_offset(multi, 2)^ == 42)
     assert(pointer_distance(multi, 2) == 2)
     assert(last[3](pointer_values) == 42)

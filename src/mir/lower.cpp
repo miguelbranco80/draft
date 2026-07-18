@@ -789,7 +789,7 @@ private:
     }
     const HirExpressionId base_id = expression.operands[0];
     const HirExpression &base_expression = hir_.expression(base_id);
-    const Type base_type = semantic_.types.type(base_expression.type);
+    const Type base_type = runtime_scalar_type(base_expression.type);
     MirValueId base;
     if (base_type.kind == TypeKind::Array) {
       base = base_expression.addressable
@@ -891,7 +891,7 @@ private:
     const HirExpression &callee_expression =
         hir_.expression(expression.operands.front());
     captured.operands.push_back(lower_expression(expression.operands.front()));
-    const Type signature = semantic_.types.type(callee_expression.type);
+    const Type signature = runtime_scalar_type(callee_expression.type);
     if (!signature.c_calling_convention) {
       captured.passes_context = true;
       if (!context_.is_valid()) {
@@ -981,7 +981,7 @@ private:
   [[nodiscard]] MirValueId lower_slice(const HirExpression &expression) {
     const HirExpressionId base_id = expression.operands.front();
     const HirExpression &base_expression = hir_.expression(base_id);
-    const Type base_type = semantic_.types.type(base_expression.type);
+    const Type base_type = runtime_scalar_type(base_expression.type);
     MirValueId base;
     if (base_type.kind == TypeKind::Array) {
       base = base_expression.addressable
@@ -1241,7 +1241,7 @@ private:
         }
         const TypeId pointer_type =
             hir_.expression(expression.operands.front()).type;
-        const Type &pointer = semantic_.types.type(pointer_type);
+        const Type pointer = runtime_scalar_type(pointer_type);
         instruction.offset = semantic_.types.type(pointer.element).layout.size;
         return emit_value(std::move(instruction));
       }
