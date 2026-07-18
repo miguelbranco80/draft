@@ -208,6 +208,13 @@ their checked offsets. It deliberately contains no body statements, comments,
 or semantic arena IDs. This keeps exact source structure available without
 forcing a provider to reverse-engineer basic checked facts from that source.
 
+Interface proposals are opaque within one completeness set in the literal
+request data, not only by convention. The compiler constructs all obligations
+from one immutable surface compilation before invoking any provider and installs
+the complete set of returned source only afterward. A resolver acceptance test
+captures both same-package request binding sets, proves neither contains either
+generated name, then requires their merged pins to compile provider-free.
+
 Every lexically enclosing `deny` region contributes its exact canonical selector
 spellings in outer-to-inner order. These facts are readable policy instructions
 and obligation hash inputs. Ordinary semantic denial checking still resolves

@@ -120,6 +120,20 @@ struct TemporaryWorkspace {
            << "}\n";
   }
 
+  // These two sites are deliberately in the same package-level interface
+  // completeness set. The provider returns declarations that the final body
+  // needs, but neither request is allowed to observe the other response.
+  void write_opaque_interface_set_source() const {
+    std::ofstream source(
+        package / "package.draft", std::ios::binary | std::ios::trunc);
+    source << "package app\n\n"
+           << "... \"declare first\"\n"
+           << "... \"declare second\"\n\n"
+           << "main :: proc() {\n"
+           << "    assert(first + second == 42)\n"
+           << "}\n";
+  }
+
   void write_complete_source() const {
     std::ofstream source(
         package / "package.draft", std::ios::binary | std::ios::trunc);
@@ -154,7 +168,9 @@ struct FakeProviderState {
   std::string last_prompt;
   std::string last_attachment;
   bool staged_responses = false;
+  bool opaque_interface_responses = false;
   std::vector<draft::AgentConstructKind> kinds;
+  std::vector<std::vector<std::string>> visible_binding_names;
 };
 
 struct FakeTestRunnerState {
@@ -219,7 +235,24 @@ bool synthesize(
   state->last_attachment = request.attachments.empty()
       ? std::string()
       : request.attachments[0].contents;
-  if (state->staged_responses) {
+  std::vector<std::string> visible_names;
+  for (const draft::AgentVisibleBinding &binding :
+       request.obligation.visible_bindings) {
+    visible_names.push_back(binding.name);
+  }
+  state->visible_binding_names.push_back(std::move(visible_names));
+  if (state->opaque_interface_responses) {
+    if (request.prompt == "declare first") {
+      response.source = "first :: 20;";
+    } else if (request.prompt == "declare second") {
+      response.source = "second :: 22;";
+    } else {
+      diagnostics.error(
+          draft::SourceRange::invalid(),
+          "opaque-set fixture received an unexpected prompt");
+      return false;
+    }
+  } else if (state->staged_responses) {
     switch (request.obligation.kind) {
     case draft::AgentConstructKind::SynthesisDeclaration:
       response.source = "pub answer :: 42;";
@@ -668,6 +701,75 @@ void test_dependency_interface_rounds(TestState &state) {
   EXPECT(state, !offline_diagnostics.has_errors());
 }
 
+[[nodiscard]] bool contains_name(
+    const std::vector<std::string> &names,
+    std::string_view expected) {
+  for (const std::string &name : names) {
+    if (name == expected) return true;
+  }
+  return false;
+}
+
+void test_same_interface_set_is_opaque(TestState &state) {
+  TemporaryWorkspace workspace;
+  workspace.write_opaque_interface_set_source();
+  FakeProviderState provider;
+  provider.opaque_interface_responses = true;
+
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  const draft::ResolveWorkspaceResult resolved = draft::resolve_workspace(
+      sources,
+      workspace.package.string(),
+      resolve_options(workspace, provider),
+      diagnostics);
+  if (!resolved.ok) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+  }
+  EXPECT(state, resolved.ok);
+  EXPECT(state, resolved.committed);
+  EXPECT(state, resolved.synthesized_sites == 2);
+  EXPECT(state, provider.calls == 2);
+  EXPECT(state, provider.kinds.size() == 2);
+  EXPECT(state, provider.visible_binding_names.size() == 2);
+  if (provider.kinds.size() == 2) {
+    EXPECT(state, provider.kinds[0] ==
+        draft::AgentConstructKind::SynthesisDeclaration);
+    EXPECT(state, provider.kinds[1] ==
+        draft::AgentConstructKind::SynthesisDeclaration);
+  }
+  if (provider.visible_binding_names.size() == 2) {
+    // The strongest useful assertion is symmetric: request order must not make
+    // the first proposal visible to the second request, and source order must
+    // not invent the second declaration for the first request.
+    EXPECT(state,
+        !contains_name(provider.visible_binding_names[0], "first"));
+    EXPECT(state,
+        !contains_name(provider.visible_binding_names[0], "second"));
+    EXPECT(state,
+        !contains_name(provider.visible_binding_names[1], "first"));
+    EXPECT(state,
+        !contains_name(provider.visible_binding_names[1], "second"));
+  }
+
+  // The opaque proposals are merged only after both requests return. Their
+  // combined package must then pass the normal provider-free complete compile.
+  draft::SourceManager offline_sources;
+  draft::DiagnosticSink offline_diagnostics;
+  const draft::CompileWorkspaceResult offline =
+      draft::compile_workspace_with_resolution(
+          offline_sources,
+          workspace.package.string(),
+          compile_options(workspace),
+          offline_diagnostics);
+  if (!offline.ok) {
+    std::cerr << draft::render_diagnostics(
+        offline_sources, offline_diagnostics);
+  }
+  EXPECT(state, offline.ok);
+  EXPECT(state, !offline_diagnostics.has_errors());
+}
+
 void test_tests_gate_manifest_commit(TestState &state) {
   TemporaryWorkspace workspace;
   workspace.write_source("candidate with tests");
@@ -784,6 +886,7 @@ int main() {
   test_external_inputs_commit_without_synthesis(state);
   test_interface_sites_precede_dependent_bodies(state);
   test_dependency_interface_rounds(state);
+  test_same_interface_set_is_opaque(state);
   test_tests_gate_manifest_commit(state);
   if (state.failures != 0) {
     std::cerr << state.failures << " resolver expectation(s) failed\n";
