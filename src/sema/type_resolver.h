@@ -45,6 +45,23 @@ void resolve_package_types(
     ScopeId scope,
     DiagnosticSink &diagnostics);
 
+// Resolves one procedure declaration introduced in a lexical statement scope.
+// Body checking first declares owner so recursion can find the name, then calls
+// this routine to create its optional parametric scope, immutable parameter
+// symbols, and canonical procedure type. Package declarations use the same
+// internal path during the ordinary signature-resolution pass.
+[[nodiscard]] TypeId resolve_local_procedure_signature(
+    const SourceManager &sources,
+    const LoadedPackage &loaded,
+    SemanticPackage &package,
+    const ConditionalSelections &selections,
+    const SyntaxTree &tree,
+    NodeId declaration,
+    NodeId procedure,
+    ScopeId scope,
+    SymbolId owner,
+    DiagnosticSink &diagnostics);
+
 // Creates or reuses one nominal type application from already resolved,
 // consumer-local arguments. Body checking uses this when substituting a
 // procedure template signature such as `^Dynamic[T]` after T was inferred.

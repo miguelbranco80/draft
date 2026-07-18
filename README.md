@@ -35,6 +35,7 @@ handwritten code.
 - Manual memory management through explicit allocators and scoped context.
 - Private-by-default package declarations with explicit `pub`.
 - One procedure abstraction for all callables.
+- Static nested procedures with explicit runtime state and no hidden captures.
 - Rich compile-time types with concrete native lowering.
 - Native parsed assembly with typed operands.
 - Direct C ABI import and export.
@@ -120,8 +121,13 @@ field (or takes a Context-field address) receives a lexical copy, and ordinary
 calls made in that scope receive the copy as their hidden argument. The narrow
 `runtime.default_context` and `runtime.call_with_context` bridges let
 context-free C callbacks acquire a compatible value and enter an ordinary Draft
-callback without exposing Context as a generally legal C aggregate. The hosted
-temp allocator is independently owned per pthread, supports explicit group
+callback without exposing Context as a generally legal C aggregate. The
+`examples/nested-procedures` program covers lexical recursion, escaping
+procedure pointers, enclosing compile-time parameters and constants, hidden
+Context propagation, and collision-free native identities. Runtime parameters,
+locals, and iteration bindings from an enclosing invocation are rejected as
+captures and must be passed explicitly. The hosted temp allocator is
+independently owned per pthread, supports explicit group
 reset, and is destroyed at thread exit; a spawned child replaces rather than
 shares the parent's temporary provider state. The
 compiler-distributed `core/runtime`, `core/c`, `core/option`, `core/result`,
@@ -154,7 +160,7 @@ and policy. Failed attempts revoke prior passing evidence for only that key;
 locked builds can verify required active evidence without rerunning it.
 
 On Apple hosts, the test suite also compiles, links, launches, and requires a
-zero exit from 16 handwritten programs spanning the runtime/core facilities,
+zero exit from 17 handwritten programs spanning the runtime/core facilities,
 multi-package generics, parsed and package assembly, C interop, atomics, and
 pthreads. A separate end-to-end gate builds a Draft dylib and generated header,
 compiles a checked-in C11 client against them, and launches it. These complement

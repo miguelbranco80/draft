@@ -13,6 +13,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 namespace {
 
@@ -348,6 +349,177 @@ main :: proc() -> i64 {
   }
   EXPECT(state, templates == 4);
   EXPECT(state, concrete_instances == 4);
+}
+
+void test_nested_procedures(TestState &state) {
+  const std::string text = R"draft(
+package bodies
+
+factorial :: proc(value: u64) -> u64 {
+    One :: 1
+    recurse :: proc(current: u64) -> u64 {
+        if current <= One {
+            return One
+        }
+        return current * recurse(current - 1)
+    }
+    return recurse(value)
+}
+
+last_of[T: type, N: usize] :: proc(values: [N]T) -> T {
+    // Both T and N are compile-time bindings. The nested procedure may use
+    // them without acquiring a runtime closure environment.
+    last :: proc(input: [N]T) -> T {
+        return input[N - 1]
+    }
+    identity[U: type] :: proc(input: U) -> U {
+        return input
+    }
+    return identity[T](last(values))
+}
+
+make_increment :: proc() -> proc(value: i64) -> i64 {
+    increment :: proc(value: i64) -> i64 {
+        return value + 1
+    }
+    Increment :: increment
+    // A nested procedure has an ordinary code-pointer representation and can
+    // therefore outlive this invocation without an environment object.
+    return Increment
+}
+
+shared: i64 = 7
+
+read_shared_and_context :: proc() -> i64 {
+    read :: proc() -> i64 {
+        // Package storage and the hidden runtime context are not captures.
+        return shared + cast[i64](context.user_index)
+    }
+    context.user_index = 8
+    return read()
+}
+
+left :: proc() -> i64 {
+    Base :: 19
+    Answer :: Base + 1
+    helper :: proc() -> i64 {
+        return Answer
+    }
+    return helper()
+}
+
+right :: proc() -> i64 {
+    // Reusing the same short name in a different lexical scope is legal. The
+    // two symbols must receive different native linkage identities.
+    helper :: proc() -> i64 {
+        return 22
+    }
+    return helper()
+}
+
+main :: proc() -> i64 {
+    values := [3]i64{4, 5, 6}
+    other := [2]u32{8, 9}
+    callback := make_increment()
+    return cast[i64](factorial(5)) + last_of(values) + callback(1) +
+        left() + right() + read_shared_and_context() +
+        cast[i64](last_of(other))
+}
+)draft";
+  CheckedSource source(text);
+
+  if (source.diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(source.sources, source.diagnostics);
+  }
+  EXPECT(state, source.semantics.ok);
+  EXPECT(state, source.bodies.ok);
+  EXPECT(state, !source.diagnostics.has_errors());
+
+  std::size_t nested_procedures = 0;
+  std::vector<std::string> linkage_names;
+  std::vector<std::string> helper_linkage_names;
+  for (const draft::HirProcedure &procedure :
+       source.bodies.program.procedures()) {
+    const draft::Symbol &symbol =
+        source.semantics.package.symbols.symbol(procedure.symbol);
+    if (!symbol.linkage_name.empty()) {
+      ++nested_procedures;
+      linkage_names.push_back(symbol.linkage_name);
+      EXPECT(state, symbol.linkage_name.find("$nested$") != std::string::npos);
+      if (symbol.name == "helper") {
+        helper_linkage_names.push_back(symbol.linkage_name);
+      }
+    }
+  }
+  EXPECT(state, nested_procedures >= 8);
+  EXPECT(state, helper_linkage_names.size() == 2);
+  if (helper_linkage_names.size() == 2) {
+    EXPECT(state, helper_linkage_names[0] != helper_linkage_names[1]);
+  }
+
+  // Compile through a fresh semantic graph, rather than merely emitting the
+  // first graph twice. The exact linkage sequence must not depend on transient
+  // SymbolId/ScopeId allocation from another compilation.
+  CheckedSource repeated(text);
+  std::vector<std::string> repeated_linkage_names;
+  for (const draft::HirProcedure &procedure :
+       repeated.bodies.program.procedures()) {
+    const draft::Symbol &symbol =
+        repeated.semantics.package.symbols.symbol(procedure.symbol);
+    if (!symbol.linkage_name.empty()) {
+      repeated_linkage_names.push_back(symbol.linkage_name);
+    }
+  }
+  EXPECT(state, repeated.bodies.ok);
+  EXPECT(state, linkage_names == repeated_linkage_names);
+}
+
+void test_nested_procedure_capture_diagnostics(TestState &state) {
+  CheckedSource source(R"draft(
+package bodies
+
+bad :: proc(parameter: i64) -> i64 {
+    local := parameter
+    items := [1]i64{3}
+    for item in items {
+        capture :: proc() -> i64 {
+            from_parameter := parameter
+            from_local := local
+            return item + from_parameter + from_local
+        }
+        return capture()
+    }
+    return 0
+}
+)draft");
+
+  EXPECT(state, !source.bodies.ok);
+  const std::string rendered =
+      draft::render_diagnostics(source.sources, source.diagnostics);
+  EXPECT(state, rendered.find("cannot capture enclosing runtime binding 'parameter'") !=
+      std::string::npos);
+  EXPECT(state, rendered.find("cannot capture enclosing runtime binding 'local'") !=
+      std::string::npos);
+  EXPECT(state, rendered.find("cannot capture enclosing runtime binding 'item'") !=
+      std::string::npos);
+  EXPECT(state, rendered.find("pass it as an explicit parameter") !=
+      std::string::npos);
+  bool parameter_range = false;
+  bool local_range = false;
+  bool item_range = false;
+  for (const draft::Diagnostic &diagnostic : source.diagnostics.diagnostics()) {
+    if (diagnostic.message.find("cannot capture enclosing runtime binding") ==
+        std::string::npos) {
+      continue;
+    }
+    const std::string_view spelling = source.sources.text(diagnostic.range);
+    parameter_range = parameter_range || spelling == "parameter";
+    local_range = local_range || spelling == "local";
+    item_range = item_range || spelling == "item";
+  }
+  EXPECT(state, parameter_range);
+  EXPECT(state, local_range);
+  EXPECT(state, item_range);
 }
 
 void test_string_index_is_immutable(TestState &state) {
@@ -834,6 +1006,8 @@ int main() {
   test_common_typed_bodies(state);
   test_body_diagnostics(state);
   test_parametric_procedure_instances(state);
+  test_nested_procedures(state);
+  test_nested_procedure_capture_diagnostics(state);
   test_string_index_is_immutable(state);
   test_multi_pointer_slice_shape(state);
   test_constant_bounds_diagnostics(state);

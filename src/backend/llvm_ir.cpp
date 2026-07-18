@@ -1538,8 +1538,10 @@ private:
             imported.public_name);
       }
     }
+    const Symbol &symbol = semantic_.symbols.symbol(symbol_id);
     return package_symbol_name(
-        options_.package, semantic_.symbols.symbol(symbol_id).name);
+        options_.package,
+        symbol.linkage_name.empty() ? symbol.name : symbol.linkage_name);
   }
 
   [[nodiscard]] std::optional<std::string> procedure_constant_name(

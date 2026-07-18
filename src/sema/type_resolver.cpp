@@ -149,6 +149,25 @@ public:
         source, std::move(arguments), use_range);
   }
 
+  // Local procedures arrive after the package-wide resolver has finished, but
+  // their signatures obey exactly the same rules as package procedures. Keep
+  // the operation here so parameter and parametric scope construction has one
+  // implementation and one ordering contract.
+  [[nodiscard]] TypeId resolve_one_procedure(
+      const SyntaxTree &tree,
+      NodeId declaration_id,
+      NodeId procedure_id,
+      ScopeId parent,
+      SymbolId owner) {
+    const SyntaxNode &declaration = tree.node(declaration_id);
+    const ScopeId semantic_parent = ensure_parametric_scope(
+        owner, tree, declaration, parent);
+    const TypeId type = resolve_procedure_type(
+        tree, procedure_id, semantic_parent, owner);
+    semantic_.symbols.symbol_mut(owner).type = type;
+    return type;
+  }
+
 private:
   // Finds the immutable parsed tree owning a SyntaxReference. LoadedPackage
   // keeps files in canonical order, making this linear scan deterministic.
@@ -1495,8 +1514,12 @@ private:
     }
 
     active_integer_constants_.push_back(symbol_id);
+    const ScopeKind owner_kind = semantic_.symbols.scope(symbol.scope).kind;
+    const ScopeId evaluation_scope = owner_kind == ScopeKind::Block
+        ? symbol.scope
+        : file_scope(tree->file());
     const std::optional<BigInteger> result = integer_constant_expression(
-        *tree, *payload, file_scope(tree->file()));
+        *tree, *payload, evaluation_scope);
     active_integer_constants_.pop_back();
     return result;
   }
@@ -2275,6 +2298,22 @@ TypeId resolve_type_syntax(
     DiagnosticSink &diagnostics) {
   TypeResolver resolver(sources, loaded, package, selections, diagnostics);
   return resolver.resolve_one_type(tree, type, scope);
+}
+
+TypeId resolve_local_procedure_signature(
+    const SourceManager &sources,
+    const LoadedPackage &loaded,
+    SemanticPackage &package,
+    const ConditionalSelections &selections,
+    const SyntaxTree &tree,
+    NodeId declaration,
+    NodeId procedure,
+    ScopeId scope,
+    SymbolId owner,
+    DiagnosticSink &diagnostics) {
+  TypeResolver resolver(sources, loaded, package, selections, diagnostics);
+  return resolver.resolve_one_procedure(
+      tree, declaration, procedure, scope, owner);
 }
 
 TypeId instantiate_parametric_type_application(

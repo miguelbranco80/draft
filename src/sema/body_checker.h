@@ -1,10 +1,11 @@
 // Type checking and typed-HIR construction for procedure bodies.
 //
 // This phase consumes the final selected package semantic graph: package names,
-// signatures, constants, and layouts are already stable. It appends lexical
-// block/local symbols, checks runtime expressions and statements with expected
-// types, records body-level judgment/synthesis sites, and emits structured HIR.
-// It does not perform ABI lowering, storage placement, or LLVM construction.
+// signatures, package constants, and layouts are already stable. It appends
+// lexical block/local symbols and lexical compile-time constants, checks runtime
+// expressions and statements with expected types, records body-level
+// judgment/synthesis sites, and emits structured HIR. It does not perform ABI
+// lowering, storage placement, or LLVM construction.
 
 #pragma once
 
@@ -40,14 +41,15 @@ struct ProcedureInstantiationSeed {
 
 // Checks every package procedure definition in stable declaration order.
 // Foreign declarations and standalone procedure types have no body and are
-// skipped. Errors in one body do not prevent independent bodies from producing
-// recoverable HIR.
+// skipped. Successfully evaluated lexical `::` values append to constants so
+// later agent obligations observe the same values as body expressions. Errors
+// in one body do not prevent independent bodies from producing recoverable HIR.
 [[nodiscard]] BodyCheckResult check_package_bodies(
     const SourceManager &sources,
     const LoadedPackage &loaded,
     const ConditionalSelections &selections,
     SemanticPackage &package,
-    const ConstantTable &constants,
+    ConstantTable &constants,
     const TargetFacts &target,
     DiagnosticSink &diagnostics,
     const std::vector<ProcedureInstantiationSeed> &seeds = {});

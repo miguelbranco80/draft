@@ -98,8 +98,9 @@ struct ProcedureInstance {
 
 // BodyChecker is one sequential phase context. It owns only the HIR under
 // construction; source, syntax, semantic tables, constants, and selections are
-// caller-owned. SymbolTable may grow, so operations retain SymbolId values and
-// copy source records instead of holding element references across declarations.
+// caller-owned. SymbolTable and the constant table may grow, so operations
+// retain stable IDs and copy source records instead of holding element
+// references across declarations.
 class BodyChecker {
 public:
   BodyChecker(
@@ -107,7 +108,7 @@ public:
       const LoadedPackage &loaded,
       const ConditionalSelections &selections,
       SemanticPackage &semantic,
-      const ConstantTable &constants,
+      ConstantTable &constants,
       const TargetFacts &target,
       DiagnosticSink &diagnostics,
       const std::vector<ProcedureInstantiationSeed> &seeds)
@@ -238,6 +239,70 @@ private:
       }
     }
     return std::nullopt;
+  }
+
+  // Draft section 4 forbids a nested procedure from capturing an enclosing
+  // invocation's runtime state. True when child is ancestor itself or a lexical
+  // descendant of ancestor.
+  // This small relation is the complete runtime-capture test for nested
+  // procedures: their own parameters and locals live at or below their
+  // Procedure scope, while an enclosing invocation's bindings live above it.
+  [[nodiscard]] bool scope_is_within(
+      ScopeId child, ScopeId ancestor) const {
+    ScopeId current = child;
+    while (current.is_valid()) {
+      if (current == ancestor) return true;
+      current = semantic_.symbols.scope(current).parent;
+    }
+    return false;
+  }
+
+  [[nodiscard]] bool is_nested_procedure(SymbolId symbol) const {
+    if (!symbol.is_valid()) return false;
+    const Symbol &candidate = semantic_.symbols.symbol(symbol);
+    return candidate.kind == SymbolKind::Procedure &&
+        semantic_.symbols.scope(candidate.scope).kind == ScopeKind::Block;
+  }
+
+  [[nodiscard]] std::string source_relative_name(FileId file) const {
+    for (const LoadedPackageFile &entry : loaded_.files) {
+      if (entry.source == file) return entry.relative_name;
+    }
+    // A manually assembled test package may omit a canonical relative name.
+    // FileId is intentionally not used: it is process-local and must not leak
+    // into a native identity. The empty component remains deterministic.
+    return {};
+  }
+
+  [[nodiscard]] std::string effective_linkage_name(SymbolId symbol) const {
+    const Symbol &record = semantic_.symbols.symbol(symbol);
+    return record.linkage_name.empty() ? record.name : record.linkage_name;
+  }
+
+  // LLVM functions are package-level even when their Draft names are lexical.
+  // The complete enclosing linkage identity, canonical relative filename, and
+  // declaration byte offset make the generated name stable and collision-free
+  // without exposing a source-visible mangling scheme.
+  [[nodiscard]] std::string nested_linkage_name(
+      const SyntaxTree &tree,
+      std::string_view name,
+      SourceRange range) const {
+    const std::string relative = source_relative_name(tree.file());
+    return effective_linkage_name(current_procedure_) + "$nested$" +
+        std::to_string(relative.size()) + ":" + relative + "$" +
+        std::to_string(range.begin.offset) + "$" + std::string(name);
+  }
+
+  [[nodiscard]] bool captures_enclosing_runtime_binding(
+      const Symbol &symbol) const {
+    if (symbol.kind != SymbolKind::Parameter &&
+        symbol.kind != SymbolKind::Local) {
+      return false;
+    }
+    const std::optional<ScopeId> current_scope =
+        owned_scope(current_procedure_, ScopeKind::Procedure);
+    return current_scope.has_value() &&
+        !scope_is_within(symbol.scope, *current_scope);
   }
 
   [[nodiscard]] SourceName token_name(
@@ -490,7 +555,10 @@ private:
   // on demand: instances normally contain only one or two values, and avoiding
   // a second mutable constant store keeps their ownership unambiguous.
   [[nodiscard]] ConstantTable active_constant_table() const {
-    ConstantTable result;
+    // Lexical constants and concrete value parameters share one evaluator
+    // overlay. SymbolId keys keep unrelated scopes separate even though the
+    // table is append-only across all checked procedure bodies.
+    ConstantTable result = constants_;
     if (!current_instance_index_.has_value()) return result;
     for (const ValueSubstitution &substitution :
          instances_[*current_instance_index_].value_substitutions) {
@@ -2172,6 +2240,33 @@ private:
     return instance_id;
   }
 
+  // A nested template can mention compile-time parameters owned by every
+  // enclosing template. Its concrete instance must therefore retain both its
+  // explicitly inferred arguments and the active outer specialization. Keep
+  // unrelated package templates independent so their cache keys do not grow
+  // with substitutions they can never reference.
+  void append_enclosing_substitutions(
+      SymbolId source,
+      std::vector<TypeSubstitution> &type_substitutions,
+      std::vector<ValueSubstitution> &value_substitutions) const {
+    if (!is_nested_procedure(source) || !current_instance_index_.has_value()) {
+      return;
+    }
+    const ProcedureInstance &outer = instances_[*current_instance_index_];
+    for (const TypeSubstitution &substitution : outer.type_substitutions) {
+      if (!substitution_index(
+              type_substitutions, substitution.parameter).has_value()) {
+        type_substitutions.push_back(substitution);
+      }
+    }
+    for (const ValueSubstitution &substitution : outer.value_substitutions) {
+      if (!value_substitution_index(
+              value_substitutions, substitution.parameter).has_value()) {
+        value_substitutions.push_back(substitution);
+      }
+    }
+  }
+
   [[nodiscard]] SymbolId instantiate_procedure(
       SymbolId source,
       std::vector<TypeSubstitution> type_substitutions,
@@ -2222,6 +2317,9 @@ private:
       }
     }
 
+    append_enclosing_substitutions(
+        source, type_substitutions, value_substitutions);
+
     if (const std::optional<ImportedSymbol> imported =
             imported_symbol_record(source)) {
       return instantiate_imported_procedure(
@@ -2269,7 +2367,15 @@ private:
     if (!preferred_name.empty()) {
       instance_symbol.name = std::string(preferred_name);
     } else {
-      instance_symbol.name = source_symbol.name + "$instance";
+      // A nested source name is only unique inside its block. Its compiler
+      // linkage identity includes lexical ancestry, so reuse that identity as
+      // the package-private instance binding and avoid collisions between two
+      // independent `helper[T]` declarations.
+      instance_symbol.name =
+          (source_symbol.linkage_name.empty()
+               ? source_symbol.name
+               : source_symbol.linkage_name) +
+          "$instance";
       for (const ParametricParameterRecord &parameter : parameters) {
         if (parameter.constraint == TypeConstraintKind::CompileTimeValue) {
           const std::size_t index = *value_substitution_index(
@@ -2285,6 +2391,9 @@ private:
               std::to_string(type_substitutions[index].replacement.value);
         }
       }
+    }
+    if (!source_symbol.linkage_name.empty()) {
+      instance_symbol.linkage_name = instance_symbol.name;
     }
     instance_symbol.kind = SymbolKind::Procedure;
     instance_symbol.visibility = Visibility::Private;
@@ -2778,6 +2887,13 @@ private:
         return invalid_expression(node.range);
       }
       const Symbol symbol = semantic_.symbols.symbol(*found);
+      if (captures_enclosing_runtime_binding(symbol)) {
+        diagnostics_.error(
+            names.front().range,
+            "nested procedure cannot capture enclosing runtime binding '" +
+                symbol.name + "'; pass it as an explicit parameter");
+        return invalid_expression(node.range);
+      }
       if (!symbol.type.is_valid() || symbol.kind == SymbolKind::Type ||
           symbol.kind == SymbolKind::Import) {
         diagnostics_.error(names.front().range, "name does not denote a runtime value");
@@ -3149,8 +3265,13 @@ private:
                 return invalid_expression(node.range);
               }
             }
-            const bool symbolic = !current_instance_index_.has_value() &&
-                has_symbolic_type_substitution(type_substitutions);
+            // A template HIR row is semantic evidence, not executable code.
+            // Do not let a concrete-looking call inside that row manufacture a
+            // native specialization; the concrete enclosing body is checked
+            // again and creates every instance it can actually execute.
+            const bool symbolic = current_procedure_is_template_ ||
+                (!current_instance_index_.has_value() &&
+                 has_symbolic_type_substitution(type_substitutions));
             SymbolId callee_symbol = *inferred_template;
             TypeId concrete_signature_id;
             if (symbolic) {
@@ -3403,9 +3524,10 @@ private:
             type_substitutions.push_back(
                 {semantic_.symbols.symbol(parameter.parameter).type, argument});
           }
-          if (!current_instance_index_.has_value() &&
-              (has_symbolic_type_substitution(type_substitutions) ||
-               has_symbolic_value_substitution(value_substitutions))) {
+          if (current_procedure_is_template_ ||
+              (!current_instance_index_.has_value() &&
+               (has_symbolic_type_substitution(type_substitutions) ||
+                has_symbolic_value_substitution(value_substitutions)))) {
             const TypeId symbolic_signature = substitute_type(
                 base_symbol.type,
                 type_substitutions,
@@ -3731,6 +3853,182 @@ private:
     return std::nullopt;
   }
 
+  // Evaluates a lexical `::` declaration exactly once and retains its value by
+  // SymbolId. Nested procedures may then use the binding because it represents
+  // compile-time state, never storage from an enclosing invocation.
+  [[nodiscard]] HirStatementId check_compile_time_declaration(
+      const SyntaxTree &tree,
+      NodeId declaration_id,
+      NodeId expression_id,
+      ScopeId scope,
+      const std::vector<SourceName> &names) {
+    const SyntaxNode &declaration = tree.node(declaration_id);
+    HirStatement statement;
+    statement.kind = HirStatementKind::CompileTimeDeclaration;
+    statement.range = declaration.range;
+    statement.syntax = {tree.file(), declaration_id};
+    if (names.size() != 1 || names.front().text == "_") {
+      diagnostics_.error(
+          declaration.range,
+          "compile-time declaration requires one non-discard binding name");
+      return hir_.add_statement(std::move(statement));
+    }
+
+    Symbol symbol;
+    symbol.name = names.front().text;
+    symbol.kind = SymbolKind::Constant;
+    symbol.visibility = Visibility::Private;
+    symbol.scope = scope;
+    symbol.syntax = {tree.file(), declaration_id};
+    symbol.name_range = names.front().range;
+    const SymbolId id =
+        semantic_.symbols.declare(std::move(symbol), diagnostics_);
+    if (!id.is_valid()) return hir_.add_statement(std::move(statement));
+    statement.bindings.push_back(id);
+
+    const ConstantTable visible_constants = active_constant_table();
+    const std::vector<ConstantTypeBinding> visible_types =
+        active_constant_types();
+    const std::optional<EvaluatedConstant> evaluated =
+        evaluate_typed_constant_expression(
+            sources_,
+            loaded_,
+            semantic_,
+            target_,
+            tree,
+            expression_id,
+            scope,
+            diagnostics_,
+            &visible_constants,
+            &visible_types);
+    if (!evaluated.has_value()) {
+      semantic_.symbols.symbol_mut(id).type =
+          semantic_.types.builtins().invalid;
+      return hir_.add_statement(std::move(statement));
+    }
+    TypeId type = evaluated->type;
+    if (!type.is_valid()) {
+      switch (evaluated->value.kind) {
+      case ConstantKind::Bool:
+        type = semantic_.types.builtins().bool_type;
+        break;
+      case ConstantKind::Integer: {
+        const SyntaxNode &expression = tree.node(expression_id);
+        const bool rune = expression.kind == NodeKind::LiteralExpression &&
+            expression.token_begin < expression.token_end &&
+            tree.token(expression.token_begin).kind == TokenKind::RuneLiteral;
+        type = rune
+            ? semantic_.types.builtins().rune_type
+            : semantic_.types.builtins().untyped_integer;
+        break;
+      }
+      case ConstantKind::Float:
+        type = semantic_.types.builtins().untyped_float;
+        break;
+      case ConstantKind::String:
+        type = semantic_.types.builtins().string_type;
+        break;
+      default:
+        break;
+      }
+    }
+    semantic_.symbols.symbol_mut(id).type = type;
+    // The final obligation pass receives this same table. Appending here makes
+    // the lexical constant value available to synthesis/docs/judgment context
+    // as well as ordinary expression substitution.
+    constants_.bindings.push_back({id, evaluated->value});
+    return hir_.add_statement(std::move(statement));
+  }
+
+  // Checks a lexical procedure declaration. The procedure is declared before
+  // its body is visited so direct recursion works; later declarations retain
+  // ordinary source-order visibility, exactly like other local bindings.
+  [[nodiscard]] HirStatementId check_nested_procedure_declaration(
+      const SyntaxTree &tree,
+      NodeId declaration_id,
+      NodeId procedure_id,
+      ScopeId scope,
+      const std::vector<SourceName> &names) {
+    const SyntaxNode &declaration = tree.node(declaration_id);
+    HirStatement statement;
+    statement.kind = HirStatementKind::NestedProcedure;
+    statement.range = declaration.range;
+    statement.syntax = {tree.file(), declaration_id};
+
+    if (names.size() != 1 || names.front().text == "_") {
+      diagnostics_.error(
+          declaration.range,
+          "nested procedure declaration requires one non-discard binding name");
+      return hir_.add_statement(std::move(statement));
+    }
+
+    const SourceName &name = names.front();
+    Symbol symbol;
+    symbol.name = name.text;
+    symbol.linkage_name = nested_linkage_name(tree, name.text, name.range);
+    symbol.kind = SymbolKind::Procedure;
+    symbol.visibility = Visibility::Private;
+    symbol.scope = scope;
+    symbol.syntax = {tree.file(), declaration_id};
+    symbol.name_range = name.range;
+    for (NodeId child : declaration.children) {
+      if (tree.node(child).kind == NodeKind::ParametricParameterList) {
+        symbol.flags.parametric = true;
+      }
+    }
+    const bool parametric = symbol.flags.parametric;
+    const SymbolId id =
+        semantic_.symbols.declare(std::move(symbol), diagnostics_);
+    if (!id.is_valid()) return hir_.add_statement(std::move(statement));
+    statement.bindings.push_back(id);
+
+    // A procedure declared inside a statement-level denial is governed by that
+    // denial even though its body is represented by a separate HIR procedure.
+    // Copying syntax references preserves the same later selector-resolution
+    // path used by package declaration denials.
+    for (SyntaxReference denial : active_statement_denials_) {
+      semantic_.declaration_denials.push_back({id, denial});
+    }
+
+    TypeId signature = resolve_local_procedure_signature(
+        sources_,
+        loaded_,
+        semantic_,
+        selections_,
+        tree,
+        declaration_id,
+        procedure_id,
+        scope,
+        id,
+        diagnostics_);
+    signature = substitute_active(signature, declaration.range);
+    semantic_.symbols.symbol_mut(id).type = signature;
+
+    // Signature resolution creates symbols before the enclosing concrete
+    // specialization is known to TypeResolver. Apply that specialization to
+    // the runtime-bearing parameter rows and compile-time value parameter
+    // types now. Type-parameter identities themselves must remain symbolic.
+    for (const OwnedSemanticScope &owned : semantic_.owned_scopes) {
+      if (owned.owner != id) continue;
+      const Scope scope_record = semantic_.symbols.scope(owned.scope);
+      for (SymbolId child : scope_record.symbols) {
+        Symbol &owned_symbol = semantic_.symbols.symbol_mut(child);
+        if (owned_symbol.kind == SymbolKind::Parameter ||
+            owned_symbol.kind == SymbolKind::ValueParameter) {
+          owned_symbol.type = substitute_active(
+              owned_symbol.type, owned_symbol.name_range);
+        }
+      }
+    }
+
+    // A body nested in a symbolic outer template is itself non-executable even
+    // when it has no parameters of its own. The concrete outer body is checked
+    // again and creates the executable lexical procedure for that instance.
+    (void)check_procedure(
+        id, current_procedure_is_template_ || parametric);
+    return hir_.add_statement(std::move(statement));
+  }
+
   // Checks one local declaration and appends bindings to the current block scope.
   [[nodiscard]] HirStatementId check_local_declaration(
       const SyntaxTree &tree, NodeId statement_id, ScopeId scope) {
@@ -3760,6 +4058,30 @@ private:
       if (name_list.kind == NodeKind::NameList) {
         names = names_in_span(tree, name_list.token_begin, name_list.token_end);
       }
+    }
+
+    for (std::size_t index = 1; index < declaration.children.size(); ++index) {
+      const NodeId child = declaration.children[index];
+      if (tree.node(child).kind == NodeKind::Procedure) {
+        return check_nested_procedure_declaration(
+            tree, declaration_id, child, scope, names);
+      }
+    }
+
+    const NodeId payload = declaration.children.back();
+    bool compile_time_declaration = false;
+    for (std::uint32_t index = declaration.token_begin;
+         index < tree.node(payload).token_begin;
+         ++index) {
+      if (tree.token(index).kind == TokenKind::ColonColon) {
+        compile_time_declaration = true;
+        break;
+      }
+    }
+    if (compile_time_declaration &&
+        !node_is_type_syntax(tree.node(payload).kind)) {
+      return check_compile_time_declaration(
+          tree, declaration_id, payload, scope, names);
     }
 
     TypeId declared_type;
@@ -4145,8 +4467,10 @@ private:
            current_procedure_,
            {}});
       if (!node.children.empty()) {
+        active_statement_denials_.push_back({tree.file(), statement_id});
         statement.blocks.push_back(
             check_block(tree, node.children.back(), scope, result_type, depth));
+        active_statement_denials_.pop_back();
       }
       break;
 
@@ -4363,6 +4687,18 @@ private:
     return false;
   }
 
+  // Concrete parametric instances retain their source declaration for denial
+  // contracts and source identity. Nested instances use the same table, so one
+  // shallow lookup reaches the lexical declaration that owns the syntax.
+  [[nodiscard]] SymbolId procedure_declaration_source(
+      SymbolId procedure) const {
+    for (const ParametricInstanceRecord &instance :
+         semantic_.parametric_instances) {
+      if (instance.instance == procedure) return instance.source;
+    }
+    return procedure;
+  }
+
   // Checks one source procedure definition. Signature members contain parameters
   // followed by the result, and the prebuilt Procedure scope contains parameters.
   [[nodiscard]] bool check_procedure(
@@ -4391,7 +4727,28 @@ private:
         ? semantic_.types.builtins().void_type
         : signature.members.back();
     const std::size_t initial_errors = diagnostics_.error_count();
+
+    // Recursive checking of a nested procedure temporarily changes the active
+    // procedure and template state. Preserve the enclosing values so checking
+    // resumes in the outer body with the correct capture and instantiation
+    // rules. Declaration denials are also made lexical here, allowing deeper
+    // nested procedures to inherit them when a deferred instance is checked.
+    const SymbolId saved_procedure = current_procedure_;
+    const bool saved_template = current_procedure_is_template_;
+    const std::vector<SyntaxReference> saved_denials =
+        active_statement_denials_;
+    const SymbolId declaration_source = procedure_declaration_source(id);
+    for (const DeclarationDenial &denial : semantic_.declaration_denials) {
+      if (denial.declaration != declaration_source) continue;
+      if (std::find(
+              active_statement_denials_.begin(),
+              active_statement_denials_.end(),
+              denial.denial) == active_statement_denials_.end()) {
+        active_statement_denials_.push_back(denial.denial);
+      }
+    }
     current_procedure_ = id;
+    current_procedure_is_template_ = parametric_template;
     const HirBlockId checked_body = check_block(
         *tree, *body, *parameter_scope, result_type, {});
     if (result_type != semantic_.types.builtins().void_type &&
@@ -4404,7 +4761,9 @@ private:
          checked_body,
          diagnostics_.error_count() == initial_errors,
          parametric_template});
-    current_procedure_ = {};
+    current_procedure_ = saved_procedure;
+    current_procedure_is_template_ = saved_template;
+    active_statement_denials_ = saved_denials;
     return true;
   }
 
@@ -4412,12 +4771,14 @@ private:
   const LoadedPackage &loaded_;
   const ConditionalSelections &selections_;
   SemanticPackage &semantic_;
-  const ConstantTable &constants_;
+  ConstantTable &constants_;
   const TargetFacts &target_;
   DiagnosticSink &diagnostics_;
   const std::vector<ProcedureInstantiationSeed> &seeds_;
   HirProgram hir_;
   SymbolId current_procedure_;
+  bool current_procedure_is_template_ = false;
+  std::vector<SyntaxReference> active_statement_denials_;
   std::vector<ProcedureInstance> instances_;
   std::optional<std::size_t> current_instance_index_;
 };
@@ -4429,7 +4790,7 @@ BodyCheckResult check_package_bodies(
     const LoadedPackage &loaded,
     const ConditionalSelections &selections,
     SemanticPackage &package,
-    const ConstantTable &constants,
+    ConstantTable &constants,
     const TargetFacts &target,
     DiagnosticSink &diagnostics,
     const std::vector<ProcedureInstantiationSeed> &seeds) {

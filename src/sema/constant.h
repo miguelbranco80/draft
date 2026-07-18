@@ -73,8 +73,10 @@ struct ConstantBinding {
   ConstantValue value;
 };
 
-// ConstantTable contains only successfully evaluated package constants in
-// stable SymbolId order. A missing entry means not requested, not yet ready, or
+// ConstantTable contains successfully evaluated constants in stable SymbolId
+// order. Package constants are installed by semantic fixed-point evaluation;
+// body checking later appends lexical `::` constants in deterministic procedure
+// and statement order. A missing entry means not requested, not yet ready, or
 // invalid; diagnostics and CompileTimeRoundResult distinguish those cases.
 struct ConstantTable {
   std::vector<ConstantBinding> bindings;

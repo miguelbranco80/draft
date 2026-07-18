@@ -100,6 +100,14 @@ struct SymbolFlags {
 
 struct Symbol {
   std::string name;
+  // Most symbols use their source name for both lookup and native linkage.
+  // Nested procedures are different: the same short name may appear in two
+  // unrelated lexical blocks, while both bodies still become package-level
+  // machine functions. linkage_name gives those procedures a deterministic,
+  // compiler-owned identity without changing the spelling used by lookup,
+  // diagnostics, documentation, or package interfaces. An empty value means
+  // "use name", which keeps ordinary declarations direct and unsurprising.
+  std::string linkage_name;
   SymbolKind kind = SymbolKind::UnresolvedDeclaration;
   Visibility visibility = Visibility::Private;
   SymbolFlags flags;

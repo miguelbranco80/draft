@@ -1,0 +1,78 @@
+package nested_procedures
+
+// Nested procedures are ordinary static functions with lexical visibility.
+// Direct recursion therefore needs no closure environment or special call ABI.
+factorial :: proc(value: u64) -> u64 {
+    One :: 1
+    recurse :: proc(current: u64) -> u64 {
+        if current <= One {
+            return One
+        }
+        return current * recurse(current - 1)
+    }
+    return recurse(value)
+}
+
+// A nested procedure may use enclosing compile-time parameters. Each concrete
+// outer specialization supplies those values while the nested function still
+// receives every runtime value explicitly.
+last_of[T: type, N: usize] :: proc(values: [N]T) -> T {
+    last :: proc(input: [N]T) -> T {
+        return input[N - 1]
+    }
+    identity[U: type] :: proc(input: U) -> U {
+        return input
+    }
+    return identity[T](last(values))
+}
+
+// Because no environment is captured, a nested procedure pointer can outlive
+// the invocation that exposed it and has the normal procedure-pointer shape.
+make_increment :: proc() -> proc(value: i64) -> i64 {
+    increment :: proc(value: i64) -> i64 {
+        return value + 1
+    }
+    Increment :: increment
+    return Increment
+}
+
+shared: i64 = 7
+
+read_shared_and_context :: proc() -> i64 {
+    read :: proc() -> i64 {
+        // Package storage and the hidden context remain available because they
+        // do not belong to an enclosing invocation's runtime frame.
+        return shared + cast[i64](context.user_index)
+    }
+    context.user_index = 8
+    return read()
+}
+
+left :: proc() -> i64 {
+    Base :: 19
+    Answer :: Base + 1
+    helper :: proc() -> i64 {
+        return Answer
+    }
+    return helper()
+}
+
+right :: proc() -> i64 {
+    // The backend must not collide this function with left.helper.
+    helper :: proc() -> i64 {
+        return 22
+    }
+    return helper()
+}
+
+main :: proc() {
+    values := [3]i64{4, 5, 6}
+    other := [2]u32{8, 9}
+    callback := make_increment()
+    assert(factorial(5) == 120, "nested recursion failed")
+    assert(last_of(values) == 6, "enclosing compile-time parameters failed")
+    assert(last_of(other) == 9, "second outer specialization failed")
+    assert(callback(41) == 42, "escaping nested procedure pointer failed")
+    assert(left() + right() == 42, "nested linkage names collided")
+    assert(read_shared_and_context() == 15, "context propagation failed")
+}

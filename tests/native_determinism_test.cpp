@@ -185,8 +185,12 @@ void test_repeated_native_link_is_byte_identical(TestState &state) {
 
   draft::SourceManager sources;
   draft::DiagnosticSink compile_diagnostics;
+  // The executable fixture contains repeated short nested names and two outer
+  // generic specializations. Rebuilding it proves that lexical linkage names
+  // depend only on source/package identity and canonical type arguments, never
+  // process addresses or filesystem paths.
   const draft::CompileWorkspaceResult executable = compile_fixture(
-      sources, "hello", true, compile_diagnostics);
+      sources, "nested-procedures", true, compile_diagnostics);
   const draft::CompileWorkspaceResult library = compile_fixture(
       sources, "c-library", false, compile_diagnostics);
   if (compile_diagnostics.has_errors()) {

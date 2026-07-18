@@ -104,6 +104,8 @@ void test_native_examples(TestState &state) {
       ConformanceCase{"core-atomic", "examples", "examples/core-atomic"},
       ConformanceCase{
           "core-atomic-thread", "examples", "examples/core-atomic-thread"},
+      ConformanceCase{
+          "nested-procedures", "examples", "examples/nested-procedures"},
       ConformanceCase{"assembly", "examples", "examples/assembly"},
       ConformanceCase{
           "external-assembly", "examples", "examples/external-assembly"},

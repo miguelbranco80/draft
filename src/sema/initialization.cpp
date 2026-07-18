@@ -280,6 +280,12 @@ private:
                 : Initialization::Initialized});
       }
       break;
+    case HirStatementKind::CompileTimeDeclaration:
+      // Compile-time bindings have neither storage nor initialization state.
+      break;
+    case HirStatementKind::NestedProcedure:
+      // Static procedure identity is available without runtime storage.
+      break;
     case HirStatementKind::Assignment:
       check_assignment(statement, state);
       break;

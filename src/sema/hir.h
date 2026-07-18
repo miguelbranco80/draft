@@ -150,6 +150,14 @@ enum class HirStatementKind {
   Invalid,
   Block,
   LocalDeclaration,
+  // A lexical `::` value is evaluated by the compiler and owns no runtime
+  // storage. The binding remains in the semantic scope for later statements
+  // and nested procedure bodies.
+  CompileTimeDeclaration,
+  // A nested procedure declaration changes lexical visibility but performs no
+  // runtime operation. Its separately checked HirProcedure row is lowered as
+  // an ordinary static function.
+  NestedProcedure,
   Expression,
   Assignment,
   Return,

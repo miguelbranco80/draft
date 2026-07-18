@@ -3378,8 +3378,15 @@ private:
       return pending();
     }
     const NodeId expression = declaration.children.back();
+    // Package declarations need their file-local import scope. A lexical
+    // constant instead evaluates where it was declared so earlier constants
+    // and enclosing compile-time bindings remain visible.
+    const ScopeKind owner_kind = semantic_.symbols.scope(initial.scope).kind;
+    const ScopeId evaluation_scope = owner_kind == ScopeKind::Block
+        ? initial.scope
+        : file_scope(tree->file());
     const EvalResult result = evaluate_expression(
-        *tree, expression, file_scope(tree->file()), required);
+        *tree, expression, evaluation_scope, required);
     if (result.status == EvalStatus::Ready) {
       states_[id.value] = BindingState::Ready;
       values_[id.value] = result.value;

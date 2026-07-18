@@ -96,6 +96,7 @@ pub work[T: integer, N: usize] :: proc(
             // This shadows the denied parameter. Denials name semantic
             // entities, so this distinct inner binding remains usable.
             blocked := false
+            Answer :: 42
             // This local comment is deliberately not agent semantic context.
             return ... "produce the answer" file "PROMPT.txt"
         }
@@ -315,6 +316,7 @@ void test_agent_records(TestState &state) {
     bool saw_shadowed_blocked = false;
     bool saw_denied_secret = false;
     bool saw_package_version = false;
+    bool saw_lexical_constant = false;
     for (const draft::AgentVisibleBinding &binding :
          synthesis_obligation.visible_bindings) {
       if (binding.name == "values") {
@@ -356,12 +358,24 @@ void test_agent_records(TestState &state) {
                 std::string::npos);
         saw_package_version = true;
       }
+      if (binding.name == "Answer") {
+        EXPECT(state, binding.has_constant);
+        EXPECT(state, binding.has_source_definition);
+        EXPECT(state,
+            binding.constant_definition.find("CONSTANT_INTEGER 2\n42\n") !=
+                std::string::npos);
+        EXPECT(state,
+            binding.source_definition.find("Answer :: 42") !=
+                std::string::npos);
+        saw_lexical_constant = true;
+      }
     }
     EXPECT(state, saw_values);
     EXPECT(state, saw_callback);
     EXPECT(state, saw_shadowed_blocked);
     EXPECT(state, !saw_denied_secret);
     EXPECT(state, saw_package_version);
+    EXPECT(state, saw_lexical_constant);
     EXPECT(state,
         synthesis_obligation.target.identity == "draft-aarch64-macos-v5");
     EXPECT(state, synthesis_obligation.target.arch == "aarch64");

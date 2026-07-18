@@ -1787,6 +1787,13 @@ private:
     case HirStatementKind::LocalDeclaration:
       lower_local_declaration(statement);
       break;
+    case HirStatementKind::CompileTimeDeclaration:
+      // The value was substituted into HIR uses during body checking.
+      break;
+    case HirStatementKind::NestedProcedure:
+      // Its HirProcedure row is lowered independently as a static function.
+      // The lexical declaration itself has no runtime initialization.
+      break;
     case HirStatementKind::Expression:
       for (HirExpressionId expression : statement.expressions) {
         (void)lower_expression(expression);

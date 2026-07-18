@@ -370,6 +370,35 @@ deny assert {
   EXPECT(state, rendered.find("unknown call") == std::string::npos);
 }
 
+void test_nested_procedure_inherits_statement_denial(TestState &state) {
+  DenialSource source(R"draft(package denials
+
+outer :: proc() {
+    deny assert {
+        nested :: proc() {
+            assert(true)
+        }
+        nested()
+    }
+}
+)draft");
+  EXPECT(state, source.semantics.ok);
+  EXPECT(state, source.bodies.ok);
+  EXPECT(state, !source.denials_ok);
+  const std::string rendered =
+      draft::render_diagnostics(source.sources, source.diagnostics);
+  EXPECT(state, rendered.find("denied assert") != std::string::npos);
+  EXPECT(state, rendered.find("denial is established here") != std::string::npos);
+  bool exact_source_range = false;
+  for (const draft::Diagnostic &diagnostic : source.diagnostics.diagnostics()) {
+    if (diagnostic.message.find("denied assert") == std::string::npos) continue;
+    exact_source_range = exact_source_range ||
+        source.sources.text(diagnostic.range) == "assert(true)" ||
+        source.sources.text(diagnostic.range) == "nested()";
+  }
+  EXPECT(state, exact_source_range);
+}
+
 } // namespace
 
 int main() {
@@ -384,6 +413,7 @@ int main() {
   test_returned_procedure_substitution(state);
   test_pointer_field_write_substitution(state);
   test_higher_order_substitution(state);
+  test_nested_procedure_inherits_statement_denial(state);
   if (state.failures != 0) {
     std::cerr << state.failures << " denial expectation(s) failed\n";
     return EXIT_FAILURE;
