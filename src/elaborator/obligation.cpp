@@ -3,12 +3,14 @@
 #include "elaborator/obligation.h"
 
 #include "base/sha256.h"
+#include "sema/denial.h"
 #include "sema/interface.h"
 
 #include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <iterator>
 #include <limits>
 #include <optional>
 #include <span>
@@ -62,6 +64,48 @@ void hash_field(Sha256 &hash, std::string_view value) {
 [[nodiscard]] bool already_seen(
     const std::vector<std::string> &names, std::string_view name) {
   return std::find(names.begin(), names.end(), name) != names.end();
+}
+
+[[nodiscard]] bool denies_symbol(
+    std::span<const ResolvedDenialSelector> denials, SymbolId symbol) {
+  return std::any_of(
+      denials.begin(), denials.end(),
+      [symbol](const ResolvedDenialSelector &denial) {
+        return denial.kind == ResolvedDenialKind::Symbol &&
+            denial.symbol == symbol;
+      });
+}
+
+[[nodiscard]] bool denies_package(
+    std::span<const ResolvedDenialSelector> denials,
+    const ImportBinding &binding) {
+  return std::any_of(
+      denials.begin(), denials.end(),
+      [&binding](const ResolvedDenialSelector &denial) {
+        return denial.kind == ResolvedDenialKind::ImportedPackage &&
+            denial.root_identity == binding.root_identity &&
+            denial.root_relative_path == binding.root_relative_path;
+      });
+}
+
+[[nodiscard]] bool denies_all_context(
+    std::span<const ResolvedDenialSelector> denials) {
+  return std::any_of(
+      denials.begin(), denials.end(),
+      [](const ResolvedDenialSelector &denial) {
+        return denial.kind == ResolvedDenialKind::Context;
+      });
+}
+
+[[nodiscard]] bool denies_context_field(
+    std::span<const ResolvedDenialSelector> denials,
+    std::string_view name) {
+  return denies_all_context(denials) || std::any_of(
+      denials.begin(), denials.end(),
+      [name](const ResolvedDenialSelector &denial) {
+        return denial.kind == ResolvedDenialKind::ContextField &&
+            denial.field == name;
+      });
 }
 
 // Produces one source-oriented type spelling from the same canonical TypeStore
@@ -414,12 +458,14 @@ void append_imported_effect_context(
     const PackageIdentity &identity,
     const SemanticPackage &package,
     const ImportBinding &binding,
+    std::span<const ResolvedDenialSelector> denials,
     std::vector<AgentTypeContext> &type_contexts,
     DiagnosticSink &diagnostics) {
   std::string output;
   std::size_t declaration_count = 0;
   for (const ImportedSymbol &imported : package.imported_symbols) {
     if (imported.import_symbol == binding.symbol &&
+        !denies_symbol(denials, imported.proxy) &&
         !is_concrete_imported_instance(package, imported.proxy)) {
       ++declaration_count;
     }
@@ -429,6 +475,7 @@ void append_imported_effect_context(
       static_cast<std::uint64_t>(declaration_count), output);
   for (const ImportedSymbol &imported : package.imported_symbols) {
     if (imported.import_symbol != binding.symbol ||
+        denies_symbol(denials, imported.proxy) ||
         is_concrete_imported_instance(package, imported.proxy)) {
       continue;
     }
@@ -573,6 +620,7 @@ imported_package_context(
     const LoadedPackage &loaded,
     const SemanticPackage &package,
     const AgentRecord &record,
+    std::span<const ResolvedDenialSelector> denials,
     std::vector<AgentTypeContext> &type_contexts,
     DiagnosticSink &diagnostics) {
   std::vector<AgentImportedPackageContext> result;
@@ -600,6 +648,7 @@ imported_package_context(
             symbol.name_range, "visible import has no semantic binding");
         continue;
       }
+      if (denies_package(denials, *binding)) continue;
       AgentImportedPackageContext context;
       context.alias = symbol.name;
       context.root_identity = binding->root_identity;
@@ -608,6 +657,7 @@ imported_package_context(
           identity,
           package,
           *binding,
+          denials,
           type_contexts,
           diagnostics);
       context.definition_digest = sha256(context.definition);
@@ -740,16 +790,42 @@ imported_package_context(
       kind == NodeKind::DenyExpression;
 }
 
+[[nodiscard]] bool is_denial_site(SemanticSiteKind kind) {
+  return kind == SemanticSiteKind::DenialDeclaration ||
+      kind == SemanticSiteKind::DenialMember ||
+      kind == SemanticSiteKind::DenialStatement ||
+      kind == SemanticSiteKind::DenialExpression;
+}
+
+// Semantic analysis records the scope outside each governed deny region. This
+// exact scope matters when the region later declares a same-named local: the
+// selector keeps naming the outer entity and context pruning must do the same.
+[[nodiscard]] ScopeId denial_scope(
+    const SemanticPackage &package,
+    SyntaxReference denial,
+    ScopeId fallback) {
+  for (const SemanticSite &site : package.sites) {
+    if (is_denial_site(site.kind) && site.syntax == denial) return site.scope;
+  }
+  return fallback;
+}
+
+struct ActiveDenialContext {
+  std::vector<AgentActiveDenial> descriptions;
+  std::vector<ResolvedDenialSelector> resolved;
+};
+
 // Finds lexical denial ancestors without relying on NodeId allocation order.
 // SyntaxTree intentionally has no parent links, but its half-open ranges make
 // containment unambiguous. Sorting by start and then widest end produces a
 // stable outer-to-inner order even though parser nodes are appended bottom-up.
-[[nodiscard]] std::vector<AgentActiveDenial> active_denial_context(
+[[nodiscard]] ActiveDenialContext active_denial_context(
     const SourceManager &sources,
     const LoadedPackage &loaded,
+    const SemanticPackage &package,
     const AgentRecord &record,
     DiagnosticSink &diagnostics) {
-  std::vector<AgentActiveDenial> result;
+  ActiveDenialContext result;
   const SyntaxTree *tree = find_tree(loaded, record.syntax.file);
   if (tree == nullptr || !record.syntax.node.is_valid()) {
     diagnostics.error(
@@ -794,8 +870,19 @@ imported_package_context(
       active.selector = canonical_token_source(
           sources, *tree, tree->node(denial.children[index]));
       active.selector_digest = sha256(active.selector);
-      result.push_back(std::move(active));
+      result.descriptions.push_back(std::move(active));
     }
+    std::vector<ResolvedDenialSelector> resolved = resolve_denial_selectors(
+        sources,
+        loaded,
+        package,
+        {record.syntax.file, ancestor},
+        denial_scope(package, {record.syntax.file, ancestor}, record.scope),
+        diagnostics);
+    result.resolved.insert(
+        result.resolved.end(),
+        std::make_move_iterator(resolved.begin()),
+        std::make_move_iterator(resolved.end()));
   }
   return result;
 }
@@ -960,6 +1047,7 @@ imported_package_context(
     const LoadedPackage &loaded,
     const SemanticPackage &package,
     const AgentRecord &record,
+    std::span<const ResolvedDenialSelector> denials,
     std::vector<AgentTypeContext> &type_contexts,
     DiagnosticSink &diagnostics) {
   std::vector<AgentVisibleBinding> result;
@@ -980,6 +1068,7 @@ imported_package_context(
         continue;
       }
       names.push_back(symbol.name);
+      if (denies_symbol(denials, symbol_id)) continue;
       if (!symbol.type.is_valid() ||
           package.types.type(symbol.type).kind == TypeKind::Invalid ||
           symbol.kind == SymbolKind::Import) {
@@ -1003,6 +1092,50 @@ imported_package_context(
         if (left.name != right.name) return left.name < right.name;
         return static_cast<std::uint32_t>(left.kind) <
             static_cast<std::uint32_t>(right.kind);
+      });
+  return result;
+}
+
+// Context fields are part of the usable symbol set, not merely a type graph.
+// Find the owner by its exact TypeId so imported core/runtime.Context and the
+// compiler's private ABI-identical Context follow the same path.
+[[nodiscard]] std::vector<AgentContextField> context_fields(
+    const PackageIdentity &identity,
+    const SemanticPackage &package,
+    std::span<const ResolvedDenialSelector> denials,
+    std::vector<AgentTypeContext> &type_contexts,
+    DiagnosticSink &diagnostics) {
+  std::vector<AgentContextField> result;
+  if (!package.runtime_context_type.is_valid() ||
+      denies_all_context(denials)) {
+    return result;
+  }
+  for (const AggregateMember &member : package.aggregate_members) {
+    const Symbol &owner = package.symbols.symbol(member.owner);
+    if (owner.type != package.runtime_context_type) continue;
+    const Symbol &field = package.symbols.symbol(member.member);
+    if (denies_context_field(denials, field.name)) continue;
+    if (!field.type.is_valid() ||
+        package.types.type(field.type).kind == TypeKind::Invalid) {
+      diagnostics.error(
+          field.name_range, "runtime Context field has no complete type");
+      continue;
+    }
+    const InterfaceTypeGraph type = export_interface_type(
+        identity, package, field.type, diagnostics);
+    add_type_context(type, type_contexts);
+    result.push_back({
+        field.name,
+        member.offset,
+        hash_interface_type_graph(type),
+        type_text(package, field.type),
+    });
+  }
+  std::sort(
+      result.begin(), result.end(),
+      [](const AgentContextField &left, const AgentContextField &right) {
+        if (left.offset != right.offset) return left.offset < right.offset;
+        return left.name < right.name;
       });
   return result;
 }
@@ -1040,7 +1173,7 @@ imported_package_context(
     const AgentObligation &obligation,
     const TargetProfile &target) {
   Sha256 hash;
-  hash_field(hash, "draft-agent-obligation-v8");
+  hash_field(hash, "draft-agent-obligation-v9");
   hash_field(hash, obligation.site_identity);
   hash.update(obligation.record_digest.bytes);
   hash.update(obligation.expected_type_digest.bytes);
@@ -1088,6 +1221,13 @@ imported_package_context(
   for (const AgentActiveDenial &denial : obligation.active_denials) {
     hash_field(hash, denial.selector);
     hash.update(denial.selector_digest.bytes);
+  }
+  hash_u64(hash, static_cast<std::uint64_t>(obligation.context_fields.size()));
+  for (const AgentContextField &field : obligation.context_fields) {
+    hash_field(hash, field.name);
+    hash_u64(hash, field.offset);
+    hash.update(field.type_digest.bytes);
+    hash_field(hash, field.type_text);
   }
   hash_u64(
       hash,
@@ -1247,11 +1387,21 @@ AgentObligationResult build_agent_obligations(
       obligation.expected_type_text = type_text(package, record.expected_type);
       add_type_context(expected, obligation.type_contexts);
     }
+    ActiveDenialContext denials = active_denial_context(
+        sources, loaded, package, record, diagnostics);
+    obligation.active_denials = std::move(denials.descriptions);
+    obligation.context_fields = context_fields(
+        identity,
+        package,
+        denials.resolved,
+        obligation.type_contexts,
+        diagnostics);
     obligation.visible_bindings = visible_bindings(
         identity,
         loaded,
         package,
         record,
+        denials.resolved,
         obligation.type_contexts,
         diagnostics);
     obligation.imported_packages = imported_package_context(
@@ -1259,13 +1409,12 @@ AgentObligationResult build_agent_obligations(
         loaded,
         package,
         record,
+        denials.resolved,
         obligation.type_contexts,
         diagnostics);
     obligation.target = target_context(target);
     obligation.enclosing_declaration = enclosing_declaration_context(
         sources, loaded, package, record, diagnostics);
-    obligation.active_denials = active_denial_context(
-        sources, loaded, record, diagnostics);
     obligation.parametric_parameters = parametric_context(
         identity, package, record, diagnostics);
     obligation.guiding_judgments = guiding_judgment_context(

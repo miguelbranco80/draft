@@ -129,6 +129,31 @@ deny asm {
   EXPECT(state, !source.diagnostics.has_errors());
 }
 
+void test_statement_selector_ignores_later_shadow(TestState &state) {
+  DenialSource source(R"draft(package denials
+
+forbidden :: proc() {
+    assert(true)
+}
+
+bad :: proc() {
+    deny forbidden {
+        // This call resolves before the later local declaration and therefore
+        // reaches the outer procedure selected by the denial.
+        forbidden()
+        forbidden := 0
+    }
+}
+)draft");
+  EXPECT(state, source.semantics.ok);
+  EXPECT(state, source.bodies.ok);
+  EXPECT(state, !source.denials_ok);
+  EXPECT(state, source.diagnostics.error_count() == 1);
+  const std::string rendered =
+      draft::render_diagnostics(source.sources, source.diagnostics);
+  EXPECT(state, rendered.find("denied declaration") != std::string::npos);
+}
+
 void test_flow_slot_substitution(TestState &state) {
   DenialSource source(R"draft(package denials
 
@@ -351,6 +376,7 @@ int main() {
   TestState state;
   test_denial_violations(state);
   test_unrelated_denial(state);
+  test_statement_selector_ignores_later_shadow(state);
   test_flow_slot_substitution(state);
   test_audited_foreign_effect(state);
   test_typed_field_flow_substitution(state);

@@ -3,6 +3,7 @@
 #include "sema/semantic.h"
 
 #include "sema/global_initializer.h"
+#include "sema/runtime_context.h"
 #include "sema/target_validation.h"
 #include "sema/type_resolver.h"
 
@@ -61,6 +62,10 @@ SemanticAnalysisResult analyze_package_semantics(
   bind_package_interfaces(result.package, imports, diagnostics);
   resolve_package_types(
       sources, loaded, result.package, result.selections, diagnostics);
+  // Declaration/member synthesis runs before bodies. Install the built-in
+  // Context now so those early requests receive the same typed field set as
+  // later statement/expression synthesis.
+  ensure_runtime_context_type(result.package, diagnostics);
   CompileTimeRoundResult final_round = evaluate_compile_time_round(
       sources,
       loaded,

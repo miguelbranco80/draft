@@ -45,7 +45,7 @@ struct SynthesisRequestFile {
 // attachments contain source-authored bounded context. Later context-closure
 // rows can extend this versioned struct without exposing semantic arena IDs.
 struct SynthesisRequest {
-  std::string format = "draft-synthesis-request-v9";
+  std::string format = "draft-synthesis-request-v10";
   AgentObligation obligation;
   std::string prompt;
   std::vector<SynthesisRequestFile> attachments;

@@ -287,6 +287,8 @@ enum class SemanticSiteKind {
   ConditionalStatement,
   DenialDeclaration,
   DenialMember,
+  DenialStatement,
+  DenialExpression,
 };
 
 // A semantic site is a zero-runtime source construct anchored in a lexical

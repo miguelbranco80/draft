@@ -171,9 +171,14 @@ An omitted symbol is unknown, and compiler-, package-assembly-, and target-owned
 providers cannot be overridden by an external audit.
 
 Provider requests never substitute hashes for information the synthesizer must
-understand. `draft-synthesis-request-v9` carries canonical Draft spellings for
+understand. `draft-synthesis-request-v10` carries canonical Draft spellings for
 the expected type and every visible binding, together with explicit target,
-SIMD, and parsed-assembly facts. Package and enclosing-declaration documentation
+SIMD, and parsed-assembly facts. It also carries the checked runtime `Context`
+fields with exact offsets and types. Active denials resolve through the ordinary
+semantic symbol table: denied bindings and packages are removed, a denied
+import member is redacted from its compact package interface, and `context` or
+`context.field` removes the matching usable field rows without erasing the
+diagnostic policy selector. Package and enclosing-declaration documentation
 retain their anchor, text, and exact isolated attachment bytes. The same rows
 remain content-hashed, so their human-readable representation is both useful to
 Codex and a stale-pin input.

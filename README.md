@@ -151,7 +151,7 @@ and policy. Failed attempts revoke prior passing evidence for only that key;
 locked builds can verify required active evidence without rerunning it.
 
 On Apple hosts, the test suite also compiles, links, launches, and requires a
-zero exit from 15 handwritten programs spanning the runtime/core facilities,
+zero exit from 16 handwritten programs spanning the runtime/core facilities,
 multi-package generics, parsed and package assembly, C interop, atomics, and
 pthreads. A separate end-to-end gate builds a Draft dylib and generated header,
 compiles a checked-in C11 client against them, and launches it. These complement

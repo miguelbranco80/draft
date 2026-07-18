@@ -63,6 +63,7 @@ add_library(
   src/sema/ieee_float.cpp
   src/sema/initialization.cpp
   src/sema/interface.cpp
+  src/sema/runtime_context.cpp
   src/sema/semantic.cpp
   src/sema/symbol.cpp
   src/sema/target_validation.cpp

@@ -86,11 +86,16 @@ pub work[T: integer, N: usize] :: proc(
     values: []u32,
     record: Record,
     callback: proc(value: ^i16, bytes: [4]u8) -> (bool, i64),
+    blocked: u64,
+    secret: i16,
 ) -> i64 {
     judge "The implementation preserves the invariant."
         folder "notes"
-    deny assert {
+    deny assert, blocked, secret {
         deny context.user_index {
+            // This shadows the denied parameter. Denials name semantic
+            // entities, so this distinct inner binding remains usable.
+            blocked := false
             // This local comment is deliberately not agent semantic context.
             return ... "produce the answer" file "PROMPT.txt"
         }
@@ -214,18 +219,38 @@ void test_agent_records(TestState &state) {
         draft::sha256(
             synthesis_obligation.enclosing_declaration.source) ==
             synthesis_obligation.enclosing_declaration.source_digest);
-    EXPECT(state, synthesis_obligation.active_denials.size() == 2);
-    if (synthesis_obligation.active_denials.size() == 2) {
+    EXPECT(state, synthesis_obligation.active_denials.size() == 4);
+    if (synthesis_obligation.active_denials.size() == 4) {
       EXPECT(state,
           synthesis_obligation.active_denials[0].selector == "assert");
       EXPECT(state,
-          synthesis_obligation.active_denials[1].selector ==
+          synthesis_obligation.active_denials[1].selector == "blocked");
+      EXPECT(state,
+          synthesis_obligation.active_denials[2].selector == "secret");
+      EXPECT(state,
+          synthesis_obligation.active_denials[3].selector ==
               "context.user_index");
       EXPECT(state,
           draft::sha256(
-              synthesis_obligation.active_denials[1].selector) ==
-              synthesis_obligation.active_denials[1].selector_digest);
+              synthesis_obligation.active_denials[3].selector) ==
+              synthesis_obligation.active_denials[3].selector_digest);
     }
+    EXPECT(state, synthesis_obligation.context_fields.size() == 7);
+    bool saw_allocator_context = false;
+    bool saw_denied_user_index_context = false;
+    for (const draft::AgentContextField &field :
+         synthesis_obligation.context_fields) {
+      if (field.name == "allocator") {
+        EXPECT(state, field.offset == 0);
+        EXPECT(state, !field.type_text.empty());
+        saw_allocator_context = true;
+      }
+      if (field.name == "user_index") {
+        saw_denied_user_index_context = true;
+      }
+    }
+    EXPECT(state, saw_allocator_context);
+    EXPECT(state, !saw_denied_user_index_context);
     EXPECT(state, synthesis_obligation.parametric_parameters.size() == 2);
     if (synthesis_obligation.parametric_parameters.size() == 2) {
       const draft::AgentParametricParameter &type_parameter =
@@ -272,6 +297,8 @@ void test_agent_records(TestState &state) {
     EXPECT(state, !synthesis_obligation.visible_bindings.empty());
     bool saw_values = false;
     bool saw_callback = false;
+    bool saw_shadowed_blocked = false;
+    bool saw_denied_secret = false;
     for (const draft::AgentVisibleBinding &binding :
          synthesis_obligation.visible_bindings) {
       if (binding.name == "values") {
@@ -283,9 +310,16 @@ void test_agent_records(TestState &state) {
             binding.type_text == "proc(^i16, [4]u8) -> (bool, i64)");
         saw_callback = true;
       }
+      if (binding.name == "blocked") {
+        EXPECT(state, binding.type_text == "bool");
+        saw_shadowed_blocked = true;
+      }
+      if (binding.name == "secret") saw_denied_secret = true;
     }
     EXPECT(state, saw_values);
     EXPECT(state, saw_callback);
+    EXPECT(state, saw_shadowed_blocked);
+    EXPECT(state, !saw_denied_secret);
     EXPECT(state,
         synthesis_obligation.target.identity == "draft-aarch64-macos-v5");
     EXPECT(state, synthesis_obligation.target.arch == "aarch64");
@@ -664,6 +698,139 @@ void test_visible_import_interface_is_context(TestState &state) {
   }
 }
 
+void test_denied_imports_are_removed_from_usable_context(TestState &state) {
+  TemporaryPackage temporary;
+  const std::filesystem::path workspace = temporary.path / "denied-workspace";
+  write_file(
+      workspace / "lib" / "package.draft",
+      "package lib\n"
+      "pub Answer :: 42\n"
+      "pub Record :: struct { count: u32, }\n");
+  write_file(
+      workspace / "app" / "package.draft",
+      "package app\n"
+      "import lib as lib\n"
+      "member_denial :: proc() {\n"
+      "    deny lib.Answer {\n"
+      "        value: lib.Record = ... \"member denial\"\n"
+      "    }\n"
+      "}\n"
+      "package_denial :: proc() {\n"
+      "    deny lib {\n"
+      "        value: lib.Record = ... \"package denial\"\n"
+      "    }\n"
+      "}\n");
+
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  draft::CompileWorkspaceOptions options;
+  options.target = draft::make_aarch64_macos_profile();
+  options.workspace.workspace_directory = workspace.string();
+  const draft::CompileWorkspaceResult compiled = draft::compile_workspace(
+      sources,
+      (workspace / "app").string(),
+      std::move(options),
+      diagnostics);
+  if (diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+  }
+  EXPECT(state, compiled.ok);
+  EXPECT(state, !diagnostics.has_errors());
+  EXPECT(state, compiled.graph.root_package.is_valid());
+  if (!compiled.graph.root_package.is_valid() ||
+      compiled.graph.root_package.value >= compiled.packages.size() ||
+      !compiled.packages[compiled.graph.root_package.value].has_value()) {
+    return;
+  }
+
+  const draft::AgentObligation *member = nullptr;
+  const draft::AgentObligation *whole_package = nullptr;
+  for (const draft::AgentObligation &obligation :
+       compiled.packages[compiled.graph.root_package.value]
+           ->obligations.obligations) {
+    if (obligation.kind !=
+        draft::AgentConstructKind::SynthesisExpression) {
+      continue;
+    }
+    if (obligation.anchor_name == "member_denial") member = &obligation;
+    if (obligation.anchor_name == "package_denial") {
+      whole_package = &obligation;
+    }
+  }
+  EXPECT(state, member != nullptr);
+  EXPECT(state, whole_package != nullptr);
+  if (member != nullptr) {
+    EXPECT(state, member->imported_packages.size() == 1);
+    if (member->imported_packages.size() == 1) {
+      const std::string &definition =
+          member->imported_packages.front().definition;
+      EXPECT(state,
+          definition.find("DECLARATION_NAME 6\nAnswer") ==
+              std::string::npos);
+      EXPECT(state,
+          definition.find("DECLARATION_NAME 6\nRecord") !=
+              std::string::npos);
+    }
+  }
+  if (whole_package != nullptr) {
+    EXPECT(state, whole_package->imported_packages.empty());
+  }
+}
+
+void test_early_synthesis_receives_permitted_context(TestState &state) {
+  TemporaryPackage temporary;
+  write_file(
+      temporary.path / "package.draft",
+      "package early_context\n"
+      "deny context.user_index {\n"
+      "    ... \"declare helpers\"\n"
+      "}\n");
+
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  const draft::TargetProfile target = draft::make_aarch64_macos_profile();
+  draft::PackageLoadOptions load_options;
+  load_options.file_tag = target.facts.file_tag;
+  const draft::PackageLoadResult loaded = draft::load_package(
+      sources, temporary.path.string(), load_options, diagnostics);
+  draft::SemanticAnalysisResult semantics = draft::analyze_package_semantics(
+      sources, loaded.package, target.facts, diagnostics);
+  const draft::AgentMetadataResult metadata = draft::collect_agent_metadata(
+      sources,
+      loaded.package,
+      semantics.package,
+      {},
+      diagnostics);
+  const draft::AgentObligationResult obligations =
+      draft::build_agent_obligations(
+          {"workspace", "early_context"},
+          sources,
+          loaded.package,
+          semantics.package,
+          metadata,
+          target,
+          diagnostics);
+  if (diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+  }
+  EXPECT(state, loaded.ok);
+  EXPECT(state, semantics.ok);
+  EXPECT(state, metadata.ok);
+  EXPECT(state, obligations.ok);
+  EXPECT(state, !diagnostics.has_errors());
+  EXPECT(state, obligations.obligations.size() == 1);
+  if (obligations.obligations.size() == 1) {
+    const draft::AgentObligation &obligation = obligations.obligations.front();
+    EXPECT(state,
+        obligation.kind ==
+            draft::AgentConstructKind::SynthesisDeclaration);
+    EXPECT(state, obligation.context_fields.size() == 7);
+    for (const draft::AgentContextField &field : obligation.context_fields) {
+      EXPECT(state, field.name != "user_index");
+    }
+  }
+}
+
 } // namespace
 
 int main() {
@@ -672,6 +839,8 @@ int main() {
   test_dangling_documentation_is_rejected(state);
   test_judgment_guidance_respects_branch_dominance(state);
   test_visible_import_interface_is_context(state);
+  test_denied_imports_are_removed_from_usable_context(state);
+  test_early_synthesis_receives_permitted_context(state);
   if (state.failures != 0) {
     std::cerr << state.failures << " agent metadata expectation(s) failed\n";
     return EXIT_FAILURE;

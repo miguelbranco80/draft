@@ -4,6 +4,7 @@
 
 #include "sema/ieee_float.h"
 #include "sema/initialization.h"
+#include "sema/runtime_context.h"
 #include "sema/type_resolver.h"
 #include "sema/target_validation.h"
 #include "syntax/literal.h"
@@ -117,7 +118,7 @@ public:
   [[nodiscard]] BodyCheckResult run() {
     BodyCheckResult result;
     const std::size_t initial_errors = diagnostics_.error_count();
-    initialize_runtime_context();
+    ensure_runtime_context_type(semantic_, diagnostics_);
     const std::vector<SymbolId> package_symbols =
         semantic_.symbols.scope(semantic_.package_scope).symbols;
     // Capture the original declaration list before seeding. Instantiation adds
@@ -216,132 +217,6 @@ private:
           source_symbol.name_range,
           seed.instance_name);
     }
-  }
-
-  // The built-in `context` value exists independently from an import spelling,
-  // but importing core/runtime must make it exactly that package's public
-  // Context type.  This preserves normal assignment and parameter compatibility
-  // for allocator/provider records while keeping the package name explicit.
-  [[nodiscard]] std::optional<TypeId> imported_runtime_context() const {
-    for (const ImportBinding &binding : semantic_.imports) {
-      if (binding.package_path != "core/runtime") continue;
-      for (const ImportedType &imported : semantic_.imported_types) {
-        if (imported.root_identity == binding.root_identity &&
-            imported.root_relative_path == binding.root_relative_path &&
-            imported.public_name == "Context" && imported.arguments.empty()) {
-          return imported.type;
-        }
-      }
-    }
-    return std::nullopt;
-  }
-
-  [[nodiscard]] std::optional<TypeId> local_runtime_context() const {
-    if (semantic_.short_name != "runtime") return std::nullopt;
-    const std::optional<SymbolId> symbol = semantic_.symbols.lookup_direct(
-        semantic_.package_scope, "Context");
-    if (!symbol.has_value()) return std::nullopt;
-    const Symbol &context_symbol = semantic_.symbols.symbol(*symbol);
-    if (context_symbol.kind != SymbolKind::Type ||
-        !context_symbol.type.is_valid()) {
-      return std::nullopt;
-    }
-    const Type &context = semantic_.types.type(context_symbol.type);
-    const std::vector<std::uint64_t> expected_offsets = {
-        0, 16, 32, 40, 56, 72, 80, 88};
-    if (context.kind != TypeKind::Struct || !context.c_representation ||
-        !context.layout.known || context.layout.size != 96 ||
-        context.layout.alignment != 8 ||
-        context.member_offsets != expected_offsets) {
-      return std::nullopt;
-    }
-    return context_symbol.type;
-  }
-
-  void initialize_runtime_context() {
-    if (const std::optional<TypeId> imported = imported_runtime_context()) {
-      semantic_.runtime_context_type = *imported;
-      return;
-    }
-    if (const std::optional<TypeId> local = local_runtime_context()) {
-      semantic_.runtime_context_type = *local;
-      return;
-    }
-
-    // Packages that do not name core/runtime still need a concrete type for
-    // the predeclared context value.  Its provider handles are structural
-    // two-pointer records because their source-level nominal names are not in
-    // scope.  The private nominal Context itself carries the versioned 96-byte
-    // AArch64 macOS layout shared with core/runtime and the entry shim.
-    const BuiltinTypes &builtins = semantic_.types.builtins();
-    const TypeId provider = semantic_.types.tuple(
-        {builtins.rawptr_type, builtins.rawptr_type});
-    const TypeId assertion = semantic_.types.procedure(
-        {builtins.string_type,
-         builtins.string_type,
-         builtins.string_type,
-         builtins.usize_type,
-         builtins.usize_type},
-        builtins.void_type,
-        false);
-    const TypeId context = semantic_.types.begin_nominal(
-        TypeKind::Struct, "<runtime-context>", SourceRange::invalid());
-    semantic_.types.type_mut(context).c_representation = true;
-    const std::vector<TypeId> members = {
-        provider,
-        provider,
-        assertion,
-        provider,
-        provider,
-        builtins.rawptr_type,
-        builtins.int_type,
-        builtins.rawptr_type,
-    };
-    const std::vector<std::uint64_t> offsets = {
-        0, 16, 32, 40, 56, 72, 80, 88};
-    semantic_.types.complete_nominal(
-        context, {true, 96, 8}, members, offsets);
-
-    Symbol owner;
-    owner.name = "<runtime-context>";
-    owner.kind = SymbolKind::Type;
-    owner.visibility = Visibility::Private;
-    owner.scope = semantic_.package_scope;
-    owner.type = context;
-    const SymbolId owner_id =
-        semantic_.symbols.declare(std::move(owner), diagnostics_);
-    if (!owner_id.is_valid()) {
-      semantic_.runtime_context_type = context;
-      return;
-    }
-    const ScopeId member_scope = semantic_.symbols.add_scope(
-        ScopeKind::Type, semantic_.package_scope, SourceRange::invalid());
-    semantic_.owned_scopes.push_back({owner_id, member_scope});
-    const std::vector<std::string> names = {
-        "allocator",
-        "temp_allocator",
-        "assertion_failure_proc",
-        "logger",
-        "random_generator",
-        "user_ptr",
-        "user_index",
-        "_internal",
-    };
-    for (std::size_t index = 0; index < names.size(); ++index) {
-      Symbol field;
-      field.name = names[index];
-      field.kind = SymbolKind::Field;
-      field.visibility = Visibility::Public;
-      field.scope = member_scope;
-      field.type = members[index];
-      const SymbolId field_id =
-          semantic_.symbols.declare(std::move(field), diagnostics_);
-      if (field_id.is_valid()) {
-        semantic_.aggregate_members.push_back(
-            {owner_id, field_id, offsets[index]});
-      }
-    }
-    semantic_.runtime_context_type = context;
   }
 
   // Resolves a FileId to the immutable syntax tree used by all body references.
@@ -3758,6 +3633,16 @@ private:
     }
 
     case NodeKind::DenyExpression: {
+      // Keep the selector's scope as a semantic fact. The governed expression
+      // introduces no scope, but recording the site still prevents later
+      // context construction from trying to re-resolve selector text in some
+      // deeper synthesis-site scope where a same-named binding may shadow it.
+      semantic_.sites.push_back(
+          {SemanticSiteKind::DenialExpression,
+           {tree.file(), expression_id},
+           scope,
+           current_procedure_,
+           {}});
       if (!node.children.empty()) {
         const HirExpressionId value =
             check_expression(tree, node.children.back(), scope, expected);
@@ -4251,6 +4136,14 @@ private:
 
     case NodeKind::DenyStatement:
       statement.kind = HirStatementKind::Denial;
+      // A statement denial's selectors resolve outside its governed block.
+      // The block receives a fresh scope and may legally shadow those names.
+      semantic_.sites.push_back(
+          {SemanticSiteKind::DenialStatement,
+           {tree.file(), statement_id},
+           scope,
+           current_procedure_,
+           {}});
       if (!node.children.empty()) {
         statement.blocks.push_back(
             check_block(tree, node.children.back(), scope, result_type, depth));

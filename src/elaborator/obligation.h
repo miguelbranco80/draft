@@ -40,6 +40,17 @@ struct AgentVisibleBinding {
   std::string type_text;
 };
 
+// One source-visible field of the compiler-managed runtime Context. Active
+// `deny context` removes every row; `deny context.name` removes only that
+// semantic field. Offset and type come from the same checked nominal layout
+// used by body checking and native lowering.
+struct AgentContextField {
+  std::string name;
+  std::uint64_t offset = 0;
+  Sha256Digest type_digest;
+  std::string type_text;
+};
+
 // Provider-facing target facts are copied out of the target profile so an
 // adapter never has to infer architecture or assembly rules from an identity
 // hash. These are semantic/compiler contract values, not facts from the host.
@@ -163,6 +174,7 @@ struct AgentObligation {
   AgentTargetContext target;
   AgentEnclosingDeclarationContext enclosing_declaration;
   std::vector<AgentActiveDenial> active_denials;
+  std::vector<AgentContextField> context_fields;
   std::vector<AgentParametricParameter> parametric_parameters;
   std::vector<AgentTypeContext> type_contexts;
   std::vector<AgentImportedPackageContext> imported_packages;

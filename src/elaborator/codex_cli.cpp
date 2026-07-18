@@ -43,7 +43,7 @@ namespace {
 constexpr std::uintmax_t kMaximumCodexOutputBytes = 64U * 1024U * 1024U;
 constexpr std::uintmax_t kMaximumCodexLogBytes = 4U * 1024U * 1024U;
 constexpr std::string_view kPromptContractIdentity =
-    "draft-codex-synthesis-prompt-v9";
+    "draft-codex-synthesis-prompt-v10";
 constexpr std::string_view kOutputSchema =
     "{\n"
     "  \"type\": \"object\",\n"
@@ -343,6 +343,16 @@ void append_field(
     }
     append_field("DENIAL_SELECTOR", denial.selector, prompt);
     append_field("DENIAL_SHA256", denial.selector_digest.hex(), prompt);
+  }
+  prompt += "PERMITTED_CONTEXT_FIELDS ";
+  append_u64(
+      static_cast<std::uint64_t>(request.obligation.context_fields.size()),
+      prompt);
+  for (const AgentContextField &field : request.obligation.context_fields) {
+    append_field("CONTEXT_FIELD_NAME", field.name, prompt);
+    append_field("CONTEXT_FIELD_OFFSET", std::to_string(field.offset), prompt);
+    append_field("CONTEXT_FIELD_TYPE_SHA256", field.type_digest.hex(), prompt);
+    append_field("CONTEXT_FIELD_TYPE_TEXT", field.type_text, prompt);
   }
   prompt += "PARAMETRIC_PARAMETERS ";
   append_u64(
@@ -852,7 +862,7 @@ SynthesisProvider configure_codex_cli_provider(
   if (!executable_digest.has_value()) return {};
 
   Sha256 configuration;
-  configuration.update("draft.codex-cli-provider.v4");
+  configuration.update("draft.codex-cli-provider.v5");
   configuration.update(executable_digest->bytes);
   configuration.update(options.model);
   configuration.update(";timeout-ms=");
@@ -872,7 +882,7 @@ SynthesisProvider configure_codex_cli_provider(
       "codex-config-" + configuration.finalize().hex();
 
   SynthesisProvider provider;
-  provider.provider_identity = "openai-codex-cli-v10";
+  provider.provider_identity = "openai-codex-cli-v11";
   provider.model_identity = state.model;
   provider.configuration_identity = state.configuration_identity;
   provider.state = &state;

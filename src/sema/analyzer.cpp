@@ -567,6 +567,8 @@ std::string_view semantic_site_kind_name(SemanticSiteKind kind) {
   case SemanticSiteKind::ConditionalStatement: return "conditional statement";
   case SemanticSiteKind::DenialDeclaration: return "declaration denial";
   case SemanticSiteKind::DenialMember: return "member denial";
+  case SemanticSiteKind::DenialStatement: return "statement denial";
+  case SemanticSiteKind::DenialExpression: return "expression denial";
   }
   return "unknown semantic site";
 }
