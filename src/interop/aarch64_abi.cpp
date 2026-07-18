@@ -88,7 +88,13 @@ struct HomogeneousFloatInfo {
   }
   const Type &type = types.type(id);
   if (type.kind == TypeKind::Array) {
-    return aggregate_member_legal(types, type.element, active_procedures);
+    // C11 has no zero-length fixed array. Clang accepts one as an extension,
+    // but using that extension here would make @repr(C) layout depend on host
+    // flags and would let generated -std=c11 headers describe a non-C type.
+    // A pointer to the Draft array remains legal through the ordinary opaque
+    // pointer rule; only embedding the array by value is rejected.
+    return type.element_count != 0 &&
+        aggregate_member_legal(types, type.element, active_procedures);
   }
   if ((type.kind != TypeKind::Struct && type.kind != TypeKind::RawUnion) ||
       !type.c_representation || !type.layout.known) {

@@ -204,22 +204,31 @@ private:
       return;
     }
     if (value.kind == TypeKind::Pointer || value.kind == TypeKind::MultiPointer) {
-      // Follow an arbitrary pointer chain so `^^C_Record` still emits the
-      // nominal declaration needed by its typed C declarator. nominal_seen_ and
-      // procedure_seen_ break recursive records and callback signatures; a
-      // non-C pointee simply stops in the nominal branch below.
-      collect_type(value.element);
+      // A pointer may hide an arbitrary Draft pointee. Only collect a complete
+      // C definition when the pointee can actually be named by the generated
+      // header; otherwise declaration() deliberately renders the edge as
+      // void *. This prevents pointer-only APIs from leaking zero-length
+      // arrays, slices, or other non-C fields into an invalid C definition.
+      // For a representable `^^C_Record`, the recursive walk still reaches the
+      // nominal declaration; the seen sets below break record/callback cycles.
+      if (typed_pointer_element(value.element)) {
+        collect_type(value.element);
+      }
       return;
     }
     if (value.kind == TypeKind::Array) {
-      collect_type(value.element);
+      if (value.element_count != 0) collect_type(value.element);
       return;
     }
     if (value.kind != TypeKind::Struct && value.kind != TypeKind::RawUnion &&
         value.kind != TypeKind::Enum) {
       return;
     }
-    if (!value.c_representation || contains_type(nominal_seen_, id)) return;
+    if (!value.c_representation || contains_type(nominal_seen_, id) ||
+        classify_aarch64_darwin_c_type(semantic_.types, id).classification ==
+            Aarch64CAbiClass::Illegal) {
+      return;
+    }
     nominal_seen_.push_back(id);
     for (TypeId member : value.members) collect_type(member);
     nominal_types_.push_back(id);
@@ -290,8 +299,10 @@ private:
 
   [[nodiscard]] bool typed_pointer_element(TypeId id) const {
     const Type &value = type(id);
-    if (value.kind == TypeKind::Pointer || value.kind == TypeKind::MultiPointer ||
-        value.kind == TypeKind::Array) {
+    if (value.kind == TypeKind::Array) {
+      return value.element_count != 0 && typed_pointer_element(value.element);
+    }
+    if (value.kind == TypeKind::Pointer || value.kind == TypeKind::MultiPointer) {
       return typed_pointer_element(value.element);
     }
     if (value.kind == TypeKind::SignedInteger ||
@@ -311,7 +322,9 @@ private:
     }
     return (value.kind == TypeKind::Struct || value.kind == TypeKind::RawUnion ||
             value.kind == TypeKind::Enum) &&
-        value.c_representation;
+        value.c_representation &&
+        classify_aarch64_darwin_c_type(semantic_.types, id).classification !=
+            Aarch64CAbiClass::Illegal;
   }
 
   [[nodiscard]] std::string declaration(TypeId id, std::string name) const {

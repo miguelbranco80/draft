@@ -100,6 +100,18 @@ Private_Record :: struct {
     value: i64,
 }
 
+// This type is intentionally not C-declarable by value. A Draft slice has no
+// C11 field spelling, but the C ABI still permits a pointer to the record as an
+// opaque address. Header generation must expose only void * and must not emit
+// the record definition.
+Opaque_View_Record :: @repr(C) struct {
+    view: []u8,
+}
+
+Opaque_View_Box :: @repr(C) struct {
+    value: ^Opaque_View_Record,
+}
+
 thread_local bridge_counter: i32 = 7
 
 bridge_ordinary :: proc(value: i32) -> i32 {
@@ -210,6 +222,18 @@ export row_pointer_identity :: c "draft_row_pointer_identity" proc(
 export opaque_pointer_pointer_identity :: c "draft_opaque_pointer_pointer_identity" proc(
     value: ^^Private_Record,
 ) -> ^^Private_Record {
+    return value
+}
+
+export opaque_view_identity :: c "draft_opaque_view_identity" proc(
+    value: ^Opaque_View_Record,
+) -> ^Opaque_View_Record {
+    return value
+}
+
+export opaque_view_box_identity :: c "draft_opaque_view_box_identity" proc(
+    value: Opaque_View_Box,
+) -> Opaque_View_Box {
     return value
 }
 

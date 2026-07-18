@@ -73,6 +73,14 @@ The native pointer matrix covers equality and contextual `nil` for `^T`,
 rejects operators outside the closed vocabulary for scalar, aggregate, view,
 pointer, and procedure type families.
 
+C header generation now materializes a nominal aggregate definition only when
+the Darwin classifier proves that every field is C-declarable. Pointer-only
+records containing Draft views remain valid opaque ABI addresses and are
+rendered as `void *` without leaking an invalid `void` field into the header.
+The generated-header/dylib/C11-client gate calls that exact boundary. The ABI
+classifier also defensively rejects zero-length embedded arrays even though the
+ordinary Draft resolver already rejects them before native validation.
+
 Judgments now have a strict provider-neutral evidence object covering one stable
 site, its complete typed-context identity, resolved program, requested artifact
 hashes, validator identities, verdicts, rationales, and aggregate policy result.

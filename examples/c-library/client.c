@@ -128,6 +128,14 @@ int main(void) {
         return 11;
     }
 
+    // The pointee contains a Draft-only slice and is therefore intentionally
+    // erased to void * in the generated C11 header. Address identity still
+    // crosses the ABI exactly like any other data pointer.
+    if (draft_opaque_view_identity(&byte) != &byte) return 25;
+    draft_c_library_Opaque_View_Box opaque_box = {&byte};
+    opaque_box = draft_opaque_view_box_identity(opaque_box);
+    if (opaque_box.value != &byte) return 26;
+
     // The C process thread attaches lazily and retains its own Draft package
     // TLS between bridge calls.
     if (draft_bridge_from_c(35) != 42) return 12;

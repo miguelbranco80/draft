@@ -95,6 +95,14 @@ Hidden :: struct {
     value: i64,
 }
 
+Opaque_View :: @repr(C) struct {
+    view: []u8,
+}
+
+Opaque_View_Box :: @repr(C) struct {
+    value: ^Opaque_View,
+}
+
 export map_pair :: c "draft_map_pair" proc(
     value: Pair,
     callback: c proc(value: i32) -> i32,
@@ -143,6 +151,18 @@ export opaque_draft_callback :: c "draft_opaque_draft_callback" proc(
     return value
 }
 
+export opaque_view :: c "draft_opaque_view" proc(
+    value: ^Opaque_View,
+) -> ^Opaque_View {
+    return value
+}
+
+export opaque_view_box :: c "draft_opaque_view_box" proc(
+    value: Opaque_View_Box,
+) -> Opaque_View_Box {
+    return value
+}
+
 export echo_rune :: c "draft_echo_rune" proc(value: rune) -> rune {
     return value
 }
@@ -173,7 +193,7 @@ export echo_rune :: c "draft_echo_rune" proc(value: rune) -> rune {
   EXPECT(state, bodies.ok);
   EXPECT(state, native.ok);
   EXPECT(state, header.ok);
-  EXPECT(state, header.export_count == 7);
+  EXPECT(state, header.export_count == 9);
   EXPECT(state, header.text.find(
       "typedef struct draft_c_library_Pair draft_c_library_Pair;") !=
       std::string::npos);
@@ -233,6 +253,18 @@ export echo_rune :: c "draft_echo_rune" proc(value: rune) -> rune {
       std::string::npos);
   EXPECT(state, header.text.find(
       "extern void *draft_opaque_draft_callback(void *arg0, void **arg1);") !=
+      std::string::npos);
+  EXPECT(state, header.text.find(
+      "extern void *draft_opaque_view(void *arg0);") !=
+      std::string::npos);
+  EXPECT(state, header.text.find("draft_c_library_Opaque_View {") ==
+                    std::string::npos);
+  EXPECT(state, header.text.find(
+      "struct draft_c_library_Opaque_View_Box {") !=
+      std::string::npos);
+  EXPECT(state, header.text.find("void *value;") != std::string::npos);
+  EXPECT(state, header.text.find(
+      "extern draft_c_library_Opaque_View_Box draft_opaque_view_box(") !=
       std::string::npos);
   EXPECT(state, header.text.find(
       "extern int32_t draft_echo_rune(int32_t arg0);") !=
