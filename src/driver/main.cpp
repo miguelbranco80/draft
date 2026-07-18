@@ -10,6 +10,7 @@
 #include "backend/toolchain.h"
 #include "compile/compiler.h"
 #include "compile/resolver.h"
+#include "elaborator/codex_cli.h"
 #include "source/diagnostic.h"
 #include "source/source.h"
 #include "syntax/lexer.h"
@@ -250,16 +251,17 @@ enum class AgentCommandKind {
   Judge,
 };
 
-// Resolve and judge exist before a provider adapter is configured. They run the
-// complete provider-independent front end so malformed source, attachment
-// policy violations, and typed obligation errors are still reported normally.
-// A program with no relevant sites succeeds without contacting anything. A
-// program requiring provider work fails honestly and performs no filesystem
-// mutation; the later Codex adapter will replace only that final boundary.
+// Resolve and judge first run the complete provider-independent front end, so
+// malformed source, attachment-policy violations, and typed obligation errors
+// are reported before any model call. Resolve may receive one explicit Codex
+// adapter configuration; a program with only fresh pins still performs no
+// provider call. Judge remains a typed no-op boundary until its separate
+// evidence protocol is implemented.
 int run_agent_command(
     const std::string &directory,
     AgentCommandKind command,
-    bool revalidate = false) {
+    bool revalidate = false,
+    const std::optional<draft::CodexCliProviderOptions> &codex = std::nullopt) {
   draft::SourceManager sources;
   draft::DiagnosticSink diagnostics;
   std::error_code path_error;
@@ -280,6 +282,17 @@ int run_agent_command(
     draft::ResolveWorkspaceOptions resolve_options;
     resolve_options.compile = std::move(options);
     resolve_options.revalidate = revalidate;
+    // State is a separate stack object because the function table deliberately
+    // borrows it. Its lifetime encloses the entire synchronous resolver call.
+    draft::CodexCliProviderState codex_state;
+    if (codex.has_value()) {
+      resolve_options.provider = draft::configure_codex_cli_provider(
+          *codex, codex_state, diagnostics);
+      if (resolve_options.provider.synthesize == nullptr) {
+        std::cerr << draft::render_diagnostics(sources, diagnostics);
+        return 1;
+      }
+    }
     const draft::ResolveWorkspaceResult resolved = draft::resolve_workspace(
         sources,
         absolute_directory.string(),
@@ -298,7 +311,7 @@ int run_agent_command(
     if (!diagnostics.diagnostics().empty()) {
       std::cerr << draft::render_diagnostics(sources, diagnostics);
     }
-    return diagnostics.has_errors() ? 1 : 0;
+    return resolved.ok && !diagnostics.has_errors() ? 0 : 1;
   }
 
   const draft::CompileWorkspaceResult compiled =
@@ -342,6 +355,7 @@ void print_usage() {
             << "  draftc emit-llvm <package-directory>\n"
             << "  draftc build <package-directory> [-o <output>] [--allow-host-toolchain]\n"
             << "  draftc resolve <package-directory> [--revalidate]\n"
+            << "      [--codex-executable <path> --codex-model <model>]\n"
             << "  draftc judge <package-directory>\n"
             << "  draftc target\n";
 }
@@ -361,12 +375,38 @@ int main(int argc, char **argv) {
   if (argc == 3 && std::string_view(argv[1]) == "emit-llvm") {
     return compile_package(argv[2], true);
   }
-  if (argc == 3 && std::string_view(argv[1]) == "resolve") {
-    return run_agent_command(argv[2], AgentCommandKind::Resolve);
-  }
-  if (argc == 4 && std::string_view(argv[1]) == "resolve" &&
-      std::string_view(argv[3]) == "--revalidate") {
-    return run_agent_command(argv[2], AgentCommandKind::Resolve, true);
+  if (argc >= 3 && std::string_view(argv[1]) == "resolve") {
+    bool revalidate = false;
+    std::optional<std::string> codex_executable;
+    std::optional<std::string> codex_model;
+    for (int index = 3; index < argc; ++index) {
+      const std::string_view argument(argv[index]);
+      if (argument == "--revalidate" && !revalidate) {
+        revalidate = true;
+      } else if (argument == "--codex-executable" &&
+                 !codex_executable.has_value() && index + 1 < argc) {
+        codex_executable = argv[++index];
+      } else if (argument == "--codex-model" &&
+                 !codex_model.has_value() && index + 1 < argc) {
+        codex_model = argv[++index];
+      } else {
+        print_usage();
+        return 2;
+      }
+    }
+    if (codex_executable.has_value() != codex_model.has_value() ||
+        (revalidate && codex_executable.has_value())) {
+      print_usage();
+      return 2;
+    }
+    std::optional<draft::CodexCliProviderOptions> codex;
+    if (codex_executable.has_value()) {
+      codex.emplace();
+      codex->executable = *codex_executable;
+      codex->model = *codex_model;
+    }
+    return run_agent_command(
+        argv[2], AgentCommandKind::Resolve, revalidate, codex);
   }
   if (argc == 3 && std::string_view(argv[1]) == "judge") {
     return run_agent_command(argv[2], AgentCommandKind::Judge);

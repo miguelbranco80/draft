@@ -31,6 +31,7 @@ add_library(
   src/base/sha256.cpp
   src/compile/compiler.cpp
   src/compile/resolver.cpp
+  src/elaborator/codex_cli.cpp
   src/elaborator/obligation.cpp
   src/elaborator/resolution.cpp
   src/elaborator/resolution_overlay.cpp
@@ -169,6 +170,10 @@ if(BUILD_TESTING)
   add_executable(draft_resolver_tests tests/resolver_test.cpp)
   target_link_libraries(draft_resolver_tests PRIVATE draft_compiler)
   add_test(NAME draft_resolver_tests COMMAND draft_resolver_tests)
+
+  add_executable(draft_codex_cli_tests tests/codex_cli_test.cpp)
+  target_link_libraries(draft_codex_cli_tests PRIVATE draft_compiler)
+  add_test(NAME draft_codex_cli_tests COMMAND draft_codex_cli_tests)
 
   add_executable(draft_effect_tests tests/effect_test.cpp)
   target_link_libraries(draft_effect_tests PRIVATE draft_compiler)

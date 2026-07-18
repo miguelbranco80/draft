@@ -1,0 +1,565 @@
+// Process, temporary-file, prompt, and response handling for Codex CLI.
+//
+// The implementation is intentionally POSIX and matches Draft's first
+// AArch64-macOS host. It uses fork/exec directly rather than a shell, so prompt,
+// model, and path bytes can never become command syntax. A private RAII
+// directory owns schema, prompt, attachments, final output, and logs; it is
+// removed on every return path. Provider failure is diagnostic-only and cannot
+// write the resolution store.
+
+#include "elaborator/codex_cli.h"
+
+#include "base/sha256.h"
+#include "sema/symbol.h"
+
+#include <array>
+#include <cerrno>
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <limits>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <system_error>
+#include <utility>
+#include <vector>
+
+#if defined(__APPLE__) || defined(__unix__)
+#include <fcntl.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
+
+namespace draft {
+namespace {
+
+constexpr std::uintmax_t kMaximumCodexOutputBytes = 64U * 1024U * 1024U;
+constexpr std::uintmax_t kMaximumCodexLogBytes = 4U * 1024U * 1024U;
+constexpr std::string_view kOutputSchema =
+    "{\n"
+    "  \"type\": \"object\",\n"
+    "  \"properties\": {\n"
+    "    \"source\": {\"type\": \"string\"}\n"
+    "  },\n"
+    "  \"required\": [\"source\"],\n"
+    "  \"additionalProperties\": false\n"
+    "}\n";
+
+class TemporaryDirectory {
+public:
+  TemporaryDirectory() = default;
+  TemporaryDirectory(const TemporaryDirectory &) = delete;
+  TemporaryDirectory &operator=(const TemporaryDirectory &) = delete;
+
+  ~TemporaryDirectory() {
+    if (path_.empty()) return;
+    std::error_code ignored;
+    std::filesystem::remove_all(path_, ignored);
+  }
+
+  [[nodiscard]] bool create(DiagnosticSink &diagnostics) {
+#if defined(__APPLE__) || defined(__unix__)
+    std::error_code error;
+    const std::filesystem::path temporary_root =
+        std::filesystem::temp_directory_path(error);
+    if (error) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "cannot locate a temporary directory for Codex: " + error.message());
+      return false;
+    }
+    std::string pattern =
+        (temporary_root / "draft-codex-XXXXXX").string();
+    std::vector<char> writable(pattern.begin(), pattern.end());
+    writable.push_back('\0');
+    char *created = ::mkdtemp(writable.data());
+    if (created == nullptr) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "cannot create Codex provider directory: " +
+              std::string(std::strerror(errno)));
+      return false;
+    }
+    path_ = created;
+    return true;
+#else
+    diagnostics.error(
+        SourceRange::invalid(),
+        "Codex CLI provider is unavailable on this host");
+    return false;
+#endif
+  }
+
+  [[nodiscard]] const std::filesystem::path &path() const { return path_; }
+
+private:
+  std::filesystem::path path_;
+};
+
+void provider_error(DiagnosticSink &diagnostics, std::string message) {
+  diagnostics.error(SourceRange::invalid(), std::move(message));
+}
+
+[[nodiscard]] bool write_file(
+    const std::filesystem::path &path,
+    std::string_view contents,
+    DiagnosticSink &diagnostics) {
+  std::ofstream output(path, std::ios::binary | std::ios::trunc);
+  if (!output) {
+    provider_error(
+        diagnostics, "cannot create Codex input file '" + path.string() + "'");
+    return false;
+  }
+  output.write(contents.data(), static_cast<std::streamsize>(contents.size()));
+  output.close();
+  if (!output) {
+    provider_error(
+        diagnostics, "cannot write Codex input file '" + path.string() + "'");
+    return false;
+  }
+  return true;
+}
+
+// Reads a regular bounded adapter output. Codex controls these bytes, so size
+// and file type are validated before allocation.
+[[nodiscard]] bool read_file(
+    const std::filesystem::path &path,
+    std::uintmax_t maximum_size,
+    std::string &contents,
+    DiagnosticSink &diagnostics) {
+  std::error_code error;
+  const std::filesystem::file_status status =
+      std::filesystem::symlink_status(path, error);
+  if (error || std::filesystem::is_symlink(status) ||
+      !std::filesystem::is_regular_file(status)) {
+    provider_error(
+        diagnostics, "Codex did not produce a regular output file");
+    return false;
+  }
+  const std::uintmax_t size = std::filesystem::file_size(path, error);
+  if (error || size > maximum_size ||
+      size > static_cast<std::uintmax_t>(
+          std::numeric_limits<std::size_t>::max())) {
+    provider_error(diagnostics, "Codex output file is too large or unreadable");
+    return false;
+  }
+  contents.resize(static_cast<std::size_t>(size));
+  std::ifstream input(path, std::ios::binary);
+  if (!input) {
+    provider_error(diagnostics, "cannot open Codex output file");
+    return false;
+  }
+  if (!contents.empty()) {
+    input.read(contents.data(), static_cast<std::streamsize>(contents.size()));
+  }
+  if (!input || input.peek() != std::ifstream::traits_type::eof()) {
+    provider_error(diagnostics, "cannot read exact Codex output bytes");
+    return false;
+  }
+  return true;
+}
+
+void append_u64(std::uint64_t value, std::string &output) {
+  output += std::to_string(value);
+  output.push_back('\n');
+}
+
+// Length-prefixed fields allow prompts and source-authored strings to contain
+// arbitrary newlines without creating an ambiguous request transcript.
+void append_field(
+    std::string_view name,
+    std::string_view value,
+    std::string &output) {
+  output += name;
+  output.push_back(' ');
+  append_u64(static_cast<std::uint64_t>(value.size()), output);
+  output.append(value);
+  output.push_back('\n');
+}
+
+[[nodiscard]] std::string attachment_name(std::size_t index) {
+  std::string digits = std::to_string(index);
+  const std::size_t zero_count = digits.size() < 8 ? 8 - digits.size() : 0;
+  return "attachment-" + std::string(zero_count, '0') + digits + ".bin";
+}
+
+// Constructs the complete model instruction. The output contract is repeated
+// in prose as well as enforced by the CLI JSON Schema. No surface or generated
+// workspace path is exposed.
+[[nodiscard]] bool prepare_request(
+    const SynthesisRequest &request,
+    const std::filesystem::path &directory,
+    std::string &prompt,
+    DiagnosticSink &diagnostics) {
+  prompt =
+      "You are the Draft language synthesis provider. Produce exactly one "
+      "ordinary Draft source fragment for the supplied grammar category. "
+      "Return only a JSON object with one string field named source. The "
+      "source must contain no judge construct and no unresolved ... synthesis "
+      "site. Do not edit files. Do not inspect paths outside this isolated "
+      "request directory.\n";
+  append_field("REQUEST_FORMAT", request.format, prompt);
+  append_field("SITE", request.obligation.site_identity, prompt);
+  append_field(
+      "GRAMMAR",
+      agent_construct_kind_name(request.obligation.kind),
+      prompt);
+  append_field("INPUT_SHA256", request.obligation.input_digest.hex(), prompt);
+  append_field(
+      "EXPECTED_TYPE_SHA256",
+      request.obligation.expected_type_digest.hex(),
+      prompt);
+  append_field("AUTHOR_PROMPT", request.prompt, prompt);
+  prompt += "VISIBLE_BINDINGS ";
+  append_u64(
+      static_cast<std::uint64_t>(request.obligation.visible_bindings.size()),
+      prompt);
+  for (const AgentVisibleBinding &binding :
+       request.obligation.visible_bindings) {
+    append_field("BINDING_NAME", binding.name, prompt);
+    append_field("BINDING_KIND", symbol_kind_name(binding.kind), prompt);
+    append_field("BINDING_TYPE_SHA256", binding.type_digest.hex(), prompt);
+  }
+  prompt += "ATTACHMENTS ";
+  append_u64(static_cast<std::uint64_t>(request.attachments.size()), prompt);
+  for (std::size_t index = 0; index < request.attachments.size(); ++index) {
+    const SynthesisRequestFile &attachment = request.attachments[index];
+    if (attachment.contents.size() != attachment.size ||
+        sha256(attachment.contents) != attachment.digest) {
+      provider_error(
+          diagnostics, "Codex request attachment identity is inconsistent");
+      return false;
+    }
+    const std::string name = attachment_name(index);
+    if (!write_file(directory / name, attachment.contents, diagnostics)) {
+      return false;
+    }
+    append_field("ATTACHMENT_PATH", attachment.relative_path, prompt);
+    append_field("ATTACHMENT_FILE", name, prompt);
+    append_field("ATTACHMENT_SHA256", attachment.digest.hex(), prompt);
+  }
+  return true;
+}
+
+[[nodiscard]] std::optional<unsigned char> hex_digit(char value) {
+  if (value >= '0' && value <= '9') {
+    return static_cast<unsigned char>(value - '0');
+  }
+  if (value >= 'a' && value <= 'f') {
+    return static_cast<unsigned char>(value - 'a' + 10);
+  }
+  if (value >= 'A' && value <= 'F') {
+    return static_cast<unsigned char>(value - 'A' + 10);
+  }
+  return std::nullopt;
+}
+
+void append_utf8(std::uint32_t scalar, std::string &output) {
+  if (scalar <= 0x7fU) {
+    output.push_back(static_cast<char>(scalar));
+  } else if (scalar <= 0x7ffU) {
+    output.push_back(static_cast<char>(0xc0U | (scalar >> 6U)));
+    output.push_back(static_cast<char>(0x80U | (scalar & 0x3fU)));
+  } else if (scalar <= 0xffffU) {
+    output.push_back(static_cast<char>(0xe0U | (scalar >> 12U)));
+    output.push_back(static_cast<char>(0x80U | ((scalar >> 6U) & 0x3fU)));
+    output.push_back(static_cast<char>(0x80U | (scalar & 0x3fU)));
+  } else {
+    output.push_back(static_cast<char>(0xf0U | (scalar >> 18U)));
+    output.push_back(static_cast<char>(0x80U | ((scalar >> 12U) & 0x3fU)));
+    output.push_back(static_cast<char>(0x80U | ((scalar >> 6U) & 0x3fU)));
+    output.push_back(static_cast<char>(0x80U | (scalar & 0x3fU)));
+  }
+}
+
+class SourceResponseParser {
+public:
+  explicit SourceResponseParser(std::string_view input) : input_(input) {}
+
+  [[nodiscard]] bool parse(std::string &source) {
+    whitespace();
+    if (!take('{') || !json_string(key_) || key_ != "source" || !take(':') ||
+        !json_string(source) || !take('}')) {
+      return false;
+    }
+    whitespace();
+    return position_ == input_.size();
+  }
+
+private:
+  void whitespace() {
+    while (position_ < input_.size() &&
+           (input_[position_] == ' ' || input_[position_] == '\n' ||
+            input_[position_] == '\r' || input_[position_] == '\t')) {
+      ++position_;
+    }
+  }
+
+  [[nodiscard]] bool take(char expected) {
+    whitespace();
+    if (position_ >= input_.size() || input_[position_] != expected) return false;
+    ++position_;
+    return true;
+  }
+
+  [[nodiscard]] bool unicode_escape(std::uint32_t &scalar) {
+    if (position_ + 4 > input_.size()) return false;
+    scalar = 0;
+    for (std::size_t index = 0; index < 4; ++index) {
+      const std::optional<unsigned char> digit = hex_digit(input_[position_++]);
+      if (!digit.has_value()) return false;
+      scalar = scalar * 16U + *digit;
+    }
+    return true;
+  }
+
+  [[nodiscard]] bool json_string(std::string &output) {
+    whitespace();
+    if (position_ >= input_.size() || input_[position_] != '"') return false;
+    ++position_;
+    output.clear();
+    while (position_ < input_.size()) {
+      const char value = input_[position_++];
+      if (value == '"') return true;
+      if (static_cast<unsigned char>(value) < 0x20U) return false;
+      if (value != '\\') {
+        output.push_back(value);
+        continue;
+      }
+      if (position_ >= input_.size()) return false;
+      const char escape = input_[position_++];
+      switch (escape) {
+      case '"': output.push_back('"'); break;
+      case '\\': output.push_back('\\'); break;
+      case '/': output.push_back('/'); break;
+      case 'b': output.push_back('\b'); break;
+      case 'f': output.push_back('\f'); break;
+      case 'n': output.push_back('\n'); break;
+      case 'r': output.push_back('\r'); break;
+      case 't': output.push_back('\t'); break;
+      case 'u': {
+        std::uint32_t scalar = 0;
+        if (!unicode_escape(scalar)) return false;
+        if (scalar >= 0xd800U && scalar <= 0xdbffU) {
+          if (position_ + 2 > input_.size() || input_[position_] != '\\' ||
+              input_[position_ + 1] != 'u') {
+            return false;
+          }
+          position_ += 2;
+          std::uint32_t low = 0;
+          if (!unicode_escape(low) || low < 0xdc00U || low > 0xdfffU) {
+            return false;
+          }
+          scalar = 0x10000U + ((scalar - 0xd800U) << 10U) +
+              (low - 0xdc00U);
+        } else if (scalar >= 0xdc00U && scalar <= 0xdfffU) {
+          return false;
+        }
+        append_utf8(scalar, output);
+        break;
+      }
+      default: return false;
+      }
+    }
+    return false;
+  }
+
+  std::string_view input_;
+  std::size_t position_ = 0;
+  std::string key_;
+};
+
+// Starts exactly one documented non-interactive Codex process. All arguments
+// are separate execv entries and the prompt is an already-opened regular file.
+[[nodiscard]] bool run_codex(
+    const CodexCliProviderState &state,
+    const std::filesystem::path &directory,
+    DiagnosticSink &diagnostics) {
+#if defined(__APPLE__) || defined(__unix__)
+  const std::filesystem::path prompt = directory / "prompt.txt";
+  const std::filesystem::path schema = directory / "schema.json";
+  const std::filesystem::path output = directory / "response.json";
+  const std::filesystem::path log = directory / "codex.log";
+  const pid_t child = ::fork();
+  if (child < 0) {
+    provider_error(
+        diagnostics, "cannot fork Codex CLI: " + std::string(std::strerror(errno)));
+    return false;
+  }
+  if (child == 0) {
+    const int input = ::open(prompt.c_str(), O_RDONLY);
+    const int log_file = ::open(
+        log.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    if (input < 0 || log_file < 0 || ::dup2(input, STDIN_FILENO) < 0 ||
+        ::dup2(log_file, STDOUT_FILENO) < 0 ||
+        ::dup2(log_file, STDERR_FILENO) < 0) {
+      ::_exit(126);
+    }
+    (void)::close(input);
+    (void)::close(log_file);
+    std::vector<std::string> arguments{
+        state.executable.string(),
+        "exec",
+        "--ephemeral",
+        "--sandbox", "read-only",
+        "--skip-git-repo-check",
+        "--ignore-user-config",
+        "--ignore-rules",
+        "--color", "never",
+        "--model", state.model,
+        "--cd", directory.string(),
+        "--output-schema", schema.string(),
+        "--output-last-message", output.string(),
+        "-",
+    };
+    std::vector<char *> raw;
+    raw.reserve(arguments.size() + 1);
+    for (std::string &argument : arguments) raw.push_back(argument.data());
+    raw.push_back(nullptr);
+    ::execv(state.executable.c_str(), raw.data());
+    ::_exit(127);
+  }
+
+  int status = 0;
+  pid_t waited = -1;
+  do {
+    waited = ::waitpid(child, &status, 0);
+  } while (waited < 0 && errno == EINTR);
+  if (waited < 0) {
+    provider_error(
+        diagnostics, "cannot wait for Codex CLI: " +
+            std::string(std::strerror(errno)));
+    return false;
+  }
+  if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+    std::string log_contents;
+    DiagnosticSink ignored;
+    if (read_file(log, kMaximumCodexLogBytes, log_contents, ignored) &&
+        !log_contents.empty()) {
+      provider_error(diagnostics, "Codex CLI failed: " + log_contents);
+    } else {
+      provider_error(diagnostics, "Codex CLI failed without readable output");
+    }
+    return false;
+  }
+  return true;
+#else
+  (void)state;
+  (void)directory;
+  provider_error(diagnostics, "Codex CLI provider is unavailable on this host");
+  return false;
+#endif
+}
+
+[[nodiscard]] bool synthesize_with_codex(
+    void *opaque,
+    const SynthesisRequest &request,
+    SynthesisResponse &response,
+    DiagnosticSink &diagnostics) {
+  auto *state = static_cast<CodexCliProviderState *>(opaque);
+  TemporaryDirectory temporary;
+  if (!temporary.create(diagnostics)) return false;
+  std::string prompt;
+  if (!prepare_request(request, temporary.path(), prompt, diagnostics) ||
+      !write_file(temporary.path() / "schema.json", kOutputSchema, diagnostics) ||
+      !write_file(temporary.path() / "prompt.txt", prompt, diagnostics) ||
+      !run_codex(*state, temporary.path(), diagnostics)) {
+    return false;
+  }
+  std::string json;
+  if (!read_file(
+          temporary.path() / "response.json",
+          kMaximumCodexOutputBytes,
+          json,
+          diagnostics)) {
+    return false;
+  }
+  SourceResponseParser parser(json);
+  if (!parser.parse(response.source)) {
+    provider_error(
+        diagnostics, "Codex final response does not match the source schema");
+    return false;
+  }
+  return true;
+}
+
+// Hashes one regular executable without inserting it into SourceManager. The
+// executable may be a script or native binary; exact bytes, not file metadata,
+// are the configuration input.
+[[nodiscard]] std::optional<Sha256Digest> hash_executable(
+    const std::filesystem::path &path,
+    DiagnosticSink &diagnostics) {
+  std::ifstream input(path, std::ios::binary);
+  if (!input) {
+    provider_error(
+        diagnostics, "cannot open Codex executable '" + path.string() + "'");
+    return std::nullopt;
+  }
+  Sha256 hash;
+  std::array<char, 64 * 1024> buffer{};
+  while (input) {
+    input.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+    const std::streamsize count = input.gcount();
+    if (count > 0) {
+      hash.update(std::string_view(
+          buffer.data(), static_cast<std::size_t>(count)));
+    }
+  }
+  if (!input.eof()) {
+    provider_error(diagnostics, "cannot read complete Codex executable");
+    return std::nullopt;
+  }
+  return hash.finalize();
+}
+
+} // namespace
+
+SynthesisProvider configure_codex_cli_provider(
+    const CodexCliProviderOptions &options,
+    CodexCliProviderState &state,
+    DiagnosticSink &diagnostics) {
+  state = {};
+  if (options.model.empty()) {
+    provider_error(diagnostics, "Codex provider model identity must not be empty");
+    return {};
+  }
+  std::error_code error;
+  const std::filesystem::path executable =
+      std::filesystem::canonical(options.executable, error);
+  if (error || !std::filesystem::is_regular_file(executable, error) || error) {
+    provider_error(
+        diagnostics,
+        "Codex executable path is invalid: '" + options.executable.string() + "'");
+    return {};
+  }
+  const std::optional<Sha256Digest> executable_digest =
+      hash_executable(executable, diagnostics);
+  if (!executable_digest.has_value()) return {};
+
+  Sha256 configuration;
+  configuration.update("draft.codex-cli-provider.v1");
+  configuration.update(executable_digest->bytes);
+  configuration.update(options.model);
+  configuration.update(kOutputSchema);
+  configuration.update(
+      "exec;ephemeral;sandbox=read-only;skip-git;ignore-user-config;"
+      "ignore-rules;color=never;stdin;output-schema;output-last-message");
+  state.executable = executable;
+  state.model = options.model;
+  state.configuration_identity =
+      "codex-config-" + configuration.finalize().hex();
+
+  SynthesisProvider provider;
+  provider.provider_identity = "openai-codex-cli-v1";
+  provider.model_identity = state.model;
+  provider.configuration_identity = state.configuration_identity;
+  provider.state = &state;
+  provider.synthesize = synthesize_with_codex;
+  return provider;
+}
+
+} // namespace draft
