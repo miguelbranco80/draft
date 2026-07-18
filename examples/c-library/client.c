@@ -2,8 +2,22 @@
 
 #include "draft-c-library.h"
 
+#include <pthread.h>
+
 static int32_t add_one(int32_t value) {
     return value + 1;
+}
+
+typedef struct bridge_observation {
+    int32_t first;
+    int32_t second;
+} bridge_observation;
+
+static void *run_bridge_on_foreign_thread(void *user) {
+    bridge_observation *observation = (bridge_observation *)user;
+    observation->first = draft_bridge_from_c(35);
+    observation->second = draft_bridge_from_c(35);
+    return NULL;
 }
 
 int main(void) {
@@ -60,5 +74,25 @@ int main(void) {
         opaque_pointer_pointer) {
         return 11;
     }
+
+    // The C process thread attaches lazily and retains its own Draft package
+    // TLS between bridge calls.
+    if (draft_bridge_from_c(35) != 42) return 12;
+    if (draft_bridge_from_c(35) != 43) return 13;
+
+    // This pthread is unknown to core/thread. The context-free runtime bridge
+    // must attach it on first entry, initialize its package TLS to seven, and
+    // retain that independent value until pthread exit.
+    pthread_t foreign_thread;
+    bridge_observation observation = {0, 0};
+    if (pthread_create(
+            &foreign_thread,
+            NULL,
+            run_bridge_on_foreign_thread,
+            &observation) != 0) {
+        return 14;
+    }
+    if (pthread_join(foreign_thread, NULL) != 0) return 15;
+    if (observation.first != 42 || observation.second != 43) return 16;
     return 0;
 }

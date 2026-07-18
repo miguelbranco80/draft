@@ -1,5 +1,7 @@
 package c_library
 
+import core/runtime
+
 // This package has no Draft `main`: it is a native library fixture. Its public
 // C surface exercises records, enums, raw unions, and callback pointers through
 // the exact same Darwin ABI classifier used by call lowering.
@@ -42,6 +44,14 @@ Large_Record :: @repr(C) struct {
 
 Private_Record :: struct {
     value: i64,
+}
+
+thread_local bridge_counter: i32 = 7
+
+bridge_ordinary :: proc(value: i32) -> i32 {
+    result := value + cast[i32](context.user_index) + bridge_counter
+    bridge_counter += 1
+    return result
 }
 
 export pair_identity :: c "draft_pair_identity" proc(value: Pair) -> Pair {
@@ -99,6 +109,14 @@ export opaque_pointer_pointer_identity :: c "draft_opaque_pointer_pointer_identi
     value: ^^Private_Record,
 ) -> ^^Private_Record {
     return value
+}
+
+// A C-convention export has no hidden Context and cannot enter an ordinary
+// Draft procedure directly. These explicit runtime bridges also attach a
+// foreign-created pthread lazily before bridge_ordinary touches package TLS.
+export bridge_from_c :: c "draft_bridge_from_c" proc(value: i32) -> i32 {
+    thread_context := runtime.default_context()
+    return runtime.call_with_context(&thread_context, bridge_ordinary, value)
 }
 
 export apply :: c "draft_apply" proc(
