@@ -407,6 +407,16 @@ if(BUILD_TESTING)
   add_dependencies(draft_judgment_driver_tests draftc)
   add_test(NAME draft_judgment_driver_tests COMMAND draft_judgment_driver_tests)
 
+  add_test(
+    NAME draft_driver_canonicalizes_symlinked_parent
+    COMMAND
+      "${CMAKE_COMMAND}"
+      "-DDRAFTC=$<TARGET_FILE:draftc>"
+      "-DSOURCE_PACKAGE=${CMAKE_CURRENT_SOURCE_DIR}/examples/hello"
+      "-DTEST_ROOT=${CMAKE_CURRENT_BINARY_DIR}/driver-symlink-path-test"
+      -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/driver_symlink_path_test.cmake"
+  )
+
   # Evidence requirements are meaningful only for locked builds. This checks
   # the public flag boundary without invoking a native toolchain.
   add_test(

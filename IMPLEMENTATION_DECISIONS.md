@@ -943,3 +943,19 @@ The sidecar is the common join boundary for future counter-based coverage and
 sampling profiles. Sanitizer, race, allocator-poisoning, and coverage runtimes
 still require explicit versioned validation profiles; this map does not pretend
 that an unrequested instrument ran.
+
+## Canonical CLI workspace roots
+
+Status: implemented for every package command.
+
+The public driver canonicalizes the requested existing package directory before
+deriving its workspace parent. This resolves symlinked parent spellings such as
+macOS `/tmp` before they reach the resolution store. The store retains its
+strict no-follow traversal after accepting that canonical root; weakening the
+store would turn a presentation-path issue into a transaction security issue.
+
+Only package/workspace ownership uses this helper. Requested output paths,
+relocatable provider artifacts, runtime assets, and locked toolchain/SDK roots
+keep their separate explicit policies. A public `resolve` regression reaches a
+copied package through a symlinked parent, pins dummy native roots, and proves
+that the manifest is published under the canonical real workspace.

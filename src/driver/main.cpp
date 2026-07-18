@@ -70,6 +70,37 @@ void configure_core_distribution(draft::WorkspaceLoadOptions &options) {
   options.core_content_identity = DRAFT_CORE_CONTENT_IDENTITY;
 }
 
+// Package commands derive the workspace root from the package's parent. That
+// parent is also the security boundary for the no-follow resolution store, so
+// it must not retain a symlink spelling such as macOS `/tmp`. Canonicalizing the
+// already-existing package first resolves every parent component consistently
+// while leaving output paths and relocatable external inputs under their own
+// separate policies.
+[[nodiscard]] bool canonical_package_directory(
+    const std::string &spelling,
+    std::filesystem::path &directory,
+    std::string &reason) {
+  std::error_code error;
+  const std::filesystem::path absolute =
+      std::filesystem::absolute(spelling, error);
+  if (error) {
+    reason = "cannot make package path absolute: " + error.message();
+    return false;
+  }
+  directory = std::filesystem::canonical(absolute, error);
+  if (error) {
+    reason = "cannot canonicalize package path: " + error.message();
+    return false;
+  }
+  if (!std::filesystem::is_directory(directory, error)) {
+    reason = error
+        ? "cannot inspect package path: " + error.message()
+        : "package path is not a directory";
+    return false;
+  }
+  return true;
+}
+
 [[nodiscard]] bool absolute_locked_roots(
     const std::string &toolchain,
     const std::string &sdk,
@@ -318,12 +349,11 @@ int print_target() {
 int compile_package(const std::string &directory, bool emit_llvm) {
   draft::SourceManager sources;
   draft::DiagnosticSink diagnostics;
-  std::error_code path_error;
-  const std::filesystem::path absolute_directory =
-      std::filesystem::absolute(directory, path_error);
-  if (path_error) {
-    std::cerr << "error: cannot make package path absolute: "
-              << path_error.message() << '\n';
+  std::filesystem::path absolute_directory;
+  std::string path_error;
+  if (!canonical_package_directory(
+          directory, absolute_directory, path_error)) {
+    std::cerr << "error: " << path_error << '\n';
     return 1;
   }
 
@@ -391,14 +421,14 @@ int build_package(
     const draft::JudgmentVerificationPolicy &judgment_policy) {
   draft::SourceManager sources;
   draft::DiagnosticSink diagnostics;
-  std::error_code path_error;
-  const std::filesystem::path absolute_directory =
-      std::filesystem::absolute(directory, path_error);
-  if (path_error) {
-    std::cerr << "error: cannot make package path absolute: "
-              << path_error.message() << '\n';
+  std::filesystem::path absolute_directory;
+  std::string package_path_error;
+  if (!canonical_package_directory(
+          directory, absolute_directory, package_path_error)) {
+    std::cerr << "error: " << package_path_error << '\n';
     return 1;
   }
+  std::error_code path_error;
   const draft::TargetProfile target = draft::make_aarch64_macos_profile();
   draft::CompileWorkspaceOptions compile_options;
   compile_options.target = target;
@@ -528,12 +558,11 @@ int validate_package(
     const std::vector<draft::RuntimeAssetInput> &runtime_assets) {
   draft::SourceManager sources;
   draft::DiagnosticSink diagnostics;
-  std::error_code path_error;
-  const std::filesystem::path absolute_directory =
-      std::filesystem::absolute(directory, path_error).lexically_normal();
-  if (path_error) {
-    std::cerr << "error: cannot make package path absolute: "
-              << path_error.message() << '\n';
+  std::filesystem::path absolute_directory;
+  std::string path_error;
+  if (!canonical_package_directory(
+          directory, absolute_directory, path_error)) {
+    std::cerr << "error: " << path_error << '\n';
     return 1;
   }
 
@@ -589,14 +618,14 @@ int emit_c_header_package(
     const std::optional<std::string> &requested_output) {
   draft::SourceManager sources;
   draft::DiagnosticSink diagnostics;
-  std::error_code path_error;
-  const std::filesystem::path absolute_directory =
-      std::filesystem::absolute(directory, path_error);
-  if (path_error) {
-    std::cerr << "error: cannot make package path absolute: "
-              << path_error.message() << '\n';
+  std::filesystem::path absolute_directory;
+  std::string package_path_error;
+  if (!canonical_package_directory(
+          directory, absolute_directory, package_path_error)) {
+    std::cerr << "error: " << package_path_error << '\n';
     return 1;
   }
+  std::error_code path_error;
 
   draft::CompileWorkspaceOptions options;
   options.target = draft::make_aarch64_macos_profile();
@@ -822,12 +851,11 @@ int run_agent_command(
     bool judge_during_resolution = false) {
   draft::SourceManager sources;
   draft::DiagnosticSink diagnostics;
-  std::error_code path_error;
-  const std::filesystem::path absolute_directory =
-      std::filesystem::absolute(directory, path_error);
-  if (path_error) {
-    std::cerr << "error: cannot make package path absolute: "
-              << path_error.message() << '\n';
+  std::filesystem::path absolute_directory;
+  std::string path_error;
+  if (!canonical_package_directory(
+          directory, absolute_directory, path_error)) {
+    std::cerr << "error: " << path_error << '\n';
     return 1;
   }
 
