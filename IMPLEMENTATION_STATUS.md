@@ -64,6 +64,15 @@ and both byte-order variants of every fixed integer and floating storage scalar.
 Each matrix is also executed by `static_assert`, proving the same conversions
 and equality rules in the compile-time evaluator before native execution.
 
+Numeric operator conformance now instantiates every unary and binary operation
+and all ten integer compound assignments at every Draft integer identity; the
+four numeric compound assignments likewise run at every floating width. One
+matrix executes through `static_assert` and again through launched AArch64 code.
+The native pointer matrix covers equality and contextual `nil` for `^T`,
+`[^]T`, `rawptr`, `cstring`, and procedure values, while the body-checker matrix
+rejects operators outside the closed vocabulary for scalar, aggregate, view,
+pointer, and procedure type families.
+
 Judgments now have a strict provider-neutral evidence object covering one stable
 site, its complete typed-context identity, resolved program, requested artifact
 hashes, validator identities, verdicts, rationales, and aggregate policy result.

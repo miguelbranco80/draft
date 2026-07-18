@@ -1861,6 +1861,181 @@ bad :: proc() {
                     std::string::npos);
 }
 
+void test_invalid_operator_type_matrix(TestState &state) {
+  CheckedSource invalid(R"draft(
+package bodies
+
+Record :: struct {
+    value: u32,
+}
+
+Choice :: union {
+    none,
+    some: u32,
+}
+
+Mode :: enum {
+    Zero,
+    One,
+}
+
+Other_Mode :: enum {
+    Zero,
+    One,
+}
+
+bad_bool_arithmetic :: proc(left, right: bool) -> bool {
+    return left + right
+}
+
+bad_float_remainder :: proc(left, right: f32) -> f32 {
+    return left % right
+}
+
+bad_float_bitwise :: proc(left, right: f32) -> f32 {
+    return left & right
+}
+
+bad_float_shift :: proc(left, right: f32) -> f32 {
+    return left << right
+}
+
+bad_storage_logical :: proc(left, right: b32) -> b32 {
+    return left && right
+}
+
+bad_storage_order :: proc(left, right: b32) -> bool {
+    return left < right
+}
+
+bad_endian_arithmetic :: proc(left, right: u32be) -> u32be {
+    return left + right
+}
+
+bad_endian_order :: proc(left, right: u32be) -> bool {
+    return left < right
+}
+
+bad_enum_arithmetic :: proc(left, right: Mode) -> Mode {
+    return left + right
+}
+
+bad_enum_pair :: proc(left: Mode, right: Other_Mode) -> bool {
+    return left == right
+}
+
+bad_rune_arithmetic :: proc(left, right: rune) -> rune {
+    return left + right
+}
+
+bad_record_equality :: proc(left, right: Record) -> bool {
+    return left == right
+}
+
+bad_union_equality :: proc(left, right: Choice) -> bool {
+    return left == right
+}
+
+bad_tuple_equality :: proc(left, right: (u32, u32)) -> bool {
+    return left == right
+}
+
+bad_array_equality :: proc(left, right: [2]u32) -> bool {
+    return left == right
+}
+
+bad_slice_equality :: proc(left, right: []u32) -> bool {
+    return left == right
+}
+
+bad_string_equality :: proc(left, right: string) -> bool {
+    return left == right
+}
+
+bad_pointer_order :: proc(left, right: ^u32) -> bool {
+    return left < right
+}
+
+bad_pointer_pair :: proc(left: ^u32, right: ^u64) -> bool {
+    return left == right
+}
+
+bad_procedure_order :: proc(
+    left, right: proc(value: u32) -> u32,
+) -> bool {
+    return left < right
+}
+
+bad_procedure_pair :: proc(
+    left: proc(value: u32) -> u32,
+    right: proc(value: u64) -> u64,
+) -> bool {
+    return left == right
+}
+
+bad_raw_dereference :: proc(value: rawptr) -> u8 {
+    return value^
+}
+
+bad_temporary_address :: proc(left, right: u32) -> ^u32 {
+    return &(left + right)
+}
+
+bad_logical_not :: proc(value: u32) -> u32 {
+    return !value
+}
+
+bad_bitwise_not :: proc(value: f32) -> f32 {
+    return ~value
+}
+
+bad_numeric_negation :: proc(value: bool) -> bool {
+    return -value
+}
+
+bad_integer_logical :: proc(left, right: u32) -> u32 {
+    return left && right
+}
+
+bad_mixed_integer :: proc(left: u32, right: u64) -> u32 {
+    return left + right
+}
+
+bad_mixed_numeric :: proc(left: f32, right: i32) -> f32 {
+    return left + right
+}
+)draft");
+
+  if (invalid.diagnostics.error_count() != 29) {
+    std::cerr << draft::render_diagnostics(
+        invalid.sources, invalid.diagnostics);
+  }
+  EXPECT(state, !invalid.bodies.ok);
+  EXPECT(state, invalid.diagnostics.error_count() == 29);
+  const std::string rendered =
+      draft::render_diagnostics(invalid.sources, invalid.diagnostics);
+  EXPECT(state, rendered.find("numeric operands require one common type") !=
+                    std::string::npos);
+  EXPECT(state, rendered.find("operator requires integer operands") !=
+                    std::string::npos);
+  EXPECT(state, rendered.find("shift requires integer operands") !=
+                    std::string::npos);
+  EXPECT(state, rendered.find("logical operators require matching bool operands") !=
+                    std::string::npos);
+  EXPECT(state, rendered.find("comparison is not defined for operand types") !=
+                    std::string::npos);
+  EXPECT(state, rendered.find("dereference requires a typed data pointer") !=
+                    std::string::npos);
+  EXPECT(state, rendered.find("address-of requires addressable storage") !=
+                    std::string::npos);
+  EXPECT(state, rendered.find("logical not requires bool") !=
+                    std::string::npos);
+  EXPECT(state, rendered.find("bitwise not requires an integer") !=
+                    std::string::npos);
+  EXPECT(state, rendered.find("unary numeric operator requires a number") !=
+                    std::string::npos);
+}
+
 void test_numeric_context_boundaries(TestState &state) {
   CheckedSource valid(R"draft(
 package bodies
@@ -2017,6 +2192,7 @@ int main() {
   test_integer_shift_count_types(state);
   test_conditional_context_from_either_branch(state);
   test_compound_assignment_operators(state);
+  test_invalid_operator_type_matrix(state);
   test_numeric_context_boundaries(state);
   test_builtin_context_value(state);
 

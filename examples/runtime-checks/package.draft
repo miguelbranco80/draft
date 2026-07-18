@@ -266,6 +266,80 @@ float_operator_matrix[T: float] :: proc(left, right: T) -> bool {
         right <= left
 }
 
+integer_compound_matrix[T: integer] :: proc(
+    start, operand: T,
+    count: u8,
+) -> bool {
+    // Run every compound form in one reversible sequence. The intermediate
+    // values stay representable in i8, so the same source can instantiate at
+    // every integer identity without accidentally testing overflow instead.
+    value := start
+    value += operand
+    value -= operand
+    value *= operand
+    value /= operand
+    value %= 5
+    value |= 6
+    value &= 3
+    value ^= 1
+    value <<= count
+    value >>= count
+    return value == 2
+}
+
+float_compound_matrix[T: float] :: proc(start, operand: T) -> bool {
+    // Six and three are exactly representable at every supported float width.
+    value := start
+    value += operand
+    value -= operand
+    value *= operand
+    value /= operand
+    return value == start
+}
+
+complete_numeric_operator_matrix :: proc() -> bool {
+    // This deliberately duplicates the concrete runtime instantiations in
+    // main. static_assert sends the same closed vocabulary through the typed
+    // compile-time interpreter, while main sends it through HIR, MIR, LLVM,
+    // and the launched AArch64 process.
+    return integer_operator_matrix[i8](6, 3, 1) &&
+        integer_operator_matrix[i16](6, 3, 1) &&
+        integer_operator_matrix[i32](6, 3, 1) &&
+        integer_operator_matrix[i64](6, 3, 1) &&
+        integer_operator_matrix[i128](6, 3, 1) &&
+        integer_operator_matrix[u8](6, 3, 1) &&
+        integer_operator_matrix[u16](6, 3, 1) &&
+        integer_operator_matrix[u32](6, 3, 1) &&
+        integer_operator_matrix[u64](6, 3, 1) &&
+        integer_operator_matrix[u128](6, 3, 1) &&
+        integer_operator_matrix[int](6, 3, 1) &&
+        integer_operator_matrix[uint](6, 3, 1) &&
+        integer_operator_matrix[isize](6, 3, 1) &&
+        integer_operator_matrix[usize](6, 3, 1) &&
+        integer_operator_matrix[uintptr](6, 3, 1) &&
+        float_operator_matrix[f16](6.0, 3.0) &&
+        float_operator_matrix[f32](6.0, 3.0) &&
+        float_operator_matrix[f64](6.0, 3.0) &&
+        integer_compound_matrix[i8](6, 3, 1) &&
+        integer_compound_matrix[i16](6, 3, 1) &&
+        integer_compound_matrix[i32](6, 3, 1) &&
+        integer_compound_matrix[i64](6, 3, 1) &&
+        integer_compound_matrix[i128](6, 3, 1) &&
+        integer_compound_matrix[u8](6, 3, 1) &&
+        integer_compound_matrix[u16](6, 3, 1) &&
+        integer_compound_matrix[u32](6, 3, 1) &&
+        integer_compound_matrix[u64](6, 3, 1) &&
+        integer_compound_matrix[u128](6, 3, 1) &&
+        integer_compound_matrix[int](6, 3, 1) &&
+        integer_compound_matrix[uint](6, 3, 1) &&
+        integer_compound_matrix[isize](6, 3, 1) &&
+        integer_compound_matrix[usize](6, 3, 1) &&
+        integer_compound_matrix[uintptr](6, 3, 1) &&
+        float_compound_matrix[f16](6.0, 3.0) &&
+        float_compound_matrix[f32](6.0, 3.0) &&
+        float_compound_matrix[f64](6.0, 3.0)
+}
+
 scale :: proc(value: f64) -> f64 {
     return value * 0.5
 }
@@ -573,6 +647,25 @@ pointer_distance :: proc(value: [^]i64, count: isize) -> isize {
     return ptr_sub(ptr_offset(value, count), value)
 }
 
+pointer_equality_matrix :: proc(value: ^u8) -> bool {
+    // Draft defines address equality independently for each data-pointer
+    // family. No cross-family implicit comparison is involved here: each cast
+    // is compared only with another value of its own exact type.
+    many := cast[[^]u8](value)
+    raw_bits := cast[rawptr](value)
+    terminated := cast[cstring](value)
+    return value != nil && value == value &&
+        many != nil && many == many &&
+        raw_bits != nil && raw_bits == raw_bits &&
+        terminated != nil && terminated == terminated
+}
+
+procedure_equality_matrix :: proc(
+    callback: proc(value: i64) -> i64,
+) -> bool {
+    return callback != nil && callback == increment_value
+}
+
 observe_boolean :: proc(count: ^usize, value: bool) -> bool {
     count^ += 1
     return value
@@ -727,6 +820,7 @@ main :: proc() {
     static_assert(boolean_storage_matrix())
     static_assert(endian_integer_matrix())
     static_assert(endian_float_matrix())
+    static_assert(complete_numeric_operator_matrix())
     assert(len(Compile_Time_Text) == 3)
     assert(Compile_Time_Text[0] == cast[u8]('r'))
     assert(Compile_Time_Text[2] == cast[u8]('f'))
@@ -789,6 +883,24 @@ main :: proc() {
     assert(float_operator_matrix[f16](6.0, 3.0))
     assert(float_operator_matrix[f32](6.0, 3.0))
     assert(float_operator_matrix[f64](6.0, 3.0))
+    assert(integer_compound_matrix[i8](6, 3, 1))
+    assert(integer_compound_matrix[i16](6, 3, 1))
+    assert(integer_compound_matrix[i32](6, 3, 1))
+    assert(integer_compound_matrix[i64](6, 3, 1))
+    assert(integer_compound_matrix[i128](6, 3, 1))
+    assert(integer_compound_matrix[u8](6, 3, 1))
+    assert(integer_compound_matrix[u16](6, 3, 1))
+    assert(integer_compound_matrix[u32](6, 3, 1))
+    assert(integer_compound_matrix[u64](6, 3, 1))
+    assert(integer_compound_matrix[u128](6, 3, 1))
+    assert(integer_compound_matrix[int](6, 3, 1))
+    assert(integer_compound_matrix[uint](6, 3, 1))
+    assert(integer_compound_matrix[isize](6, 3, 1))
+    assert(integer_compound_matrix[usize](6, 3, 1))
+    assert(integer_compound_matrix[uintptr](6, 3, 1))
+    assert(float_compound_matrix[f16](6.0, 3.0))
+    assert(float_compound_matrix[f32](6.0, 3.0))
+    assert(float_compound_matrix[f64](6.0, 3.0))
     assert(scale(3.0) == 1.5)
     assert(mixed_untyped_numeric(true) == 3.5)
     assert(mixed_untyped_numeric(false) == 5.0)
@@ -921,6 +1033,9 @@ main :: proc() {
 
     assert(ptr_offset(multi, 2)^ == 42)
     assert(pointer_distance(multi, 2) == 2)
+    pointer_byte: u8 = 0
+    assert(pointer_equality_matrix(&pointer_byte))
+    assert(procedure_equality_matrix(increment_value))
     assert(last[3](pointer_values) == 42)
     assert(last(pointer_values) == 42)
 
