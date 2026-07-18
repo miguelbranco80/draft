@@ -60,6 +60,17 @@ struct AgentTargetContext {
   std::vector<std::string> assembly_instructions;
 };
 
+// Documentation supplied as semantic context remains associated with its
+// package or enclosing declaration. Exact attachment bytes stay parallel to
+// their verified identities so an adapter needs no workspace filesystem access.
+struct AgentDocumentationContext {
+  std::string anchor_name;
+  std::string text;
+  std::vector<AttachedFile> files;
+  std::vector<std::string> file_contents;
+  Sha256Digest record_digest;
+};
+
 // AgentObligation is the immutable input side of one provider transaction.
 // site_identity deliberately excludes prompt and type content so ordinary edits
 // stale the input digest without automatically baptizing a new site. occurrence
@@ -84,6 +95,7 @@ struct AgentObligation {
   std::string expected_type_text;
   std::vector<AgentVisibleBinding> visible_bindings;
   AgentTargetContext target;
+  std::vector<AgentDocumentationContext> documentation;
 };
 
 struct AgentObligationResult {

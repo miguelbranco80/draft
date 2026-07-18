@@ -188,13 +188,24 @@ public:
         continue;
       }
       const SyntaxNode &node = tree->node(site.syntax.node);
+      const bool package_documentation =
+          *kind == AgentConstructKind::Documentation &&
+          is_package_documentation(site);
+      if (*kind == AgentConstructKind::Documentation &&
+          !site.anchor.is_valid() && !package_documentation) {
+        diagnostics_.error(
+            node.range,
+            "documentation must be package documentation or immediately "
+            "precede a declaration");
+      }
       AgentRecord record;
       record.kind = *kind;
       record.syntax = site.syntax;
       record.scope = site.scope;
       record.anchor = site.anchor;
       record.expected_type = site.expected_type;
-      record.public_interface = is_public_documentation(site);
+      record.public_interface =
+          is_public_documentation(site, package_documentation);
       decode_text(*tree, node, record);
       collect_attachments(*tree, node, record);
       canonicalize_files(record);
@@ -213,13 +224,22 @@ private:
     return nullptr;
   }
 
-  [[nodiscard]] bool is_public_documentation(const SemanticSite &site) const {
+  [[nodiscard]] bool is_package_documentation(
+      const SemanticSite &site) const {
+    const SyntaxTree *tree = find_tree(site.syntax.file);
+    if (tree == nullptr) return false;
+    const SyntaxNode &root = tree->node(tree->root());
+    return std::find(
+        root.children.begin(), root.children.end(), site.syntax.node) !=
+        root.children.end();
+  }
+
+  [[nodiscard]] bool is_public_documentation(
+      const SemanticSite &site, bool package_documentation) const {
     if (site.kind != SemanticSiteKind::Documentation) return false;
+    if (package_documentation) return true;
     if (!site.anchor.is_valid()) {
-      // Parser placement permits unanchored documentation only in the package
-      // header. A future placement pass will distinguish recovered invalid docs;
-      // the root collector currently creates no other unanchored selected docs.
-      return true;
+      return false;
     }
     return package_.symbols.symbol(site.anchor).visibility == Visibility::Public;
   }

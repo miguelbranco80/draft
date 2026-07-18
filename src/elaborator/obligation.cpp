@@ -161,6 +161,29 @@ void hash_field(Sha256 &hash, std::string_view value) {
   return result;
 }
 
+// Package documentation is universal context. Documentation anchored to the
+// enclosing declaration is also relevant to every site inside that declaration.
+// Wider declaration-dependency closure is a separate expansion of this format;
+// this rule is positional, deterministic, and already required by Draft 1.
+[[nodiscard]] std::vector<AgentDocumentationContext> documentation_context(
+    const SemanticPackage &package,
+    const AgentMetadataResult &metadata,
+    const AgentRecord &site) {
+  std::vector<AgentDocumentationContext> result;
+  for (const AgentRecord &record : metadata.records) {
+    if (record.kind != AgentConstructKind::Documentation) continue;
+    if (record.anchor.is_valid() && record.anchor != site.anchor) continue;
+    result.push_back({
+        anchor_name(package, record.anchor),
+        record.text,
+        record.files,
+        record.file_contents,
+        record.record_digest,
+    });
+  }
+  return result;
+}
+
 // Walks lexical scopes from inner to outer. The first declaration of a name is
 // the visible one; later declarations in the same block are excluded by source
 // position. Sorting happens only after shadowing, so it cannot change meaning.
@@ -282,6 +305,22 @@ void hash_field(Sha256 &hash, std::string_view value) {
        obligation.target.assembly_instructions) {
     hash_field(hash, instruction);
   }
+  hash_u64(
+      hash,
+      static_cast<std::uint64_t>(obligation.documentation.size()));
+  for (const AgentDocumentationContext &documentation :
+       obligation.documentation) {
+    hash_field(hash, documentation.anchor_name);
+    hash_field(hash, documentation.text);
+    hash.update(documentation.record_digest.bytes);
+    hash_u64(
+        hash, static_cast<std::uint64_t>(documentation.files.size()));
+    for (const AttachedFile &file : documentation.files) {
+      hash_field(hash, file.relative_path);
+      hash_u64(hash, file.size);
+      hash.update(file.digest.bytes);
+    }
+  }
   hash_field(hash, target.facts.identity);
   hash_u64(hash, static_cast<std::uint64_t>(target.facts.simd_shapes.size()));
   for (const TargetSimdShape &shape : target.facts.simd_shapes) {
@@ -384,6 +423,7 @@ AgentObligationResult build_agent_obligations(
     obligation.visible_bindings = visible_bindings(
         identity, loaded, package, record, diagnostics);
     obligation.target = target_context(target);
+    obligation.documentation = documentation_context(package, metadata, record);
     obligation.site_identity = "site-" + site_identity_digest(obligation).hex();
     obligation.input_digest = input_digest(obligation, target);
     result.obligations.push_back(std::move(obligation));

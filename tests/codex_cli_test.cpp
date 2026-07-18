@@ -81,9 +81,11 @@ struct TemporaryFixture {
         "test -f \"$schema\" || exit 25\n"
         "test -f \"$work/attachment-00000000.bin\" || exit 26\n"
         "test \"$(cat \"$work/attachment-00000000.bin\")\" = attachment-bytes || exit 27\n"
+        "test -f \"$work/documentation-00000000-attachment-00000000.bin\" || exit 29\n"
+        "test \"$(cat \"$work/documentation-00000000-attachment-00000000.bin\")\" = design-bytes || exit 30\n"
         "prompt=$(cat)\n"
         "case \"$prompt\" in\n"
-        "  *REQUEST_FORMAT*draft-synthesis-request-v2*EXPECTED_TYPE_TEXT*i64*TARGET_IDENTITY*draft-aarch64-macos-v5*AUTHOR_PROMPT*make-answer*BINDING_NAME*visible_name*BINDING_TYPE_TEXT*u32*) ;;\n"
+        "  *REQUEST_FORMAT*draft-synthesis-request-v3*EXPECTED_TYPE_TEXT*i64*TARGET_IDENTITY*draft-aarch64-macos-v5*DOCUMENTATION*DOC_ANCHOR*visible_name*DOC_TEXT*design-context*DOC_ATTACHMENT_PATH*DESIGN.md*AUTHOR_PROMPT*make-answer*BINDING_NAME*visible_name*BINDING_TYPE_TEXT*u32*) ;;\n"
         "  *) exit 28 ;;\n"
         "esac\n"
         "printf '%s' '{\"source\":\"40 + 2\\n\"}' > \"$output\"\n";
@@ -121,6 +123,17 @@ draft::SynthesisRequest make_request() {
   request.obligation.target.assembly_architecture = "aarch64";
   request.obligation.target.assembly_dialect = "draft-aarch64-apple-v2";
   request.obligation.target.assembly_instructions = {"add"};
+  draft::AgentDocumentationContext documentation;
+  documentation.anchor_name = "visible_name";
+  documentation.text = "design-context";
+  documentation.record_digest = draft::sha256("documentation");
+  draft::AttachedFile documentation_file;
+  documentation_file.relative_path = "DESIGN.md";
+  documentation_file.size = std::string_view("design-bytes").size();
+  documentation_file.digest = draft::sha256("design-bytes");
+  documentation.files.push_back(std::move(documentation_file));
+  documentation.file_contents.push_back("design-bytes");
+  request.obligation.documentation.push_back(std::move(documentation));
   draft::AgentVisibleBinding binding;
   binding.name = "visible_name";
   binding.kind = draft::SymbolKind::Constant;
@@ -148,7 +161,7 @@ void test_adapter_contract_and_identity(TestState &state) {
   const draft::SynthesisProvider provider =
       draft::configure_codex_cli_provider(options, provider_state, diagnostics);
   EXPECT(state, provider.synthesize != nullptr);
-  EXPECT(state, provider.provider_identity == "openai-codex-cli-v2");
+  EXPECT(state, provider.provider_identity == "openai-codex-cli-v3");
   EXPECT(state, provider.model_identity == "fixture-model");
   EXPECT(state, provider.configuration_identity ==
       provider_state.configuration_identity);

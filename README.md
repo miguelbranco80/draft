@@ -164,8 +164,10 @@ installed, then statement, expression, and assembly sites run in the later body
 stage. Provider requests carry canonical expected and visible-binding type
 spellings plus explicit target, SIMD, and parsed-assembly facts; digests remain
 verification identities rather than opaque substitutes for usable context.
-Proposed and stored source is barred from introducing another `...` or
-`judge`. A successful resolution writes exact content-addressed expansion bytes
+Package documentation reaches every site, and enclosing-declaration docs reach
+sites inside that declaration, with exact attachment bytes copied into the
+isolated request. Proposed and stored source is barred from introducing another
+`...` or `judge`. A successful resolution writes exact content-addressed expansion bytes
 and one canonical manifest atomically; normal checks and builds reproduce both
 stages from pins without contacting a model. Before that manifest rename, the
 resolver compiles selected typed Test and Benchmark definitions against the

@@ -40,7 +40,7 @@ namespace {
 constexpr std::uintmax_t kMaximumCodexOutputBytes = 64U * 1024U * 1024U;
 constexpr std::uintmax_t kMaximumCodexLogBytes = 4U * 1024U * 1024U;
 constexpr std::string_view kPromptContractIdentity =
-    "draft-codex-synthesis-prompt-v2";
+    "draft-codex-synthesis-prompt-v3";
 constexpr std::string_view kOutputSchema =
     "{\n"
     "  \"type\": \"object\",\n"
@@ -189,6 +189,19 @@ void append_field(
   return "attachment-" + std::string(zero_count, '0') + digits + ".bin";
 }
 
+[[nodiscard]] std::string documentation_attachment_name(
+    std::size_t documentation_index, std::size_t attachment_index) {
+  std::string documentation = std::to_string(documentation_index);
+  std::string attachment = std::to_string(attachment_index);
+  const std::size_t documentation_zeroes =
+      documentation.size() < 8 ? 8 - documentation.size() : 0;
+  const std::size_t attachment_zeroes =
+      attachment.size() < 8 ? 8 - attachment.size() : 0;
+  return "documentation-" + std::string(documentation_zeroes, '0') +
+      documentation + "-attachment-" +
+      std::string(attachment_zeroes, '0') + attachment + ".bin";
+}
+
 // Constructs the complete model instruction. The output contract is repeated
 // in prose as well as enforced by the CLI JSON Schema. No surface or generated
 // workspace path is exposed.
@@ -265,6 +278,47 @@ void append_field(
   for (const std::string &instruction :
        request.obligation.target.assembly_instructions) {
     append_field("ASSEMBLY_INSTRUCTION", instruction, prompt);
+  }
+  prompt += "DOCUMENTATION ";
+  append_u64(
+      static_cast<std::uint64_t>(request.obligation.documentation.size()),
+      prompt);
+  for (std::size_t documentation_index = 0;
+       documentation_index < request.obligation.documentation.size();
+       ++documentation_index) {
+    const AgentDocumentationContext &documentation =
+        request.obligation.documentation[documentation_index];
+    if (documentation.files.size() != documentation.file_contents.size()) {
+      provider_error(
+          diagnostics,
+          "Codex documentation attachment identities are inconsistent");
+      return false;
+    }
+    append_field("DOC_ANCHOR", documentation.anchor_name, prompt);
+    append_field("DOC_TEXT", documentation.text, prompt);
+    append_field("DOC_SHA256", documentation.record_digest.hex(), prompt);
+    prompt += "DOC_ATTACHMENTS ";
+    append_u64(
+        static_cast<std::uint64_t>(documentation.files.size()), prompt);
+    for (std::size_t attachment_index = 0;
+         attachment_index < documentation.files.size();
+         ++attachment_index) {
+      const AttachedFile &file = documentation.files[attachment_index];
+      const std::string &contents =
+          documentation.file_contents[attachment_index];
+      if (contents.size() != file.size || sha256(contents) != file.digest) {
+        provider_error(
+            diagnostics,
+            "Codex documentation attachment identity is inconsistent");
+        return false;
+      }
+      const std::string name = documentation_attachment_name(
+          documentation_index, attachment_index);
+      if (!write_file(directory / name, contents, diagnostics)) return false;
+      append_field("DOC_ATTACHMENT_PATH", file.relative_path, prompt);
+      append_field("DOC_ATTACHMENT_FILE", name, prompt);
+      append_field("DOC_ATTACHMENT_SHA256", file.digest.hex(), prompt);
+    }
   }
   append_field("AUTHOR_PROMPT", request.prompt, prompt);
   prompt += "VISIBLE_BINDINGS ";
@@ -595,7 +649,7 @@ SynthesisProvider configure_codex_cli_provider(
   if (!executable_digest.has_value()) return {};
 
   Sha256 configuration;
-  configuration.update("draft.codex-cli-provider.v2");
+  configuration.update("draft.codex-cli-provider.v3");
   configuration.update(executable_digest->bytes);
   configuration.update(options.model);
   configuration.update(kPromptContractIdentity);
@@ -609,7 +663,7 @@ SynthesisProvider configure_codex_cli_provider(
       "codex-config-" + configuration.finalize().hex();
 
   SynthesisProvider provider;
-  provider.provider_identity = "openai-codex-cli-v2";
+  provider.provider_identity = "openai-codex-cli-v3";
   provider.model_identity = state.model;
   provider.configuration_identity = state.configuration_identity;
   provider.state = &state;

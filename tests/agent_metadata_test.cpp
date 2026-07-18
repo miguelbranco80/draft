@@ -59,6 +59,8 @@ docs "Package design\ncontext."
     file "DESIGN.md"
     folder "notes"
 
+Package_Context_Version :: 1
+
 docs "Public operation."
     file "DESIGN.md"
 pub work :: proc(
@@ -195,9 +197,103 @@ void test_agent_records(TestState &state) {
     EXPECT(state,
         synthesis_obligation.target.assembly_dialect ==
             "draft-aarch64-apple-v2");
+    EXPECT(state, synthesis_obligation.documentation.size() == 2);
+    if (synthesis_obligation.documentation.size() == 2) {
+      EXPECT(state,
+          synthesis_obligation.documentation[0].anchor_name.empty());
+      EXPECT(state,
+          synthesis_obligation.documentation[0].text ==
+              "Package design\ncontext.");
+      EXPECT(state,
+          synthesis_obligation.documentation[0].files.size() == 3);
+      EXPECT(state,
+          synthesis_obligation.documentation[1].anchor_name == "work");
+      EXPECT(state,
+          synthesis_obligation.documentation[1].text == "Public operation.");
+      EXPECT(state,
+          synthesis_obligation.documentation[1].file_contents.size() == 1);
+      if (synthesis_obligation.documentation[1].file_contents.size() == 1) {
+        EXPECT(state,
+            synthesis_obligation.documentation[1].file_contents[0] ==
+                "stable design bytes\n");
+      }
+    }
     EXPECT(state,
         synthesis_obligation.input_digest != judgment_obligation.input_digest);
+
+    // Documentation is real synthesis input. Changing an attached design file
+    // must stale the obligation even though the Draft source and site identity
+    // are unchanged.
+    write_file(temporary.path / "DESIGN.md", "changed design bytes\n");
+    const draft::AgentMetadataResult changed_metadata =
+        draft::collect_agent_metadata(
+            sources,
+            loaded.package,
+            semantics.package,
+            policy,
+            diagnostics);
+    const draft::AgentObligationResult changed_obligations =
+        draft::build_agent_obligations(
+            {"workspace", "context"},
+            sources,
+            loaded.package,
+            semantics.package,
+            changed_metadata,
+            target,
+            diagnostics);
+    EXPECT(state, changed_metadata.ok);
+    EXPECT(state, changed_obligations.ok);
+    EXPECT(state, changed_obligations.obligations.size() == 2);
+    if (changed_obligations.obligations.size() == 2) {
+      EXPECT(state,
+          changed_obligations.obligations[1].site_identity ==
+              synthesis_obligation.site_identity);
+      EXPECT(state,
+          changed_obligations.obligations[1].input_digest !=
+              synthesis_obligation.input_digest);
+    }
   }
+}
+
+void test_dangling_documentation_is_rejected(TestState &state) {
+  TemporaryPackage temporary;
+  write_file(
+      temporary.path / "package.draft",
+      R"draft(package invalid_docs
+
+Package_Context_Version :: 1
+
+docs "This does not immediately precede a declaration."
+judge "The judgment interrupts documentation attachment."
+
+work :: proc() {
+}
+)draft");
+
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  const draft::TargetProfile target = draft::make_aarch64_macos_profile();
+  draft::PackageLoadOptions load_options;
+  load_options.file_tag = target.facts.file_tag;
+  const draft::PackageLoadResult loaded = draft::load_package(
+      sources, temporary.path.string(), load_options, diagnostics);
+  const draft::SemanticAnalysisResult semantics =
+      draft::analyze_package_semantics(
+          sources, loaded.package, target.facts, diagnostics);
+  const draft::AgentMetadataResult metadata = draft::collect_agent_metadata(
+      sources,
+      loaded.package,
+      semantics.package,
+      {},
+      diagnostics);
+
+  EXPECT(state, loaded.ok);
+  EXPECT(state, semantics.ok);
+  EXPECT(state, !metadata.ok);
+  EXPECT(state,
+      draft::render_diagnostics(sources, diagnostics).find(
+          "documentation must be package documentation") !=
+          std::string::npos);
 }
 
 } // namespace
@@ -205,6 +301,7 @@ void test_agent_records(TestState &state) {
 int main() {
   TestState state;
   test_agent_records(state);
+  test_dangling_documentation_is_rejected(state);
   if (state.failures != 0) {
     std::cerr << state.failures << " agent metadata expectation(s) failed\n";
     return EXIT_FAILURE;
