@@ -496,7 +496,11 @@ private:
           semantic_.types.builtins().bool_type,
           range);
       trap_unless(valid, range);
-    } else if (target_type.kind == TypeKind::Enum) {
+    } else if (semantic_.types.type(target).kind == TypeKind::Enum) {
+      // Validation belongs to the backing-value -> enum conversion. A cast
+      // from an already valid enum into a distinct wrapper has enum-shaped
+      // runtime storage, but it does not create a new enum value and the
+      // wrapper owns no separate alternative table.
       MirValueId valid;
       for (const AggregateMember &member : semantic_.aggregate_members) {
         const Symbol &owner = semantic_.symbols.symbol(member.owner);
@@ -677,8 +681,8 @@ private:
       }
     }
     if (!expression.operands.empty()) {
-      const Type base_type =
-          semantic_.types.type(hir_.expression(expression.operands.front()).type);
+      const Type base_type = runtime_scalar_type(
+          hir_.expression(expression.operands.front()).type);
       const std::optional<std::uint64_t> index = expression.constant.integer.to_u64();
       if (index.has_value() && *index < base_type.member_offsets.size()) {
         return base_type.member_offsets[static_cast<std::size_t>(*index)];
@@ -756,7 +760,7 @@ private:
 
   [[nodiscard]] MirValueId length(
       MirValueId base, TypeId base_type, SourceRange range) {
-    const Type type = semantic_.types.type(base_type);
+    const Type type = runtime_scalar_type(base_type);
     if (type.kind == TypeKind::Array) {
       return usize_constant(type.element_count, range);
     }
@@ -962,7 +966,7 @@ private:
   [[nodiscard]] std::uint64_t aggregate_operand_offset(
       const HirExpression &expression,
       std::size_t index) const {
-    const Type type = semantic_.types.type(expression.type);
+    const Type type = runtime_scalar_type(expression.type);
     if (index < expression.operand_members.size() &&
         expression.operand_members[index].is_valid()) {
       for (const AggregateMember &member : semantic_.aggregate_members) {
@@ -1261,7 +1265,7 @@ private:
       instruction.range = expression.range;
       instruction.type = expression.type;
       instruction.symbol = expression.symbol;
-      const Type aggregate_type = semantic_.types.type(expression.type);
+      const Type aggregate_type = runtime_scalar_type(expression.type);
       if (aggregate_type.kind == TypeKind::TaggedUnion) {
         const std::optional<std::uint64_t> discriminator =
             union_discriminator(expression.symbol);
@@ -1667,7 +1671,7 @@ private:
       TypeId iterable_type,
       MirValueId index,
       SourceRange range) {
-    const Type type = semantic_.types.type(iterable_type);
+    const Type type = runtime_scalar_type(iterable_type);
     MirValueId base;
     if (type.kind == TypeKind::Array) {
       base = local_address(iterable_local, range);
@@ -1690,7 +1694,7 @@ private:
     }
     const HirExpression &iterable_expression =
         hir_.expression(statement.expressions.front());
-    const Type iterable_type = semantic_.types.type(iterable_expression.type);
+    const Type iterable_type = runtime_scalar_type(iterable_expression.type);
     const MirLocalId iterable_local =
         add_temporary(iterable_expression.type, statement.range);
     const MirValueId iterable_value =
@@ -1795,7 +1799,7 @@ private:
     }
     const HirExpression &subject_expression =
         hir_.expression(statement.expressions.front());
-    const Type subject_type = semantic_.types.type(subject_expression.type);
+    const Type subject_type = runtime_scalar_type(subject_expression.type);
     const MirValueId subject = lower_expression(statement.expressions.front());
     const MirValueId switch_subject = subject_type.kind == TypeKind::TaggedUnion
         ? extract_member(

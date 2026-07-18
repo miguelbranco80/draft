@@ -1328,6 +1328,10 @@ private:
   // Resolves a member symbol by the nominal base type's owned Type scope.
   [[nodiscard]] std::optional<SymbolId> find_member(
       TypeId base, std::string_view name) const {
+    // A distinct aggregate keeps the underlying aggregate's operator
+    // vocabulary. Member selection is one of those operators: the wrapper is
+    // the base operand, while the selected field keeps its declared type.
+    base = underlying_type_id(base);
     for (const OwnedSemanticScope &owned : semantic_.owned_scopes) {
       if (semantic_.symbols.scope(owned.scope).kind != ScopeKind::Type) continue;
       const Symbol &owner = semantic_.symbols.symbol(owned.owner);
@@ -1807,6 +1811,9 @@ private:
 
   // Returns the declaration symbol owning a nominal type's Type scope.
   [[nodiscard]] std::optional<SymbolId> type_owner(TypeId type) const {
+    // Enum and tagged-union switches over a distinct wrapper still use the
+    // alternative set owned by the underlying nominal declaration.
+    type = underlying_type_id(type);
     for (const OwnedSemanticScope &owned : semantic_.owned_scopes) {
       if (semantic_.symbols.scope(owned.scope).kind == ScopeKind::Type &&
           semantic_.symbols.symbol(owned.owner).type == type) {
@@ -1868,7 +1875,7 @@ private:
     HirExpression expression;
     expression.kind = HirExpressionKind::Constant;
     expression.range = label.range;
-    expression.type = semantic_.types.type(subject_type).element;
+    expression.type = runtime_scalar_type(subject_type).element;
     expression.symbol = *alternative;
     expression.constant = ConstantValue::make_integer(
         BigInteger::from_u64(*discriminator));
@@ -3037,7 +3044,7 @@ private:
         const HirExpressionId argument =
             check_expression(tree, call.children[1], scope);
         expression.operands.push_back(argument);
-        const Type type = semantic_.types.type(hir_.expression(argument).type);
+        const Type type = runtime_scalar_type(hir_.expression(argument).type);
         if (type.kind != TypeKind::Array && type.kind != TypeKind::Slice &&
             type.kind != TypeKind::String) {
           diagnostics_.error(call.range, "len requires an array, slice, or string");
@@ -3855,7 +3862,7 @@ private:
       const HirExpression base = hir_.expression(base_id);
       const Token &selector = tree.token(node.token_end - 1);
       if (selector.kind == TokenKind::IntegerLiteral) {
-        const Type tuple = semantic_.types.type(base.type);
+        const Type tuple = runtime_scalar_type(base.type);
         const std::optional<std::int64_t> index =
             integer_literal(sources_.text(selector.range));
         if (tuple.kind != TypeKind::Tuple || !index.has_value() || *index < 0 ||
@@ -4098,7 +4105,10 @@ private:
       if (base.kind == TypeKind::Slice) {
         result = hir_.expression(base_id).type;
       } else if (base.kind == TypeKind::String) {
-        result = semantic_.types.builtins().string_type;
+        // Slicing a string has the same source and result type. Under the
+        // distinct substitution rule, a distinct string therefore remains
+        // distinct, just as a distinct slice does above.
+        result = hir_.expression(base_id).type;
       } else if (base.kind == TypeKind::Array) {
         result = semantic_.types.slice(base.element);
         // An array slice contains a pointer into the array's storage. Do not
@@ -4225,7 +4235,7 @@ private:
         diagnostics_.error(node.range, "contextual alternative requires an expected enum or union type");
         return invalid_expression(node.range);
       }
-      const TypeKind expected_kind = semantic_.types.type(expected).kind;
+      const TypeKind expected_kind = runtime_scalar_type(expected).kind;
       if (expected_kind != TypeKind::Enum && expected_kind != TypeKind::TaggedUnion) {
         diagnostics_.error(node.range, "contextual alternative expected type is not an enum or tagged union");
         return invalid_expression(node.range);
@@ -5115,7 +5125,8 @@ private:
         const HirExpressionId iterable =
             check_expression(tree, header.children.front(), scope);
         statement.expressions.push_back(iterable);
-        const Type iterable_type = semantic_.types.type(hir_.expression(iterable).type);
+        const Type iterable_type = runtime_scalar_type(
+            hir_.expression(iterable).type);
         TypeId element_type = semantic_.types.builtins().invalid;
         if (iterable_type.kind == TypeKind::Array || iterable_type.kind == TypeKind::Slice) {
           element_type = iterable_type.element;
@@ -5324,7 +5335,7 @@ private:
         const TypeId subject_type = hir_.expression(subject).type;
         const TypeKind subject_kind = is_invalid_type(subject_type)
             ? TypeKind::Invalid
-            : semantic_.types.type(subject_type).kind;
+            : runtime_scalar_type(subject_type).kind;
         if (subject_kind != TypeKind::Invalid &&
             subject_kind != TypeKind::TaggedUnion &&
             !switch_subject_type(subject_type)) {

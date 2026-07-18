@@ -1301,6 +1301,29 @@ Handle :: distinct ^u64
 Multi_Handle :: distinct [^]u64
 Callback_Handle :: distinct proc(value: u64) -> u64
 
+Stored_Pair :: struct {
+    first: u64,
+    second: u64,
+}
+
+Stored_Choice :: union {
+    none,
+    some: u64,
+}
+
+Stored_Mode :: enum u8 {
+    Zero,
+    One,
+}
+
+Pair_Handle :: distinct Stored_Pair
+Tuple_Handle :: distinct (u64, u64)
+Array_Handle :: distinct [3]u64
+Slice_Handle :: distinct []u64
+Text_Handle :: distinct string
+Choice_Handle :: distinct Stored_Choice
+Mode_Handle :: distinct Stored_Mode
+
 storage_truth :: proc(flag: bool, bits: b32) -> bool {
     encoded := cast[b32](flag)
     return encoded == cast[b32](flag) && cast[bool](bits)
@@ -1356,6 +1379,48 @@ use_handle :: proc(
 ) -> u64 {
     same := ptr_offset(value, 0)
     return same^ + values[1] + callback(1)
+}
+
+use_aggregate_handles :: proc(
+    pair: Pair_Handle,
+    tuple: Tuple_Handle,
+    array: Array_Handle,
+    slice: Slice_Handle,
+    text: Text_Handle,
+) -> u64 {
+    slice_tail: Slice_Handle = slice[1:]
+    text_tail: Text_Handle = text[1:]
+    total := pair.first + tuple.1 + array[2] + slice_tail[0]
+    for value, index in array {
+        total += value + cast[u64](index)
+    }
+    return total + cast[u64](len(text_tail))
+}
+
+use_choice_handle :: proc(value: Choice_Handle) -> u64 {
+    switch value {
+    case .some(payload):
+        return payload
+    case .none:
+        return 0
+    }
+}
+
+make_choice_handle :: proc(value: u64) -> Choice_Handle {
+    return .some(value)
+}
+
+use_mode_handle :: proc(value: Mode_Handle) -> u64 {
+    switch value {
+    case .One:
+        return 1
+    case .Zero:
+        return 0
+    }
+}
+
+make_mode_handle :: proc() -> Mode_Handle {
+    return .One
 }
 
 constant_storage :: proc() -> bool {

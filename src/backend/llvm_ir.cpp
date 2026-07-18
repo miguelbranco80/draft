@@ -2774,7 +2774,7 @@ private:
 
   [[nodiscard]] std::size_t aggregate_index(
       TypeId aggregate_type, std::uint64_t offset) const {
-    const Type &aggregate = type(aggregate_type);
+    const Type &aggregate = type(runtime_scalar_id(aggregate_type));
     if (aggregate.kind == TypeKind::Array) {
       const std::uint64_t stride = type(aggregate.element).layout.size;
       return stride == 0 ? 0 : static_cast<std::size_t>(offset / stride);
@@ -2808,7 +2808,7 @@ private:
       candidate = procedure.value(instruction.operands.front()).type;
     }
     if (!candidate.is_valid()) return std::nullopt;
-    const TypeKind kind = type(candidate).kind;
+    const TypeKind kind = runtime_scalar_kind(candidate);
     if (kind != TypeKind::TaggedUnion && kind != TypeKind::RawUnion) {
       return std::nullopt;
     }
@@ -2820,13 +2820,14 @@ private:
       const MirProcedure &procedure,
       const MirInstruction &instruction,
       std::vector<std::string> &operands) {
-    if (type(instruction.type).kind == TypeKind::TaggedUnion ||
-        type(instruction.type).kind == TypeKind::RawUnion) {
+    const TypeId storage_type = runtime_scalar_id(instruction.type);
+    if (type(storage_type).kind == TypeKind::TaggedUnion ||
+        type(storage_type).kind == TypeKind::RawUnion) {
       // Unions are represented as their exact byte-sized storage because LLVM
       // has no source-level tagged-union type. Build the value in temporary
       // memory: zeroing first gives deterministic padding and the Draft zero
       // value, then discriminator/payload stores write their typed fields.
-      const Type &aggregate_type = type(instruction.type);
+      const Type &aggregate_type = type(storage_type);
       const std::string storage = union_scratch(instruction_index);
       output_ << "  store " << llvm_type(instruction.type)
               << " zeroinitializer, ptr " << storage << ", align "
@@ -3261,7 +3262,7 @@ private:
       {
         const MirValueId aggregate_id = instruction.operands[0];
         const TypeId aggregate_type = procedure.value(aggregate_id).type;
-        const TypeKind aggregate_kind = type(aggregate_type).kind;
+        const TypeKind aggregate_kind = runtime_scalar_kind(aggregate_type);
         if (aggregate_kind == TypeKind::TaggedUnion ||
             aggregate_kind == TypeKind::RawUnion) {
           // The source is an opaque byte aggregate in LLVM. Materializing it
@@ -3371,7 +3372,10 @@ private:
       }
       const MirValueId low_id = instruction.operands[1];
       const MirValueId high_id = instruction.operands[2];
-      const Type &slice_type = type(instruction.type);
+      // The result may retain a distinct slice or string identity. Stride is a
+      // property of its underlying view, not of the wrapper's `element` link
+      // (which names the whole underlying type).
+      const Type &slice_type = type(runtime_scalar_id(instruction.type));
       // A Draft string is the same physical {data,len} view as []u8 but its
       // immutability is represented by TypeKind::String rather than an element
       // TypeId. Its byte stride is therefore explicit here.

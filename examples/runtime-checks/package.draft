@@ -26,6 +26,13 @@ Truth :: distinct bool
 Handle :: distinct ^i64
 Multi_Handle :: distinct [^]i64
 Callback_Handle :: distinct proc(value: i64) -> i64
+Pair_Handle :: distinct Pair[i64, i64]
+Tuple_Handle :: distinct (i64, i64)
+Array_Handle :: distinct [3]i64
+Slice_Handle :: distinct []i64
+Text_Handle :: distinct string
+Outcome_Handle :: distinct Outcome
+Code_Handle :: distinct Code
 
 Pair[T: type, U: type] :: struct {
     first: T,
@@ -185,6 +192,55 @@ switch_handle :: proc(value: Handle) -> i64 {
 
 nil_callback_handle :: proc(value: Callback_Handle) -> bool {
     return value == nil
+}
+
+aggregate_handle_total :: proc(
+    pair: Pair_Handle,
+    tuple: Tuple_Handle,
+    array: Array_Handle,
+    slice: Slice_Handle,
+    text: Text_Handle,
+) -> i64 {
+    slice_tail: Slice_Handle = slice[1:]
+    text_tail: Text_Handle = text[1:]
+    assert(pair.first == 10)
+    assert(tuple.1 == 20)
+    assert(array[2] == 42)
+    assert(slice_tail[0] == 20)
+    assert(len(text_tail) == 4)
+    total := pair.first + tuple.1 + array[2] + slice_tail[0]
+    for value, index in array {
+        total += value + cast[i64](index)
+    }
+    return total + cast[i64](len(text_tail))
+}
+
+read_outcome_handle :: proc(value: Outcome_Handle) -> i64 {
+    switch value {
+    case .value(payload):
+        return payload
+    case .failure(_):
+        return -1
+    case .empty:
+        return 0
+    }
+}
+
+make_outcome_handle :: proc(value: i64) -> Outcome_Handle {
+    return .value(value)
+}
+
+read_code_handle :: proc(value: Code_Handle) -> i64 {
+    switch value {
+    case .Seven:
+        return 7
+    case .Zero:
+        return 0
+    }
+}
+
+make_code_handle :: proc() -> Code_Handle {
+    return .Seven
 }
 
 switch_integer :: proc(value: i64) -> i64 {
@@ -454,6 +510,26 @@ main :: proc() {
     assert(multi_handle[2] == 42)
     assert(ptr_sub(ptr_offset(multi_handle, 2), multi_handle) == 2)
     assert(multi_handle[:3][1] == 20)
+    raw_pair: Pair[i64, i64] = Pair[i64, i64]{first = 10, second = 0}
+    pair_handle := cast[Pair_Handle](raw_pair)
+    raw_tuple: (i64, i64) = (0, 20)
+    tuple_handle := cast[Tuple_Handle](raw_tuple)
+    array_handle := cast[Array_Handle](pointer_values)
+    slice_handle := cast[Slice_Handle](pointer_values[:])
+    text_handle := cast[Text_Handle]("draft")
+    assert(aggregate_handle_total(
+        pair_handle,
+        tuple_handle,
+        array_handle,
+        slice_handle,
+        text_handle,
+    ) == 171)
+    raw_outcome: Outcome = .value(42)
+    assert(read_outcome_handle(cast[Outcome_Handle](raw_outcome)) == 42)
+    assert(read_outcome_handle(make_outcome_handle(42)) == 42)
+    raw_code: Code = .Seven
+    assert(read_code_handle(cast[Code_Handle](raw_code)) == 7)
+    assert(read_code_handle(make_code_handle()) == 7)
     assert(endian_roundtrip(21) == 42)
     assert(switch_integer(42) == 1 && switch_integer(41) == 0)
     assert(switch_float(1.5) == 1 && switch_float(2.0) == 0)
