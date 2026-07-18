@@ -340,6 +340,26 @@ enum class SemanticSiteKind {
   DenialExpression,
 };
 
+// One control-flow fact known whenever execution reaches a body-level agent
+// site. The source references and TypeId are process-local semantic routes;
+// obligation construction later converts them to canonical Draft source and a
+// portable interface type graph. SwitchDefault stores every explicit label in
+// values because reaching default proves that none of those labels matched.
+enum class SemanticBranchRefinementKind {
+  ConditionTrue,
+  ConditionFalse,
+  SwitchCase,
+  SwitchDefault,
+};
+
+struct SemanticBranchRefinement {
+  SemanticBranchRefinementKind kind =
+      SemanticBranchRefinementKind::ConditionTrue;
+  SyntaxReference subject;
+  TypeId subject_type;
+  std::vector<SyntaxReference> values;
+};
+
 // A semantic site is a zero-runtime source construct anchored in a lexical
 // scope. Documentation may additionally anchor to the first symbol of the
 // immediately following declaration. An invalid anchor means package-level or
@@ -353,6 +373,10 @@ struct SemanticSite {
   // checking. Other categories leave this invalid until their grammar-specific
   // obligation builder computes a more detailed expected form.
   TypeId expected_type;
+  // Empty for package/type sites. Body checking snapshots the outer-to-inner
+  // static path facts for judgments and body synthesis before leaving their
+  // lexical branch; these facts never affect runtime lowering or reachability.
+  std::vector<SemanticBranchRefinement> branch_refinements;
 };
 
 // Type resolution necessarily starts before the full compile-time interpreter:

@@ -82,6 +82,9 @@ struct AgentRecord {
   std::vector<std::string> file_contents;
   bool public_interface = false;
   Sha256Digest record_digest;
+  // Still package-local at this phase. The elaborator converts these typed
+  // semantic routes into source-readable, content-addressed provider context.
+  std::vector<SemanticBranchRefinement> branch_refinements;
 };
 
 struct AgentMetadataResult {

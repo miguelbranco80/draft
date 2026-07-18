@@ -34,7 +34,7 @@ struct JudgmentRequestArtifact {
 };
 
 struct JudgmentRequest {
-  std::string format = "draft-judgment-request-v1";
+  std::string format = "draft-judgment-request-v2";
   AgentObligation obligation;
   Sha256Digest resolved_program;
   std::string compiler_identity;

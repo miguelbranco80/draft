@@ -45,7 +45,7 @@ namespace {
 constexpr std::uintmax_t kMaximumCodexOutputBytes = 64U * 1024U * 1024U;
 constexpr std::uintmax_t kMaximumCodexLogBytes = 4U * 1024U * 1024U;
 constexpr std::string_view kPromptContractIdentity =
-    "draft-codex-synthesis-prompt-v15";
+    "draft-codex-synthesis-prompt-v16";
 constexpr std::string_view kOutputSchema =
     "{\n"
     "  \"type\": \"object\",\n"
@@ -360,6 +360,44 @@ void append_field(
         "ENCLOSING_SEMANTIC_SKELETON",
         enclosing.semantic_skeleton,
         prompt);
+  }
+  prompt += "BRANCH_REFINEMENTS ";
+  append_u64(
+      static_cast<std::uint64_t>(obligation.branch_refinements.size()),
+      prompt);
+  for (const AgentBranchRefinement &refinement :
+       obligation.branch_refinements) {
+    if (sha256(refinement.subject) != refinement.subject_digest ||
+        refinement.values.size() != refinement.value_digests.size()) {
+      provider_error(
+          diagnostics, "Codex branch refinement identity is inconsistent");
+      return false;
+    }
+    append_field(
+        "BRANCH_KIND",
+        agent_branch_refinement_kind_name(refinement.kind),
+        prompt);
+    append_field(
+        "BRANCH_SUBJECT_SHA256", refinement.subject_digest.hex(), prompt);
+    append_field("BRANCH_SUBJECT", refinement.subject, prompt);
+    append_field(
+        "BRANCH_SUBJECT_TYPE_SHA256", refinement.type_digest.hex(), prompt);
+    append_field("BRANCH_SUBJECT_TYPE_TEXT", refinement.type_text, prompt);
+    prompt += "BRANCH_VALUES ";
+    append_u64(static_cast<std::uint64_t>(refinement.values.size()), prompt);
+    for (std::size_t index = 0; index < refinement.values.size(); ++index) {
+      if (sha256(refinement.values[index]) !=
+          refinement.value_digests[index]) {
+        provider_error(
+            diagnostics, "Codex branch refinement value is inconsistent");
+        return false;
+      }
+      append_field(
+          "BRANCH_VALUE_SHA256",
+          refinement.value_digests[index].hex(),
+          prompt);
+      append_field("BRANCH_VALUE", refinement.values[index], prompt);
+    }
   }
   prompt += "ACTIVE_DENIALS ";
   append_u64(
@@ -1193,7 +1231,7 @@ SynthesisProvider configure_codex_cli_provider(
   }
 
   SynthesisProvider provider;
-  provider.provider_identity = "openai-codex-cli-v19";
+  provider.provider_identity = "openai-codex-cli-v20";
   provider.model_identity = state.model;
   provider.configuration_identity = state.configuration_identity;
   provider.state = &state;

@@ -837,6 +837,82 @@ imported_package_context(
   return result;
 }
 
+[[nodiscard]] AgentBranchRefinementKind branch_refinement_kind(
+    SemanticBranchRefinementKind kind) {
+  switch (kind) {
+  case SemanticBranchRefinementKind::ConditionTrue:
+    return AgentBranchRefinementKind::ConditionTrue;
+  case SemanticBranchRefinementKind::ConditionFalse:
+    return AgentBranchRefinementKind::ConditionFalse;
+  case SemanticBranchRefinementKind::SwitchCase:
+    return AgentBranchRefinementKind::SwitchCase;
+  case SemanticBranchRefinementKind::SwitchDefault:
+    return AgentBranchRefinementKind::SwitchDefault;
+  }
+  return AgentBranchRefinementKind::ConditionTrue;
+}
+
+// Converts body-checker path facts into the same portable source/type language
+// as the rest of an obligation. Order remains outer-to-inner; switch label order
+// remains authored case/label order. No HIR or process-local syntax ID crosses
+// this boundary.
+[[nodiscard]] std::vector<AgentBranchRefinement> branch_refinement_context(
+    const PackageIdentity &identity,
+    const SourceManager &sources,
+    const LoadedPackage &loaded,
+    const SemanticPackage &package,
+    const AgentRecord &record,
+    std::vector<AgentTypeContext> &type_contexts,
+    DiagnosticSink &diagnostics) {
+  std::vector<AgentBranchRefinement> result;
+  for (const SemanticBranchRefinement &semantic :
+       record.branch_refinements) {
+    const SyntaxTree *subject_tree = find_tree(
+        loaded, semantic.subject.file);
+    if (subject_tree == nullptr || !semantic.subject.node.is_valid()) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "agent branch refinement has no subject syntax");
+      continue;
+    }
+    if (!semantic.subject_type.is_valid() ||
+        package.types.type(semantic.subject_type).kind == TypeKind::Invalid) {
+      diagnostics.error(
+          subject_tree->node(semantic.subject.node).range,
+          "agent branch refinement has no complete subject type");
+      continue;
+    }
+
+    const InterfaceTypeGraph type = export_interface_type(
+        identity, package, semantic.subject_type, diagnostics);
+    add_type_context(type, type_contexts);
+    AgentBranchRefinement refinement;
+    refinement.kind = branch_refinement_kind(semantic.kind);
+    refinement.subject = canonical_token_source(
+        sources,
+        *subject_tree,
+        subject_tree->node(semantic.subject.node));
+    refinement.subject_digest = sha256(refinement.subject);
+    refinement.type_digest = hash_interface_type_graph(type);
+    refinement.type_text = type_text(package, semantic.subject_type);
+    for (SyntaxReference value : semantic.values) {
+      const SyntaxTree *value_tree = find_tree(loaded, value.file);
+      if (value_tree == nullptr || !value.node.is_valid()) {
+        diagnostics.error(
+            SourceRange::invalid(),
+            "agent branch refinement has no switch-label syntax");
+        continue;
+      }
+      refinement.values.push_back(canonical_token_source(
+          sources, *value_tree, value_tree->node(value.node)));
+      refinement.value_digests.push_back(
+          sha256(refinement.values.back()));
+    }
+    result.push_back(std::move(refinement));
+  }
+  return result;
+}
+
 [[nodiscard]] std::string_view validation_context_kind(
     std::string_view relative_name) {
   const std::size_t dot = relative_name.rfind('.');
@@ -1429,7 +1505,7 @@ struct ActiveDenialContext {
     const AgentObligation &obligation,
     const TargetProfile &target) {
   Sha256 hash;
-  hash_field(hash, "draft-agent-obligation-v14");
+  hash_field(hash, "draft-agent-obligation-v15");
   hash_field(hash, obligation.site_identity);
   hash.update(obligation.record_digest.bytes);
   hash.update(obligation.expected_type_digest.bytes);
@@ -1475,6 +1551,29 @@ struct ActiveDenialContext {
     hash_field(hash, obligation.enclosing_declaration.semantic_skeleton);
     hash.update(
         obligation.enclosing_declaration.semantic_skeleton_digest.bytes);
+  }
+  hash_u64(
+      hash,
+      static_cast<std::uint64_t>(obligation.branch_refinements.size()));
+  for (const AgentBranchRefinement &refinement :
+       obligation.branch_refinements) {
+    hash_field(
+        hash, agent_branch_refinement_kind_name(refinement.kind));
+    hash_field(hash, refinement.subject);
+    hash.update(refinement.subject_digest.bytes);
+    hash.update(refinement.type_digest.bytes);
+    hash_field(hash, refinement.type_text);
+    hash_u64(
+        hash, static_cast<std::uint64_t>(refinement.values.size()));
+    for (const std::string &value : refinement.values) {
+      hash_field(hash, value);
+    }
+    hash_u64(
+        hash,
+        static_cast<std::uint64_t>(refinement.value_digests.size()));
+    for (const Sha256Digest &digest : refinement.value_digests) {
+      hash.update(digest.bytes);
+    }
   }
   hash_u64(hash, static_cast<std::uint64_t>(obligation.active_denials.size()));
   for (const AgentActiveDenial &denial : obligation.active_denials) {
@@ -1665,6 +1764,17 @@ std::string_view agent_construct_kind_name(AgentConstructKind kind) {
   return "invalid";
 }
 
+std::string_view agent_branch_refinement_kind_name(
+    AgentBranchRefinementKind kind) {
+  switch (kind) {
+  case AgentBranchRefinementKind::ConditionTrue: return "condition-true";
+  case AgentBranchRefinementKind::ConditionFalse: return "condition-false";
+  case AgentBranchRefinementKind::SwitchCase: return "switch-case";
+  case AgentBranchRefinementKind::SwitchDefault: return "switch-default";
+  }
+  return "invalid";
+}
+
 AgentObligationResult build_agent_obligations(
     const PackageIdentity &identity,
     const SourceManager &sources,
@@ -1732,6 +1842,14 @@ AgentObligationResult build_agent_obligations(
     obligation.target = target_context(target);
     obligation.enclosing_declaration = enclosing_declaration_context(
         sources, loaded, package, record, diagnostics);
+    obligation.branch_refinements = branch_refinement_context(
+        identity,
+        sources,
+        loaded,
+        package,
+        record,
+        obligation.type_contexts,
+        diagnostics);
     obligation.parametric_parameters = parametric_context(
         identity, package, record, diagnostics);
     obligation.guiding_judgments = guiding_judgment_context(

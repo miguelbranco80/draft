@@ -122,6 +122,34 @@ struct AgentEnclosingDeclarationContext {
   Sha256Digest semantic_skeleton_digest;
 };
 
+// A canonical static path fact at a body-level judgment or synthesis site.
+// subject and values are normalized, comment-free Draft expressions. A true or
+// false condition has no values; a switch case lists its matching labels; a
+// switch default lists every explicit label it proves did not match. The
+// subject type is both readable and backed by the complete AgentTypeContext
+// graph referenced by type_digest.
+enum class AgentBranchRefinementKind {
+  ConditionTrue,
+  ConditionFalse,
+  SwitchCase,
+  SwitchDefault,
+};
+
+struct AgentBranchRefinement {
+  AgentBranchRefinementKind kind =
+      AgentBranchRefinementKind::ConditionTrue;
+  // These source/digest pairs use the same normalization and immediate
+  // provider-boundary recheck as enclosing declarations.
+  std::string subject;
+  Sha256Digest subject_digest;
+  Sha256Digest type_digest;
+  std::string type_text;
+  // Parallel authored-order arrays. Their sizes must match, including the
+  // empty arrays used by true/false condition facts.
+  std::vector<std::string> values;
+  std::vector<Sha256Digest> value_digests;
+};
+
 // One source-authored selector from a lexically enclosing deny region. The
 // spelling is canonical nontrivia Draft source such as `assert`, `asm`, or
 // `context.allocator`. Semantic denial checking remains authoritative; this
@@ -201,6 +229,7 @@ struct AgentObligation {
   std::vector<AgentVisibleBinding> visible_bindings;
   AgentTargetContext target;
   AgentEnclosingDeclarationContext enclosing_declaration;
+  std::vector<AgentBranchRefinement> branch_refinements;
   std::vector<AgentActiveDenial> active_denials;
   std::vector<AgentContextField> context_fields;
   std::vector<AgentParametricParameter> parametric_parameters;
@@ -241,5 +270,8 @@ collect_agent_validation_context(
 
 [[nodiscard]] std::string_view agent_construct_kind_name(
     AgentConstructKind kind);
+
+[[nodiscard]] std::string_view agent_branch_refinement_kind_name(
+    AgentBranchRefinementKind kind);
 
 } // namespace draft

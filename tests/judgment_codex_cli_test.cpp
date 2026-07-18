@@ -81,7 +81,7 @@ struct TemporaryFixture {
         "test \"$(cat \"$work/requested-artifact-00000000.bin\")\" = object-bytes || exit 28\n"
         "prompt=$(cat)\n"
         "case \"$prompt\" in\n"
-        "  *REQUEST_FORMAT*draft-judgment-request-v1*SITE*judgment-site*TARGET_IDENTITY*draft-aarch64-macos-v5*JUDGMENT_CLAIM*preserve-the-abi*ATTACHMENT_PATH*EVIDENCE.md*RESOLVED_PROGRAM_SHA256*COMPILER_IDENTITY*draft-bootstrap-cpp-v106*POLICY_IDENTITY*draft-judgment-policy-v1*VALIDATOR_IDENTITY*validator-0*REQUESTED_ARTIFACTS*ARTIFACT_KIND*object*ARTIFACT_FILE*requested-artifact-00000000.bin*ARTIFACT_SHA256*) ;;\n"
+        "  *REQUEST_FORMAT*draft-judgment-request-v2*SITE*judgment-site*TARGET_IDENTITY*draft-aarch64-macos-v5*BRANCH_KIND*condition-false*BRANCH_SUBJECT*validated*JUDGMENT_CLAIM*preserve-the-abi*ATTACHMENT_PATH*EVIDENCE.md*RESOLVED_PROGRAM_SHA256*COMPILER_IDENTITY*draft-bootstrap-cpp-v107*POLICY_IDENTITY*draft-judgment-policy-v1*VALIDATOR_IDENTITY*validator-0*REQUESTED_ARTIFACTS*ARTIFACT_KIND*object*ARTIFACT_FILE*requested-artifact-00000000.bin*ARTIFACT_SHA256*) ;;\n"
         "  *) exit 29 ;;\n"
         "esac\n"
         "case \"$model\" in\n"
@@ -126,8 +126,15 @@ draft::JudgmentRequest make_request() {
   request.obligation.target.page_size = 16384;
   request.obligation.target.assembly_architecture = "aarch64";
   request.obligation.target.assembly_dialect = "draft-aarch64-apple-v2";
+  draft::AgentBranchRefinement refinement;
+  refinement.kind = draft::AgentBranchRefinementKind::ConditionFalse;
+  refinement.subject = "validated";
+  refinement.subject_digest = draft::sha256(refinement.subject);
+  refinement.type_digest = draft::sha256("bool-type");
+  refinement.type_text = "bool";
+  request.obligation.branch_refinements.push_back(std::move(refinement));
   request.resolved_program = draft::sha256("resolved program");
-  request.compiler_identity = "draft-bootstrap-cpp-v106";
+  request.compiler_identity = "draft-bootstrap-cpp-v107";
   request.policy_identity = "draft-judgment-policy-v1";
   request.validator_identity = "validator-0";
   request.claim = "preserve-the-abi";
@@ -167,7 +174,7 @@ void test_adapter_contract(TestState &state) {
   const draft::JudgmentProvider provider = configure(
       fixture, "fixture-model", provider_state, diagnostics);
   EXPECT(state, provider.judge != nullptr);
-  EXPECT(state, provider.provider_identity == "openai-codex-cli-v19");
+  EXPECT(state, provider.provider_identity == "openai-codex-cli-v20");
   EXPECT(state, provider.model_identity == "fixture-model");
   EXPECT(state,
       provider.configuration_identity == provider_state.configuration_identity);

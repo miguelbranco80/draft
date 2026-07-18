@@ -18,6 +18,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <vector>
 
 namespace {
 
@@ -647,6 +648,166 @@ work :: proc() -> i64 {
   }
 }
 
+void test_body_sites_receive_typed_branch_refinements(TestState &state) {
+  TemporaryPackage temporary;
+  write_file(
+      temporary.path / "package.draft",
+      R"draft(package branch_context
+
+work :: proc(flag: bool, value: i64) {
+    if flag {
+        isolated :: proc() {
+            judge "nested static"
+        }
+        isolated()
+        if value > 0 {
+            judge "positive"
+        }
+    } else {
+        judge "negative flag"
+    }
+    switch value {
+    case 1, 2:
+        judge "selected values"
+    case:
+        judge "other values"
+    }
+}
+)draft");
+
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  const draft::TargetProfile target = draft::make_aarch64_macos_profile();
+  draft::PackageLoadOptions load_options;
+  load_options.file_tag = target.facts.file_tag;
+  const draft::PackageLoadResult loaded = draft::load_package(
+      sources, temporary.path.string(), load_options, diagnostics);
+  draft::SemanticAnalysisResult semantics = draft::analyze_package_semantics(
+      sources, loaded.package, target.facts, diagnostics);
+  const draft::BodyCheckResult bodies = draft::check_package_bodies(
+      sources,
+      loaded.package,
+      semantics.selections,
+      semantics.package,
+      semantics.constants,
+      target.facts,
+      diagnostics);
+  const draft::AgentMetadataResult metadata = draft::collect_agent_metadata(
+      sources, loaded.package, semantics.package, {}, diagnostics);
+  const draft::AgentObligationResult obligations =
+      draft::build_agent_obligations(
+          {"workspace", "branch_context"},
+          sources,
+          loaded.package,
+          semantics.package,
+          semantics.constants,
+          metadata,
+          target,
+          diagnostics);
+
+  if (diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+  }
+  EXPECT(state, loaded.ok);
+  EXPECT(state, semantics.ok);
+  EXPECT(state, bodies.ok);
+  EXPECT(state, metadata.ok);
+  EXPECT(state, obligations.ok);
+  EXPECT(state, !diagnostics.has_errors());
+
+  const auto obligation_for_claim = [&metadata, &obligations](
+                                        std::string_view claim)
+      -> const draft::AgentObligation * {
+    for (const draft::AgentRecord &record : metadata.records) {
+      if (record.kind != draft::AgentConstructKind::Judgment ||
+          record.text != claim) {
+        continue;
+      }
+      for (const draft::AgentObligation &obligation :
+           obligations.obligations) {
+        if (obligation.record_digest == record.record_digest) {
+          return &obligation;
+        }
+      }
+    }
+    return nullptr;
+  };
+
+  const draft::AgentObligation *positive =
+      obligation_for_claim("positive");
+  const draft::AgentObligation *negative =
+      obligation_for_claim("negative flag");
+  const draft::AgentObligation *nested =
+      obligation_for_claim("nested static");
+  const draft::AgentObligation *selected =
+      obligation_for_claim("selected values");
+  const draft::AgentObligation *other =
+      obligation_for_claim("other values");
+  EXPECT(state, positive != nullptr);
+  EXPECT(state, negative != nullptr);
+  EXPECT(state, nested != nullptr);
+  EXPECT(state, selected != nullptr);
+  EXPECT(state, other != nullptr);
+
+  if (positive != nullptr) {
+    EXPECT(state, positive->branch_refinements.size() == 2);
+    if (positive->branch_refinements.size() == 2) {
+      EXPECT(state,
+          positive->branch_refinements[0].kind ==
+              draft::AgentBranchRefinementKind::ConditionTrue);
+      EXPECT(state, positive->branch_refinements[0].subject == "flag");
+      EXPECT(state, positive->branch_refinements[0].type_text == "bool");
+      EXPECT(state,
+          positive->branch_refinements[1].kind ==
+              draft::AgentBranchRefinementKind::ConditionTrue);
+      EXPECT(state, positive->branch_refinements[1].subject == "value > 0");
+      EXPECT(state, positive->branch_refinements[1].type_text == "bool");
+    }
+  }
+  if (negative != nullptr) {
+    EXPECT(state, negative->branch_refinements.size() == 1);
+    if (negative->branch_refinements.size() == 1) {
+      EXPECT(state,
+          negative->branch_refinements[0].kind ==
+              draft::AgentBranchRefinementKind::ConditionFalse);
+      EXPECT(state, negative->branch_refinements[0].subject == "flag");
+    }
+  }
+  if (nested != nullptr) {
+    EXPECT(state, nested->branch_refinements.empty());
+  }
+  if (selected != nullptr) {
+    EXPECT(state, selected->branch_refinements.size() == 1);
+    if (selected->branch_refinements.size() == 1) {
+      const draft::AgentBranchRefinement &refinement =
+          selected->branch_refinements[0];
+      EXPECT(state,
+          refinement.kind ==
+              draft::AgentBranchRefinementKind::SwitchCase);
+      EXPECT(state, refinement.subject == "value");
+      EXPECT(state, refinement.type_text == "i64");
+      EXPECT(state,
+          refinement.values == std::vector<std::string>({"1", "2"}));
+      EXPECT(state,
+          refinement.values.size() == refinement.value_digests.size());
+    }
+  }
+  if (other != nullptr) {
+    EXPECT(state, other->branch_refinements.size() == 1);
+    if (other->branch_refinements.size() == 1) {
+      const draft::AgentBranchRefinement &refinement =
+          other->branch_refinements[0];
+      EXPECT(state,
+          refinement.kind ==
+              draft::AgentBranchRefinementKind::SwitchDefault);
+      EXPECT(state, refinement.subject == "value");
+      EXPECT(state, refinement.type_text == "i64");
+      EXPECT(state,
+          refinement.values == std::vector<std::string>({"1", "2"}));
+    }
+  }
+}
+
 void test_visible_import_interface_is_context(TestState &state) {
   TemporaryPackage temporary;
   const std::filesystem::path workspace = temporary.path / "workspace";
@@ -974,6 +1135,7 @@ int main() {
   test_agent_records(state);
   test_dangling_documentation_is_rejected(state);
   test_judgment_guidance_respects_branch_dominance(state);
+  test_body_sites_receive_typed_branch_refinements(state);
   test_visible_import_interface_is_context(state);
   test_denied_imports_are_removed_from_usable_context(state);
   test_early_synthesis_receives_permitted_context(state);

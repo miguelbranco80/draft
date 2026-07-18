@@ -445,6 +445,26 @@ private:
     return hir_.add_expression(std::move(expression));
   }
 
+  // Body sites snapshot static path facts while the checker is inside their
+  // structured branch. The semantic site owns only process-local references;
+  // canonical source and portable type graphs are built later with the rest of
+  // the provider obligation. Denial sites use their separate lexical model and
+  // therefore do not pass through this helper.
+  void add_body_agent_site(
+      SemanticSiteKind kind,
+      SyntaxReference syntax,
+      ScopeId scope,
+      TypeId expected_type = {}) {
+    SemanticSite site;
+    site.kind = kind;
+    site.syntax = syntax;
+    site.scope = scope;
+    site.anchor = current_procedure_;
+    site.expected_type = expected_type;
+    site.branch_refinements = active_branch_refinements_;
+    semantic_.sites.push_back(std::move(site));
+  }
+
   [[nodiscard]] bool is_invalid_type(TypeId type) const {
     return !type.is_valid() || semantic_.types.type(type).kind == TypeKind::Invalid;
   }
@@ -4887,6 +4907,7 @@ private:
            {tree.file(), expression_id},
            scope,
            current_procedure_,
+           {},
            {}});
       if (!node.children.empty()) {
         const HirExpressionId value =
@@ -4905,12 +4926,11 @@ private:
     }
 
     case NodeKind::SynthesisExpression: {
-      semantic_.sites.push_back(
-          {SemanticSiteKind::SynthesisExpression,
-           {tree.file(), expression_id},
-           scope,
-           current_procedure_,
-           expected});
+      add_body_agent_site(
+          SemanticSiteKind::SynthesisExpression,
+          {tree.file(), expression_id},
+          scope,
+          expected);
       HirExpression expression;
       expression.kind = HirExpressionKind::Synthesis;
       expression.range = node.range;
@@ -4935,12 +4955,10 @@ private:
           expression.operands.push_back(check_expression(
               tree, tree.node(child).children.front(), scope));
         } else if (tree.node(child).kind == NodeKind::SynthesisAssembly) {
-          semantic_.sites.push_back(
-              {SemanticSiteKind::SynthesisAssembly,
-               {tree.file(), child},
-               scope,
-               current_procedure_,
-               {}});
+          add_body_agent_site(
+              SemanticSiteKind::SynthesisAssembly,
+              {tree.file(), child},
+              scope);
         }
       }
       expression.type = apply_expected_type(result, expected, node.range);
@@ -5672,25 +5690,46 @@ private:
     case NodeKind::IfStatement:
       statement.kind = HirStatementKind::If;
       if (!node.children.empty()) {
-        statement.expressions.push_back(check_expression(
+        const HirExpressionId condition = check_expression(
             tree,
             node.children.front(),
             scope,
-            semantic_.types.builtins().bool_type));
-      }
-      for (std::size_t index = 1; index < node.children.size(); ++index) {
-        const NodeId child = node.children[index];
-        if (tree.node(child).kind == NodeKind::Block) {
+            semantic_.types.builtins().bool_type);
+        statement.expressions.push_back(condition);
+
+        SemanticBranchRefinement refinement;
+        refinement.subject = {tree.file(), node.children.front()};
+        refinement.subject_type = hir_.expression(condition).type;
+        if (node.children.size() >= 2) {
+          refinement.kind = SemanticBranchRefinementKind::ConditionTrue;
+          active_branch_refinements_.push_back(refinement);
           statement.blocks.push_back(
-              check_block(tree, child, scope, result_type, depth));
-        } else {
-          HirBlock synthetic;
-          synthetic.scope = semantic_.symbols.add_scope(
-              ScopeKind::Block, scope, tree.node(child).range);
-          synthetic.range = tree.node(child).range;
-          synthetic.statements.push_back(
-              check_statement(tree, child, synthetic.scope, result_type, depth));
-          statement.blocks.push_back(hir_.add_block(std::move(synthetic)));
+              check_block(
+                  tree, node.children[1], scope, result_type, depth));
+          active_branch_refinements_.pop_back();
+        }
+        if (node.children.size() >= 3) {
+          const NodeId alternative = node.children[2];
+          refinement.kind = SemanticBranchRefinementKind::ConditionFalse;
+          active_branch_refinements_.push_back(refinement);
+          if (tree.node(alternative).kind == NodeKind::Block) {
+            statement.blocks.push_back(
+                check_block(tree, alternative, scope, result_type, depth));
+          } else {
+            HirBlock synthetic;
+            synthetic.scope = semantic_.symbols.add_scope(
+                ScopeKind::Block, scope, tree.node(alternative).range);
+            synthetic.range = tree.node(alternative).range;
+            synthetic.statements.push_back(check_statement(
+                tree,
+                alternative,
+                synthetic.scope,
+                result_type,
+                depth));
+            statement.blocks.push_back(
+                hir_.add_block(std::move(synthetic)));
+          }
+          active_branch_refinements_.pop_back();
         }
       }
       break;
@@ -5846,6 +5885,7 @@ private:
            {tree.file(), statement_id},
            scope,
            current_procedure_,
+           {},
            {}});
       if (!node.children.empty()) {
         active_statement_denials_.push_back({tree.file(), statement_id});
@@ -5865,22 +5905,18 @@ private:
 
     case NodeKind::Judgment:
       statement.kind = HirStatementKind::Judgment;
-      semantic_.sites.push_back(
-          {SemanticSiteKind::Judgment,
-           {tree.file(), statement_id},
-           scope,
-           current_procedure_,
-           {}});
+      add_body_agent_site(
+          SemanticSiteKind::Judgment,
+          {tree.file(), statement_id},
+          scope);
       break;
 
     case NodeKind::SynthesisStatement:
       statement.kind = HirStatementKind::Synthesis;
-      semantic_.sites.push_back(
-          {SemanticSiteKind::SynthesisStatement,
-           {tree.file(), statement_id},
-           scope,
-           current_procedure_,
-           {}});
+      add_body_agent_site(
+          SemanticSiteKind::SynthesisStatement,
+          {tree.file(), statement_id},
+          scope);
       break;
 
     case NodeKind::AsmStatement:
@@ -5891,12 +5927,10 @@ private:
           statement.expressions.push_back(check_expression(
               tree, tree.node(child).children.front(), scope));
         } else if (tree.node(child).kind == NodeKind::SynthesisAssembly) {
-          semantic_.sites.push_back(
-              {SemanticSiteKind::SynthesisAssembly,
-               {tree.file(), child},
-               scope,
-               current_procedure_,
-               {}});
+          add_body_agent_site(
+              SemanticSiteKind::SynthesisAssembly,
+              {tree.file(), child},
+              scope);
         }
       }
       break;
@@ -5950,6 +5984,24 @@ private:
         bool has_default = false;
         std::vector<SymbolId> covered_alternatives;
         std::vector<ConstantValue> covered_values;
+        std::vector<SyntaxReference> all_switch_labels;
+        // Default means that no explicit label in the complete switch matched,
+        // including labels written after the default clause. Collect their
+        // syntax before checking any case body so every default-site snapshot
+        // contains the same complete exclusion set.
+        for (std::size_t case_index = 1;
+             case_index < node.children.size(); ++case_index) {
+          const SyntaxNode &case_node = tree.node(node.children[case_index]);
+          if (case_node.kind != NodeKind::SwitchCase ||
+              case_node.children.empty()) {
+            continue;
+          }
+          for (std::size_t label_index = 0;
+               label_index + 1 < case_node.children.size(); ++label_index) {
+            all_switch_labels.push_back(
+                {tree.file(), case_node.children[label_index]});
+          }
+        }
         for (std::size_t case_index = 1; case_index < node.children.size(); ++case_index) {
           const SyntaxNode &case_node = tree.node(node.children[case_index]);
           if (case_node.kind != NodeKind::SwitchCase || case_node.children.empty()) continue;
@@ -6035,6 +6087,22 @@ private:
           HirBlock case_block;
           case_block.scope = case_scope;
           case_block.range = case_node.range;
+          SemanticBranchRefinement refinement;
+          refinement.kind = hir_case.is_default
+              ? SemanticBranchRefinementKind::SwitchDefault
+              : SemanticBranchRefinementKind::SwitchCase;
+          refinement.subject = {tree.file(), node.children.front()};
+          refinement.subject_type = subject_type;
+          if (hir_case.is_default) {
+            refinement.values = all_switch_labels;
+          } else {
+            for (std::size_t label_index = 0;
+                 label_index + 1 < case_node.children.size(); ++label_index) {
+              refinement.values.push_back(
+                  {tree.file(), case_node.children[label_index]});
+            }
+          }
+          active_branch_refinements_.push_back(std::move(refinement));
           check_statement_list(
               tree,
               tree.node(list_id),
@@ -6042,6 +6110,7 @@ private:
               result_type,
               {depth.breakable + 1, depth.loops},
               case_block);
+          active_branch_refinements_.pop_back();
           hir_case.body = hir_.add_block(std::move(case_block));
           statement.blocks.push_back(hir_case.body);
           statement.switch_cases.push_back(hir_case);
@@ -6167,6 +6236,13 @@ private:
     const bool saved_template = current_procedure_is_template_;
     const std::vector<SyntaxReference> saved_denials =
         active_statement_denials_;
+    const std::vector<SemanticBranchRefinement> saved_refinements =
+        active_branch_refinements_;
+    // A nested procedure declaration may be checked while its declaration is
+    // inside an outer runtime branch, but invoking that static procedure later
+    // does not imply the declaration-time path. Only its own body branches may
+    // refine sites in the nested procedure.
+    active_branch_refinements_.clear();
     const SymbolId declaration_source = procedure_declaration_source(id);
     for (const DeclarationDenial &denial : semantic_.declaration_denials) {
       if (denial.declaration != declaration_source) continue;
@@ -6194,6 +6270,7 @@ private:
     current_procedure_ = saved_procedure;
     current_procedure_is_template_ = saved_template;
     active_statement_denials_ = saved_denials;
+    active_branch_refinements_ = saved_refinements;
     return true;
   }
 
@@ -6209,6 +6286,7 @@ private:
   SymbolId current_procedure_;
   bool current_procedure_is_template_ = false;
   std::vector<SyntaxReference> active_statement_denials_;
+  std::vector<SemanticBranchRefinement> active_branch_refinements_;
   std::vector<ProcedureInstance> instances_;
   std::optional<std::size_t> current_instance_index_;
   // Used only by the package-initializer preflight. It reuses the complete

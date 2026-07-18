@@ -360,7 +360,8 @@ private:
       NodeId node,
       ScopeId scope,
       SymbolId owner) {
-    semantic_.sites.push_back({kind, {tree.file(), node}, scope, owner, {}});
+    semantic_.sites.push_back(
+        {kind, {tree.file(), node}, scope, owner, {}, {}});
   }
 
   // Finds a previously created owner scope of the requested semantic kind.

@@ -101,7 +101,9 @@ void test_execution_revocation_and_reactivation(TestState &state) {
             "judge \"The package has one ordinary entry.\"\n\n"
             "main :: proc() {\n"
             "    value := 42\n"
-            "    judge \"The local value is well typed at this point.\"\n"
+            "    if value == 42 {\n"
+            "        judge \"The local value is well typed at this point.\"\n"
+            "    }\n"
             "    _ = value\n"
             "}\n";
   source.close();
@@ -133,7 +135,7 @@ void test_execution_revocation_and_reactivation(TestState &state) {
   EXPECT(state, provider.calls == 2);
   EXPECT(state, provider.requests.size() == 2);
   if (provider.requests.size() == 2) {
-    EXPECT(state, provider.requests[0].format == "draft-judgment-request-v1");
+    EXPECT(state, provider.requests[0].format == "draft-judgment-request-v2");
     EXPECT(state, provider.requests[0].obligation.syntax == draft::SyntaxReference{});
     EXPECT(state, provider.requests[0].resolved_program ==
         *compiled.resolved_program_digest);
@@ -142,6 +144,17 @@ void test_execution_revocation_and_reactivation(TestState &state) {
     EXPECT(state, provider.requests[1].claim ==
         "The local value is well typed at this point.");
     EXPECT(state, provider.requests[1].obligation.visible_bindings.size() >= 1);
+    EXPECT(state,
+        provider.requests[1].obligation.branch_refinements.size() == 1);
+    if (provider.requests[1].obligation.branch_refinements.size() == 1) {
+      const draft::AgentBranchRefinement &refinement =
+          provider.requests[1].obligation.branch_refinements.front();
+      EXPECT(state,
+          refinement.kind ==
+              draft::AgentBranchRefinementKind::ConditionTrue);
+      EXPECT(state, refinement.subject == "value == 42");
+      EXPECT(state, refinement.type_text == "bool");
+    }
   }
 
   for (std::size_t index = 0; index < first.evidence.size(); ++index) {

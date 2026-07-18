@@ -22,7 +22,7 @@ namespace draft {
 namespace {
 
 constexpr std::string_view kPromptContractIdentity =
-    "draft-codex-judgment-prompt-v1";
+    "draft-codex-judgment-prompt-v2";
 constexpr std::string_view kOutputSchema =
     "{\n"
     "  \"type\": \"object\",\n"
@@ -380,7 +380,7 @@ JudgmentProvider configure_codex_cli_judgment_provider(
   }
 
   JudgmentProvider provider;
-  provider.provider_identity = "openai-codex-cli-v19";
+  provider.provider_identity = "openai-codex-cli-v20";
   provider.model_identity = state.model;
   provider.configuration_identity = state.configuration_identity;
   provider.state = &state;
