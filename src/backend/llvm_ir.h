@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include "backend/source_correlation.h"
 #include "mir/mir.h"
 #include "sema/analyzer.h"
 #include "sema/constant.h"
@@ -31,6 +32,9 @@ struct LlvmIrOptions {
 struct LlvmIrResult {
   bool ok = false;
   std::string text;
+  // These rows are collected at the same point as the LLVM debug markers, so
+  // the sidecar and instruction metadata cannot silently drift apart.
+  std::vector<SourceCorrelationEntry> source_correlations;
 };
 
 // The emitter produces opaque-pointer LLVM IR and never invokes a toolchain.

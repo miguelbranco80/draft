@@ -5,6 +5,7 @@
 #include "backend/locked_inputs.h"
 #include "backend/foreign_inputs.h"
 #include "backend/runtime_assets.h"
+#include "base/sha256.h"
 #include "compile/compiler.h"
 #include "source/diagnostic.h"
 #include "target/profile.h"
@@ -53,6 +54,11 @@ struct NativeBuildResult {
   bool ok = false;
   std::string toolchain_version;
   std::string output_path;
+  // Every native build emits a canonical operation-to-source sidecar in its
+  // isolated build directory. Coverage and sampling tools can bind their data
+  // to this digest without making a derived file part of program identity.
+  std::string source_correlation_path;
+  Sha256Digest source_correlation_digest;
   // Canonical physical roots verified for the exact manifest rows. This lets
   // an embedding build system deploy them without the compiler inventing a
   // target-specific output layout. Empty on failure.

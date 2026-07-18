@@ -321,6 +321,17 @@ void test_package_assembly_reaches_link(TestState &state) {
   }
   EXPECT(state, built.ok);
   EXPECT(state, std::filesystem::exists(temporary / "program"));
+  EXPECT(
+      state,
+      built.source_correlation_path ==
+          (temporary / "build" / "draft-source-correlation.json").string());
+  const std::string source_correlation =
+      read_file(temporary / "build" / "draft-source-correlation.json");
+  EXPECT(state, !source_correlation.empty());
+  EXPECT(state, built.source_correlation_digest ==
+      draft::sha256(source_correlation));
+  EXPECT(state, source_correlation.find("llvm-modules-sha256:") !=
+      std::string::npos);
 
   const std::string arguments = read_file(log);
   EXPECT(state, arguments.find(
@@ -446,6 +457,11 @@ void test_locked_build_verifies_and_isolates_inputs(TestState &state) {
   }
   EXPECT(state, built.ok);
   EXPECT(state, std::filesystem::exists(temporary / "program"));
+  const std::string locked_source_correlation =
+      read_file(temporary / "build" / "draft-source-correlation.json");
+  EXPECT(state, !locked_source_correlation.empty());
+  EXPECT(state, built.source_correlation_digest ==
+      draft::sha256(locked_source_correlation));
   EXPECT(state, built.runtime_assets.size() == 1);
   if (built.runtime_assets.size() == 1) {
     EXPECT(state, built.runtime_assets.front().name == "unicode-tables");
@@ -486,6 +502,12 @@ void test_locked_build_verifies_and_isolates_inputs(TestState &state) {
       repeated_diagnostics);
   EXPECT(state, repeated.ok);
   EXPECT(state, !repeated_diagnostics.has_errors());
+  EXPECT(state, repeated.source_correlation_digest ==
+      built.source_correlation_digest);
+  EXPECT(
+      state,
+      read_file(temporary / "build" / "draft-source-correlation.json") ==
+          locked_source_correlation);
   EXPECT(state, read_file(log) == arguments + arguments);
 
   // The locked archive path uses the archiver inside the already pinned

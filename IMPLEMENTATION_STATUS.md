@@ -42,9 +42,9 @@ conformance remains broader than the current representative surface. Public
 judgment execution, resolution-profile selection, and provider-free locked
 verification now exist, but have not been qualified against the selected
 release Codex distribution. Generated-source maps now reach hermetic LLVM
-operation locations and real native line tables, but pinned-toolchain
-DWARF/disassembly qualification and explicit coverage/profile correlation
-remain.
+operation locations, real native line tables, and a canonical native
+operation-correlation sidecar. Pinned-toolchain DWARF/disassembly qualification
+and actual coverage/profile instrumentation and result ingestion remain.
 
 An isolated locked-build smoke now uses upstream Homebrew LLVM and LLD 22.1.8
 with the macOS 26.5 SDK. It pins both complete selected input trees, resolves the
@@ -192,7 +192,7 @@ not a private caller helper, reaches the callee's owner.
 | Ordinary offline builds consume pins without a provider | staged offline compiler path, resolver tests, locked executable/archive adapter tests, and byte-identical repeated real builds of all five output kinds | Implemented for the first host gate | Repeat the same proof with the pinned release toolchain/SDK. |
 | `draft build --locked` with no ambient external search | Versioned external-input rows, resolved-program binding, content-tree verification, explicit toolchain/SDK/provider/summary/runtime-asset CLI roots, clean process environment, absolute Clang/linker/archiver paths, provider snapshots, complete relocated file-or-directory runtime-asset verification, consumed summary verification, SDK/link flags, optional exact-key test/benchmark evidence gates, and exact per-site active judgment-evidence verification with no provider call | Implemented for every external role consumed by the first native adapter | Runtime assets are returned to embedding deployment tooling rather than assigned an unspecified CLI output layout; unsupported future external roles still fail closed. Repeat with the pinned release distribution. |
 | Tests, benchmarks, judgments, and validation evidence | Typed core-nominal discovery, target-qualified file selection, canonical package/declaration order, compiler-owned isolated native harnesses, resolution precommit Test/Benchmark and selected judgment execution, private result pipe, direct process runner, process-isolated benchmark warmup/sampling, provider-neutral deterministic ordered multi-validator/all-pass judgment execution with exact artifact requests plus Codex adapter and public policy flags, stable site discovery, package/declaration/exact-site union selection, strict native and judgment evidence schemas, canonical content-addressed shared attempt storage, exact environment/tool/policy keys, append-only history, failure revocation, partial/all-pass atomic manifest selection, policy-shaped locked native and per-site judgment evidence gates, validation tests, and `examples/validation` | Implemented for tests, first benchmark profile, and extensible all-pass judgment policies | Add richer instrumentation profiles and statistical aggregation/tolerances. |
-| Generated-source diagnostics/source maps | Per-pin persistent surface/expansion byte maps, composed in-memory maps, diagnostic origin notes, and hermetic LLVM subprogram/operation locations that retain both the authored site and generated coordinate | Implemented through native debug line inputs | Qualify the mapping in the pinned toolchain's DWARF/disassembly and add explicit instrumentation coverage/profile correlation. |
+| Generated-source diagnostics/source maps | Per-pin persistent surface/expansion byte maps, composed in-memory maps, diagnostic origin notes, hermetic LLVM subprogram/operation locations, and canonical `draft-source-correlation-v1` native sidecars that bind every source-addressable emitted MIR operation to generated/authored coordinates and stable synthesis identity without physical checkout paths | Implemented through native debug line inputs and explicit coverage/profile correlation output | Qualify both forms in the pinned toolchain's DWARF/disassembly; add runtime instrumentation and result ingestion only through versioned validation profiles. |
 | Crash-safe and deterministic release verification | Atomic pin-store tests, injected stops at every staging/object-sync/manifest-visibility boundary with recovery, a real multi-process writer race over exclusive immutable-object installation and manifest replacement, serialized manifest writers and checked conditional updates, interrupted object-before-manifest recovery, rejection of redirected/non-regular/oversized store entries, strict UTF-8 manifest parsing, exhaustive truncation/NUL/invalid-byte/trailing-byte plus structural-delimiter/integer-shape mutation corpora, deterministic serializers, byte-identical repeated real builds of all five artifact kinds, and passing ordinary/sanitized 48-test suites | Implemented first-host foundation | Run the same matrix through the pinned LLVM 22.1/SDK distribution and repeat under release-scale filesystem fault infrastructure. |
 
 ## Current executable commands
@@ -214,4 +214,4 @@ contacting a provider.
 
 The next implementation slice continues the production-by-production language
 audit, then returns to the final release gates: pinned-native execution,
-coverage/profile source correlation, and the judgment-provider boundary.
+versioned validation instrumentation, and the judgment-provider boundary.

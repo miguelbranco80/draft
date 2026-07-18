@@ -2,6 +2,7 @@
 
 #include "backend/toolchain.h"
 
+#include "backend/source_correlation.h"
 #include "base/content_tree.h"
 
 #include <algorithm>
@@ -576,6 +577,14 @@ NativeBuildResult build_native_artifact(
     }
   }
   std::vector<std::string> objects;
+  SourceCorrelationMap source_correlation;
+  source_correlation.target_identity = target.facts.identity;
+  source_correlation.compiler_identity = compiled.compiler_content_identity;
+  if (compiled.resolved_program_digest.has_value()) {
+    source_correlation.program_identity = "resolved-program-sha256:" +
+        compiled.resolved_program_digest->hex();
+  }
+  Sha256 direct_module_identity;
   for (std::size_t index = 0; index < compiled.packages.size(); ++index) {
     if (!compiled.packages[index].has_value() ||
         !compiled.packages[index]->llvm.ok) {
@@ -583,6 +592,15 @@ NativeBuildResult build_native_artifact(
           SourceRange::invalid(), "compiled package has no valid LLVM module");
       return result;
     }
+    source_correlation.entries.insert(
+        source_correlation.entries.end(),
+        compiled.packages[index]->llvm.source_correlations.begin(),
+        compiled.packages[index]->llvm.source_correlations.end());
+    // Hash each complete module separately before combining its fixed-width
+    // digest. This preserves package boundaries without another ad-hoc framing
+    // format and gives direct backend users an exact correlation identity.
+    direct_module_identity.update(
+        sha256(compiled.packages[index]->llvm.text).bytes);
     const std::filesystem::path module =
         build_directory / ("package-" + std::to_string(index) + ".ll");
     const std::string package_stem = "package-" + std::to_string(index);
@@ -684,6 +702,38 @@ NativeBuildResult build_native_artifact(
       objects.push_back(assembly_object.string());
     }
   }
+
+  if (source_correlation.program_identity.empty()) {
+    source_correlation.program_identity = "llvm-modules-sha256:" +
+        direct_module_identity.finalize().hex();
+  }
+
+  // Write the map only after every package proved that it has a valid LLVM
+  // module. A failed partial build may leave ordinary compiler temporaries in
+  // the isolated directory, but it must not publish a complete-looking source
+  // correlation artifact for an incomplete graph.
+  std::string correlation_error;
+  if (!validate_source_correlation_map(
+          source_correlation,
+          correlation_error)) {
+    diagnostics.error(
+        SourceRange::invalid(),
+        "cannot publish native source correlation: " + correlation_error);
+    return result;
+  }
+  const std::string source_correlation_bytes =
+      serialize_source_correlation_map(source_correlation);
+  const std::filesystem::path source_correlation_path =
+      build_directory / "draft-source-correlation.json";
+  if (!write_atomic(
+          source_correlation_path,
+          source_correlation_bytes,
+          correlation_error)) {
+    diagnostics.error(SourceRange::invalid(), correlation_error);
+    return result;
+  }
+  result.source_correlation_path = source_correlation_path.string();
+  result.source_correlation_digest = sha256(source_correlation_bytes);
 
   if (options.artifact_kind == NativeArtifactKind::Assembly) {
     result.ok = true;

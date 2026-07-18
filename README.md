@@ -317,6 +317,16 @@ for explicit root-package exports. The `examples/c-library` fixture builds as a
 no-`main` dylib and its checked-in C client exercises aggregate and callback ABI
 compatibility.
 
+Every native build also writes `draft-source-correlation.json` in its isolated
+build directory. The canonical sidecar names each source-addressable emitted
+MIR instruction or terminator by package, canonical MIR procedure ordinal, and
+operation ordinal; it retains the procedure spelling for presentation. Each
+row then records both its generated coordinate and its authored coordinate.
+Synthesized operations also retain the stable synthesis-site identity. Coverage
+and sampling-profile adapters can use the returned sidecar digest without
+parsing LLVM metadata or exposing physical checkout paths. The sidecar is
+derived output; it does not change the resolved program that it describes.
+
 For example, an arbitrary provider is selected explicitly and never inferred
 from a host library name:
 

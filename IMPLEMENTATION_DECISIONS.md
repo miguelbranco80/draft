@@ -904,7 +904,7 @@ upper source re-evaluates to the displayed value at the site. Other loop shapes
 produce no inferred range.
 
 `draft-agent-obligation-v19`, synthesis request v20 / prompt v18, judgment
-request/prompt v4, and compiler content v119 identities make these new facts a
+request/prompt v4, and compiler content v120 identities make these new facts a
 stale-pin and evidence input. Both Codex adapters use provider identity
 `openai-codex-cli-v22` and recheck the canonical upper-source digest before a
 child starts. Obligation construction also drops a range when the binding or
@@ -914,3 +914,32 @@ Nested procedures are static and cannot capture runtime locals. Checking a
 nested body therefore clears the declaration point's active branch stack and
 restores it afterward; only branches inside that procedure refine its sites.
 Package and type-member sites have an empty stack and no loop ranges.
+
+## Native source correlation sidecar
+
+Status: canonical operation map implemented; runtime instrumentation remains a
+validation-profile concern.
+
+Every LLVM debug marker now publishes the same row to an implementation-owned
+`draft-source-correlation-v1` sidecar. A source-addressable row is identified by
+package, canonical MIR procedure ordinal, and emission ordinal, describes the
+procedure spelling plus MIR instruction or terminator, and carries both
+generated and authored file/line/column coordinates. The ordinal is necessary
+because multiple concrete specializations may retain one source procedure
+spelling.
+Generated rows additionally carry the persistent synthesis-site identity.
+Filenames are logical basenames under the separately recorded package identity;
+physical checkout paths never enter the native artifact or sidecar.
+
+The native adapter writes the canonical JSON only after every package has a
+valid LLVM module and returns its SHA-256 digest beside the native output. A
+normal resolved build binds the map to the resolved-program digest. The lower
+level backend API can deliberately compile a checked graph before resolution;
+that form binds the map to a digest of the exact, package-framed LLVM module set
+instead of inventing a resolved-program identity. The sidecar remains derived
+output in both cases, avoiding a circular program identity.
+
+The sidecar is the common join boundary for future counter-based coverage and
+sampling profiles. Sanitizer, race, allocator-poisoning, and coverage runtimes
+still require explicit versioned validation profiles; this map does not pretend
+that an unrequested instrument ran.
