@@ -141,6 +141,7 @@ void test_pinned_expression_reenters_compiler(TestState &state) {
           manifest,
           target_identity(),
           workspace.root,
+          {},
           diagnostics);
   if (!overlay.ok) {
     std::cerr << draft::render_diagnostics(surface_sources, diagnostics);
@@ -348,6 +349,7 @@ void test_stale_pin_produces_no_overlay(TestState &state) {
           manifest,
           target_identity(),
           workspace.root,
+          {},
           stale_diagnostics);
   EXPECT(state, !overlay.ok);
   EXPECT(state, overlay.sources.empty());

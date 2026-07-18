@@ -30,6 +30,7 @@ add_library(
   src/backend/toolchain.cpp
   src/base/sha256.cpp
   src/compile/compiler.cpp
+  src/compile/resolver.cpp
   src/elaborator/obligation.cpp
   src/elaborator/resolution.cpp
   src/elaborator/resolution_overlay.cpp
@@ -164,6 +165,10 @@ if(BUILD_TESTING)
   add_executable(draft_resolution_overlay_tests tests/resolution_overlay_test.cpp)
   target_link_libraries(draft_resolution_overlay_tests PRIVATE draft_compiler)
   add_test(NAME draft_resolution_overlay_tests COMMAND draft_resolution_overlay_tests)
+
+  add_executable(draft_resolver_tests tests/resolver_test.cpp)
+  target_link_libraries(draft_resolver_tests PRIVATE draft_compiler)
+  add_test(NAME draft_resolver_tests COMMAND draft_resolver_tests)
 
   add_executable(draft_effect_tests tests/effect_test.cpp)
   target_link_libraries(draft_effect_tests PRIVATE draft_compiler)

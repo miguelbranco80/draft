@@ -9,6 +9,7 @@
 
 #include "backend/toolchain.h"
 #include "compile/compiler.h"
+#include "compile/resolver.h"
 #include "source/diagnostic.h"
 #include "source/source.h"
 #include "syntax/lexer.h"
@@ -249,14 +250,6 @@ enum class AgentCommandKind {
   Judge,
 };
 
-[[nodiscard]] bool is_synthesis_record(draft::AgentConstructKind kind) {
-  return kind == draft::AgentConstructKind::SynthesisDeclaration ||
-      kind == draft::AgentConstructKind::SynthesisMember ||
-      kind == draft::AgentConstructKind::SynthesisStatement ||
-      kind == draft::AgentConstructKind::SynthesisExpression ||
-      kind == draft::AgentConstructKind::SynthesisAssembly;
-}
-
 // Resolve and judge exist before a provider adapter is configured. They run the
 // complete provider-independent front end so malformed source, attachment
 // policy violations, and typed obligation errors are still reported normally.
@@ -264,7 +257,9 @@ enum class AgentCommandKind {
 // program requiring provider work fails honestly and performs no filesystem
 // mutation; the later Codex adapter will replace only that final boundary.
 int run_agent_command(
-    const std::string &directory, AgentCommandKind command) {
+    const std::string &directory,
+    AgentCommandKind command,
+    bool revalidate = false) {
   draft::SourceManager sources;
   draft::DiagnosticSink diagnostics;
   std::error_code path_error;
@@ -281,18 +276,37 @@ int run_agent_command(
   options.workspace.workspace_directory =
       absolute_directory.parent_path().string();
   configure_core_distribution(options.workspace);
+  if (command == AgentCommandKind::Resolve) {
+    draft::ResolveWorkspaceOptions resolve_options;
+    resolve_options.compile = std::move(options);
+    resolve_options.revalidate = revalidate;
+    const draft::ResolveWorkspaceResult resolved = draft::resolve_workspace(
+        sources,
+        absolute_directory.string(),
+        std::move(resolve_options),
+        diagnostics);
+    if (resolved.ok) {
+      if (!resolved.committed) {
+        std::cout << "no synthesis sites require resolution\n";
+      } else {
+        std::cout << "resolved " << resolved.manifest.pins.size()
+                  << " synthesis sites (" << resolved.synthesized_sites
+                  << " synthesized, " << resolved.reused_sites
+                  << " reused)\n";
+      }
+    }
+    if (!diagnostics.diagnostics().empty()) {
+      std::cerr << draft::render_diagnostics(sources, diagnostics);
+    }
+    return diagnostics.has_errors() ? 1 : 0;
+  }
+
   const draft::CompileWorkspaceResult compiled =
-      command == AgentCommandKind::Resolve
-          ? draft::compile_workspace(
-                sources,
-                absolute_directory.string(),
-                std::move(options),
-                diagnostics)
-          : draft::compile_workspace_with_resolution(
-                sources,
-                absolute_directory.string(),
-                std::move(options),
-                diagnostics);
+      draft::compile_workspace_with_resolution(
+          sources,
+          absolute_directory.string(),
+          std::move(options),
+          diagnostics);
   std::size_t matching_sites = 0;
   if (compiled.ok) {
     for (const std::optional<draft::CompiledPackage> &package :
@@ -303,22 +317,15 @@ int run_agent_command(
         if (command == AgentCommandKind::Judge &&
             obligation.kind == draft::AgentConstructKind::Judgment) {
           ++matching_sites;
-        } else if (command == AgentCommandKind::Resolve &&
-                   is_synthesis_record(obligation.kind)) {
-          ++matching_sites;
         }
       }
     }
     if (matching_sites == 0) {
-      std::cout << (command == AgentCommandKind::Judge
-              ? "no judgment sites require execution\n"
-              : "no synthesis sites require resolution\n");
+      std::cout << "no judgment sites require execution\n";
     } else {
       diagnostics.error(
           draft::SourceRange::invalid(),
-          command == AgentCommandKind::Judge
-              ? "judgment provider is not configured"
-              : "synthesis provider is not configured");
+          "judgment provider is not configured");
     }
   }
   if (!diagnostics.diagnostics().empty()) {
@@ -334,7 +341,7 @@ void print_usage() {
             << "  draftc check <package-directory>\n"
             << "  draftc emit-llvm <package-directory>\n"
             << "  draftc build <package-directory> [-o <output>] [--allow-host-toolchain]\n"
-            << "  draftc resolve <package-directory>\n"
+            << "  draftc resolve <package-directory> [--revalidate]\n"
             << "  draftc judge <package-directory>\n"
             << "  draftc target\n";
 }
@@ -356,6 +363,10 @@ int main(int argc, char **argv) {
   }
   if (argc == 3 && std::string_view(argv[1]) == "resolve") {
     return run_agent_command(argv[2], AgentCommandKind::Resolve);
+  }
+  if (argc == 4 && std::string_view(argv[1]) == "resolve" &&
+      std::string_view(argv[3]) == "--revalidate") {
+    return run_agent_command(argv[2], AgentCommandKind::Resolve, true);
   }
   if (argc == 3 && std::string_view(argv[1]) == "judge") {
     return run_agent_command(argv[2], AgentCommandKind::Judge);

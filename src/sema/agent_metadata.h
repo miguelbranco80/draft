@@ -76,6 +76,10 @@ struct AgentRecord {
   TypeId expected_type;
   std::string text;
   std::vector<AttachedFile> files;
+  // file_contents is process-local provider input parallel to files after
+  // canonicalization. Public interfaces copy only the content identities in
+  // files; exact bytes never leak into a dependency interface or manifest.
+  std::vector<std::string> file_contents;
   bool public_interface = false;
   Sha256Digest record_digest;
 };

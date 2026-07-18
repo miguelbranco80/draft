@@ -1,4 +1,13 @@
 // Agent record decoding, secure attachment collection, and content hashing.
+//
+// This phase owns decoded prompts plus exact bounded attachment bytes for the
+// lifetime of AgentMetadataResult. It separately retains content identities for
+// package interfaces and obligation hashes. Paths are resolved beneath the
+// canonical package root with symlinks rejected; canonical bytewise path order
+// is established before either hashing or provider request construction.
+//
+// No provider is invoked here and no attachment path or byte enters runtime
+// lowering. Relevant specification: 03-agent-synthesis.md sections 8-10.
 
 #include "sema/agent_metadata.h"
 
@@ -323,6 +332,7 @@ private:
     const std::span<const std::uint8_t> byte_view(
         reinterpret_cast<const std::uint8_t *>(bytes.data()), bytes.size());
     record.files.push_back({relative.generic_string(), byte_size, sha256(byte_view)});
+    record.file_contents.emplace_back(bytes.begin(), bytes.end());
     total_bytes_ += byte_size;
   }
 
@@ -405,15 +415,36 @@ private:
     }
   }
 
+  // Sorts the identity/content parallel arrays together and removes repeated
+  // paths. The first duplicate is sufficient because both occurrences were read
+  // from the same secured physical path during this collector invocation.
   void canonicalize_files(AgentRecord &record) {
-    std::sort(record.files.begin(), record.files.end(), [](const AttachedFile &left, const AttachedFile &right) {
-      return left.relative_path < right.relative_path;
-    });
-    record.files.erase(
-        std::unique(record.files.begin(), record.files.end(), [](const AttachedFile &left, const AttachedFile &right) {
-          return left.relative_path == right.relative_path;
-        }),
-        record.files.end());
+    if (record.files.size() != record.file_contents.size()) {
+      diagnostics_.error(
+          SourceRange::invalid(),
+          "agent attachment identities and bytes are inconsistent");
+      return;
+    }
+    std::vector<std::size_t> order(record.files.size());
+    for (std::size_t index = 0; index < order.size(); ++index) order[index] = index;
+    std::sort(
+        order.begin(), order.end(),
+        [&record](std::size_t left, std::size_t right) {
+          return record.files[left].relative_path <
+              record.files[right].relative_path;
+        });
+    std::vector<AttachedFile> files;
+    std::vector<std::string> contents;
+    for (std::size_t index : order) {
+      if (!files.empty() &&
+          files.back().relative_path == record.files[index].relative_path) {
+        continue;
+      }
+      files.push_back(std::move(record.files[index]));
+      contents.push_back(std::move(record.file_contents[index]));
+    }
+    record.files = std::move(files);
+    record.file_contents = std::move(contents);
   }
 
   [[nodiscard]] Sha256Digest hash_record(const AgentRecord &record) const {

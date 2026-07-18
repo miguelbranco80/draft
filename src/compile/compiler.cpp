@@ -493,6 +493,47 @@ CompileWorkspaceResult compile_workspace(
   return result;
 }
 
+bool validate_resolved_agent_boundaries(
+    const CompileWorkspaceResult &surface,
+    const CompileWorkspaceResult &resolved,
+    DiagnosticSink &diagnostics) {
+  const std::size_t initial_errors = diagnostics.error_count();
+  for (std::size_t index = 0; index < resolved.packages.size(); ++index) {
+    if (!resolved.packages[index].has_value()) continue;
+    for (const AgentObligation &obligation :
+         resolved.packages[index]->obligations.obligations) {
+      if (is_synthesis_obligation(obligation.kind)) {
+        diagnostics.error(
+            obligation_range(resolved.graph.packages[index], obligation),
+            "generated source may not contain a synthesis site");
+      } else if (obligation.kind == AgentConstructKind::Judgment &&
+                 !contains_site(
+                     surface,
+                     AgentConstructKind::Judgment,
+                     obligation.site_identity)) {
+        diagnostics.error(
+            obligation_range(resolved.graph.packages[index], obligation),
+            "generated source may not introduce a judgment");
+      }
+    }
+  }
+  for (const std::optional<CompiledPackage> &package : surface.packages) {
+    if (!package.has_value()) continue;
+    for (const AgentObligation &obligation : package->obligations.obligations) {
+      if (obligation.kind == AgentConstructKind::Judgment &&
+          !contains_site(
+              resolved,
+              AgentConstructKind::Judgment,
+              obligation.site_identity)) {
+        diagnostics.error(
+            SourceRange::invalid(),
+            "resolved source displaced a surface judgment site");
+      }
+    }
+  }
+  return diagnostics.error_count() == initial_errors;
+}
+
 CompileWorkspaceResult compile_workspace_with_resolution(
     SourceManager &sources,
     const std::string &root_package_directory,
@@ -560,6 +601,7 @@ CompileWorkspaceResult compile_workspace_with_resolution(
       loaded_manifest.manifest,
       options.target.facts.identity,
       options.workspace.workspace_directory,
+      {},
       diagnostics);
   if (!overlays.ok) {
     surface.ok = false;
@@ -577,39 +619,7 @@ CompileWorkspaceResult compile_workspace_with_resolution(
   // expansion. Judgment identities must be exactly the surface set; input
   // digests may legitimately change after generated declarations become
   // visible and are therefore not compared here.
-  for (std::size_t index = 0; index < resolved.packages.size(); ++index) {
-    if (!resolved.packages[index].has_value()) continue;
-    for (const AgentObligation &obligation :
-         resolved.packages[index]->obligations.obligations) {
-      if (is_synthesis_obligation(obligation.kind)) {
-        diagnostics.error(
-            obligation_range(resolved.graph.packages[index], obligation),
-            "generated source may not contain a synthesis site");
-      } else if (obligation.kind == AgentConstructKind::Judgment &&
-                 !contains_site(
-                     surface,
-                     AgentConstructKind::Judgment,
-                     obligation.site_identity)) {
-        diagnostics.error(
-            obligation_range(resolved.graph.packages[index], obligation),
-            "generated source may not introduce a judgment");
-      }
-    }
-  }
-  for (const std::optional<CompiledPackage> &package : surface.packages) {
-    if (!package.has_value()) continue;
-    for (const AgentObligation &obligation : package->obligations.obligations) {
-      if (obligation.kind == AgentConstructKind::Judgment &&
-          !contains_site(
-              resolved,
-              AgentConstructKind::Judgment,
-              obligation.site_identity)) {
-        diagnostics.error(
-            SourceRange::invalid(),
-            "resolved source displaced a surface judgment site");
-      }
-    }
-  }
+  (void)validate_resolved_agent_boundaries(surface, resolved, diagnostics);
   if (diagnostics.error_count() == initial_errors) {
     const Sha256Digest program_digest = hash_resolved_program(
         sources,

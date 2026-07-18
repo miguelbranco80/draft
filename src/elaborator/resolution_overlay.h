@@ -18,6 +18,7 @@
 
 #include "elaborator/obligation.h"
 #include "elaborator/resolution.h"
+#include "elaborator/resolution_store.h"
 #include "source/diagnostic.h"
 #include "source/source.h"
 #include "workspace/workspace.h"
@@ -51,7 +52,8 @@ struct ResolutionOverlayResult {
 
 // Requires one fresh matching pin for every surface synthesis obligation and no
 // unassociated manifest pin. target_identity is the selected TargetFacts
-// identity. Generated objects are loaded and hash-verified through the store.
+// identity. Generated objects are loaded and hash-verified through the store;
+// an active resolver may supply not-yet-committed objects in staged_expansions.
 // Failures produce no partial override result and never modify the workspace.
 [[nodiscard]] ResolutionOverlayResult build_resolution_overlays(
     const SourceManager &surface_sources,
@@ -59,6 +61,7 @@ struct ResolutionOverlayResult {
     const ResolutionManifest &manifest,
     std::string_view target_identity,
     const std::filesystem::path &workspace_directory,
+    std::span<const GeneratedExpansion> staged_expansions,
     DiagnosticSink &diagnostics);
 
 } // namespace draft

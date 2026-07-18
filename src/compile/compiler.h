@@ -81,6 +81,16 @@ struct CompileWorkspaceResult {
     CompileWorkspaceOptions options,
     DiagnosticSink &diagnostics);
 
+// Enforces the agent boundary between a successfully checked surface graph and
+// a successfully checked resolved graph. All surface synthesis must disappear;
+// no expansion may contain another synthesis or introduce/displace a judgment.
+// Input digests of retained judgments are not compared because generated
+// declarations may legitimately change their visible semantic context.
+[[nodiscard]] bool validate_resolved_agent_boundaries(
+    const CompileWorkspaceResult &surface,
+    const CompileWorkspaceResult &resolved,
+    DiagnosticSink &diagnostics);
+
 // Compiles the surface graph first to obtain stable typed obligations, consumes
 // .draft/resolution.json when synthesis sites exist (or when a manifest is
 // already present), constructs resolved source overrides, and compiles those

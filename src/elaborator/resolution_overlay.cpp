@@ -85,6 +85,18 @@ struct SourceEdit {
   return file->syntax->node(obligation.syntax.node).range;
 }
 
+// Resolver transactions have checked proposal bytes in memory before those
+// objects exist in the persistent store. Offline builds pass an empty span and
+// therefore always take the store path.
+[[nodiscard]] const GeneratedExpansion *find_staged_expansion(
+    std::span<const GeneratedExpansion> expansions,
+    const Sha256Digest &digest) {
+  for (const GeneratedExpansion &expansion : expansions) {
+    if (expansion.digest == digest) return &expansion;
+  }
+  return nullptr;
+}
+
 } // namespace
 
 ResolutionOverlayResult build_resolution_overlays(
@@ -93,6 +105,7 @@ ResolutionOverlayResult build_resolution_overlays(
     const ResolutionManifest &manifest,
     std::string_view target_identity,
     const std::filesystem::path &workspace_directory,
+    std::span<const GeneratedExpansion> staged_expansions,
     DiagnosticSink &diagnostics) {
   ResolutionOverlayResult result;
   const std::size_t initial_errors = diagnostics.error_count();
@@ -149,12 +162,24 @@ ResolutionOverlayResult build_resolution_overlays(
         continue;
       }
       std::string expansion;
-      if (!load_generated_expansion(
-              workspace_directory,
-              pin->expansion_digest,
-              expansion,
-              diagnostics)) {
-        continue;
+      const GeneratedExpansion *staged =
+          find_staged_expansion(staged_expansions, pin->expansion_digest);
+      if (staged != nullptr) {
+        if (sha256(staged->source) != staged->digest) {
+          diagnostics.error(
+              range,
+              "staged generated expansion does not match its content identity");
+          continue;
+        }
+        expansion = staged->source;
+      } else {
+        if (!load_generated_expansion(
+                workspace_directory,
+                pin->expansion_digest,
+                expansion,
+                diagnostics)) {
+          continue;
+        }
       }
       edits.push_back({
           file->source,
