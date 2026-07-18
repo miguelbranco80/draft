@@ -74,9 +74,10 @@ struct InterfaceNominalArgument {
 struct InterfaceType {
   TypeKind kind = TypeKind::Invalid;
   std::string name;
-  // These fields are nonempty only for nominal, distinct, and type-parameter
-  // rows. They preserve the declaration package even through re-exported
-  // signatures; name remains useful for builtins and diagnostics.
+  // These fields normally identify nominal, distinct, and type-parameter rows.
+  // A published concrete structural alias application also uses them on its
+  // root as an application cache key. name remains useful for builtins and
+  // diagnostics.
   std::string nominal_root_identity;
   std::string nominal_root_relative_path;
   std::string nominal_public_name;
@@ -92,17 +93,21 @@ struct InterfaceType {
   // concrete instantiation when arguments become known. No source coordinate,
   // local symbol, or implementation detail crosses this interface boundary.
   bool owner_evaluated_element_count = false;
+  // Structural generic alias application whose defining package retains the
+  // full value recipe. Like the array/SIMD marker, this is interface identity;
+  // its package-local side-table index is never serialized.
+  bool owner_evaluated_type_application = false;
   std::vector<InterfaceTypeId> members;
   std::vector<std::uint64_t> member_offsets;
   bool c_calling_convention = false;
   bool c_representation = false;
   std::uint32_t requested_alignment = 0;
   std::vector<InterfaceMember> nominal_members;
-  // A nominal template application retains the template identity in the
-  // nominal_* fields and its type/value arguments here. Arguments may still
-  // name the surrounding template's value parameter. This makes both concrete
-  // `dep.Buffer[u8, 64]` and symbolic `dep.Buffer[u8, N]` retain nominal
-  // identity when they cross more than one package boundary.
+  // A generic type application retains the template identity in the legacy
+  // nominal_* fields and its type/value arguments here. Nominal applications
+  // preserve type identity; concrete structural aliases use the same packet
+  // only to cache their canonical result. Arguments may still name the
+  // surrounding template's value parameter across package boundaries.
   std::vector<InterfaceNominalArgument> nominal_arguments;
 };
 
@@ -231,8 +236,8 @@ struct PackageInterface {
   std::vector<InterfaceDocumentation> documentation;
   // Concrete public generic applications whose layout had to execute in this
   // defining package. Consumers import these self-contained graphs before
-  // resolving their own applications; nominal origin plus canonical arguments
-  // inside each root row form the cache key.
+  // resolving their own applications; public template origin plus canonical
+  // arguments inside each root row form the cache key.
   std::vector<InterfaceTypeGraph> instantiated_types;
 };
 
@@ -287,6 +292,18 @@ struct AvailablePackageImports {
     const PackageIdentity &identity,
     const SemanticPackage &package,
     TypeId type,
+    DiagnosticSink &diagnostics);
+
+// Publication form for a concrete structural generic application. Structural
+// TypeIds intentionally have no nominal identity, so the explicit template and
+// arguments annotate the root row with the cache key needed by a clean
+// consumer rebuild.
+[[nodiscard]] InterfaceTypeGraph export_interface_type_application(
+    const PackageIdentity &identity,
+    const SemanticPackage &package,
+    TypeId type,
+    SymbolId source,
+    const std::vector<ParametricArgument> &arguments,
     DiagnosticSink &diagnostics);
 
 [[nodiscard]] TypeId import_interface_type(

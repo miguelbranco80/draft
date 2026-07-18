@@ -163,6 +163,7 @@ void hash_field(Sha256 &hash, std::string_view value) {
   for (const InterfaceType &type : graph.types) {
     if (type.kind == TypeKind::TypeParameter ||
         type.owner_evaluated_element_count ||
+        type.owner_evaluated_type_application ||
         type.element_count_expression.is_valid()) {
       return false;
     }
@@ -459,6 +460,8 @@ private:
         }
         transferred_arguments.push_back(std::move(transferred));
       }
+      const std::vector<ParametricArgument> publication_arguments =
+          transferred_arguments;
 
       const TypeId concrete = instantiate_parametric_type_application(
           sources_,
@@ -476,10 +479,12 @@ private:
         owner_stack.pop_back();
         return false;
       }
-      const InterfaceTypeGraph graph = export_interface_type(
+      const InterfaceTypeGraph graph = export_interface_type_application(
           owner.identity,
           owner.semantics.package,
           concrete,
+          *source,
+          publication_arguments,
           diagnostics_);
       if (owner_result_is_concrete(graph)) {
         append_instantiated_type(owner.interface, graph);
@@ -1199,13 +1204,24 @@ CompileWorkspaceResult compile_workspace(
         package.bodies.program,
         package.effects,
         diagnostics);
-    package.interface = build_package_interface(
+    // Body effects replace the preliminary declaration interface, but concrete
+    // type applications published during the owner fixed point are independent
+    // self-contained graphs. Keep them available to tooling and any later
+    // consumer of this completed compilation result; rebuilding the ordinary
+    // declarations must not silently erase generic layout products.
+    std::vector<InterfaceTypeGraph> retained_type_instances =
+        package.interface.instantiated_types;
+    PackageInterface completed_interface = build_package_interface(
         workspace_package.identity,
         package.semantics.package,
         package.semantics.constants,
         package.metadata,
         package.effects,
         diagnostics);
+    for (const InterfaceTypeGraph &graph : retained_type_instances) {
+      append_instantiated_type(completed_interface, graph);
+    }
+    package.interface = std::move(completed_interface);
     if (!package.metadata.ok || !package.obligations.ok || !denials_ok ||
         !package.native_interop.ok) {
       continue;

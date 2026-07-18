@@ -27,6 +27,11 @@ pub Transitive_Procedural_Wrapper[N: usize] :: struct {
     value: layout.Buffer[layout_count(N)],
 }
 
+// This is the structural counterpart of Transitive_Procedural_Wrapper. The
+// application first runs layout_count here, then crosses into lib/layout so
+// that package can run its private increment procedure.
+pub Transitive_Procedural_Bytes[N: usize] :: layout.Procedural_Bytes[layout_count(N)]
+
 layout_for[T: type] :: proc(extra: usize) -> usize {
     return size_of(T) + extra
 }

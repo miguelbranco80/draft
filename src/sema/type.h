@@ -96,6 +96,10 @@ struct TypeLayout {
 // - an Array or Simd whose count must run in its defining package sets
 //   owner_evaluated_element_count and uses deferred_element_count_index only as
 //   a package-round side-table key; neither package-local number is serialized;
+// - a structural alias application whose value argument needs a full procedure
+//   sets owner_evaluated_type_application. Its shape fields remain available to
+//   symbolic checking, but its layout is unknown until the application recipe
+//   is concrete;
 // - Tuple and Procedure use members (procedure parameters followed by result);
 // - nominal kinds use name, declaration, and an initially unknown layout.
 //
@@ -124,6 +128,9 @@ struct Type {
   // invalid on an imported interface marker until an owner request is formed.
   bool owner_evaluated_element_count = false;
   std::uint32_t deferred_element_count_index =
+      std::numeric_limits<std::uint32_t>::max();
+  bool owner_evaluated_type_application = false;
+  std::uint32_t deferred_type_application_index =
       std::numeric_limits<std::uint32_t>::max();
   std::vector<TypeId> members;
   std::vector<std::uint64_t> member_offsets;
@@ -187,6 +194,13 @@ public:
       std::uint32_t deferred_index = std::numeric_limits<std::uint32_t>::max());
   [[nodiscard]] TypeId owner_evaluated_simd(
       TypeId element,
+      std::uint32_t deferred_index = std::numeric_limits<std::uint32_t>::max());
+  // Clones an alias result into a deliberately non-interned placeholder. The
+  // clone does not create identity—even if the alias targets a nominal type—
+  // because its side-table application is evaluated away before any
+  // runtime-bearing type identity is observed.
+  [[nodiscard]] TypeId owner_evaluated_application(
+      TypeId shape,
       std::uint32_t deferred_index = std::numeric_limits<std::uint32_t>::max());
   [[nodiscard]] TypeId tuple(const std::vector<TypeId> &members);
   [[nodiscard]] TypeId procedure(

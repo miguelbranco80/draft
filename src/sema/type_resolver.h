@@ -121,11 +121,12 @@ resolve_dependent_integer_expression_syntax(
     const TargetFacts &target,
     DiagnosticSink &diagnostics);
 
-// Concretizes an Array/SIMD row whose count recipe belongs to this package.
-// Procedure body checking supplies its exact generic environment through the
-// shared deferred-binding records; the type resolver composes nested templates
-// and invokes the normal compile-time interpreter. This keeps one evaluator and
-// one structural-type construction path across declaration and body phases.
+// Concretizes an owner-evaluated Array/SIMD count or retained structural alias
+// application whose recipe belongs to this package. Procedure body checking
+// supplies its exact generic environment through the shared deferred-binding
+// records; the type resolver composes nested templates and invokes the normal
+// compile-time interpreter. This keeps one evaluator and one structural-type
+// construction path across declaration and body phases.
 [[nodiscard]] TypeId instantiate_owner_evaluated_type_application(
     const SourceManager &sources,
     const LoadedPackage &loaded,

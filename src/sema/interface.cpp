@@ -98,6 +98,7 @@ void hash_interface_type(Sha256 &hash, const InterfaceType &type) {
   hash_u64(hash, type.element_count);
   hash_integer_expression(hash, type.element_count_expression);
   hash_u64(hash, type.owner_evaluated_element_count ? 1 : 0);
+  hash_u64(hash, type.owner_evaluated_type_application ? 1 : 0);
   hash_u64(hash, static_cast<std::uint64_t>(type.members.size()));
   for (InterfaceTypeId member : type.members) hash_type_id(hash, member);
   hash_u64(hash, static_cast<std::uint64_t>(type.member_offsets.size()));
@@ -263,6 +264,38 @@ public:
       return graph;
     }
     graph.root = translate_type(source);
+    graph.types = std::move(result_.types);
+    return graph;
+  }
+
+  [[nodiscard]] InterfaceTypeGraph run_type_application(
+      TypeId source,
+      SymbolId template_source,
+      const std::vector<ParametricArgument> &arguments) {
+    InterfaceTypeGraph graph;
+    graph.identity = identity_;
+    if (!source.is_valid() ||
+        static_cast<std::size_t>(source.value) >= package_.types.size() ||
+        !template_source.is_valid() ||
+        static_cast<std::size_t>(template_source.value) >=
+            package_.symbols.symbol_count()) {
+      diagnostics_.error(
+          SourceRange::invalid(),
+          "cannot export an invalid concrete type application");
+      return graph;
+    }
+    graph.root = translate_type(source);
+    std::vector<InterfaceNominalArgument> translated_arguments;
+    translated_arguments.reserve(arguments.size());
+    for (const ParametricArgument &argument : arguments) {
+      translated_arguments.push_back(translate_argument(argument));
+    }
+    InterfaceType &root = result_.types[graph.root.value];
+    root.nominal_root_identity = identity_.root_identity;
+    root.nominal_root_relative_path = identity_.root_relative_path;
+    root.nominal_public_name =
+        package_.symbols.symbol(template_source).name;
+    root.nominal_arguments = std::move(translated_arguments);
     graph.types = std::move(result_.types);
     return graph;
   }
@@ -591,7 +624,8 @@ private:
     translated.layout = source_type.layout;
     translated.bit_width = source_type.bit_width;
     translated.element_count = source_type.element_count;
-    if (source_type.element_count_expression.is_valid()) {
+    if (source_type.element_count_expression.is_valid() &&
+        !source_type.owner_evaluated_type_application) {
       const std::optional<IntegerExpression> expression =
           translate_integer_expression(
               source_type.element_count_expression,
@@ -602,6 +636,8 @@ private:
     }
     translated.owner_evaluated_element_count =
         source_type.owner_evaluated_element_count;
+    translated.owner_evaluated_type_application =
+        source_type.owner_evaluated_type_application;
     translated.member_offsets = source_type.member_offsets;
     translated.c_calling_convention = source_type.c_calling_convention;
     translated.c_representation = source_type.c_representation;
@@ -1058,7 +1094,9 @@ private:
         source.kind == TypeKind::Enum || source.kind == TypeKind::TaggedUnion ||
         source.kind == TypeKind::RawUnion || source.kind == TypeKind::Distinct ||
         source.kind == TypeKind::TypeParameter;
-    if (nominal) {
+    const bool retained_application =
+        !source.nominal_public_name.empty();
+    if (nominal || retained_application) {
       if (const std::optional<TypeId> existing =
               find_nominal(source, nominal_arguments)) {
         cache.translated[source_id.value] = *existing;
@@ -1068,6 +1106,12 @@ private:
 
     TypeId result = builtin_type(source);
     if (result.is_valid()) {
+      if (source.owner_evaluated_type_application) {
+        result = consumer_.types.owner_evaluated_application(result);
+      }
+      if (!nominal && retained_application) {
+        remember_nominal(source, result, nominal_arguments);
+      }
       cache.translated[source_id.value] = result;
       return result;
     }
@@ -1213,6 +1257,12 @@ private:
               std::string(type_kind_name(source.kind)) + "'");
       result = consumer_.types.builtins().invalid;
       break;
+    }
+    if (source.owner_evaluated_type_application && result.is_valid()) {
+      result = consumer_.types.owner_evaluated_application(result);
+    }
+    if (!nominal && retained_application && result.is_valid()) {
+      remember_nominal(source, result, nominal_arguments);
     }
     cache.translated[source_id.value] = result;
     return result;
@@ -1360,6 +1410,19 @@ InterfaceTypeGraph export_interface_type(
   return builder.run_type(type);
 }
 
+InterfaceTypeGraph export_interface_type_application(
+    const PackageIdentity &identity,
+    const SemanticPackage &package,
+    TypeId type,
+    SymbolId source,
+    const std::vector<ParametricArgument> &arguments,
+    DiagnosticSink &diagnostics) {
+  const ConstantTable no_constants;
+  InterfaceBuilder builder(
+      identity, package, no_constants, nullptr, nullptr, diagnostics);
+  return builder.run_type_application(type, source, arguments);
+}
+
 TypeId import_interface_type(
     const InterfaceTypeGraph &graph,
     SemanticPackage &package,
@@ -1370,7 +1433,7 @@ TypeId import_interface_type(
 
 Sha256Digest hash_interface_type_graph(const InterfaceTypeGraph &graph) {
   Sha256 hash;
-  hash_field(hash, "draft.interface-type-graph.v4");
+  hash_field(hash, "draft.interface-type-graph.v5");
   // The exporting package identity is transport context, not necessarily part
   // of the type. Builtins and purely structural types must hash identically in
   // every requester. Locally declared nominal rows already contain their exact

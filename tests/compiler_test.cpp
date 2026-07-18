@@ -729,10 +729,28 @@ void test_cross_package_generic_procedures(TestState &state) {
   EXPECT(state,
       layout->semantics.package
           .imported_type_instantiation_requests.empty());
+  // Resolving Transitive_Procedural_Bytes rebuilds generic after lib/layout
+  // publishes its inner array. That clean rebuild intentionally discards
+  // transient owner-local instance rows, while the completed interface keeps
+  // every previously published application graph. Test both representations:
+  // local rows are an implementation detail, published graphs are the durable
+  // cross-package result.
   EXPECT(state,
-      generic->semantics.package.parametric_type_instances.size() == 6);
+      generic->semantics.package.parametric_type_instances.size() == 5);
   EXPECT(state,
       layout->semantics.package.parametric_type_instances.size() == 1);
+  const auto has_published_type = [&](std::string_view public_name) {
+    return std::any_of(
+        generic->interface.instantiated_types.begin(),
+        generic->interface.instantiated_types.end(),
+        [&](const draft::InterfaceTypeGraph &graph) {
+          return graph.root.is_valid() &&
+              graph.root.value < graph.types.size() &&
+              graph.types[graph.root.value].nominal_public_name == public_name;
+        });
+  };
+  EXPECT(state, has_published_type("Transitive_Procedural_Wrapper"));
+  EXPECT(state, has_published_type("Transitive_Procedural_Bytes"));
   EXPECT(state, app->llvm.text.find("_24mono_24") != std::string::npos);
   EXPECT(state, left->llvm.text.find("_24mono_24") != std::string::npos);
   EXPECT(state, right->llvm.text.find("_24mono_24") != std::string::npos);

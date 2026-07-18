@@ -299,16 +299,18 @@ struct ImportedProcedureWrite {
 // ImportedType preserves nominal identity after an interface type has been
 // reconstructed in a consumer-local TypeStore. This prevents a downstream
 // interface from rebaptizing `dep:T` as `consumer:T` when it merely exposes the
-// dependency type in a public signature. Structural types need no provenance;
-// their identity follows their recursively translated components.
+// dependency type in a public signature. Ordinary structural types need no
+// provenance; a concrete structural generic application uses this record only
+// to map its public template/argument cache key to the canonical structural
+// TypeId.
 struct ImportedType {
   TypeId type;
   std::string root_identity;
   std::string root_relative_path;
   std::string public_name;
-  // Concrete nominal template applications keep their consumer-local type
-  // arguments separately from the template's public identity. An empty vector
-  // denotes an ordinary nominal or the unspecialized template declaration.
+  // Concrete generic applications keep their consumer-local type arguments
+  // separately from the template's public identity. An empty vector denotes an
+  // ordinary nominal or the unspecialized template declaration.
   std::vector<ParametricArgument> arguments;
 };
 
@@ -412,6 +414,16 @@ struct DeferredValueExpression {
   std::vector<DeferredElementCountValueBinding> value_bindings;
 };
 
+// A structural alias has no nominal instance identity, but a symbolic
+// application such as `Bytes[increment(N)]` must still retain its template and
+// ordered arguments until N is concrete. type is a unique non-interned shape
+// row; source and every recipe index remain local to the defining package.
+struct DeferredTypeApplication {
+  TypeId type;
+  SymbolId source;
+  std::vector<ParametricArgument> arguments;
+};
+
 // Source-local recipe for an array/SIMD count which must be evaluated by the
 // package that owns the referenced compile-time procedure bodies. type is the
 // unique symbolic Type row carrying this side-table index. syntax and scope are
@@ -480,6 +492,7 @@ struct SemanticPackage {
   std::vector<RequiredIntegerExpression> required_integer_expressions;
   std::vector<DeferredElementCount> deferred_element_counts;
   std::vector<DeferredValueExpression> deferred_value_expressions;
+  std::vector<DeferredTypeApplication> deferred_type_applications;
   std::vector<NativeBinding> native_bindings;
 };
 

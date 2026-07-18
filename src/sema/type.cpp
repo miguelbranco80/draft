@@ -197,7 +197,8 @@ TypeId TypeStore::add_scalar(
 TypeId TypeStore::pointer(TypeId element) {
   for (std::uint32_t index = 0; index < types_.size(); ++index) {
     const Type &candidate = types_[index];
-    if (candidate.kind == TypeKind::Pointer && candidate.element == element) {
+    if (candidate.kind == TypeKind::Pointer && candidate.element == element &&
+        !candidate.owner_evaluated_type_application) {
       return TypeId{index};
     }
   }
@@ -212,7 +213,9 @@ TypeId TypeStore::pointer(TypeId element) {
 TypeId TypeStore::multi_pointer(TypeId element) {
   for (std::uint32_t index = 0; index < types_.size(); ++index) {
     const Type &candidate = types_[index];
-    if (candidate.kind == TypeKind::MultiPointer && candidate.element == element) {
+    if (candidate.kind == TypeKind::MultiPointer &&
+        candidate.element == element &&
+        !candidate.owner_evaluated_type_application) {
       return TypeId{index};
     }
   }
@@ -227,7 +230,8 @@ TypeId TypeStore::multi_pointer(TypeId element) {
 TypeId TypeStore::slice(TypeId element) {
   for (std::uint32_t index = 0; index < types_.size(); ++index) {
     const Type &candidate = types_[index];
-    if (candidate.kind == TypeKind::Slice && candidate.element == element) {
+    if (candidate.kind == TypeKind::Slice && candidate.element == element &&
+        !candidate.owner_evaluated_type_application) {
       return TypeId{index};
     }
   }
@@ -243,7 +247,8 @@ TypeId TypeStore::array(TypeId element, std::uint64_t count) {
   for (std::uint32_t index = 0; index < types_.size(); ++index) {
     const Type &candidate = types_[index];
     if (candidate.kind == TypeKind::Array && candidate.element == element &&
-        candidate.element_count == count) {
+        candidate.element_count == count &&
+        !candidate.owner_evaluated_type_application) {
       return TypeId{index};
     }
   }
@@ -265,7 +270,8 @@ TypeId TypeStore::parametric_array(
   for (std::uint32_t index = 0; index < types_.size(); ++index) {
     const Type &candidate = types_[index];
     if (candidate.kind == TypeKind::Array && candidate.element == element &&
-        candidate.element_count_expression == count) {
+        candidate.element_count_expression == count &&
+        !candidate.owner_evaluated_type_application) {
       return TypeId{index};
     }
   }
@@ -296,7 +302,8 @@ TypeId TypeStore::simd(
   for (std::uint32_t index = 0; index < types_.size(); ++index) {
     Type &candidate = types_[index];
     if (candidate.kind == TypeKind::Simd && candidate.element == element &&
-        candidate.element_count == lanes) {
+        candidate.element_count == lanes &&
+        !candidate.owner_evaluated_type_application) {
       // Structural interning may first see a type through an imported graph,
       // which has no local source location. Preserve the first useful local use
       // so a target-profile rejection points at source instead of file zero.
@@ -334,7 +341,8 @@ TypeId TypeStore::parametric_simd(
   for (std::uint32_t index = 0; index < types_.size(); ++index) {
     const Type &candidate = types_[index];
     if (candidate.kind == TypeKind::Simd && candidate.element == element &&
-        candidate.element_count_expression == lanes) {
+        candidate.element_count_expression == lanes &&
+        !candidate.owner_evaluated_type_application) {
       return TypeId{index};
     }
   }
@@ -354,6 +362,18 @@ TypeId TypeStore::owner_evaluated_simd(
   result.element = element;
   result.owner_evaluated_element_count = true;
   result.deferred_element_count_index = deferred_index;
+  return add(std::move(result));
+}
+
+TypeId TypeStore::owner_evaluated_application(
+    TypeId shape, std::uint32_t deferred_index) {
+  // Copy the semantic shape for template-only checking, but make physical use
+  // fail closed. The ordinary structural constructor will produce the final
+  // canonical row after the application arguments become exact.
+  Type result = type(shape);
+  result.layout = {};
+  result.owner_evaluated_type_application = true;
+  result.deferred_type_application_index = deferred_index;
   return add(std::move(result));
 }
 
@@ -383,7 +403,8 @@ TypeLayout TypeStore::aggregate_layout(const std::vector<TypeId> &members) const
 TypeId TypeStore::tuple(const std::vector<TypeId> &members) {
   for (std::uint32_t index = 0; index < types_.size(); ++index) {
     const Type &candidate = types_[index];
-    if (candidate.kind == TypeKind::Tuple && candidate.members == members) {
+    if (candidate.kind == TypeKind::Tuple && candidate.members == members &&
+        !candidate.owner_evaluated_type_application) {
       return TypeId{index};
     }
   }
@@ -413,7 +434,8 @@ TypeId TypeStore::procedure(
   for (std::uint32_t index = 0; index < types_.size(); ++index) {
     const Type &candidate = types_[index];
     if (candidate.kind == TypeKind::Procedure && candidate.members == signature &&
-        candidate.c_calling_convention == c_calling_convention) {
+        candidate.c_calling_convention == c_calling_convention &&
+        !candidate.owner_evaluated_type_application) {
       return TypeId{index};
     }
   }

@@ -709,6 +709,83 @@ private:
     return false;
   }
 
+  [[nodiscard]] bool expression_references_symbol(
+      const SyntaxTree &tree,
+      NodeId expression,
+      ScopeId scope,
+      SymbolId wanted) const {
+    const SyntaxNode &node = tree.node(expression);
+    if (node.kind == NodeKind::NameExpression ||
+        node.kind == NodeKind::NamedType) {
+      const std::vector<SourceName> names = names_in_span(
+          tree, node.token_begin, node.token_end);
+      if (names.size() == 1) {
+        const std::optional<SymbolId> symbol =
+            semantic_.symbols.lookup(scope, names.front().text);
+        if (symbol == wanted) return true;
+      }
+    }
+    for (NodeId child : node.children) {
+      if (expression_references_symbol(
+              tree, child, scope, wanted)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  [[nodiscard]] bool expression_references_type_parameter(
+      const SyntaxTree &tree,
+      NodeId expression,
+      ScopeId scope,
+      TypeId wanted) const {
+    for (const ParametricParameterRecord &parameter :
+         semantic_.parametric_parameters) {
+      const Symbol &symbol = semantic_.symbols.symbol(parameter.parameter);
+      if (symbol.kind == SymbolKind::TypeParameter &&
+          symbol.type == wanted &&
+          expression_references_symbol(
+              tree, expression, scope, parameter.parameter)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  [[nodiscard]] bool deferred_expression_has_unbound_parameters(
+      const SyntaxTree &tree,
+      NodeId expression,
+      ScopeId scope,
+      const std::vector<DeferredElementCountTypeBinding> &type_bindings,
+      const std::vector<DeferredElementCountValueBinding> &value_bindings) const {
+    for (const ParametricParameterRecord &parameter :
+         semantic_.parametric_parameters) {
+      const Symbol &symbol = semantic_.symbols.symbol(parameter.parameter);
+      if (!expression_references_symbol(
+              tree, expression, scope, parameter.parameter)) {
+        continue;
+      }
+      if (symbol.kind == SymbolKind::TypeParameter) {
+        const bool bound = std::any_of(
+            type_bindings.begin(),
+            type_bindings.end(),
+            [&](const DeferredElementCountTypeBinding &binding) {
+              return binding.parameter == symbol.type;
+            });
+        if (!bound) return true;
+      } else if (symbol.kind == SymbolKind::ValueParameter) {
+        const bool bound = std::any_of(
+            value_bindings.begin(),
+            value_bindings.end(),
+            [&](const DeferredElementCountValueBinding &binding) {
+              return binding.parameter == parameter.parameter;
+            });
+        if (!bound) return true;
+      }
+    }
+    return false;
+  }
+
   [[nodiscard]] TypeId defer_element_count(
       TypeKind kind,
       TypeId element,
@@ -1293,6 +1370,7 @@ private:
     const Type value = semantic_.types.type(type);
     bool result = value.kind == TypeKind::TypeParameter ||
         value.owner_evaluated_element_count ||
+        value.owner_evaluated_type_application ||
         value.element_count_expression.is_valid();
     if (!result &&
         (value.kind == TypeKind::Pointer ||
@@ -1363,7 +1441,8 @@ private:
     }
     active.push_back(type);
     const Type value = semantic_.types.type(type);
-    bool result = value.owner_evaluated_element_count;
+    bool result = value.owner_evaluated_element_count ||
+        value.owner_evaluated_type_application;
     if (!result && value.element.is_valid()) {
       result = type_requires_owner_evaluation(value.element, active);
     }
@@ -1429,16 +1508,25 @@ private:
 
     const DeferredValueExpression recipe =
         semantic_.deferred_value_expressions[source.deferred_value_index];
+    const SyntaxTree *tree = find_tree(recipe.syntax.file);
+    if (tree == nullptr || !recipe.syntax.node.is_valid()) {
+      diagnostics_.error(
+          use_range, "owner-evaluated generic argument has no source recipe");
+      return std::nullopt;
+    }
     std::vector<DeferredElementCountTypeBinding> type_bindings =
         recipe.type_bindings;
     std::vector<DeferredElementCountValueBinding> value_bindings =
         recipe.value_bindings;
+    bool changed = false;
     for (DeferredElementCountTypeBinding &binding : type_bindings) {
-      binding.replacement = substitute_type(
+      const TypeId replacement = substitute_type(
           binding.replacement,
           substitutions,
           value_substitutions,
           use_range);
+      changed = changed || replacement != binding.replacement;
+      binding.replacement = replacement;
     }
     for (const ResolverTypeSubstitution &substitution : substitutions) {
       const bool present = std::any_of(
@@ -1447,9 +1535,14 @@ private:
           [&](const DeferredElementCountTypeBinding &binding) {
             return binding.parameter == substitution.parameter;
           });
-      if (!present) {
+      if (!present && expression_references_type_parameter(
+              *tree,
+              recipe.syntax.node,
+              recipe.scope,
+              substitution.parameter)) {
         type_bindings.push_back(
             {substitution.parameter, substitution.replacement});
+        changed = true;
       }
     }
 
@@ -1465,6 +1558,7 @@ private:
         diagnostics_.error(use_range, error);
         return std::nullopt;
       }
+      changed = changed || *replacement != binding.symbolic_expression;
       binding.symbolic_expression = *replacement;
       if (!integer_expression_has_parameters(binding.symbolic_expression)) {
         const IntegerExpressionResult evaluated =
@@ -1485,7 +1579,13 @@ private:
           [&](const DeferredElementCountValueBinding &binding) {
             return binding.parameter == parameter;
           });
-      if (present) continue;
+      if (present || !expression_references_symbol(
+              *tree,
+              recipe.syntax.node,
+              recipe.scope,
+              parameter)) {
+        continue;
+      }
       DeferredElementCountValueBinding binding;
       binding.parameter = parameter;
       binding.symbolic_expression = substitution.symbolic_expression;
@@ -1493,6 +1593,21 @@ private:
         binding.value = ConstantValue::make_integer(substitution.replacement);
       }
       value_bindings.push_back(std::move(binding));
+      changed = true;
+    }
+
+    // Body checking may substitute the active outer procedure environment into
+    // every visible symbol before it recognizes a parametric application. Do
+    // not run this recipe merely because that unrelated environment is
+    // nonempty: only a binding actually referenced by the saved source can
+    // make semantic progress.
+    if (!changed && deferred_expression_has_unbound_parameters(
+            *tree,
+            recipe.syntax.node,
+            recipe.scope,
+            type_bindings,
+            value_bindings)) {
+      return source;
     }
 
     bool symbolic = false;
@@ -1509,12 +1624,6 @@ private:
           break;
         }
       }
-    }
-    const SyntaxTree *tree = find_tree(recipe.syntax.file);
-    if (tree == nullptr || !recipe.syntax.node.is_valid()) {
-      diagnostics_.error(
-          use_range, "owner-evaluated generic argument has no source recipe");
-      return std::nullopt;
     }
     if (symbolic || target_ == nullptr) {
       return defer_value_expression(
@@ -1590,6 +1699,104 @@ private:
     result.value_type = recipe.expected_type;
     result.value = evaluated->value;
     return result;
+  }
+
+  // Applies one outer generic environment to an ordered type-application
+  // packet. Nominal instances and deferred structural aliases use the same
+  // argument rules; keeping them here prevents the two paths from drifting on
+  // full owner-evaluated values or compact integer expressions.
+  [[nodiscard]] std::optional<bool> substitute_parametric_arguments(
+      std::vector<ParametricArgument> &arguments,
+      const std::vector<ResolverTypeSubstitution> &substitutions,
+      const std::vector<ResolverValueSubstitution> &value_substitutions,
+      SourceRange use_range) {
+    bool changed = false;
+    for (ParametricArgument &argument : arguments) {
+      if (argument.is_type) {
+        const TypeId replacement = substitute_type(
+            argument.type,
+            substitutions,
+            value_substitutions,
+            use_range);
+        changed = changed || replacement != argument.type;
+        argument.type = replacement;
+        continue;
+      }
+      if (argument.owner_evaluated_value) {
+        const std::optional<ParametricArgument> replacement =
+            substitute_deferred_value_argument(
+                argument,
+                substitutions,
+                value_substitutions,
+                use_range);
+        if (!replacement.has_value()) return std::nullopt;
+        changed = changed || *replacement != argument;
+        argument = *replacement;
+        continue;
+      }
+      if (!argument.value_expression.is_valid()) continue;
+      std::string error;
+      const std::optional<IntegerExpression> replacement =
+          substitute_integer_expression(
+              argument.value_expression,
+              integer_expression_replacements(value_substitutions),
+              error);
+      if (!replacement.has_value()) {
+        diagnostics_.error(use_range, error);
+        return std::nullopt;
+      }
+      changed = changed || *replacement != argument.value_expression;
+      argument.value_expression = *replacement;
+      if (!integer_expression_has_parameters(argument.value_expression)) {
+        const IntegerExpressionResult evaluated =
+            evaluate_integer_expression(argument.value_expression);
+        if (!evaluated.ok) {
+          diagnostics_.error(use_range, evaluated.error);
+          return std::nullopt;
+        }
+        argument.value = ConstantValue::make_integer(evaluated.value);
+        argument.value_expression = {};
+      }
+    }
+    return changed;
+  }
+
+  [[nodiscard]] TypeId defer_type_application(
+      TypeId shape,
+      SymbolId source,
+      std::vector<ParametricArgument> arguments) {
+    const std::uint32_t index = static_cast<std::uint32_t>(
+        semantic_.deferred_type_applications.size());
+    const TypeId placeholder =
+        semantic_.types.owner_evaluated_application(shape, index);
+    semantic_.deferred_type_applications.push_back(
+        {placeholder, source, std::move(arguments)});
+    return placeholder;
+  }
+
+  [[nodiscard]] TypeId instantiate_deferred_type_application(
+      TypeId source,
+      const Type &value,
+      const std::vector<ResolverTypeSubstitution> &substitutions,
+      const std::vector<ResolverValueSubstitution> &value_substitutions,
+      SourceRange use_range) {
+    if (value.deferred_type_application_index >=
+        semantic_.deferred_type_applications.size()) {
+      // Imported interfaces retain only the marker. Workspace orchestration
+      // requests the enclosing public application from its owner and replaces
+      // this provisional shape on the next clean consumer rebuild.
+      return source;
+    }
+    const DeferredTypeApplication recipe =
+        semantic_.deferred_type_applications[
+            value.deferred_type_application_index];
+    std::vector<ParametricArgument> arguments = recipe.arguments;
+    const std::optional<bool> changed = substitute_parametric_arguments(
+        arguments, substitutions, value_substitutions, use_range);
+    if (!changed.has_value()) return semantic_.types.builtins().invalid;
+    if (!*changed) return source;
+    return instantiate_parametric_type(
+        recipe.source, std::move(arguments), use_range);
   }
 
   [[nodiscard]] TypeId instantiate_deferred_element_count(
@@ -1796,6 +2003,14 @@ private:
     }
     if (!source.is_valid()) return source;
     const Type value = semantic_.types.type(source);
+    if (value.owner_evaluated_type_application) {
+      return instantiate_deferred_type_application(
+          source,
+          value,
+          substitutions,
+          value_substitutions,
+          use_range);
+    }
 
     // Nominal applications keep their identity at the template boundary. A
     // member such as `Dynamic[T]` inside `Map[T, V]` must become the canonical
@@ -1823,57 +2038,10 @@ private:
         }
       }
       if (!arguments.empty()) {
-        bool changed = false;
-        for (ParametricArgument &argument : arguments) {
-          if (argument.is_type) {
-            const TypeId replacement = substitute_type(
-                argument.type,
-                substitutions,
-                value_substitutions,
-                use_range);
-            changed = changed || replacement != argument.type;
-            argument.type = replacement;
-            continue;
-          }
-          if (argument.owner_evaluated_value) {
-            const std::optional<ParametricArgument> replacement =
-                substitute_deferred_value_argument(
-                    argument,
-                    substitutions,
-                    value_substitutions,
-                    use_range);
-            if (!replacement.has_value()) {
-              return semantic_.types.builtins().invalid;
-            }
-            changed = changed || *replacement != argument;
-            argument = *replacement;
-            continue;
-          }
-          if (!argument.value_expression.is_valid()) continue;
-          std::string error;
-          const std::optional<IntegerExpression> replacement =
-              substitute_integer_expression(
-                  argument.value_expression,
-                  integer_expression_replacements(value_substitutions),
-                  error);
-          if (!replacement.has_value()) {
-            diagnostics_.error(use_range, error);
-            return semantic_.types.builtins().invalid;
-          }
-          changed = changed || *replacement != argument.value_expression;
-          argument.value_expression = *replacement;
-          if (!integer_expression_has_parameters(argument.value_expression)) {
-            const IntegerExpressionResult evaluated =
-                evaluate_integer_expression(argument.value_expression);
-            if (!evaluated.ok) {
-              diagnostics_.error(use_range, evaluated.error);
-              return semantic_.types.builtins().invalid;
-            }
-            argument.value = ConstantValue::make_integer(evaluated.value);
-            argument.value_expression = {};
-          }
-        }
-        if (!changed) return source;
+        const std::optional<bool> changed = substitute_parametric_arguments(
+            arguments, substitutions, value_substitutions, use_range);
+        if (!changed.has_value()) return semantic_.types.builtins().invalid;
+        if (!*changed) return source;
 
         if (!template_source.has_value() && imported_application.has_value()) {
           for (const ImportedSymbol &imported : semantic_.imported_symbols) {
@@ -2372,10 +2540,12 @@ private:
         template_type.kind != TypeKind::TaggedUnion &&
         template_type.kind != TypeKind::RawUnion) {
       if (has_owner_evaluated_argument) {
-        diagnostics_.error(
-            use_range,
-            "procedure-dependent value arguments currently require a nominal type template");
-        return semantic_.types.builtins().invalid;
+        // Structural aliases intentionally have no nominal instance identity.
+        // Retain this particular symbolic application in a non-interned shape
+        // row so outer substitution can evaluate its full value recipe, then
+        // return the ordinary canonical structural TypeId.
+        return defer_type_application(
+            template_symbol.type, source, std::move(arguments));
       }
       // Parametric aliases are purely structural and therefore need no member
       // scope or nominal instance identity.
@@ -3862,6 +4032,17 @@ private:
         semantic_.symbols.symbol_mut(id).type = *type;
       } else {
         semantic_.symbols.symbol_mut(id).kind = SymbolKind::Constant;
+        // A name, member access, or bracket expression is deliberately
+        // ambiguous during declaration collection: it may denote either a
+        // type value or an ordinary constant. Collection therefore cannot
+        // reject parameters on it without also rejecting structural aliases
+        // such as `Bytes[N] :: Other_Bytes[N]`. Once type lookup has resolved
+        // the ambiguity, report the ordinary-constant case here.
+        if (initial_symbol.flags.parametric) {
+          diagnostics_.error(
+              declaration.range,
+              "parametric parameters are valid only on type and procedure declarations");
+        }
       }
     } else if (initial_symbol.kind == SymbolKind::Variable) {
       // The first type child is the explicit declaration type. Inferred globals

@@ -534,6 +534,16 @@ private:
     return result;
   }
 
+  [[nodiscard]] bool has_deferred_value_expression(
+      const std::vector<ValueSubstitution> &substitutions) const {
+    return std::any_of(
+        substitutions.begin(),
+        substitutions.end(),
+        [](const ValueSubstitution &substitution) {
+          return substitution.deferred_expression;
+        });
+  }
+
   [[nodiscard]] TypeId substitute_type(
       TypeId source,
       const std::vector<TypeSubstitution> &type_substitutions,
@@ -544,6 +554,42 @@ private:
       if (substitution.parameter == source) return substitution.replacement;
     }
     const Type value = semantic_.types.type(source);
+
+    if (value.owner_evaluated_type_application) {
+      // A call is intentionally outside the compact integer-expression model.
+      // During symbolic template checking its source has already been checked
+      // with the required integer type, but there is no concrete value to hand
+      // to TypeResolver yet. Preserve the fail-closed placeholder; the outer
+      // concrete procedure instance rechecks this same source and supplies the
+      // exact value before any executable HIR is produced.
+      if (has_deferred_value_expression(value_substitutions)) return source;
+      std::vector<DeferredElementCountTypeBinding> deferred_types;
+      for (const TypeSubstitution &substitution : type_substitutions) {
+        deferred_types.push_back(
+            {substitution.parameter, substitution.replacement});
+      }
+      std::vector<DeferredElementCountValueBinding> deferred_values;
+      for (const ValueSubstitution &substitution : value_substitutions) {
+        deferred_values.push_back({
+            substitution.parameter,
+            substitution.value,
+            substitution.symbolic_expression,
+        });
+      }
+      const ConstantTable visible_constants = active_constant_table();
+      return instantiate_owner_evaluated_type_application(
+          sources_,
+          loaded_,
+          semantic_,
+          selections_,
+          source,
+          deferred_types,
+          deferred_values,
+          use_range,
+          visible_constants,
+          target_,
+          diagnostics_);
+    }
 
     // A nominal application cannot be rebuilt by recursively substituting its
     // physical members: doing so would manufacture an unrelated anonymous
@@ -563,6 +609,7 @@ private:
               return argument.owner_evaluated_value;
             });
         if (owner_evaluated) {
+          if (has_deferred_value_expression(value_substitutions)) return source;
           std::vector<DeferredElementCountTypeBinding> deferred_types;
           for (const TypeSubstitution &substitution : type_substitutions) {
             deferred_types.push_back(
@@ -677,6 +724,7 @@ private:
     case TypeKind::Array:
     case TypeKind::Simd: {
       if (value.owner_evaluated_element_count) {
+        if (has_deferred_value_expression(value_substitutions)) return source;
         std::vector<DeferredElementCountTypeBinding> deferred_types;
         for (const TypeSubstitution &substitution : type_substitutions) {
           deferred_types.push_back(
@@ -914,6 +962,33 @@ private:
   // Reports whether an exact compile-time shape may acquire the surrounding
   // type without an ordinary implicit runtime conversion. Tuple constants do
   // this member by member; concrete tuple members must still match exactly.
+  [[nodiscard]] bool same_deferred_application_shape(
+      TypeId left_id, TypeId right_id) const {
+    if (left_id == right_id) return true;
+    const Type left = semantic_.types.type(left_id);
+    const Type right = semantic_.types.type(right_id);
+    if (left.kind != right.kind || left.name != right.name ||
+        left.bit_width != right.bit_width ||
+        left.c_calling_convention != right.c_calling_convention ||
+        left.c_representation != right.c_representation ||
+        left.requested_alignment != right.requested_alignment ||
+        left.members.size() != right.members.size() ||
+        left.element.is_valid() != right.element.is_valid()) {
+      return false;
+    }
+    if (left.element.is_valid() &&
+        !same_deferred_application_shape(left.element, right.element)) {
+      return false;
+    }
+    for (std::size_t index = 0; index < left.members.size(); ++index) {
+      if (!same_deferred_application_shape(
+              left.members[index], right.members[index])) {
+        return false;
+      }
+    }
+    return true;
+  }
+
   [[nodiscard]] bool accepts_expected_type(
       TypeId actual, TypeId expected) const {
     if (actual == expected) return true;
@@ -930,6 +1005,18 @@ private:
     }
     const Type actual_type = semantic_.types.type(actual);
     const Type expected_type = semantic_.types.type(expected);
+    // Full compile-time calls are opaque while a template's value parameters
+    // remain symbolic. Two retained structural applications can therefore
+    // prove their element/member shape but not yet prove their exact count.
+    // Accept that provisional match only in non-executable template HIR. Every
+    // concrete instance is checked again after both recipes have evaluated,
+    // where the ordinary exact TypeId rule above remains mandatory.
+    if (current_procedure_is_template_ &&
+        actual_type.owner_evaluated_type_application &&
+        expected_type.owner_evaluated_type_application &&
+        same_deferred_application_shape(actual, expected)) {
+      return true;
+    }
     if (actual_type.kind != TypeKind::Tuple ||
         expected_type.kind != TypeKind::Tuple ||
         actual_type.members.size() != expected_type.members.size()) {
@@ -2595,6 +2682,7 @@ private:
     if (!type.is_valid()) return false;
     const Type value = semantic_.types.type(type);
     if (value.kind == TypeKind::TypeParameter) return true;
+    if (value.owner_evaluated_type_application) return true;
     if ((value.kind == TypeKind::Array || value.kind == TypeKind::Simd) &&
         (value.element_count_expression.is_valid() ||
          value.owner_evaluated_element_count)) {

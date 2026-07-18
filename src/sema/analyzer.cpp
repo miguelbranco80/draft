@@ -267,7 +267,8 @@ private:
           "thread_local is valid only on a package variable declaration");
     }
     if (flags.parametric && kind != SymbolKind::Type &&
-        kind != SymbolKind::Procedure) {
+        kind != SymbolKind::Procedure &&
+        kind != SymbolKind::UnresolvedDeclaration) {
       diagnostics_.error(
           declaration.range,
           "parametric parameters are valid only on type and procedure declarations");

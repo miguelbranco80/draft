@@ -413,8 +413,8 @@ table discipline.
 ## Owner-evaluated generic layout constants
 
 Status: implemented for array/SIMD recipes in local generic types, generic
-procedure signatures, nested procedure-dependent nominal value arguments, and
-concrete cross-package public type applications.
+procedure signatures, nested procedure-dependent nominal and structural alias
+value arguments, and concrete cross-package public type applications.
 
 The compact dependent-integer tree remains the canonical representation for
 arithmetic and casts such as `[N + 1]T`. It must not pretend to represent a call
@@ -449,6 +449,28 @@ an unknown layout. Substitution composes the captured environment through nested
 templates; once concrete, it evaluates the argument and constructs the ordinary
 canonical nominal instance. Interfaces again export only the marker.
 
+A structural alias application such as `Bytes[increment(N)]` cannot use that
+nominal-instance representation because its final identity is only the
+canonical identity of the resulting array, pointer, tuple, procedure, or scalar.
+The bootstrap therefore creates a deliberately non-interned placeholder which
+copies the provisional structural shape, has unknown layout, and indexes a
+package-local record containing the alias template plus its ordered arguments.
+Structural interning explicitly ignores these placeholders, so an unresolved
+application can never poison a later concrete lookup. Once all arguments are
+exact, the placeholder disappears and the ordinary TypeStore constructor
+returns the canonical structural TypeId; no alias-specific nominal identity is
+invented.
+
+Concrete cross-package structural results need a durable lookup key even though
+the resulting Type row has no provenance. The owner annotates only the root of
+the published InterfaceTypeGraph with the public template identity and canonical
+arguments. A consumer records that application key beside the imported
+canonical TypeId. Later rebuilds therefore reuse the exact array/tuple/etc.
+without changing structural identity. Pending whole-application markers and
+their package-local recipe indices never cross this boundary. Completed body
+interfaces retain all self-contained application graphs published during the
+layout fixed point instead of discarding them when effects are refreshed.
+
 Owner requests close transitively across package imports. If package A requests
 a concrete type from B and B's resulting layout requests a private recipe from
 C, the workspace publishes C's graph first, cleanly rebuilds B against the
@@ -471,11 +493,14 @@ with the normal typed interpreter and its active type/value bindings, and then
 instantiates the exact callee. Cross-package orchestration therefore transfers
 only the final integer and never the caller's private helper or source recipe.
 
-Symbolic signatures may retain the callee's unresolved value parameter during
-the template-only pass. They exist only as type-checking evidence and are never
-lowered. The concrete pass substitutes exact counts and is authoritative for
-runtime-bearing HIR, including signatures whose array/SIMD shape depends on the
-procedure-produced argument.
+Symbolic signatures may retain the callee's unresolved value parameter or a
+whole structural-alias placeholder during the template-only pass. They exist
+only as type-checking evidence and are never lowered. A full-call substitution
+is applied only when the saved recipe actually references that parameter; this
+prevents an unrelated outer template environment from trying to evaluate a
+callee-owned recipe. The concrete pass substitutes exact counts and is
+authoritative for runtime-bearing HIR, including signatures whose array/SIMD or
+structural-alias shape depends on the procedure-produced argument.
 
 ## Hosted process views and core threads
 

@@ -10,3 +10,8 @@ increment :: proc(value: usize) -> usize {
 pub Buffer[N: usize] :: struct {
     values: [increment(N)]u8,
 }
+
+// Structural aliases have no nominal identity of their own. The package still
+// owns evaluation of increment, so consumers receive the final array graph and
+// never need access to this private helper procedure.
+pub Procedural_Bytes[N: usize] :: [increment(N)]u8

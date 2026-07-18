@@ -447,6 +447,44 @@ main :: proc() -> i64 {
   EXPECT(state, saw_concrete_envelope);
 }
 
+void test_procedural_structural_alias_composition(TestState &state) {
+  CheckedSource source(R"draft(
+package bodies
+
+increment :: proc(value: usize) -> usize {
+    return value + 1
+}
+
+Bytes[N: usize] :: [N]u8
+
+relay[N: usize] :: proc(
+    value: Bytes[increment(N)],
+) -> Bytes[increment(N)] {
+    return value
+}
+
+outer[N: usize] :: proc(
+    value: Bytes[increment(increment(N))],
+) -> usize {
+    result := relay[increment(N)](value)
+    return len(result)
+}
+
+main :: proc() -> usize {
+    value: [3]u8
+    return outer[1](value)
+}
+)draft");
+
+  if (source.diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(
+        source.sources, source.diagnostics);
+  }
+  EXPECT(state, source.semantics.ok);
+  EXPECT(state, source.bodies.ok);
+  EXPECT(state, !source.diagnostics.has_errors());
+}
+
 void test_nested_procedures(TestState &state) {
   const std::string text = R"draft(
 package bodies
@@ -1836,6 +1874,7 @@ int main() {
   test_body_diagnostics(state);
   test_parametric_procedure_instances(state);
   test_value_parametric_nominal_composition(state);
+  test_procedural_structural_alias_composition(state);
   test_nested_procedures(state);
   test_nested_procedure_capture_diagnostics(state);
   test_assignment_discards_and_tuple_patterns(state);

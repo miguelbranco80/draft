@@ -133,6 +133,52 @@ void test_owner_evaluated_count_interface_marker(TestState &state) {
                std::numeric_limits<std::uint32_t>::max());
     EXPECT(state, !type.layout.known);
   }
+
+  // Structural parametric aliases retain a whole-application marker rather
+  // than an array-count marker. The shape is useful for later substitution,
+  // but its layout is intentionally unavailable until the defining package
+  // evaluates the saved application recipe.
+  const draft::TypeId deferred_application =
+      producer.types.owner_evaluated_application(
+          producer.types.array(*u8, 1), 9);
+  const draft::InterfaceTypeGraph application_graph =
+      draft::export_interface_type(
+          identity, producer, deferred_application, diagnostics);
+  EXPECT(state, application_graph.root.is_valid());
+  EXPECT(state,
+         application_graph.root.value < application_graph.types.size());
+  if (application_graph.root.is_valid() &&
+      application_graph.root.value < application_graph.types.size()) {
+    EXPECT(
+        state,
+        application_graph.types[application_graph.root.value]
+            .owner_evaluated_type_application);
+
+    draft::InterfaceTypeGraph without_application_marker = application_graph;
+    without_application_marker.types[without_application_marker.root.value]
+        .owner_evaluated_type_application = false;
+    EXPECT(
+        state,
+        draft::hash_interface_type_graph(application_graph) !=
+            draft::hash_interface_type_graph(without_application_marker));
+
+    draft::SemanticPackage application_consumer;
+    const draft::TypeId imported_application =
+        draft::import_interface_type(
+            application_graph, application_consumer, diagnostics);
+    EXPECT(state, imported_application.is_valid());
+    if (imported_application.is_valid()) {
+      const draft::Type &type =
+          application_consumer.types.type(imported_application);
+      EXPECT(state, type.kind == draft::TypeKind::Array);
+      EXPECT(state, type.owner_evaluated_type_application);
+      EXPECT(
+          state,
+          type.deferred_type_application_index ==
+              std::numeric_limits<std::uint32_t>::max());
+      EXPECT(state, !type.layout.known);
+    }
+  }
   EXPECT(state, !diagnostics.has_errors());
 }
 
