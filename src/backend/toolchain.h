@@ -4,6 +4,7 @@
 
 #include "backend/locked_inputs.h"
 #include "backend/foreign_inputs.h"
+#include "backend/runtime_assets.h"
 #include "compile/compiler.h"
 #include "source/diagnostic.h"
 #include "target/profile.h"
@@ -43,12 +44,19 @@ struct NativeBuildOptions {
   bool locked = false;
   LockedNativeInputRoots locked_inputs;
   std::vector<ForeignProviderInput> foreign_providers;
+  // Runtime assets participate in resolved-program identity but are not passed
+  // to Clang. A manifest-bearing build must supply its complete relocated set.
+  std::vector<RuntimeAssetInput> runtime_assets;
 };
 
 struct NativeBuildResult {
   bool ok = false;
   std::string toolchain_version;
   std::string output_path;
+  // Canonical physical roots verified for the exact manifest rows. This lets
+  // an embedding build system deploy them without the compiler inventing a
+  // target-specific output layout. Empty on failure.
+  std::vector<VerifiedRuntimeAssetInput> runtime_assets;
 };
 
 // Writes one LLVM module per compiled package and emits the requested native
@@ -57,7 +65,8 @@ struct NativeBuildResult {
 // object; assembly mode produces a directory with one collision-free source per
 // module/input. Arguments are passed directly to exec rather than through a
 // shell. Locked mode additionally verifies exact trees and uses only the
-// selected linker, SDK, and archiver.
+// selected linker, SDK, and archiver. Runtime assets are verified as external
+// identity inputs and returned to the caller, but are never linker operands.
 [[nodiscard]] NativeBuildResult build_native_artifact(
     const TargetProfile &target,
     const CompileWorkspaceResult &compiled,

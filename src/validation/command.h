@@ -27,6 +27,9 @@ struct ValidationCommandOptions {
   bool locked = false;
   LockedNativeInputRoots locked_inputs;
   std::vector<ForeignProviderInput> foreign_providers;
+  // The native harness does not read these files directly, but a manifest-
+  // bearing run must verify every external runtime identity before execution.
+  std::vector<RuntimeAssetInput> runtime_assets;
   std::vector<ForeignProviderAudit> foreign_provider_audits;
 };
 

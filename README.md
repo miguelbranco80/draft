@@ -238,6 +238,10 @@ path, supplies the SDK explicitly, disables Clang configuration discovery, and
 uses a minimal child environment with no ambient tool, header, library, or SDK
 search path. Logical foreign providers outside the target's built-in set require
 explicit object, archive, or dylib mappings; resolution pins those exact bytes.
+Named runtime assets may likewise be files or directory trees outside the Draft
+distribution. They are verified as complete external identity inputs and
+returned to embedding build systems for deployment, but they are never inferred
+as linker operands or silently copied into an unspecified output layout.
 
 Configure, build, and test the current compiler with:
 
@@ -279,6 +283,19 @@ build/draftc build examples/foreign-provider --allow-host-toolchain \
 Pass the same `--provider` row to `draftc resolve` to record its content identity
 and to later builds to supply a relocated matching file. Unmapped, duplicate,
 unused, stale, or attempts to remap target-owned providers are errors.
+
+Runtime assets use a separate `name:path` mapping. The logical name and exact
+content tree enter the resolved-program identity; the physical path does not.
+The same complete set is required by manifest-bearing build, test, and benchmark
+commands, and may be relocated without changing identity:
+
+```sh
+build/draftc resolve path/to/package \
+  --runtime-asset unicode-tables:/absolute/assets/unicode
+
+build/draftc build path/to/package --allow-host-toolchain \
+  --runtime-asset unicode-tables:/relocated/assets/unicode
+```
 
 `build/draftc resolve path/to/package --codex-distribution-root /absolute/codex-root
 --codex-executable /absolute/codex-root/bin/codex --codex-model <model>` invokes
@@ -345,11 +362,13 @@ Pin native inputs during resolution, then reproduce them without a provider:
 ```sh
 build/draftc resolve path/to/package \
   --toolchain-root /absolute/path/to/llvm \
-  --sdk-root /absolute/path/to/MacOSX.sdk
+  --sdk-root /absolute/path/to/MacOSX.sdk \
+  --runtime-asset unicode-tables:/absolute/assets/unicode
 
 build/draftc build path/to/package --locked \
   --toolchain-root /absolute/path/to/llvm \
   --sdk-root /absolute/path/to/MacOSX.sdk \
+  --runtime-asset unicode-tables:/relocated/assets/unicode \
   --require-judgment-evidence
 ```
 
@@ -364,4 +383,6 @@ the flag is rejected outside `--locked` mode.
 The first toolchain layout requires executable `bin/clang`, `bin/ld64.lld`, and
 `bin/llvm-ar`. Relocating an unchanged tree preserves its identity; changing
 any byte, path, permission, or symlink spelling makes the build fail before a
-compiler process starts.
+compiler process starts. Runtime-asset roots use the same file-kind, permission,
+byte, and safe-symlink identity and are also rechecked before a compiler process
+starts.

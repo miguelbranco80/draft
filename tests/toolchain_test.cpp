@@ -395,6 +395,8 @@ void test_locked_build_verifies_and_isolates_inputs(TestState &state) {
   }
   std::ofstream(sdk / "usr" / "lib" / "libSystem.tbd", std::ios::binary)
       << "pinned SDK bytes\n";
+  const std::filesystem::path runtime_asset = temporary / "unicode-tables.bin";
+  std::ofstream(runtime_asset, std::ios::binary) << "runtime table bytes\n";
   EXPECT(state, chmod(clang.c_str(), 0700) == 0);
   EXPECT(state, chmod(linker.c_str(), 0700) == 0);
   EXPECT(state, chmod(archiver.c_str(), 0700) == 0);
@@ -406,8 +408,16 @@ void test_locked_build_verifies_and_isolates_inputs(TestState &state) {
   draft::DiagnosticSink pin_diagnostics;
   EXPECT(state,
       draft::pin_locked_native_inputs(roots, pins, pin_diagnostics));
+  draft::RuntimeAssetInput asset_mapping;
+  asset_mapping.name = "unicode-tables";
+  asset_mapping.path = runtime_asset;
+  EXPECT(state,
+      draft::pin_runtime_asset_inputs(
+          std::span<const draft::RuntimeAssetInput>(&asset_mapping, 1),
+          pins,
+          pin_diagnostics));
   EXPECT(state, !pin_diagnostics.has_errors());
-  EXPECT(state, pins.size() == 2);
+  EXPECT(state, pins.size() == 3);
 
   draft::SourceManager sources;
   draft::DiagnosticSink compile_diagnostics;
@@ -424,6 +434,7 @@ void test_locked_build_verifies_and_isolates_inputs(TestState &state) {
   options.locked_inputs = roots;
   options.build_directory = (temporary / "build").string();
   options.output_path = (temporary / "program").string();
+  options.runtime_assets.push_back(asset_mapping);
   draft::DiagnosticSink build_diagnostics;
   const draft::NativeBuildResult built = draft::build_native_executable(
       draft::make_aarch64_macos_profile(),
@@ -435,6 +446,13 @@ void test_locked_build_verifies_and_isolates_inputs(TestState &state) {
   }
   EXPECT(state, built.ok);
   EXPECT(state, std::filesystem::exists(temporary / "program"));
+  EXPECT(state, built.runtime_assets.size() == 1);
+  if (built.runtime_assets.size() == 1) {
+    EXPECT(state, built.runtime_assets.front().name == "unicode-tables");
+    EXPECT(state,
+        built.runtime_assets.front().path ==
+            std::filesystem::canonical(runtime_asset));
+  }
 
   const std::string arguments = read_file(log);
   EXPECT(state,
@@ -487,6 +505,28 @@ void test_locked_build_verifies_and_isolates_inputs(TestState &state) {
   EXPECT(state, std::filesystem::exists(temporary / "library.a"));
   EXPECT(state, read_file(log).find("\n-- archive --\nrcsD\n") !=
       std::string::npos);
+
+  // Runtime assets are verified before any compiler process. They are returned
+  // to the embedding build system for deployment, never appended to the Clang
+  // or linker command merely because a manifest names them.
+  std::ofstream(runtime_asset, std::ios::binary | std::ios::trunc)
+      << "mutated runtime table bytes\n";
+  const std::string log_before_asset_failure = read_file(log);
+  draft::NativeBuildOptions stale_asset_options = options;
+  stale_asset_options.build_directory =
+      (temporary / "stale-asset-build").string();
+  stale_asset_options.output_path = (temporary / "stale-asset-program").string();
+  draft::DiagnosticSink stale_asset_diagnostics;
+  const draft::NativeBuildResult stale_asset = draft::build_native_executable(
+      draft::make_aarch64_macos_profile(),
+      compiled,
+      stale_asset_options,
+      stale_asset_diagnostics);
+  EXPECT(state, !stale_asset.ok);
+  EXPECT(state, stale_asset_diagnostics.has_errors());
+  EXPECT(state, read_file(log) == log_before_asset_failure);
+  std::ofstream(runtime_asset, std::ios::binary | std::ios::trunc)
+      << "runtime table bytes\n";
 
   // A changed SDK is rejected before a second compiler process starts.
   std::ofstream(sdk / "usr" / "lib" / "libSystem.tbd", std::ios::binary)

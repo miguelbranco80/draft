@@ -249,6 +249,7 @@ void initialize_claim(
   native.locked = options.locked;
   native.locked_inputs = options.locked_inputs;
   native.foreign_providers = options.foreign_providers;
+  native.runtime_assets = options.runtime_assets;
   const NativeBuildResult built = build_native_executable(
       options.target, compiled, native, diagnostics);
   if (!built.ok) return result;

@@ -142,6 +142,17 @@ variables. Other manifest external-input roles fail closed until their
 artifact-to-command mapping exists. Ordinary development builds retain the
 separate explicit host-toolchain escape hatch.
 
+Runtime assets use a separate complete-set mapping from a nonempty logical name
+to one absolute real file or directory root. Resolution records a
+`runtime-asset` row with the existing portable content-tree digest; later native
+build, test, and benchmark invocations must supply every row and may relocate
+unchanged content. A runtime asset is not a link input, so the adapter never
+passes it to Clang or guesses a location beside the produced artifact. Instead,
+the reusable native API returns the verified canonical roots to its embedding
+build/deployment layer. Root symlinks, escaping internal symlinks, special files,
+duplicates, missing rows, extra mappings, and content changes all fail before a
+compiler process starts.
+
 Resolution manifests accept raw non-ASCII JSON string contents only as valid,
 shortest-form UTF-8 scalar encodings. Continuation leads, overlong sequences,
 surrogates, and values above U+10FFFF fail before any identity is installed.
@@ -793,7 +804,7 @@ the readable subject type, and the same portable interface type graph used by
 other provider context. Source and duplicated digests are rechecked by the
 shared Codex renderer before either synthesis or judgment starts a child. The
 `draft-agent-obligation-v15`, synthesis request/prompt v16, judgment
-request/prompt v2, and compiler content v107 identities make these new facts a
+request/prompt v2, and compiler content v108 identities make these new facts a
 stale-pin and evidence input.
 
 Nested procedures are static and cannot capture runtime locals. Checking a

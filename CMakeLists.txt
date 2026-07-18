@@ -30,6 +30,7 @@ add_library(
   src/backend/foreign_summaries.cpp
   src/backend/locked_inputs.cpp
   src/backend/llvm_ir.cpp
+  src/backend/runtime_assets.cpp
   src/backend/toolchain.cpp
   src/base/content_tree.cpp
   src/base/sha256.cpp
@@ -144,6 +145,10 @@ if(BUILD_TESTING)
   add_executable(draft_foreign_inputs_tests tests/foreign_inputs_test.cpp)
   target_link_libraries(draft_foreign_inputs_tests PRIVATE draft_compiler)
   add_test(NAME draft_foreign_inputs_tests COMMAND draft_foreign_inputs_tests)
+
+  add_executable(draft_runtime_assets_tests tests/runtime_assets_test.cpp)
+  target_link_libraries(draft_runtime_assets_tests PRIVATE draft_compiler)
+  add_test(NAME draft_runtime_assets_tests COMMAND draft_runtime_assets_tests)
 
   add_executable(draft_lexer_tests tests/lexer_test.cpp)
   target_link_libraries(draft_lexer_tests PRIVATE draft_compiler)

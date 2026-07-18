@@ -138,6 +138,30 @@ void configure_core_distribution(draft::WorkspaceLoadOptions &options) {
   return true;
 }
 
+// Runtime assets use a logical name independent of their relocatable physical
+// root. The backend performs shape, duplicate, and content checks; the driver
+// owns only CLI spelling and conversion to an absolute path.
+[[nodiscard]] bool parse_runtime_asset(
+    std::string_view spelling,
+    draft::RuntimeAssetInput &input,
+    std::string &reason) {
+  const std::size_t colon = spelling.find(':');
+  if (colon == 0 || colon == std::string_view::npos ||
+      colon + 1 >= spelling.size()) {
+    reason = "runtime asset mapping must be name:path";
+    return false;
+  }
+  input.name = std::string(spelling.substr(0, colon));
+  std::error_code error;
+  input.path = std::filesystem::absolute(
+      std::filesystem::path(spelling.substr(colon + 1)), error).lexically_normal();
+  if (error) {
+    reason = "cannot make runtime asset path absolute: " + error.message();
+    return false;
+  }
+  return true;
+}
+
 // Semantic compilation must consume the exact summary set selected by an
 // existing manifest. A development build without a manifest still validates
 // summary-to-artifact binding, but has no persistent pin set to compare.
@@ -351,6 +375,7 @@ int build_package(
     const std::optional<draft::LockedNativeInputRoots> &locked_inputs,
     const std::vector<draft::ForeignProviderInput> &foreign_providers,
     const std::vector<draft::ForeignProviderSummaryInput> &provider_summaries,
+    const std::vector<draft::RuntimeAssetInput> &runtime_assets,
     bool require_test_evidence,
     bool require_benchmark_evidence,
     bool require_judgment_evidence) {
@@ -463,6 +488,7 @@ int build_package(
     native_options.artifact_kind = artifact_kind;
     native_options.allow_unpinned_toolchain = allow_host_toolchain;
     native_options.foreign_providers = foreign_providers;
+    native_options.runtime_assets = runtime_assets;
     if (locked_inputs.has_value()) {
       native_options.locked = true;
       native_options.locked_inputs = *locked_inputs;
@@ -487,7 +513,8 @@ int validate_package(
     bool allow_host_toolchain,
     const std::optional<draft::LockedNativeInputRoots> &locked_inputs,
     const std::vector<draft::ForeignProviderInput> &foreign_providers,
-    const std::vector<draft::ForeignProviderSummaryInput> &provider_summaries) {
+    const std::vector<draft::ForeignProviderSummaryInput> &provider_summaries,
+    const std::vector<draft::RuntimeAssetInput> &runtime_assets) {
   draft::SourceManager sources;
   draft::DiagnosticSink diagnostics;
   std::error_code path_error;
@@ -517,6 +544,7 @@ int validate_package(
   options.kind = kind;
   options.allow_unpinned_toolchain = allow_host_toolchain;
   options.foreign_providers = foreign_providers;
+  options.runtime_assets = runtime_assets;
   if (locked_inputs.has_value()) {
     options.locked = true;
     options.locked_inputs = *locked_inputs;
@@ -775,6 +803,7 @@ int run_agent_command(
         std::nullopt,
     const std::vector<draft::ForeignProviderInput> &foreign_providers = {},
     const std::vector<draft::ForeignProviderSummaryInput> &provider_summaries = {},
+    const std::vector<draft::RuntimeAssetInput> &runtime_assets = {},
     const std::vector<std::string> &judgment_selectors = {},
     bool list_judgments = false,
     bool judge_during_resolution = false) {
@@ -800,7 +829,8 @@ int run_agent_command(
     resolve_options.revalidate = revalidate;
     resolve_options.cancellation_requested = command_cancellation_requested;
     const bool external_inputs_configured = locked_inputs.has_value() ||
-        !foreign_providers.empty() || !provider_summaries.empty();
+        !foreign_providers.empty() || !provider_summaries.empty() ||
+        !runtime_assets.empty();
     if (!external_inputs_configured) {
       // A preserved manifest summary remains a semantic compiler input. The
       // relocatable summary and matching artifact must be supplied again;
@@ -827,6 +857,13 @@ int run_agent_command(
       if (locked_inputs.has_value() &&
           !draft::pin_locked_native_inputs(
               *locked_inputs,
+              resolve_options.external_inputs,
+              diagnostics)) {
+        std::cerr << draft::render_diagnostics(sources, diagnostics);
+        return 1;
+      }
+      if (!draft::pin_runtime_asset_inputs(
+              runtime_assets,
               resolve_options.external_inputs,
               diagnostics)) {
         std::cerr << draft::render_diagnostics(sources, diagnostics);
@@ -885,6 +922,7 @@ int run_agent_command(
     validation_state.options.target = resolve_options.compile.target;
     validation_state.options.allow_unpinned_toolchain = allow_host_toolchain;
     validation_state.options.foreign_providers = foreign_providers;
+    validation_state.options.runtime_assets = runtime_assets;
     if (locked_inputs.has_value()) {
       validation_state.options.locked = true;
       validation_state.options.locked_inputs = *locked_inputs;
@@ -1049,6 +1087,7 @@ void print_usage() {
             << "      [--allow-host-toolchain]\n"
             << "      [--provider name=object|archive|shared-library:<path>]...\n"
             << "      [--provider-summary name:<path>]...\n"
+            << "      [--runtime-asset name:<file-or-directory>]...\n"
             << "  draftc build <package-directory> --locked\n"
             << "      --toolchain-root <directory> --sdk-root <directory> [-o <output>]\n"
             << "      [--require-test-evidence] [--require-benchmark-evidence]\n"
@@ -1057,10 +1096,12 @@ void print_usage() {
             << "      [--locked --toolchain-root <directory> --sdk-root <directory>]\n"
             << "      [--provider name=object|archive|shared-library:<path>]...\n"
             << "      [--provider-summary name:<path>]...\n"
+            << "      [--runtime-asset name:<file-or-directory>]...\n"
             << "  draftc bench <package-directory> [--verify] [--allow-host-toolchain]\n"
             << "      [--locked --toolchain-root <directory> --sdk-root <directory>]\n"
             << "      [--provider name=object|archive|shared-library:<path>]...\n"
             << "      [--provider-summary name:<path>]...\n"
+            << "      [--runtime-asset name:<file-or-directory>]...\n"
             << "  draftc resolve <package-directory> [--revalidate] [--judge]\n"
             << "      [--judge-select <selector>]...\n"
             << "      [--codex-distribution-root <directory>\n"
@@ -1069,6 +1110,7 @@ void print_usage() {
             << "      [--toolchain-root <directory> --sdk-root <directory>]\n"
             << "      [--provider name=object|archive|shared-library:<path>]...\n"
             << "      [--provider-summary name:<path>]...\n"
+            << "      [--runtime-asset name:<file-or-directory>]...\n"
             << "  draftc judge <package-directory> [<selector>...] [--list]\n"
             << "      [--codex-distribution-root <directory>\n"
             << "       --codex-executable <path> --codex-model <model>]\n"
@@ -1113,6 +1155,7 @@ int main(int argc, char **argv) {
     std::optional<std::string> sdk_root;
     std::vector<draft::ForeignProviderInput> foreign_providers;
     std::vector<draft::ForeignProviderSummaryInput> provider_summaries;
+    std::vector<draft::RuntimeAssetInput> runtime_assets;
     std::vector<std::string> judgment_selectors;
     for (int index = 3; index < argc; ++index) {
       const std::string_view argument(argv[index]);
@@ -1159,6 +1202,14 @@ int main(int argc, char **argv) {
           return 2;
         }
         provider_summaries.push_back(std::move(summary));
+      } else if (argument == "--runtime-asset" && index + 1 < argc) {
+        draft::RuntimeAssetInput asset;
+        std::string reason;
+        if (!parse_runtime_asset(argv[++index], asset, reason)) {
+          std::cerr << "error: " << reason << '\n';
+          return 2;
+        }
+        runtime_assets.push_back(std::move(asset));
       } else {
         print_usage();
         return 2;
@@ -1202,6 +1253,7 @@ int main(int argc, char **argv) {
         locked_inputs,
         foreign_providers,
         provider_summaries,
+        runtime_assets,
         judgment_selectors,
         false,
         judge_during_resolution);
@@ -1279,6 +1331,7 @@ int main(int argc, char **argv) {
         std::nullopt,
         foreign_providers,
         provider_summaries,
+        {},
         judgment_selectors,
         list_judgments);
   }
@@ -1296,6 +1349,7 @@ int main(int argc, char **argv) {
     std::optional<std::string> sdk_root;
     std::vector<draft::ForeignProviderInput> foreign_providers;
     std::vector<draft::ForeignProviderSummaryInput> provider_summaries;
+    std::vector<draft::RuntimeAssetInput> runtime_assets;
     for (int index = 3; index < argc; ++index) {
       const std::string_view argument(argv[index]);
       if (argument == "--allow-host-toolchain" && !allow_host_toolchain) {
@@ -1331,6 +1385,14 @@ int main(int argc, char **argv) {
           return 2;
         }
         provider_summaries.push_back(std::move(summary));
+      } else if (argument == "--runtime-asset" && index + 1 < argc) {
+        draft::RuntimeAssetInput asset;
+        std::string reason;
+        if (!parse_runtime_asset(argv[++index], asset, reason)) {
+          std::cerr << "error: " << reason << '\n';
+          return 2;
+        }
+        runtime_assets.push_back(std::move(asset));
       } else {
         print_usage();
         return 2;
@@ -1358,7 +1420,8 @@ int main(int argc, char **argv) {
         allow_host_toolchain,
         locked_inputs,
         foreign_providers,
-        provider_summaries);
+        provider_summaries,
+        runtime_assets);
   }
   if (argc >= 3 && std::string_view(argv[1]) == "build") {
     std::optional<std::string> output;
@@ -1374,6 +1437,7 @@ int main(int argc, char **argv) {
     std::optional<std::string> sdk_root;
     std::vector<draft::ForeignProviderInput> foreign_providers;
     std::vector<draft::ForeignProviderSummaryInput> provider_summaries;
+    std::vector<draft::RuntimeAssetInput> runtime_assets;
     for (int index = 3; index < argc; ++index) {
       const std::string_view argument(argv[index]);
       if (argument == "--allow-host-toolchain") {
@@ -1433,6 +1497,14 @@ int main(int argc, char **argv) {
           return 2;
         }
         provider_summaries.push_back(std::move(summary));
+      } else if (argument == "--runtime-asset" && index + 1 < argc) {
+        draft::RuntimeAssetInput asset;
+        std::string reason;
+        if (!parse_runtime_asset(argv[++index], asset, reason)) {
+          std::cerr << "error: " << reason << '\n';
+          return 2;
+        }
+        runtime_assets.push_back(std::move(asset));
       } else {
         print_usage();
         return 2;
@@ -1464,6 +1536,7 @@ int main(int argc, char **argv) {
         locked_inputs,
         foreign_providers,
         provider_summaries,
+        runtime_assets,
         require_test_evidence,
         require_benchmark_evidence,
         require_judgment_evidence);

@@ -265,6 +265,9 @@ void add_provider(std::vector<std::string> &providers, std::string_view provider
         }
         continue;
       }
+      // Runtime assets have their own complete-set verifier. They are not
+      // foreign symbol providers and therefore do not enter the link list.
+      if (pin.kind == ExternalInputKind::RuntimeAsset) continue;
       if (!options.locked &&
           (pin.kind == ExternalInputKind::Toolchain ||
            pin.kind == ExternalInputKind::Sdk)) {
@@ -320,6 +323,33 @@ void add_provider(std::vector<std::string> &providers, std::string_view provider
       return false;
     }
   }
+  return true;
+}
+
+// A manifest makes runtime assets part of the resolved program even for an
+// ordinary non-locked build, so every manifest-bearing native invocation must
+// prove the complete mapping. Conversely, an asset passed without a manifest
+// would affect no program identity and is rejected instead of being ignored.
+[[nodiscard]] bool verify_runtime_asset_set(
+    const CompileWorkspaceResult &compiled,
+    const NativeBuildOptions &options,
+    std::vector<VerifiedRuntimeAssetInput> &verified,
+    DiagnosticSink &diagnostics) {
+  if (compiled.resolution_manifest.has_value()) {
+    return verify_runtime_asset_inputs(
+        options.runtime_assets,
+        compiled.resolution_manifest->external_inputs,
+        verified,
+        diagnostics);
+  }
+  if (!options.runtime_assets.empty()) {
+    diagnostics.error(
+        SourceRange::invalid(),
+        "runtime assets require a resolution manifest; run 'draftc resolve' "
+        "with the mappings first");
+    return false;
+  }
+  verified.clear();
   return true;
 }
 
@@ -445,6 +475,12 @@ NativeBuildResult build_native_artifact(
     diagnostics.error(
         SourceRange::invalid(),
         "locked native build cannot allow an unpinned host toolchain");
+    return result;
+  }
+
+  std::vector<VerifiedRuntimeAssetInput> runtime_assets;
+  if (!verify_runtime_asset_set(
+          compiled, options, runtime_assets, diagnostics)) {
     return result;
   }
 
@@ -654,6 +690,7 @@ NativeBuildResult build_native_artifact(
   if (options.artifact_kind == NativeArtifactKind::Assembly) {
     result.ok = true;
     result.output_path = output_path.string();
+    result.runtime_assets = runtime_assets;
     return result;
   }
 
@@ -706,6 +743,7 @@ NativeBuildResult build_native_artifact(
     }
     result.ok = true;
     result.output_path = output_path.string();
+    result.runtime_assets = runtime_assets;
     return result;
   }
 
@@ -780,6 +818,7 @@ NativeBuildResult build_native_artifact(
   }
   result.ok = true;
   result.output_path = output_path.string();
+  result.runtime_assets = runtime_assets;
   return result;
 }
 
