@@ -655,3 +655,12 @@ validation-specific header also advances the compiler content identity: an old
 evidence state is rejected instead of being silently reinterpreted by a locked
 build. Evidence-object keys remain domain-separated by their typed formats, so
 both kinds safely occupy the same `.draft/evidence` object namespace.
+
+The provider-neutral judgment command evaluates sites in deterministic compiled
+package/obligation order. It revalidates every attachment identity before the
+provider sees bytes, strips process-local syntax handles, and supplies only the
+resolved program plus canonical typed obligation. Each returned verdict is
+persisted immediately. A semantic failure therefore revokes prior evidence even
+when the aggregate command fails, while an invocation or protocol failure does
+not fabricate a qualitative verdict. Only an all-pass completed aggregate may
+publish its returned rows into a resolution manifest.

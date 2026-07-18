@@ -45,6 +45,7 @@ add_library(
   src/interop/aarch64_abi.cpp
   src/interop/c_header.cpp
   src/interop/native.cpp
+  src/judgment/command.cpp
   src/judgment/evidence.cpp
   src/judgment/evidence_store.cpp
   src/mir/lower.cpp
@@ -368,6 +369,10 @@ if(BUILD_TESTING)
     NAME draft_judgment_evidence_store_tests
     COMMAND draft_judgment_evidence_store_tests
   )
+
+  add_executable(draft_judgment_command_tests tests/judgment_command_test.cpp)
+  target_link_libraries(draft_judgment_command_tests PRIVATE draft_compiler)
+  add_test(NAME draft_judgment_command_tests COMMAND draft_judgment_command_tests)
 
   # Provider-free agent commands must recognize real typed sites but fail
   # before writing anything when no provider adapter is configured.
