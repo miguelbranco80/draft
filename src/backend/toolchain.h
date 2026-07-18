@@ -28,6 +28,10 @@ enum class NativeArtifactKind {
 
 struct NativeBuildOptions {
   std::string clang_path = "clang";
+  // Final Mach-O executables and dylibs carry a debug map, while their linked
+  // DWARF lives in a sibling dSYM bundle. Locked builds ignore this path and
+  // use the verified dsymutil from the pinned LLVM tree.
+  std::string dsymutil_path = "dsymutil";
   // The supported host path is Apple's libtool, whose -D switch removes
   // timestamps and ownership from archives. Locked builds ignore this path
   // and use the verified LLVM ar from the pinned toolchain instead.
@@ -59,6 +63,13 @@ struct NativeBuildResult {
   // to this digest without making a derived file part of program identity.
   std::string source_correlation_path;
   Sha256Digest source_correlation_digest;
+  // Executables and dynamic libraries have a conventional sibling dSYM. The
+  // digest covers the path-stable bundle after removing dsymutil's redundant
+  // relocation cache, which embeds the physical binary path. Other artifact
+  // kinds leave these fields empty/zero because their DWARF remains in object
+  // members or emitted assembly.
+  std::string debug_symbols_path;
+  Sha256Digest debug_symbols_digest;
   // Canonical physical roots verified for the exact manifest rows. This lets
   // an embedding build system deploy them without the compiler inventing a
   // target-specific output layout. Empty on failure.

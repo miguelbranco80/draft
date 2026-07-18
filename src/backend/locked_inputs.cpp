@@ -19,6 +19,7 @@ constexpr std::string_view kSdkName = "macos-sdk";
 constexpr std::string_view kClangEntry = "bin/clang";
 constexpr std::string_view kLinkerEntry = "bin/ld64.lld";
 constexpr std::string_view kArchiverEntry = "bin/llvm-ar";
+constexpr std::string_view kDsymutilEntry = "bin/dsymutil";
 
 [[nodiscard]] bool inspect_root_directory(
     const std::filesystem::path &root,
@@ -136,9 +137,11 @@ bool pin_locked_native_inputs(
   const std::filesystem::path clang = canonical.toolchain_root / kClangEntry;
   const std::filesystem::path linker = canonical.toolchain_root / kLinkerEntry;
   const std::filesystem::path archiver = canonical.toolchain_root / kArchiverEntry;
+  const std::filesystem::path dsymutil = canonical.toolchain_root / kDsymutilEntry;
   if (!inspect_executable(clang, "Clang driver", diagnostics) ||
       !inspect_executable(linker, "Mach-O linker", diagnostics) ||
-      !inspect_executable(archiver, "LLVM archiver", diagnostics)) {
+      !inspect_executable(archiver, "LLVM archiver", diagnostics) ||
+      !inspect_executable(dsymutil, "LLVM dsymutil", diagnostics)) {
     return false;
   }
 
@@ -206,6 +209,7 @@ bool verify_locked_native_inputs(
   result.clang = canonical.toolchain_root / kClangEntry;
   result.linker = canonical.toolchain_root / kLinkerEntry;
   result.archiver = canonical.toolchain_root / kArchiverEntry;
+  result.dsymutil = canonical.toolchain_root / kDsymutilEntry;
   result.toolchain_root = canonical.toolchain_root;
   result.sdk_root = canonical.sdk_root;
   verified = std::move(result);

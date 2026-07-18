@@ -131,6 +131,16 @@ void compare_repeated_artifact(
   EXPECT(state, first.ok);
   EXPECT(state, !first_diagnostics.has_errors());
   if (!first.ok) return;
+  const bool has_debug_companion =
+      kind == draft::NativeArtifactKind::Executable ||
+      kind == draft::NativeArtifactKind::DynamicLibrary;
+  EXPECT(state, has_debug_companion == !first.debug_symbols_path.empty());
+  if (has_debug_companion) {
+    EXPECT(state, std::filesystem::exists(first.debug_symbols_path));
+    EXPECT(state, !std::filesystem::exists(
+        std::filesystem::path(first.debug_symbols_path) / "Contents" /
+            "Resources" / "Relocations"));
+  }
   std::error_code error;
   const ArtifactSnapshot first_snapshot =
       snapshot_artifact(options.output_path, kind, error);
@@ -156,6 +166,9 @@ void compare_repeated_artifact(
   EXPECT(state, second.ok);
   EXPECT(state, !second_diagnostics.has_errors());
   if (!second.ok) return;
+  EXPECT(state, second.debug_symbols_path == first.debug_symbols_path);
+  EXPECT(state,
+      second.debug_symbols_digest == first.debug_symbols_digest);
   error.clear();
   const ArtifactSnapshot second_snapshot =
       snapshot_artifact(options.output_path, kind, error);

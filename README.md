@@ -264,10 +264,13 @@ manifest is selected for locked reuse.
 The first locked native-build contract is also active. Resolution can pin one
 explicit LLVM tree and macOS SDK by canonical content-tree identity. A locked
 build carries that verified manifest snapshot through compilation, re-hashes
-both physical roots, invokes the pinned Clang and Mach-O linker by absolute
-path, supplies the SDK explicitly, disables Clang configuration discovery, and
-uses a minimal child environment with no ambient tool, header, library, or SDK
-search path. Logical foreign providers outside the target's built-in set require
+both physical roots, invokes the pinned Clang, Mach-O linker, LLVM archiver,
+and dsymutil by absolute path, supplies the SDK explicitly, disables Clang
+configuration discovery, and uses a minimal child environment with no ambient
+tool, header, library, or SDK search path. Executable and dynamic-library links
+also publish a conventional sibling `.dSYM`; the compiler returns a canonical
+content-tree digest after removing dsymutil's redundant path-bearing relocation
+cache. Logical foreign providers outside the target's built-in set require
 explicit object, archive, or dylib mappings; resolution pins those exact bytes.
 Named runtime assets may likewise be files or directory trees outside the Draft
 distribution. They are verified as complete external identity inputs and
@@ -294,6 +297,9 @@ the package module without invoking external tools. `build/draftc build
 examples/hello` uses the pinned native toolchain; `--allow-host-toolchain` is an
 explicit development-only escape hatch. All commands use the same
 dependency-ordered source, semantic, HIR, and MIR pipeline.
+Successful executable and dynamic-library CLI builds print both the primary
+artifact and its `.dSYM` path; every native build also writes
+`draft-source-correlation.json` in the isolated build directory.
 
 Interface resolution also promotes a normally body-level synthesis site when a
 package constant or declaration-level `when` executes that procedure at compile
@@ -468,9 +474,9 @@ Codex or any other provider. A missing row, stale context, changed compiler, or
 later failing attempt rejects the build. As with test and benchmark evidence,
 the flag is rejected outside `--locked` mode.
 
-The first toolchain layout requires executable `bin/clang`, `bin/ld64.lld`, and
-`bin/llvm-ar`. Relocating an unchanged tree preserves its identity; changing
-any byte, path, permission, or symlink spelling makes the build fail before a
-compiler process starts. Runtime-asset roots use the same file-kind, permission,
-byte, and safe-symlink identity and are also rechecked before a compiler process
-starts.
+The first toolchain layout requires executable `bin/clang`, `bin/ld64.lld`,
+`bin/llvm-ar`, and `bin/dsymutil`. Relocating an unchanged tree preserves its
+identity; changing any byte, path, permission, or symlink spelling makes the
+build fail before a compiler process starts. Runtime-asset roots use the same
+file-kind, permission, byte, and safe-symlink identity and are also rechecked
+before a compiler process starts.

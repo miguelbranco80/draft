@@ -14,7 +14,7 @@ file(MAKE_DIRECTORY "${TEST_ROOT}/real/workspace/hello")
 file(COPY "${SOURCE_PACKAGE}/" DESTINATION "${TEST_ROOT}/real/workspace/hello")
 file(MAKE_DIRECTORY "${TEST_ROOT}/toolchain/bin")
 file(MAKE_DIRECTORY "${TEST_ROOT}/sdk/usr/lib")
-foreach(tool IN ITEMS clang ld64.lld llvm-ar)
+foreach(tool IN ITEMS clang ld64.lld llvm-ar dsymutil)
   file(WRITE "${TEST_ROOT}/toolchain/bin/${tool}" "#!/bin/sh\nexit 0\n")
   file(CHMOD "${TEST_ROOT}/toolchain/bin/${tool}"
     PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE)

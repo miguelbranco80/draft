@@ -539,6 +539,9 @@ int build_package(
           target, compiled, native_options, diagnostics);
       if (built.ok) {
         std::cout << "built " << built.output_path << '\n';
+        if (!built.debug_symbols_path.empty()) {
+          std::cout << "debug symbols " << built.debug_symbols_path << '\n';
+        }
       }
     }
   }

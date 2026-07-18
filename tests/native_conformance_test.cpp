@@ -170,6 +170,9 @@ void test_native_examples(TestState &state) {
     }
     EXPECT(state, test.name, built.ok);
     if (!built.ok) continue;
+    EXPECT(state, test.name, !built.debug_symbols_path.empty());
+    EXPECT(state, test.name,
+        std::filesystem::exists(built.debug_symbols_path));
 
     std::filesystem::create_directories(case_directory, error);
     EXPECT(state, test.name, !error);

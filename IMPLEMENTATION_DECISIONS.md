@@ -123,9 +123,9 @@ formats.
 
 The first locked compiler-owned artifact seam accepts exactly two external inputs: one LLVM
 toolchain tree named `llvm-aarch64-macos` and one SDK tree named `macos-sdk`.
-The LLVM tree exposes executable `bin/clang`, `bin/ld64.lld`, and `bin/llvm-ar`;
-Clang is the manifest entry point and the linker/archiver locations are fixed by
-this adapter version.
+The LLVM tree exposes executable `bin/clang`, `bin/ld64.lld`, `bin/llvm-ar`,
+and `bin/dsymutil`; Clang is the manifest entry point and the
+linker/archiver/debug-linker locations are fixed by this adapter version.
 Both complete trees are hashed as sorted relative path records including file
 kind, permission bits, exact regular-file bytes, and exact internal symlink
 spelling. Physical root paths are excluded. Absolute or escaping symlinks,
@@ -136,9 +136,10 @@ Locked invocation uses the verified absolute Clang and linker paths, explicit
 floor, and the linker's content-derived Mach-O UUID. Current macOS requires the
 UUID load command for executable launch; a real integration gate proves two
 complete links to the same explicit output identity are byte-for-byte equal.
-The child environment contains fixed `LANG` and `LC_ALL` plus an empty `PATH`;
-it inherits no SDK, compiler, header, library, deployment, or package search
-variables. Other manifest external-input roles fail closed until their
+The child environment contains fixed `LANG`, `LC_ALL`, `HOME`, and `TMPDIR`
+plus an empty `PATH`; it inherits no SDK, compiler, header, library, deployment,
+or package search variables. Other manifest external-input roles fail closed
+until their
 artifact-to-command mapping exists. Ordinary development builds retain the
 separate explicit host-toolchain escape hatch.
 
@@ -904,7 +905,7 @@ upper source re-evaluates to the displayed value at the site. Other loop shapes
 produce no inferred range.
 
 `draft-agent-obligation-v19`, synthesis request v20 / prompt v18, judgment
-request/prompt v4, and compiler content v120 identities make these new facts a
+request/prompt v4, and compiler content v121 identities make these new facts a
 stale-pin and evidence input. Both Codex adapters use provider identity
 `openai-codex-cli-v22` and recheck the canonical upper-source digest before a
 child starts. Obligation construction also drops a range when the binding or
@@ -943,6 +944,33 @@ The sidecar is the common join boundary for future counter-based coverage and
 sampling profiles. Sanitizer, race, allocator-poisoning, and coverage runtimes
 still require explicit versioned validation profiles; this map does not pretend
 that an unrequested instrument ran.
+
+## Native Mach-O debug companions
+
+Status: implemented for executable and dynamic-library artifacts.
+
+Mach-O final links retain a debug map rather than copying package-object DWARF
+into the executable or dylib. A successful native build therefore runs
+`dsymutil` before it reports success and publishes the conventional sibling
+`<artifact>.dSYM`. Locked roots must contain executable `bin/dsymutil` beside
+`clang`, `ld64.lld`, and `llvm-ar`; the complete toolchain tree is already one
+manifest input, so this adds no ambient tool lookup or separate unbound pin.
+
+The invocation ignores object and Swift-module timestamps, uses one worker, and
+verifies its linked output. Locked children retain the empty search path and
+fixed locale, with fixed `HOME=/` and `TMPDIR=/tmp` solely for LLVM scratch-state
+discovery. The returned native result carries both the bundle path and its
+canonical content-tree digest. Object, archive, and assembly artifacts keep
+their debug data in their object members or `.loc` directives and therefore do
+not receive a misleading final-link companion.
+
+LLVM dsymutil also emits `Contents/Resources/Relocations`, a rewriting cache
+whose YAML records the physical binary path. That cache is unnecessary for
+symbolizing the already-linked binary and is removed before hashing or
+publication. The standard `Info.plist` and `Contents/Resources/DWARF` payload
+remain, and their logical Draft compilation directory/file coordinates agree
+with `draft-source-correlation-v1`. Compiler content v121 makes the expanded
+native artifact contract explicit without changing resolved source semantics.
 
 ## Canonical CLI workspace roots
 

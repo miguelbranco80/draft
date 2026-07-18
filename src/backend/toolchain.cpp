@@ -71,14 +71,20 @@ struct ProcessResult {
     raw_arguments.push_back(nullptr);
     if (clean_environment) {
       // No package, SDK, library, compiler-config, locale, or deployment
-      // variables are inherited. PATH is deliberately empty: the Clang driver
-      // and linker paths are absolute in this mode.
-      std::array<std::string, 3> environment_storage{
+      // variables are inherited. PATH is deliberately empty: every selected
+      // Clang, linker, archiver, and debug-linker path is absolute in this mode.
+      // LLVM's dsymutil requires writable temporary-state discovery even when
+      // the link itself is hermetic. Fixed HOME/TMPDIR values keep that
+      // requirement independent of the invoking user. They are scratch
+      // locations only and do not enter the published DWARF or companion map.
+      std::array<std::string, 5> environment_storage{
           "LANG=C",
           "LC_ALL=C",
           "PATH=",
+          "HOME=/",
+          "TMPDIR=/tmp",
       };
-      std::array<char *, 4> environment{};
+      std::array<char *, 6> environment{};
       for (std::size_t index = 0; index < environment_storage.size(); ++index) {
         environment[index] = environment_storage[index].data();
       }
@@ -183,6 +189,26 @@ void append_locked_arguments(
     message += process.error;
   }
   return message;
+}
+
+// dsymutil owns a conventional directory layout, but a successful process exit
+// is not by itself proof that a usable companion was published. Check the two
+// files consumed by macOS symbol tooling before hashing or returning the tree.
+[[nodiscard]] bool require_regular_file(
+    const std::filesystem::path &path,
+    std::string_view role,
+    DiagnosticSink &diagnostics) {
+  std::error_code error;
+  const std::filesystem::file_status status =
+      std::filesystem::symlink_status(path, error);
+  if (error || !std::filesystem::is_regular_file(status)) {
+    diagnostics.error(
+        SourceRange::invalid(),
+        "Mach-O dSYM does not contain a regular " + std::string(role) +
+            " at '" + path.string() + "'");
+    return false;
+  }
+  return true;
 }
 
 // Resolves a selected filename back to the already validated target rule. A
@@ -493,6 +519,7 @@ NativeBuildResult build_native_artifact(
   VerifiedLockedNativeInputs locked_inputs;
   std::string clang_path = options.clang_path;
   std::string archiver_path = options.archiver_path;
+  std::string dsymutil_path = options.dsymutil_path;
   if (options.locked) {
     if (!std::filesystem::path(options.build_directory).is_absolute() ||
         !std::filesystem::path(options.output_path).is_absolute()) {
@@ -524,6 +551,7 @@ NativeBuildResult build_native_artifact(
     }
     clang_path = locked_inputs.clang.string();
     archiver_path = locked_inputs.archiver.string();
+    dsymutil_path = locked_inputs.dsymutil.string();
   }
 
   std::vector<std::string> version_arguments{clang_path};
@@ -863,6 +891,78 @@ NativeBuildResult build_native_artifact(
                 " Mach-O link",
             link));
     return result;
+  }
+
+  // A Mach-O link keeps only a debug map in the executable or dylib. Package
+  // objects still contain complete DWARF, but ordinary debuggers and
+  // source-aware disassemblers expect dsymutil to relocate that data into the
+  // conventional sibling bundle. Run it before reporting build success so a
+  // "built" native program always has the source information promised by the
+  // backend contract.
+  if (options.artifact_kind == NativeArtifactKind::Executable ||
+      options.artifact_kind == NativeArtifactKind::DynamicLibrary) {
+    const std::filesystem::path debug_symbols =
+        output_path.string() + ".dSYM";
+    std::error_code remove_error;
+    std::filesystem::remove_all(debug_symbols, remove_error);
+    if (remove_error) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "cannot replace native debug-symbol bundle: " +
+              remove_error.message());
+      return result;
+    }
+    const std::vector<std::string> dsymutil_arguments{
+        dsymutil_path,
+        "--no-object-timestamp",
+        "--no-swiftmodule-timestamp",
+        "--num-threads=1",
+        "--verify-dwarf=output",
+        output_path.string(),
+        "-o",
+        debug_symbols.string(),
+    };
+    const ProcessResult debug_link =
+        run_process(dsymutil_arguments, options.locked);
+    if (!debug_link.started || debug_link.exit_code != 0) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          phase_failure("Mach-O dSYM emission", debug_link));
+      return result;
+    }
+
+    const std::filesystem::path bundle_plist =
+        debug_symbols / "Contents" / "Info.plist";
+    const std::filesystem::path linked_dwarf =
+        debug_symbols / "Contents" / "Resources" / "DWARF" /
+        output_path.filename();
+    if (!require_regular_file(
+            bundle_plist, "Info.plist", diagnostics) ||
+        !require_regular_file(
+            linked_dwarf, "linked DWARF payload", diagnostics)) {
+      return result;
+    }
+
+    // LLVM dsymutil emits a relocation YAML cache for later dSYM rewriting.
+    // It is not needed to symbolize this exact binary, and its `binary-path`
+    // row names the physical checkout. Remove only that known derived cache;
+    // the standard Info.plist and linked DWARF remain intact.
+    const std::filesystem::path relocation_cache =
+        debug_symbols / "Contents" / "Resources" / "Relocations";
+    remove_error.clear();
+    std::filesystem::remove_all(relocation_cache, remove_error);
+    if (remove_error) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "cannot remove path-bearing dSYM relocation cache: " +
+              remove_error.message());
+      return result;
+    }
+    if (!hash_content_tree(
+            debug_symbols, result.debug_symbols_digest, diagnostics)) {
+      return result;
+    }
+    result.debug_symbols_path = debug_symbols.string();
   }
   result.ok = true;
   result.output_path = output_path.string();

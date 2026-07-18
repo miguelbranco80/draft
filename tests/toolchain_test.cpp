@@ -7,6 +7,7 @@
 // and included in the final deterministic link inputs.
 
 #include "backend/toolchain.h"
+#include "base/content_tree.h"
 #include "compile/compiler.h"
 #include "source/diagnostic.h"
 #include "source/source.h"
@@ -45,6 +46,44 @@ struct TestState {
   std::ostringstream contents;
   contents << input.rdbuf();
   return contents.str();
+}
+
+// The recording Clang scripts below create empty link outputs, so a real
+// dsymutil cannot consume them. This tiny companion records its exact argv and
+// creates a deterministic bundle-shaped tree. Real LLVM dSYM behavior is
+// covered by the native integration and pinned-release qualification gates.
+void write_recording_dsymutil(
+    const std::filesystem::path &path,
+    const std::filesystem::path &log) {
+  std::ofstream script(path, std::ios::binary);
+  script << "#!/bin/sh\n"
+            "printf '%s\\n' '-- dsymutil --' \"$@\" >> '"
+         << log.string()
+         << "'\n"
+            "previous=''\n"
+            "input=''\n"
+            "output=''\n"
+            "for argument in \"$@\"; do\n"
+            "  if [ \"$previous\" = \"-o\" ]; then\n"
+            "    output=\"$argument\"\n"
+            "    previous=\"$argument\"\n"
+            "    continue\n"
+            "  fi\n"
+            "  if [ \"$argument\" = \"-o\" ]; then\n"
+            "    previous=\"$argument\"\n"
+            "    continue\n"
+            "  fi\n"
+            "  input=\"$argument\"\n"
+            "  previous=\"$argument\"\n"
+            "done\n"
+            "name=$(/usr/bin/basename \"$input\")\n"
+            "/bin/mkdir -p \"$output/Contents/Resources/DWARF\" "
+            "\"$output/Contents/Resources/Relocations/aarch64\"\n"
+            ": > \"$output/Contents/Info.plist\"\n"
+            ": > \"$output/Contents/Resources/DWARF/$name\"\n"
+            "printf '%s\\n' \"binary-path: '$1'\" > "
+            "\"$output/Contents/Resources/Relocations/aarch64/program.yml\"\n"
+            "exit 0\n";
 }
 
 draft::CompileWorkspaceResult compile_fixture(
@@ -110,9 +149,13 @@ void test_explicit_foreign_provider_mapping(TestState &state) {
               "exit 0\n";
   }
   EXPECT(state, chmod(fake_clang.c_str(), 0700) == 0);
+  const std::filesystem::path fake_dsymutil = temporary / "record-dsymutil";
+  write_recording_dsymutil(fake_dsymutil, log);
+  EXPECT(state, chmod(fake_dsymutil.c_str(), 0700) == 0);
 
   draft::NativeBuildOptions options;
   options.clang_path = fake_clang.string();
+  options.dsymutil_path = fake_dsymutil.string();
   options.build_directory = (temporary / "build").string();
   options.output_path = (temporary / "program").string();
   draft::DiagnosticSink missing_diagnostics;
@@ -207,6 +250,9 @@ void test_all_native_artifact_kinds(TestState &state) {
   }
   EXPECT(state, chmod(fake_clang.c_str(), 0700) == 0);
   EXPECT(state, chmod(fake_archiver.c_str(), 0700) == 0);
+  const std::filesystem::path fake_dsymutil = temporary / "record-dsymutil";
+  write_recording_dsymutil(fake_dsymutil, log);
+  EXPECT(state, chmod(fake_dsymutil.c_str(), 0700) == 0);
 
   const draft::TargetProfile target = draft::make_aarch64_macos_profile();
   const auto build = [&](draft::NativeArtifactKind kind,
@@ -214,6 +260,7 @@ void test_all_native_artifact_kinds(TestState &state) {
     draft::NativeBuildOptions options;
     options.clang_path = fake_clang.string();
     options.archiver_path = fake_archiver.string();
+    options.dsymutil_path = fake_dsymutil.string();
     options.build_directory = (temporary / "build").string();
     options.output_path = output.string();
     options.artifact_kind = kind;
@@ -237,6 +284,7 @@ void test_all_native_artifact_kinds(TestState &state) {
   EXPECT(state, std::filesystem::exists(temporary / "library.o"));
   EXPECT(state, std::filesystem::exists(temporary / "library.a"));
   EXPECT(state, std::filesystem::exists(temporary / "library.dylib"));
+  EXPECT(state, std::filesystem::exists(temporary / "library.dylib.dSYM"));
   EXPECT(state, std::filesystem::exists(temporary / "assembly" / "package-0.s"));
   EXPECT(state, read_file(
       temporary / "assembly" / "package-0-assembly-0.s") ==
@@ -247,6 +295,7 @@ void test_all_native_artifact_kinds(TestState &state) {
   EXPECT(state, arguments.find("\n-Wl,-no_uuid\n") == std::string::npos);
   EXPECT(state, arguments.find("\n-Wl,-reproducible\n") != std::string::npos);
   EXPECT(state, arguments.find("\n-dynamiclib\n") != std::string::npos);
+  EXPECT(state, arguments.find("\n-- dsymutil --\n") != std::string::npos);
   EXPECT(state,
       arguments.find("\n-- ar --\n-static\n-D\n-o\n") != std::string::npos);
   EXPECT(state, arguments.find("\n-S\n") != std::string::npos);
@@ -309,9 +358,13 @@ void test_package_assembly_reaches_link(TestState &state) {
               "exit 0\n";
   }
   EXPECT(state, chmod(fake_clang.c_str(), 0700) == 0);
+  const std::filesystem::path fake_dsymutil = temporary / "record-dsymutil";
+  write_recording_dsymutil(fake_dsymutil, log);
+  EXPECT(state, chmod(fake_dsymutil.c_str(), 0700) == 0);
 
   draft::NativeBuildOptions native_options;
   native_options.clang_path = fake_clang.string();
+  native_options.dsymutil_path = fake_dsymutil.string();
   native_options.build_directory = (temporary / "build").string();
   native_options.output_path = (temporary / "program").string();
   const draft::NativeBuildResult built = draft::build_native_executable(
@@ -321,6 +374,18 @@ void test_package_assembly_reaches_link(TestState &state) {
   }
   EXPECT(state, built.ok);
   EXPECT(state, std::filesystem::exists(temporary / "program"));
+  EXPECT(state, built.debug_symbols_path ==
+      (temporary / "program.dSYM").string());
+  draft::Sha256Digest debug_symbols_digest;
+  draft::DiagnosticSink debug_digest_diagnostics;
+  EXPECT(state, draft::hash_content_tree(
+      temporary / "program.dSYM",
+      debug_symbols_digest,
+      debug_digest_diagnostics));
+  EXPECT(state, built.debug_symbols_digest == debug_symbols_digest);
+  EXPECT(state, !std::filesystem::exists(
+      temporary / "program.dSYM" / "Contents" / "Resources" /
+          "Relocations"));
   EXPECT(
       state,
       built.source_correlation_path ==
@@ -404,6 +469,8 @@ void test_locked_build_verifies_and_isolates_inputs(TestState &state) {
               ": > \"$2\"\n"
               "exit 0\n";
   }
+  const std::filesystem::path dsymutil = toolchain / "bin" / "dsymutil";
+  write_recording_dsymutil(dsymutil, log);
   std::ofstream(sdk / "usr" / "lib" / "libSystem.tbd", std::ios::binary)
       << "pinned SDK bytes\n";
   const std::filesystem::path runtime_asset = temporary / "unicode-tables.bin";
@@ -411,6 +478,7 @@ void test_locked_build_verifies_and_isolates_inputs(TestState &state) {
   EXPECT(state, chmod(clang.c_str(), 0700) == 0);
   EXPECT(state, chmod(linker.c_str(), 0700) == 0);
   EXPECT(state, chmod(archiver.c_str(), 0700) == 0);
+  EXPECT(state, chmod(dsymutil.c_str(), 0700) == 0);
 
   draft::LockedNativeInputRoots roots;
   roots.toolchain_root = toolchain;
@@ -457,6 +525,12 @@ void test_locked_build_verifies_and_isolates_inputs(TestState &state) {
   }
   EXPECT(state, built.ok);
   EXPECT(state, std::filesystem::exists(temporary / "program"));
+  EXPECT(state,
+      built.debug_symbols_path == (temporary / "program.dSYM").string());
+  EXPECT(state, std::filesystem::exists(built.debug_symbols_path));
+  EXPECT(state, !std::filesystem::exists(
+      temporary / "program.dSYM" / "Contents" / "Resources" /
+          "Relocations"));
   const std::string locked_source_correlation =
       read_file(temporary / "build" / "draft-source-correlation.json");
   EXPECT(state, !locked_source_correlation.empty());
@@ -504,6 +578,7 @@ void test_locked_build_verifies_and_isolates_inputs(TestState &state) {
   EXPECT(state, !repeated_diagnostics.has_errors());
   EXPECT(state, repeated.source_correlation_digest ==
       built.source_correlation_digest);
+  EXPECT(state, repeated.debug_symbols_digest == built.debug_symbols_digest);
   EXPECT(
       state,
       read_file(temporary / "build" / "draft-source-correlation.json") ==
