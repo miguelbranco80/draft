@@ -1489,10 +1489,11 @@ exact_untyped_comparisons :: proc() -> bool {
 }
 
 One :: 1
+Untyped_Tuple :: (1, 2.5)
 
 contextual_float_constants :: proc() -> f64 {
     direct: f64 = 1
-    return direct + One
+    return direct + One + Untyped_Tuple.0 + Untyped_Tuple.1
 }
 )draft");
   if (valid.diagnostics.has_errors()) {

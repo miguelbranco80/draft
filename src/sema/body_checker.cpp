@@ -3775,11 +3775,34 @@ private:
           diagnostics_.error(selector.range, "tuple selector is invalid or out of range");
           return invalid_expression(node.range);
         }
+        const std::size_t member_index = static_cast<std::size_t>(*index);
+        const TypeId member_type = tuple.members[member_index];
+        if (base.kind == HirExpressionKind::Constant &&
+            base.constant.kind == ConstantKind::Aggregate &&
+            member_index < base.constant.elements.size()) {
+          // A tuple constant has no storage identity. Selecting one member is
+          // therefore another constant operation, not a runtime extraction.
+          // Folding here is essential when the tuple's members are still
+          // untyped: only the selected scalar receives the surrounding
+          // concrete context, while the unused aggregate never reaches MIR.
+          HirExpression expression;
+          expression.kind = HirExpressionKind::Constant;
+          expression.range = node.range;
+          expression.type = apply_expected_type(
+              member_type, expected, node.range);
+          expression.constant = base.constant.elements[member_index];
+          contextualize_constant_value(
+              expression.constant,
+              member_type,
+              expression.type,
+              node.range);
+          return hir_.add_expression(std::move(expression));
+        }
         HirExpression expression;
         expression.kind = HirExpressionKind::Member;
         expression.range = node.range;
         expression.type = apply_expected_type(
-            tuple.members[static_cast<std::size_t>(*index)], expected, node.range);
+            member_type, expected, node.range);
         expression.operands.push_back(base_id);
         expression.constant = ConstantValue::make_integer(*index);
         expression.addressable = base.addressable;
