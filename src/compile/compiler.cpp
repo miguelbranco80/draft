@@ -351,6 +351,14 @@ CompileWorkspaceResult compile_workspace(
         package.semantics.package,
         options.attachments,
         diagnostics);
+    package.obligations = build_agent_obligations(
+        workspace_package.identity,
+        sources,
+        workspace_package.loaded,
+        package.semantics.package,
+        package.metadata,
+        options.target,
+        diagnostics);
     package.effects = summarize_package_effects(
         package.semantics.package, package.bodies.program);
     package.native_interop = validate_native_interop(
@@ -369,7 +377,8 @@ CompileWorkspaceResult compile_workspace(
         package.metadata,
         package.effects,
         diagnostics);
-    if (!package.metadata.ok || !denials_ok || !package.native_interop.ok) {
+    if (!package.metadata.ok || !package.obligations.ok || !denials_ok ||
+        !package.native_interop.ok) {
       continue;
     }
   }
@@ -382,7 +391,7 @@ CompileWorkspaceResult compile_workspace(
     if (!result.packages[package_index].has_value()) continue;
     CompiledPackage &package = *result.packages[package_index];
     WorkspacePackage &workspace_package = result.graph.packages[package_index];
-    if (!package.bodies.ok || !package.metadata.ok ||
+    if (!package.bodies.ok || !package.metadata.ok || !package.obligations.ok ||
         !package.native_interop.ok) {
       continue;
     }

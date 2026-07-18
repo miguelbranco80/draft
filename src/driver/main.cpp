@@ -283,12 +283,13 @@ int run_agent_command(
     for (const std::optional<draft::CompiledPackage> &package :
          compiled.packages) {
       if (!package.has_value()) continue;
-      for (const draft::AgentRecord &record : package->metadata.records) {
+      for (const draft::AgentObligation &obligation :
+           package->obligations.obligations) {
         if (command == AgentCommandKind::Judge &&
-            record.kind == draft::AgentConstructKind::Judgment) {
+            obligation.kind == draft::AgentConstructKind::Judgment) {
           ++matching_sites;
         } else if (command == AgentCommandKind::Resolve &&
-                   is_synthesis_record(record.kind)) {
+                   is_synthesis_record(obligation.kind)) {
           ++matching_sites;
         }
       }

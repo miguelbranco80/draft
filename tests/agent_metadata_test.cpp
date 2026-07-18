@@ -1,6 +1,7 @@
 // Provider-independent agent metadata, attachment, and expected-type tests.
 
 #include "sema/agent_metadata.h"
+#include "elaborator/obligation.h"
 #include "sema/body_checker.h"
 #include "sema/interface.h"
 #include "sema/semantic.h"
@@ -100,6 +101,15 @@ void test_agent_records(TestState &state) {
   const draft::AttachmentPolicy policy;
   const draft::AgentMetadataResult metadata = draft::collect_agent_metadata(
       sources, loaded.package, semantics.package, policy, diagnostics);
+  const draft::AgentObligationResult obligations =
+      draft::build_agent_obligations(
+          {"workspace", "context"},
+          sources,
+          loaded.package,
+          semantics.package,
+          metadata,
+          target,
+          diagnostics);
   const draft::PackageInterface package_interface = draft::build_package_interface(
       {"workspace", "context"},
       semantics.package,
@@ -114,7 +124,9 @@ void test_agent_records(TestState &state) {
   EXPECT(state, semantics.ok);
   EXPECT(state, bodies.ok);
   EXPECT(state, metadata.ok);
+  EXPECT(state, obligations.ok);
   EXPECT(state, metadata.records.size() == 4);
+  EXPECT(state, obligations.obligations.size() == 2);
   EXPECT(state, package_interface.documentation.size() == 2);
   EXPECT(state, !diagnostics.has_errors());
   if (metadata.records.size() != 4) return;
@@ -137,6 +149,28 @@ void test_agent_records(TestState &state) {
   }
   EXPECT(state, synthesis.files.size() == 1);
   EXPECT(state, synthesis.record_digest.hex().size() == 64);
+  if (obligations.obligations.size() == 2) {
+    const draft::AgentObligation &judgment_obligation =
+        obligations.obligations[0];
+    const draft::AgentObligation &synthesis_obligation =
+        obligations.obligations[1];
+    EXPECT(state,
+        judgment_obligation.kind == draft::AgentConstructKind::Judgment);
+    EXPECT(state,
+        synthesis_obligation.kind ==
+            draft::AgentConstructKind::SynthesisExpression);
+    EXPECT(state, judgment_obligation.site_identity.starts_with("site-"));
+    EXPECT(state, judgment_obligation.site_identity.size() == 69);
+    EXPECT(state, synthesis_obligation.site_identity.size() == 69);
+    EXPECT(state,
+        synthesis_obligation.expected_type_digest.hex() !=
+            std::string(64, '0'));
+    EXPECT(state, synthesis_obligation.anchor_name == "work");
+    EXPECT(state, synthesis_obligation.source_relative_path == "package.draft");
+    EXPECT(state, !synthesis_obligation.visible_bindings.empty());
+    EXPECT(state,
+        synthesis_obligation.input_digest != judgment_obligation.input_digest);
+  }
 }
 
 } // namespace

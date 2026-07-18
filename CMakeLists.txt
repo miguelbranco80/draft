@@ -30,6 +30,7 @@ add_library(
   src/backend/toolchain.cpp
   src/base/sha256.cpp
   src/compile/compiler.cpp
+  src/elaborator/obligation.cpp
   src/interop/aarch64_abi.cpp
   src/interop/native.cpp
   src/mir/lower.cpp

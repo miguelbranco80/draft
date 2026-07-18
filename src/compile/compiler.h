@@ -4,6 +4,7 @@
 
 #include "assembly/aarch64.h"
 #include "backend/llvm_ir.h"
+#include "elaborator/obligation.h"
 #include "interop/native.h"
 #include "mir/lower.h"
 #include "sema/agent_metadata.h"
@@ -50,6 +51,7 @@ struct CompiledPackage {
   SemanticAnalysisResult semantics;
   BodyCheckResult bodies;
   AgentMetadataResult metadata;
+  AgentObligationResult obligations;
   EffectSummaryResult effects;
   PackageInterface interface;
   NativeInteropResult native_interop;
