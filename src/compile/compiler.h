@@ -77,4 +77,21 @@ struct CompileWorkspaceResult {
     CompileWorkspaceOptions options,
     DiagnosticSink &diagnostics);
 
+// Compiles the surface graph first to obtain stable typed obligations, consumes
+// .draft/resolution.json when synthesis sites exist (or when a manifest is
+// already present), constructs resolved source overrides, and compiles those
+// complete files through the same pipeline. Missing, stale, corrupt, extra, or
+// target-mismatched pins are errors. Generated source may not introduce a new
+// synthesis or judgment site. A handwritten graph with no manifest or
+// synthesis sites behaves exactly like compile_workspace.
+//
+// `draft resolve` deliberately calls compile_workspace instead so it can inspect
+// missing/stale surface obligations. Ordinary check/build/emit operations call
+// this function and never contact a provider or modify the pin store.
+[[nodiscard]] CompileWorkspaceResult compile_workspace_with_resolution(
+    SourceManager &sources,
+    const std::string &root_package_directory,
+    CompileWorkspaceOptions options,
+    DiagnosticSink &diagnostics);
+
 } // namespace draft

@@ -78,6 +78,12 @@ draft::CompileWorkspaceOptions compile_options(
   return options;
 }
 
+// Tests derive the manifest spelling from the same versioned target profile as
+// the compiler instead of maintaining a second target-name fixture.
+std::string target_identity() {
+  return draft::make_aarch64_macos_profile().facts.identity;
+}
+
 void test_pinned_expression_reenters_compiler(TestState &state) {
   TemporaryWorkspace workspace;
   draft::SourceManager surface_sources;
@@ -111,7 +117,7 @@ void test_pinned_expression_reenters_compiler(TestState &state) {
   pin.provider_identity = "deterministic-test-provider";
   pin.model_identity = "fixture-v1";
   draft::ResolutionManifest manifest;
-  manifest.target_identity = "aarch64-apple-macos";
+  manifest.target_identity = target_identity();
   manifest.resolved_program_digest = draft::sha256("resolved fixture");
   manifest.pins.push_back(pin);
   EXPECT(state,
@@ -131,7 +137,7 @@ void test_pinned_expression_reenters_compiler(TestState &state) {
           surface_sources,
           std::span<const draft::ResolutionSurfacePackage>(&input, 1),
           manifest,
-          "aarch64-apple-macos",
+          target_identity(),
           workspace.root,
           diagnostics);
   if (!overlay.ok) {
@@ -141,16 +147,16 @@ void test_pinned_expression_reenters_compiler(TestState &state) {
   EXPECT(state, overlay.applied_sites == 1);
   EXPECT(state, overlay.sources.size() == 1);
 
+  // The public offline compiler repeats the same surface-to-overlay operation
+  // internally. No provider object or callback is available in this process.
   draft::SourceManager resolved_sources;
-  draft::CompileWorkspaceOptions resolved_options =
-      compile_options(workspace, true);
-  resolved_options.workspace.source_overrides = overlay.sources;
   draft::DiagnosticSink resolved_diagnostics;
-  const draft::CompileWorkspaceResult resolved = draft::compile_workspace(
-      resolved_sources,
-      workspace.package.string(),
-      std::move(resolved_options),
-      resolved_diagnostics);
+  const draft::CompileWorkspaceResult resolved =
+      draft::compile_workspace_with_resolution(
+          resolved_sources,
+          workspace.package.string(),
+          compile_options(workspace, true),
+          resolved_diagnostics);
   if (!resolved.ok) {
     std::cerr << draft::render_diagnostics(
         resolved_sources, resolved_diagnostics);
@@ -164,6 +170,75 @@ void test_pinned_expression_reenters_compiler(TestState &state) {
         resolved.packages[0]->llvm.text.find("ret i64 42") !=
             std::string::npos);
   }
+}
+
+void test_generated_judgment_is_rejected(TestState &state) {
+  TemporaryWorkspace workspace;
+  {
+    std::ofstream source(
+        workspace.package / "package.draft",
+        std::ios::binary | std::ios::trunc);
+    source << R"draft(package app
+
+main :: proc() {
+    ... "produce one statement"
+}
+)draft";
+  }
+  draft::SourceManager surface_sources;
+  draft::DiagnosticSink diagnostics;
+  const draft::CompileWorkspaceResult surface = draft::compile_workspace(
+      surface_sources,
+      workspace.package.string(),
+      compile_options(workspace, false),
+      diagnostics);
+  if (!surface.ok || !surface.packages[0].has_value()) {
+    EXPECT(state, false);
+    return;
+  }
+  const draft::AgentObligation &obligation =
+      surface.packages[0]->obligations.obligations[0];
+  draft::GeneratedExpansion expansion{
+      draft::sha256("judge \"generated claim\";"),
+      "judge \"generated claim\";",
+  };
+  draft::ResolutionPin pin;
+  pin.site_identity = obligation.site_identity;
+  pin.kind = obligation.kind;
+  pin.input_digest = obligation.input_digest;
+  pin.expansion_digest = expansion.digest;
+  pin.provider_identity = "test-provider";
+  pin.model_identity = "fixture";
+  draft::ResolutionManifest manifest;
+  manifest.target_identity = target_identity();
+  manifest.resolved_program_digest = draft::sha256("invalid generated judgment");
+  manifest.pins.push_back(pin);
+  EXPECT(state,
+      draft::commit_resolution(
+          workspace.root,
+          manifest,
+          std::span<const draft::GeneratedExpansion>(&expansion, 1),
+          diagnostics));
+
+  draft::SourceManager resolved_sources;
+  draft::DiagnosticSink resolved_diagnostics;
+  const draft::CompileWorkspaceResult resolved =
+      draft::compile_workspace_with_resolution(
+          resolved_sources,
+          workspace.package.string(),
+          compile_options(workspace, false),
+          resolved_diagnostics);
+  EXPECT(state, !resolved.ok);
+  EXPECT(state, resolved_diagnostics.has_errors());
+  bool saw_generated_judgment = false;
+  for (const draft::Diagnostic &diagnostic :
+       resolved_diagnostics.diagnostics()) {
+    if (diagnostic.message.find("may not introduce a judgment") !=
+        std::string::npos) {
+      saw_generated_judgment = true;
+    }
+  }
+  EXPECT(state, saw_generated_judgment);
 }
 
 void test_stale_pin_produces_no_overlay(TestState &state) {
@@ -190,7 +265,7 @@ void test_stale_pin_produces_no_overlay(TestState &state) {
   pin.provider_identity = "test-provider";
   pin.model_identity = "fixture";
   draft::ResolutionManifest manifest;
-  manifest.target_identity = "aarch64-apple-macos";
+  manifest.target_identity = target_identity();
   manifest.resolved_program_digest = draft::sha256("stale program");
   manifest.pins.push_back(pin);
   EXPECT(state,
@@ -211,7 +286,7 @@ void test_stale_pin_produces_no_overlay(TestState &state) {
           sources,
           std::span<const draft::ResolutionSurfacePackage>(&input, 1),
           manifest,
-          "aarch64-apple-macos",
+          target_identity(),
           workspace.root,
           stale_diagnostics);
   EXPECT(state, !overlay.ok);
@@ -225,6 +300,7 @@ int main() {
   TestState state;
   test_pinned_expression_reenters_compiler(state);
   test_stale_pin_produces_no_overlay(state);
+  test_generated_judgment_is_rejected(state);
   if (state.failures != 0) {
     std::cerr << state.failures << " resolution-overlay expectation(s) failed\n";
     return EXIT_FAILURE;

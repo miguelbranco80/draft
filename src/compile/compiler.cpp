@@ -3,6 +3,8 @@
 #include "compile/compiler.h"
 
 #include "base/sha256.h"
+#include "elaborator/resolution_overlay.h"
+#include "elaborator/resolution_store.h"
 #include "sema/denial.h"
 
 #include <algorithm>
@@ -98,6 +100,51 @@ void hash_field(Sha256 &hash, std::string_view value) {
     if (declaration.name == name) return &declaration;
   }
   return nullptr;
+}
+
+// Resolution pins apply only to grammar-producing sites. Documentation and
+// judgments remain surface metadata and follow their separate evidence path.
+[[nodiscard]] bool is_synthesis_obligation(AgentConstructKind kind) {
+  return kind == AgentConstructKind::SynthesisDeclaration ||
+      kind == AgentConstructKind::SynthesisMember ||
+      kind == AgentConstructKind::SynthesisStatement ||
+      kind == AgentConstructKind::SynthesisExpression ||
+      kind == AgentConstructKind::SynthesisAssembly;
+}
+
+// Recovers the diagnostic range for a process-local obligation after either
+// the surface or resolved package pass. Invalid compiler rows are reported at
+// no source rather than turned into assertions on user-controlled input.
+[[nodiscard]] SourceRange obligation_range(
+    const WorkspacePackage &package,
+    const AgentObligation &obligation) {
+  for (const LoadedPackageFile &file : package.loaded.files) {
+    if (file.source != obligation.syntax.file || !file.syntax.has_value() ||
+        !obligation.syntax.node.is_valid()) {
+      continue;
+    }
+    return file.syntax->node(obligation.syntax.node).range;
+  }
+  return SourceRange::invalid();
+}
+
+// Tests persistent site membership across the two compilation passes. Kind is
+// explicit because synthesis and judgment identities inhabit different policy
+// domains even though both use the same `site-<digest>` spelling.
+[[nodiscard]] bool contains_site(
+    const CompileWorkspaceResult &compiled,
+    AgentConstructKind kind,
+    std::string_view site_identity) {
+  for (const std::optional<CompiledPackage> &package : compiled.packages) {
+    if (!package.has_value()) continue;
+    for (const AgentObligation &obligation : package->obligations.obligations) {
+      if (obligation.kind == kind &&
+          obligation.site_identity == site_identity) {
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 // Preliminary interfaces intentionally contain no body-derived effects. Once
@@ -437,6 +484,127 @@ CompileWorkspaceResult compile_workspace(
   result.ok = every_package_ready &&
       diagnostics.error_count() == initial_errors;
   return result;
+}
+
+CompileWorkspaceResult compile_workspace_with_resolution(
+    SourceManager &sources,
+    const std::string &root_package_directory,
+    CompileWorkspaceOptions options,
+    DiagnosticSink &diagnostics) {
+  const std::size_t initial_errors = diagnostics.error_count();
+
+  // The first pass intentionally stops before MIR. Unresolved synthesis is a
+  // valid typed surface obligation, but it is never a value the lowerer may
+  // encode. Caller-supplied overrides are cleared so persistent site identity
+  // is always rediscovered from physical surface source.
+  CompileWorkspaceOptions surface_options = options;
+  surface_options.lower_mir = false;
+  surface_options.emit_llvm = false;
+  surface_options.workspace.source_overrides.clear();
+  CompileWorkspaceResult surface = compile_workspace(
+      sources,
+      root_package_directory,
+      std::move(surface_options),
+      diagnostics);
+  if (!surface.ok) return surface;
+
+  std::vector<ResolutionSurfacePackage> surface_packages;
+  std::size_t synthesis_sites = 0;
+  for (std::size_t index = 0; index < surface.packages.size(); ++index) {
+    if (!surface.packages[index].has_value()) continue;
+    CompiledPackage &compiled_package = *surface.packages[index];
+    surface_packages.push_back({
+        &compiled_package.identity,
+        &surface.graph.packages[index].loaded,
+        &compiled_package.obligations,
+    });
+    for (const AgentObligation &obligation :
+         compiled_package.obligations.obligations) {
+      if (is_synthesis_obligation(obligation.kind)) ++synthesis_sites;
+    }
+  }
+
+  const ResolutionManifestLoadResult loaded_manifest =
+      load_resolution_manifest(options.workspace.workspace_directory, diagnostics);
+  if (loaded_manifest.state == ResolutionManifestLoadState::Invalid) {
+    surface.ok = false;
+    return surface;
+  }
+  if (loaded_manifest.state == ResolutionManifestLoadState::Missing) {
+    if (synthesis_sites != 0) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "workspace has unresolved synthesis sites and no resolution manifest; "
+          "run 'draftc resolve'");
+      surface.ok = false;
+      return surface;
+    }
+    if (!options.lower_mir && !options.emit_llvm) return surface;
+    return compile_workspace(
+        sources, root_package_directory, std::move(options), diagnostics);
+  }
+
+  // Even a zero-pin manifest is checked against the target and selected graph.
+  // In particular, a now-handwritten program must not silently ignore obsolete
+  // pins from an older graph.
+  const ResolutionOverlayResult overlays = build_resolution_overlays(
+      sources,
+      surface_packages,
+      loaded_manifest.manifest,
+      options.target.facts.identity,
+      options.workspace.workspace_directory,
+      diagnostics);
+  if (!overlays.ok) {
+    surface.ok = false;
+    return surface;
+  }
+
+  options.workspace.source_overrides = overlays.sources;
+  CompileWorkspaceResult resolved = compile_workspace(
+      sources, root_package_directory, std::move(options), diagnostics);
+  if (!resolved.ok) return resolved;
+
+  // Generated source is allowed to contain ordinary docs but not another
+  // provider operation. Every surface synthesis site was removed by the
+  // overlay, so any remaining synthesis obligation necessarily came from an
+  // expansion. Judgment identities must be exactly the surface set; input
+  // digests may legitimately change after generated declarations become
+  // visible and are therefore not compared here.
+  for (std::size_t index = 0; index < resolved.packages.size(); ++index) {
+    if (!resolved.packages[index].has_value()) continue;
+    for (const AgentObligation &obligation :
+         resolved.packages[index]->obligations.obligations) {
+      if (is_synthesis_obligation(obligation.kind)) {
+        diagnostics.error(
+            obligation_range(resolved.graph.packages[index], obligation),
+            "generated source may not contain a synthesis site");
+      } else if (obligation.kind == AgentConstructKind::Judgment &&
+                 !contains_site(
+                     surface,
+                     AgentConstructKind::Judgment,
+                     obligation.site_identity)) {
+        diagnostics.error(
+            obligation_range(resolved.graph.packages[index], obligation),
+            "generated source may not introduce a judgment");
+      }
+    }
+  }
+  for (const std::optional<CompiledPackage> &package : surface.packages) {
+    if (!package.has_value()) continue;
+    for (const AgentObligation &obligation : package->obligations.obligations) {
+      if (obligation.kind == AgentConstructKind::Judgment &&
+          !contains_site(
+              resolved,
+              AgentConstructKind::Judgment,
+              obligation.site_identity)) {
+        diagnostics.error(
+            SourceRange::invalid(),
+            "resolved source displaced a surface judgment site");
+      }
+    }
+  }
+  resolved.ok = diagnostics.error_count() == initial_errors;
+  return resolved;
 }
 
 } // namespace draft

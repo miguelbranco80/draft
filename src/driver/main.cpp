@@ -152,8 +152,12 @@ int compile_package(const std::string &directory, bool emit_llvm) {
   configure_core_distribution(options.workspace);
   options.lower_mir = emit_llvm;
   options.emit_llvm = emit_llvm;
-  draft::CompileWorkspaceResult compiled = draft::compile_workspace(
-      sources, absolute_directory.string(), std::move(options), diagnostics);
+  draft::CompileWorkspaceResult compiled =
+      draft::compile_workspace_with_resolution(
+          sources,
+          absolute_directory.string(),
+          std::move(options),
+          diagnostics);
   std::size_t symbol_count = 0;
   std::size_t type_count = 0;
   std::size_t procedure_count = 0;
@@ -212,11 +216,12 @@ int build_package(
   configure_core_distribution(compile_options.workspace);
   compile_options.lower_mir = true;
   compile_options.emit_llvm = true;
-  const draft::CompileWorkspaceResult compiled = draft::compile_workspace(
-      sources,
-      absolute_directory.string(),
-      std::move(compile_options),
-      diagnostics);
+  const draft::CompileWorkspaceResult compiled =
+      draft::compile_workspace_with_resolution(
+          sources,
+          absolute_directory.string(),
+          std::move(compile_options),
+          diagnostics);
   if (compiled.ok) {
     const std::filesystem::path build_directory =
         absolute_directory / ".draft" / "build";
@@ -276,8 +281,18 @@ int run_agent_command(
   options.workspace.workspace_directory =
       absolute_directory.parent_path().string();
   configure_core_distribution(options.workspace);
-  const draft::CompileWorkspaceResult compiled = draft::compile_workspace(
-      sources, absolute_directory.string(), std::move(options), diagnostics);
+  const draft::CompileWorkspaceResult compiled =
+      command == AgentCommandKind::Resolve
+          ? draft::compile_workspace(
+                sources,
+                absolute_directory.string(),
+                std::move(options),
+                diagnostics)
+          : draft::compile_workspace_with_resolution(
+                sources,
+                absolute_directory.string(),
+                std::move(options),
+                diagnostics);
   std::size_t matching_sites = 0;
   if (compiled.ok) {
     for (const std::optional<draft::CompiledPackage> &package :
