@@ -297,6 +297,140 @@ void test_interrupted_publish_recovery(TestState &state) {
   }
 }
 
+void test_store_rejects_redirected_and_unbounded_files(TestState &state) {
+  draft::GeneratedExpansion expansion;
+  expansion.source = "bounded checked expansion";
+  expansion.digest = draft::sha256(expansion.source);
+  const draft::ResolutionManifest manifest = manifest_for(expansion);
+
+  // The store root itself must never redirect compiler reads or writes. Keep
+  // the target in a separate temporary workspace so a mistaken traversal is
+  // observable without touching anything outside the test's ownership.
+  TemporaryWorkspace redirected("redirected-root");
+  TemporaryWorkspace redirect_target("redirect-target");
+  std::error_code error;
+  std::filesystem::create_directory_symlink(
+      redirect_target.path, redirected.path / ".draft", error);
+  EXPECT(state, !error);
+  draft::DiagnosticSink redirected_load_diagnostics;
+  const draft::ResolutionManifestLoadResult redirected_load =
+      draft::load_resolution_manifest(
+          redirected.path, redirected_load_diagnostics);
+  EXPECT(state,
+      redirected_load.state == draft::ResolutionManifestLoadState::Invalid);
+  EXPECT(state, redirected_load_diagnostics.has_errors());
+  draft::DiagnosticSink redirected_commit_diagnostics;
+  EXPECT(state,
+      !draft::commit_resolution(
+          redirected.path,
+          manifest,
+          std::span<const draft::GeneratedExpansion>(&expansion, 1),
+          redirected_commit_diagnostics));
+  EXPECT(state, redirected_commit_diagnostics.has_errors());
+  EXPECT(state,
+      std::filesystem::directory_iterator(redirect_target.path) ==
+          std::filesystem::directory_iterator());
+
+  // Final files receive the same treatment as directories. A valid manifest
+  // reached through a symlink is still not part of the selected store.
+  TemporaryWorkspace manifest_link("manifest-link");
+  std::filesystem::create_directory(manifest_link.path / ".draft", error);
+  EXPECT(state, !error);
+  const std::filesystem::path outside_manifest =
+      manifest_link.path / "outside-resolution.json";
+  std::ofstream(outside_manifest, std::ios::binary)
+      << draft::serialize_resolution_manifest(manifest);
+  std::filesystem::create_symlink(
+      outside_manifest,
+      manifest_link.path / ".draft" / "resolution.json",
+      error);
+  EXPECT(state, !error);
+  draft::DiagnosticSink manifest_link_diagnostics;
+  const draft::ResolutionManifestLoadResult linked_manifest =
+      draft::load_resolution_manifest(
+          manifest_link.path, manifest_link_diagnostics);
+  EXPECT(state,
+      linked_manifest.state == draft::ResolutionManifestLoadState::Invalid);
+  EXPECT(state, manifest_link_diagnostics.has_errors());
+
+  // Commit one coherent store, then replace its content object by a symlink.
+  // Even identical target bytes are rejected because identity includes the
+  // selected regular-file entry, not merely the path's eventual contents.
+  TemporaryWorkspace object_link("object-link");
+  draft::DiagnosticSink object_commit_diagnostics;
+  EXPECT(state,
+      draft::commit_resolution(
+          object_link.path,
+          manifest,
+          std::span<const draft::GeneratedExpansion>(&expansion, 1),
+          object_commit_diagnostics));
+  const std::filesystem::path object_path = object_link.path / ".draft" /
+      "generated" / (expansion.digest.hex() + ".draft");
+  const std::filesystem::path outside_object =
+      object_link.path / "outside-expansion.draft";
+  std::ofstream(outside_object, std::ios::binary) << expansion.source;
+  std::filesystem::remove(object_path, error);
+  EXPECT(state, !error);
+  std::filesystem::create_symlink(outside_object, object_path, error);
+  EXPECT(state, !error);
+  std::string linked_source;
+  draft::DiagnosticSink object_link_diagnostics;
+  EXPECT(state,
+      !draft::load_generated_expansion(
+          object_link.path,
+          expansion.digest,
+          linked_source,
+          object_link_diagnostics));
+  EXPECT(state, object_link_diagnostics.has_errors());
+
+  // Sparse files make the size gates cheap to test while still presenting the
+  // exact oversized metadata a hostile workspace could create.
+  TemporaryWorkspace oversized_manifest("oversized-manifest");
+  std::filesystem::create_directory(
+      oversized_manifest.path / ".draft", error);
+  EXPECT(state, !error);
+  {
+    std::ofstream output(
+        oversized_manifest.path / ".draft" / "resolution.json",
+        std::ios::binary | std::ios::trunc);
+    output.seekp(static_cast<std::streamoff>(16U * 1024U * 1024U));
+    output.put('x');
+  }
+  draft::DiagnosticSink oversized_manifest_diagnostics;
+  const draft::ResolutionManifestLoadResult too_large_manifest =
+      draft::load_resolution_manifest(
+          oversized_manifest.path, oversized_manifest_diagnostics);
+  EXPECT(state,
+      too_large_manifest.state == draft::ResolutionManifestLoadState::Invalid);
+  EXPECT(state, oversized_manifest_diagnostics.has_errors());
+
+  TemporaryWorkspace oversized_object("oversized-object");
+  draft::DiagnosticSink oversized_commit_diagnostics;
+  EXPECT(state,
+      draft::commit_resolution(
+          oversized_object.path,
+          manifest,
+          std::span<const draft::GeneratedExpansion>(&expansion, 1),
+          oversized_commit_diagnostics));
+  const std::filesystem::path oversized_path = oversized_object.path /
+      ".draft" / "generated" / (expansion.digest.hex() + ".draft");
+  {
+    std::ofstream output(
+        oversized_path, std::ios::binary | std::ios::trunc);
+    output.seekp(static_cast<std::streamoff>(64U * 1024U * 1024U));
+    output.put('x');
+  }
+  std::string oversized_source;
+  draft::DiagnosticSink oversized_object_diagnostics;
+  EXPECT(state,
+      !draft::load_generated_expansion(
+          oversized_object.path,
+          expansion.digest,
+          oversized_source,
+          oversized_object_diagnostics));
+  EXPECT(state, oversized_object_diagnostics.has_errors());
+}
+
 } // namespace
 
 int main() {
@@ -305,6 +439,7 @@ int main() {
   test_validation_precedes_writes(state);
   test_corrupt_object_is_rejected(state);
   test_interrupted_publish_recovery(state);
+  test_store_rejects_redirected_and_unbounded_files(state);
   if (state.failures != 0) {
     std::cerr << state.failures << " resolution-store expectation(s) failed\n";
     return EXIT_FAILURE;
