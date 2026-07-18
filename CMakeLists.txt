@@ -32,6 +32,7 @@ add_library(
   src/compile/compiler.cpp
   src/elaborator/obligation.cpp
   src/elaborator/resolution.cpp
+  src/elaborator/resolution_store.cpp
   src/interop/aarch64_abi.cpp
   src/interop/native.cpp
   src/mir/lower.cpp
@@ -153,6 +154,10 @@ if(BUILD_TESTING)
   add_executable(draft_resolution_tests tests/resolution_test.cpp)
   target_link_libraries(draft_resolution_tests PRIVATE draft_compiler)
   add_test(NAME draft_resolution_tests COMMAND draft_resolution_tests)
+
+  add_executable(draft_resolution_store_tests tests/resolution_store_test.cpp)
+  target_link_libraries(draft_resolution_store_tests PRIVATE draft_compiler)
+  add_test(NAME draft_resolution_store_tests COMMAND draft_resolution_store_tests)
 
   add_executable(draft_effect_tests tests/effect_test.cpp)
   target_link_libraries(draft_effect_tests PRIVATE draft_compiler)

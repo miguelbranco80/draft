@@ -136,6 +136,12 @@ void test_invalid_inputs(TestState &state) {
   }
   expect_rejected(state, judgment);
 
+  std::string invalid_site = encoded;
+  const std::size_t site_digit = invalid_site.find(site('a'));
+  EXPECT(state, site_digit != std::string::npos);
+  if (site_digit != std::string::npos) invalid_site[site_digit + 5] = 'z';
+  expect_rejected(state, invalid_site);
+
   // Unknown fields are rejected. This prevents an older compiler from
   // accepting a newer manifest while ignoring semantics it does not know.
   std::string unknown_field = encoded;

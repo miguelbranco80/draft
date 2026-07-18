@@ -73,6 +73,9 @@ public:
     if (parsed.format != "draft-resolution-v1") {
       return fail("unsupported resolution manifest format");
     }
+    if (parsed.target_identity.empty()) {
+      return fail("resolution manifest target identity must not be empty");
+    }
     std::sort(
         parsed.pins.begin(), parsed.pins.end(),
         [](const ResolutionPin &left, const ResolutionPin &right) {
@@ -213,8 +216,13 @@ private:
       return fail("resolution pin has an invalid synthesis kind");
     }
     pin.kind = *parsed_kind;
-    if (!pin.site_identity.starts_with("site-") || pin.site_identity.size() != 69) {
+    if (!pin.site_identity.starts_with("site-") ||
+        !Sha256Digest::from_hex(std::string_view(pin.site_identity).substr(5))
+             .has_value()) {
       return fail("resolution pin has an invalid site identity");
+    }
+    if (pin.provider_identity.empty() || pin.model_identity.empty()) {
+      return fail("resolution pin provider and model identities must not be empty");
     }
     return true;
   }

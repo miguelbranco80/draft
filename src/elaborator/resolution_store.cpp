@@ -1,0 +1,541 @@
+// Crash-resistant implementation of the resolution store transaction.
+//
+// Files are staged below the same .draft directory as their destinations, so a
+// rename cannot cross filesystems. Generated objects are immutable and may
+// become harmless orphans if a process stops before manifest publication. The
+// manifest rename is the single visibility point for the new resolved program.
+// File and directory synchronization makes the ordering durable on the first
+// supported platform, AArch64 macOS. Other hosts retain atomic visibility but
+// may not provide the same power-loss durability guarantee.
+
+#include "elaborator/resolution_store.h"
+
+#include "base/sha256.h"
+
+#include <cerrno>
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include <fstream>
+#include <limits>
+#include <string>
+#include <system_error>
+#include <utility>
+
+#if defined(__APPLE__) || defined(__unix__)
+#include <fcntl.h>
+#include <unistd.h>
+#endif
+
+namespace draft {
+namespace {
+
+constexpr std::uintmax_t kMaximumManifestBytes = 16U * 1024U * 1024U;
+constexpr std::uintmax_t kMaximumExpansionBytes = 64U * 1024U * 1024U;
+
+class StagingDirectory {
+public:
+  explicit StagingDirectory(std::filesystem::path path)
+      : path_(std::move(path)) {}
+
+  StagingDirectory(const StagingDirectory &) = delete;
+  StagingDirectory &operator=(const StagingDirectory &) = delete;
+
+  ~StagingDirectory() {
+    if (path_.empty()) return;
+    std::error_code ignored;
+    std::filesystem::remove_all(path_, ignored);
+  }
+
+  [[nodiscard]] const std::filesystem::path &path() const { return path_; }
+
+private:
+  std::filesystem::path path_;
+};
+
+void store_error(DiagnosticSink &diagnostics, std::string message) {
+  diagnostics.error(SourceRange::invalid(), std::move(message));
+}
+
+// Rejecting symlinks keeps a workspace-controlled .draft entry from redirecting
+// compiler writes outside the selected workspace. The caller creates one path
+// component at a time, so no uninspected descendant is traversed.
+[[nodiscard]] bool ensure_directory(
+    const std::filesystem::path &path,
+    DiagnosticSink &diagnostics) {
+  std::error_code error;
+  const std::filesystem::file_status status =
+      std::filesystem::symlink_status(path, error);
+  if (error && error != std::errc::no_such_file_or_directory) {
+    store_error(diagnostics,
+        "cannot inspect resolution directory '" + path.string() + "': " +
+            error.message());
+    return false;
+  }
+  if (!error && std::filesystem::exists(status)) {
+    if (std::filesystem::is_symlink(status) ||
+        !std::filesystem::is_directory(status)) {
+      store_error(diagnostics,
+          "resolution path is not a real directory: '" + path.string() + "'");
+      return false;
+    }
+    return true;
+  }
+  error.clear();
+  if (!std::filesystem::create_directory(path, error) || error) {
+    store_error(diagnostics,
+        "cannot create resolution directory '" + path.string() + "': " +
+            error.message());
+    return false;
+  }
+  return true;
+}
+
+// Read operations also inspect each store directory itself. symlink_status on
+// only the final file would otherwise follow a symlinked .draft parent and let
+// a locked build consume a store outside the selected workspace.
+[[nodiscard]] bool inspect_store_directory(
+    const std::filesystem::path &path,
+    bool &exists,
+    DiagnosticSink &diagnostics) {
+  exists = false;
+  std::error_code error;
+  const std::filesystem::file_status status =
+      std::filesystem::symlink_status(path, error);
+  if (error == std::errc::no_such_file_or_directory ||
+      (!error && !std::filesystem::exists(status))) {
+    return true;
+  }
+  if (error) {
+    store_error(diagnostics,
+        "cannot inspect resolution directory '" + path.string() + "': " +
+            error.message());
+    return false;
+  }
+  exists = true;
+  if (std::filesystem::is_symlink(status) ||
+      !std::filesystem::is_directory(status)) {
+    store_error(diagnostics,
+        "resolution path is not a real directory: '" + path.string() + "'");
+    return false;
+  }
+  return true;
+}
+
+// Reads a bounded regular file. exists distinguishes a missing optional
+// manifest from an empty or unreadable file; all other failures are diagnosed.
+[[nodiscard]] bool read_store_file(
+    const std::filesystem::path &path,
+    std::uintmax_t maximum_bytes,
+    bool &exists,
+    std::string &contents,
+    DiagnosticSink &diagnostics) {
+  exists = false;
+  std::error_code error;
+  const std::filesystem::file_status status =
+      std::filesystem::symlink_status(path, error);
+  if (error == std::errc::no_such_file_or_directory ||
+      (!error && !std::filesystem::exists(status))) {
+    return true;
+  }
+  if (error) {
+    store_error(diagnostics,
+        "cannot inspect resolution file '" + path.string() + "': " +
+            error.message());
+    return false;
+  }
+  exists = true;
+  if (std::filesystem::is_symlink(status) ||
+      !std::filesystem::is_regular_file(status)) {
+    store_error(diagnostics,
+        "resolution file is not a real regular file: '" + path.string() + "'");
+    return false;
+  }
+  const std::uintmax_t size = std::filesystem::file_size(path, error);
+  if (error) {
+    store_error(diagnostics,
+        "cannot size resolution file '" + path.string() + "': " +
+            error.message());
+    return false;
+  }
+  if (size > maximum_bytes ||
+      size > static_cast<std::uintmax_t>(
+          std::numeric_limits<std::size_t>::max())) {
+    store_error(diagnostics,
+        "resolution file is too large: '" + path.string() + "'");
+    return false;
+  }
+  contents.resize(static_cast<std::size_t>(size));
+  std::ifstream input(path, std::ios::binary);
+  if (!input) {
+    store_error(diagnostics,
+        "cannot open resolution file '" + path.string() + "'");
+    return false;
+  }
+  if (!contents.empty()) {
+    input.read(contents.data(), static_cast<std::streamsize>(contents.size()));
+  }
+  if (!input || input.peek() != std::ifstream::traits_type::eof()) {
+    store_error(diagnostics,
+        "cannot read exact resolution file bytes from '" + path.string() + "'");
+    return false;
+  }
+  return true;
+}
+
+[[nodiscard]] bool write_file(
+    const std::filesystem::path &path,
+    std::string_view contents,
+    DiagnosticSink &diagnostics) {
+  std::ofstream output(path, std::ios::binary | std::ios::trunc);
+  if (!output) {
+    store_error(diagnostics,
+        "cannot create staged resolution file '" + path.string() + "'");
+    return false;
+  }
+  output.write(contents.data(), static_cast<std::streamsize>(contents.size()));
+  output.flush();
+  if (!output) {
+    store_error(diagnostics,
+        "cannot write staged resolution file '" + path.string() + "'");
+    return false;
+  }
+  output.close();
+  return true;
+}
+
+// fsync is a durability operation, not part of semantic identity. It is kept in
+// this filesystem module and used only where the host exposes the POSIX
+// primitive. The compiler reports a real transaction failure if macOS refuses
+// to make a staged file durable.
+[[nodiscard]] bool synchronize_path(
+    const std::filesystem::path &path,
+    DiagnosticSink &diagnostics) {
+#if defined(__APPLE__) || defined(__unix__)
+  const int descriptor = ::open(path.c_str(), O_RDONLY);
+  if (descriptor < 0) {
+    store_error(diagnostics,
+        "cannot open resolution path for synchronization '" + path.string() +
+            "': " + std::strerror(errno));
+    return false;
+  }
+  const int sync_result = ::fsync(descriptor);
+  const int sync_error = errno;
+  const int close_result = ::close(descriptor);
+  if (sync_result != 0) {
+    store_error(diagnostics,
+        "cannot synchronize resolution path '" + path.string() + "': " +
+            std::strerror(sync_error));
+    return false;
+  }
+  if (close_result != 0) {
+    store_error(diagnostics,
+        "cannot close synchronized resolution path '" + path.string() + "': " +
+            std::strerror(errno));
+    return false;
+  }
+#else
+  (void)path;
+  (void)diagnostics;
+#endif
+  return true;
+}
+
+[[nodiscard]] const GeneratedExpansion *find_expansion(
+    std::span<const GeneratedExpansion> expansions,
+    const Sha256Digest &digest) {
+  for (const GeneratedExpansion &expansion : expansions) {
+    if (expansion.digest == digest) return &expansion;
+  }
+  return nullptr;
+}
+
+[[nodiscard]] bool manifest_references(
+    const ResolutionManifest &manifest,
+    const Sha256Digest &digest) {
+  for (const ResolutionPin &pin : manifest.pins) {
+    if (pin.expansion_digest == digest) return true;
+  }
+  return false;
+}
+
+[[nodiscard]] std::filesystem::path generated_path(
+    const std::filesystem::path &workspace_directory,
+    const Sha256Digest &digest) {
+  return workspace_directory / ".draft" / "generated" /
+      (digest.hex() + ".draft");
+}
+
+[[nodiscard]] bool verify_existing_expansion(
+    const std::filesystem::path &workspace_directory,
+    const Sha256Digest &digest,
+    bool required,
+    std::string &contents,
+    DiagnosticSink &diagnostics) {
+  bool exists = false;
+  if (!read_store_file(
+          generated_path(workspace_directory, digest),
+          kMaximumExpansionBytes,
+          exists,
+          contents,
+          diagnostics)) {
+    return false;
+  }
+  if (!exists) {
+    if (required) {
+      store_error(diagnostics,
+          "missing generated expansion " + digest.hex());
+    }
+    return !required;
+  }
+  if (sha256(contents) != digest) {
+    store_error(diagnostics,
+        "generated expansion does not match its content identity " +
+            digest.hex());
+    return false;
+  }
+  return true;
+}
+
+} // namespace
+
+ResolutionManifestLoadResult load_resolution_manifest(
+    const std::filesystem::path &workspace_directory,
+    DiagnosticSink &diagnostics) {
+  ResolutionManifestLoadResult result;
+  bool store_exists = false;
+  if (!inspect_store_directory(
+          workspace_directory / ".draft", store_exists, diagnostics)) {
+    result.state = ResolutionManifestLoadState::Invalid;
+    return result;
+  }
+  if (!store_exists) return result;
+  bool exists = false;
+  std::string json;
+  const std::filesystem::path path =
+      workspace_directory / ".draft" / "resolution.json";
+  if (!read_store_file(
+          path, kMaximumManifestBytes, exists, json, diagnostics)) {
+    result.state = ResolutionManifestLoadState::Invalid;
+    return result;
+  }
+  if (!exists) return result;
+  if (!parse_resolution_manifest(json, result.manifest, diagnostics)) {
+    result.state = ResolutionManifestLoadState::Invalid;
+    return result;
+  }
+  result.state = ResolutionManifestLoadState::Loaded;
+  return result;
+}
+
+bool load_generated_expansion(
+    const std::filesystem::path &workspace_directory,
+    const Sha256Digest &digest,
+    std::string &source,
+    DiagnosticSink &diagnostics) {
+  bool store_exists = false;
+  bool generated_exists = false;
+  if (!inspect_store_directory(
+          workspace_directory / ".draft", store_exists, diagnostics) ||
+      (store_exists &&
+       !inspect_store_directory(
+           workspace_directory / ".draft" / "generated",
+           generated_exists,
+           diagnostics))) {
+    return false;
+  }
+  if (!store_exists || !generated_exists) {
+    store_error(diagnostics, "missing generated expansion " + digest.hex());
+    return false;
+  }
+  return verify_existing_expansion(
+      workspace_directory, digest, true, source, diagnostics);
+}
+
+bool commit_resolution(
+    const std::filesystem::path &workspace_directory,
+    const ResolutionManifest &manifest,
+    std::span<const GeneratedExpansion> expansions,
+    DiagnosticSink &diagnostics) {
+  const std::size_t initial_errors = diagnostics.error_count();
+
+  // Round-trip through the strict schema before touching the filesystem. This
+  // applies the same duplicate-site and kind invariants to compiler-produced
+  // data that the loader applies to disk input.
+  const std::string manifest_json = serialize_resolution_manifest(manifest);
+  ResolutionManifest checked_manifest;
+  if (!parse_resolution_manifest(
+          manifest_json, checked_manifest, diagnostics)) {
+    return false;
+  }
+
+  // Verify supplied objects and reject ambiguous or unused transaction input.
+  // Duplicate digests are rejected even when bytes agree so the transaction has
+  // one obvious owner for every staged file.
+  for (std::size_t index = 0; index < expansions.size(); ++index) {
+    const GeneratedExpansion &expansion = expansions[index];
+    if (expansion.source.size() > kMaximumExpansionBytes) {
+      store_error(diagnostics,
+          "supplied generated expansion exceeds the store size limit");
+      continue;
+    }
+    if (sha256(expansion.source) != expansion.digest) {
+      store_error(diagnostics,
+          "supplied expansion does not match digest " + expansion.digest.hex());
+      continue;
+    }
+    if (!manifest_references(checked_manifest, expansion.digest)) {
+      store_error(diagnostics,
+          "supplied expansion is not referenced by the resolution manifest");
+    }
+    for (std::size_t earlier = 0; earlier < index; ++earlier) {
+      if (expansions[earlier].digest == expansion.digest) {
+        store_error(diagnostics,
+            "resolution transaction supplies a duplicate expansion digest");
+        break;
+      }
+    }
+  }
+  if (diagnostics.error_count() != initial_errors) return false;
+
+  // Every referenced object must be supplied or already exist and verify. This
+  // read-only pass happens before creating .draft, preserving the no-write rule
+  // for incomplete transactions.
+  for (const ResolutionPin &pin : checked_manifest.pins) {
+    if (find_expansion(expansions, pin.expansion_digest) != nullptr) continue;
+    std::string existing;
+    if (!verify_existing_expansion(
+            workspace_directory,
+            pin.expansion_digest,
+            true,
+            existing,
+            diagnostics)) {
+      return false;
+    }
+  }
+
+  const std::filesystem::path store = workspace_directory / ".draft";
+  const std::filesystem::path generated = store / "generated";
+  const std::filesystem::path staging_root = store / "staging";
+  if (!ensure_directory(store, diagnostics) ||
+      !ensure_directory(generated, diagnostics) ||
+      !ensure_directory(staging_root, diagnostics)) {
+    return false;
+  }
+
+  // create_directory is the concurrency primitive here: two resolver
+  // processes cannot claim the same staging name. The suffix has no semantic
+  // meaning and never enters a manifest or diagnostic identity.
+  std::filesystem::path staging_path;
+  for (std::size_t attempt = 0; attempt < 1024; ++attempt) {
+    staging_path = staging_root /
+        (checked_manifest.resolved_program_digest.hex().substr(0, 24) + "-" +
+         std::to_string(attempt));
+    std::error_code create_error;
+    if (std::filesystem::create_directory(staging_path, create_error)) break;
+    if (create_error) {
+      store_error(diagnostics,
+          "cannot create resolution staging directory '" +
+              staging_path.string() + "': " + create_error.message());
+      return false;
+    }
+    staging_path.clear();
+  }
+  if (staging_path.empty()) {
+    store_error(diagnostics, "too many concurrent resolution transactions");
+    return false;
+  }
+  StagingDirectory staging(staging_path);
+
+  // Stage only objects that are not already present. Existing objects are read
+  // and hash-verified; a same-digest/different-byte condition is treated as a
+  // collision or corruption, never overwritten.
+  for (const GeneratedExpansion &expansion : expansions) {
+    std::string existing;
+    bool exists = false;
+    if (!read_store_file(
+            generated_path(workspace_directory, expansion.digest),
+            kMaximumExpansionBytes,
+            exists,
+            existing,
+            diagnostics)) {
+      return false;
+    }
+    if (exists) {
+      if (existing != expansion.source || sha256(existing) != expansion.digest) {
+        store_error(diagnostics,
+            "existing generated expansion conflicts with digest " +
+                expansion.digest.hex());
+        return false;
+      }
+      continue;
+    }
+    const std::filesystem::path staged =
+        staging.path() / (expansion.digest.hex() + ".draft");
+    if (!write_file(staged, expansion.source, diagnostics) ||
+        !synchronize_path(staged, diagnostics)) {
+      return false;
+    }
+  }
+
+  const std::filesystem::path staged_manifest =
+      staging.path() / "resolution.json";
+  if (!write_file(staged_manifest, manifest_json, diagnostics) ||
+      !synchronize_path(staged_manifest, diagnostics) ||
+      !synchronize_path(staging.path(), diagnostics)) {
+    return false;
+  }
+
+  // Publish immutable source first. If the process stops in this loop, the old
+  // manifest still selects the old coherent program and the new source is only
+  // an unreferenced content object.
+  for (const GeneratedExpansion &expansion : expansions) {
+    const std::filesystem::path staged =
+        staging.path() / (expansion.digest.hex() + ".draft");
+    std::error_code status_error;
+    if (!std::filesystem::exists(staged, status_error)) {
+      if (status_error) {
+        store_error(diagnostics,
+            "cannot inspect staged expansion: " + status_error.message());
+        return false;
+      }
+      continue;
+    }
+    const std::filesystem::path destination =
+        generated_path(workspace_directory, expansion.digest);
+    std::error_code rename_error;
+    std::filesystem::rename(staged, destination, rename_error);
+    if (rename_error) {
+      // Another identical transaction may have won the race. Accept that only
+      // after reading and verifying the exact destination object.
+      std::string concurrent;
+      if (!verify_existing_expansion(
+              workspace_directory,
+              expansion.digest,
+              true,
+              concurrent,
+              diagnostics) ||
+          concurrent != expansion.source) {
+        store_error(diagnostics,
+            "cannot publish generated expansion: " + rename_error.message());
+        return false;
+      }
+    }
+  }
+  if (!synchronize_path(generated, diagnostics)) return false;
+
+  // POSIX rename replaces an existing manifest atomically. This is the only
+  // point at which readers can observe the new program identity and pin set.
+  const std::filesystem::path destination_manifest = store / "resolution.json";
+  std::error_code rename_error;
+  std::filesystem::rename(staged_manifest, destination_manifest, rename_error);
+  if (rename_error) {
+    store_error(diagnostics,
+        "cannot publish resolution manifest: " + rename_error.message());
+    return false;
+  }
+  if (!synchronize_path(store, diagnostics)) return false;
+  return diagnostics.error_count() == initial_errors;
+}
+
+} // namespace draft
