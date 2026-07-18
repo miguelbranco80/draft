@@ -79,6 +79,7 @@ void test_history_and_revocation(TestState &state) {
   const draft::ValidationEvidenceCommitResult first =
       draft::commit_validation_evidence(root, passing, diagnostics);
   EXPECT(state, first.ok);
+  EXPECT(state, first.key == key);
   EXPECT(state, first.active);
   EXPECT(state, first.attempt == 1);
   EXPECT(state, std::filesystem::exists(first.evidence_path));
@@ -99,6 +100,7 @@ void test_history_and_revocation(TestState &state) {
   const draft::ValidationEvidenceCommitResult second =
       draft::commit_validation_evidence(root, failing, diagnostics);
   EXPECT(state, second.ok);
+  EXPECT(state, second.key == key);
   EXPECT(state, !second.active);
   EXPECT(state, second.attempt == 2);
   EXPECT(state, draft::load_validation_evidence_state(
@@ -111,6 +113,7 @@ void test_history_and_revocation(TestState &state) {
   const draft::ValidationEvidenceCommitResult third =
       draft::commit_validation_evidence(root, passing, diagnostics);
   EXPECT(state, third.ok);
+  EXPECT(state, third.key == key);
   EXPECT(state, third.active);
   EXPECT(state, third.attempt == 3);
   EXPECT(state, draft::load_validation_evidence_state(

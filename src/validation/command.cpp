@@ -219,7 +219,6 @@ void initialize_claim(
 [[nodiscard]] ValidationCommandResult execute_compiled_validation(
     const CompileWorkspaceResult &compiled,
     ValidationCommandOptions options,
-    bool record_evidence,
     DiagnosticSink &diagnostics) {
   ValidationCommandResult result;
   result.selected_procedures = compiled.validation_entries.size();
@@ -321,10 +320,6 @@ void initialize_claim(
   result.passed = passed;
   result.exit_code = aggregate_exit_code;
   result.signal = aggregate_signal;
-  if (!record_evidence) {
-    result.completed = true;
-    return result;
-  }
 
   ValidationEvidence evidence;
   initialize_claim(
@@ -345,6 +340,7 @@ void initialize_claim(
   if (!committed.ok) return result;
 
   result.completed = true;
+  result.evidence_key = committed.key;
   result.evidence_digest = committed.evidence_digest;
   result.attempt = committed.attempt;
   return result;
@@ -374,7 +370,7 @@ ValidationCommandResult execute_validation_command(
       diagnostics);
   if (!compiled.ok) return {};
   return execute_compiled_validation(
-      compiled, std::move(options), true, diagnostics);
+      compiled, std::move(options), diagnostics);
 }
 
 ValidationCommandResult execute_precommit_validation(
@@ -389,7 +385,7 @@ ValidationCommandResult execute_precommit_validation(
     return {};
   }
   return execute_compiled_validation(
-      compiled, std::move(options), false, diagnostics);
+      compiled, std::move(options), diagnostics);
 }
 
 bool verify_active_validation_evidence(
@@ -459,6 +455,46 @@ bool verify_active_validation_evidence(
     diagnostics.error(
         SourceRange::invalid(),
         "locked build found incomplete active validation evidence");
+    return false;
+  }
+  if (!validation.resolution_manifest.has_value()) {
+    diagnostics.error(
+        SourceRange::invalid(),
+        "locked validation evidence has no selecting resolution manifest");
+    return false;
+  }
+  const WorkspacePackage &root =
+      validation.graph.package(validation.graph.root_package);
+  const std::string_view required_kind = validation_kind_name(requirement.kind);
+  const ResolutionEvidencePin *selected = nullptr;
+  for (const ResolutionEvidencePin &candidate :
+       validation.resolution_manifest->evidence) {
+    if (candidate.kind != required_kind ||
+        candidate.root_identity != root.identity.root_identity ||
+        candidate.root_relative_path != root.identity.root_relative_path ||
+        candidate.key != key) {
+      continue;
+    }
+    if (selected != nullptr) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "resolution manifest selects duplicate validation evidence");
+      return false;
+    }
+    selected = &candidate;
+  }
+  if (selected == nullptr) {
+    diagnostics.error(
+        SourceRange::invalid(),
+        "locked build requires validation evidence not selected by the "
+        "resolution manifest");
+    return false;
+  }
+  if (selected->content_digest != *state.active_digest) {
+    diagnostics.error(
+        SourceRange::invalid(),
+        "active validation evidence differs from the attempt selected by the "
+        "resolution manifest; rerun resolution");
     return false;
   }
   active_digest = *state.active_digest;

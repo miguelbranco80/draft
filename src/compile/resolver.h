@@ -30,23 +30,32 @@ namespace draft {
 
 // The resolver owns candidate construction and semantic validation, but it
 // deliberately does not own processes or native toolchains. An embedding
-// driver supplies this narrow callback to execute the already typed Test graph
-// before the manifest becomes visible. The callback may inspect only the
-// immutable compilation and report diagnostics; it cannot alter pins.
-using ResolutionTestRunFunction = bool (*)(
-    void *state,
-    const TargetProfile &target,
-    const CompileWorkspaceResult &compiled,
-    DiagnosticSink &diagnostics);
-
-struct ResolutionTestRunner {
-  void *state = nullptr;
-  ResolutionTestRunFunction run = nullptr;
+// driver supplies this narrow callback to execute an already typed validation
+// graph before the manifest becomes visible. The callback may inspect only the
+// immutable compilation and report diagnostics; it cannot alter pins. A pass
+// returns the exact evidence object that the manifest will select.
+struct ResolutionValidationEvidence {
+  Sha256Digest key;
+  Sha256Digest content_digest;
+  bool recorded = false;
 };
 
-// Options own the provider adapter values but borrow provider.state. Native
-// lowering flags are ignored because resolution validates source/semantics and
-// commits before any separate requested artifact build.
+using ResolutionValidationRunFunction = bool (*)(
+    void *state,
+    const TargetProfile &target,
+    ValidationKind kind,
+    const CompileWorkspaceResult &compiled,
+    ResolutionValidationEvidence &evidence,
+    DiagnosticSink &diagnostics);
+
+struct ResolutionValidationRunner {
+  void *state = nullptr;
+  ResolutionValidationRunFunction run = nullptr;
+};
+
+// Options own the provider adapter values but borrow provider.state. Caller
+// lowering flags do not control resolution; the resolver performs semantic
+// candidate checks and requests native validation graphs explicitly.
 struct ResolveWorkspaceOptions {
   CompileWorkspaceOptions compile;
   SynthesisProvider provider;
@@ -60,10 +69,10 @@ struct ResolveWorkspaceOptions {
   // vector replaces it; an explicitly empty vector therefore removes the lock.
   bool external_inputs_configured = false;
   std::vector<ExternalInputPin> external_inputs;
-  // When the candidate selects typed test procedures, this runner is required
-  // and must accept them before the atomic pin-store commit. A package with no
-  // selected tests remains provider/toolchain independent.
-  ResolutionTestRunner test_runner;
+  // When the candidate selects typed test or benchmark procedures, this runner
+  // is required and must accept them before the atomic pin-store commit. A
+  // package with no selected validation remains provider/toolchain independent.
+  ResolutionValidationRunner validation_runner;
 };
 
 // Counts describe provider/reuse work performed by the attempt, including work
@@ -76,6 +85,7 @@ struct ResolveWorkspaceResult {
   std::size_t reused_sites = 0;
   std::size_t synthesized_sites = 0;
   std::size_t tested_procedures = 0;
+  std::size_t benchmarked_procedures = 0;
   ResolutionManifest manifest;
 };
 

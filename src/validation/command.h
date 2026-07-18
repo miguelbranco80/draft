@@ -34,6 +34,7 @@ struct ValidationCommandResult {
   bool completed = false;
   bool passed = false;
   std::size_t selected_procedures = 0;
+  Sha256Digest evidence_key;
   Sha256Digest evidence_digest;
   std::uint64_t attempt = 0;
   int exit_code = 0;
@@ -49,10 +50,10 @@ struct ValidationCommandResult {
     ValidationCommandOptions options,
     DiagnosticSink &diagnostics);
 
-// Executes an already compiled candidate without writing evidence. Resolution
-// uses this before its manifest commit: failed tests reject the transaction,
-// while a passed but subsequently uncommitted candidate cannot leave an active
-// evidence claim for a program that was never made visible.
+// Executes an already compiled candidate and records its immutable attempt.
+// Resolution uses this before its manifest commit so failures revoke the exact
+// key even when pins stay unchanged. A passing attempt becomes selected only
+// if the later manifest commit records its returned key and content digest.
 [[nodiscard]] ValidationCommandResult execute_precommit_validation(
     const CompileWorkspaceResult &compiled,
     ValidationCommandOptions options,

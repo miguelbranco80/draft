@@ -12,6 +12,7 @@
 #include "elaborator/resolution_overlay.h"
 #include "elaborator/resolution_store.h"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -492,48 +493,81 @@ ResolveWorkspaceResult resolve_workspace(
       manifest,
       options.compile.compiler_content_identity);
 
-  // Test files are deliberately absent from the ordinary surface graph above.
-  // Select and compile them only after the complete candidate exists, using
-  // the same in-memory overrides that were semantically accepted. This makes
-  // native test execution a true precommit gate without publishing provisional
-  // expansion bytes through resolution.json.
-  CompileWorkspaceOptions test_options = options.compile;
-  test_options.validation_kind = ValidationKind::Test;
-  test_options.lower_mir = true;
-  test_options.emit_llvm = true;
-  test_options.emit_program_entry = true;
-  CompileWorkspaceResult tests = compile_workspace(
-      sources, root_package_directory, std::move(test_options), diagnostics);
-  if (!tests.ok) return result;
-  tests.resolution_manifest = manifest;
-  tests.resolved_program_digest = hash_resolved_program(
-      sources,
-      tests.graph,
-      options.compile.target,
-      manifest,
-      options.compile.compiler_content_identity);
-  result.tested_procedures = tests.validation_entries.size();
-  if (!tests.validation_entries.empty()) {
-    if (options.test_runner.run == nullptr) {
+  // Validation-only files are deliberately absent from the ordinary surface
+  // graph above. Select and compile each first-release suite only after the
+  // complete candidate exists, using the same accepted in-memory overrides.
+  // Evidence is written before resolution.json so failed attempts still revoke
+  // their exact key; only passing evidence reaches the final manifest rename.
+  constexpr std::array validation_kinds{
+      ValidationKind::Test,
+      ValidationKind::Benchmark,
+  };
+  for (ValidationKind validation_kind : validation_kinds) {
+    CompileWorkspaceOptions validation_options = options.compile;
+    validation_options.validation_kind = validation_kind;
+    validation_options.lower_mir = true;
+    validation_options.emit_llvm = true;
+    validation_options.emit_program_entry = true;
+    CompileWorkspaceResult validation = compile_workspace(
+        sources,
+        root_package_directory,
+        std::move(validation_options),
+        diagnostics);
+    if (!validation.ok) return result;
+    validation.resolution_manifest = manifest;
+    validation.resolved_program_digest = hash_resolved_program(
+        sources,
+        validation.graph,
+        options.compile.target,
+        manifest,
+        options.compile.compiler_content_identity);
+    if (validation_kind == ValidationKind::Test) {
+      result.tested_procedures = validation.validation_entries.size();
+    } else {
+      result.benchmarked_procedures = validation.validation_entries.size();
+    }
+    if (validation.validation_entries.empty()) continue;
+    if (options.validation_runner.run == nullptr) {
       diagnostics.error(
           SourceRange::invalid(),
-          "resolution candidate contains tests but no precommit test runner "
-          "is configured");
+          "resolution candidate contains " +
+              std::string(validation_kind_name(validation_kind)) +
+              " procedures but no precommit validation runner is configured");
       return result;
     }
-    const std::size_t before_tests = diagnostics.error_count();
-    if (!options.test_runner.run(
-            options.test_runner.state,
+    const std::size_t before_validation = diagnostics.error_count();
+    ResolutionValidationEvidence evidence;
+    if (!options.validation_runner.run(
+            options.validation_runner.state,
             options.compile.target,
-            tests,
+            validation_kind,
+            validation,
+            evidence,
             diagnostics)) {
-      if (diagnostics.error_count() == before_tests) {
+      if (diagnostics.error_count() == before_validation) {
         diagnostics.error(
             SourceRange::invalid(),
-            "resolution candidate tests failed without a diagnostic");
+            "resolution candidate " +
+                std::string(validation_kind_name(validation_kind)) +
+                " validation failed without a diagnostic");
       }
       return result;
     }
+    if (!evidence.recorded) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "precommit validation passed without persistent evidence");
+      return result;
+    }
+    const WorkspacePackage &root =
+        validation.graph.package(validation.graph.root_package);
+    manifest.evidence.push_back({
+        std::string(validation_kind_name(validation_kind)),
+        root.identity.root_identity,
+        root.identity.root_relative_path,
+        evidence.key,
+        evidence.content_digest,
+    });
   }
   if (!commit_resolution(
           options.compile.workspace.workspace_directory,

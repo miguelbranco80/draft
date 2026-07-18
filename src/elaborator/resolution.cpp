@@ -68,6 +68,32 @@ void append_json_string(std::string_view value, std::string &output) {
   return std::nullopt;
 }
 
+[[nodiscard]] bool valid_evidence_kind(std::string_view value) {
+  return value == "test" || value == "benchmark" || value == "judgment";
+}
+
+[[nodiscard]] std::uint32_t evidence_kind_rank(std::string_view value) {
+  if (value == "test") return 0;
+  if (value == "benchmark") return 1;
+  if (value == "judgment") return 2;
+  return 3;
+}
+
+[[nodiscard]] bool evidence_less(
+    const ResolutionEvidencePin &left,
+    const ResolutionEvidencePin &right) {
+  if (left.kind != right.kind) {
+    return evidence_kind_rank(left.kind) < evidence_kind_rank(right.kind);
+  }
+  if (left.root_identity != right.root_identity) {
+    return left.root_identity < right.root_identity;
+  }
+  if (left.root_relative_path != right.root_relative_path) {
+    return left.root_relative_path < right.root_relative_path;
+  }
+  return left.key.bytes < right.key.bytes;
+}
+
 // Manifest paths are semantic paths inside a content tree. Host separators,
 // absolute spellings, empty components, and traversal would make the same row
 // select different bytes on different machines and are therefore rejected.
@@ -106,12 +132,13 @@ public:
         !digest(parsed.resolved_program_digest) || !comma() ||
         !key("external_inputs") ||
         !external_inputs(parsed.external_inputs) || !comma() ||
+        !key("evidence") || !evidence_pins(parsed.evidence) || !comma() ||
         !key("sites") || !pins(parsed.pins) || !punctuation('}')) {
       return false;
     }
     whitespace();
     if (position_ != input_.size()) return fail("trailing bytes after manifest");
-    if (parsed.format != "draft-resolution-v3") {
+    if (parsed.format != "draft-resolution-v4") {
       return fail("unsupported resolution manifest format");
     }
     if (parsed.target_identity.empty()) {
@@ -131,6 +158,17 @@ public:
       const ExternalInputPin &current = parsed.external_inputs[index];
       if (previous.kind == current.kind && previous.name == current.name) {
         return fail("resolution manifest contains a duplicate external input");
+      }
+    }
+    std::sort(parsed.evidence.begin(), parsed.evidence.end(), evidence_less);
+    for (std::size_t index = 1; index < parsed.evidence.size(); ++index) {
+      const ResolutionEvidencePin &previous = parsed.evidence[index - 1];
+      const ResolutionEvidencePin &current = parsed.evidence[index];
+      if (previous.kind == current.kind &&
+          previous.root_identity == current.root_identity &&
+          previous.root_relative_path == current.root_relative_path &&
+          previous.key == current.key) {
+        return fail("resolution manifest contains duplicate validation evidence");
       }
     }
     std::sort(
@@ -380,6 +418,49 @@ private:
     }
   }
 
+  [[nodiscard]] bool evidence_pin(ResolutionEvidencePin &evidence) {
+    if (!punctuation('{') || !key("kind") || !string(evidence.kind) ||
+        !comma() || !key("root") || !string(evidence.root_identity) ||
+        !comma() || !key("package") ||
+        !string(evidence.root_relative_path) || !comma() ||
+        !key("key") || !digest(evidence.key) || !comma() ||
+        !key("content") || !digest(evidence.content_digest) ||
+        !punctuation('}')) {
+      return false;
+    }
+    if (!valid_evidence_kind(evidence.kind)) {
+      return fail("resolution manifest has an invalid evidence kind");
+    }
+    if (evidence.root_identity.empty() ||
+        evidence.root_relative_path.empty() ||
+        (evidence.root_relative_path != "." &&
+         !valid_relative_entry(evidence.root_relative_path))) {
+      return fail("resolution manifest evidence package is not canonical");
+    }
+    return true;
+  }
+
+  [[nodiscard]] bool evidence_pins(
+      std::vector<ResolutionEvidencePin> &result) {
+    if (!punctuation('[')) return false;
+    whitespace();
+    if (position_ < input_.size() && input_[position_] == ']') {
+      ++position_;
+      return true;
+    }
+    while (true) {
+      ResolutionEvidencePin value;
+      if (!evidence_pin(value)) return false;
+      result.push_back(std::move(value));
+      whitespace();
+      if (position_ < input_.size() && input_[position_] == ']') {
+        ++position_;
+        return true;
+      }
+      if (!comma()) return false;
+    }
+  }
+
   [[nodiscard]] bool pins(std::vector<ResolutionPin> &result) {
     if (!punctuation('[')) return false;
     whitespace();
@@ -439,6 +520,8 @@ std::string serialize_resolution_manifest(const ResolutionManifest &manifest) {
         }
         return left.name < right.name;
       });
+  std::vector<ResolutionEvidencePin> evidence = manifest.evidence;
+  std::sort(evidence.begin(), evidence.end(), evidence_less);
   std::string output = "{\n  \"format\": ";
   append_json_string(manifest.format, output);
   output += ",\n  \"target\": ";
@@ -460,6 +543,23 @@ std::string serialize_resolution_manifest(const ResolutionManifest &manifest) {
     output += '}';
   }
   if (!external_inputs.empty()) output += '\n';
+  output += "  ],\n  \"evidence\": [";
+  for (std::size_t index = 0; index < evidence.size(); ++index) {
+    const ResolutionEvidencePin &pin = evidence[index];
+    output += index == 0 ? "\n" : ",\n";
+    output += "    {\"kind\": ";
+    append_json_string(pin.kind, output);
+    output += ", \"root\": ";
+    append_json_string(pin.root_identity, output);
+    output += ", \"package\": ";
+    append_json_string(pin.root_relative_path, output);
+    output += ", \"key\": ";
+    append_json_string(pin.key.hex(), output);
+    output += ", \"content\": ";
+    append_json_string(pin.content_digest.hex(), output);
+    output += '}';
+  }
+  if (!evidence.empty()) output += '\n';
   output += "  ],\n  \"sites\": [";
   for (std::size_t index = 0; index < pins.size(); ++index) {
     const ResolutionPin &pin = pins[index];

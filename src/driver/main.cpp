@@ -617,21 +617,25 @@ enum class AgentCommandKind {
   Judge,
 };
 
-struct ResolutionTestRunnerState {
+struct ResolutionValidationRunnerState {
   draft::ValidationCommandOptions options;
   draft::ValidationCommandResult result;
 };
 
 // Native execution remains outside the semantic resolver. This adapter accepts
-// its immutable typed candidate, runs the normal compiler-owned Test harness,
-// and deliberately leaves evidence untouched until resolution has committed.
-bool run_resolution_candidate_tests(
+// its immutable typed candidate, runs the normal compiler-owned validation harness,
+// and records audit/revocation history before resolution commits. Only passing
+// evidence is returned for selection by the later manifest publication.
+bool run_resolution_candidate_validation(
     void *opaque,
     const draft::TargetProfile &target,
+    draft::ValidationKind kind,
     const draft::CompileWorkspaceResult &compiled,
+    draft::ResolutionValidationEvidence &evidence,
     draft::DiagnosticSink &diagnostics) {
-  auto *state = static_cast<ResolutionTestRunnerState *>(opaque);
+  auto *state = static_cast<ResolutionValidationRunnerState *>(opaque);
   state->options.target = target;
+  state->options.kind = kind;
   const std::size_t before = diagnostics.error_count();
   state->result = draft::execute_precommit_validation(
       compiled, state->options, diagnostics);
@@ -639,18 +643,23 @@ bool run_resolution_candidate_tests(
     if (diagnostics.error_count() == before) {
       diagnostics.error(
           draft::SourceRange::invalid(),
-          "resolution candidate tests could not complete");
+          "resolution candidate validation could not complete");
     }
     return false;
   }
   if (!state->result.passed) {
     diagnostics.error(
         draft::SourceRange::invalid(),
-        "resolution candidate tests failed for " +
+        "resolution candidate " +
+            std::string(draft::validation_kind_name(kind)) +
+            " failed for " +
             std::to_string(state->result.selected_procedures) +
             " selected procedures");
     return false;
   }
+  evidence.key = state->result.evidence_key;
+  evidence.content_digest = state->result.evidence_digest;
+  evidence.recorded = true;
   return true;
 }
 
@@ -751,18 +760,18 @@ int run_agent_command(
         return 1;
       }
     }
-    ResolutionTestRunnerState test_state;
-    test_state.options.package_directory = absolute_directory;
-    test_state.options.target = resolve_options.compile.target;
-    test_state.options.kind = draft::ValidationKind::Test;
-    test_state.options.allow_unpinned_toolchain = allow_host_toolchain;
-    test_state.options.foreign_providers = foreign_providers;
+    ResolutionValidationRunnerState validation_state;
+    validation_state.options.package_directory = absolute_directory;
+    validation_state.options.target = resolve_options.compile.target;
+    validation_state.options.allow_unpinned_toolchain = allow_host_toolchain;
+    validation_state.options.foreign_providers = foreign_providers;
     if (locked_inputs.has_value()) {
-      test_state.options.locked = true;
-      test_state.options.locked_inputs = *locked_inputs;
+      validation_state.options.locked = true;
+      validation_state.options.locked_inputs = *locked_inputs;
     }
-    resolve_options.test_runner.state = &test_state;
-    resolve_options.test_runner.run = run_resolution_candidate_tests;
+    resolve_options.validation_runner.state = &validation_state;
+    resolve_options.validation_runner.run =
+        run_resolution_candidate_validation;
     const draft::ResolveWorkspaceResult resolved = draft::resolve_workspace(
         sources,
         absolute_directory.string(),
@@ -776,7 +785,8 @@ int run_agent_command(
                   << " synthesis sites (" << resolved.synthesized_sites
                   << " synthesized, " << resolved.reused_sites
                   << " reused); passed " << resolved.tested_procedures
-                  << " precommit tests\n";
+                  << " tests and " << resolved.benchmarked_procedures
+                  << " benchmarks before commit\n";
       }
     }
     if (!diagnostics.diagnostics().empty()) {

@@ -128,6 +128,15 @@ struct TemporaryWorkspace {
            << "    testing.expect(test, answer() == 42)\n"
            << "}\n";
   }
+
+  void write_benchmark_source() const {
+    std::ofstream source(
+        package / "candidate_bench.draft", std::ios::binary | std::ios::trunc);
+    source << "package app\n\n"
+           << "import core/benchmark\n\n"
+           << "bench_generated_answer :: proc(state: ^benchmark.Benchmark) {\n"
+           << "}\n";
+  }
 };
 
 struct FakeProviderState {
@@ -141,6 +150,8 @@ struct FakeProviderState {
 
 struct FakeTestRunnerState {
   std::size_t calls = 0;
+  std::size_t test_calls = 0;
+  std::size_t benchmark_calls = 0;
   std::size_t selected_procedures = 0;
   bool pass = true;
   bool saw_program_identity = false;
@@ -151,11 +162,18 @@ struct FakeTestRunnerState {
 bool run_candidate_tests(
     void *opaque,
     const draft::TargetProfile &target,
+    draft::ValidationKind kind,
     const draft::CompileWorkspaceResult &compiled,
+    draft::ResolutionValidationEvidence &evidence,
     draft::DiagnosticSink &diagnostics) {
   (void)diagnostics;
   auto *state = static_cast<FakeTestRunnerState *>(opaque);
   ++state->calls;
+  if (kind == draft::ValidationKind::Test) {
+    ++state->test_calls;
+  } else if (kind == draft::ValidationKind::Benchmark) {
+    ++state->benchmark_calls;
+  }
   state->selected_procedures = compiled.validation_entries.size();
   state->saw_program_identity = compiled.resolved_program_digest.has_value();
   state->saw_manifest = compiled.resolution_manifest.has_value();
@@ -165,7 +183,16 @@ bool run_candidate_tests(
       state->saw_llvm = true;
     }
   }
-  return target.facts.identity == "draft-aarch64-macos-v5" && state->pass;
+  const bool passed = kind != draft::ValidationKind::None &&
+      target.facts.identity == "draft-aarch64-macos-v5" && state->pass;
+  if (passed) {
+    const std::string prefix(draft::validation_kind_name(kind));
+    evidence.key = draft::sha256("fixture-" + prefix + "-evidence-key");
+    evidence.content_digest =
+        draft::sha256("fixture-passing-" + prefix + "-attempt");
+    evidence.recorded = true;
+  }
+  return passed;
 }
 
 // The fake intentionally performs no language validation. This proves the
@@ -452,7 +479,7 @@ void test_interface_sites_precede_dependent_bodies(TestState &state) {
   }
   EXPECT(state, offline.ok);
   EXPECT(state, !offline_diagnostics.has_errors());
-  EXPECT(state, resolved.manifest.format == "draft-resolution-v3");
+  EXPECT(state, resolved.manifest.format == "draft-resolution-v4");
   EXPECT(state, resolved.manifest.pins.size() == 3);
   std::size_t composed_maps = 0;
   for (const draft::WorkspacePackage &package : offline.graph.packages) {
@@ -530,6 +557,7 @@ void test_tests_gate_manifest_commit(TestState &state) {
   TemporaryWorkspace workspace;
   workspace.write_source("candidate with tests");
   workspace.write_test_source();
+  workspace.write_benchmark_source();
   FakeProviderState provider;
 
   // Merely type-checking the generated expression is insufficient when the
@@ -556,8 +584,8 @@ void test_tests_gate_manifest_commit(TestState &state) {
 
   FakeTestRunnerState runner;
   draft::ResolveWorkspaceOptions passing = resolve_options(workspace, provider);
-  passing.test_runner.state = &runner;
-  passing.test_runner.run = run_candidate_tests;
+  passing.validation_runner.state = &runner;
+  passing.validation_runner.run = run_candidate_tests;
   draft::SourceManager passing_sources;
   draft::DiagnosticSink passing_diagnostics;
   const draft::ResolveWorkspaceResult accepted = draft::resolve_workspace(
@@ -572,7 +600,25 @@ void test_tests_gate_manifest_commit(TestState &state) {
   EXPECT(state, accepted.ok);
   EXPECT(state, accepted.committed);
   EXPECT(state, accepted.tested_procedures == 1);
-  EXPECT(state, runner.calls == 1);
+  EXPECT(state, accepted.benchmarked_procedures == 1);
+  EXPECT(state, accepted.manifest.evidence.size() == 2);
+  if (accepted.manifest.evidence.size() == 2) {
+    EXPECT(state, accepted.manifest.evidence[0].kind == "test");
+    EXPECT(state, accepted.manifest.evidence[0].root_identity == "workspace");
+    EXPECT(state, accepted.manifest.evidence[0].root_relative_path == "app");
+    EXPECT(state, accepted.manifest.evidence[0].key ==
+        draft::sha256("fixture-test-evidence-key"));
+    EXPECT(state, accepted.manifest.evidence[0].content_digest ==
+        draft::sha256("fixture-passing-test-attempt"));
+    EXPECT(state, accepted.manifest.evidence[1].kind == "benchmark");
+    EXPECT(state, accepted.manifest.evidence[1].key ==
+        draft::sha256("fixture-benchmark-evidence-key"));
+    EXPECT(state, accepted.manifest.evidence[1].content_digest ==
+        draft::sha256("fixture-passing-benchmark-attempt"));
+  }
+  EXPECT(state, runner.calls == 2);
+  EXPECT(state, runner.test_calls == 1);
+  EXPECT(state, runner.benchmark_calls == 1);
   EXPECT(state, runner.selected_procedures == 1);
   EXPECT(state, runner.saw_program_identity);
   EXPECT(state, runner.saw_manifest);
@@ -590,8 +636,8 @@ void test_tests_gate_manifest_commit(TestState &state) {
   workspace.write_source("changed candidate rejected by tests");
   runner.pass = false;
   draft::ResolveWorkspaceOptions failing = resolve_options(workspace, provider);
-  failing.test_runner.state = &runner;
-  failing.test_runner.run = run_candidate_tests;
+  failing.validation_runner.state = &runner;
+  failing.validation_runner.run = run_candidate_tests;
   draft::SourceManager failing_sources;
   draft::DiagnosticSink failing_diagnostics;
   const draft::ResolveWorkspaceResult rejected = draft::resolve_workspace(
@@ -602,7 +648,9 @@ void test_tests_gate_manifest_commit(TestState &state) {
   EXPECT(state, !rejected.ok);
   EXPECT(state, !rejected.committed);
   EXPECT(state, rejected.tested_procedures == 1);
-  EXPECT(state, runner.calls == 2);
+  EXPECT(state, runner.calls == 3);
+  EXPECT(state, runner.test_calls == 2);
+  EXPECT(state, runner.benchmark_calls == 1);
   EXPECT(state, failing_diagnostics.has_errors());
 
   draft::DiagnosticSink after_diagnostics;

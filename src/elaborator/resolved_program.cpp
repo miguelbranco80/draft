@@ -173,6 +173,9 @@ Sha256Digest hash_resolved_program(
     hash_field(hash, input.entry_point);
   }
 
+  // Validation evidence already binds to this resolved-program identity. It is
+  // deliberately absent here to avoid a digest cycle; the v4 manifest selects
+  // exact evidence keys and immutable attempt hashes beside this field.
   std::vector<ResolutionPin> pins = manifest.pins;
   std::sort(
       pins.begin(), pins.end(),

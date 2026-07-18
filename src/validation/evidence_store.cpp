@@ -562,6 +562,7 @@ ValidationEvidenceCommitResult commit_validation_evidence(
   }
 
   result.ok = true;
+  result.key = evidence.key;
   result.evidence_digest = digest;
   result.attempt = evidence.attempt;
   result.active = evidence.passed;

@@ -28,6 +28,7 @@ struct ValidationEvidenceState {
 
 struct ValidationEvidenceCommitResult {
   bool ok = false;
+  Sha256Digest key;
   Sha256Digest evidence_digest;
   std::uint64_t attempt = 0;
   bool active = false;

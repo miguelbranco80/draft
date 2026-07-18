@@ -83,15 +83,29 @@ struct ExternalInputPin {
   std::string entry_point;
 };
 
+// One passing validation object selected by this resolved program. The key
+// names the exact static claim/environment policy while content_digest names
+// the immutable execution attempt. Package identity locates the package-owned
+// evidence store without embedding a physical workspace path. Judgment uses
+// the same row once its provider is enabled.
+struct ResolutionEvidencePin {
+  std::string kind;
+  std::string root_identity;
+  std::string root_relative_path;
+  Sha256Digest key;
+  Sha256Digest content_digest;
+};
+
 // The manifest selects one target-qualified coherent program. Pins are a
 // logical map keyed by site_identity even though a vector retains deterministic
 // compact ownership. resolved_program_digest is computed only after every
 // selected expansion has passed the ordinary compiler pipeline.
 struct ResolutionManifest {
-  std::string format = "draft-resolution-v3";
+  std::string format = "draft-resolution-v4";
   std::string target_identity;
   Sha256Digest resolved_program_digest;
   std::vector<ExternalInputPin> external_inputs;
+  std::vector<ResolutionEvidencePin> evidence;
   std::vector<ResolutionPin> pins;
 };
 
