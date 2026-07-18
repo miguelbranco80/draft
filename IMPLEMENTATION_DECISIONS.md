@@ -263,6 +263,23 @@ the complete set of returned source only afterward. A resolver acceptance test
 captures both same-package request binding sets, proves neither contains either
 generated name, then requires their merged pins to compile provider-free.
 
+Compile-time constant execution has one interface-discovery-only blocked state
+for unresolved synthesis. A reached package procedure is body-checked through
+the ordinary typed HIR path, so an expression or statement site used by a
+constant or declaration-level `when` receives the same expected type, lexical
+bindings, denials, enclosing declaration, and structured branch facts as a
+runtime body site. A direct `when ...` condition is evaluator-owned and receives
+the compiler-known `bool` expectation. These sites run in interface rounds; a
+later round reevaluates the constant and may reveal another declaration/member
+completeness set. Complete semantic checking retains the rejecting behavior, so
+only the resolver/offline pin scheduler can cross this temporary blocked state.
+Package-level conditional rounds share one persistent site namespace. When an
+earlier site has already been replaced, its generated-source map reserves that
+structural identity while obligations for the next round are built. The next
+same-kind site under the same file and anchor receives the lowest unused
+occurrence. Prompt and type content remain outside the identity and inside the
+staleness digest, while a later selected site cannot alias an earlier pin.
+
 Codex execution polls an embedding-owned cancellation callback alongside its
 fixed deadline. Cancellation never retries: the adapter kills and reaps the
 active child, emits one compiler diagnostic, and returns before its private
@@ -825,7 +842,7 @@ the readable subject type, and the same portable interface type graph used by
 other provider context. Source and duplicated digests are rechecked by the
 shared Codex renderer before either synthesis or judgment starts a child. The
 `draft-agent-obligation-v16`, synthesis request/prompt v17, judgment
-request/prompt v3, and compiler content v111 identities make these new facts a
+request/prompt v3, and compiler content v112 identities make these new facts a
 stale-pin and evidence input.
 
 Nested procedures are static and cannot capture runtime locals. Checking a

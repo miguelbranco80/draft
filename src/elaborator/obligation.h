@@ -212,9 +212,12 @@ struct AgentJudgmentContext {
 // AgentObligation is the immutable input side of one provider transaction.
 // site_identity deliberately excludes prompt and type content so ordinary edits
 // stale the input digest without automatically baptizing a new site. occurrence
-// is a zero-based discriminator among same-kind sites under one file/anchor; a
-// future association UI may retain the identity across ambiguous structural
-// moves without changing the manifest representation.
+// is the lowest available discriminator among same-kind sites under one
+// file/anchor. Generated-source maps reserve discriminators consumed in earlier
+// interface rounds, so a newly selected conditional site cannot collide with a
+// site already replaced in the same transaction. A future association UI may
+// retain the identity across ambiguous structural moves without changing the
+// manifest representation.
 struct AgentObligation {
   AgentConstructKind kind = AgentConstructKind::Documentation;
   // syntax is a process-local route back to the surface site for diagnostics

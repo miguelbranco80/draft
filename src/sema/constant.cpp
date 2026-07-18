@@ -23,6 +23,12 @@ namespace {
 enum class EvalStatus {
   Ready,
   Pending,
+  // The expression is otherwise a compile-time dependency, but interface
+  // discovery reached source that resolution must replace before evaluation
+  // can continue. This is distinct from an unknown ordinary constant: it
+  // publishes an early synthesis obligation instead of a generic fixed-point
+  // failure.
+  BlockedBySynthesis,
   Error,
 };
 
@@ -40,6 +46,7 @@ enum class BindingState {
   Evaluating,
   Ready,
   Pending,
+  BlockedBySynthesis,
   Error,
 };
 
@@ -119,6 +126,10 @@ struct LocalTargetResult {
   return {};
 }
 
+[[nodiscard]] EvalResult blocked_by_synthesis() {
+  return {EvalStatus::BlockedBySynthesis, {}, {}};
+}
+
 [[nodiscard]] EvalResult error_result() {
   return {EvalStatus::Error, {}, {}};
 }
@@ -134,12 +145,14 @@ public:
       const LoadedPackage &loaded,
       SemanticPackage &semantic,
       const TargetFacts &target,
+      CompileTimeSynthesisMode synthesis_mode,
       bool diagnose_unready,
       DiagnosticSink &diagnostics,
       const ConstantTable *local_constants = nullptr,
       const std::vector<ConstantTypeBinding> *local_types = nullptr)
       : sources_(sources), loaded_(loaded), semantic_(semantic), target_(target),
-        diagnose_unready_(diagnose_unready), diagnostics_(diagnostics),
+        synthesis_mode_(synthesis_mode), diagnose_unready_(diagnose_unready),
+        diagnostics_(diagnostics),
         local_constants_(local_constants), local_types_(local_types),
         states_(semantic.symbols.symbol_count(), BindingState::Unvisited),
         values_(semantic.symbols.symbol_count()) {}
@@ -149,7 +162,15 @@ public:
   // rebuilt semantic round, exactly matching staged declaration visibility.
   [[nodiscard]] CompileTimeRoundResult run(ConditionalSelections &selections) {
     CompileTimeRoundResult result;
-    for (const SemanticSite &site : semantic_.sites) {
+    // Discovery may append a direct synthesis-expression site while evaluating
+    // one condition. Snapshot the original count and copy each row so vector
+    // growth cannot invalidate the active site reference; appended synthesis
+    // rows are outputs, not new conditionals for this interpreter pass.
+    const std::size_t original_site_count = semantic_.sites.size();
+    for (std::size_t site_index = 0;
+         site_index < original_site_count;
+         ++site_index) {
+      const SemanticSite site = semantic_.sites[site_index];
       if ((site.kind != SemanticSiteKind::ConditionalDeclaration &&
            site.kind != SemanticSiteKind::ConditionalMember &&
            site.kind != SemanticSiteKind::ConditionalStatement) ||
@@ -177,11 +198,18 @@ public:
           ? file_scope(site.syntax.file)
           : site.scope;
       const EvalResult condition = evaluate_expression(
-          *tree, when.children.front(), condition_scope, diagnose_unready_);
+          *tree,
+          when.children.front(),
+          condition_scope,
+          diagnose_unready_,
+          semantic_.types.builtins().bool_type);
       if (condition.status == EvalStatus::Ready &&
           condition.value.kind == ConstantKind::Bool) {
         selections.entries.push_back({site.syntax, condition.value.boolean});
         ++result.new_selections;
+        continue;
+      }
+      if (condition.status == EvalStatus::BlockedBySynthesis) {
         continue;
       }
       ++result.unresolved_conditionals;
@@ -217,6 +245,8 @@ public:
       }
     }
 
+    result.compile_time_procedures = compile_time_procedures_;
+
     // Export ready constants in SymbolId order rather than dependency traversal
     // order. This is the deterministic order used by semantic dumps and hashing.
     for (std::uint32_t index = 0; index < states_.size(); ++index) {
@@ -238,6 +268,9 @@ public:
       diagnostics_.error(
           tree.node(expression).range,
           "expression is not compile-time evaluable");
+      return std::nullopt;
+    }
+    if (result.status == EvalStatus::BlockedBySynthesis) {
       return std::nullopt;
     }
     if (result.status != EvalStatus::Ready) return std::nullopt;
@@ -265,6 +298,83 @@ private:
       }
     }
     return semantic_.package_scope;
+  }
+
+  // A source synthesis expression reached outside a procedure body is already
+  // at its semantic program point, so the evaluator can publish it directly.
+  // Procedure-body sites take the ordinary BodyChecker path instead: that pass
+  // supplies lexical locals, branch refinements, and the enclosing declaration
+  // skeleton which an execution-only interpreter must not try to recreate.
+  [[nodiscard]] EvalResult unresolved_synthesis_expression(
+      const SyntaxTree &tree,
+      NodeId expression,
+      ScopeId scope,
+      TypeId expected,
+      bool required) {
+    if (synthesis_mode_ == CompileTimeSynthesisMode::Reject) {
+      return fail(
+          tree.node(expression).range,
+          "unresolved synthesis is unavailable during compile-time evaluation",
+          required);
+    }
+    if (!active_procedures_.empty()) {
+      for (SymbolId procedure : active_procedures_) {
+        remember_compile_time_procedure(procedure);
+      }
+      return blocked_by_synthesis();
+    }
+
+    const SyntaxReference syntax{tree.file(), expression};
+    for (SemanticSite &site : semantic_.sites) {
+      if (site.kind != SemanticSiteKind::SynthesisExpression ||
+          site.syntax != syntax) {
+        continue;
+      }
+      if (!site.expected_type.is_valid() && expected.is_valid()) {
+        site.expected_type = expected;
+      } else if (site.expected_type.is_valid() && expected.is_valid() &&
+                 site.expected_type != expected) {
+        return fail(
+            tree.node(expression).range,
+            "compile-time synthesis site has inconsistent expected types",
+            required);
+      }
+      return blocked_by_synthesis();
+    }
+
+    SemanticSite site;
+    site.kind = SemanticSiteKind::SynthesisExpression;
+    site.syntax = syntax;
+    site.scope = scope;
+    site.expected_type = expected;
+    // Member-level compile-time conditions are anchored to their owning type.
+    // Package/file scopes intentionally retain the invalid package anchor.
+    ScopeId candidate = scope;
+    while (candidate.is_valid()) {
+      for (const OwnedSemanticScope &owned : semantic_.owned_scopes) {
+        if (owned.scope == candidate &&
+            semantic_.symbols.scope(candidate).kind == ScopeKind::Type) {
+          site.anchor = owned.owner;
+          break;
+        }
+      }
+      if (site.anchor.is_valid() || candidate == semantic_.package_scope) break;
+      candidate = semantic_.symbols.scope(candidate).parent;
+    }
+    semantic_.sites.push_back(std::move(site));
+    return blocked_by_synthesis();
+  }
+
+  // The body checker later applies this set in declaration order. The
+  // evaluator records first reachability only to avoid duplicate work when two
+  // constants call the same helper or recursion revisits it.
+  void remember_compile_time_procedure(SymbolId procedure) {
+    if (std::find(
+            compile_time_procedures_.begin(),
+            compile_time_procedures_.end(),
+            procedure) == compile_time_procedures_.end()) {
+      compile_time_procedures_.push_back(procedure);
+    }
   }
 
   [[nodiscard]] const ConstantValue *local_value(std::string_view name) const {
@@ -2767,11 +2877,13 @@ private:
     frame.type_bindings = std::move(prepared.type_bindings);
     frame.result_type = prepared.result_type;
     local_frames_.push_back(std::move(frame));
+    active_procedures_.push_back(prepared.procedure);
     ++procedure_call_depth_;
     const ExecutionResult execution = execute_block(
         *procedure_tree, *body, body_scope, required);
     const TypeId result_type = local_frames_.back().result_type;
     --procedure_call_depth_;
+    active_procedures_.pop_back();
     local_frames_.pop_back();
     const bool returns_void =
         result_type == semantic_.types.builtins().invalid ||
@@ -3958,11 +4070,19 @@ private:
           "native assembly is unavailable during compile-time evaluation",
           required));
     case NodeKind::SynthesisStatement:
-    case NodeKind::SynthesisExpression:
+      if (synthesis_mode_ == CompileTimeSynthesisMode::Discover) {
+        for (SymbolId procedure : active_procedures_) {
+          remember_compile_time_procedure(procedure);
+        }
+        return failed_execution(blocked_by_synthesis());
+      }
       return failed_execution(fail(
           statement.range,
           "unresolved synthesis is unavailable during compile-time evaluation",
           required));
+    case NodeKind::SynthesisExpression:
+      return failed_execution(unresolved_synthesis_expression(
+          tree, statement_id, scope, {}, required));
     default:
       return failed_execution(fail(
           statement.range,
@@ -3981,6 +4101,9 @@ private:
       return ready(values_[id.value], semantic_.symbols.symbol(id).type);
     }
     if (state == BindingState::Pending) return pending();
+    if (state == BindingState::BlockedBySynthesis) {
+      return blocked_by_synthesis();
+    }
     if (state == BindingState::Error) return error_result();
     const Symbol initial = semantic_.symbols.symbol(id);
     for (const ImportedSymbol &imported : semantic_.imported_symbols) {
@@ -4053,9 +4176,13 @@ private:
       if (type.is_valid()) semantic_.symbols.symbol_mut(id).type = type;
       return result;
     }
-    states_[id.value] = result.status == EvalStatus::Error
-        ? BindingState::Error
-        : BindingState::Pending;
+    if (result.status == EvalStatus::Error) {
+      states_[id.value] = BindingState::Error;
+    } else if (result.status == EvalStatus::BlockedBySynthesis) {
+      states_[id.value] = BindingState::BlockedBySynthesis;
+    } else {
+      states_[id.value] = BindingState::Pending;
+    }
     return result;
   }
 
@@ -4721,6 +4848,10 @@ private:
       }
       return pending();
 
+    case NodeKind::SynthesisExpression:
+      return unresolved_synthesis_expression(
+          tree, expression_id, scope, expected, required);
+
     default:
       return pending();
     }
@@ -4730,6 +4861,7 @@ private:
   const LoadedPackage &loaded_;
   SemanticPackage &semantic_;
   const TargetFacts &target_;
+  CompileTimeSynthesisMode synthesis_mode_ = CompileTimeSynthesisMode::Reject;
   bool diagnose_unready_ = false;
   DiagnosticSink &diagnostics_;
   const ConstantTable *local_constants_ = nullptr;
@@ -4737,6 +4869,10 @@ private:
   std::vector<BindingState> states_;
   std::vector<ConstantValue> values_;
   std::vector<LocalFrame> local_frames_;
+  // active_procedures_ mirrors local_frames_ only during procedure execution
+  // and lets a reached `...` defer context construction to BodyChecker.
+  std::vector<SymbolId> active_procedures_;
+  std::vector<SymbolId> compile_time_procedures_;
   std::size_t execution_steps_remaining_ = kMaximumExecutionSteps;
   std::size_t procedure_call_depth_ = 0;
   bool execution_limit_reported_ = false;
@@ -4847,10 +4983,17 @@ CompileTimeRoundResult evaluate_compile_time_round(
     SemanticPackage &package,
     const TargetFacts &target,
     ConditionalSelections &selections,
+    CompileTimeSynthesisMode synthesis_mode,
     bool diagnose_unready,
     DiagnosticSink &diagnostics) {
   ConstantEvaluator evaluator(
-      sources, loaded, package, target, diagnose_unready, diagnostics);
+      sources,
+      loaded,
+      package,
+      target,
+      synthesis_mode,
+      diagnose_unready,
+      diagnostics);
   return evaluator.run(selections);
 }
 
@@ -4900,6 +5043,7 @@ std::optional<EvaluatedConstant> evaluate_typed_constant_expression(
       loaded,
       package,
       target,
+      CompileTimeSynthesisMode::Reject,
       true,
       diagnostics,
       local_constants,

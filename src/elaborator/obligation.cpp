@@ -1505,6 +1505,29 @@ struct ActiveDenialContext {
   return hash.finalize();
 }
 
+// A later conditional completeness set can reveal a site only after an earlier
+// same-kind site under the same anchor has been replaced. Counting only the
+// currently visible metadata would then reuse occurrence zero. Resolved source
+// maps retain the earlier structural identity, so allocate the lowest identity
+// not used by either those maps or an obligation already emitted this round.
+// This keeps prompt/type content out of the site key while making successive
+// interface rounds one coherent manifest namespace.
+[[nodiscard]] bool site_identity_is_used(
+    const SourceManager &sources,
+    FileId file,
+    std::string_view candidate,
+    const AgentObligationResult &result) {
+  if (file.is_valid()) {
+    for (const SourceExpansionMap &map : sources.file(file).expansion_maps) {
+      if (map.site_identity == candidate) return true;
+    }
+  }
+  for (const AgentObligation &existing : result.obligations) {
+    if (existing.site_identity == candidate) return true;
+  }
+  return false;
+}
+
 [[nodiscard]] Sha256Digest input_digest(
     const AgentObligation &obligation,
     const TargetProfile &target) {
@@ -1869,7 +1892,18 @@ AgentObligationResult build_agent_obligations(
     obligation.documentation = documentation_context(package, metadata, record);
     obligation.validation_context.assign(
         validation_context.begin(), validation_context.end());
-    obligation.site_identity = "site-" + site_identity_digest(obligation).hex();
+    while (true) {
+      obligation.site_identity =
+          "site-" + site_identity_digest(obligation).hex();
+      if (!site_identity_is_used(
+              sources,
+              record.syntax.file,
+              obligation.site_identity,
+              result)) {
+        break;
+      }
+      ++obligation.occurrence;
+    }
     obligation.input_digest = input_digest(obligation, target);
     result.obligations.push_back(std::move(obligation));
   }

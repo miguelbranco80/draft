@@ -28,6 +28,12 @@ struct SemanticAnalysisResult {
   // because a mutable variable must never become a language constant merely
   // because its initial contents were known at compile time.
   ConstantTable global_initializers;
+  // Only interface-synthesis discovery populates this source-order set. Each
+  // ID names a package procedure whose body participated in constant or `when`
+  // evaluation and encountered unresolved synthesis. The compiler checks these
+  // bodies immediately to build early obligations; complete semantic analysis
+  // rejects unresolved synthesis instead and leaves the set empty.
+  std::vector<SymbolId> compile_time_synthesis_procedures;
 };
 
 // Runs semantic rounds until no new declaration-level conditional becomes
@@ -48,6 +54,19 @@ struct SemanticAnalysisResult {
     const LoadedPackage &loaded,
     const TargetFacts &target,
     const AvailablePackageImports &imports,
+    DiagnosticSink &diagnostics);
+
+// Interface discovery form used by the compiler's dependency scheduler. In
+// Discover mode, constant execution may stop at `...` and returns the exact
+// package procedures whose ordinary body check must publish those obligations.
+// Every other semantic rule and diagnostic remains identical to the rejecting
+// form above.
+[[nodiscard]] SemanticAnalysisResult analyze_package_semantics(
+    const SourceManager &sources,
+    const LoadedPackage &loaded,
+    const TargetFacts &target,
+    const AvailablePackageImports &imports,
+    CompileTimeSynthesisMode synthesis_mode,
     DiagnosticSink &diagnostics);
 
 } // namespace draft

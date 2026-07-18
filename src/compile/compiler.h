@@ -29,8 +29,10 @@ namespace draft {
 // Interface synthesis must be discovered before bodies that may name generated
 // declarations or aggregate members. Complete performs every provider-free
 // phase. DiscoverInterfaceSynthesis stops after dependency interfaces, type
-// skeletons, constants, and early agent metadata are available; no body error
-// can therefore preempt a declaration/member obligation that would repair it.
+// skeletons, constants, and early agent metadata are available. It checks only
+// the procedure bodies actually blocked by compile-time synthesis, so an
+// unrelated runtime-body error cannot preempt an interface obligation that
+// would repair the program.
 enum class CompileWorkspaceStage {
   Complete,
   DiscoverInterfaceSynthesis,
@@ -43,7 +45,7 @@ struct CompileWorkspaceOptions {
   // Versioned identity of the compiler semantics and manifest algorithm. It is
   // a resolved-program input and must change when an implementation change can
   // alter accepted meaning or emitted behavior for the same other inputs.
-  std::string compiler_content_identity = "draft-bootstrap-cpp-v111";
+  std::string compiler_content_identity = "draft-bootstrap-cpp-v112";
   CompileWorkspaceStage stage = CompileWorkspaceStage::Complete;
   bool lower_mir = false;
   bool emit_llvm = false;

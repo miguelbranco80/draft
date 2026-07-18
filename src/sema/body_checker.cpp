@@ -169,6 +169,46 @@ public:
     return result;
   }
 
+  // Early interface discovery needs ordinary body semantics, but only for
+  // procedures the constant interpreter actually reached. Applying selection
+  // while walking the package scope keeps diagnostics and site order identical
+  // to a complete body pass and independent of evaluator recursion order.
+  [[nodiscard]] BodyCheckResult run_selected(
+      std::span<const SymbolId> selected) {
+    BodyCheckResult result;
+    const std::size_t initial_errors = diagnostics_.error_count();
+    ensure_runtime_context_type(semantic_, diagnostics_);
+    const std::vector<SymbolId> package_symbols =
+        semantic_.symbols.scope(semantic_.package_scope).symbols;
+    for (SymbolId id : package_symbols) {
+      if (std::find(selected.begin(), selected.end(), id) == selected.end()) {
+        continue;
+      }
+      const Symbol symbol = semantic_.symbols.symbol(id);
+      if (symbol.kind != SymbolKind::Procedure || !symbol.type.is_valid()) {
+        continue;
+      }
+      if (check_procedure(id, symbol.flags.parametric)) {
+        ++result.checked_procedures;
+      }
+    }
+    // A reached compile-time helper can itself make a concrete generic call.
+    // Those instance bodies are part of the same dependency closure and follow
+    // the normal growing-vector rule used by the complete body pass.
+    for (std::size_t index = 0; index < instances_.size(); ++index) {
+      current_instance_index_ = index;
+      if (!instances_[index].checked &&
+          check_procedure(instances_[index].symbol, false)) {
+        ++result.checked_procedures;
+        instances_[index].checked = true;
+      }
+      current_instance_index_.reset();
+    }
+    result.ok = diagnostics_.error_count() == initial_errors;
+    result.program = std::move(hir_);
+    return result;
+  }
+
   [[nodiscard]] bool validate_package_initializer_expression_types() {
     const std::size_t initial_errors = diagnostics_.error_count();
     type_validation_only_ = true;
@@ -1139,6 +1179,7 @@ private:
   }
 
   [[nodiscard]] bool numeric_value_type(TypeId type_id) const {
+    if (is_invalid_type(type_id)) return false;
     const Type type = runtime_scalar_type(type_id);
     return type.kind == TypeKind::SignedInteger ||
         type.kind == TypeKind::UnsignedInteger ||
@@ -6377,6 +6418,40 @@ BodyCheckResult check_package_bodies(
   if (result.ok && !validate_target_types(package.types, target, diagnostics)) {
     result.ok = false;
   }
+  if (result.ok &&
+      !check_definite_initialization(package, result.program, diagnostics)) {
+    result.ok = false;
+  }
+  return result;
+}
+
+BodyCheckResult check_compile_time_procedure_bodies(
+    const SourceManager &sources,
+    const LoadedPackage &loaded,
+    const ConditionalSelections &selections,
+    SemanticPackage &package,
+    ConstantTable &constants,
+    const TargetFacts &target,
+    std::span<const SymbolId> procedures,
+    DiagnosticSink &diagnostics) {
+  const std::vector<ProcedureInstantiationSeed> no_seeds;
+  BodyChecker checker(
+      sources,
+      loaded,
+      selections,
+      package,
+      constants,
+      target,
+      diagnostics,
+      no_seeds);
+  BodyCheckResult result = checker.run_selected(procedures);
+  if (result.ok && !validate_target_types(package.types, target, diagnostics)) {
+    result.ok = false;
+  }
+  // The early HIR is intentionally discarded and cannot reach MIR, but its
+  // lexical reads still must obey the same initialization rules as the final
+  // body. This prevents discovery from accepting a synthesis obligation whose
+  // surrounding compile-time procedure is already invalid.
   if (result.ok &&
       !check_definite_initialization(package, result.program, diagnostics)) {
     result.ok = false;

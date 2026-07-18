@@ -267,6 +267,15 @@ examples/hello` uses the pinned native toolchain; `--allow-host-toolchain` is an
 explicit development-only escape hatch. All commands use the same
 dependency-ordered source, semantic, HIR, and MIR pipeline.
 
+Interface resolution also promotes a normally body-level synthesis site when a
+package constant or declaration-level `when` executes that procedure at compile
+time. The constant interpreter stops at unresolved source, and the ordinary
+body checker builds the site's exact expected type, enclosing procedure, and
+lexical context before the provider runs. Its checked expansion is installed in
+an interface round; only then can the constant select dependent declarations.
+Direct `when ...` conditions take the same path with an exact `bool` obligation.
+Offline builds reproduce those rounds from pinned expansion bytes.
+
 `draftc build` defaults to an executable. `--kind object`, `--kind
 static-library`, `--kind dynamic-library`, and `--kind assembly` select a
 relocatable object, archive, dylib, or collision-free directory of assembly

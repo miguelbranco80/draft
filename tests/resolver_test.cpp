@@ -13,6 +13,7 @@
 
 #include <cstdlib>
 #include <cerrno>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -134,6 +135,65 @@ struct TemporaryWorkspace {
            << "}\n";
   }
 
+  // The procedure body is a compile-time dependency of Selected, which in
+  // turn selects the declaration synthesis site. The expression site must run
+  // in an earlier interface round even though expression sites normally belong
+  // to the later runtime-body stage.
+  void write_compile_time_dependency_source() const {
+    std::ofstream source(
+        package / "package.draft", std::ios::binary | std::ios::trunc);
+    source << "package app\n\n"
+           << "compile_value :: proc() -> i64 {\n"
+           << "    return ... \"compute compile-time selector\"\n"
+           << "}\n\n"
+           << "Selected :: compile_value()\n\n"
+           << "when Selected == 42 {\n"
+           << "    ... \"declare public answer\"\n"
+           << "}\n\n"
+           << "main :: proc() {\n"
+           << "    assert(answer == 42)\n"
+           << "}\n";
+  }
+
+  // A synthesis expression can itself be the package `when` condition. This
+  // exercises the evaluator-owned site path: there is no enclosing procedure
+  // body for BodyChecker to discover, but the condition still has exact bool
+  // context and must precede the selected declaration set.
+  void write_direct_condition_dependency_source() const {
+    std::ofstream source(
+        package / "package.draft", std::ios::binary | std::ios::trunc);
+    source << "package app\n\n"
+           << "when ... \"select declaration\" {\n"
+           << "    ... \"declare public answer\"\n"
+           << "}\n\n"
+           << "main :: proc() {\n"
+           << "    assert(answer == 42)\n"
+           << "}\n";
+  }
+
+  // The compile-time procedure cannot be checked until the current package
+  // declaration completeness set supplies generated_value. Resolution must
+  // therefore take three interface rounds: declaration, expression, then the
+  // declaration selected by the resulting constant.
+  void write_structural_then_compile_time_dependency_source() const {
+    std::ofstream source(
+        package / "package.draft", std::ios::binary | std::ios::trunc);
+    source << "package app\n\n"
+           << "... \"declare compile input\"\n\n"
+           << "compile_value :: proc() -> i64 {\n"
+           << "    increment: i64 = "
+              "... \"compute compile-time increment\"\n"
+           << "    return generated_value + increment\n"
+           << "}\n\n"
+           << "Selected :: compile_value()\n\n"
+           << "when Selected == 42 {\n"
+           << "    ... \"declare public answer\"\n"
+           << "}\n\n"
+           << "main :: proc() {\n"
+           << "    assert(answer == 42)\n"
+           << "}\n";
+  }
+
   void write_complete_source() const {
     std::ofstream source(
         package / "package.draft", std::ios::binary | std::ios::trunc);
@@ -172,6 +232,10 @@ struct FakeProviderState {
   bool staged_responses = false;
   bool opaque_interface_responses = false;
   std::vector<draft::AgentConstructKind> kinds;
+  std::vector<std::string> prompts;
+  std::vector<std::uint64_t> occurrences;
+  std::vector<std::string> expected_type_texts;
+  std::vector<std::string> anchor_names;
   std::vector<std::vector<std::string>> visible_binding_names;
   std::vector<draft::AgentValidationContext> last_validation_context;
 };
@@ -238,6 +302,11 @@ bool synthesize(
   auto *state = static_cast<FakeProviderState *>(opaque);
   ++state->calls;
   state->kinds.push_back(request.obligation.kind);
+  state->prompts.push_back(request.prompt);
+  state->occurrences.push_back(request.obligation.occurrence);
+  state->expected_type_texts.push_back(
+      request.obligation.expected_type_text);
+  state->anchor_names.push_back(request.obligation.anchor_name);
   state->last_prompt = request.prompt;
   state->last_attachment = request.attachments.empty()
       ? std::string()
@@ -263,7 +332,9 @@ bool synthesize(
   } else if (state->staged_responses) {
     switch (request.obligation.kind) {
     case draft::AgentConstructKind::SynthesisDeclaration:
-      response.source = "pub answer :: 42;";
+      response.source = request.prompt == "declare compile input"
+          ? "generated_value :: cast[i64](40);"
+          : "pub answer :: 42;";
       break;
     case draft::AgentConstructKind::SynthesisMember:
       response.source = "value: i64,";
@@ -273,7 +344,13 @@ bool synthesize(
           "assert(packet.value == answer && expected == 42)";
       break;
     case draft::AgentConstructKind::SynthesisExpression:
-      response.source = "42";
+      if (request.prompt == "select declaration") {
+        response.source = "true";
+      } else if (request.prompt == "compute compile-time increment") {
+        response.source = "2";
+      } else {
+        response.source = "42";
+      }
       break;
     default:
       diagnostics.error(
@@ -778,6 +855,173 @@ void test_same_interface_set_is_opaque(TestState &state) {
   EXPECT(state, !offline_diagnostics.has_errors());
 }
 
+void test_compile_time_body_dependency_precedes_selected_declaration(
+    TestState &state) {
+  TemporaryWorkspace workspace;
+  workspace.write_compile_time_dependency_source();
+  FakeProviderState provider;
+  provider.staged_responses = true;
+
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  const draft::ResolveWorkspaceResult resolved = draft::resolve_workspace(
+      sources,
+      workspace.package.string(),
+      resolve_options(workspace, provider),
+      diagnostics);
+  if (!resolved.ok) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+  }
+  EXPECT(state, resolved.ok);
+  EXPECT(state, resolved.committed);
+  EXPECT(state, resolved.synthesized_sites == 2);
+  EXPECT(state, provider.calls == 2);
+  EXPECT(state, provider.kinds.size() == 2);
+  if (provider.kinds.size() == 2) {
+    EXPECT(state, provider.kinds[0] ==
+        draft::AgentConstructKind::SynthesisExpression);
+    EXPECT(state, provider.kinds[1] ==
+        draft::AgentConstructKind::SynthesisDeclaration);
+  }
+  EXPECT(state, provider.expected_type_texts.size() == 2);
+  EXPECT(state, provider.anchor_names.size() == 2);
+  if (provider.expected_type_texts.size() == 2) {
+    EXPECT(state, provider.expected_type_texts[0] == "i64");
+  }
+  if (provider.anchor_names.size() == 2) {
+    EXPECT(state, provider.anchor_names[0] == "compile_value");
+  }
+
+  // Offline replay must reproduce both interface rounds using only committed
+  // expansion bytes. If it classifies the expression as an ordinary late body
+  // site, the `when` condition cannot select the generated declaration.
+  draft::SourceManager offline_sources;
+  draft::DiagnosticSink offline_diagnostics;
+  const draft::CompileWorkspaceResult offline =
+      draft::compile_workspace_with_resolution(
+          offline_sources,
+          workspace.package.string(),
+          compile_options(workspace),
+          offline_diagnostics);
+  if (!offline.ok) {
+    std::cerr << draft::render_diagnostics(
+        offline_sources, offline_diagnostics);
+  }
+  EXPECT(state, offline.ok);
+  EXPECT(state, offline.resolution_manifest.has_value());
+  EXPECT(state, !offline_diagnostics.has_errors());
+}
+
+void test_direct_when_synthesis_precedes_selected_declaration(
+    TestState &state) {
+  TemporaryWorkspace workspace;
+  workspace.write_direct_condition_dependency_source();
+  FakeProviderState provider;
+  provider.staged_responses = true;
+
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  const draft::ResolveWorkspaceResult resolved = draft::resolve_workspace(
+      sources,
+      workspace.package.string(),
+      resolve_options(workspace, provider),
+      diagnostics);
+  if (!resolved.ok) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+  }
+  EXPECT(state, resolved.ok);
+  EXPECT(state, resolved.committed);
+  EXPECT(state, resolved.synthesized_sites == 2);
+  EXPECT(state, provider.kinds.size() == 2);
+  if (provider.kinds.size() == 2) {
+    EXPECT(state, provider.kinds[0] ==
+        draft::AgentConstructKind::SynthesisExpression);
+    EXPECT(state, provider.kinds[1] ==
+        draft::AgentConstructKind::SynthesisDeclaration);
+  }
+  EXPECT(state, provider.expected_type_texts.size() == 2);
+  if (provider.expected_type_texts.size() == 2) {
+    EXPECT(state, provider.expected_type_texts[0] == "bool");
+  }
+  EXPECT(state, provider.anchor_names.size() == 2);
+  if (provider.anchor_names.size() == 2) {
+    EXPECT(state, provider.anchor_names[0].empty());
+  }
+
+  draft::SourceManager offline_sources;
+  draft::DiagnosticSink offline_diagnostics;
+  const draft::CompileWorkspaceResult offline =
+      draft::compile_workspace_with_resolution(
+          offline_sources,
+          workspace.package.string(),
+          compile_options(workspace),
+          offline_diagnostics);
+  EXPECT(state, offline.ok);
+  EXPECT(state, !offline_diagnostics.has_errors());
+}
+
+void test_structural_set_precedes_compile_time_body_dependency(
+    TestState &state) {
+  TemporaryWorkspace workspace;
+  workspace.write_structural_then_compile_time_dependency_source();
+  FakeProviderState provider;
+  provider.staged_responses = true;
+
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  const draft::ResolveWorkspaceResult resolved = draft::resolve_workspace(
+      sources,
+      workspace.package.string(),
+      resolve_options(workspace, provider),
+      diagnostics);
+  if (!resolved.ok) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+  }
+  EXPECT(state, resolved.ok);
+  EXPECT(state, resolved.committed);
+  EXPECT(state, resolved.synthesized_sites == 3);
+  EXPECT(state, provider.kinds.size() == 3);
+  if (provider.kinds.size() == 3) {
+    EXPECT(state, provider.kinds[0] ==
+        draft::AgentConstructKind::SynthesisDeclaration);
+    EXPECT(state, provider.kinds[1] ==
+        draft::AgentConstructKind::SynthesisExpression);
+    EXPECT(state, provider.kinds[2] ==
+        draft::AgentConstructKind::SynthesisDeclaration);
+  }
+  EXPECT(state, provider.prompts.size() == 3);
+  if (provider.prompts.size() == 3) {
+    EXPECT(state, provider.prompts[0] == "declare compile input");
+    EXPECT(state, provider.prompts[1] == "compute compile-time increment");
+    EXPECT(state, provider.prompts[2] == "declare public answer");
+  }
+  EXPECT(state, provider.occurrences.size() == 3);
+  if (provider.occurrences.size() == 3) {
+    EXPECT(state, provider.occurrences[0] == 0);
+    EXPECT(state, provider.occurrences[1] == 0);
+    EXPECT(state, provider.occurrences[2] == 1);
+  }
+  if (provider.visible_binding_names.size() == 3) {
+    EXPECT(state,
+        contains_name(provider.visible_binding_names[1], "generated_value"));
+  }
+
+  draft::SourceManager offline_sources;
+  draft::DiagnosticSink offline_diagnostics;
+  const draft::CompileWorkspaceResult offline =
+      draft::compile_workspace_with_resolution(
+          offline_sources,
+          workspace.package.string(),
+          compile_options(workspace),
+          offline_diagnostics);
+  if (!offline.ok) {
+    std::cerr << draft::render_diagnostics(
+        offline_sources, offline_diagnostics);
+  }
+  EXPECT(state, offline.ok);
+  EXPECT(state, !offline_diagnostics.has_errors());
+}
+
 void test_tests_gate_manifest_commit(TestState &state) {
   TemporaryWorkspace workspace;
   workspace.write_source("candidate with tests");
@@ -996,6 +1240,9 @@ int main() {
   test_interface_sites_precede_dependent_bodies(state);
   test_dependency_interface_rounds(state);
   test_same_interface_set_is_opaque(state);
+  test_compile_time_body_dependency_precedes_selected_declaration(state);
+  test_direct_when_synthesis_precedes_selected_declaration(state);
+  test_structural_set_precedes_compile_time_body_dependency(state);
   test_tests_gate_manifest_commit(state);
   test_validation_context_stales_synthesis(state);
   test_cancelled_resolution_does_not_start_transaction(state);

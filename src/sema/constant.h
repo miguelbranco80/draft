@@ -89,6 +89,16 @@ struct EvaluatedConstant {
   TypeId type;
 };
 
+// Interface discovery is the only phase allowed to stop constant execution at
+// a source synthesis site. Ordinary semantic analysis rejects that same site:
+// by the time a complete program is checked, resolution must already have
+// replaced it with ordinary Draft source. Keeping this as an enum prevents a
+// permissive discovery rule from becoming an ambiguous boolean at call sites.
+enum class CompileTimeSynthesisMode {
+  Reject,
+  Discover,
+};
+
 // A required expression inside a concrete parametric procedure may query the
 // layout of a symbolic TypeParameter. This phase-local binding maps that unique
 // parameter TypeId to its concrete instantiation. It is never serialized or
@@ -102,6 +112,12 @@ struct CompileTimeRoundResult {
   ConstantTable constants;
   std::size_t new_selections = 0;
   std::size_t unresolved_conditionals = 0;
+  // Package procedure bodies reached while evaluating constants and `when`
+  // conditions. In Discover mode, the compiler body-checks exactly this set to
+  // obtain typed synthesis obligations before dependent interface work
+  // continues. IDs belong to the returned SemanticPackage round and must not
+  // survive a clean semantic rebuild.
+  std::vector<SymbolId> compile_time_procedures;
 };
 
 // Evaluates package constants needed by visible declaration-level `when` sites.
@@ -115,6 +131,7 @@ struct CompileTimeRoundResult {
     SemanticPackage &package,
     const TargetFacts &target,
     ConditionalSelections &selections,
+    CompileTimeSynthesisMode synthesis_mode,
     bool diagnose_unready,
     DiagnosticSink &diagnostics);
 

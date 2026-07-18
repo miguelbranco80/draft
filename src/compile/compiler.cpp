@@ -124,6 +124,48 @@ void hash_field(Sha256 &hash, std::string_view value) {
   return false;
 }
 
+// Only the interface scheduler may turn an evaluator stop into a provider
+// obligation. The complete body pass runs after all interface overlays and
+// therefore retains the ordinary rejecting semantic behavior.
+[[nodiscard]] CompileTimeSynthesisMode compile_time_synthesis_mode(
+    CompileWorkspaceStage stage) {
+  return stage == CompileWorkspaceStage::DiscoverInterfaceSynthesis
+      ? CompileTimeSynthesisMode::Discover
+      : CompileTimeSynthesisMode::Reject;
+}
+
+// Package declarations and aggregate members can create every name and layout
+// visible to an early compile-time procedure. If either category is pending,
+// it is the package's current opaque completeness set; expression/statement
+// dependencies must wait for a clean rebuild after that entire set is merged.
+[[nodiscard]] bool has_structural_interface_synthesis(
+    const SemanticPackage &package) {
+  for (const SemanticSite &site : package.sites) {
+    if (site.kind == SemanticSiteKind::SynthesisDeclaration ||
+        site.kind == SemanticSiteKind::SynthesisMember) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// Direct synthesized `when` conditions may already have been appended by the
+// constant evaluator. Suppress only those early grammar-producing rows while a
+// structural completeness set is pending; documentation, judgments, denials,
+// and conditional source sites remain semantic context for that structural set.
+void defer_nonstructural_interface_synthesis(SemanticPackage &package) {
+  package.sites.erase(
+      std::remove_if(
+          package.sites.begin(),
+          package.sites.end(),
+          [](const SemanticSite &site) {
+            return site.kind == SemanticSiteKind::SynthesisExpression ||
+                site.kind == SemanticSiteKind::SynthesisStatement ||
+                site.kind == SemanticSiteKind::SynthesisAssembly;
+          }),
+      package.sites.end());
+}
+
 // Validation files stay outside the ordinary workspace graph, so handwritten
 // builds do not acquire test-only imports or declarations. A package that has
 // synthesis sites gets one parallel target-selected load with both validation
@@ -285,8 +327,26 @@ void append_instantiated_type(
       workspace_package.loaded,
       options.target.facts,
       available,
+      compile_time_synthesis_mode(options.stage),
       diagnostics);
   if (!semantics.ok) return false;
+  const bool structural_synthesis =
+      has_structural_interface_synthesis(semantics.package);
+  if (structural_synthesis) {
+    defer_nonstructural_interface_synthesis(semantics.package);
+  } else if (!semantics.compile_time_synthesis_procedures.empty()) {
+    const BodyCheckResult early_bodies =
+        check_compile_time_procedure_bodies(
+            sources,
+            workspace_package.loaded,
+            semantics.selections,
+            semantics.package,
+            semantics.constants,
+            options.target.facts,
+            semantics.compile_time_synthesis_procedures,
+            diagnostics);
+    if (!early_bodies.ok) return false;
+  }
   AgentMetadataResult metadata = collect_agent_metadata(
       sources,
       workspace_package.loaded,
@@ -543,16 +603,15 @@ private:
   return publisher.publish(requester);
 }
 
-// A dependency with pending generated declarations or members cannot publish a
-// complete interface to consumers. Discovery conservatively suspends every
-// consumer until the dependency is overlaid and recompiled; this avoids making
-// readiness depend on which absent generated name a consumer happens to use.
+// A dependency with any obligation emitted by interface discovery cannot yet
+// publish a complete interface to consumers. Besides declarations and members,
+// this includes a statement/expression site in a procedure required by a
+// constant, layout, or `when` decision. Discovery conservatively suspends every
+// consumer until the dependency is overlaid and recompiled; readiness must not
+// depend on which absent generated name or conditional branch a consumer uses.
 [[nodiscard]] bool has_interface_synthesis(const CompiledPackage &package) {
   for (const AgentObligation &obligation : package.obligations.obligations) {
-    if (obligation.kind == AgentConstructKind::SynthesisDeclaration ||
-        obligation.kind == AgentConstructKind::SynthesisMember) {
-      return true;
-    }
+    if (is_synthesis_obligation(obligation.kind)) return true;
   }
   return false;
 }
@@ -968,6 +1027,7 @@ CompileWorkspaceResult compile_workspace(
         workspace_package.loaded,
         options.target.facts,
         available,
+        compile_time_synthesis_mode(options.stage),
         diagnostics);
     // Imported procedure-dependent layouts are discovered only after the
     // consumer supplies concrete arguments. Publish each owner result, then
@@ -1006,6 +1066,23 @@ CompileWorkspaceResult compile_workspace(
       package.semantics.ok = false;
     }
     if (!package.semantics.ok) continue;
+    const bool structural_synthesis =
+        has_structural_interface_synthesis(package.semantics.package);
+    if (structural_synthesis) {
+      defer_nonstructural_interface_synthesis(package.semantics.package);
+    } else if (!package.semantics.compile_time_synthesis_procedures.empty()) {
+      const BodyCheckResult early_bodies =
+          check_compile_time_procedure_bodies(
+              sources,
+              workspace_package.loaded,
+              package.semantics.selections,
+              package.semantics.package,
+              package.semantics.constants,
+              options.target.facts,
+              package.semantics.compile_time_synthesis_procedures,
+              diagnostics);
+      if (!early_bodies.ok) continue;
+    }
     // Public package/declaration documentation is an interface input just like
     // public types and constants. Collect it before consumers bind dependency
     // interfaces; waiting for the body pass would make those exact docs and

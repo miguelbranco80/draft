@@ -65,6 +65,22 @@ namespace {
   return result;
 }
 
+// A pending constant or `when` condition may name declarations or members
+// supplied by the package's current opaque interface set. Discovery must return
+// that structural set without diagnosing the dependent expression yet. Once
+// the set is overlaid, the next clean semantic round either makes progress or
+// emits the ordinary precise unready diagnostic.
+[[nodiscard]] bool has_structural_synthesis_site(
+    const SemanticPackage &package) {
+  for (const SemanticSite &site : package.sites) {
+    if (site.kind == SemanticSiteKind::SynthesisDeclaration ||
+        site.kind == SemanticSiteKind::SynthesisMember) {
+      return true;
+    }
+  }
+  return false;
+}
+
 // Runs only after one complete declaration/signature/type pass. The full
 // interpreter can now execute calls and conditionals which the intentionally
 // small early layout evaluator cannot. Successful values are source-keyed and
@@ -124,7 +140,13 @@ SemanticAnalysisResult analyze_package_semantics(
     const TargetFacts &target,
     DiagnosticSink &diagnostics) {
   const AvailablePackageImports imports;
-  return analyze_package_semantics(sources, loaded, target, imports, diagnostics);
+  return analyze_package_semantics(
+      sources,
+      loaded,
+      target,
+      imports,
+      CompileTimeSynthesisMode::Reject,
+      diagnostics);
 }
 
 SemanticAnalysisResult analyze_package_semantics(
@@ -132,6 +154,22 @@ SemanticAnalysisResult analyze_package_semantics(
     const LoadedPackage &loaded,
     const TargetFacts &target,
     const AvailablePackageImports &imports,
+    DiagnosticSink &diagnostics) {
+  return analyze_package_semantics(
+      sources,
+      loaded,
+      target,
+      imports,
+      CompileTimeSynthesisMode::Reject,
+      diagnostics);
+}
+
+SemanticAnalysisResult analyze_package_semantics(
+    const SourceManager &sources,
+    const LoadedPackage &loaded,
+    const TargetFacts &target,
+    const AvailablePackageImports &imports,
+    CompileTimeSynthesisMode synthesis_mode,
     DiagnosticSink &diagnostics) {
   SemanticAnalysisResult result;
   const std::size_t initial_error_count = diagnostics.error_count();
@@ -161,6 +199,7 @@ SemanticAnalysisResult analyze_package_semantics(
         provisional,
         target,
         result.selections,
+        synthesis_mode,
         false,
         provisional_diagnostics);
     const std::size_t new_integers = resolve_required_integer_expressions(
@@ -195,15 +234,23 @@ SemanticAnalysisResult analyze_package_semantics(
   // Context now so those early requests receive the same typed field set as
   // later statement/expression synthesis.
   ensure_runtime_context_type(result.package, diagnostics);
+  const bool defer_unready_compile_time_dependencies =
+      synthesis_mode == CompileTimeSynthesisMode::Discover &&
+      has_structural_synthesis_site(result.package);
   CompileTimeRoundResult final_round = evaluate_compile_time_round(
       sources,
       loaded,
       result.package,
       target,
       result.selections,
-      true,
+      synthesis_mode,
+      !defer_unready_compile_time_dependencies,
       diagnostics);
   result.constants = std::move(final_round.constants);
+  if (synthesis_mode == CompileTimeSynthesisMode::Discover) {
+    result.compile_time_synthesis_procedures =
+        std::move(final_round.compile_time_procedures);
+  }
   (void)check_global_initializers(
       sources,
       loaded,
@@ -222,7 +269,8 @@ SemanticAnalysisResult analyze_package_semantics(
       diagnostics);
   (void)validate_target_types(result.package.types, target, diagnostics);
   result.ok = diagnostics.error_count() == initial_error_count &&
-              final_round.unresolved_conditionals == 0;
+      (final_round.unresolved_conditionals == 0 ||
+       defer_unready_compile_time_dependencies);
   return result;
 }
 

@@ -1,11 +1,14 @@
 // Type checking and typed-HIR construction for procedure bodies.
 //
-// This phase consumes the final selected package semantic graph: package names,
-// signatures, package constants, and layouts are already stable. It appends
-// lexical block/local symbols and lexical compile-time constants, checks runtime
-// expressions and statements with expected types, records body-level
-// judgment/synthesis sites, and emits structured HIR. It does not perform ABI
-// lowering, storage placement, or LLVM construction.
+// The complete phase consumes the final selected package semantic graph:
+// package names, signatures, package constants, and layouts are already stable.
+// Interface discovery may also invoke the same checker for the narrow procedure
+// dependency closure blocked by synthesis; all semantic inputs reached before
+// the site are stable, while dependent constants remain intentionally absent.
+// The checker appends lexical block/local symbols and lexical compile-time
+// constants, checks runtime expressions and statements with expected types,
+// records body-level judgment/synthesis sites, and emits structured HIR. It does
+// not perform ABI lowering, storage placement, or LLVM construction.
 
 #pragma once
 
@@ -17,6 +20,7 @@
 #include "workspace/package.h"
 
 #include <cstddef>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -66,5 +70,20 @@ struct ProcedureInstantiationSeed {
     const TargetFacts &target,
     DiagnosticSink &diagnostics,
     const std::vector<ProcedureInstantiationSeed> &seeds = {});
+
+// Checks only package procedures reached by compile-time constant evaluation.
+// The selection uses stable SymbolIds from the same SemanticPackage and is
+// applied in package declaration order, independent of evaluator call order.
+// Its HIR is disposable; the lasting output is the typed body-agent sites
+// appended to package for early interface-synthesis obligation construction.
+[[nodiscard]] BodyCheckResult check_compile_time_procedure_bodies(
+    const SourceManager &sources,
+    const LoadedPackage &loaded,
+    const ConditionalSelections &selections,
+    SemanticPackage &package,
+    ConstantTable &constants,
+    const TargetFacts &target,
+    std::span<const SymbolId> procedures,
+    DiagnosticSink &diagnostics);
 
 } // namespace draft
