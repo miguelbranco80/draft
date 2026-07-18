@@ -114,6 +114,20 @@ void hash_field(Sha256 &hash, std::string_view value) {
       kind == AgentConstructKind::SynthesisAssembly;
 }
 
+// A dependency with pending generated declarations or members cannot publish a
+// complete interface to consumers. Discovery conservatively suspends every
+// consumer until the dependency is overlaid and recompiled; this avoids making
+// readiness depend on which absent generated name a consumer happens to use.
+[[nodiscard]] bool has_interface_synthesis(const CompiledPackage &package) {
+  for (const AgentObligation &obligation : package.obligations.obligations) {
+    if (obligation.kind == AgentConstructKind::SynthesisDeclaration ||
+        obligation.kind == AgentConstructKind::SynthesisMember) {
+      return true;
+    }
+  }
+  return false;
+}
+
 // Recovers the diagnostic range for a process-local obligation after either
 // the surface or resolved package pass. Invalid compiler rows are reported at
 // no source rather than turned into assertions on user-controlled input.
@@ -360,9 +374,16 @@ CompileWorkspaceResult compile_workspace(
           static_cast<std::size_t>(import.imported_package.value);
       if (dependency_index >= result.packages.size() ||
           !result.packages[dependency_index].has_value()) {
-        diagnostics.error(
-            SourceRange::invalid(),
-            "dependency did not produce a package interface before its consumer");
+        if (options.stage == CompileWorkspaceStage::Complete) {
+          diagnostics.error(
+              SourceRange::invalid(),
+              "dependency did not produce a package interface before its consumer");
+        }
+        dependencies_ready = false;
+        continue;
+      }
+      if (options.stage == CompileWorkspaceStage::DiscoverInterfaceSynthesis &&
+          has_interface_synthesis(*result.packages[dependency_index])) {
         dependencies_ready = false;
         continue;
       }
@@ -397,22 +418,7 @@ CompileWorkspaceResult compile_workspace(
         package.semantics.package,
         package.semantics.constants,
         diagnostics);
-    result.packages[package_index] = std::move(package);
-  }
-
-  // Declaration and member synthesis is an interface-stage operation. The
-  // complete body pass cannot run yet because ordinary source is allowed to
-  // name symbols and fields supplied by these sites. Metadata collection is
-  // nevertheless valid: declaration collection and type skeleton resolution
-  // have already installed the exact package/type scopes and visible symbols
-  // available to each opaque completeness set.
-  if (options.stage == CompileWorkspaceStage::DiscoverInterfaceSynthesis) {
-    for (auto position = consumer_order.rbegin();
-         position != consumer_order.rend(); ++position) {
-      const std::size_t package_index = *position;
-      if (!result.packages[package_index].has_value()) continue;
-      CompiledPackage &package = *result.packages[package_index];
-      WorkspacePackage &workspace_package = result.graph.packages[package_index];
+    if (options.stage == CompileWorkspaceStage::DiscoverInterfaceSynthesis) {
       package.metadata = collect_agent_metadata(
           sources,
           workspace_package.loaded,
@@ -434,13 +440,23 @@ CompileWorkspaceResult compile_workspace(
           package.metadata,
           diagnostics);
     }
-    bool every_package_ready = true;
+    result.packages[package_index] = std::move(package);
+  }
+
+  // Declaration and member synthesis is an interface-stage operation. The
+  // complete body pass cannot run yet because ordinary source is allowed to
+  // name symbols and fields supplied by these sites. Metadata collection is
+  // nevertheless valid: declaration collection and type skeleton resolution
+  // have already installed the exact package/type scopes and visible symbols
+  // available to each opaque completeness set.
+  if (options.stage == CompileWorkspaceStage::DiscoverInterfaceSynthesis) {
+    bool every_ready_package_valid = true;
     for (const std::optional<CompiledPackage> &package : result.packages) {
-      every_package_ready = every_package_ready && package.has_value() &&
-          package->semantics.ok && package->metadata.ok &&
-          package->obligations.ok;
+      if (!package.has_value()) continue;
+      every_ready_package_valid = every_ready_package_valid &&
+          package->semantics.ok && package->metadata.ok && package->obligations.ok;
     }
-    result.ok = every_package_ready &&
+    result.ok = every_ready_package_valid &&
         diagnostics.error_count() == initial_errors;
     return result;
   }
@@ -690,71 +706,87 @@ CompileWorkspaceResult compile_workspace_with_resolution(
     DiagnosticSink &diagnostics) {
   const std::size_t initial_errors = diagnostics.error_count();
 
-  // First discover declaration/member synthesis without checking dependent
-  // bodies. Caller-supplied overrides are cleared so early site identity and
-  // input hashes always originate in physical surface source, never old pins.
-  CompileWorkspaceOptions interface_options = options;
-  interface_options.stage = CompileWorkspaceStage::DiscoverInterfaceSynthesis;
-  interface_options.lower_mir = false;
-  interface_options.emit_llvm = false;
-  interface_options.workspace.source_overrides.clear();
-  CompileWorkspaceResult interface_surface = compile_workspace(
-      sources,
-      root_package_directory,
-      std::move(interface_options),
-      diagnostics);
-  if (!interface_surface.ok) return interface_surface;
-
   const ResolutionManifestLoadResult loaded_manifest =
       load_resolution_manifest(options.workspace.workspace_directory, diagnostics);
   if (loaded_manifest.state == ResolutionManifestLoadState::Invalid) {
-    interface_surface.ok = false;
-    return interface_surface;
-  }
-
-  // A missing manifest can proceed only when the early stage has no synthesis.
-  // Otherwise bodies cannot be checked soundly because their missing names and
-  // layouts are precisely what declaration/member expansion is meant to add.
-  if (loaded_manifest.state == ResolutionManifestLoadState::Missing) {
-    if (synthesis_site_count(interface_surface) != 0) {
-      diagnostics.error(
-          SourceRange::invalid(),
-          "workspace has unresolved synthesis sites and no resolution manifest; "
-          "run 'draftc resolve'");
-      interface_surface.ok = false;
-      return interface_surface;
-    }
+    return {};
   }
 
   std::vector<bool> matched_pins;
-  ResolutionManifest interface_manifest;
   std::vector<WorkspaceSourceOverride> interface_overrides;
   if (loaded_manifest.state == ResolutionManifestLoadState::Loaded) {
     matched_pins.resize(loaded_manifest.manifest.pins.size(), false);
-    interface_manifest = select_stage_manifest(
-        loaded_manifest.manifest, interface_surface, matched_pins);
-    if (!validate_stage_expansions(
-            sources,
-            options.workspace.workspace_directory,
-            interface_manifest,
-            diagnostics)) {
+  }
+
+  // Reproduce dependency-ready interface rounds from pinned bytes. No body is
+  // checked until every package interface is complete, and no round observes a
+  // same-round expansion. Each nonempty round removes at least one site.
+  while (true) {
+    CompileWorkspaceOptions interface_options = options;
+    interface_options.stage =
+        CompileWorkspaceStage::DiscoverInterfaceSynthesis;
+    interface_options.lower_mir = false;
+    interface_options.emit_llvm = false;
+    interface_options.workspace.source_overrides = interface_overrides;
+    CompileWorkspaceResult interface_surface = compile_workspace(
+        sources,
+        root_package_directory,
+        std::move(interface_options),
+        diagnostics);
+    if (!interface_surface.ok) return interface_surface;
+
+    const std::size_t site_count = synthesis_site_count(interface_surface);
+    if (loaded_manifest.state == ResolutionManifestLoadState::Missing) {
+      if (site_count != 0) {
+        diagnostics.error(
+            SourceRange::invalid(),
+            "workspace has unresolved synthesis sites and no resolution manifest; "
+            "run 'draftc resolve'");
+        interface_surface.ok = false;
+        return interface_surface;
+      }
+    } else {
+      const ResolutionManifest interface_manifest = select_stage_manifest(
+          loaded_manifest.manifest, interface_surface, matched_pins);
+      if (!validate_stage_expansions(
+              sources,
+              options.workspace.workspace_directory,
+              interface_manifest,
+              diagnostics)) {
+        interface_surface.ok = false;
+        return interface_surface;
+      }
+      const ResolutionOverlayResult interface_overlay =
+          build_resolution_overlays(
+              sources,
+              resolution_packages(interface_surface),
+              interface_manifest,
+              options.target.facts.identity,
+              options.workspace.workspace_directory,
+              {},
+              diagnostics);
+      if (!interface_overlay.ok) {
+        interface_surface.ok = false;
+        return interface_surface;
+      }
+      merge_resolution_overrides(
+          interface_overrides, interface_overlay.sources);
+    }
+    if (site_count != 0) continue;
+
+    bool all_packages_ready = true;
+    for (const std::optional<CompiledPackage> &package :
+         interface_surface.packages) {
+      all_packages_ready = all_packages_ready && package.has_value();
+    }
+    if (!all_packages_ready) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "interface elaboration has suspended packages but no ready synthesis site");
       interface_surface.ok = false;
       return interface_surface;
     }
-    const ResolutionOverlayResult interface_overlay =
-        build_resolution_overlays(
-            sources,
-            resolution_packages(interface_surface),
-            interface_manifest,
-            options.target.facts.identity,
-            options.workspace.workspace_directory,
-            {},
-            diagnostics);
-    if (!interface_overlay.ok) {
-      interface_surface.ok = false;
-      return interface_surface;
-    }
-    interface_overrides = interface_overlay.sources;
+    break;
   }
 
   // With early interfaces installed, the ordinary full front end can derive

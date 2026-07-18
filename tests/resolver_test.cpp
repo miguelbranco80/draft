@@ -87,6 +87,28 @@ struct TemporaryWorkspace {
            << "    ... \"verify generated values\"\n"
            << "}\n";
   }
+
+  // The consumer cannot even resolve its body until a dependency has published
+  // the generated public declaration. This forces more than one interface
+  // discovery round across the package graph.
+  void write_dependency_staged_source() const {
+    std::error_code error;
+    const std::filesystem::path dependency = root / "dep";
+    std::filesystem::create_directories(dependency, error);
+    if (error) std::exit(EXIT_FAILURE);
+    std::ofstream dependency_source(
+        dependency / "package.draft", std::ios::binary | std::ios::trunc);
+    dependency_source << "package dep\n\n"
+                      << "... \"declare public answer\"\n";
+    std::ofstream source(
+        package / "package.draft", std::ios::binary | std::ios::trunc);
+    source << "package app\n\n"
+           << "import dep\n\n"
+           << "main :: proc() {\n"
+           << "    answer: i64 = dep.answer\n"
+           << "    assert(answer == 42)\n"
+           << "}\n";
+  }
 };
 
 struct FakeProviderState {
@@ -116,7 +138,7 @@ bool synthesize(
   if (state->staged_responses) {
     switch (request.obligation.kind) {
     case draft::AgentConstructKind::SynthesisDeclaration:
-      response.source = "answer :: 42;";
+      response.source = "pub answer :: 42;";
       break;
     case draft::AgentConstructKind::SynthesisMember:
       response.source = "value: i64,";
@@ -321,12 +343,58 @@ void test_interface_sites_precede_dependent_bodies(TestState &state) {
   EXPECT(state, provider.calls == 3);
 }
 
+void test_dependency_interface_rounds(TestState &state) {
+  TemporaryWorkspace workspace;
+  workspace.write_dependency_staged_source();
+  FakeProviderState provider;
+  provider.staged_responses = true;
+
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  const draft::ResolveWorkspaceResult resolved = draft::resolve_workspace(
+      sources,
+      workspace.package.string(),
+      resolve_options(workspace, provider),
+      diagnostics);
+  if (!resolved.ok) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+  }
+  EXPECT(state, resolved.ok);
+  EXPECT(state, resolved.synthesized_sites == 1);
+  EXPECT(state, provider.calls == 1);
+  EXPECT(state, provider.kinds.size() == 1);
+  if (provider.kinds.size() == 1) {
+    EXPECT(state, provider.kinds.front() ==
+        draft::AgentConstructKind::SynthesisDeclaration);
+  }
+
+  draft::SourceManager offline_sources;
+  draft::DiagnosticSink offline_diagnostics;
+  draft::CompileWorkspaceOptions offline_options = compile_options(workspace);
+  offline_options.lower_mir = true;
+  offline_options.emit_llvm = true;
+  const draft::CompileWorkspaceResult offline =
+      draft::compile_workspace_with_resolution(
+          offline_sources,
+          workspace.package.string(),
+          offline_options,
+          offline_diagnostics);
+  if (!offline.ok) {
+    std::cerr << draft::render_diagnostics(
+        offline_sources, offline_diagnostics);
+  }
+  EXPECT(state, offline.ok);
+  EXPECT(state, offline.packages.size() == 2);
+  EXPECT(state, !offline_diagnostics.has_errors());
+}
+
 } // namespace
 
 int main() {
   TestState state;
   test_resolution_reuse_revalidation_and_failure(state);
   test_interface_sites_precede_dependent_bodies(state);
+  test_dependency_interface_rounds(state);
   if (state.failures != 0) {
     std::cerr << state.failures << " resolver expectation(s) failed\n";
     return EXIT_FAILURE;

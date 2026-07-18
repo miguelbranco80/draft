@@ -318,21 +318,6 @@ ResolveWorkspaceResult resolve_workspace(
   ResolveWorkspaceResult result;
   const std::size_t initial_errors = diagnostics.error_count();
 
-  // Stage 1 stops before bodies. Declaration and member obligations are all
-  // derived from the same physical surface graph, so existing generated names
-  // can never create edges unavailable on a clean resolution.
-  CompileWorkspaceOptions interface_options = options.compile;
-  interface_options.stage = CompileWorkspaceStage::DiscoverInterfaceSynthesis;
-  interface_options.lower_mir = false;
-  interface_options.emit_llvm = false;
-  interface_options.workspace.source_overrides.clear();
-  CompileWorkspaceResult interface_surface = compile_workspace(
-      sources,
-      root_package_directory,
-      std::move(interface_options),
-      diagnostics);
-  if (!interface_surface.ok) return result;
-
   const ResolutionManifestLoadResult loaded = load_resolution_manifest(
       options.compile.workspace.workspace_directory, diagnostics);
   if (loaded.state == ResolutionManifestLoadState::Invalid) return result;
@@ -340,18 +325,57 @@ ResolveWorkspaceResult resolve_workspace(
   std::vector<GeneratedExpansion> expansions;
   ResolutionManifest manifest;
   manifest.target_identity = options.compile.target.facts.identity;
-  ResolvedStage interface_stage = resolve_stage(
-      sources,
-      interface_surface,
-      loaded,
-      options,
-      result,
-      expansions,
-      diagnostics);
-  if (!interface_stage.ok ||
-      !append_stage_pins(
-          manifest, std::move(interface_stage.manifest), diagnostics)) {
-    return result;
+  std::vector<WorkspaceSourceOverride> interface_overrides;
+
+  // Interface synthesis advances in dependency-ready rounds. Every package in
+  // one round sees completed prerequisite package interfaces but none of its
+  // own round's proposals. Merging a nonempty round removes at least one
+  // provider site, and generated-source validation forbids adding another, so
+  // the finite source graph guarantees termination without an iteration cap.
+  while (true) {
+    CompileWorkspaceOptions interface_options = options.compile;
+    interface_options.stage =
+        CompileWorkspaceStage::DiscoverInterfaceSynthesis;
+    interface_options.lower_mir = false;
+    interface_options.emit_llvm = false;
+    interface_options.workspace.source_overrides = interface_overrides;
+    CompileWorkspaceResult interface_surface = compile_workspace(
+        sources,
+        root_package_directory,
+        std::move(interface_options),
+        diagnostics);
+    if (!interface_surface.ok) return result;
+
+    ResolvedStage interface_stage = resolve_stage(
+        sources,
+        interface_surface,
+        loaded,
+        options,
+        result,
+        expansions,
+        diagnostics);
+    if (!interface_stage.ok) return result;
+    const bool made_progress = !interface_stage.manifest.pins.empty();
+    if (!append_stage_pins(
+            manifest, std::move(interface_stage.manifest), diagnostics)) {
+      return result;
+    }
+    merge_overrides(
+        interface_overrides, std::move(interface_stage.overrides));
+    if (made_progress) continue;
+
+    bool all_packages_ready = true;
+    for (const std::optional<CompiledPackage> &package :
+         interface_surface.packages) {
+      all_packages_ready = all_packages_ready && package.has_value();
+    }
+    if (!all_packages_ready) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "interface elaboration has suspended packages but no ready synthesis site");
+      return result;
+    }
+    break;
   }
 
   // Stage 2 type-checks bodies only after all interface edits are installed.
@@ -361,7 +385,7 @@ ResolveWorkspaceResult resolve_workspace(
   body_options.stage = CompileWorkspaceStage::Complete;
   body_options.lower_mir = false;
   body_options.emit_llvm = false;
-  body_options.workspace.source_overrides = interface_stage.overrides;
+  body_options.workspace.source_overrides = interface_overrides;
   CompileWorkspaceResult body_surface = compile_workspace(
       sources,
       root_package_directory,
@@ -392,7 +416,7 @@ ResolveWorkspaceResult resolve_workspace(
   }
 
   std::vector<WorkspaceSourceOverride> complete_overrides =
-      std::move(interface_stage.overrides);
+      std::move(interface_overrides);
   merge_overrides(complete_overrides, std::move(body_stage.overrides));
   options.compile.stage = CompileWorkspaceStage::Complete;
   options.compile.lower_mir = false;

@@ -78,8 +78,10 @@ struct CompiledPackage {
 struct CompileWorkspaceResult {
   bool ok = false;
   WorkspaceGraph graph;
-  // Indices exactly match graph.packages. A missing row means that package
-  // failed before it could publish a usable semantic interface.
+  // Indices exactly match graph.packages. In Complete, a missing row means the
+  // package failed before publishing an interface. Interface discovery may
+  // also leave a consumer empty while a dependency has pending generated
+  // declarations; ok remains true when every produced ready row is valid.
   std::vector<std::optional<CompiledPackage>> packages;
 };
 
