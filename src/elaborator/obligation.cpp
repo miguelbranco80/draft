@@ -4,6 +4,7 @@
 
 #include "base/sha256.h"
 #include "sema/denial.h"
+#include "sema/hir.h"
 #include "sema/interface.h"
 
 #include <algorithm>
@@ -64,6 +65,352 @@ void hash_field(Sha256 &hash, std::string_view value) {
 [[nodiscard]] bool already_seen(
     const std::vector<std::string> &names, std::string_view name) {
   return std::find(names.begin(), names.end(), name) != names.end();
+}
+
+// Provider context starts with the ordinary lexical name set. Keeping this
+// source-order and shadowing walk in one helper is important: prompt-selected
+// declarations and the compact visible-binding rows must never disagree about
+// which declaration a spelling denotes at the site.
+[[nodiscard]] std::vector<SymbolId> visible_symbols(
+    const LoadedPackage &loaded,
+    const SemanticPackage &package,
+    const AgentRecord &record) {
+  std::vector<SymbolId> result;
+  std::vector<std::string> names;
+  const SyntaxTree *tree = find_tree(loaded, record.syntax.file);
+  const SourceRange site_range = tree == nullptr
+      ? SourceRange::invalid()
+      : tree->node(record.syntax.node).range;
+  ScopeId scope = record.scope;
+  while (scope.is_valid()) {
+    const Scope current = package.symbols.scope(scope);
+    for (SymbolId symbol_id : current.symbols) {
+      const Symbol &symbol = package.symbols.symbol(symbol_id);
+      if (already_seen(names, symbol.name)) continue;
+      if (site_range.is_valid() && symbol.name_range.is_valid() &&
+          symbol.name_range.begin.file == site_range.begin.file &&
+          symbol.name_range.begin.offset > site_range.begin.offset) {
+        continue;
+      }
+      names.push_back(symbol.name);
+      result.push_back(symbol_id);
+    }
+    scope = current.parent;
+  }
+  return result;
+}
+
+[[nodiscard]] bool source_definition_kind(SymbolKind kind) {
+  return kind == SymbolKind::Type || kind == SymbolKind::Constant ||
+      kind == SymbolKind::Variable || kind == SymbolKind::Procedure ||
+      kind == SymbolKind::Local;
+}
+
+[[nodiscard]] SymbolId declaration_symbol(
+    const SemanticPackage &package, SymbolId symbol) {
+  // A concrete local generic procedure owns its own checked HIR row, but the
+  // provider-visible declaration is the source template already present in
+  // lexical scope. Collapse only that presentation identity; traversal still
+  // follows the concrete instance below.
+  for (const ParametricInstanceRecord &instance :
+       package.parametric_instances) {
+    if (instance.instance == symbol) return instance.source;
+  }
+  return symbol;
+}
+
+[[nodiscard]] bool contains_symbol(
+    const std::vector<SymbolId> &symbols, SymbolId wanted) {
+  return std::find(symbols.begin(), symbols.end(), wanted) != symbols.end();
+}
+
+[[nodiscard]] const HirProcedure *find_hir_procedure(
+    const HirProgram &hir, SymbolId symbol) {
+  for (const HirProcedure &procedure : hir.procedures()) {
+    if (procedure.symbol == symbol) return &procedure;
+  }
+  return nullptr;
+}
+
+// HIR is a small explicit graph. These walkers deliberately follow every
+// evaluated expression and structured child rather than trying to recover
+// dependencies by scanning identifier-shaped source text. The visited tables
+// also make shared expression nodes and switch-body aliases harmless.
+void collect_hir_expression_symbols(
+    const HirProgram &hir,
+    HirExpressionId expression_id,
+    std::vector<bool> &visited_expressions,
+    std::vector<SymbolId> &symbols) {
+  if (!expression_id.is_valid() ||
+      expression_id.value >= visited_expressions.size() ||
+      visited_expressions[expression_id.value]) {
+    return;
+  }
+  visited_expressions[expression_id.value] = true;
+  const HirExpression &expression = hir.expression(expression_id);
+  if (expression.symbol.is_valid() &&
+      !contains_symbol(symbols, expression.symbol)) {
+    symbols.push_back(expression.symbol);
+  }
+  for (SymbolId member : expression.operand_members) {
+    if (member.is_valid() && !contains_symbol(symbols, member)) {
+      symbols.push_back(member);
+    }
+  }
+  for (HirExpressionId operand : expression.operands) {
+    collect_hir_expression_symbols(
+        hir, operand, visited_expressions, symbols);
+  }
+}
+
+void collect_hir_block_symbols(
+    const HirProgram &hir,
+    HirBlockId block_id,
+    std::vector<bool> &visited_expressions,
+    std::vector<bool> &visited_statements,
+    std::vector<bool> &visited_blocks,
+    std::vector<SymbolId> &symbols);
+
+void collect_hir_statement_symbols(
+    const HirProgram &hir,
+    HirStatementId statement_id,
+    std::vector<bool> &visited_expressions,
+    std::vector<bool> &visited_statements,
+    std::vector<bool> &visited_blocks,
+    std::vector<SymbolId> &symbols) {
+  if (!statement_id.is_valid() ||
+      statement_id.value >= visited_statements.size() ||
+      visited_statements[statement_id.value]) {
+    return;
+  }
+  visited_statements[statement_id.value] = true;
+  const HirStatement &statement = hir.statement(statement_id);
+  for (HirExpressionId expression : statement.expressions) {
+    collect_hir_expression_symbols(
+        hir, expression, visited_expressions, symbols);
+  }
+  for (HirStatementId header : statement.header_statements) {
+    collect_hir_statement_symbols(
+        hir,
+        header,
+        visited_expressions,
+        visited_statements,
+        visited_blocks,
+        symbols);
+  }
+  for (HirBlockId block : statement.blocks) {
+    collect_hir_block_symbols(
+        hir,
+        block,
+        visited_expressions,
+        visited_statements,
+        visited_blocks,
+        symbols);
+  }
+  for (const HirSwitchCase &switch_case : statement.switch_cases) {
+    collect_hir_block_symbols(
+        hir,
+        switch_case.body,
+        visited_expressions,
+        visited_statements,
+        visited_blocks,
+        symbols);
+  }
+}
+
+void collect_hir_block_symbols(
+    const HirProgram &hir,
+    HirBlockId block_id,
+    std::vector<bool> &visited_expressions,
+    std::vector<bool> &visited_statements,
+    std::vector<bool> &visited_blocks,
+    std::vector<SymbolId> &symbols) {
+  if (!block_id.is_valid() || block_id.value >= visited_blocks.size() ||
+      visited_blocks[block_id.value]) {
+    return;
+  }
+  visited_blocks[block_id.value] = true;
+  for (HirStatementId statement : hir.block(block_id).statements) {
+    collect_hir_statement_symbols(
+        hir,
+        statement,
+        visited_expressions,
+        visited_statements,
+        visited_blocks,
+        symbols);
+  }
+}
+
+[[nodiscard]] std::vector<SymbolId> hir_procedure_symbols(
+    const HirProgram &hir, const HirProcedure &procedure) {
+  std::vector<SymbolId> result;
+  std::vector<bool> visited_expressions(hir.expression_count(), false);
+  std::vector<bool> visited_statements(hir.statement_count(), false);
+  std::vector<bool> visited_blocks(hir.block_count(), false);
+  collect_hir_block_symbols(
+      hir,
+      procedure.body,
+      visited_expressions,
+      visited_statements,
+      visited_blocks,
+      result);
+  return result;
+}
+
+[[nodiscard]] bool identifier_character(char value) {
+  const unsigned char byte = static_cast<unsigned char>(value);
+  return (byte >= static_cast<unsigned char>('a') &&
+          byte <= static_cast<unsigned char>('z')) ||
+      (byte >= static_cast<unsigned char>('A') &&
+       byte <= static_cast<unsigned char>('Z')) ||
+      (byte >= static_cast<unsigned char>('0') &&
+       byte <= static_cast<unsigned char>('9')) ||
+      value == '_';
+}
+
+[[nodiscard]] bool mentions_identifier(
+    std::string_view text, std::string_view name) {
+  if (name.empty()) return false;
+  std::size_t position = text.find(name);
+  while (position != std::string_view::npos) {
+    const bool begins_word =
+        position == 0 || !identifier_character(text[position - 1]);
+    const std::size_t end = position + name.size();
+    const bool ends_word =
+        end == text.size() || !identifier_character(text[end]);
+    if (begins_word && ends_word) return true;
+    position = text.find(name, position + 1);
+  }
+  return false;
+}
+
+void collect_constant_procedures(
+    const SemanticPackage &package,
+    const ConstantValue &value,
+    std::vector<SymbolId> &procedures) {
+  if (value.kind == ConstantKind::Procedure &&
+      value.symbol_index != std::numeric_limits<std::uint32_t>::max() &&
+      value.symbol_index < package.symbols.symbol_count()) {
+    const SymbolId symbol{value.symbol_index};
+    if (!contains_symbol(procedures, symbol)) procedures.push_back(symbol);
+  }
+  for (const ConstantValue &element : value.elements) {
+    collect_constant_procedures(package, element, procedures);
+  }
+}
+
+// Selects the source definitions that add information beyond the compact
+// name/type interface. The enclosing checked procedure supplies exact direct
+// dependencies; procedure references are then followed to a transitive fixed
+// point. An authored prompt may explicitly ask about another visible helper,
+// so exact identifier mentions are additional roots. The fixed upper bound is
+// part of the bootstrap compiler contract and turns pathological context into
+// a clear compiler diagnostic instead of an unbounded provider request.
+[[nodiscard]] std::vector<SymbolId> relevant_source_definitions(
+    const LoadedPackage &loaded,
+    const SemanticPackage &package,
+    const ConstantTable &constants,
+    const AgentRecord &record,
+    std::span<const ResolvedDenialSelector> denials,
+    const HirProgram *hir,
+    DiagnosticSink &diagnostics) {
+  constexpr std::size_t maximum_definitions = 256;
+  std::vector<SymbolId> result;
+  std::vector<SymbolId> procedure_queue;
+  std::vector<SymbolId> traversed_procedures;
+
+  const auto add_definition = [&](SymbolId reference)
+      -> std::optional<SymbolId> {
+    if (!reference.is_valid()) return std::nullopt;
+    const SymbolId declaration = declaration_symbol(package, reference);
+    if (declaration == record.anchor) return std::nullopt;
+    const bool denied = std::any_of(
+        denials.begin(), denials.end(),
+        [declaration](const ResolvedDenialSelector &denial) {
+          return denial.kind == ResolvedDenialKind::Symbol &&
+              denial.symbol == declaration;
+        });
+    if (denied) return std::nullopt;
+    const Symbol &symbol = package.symbols.symbol(declaration);
+    if (!source_definition_kind(symbol.kind) ||
+        !symbol.syntax.node.is_valid()) {
+      return std::nullopt;
+    }
+    if (!contains_symbol(result, declaration)) {
+      result.push_back(declaration);
+    }
+    return declaration;
+  };
+
+  const auto add_procedure_reference = [&](SymbolId reference) {
+    if (!add_definition(reference).has_value()) return;
+    const Symbol &referenced = package.symbols.symbol(reference);
+    if (hir != nullptr && referenced.kind == SymbolKind::Procedure &&
+        !contains_symbol(procedure_queue, reference)) {
+      procedure_queue.push_back(reference);
+    }
+  };
+
+  const auto add_reference = [&](SymbolId reference) {
+    const std::optional<SymbolId> declaration = add_definition(reference);
+    if (!declaration.has_value()) return;
+    const Symbol &referenced = package.symbols.symbol(reference);
+    if (hir != nullptr && referenced.kind == SymbolKind::Procedure &&
+        !contains_symbol(procedure_queue, reference)) {
+      procedure_queue.push_back(reference);
+    }
+    const ConstantValue *constant = constants.find(*declaration);
+    if (constant == nullptr) return;
+    std::vector<SymbolId> procedures;
+    collect_constant_procedures(package, *constant, procedures);
+    for (SymbolId procedure : procedures) {
+      add_procedure_reference(procedure);
+    }
+  };
+
+  for (SymbolId symbol_id : visible_symbols(loaded, package, record)) {
+    const Symbol &symbol = package.symbols.symbol(symbol_id);
+    if (mentions_identifier(record.text, symbol.name)) add_reference(symbol_id);
+  }
+
+  if (hir != nullptr && record.anchor.is_valid()) {
+    if (const HirProcedure *anchor =
+            find_hir_procedure(*hir, record.anchor)) {
+      for (SymbolId reference : hir_procedure_symbols(*hir, *anchor)) {
+        add_reference(reference);
+      }
+    }
+  }
+
+  const auto enforce_limit = [&]() {
+    if (result.size() <= maximum_definitions) return true;
+    const SyntaxTree *tree = find_tree(loaded, record.syntax.file);
+    diagnostics.error(
+        tree == nullptr
+            ? SourceRange::invalid()
+            : tree->node(record.syntax.node).range,
+        "agent semantic context exceeds the 256-definition closure limit");
+    result.resize(maximum_definitions);
+    return false;
+  };
+  if (!enforce_limit()) return result;
+
+  for (std::size_t index = 0; index < procedure_queue.size(); ++index) {
+    const SymbolId procedure_id = procedure_queue[index];
+    if (contains_symbol(traversed_procedures, procedure_id)) continue;
+    traversed_procedures.push_back(procedure_id);
+    const HirProcedure *procedure = find_hir_procedure(*hir, procedure_id);
+    if (procedure == nullptr) {
+      const SymbolId source = declaration_symbol(package, procedure_id);
+      procedure = find_hir_procedure(*hir, source);
+    }
+    if (procedure == nullptr) continue;
+    for (SymbolId reference : hir_procedure_symbols(*hir, *procedure)) {
+      add_reference(reference);
+    }
+    if (!enforce_limit()) break;
+  }
+  return result;
 }
 
 [[nodiscard]] bool denies_symbol(
@@ -1344,7 +1691,6 @@ struct ActiveDenialContext {
 // position. Sorting happens only after shadowing, so it cannot change meaning.
 [[nodiscard]] std::vector<AgentVisibleBinding> visible_bindings(
     const PackageIdentity &identity,
-    const SourceManager &sources,
     const LoadedPackage &loaded,
     const SemanticPackage &package,
     const ConstantTable &constants,
@@ -1353,74 +1699,31 @@ struct ActiveDenialContext {
     std::vector<AgentTypeContext> &type_contexts,
     DiagnosticSink &diagnostics) {
   std::vector<AgentVisibleBinding> result;
-  std::vector<std::string> names;
-  const SyntaxTree *tree = find_tree(loaded, record.syntax.file);
-  const SourceRange site_range = tree == nullptr
-      ? SourceRange::invalid()
-      : tree->node(record.syntax.node).range;
-  ScopeId scope = record.scope;
-  while (scope.is_valid()) {
-    const Scope current = package.symbols.scope(scope);
-    for (SymbolId symbol_id : current.symbols) {
-      const Symbol &symbol = package.symbols.symbol(symbol_id);
-      if (already_seen(names, symbol.name)) continue;
-      if (site_range.is_valid() && symbol.name_range.is_valid() &&
-          symbol.name_range.begin.file == site_range.begin.file &&
-          symbol.name_range.begin.offset > site_range.begin.offset) {
-        continue;
-      }
-      names.push_back(symbol.name);
-      if (denies_symbol(denials, symbol_id)) continue;
-      if (!symbol.type.is_valid() ||
-          package.types.type(symbol.type).kind == TypeKind::Invalid ||
-          symbol.kind == SymbolKind::Import) {
-        continue;
-      }
-      const InterfaceTypeGraph type = export_interface_type(
-          identity, package, symbol.type, diagnostics);
-      add_type_context(type, type_contexts);
-      AgentVisibleBinding binding;
-      binding.name = symbol.name;
-      binding.kind = symbol.kind;
-      binding.type_digest = hash_interface_type_graph(type);
-      binding.type_text = type_text(package, symbol.type);
-      if (const ConstantValue *constant = constants.find(symbol_id)) {
-        binding.has_constant = true;
-        append_constant_context(
-            canonical_constant(identity, package, *constant),
-            binding.constant_definition);
-        binding.constant_digest = sha256(binding.constant_definition);
-      }
-
-      // Parameters already have exact names and types, fields live in their
-      // canonical type graph, and imported declarations live in their compact
-      // package interface. The remaining source-declared binding kinds are the
-      // bounded private/local definition closure that public interfaces cannot
-      // provide. Reusing the symbol's declaration node handles grouped local
-      // bindings without inventing a compiler-specific source representation.
-      const bool source_definition_kind =
-          symbol.kind == SymbolKind::Type ||
-          symbol.kind == SymbolKind::Constant ||
-          symbol.kind == SymbolKind::Variable ||
-          symbol.kind == SymbolKind::Procedure ||
-          symbol.kind == SymbolKind::Local;
-      if (source_definition_kind && symbol_id != record.anchor) {
-        const SyntaxTree *definition_tree = find_tree(loaded, symbol.syntax.file);
-        if (definition_tree != nullptr && symbol.syntax.node.is_valid()) {
-          binding.source_definition = canonical_token_source(
-              sources,
-              *definition_tree,
-              definition_tree->node(symbol.syntax.node));
-          binding.has_source_definition = !binding.source_definition.empty();
-          if (binding.has_source_definition) {
-            binding.source_definition_digest =
-                sha256(binding.source_definition);
-          }
-        }
-      }
-      result.push_back(std::move(binding));
+  for (SymbolId symbol_id : visible_symbols(loaded, package, record)) {
+    const Symbol &symbol = package.symbols.symbol(symbol_id);
+    if (denies_symbol(denials, symbol_id)) continue;
+    if (!symbol.type.is_valid() ||
+        package.types.type(symbol.type).kind == TypeKind::Invalid ||
+        symbol.kind == SymbolKind::Import) {
+      continue;
     }
-    scope = current.parent;
+    const InterfaceTypeGraph type = export_interface_type(
+        identity, package, symbol.type, diagnostics);
+    add_type_context(type, type_contexts);
+    AgentVisibleBinding binding;
+    binding.name = symbol.name;
+    binding.kind = symbol.kind;
+    binding.type_digest = hash_interface_type_graph(type);
+    binding.type_text = type_text(package, symbol.type);
+    if (const ConstantValue *constant = constants.find(symbol_id)) {
+      binding.has_constant = true;
+      append_constant_context(
+          canonical_constant(identity, package, *constant),
+          binding.constant_definition);
+      binding.constant_digest = sha256(binding.constant_definition);
+    }
+
+    result.push_back(std::move(binding));
   }
   std::sort(
       result.begin(), result.end(),
@@ -1428,6 +1731,75 @@ struct ActiveDenialContext {
         if (left.name != right.name) return left.name < right.name;
         return static_cast<std::uint32_t>(left.kind) <
             static_cast<std::uint32_t>(right.kind);
+      });
+  return result;
+}
+
+// Renders the selected closure independently of lexical visibility. A helper
+// reached through another helper is semantic context, not automatically a name
+// that generated source may use. Each row repeats its readable type/value facts
+// so an adapter never has to correlate process-local semantic IDs.
+[[nodiscard]] std::vector<AgentDeclarationContext> declaration_context(
+    const PackageIdentity &identity,
+    const SourceManager &sources,
+    const LoadedPackage &loaded,
+    const SemanticPackage &package,
+    const ConstantTable &constants,
+    std::span<const SymbolId> declarations,
+    std::vector<AgentTypeContext> &type_contexts,
+    DiagnosticSink &diagnostics) {
+  std::vector<AgentDeclarationContext> result;
+  for (SymbolId symbol_id : declarations) {
+    const Symbol &symbol = package.symbols.symbol(symbol_id);
+    if (!symbol.type.is_valid() ||
+        package.types.type(symbol.type).kind == TypeKind::Invalid) {
+      diagnostics.error(
+          symbol.name_range,
+          "agent declaration context has no complete type");
+      continue;
+    }
+    const SyntaxTree *tree = find_tree(loaded, symbol.syntax.file);
+    if (tree == nullptr || !symbol.syntax.node.is_valid()) {
+      diagnostics.error(
+          symbol.name_range,
+          "agent declaration context has no source definition");
+      continue;
+    }
+    AgentDeclarationContext context;
+    context.source_relative_path =
+        source_relative_path(loaded, symbol.syntax.file);
+    context.name = symbol.name;
+    context.kind = symbol.kind;
+    const InterfaceTypeGraph type = export_interface_type(
+        identity, package, symbol.type, diagnostics);
+    add_type_context(type, type_contexts);
+    context.type_digest = hash_interface_type_graph(type);
+    context.type_text = type_text(package, symbol.type);
+    if (const ConstantValue *constant = constants.find(symbol_id)) {
+      context.has_constant = true;
+      append_constant_context(
+          canonical_constant(identity, package, *constant),
+          context.constant_definition);
+      context.constant_digest = sha256(context.constant_definition);
+    }
+    context.source = canonical_token_source(
+        sources, *tree, tree->node(symbol.syntax.node));
+    context.source_digest = sha256(context.source);
+    result.push_back(std::move(context));
+  }
+  std::sort(
+      result.begin(), result.end(),
+      [](const AgentDeclarationContext &left,
+         const AgentDeclarationContext &right) {
+        if (left.source_relative_path != right.source_relative_path) {
+          return left.source_relative_path < right.source_relative_path;
+        }
+        if (left.name != right.name) return left.name < right.name;
+        if (left.kind != right.kind) {
+          return static_cast<std::uint32_t>(left.kind) <
+              static_cast<std::uint32_t>(right.kind);
+        }
+        return left.source < right.source;
       });
   return result;
 }
@@ -1532,7 +1904,7 @@ struct ActiveDenialContext {
     const AgentObligation &obligation,
     const TargetProfile &target) {
   Sha256 hash;
-  hash_field(hash, "draft-agent-obligation-v16");
+  hash_field(hash, "draft-agent-obligation-v17");
   hash_field(hash, obligation.site_identity);
   hash.update(obligation.record_digest.bytes);
   hash.update(obligation.expected_type_digest.bytes);
@@ -1748,11 +2120,25 @@ struct ActiveDenialContext {
       hash.update(binding.constant_digest.bytes);
       hash_field(hash, binding.constant_definition);
     }
-    hash_u64(hash, binding.has_source_definition ? 1 : 0);
-    if (binding.has_source_definition) {
-      hash.update(binding.source_definition_digest.bytes);
-      hash_field(hash, binding.source_definition);
+  }
+  hash_u64(
+      hash,
+      static_cast<std::uint64_t>(
+          obligation.relevant_declarations.size()));
+  for (const AgentDeclarationContext &declaration :
+       obligation.relevant_declarations) {
+    hash_field(hash, declaration.source_relative_path);
+    hash_field(hash, declaration.name);
+    hash_u64(hash, static_cast<std::uint64_t>(declaration.kind));
+    hash.update(declaration.type_digest.bytes);
+    hash_field(hash, declaration.type_text);
+    hash_u64(hash, declaration.has_constant ? 1 : 0);
+    if (declaration.has_constant) {
+      hash.update(declaration.constant_digest.bytes);
+      hash_field(hash, declaration.constant_definition);
     }
+    hash.update(declaration.source_digest.bytes);
+    hash_field(hash, declaration.source);
   }
   return hash.finalize();
 }
@@ -1819,7 +2205,8 @@ AgentObligationResult build_agent_obligations(
     const AgentMetadataResult &metadata,
     const TargetProfile &target,
     DiagnosticSink &diagnostics,
-    std::span<const AgentValidationContext> validation_context) {
+    std::span<const AgentValidationContext> validation_context,
+    const HirProgram *hir) {
   AgentObligationResult result;
   const std::size_t initial_errors = diagnostics.error_count();
   for (std::size_t index = 0; index < metadata.records.size(); ++index) {
@@ -1856,14 +2243,31 @@ AgentObligationResult build_agent_obligations(
         denials.resolved,
         obligation.type_contexts,
         diagnostics);
+    const std::vector<SymbolId> relevant_definitions =
+        relevant_source_definitions(
+            loaded,
+            package,
+            constants,
+            record,
+            denials.resolved,
+            hir,
+            diagnostics);
     obligation.visible_bindings = visible_bindings(
         identity,
-        sources,
         loaded,
         package,
         constants,
         record,
         denials.resolved,
+        obligation.type_contexts,
+        diagnostics);
+    obligation.relevant_declarations = declaration_context(
+        identity,
+        sources,
+        loaded,
+        package,
+        constants,
+        relevant_definitions,
         obligation.type_contexts,
         diagnostics);
     obligation.imported_packages = imported_package_context(

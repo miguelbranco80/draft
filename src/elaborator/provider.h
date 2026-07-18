@@ -36,8 +36,8 @@ struct SynthesisRequestFile {
 
 // One complete provider request for the current bootstrap context format.
 // obligation includes grammar category, usable canonical type spellings,
-// visible binding names/types/canonical constant values and bounded private or
-// local source declarations, explicit target and
+// visible binding names/types/canonical constant values, a bounded transitive
+// relevant-declaration closure, explicit target and
 // assembly facts, enclosing documentation, canonical enclosing declaration
 // source and typed semantic skeleton, active denial selectors,
 // typed outer-to-inner branch refinements, parametric constraints, complete
@@ -45,11 +45,10 @@ struct SynthesisRequestFile {
 // available imported package interfaces and their explicit public documentation
 // bytes, judgment claims, canonical test and benchmark source, persistent
 // source coordinates, the exact input
-// digest, and stable site identity. prompt and
-// attachments contain source-authored bounded context. Later transitive closure
-// rows can extend this versioned struct without exposing semantic arena IDs.
+// digest, and stable site identity. prompt and attachments contain
+// source-authored bounded context without exposing semantic arena IDs.
 struct SynthesisRequest {
-  std::string format = "draft-synthesis-request-v17";
+  std::string format = "draft-synthesis-request-v18";
   AgentObligation obligation;
   std::string prompt;
   std::vector<SynthesisRequestFile> attachments;

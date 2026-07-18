@@ -147,7 +147,9 @@ void test_agent_records(TestState &state) {
           semantics.constants,
           metadata,
           target,
-          diagnostics);
+          diagnostics,
+          {},
+          &bodies.program);
   const draft::PackageInterface package_interface = draft::build_package_interface(
       {"workspace", "context"},
       semantics.package,
@@ -322,7 +324,6 @@ void test_agent_records(TestState &state) {
          synthesis_obligation.visible_bindings) {
       if (binding.name == "values") {
         EXPECT(state, binding.type_text == "[]u32");
-        EXPECT(state, !binding.has_source_definition);
         saw_values = true;
       }
       if (binding.name == "callback") {
@@ -332,41 +333,23 @@ void test_agent_records(TestState &state) {
       }
       if (binding.name == "blocked") {
         EXPECT(state, binding.type_text == "bool");
-        EXPECT(state, binding.has_source_definition);
-        EXPECT(state,
-            draft::sha256(binding.source_definition) ==
-                binding.source_definition_digest);
-        EXPECT(state,
-            binding.source_definition.find("blocked := false") !=
-                std::string::npos);
-        EXPECT(state,
-            binding.source_definition.find("local comment") ==
-                std::string::npos);
         saw_shadowed_blocked = true;
       }
       if (binding.name == "secret") saw_denied_secret = true;
       if (binding.name == "Package_Context_Version") {
         EXPECT(state, binding.has_constant);
-        EXPECT(state, binding.has_source_definition);
         EXPECT(state,
             draft::sha256(binding.constant_definition) ==
                 binding.constant_digest);
         EXPECT(state,
             binding.constant_definition.find("CONSTANT_INTEGER 1\n1\n") !=
                 std::string::npos);
-        EXPECT(state,
-            binding.source_definition.find("Package_Context_Version :: 1") !=
-                std::string::npos);
         saw_package_version = true;
       }
       if (binding.name == "Answer") {
         EXPECT(state, binding.has_constant);
-        EXPECT(state, binding.has_source_definition);
         EXPECT(state,
             binding.constant_definition.find("CONSTANT_INTEGER 2\n42\n") !=
-                std::string::npos);
-        EXPECT(state,
-            binding.source_definition.find("Answer :: 42") !=
                 std::string::npos);
         saw_lexical_constant = true;
       }
@@ -1116,6 +1099,259 @@ void test_denied_imports_are_removed_from_usable_context(TestState &state) {
   }
 }
 
+void test_source_definitions_follow_semantic_references(TestState &state) {
+  TemporaryPackage temporary;
+  write_file(
+      temporary.path / "package.draft",
+      R"draft(package relevant_context
+
+Prompt_Value :: 7
+
+middle :: proc(value: i64) -> i64 {
+    leaf :: proc(item: i64) -> i64 {
+        return item + 1
+    }
+    // This comment must not enter provider context.
+    return leaf(value)
+}
+
+Selected :: middle
+
+unrelated :: proc(value: i64) -> i64 {
+    return value - 1
+}
+
+work :: proc() -> i64 {
+    prior := Selected(1)
+    judge "Prompt_Value remains positive"
+    _ = prior
+    return ... "combine the result with Prompt_Value"
+}
+)draft");
+
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  const draft::TargetProfile target = draft::make_aarch64_macos_profile();
+  draft::PackageLoadOptions load_options;
+  load_options.file_tag = target.facts.file_tag;
+  const draft::PackageLoadResult loaded = draft::load_package(
+      sources, temporary.path.string(), load_options, diagnostics);
+  draft::SemanticAnalysisResult semantics = draft::analyze_package_semantics(
+      sources, loaded.package, target.facts, diagnostics);
+  const draft::BodyCheckResult bodies = draft::check_package_bodies(
+      sources,
+      loaded.package,
+      semantics.selections,
+      semantics.package,
+      semantics.constants,
+      target.facts,
+      diagnostics);
+  const draft::AgentMetadataResult metadata = draft::collect_agent_metadata(
+      sources, loaded.package, semantics.package, {}, diagnostics);
+  const draft::AgentObligationResult obligations =
+      draft::build_agent_obligations(
+          {"workspace", "relevant_context"},
+          sources,
+          loaded.package,
+          semantics.package,
+          semantics.constants,
+          metadata,
+          target,
+          diagnostics,
+          {},
+          &bodies.program);
+
+  if (diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+  }
+  EXPECT(state, loaded.ok);
+  EXPECT(state, semantics.ok);
+  EXPECT(state, bodies.ok);
+  EXPECT(state, metadata.ok);
+  EXPECT(state, obligations.ok);
+  EXPECT(state, !diagnostics.has_errors());
+  EXPECT(state, obligations.obligations.size() == 2);
+  const draft::AgentObligation *judgment = nullptr;
+  const draft::AgentObligation *synthesis = nullptr;
+  for (const draft::AgentObligation &obligation : obligations.obligations) {
+    if (obligation.kind == draft::AgentConstructKind::Judgment) {
+      judgment = &obligation;
+    }
+    if (obligation.kind == draft::AgentConstructKind::SynthesisExpression) {
+      synthesis = &obligation;
+    }
+  }
+  EXPECT(state, judgment != nullptr);
+  EXPECT(state, synthesis != nullptr);
+  if (judgment == nullptr || synthesis == nullptr) return;
+
+  bool saw_leaf_binding = false;
+  bool saw_unrelated_binding = false;
+  for (const draft::AgentVisibleBinding &binding :
+       synthesis->visible_bindings) {
+    if (binding.name == "leaf") saw_leaf_binding = true;
+    if (binding.name == "unrelated") saw_unrelated_binding = true;
+  }
+  EXPECT(state, !saw_leaf_binding);
+  EXPECT(state, saw_unrelated_binding);
+
+  bool saw_leaf = false;
+  bool saw_middle = false;
+  bool saw_prompt_value = false;
+  bool saw_selected = false;
+  bool saw_unrelated_definition = false;
+  for (const draft::AgentDeclarationContext &declaration :
+       synthesis->relevant_declarations) {
+    EXPECT(state, declaration.source_relative_path == "package.draft");
+    EXPECT(state,
+        draft::sha256(declaration.source) == declaration.source_digest);
+    if (declaration.name == "leaf") {
+      EXPECT(state,
+          declaration.source.find("return item + 1") !=
+              std::string::npos);
+      saw_leaf = true;
+    }
+    if (declaration.name == "middle") {
+      EXPECT(state,
+          declaration.source.find("return leaf(value)") !=
+              std::string::npos);
+      EXPECT(state,
+          declaration.source.find("comment must not enter") ==
+              std::string::npos);
+      saw_middle = true;
+    }
+    if (declaration.name == "Prompt_Value") {
+      EXPECT(state, declaration.has_constant);
+      saw_prompt_value = true;
+    }
+    if (declaration.name == "Selected") {
+      EXPECT(state, declaration.has_constant);
+      saw_selected = true;
+    }
+    if (declaration.name == "unrelated") saw_unrelated_definition = true;
+  }
+  EXPECT(state, saw_leaf);
+  EXPECT(state, saw_middle);
+  EXPECT(state, saw_prompt_value);
+  EXPECT(state, saw_selected);
+  EXPECT(state, !saw_unrelated_definition);
+
+  // Judgments use the same compiler-checked closure. Their claim may add
+  // prompt-selected roots, but it cannot turn unrelated declarations into
+  // context or expose a hidden helper as a visible binding.
+  bool judgment_saw_leaf = false;
+  bool judgment_saw_middle = false;
+  bool judgment_saw_prompt_value = false;
+  bool judgment_saw_unrelated = false;
+  for (const draft::AgentDeclarationContext &declaration :
+       judgment->relevant_declarations) {
+    if (declaration.name == "leaf") judgment_saw_leaf = true;
+    if (declaration.name == "middle") judgment_saw_middle = true;
+    if (declaration.name == "Prompt_Value") {
+      judgment_saw_prompt_value = true;
+    }
+    if (declaration.name == "unrelated") judgment_saw_unrelated = true;
+  }
+  EXPECT(state, judgment_saw_leaf);
+  EXPECT(state, judgment_saw_middle);
+  EXPECT(state, judgment_saw_prompt_value);
+  EXPECT(state, !judgment_saw_unrelated);
+
+  struct RebuiltIdentity {
+    bool ok = false;
+    std::string site_identity;
+    draft::Sha256Digest input_digest;
+  };
+  const auto rebuild_synthesis = [&]() {
+    RebuiltIdentity result;
+    draft::SourceManager rebuilt_sources;
+    draft::DiagnosticSink rebuilt_diagnostics;
+    const draft::PackageLoadResult rebuilt_loaded = draft::load_package(
+        rebuilt_sources,
+        temporary.path.string(),
+        load_options,
+        rebuilt_diagnostics);
+    draft::SemanticAnalysisResult rebuilt_semantics =
+        draft::analyze_package_semantics(
+            rebuilt_sources,
+            rebuilt_loaded.package,
+            target.facts,
+            rebuilt_diagnostics);
+    const draft::BodyCheckResult rebuilt_bodies = draft::check_package_bodies(
+        rebuilt_sources,
+        rebuilt_loaded.package,
+        rebuilt_semantics.selections,
+        rebuilt_semantics.package,
+        rebuilt_semantics.constants,
+        target.facts,
+        rebuilt_diagnostics);
+    const draft::AgentMetadataResult rebuilt_metadata =
+        draft::collect_agent_metadata(
+            rebuilt_sources,
+            rebuilt_loaded.package,
+            rebuilt_semantics.package,
+            {},
+            rebuilt_diagnostics);
+    const draft::AgentObligationResult rebuilt_obligations =
+        draft::build_agent_obligations(
+            {"workspace", "relevant_context"},
+            rebuilt_sources,
+            rebuilt_loaded.package,
+            rebuilt_semantics.package,
+            rebuilt_semantics.constants,
+            rebuilt_metadata,
+            target,
+            rebuilt_diagnostics,
+            {},
+            &rebuilt_bodies.program);
+    if (rebuilt_diagnostics.has_errors()) {
+      std::cerr << draft::render_diagnostics(
+          rebuilt_sources, rebuilt_diagnostics);
+    }
+    result.ok = rebuilt_loaded.ok && rebuilt_semantics.ok &&
+        rebuilt_bodies.ok && rebuilt_metadata.ok && rebuilt_obligations.ok &&
+        !rebuilt_diagnostics.has_errors();
+    for (const draft::AgentObligation &obligation :
+         rebuilt_obligations.obligations) {
+      if (obligation.kind !=
+          draft::AgentConstructKind::SynthesisExpression) {
+        continue;
+      }
+      result.site_identity = obligation.site_identity;
+      result.input_digest = obligation.input_digest;
+    }
+    return result;
+  };
+
+  const std::string original_source =
+      read_file(temporary.path / "package.draft");
+  std::string changed_helper_source = original_source;
+  const std::size_t helper_body = changed_helper_source.find("item + 1");
+  EXPECT(state, helper_body != std::string::npos);
+  if (helper_body != std::string::npos) {
+    changed_helper_source.replace(helper_body, 8, "item + 2");
+    write_file(temporary.path / "package.draft", changed_helper_source);
+    const RebuiltIdentity changed_helper = rebuild_synthesis();
+    EXPECT(state, changed_helper.ok);
+    EXPECT(state, changed_helper.site_identity == synthesis->site_identity);
+    EXPECT(state, changed_helper.input_digest != synthesis->input_digest);
+  }
+
+  std::string changed_unrelated_source = original_source;
+  const std::size_t unrelated_body =
+      changed_unrelated_source.find("value - 1");
+  EXPECT(state, unrelated_body != std::string::npos);
+  if (unrelated_body != std::string::npos) {
+    changed_unrelated_source.replace(unrelated_body, 9, "value - 2");
+    write_file(temporary.path / "package.draft", changed_unrelated_source);
+    const RebuiltIdentity changed_unrelated = rebuild_synthesis();
+    EXPECT(state, changed_unrelated.ok);
+    EXPECT(state, changed_unrelated.site_identity == synthesis->site_identity);
+    EXPECT(state, changed_unrelated.input_digest == synthesis->input_digest);
+  }
+  write_file(temporary.path / "package.draft", original_source);
+}
+
 void test_early_synthesis_receives_permitted_context(TestState &state) {
   TemporaryPackage temporary;
   write_file(
@@ -1202,6 +1438,7 @@ int main() {
   test_body_sites_receive_typed_branch_refinements(state);
   test_visible_import_interface_is_context(state);
   test_denied_imports_are_removed_from_usable_context(state);
+  test_source_definitions_follow_semantic_references(state);
   test_early_synthesis_receives_permitted_context(state);
   if (state.failures != 0) {
     std::cerr << state.failures << " agent metadata expectation(s) failed\n";

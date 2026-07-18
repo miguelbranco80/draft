@@ -204,7 +204,7 @@ An omitted symbol is unknown, and compiler-, package-assembly-, and target-owned
 providers cannot be overridden by an external audit.
 
 Provider requests never substitute hashes for information the synthesizer must
-understand. `draft-synthesis-request-v17` carries canonical Draft spellings for
+understand. `draft-synthesis-request-v18` carries canonical Draft spellings for
 the expected type and every visible binding, together with complete canonical
 values for visible compile-time constants and explicit target, SIMD, and
 parsed-assembly facts. Procedure-valued constants lose their process-local
@@ -219,12 +219,19 @@ retain their anchor, text, and exact isolated attachment bytes. The same rows
 remain content-hashed, so their human-readable representation is both useful to
 Codex and a stale-pin input.
 
-Each permitted visible source declaration or local binding also carries its
-one canonical comment-free declaration node and digest. Parameters remain the
-smaller name/type rows, aggregate fields remain in canonical type graphs,
-imports remain compact package interfaces, and the current anchor remains in
-its dedicated enclosing-declaration fields. This is a bounded direct semantic
-closure: it exposes no whole source file and no process-local symbol identity.
+Usable visible names remain compact name/type/value rows. Separately, the
+compiler starts from exact prompt identifier mentions and the enclosing checked
+HIR, then follows resolved procedure references to a fixed point capped at 256
+source declarations. Each selected row carries its canonical comment-free
+declaration, source-relative file, readable type, canonical constant value when
+applicable, and digest. Keeping this closure separate from visible bindings is
+semantic: a nested helper reached through another definition may explain that
+definition without becoming a legal unqualified name at the synthesis site.
+Aggregate fields remain in canonical type graphs, imports remain compact
+package interfaces, and the current anchor remains in its dedicated enclosing-
+declaration fields. No whole source file or process-local symbol identity is
+exposed. Exceeding the bound is a compile error rather than a silently partial
+request.
 
 Target-selected `_test.draft` and `_bench.draft` files remain absent from the
 ordinary package graph, but a package containing synthesis sites receives a
@@ -860,8 +867,8 @@ Obligation construction converts them to comment-free canonical Draft source,
 the readable subject type, and the same portable interface type graph used by
 other provider context. Source and duplicated digests are rechecked by the
 shared Codex renderer before either synthesis or judgment starts a child. The
-`draft-agent-obligation-v16`, synthesis request/prompt v17, judgment
-request/prompt v3, and compiler content v114 identities make these new facts a
+`draft-agent-obligation-v17`, synthesis request/prompt v18, judgment
+request/prompt v3, and compiler content v116 identities make these new facts a
 stale-pin and evidence input.
 
 Nested procedures are static and cannot capture runtime locals. Checking a

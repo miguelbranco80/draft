@@ -1301,7 +1301,8 @@ CompileWorkspaceResult compile_workspace(
         package.metadata,
         options.target,
         diagnostics,
-        package.validation_context);
+        package.validation_context,
+        &package.bodies.program);
     package.effects = summarize_package_effects(
         package.semantics.package,
         package.bodies.program,

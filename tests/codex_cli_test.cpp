@@ -97,7 +97,7 @@ struct TemporaryFixture {
         "test \"$(cat \"$work/import-00000000-documentation-00000000-attachment-00000000.bin\")\" = imported-design-bytes || exit 34\n"
         "prompt=$(cat)\n"
         "case \"$prompt\" in\n"
-        "  *REQUEST_FORMAT*draft-synthesis-request-v17*ROOT_IDENTITY*workspace*SOURCE_RELATIVE_PATH*package.draft*ANCHOR_NAME*visible_name*EXPECTED_TYPE_TEXT*i64*TARGET_IDENTITY*draft-aarch64-macos-v5*ENCLOSING_DECLARATION_NAME*visible_name*ENCLOSING_DECLARATION_SOURCE*visible_name*ENCLOSING_SEMANTIC_SKELETON*fixture-skeleton*BRANCH_REFINEMENTS*BRANCH_KIND*loop-condition-entered*BRANCH_SUBJECT*ready*BRANCH_SUBJECT_TYPE_TEXT*bool*ACTIVE_DENIALS*DENIAL_SELECTOR*assert*PERMITTED_CONTEXT_FIELDS*CONTEXT_FIELD_NAME*allocator*CONTEXT_FIELD_TYPE_TEXT*runtime.Allocator*PARAMETRIC_PARAMETERS*PARAMETER_NAME*T*PARAMETER_CONSTRAINT*integer*PARAMETER_TYPE_TEXT*T*TYPE_CONTEXTS*TYPE_REFERENCE_SHA256*TYPE_DEFINITION*MEMBER_NAME*IMPORTED_PACKAGES*IMPORT_ALIAS*lib*IMPORT_DEFINITION*DECLARATION_NAME*make*IMPORT_DOCUMENTATION*IMPORT_DOC_ANCHOR*make*IMPORT_DOC_TEXT*imported-design*IMPORT_DOC_ATTACHMENT_PATH*IMPORTED.md*GUIDING_JUDGMENTS*JUDGMENT_ANCHOR*visible_name*JUDGMENT_CLAIM*preserve-invariant*JUDGMENT_ATTACHMENT_PATH*EVIDENCE.md*DOCUMENTATION*DOC_ANCHOR*visible_name*DOC_TEXT*design-context*DOC_ATTACHMENT_PATH*DESIGN.md*VALIDATION_CONTEXT*VALIDATION_KIND*test*VALIDATION_SOURCE_PATH*behavior_test.draft*VALIDATION_SOURCE*test_fixture*AUTHOR_PROMPT*make-answer*BINDING_NAME*visible_name*BINDING_TYPE_TEXT*u32*BINDING_HAS_CONSTANT*true*BINDING_CONSTANT*fixture-constant*BINDING_HAS_SOURCE_DEFINITION*true*BINDING_SOURCE_DEFINITION*visible_name*) ;;\n"
+        "  *REQUEST_FORMAT*draft-synthesis-request-v18*ROOT_IDENTITY*workspace*SOURCE_RELATIVE_PATH*package.draft*ANCHOR_NAME*visible_name*EXPECTED_TYPE_TEXT*i64*TARGET_IDENTITY*draft-aarch64-macos-v5*ENCLOSING_DECLARATION_NAME*visible_name*ENCLOSING_DECLARATION_SOURCE*visible_name*ENCLOSING_SEMANTIC_SKELETON*fixture-skeleton*BRANCH_REFINEMENTS*BRANCH_KIND*loop-condition-entered*BRANCH_SUBJECT*ready*BRANCH_SUBJECT_TYPE_TEXT*bool*ACTIVE_DENIALS*DENIAL_SELECTOR*assert*PERMITTED_CONTEXT_FIELDS*CONTEXT_FIELD_NAME*allocator*CONTEXT_FIELD_TYPE_TEXT*runtime.Allocator*PARAMETRIC_PARAMETERS*PARAMETER_NAME*T*PARAMETER_CONSTRAINT*integer*PARAMETER_TYPE_TEXT*T*TYPE_CONTEXTS*TYPE_REFERENCE_SHA256*TYPE_DEFINITION*MEMBER_NAME*IMPORTED_PACKAGES*IMPORT_ALIAS*lib*IMPORT_DEFINITION*DECLARATION_NAME*make*IMPORT_DOCUMENTATION*IMPORT_DOC_ANCHOR*make*IMPORT_DOC_TEXT*imported-design*IMPORT_DOC_ATTACHMENT_PATH*IMPORTED.md*GUIDING_JUDGMENTS*JUDGMENT_ANCHOR*visible_name*JUDGMENT_CLAIM*preserve-invariant*JUDGMENT_ATTACHMENT_PATH*EVIDENCE.md*DOCUMENTATION*DOC_ANCHOR*visible_name*DOC_TEXT*design-context*DOC_ATTACHMENT_PATH*DESIGN.md*VALIDATION_CONTEXT*VALIDATION_KIND*test*VALIDATION_SOURCE_PATH*behavior_test.draft*VALIDATION_SOURCE*test_fixture*AUTHOR_PROMPT*make-answer*BINDING_NAME*visible_name*BINDING_TYPE_TEXT*u32*BINDING_HAS_CONSTANT*true*BINDING_CONSTANT*fixture-constant*RELEVANT_DECLARATIONS*DECLARATION_SOURCE_PATH*package.draft*DECLARATION_NAME*visible_name*DECLARATION_TYPE_TEXT*u32*DECLARATION_HAS_CONSTANT*true*DECLARATION_CONSTANT*fixture-constant*DECLARATION_SOURCE*visible_name*) ;;\n"
         "  *) exit 28 ;;\n"
         "esac\n"
         "printf '%s' '{\"source\":\"40 + 2\\n\"}' > \"$output\"\n";
@@ -242,11 +242,19 @@ draft::SynthesisRequest make_request() {
   binding.has_constant = true;
   binding.constant_definition = "fixture-constant";
   binding.constant_digest = draft::sha256(binding.constant_definition);
-  binding.has_source_definition = true;
-  binding.source_definition = "visible_name :: 42";
-  binding.source_definition_digest =
-      draft::sha256(binding.source_definition);
   request.obligation.visible_bindings.push_back(std::move(binding));
+  draft::AgentDeclarationContext declaration;
+  declaration.source_relative_path = "package.draft";
+  declaration.name = "visible_name";
+  declaration.kind = draft::SymbolKind::Constant;
+  declaration.type_digest = draft::sha256("binding-type");
+  declaration.type_text = "u32";
+  declaration.has_constant = true;
+  declaration.constant_definition = "fixture-constant";
+  declaration.constant_digest = draft::sha256(declaration.constant_definition);
+  declaration.source = "visible_name :: 42";
+  declaration.source_digest = draft::sha256(declaration.source);
+  request.obligation.relevant_declarations.push_back(std::move(declaration));
   request.prompt = "make-answer";
 
   draft::SynthesisRequestFile attachment;
@@ -298,6 +306,19 @@ void test_adapter_contract_and_identity(TestState &state) {
           invalid_refinement_response,
           invalid_refinement_diagnostics));
   EXPECT(state, invalid_refinement_diagnostics.error_count() == 1);
+
+  draft::SynthesisRequest invalid_declaration = request;
+  invalid_declaration.obligation.relevant_declarations.front().source_digest =
+      draft::sha256("different declaration");
+  draft::DiagnosticSink invalid_declaration_diagnostics;
+  draft::SynthesisResponse invalid_declaration_response;
+  EXPECT(state,
+      !provider.synthesize(
+          provider.state,
+          invalid_declaration,
+          invalid_declaration_response,
+          invalid_declaration_diagnostics));
+  EXPECT(state, invalid_declaration_diagnostics.error_count() == 1);
 
   // The launcher is not the distribution. Adding one sibling resource leaves
   // its bytes untouched but must invalidate the already configured provider

@@ -638,27 +638,54 @@ void append_field(
       append_field(
           "BINDING_CONSTANT", binding.constant_definition, prompt);
     }
+  }
+  prompt += "RELEVANT_DECLARATIONS ";
+  append_u64(
+      static_cast<std::uint64_t>(
+          obligation.relevant_declarations.size()),
+      prompt);
+  for (const AgentDeclarationContext &declaration :
+       obligation.relevant_declarations) {
     append_field(
-        "BINDING_HAS_SOURCE_DEFINITION",
-        binding.has_source_definition ? "true" : "false",
+        "DECLARATION_SOURCE_PATH",
+        declaration.source_relative_path,
         prompt);
-    if (binding.has_source_definition) {
-      if (sha256(binding.source_definition) !=
-          binding.source_definition_digest) {
+    append_field("DECLARATION_NAME", declaration.name, prompt);
+    append_field(
+        "DECLARATION_KIND", symbol_kind_name(declaration.kind), prompt);
+    append_field(
+        "DECLARATION_TYPE_SHA256", declaration.type_digest.hex(), prompt);
+    append_field("DECLARATION_TYPE_TEXT", declaration.type_text, prompt);
+    append_field(
+        "DECLARATION_HAS_CONSTANT",
+        declaration.has_constant ? "true" : "false",
+        prompt);
+    if (declaration.has_constant) {
+      if (sha256(declaration.constant_definition) !=
+          declaration.constant_digest) {
         provider_error(
             diagnostics,
-            "Codex visible source definition identity is inconsistent");
+            "Codex relevant declaration constant identity is inconsistent");
         return false;
       }
       append_field(
-          "BINDING_SOURCE_DEFINITION_SHA256",
-          binding.source_definition_digest.hex(),
+          "DECLARATION_CONSTANT_SHA256",
+          declaration.constant_digest.hex(),
           prompt);
       append_field(
-          "BINDING_SOURCE_DEFINITION",
-          binding.source_definition,
+          "DECLARATION_CONSTANT",
+          declaration.constant_definition,
           prompt);
     }
+    if (sha256(declaration.source) != declaration.source_digest) {
+      provider_error(
+          diagnostics,
+          "Codex relevant declaration source identity is inconsistent");
+      return false;
+    }
+    append_field(
+        "DECLARATION_SOURCE_SHA256", declaration.source_digest.hex(), prompt);
+    append_field("DECLARATION_SOURCE", declaration.source, prompt);
   }
   prompt += "ATTACHMENTS ";
   append_u64(static_cast<std::uint64_t>(attachments.size()), prompt);

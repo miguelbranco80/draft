@@ -28,6 +28,8 @@
 
 namespace draft {
 
+class HirProgram;
+
 // One binding visible at a synthesis/judgment program point. type_digest is the
 // complete canonical type graph rather than a package-local TypeId. kind stays
 // explicit because a procedure, constant, and variable of the same type expose
@@ -43,14 +45,26 @@ struct AgentVisibleBinding {
   bool has_constant = false;
   Sha256Digest constant_digest;
   std::string constant_definition;
-  // A visible source declaration is especially useful for private helpers and
-  // locals that cannot appear in a public package interface. The compiler
-  // supplies one bounded, comment-free declaration node rather than an
-  // enclosing file. The current anchor is omitted because it already has its
-  // richer enclosing-declaration context.
-  bool has_source_definition = false;
-  Sha256Digest source_definition_digest;
-  std::string source_definition;
+};
+
+// One definition selected by the semantic dependency closure. This is
+// intentionally separate from AgentVisibleBinding: a private helper reached
+// through another helper may be useful explanatory context without being a
+// legal unqualified name at the synthesis site. Source is one bounded,
+// comment-free declaration node, never an enclosing file. Complete type graphs
+// remain in AgentTypeContext and compile-time values retain their canonical
+// representation here.
+struct AgentDeclarationContext {
+  std::string source_relative_path;
+  std::string name;
+  SymbolKind kind = SymbolKind::UnresolvedDeclaration;
+  Sha256Digest type_digest;
+  std::string type_text;
+  bool has_constant = false;
+  Sha256Digest constant_digest;
+  std::string constant_definition;
+  Sha256Digest source_digest;
+  std::string source;
 };
 
 // One source-visible field of the compiler-managed runtime Context. Active
@@ -235,6 +249,7 @@ struct AgentObligation {
   Sha256Digest expected_type_digest;
   std::string expected_type_text;
   std::vector<AgentVisibleBinding> visible_bindings;
+  std::vector<AgentDeclarationContext> relevant_declarations;
   AgentTargetContext target;
   AgentEnclosingDeclarationContext enclosing_declaration;
   std::vector<AgentBranchRefinement> branch_refinements;
@@ -274,7 +289,8 @@ collect_agent_validation_context(
     const AgentMetadataResult &metadata,
     const TargetProfile &target,
     DiagnosticSink &diagnostics,
-    std::span<const AgentValidationContext> validation_context = {});
+    std::span<const AgentValidationContext> validation_context = {},
+    const HirProgram *hir = nullptr);
 
 [[nodiscard]] std::string_view agent_construct_kind_name(
     AgentConstructKind kind);

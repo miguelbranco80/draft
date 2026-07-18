@@ -208,6 +208,13 @@ verification identities rather than opaque substitutes for usable context.
 Visible imported aliases carry compact public interfaces with constants,
 generic constraints, native bindings, and typed effect contracts; those
 interfaces are also stale-pin inputs.
+Usable visible names remain compact rows. A separate bounded declaration
+closure starts from exact prompt mentions and resolved references in the
+enclosing checked procedure, follows helper procedures transitively, and
+supplies each selected comment-free definition with its type, constant value,
+source coordinate, and digest. A transitive nested helper may therefore explain
+another definition without being falsely advertised as directly visible at the
+site.
 They also carry stable package/source coordinates and a comment-free canonical
 token view of the enclosing procedure or type declaration, all covered by the
 site input digest. Body sites additionally carry typed outer-to-inner `if`,
