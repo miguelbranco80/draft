@@ -7,6 +7,7 @@
 // package's public procedure signature.
 
 #include "sema/body_checker.h"
+#include "sema/effect.h"
 #include "sema/interface.h"
 #include "sema/semantic.h"
 #include "source/diagnostic.h"
@@ -15,6 +16,7 @@
 #include "target/profile.h"
 #include "workspace/package.h"
 
+#include <algorithm>
 #include <cstdlib>
 #include <cstdint>
 #include <iostream>
@@ -539,6 +541,116 @@ Bad :: struct {
                     std::string::npos);
 }
 
+void test_imported_flow_effect(TestState &state) {
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  const draft::TargetProfile target = draft::make_aarch64_macos_profile();
+
+  draft::LoadedPackage dependency = parse_package(
+      sources,
+      diagnostics,
+      "callbacks/package.draft",
+      "callbacks",
+      R"draft(package callbacks
+
+pub invoke :: proc(callback: proc()) {
+    copy := callback
+    copy()
+}
+)draft");
+  draft::SemanticAnalysisResult dependency_semantics =
+      draft::analyze_package_semantics(
+          sources, dependency, target.facts, diagnostics);
+  draft::BodyCheckResult dependency_bodies = draft::check_package_bodies(
+      sources,
+      dependency,
+      dependency_semantics.selections,
+      dependency_semantics.package,
+      dependency_semantics.constants,
+      target.facts,
+      diagnostics);
+  const draft::EffectSummaryResult dependency_effects =
+      draft::summarize_package_effects(
+          dependency_semantics.package, dependency_bodies.program, &target);
+  const draft::AgentMetadataResult empty_metadata;
+  draft::PackageInterface dependency_interface =
+      draft::build_package_interface(
+          {"workspace", "callbacks"},
+          dependency_semantics.package,
+          dependency_semantics.constants,
+          empty_metadata,
+          dependency_effects,
+          diagnostics);
+
+  draft::LoadedPackage consumer = parse_package(
+      sources,
+      diagnostics,
+      "consumer/package.draft",
+      "consumer",
+      R"draft(package consumer
+
+import callbacks
+
+danger :: proc() {
+    assert(true)
+}
+
+caller :: proc() {
+    callbacks.invoke(danger)
+}
+)draft");
+  const std::optional<draft::SyntaxReference> import = first_import(consumer);
+  EXPECT(state, import.has_value());
+  if (!import.has_value()) return;
+  draft::AvailablePackageImports available;
+  available.entries.push_back({*import, &dependency_interface});
+  draft::SemanticAnalysisResult consumer_semantics =
+      draft::analyze_package_semantics(
+          sources, consumer, target.facts, available, diagnostics);
+  draft::BodyCheckResult consumer_bodies = draft::check_package_bodies(
+      sources,
+      consumer,
+      consumer_semantics.selections,
+      consumer_semantics.package,
+      consumer_semantics.constants,
+      target.facts,
+      diagnostics);
+  const draft::EffectSummaryResult consumer_effects =
+      draft::summarize_package_effects(
+          consumer_semantics.package, consumer_bodies.program, &target);
+
+  if (diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+  }
+  EXPECT(state, dependency_semantics.ok);
+  EXPECT(state, dependency_bodies.ok);
+  EXPECT(state, consumer_semantics.ok);
+  EXPECT(state, consumer_bodies.ok);
+  const std::optional<draft::SymbolId> caller =
+      consumer_semantics.package.symbols.lookup_direct(
+          consumer_semantics.package.package_scope, "caller");
+  EXPECT(state, caller.has_value());
+  if (!caller.has_value()) return;
+  const draft::ProcedureEffectSummary *summary =
+      consumer_effects.find(*caller);
+  EXPECT(state, summary != nullptr);
+  if (summary == nullptr) return;
+  const bool has_assert = std::any_of(
+      summary->effects.begin(),
+      summary->effects.end(),
+      [](const draft::SemanticEffect &effect) {
+        return effect.kind == draft::EffectKind::RuntimeAssert;
+      });
+  const bool has_unknown = std::any_of(
+      summary->effects.begin(),
+      summary->effects.end(),
+      [](const draft::SemanticEffect &effect) {
+        return effect.kind == draft::EffectKind::UnknownCall;
+      });
+  EXPECT(state, has_assert);
+  EXPECT(state, !has_unknown);
+}
+
 } // namespace
 
 int main() {
@@ -547,6 +659,7 @@ int main() {
   test_private_name_is_not_imported(state);
   test_imported_parametric_type(state);
   test_imported_parametric_constraint(state);
+  test_imported_flow_effect(state);
 
   if (state.failures != 0) {
     std::cerr << state.failures << " interface test expectation(s) failed\n";

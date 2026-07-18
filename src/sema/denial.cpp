@@ -225,6 +225,9 @@ private:
   [[nodiscard]] bool matches_effect(
       const DeniedEntity &denied, const SemanticEffect &effect) const {
     if (effect.kind == EffectKind::UnknownCall) return true;
+    // A flow slot is a placeholder, not an effectful target. The enclosing
+    // call substitutes its actual procedure value before matching denials.
+    if (effect.kind == EffectKind::FlowCall) return false;
     switch (denied.kind) {
     case DeniedKind::Symbol:
       return effect.symbol.is_valid() && effect.symbol == denied.symbol;
@@ -275,7 +278,10 @@ private:
   }
 
   void check_call(
-      SymbolId callee, SourceRange range, const std::vector<DeniedEntity> &active) {
+      SymbolId callee,
+      const std::vector<HirExpressionId> &arguments,
+      SourceRange range,
+      const std::vector<DeniedEntity> &active) {
     for (const DeniedEntity &denied : active) {
       if (matches_symbol(denied, callee)) {
         report_violation(denied, range, "declaration call");
@@ -300,13 +306,26 @@ private:
       if (imported_known) {
         for (const ImportedEffect &effect : package_.imported_effects) {
           if (effect.procedure_proxy != callee) continue;
+          if (effect.kind == EffectKind::FlowCall) {
+            if (effect.flow_parameter < arguments.size()) {
+              check_call_target(
+                  hir_.expression(arguments[effect.flow_parameter]),
+                  {},
+                  range,
+                  active);
+            } else {
+              check_effect(unknown, range, active);
+            }
+            continue;
+          }
           check_effect(
               {effect.kind,
                {},
                effect.detail,
                effect.root_identity,
                effect.root_relative_path,
-               effect.declaration},
+               effect.declaration,
+               effect.flow_parameter},
               range,
               active);
         }
@@ -316,7 +335,27 @@ private:
       return;
     }
     for (const SemanticEffect &effect : summary->effects) {
-      check_effect(effect, range, active);
+      if (effect.kind != EffectKind::FlowCall) {
+        check_effect(effect, range, active);
+        continue;
+      }
+      if (effect.flow_parameter >= arguments.size()) {
+        check_effect(
+            {EffectKind::UnknownCall,
+             {},
+             "flow-through callback slot is absent at call site",
+             {},
+             {},
+             {}},
+            range,
+            active);
+        continue;
+      }
+      check_call_target(
+          hir_.expression(arguments[effect.flow_parameter]),
+          {},
+          range,
+          active);
     }
   }
 
@@ -326,11 +365,21 @@ private:
   // an unknown call edge.
   void check_call_target(
       const HirExpression &callee,
+      const std::vector<HirExpressionId> &arguments,
       SourceRange range,
       const std::vector<DeniedEntity> &active) {
     if (callee.kind == HirExpressionKind::Symbol && callee.symbol.is_valid()) {
-      check_call(callee.symbol, range, active);
-      return;
+      const Symbol &symbol = package_.symbols.symbol(callee.symbol);
+      if (symbol.kind == SymbolKind::Procedure) {
+        check_call(callee.symbol, arguments, range, active);
+        return;
+      }
+      // A procedure parameter is intentionally retained as a flow slot. Its
+      // callers are checked after substituting their finite actual targets.
+      if (symbol.kind == SymbolKind::Parameter && callee.type.is_valid() &&
+          package_.types.type(callee.type).kind == TypeKind::Procedure) {
+        return;
+      }
     }
     check_effect(
         {EffectKind::UnknownCall, {}, "indirect procedure target", {}, {}, {}},
@@ -369,8 +418,16 @@ private:
       return;
     }
     if (expression.kind == HirExpressionKind::Call && !expression.operands.empty()) {
+      std::vector<HirExpressionId> arguments;
+      arguments.insert(
+          arguments.end(),
+          expression.operands.begin() + 1,
+          expression.operands.end());
       check_call_target(
-          hir_.expression(expression.operands.front()), expression.range, active);
+          hir_.expression(expression.operands.front()),
+          arguments,
+          expression.range,
+          active);
     } else if (expression.kind == HirExpressionKind::Symbol &&
                expression.symbol.is_valid()) {
       const Symbol &symbol = package_.symbols.symbol(expression.symbol);
@@ -406,7 +463,10 @@ private:
                expression.constant.text == "call_with_context") {
       if (expression.operands.size() >= 2) {
         check_call_target(
-            hir_.expression(expression.operands[1]), expression.range, active);
+            hir_.expression(expression.operands[1]),
+            {},
+            expression.range,
+            active);
       }
     } else if (expression.kind == HirExpressionKind::Intrinsic &&
                expression.constant.kind == ConstantKind::String &&

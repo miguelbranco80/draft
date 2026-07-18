@@ -171,6 +171,20 @@ void hash_field(Sha256 &hash, std::string_view value) {
     hash_field(hash, provider);
   }
   hash_field(hash, target.system_link_library);
+  hash_u64(
+      hash,
+      static_cast<std::uint64_t>(target.system_foreign_summaries.size()));
+  for (const SystemForeignSummary &summary :
+       target.system_foreign_summaries) {
+    hash_field(hash, summary.provider);
+    hash_field(hash, summary.linker_name);
+    hash_u64(
+        hash,
+        static_cast<std::uint64_t>(summary.callback_parameters.size()));
+    for (std::uint32_t parameter : summary.callback_parameters) {
+      hash_u64(hash, parameter);
+    }
+  }
   hash_u64(hash, static_cast<std::uint64_t>(obligation.visible_bindings.size()));
   for (const AgentVisibleBinding &binding : obligation.visible_bindings) {
     hash_field(hash, binding.name);

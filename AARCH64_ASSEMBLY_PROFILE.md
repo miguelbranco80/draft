@@ -1,7 +1,7 @@
 # Draft AArch64 parsed assembly profile
 
 This document fixes the complete grammar of `draft-aarch64-apple-v2`, the
-parsed inline-assembly dialect selected by `draft-aarch64-macos-v3`. It is a
+parsed inline-assembly dialect selected by `draft-aarch64-macos-v4`. It is a
 small straight-line language, not an alias for every instruction accepted by
 Apple's assembler. Anything not listed here is rejected before LLVM lowering.
 External package `.s`, `.S`, and `.asm` files remain the unrestricted escape

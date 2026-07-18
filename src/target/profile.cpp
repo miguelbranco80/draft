@@ -33,7 +33,7 @@ namespace {
 
 TargetProfile make_aarch64_macos_profile() {
   TargetProfile profile;
-  profile.facts.identity = "draft-aarch64-macos-v3";
+  profile.facts.identity = "draft-aarch64-macos-v4";
   profile.facts.arch = "aarch64";
   profile.facts.os = "macos";
   profile.facts.abi = "darwin_arm64";
@@ -76,6 +76,38 @@ TargetProfile make_aarch64_macos_profile() {
   };
   profile.system_link_providers = {"darwin", "libc"};
   profile.system_link_library = "System";
+  // This closed list covers the first core distribution and native examples.
+  // It is deliberately a symbol list rather than provider-wide trust: adding
+  // another System API requires deciding whether it calls or stores any Draft
+  // procedure pointer and then changing the target profile identity.
+  profile.system_foreign_summaries = {
+      {"darwin", "_exit", {}},
+      {"darwin", "clock_gettime_nsec_np", {}},
+      {"darwin", "close", {}},
+      {"darwin", "getpid", {}},
+      {"darwin", "mmap", {}},
+      {"darwin", "mprotect", {}},
+      {"darwin", "munmap", {}},
+      {"darwin", "nanosleep", {}},
+      {"darwin", "pthread_cond_broadcast", {}},
+      {"darwin", "pthread_cond_destroy", {}},
+      {"darwin", "pthread_cond_init", {}},
+      {"darwin", "pthread_cond_signal", {}},
+      {"darwin", "pthread_cond_wait", {}},
+      {"darwin", "pthread_create", {2}},
+      {"darwin", "pthread_join", {}},
+      {"darwin", "pthread_mutex_destroy", {}},
+      {"darwin", "pthread_mutex_init", {}},
+      {"darwin", "pthread_mutex_lock", {}},
+      {"darwin", "pthread_mutex_trylock", {}},
+      {"darwin", "pthread_mutex_unlock", {}},
+      {"darwin", "pthread_self", {}},
+      {"darwin", "read", {}},
+      {"darwin", "sched_yield", {}},
+      {"darwin", "unlink", {}},
+      {"darwin", "write", {}},
+      {"libc", "labs", {}},
+  };
   profile.assembly_files = {
       {".S", AssemblyPreprocessing::None},
       {".asm", AssemblyPreprocessing::None},
@@ -138,6 +170,36 @@ bool validate_target_profile(const TargetProfile &profile, std::string &reason) 
       !bytewise_sorted_unique(profile.system_link_providers)) {
     reason = "initial target must map darwin and libc to the System library";
     return false;
+  }
+  for (std::size_t index = 0;
+       index < profile.system_foreign_summaries.size(); ++index) {
+    const SystemForeignSummary &summary =
+        profile.system_foreign_summaries[index];
+    if (!std::binary_search(
+            profile.system_link_providers.begin(),
+            profile.system_link_providers.end(),
+            summary.provider) || summary.linker_name.empty()) {
+      reason = "system foreign summary must name a target-owned provider and symbol";
+      return false;
+    }
+    if (index != 0) {
+      const SystemForeignSummary &previous =
+          profile.system_foreign_summaries[index - 1];
+      if (previous.provider > summary.provider ||
+          (previous.provider == summary.provider &&
+           previous.linker_name >= summary.linker_name)) {
+        reason = "system foreign summaries must be sorted and unique";
+        return false;
+      }
+    }
+    for (std::size_t callback = 1;
+         callback < summary.callback_parameters.size(); ++callback) {
+      if (summary.callback_parameters[callback - 1] >=
+          summary.callback_parameters[callback]) {
+        reason = "system foreign callback slots must be sorted and unique";
+        return false;
+      }
+    }
   }
   const std::vector<std::string> expected_extensions = {".S", ".asm", ".s"};
   if (profile.assembly_files.size() != expected_extensions.size()) {

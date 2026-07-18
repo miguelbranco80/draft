@@ -26,6 +26,7 @@
 #include "workspace/package.h"
 
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -40,6 +41,10 @@ enum class EffectKind {
   ContextField,
   Assembly,
   Unchecked,
+  // The procedure calls the procedure-valued parameter at flow_parameter.
+  // Call-site composition substitutes the finite target set supplied for that
+  // slot instead of treating the callback as an arbitrary indirect edge.
+  FlowCall,
   UnknownCall,
 };
 
@@ -186,6 +191,7 @@ struct ImportedEffect {
   std::string root_relative_path;
   std::string declaration;
   std::string detail;
+  std::uint32_t flow_parameter = std::numeric_limits<std::uint32_t>::max();
 };
 
 // ImportedType preserves nominal identity after an interface type has been

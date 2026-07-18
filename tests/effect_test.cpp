@@ -69,8 +69,17 @@ pub caller :: proc(values: [^]i64) {
     leaf(values)
 }
 
-invoke :: proc(callback: proc()) {
+pub invoke :: proc(callback: proc()) {
     callback()
+}
+
+flow_leaf :: proc() {
+    assert(true)
+}
+
+flow_caller :: proc() {
+    copy := flow_leaf
+    invoke(copy)
 }
 )draft");
   file.syntax.emplace(draft::parse_source_file(sources, file.source, diagnostics));
@@ -102,21 +111,30 @@ invoke :: proc(callback: proc()) {
 
   EXPECT(state, semantics.ok);
   EXPECT(state, bodies.ok);
-  EXPECT(state, effects.procedures.size() == 3);
+  EXPECT(state, effects.procedures.size() == 5);
   const std::optional<draft::SymbolId> leaf = symbol(semantics.package, "leaf");
   const std::optional<draft::SymbolId> caller = symbol(semantics.package, "caller");
   const std::optional<draft::SymbolId> invoke = symbol(semantics.package, "invoke");
+  const std::optional<draft::SymbolId> flow_caller =
+      symbol(semantics.package, "flow_caller");
   EXPECT(state, leaf.has_value());
   EXPECT(state, caller.has_value());
   EXPECT(state, invoke.has_value());
-  if (!leaf || !caller || !invoke) return;
+  EXPECT(state, flow_caller.has_value());
+  if (!leaf || !caller || !invoke || !flow_caller) return;
   const draft::ProcedureEffectSummary *leaf_summary = effects.find(*leaf);
   const draft::ProcedureEffectSummary *caller_summary = effects.find(*caller);
   const draft::ProcedureEffectSummary *invoke_summary = effects.find(*invoke);
+  const draft::ProcedureEffectSummary *flow_caller_summary =
+      effects.find(*flow_caller);
   EXPECT(state, leaf_summary != nullptr);
   EXPECT(state, caller_summary != nullptr);
   EXPECT(state, invoke_summary != nullptr);
-  if (leaf_summary == nullptr || caller_summary == nullptr || invoke_summary == nullptr) return;
+  EXPECT(state, flow_caller_summary != nullptr);
+  if (leaf_summary == nullptr || caller_summary == nullptr ||
+      invoke_summary == nullptr || flow_caller_summary == nullptr) {
+    return;
+  }
   EXPECT(state, has_effect(*leaf_summary, draft::EffectKind::PackageGlobal));
   EXPECT(state, has_effect(*leaf_summary, draft::EffectKind::Unchecked));
   EXPECT(state, has_effect(*leaf_summary, draft::EffectKind::RuntimeAssert));
@@ -124,13 +142,131 @@ invoke :: proc(callback: proc()) {
   EXPECT(state, caller_summary->direct_calls.size() == 1);
   EXPECT(state, has_effect(*caller_summary, draft::EffectKind::RuntimeAssert));
   EXPECT(state, has_effect(*caller_summary, draft::EffectKind::Unchecked));
-  EXPECT(state, has_effect(*invoke_summary, draft::EffectKind::UnknownCall));
-  EXPECT(state, package_interface.declarations.size() == 2);
-  if (package_interface.declarations.size() == 2) {
+  EXPECT(state, has_effect(*invoke_summary, draft::EffectKind::FlowCall));
+  EXPECT(state, !has_effect(*invoke_summary, draft::EffectKind::UnknownCall));
+  EXPECT(state,
+      has_effect(*flow_caller_summary, draft::EffectKind::RuntimeAssert));
+  EXPECT(state,
+      !has_effect(*flow_caller_summary, draft::EffectKind::UnknownCall));
+  EXPECT(state, package_interface.declarations.size() == 3);
+  if (package_interface.declarations.size() == 3) {
     EXPECT(state, package_interface.declarations[1].name == "caller");
     EXPECT(state, package_interface.declarations[1].has_effect_summary);
     EXPECT(state, package_interface.declarations[1].effects.size() >= 4);
+    EXPECT(state, package_interface.declarations[2].name == "invoke");
+    EXPECT(state, package_interface.declarations[2].effects.size() == 1);
+    if (package_interface.declarations[2].effects.size() == 1) {
+      EXPECT(state,
+          package_interface.declarations[2].effects[0].kind ==
+              draft::EffectKind::FlowCall);
+      EXPECT(state,
+          package_interface.declarations[2].effects[0].flow_parameter == 0);
+    }
   }
+}
+
+void test_target_and_package_assembly_summaries(TestState &state) {
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  draft::LoadedPackage loaded;
+  loaded.short_name = "native_effects";
+  draft::LoadedPackageFile file;
+  file.kind = draft::PackageFileKind::DraftSource;
+  file.relative_name = "package.draft";
+  file.source = sources.add_source(
+      "package.draft",
+      R"draft(package native_effects
+
+Callback :: c proc(user: rawptr) -> rawptr
+
+foreign darwin {
+    pthread_create :: c proc(
+        thread: ^rawptr,
+        attributes: rawptr,
+        start: Callback,
+        user: rawptr,
+    ) -> i32
+    mystery :: c proc()
+}
+
+foreign package_assembly {
+    external :: c proc()
+}
+
+counter: i32
+
+worker :: c proc(user: rawptr) -> rawptr {
+    counter += 1
+    return user
+}
+
+through_system :: proc() {
+    thread: rawptr
+    pthread_create(&thread, nil, worker, nil)
+}
+
+through_assembly :: proc() {
+    external()
+}
+
+through_unknown :: proc() {
+    mystery()
+}
+)draft");
+  file.syntax.emplace(draft::parse_source_file(sources, file.source, diagnostics));
+  loaded.files.push_back(std::move(file));
+  const draft::TargetProfile target = draft::make_aarch64_macos_profile();
+  draft::SemanticAnalysisResult semantics = draft::analyze_package_semantics(
+      sources, loaded, target.facts, diagnostics);
+  draft::BodyCheckResult bodies = draft::check_package_bodies(
+      sources,
+      loaded,
+      semantics.selections,
+      semantics.package,
+      semantics.constants,
+      target.facts,
+      diagnostics);
+  const draft::EffectSummaryResult effects =
+      draft::summarize_package_effects(
+          semantics.package, bodies.program, &target);
+  if (diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+  }
+  EXPECT(state, semantics.ok);
+  EXPECT(state, bodies.ok);
+  const std::optional<draft::SymbolId> through_system =
+      symbol(semantics.package, "through_system");
+  const std::optional<draft::SymbolId> through_assembly =
+      symbol(semantics.package, "through_assembly");
+  const std::optional<draft::SymbolId> through_unknown =
+      symbol(semantics.package, "through_unknown");
+  EXPECT(state, through_system.has_value());
+  EXPECT(state, through_assembly.has_value());
+  EXPECT(state, through_unknown.has_value());
+  if (!through_system || !through_assembly || !through_unknown) return;
+  const draft::ProcedureEffectSummary *system_summary =
+      effects.find(*through_system);
+  const draft::ProcedureEffectSummary *assembly_summary =
+      effects.find(*through_assembly);
+  const draft::ProcedureEffectSummary *unknown_summary =
+      effects.find(*through_unknown);
+  EXPECT(state, system_summary != nullptr);
+  EXPECT(state, assembly_summary != nullptr);
+  EXPECT(state, unknown_summary != nullptr);
+  if (system_summary == nullptr || assembly_summary == nullptr ||
+      unknown_summary == nullptr) {
+    return;
+  }
+  EXPECT(state,
+      has_effect(*system_summary, draft::EffectKind::PackageGlobal));
+  EXPECT(state,
+      !has_effect(*system_summary, draft::EffectKind::UnknownCall));
+  EXPECT(state,
+      has_effect(*assembly_summary, draft::EffectKind::Assembly));
+  EXPECT(state,
+      !has_effect(*assembly_summary, draft::EffectKind::UnknownCall));
+  EXPECT(state,
+      has_effect(*unknown_summary, draft::EffectKind::UnknownCall));
 }
 
 } // namespace
@@ -138,6 +274,7 @@ invoke :: proc(callback: proc()) {
 int main() {
   TestState state;
   test_transitive_effects(state);
+  test_target_and_package_assembly_summaries(state);
   if (state.failures != 0) {
     std::cerr << state.failures << " effect summary expectation(s) failed\n";
     return EXIT_FAILURE;

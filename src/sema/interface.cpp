@@ -187,6 +187,7 @@ public:
             InterfaceDeclaration::Effect interface_effect;
             interface_effect.kind = effect.kind;
             interface_effect.detail = effect.text;
+            interface_effect.flow_parameter = effect.flow_parameter;
             if (!effect.root_identity.empty()) {
               interface_effect.root_identity = effect.root_identity;
               interface_effect.root_relative_path = effect.root_relative_path;
@@ -584,6 +585,7 @@ public:
             effect.root_relative_path,
             effect.declaration,
             effect.detail,
+            effect.flow_parameter,
         });
       }
       if (declaration.kind == SymbolKind::Type) {

@@ -125,12 +125,41 @@ deny asm {
   EXPECT(state, !source.diagnostics.has_errors());
 }
 
+void test_flow_slot_substitution(TestState &state) {
+  DenialSource source(R"draft(package denials
+
+danger :: proc() {
+    assert(true)
+}
+
+invoke :: proc(callback: proc()) {
+    copy := callback
+    copy()
+}
+
+deny assert {
+    bad :: proc() {
+        invoke(danger)
+    }
+}
+)draft");
+  EXPECT(state, source.semantics.ok);
+  EXPECT(state, source.bodies.ok);
+  EXPECT(state, !source.denials_ok);
+  EXPECT(state, source.diagnostics.error_count() == 1);
+  const std::string rendered =
+      draft::render_diagnostics(source.sources, source.diagnostics);
+  EXPECT(state, rendered.find("denied assert") != std::string::npos);
+  EXPECT(state, rendered.find("unknown call") == std::string::npos);
+}
+
 } // namespace
 
 int main() {
   TestState state;
   test_denial_violations(state);
   test_unrelated_denial(state);
+  test_flow_slot_substitution(state);
   if (state.failures != 0) {
     std::cerr << state.failures << " denial expectation(s) failed\n";
     return EXIT_FAILURE;

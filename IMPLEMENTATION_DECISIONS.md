@@ -42,7 +42,7 @@ ending in the alias therefore receives ordinary identifier semicolon behavior.
 
 ## Initial AArch64 macOS profile
 
-Status: bootstrap target contract; versioned as `draft-aarch64-macos-v3`.
+Status: bootstrap target contract; versioned as `draft-aarch64-macos-v4`.
 
 The first profile targets `arm64-apple-macosx14.0.0`, uses the generic AArch64
 CPU with baseline NEON, 64-bit little-endian pointers, 16 KiB pages, Mach-O,
@@ -115,6 +115,11 @@ development builds retain the separate explicit host-toolchain escape hatch.
 The target profile maps the logical `darwin` and `libc` providers to the SDK's
 explicit `System` library. `draft_runtime` is owned by the root LLVM module and
 `package_assembly` is owned by captured package assembly; none can be remapped.
+The v4 target also carries a closed, symbol-level denial-summary table for the
+System calls used by the first core distribution. Most rows have no callback;
+`pthread_create` identifies its start routine as flow-through parameter two.
+Provider names alone never confer trust: an unlisted System symbol remains an
+unknown edge, while every package-assembly call contributes the `asm` effect.
 Every other foreign provider requires one command-line object, archive, or
 shared-library mapping. Resolution stores the provider name, artifact role, and
 content-tree digest without its physical path. Offline builds require the same
@@ -122,6 +127,14 @@ complete mapping, re-hash relocated bytes, reject unused mappings, and reject
 unknown providers before invoking Clang. A locked link first copies each
 verified artifact into the isolated build directory and re-hashes that snapshot,
 so the linker never consumes a mutable workspace path after verification.
+
+Procedure effect interfaces retain direct procedure-parameter flow slots.
+Calls, ordinary local copies, and cross-package interface composition substitute
+finite named targets at the call site. This is a semantic may-target set: all
+source assignments are unioned, and optimization is never allowed to narrow it.
+Typed member paths, returned procedures, and hidden-context procedure fields
+still require the richer path-shaped slot representation before this contract
+is complete.
 
 ## Native artifact ownership and visibility
 

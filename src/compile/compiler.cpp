@@ -579,7 +579,7 @@ CompileWorkspaceResult compile_workspace(
         options.target,
         diagnostics);
     package.effects = summarize_package_effects(
-        package.semantics.package, package.bodies.program);
+        package.semantics.package, package.bodies.program, &options.target);
     package.native_interop = validate_native_interop(
         package.semantics.package, package.bodies.program, diagnostics);
     const bool denials_ok = check_package_denials(

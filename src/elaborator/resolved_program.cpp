@@ -77,6 +77,20 @@ void hash_target(Sha256 &hash, const TargetProfile &target) {
   hash_string_vector(hash, target.parsed_assembly_instructions);
   hash_string_vector(hash, target.system_link_providers);
   hash_field(hash, target.system_link_library);
+  hash_u64(
+      hash,
+      static_cast<std::uint64_t>(target.system_foreign_summaries.size()));
+  for (const SystemForeignSummary &summary :
+       target.system_foreign_summaries) {
+    hash_field(hash, summary.provider);
+    hash_field(hash, summary.linker_name);
+    hash_u64(
+        hash,
+        static_cast<std::uint64_t>(summary.callback_parameters.size()));
+    for (std::uint32_t parameter : summary.callback_parameters) {
+      hash_u64(hash, parameter);
+    }
+  }
   hash_u64(hash, static_cast<std::uint64_t>(target.assembly_files.size()));
   for (const AssemblyFileRule &rule : target.assembly_files) {
     hash_field(hash, rule.extension);

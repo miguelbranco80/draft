@@ -15,6 +15,7 @@
 
 #include "sema/constant.h"
 
+#include <cstdint>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -45,6 +46,18 @@ struct AssemblyFileRule {
   AssemblyPreprocessing preprocessing = AssemblyPreprocessing::None;
 };
 
+// A target-owned system symbol summary is trusted only because the target
+// profile selects both the SDK library and this exact linker spelling. Most
+// fixed System calls have no route back into Draft. callback_parameters names
+// the zero-based C parameter positions that the native function may invoke.
+// Arbitrary user artifacts never enter this table; they require a separately
+// content-bound provider summary.
+struct SystemForeignSummary {
+  std::string provider;
+  std::string linker_name;
+  std::vector<std::uint32_t> callback_parameters;
+};
+
 // TargetProfile owns semantic facts plus backend/link contract strings. The
 // fields are serialized as build inputs, so changing any value requires a new
 // identity even if source programs happen to produce identical objects.
@@ -69,6 +82,10 @@ struct TargetProfile {
   // system library. Other provider names require an exact external artifact.
   std::vector<std::string> system_link_providers;
   std::string system_link_library;
+  // Sorted by provider and linker_name. These are semantic denial contracts,
+  // not linker availability declarations: an unlisted System symbol still
+  // links, but contributes an unknown call edge while a denial is active.
+  std::vector<SystemForeignSummary> system_foreign_summaries;
   std::vector<AssemblyFileRule> assembly_files;
 };
 

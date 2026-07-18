@@ -191,6 +191,14 @@ int print_target() {
   for (const std::string &provider : profile.system_link_providers) {
     std::cout << ' ' << provider;
   }
+  std::cout << '\n' << "system-foreign-summaries";
+  for (const draft::SystemForeignSummary &summary :
+       profile.system_foreign_summaries) {
+    std::cout << ' ' << summary.provider << ':' << summary.linker_name;
+    for (std::uint32_t parameter : summary.callback_parameters) {
+      std::cout << "@callback-" << parameter;
+    }
+  }
   std::cout << '\n'
             << "relocation-model "
             << draft::relocation_model_name(profile.relocation_model) << '\n'

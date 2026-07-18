@@ -129,6 +129,8 @@ struct InterfaceDeclaration {
     std::string root_relative_path;
     std::string declaration;
     std::string detail;
+    std::uint32_t flow_parameter =
+        std::numeric_limits<std::uint32_t>::max();
   };
   std::vector<Effect> effects;
 };
