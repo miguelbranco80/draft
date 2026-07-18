@@ -61,6 +61,42 @@ void configure_core_distribution(draft::WorkspaceLoadOptions &options) {
   return true;
 }
 
+[[nodiscard]] bool parse_foreign_provider(
+    std::string_view spelling,
+    draft::ForeignProviderInput &input,
+    std::string &reason) {
+  const std::size_t equal = spelling.find('=');
+  const std::size_t colon = equal == std::string_view::npos
+      ? std::string_view::npos
+      : spelling.find(':', equal + 1);
+  if (equal == 0 || equal == std::string_view::npos ||
+      colon == equal + 1 || colon == std::string_view::npos ||
+      colon + 1 >= spelling.size()) {
+    reason = "provider mapping must be name=object|archive|shared-library:path";
+    return false;
+  }
+  input.provider = std::string(spelling.substr(0, equal));
+  const std::string_view kind = spelling.substr(equal + 1, colon - equal - 1);
+  if (kind == "object") {
+    input.kind = draft::ForeignArtifactKind::Object;
+  } else if (kind == "archive") {
+    input.kind = draft::ForeignArtifactKind::Archive;
+  } else if (kind == "shared-library") {
+    input.kind = draft::ForeignArtifactKind::SharedLibrary;
+  } else {
+    reason = "provider artifact kind must be object, archive, or shared-library";
+    return false;
+  }
+  std::error_code error;
+  input.path = std::filesystem::absolute(
+      std::filesystem::path(spelling.substr(colon + 1)), error).lexically_normal();
+  if (error) {
+    reason = "cannot make provider artifact path absolute: " + error.message();
+    return false;
+  }
+  return true;
+}
+
 [[nodiscard]] std::string escaped(std::string_view text) {
   std::string result;
   for (const char byte : text) {
@@ -150,6 +186,11 @@ int print_target() {
   for (const std::string &instruction : profile.parsed_assembly_instructions) {
     std::cout << ' ' << instruction;
   }
+  std::cout << '\n' << "system-link-library " << profile.system_link_library
+            << '\n' << "system-link-providers";
+  for (const std::string &provider : profile.system_link_providers) {
+    std::cout << ' ' << provider;
+  }
   std::cout << '\n'
             << "relocation-model "
             << draft::relocation_model_name(profile.relocation_model) << '\n'
@@ -228,7 +269,8 @@ int build_package(
     const std::optional<std::string> &requested_output,
     draft::NativeArtifactKind artifact_kind,
     bool allow_host_toolchain,
-    const std::optional<draft::LockedNativeInputRoots> &locked_inputs) {
+    const std::optional<draft::LockedNativeInputRoots> &locked_inputs,
+    const std::vector<draft::ForeignProviderInput> &foreign_providers) {
   draft::SourceManager sources;
   draft::DiagnosticSink diagnostics;
   std::error_code path_error;
@@ -291,6 +333,7 @@ int build_package(
     native_options.output_path = output.string();
     native_options.artifact_kind = artifact_kind;
     native_options.allow_unpinned_toolchain = allow_host_toolchain;
+    native_options.foreign_providers = foreign_providers;
     if (locked_inputs.has_value()) {
       native_options.locked = true;
       native_options.locked_inputs = *locked_inputs;
@@ -422,7 +465,8 @@ int run_agent_command(
     bool revalidate = false,
     const std::optional<draft::CodexCliProviderOptions> &codex = std::nullopt,
     const std::optional<draft::LockedNativeInputRoots> &locked_inputs =
-        std::nullopt) {
+        std::nullopt,
+    const std::vector<draft::ForeignProviderInput> &foreign_providers = {}) {
   draft::SourceManager sources;
   draft::DiagnosticSink diagnostics;
   std::error_code path_error;
@@ -443,10 +487,18 @@ int run_agent_command(
     draft::ResolveWorkspaceOptions resolve_options;
     resolve_options.compile = std::move(options);
     resolve_options.revalidate = revalidate;
-    if (locked_inputs.has_value()) {
+    if (locked_inputs.has_value() || !foreign_providers.empty()) {
       resolve_options.external_inputs_configured = true;
-      if (!draft::pin_locked_native_inputs(
+      if (locked_inputs.has_value() &&
+          !draft::pin_locked_native_inputs(
               *locked_inputs,
+              resolve_options.external_inputs,
+              diagnostics)) {
+        std::cerr << draft::render_diagnostics(sources, diagnostics);
+        return 1;
+      }
+      if (!draft::pin_foreign_provider_inputs(
+              foreign_providers,
               resolve_options.external_inputs,
               diagnostics)) {
         std::cerr << draft::render_diagnostics(sources, diagnostics);
@@ -528,11 +580,13 @@ void print_usage() {
             << "  draftc build <package-directory> [-o <output>]\n"
             << "      [--kind executable|object|static-library|dynamic-library|assembly]\n"
             << "      [--allow-host-toolchain]\n"
+            << "      [--provider name=object|archive|shared-library:<path>]...\n"
             << "  draftc build <package-directory> --locked\n"
             << "      --toolchain-root <directory> --sdk-root <directory> [-o <output>]\n"
             << "  draftc resolve <package-directory> [--revalidate]\n"
             << "      [--codex-executable <path> --codex-model <model>]\n"
             << "      [--toolchain-root <directory> --sdk-root <directory>]\n"
+            << "      [--provider name=object|archive|shared-library:<path>]...\n"
             << "  draftc judge <package-directory>\n"
             << "  draftc target\n";
 }
@@ -568,6 +622,7 @@ int main(int argc, char **argv) {
     std::optional<std::string> codex_model;
     std::optional<std::string> toolchain_root;
     std::optional<std::string> sdk_root;
+    std::vector<draft::ForeignProviderInput> foreign_providers;
     for (int index = 3; index < argc; ++index) {
       const std::string_view argument(argv[index]);
       if (argument == "--revalidate" && !revalidate) {
@@ -584,6 +639,14 @@ int main(int argc, char **argv) {
       } else if (argument == "--sdk-root" &&
                  !sdk_root.has_value() && index + 1 < argc) {
         sdk_root = argv[++index];
+      } else if (argument == "--provider" && index + 1 < argc) {
+        draft::ForeignProviderInput provider;
+        std::string reason;
+        if (!parse_foreign_provider(argv[++index], provider, reason)) {
+          std::cerr << "error: " << reason << '\n';
+          return 2;
+        }
+        foreign_providers.push_back(std::move(provider));
       } else {
         print_usage();
         return 2;
@@ -612,7 +675,12 @@ int main(int argc, char **argv) {
       }
     }
     return run_agent_command(
-        argv[2], AgentCommandKind::Resolve, revalidate, codex, locked_inputs);
+        argv[2],
+        AgentCommandKind::Resolve,
+        revalidate,
+        codex,
+        locked_inputs,
+        foreign_providers);
   }
   if (argc == 3 && std::string_view(argv[1]) == "judge") {
     return run_agent_command(argv[2], AgentCommandKind::Judge);
@@ -626,6 +694,7 @@ int main(int argc, char **argv) {
     bool locked = false;
     std::optional<std::string> toolchain_root;
     std::optional<std::string> sdk_root;
+    std::vector<draft::ForeignProviderInput> foreign_providers;
     for (int index = 3; index < argc; ++index) {
       const std::string_view argument(argv[index]);
       if (argument == "--allow-host-toolchain") {
@@ -659,6 +728,14 @@ int main(int argc, char **argv) {
       } else if (argument == "-o" && index + 1 < argc) {
         ++index;
         output = argv[index];
+      } else if (argument == "--provider" && index + 1 < argc) {
+        draft::ForeignProviderInput provider;
+        std::string reason;
+        if (!parse_foreign_provider(argv[++index], provider, reason)) {
+          std::cerr << "error: " << reason << '\n';
+          return 2;
+        }
+        foreign_providers.push_back(std::move(provider));
       } else {
         print_usage();
         return 2;
@@ -681,7 +758,12 @@ int main(int argc, char **argv) {
       }
     }
     return build_package(
-        argv[2], output, artifact_kind, allow_host_toolchain, locked_inputs);
+        argv[2],
+        output,
+        artifact_kind,
+        allow_host_toolchain,
+        locked_inputs,
+        foreign_providers);
   }
   if (argc == 2 && std::string_view(argv[1]) == "target") {
     return print_target();

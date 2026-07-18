@@ -42,7 +42,7 @@ ending in the alias therefore receives ordinary identifier semicolon behavior.
 
 ## Initial AArch64 macOS profile
 
-Status: bootstrap target contract; versioned as `draft-aarch64-macos-v2`.
+Status: bootstrap target contract; versioned as `draft-aarch64-macos-v3`.
 
 The first profile targets `arm64-apple-macosx14.0.0`, uses the generic AArch64
 CPU with baseline NEON, 64-bit little-endian pointers, 16 KiB pages, Mach-O,
@@ -111,6 +111,17 @@ floor, and no Mach-O UUID. The child environment contains fixed `LANG` and
 deployment, or package search variables. Other manifest external-input roles
 fail closed until their artifact-to-command mapping exists. Ordinary
 development builds retain the separate explicit host-toolchain escape hatch.
+
+The target profile maps the logical `darwin` and `libc` providers to the SDK's
+explicit `System` library. `draft_runtime` is owned by the root LLVM module and
+`package_assembly` is owned by captured package assembly; none can be remapped.
+Every other foreign provider requires one command-line object, archive, or
+shared-library mapping. Resolution stores the provider name, artifact role, and
+content-tree digest without its physical path. Offline builds require the same
+complete mapping, re-hash relocated bytes, reject unused mappings, and reject
+unknown providers before invoking Clang. A locked link first copies each
+verified artifact into the isolated build directory and re-hashes that snapshot,
+so the linker never consumes a mutable workspace path after verification.
 
 ## Native artifact ownership and visibility
 

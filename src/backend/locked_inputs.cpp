@@ -176,13 +176,19 @@ bool verify_locked_native_inputs(
   LockedNativeInputRoots canonical;
   if (!canonical_roots(roots, canonical, diagnostics)) return false;
 
-  std::vector<ExternalInputPin> expected(manifest_pins.begin(), manifest_pins.end());
+  std::vector<ExternalInputPin> expected;
+  for (const ExternalInputPin &pin : manifest_pins) {
+    if (pin.kind == ExternalInputKind::Toolchain ||
+        pin.kind == ExternalInputKind::Sdk) {
+      expected.push_back(pin);
+    }
+  }
   std::sort(expected.begin(), expected.end(), pin_less);
   if (expected.size() != actual.size()) {
     diagnostics.error(
         SourceRange::invalid(),
         "locked native build requires exactly one pinned LLVM toolchain and "
-        "one pinned macOS SDK and supports no other external inputs yet");
+        "one pinned macOS SDK");
     return false;
   }
   for (std::size_t index = 0; index < actual.size(); ++index) {

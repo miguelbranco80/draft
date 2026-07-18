@@ -1,0 +1,11 @@
+package foreign_provider
+
+// The logical name is intentionally unrelated to a host search convention.
+// `draftc build --provider custom_math=object:<path>` supplies the exact bytes.
+foreign custom_math {
+    triple :: c "draft_triple" proc(value: i64) -> i64
+}
+
+main :: proc() {
+    assert(triple(14) == 42)
+}

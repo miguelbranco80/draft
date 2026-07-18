@@ -33,7 +33,7 @@ namespace {
 
 TargetProfile make_aarch64_macos_profile() {
   TargetProfile profile;
-  profile.facts.identity = "draft-aarch64-macos-v2";
+  profile.facts.identity = "draft-aarch64-macos-v3";
   profile.facts.arch = "aarch64";
   profile.facts.os = "macos";
   profile.facts.abi = "darwin_arm64";
@@ -74,6 +74,8 @@ TargetProfile make_aarch64_macos_profile() {
       "stlr", "stp", "str", "strb", "strh", "stur", "sub", "subs", "tst",
       "ucvtf", "udiv",
   };
+  profile.system_link_providers = {"darwin", "libc"};
+  profile.system_link_library = "System";
   profile.assembly_files = {
       {".S", AssemblyPreprocessing::None},
       {".asm", AssemblyPreprocessing::None},
@@ -128,6 +130,13 @@ bool validate_target_profile(const TargetProfile &profile, std::string &reason) 
   if (profile.parsed_assembly_instructions.empty() ||
       !bytewise_sorted_unique(profile.parsed_assembly_instructions)) {
     reason = "parsed assembly instruction vocabulary must be sorted and unique";
+    return false;
+  }
+  const std::vector<std::string> expected_system_providers = {"darwin", "libc"};
+  if (profile.system_link_library != "System" ||
+      profile.system_link_providers != expected_system_providers ||
+      !bytewise_sorted_unique(profile.system_link_providers)) {
+    reason = "initial target must map darwin and libc to the System library";
     return false;
   }
   const std::vector<std::string> expected_extensions = {".S", ".asm", ".s"};

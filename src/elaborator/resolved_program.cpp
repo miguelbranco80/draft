@@ -75,6 +75,8 @@ void hash_target(Sha256 &hash, const TargetProfile &target) {
   hash_field(hash, target.parsed_assembly_architecture);
   hash_field(hash, target.parsed_assembly_dialect);
   hash_string_vector(hash, target.parsed_assembly_instructions);
+  hash_string_vector(hash, target.system_link_providers);
+  hash_field(hash, target.system_link_library);
   hash_u64(hash, static_cast<std::uint64_t>(target.assembly_files.size()));
   for (const AssemblyFileRule &rule : target.assembly_files) {
     hash_field(hash, rule.extension);

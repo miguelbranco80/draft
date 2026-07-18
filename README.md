@@ -158,8 +158,8 @@ build carries that verified manifest snapshot through compilation, re-hashes
 both physical roots, invokes the pinned Clang and Mach-O linker by absolute
 path, supplies the SDK explicitly, disables Clang configuration discovery, and
 uses a minimal child environment with no ambient tool, header, library, or SDK
-search path. Foreign link artifacts are still rejected until their exact logical
-provider mappings are implemented.
+search path. Logical foreign providers outside the target's built-in set require
+explicit object, archive, or dylib mappings; resolution pins those exact bytes.
 
 Configure, build, and test the current compiler with:
 
@@ -189,6 +189,18 @@ sources. `draftc emit-c-header examples/c-library -o library.h` emits the C API
 for explicit root-package exports. The `examples/c-library` fixture builds as a
 no-`main` dylib and its checked-in C client exercises aggregate and callback ABI
 compatibility.
+
+For example, an arbitrary provider is selected explicitly and never inferred
+from a host library name:
+
+```sh
+build/draftc build examples/foreign-provider --allow-host-toolchain \
+  --provider custom_math=object:/absolute/path/to/provider.o
+```
+
+Pass the same `--provider` row to `draftc resolve` to record its content identity
+and to later builds to supply a relocated matching file. Unmapped, duplicate,
+unused, stale, or attempts to remap target-owned providers are errors.
 
 `build/draftc resolve path/to/package --codex-executable /absolute/path/to/codex
 --codex-model <model>` invokes Codex only for missing or stale sites. Executable

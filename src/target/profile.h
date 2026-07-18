@@ -65,6 +65,10 @@ struct TargetProfile {
   // by the architecture analyzer.  Keeping the names here makes profile drift
   // visible in target reports, resolved-program hashes, and tests.
   std::vector<std::string> parsed_assembly_instructions;
+  // Logical providers satisfied by the target SDK's explicitly selected base
+  // system library. Other provider names require an exact external artifact.
+  std::vector<std::string> system_link_providers;
+  std::string system_link_library;
   std::vector<AssemblyFileRule> assembly_files;
 };
 

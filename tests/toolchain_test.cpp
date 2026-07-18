@@ -50,7 +50,8 @@ struct TestState {
 draft::CompileWorkspaceResult compile_fixture(
     draft::SourceManager &sources,
     draft::DiagnosticSink &diagnostics,
-    bool emit_program_entry = true) {
+    bool emit_program_entry = true,
+    std::string_view package = "external-assembly") {
   draft::CompileWorkspaceOptions options;
   options.target = draft::make_aarch64_macos_profile();
   options.workspace.workspace_directory =
@@ -60,9 +61,86 @@ draft::CompileWorkspaceResult compile_fixture(
   options.emit_program_entry = emit_program_entry;
   return draft::compile_workspace(
       sources,
-      std::string(DRAFT_SOURCE_DIRECTORY) + "/examples/external-assembly",
+      std::string(DRAFT_SOURCE_DIRECTORY) + "/examples/" + std::string(package),
       std::move(options),
       diagnostics);
+}
+
+void test_explicit_foreign_provider_mapping(TestState &state) {
+  std::error_code error;
+  const std::filesystem::path temporary =
+      std::filesystem::temp_directory_path(error) /
+      "draft-provider-link-test";
+  EXPECT(state, !error);
+  std::filesystem::remove_all(temporary, error);
+  error.clear();
+  std::filesystem::create_directories(temporary, error);
+  EXPECT(state, !error);
+  if (error) return;
+
+  draft::SourceManager sources;
+  draft::DiagnosticSink compile_diagnostics;
+  const draft::CompileWorkspaceResult compiled = compile_fixture(
+      sources, compile_diagnostics, true, "foreign-provider");
+  EXPECT(state, compiled.ok);
+  if (!compiled.ok) {
+    std::filesystem::remove_all(temporary, error);
+    return;
+  }
+
+  const std::filesystem::path provider = temporary / "provider.o";
+  std::ofstream(provider, std::ios::binary) << "provider object bytes\n";
+  const std::filesystem::path log = temporary / "arguments.log";
+  const std::filesystem::path fake_clang = temporary / "record-clang";
+  {
+    std::ofstream script(fake_clang, std::ios::binary);
+    script << "#!/bin/sh\n"
+              "if [ \"$1\" = \"--version\" ]; then\n"
+              "  echo 'clang version 22.1.0'\n"
+              "  exit 0\n"
+              "fi\n"
+              "printf '%s\\n' '-- command --' \"$@\" >> '"
+           << log.string()
+           << "'\n"
+              "previous=''\n"
+              "for argument in \"$@\"; do\n"
+              "  if [ \"$previous\" = \"-o\" ]; then : > \"$argument\"; fi\n"
+              "  previous=\"$argument\"\n"
+              "done\n"
+              "exit 0\n";
+  }
+  EXPECT(state, chmod(fake_clang.c_str(), 0700) == 0);
+
+  draft::NativeBuildOptions options;
+  options.clang_path = fake_clang.string();
+  options.build_directory = (temporary / "build").string();
+  options.output_path = (temporary / "program").string();
+  draft::DiagnosticSink missing_diagnostics;
+  const draft::NativeBuildResult missing = draft::build_native_artifact(
+      draft::make_aarch64_macos_profile(),
+      compiled,
+      options,
+      missing_diagnostics);
+  EXPECT(state, !missing.ok);
+  EXPECT(state, missing_diagnostics.has_errors());
+  EXPECT(state, !std::filesystem::exists(log));
+
+  draft::ForeignProviderInput mapping;
+  mapping.provider = "custom_math";
+  mapping.kind = draft::ForeignArtifactKind::Object;
+  mapping.path = provider;
+  options.foreign_providers.push_back(mapping);
+  draft::DiagnosticSink mapped_diagnostics;
+  const draft::NativeBuildResult mapped = draft::build_native_artifact(
+      draft::make_aarch64_macos_profile(),
+      compiled,
+      options,
+      mapped_diagnostics);
+  EXPECT(state, mapped.ok);
+  EXPECT(state, !mapped_diagnostics.has_errors());
+  EXPECT(state, read_file(log).find(provider.string()) != std::string::npos);
+
+  std::filesystem::remove_all(temporary, error);
 }
 
 void test_all_native_artifact_kinds(TestState &state) {
@@ -426,6 +504,7 @@ void test_locked_build_verifies_and_isolates_inputs(TestState &state) {
 int main() {
   TestState state;
   test_package_assembly_reaches_link(state);
+  test_explicit_foreign_provider_mapping(state);
   test_all_native_artifact_kinds(state);
   test_locked_build_verifies_and_isolates_inputs(state);
   if (state.failures != 0) {

@@ -3,12 +3,14 @@
 #pragma once
 
 #include "backend/locked_inputs.h"
+#include "backend/foreign_inputs.h"
 #include "compile/compiler.h"
 #include "source/diagnostic.h"
 #include "target/profile.h"
 
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace draft {
 
@@ -37,6 +39,7 @@ struct NativeBuildOptions {
   // discovery so host search paths cannot affect the artifact.
   bool locked = false;
   LockedNativeInputRoots locked_inputs;
+  std::vector<ForeignProviderInput> foreign_providers;
 };
 
 struct NativeBuildResult {

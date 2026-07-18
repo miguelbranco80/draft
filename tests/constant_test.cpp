@@ -46,7 +46,7 @@ struct AnalyzedSource {
     loaded.files.push_back(std::move(file));
 
     draft::TargetFacts target;
-    target.identity = "draft-aarch64-macos-v2";
+    target.identity = "draft-aarch64-macos-v3";
     target.arch = "aarch64";
     target.os = "macos";
     target.abi = "darwin";

@@ -29,7 +29,7 @@ void test_initial_profile(TestState &state) {
   std::string reason;
   EXPECT(state, draft::validate_target_profile(profile, reason));
   EXPECT(state, reason.empty());
-  EXPECT(state, profile.facts.identity == "draft-aarch64-macos-v2");
+  EXPECT(state, profile.facts.identity == "draft-aarch64-macos-v3");
   EXPECT(state, profile.facts.pointer_bits == 64);
   EXPECT(state, profile.facts.page_size == 16384);
   EXPECT(state, profile.llvm_triple == "arm64-apple-macosx14.0.0");
@@ -37,6 +37,8 @@ void test_initial_profile(TestState &state) {
   EXPECT(state, profile.parsed_assembly_architecture == "aarch64");
   EXPECT(state, profile.parsed_assembly_dialect == "draft-aarch64-apple-v2");
   EXPECT(state, profile.parsed_assembly_instructions.size() == 82);
+  EXPECT(state, profile.system_link_library == "System");
+  EXPECT(state, profile.system_link_providers.size() == 2);
   EXPECT(state, profile.assembly_files.size() == 3);
   EXPECT(state, draft::relocation_model_name(profile.relocation_model) == "pic");
   EXPECT(state, draft::code_model_name(profile.code_model) == "small");

@@ -149,6 +149,13 @@ static archive, or dynamic library for the selected target. Choosing static or
 dynamic linkage does not require a different source declaration or source-list
 build file.
 
+The bootstrap command-line spelling for a non-system mapping is
+`--provider zlib=object|archive|shared-library:<absolute-path>`. Resolution pins
+the provider identity, role, and exact artifact content; builds receive the
+physical path separately and require it to match. Target-profile system
+providers and compiler-owned runtime/package-assembly providers cannot be
+overridden.
+
 Draft 1 foreign blocks declare fixed-arity procedure symbols only. Variadic C calls
 and foreign data symbols require a fixed-signature C wrapper.
 

@@ -26,6 +26,7 @@ add_library(draft_build_options INTERFACE)
 add_library(
   draft_compiler
   src/assembly/aarch64.cpp
+  src/backend/foreign_inputs.cpp
   src/backend/locked_inputs.cpp
   src/backend/llvm_ir.cpp
   src/backend/toolchain.cpp
@@ -122,6 +123,10 @@ if(BUILD_TESTING)
   add_executable(draft_content_tree_tests tests/content_tree_test.cpp)
   target_link_libraries(draft_content_tree_tests PRIVATE draft_compiler)
   add_test(NAME draft_content_tree_tests COMMAND draft_content_tree_tests)
+
+  add_executable(draft_foreign_inputs_tests tests/foreign_inputs_test.cpp)
+  target_link_libraries(draft_foreign_inputs_tests PRIVATE draft_compiler)
+  add_test(NAME draft_foreign_inputs_tests COMMAND draft_foreign_inputs_tests)
 
   add_executable(draft_lexer_tests tests/lexer_test.cpp)
   target_link_libraries(draft_lexer_tests PRIVATE draft_compiler)

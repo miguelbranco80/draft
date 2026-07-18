@@ -2,6 +2,9 @@
 
 #include "backend/toolchain.h"
 
+#include "base/content_tree.h"
+
+#include <algorithm>
 #include <array>
 #include <cerrno>
 #include <cstddef>
@@ -9,6 +12,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <string>
 #include <system_error>
 #include <utility>
@@ -197,6 +201,202 @@ void append_locked_arguments(
   return nullptr;
 }
 
+void add_provider(std::vector<std::string> &providers, std::string_view provider) {
+  if (std::find(providers.begin(), providers.end(), provider) == providers.end()) {
+    providers.emplace_back(provider);
+  }
+}
+
+[[nodiscard]] bool has_package_assembly(
+    const CompileWorkspaceResult &compiled) {
+  for (const std::optional<CompiledPackage> &package : compiled.packages) {
+    if (package.has_value() && !package->assembly_sources.empty()) return true;
+  }
+  return false;
+}
+
+[[nodiscard]] bool built_in_provider(
+    const TargetProfile &target,
+    const CompileWorkspaceResult &compiled,
+    std::string_view provider) {
+  if (provider == "draft_runtime") return true;
+  if (provider == "package_assembly") return has_package_assembly(compiled);
+  return std::binary_search(
+      target.system_link_providers.begin(),
+      target.system_link_providers.end(),
+      provider);
+}
+
+[[nodiscard]] bool verify_provider_set(
+    const TargetProfile &target,
+    const CompileWorkspaceResult &compiled,
+    const NativeBuildOptions &options,
+    std::vector<VerifiedForeignProviderInput> &verified,
+    DiagnosticSink &diagnostics) {
+  std::vector<std::string> required;
+  for (const std::optional<CompiledPackage> &package : compiled.packages) {
+    if (!package.has_value()) continue;
+    for (const std::string &provider : package->native_interop.providers) {
+      add_provider(required, provider);
+    }
+  }
+
+  if (options.locked || compiled.resolution_manifest.has_value()) {
+    if (!compiled.resolution_manifest.has_value() ||
+        !verify_foreign_provider_inputs(
+            options.foreign_providers,
+            compiled.resolution_manifest->external_inputs,
+            verified,
+            diagnostics)) {
+      return false;
+    }
+    for (const ExternalInputPin &pin : compiled.resolution_manifest->external_inputs) {
+      if (!options.locked &&
+          (pin.kind == ExternalInputKind::Toolchain ||
+           pin.kind == ExternalInputKind::Sdk)) {
+        continue;
+      }
+      if (pin.kind != ExternalInputKind::Toolchain &&
+          pin.kind != ExternalInputKind::Sdk &&
+          pin.kind != ExternalInputKind::Object &&
+          pin.kind != ExternalInputKind::Archive &&
+          pin.kind != ExternalInputKind::SharedLibrary) {
+        diagnostics.error(
+            SourceRange::invalid(),
+            "locked native adapter does not implement external input role '" +
+                std::string(external_input_kind_name(pin.kind)) + "'");
+        return false;
+      }
+    }
+  } else if (!inspect_foreign_provider_inputs(
+                 options.foreign_providers, verified, diagnostics)) {
+    return false;
+  }
+
+  for (const VerifiedForeignProviderInput &input : verified) {
+    if (std::find(required.begin(), required.end(), input.provider) ==
+        required.end()) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "foreign provider mapping '" + input.provider +
+              "' is not required by the compiled program");
+      return false;
+    }
+    if (built_in_provider(target, compiled, input.provider)) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "foreign provider '" + input.provider +
+              "' is owned by the compiler or target profile and cannot be remapped");
+      return false;
+    }
+  }
+  for (const std::string &provider : required) {
+    if (built_in_provider(target, compiled, provider)) continue;
+    const bool configured = std::any_of(
+        verified.begin(),
+        verified.end(),
+        [&provider](const VerifiedForeignProviderInput &input) {
+          return input.provider == provider;
+        });
+    if (!configured) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "foreign provider '" + provider +
+              "' has no exact object, archive, or shared-library mapping");
+      return false;
+    }
+  }
+  return true;
+}
+
+[[nodiscard]] ExternalInputKind provider_external_kind(
+    ForeignArtifactKind kind) {
+  switch (kind) {
+  case ForeignArtifactKind::Object: return ExternalInputKind::Object;
+  case ForeignArtifactKind::Archive: return ExternalInputKind::Archive;
+  case ForeignArtifactKind::SharedLibrary:
+    return ExternalInputKind::SharedLibrary;
+  }
+  return ExternalInputKind::ForeignArtifact;
+}
+
+[[nodiscard]] bool snapshot_locked_providers(
+    const std::filesystem::path &build_directory,
+    const ResolutionManifest &manifest,
+    std::vector<VerifiedForeignProviderInput> &providers,
+    DiagnosticSink &diagnostics) {
+  for (std::size_t index = 0; index < providers.size(); ++index) {
+    VerifiedForeignProviderInput &provider = providers[index];
+    std::ifstream input(provider.path, std::ios::binary);
+    if (!input) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "cannot snapshot foreign provider '" + provider.provider + "'");
+      return false;
+    }
+    std::string bytes{
+        std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
+    if (input.bad()) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "cannot read complete foreign provider '" + provider.provider + "'");
+      return false;
+    }
+    const std::string extension = provider.kind == ForeignArtifactKind::Object
+        ? ".o"
+        : (provider.kind == ForeignArtifactKind::Archive ? ".a" : ".dylib");
+    const std::filesystem::path snapshot =
+        build_directory / ("foreign-" + std::to_string(index) + extension);
+    std::string reason;
+    if (!write_atomic(snapshot, bytes, reason)) {
+      diagnostics.error(SourceRange::invalid(), reason);
+      return false;
+    }
+    std::error_code permission_error;
+    const std::filesystem::perms permissions =
+        std::filesystem::status(provider.path, permission_error).permissions();
+    if (permission_error) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "cannot inspect foreign provider permissions: " +
+              permission_error.message());
+      return false;
+    }
+    std::filesystem::permissions(
+        snapshot,
+        permissions,
+        std::filesystem::perm_options::replace,
+        permission_error);
+    if (permission_error) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "cannot preserve foreign provider permissions: " +
+              permission_error.message());
+      return false;
+    }
+    Sha256Digest digest;
+    if (!hash_content_tree(snapshot, digest, diagnostics)) return false;
+    const ExternalInputKind expected_kind = provider_external_kind(provider.kind);
+    const auto pin = std::find_if(
+        manifest.external_inputs.begin(),
+        manifest.external_inputs.end(),
+        [&](const ExternalInputPin &candidate) {
+          return candidate.kind == expected_kind &&
+              candidate.name == provider.provider;
+        });
+    if (pin == manifest.external_inputs.end() ||
+        pin->content_digest != digest) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "foreign provider changed while creating the locked build snapshot: '" +
+              provider.provider + "'");
+      return false;
+    }
+    provider.path = snapshot;
+  }
+  return true;
+}
+
 } // namespace
 
 std::string_view native_artifact_kind_name(NativeArtifactKind kind) {
@@ -231,6 +431,12 @@ NativeBuildResult build_native_artifact(
     diagnostics.error(
         SourceRange::invalid(),
         "locked native build cannot allow an unpinned host toolchain");
+    return result;
+  }
+
+  std::vector<VerifiedForeignProviderInput> foreign_providers;
+  if (!verify_provider_set(
+          target, compiled, options, foreign_providers, diagnostics)) {
     return result;
   }
 
@@ -302,6 +508,14 @@ NativeBuildResult build_native_artifact(
     return result;
   }
   const std::filesystem::path build_directory(options.build_directory);
+  if (options.locked && !foreign_providers.empty() &&
+      !snapshot_locked_providers(
+          build_directory,
+          *compiled.resolution_manifest,
+          foreign_providers,
+          diagnostics)) {
+    return result;
+  }
   const std::filesystem::path output_path(options.output_path);
   if (options.artifact_kind == NativeArtifactKind::Assembly) {
     std::filesystem::create_directories(output_path, directory_error);
@@ -429,6 +643,12 @@ NativeBuildResult build_native_artifact(
     return result;
   }
 
+  for (const VerifiedForeignProviderInput &provider : foreign_providers) {
+    if (provider.kind == ForeignArtifactKind::Object) {
+      objects.push_back(provider.path.string());
+    }
+  }
+
   if (output_path.has_parent_path()) {
     std::filesystem::create_directories(output_path.parent_path(), directory_error);
     if (directory_error) {
@@ -440,6 +660,13 @@ NativeBuildResult build_native_artifact(
   }
 
   if (options.artifact_kind == NativeArtifactKind::StaticLibrary) {
+    if (!foreign_providers.empty()) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "static library output cannot embed a mapped foreign provider; "
+          "link that provider when the archive is consumed");
+      return result;
+    }
     std::vector<std::string> archive_arguments{
         archiver_path,
         options.locked ? "rcsD" : "-rcs",
@@ -470,14 +697,42 @@ NativeBuildResult build_native_artifact(
   link_arguments.push_back(
       "-mmacosx-version-min=" + target.minimum_os_version);
   if (options.artifact_kind == NativeArtifactKind::Object) {
+    for (const VerifiedForeignProviderInput &provider : foreign_providers) {
+      if (provider.kind == ForeignArtifactKind::SharedLibrary) {
+        diagnostics.error(
+            SourceRange::invalid(),
+            "relocatable object output cannot bind shared-library provider '" +
+                provider.provider + "'");
+        return result;
+      }
+    }
     link_arguments.push_back("-nostdlib");
     link_arguments.push_back("-Wl,-r");
   } else if (options.artifact_kind == NativeArtifactKind::DynamicLibrary) {
+    link_arguments.push_back("-nostdlib");
     link_arguments.push_back("-dynamiclib");
     link_arguments.push_back(
         "-Wl,-install_name,@rpath/" + output_path.filename().string());
+  } else if (options.artifact_kind == NativeArtifactKind::Executable) {
+    link_arguments.push_back("-nostdlib");
   }
   link_arguments.insert(link_arguments.end(), objects.begin(), objects.end());
+  if (options.artifact_kind == NativeArtifactKind::Object) {
+    for (const VerifiedForeignProviderInput &provider : foreign_providers) {
+      if (provider.kind == ForeignArtifactKind::Archive) {
+        link_arguments.push_back(provider.path.string());
+      }
+    }
+  }
+  if (options.artifact_kind == NativeArtifactKind::Executable ||
+      options.artifact_kind == NativeArtifactKind::DynamicLibrary) {
+    for (const VerifiedForeignProviderInput &provider : foreign_providers) {
+      if (provider.kind != ForeignArtifactKind::Object) {
+        link_arguments.push_back(provider.path.string());
+      }
+    }
+    link_arguments.push_back("-l" + target.system_link_library);
+  }
   link_arguments.push_back("-o");
   link_arguments.push_back(output_path.string());
   const ProcessResult link = run_process(link_arguments, options.locked);
