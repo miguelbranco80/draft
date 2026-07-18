@@ -25,6 +25,7 @@
 #include <limits>
 #include <span>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace draft {
@@ -40,32 +41,90 @@ struct SemanticEffect {
   std::string root_relative_path;
   std::string declaration;
   std::uint32_t flow_parameter = std::numeric_limits<std::uint32_t>::max();
+  // FlowCall rows may select a procedure field nested inside a typed argument.
+  // An empty path retains the original direct procedure-parameter meaning.
+  // Context-rooted paths have no parameter and describe the hidden Context.
+  std::vector<std::string> flow_path;
+  bool flow_context = false;
+
+  SemanticEffect() = default;
+  SemanticEffect(
+      EffectKind effect_kind,
+      SymbolId effect_symbol,
+      std::string effect_text,
+      std::string effect_root_identity,
+      std::string effect_root_relative_path,
+      std::string effect_declaration,
+      std::uint32_t effect_flow_parameter =
+          std::numeric_limits<std::uint32_t>::max(),
+      std::vector<std::string> effect_flow_path = {},
+      bool effect_flow_context = false)
+      : kind(effect_kind), symbol(effect_symbol), text(std::move(effect_text)),
+        root_identity(std::move(effect_root_identity)),
+        root_relative_path(std::move(effect_root_relative_path)),
+        declaration(std::move(effect_declaration)),
+        flow_parameter(effect_flow_parameter),
+        flow_path(std::move(effect_flow_path)),
+        flow_context(effect_flow_context) {}
 
   bool operator==(const SemanticEffect &) const = default;
 };
 
+// One path-shaped input slot for a procedure value. Parameter slots begin at a
+// zero-based formal parameter and then select named aggregate fields. Context
+// slots use the same field path against the hidden runtime Context instead.
+struct ProcedureFlowSlot {
+  std::uint32_t parameter = std::numeric_limits<std::uint32_t>::max();
+  std::vector<std::string> path;
+  bool context = false;
+
+  bool operator==(const ProcedureFlowSlot &) const = default;
+};
+
 // One conservative value set for a procedure-typed expression. targets are
-// statically named procedures; parameter_slots are zero-based parameters of
-// the current procedure whose eventual values flow here. unknown is sticky
-// when type erasure, an uninitialized value, or an unsupported storage path can
-// contribute another target. Vectors retain deterministic semantic order.
+// statically named procedures; flow_slots identify typed inputs whose eventual
+// values flow here. unknown is sticky when type erasure, an uninitialized
+// value, or an unsupported storage path can contribute another target. Vectors
+// retain deterministic semantic order.
 struct ProcedureValueSummary {
   std::vector<SymbolId> targets;
-  std::vector<std::uint32_t> parameter_slots;
+  std::vector<ProcedureFlowSlot> flow_slots;
   bool unknown = false;
+};
+
+// A call argument can contain several procedure leaves. Each row is relative
+// to the argument root, so a callee slot `allocator.procedure` performs one
+// exact lookup without treating the rest of the aggregate as type-erased.
+struct ProcedureFieldValueSummary {
+  std::vector<std::string> path;
+  ProcedureValueSummary value;
+};
+
+struct ProcedureArgumentSummary {
+  std::vector<ProcedureFieldValueSummary> fields;
 };
 
 // A direct named invocation retains the procedure-valued actual arguments
 // needed to substitute the callee's FlowCall effects. Non-procedure arguments
 // have empty known value sets and are never consulted by a valid FlowCall row.
 struct ProcedureInvocationSummary {
+  HirExpressionId expression;
   SymbolId callee;
-  std::vector<ProcedureValueSummary> arguments;
+  std::vector<ProcedureArgumentSummary> arguments;
 };
 
 struct ProcedureFlowInvocationSummary {
+  HirExpressionId expression;
   ProcedureValueSummary callee;
-  std::vector<ProcedureValueSummary> arguments;
+  std::vector<ProcedureArgumentSummary> arguments;
+};
+
+// Lexical denials need the effects of the exact call expression, after typed
+// callback substitution, rather than a second less-informed HIR walk. These
+// rows are derived after the procedure fixed point and remain process-local.
+struct CallSiteEffectSummary {
+  HirExpressionId expression;
+  std::vector<SemanticEffect> effects;
 };
 
 // ProcedureEffectSummary keeps direct facts separate from the closed local
@@ -83,8 +142,11 @@ struct ProcedureEffectSummary {
 
 struct EffectSummaryResult {
   std::vector<ProcedureEffectSummary> procedures;
+  std::vector<CallSiteEffectSummary> call_sites;
 
   [[nodiscard]] const ProcedureEffectSummary *find(SymbolId procedure) const;
+  [[nodiscard]] const CallSiteEffectSummary *find_call_site(
+      HirExpressionId expression) const;
 };
 
 [[nodiscard]] EffectSummaryResult summarize_package_effects(

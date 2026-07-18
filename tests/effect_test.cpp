@@ -179,6 +179,10 @@ void test_target_and_package_assembly_summaries(TestState &state) {
 
 Callback :: c proc(user: rawptr) -> rawptr
 
+Callback_Box :: @repr(C) struct {
+    callback: Callback,
+}
+
 foreign darwin {
     pthread_create :: c proc(
         thread: ^rawptr,
@@ -194,7 +198,7 @@ foreign package_assembly {
 }
 
 foreign custom_provider {
-    audited :: c proc(callback: Callback, user: rawptr)
+    audited :: c proc(box: Callback_Box)
 }
 
 counter: i32
@@ -218,7 +222,7 @@ through_unknown :: proc() {
 }
 
 through_audit :: proc() {
-    audited(worker, nil)
+    audited(Callback_Box{callback = worker})
 }
 )draft");
   file.syntax.emplace(draft::parse_source_file(sources, file.source, diagnostics));
@@ -241,6 +245,7 @@ through_audit :: proc() {
   draft::ForeignAuditEffect callback;
   callback.kind = draft::EffectKind::FlowCall;
   callback.flow_parameter = 0;
+  callback.flow_path = {"callback"};
   audited_symbol.effects.push_back(callback);
   draft::ForeignAuditEffect assembly;
   assembly.kind = draft::EffectKind::Assembly;
@@ -306,12 +311,135 @@ through_audit :: proc() {
       !has_effect(*audit_summary, draft::EffectKind::UnknownCall));
 }
 
+void test_typed_and_context_flow_paths(TestState &state) {
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  draft::LoadedPackage loaded;
+  loaded.short_name = "path_effects";
+  draft::LoadedPackageFile file;
+  file.kind = draft::PackageFileKind::DraftSource;
+  file.relative_name = "package.draft";
+  file.source = sources.add_source(
+      "package.draft",
+      R"draft(package path_effects
+
+Callback_Box :: struct {
+    callback: proc(),
+}
+
+danger :: proc() {
+    assert(true)
+}
+
+invoke_box :: proc(box: Callback_Box) {
+    box.callback()
+}
+
+through_box :: proc() {
+    box: Callback_Box
+    box.callback = danger
+    invoke_box(box)
+}
+
+context_callback :: proc(
+    condition, message, source_file: string,
+    line, column: usize,
+) {
+    assert(true)
+}
+
+through_context :: proc() {
+    context.assertion_failure_proc = context_callback
+    context.assertion_failure_proc("", "", "", 0, 0)
+}
+)draft");
+  file.syntax.emplace(draft::parse_source_file(sources, file.source, diagnostics));
+  loaded.files.push_back(std::move(file));
+  const draft::TargetProfile target = draft::make_aarch64_macos_profile();
+  draft::SemanticAnalysisResult semantics = draft::analyze_package_semantics(
+      sources, loaded, target.facts, diagnostics);
+  draft::BodyCheckResult bodies = draft::check_package_bodies(
+      sources,
+      loaded,
+      semantics.selections,
+      semantics.package,
+      semantics.constants,
+      target.facts,
+      diagnostics);
+  const draft::EffectSummaryResult effects =
+      draft::summarize_package_effects(
+          semantics.package, bodies.program, &target);
+  if (diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+  }
+  EXPECT(state, semantics.ok);
+  EXPECT(state, bodies.ok);
+
+  const std::optional<draft::SymbolId> invoke_box =
+      symbol(semantics.package, "invoke_box");
+  const std::optional<draft::SymbolId> through_box =
+      symbol(semantics.package, "through_box");
+  const std::optional<draft::SymbolId> through_context =
+      symbol(semantics.package, "through_context");
+  EXPECT(state, invoke_box.has_value());
+  EXPECT(state, through_box.has_value());
+  EXPECT(state, through_context.has_value());
+  if (!invoke_box || !through_box || !through_context) return;
+
+  const draft::ProcedureEffectSummary *invoke_summary = effects.find(*invoke_box);
+  const draft::ProcedureEffectSummary *box_summary = effects.find(*through_box);
+  const draft::ProcedureEffectSummary *context_summary =
+      effects.find(*through_context);
+  EXPECT(state, invoke_summary != nullptr);
+  EXPECT(state, box_summary != nullptr);
+  EXPECT(state, context_summary != nullptr);
+  if (invoke_summary == nullptr || box_summary == nullptr ||
+      context_summary == nullptr) {
+    return;
+  }
+
+  const auto typed_slot = std::find_if(
+      invoke_summary->effects.begin(),
+      invoke_summary->effects.end(),
+      [](const draft::SemanticEffect &effect) {
+        return effect.kind == draft::EffectKind::FlowCall;
+      });
+  EXPECT(state, typed_slot != invoke_summary->effects.end());
+  if (typed_slot != invoke_summary->effects.end()) {
+    EXPECT(state, typed_slot->flow_parameter == 0);
+    EXPECT(state,
+        typed_slot->flow_path == std::vector<std::string>{"callback"});
+    EXPECT(state, !typed_slot->flow_context);
+  }
+  EXPECT(state, has_effect(*box_summary, draft::EffectKind::RuntimeAssert));
+  EXPECT(state, !has_effect(*box_summary, draft::EffectKind::UnknownCall));
+
+  const auto context_slot = std::find_if(
+      context_summary->effects.begin(),
+      context_summary->effects.end(),
+      [](const draft::SemanticEffect &effect) {
+        return effect.kind == draft::EffectKind::FlowCall &&
+            effect.flow_context;
+      });
+  EXPECT(state, context_slot != context_summary->effects.end());
+  if (context_slot != context_summary->effects.end()) {
+    EXPECT(state,
+        context_slot->flow_path ==
+            std::vector<std::string>{"assertion_failure_proc"});
+  }
+  EXPECT(state,
+      has_effect(*context_summary, draft::EffectKind::RuntimeAssert));
+  EXPECT(state,
+      !has_effect(*context_summary, draft::EffectKind::UnknownCall));
+}
+
 } // namespace
 
 int main() {
   TestState state;
   test_transitive_effects(state);
   test_target_and_package_assembly_summaries(state);
+  test_typed_and_context_flow_paths(state);
   if (state.failures != 0) {
     std::cerr << state.failures << " effect summary expectation(s) failed\n";
     return EXIT_FAILURE;

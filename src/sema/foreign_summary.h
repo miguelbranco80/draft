@@ -23,6 +23,8 @@ struct ForeignAuditEffect {
   std::string detail;
   std::uint32_t flow_parameter =
       std::numeric_limits<std::uint32_t>::max();
+  std::vector<std::string> flow_path;
+  bool flow_context = false;
 };
 
 struct ForeignAuditSymbol {

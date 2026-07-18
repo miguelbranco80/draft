@@ -128,13 +128,15 @@ unknown providers before invoking Clang. A locked link first copies each
 verified artifact into the isolated build directory and re-hashes that snapshot,
 so the linker never consumes a mutable workspace path after verification.
 
-Procedure effect interfaces retain direct procedure-parameter flow slots.
-Calls, ordinary local copies, and cross-package interface composition substitute
-finite named targets at the call site. This is a semantic may-target set: all
-source assignments are unioned, and optimization is never allowed to narrow it.
-Typed member paths, returned procedures, and hidden-context procedure fields
-still require the richer path-shaped slot representation before this contract
-is complete.
+Procedure effect interfaces retain path-shaped procedure flow slots. Calls,
+ordinary local and typed-field copies, hidden-Context provider fields, and
+cross-package interface composition substitute finite named targets at the
+exact call site. Transitive declaration calls are effects as well, so denying a
+declaration reaches through helpers and procedure-valued fields. This is a
+semantic may-target set: all source assignments are unioned, and optimization
+is never allowed to narrow it. Returned procedure values and writes that must
+flow back through a separate callee, including nested higher-order callback
+arguments, remain the next closure extension.
 
 External artifact summaries use the strict
 `draft-provider-denial-summary-v1` line format documented in section 12. The

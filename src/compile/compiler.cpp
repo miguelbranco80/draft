@@ -209,6 +209,9 @@ void refresh_imported_effects(
           effect.root_relative_path,
           effect.declaration,
           effect.detail,
+          effect.flow_parameter,
+          effect.flow_path,
+          effect.flow_context,
       });
     }
   }

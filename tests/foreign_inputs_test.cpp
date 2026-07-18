@@ -8,6 +8,7 @@
 #include <fstream>
 #include <iostream>
 #include <span>
+#include <string>
 #include <string_view>
 #include <system_error>
 #include <vector>
@@ -78,7 +79,7 @@ void test_pin_verify_and_relocation(TestState &state) {
       "provider\tcustom_math\n"
       "artifact\t" + pins.front().content_digest.hex() + "\n"
       "symbol\tdraft_custom_math\n"
-      "callback\t0\n"
+      "callback\t0\tstate\tprocedure\n"
       "effect\tassembly\n"
       "end\n";
   std::ofstream(first_summary, std::ios::binary) << summary_bytes;
@@ -112,6 +113,9 @@ void test_pin_verify_and_relocation(TestState &state) {
           audits[0].symbols[0].effects[0].kind ==
               draft::EffectKind::FlowCall);
       EXPECT(state, audits[0].symbols[0].effects[0].flow_parameter == 0);
+      EXPECT(state,
+          (audits[0].symbols[0].effects[0].flow_path ==
+              std::vector<std::string>{"state", "procedure"}));
       EXPECT(state,
           audits[0].symbols[0].effects[1].kind ==
               draft::EffectKind::Assembly);

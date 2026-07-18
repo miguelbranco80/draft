@@ -171,8 +171,9 @@ end
 ```
 
 Symbols and the records inside each symbol block are bytewise sorted and
-unique. A record may name a callback parameter, `assert`, `assembly`,
-`unchecked`, `context\t<field>`, or
+unique. A callback record names a parameter and may continue with a typed field
+path, for example `callback\t0\tallocator\tprocedure`. Other records name
+`assert`, `assembly`, `unchecked`, `context\t<field>`, or
 `declaration\t<root>\t<package-path>\t<public-name>`. An empty symbol block is
 an audited no-effect body. Missing symbols remain unknown; a summary never
 grants provider-wide trust.

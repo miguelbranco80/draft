@@ -192,6 +192,64 @@ deny asm {
   EXPECT(state, rendered.find("unknown call") == std::string::npos);
 }
 
+void test_typed_field_flow_substitution(TestState &state) {
+  DenialSource source(R"draft(package denials
+
+Callback_Box :: struct {
+    callback: proc(),
+}
+
+danger :: proc() {
+    assert(true)
+}
+
+invoke_box :: proc(box: Callback_Box) {
+    box.callback()
+}
+
+deny assert {
+    bad :: proc() {
+        box: Callback_Box
+        box.callback = danger
+        invoke_box(box)
+    }
+}
+)draft");
+  EXPECT(state, source.semantics.ok);
+  EXPECT(state, source.bodies.ok);
+  EXPECT(state, !source.denials_ok);
+  EXPECT(state, source.diagnostics.error_count() == 1);
+  const std::string rendered =
+      draft::render_diagnostics(source.sources, source.diagnostics);
+  EXPECT(state, rendered.find("denied assert") != std::string::npos);
+  EXPECT(state, rendered.find("unknown call") == std::string::npos);
+}
+
+void test_transitive_declaration_denial(TestState &state) {
+  DenialSource source(R"draft(package denials
+
+forbidden :: proc() {}
+
+helper :: proc() {
+    forbidden()
+}
+
+deny forbidden {
+    bad :: proc() {
+        helper()
+    }
+}
+)draft");
+  EXPECT(state, source.semantics.ok);
+  EXPECT(state, source.bodies.ok);
+  EXPECT(state, !source.denials_ok);
+  EXPECT(state, source.diagnostics.error_count() == 1);
+  const std::string rendered =
+      draft::render_diagnostics(source.sources, source.diagnostics);
+  EXPECT(state, rendered.find("denied declaration") != std::string::npos);
+  EXPECT(state, rendered.find("unknown call") == std::string::npos);
+}
+
 } // namespace
 
 int main() {
@@ -200,6 +258,8 @@ int main() {
   test_unrelated_denial(state);
   test_flow_slot_substitution(state);
   test_audited_foreign_effect(state);
+  test_typed_field_flow_substitution(state);
+  test_transitive_declaration_denial(state);
   if (state.failures != 0) {
     std::cerr << state.failures << " denial expectation(s) failed\n";
     return EXIT_FAILURE;

@@ -35,11 +35,12 @@ void add_target(ProcedureValueSummary &value, SymbolId target) {
   }
 }
 
-void add_parameter_slot(ProcedureValueSummary &value, std::uint32_t slot) {
+void add_flow_slot(
+    ProcedureValueSummary &value, ProcedureFlowSlot slot) {
   if (std::find(
-          value.parameter_slots.begin(), value.parameter_slots.end(), slot) ==
-      value.parameter_slots.end()) {
-    value.parameter_slots.push_back(slot);
+          value.flow_slots.begin(), value.flow_slots.end(), slot) ==
+      value.flow_slots.end()) {
+    value.flow_slots.push_back(std::move(slot));
   }
 }
 
@@ -47,14 +48,14 @@ void merge_value(
     ProcedureValueSummary &destination,
     const ProcedureValueSummary &source) {
   for (SymbolId target : source.targets) add_target(destination, target);
-  for (std::uint32_t slot : source.parameter_slots) {
-    add_parameter_slot(destination, slot);
+  for (const ProcedureFlowSlot &slot : source.flow_slots) {
+    add_flow_slot(destination, slot);
   }
   destination.unknown = destination.unknown || source.unknown;
 }
 
 [[nodiscard]] bool value_is_empty(const ProcedureValueSummary &value) {
-  return value.targets.empty() && value.parameter_slots.empty() &&
+  return value.targets.empty() && value.flow_slots.empty() &&
       !value.unknown;
 }
 
@@ -86,6 +87,7 @@ public:
       ProcedureEffectSummary summary;
       summary.procedure = procedure.symbol;
       current_ = &summary;
+      current_procedure_ = procedure.symbol;
       procedure_values_.clear();
       seed_parameter_slots(procedure.symbol);
       visit_block(procedure.body);
@@ -104,15 +106,23 @@ public:
       ProcedureEffectSummary summary;
       summary.procedure = binding.symbol;
       const Symbol &symbol = package_.symbols.symbol(binding.symbol);
-      std::vector<ProcedureValueSummary> arguments;
+      std::vector<ProcedureArgumentSummary> arguments;
       if (symbol.type.is_valid()) {
         const Type &type = package_.types.type(symbol.type);
         if (type.kind == TypeKind::Procedure && !type.members.empty()) {
           arguments.resize(type.members.size() - 1);
           for (std::size_t index = 0; index < arguments.size(); ++index) {
-            if (procedure_type(type.members[index])) {
-              arguments[index].parameter_slots.push_back(
-                  static_cast<std::uint32_t>(index));
+            const Type &parameter_type =
+                package_.types.type(type.members[index]);
+            const bool follow_pointer =
+                parameter_type.kind == TypeKind::Pointer ||
+                parameter_type.kind == TypeKind::MultiPointer;
+            for (const std::vector<std::string> &path :
+                 procedure_paths(type.members[index], follow_pointer)) {
+              ProcedureValueSummary value;
+              value.flow_slots.push_back({
+                  static_cast<std::uint32_t>(index), path, false});
+              arguments[index].fields.push_back({path, std::move(value)});
             }
           }
         }
@@ -123,6 +133,7 @@ public:
       result_.procedures.push_back(std::move(summary));
     }
     current_ = nullptr;
+    current_procedure_ = {};
     procedure_values_.clear();
 
     // Every progress step adds one member of a finite source-derived set. The
@@ -144,12 +155,43 @@ public:
       }
       if (!changed) break;
     }
+
+    // Recompose each source call once against the closed procedure summaries.
+    // The denial walker consumes these exact rows, so a typed field selected at
+    // one call site cannot degrade back into an unknown edge during its second
+    // lexical-policy check.
+    for (const ProcedureEffectSummary &summary : result_.procedures) {
+      for (const ProcedureInvocationSummary &invocation :
+           summary.direct_invocations) {
+        ProcedureEffectSummary site;
+        [[maybe_unused]] const bool added = compose_named_call(
+            site, invocation.callee, invocation.arguments);
+        result_.call_sites.push_back(
+            {invocation.expression, std::move(site.effects)});
+      }
+      for (const ProcedureFlowInvocationSummary &invocation :
+           summary.direct_flow_calls) {
+        ProcedureEffectSummary site;
+        [[maybe_unused]] const bool added = compose_value_call(
+            site, invocation.callee, invocation.arguments);
+        result_.call_sites.push_back(
+            {invocation.expression, std::move(site.effects)});
+      }
+    }
     return std::move(result_);
   }
 
 private:
+  struct StoragePath {
+    SymbolId symbol;
+    std::vector<std::string> fields;
+    bool context = false;
+  };
+
   struct StoredProcedureValue {
     SymbolId symbol;
+    std::vector<std::string> path;
+    bool context = false;
     ProcedureValueSummary value;
   };
 
@@ -158,28 +200,187 @@ private:
         package_.types.type(type).kind == TypeKind::Procedure;
   }
 
-  [[nodiscard]] ProcedureValueSummary *stored_value(SymbolId symbol) {
+  [[nodiscard]] std::optional<SymbolId> type_owner(TypeId type) const {
+    for (const OwnedSemanticScope &owned : package_.owned_scopes) {
+      if (package_.symbols.scope(owned.scope).kind == ScopeKind::Type &&
+          package_.symbols.symbol(owned.owner).type == type) {
+        return owned.owner;
+      }
+    }
+    return std::nullopt;
+  }
+
+  [[nodiscard]] std::vector<std::pair<std::string, TypeId>> fields(
+      TypeId type) const {
+    std::vector<std::pair<std::string, TypeId>> result;
+    if (!type.is_valid()) return result;
+    const Type &row = package_.types.type(type);
+    if (row.kind == TypeKind::Tuple) {
+      for (std::size_t index = 0; index < row.members.size(); ++index) {
+        result.push_back({std::to_string(index), row.members[index]});
+      }
+      return result;
+    }
+    const std::optional<SymbolId> owner = type_owner(type);
+    if (!owner.has_value()) return result;
+    for (const AggregateMember &member : package_.aggregate_members) {
+      if (member.owner != *owner) continue;
+      const Symbol &symbol = package_.symbols.symbol(member.member);
+      if (symbol.kind == SymbolKind::Field) {
+        result.push_back({symbol.name, symbol.type});
+      }
+    }
+    return result;
+  }
+
+  void collect_procedure_paths(
+      TypeId type,
+      std::vector<std::string> &path,
+      std::vector<TypeId> &active,
+      bool follow_pointer,
+      std::vector<std::vector<std::string>> &result) const {
+    if (!type.is_valid()) return;
+    const Type &row = package_.types.type(type);
+    if (row.kind == TypeKind::Procedure) {
+      result.push_back(path);
+      return;
+    }
+    if ((row.kind == TypeKind::Pointer ||
+         row.kind == TypeKind::MultiPointer) && follow_pointer) {
+      if (std::find(active.begin(), active.end(), type) != active.end()) return;
+      active.push_back(type);
+      collect_procedure_paths(row.element, path, active, true, result);
+      active.pop_back();
+      return;
+    }
+    if (row.kind == TypeKind::Distinct) {
+      collect_procedure_paths(row.element, path, active, follow_pointer, result);
+      return;
+    }
+    if (row.kind != TypeKind::Struct && row.kind != TypeKind::Tuple) return;
+    if (std::find(active.begin(), active.end(), type) != active.end()) return;
+    active.push_back(type);
+    for (const auto &[name, member_type] : fields(type)) {
+      path.push_back(name);
+      collect_procedure_paths(member_type, path, active, true, result);
+      path.pop_back();
+    }
+    active.pop_back();
+  }
+
+  [[nodiscard]] std::vector<std::vector<std::string>> procedure_paths(
+      TypeId type, bool follow_pointer = false) const {
+    std::vector<std::vector<std::string>> result;
+    std::vector<std::string> path;
+    std::vector<TypeId> active;
+    collect_procedure_paths(type, path, active, follow_pointer, result);
+    return result;
+  }
+
+  [[nodiscard]] std::optional<std::string> member_name(
+      const HirExpression &expression) const {
+    if (expression.symbol.is_valid()) {
+      return package_.symbols.symbol(expression.symbol).name;
+    }
+    if (expression.constant.kind == ConstantKind::Integer) {
+      return expression.constant.integer.to_decimal();
+    }
+    return std::nullopt;
+  }
+
+  [[nodiscard]] std::optional<StoragePath> storage_path(
+      HirExpressionId id) const {
+    if (!id.is_valid()) return std::nullopt;
+    const HirExpression &expression = hir_.expression(id);
+    if (expression.kind == HirExpressionKind::Context) {
+      StoragePath result;
+      result.context = true;
+      return result;
+    }
+    if (expression.kind == HirExpressionKind::Symbol &&
+        expression.symbol.is_valid()) {
+      const SymbolKind kind =
+          package_.symbols.symbol(expression.symbol).kind;
+      if (kind == SymbolKind::Variable || kind == SymbolKind::Local ||
+          kind == SymbolKind::Parameter) {
+        StoragePath result;
+        result.symbol = expression.symbol;
+        return result;
+      }
+      return std::nullopt;
+    }
+    if ((expression.kind == HirExpressionKind::Dereference ||
+         expression.kind == HirExpressionKind::Address) &&
+        !expression.operands.empty()) {
+      return storage_path(expression.operands.front());
+    }
+    if (expression.kind != HirExpressionKind::Member ||
+        expression.operands.empty()) {
+      return std::nullopt;
+    }
+    std::optional<StoragePath> result =
+        storage_path(expression.operands.front());
+    const std::optional<std::string> name = member_name(expression);
+    if (!result.has_value() || !name.has_value()) return std::nullopt;
+    result->fields.push_back(*name);
+    return result;
+  }
+
+  [[nodiscard]] std::optional<std::uint32_t> parameter_ordinal(
+      SymbolId parameter) const {
+    for (const OwnedSemanticScope &owned : package_.owned_scopes) {
+      if (owned.owner != current_procedure_ ||
+          package_.symbols.scope(owned.scope).kind != ScopeKind::Procedure) {
+        continue;
+      }
+      std::uint32_t ordinal = 0;
+      for (SymbolId symbol : package_.symbols.scope(owned.scope).symbols) {
+        if (package_.symbols.symbol(symbol).kind != SymbolKind::Parameter) {
+          continue;
+        }
+        if (symbol == parameter) return ordinal;
+        ++ordinal;
+      }
+    }
+    return std::nullopt;
+  }
+
+  [[nodiscard]] ProcedureValueSummary *stored_value(
+      SymbolId symbol,
+      const std::vector<std::string> &path,
+      bool context = false) {
     for (StoredProcedureValue &stored : procedure_values_) {
-      if (stored.symbol == symbol) return &stored.value;
+      if (stored.symbol == symbol && stored.path == path &&
+          stored.context == context) {
+        return &stored.value;
+      }
     }
     return nullptr;
   }
 
   [[nodiscard]] const ProcedureValueSummary *stored_value(
-      SymbolId symbol) const {
+      SymbolId symbol,
+      const std::vector<std::string> &path,
+      bool context = false) const {
     for (const StoredProcedureValue &stored : procedure_values_) {
-      if (stored.symbol == symbol) return &stored.value;
+      if (stored.symbol == symbol && stored.path == path &&
+          stored.context == context) {
+        return &stored.value;
+      }
     }
     return nullptr;
   }
 
   void merge_stored_value(
-      SymbolId symbol, const ProcedureValueSummary &value) {
-    if (ProcedureValueSummary *stored = stored_value(symbol)) {
+      SymbolId symbol,
+      std::vector<std::string> path,
+      const ProcedureValueSummary &value,
+      bool context = false) {
+    if (ProcedureValueSummary *stored = stored_value(symbol, path, context)) {
       merge_value(*stored, value);
       return;
     }
-    procedure_values_.push_back({symbol, value});
+    procedure_values_.push_back({symbol, std::move(path), context, value});
   }
 
   // Parameter order in the owning Procedure scope is signature order. A
@@ -197,8 +398,9 @@ private:
         if (symbol.kind != SymbolKind::Parameter) continue;
         if (procedure_type(symbol.type)) {
           ProcedureValueSummary value;
-          value.parameter_slots.push_back(ordinal);
-          procedure_values_.push_back({symbol_id, std::move(value)});
+          value.flow_slots.push_back({ordinal, {}, false});
+          procedure_values_.push_back(
+              {symbol_id, {}, false, std::move(value)});
         }
         ++ordinal;
       }
@@ -279,29 +481,53 @@ private:
     return base;
   }
 
-  [[nodiscard]] ProcedureValueSummary procedure_value(
-      HirExpressionId id) const {
+  [[nodiscard]] ProcedureValueSummary procedure_value_at(
+      HirExpressionId id,
+      const std::vector<std::string> &relative_path) const {
     ProcedureValueSummary value;
     if (!id.is_valid()) {
       value.unknown = true;
       return value;
     }
     const HirExpression &expression = hir_.expression(id);
-    if (!procedure_type(expression.type)) return value;
 
-    if (expression.kind == HirExpressionKind::Symbol &&
+    if (std::optional<StoragePath> location = storage_path(id)) {
+      location->fields.insert(
+          location->fields.end(), relative_path.begin(), relative_path.end());
+      if (const ProcedureValueSummary *stored = stored_value(
+              location->symbol, location->fields, location->context)) {
+        return *stored;
+      }
+      if (!location->context) {
+        const Symbol &root = package_.symbols.symbol(location->symbol);
+        if (root.kind == SymbolKind::Parameter) {
+          const std::optional<std::uint32_t> ordinal =
+              parameter_ordinal(location->symbol);
+          if (ordinal.has_value()) {
+            value.flow_slots.push_back(
+                {*ordinal, std::move(location->fields), false});
+            return value;
+          }
+        }
+      } else {
+        value.flow_slots.push_back({
+            std::numeric_limits<std::uint32_t>::max(),
+            std::move(location->fields),
+            true});
+        return value;
+      }
+      value.unknown = true;
+      return value;
+    }
+
+    if (relative_path.empty() &&
+        expression.kind == HirExpressionKind::Symbol &&
         expression.symbol.is_valid()) {
       const Symbol &symbol = package_.symbols.symbol(expression.symbol);
       if (symbol.kind == SymbolKind::Procedure) {
         value.targets.push_back(expression.symbol);
         return value;
       }
-      if (const ProcedureValueSummary *stored =
-              stored_value(expression.symbol)) {
-        return *stored;
-      }
-      value.unknown = true;
-      return value;
     }
 
     // Conditional and denial expressions preserve values from their result
@@ -310,34 +536,126 @@ private:
     if (expression.kind == HirExpressionKind::Conditional ||
         expression.kind == HirExpressionKind::Denial) {
       for (HirExpressionId operand : expression.operands) {
-        if (procedure_type(hir_.expression(operand).type)) {
-          merge_value(value, procedure_value(operand));
-        }
+        merge_value(value, procedure_value_at(operand, relative_path));
       }
       if (value_is_empty(value)) value.unknown = true;
       return value;
     }
 
-    // Member paths, pointer-reached fields, returned callbacks, and erased raw
-    // storage need path-sensitive slots. They remain explicit unknowns until
-    // those richer slot shapes are composed rather than being guessed here.
+    // Composite operands retain their selected field SymbolId. Positional
+    // operands use the aggregate's canonical member order. Following one row
+    // at a time makes keyed and positional aggregate construction contribute
+    // the same typed callback path.
+    if (expression.kind == HirExpressionKind::Composite &&
+        !relative_path.empty()) {
+      const std::vector<std::pair<std::string, TypeId>> members =
+          fields(expression.type);
+      for (std::size_t index = 0; index < expression.operands.size(); ++index) {
+        std::string name;
+        if (index < expression.operand_members.size() &&
+            expression.operand_members[index].is_valid()) {
+          name = package_.symbols.symbol(
+              expression.operand_members[index]).name;
+        } else if (index < members.size()) {
+          name = members[index].first;
+        }
+        if (name != relative_path.front()) continue;
+        const std::vector<std::string> remainder(
+            relative_path.begin() + 1, relative_path.end());
+        return procedure_value_at(expression.operands[index], remainder);
+      }
+      value.unknown = true;
+      return value;
+    }
+
+    // Returned callbacks and erased raw storage are handled by later closure
+    // rows. Until such a row exists, they remain explicit unknowns rather than
+    // being guessed from an optimization or a physical pointer value.
     value.unknown = true;
     return value;
   }
 
-  [[nodiscard]] std::vector<ProcedureValueSummary> call_arguments(
-      const HirExpression &call, std::size_t first) const {
-    std::vector<ProcedureValueSummary> result;
-    for (std::size_t index = first; index < call.operands.size(); ++index) {
-      result.push_back(procedure_value(call.operands[index]));
+  [[nodiscard]] ProcedureValueSummary procedure_value(
+      HirExpressionId id) const {
+    return procedure_value_at(id, {});
+  }
+
+  void merge_assignment_value(
+      StoragePath destination,
+      TypeId destination_type,
+      HirExpressionId source) {
+    for (const std::vector<std::string> &relative :
+         procedure_paths(destination_type)) {
+      std::vector<std::string> complete = destination.fields;
+      complete.insert(complete.end(), relative.begin(), relative.end());
+      if (stored_value(
+              destination.symbol, complete, destination.context) == nullptr) {
+        ProcedureValueSummary original;
+        if (destination.context) {
+          original.flow_slots.push_back({
+              std::numeric_limits<std::uint32_t>::max(),
+              complete,
+              true});
+        } else if (package_.symbols.symbol(destination.symbol).kind ==
+                   SymbolKind::Parameter) {
+          const std::optional<std::uint32_t> ordinal =
+              parameter_ordinal(destination.symbol);
+          if (ordinal.has_value()) {
+            original.flow_slots.push_back({*ordinal, complete, false});
+          }
+        }
+        if (!value_is_empty(original)) {
+          merge_stored_value(
+              destination.symbol,
+              complete,
+              original,
+              destination.context);
+        }
+      }
+      merge_stored_value(
+          destination.symbol,
+          std::move(complete),
+          procedure_value_at(source, relative),
+          destination.context);
+    }
+  }
+
+  void merge_binding_value(
+      SymbolId binding, TypeId type, HirExpressionId source) {
+    StoragePath destination;
+    destination.symbol = binding;
+    merge_assignment_value(
+        std::move(destination), type, source);
+  }
+
+  [[nodiscard]] ProcedureArgumentSummary call_argument(
+      HirExpressionId id) const {
+    ProcedureArgumentSummary result;
+    if (!id.is_valid()) return result;
+    const HirExpression &expression = hir_.expression(id);
+    const Type &type = package_.types.type(expression.type);
+    const bool follow_pointer = type.kind == TypeKind::Pointer ||
+        type.kind == TypeKind::MultiPointer;
+    for (const std::vector<std::string> &path :
+         procedure_paths(expression.type, follow_pointer)) {
+      result.fields.push_back({path, procedure_value_at(id, path)});
     }
     return result;
   }
 
-  void record_call(const HirExpression &call) {
+  [[nodiscard]] std::vector<ProcedureArgumentSummary> call_arguments(
+      const HirExpression &call, std::size_t first) const {
+    std::vector<ProcedureArgumentSummary> result;
+    for (std::size_t index = first; index < call.operands.size(); ++index) {
+      result.push_back(call_argument(call.operands[index]));
+    }
+    return result;
+  }
+
+  void record_call(HirExpressionId call_id, const HirExpression &call) {
     if (call.operands.empty()) return;
     const HirExpression &callee = hir_.expression(call.operands.front());
-    const std::vector<ProcedureValueSummary> arguments =
+    const std::vector<ProcedureArgumentSummary> arguments =
         call_arguments(call, 1);
     if (callee.kind == HirExpressionKind::Symbol &&
         callee.symbol.is_valid() &&
@@ -345,11 +663,12 @@ private:
       if (has_local_body(callee.symbol)) {
         add_call(current_->direct_calls, callee.symbol);
       }
-      current_->direct_invocations.push_back({callee.symbol, arguments});
+      current_->direct_invocations.push_back(
+          {call_id, callee.symbol, arguments});
       return;
     }
     ProcedureFlowInvocationSummary invocation{
-        procedure_value(call.operands.front()), arguments};
+        call_id, procedure_value(call.operands.front()), arguments};
     for (SymbolId target : invocation.callee.targets) {
       if (has_local_body(target)) add_call(current_->direct_calls, target);
     }
@@ -359,9 +678,11 @@ private:
   // runtime.call_with_context keeps its callback at operand one and its
   // callback arguments after that. It participates in the same finite-target
   // composition as an ordinary indirect call.
-  void record_context_call(const HirExpression &expression) {
+  void record_context_call(
+      HirExpressionId expression_id, const HirExpression &expression) {
     if (expression.operands.size() < 2) return;
     ProcedureFlowInvocationSummary invocation;
+    invocation.expression = expression_id;
     invocation.callee = procedure_value(expression.operands[1]);
     invocation.arguments = call_arguments(expression, 2);
     for (SymbolId target : invocation.callee.targets) {
@@ -380,9 +701,17 @@ private:
   [[nodiscard]] bool compose_effect(
       ProcedureEffectSummary &destination,
       const SemanticEffect &effect,
-      const std::vector<ProcedureValueSummary> &arguments) {
+      const std::vector<ProcedureArgumentSummary> &arguments) {
     if (effect.kind != EffectKind::FlowCall) {
       return add_composed_effect(destination, effect);
+    }
+    if (effect.flow_context) {
+      ProcedureValueSummary value;
+      value.flow_slots.push_back({
+          std::numeric_limits<std::uint32_t>::max(),
+          effect.flow_path,
+          true});
+      return compose_value_call(destination, value, {});
     }
     if (effect.flow_parameter >= arguments.size()) {
       return add_composed_effect(
@@ -394,14 +723,27 @@ private:
            {},
            {}});
     }
-    return compose_value_call(destination, arguments[effect.flow_parameter], {});
+    for (const ProcedureFieldValueSummary &field :
+         arguments[effect.flow_parameter].fields) {
+      if (field.path == effect.flow_path) {
+        return compose_value_call(destination, field.value, {});
+      }
+    }
+    return add_composed_effect(
+        destination,
+        {EffectKind::UnknownCall,
+         {},
+         "typed callback path is absent at call site",
+         {},
+         {},
+         {}});
   }
 
   [[nodiscard]] bool compose_imported_call(
       ProcedureEffectSummary &destination,
       SymbolId callee,
       const ImportedSymbol &imported,
-      const std::vector<ProcedureValueSummary> &arguments) {
+      const std::vector<ProcedureArgumentSummary> &arguments) {
     if (!imported.has_effect_summary) {
       return add_composed_effect(
           destination,
@@ -423,7 +765,9 @@ private:
            effect.root_identity,
            effect.root_relative_path,
            effect.declaration,
-           effect.flow_parameter},
+           effect.flow_parameter,
+           effect.flow_path,
+           effect.flow_context},
           arguments) || changed;
     }
     return changed;
@@ -433,7 +777,7 @@ private:
       ProcedureEffectSummary &destination,
       SymbolId callee,
       const NativeBinding &binding,
-      const std::vector<ProcedureValueSummary> &arguments) {
+      const std::vector<ProcedureArgumentSummary> &arguments) {
     if (binding.provider == "package_assembly") {
       return add_composed_effect(
           destination,
@@ -466,7 +810,9 @@ private:
                effect.root_identity,
                effect.root_relative_path,
                effect.declaration,
-               effect.flow_parameter},
+               effect.flow_parameter,
+               effect.flow_path,
+               effect.flow_context},
               arguments) || changed;
         }
         return changed;
@@ -492,8 +838,16 @@ private:
              {},
              {}}) || changed;
       } else {
-        changed = compose_value_call(
-            destination, arguments[parameter], {}) || changed;
+        changed = compose_effect(
+            destination,
+            {EffectKind::FlowCall,
+             {},
+             "system callback parameter",
+             {},
+             {},
+             {},
+             parameter},
+            arguments) || changed;
       }
     }
     return changed;
@@ -502,9 +856,16 @@ private:
   [[nodiscard]] bool compose_named_call(
       ProcedureEffectSummary &destination,
       SymbolId callee,
-      const std::vector<ProcedureValueSummary> &arguments) {
+      const std::vector<ProcedureArgumentSummary> &arguments) {
+    bool changed = add_composed_effect(
+        destination,
+        {EffectKind::Declaration,
+         callee,
+         "procedure call",
+         {},
+         {},
+         {}});
     if (const ProcedureEffectSummary *summary = result_.find(callee)) {
-      bool changed = false;
       // Copy the row before adding to destination: recursive calls may make
       // summary and destination the same vector.
       const std::vector<SemanticEffect> effects = summary->effects;
@@ -514,10 +875,12 @@ private:
       return changed;
     }
     if (const ImportedSymbol *imported = imported_symbol(callee)) {
-      return compose_imported_call(destination, callee, *imported, arguments);
+      return compose_imported_call(
+          destination, callee, *imported, arguments) || changed;
     }
     if (const NativeBinding *binding = native_binding(callee)) {
-      return compose_native_call(destination, callee, *binding, arguments);
+      return compose_native_call(
+          destination, callee, *binding, arguments) || changed;
     }
     return add_composed_effect(
         destination,
@@ -526,18 +889,18 @@ private:
          "callee has no composed summary",
          {},
          {},
-         {}});
+         {}}) || changed;
   }
 
   [[nodiscard]] bool compose_value_call(
       ProcedureEffectSummary &destination,
       const ProcedureValueSummary &value,
-      const std::vector<ProcedureValueSummary> &arguments) {
+      const std::vector<ProcedureArgumentSummary> &arguments) {
     bool changed = false;
     for (SymbolId target : value.targets) {
       changed = compose_named_call(destination, target, arguments) || changed;
     }
-    for (std::uint32_t slot : value.parameter_slots) {
+    for (const ProcedureFlowSlot &slot : value.flow_slots) {
       changed = add_composed_effect(
           destination,
           {EffectKind::FlowCall,
@@ -546,21 +909,25 @@ private:
            {},
            {},
            {},
-           slot}) || changed;
+           slot.parameter,
+           slot.path,
+           slot.context}) || changed;
       // Higher-order callback arguments require nested slot paths. Preserve
       // safety until that shape is expressible instead of silently dropping
       // the callback's own procedure-valued inputs.
-      for (const ProcedureValueSummary &argument : arguments) {
-        if (!value_is_empty(argument)) {
-          changed = add_composed_effect(
-              destination,
-              {EffectKind::UnknownCall,
-               {},
-               "higher-order callback argument needs a nested flow slot",
-               {},
-               {},
-               {}}) || changed;
-          break;
+      for (const ProcedureArgumentSummary &argument : arguments) {
+        for (const ProcedureFieldValueSummary &field : argument.fields) {
+          if (!value_is_empty(field.value)) {
+            changed = add_composed_effect(
+                destination,
+                {EffectKind::UnknownCall,
+                 {},
+                 "higher-order callback argument needs a nested flow slot",
+                 {},
+                 {},
+                 {}}) || changed;
+            break;
+          }
         }
       }
     }
@@ -610,7 +977,7 @@ private:
     } else if (expression.kind == HirExpressionKind::Intrinsic &&
                expression.constant.kind == ConstantKind::String &&
                expression.constant.text == "call_with_context") {
-      record_context_call(expression);
+      record_context_call(id, expression);
     } else if (expression.kind == HirExpressionKind::Intrinsic &&
                expression.constant.kind == ConstantKind::String &&
                expression.constant.text == "assert") {
@@ -645,7 +1012,9 @@ private:
       }
     }
 
-    if (expression.kind == HirExpressionKind::Call) record_call(expression);
+    if (expression.kind == HirExpressionKind::Call) {
+      record_call(id, expression);
+    }
     for (HirExpressionId operand : expression.operands) {
       visit_expression(operand);
     }
@@ -673,22 +1042,22 @@ private:
         statement.bindings.size() == 1 &&
         statement.expressions.size() == 1) {
       const SymbolId binding = statement.bindings.front();
-      if (procedure_type(package_.symbols.symbol(binding).type)) {
-        merge_stored_value(
-            binding, procedure_value(statement.expressions.front()));
-      }
+      merge_binding_value(
+          binding,
+          package_.symbols.symbol(binding).type,
+          statement.expressions.front());
     } else if (statement.kind == HirStatementKind::Assignment &&
                statement.operation == HirOperation::Assign) {
       const std::size_t left_count = statement.expressions.size() / 2;
       for (std::size_t index = 0; index < left_count; ++index) {
         const HirExpression &left = hir_.expression(statement.expressions[index]);
-        if (left.kind != HirExpressionKind::Symbol ||
-            !left.symbol.is_valid() || !procedure_type(left.type)) {
-          continue;
-        }
-        merge_stored_value(
-            left.symbol,
-            procedure_value(statement.expressions[left_count + index]));
+        std::optional<StoragePath> destination =
+            storage_path(statement.expressions[index]);
+        if (!destination.has_value()) continue;
+        merge_assignment_value(
+            std::move(*destination),
+            left.type,
+            statement.expressions[left_count + index]);
       }
     }
     for (HirStatementId header : statement.header_statements) {
@@ -710,6 +1079,7 @@ private:
   std::span<const ForeignProviderAudit> provider_audits_;
   EffectSummaryResult result_;
   ProcedureEffectSummary *current_ = nullptr;
+  SymbolId current_procedure_;
   std::vector<StoredProcedureValue> procedure_values_;
 };
 
@@ -719,6 +1089,14 @@ const ProcedureEffectSummary *EffectSummaryResult::find(
     SymbolId procedure) const {
   for (const ProcedureEffectSummary &summary : procedures) {
     if (summary.procedure == procedure) return &summary;
+  }
+  return nullptr;
+}
+
+const CallSiteEffectSummary *EffectSummaryResult::find_call_site(
+    HirExpressionId expression) const {
+  for (const CallSiteEffectSummary &summary : call_sites) {
+    if (summary.expression == expression) return &summary;
   }
   return nullptr;
 }

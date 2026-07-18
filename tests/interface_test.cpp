@@ -557,6 +557,14 @@ pub invoke :: proc(callback: proc()) {
     copy := callback
     copy()
 }
+
+pub Callback_Box :: struct {
+    callback: proc(),
+}
+
+pub invoke_box :: proc(box: Callback_Box) {
+    box.callback()
+}
 )draft");
   draft::SemanticAnalysisResult dependency_semantics =
       draft::analyze_package_semantics(
@@ -581,6 +589,28 @@ pub invoke :: proc(callback: proc()) {
           empty_metadata,
           dependency_effects,
           diagnostics);
+  const auto invoke_box_interface = std::find_if(
+      dependency_interface.declarations.begin(),
+      dependency_interface.declarations.end(),
+      [](const draft::InterfaceDeclaration &declaration) {
+        return declaration.name == "invoke_box";
+      });
+  EXPECT(state,
+      invoke_box_interface != dependency_interface.declarations.end());
+  if (invoke_box_interface != dependency_interface.declarations.end()) {
+    const auto path_effect = std::find_if(
+        invoke_box_interface->effects.begin(),
+        invoke_box_interface->effects.end(),
+        [](const draft::InterfaceDeclaration::Effect &effect) {
+          return effect.kind == draft::EffectKind::FlowCall;
+        });
+    EXPECT(state, path_effect != invoke_box_interface->effects.end());
+    if (path_effect != invoke_box_interface->effects.end()) {
+      EXPECT(state,
+          path_effect->flow_path ==
+              std::vector<std::string>{"callback"});
+    }
+  }
 
   draft::LoadedPackage consumer = parse_package(
       sources,
@@ -597,6 +627,9 @@ danger :: proc() {
 
 caller :: proc() {
     callbacks.invoke(danger)
+    box: callbacks.Callback_Box
+    box.callback = danger
+    callbacks.invoke_box(box)
 }
 )draft");
   const std::optional<draft::SyntaxReference> import = first_import(consumer);

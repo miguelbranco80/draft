@@ -266,15 +266,6 @@ private:
     return false;
   }
 
-  [[nodiscard]] bool matches_symbol(
-      const DeniedEntity &denied, SymbolId symbol) const {
-    if (denied.kind == DeniedKind::Symbol) return denied.symbol == symbol;
-    if (denied.kind == DeniedKind::ImportedPackage) {
-      return symbol_from_package(symbol, denied);
-    }
-    return false;
-  }
-
   void report_violation(
       const DeniedEntity &denied, SourceRange range, std::string entity) {
     diagnostics_.error(range, "operation reaches denied " + std::move(entity));
@@ -292,114 +283,27 @@ private:
     }
   }
 
-  void check_call(
-      SymbolId callee,
-      const std::vector<HirExpressionId> &arguments,
+  void check_call_site(
+      HirExpressionId expression,
       SourceRange range,
       const std::vector<DeniedEntity> &active) {
-    for (const DeniedEntity &denied : active) {
-      if (matches_symbol(denied, callee)) {
-        report_violation(denied, range, "declaration call");
-      }
-    }
-    const ProcedureEffectSummary *summary = effects_.find(callee);
+    const CallSiteEffectSummary *summary =
+        effects_.find_call_site(expression);
     if (summary == nullptr) {
-      SemanticEffect unknown{
-          EffectKind::UnknownCall,
-          callee,
-          "callee has no composed summary",
-          {},
-          {},
-          {},
-      };
-      // Imported summary effects were copied into the caller's summary, but a
-      // nested denial needs the callee-specific facts. Reconstruct them here.
-      bool imported_known = false;
-      for (const ImportedSymbol &imported : package_.imported_symbols) {
-        if (imported.proxy == callee) imported_known = imported.has_effect_summary;
-      }
-      if (imported_known) {
-        for (const ImportedEffect &effect : package_.imported_effects) {
-          if (effect.procedure_proxy != callee) continue;
-          if (effect.kind == EffectKind::FlowCall) {
-            if (effect.flow_parameter < arguments.size()) {
-              check_call_target(
-                  hir_.expression(arguments[effect.flow_parameter]),
-                  {},
-                  range,
-                  active);
-            } else {
-              check_effect(unknown, range, active);
-            }
-            continue;
-          }
-          check_effect(
-              {effect.kind,
-               {},
-               effect.detail,
-               effect.root_identity,
-               effect.root_relative_path,
-               effect.declaration,
-               effect.flow_parameter},
-              range,
-              active);
-        }
-      } else {
-        check_effect(unknown, range, active);
-      }
+      check_effect(
+          {EffectKind::UnknownCall,
+           {},
+           "call site has no composed summary",
+           {},
+           {},
+           {}},
+          range,
+          active);
       return;
     }
     for (const SemanticEffect &effect : summary->effects) {
-      if (effect.kind != EffectKind::FlowCall) {
-        check_effect(effect, range, active);
-        continue;
-      }
-      if (effect.flow_parameter >= arguments.size()) {
-        check_effect(
-            {EffectKind::UnknownCall,
-             {},
-             "flow-through callback slot is absent at call site",
-             {},
-             {},
-             {}},
-            range,
-            active);
-        continue;
-      }
-      check_call_target(
-          hir_.expression(arguments[effect.flow_parameter]),
-          {},
-          range,
-          active);
+      check_effect(effect, range, active);
     }
-  }
-
-  // Apply the same denial logic to normal callees and to the callback selected
-  // by runtime.call_with_context.  A named callback has a normal composed
-  // effect summary; only a value whose declaration is not statically known is
-  // an unknown call edge.
-  void check_call_target(
-      const HirExpression &callee,
-      const std::vector<HirExpressionId> &arguments,
-      SourceRange range,
-      const std::vector<DeniedEntity> &active) {
-    if (callee.kind == HirExpressionKind::Symbol && callee.symbol.is_valid()) {
-      const Symbol &symbol = package_.symbols.symbol(callee.symbol);
-      if (symbol.kind == SymbolKind::Procedure) {
-        check_call(callee.symbol, arguments, range, active);
-        return;
-      }
-      // A procedure parameter is intentionally retained as a flow slot. Its
-      // callers are checked after substituting their finite actual targets.
-      if (symbol.kind == SymbolKind::Parameter && callee.type.is_valid() &&
-          package_.types.type(callee.type).kind == TypeKind::Procedure) {
-        return;
-      }
-    }
-    check_effect(
-        {EffectKind::UnknownCall, {}, "indirect procedure target", {}, {}, {}},
-        range,
-        active);
   }
 
   // Denials name top-level Context fields. A nested member chain retains the
@@ -433,16 +337,7 @@ private:
       return;
     }
     if (expression.kind == HirExpressionKind::Call && !expression.operands.empty()) {
-      std::vector<HirExpressionId> arguments;
-      arguments.insert(
-          arguments.end(),
-          expression.operands.begin() + 1,
-          expression.operands.end());
-      check_call_target(
-          hir_.expression(expression.operands.front()),
-          arguments,
-          expression.range,
-          active);
+      check_call_site(id, expression.range, active);
     } else if (expression.kind == HirExpressionKind::Symbol &&
                expression.symbol.is_valid()) {
       const Symbol &symbol = package_.symbols.symbol(expression.symbol);
@@ -476,13 +371,7 @@ private:
     } else if (expression.kind == HirExpressionKind::Intrinsic &&
                expression.constant.kind == ConstantKind::String &&
                expression.constant.text == "call_with_context") {
-      if (expression.operands.size() >= 2) {
-        check_call_target(
-            hir_.expression(expression.operands[1]),
-            {},
-            expression.range,
-            active);
-      }
+      check_call_site(id, expression.range, active);
     } else if (expression.kind == HirExpressionKind::Intrinsic &&
                expression.constant.kind == ConstantKind::String &&
                expression.constant.text == "assert") {

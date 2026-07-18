@@ -88,8 +88,8 @@ constexpr std::size_t maximum_summary_bytes = 16U * 1024U * 1024U;
     return false;
   }
   if (fields[0] == "callback") {
-    if (fields.size() != 2) {
-      reason = "callback record must contain one parameter index";
+    if (fields.size() < 2) {
+      reason = "callback record must contain a parameter index";
       return false;
     }
     const std::optional<std::uint32_t> index = parse_index(fields[1]);
@@ -100,6 +100,13 @@ constexpr std::size_t maximum_summary_bytes = 16U * 1024U * 1024U;
     effect.kind = EffectKind::FlowCall;
     effect.detail = "audited foreign callback";
     effect.flow_parameter = *index;
+    for (std::size_t field = 2; field < fields.size(); ++field) {
+      if (!valid_field(fields[field], false)) {
+        reason = "callback record contains an invalid typed field path";
+        return false;
+      }
+      effect.flow_path.push_back(std::string(fields[field]));
+    }
     return true;
   }
   if (fields[0] != "effect" || fields.size() < 2) {
