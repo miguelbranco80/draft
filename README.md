@@ -76,7 +76,9 @@ complete surface syntax tree and recovering parser, and deterministic
 target-qualified folder-package loading. The semantic foundation now loads an
 acyclic, explicitly rooted package graph; derives public package interfaces;
 binds file-local imports without leaking package-local IDs; assigns stable
-scopes, symbols, and types; resolves signatures and aggregate layouts; evaluates
+scopes, symbols, and types; rejects ignored declaration modifiers and limits
+`thread_local` to package variables and parametric lists to types/procedures;
+resolves signatures and aggregate layouts; evaluates
 arbitrary-precision integers and exactly rounded IEEE floating-point constants;
 validates that every enum has a real all-zero member and that every tagged-union
 alternative fits its chosen discriminator;

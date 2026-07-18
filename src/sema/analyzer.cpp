@@ -261,6 +261,18 @@ private:
         ? Visibility::Public
         : Visibility::Private;
 
+    if (flags.is_thread_local && kind != SymbolKind::Variable) {
+      diagnostics_.error(
+          declaration.range,
+          "thread_local is valid only on a package variable declaration");
+    }
+    if (flags.parametric && kind != SymbolKind::Type &&
+        kind != SymbolKind::Procedure) {
+      diagnostics_.error(
+          declaration.range,
+          "parametric parameters are valid only on type and procedure declarations");
+    }
+
     const std::vector<SourceName> names = names_in_pattern(tree, pattern_id);
     if ((kind == SymbolKind::Type || kind == SymbolKind::Procedure) && names.size() > 1) {
       diagnostics_.error(

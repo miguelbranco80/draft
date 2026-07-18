@@ -239,6 +239,33 @@ void test_duplicate_nominal_does_not_allocate_type(TestState &state) {
   EXPECT(state, item_type_count == 1);
 }
 
+void test_declaration_modifier_boundaries(TestState &state) {
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  draft::LoadedPackage loaded;
+  loaded.short_name = "modifiers";
+  add_file(sources, loaded, diagnostics, "package.draft", R"draft(
+package modifiers
+
+thread_local Type :: struct { value: u32, }
+thread_local Procedure :: proc() {
+}
+thread_local Constant :: 1
+
+Value[T: type]: u32
+Compile_Time[N: usize] :: 1
+)draft");
+  EXPECT(state, !diagnostics.has_errors());
+
+  (void)draft::collect_package_declarations(sources, loaded, diagnostics);
+  EXPECT(state, diagnostics.error_count() == 5);
+  const std::string rendered = draft::render_diagnostics(sources, diagnostics);
+  EXPECT(state, rendered.find("thread_local is valid only on a package variable") !=
+                    std::string::npos);
+  EXPECT(state, rendered.find("parametric parameters are valid only on type and procedure") !=
+                    std::string::npos);
+}
+
 } // namespace
 
 int main() {
@@ -246,6 +273,7 @@ int main() {
   test_package_collection(state);
   test_cross_file_duplicate(state);
   test_duplicate_nominal_does_not_allocate_type(state);
+  test_declaration_modifier_boundaries(state);
 
   if (state.failures != 0) {
     std::cerr << state.failures << " declaration collection expectation(s) failed\n";
