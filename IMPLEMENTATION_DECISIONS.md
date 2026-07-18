@@ -158,6 +158,29 @@ and explicit reset without hiding a call-boundary reset. The runtime also
 installs a stderr logger and `arc4random_buf` random provider rather than empty
 records.
 
+## Initial core memory facilities
+
+Status: ordinary Draft library surface over the allocator and Darwin ABIs.
+
+`core/memory.Arena` is a direct linked list of backing blocks with an absolute
+address-aligned bump cursor. Its allocator performs allocate and preserving
+resize, treats individual free as a logical no-op, and releases complete blocks
+on explicit reset/destroy. Block metadata and bytes use the caller-selected
+backing allocator, so no compiler ownership mechanism is hidden behind the
+handle.
+
+`memory.Buffer[T]` owns one fixed-length typed allocation. `Owned_String` owns a
+zero-terminated byte copy and exposes a mutable bounded byte view plus `cstring`;
+Draft's built-in `string` remains an immutable non-owning view and the library
+does not fabricate one through an undocumented cast. Both handles store their
+allocator and require explicit destruction.
+
+The first virtual-memory seam is target-qualified Darwin source using fixed
+signatures for `mmap`, `mprotect`, and `munmap`. Reserve creates inaccessible
+private anonymous address space, commit/protect change whole-region permissions,
+and release clears the move-by-convention handle. The constants are part of the
+versioned AArch64 macOS core distribution rather than inferred from host headers.
+
 ## Nominal generic inference and transitive interfaces
 
 Status: Draft 1 semantic rule and bootstrap representation.

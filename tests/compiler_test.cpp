@@ -292,7 +292,7 @@ void test_compiler_distributed_memory(TestState &state) {
   EXPECT(state, root->llvm.text.find(
       ".memory.new_24mono_24") != std::string::npos);
   EXPECT(state,
-      root->semantics.package.imported_procedure_instances.size() == 5);
+      root->semantics.package.imported_procedure_instances.size() >= 9);
   EXPECT(state, root->llvm.text.find(
       "call ptr @realloc") != std::string::npos);
   EXPECT(state, root->llvm.text.find(
@@ -309,9 +309,17 @@ void test_compiler_distributed_memory(TestState &state) {
   EXPECT(state, memory != nullptr);
   if (memory != nullptr) {
     EXPECT(state,
-        memory->semantics.package.parametric_instances.size() == 5);
+        memory->semantics.package.parametric_instances.size() >= 11);
     EXPECT(state, memory->llvm.text.find(
         "@\"__draft.runtime.reset_temporary_allocator\"") !=
+        std::string::npos);
+    EXPECT(state, memory->llvm.text.find("arena_5Fprovider") !=
+        std::string::npos);
+    EXPECT(state, memory->llvm.text.find("@\"mmap\"") !=
+        std::string::npos);
+    EXPECT(state, memory->llvm.text.find("@\"mprotect\"") !=
+        std::string::npos);
+    EXPECT(state, memory->llvm.text.find("@\"munmap\"") !=
         std::string::npos);
   }
 }

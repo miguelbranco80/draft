@@ -124,7 +124,8 @@ compiler-distributed `core/runtime`, `core/c`, `core/option`, `core/result`,
 packages are ordinary inspectable Draft source. `examples/core-runtime` checks
 the Context import, layout, and callback
 paths; `examples/core-memory` checks cross-package typed `new`/`free`, explicit
-allocators and alignment, resize preservation, and release; and
+allocators and alignment, temporary allocation, bump arenas, owned buffers and
+strings, resize preservation, and Darwin virtual memory; and
 `examples/core-array` checks inferred nominal generics, ownership operations,
 transitively exported nominal types, test records, benchmark records, streams,
 and the Darwin monotonic clock through a nine-package graph.

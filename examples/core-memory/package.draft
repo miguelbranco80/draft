@@ -57,4 +57,44 @@ main :: proc() {
     assert(cast[uintptr](temp_resized) % 64 == 0)
     assert(cast[^Aligned_Value](temp_resized)^.word == 73)
     memory.reset_temporary()
+
+    arena: memory.Arena
+    memory.arena_init(&arena, 128)
+    arena_storage := memory.arena_allocator(&arena)
+    arena_value := memory.new_with_allocator[Aligned_Value](arena_storage)
+    assert(cast[uintptr](arena_value) % 64 == 0)
+    arena_value^.word = 81
+    assert(arena_value^.word == 81)
+    memory.arena_reset(&arena)
+    reused := memory.new_with_allocator[u64](arena_storage)
+    reused^ = 17
+    assert(reused^ == 17)
+    memory.arena_destroy(&arena)
+
+    buffer: memory.Buffer[u64]
+    memory.buffer_init(&buffer, 3)
+    buffer.data[0] = 10
+    buffer.data[1] = 20
+    buffer.data[2] = 30
+    buffer_view := memory.buffer_view(&buffer)
+    assert(len(buffer_view) == 3 && buffer_view[1] == 20)
+    memory.buffer_destroy(&buffer)
+
+    owned: memory.Owned_String
+    memory.owned_string_copy(&owned, "draft")
+    owned_bytes := memory.owned_string_bytes(&owned)
+    assert(len(owned_bytes) == 5)
+    assert(owned_bytes[0] == cast[u8]('d') && owned_bytes[4] == cast[u8]('t'))
+    assert(memory.owned_string_cstring(&owned) != nil)
+    memory.owned_string_destroy(&owned)
+
+    (region, reserved) := memory.virtual_reserve(16384)
+    assert(reserved)
+    assert(memory.virtual_commit(&region))
+    mapped := cast[[^]u8](region.data)
+    mapped[0] = 42
+    assert(mapped[0] == 42)
+    assert(memory.virtual_protect(&region, .read))
+    assert(mapped[0] == 42)
+    assert(memory.virtual_release(&region))
 }
