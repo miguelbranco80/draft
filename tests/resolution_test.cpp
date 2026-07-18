@@ -5,6 +5,7 @@
 #include "base/sha256.h"
 #include "source/diagnostic.h"
 
+#include <cstdint>
 #include <cstdlib>
 #include <iostream>
 #include <string>
@@ -111,7 +112,7 @@ void test_canonical_round_trip(TestState &state) {
       draft::AgentConstructKind::SynthesisExpression,
       "42",
       "codex",
-      "model-two"));
+      "model-\xc3\xb8ne"));
 
   const std::string encoded = draft::serialize_resolution_manifest(manifest);
   EXPECT(state, encoded.ends_with('\n'));
@@ -273,12 +274,75 @@ void test_invalid_inputs(TestState &state) {
   expect_rejected(state, escaping_source);
 }
 
+void test_deterministic_malformed_byte_corpus(TestState &state) {
+  draft::ResolutionManifest manifest;
+  manifest.target_identity = "aarch64-apple-macos";
+  manifest.resolved_program_digest = draft::sha256("mutation-program");
+  manifest.external_inputs.push_back(make_external(
+      draft::ExternalInputKind::Toolchain,
+      "llvm",
+      "toolchain",
+      "bin/clang"));
+  manifest.evidence.push_back(make_evidence(
+      "test", "app", "mutation-test", "passing-attempt"));
+  manifest.pins.push_back(make_pin(
+      site('c'),
+      draft::AgentConstructKind::SynthesisExpression,
+      "42",
+      "codex",
+      "model"));
+  const std::string encoded = draft::serialize_resolution_manifest(manifest);
+  const std::size_t closing = encoded.rfind('}');
+  EXPECT(state, closing != std::string::npos);
+  if (closing == std::string::npos) return;
+
+  // Every prefix that omits the outer closing brace is incomplete. This walks
+  // all parser states, including every string escape, digest, integer, array,
+  // and nested object boundary, under both ordinary and sanitizer test runs.
+  for (std::size_t length = 0; length <= closing; ++length) {
+    expect_rejected(state, std::string_view(encoded).substr(0, length));
+  }
+
+  // NUL is illegal both as JSON syntax and as an unescaped string byte. 0xff
+  // additionally proves that every possible placement of an invalid UTF-8 lead
+  // is rejected instead of being retained in a semantic identity.
+  for (std::size_t index = 0; index < encoded.size(); ++index) {
+    std::string nul = encoded;
+    nul[index] = '\0';
+    expect_rejected(state, nul);
+
+    std::string invalid_utf8 = encoded;
+    invalid_utf8[index] = static_cast<char>(0xffU);
+    expect_rejected(state, invalid_utf8);
+  }
+
+  // After a complete object only the four JSON whitespace bytes are legal.
+  // Exercise every byte value so signed-char behavior cannot create a platform
+  // dependent acceptance path.
+  const std::string complete = encoded.substr(0, closing + 1);
+  for (std::uint32_t value = 0; value <= 0xffU; ++value) {
+    std::string trailing = complete;
+    trailing.push_back(static_cast<char>(value));
+    draft::DiagnosticSink diagnostics;
+    draft::ResolutionManifest parsed;
+    const bool accepted =
+        draft::parse_resolution_manifest(trailing, parsed, diagnostics);
+    const bool whitespace = value == static_cast<std::uint32_t>(' ') ||
+        value == static_cast<std::uint32_t>('\n') ||
+        value == static_cast<std::uint32_t>('\r') ||
+        value == static_cast<std::uint32_t>('\t');
+    EXPECT(state, accepted == whitespace);
+    EXPECT(state, diagnostics.has_errors() != whitespace);
+  }
+}
+
 } // namespace
 
 int main() {
   TestState state;
   test_canonical_round_trip(state);
   test_invalid_inputs(state);
+  test_deterministic_malformed_byte_corpus(state);
   if (state.failures != 0) {
     std::cerr << state.failures << " resolution expectation(s) failed\n";
     return EXIT_FAILURE;

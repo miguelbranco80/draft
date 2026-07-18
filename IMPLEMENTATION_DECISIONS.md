@@ -120,6 +120,13 @@ variables. Other manifest external-input roles fail closed until their
 artifact-to-command mapping exists. Ordinary development builds retain the
 separate explicit host-toolchain escape hatch.
 
+Resolution manifests accept raw non-ASCII JSON string contents only as valid,
+shortest-form UTF-8 scalar encodings. Continuation leads, overlong sequences,
+surrogates, and values above U+10FFFF fail before any identity is installed.
+The deterministic malformed corpus truncates at every byte boundary, replaces
+every byte with NUL and `0xff`, and tries every possible trailing byte under the
+ordinary and sanitizer suites.
+
 The target profile maps the logical `darwin` and `libc` providers to the SDK's
 explicit `System` library. `draft_runtime` is owned by the root LLVM module and
 `package_assembly` is owned by captured package assembly; none can be remapped.

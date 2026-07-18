@@ -237,6 +237,59 @@ private:
     return std::nullopt;
   }
 
+  [[nodiscard]] bool continuation_byte(
+      std::size_t offset,
+      unsigned char minimum = 0x80U,
+      unsigned char maximum = 0xbfU) const {
+    if (position_ + offset >= input_.size()) return false;
+    const unsigned char byte = static_cast<unsigned char>(
+        input_[position_ + offset]);
+    return byte >= minimum && byte <= maximum;
+  }
+
+  // JSON text is Unicode. Canonical manifests write non-ASCII scalars as raw
+  // UTF-8, so accepting arbitrary bytes here would let malformed identities
+  // enter a manifest even though no conforming JSON reader could reproduce
+  // them. These lead-byte ranges reject continuations, overlong encodings,
+  // surrogate scalars, and values above U+10FFFF without a general decoder.
+  [[nodiscard]] bool utf8_sequence(
+      unsigned char lead,
+      std::string &result) {
+    std::size_t continuation_count = 0;
+    bool valid = false;
+    if (lead >= 0xc2U && lead <= 0xdfU) {
+      continuation_count = 1;
+      valid = continuation_byte(0);
+    } else if (lead == 0xe0U) {
+      continuation_count = 2;
+      valid = continuation_byte(0, 0xa0U, 0xbfU) && continuation_byte(1);
+    } else if ((lead >= 0xe1U && lead <= 0xecU) ||
+               (lead >= 0xeeU && lead <= 0xefU)) {
+      continuation_count = 2;
+      valid = continuation_byte(0) && continuation_byte(1);
+    } else if (lead == 0xedU) {
+      continuation_count = 2;
+      valid = continuation_byte(0, 0x80U, 0x9fU) && continuation_byte(1);
+    } else if (lead == 0xf0U) {
+      continuation_count = 3;
+      valid = continuation_byte(0, 0x90U, 0xbfU) && continuation_byte(1) &&
+          continuation_byte(2);
+    } else if (lead >= 0xf1U && lead <= 0xf3U) {
+      continuation_count = 3;
+      valid = continuation_byte(0) && continuation_byte(1) &&
+          continuation_byte(2);
+    } else if (lead == 0xf4U) {
+      continuation_count = 3;
+      valid = continuation_byte(0, 0x80U, 0x8fU) && continuation_byte(1) &&
+          continuation_byte(2);
+    }
+    if (!valid) return fail("invalid UTF-8 in JSON string");
+    result.push_back(static_cast<char>(lead));
+    result.append(input_.substr(position_, continuation_count));
+    position_ += continuation_count;
+    return true;
+  }
+
   [[nodiscard]] bool string(std::string &result) {
     whitespace();
     if (position_ >= input_.size() || input_[position_] != '"') {
@@ -249,6 +302,12 @@ private:
       if (value == '"') return true;
       if (static_cast<unsigned char>(value) < 0x20U) {
         return fail("unescaped control byte in string");
+      }
+      if (static_cast<unsigned char>(value) >= 0x80U) {
+        if (!utf8_sequence(static_cast<unsigned char>(value), result)) {
+          return false;
+        }
+        continue;
       }
       if (value != '\\') {
         result.push_back(value);
