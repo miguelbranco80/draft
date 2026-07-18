@@ -148,36 +148,65 @@ void hash_field(Sha256 &hash, std::string_view value) {
       : CompileTimeSynthesisMode::Reject;
 }
 
-// Package declarations and aggregate members can create every name and layout
-// visible to an early compile-time procedure. If either category is pending,
-// it is the package's current opaque completeness set; expression/statement
-// dependencies must wait for a clean rebuild after that entire set is merged.
-[[nodiscard]] bool has_structural_interface_synthesis(
-    const SemanticPackage &package) {
+[[nodiscard]] bool has_semantic_site(
+    const SemanticPackage &package, SemanticSiteKind kind) {
   for (const SemanticSite &site : package.sites) {
-    if (site.kind == SemanticSiteKind::SynthesisDeclaration ||
-        site.kind == SemanticSiteKind::SynthesisMember) {
-      return true;
-    }
+    if (site.kind == kind) return true;
   }
   return false;
 }
 
-// Direct synthesized `when` conditions may already have been appended by the
-// constant evaluator. Suppress only those early grammar-producing rows while a
-// structural completeness set is pending; documentation, judgments, denials,
-// and conditional source sites remain semantic context for that structural set.
-void defer_nonstructural_interface_synthesis(SemanticPackage &package) {
-  package.sites.erase(
-      std::remove_if(
-          package.sites.begin(),
-          package.sites.end(),
-          [](const SemanticSite &site) {
-            return site.kind == SemanticSiteKind::SynthesisExpression ||
-                site.kind == SemanticSiteKind::SynthesisStatement ||
-                site.kind == SemanticSiteKind::SynthesisAssembly;
-          }),
-      package.sites.end());
+// Package declarations may introduce any name used by a compile-time body, so
+// they remain an opaque prerequisite. Aggregate-member sites are narrower: try
+// the selected bodies against the current incomplete graph. A successful check
+// proves those bodies independent enough to join the same provider round. A
+// failure is deferred without mutating the authoritative graph; after member
+// expansions land, the next clean round either discovers the sites or reports
+// the real body error. Evaluator-owned direct sites need no speculative body
+// check and remain in the current opaque set in every case.
+[[nodiscard]] bool append_compile_time_body_synthesis_sites(
+    const SourceManager &sources,
+    const LoadedPackage &loaded,
+    const TargetFacts &target,
+    SemanticAnalysisResult &semantics,
+    DiagnosticSink &diagnostics) {
+  if (semantics.compile_time_synthesis_procedures.empty() ||
+      has_semantic_site(
+          semantics.package, SemanticSiteKind::SynthesisDeclaration)) {
+    return true;
+  }
+
+  const bool speculate = has_semantic_site(
+      semantics.package, SemanticSiteKind::SynthesisMember);
+  if (speculate) {
+    SemanticPackage candidate_package = semantics.package;
+    ConstantTable candidate_constants = semantics.constants;
+    DiagnosticSink deferred_diagnostics;
+    const BodyCheckResult candidate = check_compile_time_procedure_bodies(
+        sources,
+        loaded,
+        semantics.selections,
+        candidate_package,
+        candidate_constants,
+        target,
+        semantics.compile_time_synthesis_procedures,
+        deferred_diagnostics);
+    if (!candidate.ok) return true;
+    semantics.package = std::move(candidate_package);
+    semantics.constants = std::move(candidate_constants);
+    return true;
+  }
+
+  const BodyCheckResult checked = check_compile_time_procedure_bodies(
+      sources,
+      loaded,
+      semantics.selections,
+      semantics.package,
+      semantics.constants,
+      target,
+      semantics.compile_time_synthesis_procedures,
+      diagnostics);
+  return checked.ok;
 }
 
 // Validation files stay outside the ordinary workspace graph, so handwritten
@@ -344,22 +373,13 @@ void append_instantiated_type(
       compile_time_synthesis_mode(options.stage),
       diagnostics);
   if (!semantics.ok) return false;
-  const bool structural_synthesis =
-      has_structural_interface_synthesis(semantics.package);
-  if (structural_synthesis) {
-    defer_nonstructural_interface_synthesis(semantics.package);
-  } else if (!semantics.compile_time_synthesis_procedures.empty()) {
-    const BodyCheckResult early_bodies =
-        check_compile_time_procedure_bodies(
-            sources,
-            workspace_package.loaded,
-            semantics.selections,
-            semantics.package,
-            semantics.constants,
-            options.target.facts,
-            semantics.compile_time_synthesis_procedures,
-            diagnostics);
-    if (!early_bodies.ok) return false;
+  if (!append_compile_time_body_synthesis_sites(
+          sources,
+          workspace_package.loaded,
+          options.target.facts,
+          semantics,
+          diagnostics)) {
+    return false;
   }
   AgentMetadataResult metadata = collect_agent_metadata(
       sources,
@@ -1085,22 +1105,13 @@ CompileWorkspaceResult compile_workspace(
       package.semantics.ok = false;
     }
     if (!package.semantics.ok) continue;
-    const bool structural_synthesis =
-        has_structural_interface_synthesis(package.semantics.package);
-    if (structural_synthesis) {
-      defer_nonstructural_interface_synthesis(package.semantics.package);
-    } else if (!package.semantics.compile_time_synthesis_procedures.empty()) {
-      const BodyCheckResult early_bodies =
-          check_compile_time_procedure_bodies(
-              sources,
-              workspace_package.loaded,
-              package.semantics.selections,
-              package.semantics.package,
-              package.semantics.constants,
-              options.target.facts,
-              package.semantics.compile_time_synthesis_procedures,
-              diagnostics);
-      if (!early_bodies.ok) continue;
+    if (!append_compile_time_body_synthesis_sites(
+            sources,
+            workspace_package.loaded,
+            options.target.facts,
+            package.semantics,
+            diagnostics)) {
+      continue;
     }
     // Public package/declaration documentation is an interface input just like
     // public types and constants. Collect it before consumers bind dependency

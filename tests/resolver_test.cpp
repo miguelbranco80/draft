@@ -271,6 +271,56 @@ struct TemporaryWorkspace {
            << "}\n";
   }
 
+  // Packet's member completion cannot affect the independent compile_value
+  // procedure. Interface discovery should therefore publish both obligations
+  // in one opaque round, then expose the declaration selected by the result.
+  void write_independent_member_and_compile_time_source() const {
+    std::ofstream source(
+        package / "package.draft", std::ios::binary | std::ios::trunc);
+    source << "package app\n\n"
+           << "Packet :: struct {\n"
+           << "    ... \"add value field\"\n"
+           << "}\n\n"
+           << "compile_value :: proc() -> i64 {\n"
+           << "    return ... \"compute independent selector\"\n"
+           << "}\n\n"
+           << "Selected :: compile_value()\n\n"
+           << "when Selected == 42 {\n"
+           << "    ... \"declare public answer\"\n"
+           << "}\n\n"
+           << "main :: proc() {\n"
+           << "    packet: Packet\n"
+           << "    packet.value = answer\n"
+           << "}\n";
+  }
+
+  // The evaluator skips the false branch and reaches the synthesis return, but
+  // ordinary body checking still validates that branch. Its missing Packet
+  // member makes the procedure depend on the current member completeness set,
+  // so only the member obligation may appear in the first round.
+  void write_dependent_member_and_compile_time_source() const {
+    std::ofstream source(
+        package / "package.draft", std::ios::binary | std::ios::trunc);
+    source << "package app\n\n"
+           << "Packet :: struct {\n"
+           << "    ... \"add value field\"\n"
+           << "}\n\n"
+           << "compile_value :: proc() -> i64 {\n"
+           << "    if false {\n"
+           << "        packet: Packet\n"
+           << "        packet.value = 0\n"
+           << "    }\n"
+           << "    return ... \"compute dependent selector\"\n"
+           << "}\n\n"
+           << "Selected :: compile_value()\n\n"
+           << "when Selected == 42 {\n"
+           << "    ... \"declare public answer\"\n"
+           << "}\n\n"
+           << "main :: proc() {\n"
+           << "    assert(answer == 42)\n"
+           << "}\n";
+  }
+
   void write_complete_source() const {
     std::ofstream source(
         package / "package.draft", std::ios::binary | std::ios::trunc);
@@ -1299,6 +1349,161 @@ void test_dependency_waits_for_synthesized_public_layout(TestState &state) {
   EXPECT(state, !offline_diagnostics.has_errors());
 }
 
+void test_independent_member_and_compile_time_sites_share_round(
+    TestState &state) {
+  TemporaryWorkspace workspace;
+  workspace.write_independent_member_and_compile_time_source();
+
+  // Inspect the first provider-free discovery surface directly. Seeing both
+  // rows here proves the expression was not serialized behind the unrelated
+  // aggregate member completion set.
+  draft::CompileWorkspaceOptions discovery_options = compile_options(workspace);
+  discovery_options.stage =
+      draft::CompileWorkspaceStage::DiscoverInterfaceSynthesis;
+  draft::SourceManager discovery_sources;
+  draft::DiagnosticSink discovery_diagnostics;
+  const draft::CompileWorkspaceResult discovery = draft::compile_workspace(
+      discovery_sources,
+      workspace.package.string(),
+      std::move(discovery_options),
+      discovery_diagnostics);
+  if (!discovery.ok) {
+    std::cerr << draft::render_diagnostics(
+        discovery_sources, discovery_diagnostics);
+  }
+  EXPECT(state, discovery.ok);
+  if (discovery.graph.root_package.is_valid() &&
+      discovery.graph.root_package.value < discovery.packages.size() &&
+      discovery.packages[discovery.graph.root_package.value].has_value()) {
+    const draft::CompiledPackage &root =
+        *discovery.packages[discovery.graph.root_package.value];
+    EXPECT(state, root.obligations.obligations.size() == 2);
+    if (root.obligations.obligations.size() == 2) {
+      EXPECT(state, root.obligations.obligations[0].kind ==
+          draft::AgentConstructKind::SynthesisMember);
+      EXPECT(state, root.obligations.obligations[1].kind ==
+          draft::AgentConstructKind::SynthesisExpression);
+    }
+  } else {
+    EXPECT(state, false);
+  }
+
+  FakeProviderState provider;
+  provider.staged_responses = true;
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  const draft::ResolveWorkspaceResult resolved = draft::resolve_workspace(
+      sources,
+      workspace.package.string(),
+      resolve_options(workspace, provider),
+      diagnostics);
+  if (!resolved.ok) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+  }
+  EXPECT(state, resolved.ok);
+  EXPECT(state, resolved.committed);
+  EXPECT(state, resolved.synthesized_sites == 3);
+  EXPECT(state, provider.kinds.size() == 3);
+  if (provider.kinds.size() == 3) {
+    EXPECT(state, provider.kinds[0] ==
+        draft::AgentConstructKind::SynthesisMember);
+    EXPECT(state, provider.kinds[1] ==
+        draft::AgentConstructKind::SynthesisExpression);
+    EXPECT(state, provider.kinds[2] ==
+        draft::AgentConstructKind::SynthesisDeclaration);
+  }
+
+  draft::SourceManager offline_sources;
+  draft::DiagnosticSink offline_diagnostics;
+  const draft::CompileWorkspaceResult offline =
+      draft::compile_workspace_with_resolution(
+          offline_sources,
+          workspace.package.string(),
+          compile_options(workspace),
+          offline_diagnostics);
+  if (!offline.ok) {
+    std::cerr << draft::render_diagnostics(
+        offline_sources, offline_diagnostics);
+  }
+  EXPECT(state, offline.ok);
+  EXPECT(state, !offline_diagnostics.has_errors());
+}
+
+void test_member_dependent_compile_time_site_waits_for_next_round(
+    TestState &state) {
+  TemporaryWorkspace workspace;
+  workspace.write_dependent_member_and_compile_time_source();
+
+  draft::CompileWorkspaceOptions discovery_options = compile_options(workspace);
+  discovery_options.stage =
+      draft::CompileWorkspaceStage::DiscoverInterfaceSynthesis;
+  draft::SourceManager discovery_sources;
+  draft::DiagnosticSink discovery_diagnostics;
+  const draft::CompileWorkspaceResult discovery = draft::compile_workspace(
+      discovery_sources,
+      workspace.package.string(),
+      std::move(discovery_options),
+      discovery_diagnostics);
+  if (!discovery.ok) {
+    std::cerr << draft::render_diagnostics(
+        discovery_sources, discovery_diagnostics);
+  }
+  EXPECT(state, discovery.ok);
+  if (discovery.graph.root_package.is_valid() &&
+      discovery.graph.root_package.value < discovery.packages.size() &&
+      discovery.packages[discovery.graph.root_package.value].has_value()) {
+    const draft::CompiledPackage &root =
+        *discovery.packages[discovery.graph.root_package.value];
+    EXPECT(state, root.obligations.obligations.size() == 1);
+    if (root.obligations.obligations.size() == 1) {
+      EXPECT(state, root.obligations.obligations[0].kind ==
+          draft::AgentConstructKind::SynthesisMember);
+    }
+  } else {
+    EXPECT(state, false);
+  }
+
+  FakeProviderState provider;
+  provider.staged_responses = true;
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  const draft::ResolveWorkspaceResult resolved = draft::resolve_workspace(
+      sources,
+      workspace.package.string(),
+      resolve_options(workspace, provider),
+      diagnostics);
+  if (!resolved.ok) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+  }
+  EXPECT(state, resolved.ok);
+  EXPECT(state, resolved.committed);
+  EXPECT(state, resolved.synthesized_sites == 3);
+  EXPECT(state, provider.kinds.size() == 3);
+  if (provider.kinds.size() == 3) {
+    EXPECT(state, provider.kinds[0] ==
+        draft::AgentConstructKind::SynthesisMember);
+    EXPECT(state, provider.kinds[1] ==
+        draft::AgentConstructKind::SynthesisExpression);
+    EXPECT(state, provider.kinds[2] ==
+        draft::AgentConstructKind::SynthesisDeclaration);
+  }
+
+  draft::SourceManager offline_sources;
+  draft::DiagnosticSink offline_diagnostics;
+  const draft::CompileWorkspaceResult offline =
+      draft::compile_workspace_with_resolution(
+          offline_sources,
+          workspace.package.string(),
+          compile_options(workspace),
+          offline_diagnostics);
+  if (!offline.ok) {
+    std::cerr << draft::render_diagnostics(
+        offline_sources, offline_diagnostics);
+  }
+  EXPECT(state, offline.ok);
+  EXPECT(state, !offline_diagnostics.has_errors());
+}
+
 void test_tests_gate_manifest_commit(TestState &state) {
   TemporaryWorkspace workspace;
   workspace.write_source("candidate with tests");
@@ -1524,6 +1729,8 @@ int main() {
   test_procedure_synthesis_resolves_type_layout(state);
   test_synthesis_resolves_integer_recipe_boundaries(state);
   test_dependency_waits_for_synthesized_public_layout(state);
+  test_independent_member_and_compile_time_sites_share_round(state);
+  test_member_dependent_compile_time_site_waits_for_next_round(state);
   test_tests_gate_manifest_commit(state);
   test_validation_context_stales_synthesis(state);
   test_cancelled_resolution_does_not_start_transaction(state);

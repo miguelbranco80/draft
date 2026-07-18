@@ -290,6 +290,15 @@ values publish the reached body site instead. While any such obligation is
 pending, the package interface is withheld rather than exporting an invalid
 public type, and dependency consumers resume only after a clean rebuilt round.
 
+Structural synthesis is split at the semantic boundary it can affect. A package
+declaration site remains an opaque prerequisite for every reached compile-time
+body because it may introduce any package name. A member-only set is narrower:
+the compiler checks reached bodies on copied semantic and constant tables. If
+that ordinary check succeeds, its typed sites join the same opaque provider
+round without observing any member proposal. If it fails, the copy and its
+diagnostics are discarded; only member sites run, and the next clean round
+either discovers the body sites or reports the authoritative body error.
+
 Codex execution polls an embedding-owned cancellation callback alongside its
 fixed deadline. Cancellation never retries: the adapter kills and reaps the
 active child, emits one compiler diagnostic, and returns before its private
@@ -852,7 +861,7 @@ the readable subject type, and the same portable interface type graph used by
 other provider context. Source and duplicated digests are rechecked by the
 shared Codex renderer before either synthesis or judgment starts a child. The
 `draft-agent-obligation-v16`, synthesis request/prompt v17, judgment
-request/prompt v3, and compiler content v113 identities make these new facts a
+request/prompt v3, and compiler content v114 identities make these new facts a
 stale-pin and evidence input.
 
 Nested procedures are static and cannot capture runtime locals. Checking a

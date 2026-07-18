@@ -283,6 +283,13 @@ a compile-time procedure, only the reached body is checked early. A package
 with a pending public layout withholds its interface, so consumers cannot bind a
 partial type before the checked expansion is installed.
 
+Aggregate-member synthesis is a narrower completeness boundary than a package
+declaration. An early compile-time procedure that already type-checks against
+the incomplete member graph may publish its site in the same opaque round. If
+that check needs a pending member, the compiler discards the speculative graph
+and retries after the member expansion. Package declaration sites remain prior
+dependencies because they may introduce any missing package name.
+
 `draftc build` defaults to an executable. `--kind object`, `--kind
 static-library`, `--kind dynamic-library`, and `--kind assembly` select a
 relocatable object, archive, dylib, or collision-free directory of assembly
