@@ -362,6 +362,19 @@ private:
     return result;
   }
 
+  // Contextual alternatives use the first name after '.', because a payload
+  // expression may contain additional names of its own (`.value(local)`).
+  [[nodiscard]] std::optional<std::string> first_name(
+      const SyntaxTree &tree, const SyntaxNode &node) const {
+    for (std::uint32_t index = node.token_begin; index < node.token_end; ++index) {
+      const Token &token = tree.token(index);
+      if (token_is_contextual_name(token.kind)) {
+        return std::string(sources_.text(token.range));
+      }
+    }
+    return std::nullopt;
+  }
+
   // Resolves the special namespace operation `alias.public_name`. Package
   // aliases are not runtime or compile-time values themselves; the member node
   // is resolved directly into the consumer-local proxy installed from the
@@ -1269,6 +1282,9 @@ private:
     bool equal = false;
     if (left.kind == ConstantKind::Bool && right.kind == ConstantKind::Bool) {
       equal = left.boolean == right.boolean;
+    } else if (left.kind == ConstantKind::String &&
+               right.kind == ConstantKind::String) {
+      equal = left.text == right.text;
     } else if (left.kind == ConstantKind::EnumLabel &&
                right.kind == ConstantKind::EnumLabel) {
       equal = left.text == right.text;
@@ -1796,6 +1812,41 @@ private:
     }
   }
 
+  [[nodiscard]] ConstantValue uninitialized_value(TypeId type_id) const {
+    Type type = semantic_.types.type(type_id);
+    while (type.kind == TypeKind::Distinct) {
+      type = semantic_.types.type(type.element);
+    }
+    if (type.kind == TypeKind::Array || type.kind == TypeKind::Simd) {
+      std::vector<ConstantValue> elements;
+      elements.reserve(static_cast<std::size_t>(type.element_count));
+      for (std::uint64_t index = 0; index < type.element_count; ++index) {
+        elements.push_back(uninitialized_value(type.element));
+      }
+      return ConstantValue::make_aggregate(std::move(elements));
+    }
+    if (type.kind == TypeKind::Tuple || type.kind == TypeKind::Struct) {
+      std::vector<ConstantValue> elements;
+      elements.reserve(type.members.size());
+      for (TypeId member : type.members) {
+        elements.push_back(uninitialized_value(member));
+      }
+      return ConstantValue::make_aggregate(std::move(elements));
+    }
+    // A union does not have independently addressable simultaneous fields. Its
+    // active alternative remains unknown until a complete union value is stored.
+    return ConstantValue{};
+  }
+
+  [[nodiscard]] bool contains_uninitialized(
+      const ConstantValue &value) const {
+    if (value.kind == ConstantKind::Unavailable) return true;
+    for (const ConstantValue &element : value.elements) {
+      if (contains_uninitialized(element)) return true;
+    }
+    return false;
+  }
+
   [[nodiscard]] std::optional<ConstantValue> zero_value_from_syntax(
       const SyntaxTree &tree, NodeId type_node, ScopeId scope) {
     const SyntaxNode &node = tree.node(type_node);
@@ -1808,7 +1859,7 @@ private:
     return resolved.has_value() ? zero_value(*resolved) : std::nullopt;
   }
 
-  [[nodiscard]] TokenKind assignment_operator(
+  [[nodiscard]] std::optional<std::uint32_t> assignment_operator_index(
       const SyntaxTree &tree, const SyntaxNode &node) const {
     for (std::uint32_t index = node.token_begin; index < node.token_end; ++index) {
       switch (tree.token(index).kind) {
@@ -1823,12 +1874,12 @@ private:
       case TokenKind::CaretEqual:
       case TokenKind::ShiftLeftEqual:
       case TokenKind::ShiftRightEqual:
-        return tree.token(index).kind;
+        return index;
       default:
         break;
       }
     }
-    return TokenKind::Invalid;
+    return std::nullopt;
   }
 
   [[nodiscard]] TokenKind binary_for_assignment(TokenKind operation) const {
@@ -2367,12 +2418,13 @@ private:
     }
     const std::vector<std::string> names =
         names_in_node(tree, tree.node(pattern.children.front()));
-    if (names.size() != 1) {
+    if (names.empty()) {
       return failed_execution(fail(
           declaration.range,
-          "compile-time evaluator currently requires one local binding",
+          "compile-time local requires at least one binding name",
           required));
     }
+    const bool destructures_tuple = pattern.kind == NodeKind::TuplePattern;
 
     std::optional<NodeId> declared_type;
     std::optional<NodeId> initializer;
@@ -2392,7 +2444,18 @@ private:
       local_type = type_value(tree, *declared_type, scope).value_or(
           semantic_.types.builtins().invalid);
     }
-    if (initializer.has_value()) {
+    const bool explicitly_uninitialized = initializer.has_value() &&
+        tree.node(*initializer).kind == NodeKind::UninitializedExpression;
+    if (explicitly_uninitialized) {
+      if (!declared_type.has_value() ||
+          local_type == semantic_.types.builtins().invalid) {
+        return failed_execution(fail(
+            tree.node(*initializer).range,
+            "uninitialized compile-time local requires an explicit type",
+            required));
+      }
+      value = uninitialized_value(local_type);
+    } else if (initializer.has_value()) {
       const EvalResult evaluated =
           evaluate_expression(
               tree,
@@ -2445,8 +2508,43 @@ private:
           required));
     }
 
-    if (names.front() != "_") {
-      declare_local(names.front(), std::move(value), local_type);
+    if (destructures_tuple) {
+      if (!local_type.is_valid() ||
+          semantic_.types.type(local_type).kind != TypeKind::Tuple) {
+        return failed_execution(fail(
+            pattern.range,
+            "compile-time tuple pattern requires a tuple value",
+            required));
+      }
+      const Type tuple = semantic_.types.type(local_type);
+      if (tuple.members.size() != names.size()) {
+        return failed_execution(fail(
+            pattern.range,
+            "compile-time tuple pattern has the wrong arity",
+            required));
+      }
+      if (!explicitly_uninitialized &&
+          (value.kind != ConstantKind::Aggregate ||
+           value.elements.size() != names.size())) {
+        return failed_execution(fail(
+            pattern.range,
+            "compile-time tuple pattern value has the wrong shape",
+            required));
+      }
+      for (std::size_t index = 0; index < names.size(); ++index) {
+        if (names[index] == "_") continue;
+        declare_local(
+            names[index],
+            explicitly_uninitialized
+                ? uninitialized_value(tuple.members[index])
+                : value.elements[index],
+            tuple.members[index]);
+      }
+      return {};
+    }
+
+    for (const std::string &name : names) {
+      if (name != "_") declare_local(name, value, local_type);
     }
     return {};
   }
@@ -2488,7 +2586,9 @@ private:
     std::optional<std::size_t> selected;
     TypeId selected_type;
     if (expression.kind == NodeKind::BracketExpression) {
-      if (expression.children.size() != 2 || aggregate.kind != TypeKind::Array) {
+      if (expression.children.size() != 2 ||
+          (aggregate.kind != TypeKind::Array &&
+           aggregate.kind != TypeKind::Simd)) {
         const EvalResult failure = fail(
             expression.range,
             "compile-time indexed assignment requires an array local",
@@ -2580,97 +2680,159 @@ private:
       const SyntaxNode &assignment,
       ScopeId scope,
       bool required) {
-    if (assignment.children.size() != 2) {
+    const std::optional<std::uint32_t> operator_index =
+        assignment_operator_index(tree, assignment);
+    if (!operator_index.has_value()) {
       return failed_execution(fail(
           assignment.range,
-          "compile-time evaluator currently requires one assignment target",
+          "compile-time assignment has no operator",
           required));
     }
-    const SyntaxNode &target_expression =
-        tree.node(assignment.children.front());
-    const LocalTargetResult resolved_target = local_target(
-        tree, assignment.children.front(), scope, required);
-    if (resolved_target.status != EvalStatus::Ready ||
-        !resolved_target.target.has_value()) {
-      if (resolved_target.status == EvalStatus::Error) {
-        return failed_execution(EvalStatus::Error);
-      }
+    std::size_t left_count = 0;
+    for (NodeId child : assignment.children) {
+      if (tree.node(child).token_end <= *operator_index) ++left_count;
+    }
+    const std::size_t right_count = assignment.children.size() - left_count;
+    if (left_count == 0 || left_count != right_count) {
       return failed_execution(fail(
-          target_expression.range,
-          "compile-time assignment cannot write runtime or unknown storage",
+          assignment.range,
+          "compile-time assignment sides must have equal nonzero arity",
           required));
     }
-    const LocalTarget target_snapshot = *resolved_target.target;
-    const EvalResult right =
-        evaluate_expression(
-            tree,
-            assignment.children.back(),
-            scope,
-            required,
-            target_snapshot.type);
-    if (right.status != EvalStatus::Ready) return failed_execution(right);
 
-    ConstantValue stored = right.value;
-    const TokenKind operation = assignment_operator(tree, assignment);
-    if (operation != TokenKind::Equal) {
-      const TokenKind binary = binary_for_assignment(operation);
-      if (binary == TokenKind::Invalid) {
+    // Resolve every lvalue before evaluating any right-hand side.  The stored
+    // snapshots are also the old values used by compound assignment; actual
+    // writes happen only after every RHS has been evaluated and converted.
+    std::vector<std::optional<LocalTarget>> targets;
+    targets.reserve(left_count);
+    for (std::size_t index = 0; index < left_count; ++index) {
+      const NodeId target_id = assignment.children[index];
+      const SyntaxNode &target_expression = tree.node(target_id);
+      const std::optional<std::string> name =
+          target_expression.kind == NodeKind::NameExpression
+          ? final_name(tree, target_expression)
+          : std::nullopt;
+      if (name.has_value() && *name == "_") {
+        targets.push_back(std::nullopt);
+        continue;
+      }
+      const LocalTargetResult resolved = local_target(
+          tree, target_id, scope, required);
+      if (resolved.status != EvalStatus::Ready || !resolved.target.has_value()) {
+        if (resolved.status == EvalStatus::Error) {
+          return failed_execution(EvalStatus::Error);
+        }
         return failed_execution(fail(
-            assignment.range,
-            "invalid compile-time compound assignment",
+            target_expression.range,
+            "compile-time assignment cannot write runtime or unknown storage",
             required));
       }
-      const EvalResult result =
-          runtime_type(target_snapshot.type).kind == TypeKind::Float
-          ? evaluate_typed_float_binary(
-                binary,
-                target_snapshot.value,
-                right.value,
-                target_snapshot.type,
-                assignment.range,
-                required)
-          : evaluate_binary_values(
-                binary,
-                target_snapshot.value,
-                right.value,
-                assignment.range,
-                required);
-      if (result.status != EvalStatus::Ready) return failed_execution(result);
-      const EvalResult converted = convert_to_type(
-          result.value,
-          target_snapshot.type,
-          true,
-          assignment.range,
-          required);
-      if (converted.status != EvalStatus::Ready) {
-        return failed_execution(converted);
-      }
-      stored = converted.value;
-    } else if (target_snapshot.type.is_valid() &&
-               target_snapshot.type != semantic_.types.builtins().invalid &&
-               right.type != target_snapshot.type) {
-      if (right.value.kind == ConstantKind::Procedure) {
-        return failed_execution(fail(
-            assignment.range,
-            "compile-time assignment has a different procedure type",
-            required));
-      }
-      const EvalResult converted = convert_to_type(
-          right.value,
-          target_snapshot.type,
-          false,
-          assignment.range,
-          required);
-      if (converted.status != EvalStatus::Ready) {
-        return failed_execution(converted);
-      }
-      stored = converted.value;
+      targets.push_back(*resolved.target);
     }
-    if (!store_local_target(target_snapshot, std::move(stored))) {
-      return failed_execution(fail(
-          target_expression.range,
-          "compile-time assignment target became unavailable",
-          required));
+
+    const TokenKind operation = tree.token(*operator_index).kind;
+    if (operation != TokenKind::Equal) {
+      for (const std::optional<LocalTarget> &target : targets) {
+        if (!target.has_value()) {
+          return failed_execution(fail(
+              assignment.range,
+              "discard target is invalid in compound assignment",
+              required));
+        }
+      }
+    }
+
+    std::vector<std::optional<ConstantValue>> stored_values;
+    stored_values.reserve(right_count);
+    for (std::size_t index = 0; index < right_count; ++index) {
+      const NodeId right_id = assignment.children[left_count + index];
+      const TypeId expected = targets[index].has_value()
+          ? targets[index]->type
+          : TypeId{};
+      const EvalResult right = evaluate_expression(
+          tree, right_id, scope, required, expected);
+      if (right.status != EvalStatus::Ready) return failed_execution(right);
+      if (!targets[index].has_value()) {
+        stored_values.push_back(std::nullopt);
+        continue;
+      }
+
+      const LocalTarget &target = *targets[index];
+      ConstantValue stored = right.value;
+      if (operation != TokenKind::Equal) {
+        if (target.value.kind == ConstantKind::Unavailable) {
+          return failed_execution(fail(
+              tree.node(assignment.children[index]).range,
+              "compound assignment reads an uninitialized local",
+              required));
+        }
+        const TokenKind binary = binary_for_assignment(operation);
+        if (binary == TokenKind::Invalid) {
+          return failed_execution(fail(
+              assignment.range,
+              "invalid compile-time compound assignment",
+              required));
+        }
+        const EvalResult result =
+            runtime_type(target.type).kind == TypeKind::Float
+            ? evaluate_typed_float_binary(
+                  binary,
+                  target.value,
+                  right.value,
+                  target.type,
+                  assignment.range,
+                  required)
+            : evaluate_binary_values(
+                  binary,
+                  target.value,
+                  right.value,
+                  assignment.range,
+                  required);
+        if (result.status != EvalStatus::Ready) {
+          return failed_execution(result);
+        }
+        const EvalResult converted = convert_to_type(
+            result.value,
+            target.type,
+            true,
+            assignment.range,
+            required);
+        if (converted.status != EvalStatus::Ready) {
+          return failed_execution(converted);
+        }
+        stored = converted.value;
+      } else if (target.type.is_valid() &&
+                 target.type != semantic_.types.builtins().invalid &&
+                 right.type != target.type) {
+        if (right.value.kind == ConstantKind::Procedure) {
+          return failed_execution(fail(
+              assignment.range,
+              "compile-time assignment has a different procedure type",
+              required));
+        }
+        const EvalResult converted = convert_to_type(
+            right.value,
+            target.type,
+            false,
+            assignment.range,
+            required);
+        if (converted.status != EvalStatus::Ready) {
+          return failed_execution(converted);
+        }
+        stored = converted.value;
+      }
+      stored_values.push_back(std::move(stored));
+    }
+
+    for (std::size_t index = 0; index < targets.size(); ++index) {
+      if (!targets[index].has_value()) continue;
+      if (!stored_values[index].has_value() ||
+          !store_local_target(*targets[index], std::move(*stored_values[index]))) {
+        return failed_execution(fail(
+            tree.node(assignment.children[index]).range,
+            "compile-time assignment target became unavailable",
+            required));
+      }
     }
     return {};
   }
@@ -2923,6 +3085,10 @@ private:
 
     std::optional<NodeId> selected;
     std::optional<NodeId> fallback;
+    std::optional<LocalBinding> selected_payload;
+    const bool tagged_subject = subject.type.is_valid() &&
+        runtime_type(subject.type).kind == TypeKind::TaggedUnion &&
+        subject.value.kind == ConstantKind::Aggregate;
     for (std::size_t index = 1; index < statement.children.size(); ++index) {
       const SyntaxNode &switch_case = tree.node(statement.children[index]);
       if (switch_case.children.empty()) continue;
@@ -2934,10 +3100,75 @@ private:
       for (std::size_t label = 0;
            label + 1 < switch_case.children.size();
            ++label) {
-        const EvalResult candidate = evaluate_expression(
-            tree, switch_case.children[label], scope, required);
+        const NodeId label_id = switch_case.children[label];
+        const SyntaxNode &label_node = tree.node(label_id);
+        if (tagged_subject &&
+            label_node.kind == NodeKind::ContextualAlternativeExpression) {
+          const std::optional<std::string> name = first_name(tree, label_node);
+          const std::optional<std::size_t> alternative = name.has_value()
+              ? aggregate_member_index(subject.type, *name)
+              : std::nullopt;
+          if (!alternative.has_value()) {
+            return failed_execution(fail(
+                label_node.range,
+                "compile-time switch names no tagged-union alternative",
+                required));
+          }
+          if (*alternative != subject.value.variant_index) continue;
+
+          const Type union_type = runtime_type(subject.type);
+          const TypeId payload_type = union_type.members[*alternative];
+          const bool has_payload =
+              semantic_.types.type(payload_type).kind != TypeKind::Void;
+          if (has_payload) {
+            if (label_node.children.size() != 1 ||
+                subject.value.elements.size() != 1) {
+              return failed_execution(fail(
+                  label_node.range,
+                  "compile-time union switch payload has the wrong shape",
+                  required));
+            }
+            const SyntaxNode &binding_node =
+                tree.node(label_node.children.front());
+            const std::optional<std::string> binding =
+                binding_node.kind == NodeKind::NameExpression
+                ? final_name(tree, binding_node)
+                : std::nullopt;
+            if (!binding.has_value()) {
+              return failed_execution(fail(
+                  binding_node.range,
+                  "compile-time union switch payload requires a binding name",
+                  required));
+            }
+            if (*binding != "_") {
+              selected_payload = LocalBinding{
+                  *binding, subject.value.elements.front(), payload_type};
+            }
+          } else if (!label_node.children.empty()) {
+            return failed_execution(fail(
+                label_node.range,
+                "payload-free union alternative cannot bind a payload",
+                required));
+          }
+          selected = statements;
+          break;
+        }
+
+        EvalResult candidate = evaluate_expression(
+            tree, label_id, scope, required, subject.type);
         if (candidate.status != EvalStatus::Ready) {
           return failed_execution(candidate);
+        }
+        if (subject.type.is_valid() && candidate.type != subject.type) {
+          candidate = convert_to_type(
+              candidate.value,
+              subject.type,
+              false,
+              label_node.range,
+              required);
+          if (candidate.status != EvalStatus::Ready) {
+            return failed_execution(candidate);
+          }
         }
         const EvalResult equal =
             subject.type.is_valid() &&
@@ -2947,13 +3178,13 @@ private:
                   subject.value,
                   candidate.value,
                   subject.type,
-                  tree.node(switch_case.children[label]).range,
+                  label_node.range,
                   required)
             : evaluate_binary_values(
                   TokenKind::EqualEqual,
                   subject.value,
                   candidate.value,
-                  tree.node(switch_case.children[label]).range,
+                  label_node.range,
                   required);
         if (equal.status != EvalStatus::Ready) return failed_execution(equal);
         if (equal.value.boolean) {
@@ -2967,6 +3198,12 @@ private:
     if (!selected.has_value()) return {};
 
     local_frames_.back().scopes.emplace_back();
+    if (selected_payload.has_value()) {
+      declare_local(
+          selected_payload->name,
+          selected_payload->value,
+          selected_payload->type);
+    }
     ExecutionResult result = execute_statement_list(
         tree, tree.node(*selected), scope, required);
     local_frames_.back().scopes.pop_back();
@@ -3234,6 +3471,12 @@ private:
       if (!name.has_value()) return pending();
       if (*name == "target") return ready(ConstantValue::make_target());
       if (const LocalBinding *local = local_binding(*name)) {
+        if (contains_uninitialized(local->value)) {
+          return fail(
+              node.range,
+              "compile-time evaluation reads an uninitialized local",
+              required);
+        }
         return ready(local->value, local->type);
       }
       const std::optional<SymbolId> symbol = semantic_.symbols.lookup(scope, *name);
@@ -3254,7 +3497,7 @@ private:
     }
 
     case NodeKind::ContextualAlternativeExpression: {
-      const std::optional<std::string> name = final_name(tree, node);
+      const std::optional<std::string> name = first_name(tree, node);
       if (!name.has_value()) return pending();
       TypeId payload_type;
       if (expected.is_valid() &&
@@ -3319,7 +3562,14 @@ private:
               "constant aggregate member is out of range or unknown",
               required);
         }
-        return ready(base.value.elements[*index], aggregate.members[*index]);
+        const ConstantValue &selected = base.value.elements[*index];
+        if (contains_uninitialized(selected)) {
+          return fail(
+              node.range,
+              "compile-time evaluation reads an uninitialized member",
+              required);
+        }
+        return ready(selected, aggregate.members[*index]);
       }
       return pending();
     }
@@ -3445,6 +3695,7 @@ private:
       }
       const Type composite = semantic_.types.type(*composite_type);
       if (composite.kind != TypeKind::Array &&
+          composite.kind != TypeKind::Simd &&
           composite.kind != TypeKind::Tuple &&
           composite.kind != TypeKind::Struct &&
           composite.kind != TypeKind::RawUnion) {
@@ -3462,7 +3713,7 @@ private:
       }
       ConstantValue result = *zero;
       std::vector<bool> initialized(
-          composite.kind == TypeKind::Array
+          composite.kind == TypeKind::Array || composite.kind == TypeKind::Simd
               ? static_cast<std::size_t>(composite.element_count)
               : composite.members.size(),
           false);
@@ -3489,6 +3740,7 @@ private:
         std::optional<std::size_t> destination;
         if (keyed) {
           if (!key.has_value() || composite.kind == TypeKind::Array ||
+              composite.kind == TypeKind::Simd ||
               composite.kind == TypeKind::Tuple) {
             return fail(
                 element.range,
@@ -3520,7 +3772,8 @@ private:
         }
         initialized[*destination] = true;
 
-        const TypeId element_type = composite.kind == TypeKind::Array
+        const TypeId element_type =
+            composite.kind == TypeKind::Array || composite.kind == TypeKind::Simd
             ? composite.element
             : composite.members[*destination];
         const EvalResult evaluated = evaluate_expression(
@@ -3605,13 +3858,20 @@ private:
       }
       if (base.value.kind == ConstantKind::Aggregate && base.type.is_valid()) {
         const Type aggregate = semantic_.types.type(base.type);
-        if (aggregate.kind != TypeKind::Array ||
+        if ((aggregate.kind != TypeKind::Array &&
+             aggregate.kind != TypeKind::Simd) ||
             *position >= base.value.elements.size()) {
           return fail(node.range, "constant array index is out of bounds", required);
         }
-        return ready(
-            base.value.elements[static_cast<std::size_t>(*position)],
-            aggregate.element);
+        const ConstantValue &selected =
+            base.value.elements[static_cast<std::size_t>(*position)];
+        if (contains_uninitialized(selected)) {
+          return fail(
+              node.range,
+              "compile-time evaluation reads an uninitialized element",
+              required);
+        }
+        return ready(selected, aggregate.element);
       }
       if (base.value.kind == ConstantKind::String &&
           *position < base.value.text.size()) {

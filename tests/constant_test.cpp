@@ -71,6 +71,21 @@ void test_constants_and_conditional_rounds(TestState &state) {
   AnalyzedSource source(R"draft(
 package conditions
 
+Mode :: enum {
+    Off,
+    On,
+}
+
+Outcome :: union {
+    empty,
+    value: u32,
+}
+
+Compile_Header :: struct {
+    tag: u8,
+    value: u32,
+}
+
 make_mask :: proc(bits: uint) -> uint {
     result: uint
     for i: uint = 0; i < bits; i += 1 {
@@ -97,6 +112,24 @@ classify :: proc(value: int) -> int {
         return 20
     case:
         return 30
+    }
+}
+
+classify_mode :: proc(value: Mode) -> u32 {
+    switch value {
+    case .On:
+        return 1
+    case .Off:
+        return 0
+    }
+}
+
+classify_outcome :: proc(value: Outcome) -> u32 {
+    switch value {
+    case .value(payload):
+        return payload
+    case .empty:
+        return 0
     }
 }
 
@@ -150,6 +183,23 @@ apply_operation :: proc(
     return operation(value)
 }
 
+statement_forms :: proc() -> u32 {
+    grouped_left, grouped_right: u32 = 5
+    (first, second): (u32, u32) = (10, 32)
+    first, second = second, first
+    scratch: u32 = ---
+    scratch = first + second
+    _, grouped_left = grouped_right, first
+    return scratch + grouped_left + second
+}
+
+initialize_members :: proc() -> Compile_Header {
+    result: Compile_Header = ---
+    result.tag = 1
+    result.value = 42
+    return result
+}
+
 round_each_step :: proc() -> f32 {
     value: f32 = 16777216.0
     return value + 1.0
@@ -185,15 +235,22 @@ Odd_Mask :: make_mask(8)
 Factorial_10 :: factorial(10)
 Class_2 :: classify(2)
 Class_Default :: classify(9)
+Class_Mode :: classify_mode(.On)
+Class_Outcome :: classify_outcome(.value(42))
 Target_Word :: target_word()
 Wrapped_Byte :: increment_byte(255)
 Measured_U32 :: measure[u32, 7](0)
 Table :: make_table()
 Table_Sum :: sum_table(Table)
+Vector_Type :: #simd[4]u32
+Vector :: Vector_Type{1, 2, 3, 4}
+Vector_Value :: Vector[2]
 Increment_Procedure :: increment_value
 Applied_Procedure :: apply_operation(Increment_Procedure, 41)
 Same_Procedure :: Increment_Procedure == increment_value
 Different_Procedure :: Increment_Procedure != decrement_value
+Statement_Forms :: statement_forms()
+Initialized_Member :: initialize_members().value
 Rounded_F32 :: round_each_step()
 Contextual_Rounded_F32 :: round_contextual_tree()
 Sibling_Context_Left :: Contextual_Rounded_F32 ==
@@ -332,6 +389,10 @@ when Accent == '\u{e9}' {
       find_symbol(source.analysis.package, "Class_2");
   const std::optional<draft::SymbolId> class_default =
       find_symbol(source.analysis.package, "Class_Default");
+  const std::optional<draft::SymbolId> class_mode =
+      find_symbol(source.analysis.package, "Class_Mode");
+  const std::optional<draft::SymbolId> class_outcome =
+      find_symbol(source.analysis.package, "Class_Outcome");
   const std::optional<draft::SymbolId> target_word =
       find_symbol(source.analysis.package, "Target_Word");
   const std::optional<draft::SymbolId> wrapped_byte =
@@ -342,6 +403,8 @@ when Accent == '\u{e9}' {
       find_symbol(source.analysis.package, "Table");
   const std::optional<draft::SymbolId> table_sum =
       find_symbol(source.analysis.package, "Table_Sum");
+  const std::optional<draft::SymbolId> vector_value =
+      find_symbol(source.analysis.package, "Vector_Value");
   const std::optional<draft::SymbolId> header_value =
       find_symbol(source.analysis.package, "Header_Value");
   const std::optional<draft::SymbolId> tuple_value =
@@ -354,6 +417,10 @@ when Accent == '\u{e9}' {
       find_symbol(source.analysis.package, "Same_Procedure");
   const std::optional<draft::SymbolId> different_procedure =
       find_symbol(source.analysis.package, "Different_Procedure");
+  const std::optional<draft::SymbolId> statement_forms =
+      find_symbol(source.analysis.package, "Statement_Forms");
+  const std::optional<draft::SymbolId> initialized_member =
+      find_symbol(source.analysis.package, "Initialized_Member");
   const std::optional<draft::SymbolId> rounded_f32 =
       find_symbol(source.analysis.package, "Rounded_F32");
   const std::optional<draft::SymbolId> contextual_rounded_f32 =
@@ -383,17 +450,22 @@ when Accent == '\u{e9}' {
   EXPECT(state, factorial.has_value());
   EXPECT(state, class_two.has_value());
   EXPECT(state, class_default.has_value());
+  EXPECT(state, class_mode.has_value());
+  EXPECT(state, class_outcome.has_value());
   EXPECT(state, target_word.has_value());
   EXPECT(state, wrapped_byte.has_value());
   EXPECT(state, measured_u32.has_value());
   EXPECT(state, table.has_value());
   EXPECT(state, table_sum.has_value());
+  EXPECT(state, vector_value.has_value());
   EXPECT(state, header_value.has_value());
   EXPECT(state, tuple_value.has_value());
   EXPECT(state, increment_procedure.has_value());
   EXPECT(state, applied_procedure.has_value());
   EXPECT(state, same_procedure.has_value());
   EXPECT(state, different_procedure.has_value());
+  EXPECT(state, statement_forms.has_value());
+  EXPECT(state, initialized_member.has_value());
   EXPECT(state, rounded_f32.has_value());
   EXPECT(state, contextual_rounded_f32.has_value());
   EXPECT(state, sibling_context_left.has_value());
@@ -426,6 +498,12 @@ when Accent == '\u{e9}' {
         source.analysis.constants.find(*class_two);
     const draft::ConstantValue *class_default_result =
         source.analysis.constants.find(*class_default);
+    const draft::ConstantValue *class_mode_result = class_mode
+        ? source.analysis.constants.find(*class_mode)
+        : nullptr;
+    const draft::ConstantValue *class_outcome_result = class_outcome
+        ? source.analysis.constants.find(*class_outcome)
+        : nullptr;
     const draft::ConstantValue *target_word_result =
         source.analysis.constants.find(*target_word);
     const draft::ConstantValue *wrapped_byte_result =
@@ -436,6 +514,9 @@ when Accent == '\u{e9}' {
         source.analysis.constants.find(*table);
     const draft::ConstantValue *table_sum_result =
         source.analysis.constants.find(*table_sum);
+    const draft::ConstantValue *vector_value_result = vector_value
+        ? source.analysis.constants.find(*vector_value)
+        : nullptr;
     const draft::ConstantValue *header_value_result =
         source.analysis.constants.find(*header_value);
     const draft::ConstantValue *tuple_value_result =
@@ -451,6 +532,12 @@ when Accent == '\u{e9}' {
         : nullptr;
     const draft::ConstantValue *different_procedure_result = different_procedure
         ? source.analysis.constants.find(*different_procedure)
+        : nullptr;
+    const draft::ConstantValue *statement_forms_result = statement_forms
+        ? source.analysis.constants.find(*statement_forms)
+        : nullptr;
+    const draft::ConstantValue *initialized_member_result = initialized_member
+        ? source.analysis.constants.find(*initialized_member)
         : nullptr;
     const draft::ConstantValue *rounded_f32_result = rounded_f32
         ? source.analysis.constants.find(*rounded_f32)
@@ -493,17 +580,22 @@ when Accent == '\u{e9}' {
     EXPECT(state, factorial_result != nullptr);
     EXPECT(state, class_two_result != nullptr);
     EXPECT(state, class_default_result != nullptr);
+    EXPECT(state, class_mode_result != nullptr);
+    EXPECT(state, class_outcome_result != nullptr);
     EXPECT(state, target_word_result != nullptr);
     EXPECT(state, wrapped_byte_result != nullptr);
     EXPECT(state, measured_u32_result != nullptr);
     EXPECT(state, table_result != nullptr);
     EXPECT(state, table_sum_result != nullptr);
+    EXPECT(state, vector_value_result != nullptr);
     EXPECT(state, header_value_result != nullptr);
     EXPECT(state, tuple_value_result != nullptr);
     EXPECT(state, increment_procedure_result != nullptr);
     EXPECT(state, applied_procedure_result != nullptr);
     EXPECT(state, same_procedure_result != nullptr);
     EXPECT(state, different_procedure_result != nullptr);
+    EXPECT(state, statement_forms_result != nullptr);
+    EXPECT(state, initialized_member_result != nullptr);
     EXPECT(state, rounded_f32_result != nullptr);
     EXPECT(state, contextual_rounded_f32_result != nullptr);
     EXPECT(state, sibling_context_left_result != nullptr);
@@ -543,6 +635,12 @@ when Accent == '\u{e9}' {
     if (class_default_result) {
       EXPECT(state, class_default_result->integer.to_decimal() == "30");
     }
+    if (class_mode_result) {
+      EXPECT(state, class_mode_result->integer.to_decimal() == "1");
+    }
+    if (class_outcome_result) {
+      EXPECT(state, class_outcome_result->integer.to_decimal() == "42");
+    }
     if (target_word_result) {
       EXPECT(state, target_word_result->integer.to_decimal() == "64");
     }
@@ -561,6 +659,9 @@ when Accent == '\u{e9}' {
     }
     if (table_sum_result) {
       EXPECT(state, table_sum_result->integer.to_decimal() == "14");
+    }
+    if (vector_value_result) {
+      EXPECT(state, vector_value_result->integer.to_decimal() == "3");
     }
     if (header_value_result) {
       EXPECT(state, header_value_result->integer.to_decimal() == "42");
@@ -581,6 +682,12 @@ when Accent == '\u{e9}' {
     if (same_procedure_result) EXPECT(state, same_procedure_result->boolean);
     if (different_procedure_result) {
       EXPECT(state, different_procedure_result->boolean);
+    }
+    if (statement_forms_result) {
+      EXPECT(state, statement_forms_result->integer.to_decimal() == "84");
+    }
+    if (initialized_member_result) {
+      EXPECT(state, initialized_member_result->integer.to_decimal() == "42");
     }
     if (rounded_f32_result) {
       EXPECT(state, rounded_f32_result->float_bit_width == 32);
@@ -659,11 +766,17 @@ uses_foreign :: proc() -> i64 {
     return external()
 }
 
+reads_uninitialized :: proc() -> u32 {
+    value: u32 = ---
+    return value
+}
+
 Bad_Return :: bad_return()
 Bad_Shift :: bad_shift(1)
 Bad_Division :: bad_division(-128)
 Bad_Recursion :: recursive(0)
 Bad_Foreign :: uses_foreign()
+Bad_Uninitialized :: reads_uninitialized()
 )draft");
 
   EXPECT(state, !source.analysis.ok);
@@ -674,6 +787,7 @@ Bad_Foreign :: uses_foreign()
   EXPECT(state, rendered.find("division overflow traps") != std::string::npos);
   EXPECT(state, rendered.find("recursion limit exceeded") != std::string::npos);
   EXPECT(state, rendered.find("foreign calls are unavailable") != std::string::npos);
+  EXPECT(state, rendered.find("reads an uninitialized local") != std::string::npos);
 }
 
 void test_global_initializers(TestState &state) {

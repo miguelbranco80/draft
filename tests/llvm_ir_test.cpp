@@ -111,6 +111,11 @@ Outcome :: union {
     failure: u32,
 }
 
+Text_Outcome :: union {
+    empty,
+    value: string,
+}
+
 Pair[T: type, U: type] :: struct {
     first: T,
     second: U,
@@ -137,6 +142,7 @@ global_tuple: (i32, u64) = (7, 9)
 global_header: Header = Header{tag = 1, value = 42}
 global_text_count: Text_Count = Text_Count{text = "draft", count = 5}
 global_outcome: Outcome = .value(9)
+global_text_outcome: Text_Outcome = .value("draft")
 global_overlay: Overlay = Overlay{word = 0x1020304050607080}
 global_infinity: f32 = compile_time_infinity()
 global_nan: f32 = compile_time_nan()
@@ -179,6 +185,15 @@ read_outcome :: proc(outcome: Outcome) -> i64 {
         return payload
     case .failure(_):
         return -1
+    case .empty:
+        return 0
+    }
+}
+
+read_text_outcome :: proc(outcome: Text_Outcome) -> usize {
+    switch outcome {
+    case .value(payload):
+        return len(payload)
     case .empty:
         return 0
     }
@@ -237,6 +252,7 @@ main :: proc() -> i32 {
     assert(len(global_text_count.text) == 5)
     assert(global_text_count.count == 5)
     assert(read_outcome(global_outcome) == 9)
+    assert(read_text_outcome(global_text_outcome) == 5)
     assert(global_overlay.word == 0x1020304050607080)
     assert(constant_table_value() == 16)
     assert(global_infinity > 1e30)
@@ -358,6 +374,10 @@ main :: proc() -> i32 {
   EXPECT(state, module.text.find(
       "[i8 1, i8 0, i8 0, i8 0, i8 0, i8 0, i8 0, i8 0, i8 9") !=
       std::string::npos);
+  EXPECT(state, module.text.find(
+      "global <{ [8 x i8], { ptr, i64 }, [0 x i8] }> <{ [8 x i8] "
+      "[i8 1, i8 0, i8 0, i8 0, i8 0, i8 0, i8 0, i8 0], "
+      "{ ptr, i64 } { ptr @.draft.string.") != std::string::npos);
   EXPECT(state, module.text.find(
       "[i8 128, i8 112, i8 96, i8 80, i8 64, i8 48, i8 32, i8 16]") !=
       std::string::npos);
