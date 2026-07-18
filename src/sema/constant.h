@@ -36,11 +36,23 @@
 
 namespace draft {
 
+// A target profile names SIMD shapes explicitly.  The language does not infer
+// legality from an LLVM type or from a coincidentally matching byte size: doing
+// so would make the accepted language depend on backend implementation details.
+// element is the canonical Draft scalar spelling (for example, "u32").
+struct TargetSimdShape {
+  std::string element;
+  std::uint64_t lanes = 0;
+
+  bool operator==(const TargetSimdShape &) const = default;
+};
+
 // TargetFacts is the semantic, LLVM-independent view of a selected profile.
 // Categorical fields contain their source enum alternative name without a dot.
 // known_features and features are in canonical bytewise order; the former is
-// the architecture vocabulary and the latter its enabled subset. This lets
-// target.has_feature distinguish disabled from misspelled feature names.
+// the architecture vocabulary and the latter its enabled subset. simd_shapes
+// is sorted by element spelling and then lane count. This lets target checking
+// reject a vector before an implementation-specific LLVM type is constructed.
 struct TargetFacts {
   std::string identity;
   std::string arch;
@@ -53,6 +65,7 @@ struct TargetFacts {
   std::uint64_t page_size = 0;
   std::vector<std::string> known_features;
   std::vector<std::string> features;
+  std::vector<TargetSimdShape> simd_shapes;
 };
 
 struct ConstantBinding {

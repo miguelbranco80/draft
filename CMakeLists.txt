@@ -65,6 +65,7 @@ add_library(
   src/sema/interface.cpp
   src/sema/semantic.cpp
   src/sema/symbol.cpp
+  src/sema/target_validation.cpp
   src/sema/type.cpp
   src/sema/type_resolver.cpp
   src/syntax/lexer.cpp

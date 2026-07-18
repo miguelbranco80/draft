@@ -64,6 +64,11 @@ void hash_target(Sha256 &hash, const TargetProfile &target) {
   hash_u64(hash, target.facts.page_size);
   hash_string_vector(hash, target.facts.known_features);
   hash_string_vector(hash, target.facts.features);
+  hash_u64(hash, static_cast<std::uint64_t>(target.facts.simd_shapes.size()));
+  for (const TargetSimdShape &shape : target.facts.simd_shapes) {
+    hash_field(hash, shape.element);
+    hash_u64(hash, shape.lanes);
+  }
   hash_field(hash, target.llvm_triple);
   hash_field(hash, target.llvm_data_layout);
   hash_field(hash, target.llvm_cpu);

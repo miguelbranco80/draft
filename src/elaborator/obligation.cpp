@@ -152,6 +152,11 @@ void hash_field(Sha256 &hash, std::string_view value) {
   hash.update(obligation.record_digest.bytes);
   hash.update(obligation.expected_type_digest.bytes);
   hash_field(hash, target.facts.identity);
+  hash_u64(hash, static_cast<std::uint64_t>(target.facts.simd_shapes.size()));
+  for (const TargetSimdShape &shape : target.facts.simd_shapes) {
+    hash_field(hash, shape.element);
+    hash_u64(hash, shape.lanes);
+  }
   hash_field(hash, target.llvm_triple);
   hash_field(hash, target.llvm_data_layout);
   hash_field(hash, target.llvm_cpu);

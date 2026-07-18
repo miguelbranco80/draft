@@ -42,7 +42,7 @@ ending in the alias therefore receives ordinary identifier semicolon behavior.
 
 ## Initial AArch64 macOS profile
 
-Status: bootstrap target contract; versioned as `draft-aarch64-macos-v4`.
+Status: bootstrap target contract; versioned as `draft-aarch64-macos-v5`.
 
 The first profile targets `arm64-apple-macosx14.0.0`, uses the generic AArch64
 CPU with baseline NEON, 64-bit little-endian pointers, 16 KiB pages, Mach-O,
@@ -52,6 +52,11 @@ deployment floor. Its pinned LLVM data-layout string is:
 ```text
 e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32
 ```
+
+The profile explicitly names its baseline NEON SIMD shapes: 64-bit and 128-bit
+vectors with at least two lanes over `i8/u8`, `i16/u16`, `i32/u32`,
+`i64/u64`, `f16`, `f32`, or `f64` where the total width matches. A different
+lane count or element spelling is a semantic target error, not an LLVM fallback.
 
 The parsed inline-assembly dialect identity is `draft-aarch64-apple-v2`; its
 closed register, operand, addressing, condition, and instruction grammar is

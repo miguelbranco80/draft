@@ -276,11 +276,20 @@ TypeId TypeStore::parametric_array(
   return add(std::move(result));
 }
 
-TypeId TypeStore::simd(TypeId element, std::uint64_t lanes) {
+TypeId TypeStore::simd(
+    TypeId element,
+    std::uint64_t lanes,
+    SourceRange declaration) {
   for (std::uint32_t index = 0; index < types_.size(); ++index) {
-    const Type &candidate = types_[index];
+    Type &candidate = types_[index];
     if (candidate.kind == TypeKind::Simd && candidate.element == element &&
         candidate.element_count == lanes) {
+      // Structural interning may first see a type through an imported graph,
+      // which has no local source location. Preserve the first useful local use
+      // so a target-profile rejection points at source instead of file zero.
+      if (!candidate.declaration.is_valid() && declaration.is_valid()) {
+        candidate.declaration = declaration;
+      }
       return TypeId{index};
     }
   }
@@ -289,6 +298,7 @@ TypeId TypeStore::simd(TypeId element, std::uint64_t lanes) {
   result.kind = TypeKind::Simd;
   result.element = element;
   result.element_count = lanes;
+  result.declaration = declaration;
   const TypeLayout element_layout = type(element).layout;
   if (element_layout.known && lanes != 0 &&
       element_layout.size <= std::numeric_limits<std::uint64_t>::max() / lanes) {

@@ -193,7 +193,7 @@ private:
     return std::nullopt;
   }
 
-  void collect_type(TypeId id, bool through_pointer = true) {
+  void collect_type(TypeId id) {
     if (!id.is_valid()) return;
     const Type &value = type(id);
     if (value.kind == TypeKind::Procedure) {
@@ -204,7 +204,11 @@ private:
       return;
     }
     if (value.kind == TypeKind::Pointer || value.kind == TypeKind::MultiPointer) {
-      if (through_pointer) collect_type(value.element, false);
+      // Follow an arbitrary pointer chain so `^^C_Record` still emits the
+      // nominal declaration needed by its typed C declarator. nominal_seen_ and
+      // procedure_seen_ break recursive records and callback signatures; a
+      // non-C pointee simply stops in the nominal branch below.
+      collect_type(value.element);
       return;
     }
     if (value.kind == TypeKind::Array) {
@@ -241,6 +245,12 @@ private:
     if (value.bit_width == 16) return signed_value ? "int16_t" : "uint16_t";
     if (value.bit_width == 32) return signed_value ? "int32_t" : "uint32_t";
     if (value.bit_width == 64) return signed_value ? "int64_t" : "uint64_t";
+    // The pinned Clang target defines the AArch64 C ABI for its standard
+    // `__int128` extension. There is no C `<stdint.h>` typedef for 128 bits, so
+    // spelling the extension is the only header form matching Draft i128/u128.
+    if (value.bit_width == 128) {
+      return signed_value ? "__int128" : "unsigned __int128";
+    }
     return "void";
   }
 
@@ -276,10 +286,15 @@ private:
 
   [[nodiscard]] bool typed_pointer_element(TypeId id) const {
     const Type &value = type(id);
+    if (value.kind == TypeKind::Pointer || value.kind == TypeKind::MultiPointer ||
+        value.kind == TypeKind::Array) {
+      return typed_pointer_element(value.element);
+    }
     if (value.kind == TypeKind::SignedInteger ||
         value.kind == TypeKind::UnsignedInteger ||
         value.kind == TypeKind::BooleanStorage || value.kind == TypeKind::Rune ||
         value.kind == TypeKind::EndianScalar || value.kind == TypeKind::Float ||
+        value.kind == TypeKind::RawPointer || value.kind == TypeKind::CString ||
         value.kind == TypeKind::Procedure) {
       return true;
     }
@@ -296,10 +311,17 @@ private:
           std::move(name) + "[" + std::to_string(value.element_count) + "]");
     }
     if (value.kind == TypeKind::Pointer || value.kind == TypeKind::MultiPointer) {
-      if (typed_pointer_element(value.element)) {
-        return base_type(value.element) + " *" + name;
+      if (!typed_pointer_element(value.element)) return "void *" + name;
+
+      // C pointer and array declarators nest around the identifier rather than
+      // composing as prefix type strings. Recursing with the identifier makes
+      // `^^u8` become `uint8_t **name` and `^[4]u8` become
+      // `uint8_t (*name)[4]` without a general declarator AST.
+      std::string pointer_name = "*" + name;
+      if (type(value.element).kind == TypeKind::Array) {
+        pointer_name = "(" + pointer_name + ")";
       }
-      return "void *" + name;
+      return declaration(value.element, std::move(pointer_name));
     }
     return base_type(id) + " " + name;
   }

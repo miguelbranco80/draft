@@ -661,7 +661,7 @@ private:
           value.element, substitutions, value_substitutions, use_range);
       return value.kind == TypeKind::Array
           ? semantic_.types.array(element, count)
-          : semantic_.types.simd(element, count);
+          : semantic_.types.simd(element, count, use_range);
     }
     case TypeKind::Tuple: {
       std::vector<TypeId> members;
@@ -1344,7 +1344,7 @@ private:
         return invalid;
       }
       return semantic_.types.simd(
-          resolve_type(tree, node.children.back(), scope), *lanes);
+          resolve_type(tree, node.children.back(), scope), *lanes, node.range);
     }
 
     case NodeKind::TupleType: {

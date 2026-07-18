@@ -230,6 +230,11 @@ int print_target() {
             << "pointer-bits " << profile.facts.pointer_bits << '\n'
             << "page-size " << profile.facts.page_size << '\n'
             << "object-format " << profile.facts.object_format << '\n'
+            << "simd-shapes";
+  for (const draft::TargetSimdShape &shape : profile.facts.simd_shapes) {
+    std::cout << ' ' << shape.element << 'x' << shape.lanes;
+  }
+  std::cout << '\n'
             << "assembly-dialect " << profile.parsed_assembly_dialect << '\n'
             << "assembly-instructions";
   for (const std::string &instruction : profile.parsed_assembly_instructions) {

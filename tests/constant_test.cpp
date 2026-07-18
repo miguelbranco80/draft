@@ -46,7 +46,7 @@ struct AnalyzedSource {
     loaded.files.push_back(std::move(file));
 
     draft::TargetFacts target;
-    target.identity = "draft-aarch64-macos-v4";
+    target.identity = "draft-aarch64-macos-v5";
     target.arch = "aarch64";
     target.os = "macos";
     target.abi = "darwin";
@@ -56,6 +56,7 @@ struct AnalyzedSource {
     target.pointer_bits = 64;
     target.page_size = 16384;
     target.known_features = {"crc", "neon"};
+    target.simd_shapes = {{"u32", 4}};
     target.features = {"neon"};
     analysis = draft::analyze_package_semantics(
         sources, loaded, target, diagnostics);

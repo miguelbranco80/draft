@@ -1,5 +1,6 @@
 // Internal consistency tests for the versioned AArch64 macOS target boundary.
 
+#include "sema/target_validation.h"
 #include "target/profile.h"
 
 #include <cstdlib>
@@ -29,9 +30,14 @@ void test_initial_profile(TestState &state) {
   std::string reason;
   EXPECT(state, draft::validate_target_profile(profile, reason));
   EXPECT(state, reason.empty());
-  EXPECT(state, profile.facts.identity == "draft-aarch64-macos-v4");
+  EXPECT(state, profile.facts.identity == "draft-aarch64-macos-v5");
   EXPECT(state, profile.facts.pointer_bits == 64);
   EXPECT(state, profile.facts.page_size == 16384);
+  EXPECT(state, profile.facts.simd_shapes.size() == 19);
+  EXPECT(state, profile.facts.simd_shapes.front() ==
+      draft::TargetSimdShape({"f16", 4}));
+  EXPECT(state, profile.facts.simd_shapes.back() ==
+      draft::TargetSimdShape({"u8", 16}));
   EXPECT(state, profile.llvm_triple == "arm64-apple-macosx14.0.0");
   EXPECT(state, profile.llvm_data_layout.find("m:o") != std::string::npos);
   EXPECT(state, profile.parsed_assembly_architecture == "aarch64");
@@ -64,11 +70,43 @@ void test_invalid_profile_reports_reason(TestState &state) {
   EXPECT(state, reason.find("known feature") != std::string::npos);
 
   profile = draft::make_aarch64_macos_profile();
+  std::swap(profile.facts.simd_shapes[0], profile.facts.simd_shapes[1]);
+  EXPECT(state, !draft::validate_target_profile(profile, reason));
+  EXPECT(state, reason.find("SIMD shape vocabulary") != std::string::npos);
+
+  profile = draft::make_aarch64_macos_profile();
+  profile.facts.simd_shapes[0].lanes = 3;
+  EXPECT(state, !draft::validate_target_profile(profile, reason));
+  EXPECT(state, reason.find("64-bit or 128-bit vector") != std::string::npos);
+
+  profile = draft::make_aarch64_macos_profile();
   std::swap(
       profile.parsed_assembly_instructions[0],
       profile.parsed_assembly_instructions[1]);
   EXPECT(state, !draft::validate_target_profile(profile, reason));
   EXPECT(state, reason.find("instruction vocabulary") != std::string::npos);
+}
+
+void test_simd_semantic_boundary(TestState &state) {
+  const draft::TargetProfile profile = draft::make_aarch64_macos_profile();
+  draft::TypeStore types;
+  const std::optional<draft::TypeId> u32 = types.find_builtin("u32");
+  EXPECT(state, u32.has_value());
+  if (!u32.has_value()) return;
+
+  (void)types.simd(*u32, 4);
+  draft::DiagnosticSink diagnostics;
+  EXPECT(state,
+      draft::validate_target_types(types, profile.facts, diagnostics));
+  EXPECT(state, diagnostics.error_count() == 0);
+
+  (void)types.simd(*u32, 3);
+  EXPECT(state,
+      !draft::validate_target_types(types, profile.facts, diagnostics));
+  EXPECT(state, diagnostics.error_count() == 1);
+  EXPECT(state,
+      diagnostics.diagnostics().front().message.find("#simd[3]u32") !=
+          std::string::npos);
 }
 
 } // namespace
@@ -77,6 +115,7 @@ int main() {
   TestState state;
   test_initial_profile(state);
   test_invalid_profile_reports_reason(state);
+  test_simd_semantic_boundary(state);
 
   if (state.failures != 0) {
     std::cerr << state.failures << " target profile expectation(s) failed\n";

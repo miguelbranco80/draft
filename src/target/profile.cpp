@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -29,11 +30,34 @@ namespace {
   return true;
 }
 
+[[nodiscard]] bool simd_shapes_sorted_unique(
+    const std::vector<TargetSimdShape> &shapes) {
+  for (std::size_t index = 1; index < shapes.size(); ++index) {
+    const TargetSimdShape &previous = shapes[index - 1];
+    const TargetSimdShape &current = shapes[index];
+    if (previous.element > current.element ||
+        (previous.element == current.element &&
+         previous.lanes >= current.lanes)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+[[nodiscard]] std::optional<std::uint64_t> simd_element_bits(
+    std::string_view element) {
+  if (element == "i8" || element == "u8") return 8;
+  if (element == "i16" || element == "u16" || element == "f16") return 16;
+  if (element == "i32" || element == "u32" || element == "f32") return 32;
+  if (element == "i64" || element == "u64" || element == "f64") return 64;
+  return std::nullopt;
+}
+
 } // namespace
 
 TargetProfile make_aarch64_macos_profile() {
   TargetProfile profile;
-  profile.facts.identity = "draft-aarch64-macos-v4";
+  profile.facts.identity = "draft-aarch64-macos-v5";
   profile.facts.arch = "aarch64";
   profile.facts.os = "macos";
   profile.facts.abi = "darwin_arm64";
@@ -49,6 +73,16 @@ TargetProfile make_aarch64_macos_profile() {
   profile.facts.known_features = {
       "aes", "crc", "dotprod", "fp16", "neon", "sha2"};
   profile.facts.features = {"neon"};
+  // Draft 1 names only the baseline 64-bit and 128-bit Advanced SIMD register
+  // shapes with at least two lanes. f16 is a legal storage/vector shape even
+  // though arithmetic requiring optional full-FP16 instructions remains gated
+  // by the separate target feature vocabulary.
+  profile.facts.simd_shapes = {
+      {"f16", 4}, {"f16", 8}, {"f32", 2}, {"f32", 4}, {"f64", 2},
+      {"i16", 4}, {"i16", 8}, {"i32", 2}, {"i32", 4}, {"i64", 2},
+      {"i8", 8}, {"i8", 16}, {"u16", 4}, {"u16", 8}, {"u32", 2},
+      {"u32", 4}, {"u64", 2}, {"u8", 8}, {"u8", 16},
+  };
 
   profile.minimum_os_version = "14.0";
   profile.llvm_triple = "arm64-apple-macosx14.0.0";
@@ -151,6 +185,22 @@ bool validate_target_profile(const TargetProfile &profile, std::string &reason) 
             profile.facts.known_features.end(),
             feature)) {
       reason = "enabled target feature is absent from the known feature vocabulary";
+      return false;
+    }
+  }
+  if (profile.facts.simd_shapes.empty() ||
+      !simd_shapes_sorted_unique(profile.facts.simd_shapes)) {
+    reason = "target SIMD shape vocabulary must be sorted and unique";
+    return false;
+  }
+  for (const TargetSimdShape &shape : profile.facts.simd_shapes) {
+    const std::optional<std::uint64_t> element_bits =
+        simd_element_bits(shape.element);
+    if (!element_bits.has_value() || shape.lanes < 2 ||
+        shape.lanes > 128 / *element_bits ||
+        (*element_bits * shape.lanes != 64 &&
+         *element_bits * shape.lanes != 128)) {
+      reason = "target SIMD shape must name a baseline 64-bit or 128-bit vector";
       return false;
     }
   }

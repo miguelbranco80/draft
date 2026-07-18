@@ -5,6 +5,7 @@
 #include "sema/ieee_float.h"
 #include "sema/initialization.h"
 #include "sema/type_resolver.h"
+#include "sema/target_validation.h"
 #include "syntax/literal.h"
 #include "syntax/token.h"
 
@@ -560,7 +561,7 @@ private:
           value.element, type_substitutions, value_substitutions, use_range);
       return value.kind == TypeKind::Array
           ? semantic_.types.array(element, count)
-          : semantic_.types.simd(element, count);
+          : semantic_.types.simd(element, count, use_range);
     }
     case TypeKind::Tuple: {
       std::vector<TypeId> members;
@@ -4542,6 +4543,9 @@ BodyCheckResult check_package_bodies(
   BodyChecker checker(
       sources, loaded, selections, package, constants, target, diagnostics, seeds);
   BodyCheckResult result = checker.run();
+  if (result.ok && !validate_target_types(package.types, target, diagnostics)) {
+    result.ok = false;
+  }
   if (result.ok &&
       !check_definite_initialization(package, result.program, diagnostics)) {
     result.ok = false;

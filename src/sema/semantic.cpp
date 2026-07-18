@@ -3,6 +3,7 @@
 #include "sema/semantic.h"
 
 #include "sema/global_initializer.h"
+#include "sema/target_validation.h"
 #include "sema/type_resolver.h"
 
 #include <cstddef>
@@ -77,6 +78,7 @@ SemanticAnalysisResult analyze_package_semantics(
       result.constants,
       result.global_initializers,
       diagnostics);
+  (void)validate_target_types(result.package.types, target, diagnostics);
   result.ok = diagnostics.error_count() == initial_error_count &&
               final_round.unresolved_conditionals == 0;
   return result;

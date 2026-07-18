@@ -61,6 +61,10 @@ Number :: @repr(C) raw union {
     decimal: f64,
 }
 
+Wide :: @repr(C) struct {
+    value: i128,
+}
+
 export map_pair :: c "draft_map_pair" proc(
     value: Pair,
     callback: c proc(value: i32) -> i32,
@@ -75,6 +79,14 @@ export inspect :: c "draft.inspect" proc(
     number: Number,
 ) -> i32 {
     return 0
+}
+
+export widen :: c "draft_widen" proc(
+    value: i128,
+    output: ^^u8,
+    record: ^Wide,
+) -> u128 {
+    return cast[u128](value)
 }
 )draft");
   file.syntax.emplace(draft::parse_source_file(sources, file.source, diagnostics));
@@ -103,7 +115,7 @@ export inspect :: c "draft.inspect" proc(
   EXPECT(state, bodies.ok);
   EXPECT(state, native.ok);
   EXPECT(state, header.ok);
-  EXPECT(state, header.export_count == 2);
+  EXPECT(state, header.export_count == 3);
   EXPECT(state, header.text.find(
       "typedef struct draft_c_library_Pair draft_c_library_Pair;") !=
       std::string::npos);
@@ -127,6 +139,11 @@ export inspect :: c "draft.inspect" proc(
       "extern draft_c_library_Pair draft_map_pair(") != std::string::npos);
   EXPECT(state, header.text.find(
       "__asm__(\"_draft.inspect\")") != std::string::npos);
+  EXPECT(state, header.text.find(
+      "__int128 value;") != std::string::npos);
+  EXPECT(state, header.text.find(
+      "extern unsigned __int128 draft_widen(__int128 arg0, uint8_t **arg1, "
+      "draft_c_library_Wide *arg2);") != std::string::npos);
 }
 
 } // namespace

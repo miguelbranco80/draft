@@ -157,7 +157,10 @@ public:
   [[nodiscard]] TypeId multi_pointer(TypeId element);
   [[nodiscard]] TypeId slice(TypeId element);
   [[nodiscard]] TypeId array(TypeId element, std::uint64_t count);
-  [[nodiscard]] TypeId simd(TypeId element, std::uint64_t lanes);
+  [[nodiscard]] TypeId simd(
+      TypeId element,
+      std::uint64_t lanes,
+      SourceRange declaration = SourceRange::invalid());
   [[nodiscard]] TypeId parametric_array(
       TypeId element, std::uint32_t value_parameter);
   [[nodiscard]] TypeId parametric_simd(
