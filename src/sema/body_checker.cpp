@@ -775,6 +775,14 @@ private:
         data_pointer_kind(kind);
   }
 
+  [[nodiscard]] bool current_procedure_uses_c_abi() const {
+    if (!current_procedure_.is_valid()) return false;
+    const TypeId type = semantic_.symbols.symbol(current_procedure_).type;
+    return type.is_valid() &&
+        semantic_.types.type(type).kind == TypeKind::Procedure &&
+        semantic_.types.type(type).c_calling_convention;
+  }
+
   [[nodiscard]] std::uint32_t integer_width(TypeId type_id) const {
     const Type type = runtime_scalar_type(type_id);
     if (type.kind == TypeKind::Enum) {
@@ -2808,6 +2816,11 @@ private:
       if (argument_count < 1 || argument_count > 2) {
         diagnostics_.error(call.range, "assert requires a bool and optional string");
       }
+      if (current_procedure_uses_c_abi()) {
+        diagnostics_.error(
+            call.range,
+            "runtime assert is unavailable in a c proc without Draft context");
+      }
       if (argument_count >= 1) {
         expression.operands.push_back(check_expression(
             tree,
@@ -3447,6 +3460,13 @@ private:
             }
             const Type concrete_signature =
                 semantic_.types.type(concrete_signature_id);
+            if (current_procedure_uses_c_abi() &&
+                !concrete_signature.c_calling_convention) {
+              diagnostics_.error(
+                  node.range,
+                  "c proc cannot call an ordinary Draft procedure without "
+                  "runtime.call_with_context");
+            }
             HirExpression expression;
             expression.kind = HirExpressionKind::Call;
             expression.range = node.range;
@@ -3482,6 +3502,13 @@ private:
         return invalid_expression(node.range);
       }
       const Type signature = semantic_.types.type(callee_type);
+      if (current_procedure_uses_c_abi() &&
+          !signature.c_calling_convention) {
+        diagnostics_.error(
+            node.range,
+            "c proc cannot call an ordinary Draft procedure without "
+            "runtime.call_with_context");
+      }
       const std::size_t parameter_count = signature.members.empty()
           ? 0
           : signature.members.size() - 1;

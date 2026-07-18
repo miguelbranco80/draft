@@ -117,7 +117,9 @@ canonical package/filename order; `examples/external-assembly` exercises the
 separate C-ABI symbol boundary. An unresolved assembly synthesis site is kept
 as a typed obligation during checking and precisely rejects native lowering.
 Scalar/pointer `c proc` imports and exports are checked at a separate C ABI
-boundary and retain exact linker names; `examples/c-interop` exercises both.
+boundary and retain exact linker names. A `c proc` has neither implicit Draft
+context nor runtime `assert`; it may call ordinary Draft only through the
+explicit checked context bridge. `examples/c-interop` exercises both ABIs.
 The hosted entry shim owns one runtime Context across the linked package graph,
 captures process arguments, enforces the exact `main` signature, and reports
 assertion and bounds failures before trapping. Ordinary procedures see that

@@ -1331,14 +1331,27 @@ set_user_index :: proc() -> int {
   CheckedSource invalid(R"draft(
 package bodies
 
+ordinary :: proc() {
+}
+
 bad :: c proc() -> int {
     return context.user_index
+}
+
+bad_calls :: c proc() {
+    ordinary()
+    assert(true)
+    static_assert(true)
 }
 )draft");
   EXPECT(state, !invalid.bodies.ok);
   const std::string rendered =
       draft::render_diagnostics(invalid.sources, invalid.diagnostics);
   EXPECT(state, rendered.find("context value is unavailable in a c proc") !=
+      std::string::npos);
+  EXPECT(state, rendered.find("c proc cannot call an ordinary Draft procedure") !=
+      std::string::npos);
+  EXPECT(state, rendered.find("runtime assert is unavailable in a c proc") !=
       std::string::npos);
 }
 
