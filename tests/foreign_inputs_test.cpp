@@ -1,6 +1,7 @@
 // Exact content pinning for logical foreign link providers.
 
 #include "backend/foreign_inputs.h"
+#include "backend/foreign_summaries.h"
 
 #include <cstdlib>
 #include <filesystem>
@@ -63,6 +64,100 @@ void test_pin_verify_and_relocation(TestState &state) {
     EXPECT(state, pins[0].name == "custom_math");
     EXPECT(state, pins[0].entry_point.empty());
   }
+  if (pins.empty()) {
+    std::filesystem::remove_all(temporary, error);
+    return;
+  }
+
+  const std::filesystem::path first_summary =
+      temporary / "first" / "provider.summary";
+  const std::filesystem::path relocated_summary =
+      temporary / "relocated" / "renamed.summary";
+  const std::string summary_bytes =
+      "draft-provider-denial-summary-v1\n"
+      "provider\tcustom_math\n"
+      "artifact\t" + pins.front().content_digest.hex() + "\n"
+      "symbol\tdraft_custom_math\n"
+      "callback\t0\n"
+      "effect\tassembly\n"
+      "end\n";
+  std::ofstream(first_summary, std::ios::binary) << summary_bytes;
+  std::ofstream(relocated_summary, std::ios::binary) << summary_bytes;
+  draft::ForeignProviderSummaryInput summary_input;
+  summary_input.provider = "custom_math";
+  summary_input.path = first_summary;
+  std::vector<draft::ExternalInputPin> summary_pins;
+  std::vector<draft::ForeignProviderAudit> audits;
+  draft::DiagnosticSink summary_diagnostics;
+  EXPECT(state, draft::pin_foreign_provider_summary_inputs(
+      std::span<const draft::ForeignProviderSummaryInput>(&summary_input, 1),
+      std::span<const draft::ForeignProviderInput>(&input, 1),
+      summary_pins,
+      audits,
+      summary_diagnostics));
+  EXPECT(state, !summary_diagnostics.has_errors());
+  EXPECT(state, summary_pins.size() == 1);
+  EXPECT(state, audits.size() == 1);
+  if (summary_pins.size() == 1) {
+    EXPECT(state,
+        summary_pins[0].kind == draft::ExternalInputKind::ProviderSummary);
+    EXPECT(state, summary_pins[0].name == "custom_math");
+  }
+  if (audits.size() == 1) {
+    EXPECT(state, audits[0].provider == "custom_math");
+    EXPECT(state, audits[0].symbols.size() == 1);
+    if (audits[0].symbols.size() == 1) {
+      EXPECT(state, audits[0].symbols[0].effects.size() == 2);
+      EXPECT(state,
+          audits[0].symbols[0].effects[0].kind ==
+              draft::EffectKind::FlowCall);
+      EXPECT(state, audits[0].symbols[0].effects[0].flow_parameter == 0);
+      EXPECT(state,
+          audits[0].symbols[0].effects[1].kind ==
+              draft::EffectKind::Assembly);
+    }
+  }
+
+  summary_input.path = relocated_summary;
+  draft::DiagnosticSink relocated_summary_diagnostics;
+  EXPECT(state, draft::verify_foreign_provider_summary_inputs(
+      std::span<const draft::ForeignProviderSummaryInput>(&summary_input, 1),
+      std::span<const draft::ForeignProviderInput>(&input, 1),
+      summary_pins,
+      audits,
+      relocated_summary_diagnostics));
+  EXPECT(state, !relocated_summary_diagnostics.has_errors());
+
+  // A manifest claim cannot survive after the caller omits the physical
+  // summary and its artifact. This is the fail-closed path used by ordinary
+  // builds and by resolution runs that would otherwise preserve old pins.
+  draft::DiagnosticSink missing_summary_diagnostics;
+  EXPECT(state, !draft::verify_foreign_provider_summary_inputs(
+      {}, {}, summary_pins, audits, missing_summary_diagnostics));
+  EXPECT(state, missing_summary_diagnostics.has_errors());
+
+  // Summary semantics are inseparable from the artifact digest written into
+  // the summary itself, even if both files are supplied under matching names.
+  const std::filesystem::path mismatched_summary =
+      temporary / "first" / "mismatched.summary";
+  const std::string mismatched_bytes =
+      "draft-provider-denial-summary-v1\n"
+      "provider\tcustom_math\n"
+      "artifact\t" + std::string(64, '0') + "\n"
+      "symbol\tdraft_custom_math\n"
+      "end\n";
+  std::ofstream(mismatched_summary, std::ios::binary) << mismatched_bytes;
+  summary_input.path = mismatched_summary;
+  std::vector<draft::ExternalInputPin> rejected_pins;
+  draft::DiagnosticSink mismatch_diagnostics;
+  EXPECT(state, !draft::pin_foreign_provider_summary_inputs(
+      std::span<const draft::ForeignProviderSummaryInput>(&summary_input, 1),
+      std::span<const draft::ForeignProviderInput>(&input, 1),
+      rejected_pins,
+      audits,
+      mismatch_diagnostics));
+  EXPECT(state, mismatch_diagnostics.has_errors());
+  EXPECT(state, rejected_pins.empty());
 
   input.path = relocated;
   std::vector<draft::VerifiedForeignProviderInput> verified;

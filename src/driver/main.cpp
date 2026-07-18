@@ -8,9 +8,11 @@
 // versioned target profile without embedding phase logic in this file.
 
 #include "backend/toolchain.h"
+#include "backend/foreign_summaries.h"
 #include "compile/compiler.h"
 #include "compile/resolver.h"
 #include "elaborator/codex_cli.h"
+#include "elaborator/resolution_store.h"
 #include "interop/c_header.h"
 #include "source/diagnostic.h"
 #include "source/source.h"
@@ -95,6 +97,52 @@ void configure_core_distribution(draft::WorkspaceLoadOptions &options) {
     return false;
   }
   return true;
+}
+
+[[nodiscard]] bool parse_foreign_provider_summary(
+    std::string_view spelling,
+    draft::ForeignProviderSummaryInput &input,
+    std::string &reason) {
+  const std::size_t colon = spelling.find(':');
+  if (colon == 0 || colon == std::string_view::npos ||
+      colon + 1 >= spelling.size()) {
+    reason = "provider summary mapping must be name:path";
+    return false;
+  }
+  input.provider = std::string(spelling.substr(0, colon));
+  std::error_code error;
+  input.path = std::filesystem::absolute(
+      std::filesystem::path(spelling.substr(colon + 1)), error).lexically_normal();
+  if (error) {
+    reason = "cannot make provider summary path absolute: " + error.message();
+    return false;
+  }
+  return true;
+}
+
+// Semantic compilation must consume the exact summary set selected by an
+// existing manifest. A development build without a manifest still validates
+// summary-to-artifact binding, but has no persistent pin set to compare.
+[[nodiscard]] bool load_foreign_provider_audits(
+    const std::string &workspace_directory,
+    const std::vector<draft::ForeignProviderSummaryInput> &summary_inputs,
+    const std::vector<draft::ForeignProviderInput> &foreign_providers,
+    std::vector<draft::ForeignProviderAudit> &audits,
+    draft::DiagnosticSink &diagnostics) {
+  const draft::ResolutionManifestLoadResult loaded =
+      draft::load_resolution_manifest(workspace_directory, diagnostics);
+  if (loaded.state == draft::ResolutionManifestLoadState::Invalid) return false;
+  if (loaded.state == draft::ResolutionManifestLoadState::Loaded) {
+    return draft::verify_foreign_provider_summary_inputs(
+        summary_inputs,
+        foreign_providers,
+        loaded.manifest.external_inputs,
+        audits,
+        diagnostics);
+  }
+  std::vector<draft::ExternalInputPin> ignored;
+  return draft::pin_foreign_provider_summary_inputs(
+      summary_inputs, foreign_providers, ignored, audits, diagnostics);
 }
 
 [[nodiscard]] std::string escaped(std::string_view text) {
@@ -278,7 +326,8 @@ int build_package(
     draft::NativeArtifactKind artifact_kind,
     bool allow_host_toolchain,
     const std::optional<draft::LockedNativeInputRoots> &locked_inputs,
-    const std::vector<draft::ForeignProviderInput> &foreign_providers) {
+    const std::vector<draft::ForeignProviderInput> &foreign_providers,
+    const std::vector<draft::ForeignProviderSummaryInput> &provider_summaries) {
   draft::SourceManager sources;
   draft::DiagnosticSink diagnostics;
   std::error_code path_error;
@@ -295,6 +344,15 @@ int build_package(
   compile_options.workspace.workspace_directory =
       absolute_directory.parent_path().string();
   configure_core_distribution(compile_options.workspace);
+  if (!load_foreign_provider_audits(
+          compile_options.workspace.workspace_directory,
+          provider_summaries,
+          foreign_providers,
+          compile_options.foreign_provider_audits,
+          diagnostics)) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+    return 1;
+  }
   compile_options.lower_mir = true;
   compile_options.emit_llvm = true;
   compile_options.emit_program_entry =
@@ -474,7 +532,8 @@ int run_agent_command(
     const std::optional<draft::CodexCliProviderOptions> &codex = std::nullopt,
     const std::optional<draft::LockedNativeInputRoots> &locked_inputs =
         std::nullopt,
-    const std::vector<draft::ForeignProviderInput> &foreign_providers = {}) {
+    const std::vector<draft::ForeignProviderInput> &foreign_providers = {},
+    const std::vector<draft::ForeignProviderSummaryInput> &provider_summaries = {}) {
   draft::SourceManager sources;
   draft::DiagnosticSink diagnostics;
   std::error_code path_error;
@@ -495,7 +554,30 @@ int run_agent_command(
     draft::ResolveWorkspaceOptions resolve_options;
     resolve_options.compile = std::move(options);
     resolve_options.revalidate = revalidate;
-    if (locked_inputs.has_value() || !foreign_providers.empty()) {
+    const bool external_inputs_configured = locked_inputs.has_value() ||
+        !foreign_providers.empty() || !provider_summaries.empty();
+    if (!external_inputs_configured) {
+      // A preserved manifest summary remains a semantic compiler input. The
+      // relocatable summary and matching artifact must be supplied again;
+      // compiling without them while retaining the old manifest claim would
+      // silently turn audited edges back into unknown calls.
+      const draft::ResolutionManifestLoadResult loaded =
+          draft::load_resolution_manifest(
+              resolve_options.compile.workspace.workspace_directory,
+              diagnostics);
+      if (loaded.state == draft::ResolutionManifestLoadState::Invalid ||
+          (loaded.state == draft::ResolutionManifestLoadState::Loaded &&
+           !draft::verify_foreign_provider_summary_inputs(
+               {},
+               {},
+               loaded.manifest.external_inputs,
+               resolve_options.compile.foreign_provider_audits,
+               diagnostics))) {
+        std::cerr << draft::render_diagnostics(sources, diagnostics);
+        return 1;
+      }
+    }
+    if (external_inputs_configured) {
       resolve_options.external_inputs_configured = true;
       if (locked_inputs.has_value() &&
           !draft::pin_locked_native_inputs(
@@ -508,6 +590,15 @@ int run_agent_command(
       if (!draft::pin_foreign_provider_inputs(
               foreign_providers,
               resolve_options.external_inputs,
+              diagnostics)) {
+        std::cerr << draft::render_diagnostics(sources, diagnostics);
+        return 1;
+      }
+      if (!draft::pin_foreign_provider_summary_inputs(
+              provider_summaries,
+              foreign_providers,
+              resolve_options.external_inputs,
+              resolve_options.compile.foreign_provider_audits,
               diagnostics)) {
         std::cerr << draft::render_diagnostics(sources, diagnostics);
         return 1;
@@ -589,12 +680,14 @@ void print_usage() {
             << "      [--kind executable|object|static-library|dynamic-library|assembly]\n"
             << "      [--allow-host-toolchain]\n"
             << "      [--provider name=object|archive|shared-library:<path>]...\n"
+            << "      [--provider-summary name:<path>]...\n"
             << "  draftc build <package-directory> --locked\n"
             << "      --toolchain-root <directory> --sdk-root <directory> [-o <output>]\n"
             << "  draftc resolve <package-directory> [--revalidate]\n"
             << "      [--codex-executable <path> --codex-model <model>]\n"
             << "      [--toolchain-root <directory> --sdk-root <directory>]\n"
             << "      [--provider name=object|archive|shared-library:<path>]...\n"
+            << "      [--provider-summary name:<path>]...\n"
             << "  draftc judge <package-directory>\n"
             << "  draftc target\n";
 }
@@ -631,6 +724,7 @@ int main(int argc, char **argv) {
     std::optional<std::string> toolchain_root;
     std::optional<std::string> sdk_root;
     std::vector<draft::ForeignProviderInput> foreign_providers;
+    std::vector<draft::ForeignProviderSummaryInput> provider_summaries;
     for (int index = 3; index < argc; ++index) {
       const std::string_view argument(argv[index]);
       if (argument == "--revalidate" && !revalidate) {
@@ -655,6 +749,15 @@ int main(int argc, char **argv) {
           return 2;
         }
         foreign_providers.push_back(std::move(provider));
+      } else if (argument == "--provider-summary" && index + 1 < argc) {
+        draft::ForeignProviderSummaryInput summary;
+        std::string reason;
+        if (!parse_foreign_provider_summary(
+                argv[++index], summary, reason)) {
+          std::cerr << "error: " << reason << '\n';
+          return 2;
+        }
+        provider_summaries.push_back(std::move(summary));
       } else {
         print_usage();
         return 2;
@@ -688,7 +791,8 @@ int main(int argc, char **argv) {
         revalidate,
         codex,
         locked_inputs,
-        foreign_providers);
+        foreign_providers,
+        provider_summaries);
   }
   if (argc == 3 && std::string_view(argv[1]) == "judge") {
     return run_agent_command(argv[2], AgentCommandKind::Judge);
@@ -703,6 +807,7 @@ int main(int argc, char **argv) {
     std::optional<std::string> toolchain_root;
     std::optional<std::string> sdk_root;
     std::vector<draft::ForeignProviderInput> foreign_providers;
+    std::vector<draft::ForeignProviderSummaryInput> provider_summaries;
     for (int index = 3; index < argc; ++index) {
       const std::string_view argument(argv[index]);
       if (argument == "--allow-host-toolchain") {
@@ -744,6 +849,15 @@ int main(int argc, char **argv) {
           return 2;
         }
         foreign_providers.push_back(std::move(provider));
+      } else if (argument == "--provider-summary" && index + 1 < argc) {
+        draft::ForeignProviderSummaryInput summary;
+        std::string reason;
+        if (!parse_foreign_provider_summary(
+                argv[++index], summary, reason)) {
+          std::cerr << "error: " << reason << '\n';
+          return 2;
+        }
+        provider_summaries.push_back(std::move(summary));
       } else {
         print_usage();
         return 2;
@@ -771,7 +885,8 @@ int main(int argc, char **argv) {
         artifact_kind,
         allow_host_toolchain,
         locked_inputs,
-        foreign_providers);
+        foreign_providers,
+        provider_summaries);
   }
   if (argc == 2 && std::string_view(argv[1]) == "target") {
     return print_target();

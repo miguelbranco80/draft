@@ -72,8 +72,10 @@ public:
   EffectCollector(
       const SemanticPackage &package,
       const HirProgram &hir,
-      const TargetProfile *target)
-      : package_(package), hir_(hir), target_(target) {}
+      const TargetProfile *target,
+      std::span<const ForeignProviderAudit> provider_audits)
+      : package_(package), hir_(hir), target_(target),
+        provider_audits_(provider_audits) {}
 
   [[nodiscard]] EffectSummaryResult run() {
     // Discovery records direct source effects and symbolic call values. Local
@@ -88,6 +90,36 @@ public:
       seed_parameter_slots(procedure.symbol);
       visit_block(procedure.body);
       summary.effects = summary.direct_effects;
+      result_.procedures.push_back(std::move(summary));
+    }
+
+    // Foreign declarations have no HIR body, but a lexical denial may enclose
+    // a call to one directly. Give every foreign procedure its own composed
+    // row so that both ordinary callers and the denial walker consult exactly
+    // the same target/artifact-bound contract. Procedure-valued parameters are
+    // seeded as symbolic flow slots; composing the row at a real call site then
+    // substitutes the actual callback just like a Draft procedure does.
+    for (const NativeBinding &binding : package_.native_bindings) {
+      if (binding.kind != NativeBindingKind::ForeignImport) continue;
+      ProcedureEffectSummary summary;
+      summary.procedure = binding.symbol;
+      const Symbol &symbol = package_.symbols.symbol(binding.symbol);
+      std::vector<ProcedureValueSummary> arguments;
+      if (symbol.type.is_valid()) {
+        const Type &type = package_.types.type(symbol.type);
+        if (type.kind == TypeKind::Procedure && !type.members.empty()) {
+          arguments.resize(type.members.size() - 1);
+          for (std::size_t index = 0; index < arguments.size(); ++index) {
+            if (procedure_type(type.members[index])) {
+              arguments[index].parameter_slots.push_back(
+                  static_cast<std::uint32_t>(index));
+            }
+          }
+        }
+      }
+      [[maybe_unused]] const bool added =
+          compose_native_call(summary, binding.symbol, binding, arguments);
+      summary.direct_effects = summary.effects;
       result_.procedures.push_back(std::move(summary));
     }
     current_ = nullptr;
@@ -214,6 +246,14 @@ private:
           summary.linker_name == linker_name) {
         return &summary;
       }
+    }
+    return nullptr;
+  }
+
+  [[nodiscard]] const ForeignProviderAudit *provider_audit(
+      std::string_view provider) const {
+    for (const ForeignProviderAudit &audit : provider_audits_) {
+      if (audit.provider == provider) return &audit;
     }
     return nullptr;
   }
@@ -410,6 +450,27 @@ private:
         ? system_summary(binding.provider, *linker_name)
         : nullptr;
     if (summary == nullptr) {
+      const ForeignProviderAudit *audit = provider_audit(binding.provider);
+      const ForeignAuditSymbol *symbol =
+          audit != nullptr && linker_name.has_value()
+          ? audit->find_symbol(*linker_name)
+          : nullptr;
+      if (symbol != nullptr) {
+        bool changed = false;
+        for (const ForeignAuditEffect &effect : symbol->effects) {
+          changed = compose_effect(
+              destination,
+              {effect.kind,
+               {},
+               effect.detail,
+               effect.root_identity,
+               effect.root_relative_path,
+               effect.declaration,
+               effect.flow_parameter},
+              arguments) || changed;
+        }
+        return changed;
+      }
       return add_composed_effect(
           destination,
           {EffectKind::UnknownCall,
@@ -646,6 +707,7 @@ private:
   const SemanticPackage &package_;
   const HirProgram &hir_;
   const TargetProfile *target_ = nullptr;
+  std::span<const ForeignProviderAudit> provider_audits_;
   EffectSummaryResult result_;
   ProcedureEffectSummary *current_ = nullptr;
   std::vector<StoredProcedureValue> procedure_values_;
@@ -664,13 +726,15 @@ const ProcedureEffectSummary *EffectSummaryResult::find(
 EffectSummaryResult summarize_package_effects(
     const SemanticPackage &package,
     const HirProgram &hir,
-    const TargetProfile *target) {
-  EffectCollector collector(package, hir, target);
+    const TargetProfile *target,
+    std::span<const ForeignProviderAudit> provider_audits) {
+  EffectCollector collector(package, hir, target, provider_audits);
   return collector.run();
 }
 
 std::string_view effect_kind_name(EffectKind kind) {
   switch (kind) {
+  case EffectKind::Declaration: return "declaration";
   case EffectKind::PackageGlobal: return "package global";
   case EffectKind::RuntimeAssert: return "assert";
   case EffectKind::ContextField: return "context field";

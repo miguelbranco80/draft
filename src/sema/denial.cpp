@@ -222,6 +222,19 @@ private:
     return false;
   }
 
+  [[nodiscard]] bool origin_is_symbol(
+      const SemanticEffect &effect, SymbolId symbol) const {
+    for (const ImportedSymbol &imported : package_.imported_symbols) {
+      if (imported.proxy != symbol) continue;
+      return imported.root_identity == effect.root_identity &&
+          imported.root_relative_path == effect.root_relative_path &&
+          imported.public_name == effect.declaration;
+    }
+    const Symbol &local = package_.symbols.symbol(symbol);
+    return effect.root_identity.empty() &&
+        effect.root_relative_path.empty() && effect.declaration == local.name;
+  }
+
   [[nodiscard]] bool matches_effect(
       const DeniedEntity &denied, const SemanticEffect &effect) const {
     if (effect.kind == EffectKind::UnknownCall) return true;
@@ -230,7 +243,9 @@ private:
     if (effect.kind == EffectKind::FlowCall) return false;
     switch (denied.kind) {
     case DeniedKind::Symbol:
-      return effect.symbol.is_valid() && effect.symbol == denied.symbol;
+      return (effect.symbol.is_valid() && effect.symbol == denied.symbol) ||
+          (!effect.root_identity.empty() &&
+           origin_is_symbol(effect, denied.symbol));
     case DeniedKind::ImportedPackage:
       if (!effect.root_identity.empty()) {
         return effect.root_identity == denied.root_identity &&

@@ -27,6 +27,7 @@ add_library(
   draft_compiler
   src/assembly/aarch64.cpp
   src/backend/foreign_inputs.cpp
+  src/backend/foreign_summaries.cpp
   src/backend/locked_inputs.cpp
   src/backend/llvm_ir.cpp
   src/backend/toolchain.cpp
@@ -56,6 +57,7 @@ add_library(
   src/sema/constant.cpp
   src/sema/denial.cpp
   src/sema/effect.cpp
+  src/sema/foreign_summary.cpp
   src/sema/global_initializer.cpp
   src/sema/hir.cpp
   src/sema/ieee_float.cpp

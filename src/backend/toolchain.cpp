@@ -251,6 +251,23 @@ void add_provider(std::vector<std::string> &providers, std::string_view provider
       return false;
     }
     for (const ExternalInputPin &pin : compiled.resolution_manifest->external_inputs) {
+      if (pin.kind == ExternalInputKind::ProviderSummary) {
+        const bool consumed = std::any_of(
+            compiled.foreign_provider_audits.begin(),
+            compiled.foreign_provider_audits.end(),
+            [&pin](const ForeignProviderAudit &audit) {
+              return audit.provider == pin.name &&
+                  audit.summary_content_digest == pin.content_digest;
+            });
+        if (!consumed) {
+          diagnostics.error(
+              SourceRange::invalid(),
+              "provider summary '" + pin.name +
+                  "' was not consumed by semantic compilation");
+          return false;
+        }
+        continue;
+      }
       if (!options.locked &&
           (pin.kind == ExternalInputKind::Toolchain ||
            pin.kind == ExternalInputKind::Sdk)) {

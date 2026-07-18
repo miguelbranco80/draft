@@ -193,6 +193,10 @@ foreign package_assembly {
     external :: c proc()
 }
 
+foreign custom_provider {
+    audited :: c proc(callback: Callback, user: rawptr)
+}
+
 counter: i32
 
 worker :: c proc(user: rawptr) -> rawptr {
@@ -212,6 +216,10 @@ through_assembly :: proc() {
 through_unknown :: proc() {
     mystery()
 }
+
+through_audit :: proc() {
+    audited(worker, nil)
+}
 )draft");
   file.syntax.emplace(draft::parse_source_file(sources, file.source, diagnostics));
   loaded.files.push_back(std::move(file));
@@ -226,9 +234,23 @@ through_unknown :: proc() {
       semantics.constants,
       target.facts,
       diagnostics);
+  draft::ForeignProviderAudit audit;
+  audit.provider = "custom_provider";
+  draft::ForeignAuditSymbol audited_symbol;
+  audited_symbol.linker_name = "audited";
+  draft::ForeignAuditEffect callback;
+  callback.kind = draft::EffectKind::FlowCall;
+  callback.flow_parameter = 0;
+  audited_symbol.effects.push_back(callback);
+  draft::ForeignAuditEffect assembly;
+  assembly.kind = draft::EffectKind::Assembly;
+  assembly.detail = "audited foreign assembly";
+  audited_symbol.effects.push_back(assembly);
+  audit.symbols.push_back(std::move(audited_symbol));
+  const std::vector<draft::ForeignProviderAudit> audits{audit};
   const draft::EffectSummaryResult effects =
       draft::summarize_package_effects(
-          semantics.package, bodies.program, &target);
+          semantics.package, bodies.program, &target, audits);
   if (diagnostics.has_errors()) {
     std::cerr << draft::render_diagnostics(sources, diagnostics);
   }
@@ -240,21 +262,30 @@ through_unknown :: proc() {
       symbol(semantics.package, "through_assembly");
   const std::optional<draft::SymbolId> through_unknown =
       symbol(semantics.package, "through_unknown");
+  const std::optional<draft::SymbolId> through_audit =
+      symbol(semantics.package, "through_audit");
   EXPECT(state, through_system.has_value());
   EXPECT(state, through_assembly.has_value());
   EXPECT(state, through_unknown.has_value());
-  if (!through_system || !through_assembly || !through_unknown) return;
+  EXPECT(state, through_audit.has_value());
+  if (!through_system || !through_assembly || !through_unknown ||
+      !through_audit) {
+    return;
+  }
   const draft::ProcedureEffectSummary *system_summary =
       effects.find(*through_system);
   const draft::ProcedureEffectSummary *assembly_summary =
       effects.find(*through_assembly);
   const draft::ProcedureEffectSummary *unknown_summary =
       effects.find(*through_unknown);
+  const draft::ProcedureEffectSummary *audit_summary =
+      effects.find(*through_audit);
   EXPECT(state, system_summary != nullptr);
   EXPECT(state, assembly_summary != nullptr);
   EXPECT(state, unknown_summary != nullptr);
+  EXPECT(state, audit_summary != nullptr);
   if (system_summary == nullptr || assembly_summary == nullptr ||
-      unknown_summary == nullptr) {
+      unknown_summary == nullptr || audit_summary == nullptr) {
     return;
   }
   EXPECT(state,
@@ -267,6 +298,12 @@ through_unknown :: proc() {
       !has_effect(*assembly_summary, draft::EffectKind::UnknownCall));
   EXPECT(state,
       has_effect(*unknown_summary, draft::EffectKind::UnknownCall));
+  EXPECT(state,
+      has_effect(*audit_summary, draft::EffectKind::PackageGlobal));
+  EXPECT(state,
+      has_effect(*audit_summary, draft::EffectKind::Assembly));
+  EXPECT(state,
+      !has_effect(*audit_summary, draft::EffectKind::UnknownCall));
 }
 
 } // namespace

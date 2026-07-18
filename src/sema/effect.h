@@ -17,11 +17,13 @@
 #pragma once
 
 #include "sema/analyzer.h"
+#include "sema/foreign_summary.h"
 #include "sema/hir.h"
 #include "target/profile.h"
 
 #include <cstdint>
 #include <limits>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -88,7 +90,8 @@ struct EffectSummaryResult {
 [[nodiscard]] EffectSummaryResult summarize_package_effects(
     const SemanticPackage &package,
     const HirProgram &hir,
-    const TargetProfile *target = nullptr);
+    const TargetProfile *target = nullptr,
+    std::span<const ForeignProviderAudit> provider_audits = {});
 
 [[nodiscard]] std::string_view effect_kind_name(EffectKind kind);
 

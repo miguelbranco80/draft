@@ -15,6 +15,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 namespace {
 
@@ -40,7 +41,9 @@ struct DenialSource {
   draft::EffectSummaryResult effects;
   bool denials_ok = false;
 
-  explicit DenialSource(std::string text) {
+  explicit DenialSource(
+      std::string text,
+      std::vector<draft::ForeignProviderAudit> provider_audits = {}) {
     loaded.short_name = "denials";
     draft::LoadedPackageFile file;
     file.kind = draft::PackageFileKind::DraftSource;
@@ -59,7 +62,8 @@ struct DenialSource {
         semantics.constants,
         target.facts,
         diagnostics);
-    effects = draft::summarize_package_effects(semantics.package, bodies.program);
+    effects = draft::summarize_package_effects(
+        semantics.package, bodies.program, &target, provider_audits);
     denials_ok = draft::check_package_denials(
         sources,
         loaded,
@@ -153,6 +157,41 @@ deny assert {
   EXPECT(state, rendered.find("unknown call") == std::string::npos);
 }
 
+void test_audited_foreign_effect(TestState &state) {
+  draft::ForeignProviderAudit audit;
+  audit.provider = "custom_provider";
+  draft::ForeignAuditSymbol symbol;
+  symbol.linker_name = "native_step";
+  draft::ForeignAuditEffect assembly;
+  assembly.kind = draft::EffectKind::Assembly;
+  assembly.detail = "audited foreign assembly";
+  symbol.effects.push_back(assembly);
+  audit.symbols.push_back(std::move(symbol));
+  std::vector<draft::ForeignProviderAudit> audits;
+  audits.push_back(std::move(audit));
+
+  DenialSource source(R"draft(package denials
+
+foreign custom_provider {
+    native_step :: c proc()
+}
+
+deny asm {
+    bad :: proc() {
+        native_step()
+    }
+}
+)draft", std::move(audits));
+  EXPECT(state, source.semantics.ok);
+  EXPECT(state, source.bodies.ok);
+  EXPECT(state, !source.denials_ok);
+  EXPECT(state, source.diagnostics.error_count() == 1);
+  const std::string rendered =
+      draft::render_diagnostics(source.sources, source.diagnostics);
+  EXPECT(state, rendered.find("denied assembly") != std::string::npos);
+  EXPECT(state, rendered.find("unknown call") == std::string::npos);
+}
+
 } // namespace
 
 int main() {
@@ -160,6 +199,7 @@ int main() {
   test_denial_violations(state);
   test_unrelated_denial(state);
   test_flow_slot_substitution(state);
+  test_audited_foreign_effect(state);
   if (state.failures != 0) {
     std::cerr << state.failures << " denial expectation(s) failed\n";
     return EXIT_FAILURE;

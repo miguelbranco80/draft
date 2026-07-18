@@ -156,6 +156,34 @@ physical path separately and require it to match. Target-profile system
 providers and compiler-owned runtime/package-assembly providers cannot be
 overridden.
 
+An external provider may additionally supply an audited denial summary with
+`--provider-summary zlib:<absolute-path>`. The canonical LF-terminated v1 format
+is deliberately small and line-oriented:
+
+```text
+draft-provider-denial-summary-v1
+provider\tzlib
+artifact\t<64-hex canonical artifact content digest>
+symbol\tcompress
+callback\t0
+effect\tassembly
+end
+```
+
+Symbols and the records inside each symbol block are bytewise sorted and
+unique. A record may name a callback parameter, `assert`, `assembly`,
+`unchecked`, `context\t<field>`, or
+`declaration\t<root>\t<package-path>\t<public-name>`. An empty symbol block is
+an audited no-effect body. Missing symbols remain unknown; a summary never
+grants provider-wide trust.
+
+The summary names the provider and exact artifact content digest in its own
+bytes. Resolution also pins the summary file as a separate external input.
+Offline and locked builds re-hash the relocated artifact and summary, require
+the complete manifest summary set, and retain the consumed digest through
+semantic compilation. A missing, stale, mismatched, unused, compiler-owned, or
+target-owned mapping fails before native linking.
+
 Draft 1 foreign blocks declare fixed-arity procedure symbols only. Variadic C calls
 and foreign data symbols require a fixed-signature C wrapper.
 

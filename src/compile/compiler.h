@@ -11,6 +11,7 @@
 #include "sema/agent_metadata.h"
 #include "sema/body_checker.h"
 #include "sema/effect.h"
+#include "sema/foreign_summary.h"
 #include "sema/interface.h"
 #include "sema/semantic.h"
 #include "source/diagnostic.h"
@@ -41,13 +42,16 @@ struct CompileWorkspaceOptions {
   // Versioned identity of the compiler semantics and manifest algorithm. It is
   // a resolved-program input and must change when an implementation change can
   // alter accepted meaning or emitted behavior for the same other inputs.
-  std::string compiler_content_identity = "draft-bootstrap-cpp-v13";
+  std::string compiler_content_identity = "draft-bootstrap-cpp-v14";
   CompileWorkspaceStage stage = CompileWorkspaceStage::Complete;
   bool lower_mir = false;
   bool emit_llvm = false;
   // Library and object artifacts lower a complete root without synthesizing a
   // hosted `main`. The root still owns runtime support in either mode.
   bool emit_program_entry = true;
+  // Already content-verified artifact-bound summaries. Paths are consumed by
+  // the driver/backend verifier and never enter semantic package state.
+  std::vector<ForeignProviderAudit> foreign_provider_audits;
 };
 
 // Exact package assembly bytes are copied out of SourceManager when a package
@@ -92,6 +96,9 @@ struct CompileWorkspaceResult {
   // native building from rereading a manifest that may have changed after
   // semantic checking. Direct compiler phases leave this empty.
   std::optional<ResolutionManifest> resolution_manifest;
+  // Retained so the native adapter can prove that manifest ProviderSummary
+  // rows were consumed by this exact semantic compilation.
+  std::vector<ForeignProviderAudit> foreign_provider_audits;
 };
 
 // Loads a closed workspace graph and checks dependencies before their consumers.

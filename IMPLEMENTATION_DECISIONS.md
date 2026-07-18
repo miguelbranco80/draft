@@ -136,6 +136,15 @@ Typed member paths, returned procedures, and hidden-context procedure fields
 still require the richer path-shaped slot representation before this contract
 is complete.
 
+External artifact summaries use the strict
+`draft-provider-denial-summary-v1` line format documented in section 12. The
+summary declares the exact canonical artifact digest; the manifest separately
+pins the summary bytes under the same logical provider name. Compilation keeps
+the parsed audit and its digest in the compiled result, allowing the native
+adapter to reject a manifest summary row that semantic checking did not consume.
+An omitted symbol is unknown, and compiler-, package-assembly-, and target-owned
+providers cannot be overridden by an external audit.
+
 ## Native artifact ownership and visibility
 
 Status: first AArch64 macOS artifact contract.

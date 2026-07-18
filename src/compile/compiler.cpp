@@ -325,12 +325,28 @@ CompileWorkspaceResult compile_workspace(
     CompileWorkspaceOptions options,
     DiagnosticSink &diagnostics) {
   CompileWorkspaceResult result;
+  result.foreign_provider_audits = options.foreign_provider_audits;
   const std::size_t initial_errors = diagnostics.error_count();
   if (options.compiler_content_identity.empty()) {
     diagnostics.error(
         SourceRange::invalid(),
         "compiler content identity must not be empty");
     return result;
+  }
+  for (const ForeignProviderAudit &audit :
+       options.foreign_provider_audits) {
+    if (audit.provider == "draft_runtime" ||
+        audit.provider == "package_assembly" ||
+        std::binary_search(
+            options.target.system_link_providers.begin(),
+            options.target.system_link_providers.end(),
+            audit.provider)) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "foreign provider audit '" + audit.provider +
+              "' attempts to override a compiler- or target-owned provider");
+      return result;
+    }
   }
   std::string profile_error;
   if (!validate_target_profile(options.target, profile_error)) {
@@ -579,7 +595,10 @@ CompileWorkspaceResult compile_workspace(
         options.target,
         diagnostics);
     package.effects = summarize_package_effects(
-        package.semantics.package, package.bodies.program, &options.target);
+        package.semantics.package,
+        package.bodies.program,
+        &options.target,
+        options.foreign_provider_audits);
     package.native_interop = validate_native_interop(
         package.semantics.package, package.bodies.program, diagnostics);
     const bool denials_ok = check_package_denials(

@@ -36,6 +36,10 @@ namespace draft {
 // EffectKind lives with semantic package records because imported interface
 // summaries must retain these tags before the HIR effect-composition pass runs.
 enum class EffectKind {
+  // One reachable declaration named by stable package identity. Provider audit
+  // files use this when native code may enter a Draft procedure or touch a
+  // Draft global without possessing the consumer's process-local SymbolId.
+  Declaration,
   PackageGlobal,
   RuntimeAssert,
   ContextField,
