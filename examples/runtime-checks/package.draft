@@ -118,6 +118,10 @@ contextual_float_constants :: proc() -> f64 {
     return direct + Untyped_One + Untyped_Tuple.0 + Untyped_Tuple.1
 }
 
+contextual_tuple_constant :: proc() -> (f64, f64) {
+    return Untyped_Tuple
+}
+
 identity[T: number] :: proc(value: T) -> T {
     return value
 }
@@ -362,6 +366,8 @@ main :: proc() {
     assert(mixed_untyped_numeric(false) == 5.0)
     assert(exact_untyped_comparisons())
     assert(contextual_float_constants() == 5.5)
+    contextual_tuple := contextual_tuple_constant()
+    assert(contextual_tuple.0 == 1.0 && contextual_tuple.1 == 2.5)
     assert(identity[i64](42) == 42)
     value: u32 = 17
     assert(identity(value) == 17)

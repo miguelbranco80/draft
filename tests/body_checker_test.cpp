@@ -1495,6 +1495,10 @@ contextual_float_constants :: proc() -> f64 {
     direct: f64 = 1
     return direct + One + Untyped_Tuple.0 + Untyped_Tuple.1
 }
+
+contextual_tuple_constant :: proc() -> (f64, f64) {
+    return Untyped_Tuple
+}
 )draft");
   if (valid.diagnostics.has_errors()) {
     std::cerr << draft::render_diagnostics(valid.sources, valid.diagnostics);
@@ -1516,9 +1520,13 @@ mixed_concrete :: proc(left: f32, right: f64) -> f64 {
 generic_decimal[T: number] :: proc(value: T) -> T {
     return value + 1.5
 }
+
+concrete_tuple_conversion :: proc(value: (f32, f32)) -> (f64, f64) {
+    return value
+}
 )draft");
   EXPECT(state, !invalid.bodies.ok);
-  EXPECT(state, invalid.diagnostics.error_count() == 3);
+  EXPECT(state, invalid.diagnostics.error_count() == 4);
   const std::string rendered =
       draft::render_diagnostics(invalid.sources, invalid.diagnostics);
   EXPECT(state, rendered.find("numeric operands require one common type") !=

@@ -677,12 +677,13 @@ private:
   // Applies Draft's initial expected-type rule: exact types match, and untyped
   // numeric constants may take a compatible concrete numeric type. Range checks
   // use the constant table/literal value in the completed numeric checker.
-  [[nodiscard]] TypeId apply_expected_type(
-      TypeId actual, TypeId expected, SourceRange range) {
-    if (is_invalid_type(actual)) return semantic_.types.builtins().invalid;
-    if (!expected.is_valid() || is_invalid_type(expected) || actual == expected) {
-      return actual;
-    }
+  // Reports whether an exact compile-time shape may acquire the surrounding
+  // type without an ordinary implicit runtime conversion. Tuple constants do
+  // this member by member; concrete tuple members must still match exactly.
+  [[nodiscard]] bool accepts_expected_type(
+      TypeId actual, TypeId expected) const {
+    if (actual == expected) return true;
+    if (is_invalid_type(actual) || is_invalid_type(expected)) return false;
     const std::optional<TypeConstraintKind> constraint =
         type_constraint(expected);
     if ((is_untyped_integer(actual) && is_integer(expected)) ||
@@ -691,8 +692,31 @@ private:
           constraint == TypeConstraintKind::Float)) ||
         (is_untyped_integer(actual) &&
          constraint == TypeConstraintKind::Number)) {
-      return expected;
+      return true;
     }
+    const Type actual_type = semantic_.types.type(actual);
+    const Type expected_type = semantic_.types.type(expected);
+    if (actual_type.kind != TypeKind::Tuple ||
+        expected_type.kind != TypeKind::Tuple ||
+        actual_type.members.size() != expected_type.members.size()) {
+      return false;
+    }
+    for (std::size_t index = 0; index < actual_type.members.size(); ++index) {
+      if (!accepts_expected_type(
+              actual_type.members[index], expected_type.members[index])) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  [[nodiscard]] TypeId apply_expected_type(
+      TypeId actual, TypeId expected, SourceRange range) {
+    if (is_invalid_type(actual)) return semantic_.types.builtins().invalid;
+    if (!expected.is_valid() || is_invalid_type(expected) || actual == expected) {
+      return actual;
+    }
+    if (accepts_expected_type(actual, expected)) return expected;
     diagnostics_.error(
         range,
         "expression of type '" + std::string(type_kind_name(semantic_.types.type(actual).kind)) +
@@ -1051,6 +1075,24 @@ private:
       TypeId source,
       TypeId target,
       SourceRange range) {
+    if (value.kind == ConstantKind::Aggregate &&
+        !is_invalid_type(source) && !is_invalid_type(target)) {
+      const Type source_type = semantic_.types.type(source);
+      const Type target_type = semantic_.types.type(target);
+      if (source_type.kind == TypeKind::Tuple &&
+          target_type.kind == TypeKind::Tuple &&
+          source_type.members.size() == target_type.members.size() &&
+          value.elements.size() == source_type.members.size()) {
+        for (std::size_t index = 0; index < value.elements.size(); ++index) {
+          contextualize_constant_value(
+              value.elements[index],
+              source_type.members[index],
+              target_type.members[index],
+              range);
+        }
+        return;
+      }
+    }
     if ((is_untyped_integer(source) || is_untyped_float(source)) &&
         semantic_.types.is_float(target) &&
         (value.kind == ConstantKind::Integer ||
