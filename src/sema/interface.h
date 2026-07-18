@@ -135,6 +135,21 @@ struct InterfaceDeclaration {
     bool flow_context = false;
   };
   std::vector<Effect> effects;
+  struct ReturnFlowSlot {
+    std::uint32_t parameter =
+        std::numeric_limits<std::uint32_t>::max();
+    std::vector<std::string> path;
+    bool context = false;
+  };
+  struct ReturnValue {
+    std::vector<std::string> path;
+    std::vector<ReturnFlowSlot> flow_slots;
+    // These effects are the contract of the returned procedure when called.
+    // They are deliberately separate from the factory's own effects above.
+    std::vector<Effect> contract_effects;
+    bool unknown = false;
+  };
+  std::vector<ReturnValue> return_values;
 };
 
 // InterfaceDocumentation contains only content-addressed public design context;

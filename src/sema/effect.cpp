@@ -51,11 +51,15 @@ void merge_value(
   for (const ProcedureFlowSlot &slot : source.flow_slots) {
     add_flow_slot(destination, slot);
   }
+  for (const SemanticEffect &effect : source.contract_effects) {
+    add_effect(destination.contract_effects, effect);
+  }
   destination.unknown = destination.unknown || source.unknown;
 }
 
 [[nodiscard]] bool value_is_empty(const ProcedureValueSummary &value) {
   return value.targets.empty() && value.flow_slots.empty() &&
+      value.contract_effects.empty() &&
       !value.unknown;
 }
 
@@ -79,19 +83,12 @@ public:
         provider_audits_(provider_audits) {}
 
   [[nodiscard]] EffectSummaryResult run() {
-    // Discovery records direct source effects and symbolic call values. Local
-    // procedure-value environments deliberately union every semantic write:
-    // this may over-approximate a branch, but optimization can never erase a
-    // possible denial edge from the contract.
+    // Install every local row before discovering bodies. Returned procedure
+    // values can then refer forward or recursively without source order
+    // changing their meaning.
     for (const HirProcedure &procedure : hir_.procedures()) {
       ProcedureEffectSummary summary;
       summary.procedure = procedure.symbol;
-      current_ = &summary;
-      current_procedure_ = procedure.symbol;
-      procedure_values_.clear();
-      seed_parameter_slots(procedure.symbol);
-      visit_block(procedure.body);
-      summary.effects = summary.direct_effects;
       result_.procedures.push_back(std::move(summary));
     }
 
@@ -132,8 +129,47 @@ public:
       summary.direct_effects = summary.effects;
       result_.procedures.push_back(std::move(summary));
     }
+
+    // Replay source bodies until every returned procedure leaf is stable.
+    // Each replay also refreshes call arguments that may themselves be the
+    // result of a factory call. Local environments union every semantic write,
+    // so branches remain conservative and optimization can never narrow the
+    // selected may-target set.
+    bool returns_changed = false;
+    do {
+      returns_changed = false;
+      for (std::size_t index = 0; index < hir_.procedures().size(); ++index) {
+        const HirProcedure &procedure = hir_.procedures()[index];
+        ProcedureEffectSummary discovered;
+        discovered.procedure = procedure.symbol;
+        current_ = &discovered;
+        current_procedure_ = procedure.symbol;
+        current_result_type_ = {};
+        const Symbol &symbol = package_.symbols.symbol(procedure.symbol);
+        if (symbol.type.is_valid()) {
+          const Type &type = package_.types.type(symbol.type);
+          if (type.kind == TypeKind::Procedure && !type.members.empty()) {
+            current_result_type_ = type.members.back();
+          }
+        }
+        procedure_values_.clear();
+        seed_parameter_slots(procedure.symbol);
+        visit_block(procedure.body);
+        if (result_.procedures[index].return_values !=
+            discovered.return_values) {
+          returns_changed = true;
+        }
+        result_.procedures[index] = std::move(discovered);
+      }
+    } while (returns_changed);
+
+    for (std::size_t index = 0; index < hir_.procedures().size(); ++index) {
+      result_.procedures[index].effects =
+          result_.procedures[index].direct_effects;
+    }
     current_ = nullptr;
     current_procedure_ = {};
+    current_result_type_ = {};
     procedure_values_.clear();
 
     // Every progress step adds one member of a finite source-derived set. The
@@ -481,6 +517,120 @@ private:
     return base;
   }
 
+  [[nodiscard]] const ProcedureValueSummary *argument_field(
+      const std::vector<ProcedureArgumentSummary> &arguments,
+      std::uint32_t parameter,
+      const std::vector<std::string> &path) const {
+    if (parameter >= arguments.size()) return nullptr;
+    for (const ProcedureFieldValueSummary &field : arguments[parameter].fields) {
+      if (field.path == path) return &field.value;
+    }
+    return nullptr;
+  }
+
+  [[nodiscard]] ProcedureValueSummary substitute_return_value(
+      const ProcedureValueSummary &source,
+      const std::vector<ProcedureArgumentSummary> &arguments) const {
+    ProcedureValueSummary result;
+    result.targets = source.targets;
+    result.contract_effects = source.contract_effects;
+    result.unknown = source.unknown;
+    for (const ProcedureFlowSlot &slot : source.flow_slots) {
+      if (slot.context) {
+        add_flow_slot(result, slot);
+        continue;
+      }
+      const ProcedureValueSummary *argument =
+          argument_field(arguments, slot.parameter, slot.path);
+      if (argument == nullptr) {
+        result.unknown = true;
+      } else {
+        merge_value(result, *argument);
+      }
+    }
+    return result;
+  }
+
+  [[nodiscard]] ProcedureValueSummary imported_return_value(
+      SymbolId callee,
+      const std::vector<std::string> &path,
+      const std::vector<ProcedureArgumentSummary> &arguments) const {
+    ProcedureValueSummary canonical;
+    bool found = false;
+    for (const ImportedProcedureReturn &returned : package_.imported_returns) {
+      if (returned.procedure_proxy != callee || returned.path != path) continue;
+      found = true;
+      canonical.unknown = returned.unknown;
+      for (const ImportedReturnFlowSlot &slot : returned.flow_slots) {
+        canonical.flow_slots.push_back(
+            {slot.parameter, slot.path, slot.context});
+      }
+      for (const ImportedEffect &effect : returned.contract_effects) {
+        add_effect(
+            canonical.contract_effects,
+            {effect.kind,
+             {},
+             effect.detail,
+             effect.root_identity,
+             effect.root_relative_path,
+             effect.declaration,
+             effect.flow_parameter,
+             effect.flow_path,
+             effect.flow_context});
+      }
+    }
+    if (!found) canonical.unknown = true;
+    return substitute_return_value(canonical, arguments);
+  }
+
+  [[nodiscard]] ProcedureValueSummary call_return_value(
+      const HirExpression &call,
+      const std::vector<std::string> &path) const {
+    ProcedureValueSummary result;
+    if (call.operands.empty()) {
+      result.unknown = true;
+      return result;
+    }
+    const HirExpression &callee = hir_.expression(call.operands.front());
+    const std::vector<ProcedureArgumentSummary> arguments =
+        call_arguments(call, 1);
+    if (callee.kind != HirExpressionKind::Symbol ||
+        !callee.symbol.is_valid() ||
+        package_.symbols.symbol(callee.symbol).kind != SymbolKind::Procedure) {
+      result.unknown = true;
+      return result;
+    }
+    if (const ProcedureEffectSummary *summary = result_.find(callee.symbol)) {
+      for (const ProcedureFieldValueSummary &returned :
+           summary->return_values) {
+        if (returned.path == path) {
+          return substitute_return_value(returned.value, arguments);
+        }
+      }
+      // The compiler-owned default_context bridge returns a snapshot of the
+      // current hidden Context. Its typed procedure leaves therefore retain
+      // their Context-rooted paths without becoming arbitrary native targets.
+      if (const NativeBinding *binding = native_binding(callee.symbol)) {
+        const std::optional<std::string> linker_name =
+            decode_linker_name(binding->linker_name_spelling);
+        if (binding->provider == "draft_runtime" &&
+            linker_name.has_value() &&
+            *linker_name == "__draft.runtime.default_context") {
+          result.flow_slots.push_back({
+              std::numeric_limits<std::uint32_t>::max(), path, true});
+          return result;
+        }
+      }
+      result.unknown = true;
+      return result;
+    }
+    if (imported_symbol(callee.symbol) != nullptr) {
+      return imported_return_value(callee.symbol, path, arguments);
+    }
+    result.unknown = true;
+    return result;
+  }
+
   [[nodiscard]] ProcedureValueSummary procedure_value_at(
       HirExpressionId id,
       const std::vector<std::string> &relative_path) const {
@@ -568,9 +718,12 @@ private:
       return value;
     }
 
-    // Returned callbacks and erased raw storage are handled by later closure
-    // rows. Until such a row exists, they remain explicit unknowns rather than
-    // being guessed from an optimization or a physical pointer value.
+    if (expression.kind == HirExpressionKind::Call) {
+      return call_return_value(expression, relative_path);
+    }
+
+    // Erased raw storage and dynamically selected factories remain explicit
+    // unknowns rather than being guessed from optimization or pointer bits.
     value.unknown = true;
     return value;
   }
@@ -626,6 +779,18 @@ private:
     destination.symbol = binding;
     merge_assignment_value(
         std::move(destination), type, source);
+  }
+
+  void merge_return_value(
+      const std::vector<std::string> &path,
+      const ProcedureValueSummary &value) {
+    for (ProcedureFieldValueSummary &returned : current_->return_values) {
+      if (returned.path == path) {
+        merge_value(returned.value, value);
+        return;
+      }
+    }
+    current_->return_values.push_back({path, value});
   }
 
   [[nodiscard]] ProcedureArgumentSummary call_argument(
@@ -900,6 +1065,9 @@ private:
     for (SymbolId target : value.targets) {
       changed = compose_named_call(destination, target, arguments) || changed;
     }
+    for (const SemanticEffect &effect : value.contract_effects) {
+      changed = compose_effect(destination, effect, arguments) || changed;
+    }
     for (const ProcedureFlowSlot &slot : value.flow_slots) {
       changed = add_composed_effect(
           destination,
@@ -1038,7 +1206,14 @@ private:
     for (HirExpressionId expression : statement.expressions) {
       visit_expression(expression);
     }
-    if (statement.kind == HirStatementKind::LocalDeclaration &&
+    if (statement.kind == HirStatementKind::Return &&
+        statement.expressions.size() == 1) {
+      for (const std::vector<std::string> &path :
+           procedure_paths(current_result_type_)) {
+        merge_return_value(
+            path, procedure_value_at(statement.expressions.front(), path));
+      }
+    } else if (statement.kind == HirStatementKind::LocalDeclaration &&
         statement.bindings.size() == 1 &&
         statement.expressions.size() == 1) {
       const SymbolId binding = statement.bindings.front();
@@ -1080,6 +1255,7 @@ private:
   EffectSummaryResult result_;
   ProcedureEffectSummary *current_ = nullptr;
   SymbolId current_procedure_;
+  TypeId current_result_type_;
   std::vector<StoredProcedureValue> procedure_values_;
 };
 

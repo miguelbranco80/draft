@@ -2263,6 +2263,17 @@ private:
       concrete_effect.procedure_proxy = instance_id;
       semantic_.imported_effects.push_back(std::move(concrete_effect));
     }
+    const std::vector<ImportedProcedureReturn> existing_returns =
+        semantic_.imported_returns;
+    for (const ImportedProcedureReturn &returned : existing_returns) {
+      if (returned.procedure_proxy != source) continue;
+      ImportedProcedureReturn concrete_return = returned;
+      concrete_return.procedure_proxy = instance_id;
+      for (ImportedEffect &effect : concrete_return.contract_effects) {
+        effect.procedure_proxy = instance_id;
+      }
+      semantic_.imported_returns.push_back(std::move(concrete_return));
+    }
     semantic_.imported_procedure_instances.push_back({
         source,
         instance_id,

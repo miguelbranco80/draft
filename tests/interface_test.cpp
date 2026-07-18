@@ -565,6 +565,18 @@ pub Callback_Box :: struct {
 pub invoke_box :: proc(box: Callback_Box) {
     box.callback()
 }
+
+pub identity_return :: proc(callback: proc()) -> proc() {
+    return callback
+}
+
+hidden_assert :: proc() {
+    assert(true)
+}
+
+pub make_assert :: proc() -> proc() {
+    return hidden_assert
+}
 )draft");
   draft::SemanticAnalysisResult dependency_semantics =
       draft::analyze_package_semantics(
@@ -611,6 +623,26 @@ pub invoke_box :: proc(box: Callback_Box) {
               std::vector<std::string>{"callback"});
     }
   }
+  const auto identity_return_interface = std::find_if(
+      dependency_interface.declarations.begin(),
+      dependency_interface.declarations.end(),
+      [](const draft::InterfaceDeclaration &declaration) {
+        return declaration.name == "identity_return";
+      });
+  EXPECT(state,
+      identity_return_interface != dependency_interface.declarations.end());
+  if (identity_return_interface != dependency_interface.declarations.end()) {
+    EXPECT(state, identity_return_interface->return_values.size() == 1);
+    if (identity_return_interface->return_values.size() == 1) {
+      EXPECT(state,
+          identity_return_interface->return_values[0].flow_slots.size() == 1);
+      if (identity_return_interface->return_values[0].flow_slots.size() == 1) {
+        EXPECT(state,
+            identity_return_interface->return_values[0]
+                    .flow_slots[0].parameter == 0);
+      }
+    }
+  }
 
   draft::LoadedPackage consumer = parse_package(
       sources,
@@ -630,6 +662,10 @@ caller :: proc() {
     box: callbacks.Callback_Box
     box.callback = danger
     callbacks.invoke_box(box)
+    selected := callbacks.identity_return(danger)
+    selected()
+    provided := callbacks.make_assert()
+    provided()
 }
 )draft");
   const std::optional<draft::SyntaxReference> import = first_import(consumer);

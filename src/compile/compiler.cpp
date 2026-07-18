@@ -173,6 +173,7 @@ void refresh_imported_effects(
     const CompileWorkspaceResult &result,
     DiagnosticSink &diagnostics) {
   package.imported_effects.clear();
+  package.imported_returns.clear();
   for (ImportedSymbol &imported : package.imported_symbols) {
     std::string_view declaration_name = imported.public_name;
     for (const ImportedProcedureInstance &instance :
@@ -213,6 +214,33 @@ void refresh_imported_effects(
           effect.flow_path,
           effect.flow_context,
       });
+    }
+    for (const InterfaceDeclaration::ReturnValue &returned :
+         declaration->return_values) {
+      ImportedProcedureReturn imported_return;
+      imported_return.procedure_proxy = imported.proxy;
+      imported_return.path = returned.path;
+      imported_return.unknown = returned.unknown;
+      for (const InterfaceDeclaration::ReturnFlowSlot &slot :
+           returned.flow_slots) {
+        imported_return.flow_slots.push_back(
+            {slot.parameter, slot.path, slot.context});
+      }
+      for (const InterfaceDeclaration::Effect &effect :
+           returned.contract_effects) {
+        imported_return.contract_effects.push_back({
+            imported.proxy,
+            effect.kind,
+            effect.root_identity,
+            effect.root_relative_path,
+            effect.declaration,
+            effect.detail,
+            effect.flow_parameter,
+            effect.flow_path,
+            effect.flow_context,
+        });
+      }
+      package.imported_returns.push_back(std::move(imported_return));
     }
   }
 }

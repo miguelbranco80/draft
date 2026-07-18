@@ -134,9 +134,11 @@ cross-package interface composition substitute finite named targets at the
 exact call site. Transitive declaration calls are effects as well, so denying a
 declaration reaches through helpers and procedure-valued fields. This is a
 semantic may-target set: all source assignments are unioned, and optimization
-is never allowed to narrow it. Returned procedure values and writes that must
-flow back through a separate callee, including nested higher-order callback
-arguments, remain the next closure extension.
+is never allowed to narrow it. Returned procedure leaves carry either their
+factory-input slots or a flattened imported call contract, keeping those two
+parameter scopes distinct across package interfaces. Writes that must flow back
+through a separate callee and nested higher-order callback arguments remain the
+next closure extension.
 
 External artifact summaries use the strict
 `draft-provider-denial-summary-v1` line format documented in section 12. The

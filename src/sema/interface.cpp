@@ -184,35 +184,79 @@ public:
         if (const ProcedureEffectSummary *summary = effects_->find(id)) {
           declaration.has_effect_summary = true;
           for (const SemanticEffect &effect : summary->effects) {
-            InterfaceDeclaration::Effect interface_effect;
-            interface_effect.kind = effect.kind;
-            interface_effect.detail = effect.text;
-            interface_effect.flow_parameter = effect.flow_parameter;
-            interface_effect.flow_path = effect.flow_path;
-            interface_effect.flow_context = effect.flow_context;
-            if (!effect.root_identity.empty()) {
-              interface_effect.root_identity = effect.root_identity;
-              interface_effect.root_relative_path = effect.root_relative_path;
-              interface_effect.declaration = effect.declaration;
-            } else if (effect.symbol.is_valid()) {
-              bool imported_origin = false;
-              for (const ImportedSymbol &imported : package_.imported_symbols) {
-                if (imported.proxy == effect.symbol) {
-                  interface_effect.root_identity = imported.root_identity;
-                  interface_effect.root_relative_path = imported.root_relative_path;
-                  interface_effect.declaration = imported.public_name;
-                  imported_origin = true;
-                  break;
+            declaration.effects.push_back(translate_effect(effect));
+          }
+          for (const ProcedureFieldValueSummary &returned :
+               summary->return_values) {
+            InterfaceDeclaration::ReturnValue interface_return;
+            interface_return.path = returned.path;
+            interface_return.unknown = returned.value.unknown;
+            for (const ProcedureFlowSlot &slot : returned.value.flow_slots) {
+              interface_return.flow_slots.push_back(
+                  {slot.parameter, slot.path, slot.context});
+            }
+            std::vector<SemanticEffect> contract =
+                returned.value.contract_effects;
+            for (SymbolId target : returned.value.targets) {
+              const SemanticEffect declaration_effect{
+                  EffectKind::Declaration,
+                  target,
+                  "returned procedure",
+                  {},
+                  {},
+                  {}};
+              if (std::find(contract.begin(), contract.end(),
+                            declaration_effect) == contract.end()) {
+                contract.push_back(declaration_effect);
+              }
+              if (const ProcedureEffectSummary *target_summary =
+                      effects_->find(target)) {
+                for (const SemanticEffect &effect : target_summary->effects) {
+                  if (std::find(contract.begin(), contract.end(), effect) ==
+                      contract.end()) {
+                    contract.push_back(effect);
+                  }
+                }
+              } else {
+                bool imported_known = false;
+                for (const ImportedSymbol &imported :
+                     package_.imported_symbols) {
+                  if (imported.proxy == target) {
+                    imported_known = imported.has_effect_summary;
+                    break;
+                  }
+                }
+                if (imported_known) {
+                  for (const ImportedEffect &effect :
+                       package_.imported_effects) {
+                    if (effect.procedure_proxy != target) continue;
+                    const SemanticEffect semantic_effect{
+                        effect.kind,
+                        {},
+                        effect.detail,
+                        effect.root_identity,
+                        effect.root_relative_path,
+                        effect.declaration,
+                        effect.flow_parameter,
+                        effect.flow_path,
+                        effect.flow_context};
+                    if (std::find(
+                            contract.begin(),
+                            contract.end(),
+                            semantic_effect) == contract.end()) {
+                      contract.push_back(semantic_effect);
+                    }
+                  }
+                } else {
+                  interface_return.unknown = true;
                 }
               }
-              if (!imported_origin) {
-                interface_effect.root_identity = identity_.root_identity;
-                interface_effect.root_relative_path = identity_.root_relative_path;
-                interface_effect.declaration =
-                    package_.symbols.symbol(effect.symbol).name;
-              }
             }
-            declaration.effects.push_back(std::move(interface_effect));
+            for (const SemanticEffect &effect : contract) {
+              interface_return.contract_effects.push_back(
+                  translate_effect(effect));
+            }
+            declaration.return_values.push_back(std::move(interface_return));
           }
         }
       }
@@ -252,6 +296,34 @@ public:
   }
 
 private:
+  [[nodiscard]] InterfaceDeclaration::Effect translate_effect(
+      const SemanticEffect &effect) const {
+    InterfaceDeclaration::Effect result;
+    result.kind = effect.kind;
+    result.detail = effect.text;
+    result.flow_parameter = effect.flow_parameter;
+    result.flow_path = effect.flow_path;
+    result.flow_context = effect.flow_context;
+    if (!effect.root_identity.empty()) {
+      result.root_identity = effect.root_identity;
+      result.root_relative_path = effect.root_relative_path;
+      result.declaration = effect.declaration;
+      return result;
+    }
+    if (!effect.symbol.is_valid()) return result;
+    for (const ImportedSymbol &imported : package_.imported_symbols) {
+      if (imported.proxy != effect.symbol) continue;
+      result.root_identity = imported.root_identity;
+      result.root_relative_path = imported.root_relative_path;
+      result.declaration = imported.public_name;
+      return result;
+    }
+    result.root_identity = identity_.root_identity;
+    result.root_relative_path = identity_.root_relative_path;
+    result.declaration = package_.symbols.symbol(effect.symbol).name;
+    return result;
+  }
+
   [[nodiscard]] ConstantValue canonical_constant(ConstantValue value) const {
     for (ConstantValue &element : value.elements) {
       element = canonical_constant(std::move(element));
@@ -591,6 +663,33 @@ public:
             effect.flow_path,
             effect.flow_context,
         });
+      }
+      for (const InterfaceDeclaration::ReturnValue &returned :
+           declaration.return_values) {
+        ImportedProcedureReturn imported_return;
+        imported_return.procedure_proxy = proxy_id;
+        imported_return.path = returned.path;
+        imported_return.unknown = returned.unknown;
+        for (const InterfaceDeclaration::ReturnFlowSlot &slot :
+             returned.flow_slots) {
+          imported_return.flow_slots.push_back(
+              {slot.parameter, slot.path, slot.context});
+        }
+        for (const InterfaceDeclaration::Effect &effect :
+             returned.contract_effects) {
+          imported_return.contract_effects.push_back({
+              proxy_id,
+              effect.kind,
+              effect.root_identity,
+              effect.root_relative_path,
+              effect.declaration,
+              effect.detail,
+              effect.flow_parameter,
+              effect.flow_path,
+              effect.flow_context,
+          });
+        }
+        consumer_.imported_returns.push_back(std::move(imported_return));
       }
       if (declaration.kind == SymbolKind::Type) {
         bind_nominal_members(

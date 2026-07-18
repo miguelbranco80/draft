@@ -200,6 +200,23 @@ struct ImportedEffect {
   bool flow_context = false;
 };
 
+// Canonical call contract for one procedure leaf returned by an imported
+// declaration. Slots refer to the factory declaration's parameters; effects
+// describe the returned procedure when it is later called.
+struct ImportedReturnFlowSlot {
+  std::uint32_t parameter = std::numeric_limits<std::uint32_t>::max();
+  std::vector<std::string> path;
+  bool context = false;
+};
+
+struct ImportedProcedureReturn {
+  SymbolId procedure_proxy;
+  std::vector<std::string> path;
+  std::vector<ImportedReturnFlowSlot> flow_slots;
+  std::vector<ImportedEffect> contract_effects;
+  bool unknown = false;
+};
+
 // ImportedType preserves nominal identity after an interface type has been
 // reconstructed in a consumer-local TypeStore. This prevents a downstream
 // interface from rebaptizing `dep:T` as `consumer:T` when it merely exposes the
@@ -296,6 +313,7 @@ struct SemanticPackage {
   std::vector<ImportedProcedureInstance> imported_procedure_instances;
   std::vector<ImportedType> imported_types;
   std::vector<ImportedEffect> imported_effects;
+  std::vector<ImportedProcedureReturn> imported_returns;
   std::vector<DeclarationDenial> declaration_denials;
   std::vector<SemanticSite> sites;
   std::vector<NativeBinding> native_bindings;

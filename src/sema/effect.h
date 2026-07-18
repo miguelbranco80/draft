@@ -89,7 +89,14 @@ struct ProcedureFlowSlot {
 struct ProcedureValueSummary {
   std::vector<SymbolId> targets;
   std::vector<ProcedureFlowSlot> flow_slots;
+  // Imported returned procedures may not have a consumer-local SymbolId. Their
+  // exact call contract is retained directly and composed when the value is
+  // eventually called. FlowCall rows here refer to that returned procedure's
+  // own arguments, not to the factory procedure that returned it.
+  std::vector<SemanticEffect> contract_effects;
   bool unknown = false;
+
+  bool operator==(const ProcedureValueSummary &) const = default;
 };
 
 // A call argument can contain several procedure leaves. Each row is relative
@@ -98,10 +105,14 @@ struct ProcedureValueSummary {
 struct ProcedureFieldValueSummary {
   std::vector<std::string> path;
   ProcedureValueSummary value;
+
+  bool operator==(const ProcedureFieldValueSummary &) const = default;
 };
 
 struct ProcedureArgumentSummary {
   std::vector<ProcedureFieldValueSummary> fields;
+
+  bool operator==(const ProcedureArgumentSummary &) const = default;
 };
 
 // A direct named invocation retains the procedure-valued actual arguments
@@ -137,6 +148,9 @@ struct ProcedureEffectSummary {
   std::vector<SymbolId> direct_calls;
   std::vector<ProcedureInvocationSummary> direct_invocations;
   std::vector<ProcedureFlowInvocationSummary> direct_flow_calls;
+  // Procedure leaves returned by this procedure, keyed relative to the result
+  // root. A direct procedure result uses the empty path.
+  std::vector<ProcedureFieldValueSummary> return_values;
   std::vector<SemanticEffect> effects;
 };
 

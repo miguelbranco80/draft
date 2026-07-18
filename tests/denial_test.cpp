@@ -250,6 +250,34 @@ deny forbidden {
   EXPECT(state, rendered.find("unknown call") == std::string::npos);
 }
 
+void test_returned_procedure_substitution(TestState &state) {
+  DenialSource source(R"draft(package denials
+
+identity :: proc(callback: proc()) -> proc() {
+    return callback
+}
+
+danger :: proc() {
+    assert(true)
+}
+
+deny assert {
+    bad :: proc() {
+        selected := identity(danger)
+        selected()
+    }
+}
+)draft");
+  EXPECT(state, source.semantics.ok);
+  EXPECT(state, source.bodies.ok);
+  EXPECT(state, !source.denials_ok);
+  EXPECT(state, source.diagnostics.error_count() == 1);
+  const std::string rendered =
+      draft::render_diagnostics(source.sources, source.diagnostics);
+  EXPECT(state, rendered.find("denied assert") != std::string::npos);
+  EXPECT(state, rendered.find("unknown call") == std::string::npos);
+}
+
 } // namespace
 
 int main() {
@@ -260,6 +288,7 @@ int main() {
   test_audited_foreign_effect(state);
   test_typed_field_flow_substitution(state);
   test_transitive_declaration_denial(state);
+  test_returned_procedure_substitution(state);
   if (state.failures != 0) {
     std::cerr << state.failures << " denial expectation(s) failed\n";
     return EXIT_FAILURE;

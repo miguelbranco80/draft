@@ -433,6 +433,116 @@ through_context :: proc() {
       !has_effect(*context_summary, draft::EffectKind::UnknownCall));
 }
 
+void test_returned_procedure_flow(TestState &state) {
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  draft::LoadedPackage loaded;
+  loaded.short_name = "return_effects";
+  draft::LoadedPackageFile file;
+  file.kind = draft::PackageFileKind::DraftSource;
+  file.relative_name = "package.draft";
+  file.source = sources.add_source(
+      "package.draft",
+      R"draft(package return_effects
+
+Callback_Box :: struct {
+    callback: proc(),
+}
+
+forward :: proc(callback: proc()) -> proc() {
+    return identity(callback)
+}
+
+identity :: proc(callback: proc()) -> proc() {
+    return callback
+}
+
+danger :: proc() {
+    assert(true)
+}
+
+named_factory :: proc() -> proc() {
+    return danger
+}
+
+box_factory :: proc(callback: proc()) -> Callback_Box {
+    return Callback_Box{callback = callback}
+}
+
+through_return :: proc() {
+    selected := forward(danger)
+    selected()
+    named := named_factory()
+    named()
+    box := box_factory(danger)
+    box.callback()
+}
+)draft");
+  file.syntax.emplace(draft::parse_source_file(sources, file.source, diagnostics));
+  loaded.files.push_back(std::move(file));
+  const draft::TargetProfile target = draft::make_aarch64_macos_profile();
+  draft::SemanticAnalysisResult semantics = draft::analyze_package_semantics(
+      sources, loaded, target.facts, diagnostics);
+  draft::BodyCheckResult bodies = draft::check_package_bodies(
+      sources,
+      loaded,
+      semantics.selections,
+      semantics.package,
+      semantics.constants,
+      target.facts,
+      diagnostics);
+  const draft::EffectSummaryResult effects =
+      draft::summarize_package_effects(
+          semantics.package, bodies.program, &target);
+  if (diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+  }
+  EXPECT(state, semantics.ok);
+  EXPECT(state, bodies.ok);
+  const std::optional<draft::SymbolId> identity =
+      symbol(semantics.package, "identity");
+  const std::optional<draft::SymbolId> box_factory =
+      symbol(semantics.package, "box_factory");
+  const std::optional<draft::SymbolId> through_return =
+      symbol(semantics.package, "through_return");
+  EXPECT(state, identity.has_value());
+  EXPECT(state, box_factory.has_value());
+  EXPECT(state, through_return.has_value());
+  if (!identity || !box_factory || !through_return) return;
+  const draft::ProcedureEffectSummary *identity_summary =
+      effects.find(*identity);
+  const draft::ProcedureEffectSummary *box_factory_summary =
+      effects.find(*box_factory);
+  const draft::ProcedureEffectSummary *caller_summary =
+      effects.find(*through_return);
+  EXPECT(state, identity_summary != nullptr);
+  EXPECT(state, box_factory_summary != nullptr);
+  EXPECT(state, caller_summary != nullptr);
+  if (identity_summary == nullptr || box_factory_summary == nullptr ||
+      caller_summary == nullptr) {
+    return;
+  }
+  EXPECT(state, identity_summary->return_values.size() == 1);
+  if (identity_summary->return_values.size() == 1) {
+    EXPECT(state,
+        identity_summary->return_values[0].value.flow_slots.size() == 1);
+    if (identity_summary->return_values[0].value.flow_slots.size() == 1) {
+      EXPECT(state,
+          identity_summary->return_values[0].value.flow_slots[0].parameter == 0);
+    }
+  }
+  EXPECT(state, box_factory_summary->return_values.size() == 1);
+  if (box_factory_summary->return_values.size() == 1) {
+    EXPECT(state,
+        box_factory_summary->return_values[0].path ==
+            std::vector<std::string>{"callback"});
+  }
+  EXPECT(state,
+      has_effect(*caller_summary, draft::EffectKind::RuntimeAssert));
+  EXPECT(state,
+      !has_effect(*caller_summary, draft::EffectKind::UnknownCall));
+}
+
 } // namespace
 
 int main() {
@@ -440,6 +550,7 @@ int main() {
   test_transitive_effects(state);
   test_target_and_package_assembly_summaries(state);
   test_typed_and_context_flow_paths(state);
+  test_returned_procedure_flow(state);
   if (state.failures != 0) {
     std::cerr << state.failures << " effect summary expectation(s) failed\n";
     return EXIT_FAILURE;
