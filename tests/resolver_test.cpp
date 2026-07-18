@@ -2,6 +2,7 @@
 
 #include "compile/resolver.h"
 
+#include "backend/toolchain.h"
 #include "compile/compiler.h"
 #include "elaborator/provider.h"
 #include "elaborator/resolution.h"
@@ -11,6 +12,7 @@
 #include "target/profile.h"
 
 #include <cstdlib>
+#include <cerrno>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -19,6 +21,12 @@
 #include <string_view>
 #include <system_error>
 #include <vector>
+
+#if defined(__APPLE__)
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
 
 namespace {
 
@@ -85,6 +93,7 @@ struct TemporaryWorkspace {
            << "main :: proc() {\n"
            << "    packet: Packet\n"
            << "    packet.value = answer\n"
+           << "    expected: i64 = ... \"compute expected value\"\n"
            << "    ... \"verify generated values\"\n"
            << "}\n";
   }
@@ -219,7 +228,11 @@ bool synthesize(
       response.source = "value: i64,";
       break;
     case draft::AgentConstructKind::SynthesisStatement:
-      response.source = "assert(packet.value == answer)";
+      response.source =
+          "assert(packet.value == answer && expected == 42)";
+      break;
+    case draft::AgentConstructKind::SynthesisExpression:
+      response.source = "42";
       break;
     default:
       diagnostics.error(
@@ -232,6 +245,39 @@ bool synthesize(
   }
   return true;
 }
+
+#if defined(__APPLE__)
+[[nodiscard]] bool run_executable(
+    const std::filesystem::path &executable,
+    const std::filesystem::path &working_directory,
+    int &status) {
+  const pid_t child = ::fork();
+  if (child < 0) return false;
+  if (child == 0) {
+    if (::chdir(working_directory.c_str()) != 0) _exit(126);
+    ::execl(executable.c_str(), executable.c_str(), nullptr);
+    _exit(127);
+  }
+  while (::waitpid(child, &status, 0) < 0) {
+    if (errno != EINTR) return false;
+  }
+  return true;
+}
+
+[[nodiscard]] std::string read_binary_file(
+    const std::filesystem::path &path) {
+  std::ifstream input(path, std::ios::binary);
+  input.seekg(0, std::ios::end);
+  const std::streamoff end = input.tellg();
+  if (!input || end < 0) return {};
+  std::string contents(static_cast<std::size_t>(end), '\0');
+  input.seekg(0, std::ios::beg);
+  if (!contents.empty()) {
+    input.read(contents.data(), static_cast<std::streamsize>(contents.size()));
+  }
+  return input ? contents : std::string();
+}
+#endif
 
 draft::CompileWorkspaceOptions compile_options(
     const TemporaryWorkspace &workspace) {
@@ -473,15 +519,17 @@ void test_interface_sites_precede_dependent_bodies(TestState &state) {
   }
   EXPECT(state, resolved.ok);
   EXPECT(state, resolved.committed);
-  EXPECT(state, resolved.synthesized_sites == 3);
-  EXPECT(state, provider.calls == 3);
-  EXPECT(state, provider.kinds.size() == 3);
-  if (provider.kinds.size() == 3) {
+  EXPECT(state, resolved.synthesized_sites == 4);
+  EXPECT(state, provider.calls == 4);
+  EXPECT(state, provider.kinds.size() == 4);
+  if (provider.kinds.size() == 4) {
     EXPECT(state, provider.kinds[0] ==
         draft::AgentConstructKind::SynthesisDeclaration);
     EXPECT(state, provider.kinds[1] ==
         draft::AgentConstructKind::SynthesisMember);
     EXPECT(state, provider.kinds[2] ==
+        draft::AgentConstructKind::SynthesisExpression);
+    EXPECT(state, provider.kinds[3] ==
         draft::AgentConstructKind::SynthesisStatement);
   }
 
@@ -505,7 +553,7 @@ void test_interface_sites_precede_dependent_bodies(TestState &state) {
   EXPECT(state, offline.ok);
   EXPECT(state, !offline_diagnostics.has_errors());
   EXPECT(state, resolved.manifest.format == "draft-resolution-v4");
-  EXPECT(state, resolved.manifest.pins.size() == 3);
+  EXPECT(state, resolved.manifest.pins.size() == 4);
   std::size_t composed_maps = 0;
   for (const draft::WorkspacePackage &package : offline.graph.packages) {
     for (const draft::LoadedPackageFile &file : package.loaded.files) {
@@ -518,7 +566,49 @@ void test_interface_sites_precede_dependent_bodies(TestState &state) {
       }
     }
   }
-  EXPECT(state, composed_maps == 3);
+  EXPECT(state, composed_maps == 4);
+
+#if defined(__APPLE__)
+  // The provider is no longer in scope: link the stored resolved program twice,
+  // require byte-identical executables, then launch one. This is the literal
+  // native acceptance path for declaration/member/expression/body synthesis.
+  const std::filesystem::path native_root = workspace.root / "native-acceptance";
+  draft::NativeBuildOptions first_native;
+  first_native.build_directory = (native_root / "first-build").string();
+  first_native.output_path = (native_root / "first-program").string();
+  first_native.allow_unpinned_toolchain = true;
+  const draft::NativeBuildResult first_built = draft::build_native_executable(
+      draft::make_aarch64_macos_profile(),
+      offline,
+      first_native,
+      offline_diagnostics);
+  EXPECT(state, first_built.ok);
+  const std::string first_bytes = first_built.ok
+      ? read_binary_file(first_built.output_path)
+      : std::string();
+  // Output path is part of native artifact identity. Rebuild exactly the same
+  // provider-free path so the comparison does not conflate program identity
+  // with a changed install name or linker output name.
+  draft::NativeBuildOptions second_native = first_native;
+  const draft::NativeBuildResult second_built = draft::build_native_executable(
+      draft::make_aarch64_macos_profile(),
+      offline,
+      second_native,
+      offline_diagnostics);
+  EXPECT(state, second_built.ok);
+  if (first_built.ok && second_built.ok) {
+    const std::string second_bytes = read_binary_file(second_built.output_path);
+    EXPECT(state, !first_bytes.empty());
+    EXPECT(state, first_bytes == second_bytes);
+    int process_status = 0;
+    EXPECT(state,
+        run_executable(first_built.output_path, native_root, process_status));
+    EXPECT(state, WIFEXITED(process_status));
+    if (WIFEXITED(process_status)) {
+      EXPECT(state, WEXITSTATUS(process_status) == 0);
+    }
+  }
+#endif
 
   draft::SourceManager reuse_sources;
   draft::DiagnosticSink reuse_diagnostics;
@@ -529,8 +619,8 @@ void test_interface_sites_precede_dependent_bodies(TestState &state) {
       reuse_diagnostics);
   EXPECT(state, reused.ok);
   EXPECT(state, reused.synthesized_sites == 0);
-  EXPECT(state, reused.reused_sites == 3);
-  EXPECT(state, provider.calls == 3);
+  EXPECT(state, reused.reused_sites == 4);
+  EXPECT(state, provider.calls == 4);
 }
 
 void test_dependency_interface_rounds(TestState &state) {
