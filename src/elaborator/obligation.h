@@ -44,6 +44,10 @@ struct AgentVisibleBinding {
 // moves without changing the manifest representation.
 struct AgentObligation {
   AgentConstructKind kind = AgentConstructKind::Documentation;
+  // syntax is a process-local route back to the surface site for diagnostics
+  // and exact source replacement. It is intentionally excluded from every
+  // persistent identity because FileId and NodeId depend on load order.
+  SyntaxReference syntax;
   std::string site_identity;
   Sha256Digest input_digest;
   std::string root_identity;

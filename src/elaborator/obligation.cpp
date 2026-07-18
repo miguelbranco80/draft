@@ -198,6 +198,7 @@ AgentObligationResult build_agent_obligations(
     if (!is_obligation_kind(record.kind)) continue;
     AgentObligation obligation;
     obligation.kind = record.kind;
+    obligation.syntax = record.syntax;
     obligation.root_identity = identity.root_identity;
     obligation.root_relative_path = identity.root_relative_path;
     obligation.source_relative_path =

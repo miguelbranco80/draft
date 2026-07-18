@@ -27,6 +27,28 @@ struct SelectedFile {
   PackageFileKind kind = PackageFileKind::DraftSource;
 };
 
+// Selects at most one exact-name in-memory replacement. A duplicate is a
+// caller/configuration error rather than a last-wins rule because choosing one
+// would change the resolved program according to vector order.
+[[nodiscard]] const PackageSourceOverride *find_override(
+    const PackageLoadOptions &options,
+    std::string_view relative_name,
+    DiagnosticSink &diagnostics) {
+  const PackageSourceOverride *result = nullptr;
+  for (const PackageSourceOverride &candidate : options.source_overrides) {
+    if (candidate.relative_name != relative_name) continue;
+    if (result != nullptr) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "resolved source contains duplicate overrides for '" +
+              std::string(relative_name) + "'");
+      return nullptr;
+    }
+    result = &candidate;
+  }
+  return result;
+}
+
 [[nodiscard]] bool ends_with(std::string_view value, std::string_view suffix) {
   return value.size() >= suffix.size() &&
          value.substr(value.size() - suffix.size()) == suffix;
@@ -186,9 +208,28 @@ PackageLoadResult load_package(
   });
 
   bool saw_draft_source = false;
+  std::vector<std::string> used_overrides;
   for (const SelectedFile &selected_file : selected) {
     const std::filesystem::path physical = directory_path / selected_file.name;
-    LoadFileResult load = sources.load_file(physical.string());
+    const PackageSourceOverride *source_override = find_override(
+        options, selected_file.name, diagnostics);
+    if (source_override != nullptr &&
+        selected_file.kind != PackageFileKind::DraftSource) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "resolved source cannot override assembly file '" +
+              selected_file.name + "'");
+      continue;
+    }
+    LoadFileResult load;
+    if (source_override != nullptr) {
+      load.ok = true;
+      load.file = sources.add_source(
+          physical.string() + " [resolved]", source_override->contents);
+      used_overrides.push_back(source_override->relative_name);
+    } else {
+      load = sources.load_file(physical.string());
+    }
     if (!load.ok) {
       diagnostics.error(SourceRange::invalid(), std::move(load.error));
       continue;
@@ -214,6 +255,22 @@ PackageLoadResult load_package(
       }
     }
     result.package.files.push_back(std::move(file));
+  }
+
+  // An override which does not name a selected physical Draft file indicates a
+  // stale manifest/file association or a target-selection mismatch. Silently
+  // ignoring it could build a different resolved program than the caller
+  // requested.
+  for (const PackageSourceOverride &source_override : options.source_overrides) {
+    if (std::find(
+            used_overrides.begin(),
+            used_overrides.end(),
+            source_override.relative_name) == used_overrides.end()) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "resolved source override does not match a selected Draft file '" +
+              source_override.relative_name + "'");
+    }
   }
 
   if (!saw_draft_source) {

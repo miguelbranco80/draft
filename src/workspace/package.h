@@ -30,13 +30,27 @@ enum class PackageFileKind {
   AssemblySource,
 };
 
+// PackageSourceOverride supplies one complete in-memory source file under the
+// same package-relative name as a selected physical .draft file. The workspace
+// layer uses this only for a checked resolution overlay: package enumeration,
+// target qualification, imports, and package identity still come from the
+// selected physical workspace. Exact replacement bytes re-enter through the
+// ordinary parser. Assembly files are never overridden through this seam.
+struct PackageSourceOverride {
+  std::string relative_name;
+  std::string contents;
+};
+
 // PackageLoadOptions contains only selection facts defined by the target and
 // command. file_tag is the exact target.file_tag; tests and benchmarks are
 // independently selected because validation commands may include either set.
+// source_overrides is normally empty and is populated by the resolved-program
+// orchestrator only after it has verified pins and generated-source hashes.
 struct PackageLoadOptions {
   std::string file_tag;
   bool include_tests = false;
   bool include_benchmarks = false;
+  std::vector<PackageSourceOverride> source_overrides;
 };
 
 // LoadedPackageFile owns no source bytes; FileId points into the caller-owned

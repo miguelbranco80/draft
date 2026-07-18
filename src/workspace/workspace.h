@@ -71,17 +71,6 @@ struct DependencyMapping {
   std::string content_identity;
 };
 
-// WorkspaceLoadOptions contains every permitted source root. core_directory
-// may be empty only when the reachable graph imports no core package. Likewise,
-// no dependency directory or environment search path is inferred.
-struct WorkspaceLoadOptions {
-  std::string workspace_directory;
-  std::string core_directory;
-  std::string core_content_identity;
-  std::vector<DependencyMapping> dependencies;
-  PackageLoadOptions package_options;
-};
-
 // PackageIdentity is the semantic pair required by the specification.
 // root_identity is "workspace" or a pinned dependency/distribution identity.
 // root_relative_path uses slash separators, has no leading/trailing slash, and
@@ -91,6 +80,26 @@ struct PackageIdentity {
   std::string root_relative_path;
 
   bool operator==(const PackageIdentity &) const = default;
+};
+
+// WorkspaceSourceOverride associates complete resolved file bytes with a
+// semantic package identity. Physical checkout paths are deliberately absent:
+// moving the workspace must not change which pinned source is selected.
+struct WorkspaceSourceOverride {
+  PackageIdentity identity;
+  PackageSourceOverride source;
+};
+
+// WorkspaceLoadOptions contains every permitted source root. core_directory
+// may be empty only when the reachable graph imports no core package. Likewise,
+// no dependency directory or environment search path is inferred.
+struct WorkspaceLoadOptions {
+  std::string workspace_directory;
+  std::string core_directory;
+  std::string core_content_identity;
+  std::vector<DependencyMapping> dependencies;
+  std::vector<WorkspaceSourceOverride> source_overrides;
+  PackageLoadOptions package_options;
 };
 
 // WorkspacePackage owns one loaded folder package and its canonical identity.

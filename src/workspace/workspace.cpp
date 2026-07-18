@@ -76,6 +76,22 @@ public:
     }
 
     graph_.root_package = load_package_recursive(0, *relative, SourceRange::invalid());
+    for (const WorkspaceSourceOverride &source_override :
+         options_.source_overrides) {
+      bool package_loaded = false;
+      for (const WorkspacePackage &package : graph_.packages) {
+        if (package.identity == source_override.identity) {
+          package_loaded = true;
+          break;
+        }
+      }
+      if (!package_loaded) {
+        diagnostics_.error(
+            SourceRange::invalid(),
+            "resolved source override names an unreachable package '" +
+                display_package_identity(source_override.identity) + "'");
+      }
+    }
     result.ok = graph_.root_package.is_valid() &&
         diagnostics_.error_count() == initial_errors;
     result.graph = std::move(graph_);
@@ -406,8 +422,16 @@ private:
       }
     }
 
+    PackageLoadOptions package_options = options_.package_options;
+    package_options.source_overrides.clear();
+    for (const WorkspaceSourceOverride &source_override :
+         options_.source_overrides) {
+      if (source_override.identity == checked_identity) {
+        package_options.source_overrides.push_back(source_override.source);
+      }
+    }
     PackageLoadResult loaded = draft::load_package(
-        sources_, *canonical, options_.package_options, diagnostics_);
+        sources_, *canonical, package_options, diagnostics_);
     if (!loaded.ok) {
       return PackageId{};
     }
