@@ -8,18 +8,33 @@ Observation :: struct {
     value: u64,
     context_index: int,
     temporary_is_thread_owned: bool,
+    ready: bool,
+}
+
+Work :: struct {
+    observation: ^Observation,
+    mutex: ^thread.Mutex,
+    condition: ^thread.Condition,
 }
 
 worker :: proc(user: rawptr) {
-    observation := cast[^Observation](user)
+    work := cast[^Work](user)
     snapshot := runtime.default_context()
-    observation^.value = 42
-    observation^.context_index = snapshot.user_index
-    observation^.temporary_is_thread_owned =
-        snapshot.temp_allocator.procedure != snapshot.allocator.procedure
     temporary := memory.temporary_new[u64]()
     temporary^ = 91
     assert(temporary^ == 91)
+
+    // The mutex protects both the payload and the ready flag. Signaling while
+    // holding it gives the waiting thread one simple, auditable publication
+    // edge; the wait loop also handles permitted spurious wakeups.
+    thread.mutex_lock(work^.mutex)
+    work^.observation^.value = 42
+    work^.observation^.context_index = snapshot.user_index
+    work^.observation^.temporary_is_thread_owned =
+        snapshot.temp_allocator.procedure != snapshot.allocator.procedure
+    work^.observation^.ready = true
+    thread.condition_signal(work^.condition)
+    thread.mutex_unlock(work^.mutex)
 }
 
 main :: proc() {
@@ -28,21 +43,33 @@ main :: proc() {
     // hosted runtime replaces it with state owned by the new OS thread.
     context.temp_allocator = context.allocator
     observation: Observation
-    (child, started) := thread.spawn(worker, cast[rawptr](&observation))
+
+    mutex: thread.Mutex
+    condition: thread.Condition
+    assert(thread.mutex_init(&mutex))
+    assert(thread.condition_init(&condition))
+    work := Work{
+        observation = &observation,
+        mutex = &mutex,
+        condition = &condition,
+    }
+
+    (child, started) := thread.spawn(worker, cast[rawptr](&work))
     assert(started)
-    assert(thread.join(&child))
+
+    thread.mutex_lock(&mutex)
+    for !observation.ready {
+        thread.condition_wait(&condition, &mutex)
+    }
     assert(observation.value == 42)
     assert(observation.context_index == 73)
     assert(observation.temporary_is_thread_owned)
-    assert(thread.current_id() != 0)
-
-    mutex: thread.Mutex
-    assert(thread.mutex_init(&mutex))
-    thread.mutex_lock(&mutex)
     thread.mutex_unlock(&mutex)
-    assert(thread.mutex_destroy(&mutex))
 
-    condition: thread.Condition
-    assert(thread.condition_init(&condition))
+    assert(thread.join(&child))
+    assert(thread.current_id() != 0)
+    thread.yield()
+
     assert(thread.condition_destroy(&condition))
+    assert(thread.mutex_destroy(&mutex))
 }

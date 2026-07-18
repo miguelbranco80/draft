@@ -59,6 +59,18 @@ main :: proc() {
     assert(provided.assertion_failure_proc != nil)
     assert(provided.allocator.procedure != nil)
     assert(provided.temp_allocator.procedure != nil)
+    assert(provided.logger.procedure != nil)
+    assert(provided.random_generator.procedure != nil)
+
+    // Provider records are ordinary callable Draft values. Exercise the
+    // random-provider ABI without making the test depend on particular random
+    // bytes (all byte patterns, including all-zero, are valid output).
+    random_bytes: [32]u8
+    assert(provided.random_generator.procedure(
+        provided.random_generator.user,
+        cast[[^]u8](&random_bytes[0]),
+        len(random_bytes),
+    ))
     provided.user_index = 40
     assert(runtime.call_with_context(
         &provided,

@@ -702,7 +702,28 @@ private:
             << "resize.realloc:\n"
             << "  %resized = call ptr @realloc("
                "ptr %old_memory, i64 %new_size)\n"
+            // realloc preserves the old prefix but deliberately leaves any
+            // grown tail unspecified. Draft's hosted allocator returns
+            // cleared storage, including bytes added by resize, so make that
+            // part of the runtime ABI explicit instead of depending on fresh
+            // pages happening to contain zeroes.
+            << "  %resized.ok = icmp ne ptr %resized, null\n"
+            << "  br i1 %resized.ok, label %resize.realloc.growth.check, "
+               "label %resize.realloc.failed\n"
+            << "resize.realloc.growth.check:\n"
+            << "  %resize.grows = icmp ugt i64 %new_size, %old_size\n"
+            << "  br i1 %resize.grows, label %resize.realloc.clear, "
+               "label %resize.realloc.finish\n"
+            << "resize.realloc.clear:\n"
+            << "  %resize.tail = getelementptr i8, ptr %resized, i64 %old_size\n"
+            << "  %resize.growth = sub i64 %new_size, %old_size\n"
+            << "  call void @llvm.memset.p0.i64("
+               "ptr %resize.tail, i8 0, i64 %resize.growth, i1 false)\n"
+            << "  br label %resize.realloc.finish\n"
+            << "resize.realloc.finish:\n"
             << "  ret ptr %resized\n"
+            << "resize.realloc.failed:\n"
+            << "  ret ptr null\n"
             << "resize.aligned:\n"
             << "  %replacement = call ptr @__draft.allocate_zeroed("
                "i64 %new_size, i64 %alignment)\n"

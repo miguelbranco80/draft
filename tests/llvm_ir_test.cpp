@@ -421,6 +421,15 @@ main :: proc() -> int {
   EXPECT(state, module.text.find(
       "define internal i1 @__draft.default_random") != std::string::npos);
   EXPECT(state, module.text.find(
+      "%resize.grows = icmp ugt i64 %new_size, %old_size") !=
+      std::string::npos);
+  EXPECT(state, module.text.find(
+      "%resize.tail = getelementptr i8, ptr %resized, i64 %old_size") !=
+      std::string::npos);
+  EXPECT(state, module.text.find(
+      "ptr %resize.tail, i8 0, i64 %resize.growth, i1 false") !=
+      std::string::npos);
+  EXPECT(state, module.text.find(
       "define internal ptr @__draft.ensure_thread_context") !=
       std::string::npos);
   EXPECT(state, module.text.find(
