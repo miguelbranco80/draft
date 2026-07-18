@@ -317,6 +317,307 @@ void add_type_context(
   contexts.push_back(std::move(context));
 }
 
+[[nodiscard]] std::string_view constraint_name(TypeConstraintKind kind);
+
+void append_path_context(
+    std::string_view count_name,
+    std::string_view element_name,
+    const std::vector<std::string> &path,
+    std::string &output) {
+  output += count_name;
+  output.push_back(' ');
+  append_context_u64(static_cast<std::uint64_t>(path.size()), output);
+  for (const std::string &field : path) {
+    append_context_field(element_name, field, output);
+  }
+}
+
+void append_imported_effect_context(
+    const ImportedEffect &effect,
+    std::string &output);
+
+void append_imported_flow_value_context(
+    const ImportedFlowValue &value,
+    std::string &output) {
+  append_context_field(
+      "FLOW_UNKNOWN", value.unknown ? "true" : "false", output);
+  output += "FLOW_SLOTS ";
+  append_context_u64(
+      static_cast<std::uint64_t>(value.flow_slots.size()), output);
+  for (const ImportedReturnFlowSlot &slot : value.flow_slots) {
+    append_context_field(
+        "FLOW_PARAMETER", std::to_string(slot.parameter), output);
+    append_context_field(
+        "FLOW_CONTEXT", slot.context ? "true" : "false", output);
+    append_path_context("FLOW_PATH", "FLOW_PATH_FIELD", slot.path, output);
+  }
+  output += "FLOW_CONTRACT_EFFECTS ";
+  append_context_u64(
+      static_cast<std::uint64_t>(value.contract_effects.size()), output);
+  for (const ImportedEffect &effect : value.contract_effects) {
+    append_imported_effect_context(effect, output);
+  }
+}
+
+void append_imported_effect_context(
+    const ImportedEffect &effect,
+    std::string &output) {
+  append_context_field(
+      "EFFECT_KIND", std::string(effect_kind_name(effect.kind)), output);
+  append_context_field(
+      "EFFECT_ROOT_IDENTITY", effect.root_identity, output);
+  append_context_field(
+      "EFFECT_ROOT_RELATIVE_PATH", effect.root_relative_path, output);
+  append_context_field("EFFECT_DECLARATION", effect.declaration, output);
+  append_context_field("EFFECT_DETAIL", effect.detail, output);
+  append_context_field(
+      "EFFECT_FLOW_PARAMETER", std::to_string(effect.flow_parameter), output);
+  append_context_field(
+      "EFFECT_FLOW_CONTEXT", effect.flow_context ? "true" : "false", output);
+  append_path_context(
+      "EFFECT_FLOW_PATH", "EFFECT_FLOW_PATH_FIELD", effect.flow_path, output);
+  output += "EFFECT_FLOW_ARGUMENTS ";
+  append_context_u64(
+      static_cast<std::uint64_t>(effect.flow_arguments.size()), output);
+  for (const ImportedFlowArgument &argument : effect.flow_arguments) {
+    output += "FLOW_ARGUMENT_FIELDS ";
+    append_context_u64(
+        static_cast<std::uint64_t>(argument.fields.size()), output);
+    for (const ImportedFlowField &field : argument.fields) {
+      append_path_context(
+          "FLOW_FIELD_PATH", "FLOW_FIELD_PATH_ELEMENT", field.path, output);
+      append_imported_flow_value_context(field.value, output);
+    }
+  }
+}
+
+[[nodiscard]] const ImportBinding *find_import_binding(
+    const SemanticPackage &package,
+    SymbolId symbol) {
+  for (const ImportBinding &binding : package.imports) {
+    if (binding.symbol == symbol) return &binding;
+  }
+  return nullptr;
+}
+
+[[nodiscard]] bool is_concrete_imported_instance(
+    const SemanticPackage &package,
+    SymbolId proxy) {
+  for (const ImportedProcedureInstance &instance :
+       package.imported_procedure_instances) {
+    if (instance.instance_proxy == proxy) return true;
+  }
+  return false;
+}
+
+[[nodiscard]] std::string imported_package_definition(
+    const PackageIdentity &identity,
+    const SemanticPackage &package,
+    const ImportBinding &binding,
+    std::vector<AgentTypeContext> &type_contexts,
+    DiagnosticSink &diagnostics) {
+  std::string output;
+  std::size_t declaration_count = 0;
+  for (const ImportedSymbol &imported : package.imported_symbols) {
+    if (imported.import_symbol == binding.symbol &&
+        !is_concrete_imported_instance(package, imported.proxy)) {
+      ++declaration_count;
+    }
+  }
+  output += "IMPORTED_DECLARATIONS ";
+  append_context_u64(
+      static_cast<std::uint64_t>(declaration_count), output);
+  for (const ImportedSymbol &imported : package.imported_symbols) {
+    if (imported.import_symbol != binding.symbol ||
+        is_concrete_imported_instance(package, imported.proxy)) {
+      continue;
+    }
+    const Symbol &symbol = package.symbols.symbol(imported.proxy);
+    append_context_field("DECLARATION_NAME", imported.public_name, output);
+    append_context_field(
+        "DECLARATION_KIND", std::string(symbol_kind_name(symbol.kind)), output);
+    append_context_field(
+        "DECLARATION_PARAMETRIC",
+        symbol.flags.parametric ? "true" : "false",
+        output);
+    append_context_field(
+        "DECLARATION_FOREIGN", symbol.flags.foreign ? "true" : "false", output);
+    append_context_field(
+        "DECLARATION_EXPORTED", symbol.flags.exported ? "true" : "false", output);
+    append_context_field(
+        "DECLARATION_THREAD_LOCAL",
+        symbol.flags.is_thread_local ? "true" : "false",
+        output);
+    if (!symbol.type.is_valid() ||
+        package.types.type(symbol.type).kind == TypeKind::Invalid) {
+      diagnostics.error(
+          symbol.name_range, "imported agent declaration has no complete type");
+      append_context_field("DECLARATION_TYPE_TEXT", "<invalid>", output);
+      append_context_field("DECLARATION_TYPE_SHA256", {}, output);
+    } else {
+      const InterfaceTypeGraph type = export_interface_type(
+          identity, package, symbol.type, diagnostics);
+      add_type_context(type, type_contexts);
+      append_context_field(
+          "DECLARATION_TYPE_TEXT", type_text(package, symbol.type), output);
+      append_context_field(
+          "DECLARATION_TYPE_SHA256",
+          hash_interface_type_graph(type).hex(),
+          output);
+    }
+    std::size_t parameter_count = 0;
+    for (const ParametricParameterRecord &parameter :
+         package.parametric_parameters) {
+      if (parameter.owner == imported.proxy) ++parameter_count;
+    }
+    output += "DECLARATION_PARAMETERS ";
+    append_context_u64(static_cast<std::uint64_t>(parameter_count), output);
+    for (const ParametricParameterRecord &parameter :
+         package.parametric_parameters) {
+      if (parameter.owner != imported.proxy) continue;
+      const Symbol &parameter_symbol =
+          package.symbols.symbol(parameter.parameter);
+      append_context_field("DECLARATION_PARAMETER", parameter_symbol.name, output);
+      append_context_field(
+          "DECLARATION_PARAMETER_KIND",
+          std::string(symbol_kind_name(parameter_symbol.kind)),
+          output);
+      append_context_field(
+          "DECLARATION_PARAMETER_CONSTRAINT",
+          std::string(constraint_name(parameter.constraint)),
+          output);
+      if (parameter_symbol.type.is_valid()) {
+        const InterfaceTypeGraph parameter_type = export_interface_type(
+            identity, package, parameter_symbol.type, diagnostics);
+        add_type_context(parameter_type, type_contexts);
+        append_context_field(
+            "DECLARATION_PARAMETER_TYPE_TEXT",
+            type_text(package, parameter_symbol.type),
+            output);
+        append_context_field(
+            "DECLARATION_PARAMETER_TYPE_SHA256",
+            hash_interface_type_graph(parameter_type).hex(),
+            output);
+      }
+    }
+    append_context_field(
+        "DECLARATION_HAS_CONSTANT",
+        imported.has_constant ? "true" : "false",
+        output);
+    if (imported.has_constant) {
+      append_constant_context(imported.constant, output);
+    }
+    append_context_field(
+        "DECLARATION_NATIVE_PROVIDER", imported.native_provider, output);
+    append_context_field(
+        "DECLARATION_NATIVE_LINKER_NAME",
+        imported.native_linker_name_spelling,
+        output);
+    append_context_field(
+        "DECLARATION_HAS_EFFECT_SUMMARY",
+        imported.has_effect_summary ? "true" : "false",
+        output);
+    std::size_t effect_count = 0;
+    for (const ImportedEffect &effect : package.imported_effects) {
+      if (effect.procedure_proxy == imported.proxy) ++effect_count;
+    }
+    output += "DECLARATION_EFFECTS ";
+    append_context_u64(static_cast<std::uint64_t>(effect_count), output);
+    for (const ImportedEffect &effect : package.imported_effects) {
+      if (effect.procedure_proxy == imported.proxy) {
+        append_imported_effect_context(effect, output);
+      }
+    }
+    std::size_t return_count = 0;
+    for (const ImportedProcedureReturn &returned : package.imported_returns) {
+      if (returned.procedure_proxy == imported.proxy) ++return_count;
+    }
+    output += "DECLARATION_RETURNS ";
+    append_context_u64(static_cast<std::uint64_t>(return_count), output);
+    for (const ImportedProcedureReturn &returned : package.imported_returns) {
+      if (returned.procedure_proxy != imported.proxy) continue;
+      append_path_context(
+          "RETURN_PATH", "RETURN_PATH_FIELD", returned.path, output);
+      ImportedFlowValue value;
+      value.flow_slots = returned.flow_slots;
+      value.contract_effects = returned.contract_effects;
+      value.unknown = returned.unknown;
+      append_imported_flow_value_context(value, output);
+    }
+    std::size_t write_count = 0;
+    for (const ImportedProcedureWrite &write : package.imported_writes) {
+      if (write.procedure_proxy == imported.proxy) ++write_count;
+    }
+    output += "DECLARATION_WRITES ";
+    append_context_u64(static_cast<std::uint64_t>(write_count), output);
+    for (const ImportedProcedureWrite &write : package.imported_writes) {
+      if (write.procedure_proxy != imported.proxy) continue;
+      append_context_field(
+          "WRITE_PARAMETER", std::to_string(write.parameter), output);
+      append_context_field(
+          "WRITE_INDIRECTION", std::to_string(write.indirection), output);
+      append_path_context("WRITE_PATH", "WRITE_PATH_FIELD", write.path, output);
+      ImportedFlowValue value;
+      value.flow_slots = write.value_flow_slots;
+      value.contract_effects = write.value_contract_effects;
+      value.unknown = write.value_unknown;
+      append_imported_flow_value_context(value, output);
+    }
+  }
+  return output;
+}
+
+[[nodiscard]] std::vector<AgentImportedPackageContext>
+imported_package_context(
+    const PackageIdentity &identity,
+    const LoadedPackage &loaded,
+    const SemanticPackage &package,
+    const AgentRecord &record,
+    std::vector<AgentTypeContext> &type_contexts,
+    DiagnosticSink &diagnostics) {
+  std::vector<AgentImportedPackageContext> result;
+  const SyntaxTree *tree = find_tree(loaded, record.syntax.file);
+  const SourceRange site_range = tree == nullptr
+      ? SourceRange::invalid()
+      : tree->node(record.syntax.node).range;
+  std::vector<std::string> names;
+  ScopeId scope = record.scope;
+  while (scope.is_valid()) {
+    const Scope current = package.symbols.scope(scope);
+    for (SymbolId symbol_id : current.symbols) {
+      const Symbol &symbol = package.symbols.symbol(symbol_id);
+      if (already_seen(names, symbol.name)) continue;
+      if (site_range.is_valid() && symbol.name_range.is_valid() &&
+          symbol.name_range.begin.file == site_range.begin.file &&
+          symbol.name_range.begin.offset > site_range.begin.offset) {
+        continue;
+      }
+      names.push_back(symbol.name);
+      if (symbol.kind != SymbolKind::Import) continue;
+      const ImportBinding *binding = find_import_binding(package, symbol_id);
+      if (binding == nullptr) {
+        diagnostics.error(
+            symbol.name_range, "visible import has no semantic binding");
+        continue;
+      }
+      AgentImportedPackageContext context;
+      context.alias = symbol.name;
+      context.root_identity = binding->root_identity;
+      context.root_relative_path = binding->root_relative_path;
+      context.definition = imported_package_definition(
+          identity,
+          package,
+          *binding,
+          type_contexts,
+          diagnostics);
+      context.definition_digest = sha256(context.definition);
+      result.push_back(std::move(context));
+    }
+    scope = current.parent;
+  }
+  return result;
+}
+
 [[nodiscard]] AgentTargetContext target_context(const TargetProfile &target) {
   AgentTargetContext result;
   result.identity = target.facts.identity;
@@ -739,7 +1040,7 @@ void add_type_context(
     const AgentObligation &obligation,
     const TargetProfile &target) {
   Sha256 hash;
-  hash_field(hash, "draft-agent-obligation-v7");
+  hash_field(hash, "draft-agent-obligation-v8");
   hash_field(hash, obligation.site_identity);
   hash.update(obligation.record_digest.bytes);
   hash.update(obligation.expected_type_digest.bytes);
@@ -804,6 +1105,17 @@ void add_type_context(
     hash.update(type.type_digest.bytes);
     hash.update(type.definition_digest.bytes);
     hash_field(hash, type.definition);
+  }
+  hash_u64(
+      hash,
+      static_cast<std::uint64_t>(obligation.imported_packages.size()));
+  for (const AgentImportedPackageContext &package :
+       obligation.imported_packages) {
+    hash_field(hash, package.alias);
+    hash_field(hash, package.root_identity);
+    hash_field(hash, package.root_relative_path);
+    hash.update(package.definition_digest.bytes);
+    hash_field(hash, package.definition);
   }
   hash_u64(
       hash,
@@ -936,6 +1248,13 @@ AgentObligationResult build_agent_obligations(
       add_type_context(expected, obligation.type_contexts);
     }
     obligation.visible_bindings = visible_bindings(
+        identity,
+        loaded,
+        package,
+        record,
+        obligation.type_contexts,
+        diagnostics);
+    obligation.imported_packages = imported_package_context(
         identity,
         loaded,
         package,

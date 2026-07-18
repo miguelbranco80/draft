@@ -1,6 +1,7 @@
 // Provider-independent agent metadata, attachment, and expected-type tests.
 
 #include "sema/agent_metadata.h"
+#include "compile/compiler.h"
 #include "elaborator/obligation.h"
 #include "sema/body_checker.h"
 #include "sema/interface.h"
@@ -493,6 +494,7 @@ work :: proc() -> i64 {
     }
     return ... "produce a value"
 }
+
 )draft");
 
   draft::SourceManager sources;
@@ -552,6 +554,116 @@ work :: proc() -> i64 {
   }
 }
 
+void test_visible_import_interface_is_context(TestState &state) {
+  TemporaryPackage temporary;
+  const std::filesystem::path workspace = temporary.path / "workspace";
+  write_file(
+      workspace / "lib" / "package.draft",
+      "package lib\n"
+      "pub Answer :: 42\n"
+      "pub Record :: struct {\n"
+      "    count: u32,\n"
+      "}\n");
+  write_file(
+      workspace / "app" / "package.draft",
+      "package app\n"
+      "import lib as lib\n"
+      "main :: proc() {\n"
+      "    value: lib.Record = ... \"make a record\"\n"
+      "}\n");
+
+  auto compile = [&](draft::SourceManager &sources,
+                     draft::DiagnosticSink &diagnostics) {
+    draft::CompileWorkspaceOptions options;
+    options.target = draft::make_aarch64_macos_profile();
+    options.workspace.workspace_directory = workspace.string();
+    return draft::compile_workspace(
+        sources,
+        (workspace / "app").string(),
+        std::move(options),
+        diagnostics);
+  };
+
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  const draft::CompileWorkspaceResult initial = compile(sources, diagnostics);
+  if (diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+  }
+  EXPECT(state, initial.ok);
+  EXPECT(state, !diagnostics.has_errors());
+  EXPECT(state, initial.graph.root_package.is_valid());
+  const draft::AgentObligation *initial_synthesis = nullptr;
+  if (initial.graph.root_package.is_valid() &&
+      initial.graph.root_package.value < initial.packages.size() &&
+      initial.packages[initial.graph.root_package.value].has_value()) {
+    for (const draft::AgentObligation &obligation :
+         initial.packages[initial.graph.root_package.value]
+             ->obligations.obligations) {
+      if (obligation.kind == draft::AgentConstructKind::SynthesisExpression) {
+        initial_synthesis = &obligation;
+      }
+    }
+  }
+  EXPECT(state, initial_synthesis != nullptr);
+  if (initial_synthesis == nullptr) return;
+  EXPECT(state, initial_synthesis->imported_packages.size() == 1);
+  if (initial_synthesis->imported_packages.size() == 1) {
+    const draft::AgentImportedPackageContext &context =
+        initial_synthesis->imported_packages.front();
+    EXPECT(state, context.alias == "lib");
+    EXPECT(state, context.root_identity == "workspace");
+    EXPECT(state, context.root_relative_path == "lib");
+    EXPECT(state,
+        context.definition.find("DECLARATION_NAME 6\nAnswer") !=
+            std::string::npos);
+    EXPECT(state,
+        context.definition.find("DECLARATION_NAME 6\nRecord") !=
+            std::string::npos);
+    EXPECT(state,
+        draft::sha256(context.definition) == context.definition_digest);
+  }
+
+  // A dependency constant is part of its visible compact interface even when
+  // the current expected type is unchanged. Editing it must stale the request
+  // without manufacturing a new structural site identity.
+  write_file(
+      workspace / "lib" / "package.draft",
+      "package lib\n"
+      "pub Answer :: 43\n"
+      "pub Record :: struct {\n"
+      "    count: u32,\n"
+      "}\n");
+  draft::SourceManager changed_sources;
+  draft::DiagnosticSink changed_diagnostics;
+  const draft::CompileWorkspaceResult changed =
+      compile(changed_sources, changed_diagnostics);
+  EXPECT(state, changed.ok);
+  EXPECT(state, !changed_diagnostics.has_errors());
+  const draft::AgentObligation *changed_synthesis = nullptr;
+  if (changed.graph.root_package.is_valid() &&
+      changed.graph.root_package.value < changed.packages.size() &&
+      changed.packages[changed.graph.root_package.value].has_value()) {
+    for (const draft::AgentObligation &obligation :
+         changed.packages[changed.graph.root_package.value]
+             ->obligations.obligations) {
+      if (obligation.kind == draft::AgentConstructKind::SynthesisExpression) {
+        changed_synthesis = &obligation;
+      }
+    }
+  }
+  EXPECT(state, changed_synthesis != nullptr);
+  if (changed_synthesis != nullptr) {
+    EXPECT(state,
+        changed_synthesis->site_identity == initial_synthesis->site_identity);
+    EXPECT(state,
+        changed_synthesis->expected_type_digest ==
+            initial_synthesis->expected_type_digest);
+    EXPECT(state,
+        changed_synthesis->input_digest != initial_synthesis->input_digest);
+  }
+}
+
 } // namespace
 
 int main() {
@@ -559,6 +671,7 @@ int main() {
   test_agent_records(state);
   test_dangling_documentation_is_rejected(state);
   test_judgment_guidance_respects_branch_dominance(state);
+  test_visible_import_interface_is_context(state);
   if (state.failures != 0) {
     std::cerr << state.failures << " agent metadata expectation(s) failed\n";
     return EXIT_FAILURE;

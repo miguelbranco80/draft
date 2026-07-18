@@ -164,7 +164,7 @@ An omitted symbol is unknown, and compiler-, package-assembly-, and target-owned
 providers cannot be overridden by an external audit.
 
 Provider requests never substitute hashes for information the synthesizer must
-understand. `draft-synthesis-request-v8` carries canonical Draft spellings for
+understand. `draft-synthesis-request-v9` carries canonical Draft spellings for
 the expected type and every visible binding, together with explicit target,
 SIMD, and parsed-assembly facts. Package and enclosing-declaration documentation
 retain their anchor, text, and exact isolated attachment bytes. The same rows
@@ -203,6 +203,14 @@ layout, members, offsets, structural children, calling convention, and generic
 type/value arguments. Its definition digest is a separate obligation input from
 the compact reference digest, so changing fields of a same-named nominal type
 correctly stales synthesis and still gives Codex the facts it needs.
+
+Every visible file-local import contributes a compact interface under its actual
+alias and canonical package identity. The interface includes public declaration
+names/kinds/flags, signatures, generic constraints, constants, native bindings,
+and composed effect/return/write contracts; its referenced types reuse the
+complete type graphs above. A shadowed import is absent. Interface bytes and
+their digest are obligation inputs, so a dependency API or constant change
+stales the site even when its expected type and enclosing source do not change.
 
 A provider-free compile or resolution revalidation may consume a content-fresh
 pin without installing its original provider. When `draft resolve` explicitly

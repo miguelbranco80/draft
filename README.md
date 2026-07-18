@@ -165,6 +165,9 @@ stage. Provider requests carry canonical expected and visible-binding type
 spellings plus complete referenced type graphs, layouts, and members, along
 with explicit target, SIMD, and parsed-assembly facts; digests remain
 verification identities rather than opaque substitutes for usable context.
+Visible imported aliases carry compact public interfaces with constants,
+generic constraints, native bindings, and typed effect contracts; those
+interfaces are also stale-pin inputs.
 They also carry stable package/source coordinates and a comment-free canonical
 token view of the enclosing procedure or type declaration, all covered by the
 site input digest. Lexically active `deny` selectors are sent and hashed in

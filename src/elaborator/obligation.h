@@ -114,6 +114,18 @@ struct AgentTypeContext {
   std::string definition;
 };
 
+// Compact public interface for one file-local imported package alias visible at
+// the site. The definition contains declarations, constants, native bindings,
+// and typed effect/return/write contracts; referenced declaration types reuse
+// AgentTypeContext graphs.
+struct AgentImportedPackageContext {
+  std::string alias;
+  std::string root_identity;
+  std::string root_relative_path;
+  Sha256Digest definition_digest;
+  std::string definition;
+};
+
 // A surface judgment whose position permits it to guide this synthesis site.
 // These are claims, not passing verdicts: including one never evaluates it or
 // weakens ordinary syntax, type, denial, test, or benchmark validation.
@@ -153,6 +165,7 @@ struct AgentObligation {
   std::vector<AgentActiveDenial> active_denials;
   std::vector<AgentParametricParameter> parametric_parameters;
   std::vector<AgentTypeContext> type_contexts;
+  std::vector<AgentImportedPackageContext> imported_packages;
   std::vector<AgentJudgmentContext> guiding_judgments;
   std::vector<AgentDocumentationContext> documentation;
 };

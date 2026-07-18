@@ -43,7 +43,7 @@ namespace {
 constexpr std::uintmax_t kMaximumCodexOutputBytes = 64U * 1024U * 1024U;
 constexpr std::uintmax_t kMaximumCodexLogBytes = 4U * 1024U * 1024U;
 constexpr std::string_view kPromptContractIdentity =
-    "draft-codex-synthesis-prompt-v8";
+    "draft-codex-synthesis-prompt-v9";
 constexpr std::string_view kOutputSchema =
     "{\n"
     "  \"type\": \"object\",\n"
@@ -371,6 +371,25 @@ void append_field(
     append_field("TYPE_REFERENCE_SHA256", type.type_digest.hex(), prompt);
     append_field("TYPE_DEFINITION_SHA256", type.definition_digest.hex(), prompt);
     append_field("TYPE_DEFINITION", type.definition, prompt);
+  }
+  prompt += "IMPORTED_PACKAGES ";
+  append_u64(
+      static_cast<std::uint64_t>(request.obligation.imported_packages.size()),
+      prompt);
+  for (const AgentImportedPackageContext &package :
+       request.obligation.imported_packages) {
+    if (sha256(package.definition) != package.definition_digest) {
+      provider_error(
+          diagnostics, "Codex imported package identity is inconsistent");
+      return false;
+    }
+    append_field("IMPORT_ALIAS", package.alias, prompt);
+    append_field("IMPORT_ROOT_IDENTITY", package.root_identity, prompt);
+    append_field(
+        "IMPORT_ROOT_RELATIVE_PATH", package.root_relative_path, prompt);
+    append_field(
+        "IMPORT_DEFINITION_SHA256", package.definition_digest.hex(), prompt);
+    append_field("IMPORT_DEFINITION", package.definition, prompt);
   }
   prompt += "GUIDING_JUDGMENTS ";
   append_u64(
@@ -853,7 +872,7 @@ SynthesisProvider configure_codex_cli_provider(
       "codex-config-" + configuration.finalize().hex();
 
   SynthesisProvider provider;
-  provider.provider_identity = "openai-codex-cli-v9";
+  provider.provider_identity = "openai-codex-cli-v10";
   provider.model_identity = state.model;
   provider.configuration_identity = state.configuration_identity;
   provider.state = &state;
