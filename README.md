@@ -168,7 +168,8 @@ They also carry stable package/source coordinates and a comment-free canonical
 token view of the enclosing procedure or type declaration, all covered by the
 site input digest. Lexically active `deny` selectors are sent and hashed in
 outer-to-inner order, and parametric sites carry ordered type/value constraints.
-Package documentation reaches every site, and
+Package-wide and structurally dominating judgment claims can guide synthesis
+without being treated as passing verdicts. Package documentation reaches every site, and
 enclosing-declaration docs reach
 sites inside that declaration, with exact attachment bytes copied into the
 isolated request. Proposed and stored source is barred from introducing another

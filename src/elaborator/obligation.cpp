@@ -378,6 +378,104 @@ void hash_field(Sha256 &hash, std::string_view value) {
   return result;
 }
 
+// Returns true when earlier is a direct item of a list of list_kind and site is
+// inside a later direct item of that same list. This is the structured-syntax
+// dominance rule needed here: leaving a branch/list prevents its claims from
+// leaking to siblings, while a claim before an if/loop/switch dominates sites
+// nested inside that later statement.
+[[nodiscard]] bool precedes_in_enclosing_list(
+    const SyntaxTree &tree,
+    NodeId earlier,
+    NodeId site,
+    NodeKind list_kind) {
+  std::vector<NodeId> parents(tree.nodes().size());
+  for (std::size_t parent_index = 0;
+       parent_index < tree.nodes().size(); ++parent_index) {
+    for (NodeId child : tree.nodes()[parent_index].children) {
+      if (child.is_valid() &&
+          static_cast<std::size_t>(child.value) < parents.size()) {
+        parents[child.value] =
+            NodeId{static_cast<std::uint32_t>(parent_index)};
+      }
+    }
+  }
+
+  NodeId list;
+  NodeId earlier_item = earlier;
+  NodeId current = earlier;
+  while (current.is_valid() &&
+         static_cast<std::size_t>(current.value) < parents.size()) {
+    const NodeId parent = parents[current.value];
+    if (!parent.is_valid()) break;
+    if (tree.node(parent).kind == list_kind) {
+      list = parent;
+      earlier_item = current;
+      break;
+    }
+    current = parent;
+  }
+  if (!list.is_valid()) return false;
+
+  NodeId site_item = site;
+  current = site;
+  while (current.is_valid() && current != list &&
+         static_cast<std::size_t>(current.value) < parents.size()) {
+    site_item = current;
+    current = parents[current.value];
+  }
+  if (current != list) return false;
+
+  const std::vector<NodeId> &items = tree.node(list).children;
+  const auto earlier_position = std::find(
+      items.begin(), items.end(), earlier_item);
+  const auto site_position = std::find(items.begin(), items.end(), site_item);
+  return earlier_position != items.end() && site_position != items.end() &&
+      earlier_position < site_position;
+}
+
+[[nodiscard]] std::vector<AgentJudgmentContext> guiding_judgment_context(
+    const LoadedPackage &loaded,
+    const SemanticPackage &package,
+    const AgentMetadataResult &metadata,
+    const AgentRecord &site) {
+  std::vector<AgentJudgmentContext> result;
+  const SyntaxTree *site_tree = find_tree(loaded, site.syntax.file);
+  for (const AgentRecord &record : metadata.records) {
+    if (record.kind != AgentConstructKind::Judgment ||
+        record.syntax == site.syntax) {
+      continue;
+    }
+    bool available = !record.anchor.is_valid();
+    if (!available && record.anchor == site.anchor && site_tree != nullptr &&
+        record.syntax.file == site.syntax.file) {
+      const SymbolKind anchor_kind =
+          package.symbols.symbol(site.anchor).kind;
+      if (anchor_kind == SymbolKind::Type) {
+        available = precedes_in_enclosing_list(
+            *site_tree,
+            record.syntax.node,
+            site.syntax.node,
+            NodeKind::MemberList);
+      } else if (anchor_kind == SymbolKind::Procedure) {
+        available = precedes_in_enclosing_list(
+            *site_tree,
+            record.syntax.node,
+            site.syntax.node,
+            NodeKind::StatementList);
+      }
+    }
+    if (!available) continue;
+    result.push_back({
+        anchor_name(package, record.anchor),
+        record.text,
+        record.files,
+        record.file_contents,
+        record.record_digest,
+    });
+  }
+  return result;
+}
+
 // Walks lexical scopes from inner to outer. The first declaration of a name is
 // the visible one; later declarations in the same block are excluded by source
 // position. Sorting happens only after shadowing, so it cannot change meaning.
@@ -464,7 +562,7 @@ void hash_field(Sha256 &hash, std::string_view value) {
     const AgentObligation &obligation,
     const TargetProfile &target) {
   Sha256 hash;
-  hash_field(hash, "draft-agent-obligation-v5");
+  hash_field(hash, "draft-agent-obligation-v6");
   hash_field(hash, obligation.site_identity);
   hash.update(obligation.record_digest.bytes);
   hash.update(obligation.expected_type_digest.bytes);
@@ -523,6 +621,21 @@ void hash_field(Sha256 &hash, std::string_view value) {
     hash_field(hash, parameter.constraint);
     hash_field(hash, parameter.type_text);
     hash.update(parameter.type_digest.bytes);
+  }
+  hash_u64(
+      hash,
+      static_cast<std::uint64_t>(obligation.guiding_judgments.size()));
+  for (const AgentJudgmentContext &judgment :
+       obligation.guiding_judgments) {
+    hash_field(hash, judgment.anchor_name);
+    hash_field(hash, judgment.claim);
+    hash.update(judgment.record_digest.bytes);
+    hash_u64(hash, static_cast<std::uint64_t>(judgment.files.size()));
+    for (const AttachedFile &file : judgment.files) {
+      hash_field(hash, file.relative_path);
+      hash_u64(hash, file.size);
+      hash.update(file.digest.bytes);
+    }
   }
   hash_u64(
       hash,
@@ -647,6 +760,8 @@ AgentObligationResult build_agent_obligations(
         sources, loaded, record, diagnostics);
     obligation.parametric_parameters = parametric_context(
         identity, package, record, diagnostics);
+    obligation.guiding_judgments = guiding_judgment_context(
+        loaded, package, metadata, record);
     obligation.documentation = documentation_context(package, metadata, record);
     obligation.site_identity = "site-" + site_identity_digest(obligation).hex();
     obligation.input_digest = input_digest(obligation, target);

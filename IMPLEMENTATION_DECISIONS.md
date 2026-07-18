@@ -164,7 +164,7 @@ An omitted symbol is unknown, and compiler-, package-assembly-, and target-owned
 providers cannot be overridden by an external audit.
 
 Provider requests never substitute hashes for information the synthesizer must
-understand. `draft-synthesis-request-v6` carries canonical Draft spellings for
+understand. `draft-synthesis-request-v7` carries canonical Draft spellings for
 the expected type and every visible binding, together with explicit target,
 SIMD, and parsed-assembly facts. Package and enclosing-declaration documentation
 retain their anchor, text, and exact isolated attachment bytes. The same rows
@@ -189,6 +189,13 @@ Parametric sites additionally receive the enclosing declaration's parameters in
 source order, with their type/value kind, source constraint vocabulary, and
 canonical type spelling and digest. Concrete body instances route back to their
 template parameter contract rather than silently losing generic constraints.
+
+Surface judgment claims guide synthesis only under the specification's
+positional rule. Package claims are universal. A type/procedure claim must be
+an earlier direct item of a member/statement list that structurally encloses a
+later item containing the site; claims inside a sibling branch therefore do not
+leak. Claim text and exact attachment bytes are context and stale-pin inputs,
+but no verdict is implied and no judgment is executed during synthesis.
 
 A provider-free compile or resolution revalidation may consume a content-fresh
 pin without installing its original provider. When `draft resolve` explicitly

@@ -43,7 +43,7 @@ namespace {
 constexpr std::uintmax_t kMaximumCodexOutputBytes = 64U * 1024U * 1024U;
 constexpr std::uintmax_t kMaximumCodexLogBytes = 4U * 1024U * 1024U;
 constexpr std::string_view kPromptContractIdentity =
-    "draft-codex-synthesis-prompt-v6";
+    "draft-codex-synthesis-prompt-v7";
 constexpr std::string_view kOutputSchema =
     "{\n"
     "  \"type\": \"object\",\n"
@@ -205,6 +205,19 @@ void append_field(
       std::string(attachment_zeroes, '0') + attachment + ".bin";
 }
 
+[[nodiscard]] std::string judgment_attachment_name(
+    std::size_t judgment_index, std::size_t attachment_index) {
+  std::string judgment = std::to_string(judgment_index);
+  std::string attachment = std::to_string(attachment_index);
+  const std::size_t judgment_zeroes =
+      judgment.size() < 8 ? 8 - judgment.size() : 0;
+  const std::size_t attachment_zeroes =
+      attachment.size() < 8 ? 8 - attachment.size() : 0;
+  return "judgment-" + std::string(judgment_zeroes, '0') + judgment +
+      "-attachment-" + std::string(attachment_zeroes, '0') + attachment +
+      ".bin";
+}
+
 // Constructs the complete model instruction. The output contract is repeated
 // in prose as well as enforced by the CLI JSON Schema. No surface or generated
 // workspace path is exposed.
@@ -344,6 +357,44 @@ void append_field(
     append_field("PARAMETER_CONSTRAINT", parameter.constraint, prompt);
     append_field("PARAMETER_TYPE_TEXT", parameter.type_text, prompt);
     append_field("PARAMETER_TYPE_SHA256", parameter.type_digest.hex(), prompt);
+  }
+  prompt += "GUIDING_JUDGMENTS ";
+  append_u64(
+      static_cast<std::uint64_t>(
+          request.obligation.guiding_judgments.size()),
+      prompt);
+  for (std::size_t judgment_index = 0;
+       judgment_index < request.obligation.guiding_judgments.size();
+       ++judgment_index) {
+    const AgentJudgmentContext &judgment =
+        request.obligation.guiding_judgments[judgment_index];
+    if (judgment.files.size() != judgment.file_contents.size()) {
+      provider_error(
+          diagnostics, "Codex judgment attachment identities are inconsistent");
+      return false;
+    }
+    append_field("JUDGMENT_ANCHOR", judgment.anchor_name, prompt);
+    append_field("JUDGMENT_CLAIM", judgment.claim, prompt);
+    append_field("JUDGMENT_SHA256", judgment.record_digest.hex(), prompt);
+    prompt += "JUDGMENT_ATTACHMENTS ";
+    append_u64(static_cast<std::uint64_t>(judgment.files.size()), prompt);
+    for (std::size_t attachment_index = 0;
+         attachment_index < judgment.files.size(); ++attachment_index) {
+      const AttachedFile &file = judgment.files[attachment_index];
+      const std::string &contents =
+          judgment.file_contents[attachment_index];
+      if (contents.size() != file.size || sha256(contents) != file.digest) {
+        provider_error(
+            diagnostics, "Codex judgment attachment identity is inconsistent");
+        return false;
+      }
+      const std::string name = judgment_attachment_name(
+          judgment_index, attachment_index);
+      if (!write_file(directory / name, contents, diagnostics)) return false;
+      append_field("JUDGMENT_ATTACHMENT_PATH", file.relative_path, prompt);
+      append_field("JUDGMENT_ATTACHMENT_FILE", name, prompt);
+      append_field("JUDGMENT_ATTACHMENT_SHA256", file.digest.hex(), prompt);
+    }
   }
   prompt += "DOCUMENTATION ";
   append_u64(
@@ -788,7 +839,7 @@ SynthesisProvider configure_codex_cli_provider(
       "codex-config-" + configuration.finalize().hex();
 
   SynthesisProvider provider;
-  provider.provider_identity = "openai-codex-cli-v7";
+  provider.provider_identity = "openai-codex-cli-v8";
   provider.model_identity = state.model;
   provider.configuration_identity = state.configuration_identity;
   provider.state = &state;

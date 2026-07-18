@@ -104,6 +104,17 @@ struct AgentParametricParameter {
   Sha256Digest type_digest;
 };
 
+// A surface judgment whose position permits it to guide this synthesis site.
+// These are claims, not passing verdicts: including one never evaluates it or
+// weakens ordinary syntax, type, denial, test, or benchmark validation.
+struct AgentJudgmentContext {
+  std::string anchor_name;
+  std::string claim;
+  std::vector<AttachedFile> files;
+  std::vector<std::string> file_contents;
+  Sha256Digest record_digest;
+};
+
 // AgentObligation is the immutable input side of one provider transaction.
 // site_identity deliberately excludes prompt and type content so ordinary edits
 // stale the input digest without automatically baptizing a new site. occurrence
@@ -131,6 +142,7 @@ struct AgentObligation {
   AgentEnclosingDeclarationContext enclosing_declaration;
   std::vector<AgentActiveDenial> active_denials;
   std::vector<AgentParametricParameter> parametric_parameters;
+  std::vector<AgentJudgmentContext> guiding_judgments;
   std::vector<AgentDocumentationContext> documentation;
 };
 

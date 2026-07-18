@@ -223,6 +223,20 @@ void test_agent_records(TestState &state) {
       EXPECT(state, value_parameter.constraint == "value");
       EXPECT(state, value_parameter.type_text == "usize");
     }
+    EXPECT(state, synthesis_obligation.guiding_judgments.size() == 1);
+    if (synthesis_obligation.guiding_judgments.size() == 1) {
+      const draft::AgentJudgmentContext &guidance =
+          synthesis_obligation.guiding_judgments.front();
+      EXPECT(state, guidance.anchor_name == "work");
+      EXPECT(state,
+          guidance.claim == "The implementation preserves the invariant.");
+      EXPECT(state, guidance.files.size() == 2);
+      EXPECT(state, guidance.file_contents.size() == 2);
+      if (guidance.file_contents.size() == 2) {
+        EXPECT(state, guidance.file_contents[0] == "first note\n");
+        EXPECT(state, guidance.file_contents[1] == "second note\n");
+      }
+    }
     EXPECT(state, !synthesis_obligation.visible_bindings.empty());
     bool saw_values = false;
     bool saw_callback = false;
@@ -346,12 +360,88 @@ work :: proc() {
           std::string::npos);
 }
 
+void test_judgment_guidance_respects_branch_dominance(TestState &state) {
+  TemporaryPackage temporary;
+  write_file(
+      temporary.path / "package.draft",
+      R"draft(package judgment_context
+
+Package_Context_Version :: 1
+
+judge "package-wide"
+
+work :: proc() -> i64 {
+    if true {
+        judge "branch-only"
+    }
+    return ... "produce a value"
+}
+)draft");
+
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  const draft::TargetProfile target = draft::make_aarch64_macos_profile();
+  draft::PackageLoadOptions load_options;
+  load_options.file_tag = target.facts.file_tag;
+  const draft::PackageLoadResult loaded = draft::load_package(
+      sources, temporary.path.string(), load_options, diagnostics);
+  draft::SemanticAnalysisResult semantics = draft::analyze_package_semantics(
+      sources, loaded.package, target.facts, diagnostics);
+  const draft::BodyCheckResult bodies = draft::check_package_bodies(
+      sources,
+      loaded.package,
+      semantics.selections,
+      semantics.package,
+      semantics.constants,
+      target.facts,
+      diagnostics);
+  const draft::AgentMetadataResult metadata = draft::collect_agent_metadata(
+      sources, loaded.package, semantics.package, {}, diagnostics);
+  const draft::AgentObligationResult obligations =
+      draft::build_agent_obligations(
+          {"workspace", "judgment_context"},
+          sources,
+          loaded.package,
+          semantics.package,
+          metadata,
+          target,
+          diagnostics);
+
+  if (diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+  }
+  EXPECT(state, loaded.ok);
+  EXPECT(state, semantics.ok);
+  EXPECT(state, bodies.ok);
+  EXPECT(state, metadata.ok);
+  EXPECT(state, obligations.ok);
+  EXPECT(state, !diagnostics.has_errors());
+  const draft::AgentObligation *synthesis = nullptr;
+  for (const draft::AgentObligation &obligation : obligations.obligations) {
+    if (obligation.kind == draft::AgentConstructKind::SynthesisExpression) {
+      synthesis = &obligation;
+      break;
+    }
+  }
+  EXPECT(state, synthesis != nullptr);
+  if (synthesis != nullptr) {
+    // Package claims are universal. The claim inside the completed if branch
+    // does not dominate the later return and must not leak into its request.
+    EXPECT(state, synthesis->guiding_judgments.size() == 1);
+    if (synthesis->guiding_judgments.size() == 1) {
+      EXPECT(state,
+          synthesis->guiding_judgments.front().claim == "package-wide");
+    }
+  }
+}
+
 } // namespace
 
 int main() {
   TestState state;
   test_agent_records(state);
   test_dangling_documentation_is_rejected(state);
+  test_judgment_guidance_respects_branch_dominance(state);
   if (state.failures != 0) {
     std::cerr << state.failures << " agent metadata expectation(s) failed\n";
     return EXIT_FAILURE;
