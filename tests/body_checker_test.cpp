@@ -1487,6 +1487,13 @@ exact_untyped_comparisons :: proc() -> bool {
     return 9007199254740993 != 9007199254740992.0 &&
         340282366920938463463374607431768211456 > 0
 }
+
+One :: 1
+
+contextual_float_constants :: proc() -> f64 {
+    direct: f64 = 1
+    return direct + One
+}
 )draft");
   if (valid.diagnostics.has_errors()) {
     std::cerr << draft::render_diagnostics(valid.sources, valid.diagnostics);

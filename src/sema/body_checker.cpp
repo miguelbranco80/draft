@@ -1042,6 +1042,26 @@ private:
     }
   }
 
+  // MIR constants are complete typed values rather than requests for an
+  // implicit conversion. When an exact untyped leaf enters a floating context,
+  // round its payload here so its ConstantKind agrees with the resulting TypeId.
+  // Integer contexts retain BigInteger and use the ordinary range check.
+  void contextualize_constant_value(
+      ConstantValue &value,
+      TypeId source,
+      TypeId target,
+      SourceRange range) {
+    if ((is_untyped_integer(source) || is_untyped_float(source)) &&
+        semantic_.types.is_float(target) &&
+        (value.kind == ConstantKind::Integer ||
+         value.kind == ConstantKind::Float)) {
+      const std::optional<ConstantValue> converted =
+          convert_numeric_constant(value, target, range);
+      if (converted.has_value()) value = *converted;
+    }
+    check_constant_range(value, target, range);
+  }
+
   // Applies a concrete numeric context to an already checked untyped tree.
   // This is needed when `:=` chooses int/f64 after seeing the complete
   // initializer. Integer payloads may remain mathematical integers because
@@ -1058,14 +1078,8 @@ private:
          expression.type == semantic_.types.builtins().untyped_float) &&
         semantic_.types.is_float(target);
     if (!integer && !floating) return;
-    if (integer) check_constant_range(expression.constant, target, expression.range);
-    if (floating &&
-        (expression.constant.kind == ConstantKind::Integer ||
-         expression.constant.kind == ConstantKind::Float)) {
-      const std::optional<ConstantValue> converted = convert_numeric_constant(
-          expression.constant, target, expression.range);
-      if (converted.has_value()) expression.constant = *converted;
-    }
+    contextualize_constant_value(
+        expression.constant, expression.type, target, expression.range);
     expression.type = target;
     const std::vector<HirExpressionId> operands = expression.operands;
     for (HirExpressionId operand : operands) {
@@ -3135,8 +3149,10 @@ private:
         diagnostics_.error(node.range, "literal is not yet valid in a runtime expression");
         return invalid_expression(node.range);
       }
-      expression.type = apply_expected_type(expression.type, expected, node.range);
-      check_constant_range(expression.constant, expression.type, node.range);
+      const TypeId literal_type = expression.type;
+      expression.type = apply_expected_type(literal_type, expected, node.range);
+      contextualize_constant_value(
+          expression.constant, literal_type, expression.type, node.range);
       return hir_.add_expression(std::move(expression));
     }
 
@@ -3184,8 +3200,9 @@ private:
       expression.kind = HirExpressionKind::Symbol;
       expression.range = node.range;
       expression.symbol = *found;
+      const TypeId symbol_type = substitute_active(symbol.type, node.range);
       expression.type = apply_expected_type(
-          substitute_active(symbol.type, node.range), expected, node.range);
+          symbol_type, expected, node.range);
       // Parameters are immutable value bindings. Pointer and slice parameters
       // may still mutate the storage they explicitly reference through
       // dereference/index operations, but the parameter slot itself and fields
@@ -3195,14 +3212,16 @@ private:
       if (const ConstantValue *constant = constants_.find(*found)) {
         expression.kind = HirExpressionKind::Constant;
         expression.constant = *constant;
-        check_constant_range(expression.constant, expression.type, node.range);
+        contextualize_constant_value(
+            expression.constant, symbol_type, expression.type, node.range);
       } else if (const ConstantValue *instance_value = active_constant(*found)) {
         // A compile-time value parameter has no runtime storage in a concrete
         // monomorphization. Replacing its Symbol expression here prevents MIR
         // from ever allocating or loading a phantom parameter.
         expression.kind = HirExpressionKind::Constant;
         expression.constant = *instance_value;
-        check_constant_range(expression.constant, expression.type, node.range);
+        contextualize_constant_value(
+            expression.constant, symbol_type, expression.type, node.range);
       }
       return hir_.add_expression(std::move(expression));
     }

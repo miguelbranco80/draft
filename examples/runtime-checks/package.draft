@@ -39,6 +39,7 @@ increment_value :: proc(value: i64) -> i64 {
 
 Increment_Callback :: increment_value
 Switch_Base :: 40
+Untyped_One :: 1
 global_callback: proc(value: i64) -> i64 = Increment_Callback
 global_table: [4]u32 = [4]u32{1, 4, 9, 16}
 global_partial_table: [3]i64 = [3]i64{42}
@@ -109,6 +110,11 @@ exact_untyped_comparisons :: proc() -> bool {
     // the second pair. Both comparisons use Draft's exact untyped domains.
     return 9007199254740993 != 9007199254740992.0 &&
         340282366920938463463374607431768211456 > 0
+}
+
+contextual_float_constants :: proc() -> f64 {
+    direct: f64 = 1
+    return direct + Untyped_One
 }
 
 identity[T: number] :: proc(value: T) -> T {
@@ -354,6 +360,7 @@ main :: proc() {
     assert(mixed_untyped_numeric(true) == 3.5)
     assert(mixed_untyped_numeric(false) == 5.0)
     assert(exact_untyped_comparisons())
+    assert(contextual_float_constants() == 2.0)
     assert(identity[i64](42) == 42)
     value: u32 = 17
     assert(identity(value) == 17)
