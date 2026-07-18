@@ -95,6 +95,15 @@ struct IntegerExpressionResult {
   std::string error;
 };
 
+// Exact inverse for the intentionally small inference vocabulary. parameter is
+// the sole unresolved leaf and value is its concrete typed value. Absence means
+// the expression is malformed, has zero/multiple parameter occurrences, has a
+// non-injective operation, or cannot produce the requested result.
+struct IntegerExpressionSolution {
+  std::uint32_t parameter = std::numeric_limits<std::uint32_t>::max();
+  BigInteger value;
+};
+
 [[nodiscard]] std::uint32_t append_integer_constant(
     IntegerExpression &expression,
     BigInteger value,
@@ -129,6 +138,15 @@ struct IntegerExpressionResult {
 
 [[nodiscard]] IntegerExpressionResult evaluate_integer_expression(
     const IntegerExpression &expression);
+
+// Solves a single-parameter expression only through operations which are
+// provably one-to-one over the node's exact typed domain. The returned candidate
+// is substituted and evaluated before success, so wrapping semantics and
+// malformed trees cannot produce a guessed inference result.
+[[nodiscard]] std::optional<IntegerExpressionSolution>
+solve_unique_integer_expression(
+    const IntegerExpression &expression,
+    const BigInteger &result);
 
 // Replaces parameter leaves with concrete values or other symbolic trees.
 // Unmentioned parameters remain symbolic. The caller owns type-compatibility

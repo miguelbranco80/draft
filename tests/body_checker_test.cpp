@@ -485,6 +485,69 @@ main :: proc() -> usize {
   EXPECT(state, !source.diagnostics.has_errors());
 }
 
+void test_dependent_value_inference(TestState &state) {
+  CheckedSource valid(R"draft(
+package bodies
+
+Buffer[N: usize] :: struct {
+    values: [N]i64,
+}
+
+array_offset[N: usize] :: proc(values: [N + 1]i64) -> usize {
+    return N
+}
+
+buffer_offset[N: usize] :: proc(value: ^Buffer[N + 1]) -> usize {
+    return N
+}
+
+reverse_offset[N: usize] :: proc(values: [10 - N]i64) -> usize {
+    return N
+}
+
+narrow_offset[N: u8] :: proc(values: [cast[usize](N) + 1]i64) -> u8 {
+    return N
+}
+
+consistent[N: usize] :: proc(first: [N]i64, second: [N + 1]i64) -> usize {
+    return N
+}
+
+main :: proc() -> usize {
+    values: [3]i64
+    buffer: Buffer[3]
+    return array_offset(values) + buffer_offset(&buffer) +
+        reverse_offset(values) + cast[usize](narrow_offset(values)) +
+        consistent([2]i64{}, values)
+}
+)draft");
+  if (valid.diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(
+        valid.sources, valid.diagnostics);
+  }
+  EXPECT(state, valid.semantics.ok);
+  EXPECT(state, valid.bodies.ok);
+  EXPECT(state, !valid.diagnostics.has_errors());
+
+  CheckedSource non_unique(R"draft(
+package bodies
+
+scaled[N: usize] :: proc(values: [N * 2]u8) {
+}
+
+main :: proc() {
+    values: [4]u8
+    scaled(values)
+}
+)draft");
+  EXPECT(state, !non_unique.bodies.ok);
+  const std::string rendered = draft::render_diagnostics(
+      non_unique.sources, non_unique.diagnostics);
+  EXPECT(state, rendered.find(
+                    "procedure type arguments cannot be inferred uniquely") !=
+                    std::string::npos);
+}
+
 void test_nested_procedures(TestState &state) {
   const std::string text = R"draft(
 package bodies
@@ -1875,6 +1938,7 @@ int main() {
   test_parametric_procedure_instances(state);
   test_value_parametric_nominal_composition(state);
   test_procedural_structural_alias_composition(state);
+  test_dependent_value_inference(state);
   test_nested_procedures(state);
   test_nested_procedure_capture_diagnostics(state);
   test_assignment_discards_and_tuple_patterns(state);

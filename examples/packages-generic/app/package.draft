@@ -31,6 +31,8 @@ main :: proc() {
     assert(copy.value == 42)
     assert(generic.identity[u64](9) == 9)
     assert(generic.byte_size[Private_Value]() == 8)
+    inferred_bytes: [3]u8
+    assert(generic.inferred_offset(inferred_bytes) == 2)
     through := left.through_generic[Private_Value](original)
     assert(through.value == 42)
     assert(left.composed_count[4]() == 5)

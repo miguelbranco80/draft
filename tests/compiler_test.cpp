@@ -701,9 +701,10 @@ void test_cross_package_generic_procedures(TestState &state) {
     return;
   }
 
-  // The app requests a private nominal, u64, byte-size, and composed type/value
-  // template specializations in left. One concrete generic type recursively
-  // requests Buffer[2] from lib/layout, then rebuilds generic against that
+  // The app requests private-nominal, u64, byte-size, and inferred N + 1
+  // specializations from generic, plus composed type/value work through left.
+  // One concrete generic type recursively requests Buffer[2] from lib/layout,
+  // then rebuilds generic against that
   // owner-produced graph. The concrete left bodies publish transitive
   // identity[Private_Value] and exact_count[increment_count(4)] requests to
   // generic. The latter keeps left's private compile-time helper on its owner
@@ -714,12 +715,12 @@ void test_cross_package_generic_procedures(TestState &state) {
   // must share owner symbols even though lib/generic was discovered before the
   // second sibling in the physical workspace traversal.
   EXPECT(state,
-      app->semantics.package.imported_procedure_instances.size() == 5);
+      app->semantics.package.imported_procedure_instances.size() == 6);
   EXPECT(state,
       left->semantics.package.imported_procedure_instances.size() == 4);
   EXPECT(state,
       right->semantics.package.imported_procedure_instances.size() == 2);
-  EXPECT(state, generic->semantics.package.parametric_instances.size() == 5);
+  EXPECT(state, generic->semantics.package.parametric_instances.size() == 6);
   EXPECT(state, left->semantics.package.parametric_instances.size() == 2);
   EXPECT(state,
       app->semantics.package.imported_type_instantiation_requests.empty());

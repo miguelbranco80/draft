@@ -126,6 +126,51 @@ constexpr std::uint64_t kMaximumIntegerExpressionBits = 1'000'000;
   return base + source.root;
 }
 
+[[nodiscard]] std::optional<BigInteger> evaluate_constant_subtree(
+    const IntegerExpression &expression, std::uint32_t root) {
+  // Interface expressions are untrusted input. Walk the canonical post-order
+  // table iteratively so a very deep constant sibling cannot consume the C++
+  // call stack while inference is only trying to evaluate that subtree.
+  std::vector<bool> reachable(expression.nodes.size(), false);
+  reachable[root] = true;
+  for (std::size_t offset = static_cast<std::size_t>(root) + 1;
+       offset != 0;
+       --offset) {
+    const std::size_t index = offset - 1;
+    if (!reachable[index]) continue;
+    const IntegerExpressionNode &node = expression.nodes[index];
+    if (unary(node.operation)) {
+      reachable[node.left] = true;
+    } else if (binary(node.operation)) {
+      reachable[node.left] = true;
+      reachable[node.right] = true;
+    }
+  }
+
+  IntegerExpression subtree;
+  std::vector<std::uint32_t> translated(
+      expression.nodes.size(), kInvalidIndex);
+  for (std::size_t index = 0; index <= root; ++index) {
+    if (!reachable[index]) continue;
+    IntegerExpressionNode node = expression.nodes[index];
+    if (unary(node.operation)) {
+      node.left = translated[node.left];
+    } else if (binary(node.operation)) {
+      node.left = translated[node.left];
+      node.right = translated[node.right];
+    }
+    subtree.nodes.push_back(std::move(node));
+    translated[index] = static_cast<std::uint32_t>(
+        subtree.nodes.size() - 1);
+  }
+  subtree.root = translated[root];
+  const IntegerExpressionResult evaluated =
+      evaluate_integer_expression(subtree);
+  return evaluated.ok
+      ? std::optional<BigInteger>(evaluated.value)
+      : std::nullopt;
+}
+
 } // namespace
 
 bool IntegerExpression::is_valid() const {
@@ -359,6 +404,133 @@ IntegerExpressionResult evaluate_integer_expression(
     values.push_back(wrap_integer(result, node.type));
   }
   return {true, values[expression.root], {}};
+}
+
+std::optional<IntegerExpressionSolution> solve_unique_integer_expression(
+    const IntegerExpression &expression,
+    const BigInteger &result) {
+  if (!expression.is_valid()) return std::nullopt;
+
+  // Count occurrences rather than distinct parameter IDs. `N + N` names one
+  // parameter but is not one-to-one over a fixed-width domain, while a single
+  // leaf wrapped in a chain of invertible operations is.
+  std::vector<std::uint32_t> parameter_counts;
+  parameter_counts.reserve(expression.nodes.size());
+  for (const IntegerExpressionNode &node : expression.nodes) {
+    std::uint32_t count = 0;
+    if (node.operation == IntegerExpressionOperation::Parameter) {
+      count = 1;
+    } else if (unary(node.operation)) {
+      count = parameter_counts[node.left];
+    } else if (binary(node.operation)) {
+      count = parameter_counts[node.left] + parameter_counts[node.right];
+    }
+    // Only zero, one, and "more than one" matter. Saturating also prevents a
+    // malicious interface graph from overflowing this diagnostic-only count.
+    parameter_counts.push_back(count > 1 ? 2 : count);
+  }
+  if (parameter_counts[expression.root] != 1) return std::nullopt;
+
+  const IntegerExpressionNode &root = expression.nodes[expression.root];
+  if (wrap_integer(result, root.type) != result) return std::nullopt;
+  BigInteger wanted = result;
+  std::uint32_t current = expression.root;
+  while (true) {
+    const IntegerExpressionNode &node = expression.nodes[current];
+    if (node.operation == IntegerExpressionOperation::Parameter) {
+      IntegerExpressionReplacement replacement;
+      replacement.parameter = node.parameter;
+      replacement.value = wrap_integer(wanted, node.type);
+      std::string error;
+      const std::optional<IntegerExpression> concrete =
+          substitute_integer_expression(
+              expression, {replacement}, error);
+      if (!concrete.has_value()) return std::nullopt;
+      const IntegerExpressionResult verified =
+          evaluate_integer_expression(*concrete);
+      if (!verified.ok || verified.value != result) return std::nullopt;
+      return IntegerExpressionSolution{
+          node.parameter,
+          *replacement.value,
+      };
+    }
+
+    if (unary(node.operation)) {
+      const IntegerExpressionNode &operand = expression.nodes[node.left];
+      if (parameter_counts[node.left] != 1) {
+        return std::nullopt;
+      }
+      if (node.operation == IntegerExpressionOperation::Cast) {
+        const bool typed_source =
+            operand.type.representation !=
+                IntegerExpressionRepresentation::Untyped;
+        const bool typed_target =
+            node.type.representation !=
+                IntegerExpressionRepresentation::Untyped;
+        // A same-width or widening integer cast is injective over every source
+        // bit pattern. Narrowing discards high bits and therefore cannot prove
+        // a unique source value.
+        if (!typed_source || !typed_target ||
+            operand.type.bit_width > node.type.bit_width) {
+          return std::nullopt;
+        }
+      } else if (node.type != operand.type) {
+        return std::nullopt;
+      }
+      if (node.operation == IntegerExpressionOperation::Positive ||
+          node.operation == IntegerExpressionOperation::Cast) {
+        // No change.
+      } else if (node.operation == IntegerExpressionOperation::Negate) {
+        wanted = wanted.negated();
+      } else if (node.operation == IntegerExpressionOperation::BitwiseNot) {
+        wanted = wanted.bitwise_not();
+      } else {
+        return std::nullopt;
+      }
+      wanted = wrap_integer(wanted, operand.type);
+      current = node.left;
+      continue;
+    }
+
+    if (!binary(node.operation)) return std::nullopt;
+    const bool parameter_on_left = parameter_counts[node.left] == 1;
+    const bool parameter_on_right = parameter_counts[node.right] == 1;
+    if (parameter_on_left == parameter_on_right) return std::nullopt;
+    const std::uint32_t variable = parameter_on_left
+        ? node.left
+        : node.right;
+    const std::uint32_t fixed = parameter_on_left
+        ? node.right
+        : node.left;
+    if (parameter_counts[fixed] != 0 ||
+        expression.nodes[variable].type != node.type) {
+      return std::nullopt;
+    }
+    const std::optional<BigInteger> constant =
+        evaluate_constant_subtree(expression, fixed);
+    if (!constant.has_value()) return std::nullopt;
+
+    switch (node.operation) {
+    case IntegerExpressionOperation::Add:
+      wanted = wanted.subtracted(*constant);
+      break;
+    case IntegerExpressionOperation::Subtract:
+      wanted = parameter_on_left
+          ? wanted.added(*constant)
+          : constant->subtracted(wanted);
+      break;
+    case IntegerExpressionOperation::BitwiseXor:
+      wanted = wanted.bitwise_xor(*constant);
+      break;
+    default:
+      // Multiplication, division, remainder, shifts, AND, and OR are not
+      // generally one-to-one. Explicit generic arguments remain required even
+      // for particular constants which might admit a more elaborate proof.
+      return std::nullopt;
+    }
+    wanted = wrap_integer(wanted, expression.nodes[variable].type);
+    current = variable;
+  }
 }
 
 std::optional<IntegerExpression> substitute_integer_expression(

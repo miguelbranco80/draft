@@ -410,6 +410,32 @@ converge on the in-progress TypeId. Recursive instantiation snapshots aggregate
 rows before appending new ones; sanitizer coverage enforces this append-only
 table discipline.
 
+## Unique dependent-value inference
+
+Status: implemented for a closed, provably one-to-one Draft 1 subset.
+
+Procedure-call inference first substitutes values learned from earlier runtime
+arguments, then may invert one remaining dependent integer expression. The
+solver requires exactly one occurrence of exactly one unresolved value
+parameter. It follows only operations which are one-to-one over the node's exact
+typed domain: unary positive, negation, bitwise complement, same-width or
+widening integer casts, addition or subtraction by a constant expression, and
+XOR by a constant expression. Fixed-width inversion uses the same
+two's-complement wrapping as ordinary dependent-expression evaluation. The
+candidate is substituted back into the complete canonical expression and
+evaluated before it is accepted.
+
+This supports calls inferred from shapes such as `[N + 1]T`, `[10 - N]T`, and
+`Buffer[N + 1]`, including imported templates whose parameter leaves have been
+remapped through package-interface ordinals. It also checks a later dependent
+argument against a value inferred by an earlier argument.
+
+The compiler does not guess through non-injective forms. Repeated occurrences
+such as `N + N`, multiplication/division/remainder, shifts, AND, and OR require
+an explicit generic argument unless a future solver can prove a unique solution
+for the complete declared domain. Rejecting those forms is part of the
+uniqueness rule, not a heuristic failure.
+
 ## Owner-evaluated generic layout constants
 
 Status: implemented for array/SIMD recipes in local generic types, generic

@@ -193,6 +193,130 @@ void test_explicit_integer_cast(TestState &state) {
   EXPECT(state, result.value == draft::BigInteger::from_u64(0));
 }
 
+void test_unique_inverse_solver(TestState &state) {
+  draft::IntegerExpression offset;
+  const std::uint32_t parameter = draft::append_integer_parameter(
+      offset, 17, unsigned_type(8));
+  const std::uint32_t one = draft::append_integer_constant(
+      offset, draft::BigInteger::from_u64(1), unsigned_type(8));
+  offset.root = draft::append_integer_binary(
+      offset,
+      draft::IntegerExpressionOperation::Add,
+      parameter,
+      one,
+      unsigned_type(8));
+  const std::optional<draft::IntegerExpressionSolution> wrapped =
+      draft::solve_unique_integer_expression(
+          offset, draft::BigInteger::from_u64(0));
+  EXPECT(state, wrapped.has_value());
+  if (wrapped.has_value()) {
+    EXPECT(state, wrapped->parameter == 17);
+    EXPECT(state, wrapped->value == draft::BigInteger::from_u64(255));
+  }
+
+  draft::IntegerExpression reverse;
+  const std::uint32_t ten = draft::append_integer_constant(
+      reverse, draft::BigInteger::from_u64(10), unsigned_type(8));
+  const std::uint32_t reverse_parameter = draft::append_integer_parameter(
+      reverse, 23, unsigned_type(8));
+  reverse.root = draft::append_integer_binary(
+      reverse,
+      draft::IntegerExpressionOperation::Subtract,
+      ten,
+      reverse_parameter,
+      unsigned_type(8));
+  const std::optional<draft::IntegerExpressionSolution> reversed =
+      draft::solve_unique_integer_expression(
+          reverse, draft::BigInteger::from_u64(7));
+  EXPECT(state, reversed.has_value());
+  if (reversed.has_value()) {
+    EXPECT(state, reversed->parameter == 23);
+    EXPECT(state, reversed->value == draft::BigInteger::from_u64(3));
+  }
+
+  draft::IntegerExpression widening_cast;
+  const std::uint32_t narrow_parameter = draft::append_integer_parameter(
+      widening_cast, 29, unsigned_type(8));
+  widening_cast.root = draft::append_integer_unary(
+      widening_cast,
+      draft::IntegerExpressionOperation::Cast,
+      narrow_parameter,
+      unsigned_type(16));
+  const std::optional<draft::IntegerExpressionSolution> widened =
+      draft::solve_unique_integer_expression(
+          widening_cast, draft::BigInteger::from_u64(255));
+  EXPECT(state, widened.has_value());
+  if (widened.has_value()) {
+    EXPECT(state, widened->parameter == 29);
+    EXPECT(state, widened->value == draft::BigInteger::from_u64(255));
+  }
+
+  draft::IntegerExpression narrowing_cast;
+  const std::uint32_t wide_parameter = draft::append_integer_parameter(
+      narrowing_cast, 30, unsigned_type(16));
+  narrowing_cast.root = draft::append_integer_unary(
+      narrowing_cast,
+      draft::IntegerExpressionOperation::Cast,
+      wide_parameter,
+      unsigned_type(8));
+  EXPECT(
+      state,
+      !draft::solve_unique_integer_expression(
+           narrowing_cast, draft::BigInteger::from_u64(0)).has_value());
+
+  draft::IntegerExpression xor_mask;
+  const std::uint32_t masked_parameter = draft::append_integer_parameter(
+      xor_mask, 30, unsigned_type(8));
+  const std::uint32_t mask = draft::append_integer_constant(
+      xor_mask, draft::BigInteger::from_u64(0xaa), unsigned_type(8));
+  xor_mask.root = draft::append_integer_binary(
+      xor_mask,
+      draft::IntegerExpressionOperation::BitwiseXor,
+      masked_parameter,
+      mask,
+      unsigned_type(8));
+  const std::optional<draft::IntegerExpressionSolution> unmasked =
+      draft::solve_unique_integer_expression(
+          xor_mask, draft::BigInteger::from_u64(0));
+  EXPECT(state, unmasked.has_value());
+  if (unmasked.has_value()) {
+    EXPECT(state, unmasked->value == draft::BigInteger::from_u64(0xaa));
+  }
+
+  draft::IntegerExpression non_unique;
+  const std::uint32_t repeated = draft::append_integer_parameter(
+      non_unique, 31, unsigned_type(8));
+  const std::uint32_t repeated_again = draft::append_integer_parameter(
+      non_unique, 31, unsigned_type(8));
+  non_unique.root = draft::append_integer_binary(
+      non_unique,
+      draft::IntegerExpressionOperation::Add,
+      repeated,
+      repeated_again,
+      unsigned_type(8));
+  EXPECT(
+      state,
+      !draft::solve_unique_integer_expression(
+           non_unique, draft::BigInteger::from_u64(8)).has_value());
+
+  draft::IntegerExpression multiplied;
+  const std::uint32_t multiplied_parameter =
+      draft::append_integer_parameter(
+          multiplied, 41, unsigned_type(8));
+  const std::uint32_t two = draft::append_integer_constant(
+      multiplied, draft::BigInteger::from_u64(2), unsigned_type(8));
+  multiplied.root = draft::append_integer_binary(
+      multiplied,
+      draft::IntegerExpressionOperation::Multiply,
+      multiplied_parameter,
+      two,
+      unsigned_type(8));
+  EXPECT(
+      state,
+      !draft::solve_unique_integer_expression(
+           multiplied, draft::BigInteger::from_u64(8)).has_value());
+}
+
 } // namespace
 
 int main() {
@@ -202,6 +326,7 @@ int main() {
   test_integer_traps(state);
   test_malformed_and_resource_limited_trees(state);
   test_explicit_integer_cast(state);
+  test_unique_inverse_solver(state);
   if (state.failures != 0) {
     std::cerr << state.failures << " integer-expression expectation(s) failed\n";
     return EXIT_FAILURE;

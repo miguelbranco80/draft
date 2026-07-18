@@ -217,6 +217,18 @@ last[N: usize] :: proc(values: [N]i64) -> i64 {
     return values[N - 1]
 }
 
+inferred_offset[N: usize] :: proc(values: [N + 1]i64) -> usize {
+    return N
+}
+
+inferred_buffer_offset[N: usize] :: proc(value: ^Value_Buffer[N + 1]) -> usize {
+    return N
+}
+
+inferred_reverse_offset[N: usize] :: proc(values: [10 - N]i64) -> usize {
+    return N
+}
+
 storage_roundtrip :: proc(flag: bool, bits: b32) -> bool {
     encoded := cast[b32](flag)
     return cast[bool](encoded) || cast[bool](bits)
@@ -519,6 +531,11 @@ main :: proc() {
     assert(identity[i64](42) == 42)
     value: u32 = 17
     assert(identity(value) == 17)
+    inferred_values: [3]i64
+    inferred_buffer: Value_Buffer[3]
+    assert(inferred_offset(inferred_values) == 2)
+    assert(inferred_buffer_offset(&inferred_buffer) == 2)
+    assert(inferred_reverse_offset(inferred_values) == 7)
     envelope: Value_Envelope[2]
     envelope.buffer.values[3] = 42
     assert(last_enveloped(&envelope) == 42)

@@ -2550,22 +2550,6 @@ private:
     return false;
   }
 
-  // Dependent array/SIMD counts carry a concrete u64 in their structural type
-  // rather than the original expression type. The destination parameter's
-  // declared type supplies that already-validated context here.
-  [[nodiscard]] bool infer_value_argument(
-      SymbolId owner,
-      SymbolId parameter,
-      std::uint64_t value,
-      std::vector<ValueSubstitution> &substitutions) {
-    return infer_exact_value_argument(
-        owner,
-        parameter,
-        ConstantValue::make_integer(BigInteger::from_u64(value)),
-        semantic_.symbols.symbol(parameter).type,
-        substitutions);
-  }
-
   [[nodiscard]] bool infer_symbolic_value_argument(
       SymbolId owner,
       SymbolId parameter,
@@ -2597,6 +2581,69 @@ private:
       return true;
     }
     return false;
+  }
+
+  [[nodiscard]] std::optional<IntegerExpression> substitute_inferred_values(
+      const IntegerExpression &pattern,
+      const std::vector<ValueSubstitution> &substitutions) const {
+    std::string error;
+    return substitute_integer_expression(
+        pattern,
+        integer_expression_replacements(substitutions),
+        error);
+  }
+
+  // Infers one value parameter from a concrete dependent shape. The shared
+  // integer-expression solver accepts only a single occurrence surrounded by
+  // operations which are provably one-to-one in the exact typed domain. After
+  // solving, infer_exact_value_argument still enforces declaration ownership,
+  // the parameter's integer identity, and representability.
+  [[nodiscard]] bool infer_concrete_value_expression(
+      SymbolId owner,
+      const IntegerExpression &pattern,
+      const BigInteger &actual,
+      std::vector<ValueSubstitution> &substitutions) {
+    const std::optional<IntegerExpression> substituted =
+        substitute_inferred_values(pattern, substitutions);
+    if (!substituted.has_value()) return false;
+    if (!integer_expression_has_parameters(*substituted)) {
+      const IntegerExpressionResult evaluated =
+          evaluate_integer_expression(*substituted);
+      return evaluated.ok && evaluated.value == actual;
+    }
+    const std::optional<IntegerExpressionSolution> solution =
+        solve_unique_integer_expression(*substituted, actual);
+    if (!solution.has_value()) return false;
+    const SymbolId parameter{solution->parameter};
+    if (static_cast<std::size_t>(parameter.value) >=
+        semantic_.symbols.symbol_count()) {
+      return false;
+    }
+    return infer_exact_value_argument(
+        owner,
+        parameter,
+        ConstantValue::make_integer(solution->value),
+        semantic_.symbols.symbol(parameter).type,
+        substitutions);
+  }
+
+  [[nodiscard]] bool infer_symbolic_value_expression(
+      SymbolId owner,
+      const IntegerExpression &pattern,
+      const IntegerExpression &actual,
+      std::vector<ValueSubstitution> &substitutions) {
+    const std::optional<IntegerExpression> substituted =
+        substitute_inferred_values(pattern, substitutions);
+    if (!substituted.has_value()) return false;
+    if (const std::optional<std::uint32_t> parameter =
+            single_integer_parameter(*substituted)) {
+      return infer_symbolic_value_argument(
+          owner,
+          SymbolId{*parameter},
+          actual,
+          substitutions);
+    }
+    return *substituted == actual;
   }
 
   // Unifies one symbolic signature type with an already checked argument type.
@@ -2788,24 +2835,21 @@ private:
             if (pattern_argument != actual_argument) return false;
             continue;
           }
-          const std::optional<std::uint32_t> pattern_parameter =
-              single_integer_parameter(pattern_argument.value_expression);
-          if (pattern_parameter.has_value()) {
+          if (pattern_argument.value_expression.is_valid()) {
             const bool inferred = actual_argument.value_expression.is_valid()
-                ? infer_symbolic_value_argument(
+                ? infer_symbolic_value_expression(
                       owner,
-                      SymbolId{*pattern_parameter},
+                      pattern_argument.value_expression,
                       actual_argument.value_expression,
                       value_substitutions)
-                : infer_exact_value_argument(
-                      owner,
-                      SymbolId{*pattern_parameter},
-                      actual_argument.value,
-                      actual_argument.value_type,
-                      value_substitutions);
+                : actual_argument.value.kind == ConstantKind::Integer &&
+                    infer_concrete_value_expression(
+                        owner,
+                        pattern_argument.value_expression,
+                        actual_argument.value.integer,
+                        value_substitutions);
             if (!inferred) return false;
-          } else if (pattern_argument.value_expression.is_valid() ||
-                     actual_argument.value_expression.is_valid() ||
+          } else if (actual_argument.value_expression.is_valid() ||
                      pattern_argument.value != actual_argument.value) {
             return false;
           }
@@ -2826,27 +2870,21 @@ private:
           value_substitutions);
     case TypeKind::Array:
     case TypeKind::Simd: {
-      const std::optional<std::uint32_t> pattern_parameter =
-          single_integer_parameter(pattern.element_count_expression);
-      if (pattern_parameter.has_value()) {
+      if (pattern.element_count_expression.is_valid()) {
         const bool inferred = actual.element_count_expression.is_valid()
-            ? infer_symbolic_value_argument(
+            ? infer_symbolic_value_expression(
                   owner,
-                  SymbolId{*pattern_parameter},
+                  pattern.element_count_expression,
                   actual.element_count_expression,
                   value_substitutions)
-            : infer_value_argument(
+            : infer_concrete_value_expression(
                   owner,
-                  SymbolId{*pattern_parameter},
-                  actual.element_count,
+                  pattern.element_count_expression,
+                  BigInteger::from_u64(actual.element_count),
                   value_substitutions);
         if (!inferred) return false;
-      } else if (pattern.element_count_expression.is_valid() ||
-                 actual.element_count_expression.is_valid()) {
-        if (pattern.element_count_expression !=
-            actual.element_count_expression) {
-          return false;
-        }
+      } else if (actual.element_count_expression.is_valid()) {
+        return false;
       } else if (pattern.element_count != actual.element_count) {
         return false;
       }

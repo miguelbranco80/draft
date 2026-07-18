@@ -57,3 +57,9 @@ pub plus_one[N: usize] :: proc() -> usize {
 pub exact_count[N: usize] :: proc() -> usize {
     return N
 }
+
+// The caller can recover N uniquely from the concrete array length even though
+// the public signature crosses a package-interface ordinal remap.
+pub inferred_offset[N: usize] :: proc(values: [N + 1]u8) -> usize {
+    return N
+}
