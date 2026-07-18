@@ -3472,6 +3472,41 @@ private:
           result = semantic_.types.builtins().invalid;
         }
       }
+      const bool left_untyped_numeric =
+          is_untyped_integer(left) || is_untyped_float(left);
+      const bool right_untyped_numeric =
+          is_untyped_integer(right) || is_untyped_float(right);
+      if (result == semantic_.types.builtins().bool_type &&
+          left_untyped_numeric && right_untyped_numeric) {
+        // An all-untyped comparison has no concrete machine type to inherit.
+        // Choosing int/f64 here would reject arbitrary-precision integers or
+        // round exact decimal values before comparing them. Both operands are
+        // necessarily compile-time values, so preserve their specified exact
+        // domains by replacing the complete comparison with its bool result.
+        const ConstantTable visible_constants = active_constant_table();
+        const std::vector<ConstantTypeBinding> visible_types =
+            active_constant_types();
+        const std::optional<ConstantValue> folded =
+            evaluate_constant_expression(
+                sources_,
+                loaded_,
+                semantic_,
+                target_,
+                tree,
+                expression_id,
+                scope,
+                diagnostics_,
+                &visible_constants,
+                &visible_types);
+        if (folded.has_value() && folded->kind == ConstantKind::Bool) {
+          HirExpression comparison;
+          comparison.kind = HirExpressionKind::Constant;
+          comparison.type = semantic_.types.builtins().bool_type;
+          comparison.range = node.range;
+          comparison.constant = *folded;
+          return hir_.add_expression(std::move(comparison));
+        }
+      }
       HirExpression expression;
       expression.kind = HirExpressionKind::Binary;
       expression.operation = hir_operation(operation);
@@ -3488,17 +3523,6 @@ private:
       } else if (result == semantic_.types.builtins().bool_type &&
                  semantic_.types.is_number(right)) {
         contextualize_numeric_expression(left_id, right);
-      } else if (result == semantic_.types.builtins().bool_type &&
-                 is_untyped_integer(left) && is_untyped_integer(right)) {
-        contextualize_numeric_expression(left_id, semantic_.types.builtins().int_type);
-        contextualize_numeric_expression(right_id, semantic_.types.builtins().int_type);
-      } else if (result == semantic_.types.builtins().bool_type &&
-                 (is_untyped_float(left) || is_untyped_float(right))) {
-        const std::optional<TypeId> f64 = semantic_.types.find_builtin("f64");
-        if (f64.has_value()) {
-          contextualize_numeric_expression(left_id, *f64);
-          contextualize_numeric_expression(right_id, *f64);
-        }
       }
       return hir_.add_expression(std::move(expression));
     }

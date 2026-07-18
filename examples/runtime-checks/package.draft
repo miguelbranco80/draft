@@ -104,6 +104,13 @@ mixed_untyped_numeric :: proc(condition: bool) -> f64 {
     return arithmetic + selected
 }
 
+exact_untyped_comparisons :: proc() -> bool {
+    // f64 would round the first pair to equal values, while int cannot hold
+    // the second pair. Both comparisons use Draft's exact untyped domains.
+    return 9007199254740993 != 9007199254740992.0 &&
+        340282366920938463463374607431768211456 > 0
+}
+
 identity[T: number] :: proc(value: T) -> T {
     return value
 }
@@ -346,6 +353,7 @@ main :: proc() {
     assert(scale(3.0) == 1.5)
     assert(mixed_untyped_numeric(true) == 3.5)
     assert(mixed_untyped_numeric(false) == 5.0)
+    assert(exact_untyped_comparisons())
     assert(identity[i64](42) == 42)
     value: u32 = 17
     assert(identity(value) == 17)
