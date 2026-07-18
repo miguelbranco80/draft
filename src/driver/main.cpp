@@ -239,6 +239,78 @@ int build_package(
   return diagnostics.has_errors() ? 1 : 0;
 }
 
+enum class AgentCommandKind {
+  Resolve,
+  Judge,
+};
+
+[[nodiscard]] bool is_synthesis_record(draft::AgentConstructKind kind) {
+  return kind == draft::AgentConstructKind::SynthesisDeclaration ||
+      kind == draft::AgentConstructKind::SynthesisMember ||
+      kind == draft::AgentConstructKind::SynthesisStatement ||
+      kind == draft::AgentConstructKind::SynthesisExpression ||
+      kind == draft::AgentConstructKind::SynthesisAssembly;
+}
+
+// Resolve and judge exist before a provider adapter is configured. They run the
+// complete provider-independent front end so malformed source, attachment
+// policy violations, and typed obligation errors are still reported normally.
+// A program with no relevant sites succeeds without contacting anything. A
+// program requiring provider work fails honestly and performs no filesystem
+// mutation; the later Codex adapter will replace only that final boundary.
+int run_agent_command(
+    const std::string &directory, AgentCommandKind command) {
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  std::error_code path_error;
+  const std::filesystem::path absolute_directory =
+      std::filesystem::absolute(directory, path_error);
+  if (path_error) {
+    std::cerr << "error: cannot make package path absolute: "
+              << path_error.message() << '\n';
+    return 1;
+  }
+
+  draft::CompileWorkspaceOptions options;
+  options.target = draft::make_aarch64_macos_profile();
+  options.workspace.workspace_directory =
+      absolute_directory.parent_path().string();
+  configure_core_distribution(options.workspace);
+  const draft::CompileWorkspaceResult compiled = draft::compile_workspace(
+      sources, absolute_directory.string(), std::move(options), diagnostics);
+  std::size_t matching_sites = 0;
+  if (compiled.ok) {
+    for (const std::optional<draft::CompiledPackage> &package :
+         compiled.packages) {
+      if (!package.has_value()) continue;
+      for (const draft::AgentRecord &record : package->metadata.records) {
+        if (command == AgentCommandKind::Judge &&
+            record.kind == draft::AgentConstructKind::Judgment) {
+          ++matching_sites;
+        } else if (command == AgentCommandKind::Resolve &&
+                   is_synthesis_record(record.kind)) {
+          ++matching_sites;
+        }
+      }
+    }
+    if (matching_sites == 0) {
+      std::cout << (command == AgentCommandKind::Judge
+              ? "no judgment sites require execution\n"
+              : "no synthesis sites require resolution\n");
+    } else {
+      diagnostics.error(
+          draft::SourceRange::invalid(),
+          command == AgentCommandKind::Judge
+              ? "judgment provider is not configured"
+              : "synthesis provider is not configured");
+    }
+  }
+  if (!diagnostics.diagnostics().empty()) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+  }
+  return diagnostics.has_errors() ? 1 : 0;
+}
+
 void print_usage() {
   std::cerr << "usage:\n"
             << "  draftc lex <file.draft>\n"
@@ -246,6 +318,8 @@ void print_usage() {
             << "  draftc check <package-directory>\n"
             << "  draftc emit-llvm <package-directory>\n"
             << "  draftc build <package-directory> [-o <output>] [--allow-host-toolchain]\n"
+            << "  draftc resolve <package-directory>\n"
+            << "  draftc judge <package-directory>\n"
             << "  draftc target\n";
 }
 
@@ -263,6 +337,12 @@ int main(int argc, char **argv) {
   }
   if (argc == 3 && std::string_view(argv[1]) == "emit-llvm") {
     return compile_package(argv[2], true);
+  }
+  if (argc == 3 && std::string_view(argv[1]) == "resolve") {
+    return run_agent_command(argv[2], AgentCommandKind::Resolve);
+  }
+  if (argc == 3 && std::string_view(argv[1]) == "judge") {
+    return run_agent_command(argv[2], AgentCommandKind::Judge);
   }
   if (argc >= 3 && std::string_view(argv[1]) == "build") {
     std::optional<std::string> output;

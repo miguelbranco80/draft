@@ -203,4 +203,25 @@ if(BUILD_TESTING)
     PRIVATE DRAFT_SOURCE_DIRECTORY="${CMAKE_CURRENT_SOURCE_DIR}"
   )
   add_test(NAME draft_toolchain_tests COMMAND draft_toolchain_tests)
+
+  # Provider-free agent commands must recognize real typed sites but fail
+  # before writing anything when no provider adapter is configured.
+  add_test(
+    NAME draft_resolve_requires_provider
+    COMMAND draftc resolve "${CMAKE_CURRENT_SOURCE_DIR}/examples/agent-pending"
+  )
+  set_tests_properties(
+    draft_resolve_requires_provider
+    PROPERTIES
+      WILL_FAIL TRUE
+  )
+  add_test(
+    NAME draft_judge_requires_provider
+    COMMAND draftc judge "${CMAKE_CURRENT_SOURCE_DIR}/examples/agent-pending"
+  )
+  set_tests_properties(
+    draft_judge_requires_provider
+    PROPERTIES
+      WILL_FAIL TRUE
+  )
 endif()
