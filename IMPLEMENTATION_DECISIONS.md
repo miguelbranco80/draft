@@ -540,6 +540,21 @@ callee-owned recipe. The concrete pass substitutes exact counts and is
 authoritative for runtime-bearing HIR, including signatures whose array/SIMD or
 structural-alias shape depends on the procedure-produced argument.
 
+## Shift-count validation domain
+
+Status: complete Draft 1 scalar runtime rule.
+
+A shift count retains its independently checked source integer type through HIR;
+there is no language-level coercion to the shifted operand's type. MIR validates
+the count in unsigned `u128`, which exactly represents every nonnegative Draft 1
+integer count and every scalar operand width. Sign-extending a negative signed
+count into that domain produces a large unsigned value, so the single
+`count < width` comparison rejects both negative and out-of-range counts. Only
+the proven-safe count is then represented at the shifted operand's width for
+LLVM's same-width shift instruction. This avoids truncating a width such as 128
+into a narrow count type such as `i8` while retaining the source rule that every
+invalid count traps before the shift executes.
+
 ## Hosted process views and core threads
 
 Status: AArch64 macOS hosted runtime contract.

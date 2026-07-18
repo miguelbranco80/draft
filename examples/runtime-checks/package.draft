@@ -156,6 +156,14 @@ compound_shift :: proc(value: u32, count: usize) -> u32 {
     return result
 }
 
+wide_shift_left :: proc(value: u128, count: i8) -> u128 {
+    return value << count
+}
+
+wide_shift_right :: proc(value: u128, count: i8) -> u128 {
+    return value >> count
+}
+
 scale :: proc(value: f64) -> f64 {
     return value * 0.5
 }
@@ -519,6 +527,13 @@ main :: proc() {
     assert(remainder(minimum, -1) == 0)
     assert(shift(1, 5) == 32)
     assert(compound_shift(1, 5) == 32)
+    assert(wide_shift_left(1, 0) == 1)
+    assert(wide_shift_left(1, 127) ==
+        170141183460469231731687303715884105728)
+    assert(wide_shift_right(
+        170141183460469231731687303715884105728,
+        127,
+    ) == 1)
     assert(scale(3.0) == 1.5)
     assert(mixed_untyped_numeric(true) == 3.5)
     assert(mixed_untyped_numeric(false) == 5.0)

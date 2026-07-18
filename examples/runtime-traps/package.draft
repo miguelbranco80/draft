@@ -40,6 +40,14 @@ main :: proc() -> int {
         count := dynamic_zero - 1
         return cast[int](value << count)
     }
+    if selector == cast[u8]('w') {
+        // This is the narrow signed-count counterpart to the successful
+        // u128/i8 cases in runtime-checks. MIR sign-extends i8(-1) into its
+        // full-width validation domain, where the value must fail the bound.
+        value: u128 = 1
+        count := cast[i8](dynamic_zero) - 1
+        return cast[int](value << count)
+    }
     if selector == cast[u8]('f') {
         // Multiplication by the runtime selector prevents this from becoming a
         // required compile-time conversion while remaining far outside i64.

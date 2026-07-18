@@ -633,41 +633,41 @@ private:
                (operation == HirOperation::ShiftLeft ||
                 operation == HirOperation::ShiftRight)) {
       const TypeId count_type = procedure_.value(right).type;
+
+      // Draft permits the shift count to have any concrete integer type.  Do
+      // not encode the operand width in that type: a u128 operand has width
+      // 128, which an i8 count would reinterpret as -128 before comparison.
+      //
+      // u128 is a simple common validation domain for every Draft 1 integer
+      // count and every scalar operand width.  Extending a negative signed
+      // count to u128 preserves its two's-complement sign, producing a large
+      // unsigned value that fails the single `< width` test.  Once that test
+      // succeeds, the original count can be narrowed to the operand type
+      // without losing a bit used by the shift itself.
+      const TypeId validation_type =
+          semantic_.types.find_builtin("u128").value();
+      MirValueId validated_count = right;
+      if (count_type != validation_type) {
+        validated_count = convert(right, validation_type, range);
+      }
       const MirValueId width = constant(
           ConstantValue::make_integer(
               static_cast<std::int64_t>(integer_bit_width(procedure_.value(left).type))),
-          count_type,
+          validation_type,
           range);
-      MirValueId safe = binary(
+      const MirValueId safe = binary(
           HirOperation::Less,
-          right,
+          validated_count,
           width,
           semantic_.types.builtins().bool_type,
           range);
-      if (signed_integer_type(count_type)) {
-        const MirValueId zero_value = constant(
-            ConstantValue::make_integer(0), count_type, range);
-        const MirValueId nonnegative = binary(
-            HirOperation::GreaterEqual,
-            right,
-            zero_value,
-            semantic_.types.builtins().bool_type,
-            range);
-        safe = binary(
-            HirOperation::BitwiseAnd,
-            safe,
-            nonnegative,
-            semantic_.types.builtins().bool_type,
-            range);
-      }
       trap_unless(safe, range);
-      if (procedure_.value(right).type != procedure_.value(left).type) {
-        MirInstruction conversion;
-        conversion.kind = MirInstructionKind::Convert;
-        conversion.range = range;
-        conversion.type = procedure_.value(left).type;
-        conversion.operands.push_back(right);
-        right = emit_value(std::move(conversion));
+
+      const TypeId operand_type = procedure_.value(left).type;
+      if (operand_type == validation_type) {
+        right = validated_count;
+      } else if (count_type != operand_type) {
+        right = convert(right, operand_type, range);
       }
     }
     return binary(operation, left, right, result_type, range);

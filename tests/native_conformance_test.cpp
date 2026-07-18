@@ -187,6 +187,7 @@ void test_native_examples(TestState &state) {
           "o", // Signed minimum divided by negative one.
           "s", // Out-of-range shift count.
           "n", // Negative shift count.
+          "w", // Narrow negative count for a u128 shift.
           "f", // Out-of-range float-to-integer conversion.
           "q", // NaN-to-integer conversion.
           "r", // Invalid Unicode scalar conversion.

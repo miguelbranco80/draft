@@ -11,6 +11,7 @@
 
 #include <cstdlib>
 #include <iostream>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -216,6 +217,10 @@ divide :: proc(left, right: i64) -> i64 {
 shift :: proc(value: u32, count: usize) -> u32 {
     return value << count
 }
+
+wide_shift :: proc(value: u128, count: i8) -> u128 {
+    return value << count
+}
 )draft");
 
   if (source.diagnostics.has_errors()) {
@@ -224,9 +229,18 @@ shift :: proc(value: u32, count: usize) -> u32 {
   EXPECT(state, source.mir.ok);
   std::size_t traps = 0;
   std::size_t unreachable = 0;
+  std::size_t full_width_count_conversions = 0;
+  const std::optional<draft::TypeId> u128_type =
+      source.semantics.package.types.find_builtin("u128");
+  EXPECT(state, u128_type.has_value());
   for (const draft::MirProcedure &procedure : source.mir.program.procedures()) {
     for (const draft::MirInstruction &instruction : procedure.instructions) {
       if (instruction.kind == draft::MirInstructionKind::Trap) ++traps;
+      if (u128_type.has_value() &&
+          instruction.kind == draft::MirInstructionKind::Convert &&
+          instruction.type == *u128_type) {
+        ++full_width_count_conversions;
+      }
     }
     for (const draft::MirBlock &block : procedure.blocks) {
       if (block.terminator.kind == draft::MirTerminatorKind::Unreachable) {
@@ -234,8 +248,9 @@ shift :: proc(value: u32, count: usize) -> u32 {
       }
     }
   }
-  EXPECT(state, traps == 2);
-  EXPECT(state, unreachable == 2);
+  EXPECT(state, traps == 3);
+  EXPECT(state, unreachable == 3);
+  EXPECT(state, full_width_count_conversions == 2);
 }
 
 } // namespace
