@@ -832,10 +832,19 @@ private:
 
     const MirBlockId right_block = procedure_.add_block(expression.range);
     const MirBlockId join_block = procedure_.add_block(expression.range);
+    MirValueId condition = left;
+    if (procedure_.value(left).type != semantic_.types.builtins().bool_type) {
+      // Source-level distinct bool remains the expression's result type. MIR
+      // branches, however, deliberately accept only canonical bool. Expose the
+      // identical underlying computation representation at this internal
+      // boundary without changing the stored/result value.
+      condition = convert(
+          left, semantic_.types.builtins().bool_type, expression.range);
+    }
     if (expression.operation == HirOperation::LogicalAnd) {
-      conditional_branch(left, right_block, join_block, expression.range);
+      conditional_branch(condition, right_block, join_block, expression.range);
     } else {
-      conditional_branch(left, join_block, right_block, expression.range);
+      conditional_branch(condition, join_block, right_block, expression.range);
     }
     current_ = right_block;
     const MirValueId right = lower_expression(expression.operands[1]);

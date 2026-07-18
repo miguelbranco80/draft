@@ -351,6 +351,15 @@ private:
     return type == semantic_.types.builtins().bool_type;
   }
 
+  // A distinct type keeps the operators of its underlying type, with the
+  // distinct type substituted for operand and result positions. Conditions
+  // remain stricter and continue to use is_bool(): a distinct bool does not
+  // acquire implicit truthiness merely because its logical operators exist.
+  [[nodiscard]] bool is_logical_bool(TypeId type) const {
+    return !is_invalid_type(type) &&
+        runtime_scalar_type(type).kind == TypeKind::Bool;
+  }
+
   [[nodiscard]] bool is_untyped_integer(TypeId type) const {
     return type == semantic_.types.builtins().untyped_integer;
   }
@@ -3434,7 +3443,7 @@ private:
           kind = HirExpressionKind::Address;
         }
       } else if (operation == TokenKind::Bang) {
-        if (!is_bool(operand.type)) {
+        if (!is_logical_bool(operand.type)) {
           diagnostics_.error(node.range, "logical not requires bool");
           result = semantic_.types.builtins().invalid;
         }
@@ -3512,10 +3521,14 @@ private:
       const TypeId right = hir_.expression(right_id).type;
       TypeId result = semantic_.types.builtins().invalid;
       if (operation == TokenKind::LogicalAnd || operation == TokenKind::LogicalOr) {
-        if (is_bool(left) && is_bool(right)) {
-          result = semantic_.types.builtins().bool_type;
+        if (left == right && is_logical_bool(left)) {
+          // Plain bool naturally returns bool. A distinct bool returns the
+          // same distinct type, matching the general operator-substitution
+          // rule rather than silently erasing its identity.
+          result = left;
         } else {
-          diagnostics_.error(node.range, "logical operators require bool operands");
+          diagnostics_.error(
+              node.range, "logical operators require matching bool operands");
         }
       } else if (operation == TokenKind::EqualEqual || operation == TokenKind::BangEqual ||
                  operation == TokenKind::Less || operation == TokenKind::LessEqual ||

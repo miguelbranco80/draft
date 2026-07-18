@@ -22,6 +22,7 @@ Overlay :: raw union {
 }
 
 Distance :: distinct i64
+Truth :: distinct bool
 
 Pair[T: type, U: type] :: struct {
     first: T,
@@ -160,6 +161,10 @@ last[N: usize] :: proc(values: [N]i64) -> i64 {
 storage_roundtrip :: proc(flag: bool, bits: b32) -> bool {
     encoded := cast[b32](flag)
     return cast[bool](encoded) || cast[bool](bits)
+}
+
+distinct_logical :: proc(left, right: Truth) -> Truth {
+    return !left || (left && right)
 }
 
 switch_integer :: proc(value: i64) -> i64 {
@@ -406,6 +411,10 @@ main :: proc() {
     assert(cast[i64](to_rune(65)) == 65)
     assert(to_code(7) == .Seven)
     assert(storage_roundtrip(false, cast[b32](true)))
+    truth := cast[Truth](true)
+    falsehood := cast[Truth](false)
+    assert(cast[bool](distinct_logical(falsehood, truth)))
+    assert(!cast[bool](distinct_logical(truth, falsehood)))
     assert(endian_roundtrip(21) == 42)
     assert(switch_integer(42) == 1 && switch_integer(41) == 0)
     assert(switch_float(1.5) == 1 && switch_float(2.0) == 0)

@@ -1296,6 +1296,7 @@ void test_storage_pointer_and_distinct_semantics(TestState &state) {
 package bodies
 
 Counter :: distinct u32
+Truth :: distinct bool
 
 storage_truth :: proc(flag: bool, bits: b32) -> bool {
     encoded := cast[b32](flag)
@@ -1328,6 +1329,10 @@ increment :: proc(value: Counter) -> Counter {
     return value + 1
 }
 
+logical_truth :: proc(left, right: Truth) -> Truth {
+    return !left || (left && right)
+}
+
 constant_storage :: proc() -> bool {
     return cast[bool](cast[b64](true))
 }
@@ -1342,6 +1347,7 @@ constant_storage :: proc() -> bool {
 package bodies
 
 Counter :: distinct u32
+Truth :: distinct bool
 
 Code :: enum i16 {
     Zero,
@@ -1367,6 +1373,10 @@ bad_distinct_pair :: proc(value: Counter) -> i64 {
     return cast[i64](value)
 }
 
+bad_distinct_logical_pair :: proc(left: Truth, right: bool) -> Truth {
+    return left && right
+}
+
 bad_pointer_kind :: proc(bits: rawptr) -> rawptr {
     return ptr_offset(bits, 1)
 }
@@ -1385,6 +1395,8 @@ bad_pointer_pair :: proc(left: ^u32, right: ^u64) -> isize {
       draft::render_diagnostics(invalid.sources, invalid.diagnostics);
   EXPECT(state, rendered.find("comparison is not defined") != std::string::npos);
   EXPECT(state, rendered.find("cast source and target types are incompatible") !=
+                    std::string::npos);
+  EXPECT(state, rendered.find("logical operators require matching bool operands") !=
                     std::string::npos);
   EXPECT(state, rendered.find("ptr_offset requires a ^T or [^]T pointer") !=
                     std::string::npos);

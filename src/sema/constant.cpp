@@ -680,7 +680,7 @@ private:
     } else if (operation == TokenKind::Tilde) {
       valid = integer_operand(operand);
     } else if (operation == TokenKind::Bang) {
-      valid = operand == semantic_.types.builtins().bool_type;
+      valid = runtime_type(operand).kind == TypeKind::Bool;
     }
     if (valid) return std::nullopt;
     return fail(
@@ -1503,27 +1503,27 @@ private:
         tree, node.children[0], scope, required, numeric_context);
     if (left.status != EvalStatus::Ready) return left;
     if (operation == TokenKind::LogicalAnd || operation == TokenKind::LogicalOr) {
-      if (left.value.kind != ConstantKind::Bool) {
+      if (left.value.kind != ConstantKind::Bool || !left.type.is_valid() ||
+          runtime_type(left.type).kind != TypeKind::Bool) {
         return fail(node.range, "logical operator requires bool operands", required);
       }
       if (operation == TokenKind::LogicalAnd && !left.value.boolean) {
         return ready(
             ConstantValue::make_bool(false),
-            semantic_.types.builtins().bool_type);
+            left.type);
       }
       if (operation == TokenKind::LogicalOr && left.value.boolean) {
         return ready(
             ConstantValue::make_bool(true),
-            semantic_.types.builtins().bool_type);
+            left.type);
       }
       const EvalResult right =
           evaluate_expression(tree, node.children[1], scope, required);
       if (right.status != EvalStatus::Ready) return right;
-      if (right.value.kind != ConstantKind::Bool) {
+      if (right.value.kind != ConstantKind::Bool || right.type != left.type) {
         return fail(node.range, "logical operator requires bool operands", required);
       }
-      return ready(
-          right.value, semantic_.types.builtins().bool_type);
+      return ready(right.value, left.type);
     }
 
     TypeId right_context = numeric_context;
@@ -3883,7 +3883,7 @@ private:
       if (operation == TokenKind::Bang && operand.value.kind == ConstantKind::Bool) {
         return ready(
             ConstantValue::make_bool(!operand.value.boolean),
-            semantic_.types.builtins().bool_type);
+            operand.type);
       }
       if (operand.value.kind != ConstantKind::Integer) {
         if (operand.value.kind == ConstantKind::Float && operation == TokenKind::Plus) {

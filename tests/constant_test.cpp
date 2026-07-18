@@ -826,6 +826,11 @@ package conditions
 Distance :: distinct i64
 Good :: cast[Distance](cast[i64](40)) + 2
 
+Truth :: distinct bool
+Truth_Value :: cast[Truth](true)
+Negated_Truth :: !Truth_Value
+Combined_Truth :: Truth_Value && !Negated_Truth
+
 callback :: proc() {
 }
 Good_Nil :: callback != nil
