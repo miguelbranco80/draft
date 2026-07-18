@@ -367,6 +367,10 @@ struct FakeProviderState {
   std::string response = "42";
   std::string last_prompt;
   std::string last_attachment;
+  // This mode deliberately returns a well-framed but ill-typed expression on
+  // the first call, then uses the compiler-owned correction transcript to
+  // return a valid expression. It proves retries occur above the provider.
+  bool correct_after_rejection = false;
   bool staged_responses = false;
   bool opaque_interface_responses = false;
   std::vector<draft::AgentConstructKind> kinds;
@@ -376,6 +380,7 @@ struct FakeProviderState {
   std::vector<std::string> anchor_names;
   std::vector<std::vector<std::string>> visible_binding_names;
   std::vector<draft::AgentValidationContext> last_validation_context;
+  std::vector<std::vector<draft::SynthesisRejection>> rejection_histories;
 };
 
 struct FakeTestRunnerState {
@@ -450,13 +455,18 @@ bool synthesize(
       ? std::string()
       : request.attachments[0].contents;
   state->last_validation_context = request.obligation.validation_context;
+  state->rejection_histories.push_back(request.prior_rejections);
   std::vector<std::string> visible_names;
   for (const draft::AgentVisibleBinding &binding :
        request.obligation.visible_bindings) {
     visible_names.push_back(binding.name);
   }
   state->visible_binding_names.push_back(std::move(visible_names));
-  if (state->opaque_interface_responses) {
+  if (state->correct_after_rejection) {
+    response.source = request.prior_rejections.empty()
+        ? "\"not an i64\""
+        : "42";
+  } else if (state->opaque_interface_responses) {
     if (request.prompt == "declare first") {
       response.source = "first :: 20;";
     } else if (request.prompt == "declare second") {
@@ -691,8 +701,8 @@ void test_resolution_reuse_revalidation_and_failure(TestState &state) {
   const std::string committed_manifest =
       draft::serialize_resolution_manifest(before_failure.manifest);
 
-  // A syntactically invalid provider proposal fails the ordinary compiler. The
-  // previously committed manifest remains byte-for-byte authoritative.
+  // Repeatedly invalid provider proposals exhaust the compiler-check budget.
+  // The previously committed manifest remains byte-for-byte authoritative.
   workspace.write_source("changed for invalid proposal");
   provider.response = "judge \"not an expression\";";
   draft::SourceManager failure_sources;
@@ -705,7 +715,17 @@ void test_resolution_reuse_revalidation_and_failure(TestState &state) {
   EXPECT(state, !failure.ok);
   EXPECT(state, !failure.committed);
   EXPECT(state, failure_diagnostics.has_errors());
-  EXPECT(state, provider.calls == 3);
+  EXPECT(state, provider.calls == 4);
+  const std::string failure_rendering =
+      draft::render_diagnostics(failure_sources, failure_diagnostics);
+  EXPECT(state,
+      failure_rendering.find("exhausted 2 compiler-checked proposal") !=
+          std::string::npos);
+  EXPECT(state, provider.rejection_histories.size() == 4);
+  if (provider.rejection_histories.size() == 4) {
+    EXPECT(state, provider.rejection_histories[2].empty());
+    EXPECT(state, provider.rejection_histories[3].size() == 1);
+  }
 
   draft::DiagnosticSink after_failure_diagnostics;
   const draft::ResolutionManifestLoadResult after_failure =
@@ -715,6 +735,59 @@ void test_resolution_reuse_revalidation_and_failure(TestState &state) {
   EXPECT(state,
       draft::serialize_resolution_manifest(after_failure.manifest) ==
           committed_manifest);
+}
+
+void test_compiler_rejection_retries_with_feedback(TestState &state) {
+  TemporaryWorkspace workspace;
+  workspace.write_source("correct the typed expression");
+  FakeProviderState provider;
+  provider.correct_after_rejection = true;
+
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  const draft::ResolveWorkspaceResult resolved = draft::resolve_workspace(
+      sources,
+      workspace.package.string(),
+      resolve_options(workspace, provider),
+      diagnostics);
+  if (!resolved.ok) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+  }
+  EXPECT(state, resolved.ok);
+  EXPECT(state, resolved.committed);
+  EXPECT(state, resolved.synthesized_sites == 1);
+  EXPECT(state, provider.calls == 2);
+  EXPECT(state, !diagnostics.has_errors());
+  EXPECT(state, provider.rejection_histories.size() == 2);
+  if (provider.rejection_histories.size() == 2) {
+    EXPECT(state, provider.rejection_histories[0].empty());
+    EXPECT(state, provider.rejection_histories[1].size() == 1);
+    if (provider.rejection_histories[1].size() == 1) {
+      const draft::SynthesisRejection &rejection =
+          provider.rejection_histories[1][0];
+      EXPECT(state, rejection.attempt == 1);
+      EXPECT(state, rejection.source == "\"not an i64\"");
+      EXPECT(state,
+          rejection.diagnostics.find("error") != std::string::npos);
+      EXPECT(state,
+          rejection.diagnostics.find("generated from synthesis site") !=
+              std::string::npos);
+    }
+  }
+
+  EXPECT(state, resolved.manifest.pins.size() == 1);
+  if (resolved.manifest.pins.size() == 1) {
+    std::string accepted_source;
+    draft::DiagnosticSink load_diagnostics;
+    EXPECT(state,
+        draft::load_generated_expansion(
+            workspace.root,
+            resolved.manifest.pins[0].expansion_digest,
+            accepted_source,
+            load_diagnostics));
+    EXPECT(state, accepted_source == "42");
+    EXPECT(state, !load_diagnostics.has_errors());
+  }
 }
 
 void test_external_inputs_commit_without_synthesis(TestState &state) {
@@ -1839,11 +1912,40 @@ void test_cancelled_resolution_does_not_start_transaction(TestState &state) {
   EXPECT(state, manifest.state == draft::ResolutionManifestLoadState::Missing);
 }
 
+void test_invalid_proposal_budget_stops_before_provider(TestState &state) {
+  TemporaryWorkspace workspace;
+  workspace.write_source("must not reach provider with invalid budget");
+  FakeProviderState provider;
+
+  for (const std::uint32_t invalid_budget : {0U, 9U}) {
+    draft::ResolveWorkspaceOptions options =
+        resolve_options(workspace, provider);
+    options.maximum_proposal_attempts = invalid_budget;
+    draft::SourceManager sources;
+    draft::DiagnosticSink diagnostics;
+    const draft::ResolveWorkspaceResult resolved = draft::resolve_workspace(
+        sources,
+        workspace.package.string(),
+        std::move(options),
+        diagnostics);
+    EXPECT(state, !resolved.ok);
+    EXPECT(state, !resolved.committed);
+    EXPECT(state, diagnostics.error_count() == 1);
+    if (!diagnostics.diagnostics().empty()) {
+      EXPECT(state,
+          diagnostics.diagnostics().front().message.find("between 1 and 8") !=
+              std::string::npos);
+    }
+  }
+  EXPECT(state, provider.calls == 0);
+}
+
 } // namespace
 
 int main() {
   TestState state;
   test_resolution_reuse_revalidation_and_failure(state);
+  test_compiler_rejection_retries_with_feedback(state);
   test_external_inputs_commit_without_synthesis(state);
   test_interface_sites_precede_dependent_bodies(state);
   test_dependency_interface_rounds(state);
@@ -1861,6 +1963,7 @@ int main() {
   test_invalid_validation_context_stops_before_provider(state);
   test_validation_context_stales_synthesis(state);
   test_cancelled_resolution_does_not_start_transaction(state);
+  test_invalid_proposal_budget_stops_before_provider(state);
   if (state.failures != 0) {
     std::cerr << state.failures << " resolver expectation(s) failed\n";
     return EXIT_FAILURE;

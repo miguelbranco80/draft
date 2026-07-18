@@ -23,6 +23,7 @@
 #include "source/source.h"
 
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -85,6 +86,11 @@ struct ResolveWorkspaceOptions {
   SynthesisProvider provider;
   void *cancellation_state = nullptr;
   ResolutionCancellationRequested cancellation_requested = nullptr;
+  // One proposal attempt is one successful provider response followed by the
+  // ordinary parser and semantic checker. This budget is deliberately distinct
+  // from adapter-level process retries. Values outside 1..8 are rejected before
+  // compilation so a malformed embedding cannot create an unbounded loop.
+  std::uint32_t maximum_proposal_attempts = 2;
   // Revalidation never invokes provider.synthesize. A stale site must retain an
   // existing expansion object, which is checked under its current obligation
   // and re-pinned only if the entire working program succeeds.

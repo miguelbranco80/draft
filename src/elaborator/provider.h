@@ -34,6 +34,18 @@ struct SynthesisRequestFile {
   std::string contents;
 };
 
+// One earlier proposal that the ordinary Draft compiler rejected during the
+// current resolver transaction. attempt is one-based and rows are ordered by
+// attempt. source owns the exact provider bytes; diagnostics owns their
+// generated-source-aware compiler rendering. These rows are correction context
+// only: they do not alter the stable obligation or its input digest, and no row
+// survives after one expansion has been accepted and pinned.
+struct SynthesisRejection {
+  std::uint32_t attempt = 0;
+  std::string source;
+  std::string diagnostics;
+};
+
 // One complete provider request for the current bootstrap context format.
 // obligation includes grammar category, usable canonical type spellings,
 // visible binding names/types/canonical constant values, a bounded transitive
@@ -46,14 +58,16 @@ struct SynthesisRequestFile {
 // available imported package interfaces and their explicit public documentation
 // bytes, judgment claims, canonical test and benchmark source plus checked
 // validation signatures/layouts/references, persistent
-// source coordinates, the exact input
-// digest, and stable site identity. prompt and attachments contain
-// source-authored bounded context without exposing semantic arena IDs.
+// source coordinates, the exact input digest, and stable site identity. prompt
+// and attachments contain source-authored bounded context without exposing
+// semantic arena IDs. prior_rejections is initially empty; on a bounded retry
+// it contains the exact compiler feedback needed to correct earlier proposals.
 struct SynthesisRequest {
-  std::string format = "draft-synthesis-request-v20";
+  std::string format = "draft-synthesis-request-v21";
   AgentObligation obligation;
   std::string prompt;
   std::vector<SynthesisRequestFile> attachments;
+  std::vector<SynthesisRejection> prior_rejections;
 };
 
 // A provider returns exact fragment bytes only. Empty bytes are not rejected at

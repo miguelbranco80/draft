@@ -211,7 +211,7 @@ An omitted symbol is unknown, and compiler-, package-assembly-, and target-owned
 providers cannot be overridden by an external audit.
 
 Provider requests never substitute hashes for information the synthesizer must
-understand. `draft-synthesis-request-v20` carries canonical Draft spellings for
+understand. `draft-synthesis-request-v21` carries canonical Draft spellings for
 the expected type and every visible binding, together with complete canonical
 values for visible compile-time constants and explicit target, SIMD, and
 parsed-assembly facts. Procedure-valued constants lose their process-local
@@ -225,6 +225,17 @@ diagnostic policy selector. Package and enclosing-declaration documentation
 retain their anchor, text, and exact isolated attachment bytes. The same rows
 remain content-hashed, so their human-readable representation is both useful to
 Codex and a stale-pin input.
+
+Compiler rejection is provider correction context, not a change to the stable
+site obligation. A resolver gives each new proposal a private lexical-boundary
+check and an ordinary parser/semantic compile over exactly that one site and
+the already accepted earlier-stage overlays. Other proposals in the same opaque
+completeness set remain invisible. A rejected response is retried at most once
+by default; the stateless second request carries the exact rejected bytes and
+generated-source-aware diagnostics. Intermediate diagnostics never reach the
+user or store, while exhaustion publishes only the final rejection and leaves
+the prior manifest untouched. This compiler-level budget is independent of the
+Codex adapter's process retry budget for timeouts and process failures.
 
 Usable visible names remain compact name/type/value rows. Separately, the
 compiler starts from exact prompt identifier mentions and the enclosing checked
@@ -904,12 +915,14 @@ explicit snapshot terms are provider vocabulary; neither promises that mutable
 upper source re-evaluates to the displayed value at the site. Other loop shapes
 produce no inferred range.
 
-`draft-agent-obligation-v19`, synthesis request v20 / prompt v18, judgment
-request/prompt v4, and compiler content v121 identities make these new facts a
-stale-pin and evidence input. Both Codex adapters use provider identity
-`openai-codex-cli-v22` and recheck the canonical upper-source digest before a
-child starts. Obligation construction also drops a range when the binding or
-any resolved upper-expression input is hidden by an active denial.
+`draft-agent-obligation-v19`, synthesis request v21 / prompt v20, judgment
+request/prompt v4, and compiler content v123 identities make these facts and
+the compiler-checked correction policy stale-pin and evidence inputs. The
+synthesis adapter uses provider identity `openai-codex-cli-v24`; the unchanged
+judgment adapter remains `openai-codex-cli-v22`. Both recheck the canonical
+upper-source digest before a child starts. Obligation construction also drops a
+range when the binding or any resolved upper-expression input is hidden by an
+active denial.
 
 Nested procedures are static and cannot capture runtime locals. Checking a
 nested body therefore clears the declaration point's active branch stack and
@@ -1029,7 +1042,7 @@ traps, and message construction used solely by an assertion cannot survive,
 and no condition is converted into an optimizer assumption.
 
 The versioned `draft.resolved-program.v4` hash records the assertion mode beside
-compiler content v122. `build`, `resolve`, and `judge` expose the same explicit
+compiler content v123. `build`, `resolve`, and `judge` expose the same explicit
 flag so an offline or locked manifest cannot be replayed under a different
 mode. Test and benchmark compilations deliberately override the release choice
 to assertions on and receive their own resolved validation digest; disabling

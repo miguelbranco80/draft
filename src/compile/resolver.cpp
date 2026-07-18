@@ -155,6 +155,96 @@ namespace {
   return true;
 }
 
+// Later-stage or candidate overrides contain complete files based on an
+// already overlaid source surface. A later row replaces an earlier row for the
+// same semantic package and filename; unrelated files retain deterministic
+// discovery order. This operation is used both by normal stage advancement and
+// by private one-proposal compiler checks.
+void merge_overrides(
+    std::vector<WorkspaceSourceOverride> &combined,
+    std::vector<WorkspaceSourceOverride> later) {
+  for (WorkspaceSourceOverride &candidate : later) {
+    bool replaced = false;
+    for (WorkspaceSourceOverride &existing : combined) {
+      if (existing.identity == candidate.identity &&
+          existing.source.relative_name == candidate.source.relative_name) {
+        existing.source = std::move(candidate.source);
+        replaced = true;
+        break;
+      }
+    }
+    if (!replaced) combined.push_back(std::move(candidate));
+  }
+}
+
+// Copies a private candidate diagnostic set into the resolver's authoritative
+// sink. Rejected intermediate attempts stay private; only the final rejection
+// is published so users do not see errors that a later proposal corrected.
+void publish_diagnostics(
+    const DiagnosticSink &source,
+    DiagnosticSink &destination) {
+  for (const Diagnostic &diagnostic : source.diagnostics()) {
+    destination.report(
+        diagnostic.severity, diagnostic.range, diagnostic.message);
+  }
+}
+
+// Installs exactly one proposed expansion over the stage surface and runs the
+// same provider-free compiler stage that discovered the obligation. Earlier
+// interface-round overrides remain visible, while other proposals from this
+// completeness set do not: this preserves the specification's opaque-set rule
+// while still giving each provider response ordinary parser and type-checker
+// authority before it enters the transaction.
+[[nodiscard]] bool proposal_compiles(
+    SourceManager &sources,
+    const std::string &root_package_directory,
+    const CompileWorkspaceOptions &stage_compile_options,
+    const PackageIdentity &identity,
+    const LoadedPackage &loaded,
+    const AgentObligation &obligation,
+    const ResolutionPin &pin,
+    const GeneratedExpansion &expansion,
+    DiagnosticSink &diagnostics) {
+  AgentObligationResult candidate_obligations;
+  candidate_obligations.ok = true;
+  candidate_obligations.obligations.push_back(obligation);
+  const ResolutionSurfacePackage candidate_package{
+      &identity,
+      &loaded,
+      &candidate_obligations,
+  };
+  ResolutionManifest candidate_manifest;
+  candidate_manifest.target_identity =
+      stage_compile_options.target.facts.identity;
+  candidate_manifest.pins.push_back(pin);
+  ResolutionOverlayResult candidate_overlay =
+      build_resolution_overlays(
+          sources,
+          std::span<const ResolutionSurfacePackage>(&candidate_package, 1),
+          candidate_manifest,
+          stage_compile_options.target.facts.identity,
+          stage_compile_options.workspace.workspace_directory,
+          std::span<const GeneratedExpansion>(&expansion, 1),
+          diagnostics);
+  if (!candidate_overlay.ok) return false;
+
+  CompileWorkspaceOptions candidate_options = stage_compile_options;
+  merge_overrides(
+      candidate_options.workspace.source_overrides,
+      std::move(candidate_overlay.sources));
+  const CompileWorkspaceResult compiled = compile_workspace(
+      sources,
+      root_package_directory,
+      std::move(candidate_options),
+      diagnostics);
+  if (!compiled.ok && !diagnostics.has_errors()) {
+    diagnostics.error(
+        SourceRange::invalid(),
+        "compiler rejected a synthesis proposal without a diagnostic");
+  }
+  return compiled.ok && !diagnostics.has_errors();
+}
+
 // One elaboration stage owns exactly the synthesis sites visible in its input
 // compilation. Interface discovery contains declaration/member sites; the body
 // compilation after those edits contains statement/expression/assembly sites.
@@ -172,6 +262,8 @@ struct ResolvedStage {
 // one interface completeness set cannot observe another site's generated names.
 [[nodiscard]] ResolvedStage resolve_stage(
     SourceManager &sources,
+    const std::string &root_package_directory,
+    const CompileWorkspaceOptions &stage_compile_options,
     const CompileWorkspaceResult &surface,
     const ResolutionManifestLoadResult &loaded,
     const ResolveWorkspaceOptions &options,
@@ -218,6 +310,20 @@ struct ResolvedStage {
       pin.site_identity = obligation.site_identity;
       pin.kind = obligation.kind;
       pin.input_digest = obligation.input_digest;
+      const SourceRange surface_range = obligation_range(
+          surface.graph.packages[package_index].loaded, obligation);
+      if (!surface_range.is_valid()) {
+        diagnostics.error(
+            SourceRange::invalid(),
+            "synthesis obligation has no source range for its persistent map");
+        return stage;
+      }
+      pin.source_map.root_identity = obligation.root_identity;
+      pin.source_map.root_relative_path = obligation.root_relative_path;
+      pin.source_map.source_relative_path = obligation.source_relative_path;
+      pin.source_map.surface_begin = surface_range.begin.offset;
+      pin.source_map.surface_end = surface_range.end.offset;
+      bool expansion_boundary_checked = false;
       if (fresh || (options.revalidate && existing != nullptr &&
                     existing->kind == obligation.kind)) {
         if (!load_generated_expansion(
@@ -250,42 +356,97 @@ struct ResolvedStage {
         }
         SynthesisRequest request;
         if (!build_request(obligation, *record, request, diagnostics)) return stage;
-        SynthesisResponse response;
-        const std::size_t before_provider = diagnostics.error_count();
-        if (!options.provider.synthesize(
-                options.provider.state,
-                request,
-                response,
-                diagnostics)) {
-          if (diagnostics.error_count() == before_provider) {
-            diagnostics.error(
-                SourceRange::invalid(),
-                "synthesis provider failed without a diagnostic");
+        bool accepted = false;
+        for (std::uint32_t attempt = 1;
+             attempt <= options.maximum_proposal_attempts; ++attempt) {
+          if (resolution_cancelled(options, diagnostics)) return stage;
+          SynthesisResponse response;
+          const std::size_t before_provider = diagnostics.error_count();
+          if (!options.provider.synthesize(
+                  options.provider.state,
+                  request,
+                  response,
+                  diagnostics)) {
+            if (diagnostics.error_count() == before_provider) {
+              diagnostics.error(
+                  SourceRange::invalid(),
+                  "synthesis provider failed without a diagnostic");
+            }
+            return stage;
           }
+
+          GeneratedExpansion candidate_expansion;
+          candidate_expansion.source = std::move(response.source);
+          candidate_expansion.digest = sha256(candidate_expansion.source);
+          ResolutionPin candidate_pin = pin;
+          candidate_pin.expansion_digest = candidate_expansion.digest;
+          candidate_pin.provider_identity =
+              options.provider.provider_identity;
+          candidate_pin.model_identity = options.provider.model_identity;
+          candidate_pin.configuration_identity =
+              options.provider.configuration_identity;
+          candidate_pin.source_map.expansion_bytes =
+              static_cast<std::uint64_t>(candidate_expansion.source.size());
+
+          // Lexical boundary checks and the ordinary stage compile share one
+          // private sink. On rejection its generated-source rendering becomes
+          // correction data for the next stateless provider invocation.
+          DiagnosticSink attempt_diagnostics;
+          const std::string display_name =
+              "<generated/" + obligation.site_identity + ">";
+          bool proposal_ok = validate_generated_source_boundary(
+              sources,
+              display_name,
+              candidate_expansion.source,
+              attempt_diagnostics);
+          if (proposal_ok) {
+            proposal_ok = proposal_compiles(
+                sources,
+                root_package_directory,
+                stage_compile_options,
+                package.identity,
+                surface.graph.packages[package_index].loaded,
+                obligation,
+                candidate_pin,
+                candidate_expansion,
+                attempt_diagnostics);
+          }
+          if (proposal_ok) {
+            expansion = std::move(candidate_expansion);
+            pin = std::move(candidate_pin);
+            expansion_boundary_checked = true;
+            accepted = true;
+            ++result.synthesized_sites;
+            break;
+          }
+          if (!attempt_diagnostics.has_errors()) {
+            attempt_diagnostics.error(
+                surface_range,
+                "compiler rejected a synthesis proposal without an error");
+          }
+          const std::string rendered =
+              render_diagnostics(sources, attempt_diagnostics);
+          request.prior_rejections.push_back({
+              attempt,
+              std::move(candidate_expansion.source),
+              rendered,
+          });
+          if (attempt == options.maximum_proposal_attempts) {
+            publish_diagnostics(attempt_diagnostics, diagnostics);
+            diagnostics.note(
+                surface_range,
+                "synthesis site exhausted " + std::to_string(attempt) +
+                    " compiler-checked proposal attempt(s)");
+            return stage;
+          }
+        }
+        if (!accepted) {
+          diagnostics.error(
+              surface_range,
+              "synthesis proposal loop ended without an accepted expansion");
           return stage;
         }
-        expansion.source = std::move(response.source);
-        expansion.digest = sha256(expansion.source);
-        pin.expansion_digest = expansion.digest;
-        pin.provider_identity = options.provider.provider_identity;
-        pin.model_identity = options.provider.model_identity;
-        pin.configuration_identity = options.provider.configuration_identity;
-        ++result.synthesized_sites;
       }
-
-      const SourceRange surface_range = obligation_range(
-          surface.graph.packages[package_index].loaded, obligation);
-      if (!surface_range.is_valid()) {
-        diagnostics.error(
-            SourceRange::invalid(),
-            "synthesis obligation has no source range for its persistent map");
-        return stage;
-      }
-      pin.source_map.root_identity = obligation.root_identity;
-      pin.source_map.root_relative_path = obligation.root_relative_path;
-      pin.source_map.source_relative_path = obligation.source_relative_path;
-      pin.source_map.surface_begin = surface_range.begin.offset;
-      pin.source_map.surface_end = surface_range.end.offset;
       pin.source_map.expansion_bytes =
           static_cast<std::uint64_t>(expansion.source.size());
 
@@ -294,7 +455,7 @@ struct ResolvedStage {
       // the next stage before the complete resolved-program check can run.
       const std::string display_name =
           "<generated/" + obligation.site_identity + ">";
-      if (!validate_generated_source_boundary(
+      if (!expansion_boundary_checked && !validate_generated_source_boundary(
               sources,
               display_name,
               expansion.source,
@@ -320,27 +481,6 @@ struct ResolvedStage {
   stage.overrides = overlays.sources;
   stage.ok = true;
   return stage;
-}
-
-// Later-stage overrides contain complete files based on the already overlaid
-// interface source. They replace an earlier row for the same semantic package
-// and filename; unrelated early files remain present. Vector order stays the
-// deterministic package/file discovery order established by the first stage.
-void merge_overrides(
-    std::vector<WorkspaceSourceOverride> &combined,
-    std::vector<WorkspaceSourceOverride> later) {
-  for (WorkspaceSourceOverride &candidate : later) {
-    bool replaced = false;
-    for (WorkspaceSourceOverride &existing : combined) {
-      if (existing.identity == candidate.identity &&
-          existing.source.relative_name == candidate.source.relative_name) {
-        existing.source = std::move(candidate.source);
-        replaced = true;
-        break;
-      }
-    }
-    if (!replaced) combined.push_back(std::move(candidate));
-  }
 }
 
 // Appends one stage's disjoint pin set into the coherent transaction manifest.
@@ -373,6 +513,13 @@ ResolveWorkspaceResult resolve_workspace(
     DiagnosticSink &diagnostics) {
   ResolveWorkspaceResult result;
   const std::size_t initial_errors = diagnostics.error_count();
+  if (options.maximum_proposal_attempts == 0 ||
+      options.maximum_proposal_attempts > 8) {
+    diagnostics.error(
+        SourceRange::invalid(),
+        "synthesis proposal attempt count must be between 1 and 8");
+    return result;
+  }
   if (resolution_cancelled(options, diagnostics)) return result;
 
   const ResolutionManifestLoadResult loaded = load_resolution_manifest(
@@ -423,12 +570,14 @@ ResolveWorkspaceResult resolve_workspace(
     CompileWorkspaceResult interface_surface = compile_workspace(
         sources,
         root_package_directory,
-        std::move(interface_options),
+        interface_options,
         diagnostics);
     if (!interface_surface.ok) return result;
 
     ResolvedStage interface_stage = resolve_stage(
         sources,
+        root_package_directory,
+        interface_options,
         interface_surface,
         loaded,
         options,
@@ -477,6 +626,8 @@ ResolveWorkspaceResult resolve_workspace(
 
   ResolvedStage body_stage = resolve_stage(
       sources,
+      root_package_directory,
+      body_options,
       body_surface,
       loaded,
       options,

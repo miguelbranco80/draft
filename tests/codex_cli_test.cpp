@@ -97,7 +97,11 @@ struct TemporaryFixture {
         "test \"$(cat \"$work/import-00000000-documentation-00000000-attachment-00000000.bin\")\" = imported-design-bytes || exit 34\n"
         "prompt=$(cat)\n"
         "case \"$prompt\" in\n"
-        "  *REQUEST_FORMAT*draft-synthesis-request-v20*ROOT_IDENTITY*workspace*SOURCE_RELATIVE_PATH*package.draft*ANCHOR_NAME*visible_name*EXPECTED_TYPE_TEXT*i64*TARGET_IDENTITY*draft-aarch64-macos-v5*ENCLOSING_DECLARATION_NAME*visible_name*ENCLOSING_DECLARATION_SOURCE*visible_name*ENCLOSING_SEMANTIC_SKELETON*fixture-skeleton*BRANCH_REFINEMENTS*BRANCH_KIND*loop-condition-entered*BRANCH_SUBJECT*ready*BRANCH_SUBJECT_TYPE_TEXT*bool*LOOP_RANGES*LOOP_RANGE_KIND*header-entry-value*LOOP_RANGE_BINDING*index*LOOP_RANGE_BINDING_TYPE_TEXT*i64*LOOP_RANGE_LOWER_INCLUSIVE*0*LOOP_RANGE_UPPER*limit*LOOP_RANGE_UPPER_TYPE_TEXT*i64*ACTIVE_DENIALS*DENIAL_SELECTOR*assert*PERMITTED_CONTEXT_FIELDS*CONTEXT_FIELD_NAME*allocator*CONTEXT_FIELD_TYPE_TEXT*runtime.Allocator*PARAMETRIC_PARAMETERS*PARAMETER_NAME*T*PARAMETER_CONSTRAINT*integer*PARAMETER_TYPE_TEXT*T*TYPE_CONTEXTS*TYPE_REFERENCE_SHA256*TYPE_DEFINITION*MEMBER_NAME*IMPORTED_PACKAGES*IMPORT_ALIAS*lib*IMPORT_DEFINITION*DECLARATION_NAME*make*IMPORT_DOCUMENTATION*IMPORT_DOC_ANCHOR*make*IMPORT_DOC_TEXT*imported-design*IMPORT_DOC_ATTACHMENT_PATH*IMPORTED.md*GUIDING_JUDGMENTS*JUDGMENT_ANCHOR*visible_name*JUDGMENT_CLAIM*preserve-invariant*JUDGMENT_ATTACHMENT_PATH*EVIDENCE.md*DOCUMENTATION*DOC_ANCHOR*visible_name*DOC_TEXT*design-context*DOC_ATTACHMENT_PATH*DESIGN.md*VALIDATION_CONTEXT*VALIDATION_KIND*test*VALIDATION_SOURCE_PATH*behavior_test.draft*VALIDATION_SOURCE*test_fixture*VALIDATION_TYPING_COMPLETE*true*VALIDATION_PROCEDURE_NAME*test_fixture*VALIDATION_PROCEDURE_TYPE_TEXT*proc*VALIDATION_STATE_SIZE*24*VALIDATION_REFERENCE_NAME*visible_name*VALIDATION_REFERENCE_TYPE_TEXT*u32*VALIDATION_REFERENCE_HAS_CONSTANT*true*VALIDATION_REFERENCE_CONSTANT*fixture-constant*AUTHOR_PROMPT*make-answer*BINDING_NAME*visible_name*BINDING_TYPE_TEXT*u32*BINDING_HAS_CONSTANT*true*BINDING_CONSTANT*fixture-constant*RELEVANT_DECLARATIONS*DECLARATION_SOURCE_PATH*package.draft*DECLARATION_NAME*visible_name*DECLARATION_TYPE_TEXT*u32*DECLARATION_HAS_CONSTANT*true*DECLARATION_CONSTANT*fixture-constant*DECLARATION_SOURCE*visible_name*) ;;\n"
+        "  *REJECTED_SOURCE*bad-fragment*COMPILER_DIAGNOSTICS*fixture-compiler-error*) ;;\n"
+        "  *REJECTED_SOURCE*) exit 35 ;;\n"
+        "esac\n"
+        "case \"$prompt\" in\n"
+        "  *REQUEST_FORMAT*draft-synthesis-request-v21*ROOT_IDENTITY*workspace*SOURCE_RELATIVE_PATH*package.draft*ANCHOR_NAME*visible_name*EXPECTED_TYPE_TEXT*i64*TARGET_IDENTITY*draft-aarch64-macos-v5*ENCLOSING_DECLARATION_NAME*visible_name*ENCLOSING_DECLARATION_SOURCE*visible_name*ENCLOSING_SEMANTIC_SKELETON*fixture-skeleton*BRANCH_REFINEMENTS*BRANCH_KIND*loop-condition-entered*BRANCH_SUBJECT*ready*BRANCH_SUBJECT_TYPE_TEXT*bool*LOOP_RANGES*LOOP_RANGE_KIND*header-entry-value*LOOP_RANGE_BINDING*index*LOOP_RANGE_BINDING_TYPE_TEXT*i64*LOOP_RANGE_LOWER_INCLUSIVE*0*LOOP_RANGE_UPPER*limit*LOOP_RANGE_UPPER_TYPE_TEXT*i64*ACTIVE_DENIALS*DENIAL_SELECTOR*assert*PERMITTED_CONTEXT_FIELDS*CONTEXT_FIELD_NAME*allocator*CONTEXT_FIELD_TYPE_TEXT*runtime.Allocator*PARAMETRIC_PARAMETERS*PARAMETER_NAME*T*PARAMETER_CONSTRAINT*integer*PARAMETER_TYPE_TEXT*T*TYPE_CONTEXTS*TYPE_REFERENCE_SHA256*TYPE_DEFINITION*MEMBER_NAME*IMPORTED_PACKAGES*IMPORT_ALIAS*lib*IMPORT_DEFINITION*DECLARATION_NAME*make*IMPORT_DOCUMENTATION*IMPORT_DOC_ANCHOR*make*IMPORT_DOC_TEXT*imported-design*IMPORT_DOC_ATTACHMENT_PATH*IMPORTED.md*GUIDING_JUDGMENTS*JUDGMENT_ANCHOR*visible_name*JUDGMENT_CLAIM*preserve-invariant*JUDGMENT_ATTACHMENT_PATH*EVIDENCE.md*DOCUMENTATION*DOC_ANCHOR*visible_name*DOC_TEXT*design-context*DOC_ATTACHMENT_PATH*DESIGN.md*VALIDATION_CONTEXT*VALIDATION_KIND*test*VALIDATION_SOURCE_PATH*behavior_test.draft*VALIDATION_SOURCE*test_fixture*VALIDATION_TYPING_COMPLETE*true*VALIDATION_PROCEDURE_NAME*test_fixture*VALIDATION_PROCEDURE_TYPE_TEXT*proc*VALIDATION_STATE_SIZE*24*VALIDATION_REFERENCE_NAME*visible_name*VALIDATION_REFERENCE_TYPE_TEXT*u32*VALIDATION_REFERENCE_HAS_CONSTANT*true*VALIDATION_REFERENCE_CONSTANT*fixture-constant*AUTHOR_PROMPT*make-answer*BINDING_NAME*visible_name*BINDING_TYPE_TEXT*u32*BINDING_HAS_CONSTANT*true*BINDING_CONSTANT*fixture-constant*RELEVANT_DECLARATIONS*DECLARATION_SOURCE_PATH*package.draft*DECLARATION_NAME*visible_name*DECLARATION_TYPE_TEXT*u32*DECLARATION_HAS_CONSTANT*true*DECLARATION_CONSTANT*fixture-constant*DECLARATION_SOURCE*visible_name*FRAGMENT_CONTRACT*EXPECTED_TYPE_TEXT*COMPILER_REJECTIONS*) ;;\n"
         "  *) exit 28 ;;\n"
         "esac\n"
         "printf '%s' '{\"source\":\"40 + 2\\n\"}' > \"$output\"\n";
@@ -315,7 +319,7 @@ void test_adapter_contract_and_identity(TestState &state) {
   const draft::SynthesisProvider provider =
       draft::configure_codex_cli_provider(options, provider_state, diagnostics);
   EXPECT(state, provider.synthesize != nullptr);
-  EXPECT(state, provider.provider_identity == "openai-codex-cli-v22");
+  EXPECT(state, provider.provider_identity == "openai-codex-cli-v24");
   EXPECT(state, provider.model_identity == "fixture-model");
   EXPECT(state, provider.configuration_identity ==
       provider_state.configuration_identity);
@@ -328,6 +332,26 @@ void test_adapter_contract_and_identity(TestState &state) {
   EXPECT(state, synthesized);
   EXPECT(state, response.source == "40 + 2\n");
   EXPECT(state, !diagnostics.has_errors());
+
+  // A stateless correction call carries the exact rejected bytes and rendered
+  // compiler diagnostics in explicit length-prefixed fields. The fixture
+  // process above rejects a partial or renamed correction transcript.
+  draft::SynthesisRequest correction = request;
+  correction.prior_rejections.push_back({
+      1,
+      "bad-fragment",
+      "fixture-compiler-error",
+  });
+  draft::DiagnosticSink correction_diagnostics;
+  draft::SynthesisResponse correction_response;
+  EXPECT(state,
+      provider.synthesize(
+          provider.state,
+          correction,
+          correction_response,
+          correction_diagnostics));
+  EXPECT(state, correction_response.source == "40 + 2\n");
+  EXPECT(state, !correction_diagnostics.has_errors());
 
   // Readable branch facts duplicate their content identity deliberately. The
   // adapter rechecks that boundary before starting Codex, just as it does for
