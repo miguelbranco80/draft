@@ -608,6 +608,11 @@ private:
       return *actual == constraint;
     }
     if (constraint == TypeConstraintKind::AnyType) return true;
+    // A distinct type deliberately keeps the operators of its underlying
+    // scalar, but it is not a member of the closed built-in constraint sets.
+    // Aliases need no special handling because they resolve to the aliased
+    // TypeId before this point.
+    if (kind == TypeKind::Distinct) return false;
     if (constraint == TypeConstraintKind::Integer) {
       return semantic_.types.is_integer(argument);
     }

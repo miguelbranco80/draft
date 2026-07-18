@@ -391,6 +391,8 @@ Number_Box[T: number] :: struct {
     value: T,
 }
 
+Counter :: distinct u32
+
 Missing_Argument :: struct {
     value: Number_Box,
 }
@@ -398,9 +400,13 @@ Missing_Argument :: struct {
 Wrong_Constraint :: struct {
     value: Number_Box[bool],
 }
+
+Wrong_Distinct_Constraint :: struct {
+    value: Number_Box[Counter],
+}
 )draft");
 
-  EXPECT(state, source.diagnostics.error_count() == 2);
+  EXPECT(state, source.diagnostics.error_count() == 3);
   const std::string rendered =
       draft::render_diagnostics(source.sources, source.diagnostics);
   EXPECT(state, rendered.find("requires explicit type arguments") !=

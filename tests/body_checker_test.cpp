@@ -1063,6 +1063,33 @@ main :: proc() {
   EXPECT(state, type_assertion_rendered.find(
                     "static assertion failed: T must occupy four bytes") !=
                     std::string::npos);
+
+  CheckedSource distinct_constraint(R"draft(
+package bodies
+
+Counter :: distinct u32
+
+accept[T: number] :: proc(value: T) -> T {
+    return value
+}
+
+main :: proc() {
+    counter := cast[Counter](cast[u32](1))
+    explicit := accept[Counter](counter)
+    inferred := accept(counter)
+}
+)draft");
+  if (distinct_constraint.diagnostics.error_count() != 2) {
+    std::cerr << draft::render_diagnostics(
+        distinct_constraint.sources, distinct_constraint.diagnostics);
+  }
+  EXPECT(state, !distinct_constraint.bodies.ok);
+  EXPECT(state, distinct_constraint.diagnostics.error_count() == 2);
+  const std::string distinct_rendered = draft::render_diagnostics(
+      distinct_constraint.sources, distinct_constraint.diagnostics);
+  EXPECT(state, distinct_rendered.find(
+                    "procedure type argument does not satisfy its constraint") !=
+                    std::string::npos);
 }
 
 void test_definite_initialization(TestState &state) {

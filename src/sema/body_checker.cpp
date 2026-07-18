@@ -1950,6 +1950,13 @@ private:
       }
       return *actual == constraint;
     }
+    // Distinct scalars inherit their underlying operator vocabulary but do not
+    // join the built-in integer/float/number constraint sets. An alias has
+    // already resolved to its target TypeId and therefore remains eligible.
+    if (kind == TypeKind::Distinct &&
+        constraint != TypeConstraintKind::AnyType) {
+      return false;
+    }
     switch (constraint) {
     case TypeConstraintKind::AnyType:
       return true;
@@ -3546,8 +3553,11 @@ private:
       }
       const HirExpressionId callee = check_expression(tree, node.children.front(), scope);
       const TypeId callee_type = hir_.expression(callee).type;
-      if (is_invalid_type(callee_type) ||
-          semantic_.types.type(callee_type).kind != TypeKind::Procedure) {
+      // A failed specialization has already emitted the precise type/value
+      // argument diagnostic. Do not obscure it with a second complaint that
+      // the resulting invalid placeholder is not callable.
+      if (is_invalid_type(callee_type)) return invalid_expression(node.range);
+      if (semantic_.types.type(callee_type).kind != TypeKind::Procedure) {
         diagnostics_.error(node.range, "called expression does not have procedure type");
         return invalid_expression(node.range);
       }
