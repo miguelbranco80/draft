@@ -883,6 +883,58 @@ main :: proc() {
                     std::string::npos);
 }
 
+void test_parameter_immutability(TestState &state) {
+  // Parameters carry values into a procedure; they are not hidden mutable
+  // locals. Explicit indirection is different: a pointer, multi-pointer, or
+  // slice parameter is an immutable view value whose referenced storage may be
+  // mutated. Keeping those two rules separate makes mutation visible in the
+  // procedure signature without making ordinary value parameters surprising.
+  CheckedSource explicit_views(R"draft(
+package bodies
+
+mutate_views :: proc(slice: []i64, pointer: ^i64, multi: [^]i64) {
+    slice[0] = 1
+    pointer^ = 2
+    multi[0] = 3
+}
+)draft");
+
+  if (explicit_views.diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(
+        explicit_views.sources, explicit_views.diagnostics);
+  }
+  EXPECT(state, explicit_views.bodies.ok);
+  EXPECT(state, !explicit_views.diagnostics.has_errors());
+
+  CheckedSource copied_values(R"draft(
+package bodies
+
+Pair :: struct {
+    left: i64,
+    right: i64,
+}
+
+mutate_values :: proc(value: i64, pair: Pair, fixed: [2]i64) {
+    value = 1
+    pair.left = 2
+    fixed[0] = 3
+    pointer := &value
+    view := fixed[:]
+}
+)draft");
+
+  EXPECT(state, !copied_values.bodies.ok);
+  EXPECT(state, copied_values.diagnostics.error_count() == 5);
+  const std::string rendered = draft::render_diagnostics(
+      copied_values.sources, copied_values.diagnostics);
+  EXPECT(state, rendered.find("assignment target is not addressable") !=
+                    std::string::npos);
+  EXPECT(state, rendered.find("address-of requires addressable storage") !=
+                    std::string::npos);
+  EXPECT(state, rendered.find("slicing an array requires addressable storage") !=
+                    std::string::npos);
+}
+
 void test_multi_pointer_slice_shape(TestState &state) {
   CheckedSource source(R"draft(
 package bodies
@@ -1369,6 +1421,7 @@ int main() {
   test_switch_case_semantics(state);
   test_local_type_declarations(state);
   test_string_index_is_immutable(state);
+  test_parameter_immutability(state);
   test_multi_pointer_slice_shape(state);
   test_constant_bounds_diagnostics(state);
   test_parametric_procedure_value_diagnostics(state);

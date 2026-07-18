@@ -153,6 +153,7 @@ public:
           }
         }
         procedure_values_.clear();
+        storage_origins_.clear();
         seed_parameter_slots(procedure.symbol);
         visit_block(procedure.body);
         if (result_.procedures[index].return_values !=
@@ -173,6 +174,7 @@ public:
     current_procedure_ = {};
     current_result_type_ = {};
     procedure_values_.clear();
+    storage_origins_.clear();
 
     // Every progress step adds one member of a finite source-derived set. The
     // deterministic procedure/call/effect traversal makes recursion converge
@@ -229,6 +231,19 @@ private:
     // names storage local to this procedure even when its address is passed to
     // another procedure.
     int indirection = 0;
+
+    bool operator==(const StoragePath &) const = default;
+  };
+
+  // A pointer-valued local may retain an address derived from a formal
+  // parameter. Procedure-effect summaries must follow that origin through the
+  // explicit local copy; otherwise `copy := parameter; write(copy)` would hide
+  // a caller-visible write merely because the source used immutable parameter
+  // bindings correctly. Multiple rows deliberately form a may-origin set for
+  // assignments in different control-flow paths.
+  struct StoredStorageOrigin {
+    SymbolId binding;
+    StoragePath origin;
   };
 
   struct StoredProcedureValue {
@@ -380,6 +395,112 @@ private:
     const std::optional<std::string> name = member_name(expression);
     if (!result.has_value() || !name.has_value()) return std::nullopt;
     result->fields.push_back(*name);
+    return result;
+  }
+
+  [[nodiscard]] bool data_pointer_type(TypeId type) const {
+    if (!type.is_valid()) return false;
+    const TypeKind kind = package_.types.type(type).kind;
+    return kind == TypeKind::Pointer || kind == TypeKind::MultiPointer;
+  }
+
+  [[nodiscard]] std::vector<StoragePath> pointer_value_origins(
+      HirExpressionId id) const {
+    if (!id.is_valid()) return {};
+    const HirExpression &expression = hir_.expression(id);
+
+    // A local pointer symbol denotes the pointer stored in its slot, not the
+    // slot itself. Recover every address that may have been assigned to it.
+    if (expression.kind == HirExpressionKind::Symbol &&
+        expression.symbol.is_valid() &&
+        package_.symbols.symbol(expression.symbol).kind == SymbolKind::Local) {
+      std::vector<StoragePath> result;
+      for (const StoredStorageOrigin &stored : storage_origins_) {
+        if (stored.binding == expression.symbol &&
+            std::find(result.begin(), result.end(), stored.origin) ==
+                result.end()) {
+          result.push_back(stored.origin);
+        }
+      }
+      if (!result.empty()) return result;
+    }
+
+    if (const std::optional<StoragePath> direct = storage_path(id)) {
+      return {*direct};
+    }
+
+    // Pointer-preserving casts do not sever effect provenance.
+    if (expression.kind == HirExpressionKind::Intrinsic &&
+        expression.constant.kind == ConstantKind::String &&
+        expression.constant.text == "cast" &&
+        expression.operands.size() == 1 &&
+        data_pointer_type(expression.type)) {
+      return pointer_value_origins(expression.operands.front());
+    }
+    return {};
+  }
+
+  void merge_storage_origins(SymbolId binding, HirExpressionId source) {
+    if (!binding.is_valid() ||
+        !data_pointer_type(package_.symbols.symbol(binding).type)) {
+      return;
+    }
+    for (const StoragePath &origin : pointer_value_origins(source)) {
+      const StoredStorageOrigin candidate{binding, origin};
+      const bool present = std::any_of(
+          storage_origins_.begin(),
+          storage_origins_.end(),
+          [&](const StoredStorageOrigin &stored) {
+            return stored.binding == candidate.binding &&
+                stored.origin == candidate.origin;
+          });
+      if (!present) storage_origins_.push_back(candidate);
+    }
+  }
+
+  void resolve_storage_path(
+      StoragePath path,
+      std::vector<SymbolId> &active,
+      std::vector<StoragePath> &result) const {
+    if (path.context || path.indirection <= 0 || !path.symbol.is_valid() ||
+        package_.symbols.symbol(path.symbol).kind != SymbolKind::Local) {
+      if (std::find(result.begin(), result.end(), path) == result.end()) {
+        result.push_back(std::move(path));
+      }
+      return;
+    }
+
+    if (std::find(active.begin(), active.end(), path.symbol) != active.end()) {
+      // A pure local cycle has no parameter-rooted write to publish. Other
+      // non-cyclic rows in the same may-origin set are still retained.
+      return;
+    }
+    active.push_back(path.symbol);
+    bool found = false;
+    for (const StoredStorageOrigin &stored : storage_origins_) {
+      if (stored.binding != path.symbol) continue;
+      found = true;
+      StoragePath resolved = stored.origin;
+      resolved.indirection += path.indirection;
+      resolved.fields.insert(
+          resolved.fields.end(), path.fields.begin(), path.fields.end());
+      resolve_storage_path(std::move(resolved), active, result);
+    }
+    active.pop_back();
+
+    // An untracked local remains local storage. It cannot produce a formal
+    // parameter write summary, but preserving it lets procedure-value storage
+    // tracking continue to operate normally.
+    if (!found && std::find(result.begin(), result.end(), path) == result.end()) {
+      result.push_back(std::move(path));
+    }
+  }
+
+  [[nodiscard]] std::vector<StoragePath> resolved_storage_paths(
+      StoragePath path) const {
+    std::vector<StoragePath> result;
+    std::vector<SymbolId> active;
+    resolve_storage_path(std::move(path), active, result);
     return result;
   }
 
@@ -727,10 +848,12 @@ private:
       // Apply every dereference performed from the callee's formal parameter.
       // Explicit address operations already contributed negative balances.
       destination->indirection += static_cast<int>(indirection);
-      apply_value_write(
-          std::move(*destination),
-          path,
-          substitute_return_value(value, arguments));
+      const ProcedureValueSummary substituted =
+          substitute_return_value(value, arguments);
+      for (StoragePath resolved :
+           resolved_storage_paths(std::move(*destination))) {
+        apply_value_write(std::move(resolved), path, substituted);
+      }
     };
 
     if (const ProcedureEffectSummary *summary = result_.find(callee)) {
@@ -753,10 +876,12 @@ private:
           storage_path(call.operands[write.parameter + 1U]);
       if (!destination.has_value()) continue;
       destination->indirection += static_cast<int>(write.indirection);
-      apply_value_write(
-          std::move(*destination),
-          write.path,
-          imported_write_value(write, arguments));
+      const ProcedureValueSummary value =
+          imported_write_value(write, arguments);
+      for (StoragePath resolved :
+           resolved_storage_paths(std::move(*destination))) {
+        apply_value_write(std::move(resolved), write.path, value);
+      }
     }
   }
 
@@ -836,31 +961,35 @@ private:
     const HirExpression &expression = hir_.expression(id);
 
     if (std::optional<StoragePath> location = storage_path(id)) {
-      location->fields.insert(
-          location->fields.end(), relative_path.begin(), relative_path.end());
-      if (const ProcedureValueSummary *stored = stored_value(
-              location->symbol, location->fields, location->context)) {
-        return *stored;
-      }
-      if (!location->context) {
-        const Symbol &root = package_.symbols.symbol(location->symbol);
+      for (StoragePath resolved :
+           resolved_storage_paths(std::move(*location))) {
+        resolved.fields.insert(
+            resolved.fields.end(), relative_path.begin(), relative_path.end());
+        if (const ProcedureValueSummary *stored = stored_value(
+                resolved.symbol, resolved.fields, resolved.context)) {
+          merge_value(value, *stored);
+          continue;
+        }
+        if (resolved.context) {
+          add_flow_slot(value, {
+              std::numeric_limits<std::uint32_t>::max(),
+              std::move(resolved.fields),
+              true});
+          continue;
+        }
+        const Symbol &root = package_.symbols.symbol(resolved.symbol);
         if (root.kind == SymbolKind::Parameter) {
           const std::optional<std::uint32_t> ordinal =
-              parameter_ordinal(location->symbol);
+              parameter_ordinal(resolved.symbol);
           if (ordinal.has_value()) {
-            value.flow_slots.push_back(
-                {*ordinal, std::move(location->fields), false});
-            return value;
+            add_flow_slot(
+                value, {*ordinal, std::move(resolved.fields), false});
+            continue;
           }
         }
-      } else {
-        value.flow_slots.push_back({
-            std::numeric_limits<std::uint32_t>::max(),
-            std::move(location->fields),
-            true});
-        return value;
+        value.unknown = true;
       }
-      value.unknown = true;
+      if (value_is_empty(value)) value.unknown = true;
       return value;
     }
 
@@ -1503,6 +1632,7 @@ private:
           binding,
           package_.symbols.symbol(binding).type,
           statement.expressions.front());
+      merge_storage_origins(binding, statement.expressions.front());
     } else if (statement.kind == HirStatementKind::Assignment &&
                statement.operation == HirOperation::Assign) {
       const std::size_t left_count = std::min(
@@ -1517,11 +1647,14 @@ private:
           std::optional<StoragePath> destination =
               storage_path(statement.expressions[index]);
           if (!destination.has_value()) continue;
-          merge_assignment_value_from_path(
-              std::move(*destination),
-              left.type,
-              source,
-              {std::to_string(statement.assignment_member_indices[index])});
+          for (StoragePath resolved :
+               resolved_storage_paths(std::move(*destination))) {
+            merge_assignment_value_from_path(
+                std::move(resolved),
+                left.type,
+                source,
+                {std::to_string(statement.assignment_member_indices[index])});
+          }
         }
         return;
       }
@@ -1532,10 +1665,20 @@ private:
         std::optional<StoragePath> destination =
             storage_path(statement.expressions[index]);
         if (!destination.has_value()) continue;
-        merge_assignment_value(
-            std::move(*destination),
-            left.type,
-            statement.expressions[left_count + index]);
+        for (StoragePath resolved :
+             resolved_storage_paths(std::move(*destination))) {
+          merge_assignment_value(
+              std::move(resolved),
+              left.type,
+              statement.expressions[left_count + index]);
+        }
+        if (left.kind == HirExpressionKind::Symbol &&
+            left.symbol.is_valid() &&
+            package_.symbols.symbol(left.symbol).kind == SymbolKind::Local) {
+          merge_storage_origins(
+              left.symbol,
+              statement.expressions[left_count + index]);
+        }
       }
     }
     for (HirStatementId header : statement.header_statements) {
@@ -1560,6 +1703,7 @@ private:
   SymbolId current_procedure_;
   TypeId current_result_type_;
   std::vector<StoredProcedureValue> procedure_values_;
+  std::vector<StoredStorageOrigin> storage_origins_;
   std::vector<CompositionFrame> composition_stack_;
 };
 

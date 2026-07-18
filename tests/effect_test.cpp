@@ -566,10 +566,11 @@ forward_install :: proc(destination: ^Callback_Box, callback: proc()) {
 }
 
 // A two-level contract must retain both dereferences. Taking the address of the
-// pointer parameter below removes one level, leaving a normal one-level write
-// contract for callers of deep_forward.
+// explicit local pointer copy below removes one level, leaving a normal
+// one-level write contract for callers of deep_forward.
 deep_forward :: proc(destination: ^Callback_Box, callback: proc()) {
-    deep_install(&destination, callback)
+    local_destination := destination
+    deep_install(&local_destination, callback)
 }
 
 install :: proc(destination: ^Callback_Box, callback: proc()) {
@@ -580,16 +581,33 @@ deep_install :: proc(destination: ^^Callback_Box, callback: proc()) {
     destination^^.callback = callback
 }
 
-// A value parameter is local storage. Assigning it does not change the value
-// held by the caller and therefore must not publish a write-back contract.
+// A mutable local copied from a value parameter does not change the value held
+// by the caller and therefore must not publish a write-back contract.
 local_only :: proc(box: Callback_Box, callback: proc()) {
-    box.callback = callback
+    local_box := box
+    local_box.callback = callback
 }
 
-// Taking the address of a value parameter still only exposes this procedure's
-// local copy. The address and the install contract's dereference cancel.
+// Taking the address of an explicit local copy still only exposes this
+// procedure's storage. The address and install contract's dereference cancel.
 install_local_copy :: proc(box: Callback_Box, callback: proc()) {
-    install(&box, callback)
+    local_box := box
+    install(&local_box, callback)
+}
+
+// Pointer locals retain a conservative may-origin set. A later call through
+// the local therefore publishes the write contract for both possible formal
+// parameters instead of trusting one source-order assignment.
+choose_install :: proc(
+    left, right: ^Callback_Box,
+    callback: proc(),
+    choose_left: bool,
+) {
+    destination := left
+    if !choose_left {
+        destination = right
+    }
+    install(destination, callback)
 }
 
 danger :: proc() {
@@ -639,6 +657,8 @@ through_install :: proc() {
       symbol(semantics.package, "local_only");
   const std::optional<draft::SymbolId> install_local_copy =
       symbol(semantics.package, "install_local_copy");
+  const std::optional<draft::SymbolId> choose_install =
+      symbol(semantics.package, "choose_install");
   const std::optional<draft::SymbolId> through_install =
       symbol(semantics.package, "through_install");
   EXPECT(state, install.has_value());
@@ -647,9 +667,11 @@ through_install :: proc() {
   EXPECT(state, deep_forward.has_value());
   EXPECT(state, local_only.has_value());
   EXPECT(state, install_local_copy.has_value());
+  EXPECT(state, choose_install.has_value());
   EXPECT(state, through_install.has_value());
   if (!install || !forward_install || !deep_install || !deep_forward ||
-      !local_only || !install_local_copy || !through_install) {
+      !local_only || !install_local_copy || !choose_install ||
+      !through_install) {
     return;
   }
 
@@ -663,6 +685,8 @@ through_install :: proc() {
   const draft::ProcedureEffectSummary *local_summary = effects.find(*local_only);
   const draft::ProcedureEffectSummary *local_call_summary =
       effects.find(*install_local_copy);
+  const draft::ProcedureEffectSummary *choice_summary =
+      effects.find(*choose_install);
   const draft::ProcedureEffectSummary *caller_summary =
       effects.find(*through_install);
   EXPECT(state, install_summary != nullptr);
@@ -671,11 +695,12 @@ through_install :: proc() {
   EXPECT(state, deep_forward_summary != nullptr);
   EXPECT(state, local_summary != nullptr);
   EXPECT(state, local_call_summary != nullptr);
+  EXPECT(state, choice_summary != nullptr);
   EXPECT(state, caller_summary != nullptr);
   if (install_summary == nullptr || forward_summary == nullptr ||
       deep_summary == nullptr || deep_forward_summary == nullptr ||
       local_summary == nullptr || local_call_summary == nullptr ||
-      caller_summary == nullptr) {
+      choice_summary == nullptr || caller_summary == nullptr) {
     return;
   }
 
@@ -705,6 +730,20 @@ through_install :: proc() {
   }
   EXPECT(state, local_summary->field_writes.empty());
   EXPECT(state, local_call_summary->field_writes.empty());
+  EXPECT(state, choice_summary->field_writes.size() == 2);
+  bool writes_left = false;
+  bool writes_right = false;
+  for (const draft::ProcedureFieldWriteSummary &write :
+       choice_summary->field_writes) {
+    writes_left = writes_left ||
+        (write.parameter == 0 && write.indirection == 1 &&
+         write.path == std::vector<std::string>{"callback"});
+    writes_right = writes_right ||
+        (write.parameter == 1 && write.indirection == 1 &&
+         write.path == std::vector<std::string>{"callback"});
+  }
+  EXPECT(state, writes_left);
+  EXPECT(state, writes_right);
   EXPECT(state,
       has_effect(*caller_summary, draft::EffectKind::RuntimeAssert));
   EXPECT(state,

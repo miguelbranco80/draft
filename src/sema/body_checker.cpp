@@ -3047,8 +3047,12 @@ private:
       expression.symbol = *found;
       expression.type = apply_expected_type(
           substitute_active(symbol.type, node.range), expected, node.range);
+      // Parameters are immutable value bindings. Pointer and slice parameters
+      // may still mutate the storage they explicitly reference through
+      // dereference/index operations, but the parameter slot itself and fields
+      // or fixed-array elements inside its copied value are not addressable.
       expression.addressable = symbol.kind == SymbolKind::Variable ||
-          symbol.kind == SymbolKind::Local || symbol.kind == SymbolKind::Parameter;
+          symbol.kind == SymbolKind::Local;
       if (const ConstantValue *constant = constants_.find(*found)) {
         expression.kind = HirExpressionKind::Constant;
         expression.constant = *constant;
@@ -3777,7 +3781,9 @@ private:
       // A string is an immutable byte view. Lowering still computes an address
       // internally to load the byte, but source code may not take that address
       // or use the indexed expression as an assignment target.
-      expression.addressable = base.kind != TypeKind::String;
+      expression.addressable =
+          base.kind == TypeKind::Slice || base.kind == TypeKind::MultiPointer ||
+          (base.kind == TypeKind::Array && base_expression.addressable);
       return hir_.add_expression(std::move(expression));
     }
 
@@ -3790,7 +3796,19 @@ private:
         result = hir_.expression(base_id).type;
       } else if (base.kind == TypeKind::String) {
         result = semantic_.types.builtins().string_type;
-      } else if (base.kind == TypeKind::Array || base.kind == TypeKind::MultiPointer) {
+      } else if (base.kind == TypeKind::Array) {
+        result = semantic_.types.slice(base.element);
+        // An array slice contains a pointer into the array's storage. Do not
+        // manufacture that mutable view from a temporary or from an immutable
+        // value parameter; the caller must make an explicit mutable local copy
+        // first. Slice and multi-pointer values already are explicit views and
+        // therefore do not need this storage check.
+        if (!hir_.expression(base_id).addressable) {
+          diagnostics_.error(
+              tree.node(node.children.front()).range,
+              "slicing an array requires addressable storage");
+        }
+      } else if (base.kind == TypeKind::MultiPointer) {
         result = semantic_.types.slice(base.element);
       } else {
         diagnostics_.error(

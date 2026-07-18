@@ -139,7 +139,9 @@ type aliases/nominals/local generics with specialization-specific layouts,
 qualified/applied/grouped/tuple type-value aliases,
 hidden Context propagation, and collision-free native identities. Runtime
 parameters, locals, and iteration bindings from an enclosing invocation are
-rejected as captures and must be passed explicitly. The hosted temp allocator is
+rejected as captures and must be passed explicitly. Procedure parameters are
+immutable value bindings: mutation requires an explicit local copy or an
+explicit pointer, multi-pointer, or slice parameter. The hosted temp allocator is
 independently owned per pthread, supports explicit group
 reset, and is destroyed at thread exit; a spawned child replaces rather than
 shares the parent's temporary provider state. The
