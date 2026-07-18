@@ -1275,6 +1275,11 @@ void test_operator_type_boundaries(TestState &state) {
   AnalyzedSource valid(R"draft(
 package conditions
 
+Mode :: enum {
+    Zero,
+    One,
+}
+
 Distance :: distinct i64
 Good :: cast[Distance](cast[i64](40)) + 2
 
@@ -1291,6 +1296,8 @@ Generic_Selected :: identity[bool](false && true)
 callback :: proc() {
 }
 Good_Nil :: callback != nil
+Inferred_Nil_Callback :: nil if true else callback
+Inferred_Mode :: .One if true else cast[Mode](cast[u8](0))
 Short_Circuit_Division :: false && ((1 / 0) == 0)
 Selected_Conditional :: 42 if true else (1 / 0)
 )draft");
@@ -1300,6 +1307,44 @@ Selected_Conditional :: 42 if true else (1 / 0)
   EXPECT(state, valid.analysis.ok);
   EXPECT(state, !valid.diagnostics.has_errors());
   EXPECT(state, valid.analysis.package.parametric_instances.empty());
+  const std::optional<draft::SymbolId> inferred_nil =
+      find_symbol(valid.analysis.package, "Inferred_Nil_Callback");
+  const std::optional<draft::SymbolId> inferred_mode =
+      find_symbol(valid.analysis.package, "Inferred_Mode");
+  EXPECT(state, inferred_nil.has_value());
+  EXPECT(state, inferred_mode.has_value());
+  if (inferred_nil.has_value()) {
+    const draft::Symbol &symbol =
+        valid.analysis.package.symbols.symbol(*inferred_nil);
+    EXPECT(state, symbol.type.is_valid());
+    if (symbol.type.is_valid()) {
+      EXPECT(state,
+          valid.analysis.package.types.type(symbol.type).kind ==
+              draft::TypeKind::Procedure);
+    }
+    const draft::ConstantValue *value =
+        valid.analysis.constants.find(*inferred_nil);
+    EXPECT(state, value != nullptr);
+    if (value != nullptr) {
+      EXPECT(state, value->kind == draft::ConstantKind::Nil);
+    }
+  }
+  if (inferred_mode.has_value()) {
+    const draft::Symbol &symbol =
+        valid.analysis.package.symbols.symbol(*inferred_mode);
+    EXPECT(state, symbol.type.is_valid());
+    if (symbol.type.is_valid()) {
+      EXPECT(state,
+          valid.analysis.package.types.type(symbol.type).kind ==
+              draft::TypeKind::Enum);
+    }
+    const draft::ConstantValue *value =
+        valid.analysis.constants.find(*inferred_mode);
+    EXPECT(state, value != nullptr);
+    if (value != nullptr) {
+      EXPECT(state, value->kind == draft::ConstantKind::EnumLabel);
+    }
+  }
 
   AnalyzedSource invalid(R"draft(
 package conditions

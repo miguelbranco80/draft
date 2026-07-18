@@ -1538,6 +1538,27 @@ private:
     return TokenKind::Invalid;
   }
 
+  // `nil` deliberately has no standalone type. Keep this small syntax query
+  // next to the other operator-shape helpers so binary comparisons and
+  // conditional expressions discover its context in exactly the same way.
+  [[nodiscard]] bool is_nil_literal(
+      const SyntaxTree &tree, NodeId expression) const {
+    const SyntaxNode &node = tree.node(expression);
+    return node.kind == NodeKind::LiteralExpression &&
+        node.token_begin < node.token_end &&
+        tree.token(node.token_begin).kind == TokenKind::KeywordNil;
+  }
+
+  // A contextual enum/union alternative is like `nil`: its spelling identifies
+  // a member only after the surrounding expression identifies the owning type.
+  // This predicate does not inspect or evaluate values; it only lets a sibling
+  // branch provide the missing expected type during semantic checking.
+  [[nodiscard]] bool needs_value_context(
+      const SyntaxTree &tree, NodeId expression) const {
+    return is_nil_literal(tree, expression) ||
+        tree.node(expression).kind == NodeKind::ContextualAlternativeExpression;
+  }
+
   // Converts the closed source operator vocabulary into the representation
   // consumed by HIR and MIR. Invalid is deliberate for punctuation that is not
   // an executable operator; callers have already emitted the contextual
@@ -3986,14 +4007,8 @@ private:
       // therefore has to borrow the type of the other operand.  Do this here,
       // where both operands are visible, instead of giving nil a magic raw
       // pointer type that would weaken the rest of contextual type checking.
-      const auto is_nil_literal = [&tree](NodeId child) {
-        const SyntaxNode &candidate = tree.node(child);
-        return candidate.kind == NodeKind::LiteralExpression &&
-            candidate.token_begin < candidate.token_end &&
-            tree.token(candidate.token_begin).kind == TokenKind::KeywordNil;
-      };
-      const bool left_is_nil = is_nil_literal(node.children[0]);
-      const bool right_is_nil = is_nil_literal(node.children[1]);
+      const bool left_is_nil = is_nil_literal(tree, node.children[0]);
+      const bool right_is_nil = is_nil_literal(tree, node.children[1]);
       HirExpressionId left_id;
       HirExpressionId right_id;
       if (left_is_nil && !right_is_nil) {
@@ -4755,23 +4770,47 @@ private:
       if (node.children.size() != 3) return invalid_expression(node.range);
       const HirExpressionId condition = check_expression(
           tree, node.children[1], scope, semantic_.types.builtins().bool_type);
-      const HirExpressionId left = check_expression(tree, node.children[0], scope, expected);
-      const TypeId left_type = hir_.expression(left).type;
-      // A concrete left branch supplies useful context to `nil`, contextual
-      // alternatives, and untyped constants on the right. An untyped numeric
-      // left branch does not: both untyped branches must be inspected before
-      // deciding whether their common exact domain is integer or floating.
-      TypeId right_expected = expected;
-      if (!right_expected.is_valid() &&
-          !is_untyped_integer(left_type) &&
-          !is_untyped_float(left_type)) {
-        right_expected = left_type;
+
+      // A direct `nil` or `.alternative` branch cannot be checked without a
+      // type. When there is no outer expected type and exactly one branch needs
+      // context, check the independently typed branch first and use its type for
+      // the contextual branch. This is semantic discovery only: MIR still
+      // evaluates the condition first and then only the selected branch.
+      HirExpressionId left;
+      HirExpressionId right;
+      const bool left_needs_context =
+          needs_value_context(tree, node.children[0]);
+      const bool right_needs_context =
+          needs_value_context(tree, node.children[2]);
+      if (!expected.is_valid() && left_needs_context &&
+          !right_needs_context) {
+        right = check_expression(tree, node.children[2], scope);
+        left = check_expression(
+            tree,
+            node.children[0],
+            scope,
+            hir_.expression(right).type);
+      } else {
+        left = check_expression(tree, node.children[0], scope, expected);
       }
-      const HirExpressionId right = check_expression(
-          tree,
-          node.children[2],
-          scope,
-          right_expected);
+      const TypeId left_type = hir_.expression(left).type;
+      if (!right.is_valid()) {
+        // A concrete left branch supplies useful context to `nil`, contextual
+        // alternatives, and untyped constants on the right. An untyped numeric
+        // left branch does not: both untyped branches must be inspected before
+        // deciding whether their common exact domain is integer or floating.
+        TypeId right_expected = expected;
+        if (!right_expected.is_valid() &&
+            !is_untyped_integer(left_type) &&
+            !is_untyped_float(left_type)) {
+          right_expected = left_type;
+        }
+        right = check_expression(
+            tree,
+            node.children[2],
+            scope,
+            right_expected);
+      }
       TypeId result = left_type;
       if (hir_.expression(right).type != left_type) {
         result = common_numeric_type(left_type, hir_.expression(right).type, node.range);

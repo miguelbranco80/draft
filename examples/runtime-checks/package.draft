@@ -195,6 +195,30 @@ inferred_tuple_conditional :: proc(condition: bool) -> f64 {
     return cast[f64](pair.0) + pair.1
 }
 
+inferred_pointer_conditional :: proc(
+    condition: bool,
+    fallback: ^i64,
+) -> ^i64 {
+    selected := nil if condition else fallback
+    return selected
+}
+
+inferred_code_conditional :: proc(
+    condition: bool,
+    fallback: Code,
+) -> Code {
+    selected := .Seven if condition else fallback
+    return selected
+}
+
+inferred_outcome_conditional :: proc(
+    condition: bool,
+    fallback: Outcome,
+) -> Outcome {
+    selected := .value(42) if condition else fallback
+    return selected
+}
+
 identity[T: number] :: proc(value: T) -> T {
     return value
 }
@@ -543,6 +567,21 @@ main :: proc() {
     assert(contextual_tuple.0 == 1.0 && contextual_tuple.1 == 2.5)
     assert(inferred_tuple_conditional(true) == 3.5)
     assert(inferred_tuple_conditional(false) == 7.5)
+    conditional_pointee: i64 = 42
+    assert(inferred_pointer_conditional(true, &conditional_pointee) == nil)
+    assert(inferred_pointer_conditional(false, &conditional_pointee) ==
+        &conditional_pointee)
+    assert(inferred_code_conditional(true, .Zero) == .Seven)
+    assert(inferred_code_conditional(false, .Zero) == .Zero)
+    conditional_outcome: Outcome = .failure(7)
+    assert(read_outcome(inferred_outcome_conditional(
+        true,
+        conditional_outcome,
+    )) == 42)
+    assert(read_outcome(inferred_outcome_conditional(
+        false,
+        conditional_outcome,
+    )) == -1)
     assert(identity[i64](42) == 42)
     value: u32 = 17
     assert(identity(value) == 17)

@@ -555,6 +555,18 @@ LLVM's same-width shift instruction. This avoids truncating a width such as 128
 into a narrow count type such as `i8` while retaining the source rule that every
 invalid count traps before the shift executes.
 
+## Conditional context discovery
+
+Status: complete Draft 1 contextual-value inference rule.
+
+An outer expected type continues to flow into both conditional value branches.
+Without one, a direct `nil` or contextual enum/tagged-union alternative may take
+its type from the opposite, independently typed branch regardless of whether it
+appears on the left or right. This is a type-checking dependency only: runtime
+evaluation still executes the condition first and then exactly one value branch.
+If both branches require context, the compiler does not guess an owner or pointer
+kind; an outer expected type remains mandatory.
+
 ## Hosted process views and core threads
 
 Status: AArch64 macOS hosted runtime contract.

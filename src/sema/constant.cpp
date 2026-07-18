@@ -716,6 +716,138 @@ private:
         required);
   }
 
+  [[nodiscard]] bool is_nil_literal(
+      const SyntaxTree &tree, NodeId expression_id) const {
+    const SyntaxNode &expression = tree.node(expression_id);
+    return expression.kind == NodeKind::LiteralExpression &&
+        expression.token_begin < expression.token_end &&
+        tree.token(expression.token_begin).kind == TokenKind::KeywordNil;
+  }
+
+  [[nodiscard]] bool needs_value_context(
+      const SyntaxTree &tree, NodeId expression_id) const {
+    return is_nil_literal(tree, expression_id) ||
+        tree.node(expression_id).kind ==
+            NodeKind::ContextualAlternativeExpression;
+  }
+
+  // Finds the declared type of a non-executed expression when that type is
+  // enough to contextualize the selected branch of a constant conditional.
+  // This deliberately recognizes only shapes whose type is available without
+  // evaluating their value. In particular, it never enters a dead procedure
+  // call or performs dead arithmetic merely to discover a type.
+  [[nodiscard]] TypeId declared_value_type_hint(
+      const SyntaxTree &tree, NodeId expression_id, ScopeId scope) {
+    const SyntaxNode &expression = tree.node(expression_id);
+    if (expression.kind == NodeKind::NameExpression) {
+      const std::optional<std::string> name = final_name(tree, expression);
+      if (!name.has_value()) return {};
+      if (const LocalBinding *local = local_binding(*name)) {
+        return local->type;
+      }
+      const std::optional<SymbolId> found =
+          semantic_.symbols.lookup(scope, *name);
+      if (!found.has_value()) return {};
+      const Symbol &symbol = semantic_.symbols.symbol(*found);
+      TypeId type = substitute_local_type(symbol.type);
+      if ((!type.is_valid() ||
+           semantic_.types.type(type).kind == TypeKind::Invalid) &&
+          (symbol.kind == SymbolKind::Constant ||
+           symbol.kind == SymbolKind::UnresolvedDeclaration)) {
+        // Constant lookup is side-effect free and guarded against cycles by
+        // evaluate_binding. This permits forward constant names to expose an
+        // already inferable type without executing an arbitrary dead branch.
+        const EvalResult value = evaluate_binding(*found, false);
+        if (value.status == EvalStatus::Ready) {
+          type = substitute_local_type(value.type);
+        }
+      }
+      return type.is_valid() &&
+              semantic_.types.type(type).kind != TypeKind::Invalid
+          ? type
+          : TypeId{};
+    }
+    if (expression.kind == NodeKind::MemberExpression) {
+      if (const std::optional<SymbolId> imported =
+              imported_member(tree, expression, scope)) {
+        return substitute_local_type(
+            semantic_.symbols.symbol(*imported).type);
+      }
+      return {};
+    }
+    if ((expression.kind == NodeKind::GroupExpression ||
+         expression.kind == NodeKind::DenyExpression) &&
+        !expression.children.empty()) {
+      return declared_value_type_hint(
+          tree, expression.children.back(), scope);
+    }
+    if (expression.kind == NodeKind::ConditionalExpression &&
+        expression.children.size() == 3) {
+      const TypeId left = declared_value_type_hint(
+          tree, expression.children.front(), scope);
+      const TypeId right = declared_value_type_hint(
+          tree, expression.children.back(), scope);
+      if (left.is_valid() && right.is_valid() && left != right) return {};
+      return left.is_valid() ? left : right;
+    }
+    if (expression.kind != NodeKind::CallExpression ||
+        expression.children.empty()) {
+      return {};
+    }
+
+    const SyntaxNode &callee = tree.node(expression.children.front());
+    if (callee.kind == NodeKind::BracketExpression &&
+        callee.children.size() == 2) {
+      const SyntaxNode &base = tree.node(callee.children.front());
+      const std::optional<std::string> name = final_name(tree, base);
+      if (name.has_value() && *name == "cast") {
+        return type_value(tree, callee.children.back(), scope).value_or(
+            TypeId{});
+      }
+    }
+
+    NodeId base_callee = expression.children.front();
+    if (callee.kind == NodeKind::BracketExpression &&
+        !callee.children.empty()) {
+      base_callee = callee.children.front();
+    }
+    const SyntaxNode &base = tree.node(base_callee);
+    std::optional<SymbolId> procedure;
+    if (base.kind == NodeKind::NameExpression) {
+      const std::optional<std::string> name = final_name(tree, base);
+      if (name.has_value()) procedure = semantic_.symbols.lookup(scope, *name);
+    } else if (base.kind == NodeKind::MemberExpression) {
+      procedure = imported_member(tree, base, scope);
+    }
+    if (!procedure.has_value()) return {};
+    const TypeId signature_id =
+        semantic_.symbols.symbol(*procedure).type;
+    if (!signature_id.is_valid() ||
+        semantic_.types.type(signature_id).kind == TypeKind::Invalid) {
+      return {};
+    }
+    const Type signature = semantic_.types.type(signature_id);
+    if (signature.kind != TypeKind::Procedure || signature.members.empty()) {
+      return {};
+    }
+    return substitute_local_type(signature.members.back());
+  }
+
+  [[nodiscard]] bool accepts_context_hint(
+      const SyntaxTree &tree,
+      NodeId contextual_expression,
+      TypeId hinted_type) const {
+    if (!hinted_type.is_valid() ||
+        semantic_.types.type(hinted_type).kind == TypeKind::Invalid) {
+      return false;
+    }
+    const TypeKind kind = runtime_type(hinted_type).kind;
+    if (is_nil_literal(tree, contextual_expression)) {
+      return nil_context_type(hinted_type);
+    }
+    return kind == TypeKind::Enum || kind == TypeKind::TaggedUnion;
+  }
+
   // Finds a concrete numeric type without evaluating the expression.  This is
   // intentionally a small syntactic query, not a second type checker.  Its job
   // is to discover context supplied by the opposite operand before source-order
@@ -4366,12 +4498,31 @@ private:
       if (condition.value.kind != ConstantKind::Bool) {
         return fail(node.range, "constant conditional requires a bool condition", required);
       }
-      return evaluate_expression(
-          tree,
-          condition.value.boolean ? node.children[0] : node.children[2],
-          scope,
-          required,
-          expected);
+      const NodeId selected = condition.value.boolean
+          ? node.children[0]
+          : node.children[2];
+      TypeId selected_context = expected;
+      if (!selected_context.is_valid() &&
+          needs_value_context(tree, selected)) {
+        const NodeId other = condition.value.boolean
+            ? node.children[2]
+            : node.children[0];
+        const TypeId hint = declared_value_type_hint(tree, other, scope);
+        if (accepts_context_hint(tree, selected, hint)) {
+          selected_context = hint;
+        }
+      }
+      EvalResult result = evaluate_expression(
+          tree, selected, scope, required, selected_context);
+      if (result.status == EvalStatus::Ready && selected_context.is_valid() &&
+          needs_value_context(tree, selected) && !result.type.is_valid()) {
+        // Contextual alternatives historically carry their owner separately
+        // from ConstantValue so switch-label comparison can resolve labels in
+        // the subject domain. Attach the inferred owner only to the complete
+        // conditional result, where it becomes the declaration's value type.
+        result.type = selected_context;
+      }
+      return result;
     }
 
     case NodeKind::BracketExpression: {

@@ -1743,6 +1743,62 @@ mask :: proc(bits: uint) -> uint {
   EXPECT(state, !source.diagnostics.has_errors());
 }
 
+void test_conditional_context_from_either_branch(TestState &state) {
+  CheckedSource valid(R"draft(
+package bodies
+
+Mode :: enum {
+    Off,
+    On,
+}
+
+Choice :: union {
+    none,
+    some: i64,
+}
+
+choose_pointer :: proc(condition: bool, fallback: ^i64) -> ^i64 {
+    selected := nil if condition else fallback
+    return selected
+}
+
+choose_mode :: proc(condition: bool, fallback: Mode) -> Mode {
+    selected := .On if condition else fallback
+    return selected
+}
+
+choose_choice :: proc(condition: bool, fallback: Choice) -> Choice {
+    selected := .some(42) if condition else fallback
+    return selected
+}
+)draft");
+  if (valid.diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(valid.sources, valid.diagnostics);
+  }
+  EXPECT(state, valid.bodies.ok);
+  EXPECT(state, !valid.diagnostics.has_errors());
+
+  CheckedSource invalid(R"draft(
+package bodies
+
+untyped_nil_pair :: proc(condition: bool) {
+    selected := nil if condition else nil
+}
+
+untyped_alternative_pair :: proc(condition: bool) {
+    selected := .left if condition else .right
+}
+)draft");
+  EXPECT(state, !invalid.bodies.ok);
+  const std::string rendered = draft::render_diagnostics(
+      invalid.sources, invalid.diagnostics);
+  EXPECT(state, rendered.find("nil requires an expected pointer type") !=
+                    std::string::npos);
+  EXPECT(state, rendered.find(
+                    "contextual alternative requires an expected enum or union type") !=
+                    std::string::npos);
+}
+
 void test_compound_assignment_operators(TestState &state) {
   CheckedSource valid(R"draft(
 package bodies
@@ -1955,6 +2011,7 @@ int main() {
   test_checked_numeric_casts(state);
   test_storage_pointer_and_distinct_semantics(state);
   test_integer_shift_count_types(state);
+  test_conditional_context_from_either_branch(state);
   test_compound_assignment_operators(state);
   test_numeric_context_boundaries(state);
   test_builtin_context_value(state);
