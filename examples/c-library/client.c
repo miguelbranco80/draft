@@ -53,5 +53,12 @@ int main(void) {
     uint8_t row[3] = {5, 8, 13};
     uint8_t (*row_pointer)[3] = &row;
     if (draft_row_pointer_identity(row_pointer) != row_pointer) return 10;
+
+    void *opaque_pointer = &byte;
+    void **opaque_pointer_pointer = &opaque_pointer;
+    if (draft_opaque_pointer_pointer_identity(opaque_pointer_pointer) !=
+        opaque_pointer_pointer) {
+        return 11;
+    }
     return 0;
 }

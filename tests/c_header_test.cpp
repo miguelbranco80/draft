@@ -65,6 +65,10 @@ Wide :: @repr(C) struct {
     value: i128,
 }
 
+Hidden :: struct {
+    value: i64,
+}
+
 export map_pair :: c "draft_map_pair" proc(
     value: Pair,
     callback: c proc(value: i32) -> i32,
@@ -94,6 +98,12 @@ export return_grid :: c "draft_return_grid" proc(
 ) -> ^[4]u8 {
     return value
 }
+
+export opaque_chain :: c "draft_opaque_chain" proc(
+    value: ^^Hidden,
+) -> ^^Hidden {
+    return value
+}
 )draft");
   file.syntax.emplace(draft::parse_source_file(sources, file.source, diagnostics));
   loaded.files.push_back(std::move(file));
@@ -121,7 +131,7 @@ export return_grid :: c "draft_return_grid" proc(
   EXPECT(state, bodies.ok);
   EXPECT(state, native.ok);
   EXPECT(state, header.ok);
-  EXPECT(state, header.export_count == 4);
+  EXPECT(state, header.export_count == 5);
   EXPECT(state, header.text.find(
       "typedef struct draft_c_library_Pair draft_c_library_Pair;") !=
       std::string::npos);
@@ -153,6 +163,9 @@ export return_grid :: c "draft_return_grid" proc(
       "draft_c_library_Wide *arg2);") != std::string::npos);
   EXPECT(state, header.text.find(
       "extern uint8_t (*draft_return_grid(uint8_t (*arg0)[4]))[4];") !=
+      std::string::npos);
+  EXPECT(state, header.text.find(
+      "extern void **draft_opaque_chain(void **arg0);") !=
       std::string::npos);
 }
 

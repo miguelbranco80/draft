@@ -311,14 +311,23 @@ private:
           std::move(name) + "[" + std::to_string(value.element_count) + "]");
     }
     if (value.kind == TypeKind::Pointer || value.kind == TypeKind::MultiPointer) {
-      if (!typed_pointer_element(value.element)) return "void *" + name;
+      const Type &element = type(value.element);
+      if (!typed_pointer_element(value.element) &&
+          element.kind != TypeKind::Pointer &&
+          element.kind != TypeKind::MultiPointer) {
+        // One pointer may intentionally hide any Draft pointee behind void.
+        // Preserve outer pointer layers, though: ^^Opaque is void ** rather
+        // than void *, because C code can observe and update the inner pointer
+        // value even though it cannot name the ultimate Draft object.
+        return "void *" + name;
+      }
 
       // C pointer and array declarators nest around the identifier rather than
       // composing as prefix type strings. Recursing with the identifier makes
       // `^^u8` become `uint8_t **name` and `^[4]u8` become
       // `uint8_t (*name)[4]` without a general declarator AST.
       std::string pointer_name = "*" + name;
-      if (type(value.element).kind == TypeKind::Array) {
+      if (element.kind == TypeKind::Array) {
         pointer_name = "(" + pointer_name + ")";
       }
       return declaration(value.element, std::move(pointer_name));
