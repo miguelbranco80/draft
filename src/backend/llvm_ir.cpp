@@ -497,6 +497,11 @@ private:
                "ptr, i64, ptr }\n"
             << "@__draft.process_argc = internal global i32 0, align 4\n"
             << "@__draft.process_argv = internal global ptr null, align 8\n"
+            << "@__draft.process_envp = internal global ptr null, align 8\n"
+            << "@__draft.process_args_data = internal global ptr null, align 8\n"
+            << "@__draft.process_args_count = internal global i64 0, align 8\n"
+            << "@__draft.process_environment_data = internal global ptr null, align 8\n"
+            << "@__draft.process_environment_count = internal global i64 0, align 8\n"
             << "@__draft.root_context = internal global %draft.runtime.Context "
                "{ %draft.runtime.Allocator { ptr @__draft.default_allocator, "
                "ptr null }, "
@@ -528,6 +533,7 @@ private:
             << "declare void @free(ptr)\n"
             << "declare i32 @posix_memalign(ptr, i64, i64)\n"
             << "declare void @arc4random_buf(ptr, i64)\n"
+            << "declare i64 @strlen(ptr)\n"
             << "declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)\n"
             << "declare void @llvm.memset.p0.i64(ptr, i8, i64, i1)\n\n"
             // The runtime allocator is an ordinary Draft procedure pointer:
@@ -726,6 +732,131 @@ private:
             << "ok:\n"
             << "  ret void\n"
             << "}\n\n";
+
+    // Darwin's hosted entry supplies argv and envp as null-terminated C-string
+    // vectors. Materialize immutable Draft string records once before main so
+    // core/os can return stable slices without allocating on every query or
+    // smuggling C-string rules into ordinary library code.
+    output_ << "define internal void @__draft.initialize_process_views("
+               "i32 %argc, ptr %argv, ptr %envp) {\n"
+            << "entry:\n"
+            << "  %argument.count = zext i32 %argc to i64\n"
+            << "  %argument.bytes = mul i64 %argument.count, 16\n"
+            << "  %argument.data = call ptr @calloc(i64 %argument.count, i64 16)\n"
+            << "  store ptr %argument.data, ptr @__draft.process_args_data, align 8\n"
+            << "  store i64 %argument.count, ptr @__draft.process_args_count, align 8\n"
+            << "  br label %argument.loop\n"
+            << "argument.loop:\n"
+            << "  %argument.index = phi i64 [ 0, %entry ], "
+               "[ %argument.next, %argument.body ]\n"
+            << "  %argument.done = icmp uge i64 %argument.index, %argument.count\n"
+            << "  br i1 %argument.done, label %environment.count.entry, "
+               "label %argument.body\n"
+            << "argument.body:\n"
+            << "  %argument.pointer.slot = getelementptr ptr, ptr %argv, "
+               "i64 %argument.index\n"
+            << "  %argument.pointer = load ptr, ptr %argument.pointer.slot, align 8\n"
+            << "  %argument.length = call i64 @strlen(ptr %argument.pointer)\n"
+            << "  %argument.record = getelementptr { ptr, i64 }, "
+               "ptr %argument.data, i64 %argument.index\n"
+            << "  %argument.record.pointer = getelementptr { ptr, i64 }, "
+               "ptr %argument.record, i32 0, i32 0\n"
+            << "  %argument.record.length = getelementptr { ptr, i64 }, "
+               "ptr %argument.record, i32 0, i32 1\n"
+            << "  store ptr %argument.pointer, ptr %argument.record.pointer, align 8\n"
+            << "  store i64 %argument.length, ptr %argument.record.length, align 8\n"
+            << "  %argument.next = add i64 %argument.index, 1\n"
+            << "  br label %argument.loop\n"
+            << "environment.count.entry:\n"
+            << "  %environment.exists = icmp ne ptr %envp, null\n"
+            << "  br i1 %environment.exists, label %environment.count.loop, "
+               "label %environment.allocate\n"
+            << "environment.count.loop:\n"
+            << "  %environment.count.index = phi i64 [ 0, %environment.count.entry ], "
+               "[ %environment.count.next, %environment.count.body ]\n"
+            << "  %environment.count.slot = getelementptr ptr, ptr %envp, "
+               "i64 %environment.count.index\n"
+            << "  %environment.count.pointer = load ptr, "
+               "ptr %environment.count.slot, align 8\n"
+            << "  %environment.count.done = icmp eq ptr "
+               "%environment.count.pointer, null\n"
+            << "  br i1 %environment.count.done, label %environment.allocate, "
+               "label %environment.count.body\n"
+            << "environment.count.body:\n"
+            << "  %environment.count.next = add i64 %environment.count.index, 1\n"
+            << "  br label %environment.count.loop\n"
+            << "environment.allocate:\n"
+            << "  %environment.count = phi i64 [ 0, %environment.count.entry ], "
+               "[ %environment.count.index, %environment.count.loop ]\n"
+            << "  %environment.data = call ptr @calloc("
+               "i64 %environment.count, i64 16)\n"
+            << "  store ptr %environment.data, "
+               "ptr @__draft.process_environment_data, align 8\n"
+            << "  store i64 %environment.count, "
+               "ptr @__draft.process_environment_count, align 8\n"
+            << "  br label %environment.loop\n"
+            << "environment.loop:\n"
+            << "  %environment.index = phi i64 [ 0, %environment.allocate ], "
+               "[ %environment.next, %environment.body ]\n"
+            << "  %environment.done = icmp uge i64 "
+               "%environment.index, %environment.count\n"
+            << "  br i1 %environment.done, label %finish, "
+               "label %environment.body\n"
+            << "environment.body:\n"
+            << "  %environment.pointer.slot = getelementptr ptr, ptr %envp, "
+               "i64 %environment.index\n"
+            << "  %environment.pointer = load ptr, "
+               "ptr %environment.pointer.slot, align 8\n"
+            << "  %environment.length = call i64 @strlen("
+               "ptr %environment.pointer)\n"
+            << "  %environment.record = getelementptr { ptr, i64 }, "
+               "ptr %environment.data, i64 %environment.index\n"
+            << "  %environment.record.pointer = getelementptr { ptr, i64 }, "
+               "ptr %environment.record, i32 0, i32 0\n"
+            << "  %environment.record.length = getelementptr { ptr, i64 }, "
+               "ptr %environment.record, i32 0, i32 1\n"
+            << "  store ptr %environment.pointer, "
+               "ptr %environment.record.pointer, align 8\n"
+            << "  store i64 %environment.length, "
+               "ptr %environment.record.length, align 8\n"
+            << "  %environment.next = add i64 %environment.index, 1\n"
+            << "  br label %environment.loop\n"
+            << "finish:\n"
+            << "  ret void\n"
+            << "}\n\n"
+            << "define hidden ptr @\"__draft.os.args_data\"() {\n"
+            << "entry:\n"
+            << "  %data = load ptr, ptr @__draft.process_args_data, align 8\n"
+            << "  ret ptr %data\n"
+            << "}\n\n"
+            << "define hidden i64 @\"__draft.os.args_count\"() {\n"
+            << "entry:\n"
+            << "  %count = load i64, ptr @__draft.process_args_count, align 8\n"
+            << "  ret i64 %count\n"
+            << "}\n\n"
+            << "define hidden ptr @\"__draft.os.environment_data\"() {\n"
+            << "entry:\n"
+            << "  %data = load ptr, ptr @__draft.process_environment_data, align 8\n"
+            << "  ret ptr %data\n"
+            << "}\n\n"
+            << "define hidden i64 @\"__draft.os.environment_count\"() {\n"
+            << "entry:\n"
+            << "  %count = load i64, ptr @__draft.process_environment_count, align 8\n"
+            << "  ret i64 %count\n"
+            << "}\n\n"
+            << "define internal void @__draft.shutdown_process_views() {\n"
+            << "entry:\n"
+            << "  %arguments = load ptr, ptr @__draft.process_args_data, align 8\n"
+            << "  %environment = load ptr, "
+               "ptr @__draft.process_environment_data, align 8\n"
+            << "  call void @free(ptr %arguments)\n"
+            << "  call void @free(ptr %environment)\n"
+            << "  store ptr null, ptr @__draft.process_args_data, align 8\n"
+            << "  store i64 0, ptr @__draft.process_args_count, align 8\n"
+            << "  store ptr null, ptr @__draft.process_environment_data, align 8\n"
+            << "  store i64 0, ptr @__draft.process_environment_count, align 8\n"
+            << "  ret void\n"
+            << "}\n\n";
     if (!semantic_.runtime_context_type.is_valid()) {
       error(
           SourceRange::invalid(),
@@ -757,6 +888,17 @@ private:
             << "define hidden void @\"__draft.runtime.attach_thread\"() {\n"
             << "entry:\n"
             << "  %thread.context = call ptr @__draft.ensure_thread_context()\n"
+            << "  ret void\n"
+            << "}\n\n"
+            << "define hidden void @\"__draft.runtime.install_thread_context\"("
+               "ptr %source) {\n"
+            << "entry:\n"
+            << "  %snapshot = load %draft.runtime.Context, "
+               "ptr %source, align 8\n"
+            << "  store %draft.runtime.Context %snapshot, "
+               "ptr @__draft.thread_context, align 8\n"
+            << "  store i1 true, ptr @__draft.thread_context_initialized, "
+               "align 1\n"
             << "  ret void\n"
             << "}\n\n"
             << "define hidden void @\"__draft.runtime.default_context\"("
@@ -822,7 +964,8 @@ private:
     if (!options_.emit_program_entry) return false;
     const std::optional<std::string> native = native_symbol_name(symbol_id);
     return native.has_value() &&
-        *native == "@\"__draft.runtime.default_context\"";
+        (*native == "@\"__draft.runtime.default_context\"" ||
+         *native == "@\"__draft.runtime.install_thread_context\"");
   }
 
   [[nodiscard]] std::string symbol_name(SymbolId symbol_id) const {
@@ -2862,18 +3005,23 @@ private:
       return;
     }
     const TypeId result_type = function_result(symbol.type);
-    output_ << "define i32 @main(i32 %argc, ptr %argv) {\n"
+    output_ << "define i32 @main(i32 %argc, ptr %argv, ptr %envp) {\n"
             << "entry:\n"
             << "  store i32 %argc, ptr @__draft.process_argc, align 4\n"
-            << "  store ptr %argv, ptr @__draft.process_argv, align 8\n";
+            << "  store ptr %argv, ptr @__draft.process_argv, align 8\n"
+            << "  store ptr %envp, ptr @__draft.process_envp, align 8\n"
+            << "  call void @__draft.initialize_process_views("
+               "i32 %argc, ptr %argv, ptr %envp)\n";
     if (result_type == semantic_.types.builtins().void_type) {
       output_ << "  call void " << symbol_name(*entry)
               << "(ptr @__draft.root_context)\n"
+              << "  call void @__draft.shutdown_process_views()\n"
               << "  ret i32 0\n";
     } else if (result_type == semantic_.types.builtins().int_type) {
       output_ << "  %draft.result = call " << llvm_type(result_type) << ' '
               << symbol_name(*entry) << "(ptr @__draft.root_context)\n";
-      output_ << "  %exit.result = trunc " << llvm_type(result_type)
+      output_ << "  call void @__draft.shutdown_process_views()\n"
+              << "  %exit.result = trunc " << llvm_type(result_type)
               << " %draft.result to i32\n"
               << "  ret i32 %exit.result\n";
     } else {

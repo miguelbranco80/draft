@@ -1,0 +1,37 @@
+package core_thread
+
+import core/thread
+import core/runtime
+
+Observation :: struct {
+    value: u64,
+    context_index: int,
+}
+
+worker :: proc(user: rawptr) {
+    observation := cast[^Observation](user)
+    snapshot := runtime.default_context()
+    observation^.value = 42
+    observation^.context_index = snapshot.user_index
+}
+
+main :: proc() {
+    context.user_index = 73
+    observation: Observation
+    (child, started) := thread.spawn(worker, cast[rawptr](&observation))
+    assert(started)
+    assert(thread.join(&child))
+    assert(observation.value == 42)
+    assert(observation.context_index == 73)
+    assert(thread.current_id() != 0)
+
+    mutex: thread.Mutex
+    assert(thread.mutex_init(&mutex))
+    thread.mutex_lock(&mutex)
+    thread.mutex_unlock(&mutex)
+    assert(thread.mutex_destroy(&mutex))
+
+    condition: thread.Condition
+    assert(thread.condition_init(&condition))
+    assert(thread.condition_destroy(&condition))
+}

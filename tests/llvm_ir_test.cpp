@@ -394,7 +394,8 @@ main :: proc() -> int {
       "call void @__draft.assert(ptr %context, i1") != std::string::npos);
   EXPECT(state, module.text.find("copy == 42") != std::string::npos);
   EXPECT(state, module.text.find("package.draft") != std::string::npos);
-  EXPECT(state, module.text.find("define i32 @main(i32 %argc, ptr %argv)") !=
+  EXPECT(state, module.text.find(
+      "define i32 @main(i32 %argc, ptr %argv, ptr %envp)") !=
       std::string::npos);
   EXPECT(state, module.text.find(
       "%draft.runtime.Context = type { %draft.runtime.Allocator, "
@@ -408,6 +409,12 @@ main :: proc() -> int {
       "store i32 %argc, ptr @__draft.process_argc") != std::string::npos);
   EXPECT(state, module.text.find(
       "store ptr %argv, ptr @__draft.process_argv") != std::string::npos);
+  EXPECT(state, module.text.find(
+      "store ptr %envp, ptr @__draft.process_envp") != std::string::npos);
+  EXPECT(state, module.text.find(
+      "call void @__draft.initialize_process_views") != std::string::npos);
+  EXPECT(state, module.text.find(
+      "define hidden ptr @\"__draft.os.args_data\"") != std::string::npos);
   EXPECT(state, module.text.find("ptr @__draft.root_context") != std::string::npos);
   EXPECT(state, module.text.find(
       "define internal void @__draft.default_logger") != std::string::npos);

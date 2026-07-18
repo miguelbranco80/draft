@@ -1,0 +1,116 @@
+package os
+
+import core/c as c
+import core/io
+
+// The hosted entry shim owns the process vectors and exposes their already
+// materialized Draft string records through this private runtime ABI. The
+// wrappers below return non-owning views valid until process exit.
+foreign draft_runtime {
+    process_args_data :: c "__draft.os.args_data" proc() -> rawptr
+    process_args_count :: c "__draft.os.args_count" proc() -> usize
+    process_environment_data :: c "__draft.os.environment_data" proc() -> rawptr
+    process_environment_count :: c "__draft.os.environment_count" proc() -> usize
+}
+
+pub args :: proc() -> []string {
+    data := cast[[^]string](process_args_data())
+    return data[:process_args_count()]
+}
+
+// Environment entries retain the target process representation `name=value`.
+// This preserves exact bytes and duplicate-name ordering; policy for selecting
+// or decoding a value belongs in ordinary library/application code.
+pub environment :: proc() -> []string {
+    data := cast[[^]string](process_environment_data())
+    return data[:process_environment_count()]
+}
+
+// File is a small non-owning descriptor handle. Closing it is explicit, and a
+// copied File aliases the same OS resource. The package deliberately exposes a
+// descriptor constructor because Draft 1 requires a fixed-signature native
+// wrapper before it can safely offer Darwin's variadic open(2).
+pub File :: @repr(C) struct {
+    descriptor: c.int,
+}
+
+pub standard_input: File = File{descriptor = 0}
+pub standard_output: File = File{descriptor = 1}
+pub standard_error: File = File{descriptor = 2}
+
+foreign darwin {
+    native_read :: c "read" proc(
+        descriptor: c.int,
+        destination: [^]u8,
+        count: c.size_t,
+    ) -> c.ssize_t
+    native_write :: c "write" proc(
+        descriptor: c.int,
+        source: [^]u8,
+        count: c.size_t,
+    ) -> c.ssize_t
+    native_close :: c "close" proc(descriptor: c.int) -> c.int
+    native_process_id :: c "getpid" proc() -> c.int
+    native_exit :: c "_exit" proc(status: c.int)
+}
+
+pub file_from_descriptor :: proc(descriptor: c.int) -> File {
+    return File{descriptor = descriptor}
+}
+
+pub read :: proc(handle: File, destination: []u8) -> (usize, io.Error) {
+    if len(destination) == 0 {
+        return (0, .none)
+    }
+    data := cast[[^]u8](&destination[0])
+    count := native_read(handle.descriptor, data, len(destination))
+    if count < 0 {
+        return (0, .unavailable)
+    }
+    if count == 0 {
+        return (0, .end_of_input)
+    }
+    return (cast[usize](count), .none)
+}
+
+pub write :: proc(handle: File, source: []u8) -> (usize, io.Error) {
+    if len(source) == 0 {
+        return (0, .none)
+    }
+    data := cast[[^]u8](&source[0])
+    count := native_write(handle.descriptor, data, len(source))
+    if count < 0 {
+        return (0, .unavailable)
+    }
+    return (cast[usize](count), .none)
+}
+
+pub close :: proc(handle: ^File) -> bool {
+    if handle^.descriptor < 0 {
+        return true
+    }
+    result := native_close(handle^.descriptor)
+    if result == 0 {
+        handle^.descriptor = -1
+        return true
+    }
+    return false
+}
+
+pub process_id :: proc() -> u64 {
+    return cast[u64](native_process_id())
+}
+
+pub page_size :: proc() -> usize {
+    // This is a target-profile fact, not a host query. Changing the selected
+    // target changes the profile identity and recompiles this branch.
+    when target.page_size == 16384 {
+        return 16384
+    } else {
+        return target.page_size
+    }
+}
+
+pub exit :: proc(status: int) {
+    native_exit(cast[c.int](status))
+}

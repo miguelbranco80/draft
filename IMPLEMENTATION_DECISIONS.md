@@ -183,3 +183,23 @@ importer installs provenance before following members so recursive types
 converge on the in-progress TypeId. Recursive instantiation snapshots aggregate
 rows before appending new ones; sanitizer coverage enforces this append-only
 table discipline.
+
+## Hosted process views and core threads
+
+Status: AArch64 macOS hosted runtime contract.
+
+The C entry receives Darwin's third `envp` argument. Before Draft `main`, the
+runtime materializes argv and envp as stable `{pointer,length}` string records;
+`core/os` returns non-owning slices over those records. Normal return frees the
+record arrays after all Draft defers finish. Environment entries preserve their
+exact `name=value` bytes and ordering. The initial file API wraps already-open
+fixed descriptors; pathname opening waits for a pinned fixed-signature wrapper
+because Draft 1 deliberately rejects variadic C imports.
+
+`core/thread` uses pthreads through fixed C signatures. Spawn state owns a copy
+of the active Context. The C trampoline installs that copy as the child TLS
+default before entering the ordinary Draft callback, so ordinary calls, defers,
+and `runtime.default_context` agree. Join clears the owning handle. Mutex and
+condition storage uses the target-profile Darwin LP64 layouts (64 and 48 bytes,
+including their eight-byte signatures) and is accessed only through pthread
+operations.

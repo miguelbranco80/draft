@@ -1,0 +1,20 @@
+package core_os
+
+import core/os
+
+main :: proc() {
+    arguments := os.args()
+    variables := os.environment()
+    assert(len(arguments) >= 1)
+    assert(len(arguments[0]) >= 1)
+    assert(os.standard_input.descriptor == 0)
+    assert(os.standard_output.descriptor == 1)
+    assert(os.standard_error.descriptor == 2)
+    assert(os.process_id() != 0)
+    assert(os.page_size() == 16384)
+    // The environment may legitimately be empty under a deliberately clean
+    // launcher. If an entry exists, it is a valid string view.
+    if len(variables) != 0 {
+        assert(len(variables[0]) != 0)
+    }
+}

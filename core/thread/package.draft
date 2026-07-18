@@ -1,0 +1,190 @@
+package thread
+
+import core/c as c
+import core/memory
+import core/runtime
+import core/time
+
+pub Entry_Proc :: proc(user: rawptr)
+Start_Routine :: c proc(user: rawptr) -> rawptr
+
+// pthread_t is an opaque pointer on the fixed AArch64 Darwin target. Thread is
+// move-by-convention ownership metadata: after a successful join its handle is
+// cleared, and copying a live value would create two aliases to one join right.
+pub Thread :: @repr(C) struct {
+    handle: rawptr,
+}
+
+Start_State :: struct {
+    thread_context: runtime.Context,
+    entry: Entry_Proc,
+    user: rawptr,
+}
+
+foreign darwin {
+    pthread_create :: c proc(
+        thread: ^rawptr,
+        attributes: rawptr,
+        start: Start_Routine,
+        user: rawptr,
+    ) -> c.int
+    pthread_join :: c proc(thread: rawptr, result: ^rawptr) -> c.int
+    pthread_self :: c proc() -> rawptr
+    sched_yield :: c proc() -> c.int
+}
+
+release_start_state :: proc(state: ^Start_State) {
+    memory.free_with_allocator(state, state^.thread_context.allocator)
+}
+
+// A pthread begins with the C calling convention and no hidden Context. The
+// two runtime bridge calls lazily establish Draft TLS, enter the ordinary user
+// callback with the copied spawning Context, and finally release trampoline
+// state through the same explicit Context.
+thread_trampoline :: c proc(user: rawptr) -> rawptr {
+    state := cast[^Start_State](user)
+    runtime.install_thread_context(&state^.thread_context)
+    runtime.call_with_context(
+        &state^.thread_context,
+        state^.entry,
+        state^.user,
+    )
+    runtime.call_with_context(
+        &state^.thread_context,
+        release_start_state,
+        state,
+    )
+    return nil
+}
+
+pub spawn :: proc(entry: Entry_Proc, user: rawptr) -> (Thread, bool) {
+    assert(entry != nil, "thread entry procedure is nil")
+    state := memory.new_with_allocator[Start_State](context.allocator)
+    state^.thread_context = context
+    state^.entry = entry
+    state^.user = user
+
+    result: Thread
+    status := pthread_create(
+        &result.handle,
+        nil,
+        thread_trampoline,
+        cast[rawptr](state),
+    )
+    if status != 0 {
+        memory.free_with_allocator(state, context.allocator)
+        empty: Thread
+        return (empty, false)
+    }
+    return (result, true)
+}
+
+pub join :: proc(thread: ^Thread) -> bool {
+    if thread^.handle == nil {
+        return true
+    }
+    status := pthread_join(thread^.handle, nil)
+    if status == 0 {
+        thread^.handle = nil
+        return true
+    }
+    return false
+}
+
+pub current_id :: proc() -> uintptr {
+    return cast[uintptr](pthread_self())
+}
+
+pub yield :: proc() {
+    sched_yield()
+}
+
+// These opaque layouts are part of the AArch64 macOS target profile. Darwin's
+// LP64 pthread mutex contains an eight-byte signature plus 56 opaque bytes; a
+// condition contains the same signature plus 40 bytes. Only pthread functions
+// may inspect or mutate this storage.
+pub Mutex :: @repr(C) struct {
+    signature: i64,
+    opaque: [56]u8,
+}
+
+pub Condition :: @repr(C) struct {
+    signature: i64,
+    opaque: [40]u8,
+}
+
+foreign darwin {
+    pthread_mutex_init :: c proc(mutex: ^Mutex, attributes: rawptr) -> c.int
+    pthread_mutex_destroy :: c proc(mutex: ^Mutex) -> c.int
+    pthread_mutex_lock :: c proc(mutex: ^Mutex) -> c.int
+    pthread_mutex_trylock :: c proc(mutex: ^Mutex) -> c.int
+    pthread_mutex_unlock :: c proc(mutex: ^Mutex) -> c.int
+    pthread_cond_init :: c proc(condition: ^Condition, attributes: rawptr) -> c.int
+    pthread_cond_destroy :: c proc(condition: ^Condition) -> c.int
+    pthread_cond_wait :: c proc(condition: ^Condition, mutex: ^Mutex) -> c.int
+    pthread_cond_signal :: c proc(condition: ^Condition) -> c.int
+    pthread_cond_broadcast :: c proc(condition: ^Condition) -> c.int
+}
+
+pub mutex_init :: proc(mutex: ^Mutex) -> bool {
+    return pthread_mutex_init(mutex, nil) == 0
+}
+
+pub mutex_destroy :: proc(mutex: ^Mutex) -> bool {
+    return pthread_mutex_destroy(mutex) == 0
+}
+
+pub mutex_lock :: proc(mutex: ^Mutex) {
+    assert(pthread_mutex_lock(mutex) == 0, "mutex lock failed")
+}
+
+pub mutex_try_lock :: proc(mutex: ^Mutex) -> bool {
+    return pthread_mutex_trylock(mutex) == 0
+}
+
+pub mutex_unlock :: proc(mutex: ^Mutex) {
+    assert(pthread_mutex_unlock(mutex) == 0, "mutex unlock failed")
+}
+
+pub condition_init :: proc(condition: ^Condition) -> bool {
+    return pthread_cond_init(condition, nil) == 0
+}
+
+pub condition_destroy :: proc(condition: ^Condition) -> bool {
+    return pthread_cond_destroy(condition) == 0
+}
+
+pub condition_wait :: proc(condition: ^Condition, mutex: ^Mutex) {
+    assert(pthread_cond_wait(condition, mutex) == 0, "condition wait failed")
+}
+
+pub condition_signal :: proc(condition: ^Condition) {
+    assert(pthread_cond_signal(condition) == 0, "condition signal failed")
+}
+
+pub condition_broadcast :: proc(condition: ^Condition) {
+    assert(pthread_cond_broadcast(condition) == 0,
+        "condition broadcast failed")
+}
+
+Timespec :: @repr(C) struct {
+    seconds: i64,
+    nanoseconds: i64,
+}
+
+foreign darwin {
+    nanosleep :: c proc(requested: ^Timespec, remaining: ^Timespec) -> c.int
+}
+
+pub sleep :: proc(duration: time.Duration) -> bool {
+    if duration <= 0 {
+        return true
+    }
+    total := cast[i64](duration)
+    requested := Timespec{
+        seconds = total / cast[i64](time.second),
+        nanoseconds = total % cast[i64](time.second),
+    }
+    remaining: Timespec
+    return nanosleep(&requested, &remaining) == 0
+}

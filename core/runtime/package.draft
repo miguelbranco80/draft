@@ -76,6 +76,12 @@ pub Context :: @repr(C) struct {
 // enters an ordinary Draft procedure.
 foreign draft_runtime {
     pub default_context :: c "__draft.runtime.default_context" proc() -> Context
+    // core/thread uses this context-free C bridge before entering its ordinary
+    // callback. It replaces the calling thread's TLS snapshot with the exact
+    // spawning Context copy; foreign hosts normally use the lazy default path.
+    pub install_thread_context :: c "__draft.runtime.install_thread_context" proc(
+        value: ^Context,
+    )
     // The surface declaration is a stable capability name. The compiler checks
     // and specializes the callback's complete parameter/result signature at
     // each call site, so no erased or variadic runtime ABI is involved. The

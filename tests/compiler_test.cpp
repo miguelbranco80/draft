@@ -408,6 +408,116 @@ void test_compiler_distributed_map(TestState &state) {
   }
 }
 
+void test_compiler_distributed_os(TestState &state) {
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  draft::CompileWorkspaceOptions options;
+  options.target = draft::make_aarch64_macos_profile();
+  options.workspace.workspace_directory =
+      std::string(DRAFT_SOURCE_DIRECTORY) + "/examples";
+  options.workspace.core_directory =
+      std::string(DRAFT_SOURCE_DIRECTORY) + "/core";
+  options.workspace.core_content_identity = "draft-core-test-v1";
+  options.lower_mir = true;
+  options.emit_llvm = true;
+  const draft::CompileWorkspaceResult result = draft::compile_workspace(
+      sources,
+      std::string(DRAFT_SOURCE_DIRECTORY) + "/examples/core-os",
+      std::move(options),
+      diagnostics);
+  if (diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+  }
+  EXPECT(state, result.ok);
+  EXPECT(state, !diagnostics.has_errors());
+  EXPECT(state, result.graph.packages.size() == 4);
+  if (!result.ok || !result.graph.root_package.is_valid()) return;
+
+  const std::optional<draft::CompiledPackage> &root =
+      result.packages[result.graph.root_package.value];
+  EXPECT(state, root.has_value());
+  if (!root.has_value()) return;
+  EXPECT(state, root->llvm.ok);
+  EXPECT(state, root->llvm.text.find(
+      "define i32 @main(i32 %argc, ptr %argv, ptr %envp)") !=
+      std::string::npos);
+  EXPECT(state, root->llvm.text.find(
+      "define hidden ptr @\"__draft.os.args_data\"") !=
+      std::string::npos);
+  EXPECT(state, root->llvm.text.find("@strlen") != std::string::npos);
+
+  const draft::CompiledPackage *os = nullptr;
+  for (const std::optional<draft::CompiledPackage> &package : result.packages) {
+    if (package.has_value() && package->identity.root_relative_path == "os") {
+      os = &*package;
+      break;
+    }
+  }
+  EXPECT(state, os != nullptr);
+  if (os != nullptr) {
+    EXPECT(state, os->llvm.ok);
+    EXPECT(state, os->llvm.text.find("@\"__draft.os.args_data\"") !=
+        std::string::npos);
+    EXPECT(state, os->llvm.text.find("@\"getpid\"") != std::string::npos);
+    EXPECT(state, os->native_interop.providers.size() == 2);
+  }
+}
+
+void test_compiler_distributed_thread(TestState &state) {
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  draft::CompileWorkspaceOptions options;
+  options.target = draft::make_aarch64_macos_profile();
+  options.workspace.workspace_directory =
+      std::string(DRAFT_SOURCE_DIRECTORY) + "/examples";
+  options.workspace.core_directory =
+      std::string(DRAFT_SOURCE_DIRECTORY) + "/core";
+  options.workspace.core_content_identity = "draft-core-test-v1";
+  options.lower_mir = true;
+  options.emit_llvm = true;
+  const draft::CompileWorkspaceResult result = draft::compile_workspace(
+      sources,
+      std::string(DRAFT_SOURCE_DIRECTORY) + "/examples/core-thread",
+      std::move(options),
+      diagnostics);
+  if (diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+  }
+  EXPECT(state, result.ok);
+  EXPECT(state, !diagnostics.has_errors());
+  EXPECT(state, result.graph.packages.size() == 6);
+  if (!result.ok || !result.graph.root_package.is_valid()) return;
+
+  const std::optional<draft::CompiledPackage> &root =
+      result.packages[result.graph.root_package.value];
+  EXPECT(state, root.has_value());
+  if (!root.has_value()) return;
+  EXPECT(state, root->llvm.ok);
+  EXPECT(state, root->llvm.text.find(
+      "define hidden void @\"__draft.runtime.install_thread_context\"") !=
+      std::string::npos);
+
+  const draft::CompiledPackage *thread = nullptr;
+  for (const std::optional<draft::CompiledPackage> &package : result.packages) {
+    if (package.has_value() &&
+        package->identity.root_relative_path == "thread") {
+      thread = &*package;
+      break;
+    }
+  }
+  EXPECT(state, thread != nullptr);
+  if (thread != nullptr) {
+    EXPECT(state, thread->llvm.ok);
+    EXPECT(state, thread->llvm.text.find("@\"pthread_create\"") !=
+        std::string::npos);
+    EXPECT(state, thread->llvm.text.find(
+        "@\"__draft.runtime.install_thread_context\"") !=
+        std::string::npos);
+    EXPECT(state, thread->llvm.text.find("@\"pthread_mutex_lock\"") !=
+        std::string::npos);
+  }
+}
+
 void test_cross_package_generic_procedures(TestState &state) {
   draft::SourceManager sources;
   draft::DiagnosticSink diagnostics;
@@ -527,6 +637,8 @@ int main() {
   test_compiler_distributed_memory(state);
   test_compiler_distributed_array_and_support(state);
   test_compiler_distributed_map(state);
+  test_compiler_distributed_os(state);
+  test_compiler_distributed_thread(state);
   test_cross_package_generic_procedures(state);
   test_runtime_context_bridge_diagnostics(state);
   if (state.failures != 0) {

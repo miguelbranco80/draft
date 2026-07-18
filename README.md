@@ -117,7 +117,7 @@ context-free C callbacks acquire a compatible value and enter an ordinary Draft
 callback without exposing Context as a generally legal C aggregate. The
 compiler-distributed `core/runtime`, `core/c`, `core/option`, `core/result`,
 `core/memory`, `core/heap`, `core/array`, `core/map`, `core/io`, `core/testing`,
-`core/benchmark`, and `core/time` packages are ordinary inspectable Draft
+`core/benchmark`, `core/time`, `core/os`, and `core/thread` packages are ordinary inspectable Draft
 source. `examples/core-runtime` checks the Context import, layout, and callback
 paths; `examples/core-memory` checks cross-package typed `new`/`free`, explicit
 allocators and alignment, resize preservation, and release; and
@@ -127,6 +127,10 @@ and the Darwin monotonic clock through a nine-package graph.
 `examples/core-map` additionally executes the allocator-explicit, open-addressed
 hash map with stored hashes, tombstones, rehashing, and public string key
 operations.
+`examples/core-os` verifies stable process argument/environment views and fixed
+descriptor I/O wrappers. `examples/core-thread` executes a pthread with an
+independent copy of the spawning Context, observes that copy through Draft TLS,
+joins it, and exercises the fixed AArch64 Darwin mutex/condition layouts.
 
 Synthesis resolution now has a provider-neutral transaction and an explicit
 Codex CLI adapter. Declaration and aggregate-member sites form an early opaque
