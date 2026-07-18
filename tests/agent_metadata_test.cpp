@@ -69,6 +69,7 @@ pub work :: proc(
 ) -> i64 {
     judge "The implementation preserves the invariant."
         folder "notes"
+    // This local comment is deliberately not agent semantic context.
     return ... "produce the answer" file "PROMPT.txt"
 }
 )draft");
@@ -173,6 +174,22 @@ void test_agent_records(TestState &state) {
     EXPECT(state, synthesis_obligation.expected_type_text == "i64");
     EXPECT(state, synthesis_obligation.anchor_name == "work");
     EXPECT(state, synthesis_obligation.source_relative_path == "package.draft");
+    EXPECT(state, synthesis_obligation.enclosing_declaration.present);
+    EXPECT(state,
+        synthesis_obligation.enclosing_declaration.name == "work");
+    EXPECT(state,
+        synthesis_obligation.enclosing_declaration.kind ==
+            draft::SymbolKind::Procedure);
+    EXPECT(state,
+        synthesis_obligation.enclosing_declaration.source.find(
+            "return ... \"produce the answer\"") != std::string::npos);
+    EXPECT(state,
+        synthesis_obligation.enclosing_declaration.source.find(
+            "local comment") == std::string::npos);
+    EXPECT(state,
+        draft::sha256(
+            synthesis_obligation.enclosing_declaration.source) ==
+            synthesis_obligation.enclosing_declaration.source_digest);
     EXPECT(state, !synthesis_obligation.visible_bindings.empty());
     bool saw_values = false;
     bool saw_callback = false;

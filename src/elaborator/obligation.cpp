@@ -184,6 +184,79 @@ void hash_field(Sha256 &hash, std::string_view value) {
   return result;
 }
 
+// Rebuilds readable declaration source from nontrivia tokens. Source gaps are
+// normalized to one space or one newline, which removes comments without
+// joining two tokens that were separated in the authored program. Inserted
+// semicolons are omitted because their following source gap already preserves
+// the line boundary that caused insertion.
+[[nodiscard]] std::string canonical_token_source(
+    const SourceManager &sources,
+    const SyntaxTree &tree,
+    const SyntaxNode &node) {
+  std::string result;
+  std::uint32_t previous_end = 0;
+  bool have_token = false;
+  for (std::uint32_t index = node.token_begin;
+       index < node.token_end; ++index) {
+    const Token &token = tree.token(index);
+    if (token.kind == TokenKind::EndOfFile || token.inserted) continue;
+    if (have_token && token.range.begin.offset >= previous_end) {
+      const SourceRange gap{
+          {tree.file(), previous_end}, token.range.begin};
+      const std::string_view bytes = sources.text(gap);
+      if (!bytes.empty()) {
+        result.push_back(
+            bytes.find('\n') == std::string_view::npos ? ' ' : '\n');
+      }
+    }
+    result.append(sources.text(token.range));
+    previous_end = token.range.end.offset;
+    have_token = true;
+  }
+  return result;
+}
+
+[[nodiscard]] AgentEnclosingDeclarationContext enclosing_declaration_context(
+    const SourceManager &sources,
+    const LoadedPackage &loaded,
+    const SemanticPackage &package,
+    const AgentRecord &record,
+    DiagnosticSink &diagnostics) {
+  AgentEnclosingDeclarationContext result;
+  if (!record.anchor.is_valid()) return result;
+
+  const Symbol &anchor = package.symbols.symbol(record.anchor);
+  const SyntaxTree *tree = find_tree(loaded, anchor.syntax.file);
+  if (tree == nullptr || !anchor.syntax.node.is_valid()) {
+    diagnostics.error(
+        SourceRange::invalid(),
+        "agent obligation anchor has no enclosing declaration syntax");
+    return result;
+  }
+  const SyntaxNode &declaration = tree->node(anchor.syntax.node);
+  if (record.syntax.file != anchor.syntax.file ||
+      !record.syntax.node.is_valid()) {
+    diagnostics.error(
+        SourceRange::invalid(),
+        "agent obligation is not in its enclosing declaration file");
+    return result;
+  }
+  const SourceRange site = tree->node(record.syntax.node).range;
+  if (site.begin.offset < declaration.range.begin.offset ||
+      site.end.offset > declaration.range.end.offset) {
+    diagnostics.error(
+        site, "agent obligation is outside its enclosing declaration");
+    return result;
+  }
+
+  result.present = true;
+  result.name = anchor.name;
+  result.kind = anchor.kind;
+  result.source = canonical_token_source(sources, *tree, declaration);
+  result.source_digest = sha256(result.source);
+  return result;
+}
+
 // Walks lexical scopes from inner to outer. The first declaration of a name is
 // the visible one; later declarations in the same block are excluded by source
 // position. Sorting happens only after shadowing, so it cannot change meaning.
@@ -270,7 +343,7 @@ void hash_field(Sha256 &hash, std::string_view value) {
     const AgentObligation &obligation,
     const TargetProfile &target) {
   Sha256 hash;
-  hash_field(hash, "draft-agent-obligation-v2");
+  hash_field(hash, "draft-agent-obligation-v3");
   hash_field(hash, obligation.site_identity);
   hash.update(obligation.record_digest.bytes);
   hash.update(obligation.expected_type_digest.bytes);
@@ -304,6 +377,15 @@ void hash_field(Sha256 &hash, std::string_view value) {
   for (const std::string &instruction :
        obligation.target.assembly_instructions) {
     hash_field(hash, instruction);
+  }
+  hash_u64(hash, obligation.enclosing_declaration.present ? 1 : 0);
+  if (obligation.enclosing_declaration.present) {
+    hash_field(hash, obligation.enclosing_declaration.name);
+    hash_u64(
+        hash,
+        static_cast<std::uint64_t>(obligation.enclosing_declaration.kind));
+    hash_field(hash, obligation.enclosing_declaration.source);
+    hash.update(obligation.enclosing_declaration.source_digest.bytes);
   }
   hash_u64(
       hash,
@@ -393,7 +475,6 @@ AgentObligationResult build_agent_obligations(
     const AgentMetadataResult &metadata,
     const TargetProfile &target,
     DiagnosticSink &diagnostics) {
-  (void)sources;
   AgentObligationResult result;
   const std::size_t initial_errors = diagnostics.error_count();
   for (std::size_t index = 0; index < metadata.records.size(); ++index) {
@@ -423,6 +504,8 @@ AgentObligationResult build_agent_obligations(
     obligation.visible_bindings = visible_bindings(
         identity, loaded, package, record, diagnostics);
     obligation.target = target_context(target);
+    obligation.enclosing_declaration = enclosing_declaration_context(
+        sources, loaded, package, record, diagnostics);
     obligation.documentation = documentation_context(package, metadata, record);
     obligation.site_identity = "site-" + site_identity_digest(obligation).hex();
     obligation.input_digest = input_digest(obligation, target);

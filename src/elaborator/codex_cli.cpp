@@ -43,7 +43,7 @@ namespace {
 constexpr std::uintmax_t kMaximumCodexOutputBytes = 64U * 1024U * 1024U;
 constexpr std::uintmax_t kMaximumCodexLogBytes = 4U * 1024U * 1024U;
 constexpr std::string_view kPromptContractIdentity =
-    "draft-codex-synthesis-prompt-v3";
+    "draft-codex-synthesis-prompt-v4";
 constexpr std::string_view kOutputSchema =
     "{\n"
     "  \"type\": \"object\",\n"
@@ -222,11 +222,22 @@ void append_field(
       "request directory.\n";
   append_field("REQUEST_FORMAT", request.format, prompt);
   append_field("SITE", request.obligation.site_identity, prompt);
+  append_field("ROOT_IDENTITY", request.obligation.root_identity, prompt);
+  append_field(
+      "ROOT_RELATIVE_PATH", request.obligation.root_relative_path, prompt);
+  append_field(
+      "SOURCE_RELATIVE_PATH", request.obligation.source_relative_path, prompt);
+  append_field("ANCHOR_NAME", request.obligation.anchor_name, prompt);
+  append_field(
+      "SITE_OCCURRENCE",
+      std::to_string(request.obligation.occurrence),
+      prompt);
   append_field(
       "GRAMMAR",
       agent_construct_kind_name(request.obligation.kind),
       prompt);
   append_field("INPUT_SHA256", request.obligation.input_digest.hex(), prompt);
+  append_field("RECORD_SHA256", request.obligation.record_digest.hex(), prompt);
   append_field(
       "EXPECTED_TYPE_SHA256",
       request.obligation.expected_type_digest.hex(),
@@ -281,6 +292,30 @@ void append_field(
   for (const std::string &instruction :
        request.obligation.target.assembly_instructions) {
     append_field("ASSEMBLY_INSTRUCTION", instruction, prompt);
+  }
+  append_field(
+      "ENCLOSING_DECLARATION_PRESENT",
+      request.obligation.enclosing_declaration.present ? "true" : "false",
+      prompt);
+  if (request.obligation.enclosing_declaration.present) {
+    const AgentEnclosingDeclarationContext &enclosing =
+        request.obligation.enclosing_declaration;
+    if (sha256(enclosing.source) != enclosing.source_digest) {
+      provider_error(
+          diagnostics,
+          "Codex enclosing declaration identity is inconsistent");
+      return false;
+    }
+    append_field("ENCLOSING_DECLARATION_NAME", enclosing.name, prompt);
+    append_field(
+        "ENCLOSING_DECLARATION_KIND",
+        symbol_kind_name(enclosing.kind),
+        prompt);
+    append_field(
+        "ENCLOSING_DECLARATION_SHA256",
+        enclosing.source_digest.hex(),
+        prompt);
+    append_field("ENCLOSING_DECLARATION_SOURCE", enclosing.source, prompt);
   }
   prompt += "DOCUMENTATION ";
   append_u64(
@@ -725,7 +760,7 @@ SynthesisProvider configure_codex_cli_provider(
       "codex-config-" + configuration.finalize().hex();
 
   SynthesisProvider provider;
-  provider.provider_identity = "openai-codex-cli-v4";
+  provider.provider_identity = "openai-codex-cli-v5";
   provider.model_identity = state.model;
   provider.configuration_identity = state.configuration_identity;
   provider.state = &state;

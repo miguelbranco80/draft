@@ -71,6 +71,19 @@ struct AgentDocumentationContext {
   Sha256Digest record_digest;
 };
 
+// A body or member site is meaningful only inside its declaration. The
+// canonical source is reconstructed from syntax tokens, so it retains exact
+// identifiers and literals while deliberately omitting lexical comments. An
+// invalid anchor (for example package-declaration synthesis) has present=false
+// instead of inventing a synthetic declaration.
+struct AgentEnclosingDeclarationContext {
+  bool present = false;
+  std::string name;
+  SymbolKind kind = SymbolKind::UnresolvedDeclaration;
+  std::string source;
+  Sha256Digest source_digest;
+};
+
 // AgentObligation is the immutable input side of one provider transaction.
 // site_identity deliberately excludes prompt and type content so ordinary edits
 // stale the input digest without automatically baptizing a new site. occurrence
@@ -95,6 +108,7 @@ struct AgentObligation {
   std::string expected_type_text;
   std::vector<AgentVisibleBinding> visible_bindings;
   AgentTargetContext target;
+  AgentEnclosingDeclarationContext enclosing_declaration;
   std::vector<AgentDocumentationContext> documentation;
 };
 

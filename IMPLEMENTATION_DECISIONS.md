@@ -164,12 +164,20 @@ An omitted symbol is unknown, and compiler-, package-assembly-, and target-owned
 providers cannot be overridden by an external audit.
 
 Provider requests never substitute hashes for information the synthesizer must
-understand. `draft-synthesis-request-v3` carries canonical Draft spellings for
+understand. `draft-synthesis-request-v4` carries canonical Draft spellings for
 the expected type and every visible binding, together with explicit target,
 SIMD, and parsed-assembly facts. Package and enclosing-declaration documentation
 retain their anchor, text, and exact isolated attachment bytes. The same rows
 remain content-hashed, so their human-readable representation is both useful to
 Codex and a stale-pin input.
+
+The request also carries persistent package and source coordinates plus a
+canonical token rendering of the enclosing procedure or type declaration.
+Lexical comments are omitted by construction, while names, literals, grammar,
+and the synthesis site's exact structural surroundings remain readable. The
+rendering and its digest are obligation inputs; package-level declaration
+synthesis explicitly has no enclosing declaration instead of receiving an
+unbounded source-file dump.
 
 A provider-free compile or resolution revalidation may consume a content-fresh
 pin without installing its original provider. When `draft resolve` explicitly
