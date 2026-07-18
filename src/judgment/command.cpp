@@ -9,7 +9,6 @@
 #include <algorithm>
 #include <cstddef>
 #include <string>
-#include <string_view>
 #include <utility>
 
 namespace draft {
@@ -38,6 +37,36 @@ namespace {
         SourceRange::invalid(),
         "judgment provider identities must not be empty");
     return false;
+  }
+  return true;
+}
+
+[[nodiscard]] bool validators_are_configured(
+    const std::vector<JudgmentValidatorConfiguration> &validators,
+    DiagnosticSink &diagnostics) {
+  if (validators.empty()) {
+    diagnostics.error(
+        SourceRange::invalid(),
+        "judgment policy requires at least one validator");
+    return false;
+  }
+  for (std::size_t index = 0; index < validators.size(); ++index) {
+    const JudgmentValidatorConfiguration &validator = validators[index];
+    if (validator.identity.empty()) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "judgment validator identities must not be empty");
+      return false;
+    }
+    for (std::size_t previous = 0; previous < index; ++previous) {
+      if (validators[previous].identity == validator.identity) {
+        diagnostics.error(
+            SourceRange::invalid(),
+            "judgment validator identities must be unique");
+        return false;
+      }
+    }
+    if (!provider_is_configured(validator.provider, diagnostics)) return false;
   }
   return true;
 }
@@ -109,7 +138,6 @@ namespace {
   request.resolved_program = *compiled.resolved_program_digest;
   request.compiler_identity = compiled.compiler_content_identity;
   request.policy_identity = options.policy_identity;
-  request.validator_identity = "validator-0";
   request.claim = record.text;
   request.artifacts = options.artifacts;
   for (std::size_t index = 0; index < record.files.size(); ++index) {
@@ -126,9 +154,7 @@ namespace {
 
 [[nodiscard]] JudgmentEvidence make_evidence(
     const CompileWorkspaceResult &compiled,
-    const JudgmentRequest &request,
-    const JudgmentProvider &provider,
-    JudgmentResponse response) {
+    const JudgmentRequest &request) {
   JudgmentEvidence evidence;
   evidence.resolved_program = request.resolved_program;
   evidence.target_identity = request.obligation.target.identity;
@@ -145,6 +171,14 @@ namespace {
   for (const JudgmentRequestArtifact &artifact : request.artifacts) {
     evidence.artifacts.push_back({artifact.kind, artifact.digest});
   }
+  return evidence;
+}
+
+void append_validator_result(
+    const JudgmentRequest &request,
+    const JudgmentProvider &provider,
+    JudgmentResponse response,
+    JudgmentEvidence &evidence) {
   JudgmentValidatorResult validator;
   validator.validator_identity = request.validator_identity;
   validator.provider_identity = provider.provider_identity;
@@ -153,9 +187,6 @@ namespace {
   validator.passed = response.passed;
   validator.rationale = std::move(response.rationale);
   evidence.validators.push_back(std::move(validator));
-  evidence.passed = response.passed;
-  evidence.key = hash_judgment_evidence_key(evidence);
-  return evidence;
 }
 
 } // namespace
@@ -193,7 +224,9 @@ JudgmentCommandResult execute_judgment_command(
     result.passed = true;
     return result;
   }
-  if (!provider_is_configured(options.provider, diagnostics)) return result;
+  if (!validators_are_configured(options.validators, diagnostics)) {
+    return result;
+  }
 
   bool aggregate_passed = true;
   for (const std::optional<CompiledPackage> &package : compiled.packages) {
@@ -227,29 +260,41 @@ JudgmentCommandResult execute_judgment_command(
               diagnostics)) {
         return result;
       }
-      JudgmentResponse response;
-      const std::size_t before_provider = diagnostics.error_count();
-      if (!options.provider.judge(
-              options.provider.state,
-              request,
-              response,
-              diagnostics)) {
-        if (diagnostics.error_count() == before_provider) {
+      JudgmentEvidence evidence = make_evidence(compiled, request);
+      bool site_passed = true;
+      for (const JudgmentValidatorConfiguration &validator :
+           options.validators) {
+        request.validator_identity = validator.identity;
+        JudgmentResponse response;
+        const std::size_t before_provider = diagnostics.error_count();
+        if (!validator.provider.judge(
+                validator.provider.state,
+                request,
+                response,
+                diagnostics)) {
+          if (diagnostics.error_count() == before_provider) {
+            diagnostics.error(
+                SourceRange::invalid(),
+                "judgment provider failed without a diagnostic");
+          }
+          return result;
+        }
+        if (response.rationale.empty()) {
           diagnostics.error(
               SourceRange::invalid(),
-              "judgment provider failed without a diagnostic");
+              "judgment provider returned an empty rationale");
+          return result;
         }
-        return result;
-      }
-      if (response.rationale.empty()) {
-        diagnostics.error(
-            SourceRange::invalid(),
-            "judgment provider returned an empty rationale");
-        return result;
+        site_passed = site_passed && response.passed;
+        append_validator_result(
+            request,
+            validator.provider,
+            std::move(response),
+            evidence);
       }
 
-      JudgmentEvidence evidence = make_evidence(
-          compiled, request, options.provider, std::move(response));
+      evidence.passed = site_passed;
+      evidence.key = hash_judgment_evidence_key(evidence);
       const JudgmentEvidenceCommitResult committed = commit_judgment_evidence(
           options.workspace_directory, evidence, diagnostics);
       if (!committed.ok) return result;

@@ -905,13 +905,15 @@ int run_agent_command(
       judgment_state.options.target = resolve_options.compile.target;
       judgment_state.options.selectors = judgment_selectors;
       if (codex.has_value()) {
-        judgment_state.options.provider =
+        draft::JudgmentProvider provider =
             draft::configure_codex_cli_judgment_provider(
                 *codex, judgment_codex_state, diagnostics);
-        if (judgment_state.options.provider.judge == nullptr) {
+        if (provider.judge == nullptr) {
           std::cerr << draft::render_diagnostics(sources, diagnostics);
           return 1;
         }
+        judgment_state.options.validators.push_back(
+            {"validator-0", std::move(provider)});
       }
       resolve_options.judgment_runner.state = &judgment_state;
       resolve_options.judgment_runner.run =
@@ -1016,13 +1018,15 @@ int run_agent_command(
   judgment_options.target = target;
   judgment_options.selectors = judgment_selectors;
   if (codex.has_value()) {
-    judgment_options.provider =
+    draft::JudgmentProvider provider =
         draft::configure_codex_cli_judgment_provider(
             *codex, codex_state, diagnostics);
-    if (judgment_options.provider.judge == nullptr) {
+    if (provider.judge == nullptr) {
       std::cerr << draft::render_diagnostics(sources, diagnostics);
       return 1;
     }
+    judgment_options.validators.push_back(
+        {"validator-0", std::move(provider)});
   }
   const draft::JudgmentCommandResult judged =
       draft::execute_judgment_command(

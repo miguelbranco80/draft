@@ -5,6 +5,7 @@
 #include "compile/compiler.h"
 #include "judgment/evidence_store.h"
 #include "judgment/selection.h"
+#include "judgment/verification.h"
 #include "source/diagnostic.h"
 #include "source/source.h"
 #include "target/profile.h"
@@ -76,11 +77,13 @@ bool fake_judge(
   draft::JudgmentCommandOptions options;
   options.workspace_directory = root;
   options.target = draft::make_aarch64_macos_profile();
-  options.provider.provider_identity = "fake-judge-v1";
-  options.provider.model_identity = "deterministic-model-v1";
-  options.provider.configuration_identity = "fake-configuration-v1";
-  options.provider.state = &provider_state;
-  options.provider.judge = fake_judge;
+  draft::JudgmentProvider provider;
+  provider.provider_identity = "fake-judge-v1";
+  provider.model_identity = "deterministic-model-v1";
+  provider.configuration_identity = "fake-configuration-v1";
+  provider.state = &provider_state;
+  provider.judge = fake_judge;
+  options.validators.push_back({"validator-0", std::move(provider)});
   return options;
 }
 
@@ -111,7 +114,7 @@ void test_execution_revocation_and_reactivation(TestState &state) {
 
   draft::SourceManager sources;
   draft::DiagnosticSink diagnostics;
-  const draft::CompileWorkspaceResult compiled =
+  draft::CompileWorkspaceResult compiled =
       compile_fixture(root, sources, diagnostics);
   if (diagnostics.has_errors()) {
     std::cerr << draft::render_diagnostics(sources, diagnostics);
@@ -200,6 +203,97 @@ void test_execution_revocation_and_reactivation(TestState &state) {
   const std::vector<draft::JudgmentSiteDescription> sites =
       draft::discover_judgment_sites(compiled);
   EXPECT(state, sites.size() == 2);
+
+  // The provider-neutral command executes every validator for every selected
+  // site, aggregates only after all typed verdicts arrive, and commits one
+  // evidence object containing the exact requested artifact identities.
+  FakeProviderState primary_validator;
+  primary_validator.failing_call = 99;
+  FakeProviderState secondary_validator;
+  secondary_validator.failing_call = 99;
+  draft::JudgmentCommandOptions multiple =
+      command_options(root, primary_validator);
+  multiple.policy_identity =
+      "draft-judgment-policy-v2:validators=2:aggregate=all-pass:artifacts=object";
+  multiple.validators.front().identity = "review-primary";
+  draft::JudgmentProvider secondary = multiple.validators.front().provider;
+  secondary.provider_identity = "independent-fake-judge-v1";
+  secondary.configuration_identity = "independent-configuration-v1";
+  secondary.state = &secondary_validator;
+  multiple.validators.push_back(
+      {"review-secondary", std::move(secondary)});
+  draft::JudgmentRequestArtifact artifact;
+  artifact.kind = "object";
+  artifact.contents = "exact object bytes";
+  artifact.digest = draft::sha256(artifact.contents);
+  multiple.artifacts.push_back(artifact);
+  const draft::JudgmentCommandResult multiple_result =
+      draft::execute_judgment_command(
+          compiled, std::move(multiple), diagnostics);
+  EXPECT(state, multiple_result.completed);
+  EXPECT(state, multiple_result.passed);
+  EXPECT(state, multiple_result.evidence.size() == 2);
+  EXPECT(state, primary_validator.calls == 2);
+  EXPECT(state, secondary_validator.calls == 2);
+  if (!primary_validator.requests.empty() &&
+      !secondary_validator.requests.empty()) {
+    EXPECT(state,
+        primary_validator.requests.front().validator_identity ==
+            "review-primary");
+    EXPECT(state,
+        secondary_validator.requests.front().validator_identity ==
+            "review-secondary");
+    EXPECT(state,
+        primary_validator.requests.front().artifacts.size() == 1);
+    EXPECT(state,
+        primary_validator.requests.front().artifacts.front().contents ==
+            artifact.contents);
+  }
+  for (const draft::ResolutionEvidencePin &pin : multiple_result.evidence) {
+    draft::JudgmentEvidenceState loaded;
+    EXPECT(state, draft::load_judgment_evidence_state(
+        root, pin.key, loaded, diagnostics));
+    EXPECT(state, loaded.active_evidence.has_value());
+    if (loaded.active_evidence.has_value()) {
+      EXPECT(state, loaded.active_evidence->validators.size() == 2);
+      EXPECT(state, loaded.active_evidence->artifacts.size() == 1);
+      EXPECT(state, loaded.active_evidence->passed);
+    }
+  }
+
+  // Offline verification consumes an explicit policy shape. It needs neither
+  // provider and proves validator order plus exact artifact content identity.
+  draft::ResolutionManifest policy_manifest;
+  policy_manifest.target_identity =
+      draft::make_aarch64_macos_profile().facts.identity;
+  policy_manifest.resolved_program_digest =
+      *compiled.resolved_program_digest;
+  policy_manifest.evidence = multiple_result.evidence;
+  compiled.resolution_manifest = std::move(policy_manifest);
+  draft::JudgmentVerificationPolicy verification_policy;
+  verification_policy.identity =
+      "draft-judgment-policy-v2:validators=2:aggregate=all-pass:artifacts=object";
+  verification_policy.validator_identities = {
+      "review-primary", "review-secondary"};
+  verification_policy.artifacts.push_back(
+      {artifact.kind, artifact.digest});
+  std::vector<draft::Sha256Digest> active_evidence;
+  EXPECT(state, draft::verify_active_judgment_evidence(
+      compiled,
+      root,
+      active_evidence,
+      diagnostics,
+      verification_policy));
+  EXPECT(state, active_evidence.size() == 2);
+  draft::DiagnosticSink wrong_policy_diagnostics;
+  active_evidence.clear();
+  EXPECT(state, !draft::verify_active_judgment_evidence(
+      compiled,
+      root,
+      active_evidence,
+      wrong_policy_diagnostics));
+  EXPECT(state, wrong_policy_diagnostics.has_errors());
+
   if (sites.size() == 2) {
     provider.calls = 0;
     provider.requests.clear();

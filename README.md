@@ -340,6 +340,15 @@ the model calls is still current, so concurrent resolution cannot attach a
 verdict to a different program. A failing aggregate never selects its rows and
 revokes any prior active evidence for the same exact claim keys.
 
+The provider-neutral judgment API also supports an ordered set of independent
+validators and exact requested artifact bytes. It invokes every validator for
+each selected site and records one evidence object that passes only when all
+rows pass. Offline verification is given the same policy identity, validator
+order, and artifact digests, so it can reject mismatched evidence without a
+provider. The current command-line profile intentionally exposes the simpler
+one-validator/no-artifact policy while richer profile configuration is being
+defined.
+
 `draftc judge path/to/package --list` prints each exact stable `site-...`
 identity with its package, anchor, source file, and occurrence without
 configuring Codex. Positional selectors (or `--select <selector>`) accept that

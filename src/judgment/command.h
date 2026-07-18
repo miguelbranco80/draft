@@ -17,13 +17,26 @@ namespace draft {
 inline constexpr std::string_view kDefaultJudgmentPolicyIdentity =
     "draft-judgment-policy-v1:validators=1:aggregate=all-pass:artifacts=none";
 
+// One independent validator selected by a judgment policy. The identity is
+// compiler-owned policy data; provider/model/configuration identities describe
+// the concrete implementation used for this invocation. Keeping those fields
+// separate lets evidence prove both the requested validator slot and the agent
+// that actually filled it.
+struct JudgmentValidatorConfiguration {
+  std::string identity;
+  JudgmentProvider provider;
+};
+
 struct JudgmentCommandOptions {
   std::filesystem::path workspace_directory;
   TargetProfile target;
-  JudgmentProvider provider;
-  // v1 invokes exactly one validator per site and passes only when every site
-  // passes. The explicit identity prevents a later count/aggregation change
-  // from reusing evidence produced under this first policy.
+  // Validators run in policy order for every selected site. The current
+  // provider-neutral aggregation rule is deliberately small and exact: every
+  // configured validator must return a typed verdict and all must pass.
+  std::vector<JudgmentValidatorConfiguration> validators;
+  // The explicit identity prevents a different count, ordering, aggregation,
+  // or requested-artifact policy from reusing evidence. The default public CLI
+  // profile installs one `validator-0` row and requests no artifacts.
   std::string policy_identity = std::string(kDefaultJudgmentPolicyIdentity);
   std::vector<JudgmentRequestArtifact> artifacts;
   std::vector<std::string> selectors;

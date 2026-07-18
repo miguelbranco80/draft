@@ -4,6 +4,7 @@
 
 #include "judgment/evidence_store.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <string>
 #include <string_view>
@@ -59,6 +60,54 @@ void verification_error(DiagnosticSink &diagnostics, std::string message) {
   diagnostics.error(SourceRange::invalid(), std::move(message));
 }
 
+[[nodiscard]] bool validate_policy(
+    const JudgmentVerificationPolicy &policy,
+    std::vector<JudgmentArtifactIdentity> &artifacts,
+    DiagnosticSink &diagnostics) {
+  if (policy.identity.empty() || policy.validator_identities.empty()) {
+    verification_error(
+        diagnostics,
+        "judgment evidence policy requires an identity and at least one validator");
+    return false;
+  }
+  for (std::size_t index = 0;
+       index < policy.validator_identities.size();
+       ++index) {
+    const std::string &identity = policy.validator_identities[index];
+    if (identity.empty()) {
+      verification_error(
+          diagnostics,
+          "judgment evidence policy requires unique nonempty validator identities");
+      return false;
+    }
+    for (std::size_t previous = 0; previous < index; ++previous) {
+      if (policy.validator_identities[previous] == identity) {
+        verification_error(
+            diagnostics,
+            "judgment evidence policy requires unique nonempty validator identities");
+        return false;
+      }
+    }
+  }
+  artifacts = policy.artifacts;
+  std::sort(
+      artifacts.begin(), artifacts.end(),
+      [](const JudgmentArtifactIdentity &left,
+         const JudgmentArtifactIdentity &right) {
+        return left.kind < right.kind;
+      });
+  for (std::size_t index = 0; index < artifacts.size(); ++index) {
+    if (artifacts[index].kind.empty() ||
+        (index != 0 && artifacts[index - 1].kind == artifacts[index].kind)) {
+      verification_error(
+          diagnostics,
+          "judgment evidence policy requires unique nonempty artifact kinds");
+      return false;
+    }
+  }
+  return true;
+}
+
 } // namespace
 
 bool verify_active_judgment_evidence(
@@ -66,16 +115,18 @@ bool verify_active_judgment_evidence(
     const std::filesystem::path &workspace_directory,
     std::vector<Sha256Digest> &active_digests,
     DiagnosticSink &diagnostics,
-    std::string_view policy_identity) {
+    const JudgmentVerificationPolicy &policy) {
   active_digests.clear();
   if (!compiled.ok || !compiled.resolved_program_digest.has_value() ||
-      workspace_directory.empty() || policy_identity.empty()) {
+      workspace_directory.empty()) {
     verification_error(
         diagnostics,
         "judgment evidence verification requires a complete resolved program, "
         "workspace, and policy identity");
     return false;
   }
+  std::vector<JudgmentArtifactIdentity> expected_artifacts;
+  if (!validate_policy(policy, expected_artifacts, diagnostics)) return false;
 
   const std::size_t required_count = judgment_count(compiled);
   if (!compiled.resolution_manifest.has_value()) {
@@ -155,20 +206,30 @@ bool verify_active_judgment_evidence(
         evidence.target_identity != obligation->target.identity ||
         evidence.target_identity != manifest.target_identity ||
         evidence.compiler_identity != compiled.compiler_content_identity ||
-        evidence.policy_identity != policy_identity) {
+        evidence.policy_identity != policy.identity) {
       verification_error(
           diagnostics,
           "manifest-selected judgment evidence has stale program, target, "
           "compiler, package, or policy identity");
       return false;
     }
-    if (!evidence.artifacts.empty() || evidence.validators.size() != 1 ||
-        evidence.validators.front().validator_identity != "validator-0" ||
-        !evidence.validators.front().passed) {
+    bool validators_match =
+        evidence.validators.size() == policy.validator_identities.size();
+    if (validators_match) {
+      for (std::size_t index = 0; index < evidence.validators.size(); ++index) {
+        if (evidence.validators[index].validator_identity !=
+                policy.validator_identities[index] ||
+            !evidence.validators[index].passed) {
+          validators_match = false;
+          break;
+        }
+      }
+    }
+    if (evidence.artifacts != expected_artifacts || !validators_match) {
       verification_error(
           diagnostics,
           "manifest-selected judgment evidence does not match the active "
-          "one-validator/no-artifact policy");
+          "validator/artifact policy");
       return false;
     }
     active_digests.push_back(*state.active_digest);

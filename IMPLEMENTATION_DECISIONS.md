@@ -720,7 +720,8 @@ existing staged-object/fsync/manifest-last crash protocol.
 
 ## Offline locked judgment evidence gate
 
-Status: first all-sites policy implemented.
+Status: provider-neutral multi-validator/artifact verification implemented;
+public CLI uses the first all-sites profile.
 
 `draftc build --locked --require-judgment-evidence` never configures a judging
 provider. It starts from the already compiled resolved graph and requires one
@@ -729,12 +730,22 @@ key must be active, passing, and still point at the exact immutable attempt
 selected by the manifest. The typed object must match the full stable claim and
 input digests, resolved program, target, compiler, package, and active policy.
 
-The first policy is explicitly one `validator-0`, aggregate all-pass, with no
-requested artifacts. Provider, model, and configuration remain exact nonempty
-identities inside the selected evidence object; the locked gate does not need
-provider installation or credentials to verify them. A later failing attempt
-revokes the key immediately, so an unchanged manifest that names the older pass
-fails offline verification until judgment succeeds and republishes selection.
+The provider-neutral command accepts an ordered nonempty validator list and an
+exact map of requested artifact bytes. It invokes every validator for every
+selected site even after an ordinary failing verdict, then commits one evidence
+object whose aggregate passes only when all validator rows pass. Validator
+identities are unique policy slots; provider, model, and configuration remain
+separate exact nonempty audit identities. Artifact kinds are unique and their
+content is rehashed before any invocation.
+
+Offline verification receives the expected policy identity, validator order,
+and artifact content identities. It needs no provider installation or
+credentials, and rejects a selected object when any row, order, kind, or digest
+differs. The public CLI currently instantiates the explicit first profile: one
+`validator-0`, aggregate all-pass, with no requested artifacts. A later failing
+attempt revokes the key immediately, so an unchanged manifest that names the
+older pass fails offline verification until judgment succeeds and republishes
+selection.
 
 ## Judgment discovery and partial selection
 
@@ -811,7 +822,7 @@ the readable subject type, and the same portable interface type graph used by
 other provider context. Source and duplicated digests are rechecked by the
 shared Codex renderer before either synthesis or judgment starts a child. The
 `draft-agent-obligation-v16`, synthesis request/prompt v17, judgment
-request/prompt v3, and compiler content v109 identities make these new facts a
+request/prompt v3, and compiler content v110 identities make these new facts a
 stale-pin and evidence input.
 
 Nested procedures are static and cannot capture runtime locals. Checking a
