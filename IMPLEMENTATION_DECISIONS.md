@@ -724,3 +724,23 @@ identities inside the selected evidence object; the locked gate does not need
 provider installation or credentials to verify them. A later failing attempt
 revokes the key immediately, so an unchanged manifest that names the older pass
 fails offline verification until judgment succeeds and republishes selection.
+
+## Judgment discovery and partial selection
+
+Status: package, declaration, and exact-site selection implemented.
+
+The compiler exposes judgment sites in canonical compiled obligation order.
+Each listing includes the unambiguous persistent `site-...` identity plus its
+package, semantic anchor, source file, and occurrence. A command selector may be
+that exact identity, a package path/full identity, or a package plus declaration
+anchor; several selectors form a de-duplicated union. Every supplied selector
+must match at least one current site before provider configuration.
+
+Resolution v4 evidence rows intentionally avoid duplicating the site identity,
+so partial replacement maps an old row through its typed evidence history. The
+judgment store now retains the latest typed attempt even when it is a failure
+that revoked active state. This is enough to identify and remove only selected
+old rows. Missing or corrupt history fails closed. Each proposed replacement is
+then reloaded and required to be an active attempt for exactly one selected
+site before the stale-snapshot-safe manifest transaction begins. The default
+empty selector remains all-sites behavior.

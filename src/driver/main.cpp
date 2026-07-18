@@ -16,6 +16,7 @@
 #include "interop/c_header.h"
 #include "judgment/codex_cli.h"
 #include "judgment/command.h"
+#include "judgment/selection.h"
 #include "judgment/verification.h"
 #include "source/diagnostic.h"
 #include "source/source.h"
@@ -28,7 +29,6 @@
 #include "workspace/package.h"
 #include "workspace/workspace.h"
 
-#include <algorithm>
 #include <csignal>
 #include <filesystem>
 #include <fstream>
@@ -707,7 +707,9 @@ int run_agent_command(
     const std::optional<draft::LockedNativeInputRoots> &locked_inputs =
         std::nullopt,
     const std::vector<draft::ForeignProviderInput> &foreign_providers = {},
-    const std::vector<draft::ForeignProviderSummaryInput> &provider_summaries = {}) {
+    const std::vector<draft::ForeignProviderSummaryInput> &provider_summaries = {},
+    const std::vector<std::string> &judgment_selectors = {},
+    bool list_judgments = false) {
   draft::SourceManager sources;
   draft::DiagnosticSink diagnostics;
   std::error_code path_error;
@@ -857,18 +859,21 @@ int run_agent_command(
     return 1;
   }
 
-  std::size_t matching_sites = 0;
-  for (const std::optional<draft::CompiledPackage> &package :
-       compiled.packages) {
-    if (!package.has_value()) continue;
-    for (const draft::AgentObligation &obligation :
-         package->obligations.obligations) {
-      if (obligation.kind == draft::AgentConstructKind::Judgment) {
-        ++matching_sites;
-      }
-    }
+  draft::JudgmentSelection selection;
+  if (!draft::select_judgment_sites(
+          compiled, judgment_selectors, selection, diagnostics)) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+    return 1;
   }
-  if (matching_sites == 0) {
+  if (list_judgments) {
+    for (const draft::JudgmentSiteDescription &site : selection.sites) {
+      std::cout << site.site_identity << ' ' << site.package_identity << ' '
+                << site.anchor_name << ' ' << site.source_relative_path << ':'
+                << site.occurrence << '\n';
+    }
+    return 0;
+  }
+  if (selection.sites.empty()) {
     std::cout << "no judgment sites require execution\n";
     return 0;
   }
@@ -878,6 +883,7 @@ int run_agent_command(
   judgment_options.workspace_directory =
       absolute_directory.parent_path();
   judgment_options.target = target;
+  judgment_options.selectors = judgment_selectors;
   if (codex.has_value()) {
     judgment_options.provider =
         draft::configure_codex_cli_judgment_provider(
@@ -909,18 +915,18 @@ int run_agent_command(
     replacement.target_identity = target.facts.identity;
     replacement.resolved_program_digest = *compiled.resolved_program_digest;
   }
-  replacement.evidence.erase(
-      std::remove_if(
-          replacement.evidence.begin(),
-          replacement.evidence.end(),
-          [](const draft::ResolutionEvidencePin &pin) {
-            return pin.kind == "judgment";
-          }),
-      replacement.evidence.end());
-  replacement.evidence.insert(
-      replacement.evidence.end(),
-      judged.evidence.begin(),
-      judged.evidence.end());
+  std::vector<draft::ResolutionEvidencePin> updated_evidence;
+  if (!draft::replace_selected_judgment_evidence(
+          absolute_directory.parent_path(),
+          replacement.evidence,
+          selection,
+          judged.evidence,
+          updated_evidence,
+          diagnostics)) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+    return 1;
+  }
+  replacement.evidence = std::move(updated_evidence);
   if (!draft::commit_resolution_manifest_if_unchanged(
           absolute_directory.parent_path(),
           compiled.resolution_manifest,
@@ -969,7 +975,7 @@ void print_usage() {
             << "      [--toolchain-root <directory> --sdk-root <directory>]\n"
             << "      [--provider name=object|archive|shared-library:<path>]...\n"
             << "      [--provider-summary name:<path>]...\n"
-            << "  draftc judge <package-directory>\n"
+            << "  draftc judge <package-directory> [<selector>...] [--list]\n"
             << "      [--codex-distribution-root <directory>\n"
             << "       --codex-executable <path> --codex-model <model>]\n"
             << "      [--provider name=object|archive|shared-library:<path>]...\n"
@@ -1098,6 +1104,8 @@ int main(int argc, char **argv) {
     std::optional<std::string> codex_distribution_root;
     std::optional<std::string> codex_executable;
     std::optional<std::string> codex_model;
+    bool list_judgments = false;
+    std::vector<std::string> judgment_selectors;
     std::vector<draft::ForeignProviderInput> foreign_providers;
     std::vector<draft::ForeignProviderSummaryInput> provider_summaries;
     for (int index = 3; index < argc; ++index) {
@@ -1111,6 +1119,10 @@ int main(int argc, char **argv) {
       } else if (argument == "--codex-model" &&
                  !codex_model.has_value() && index + 1 < argc) {
         codex_model = argv[++index];
+      } else if (argument == "--list" && !list_judgments) {
+        list_judgments = true;
+      } else if (argument == "--select" && index + 1 < argc) {
+        judgment_selectors.emplace_back(argv[++index]);
       } else if (argument == "--provider" && index + 1 < argc) {
         draft::ForeignProviderInput provider;
         std::string reason;
@@ -1128,6 +1140,8 @@ int main(int argc, char **argv) {
           return 2;
         }
         provider_summaries.push_back(std::move(summary));
+      } else if (!argument.starts_with('-')) {
+        judgment_selectors.emplace_back(argument);
       } else {
         print_usage();
         return 2;
@@ -1135,7 +1149,8 @@ int main(int argc, char **argv) {
     }
     if (codex_executable.has_value() != codex_model.has_value() ||
         codex_executable.has_value() !=
-            codex_distribution_root.has_value()) {
+            codex_distribution_root.has_value() ||
+        (list_judgments && codex_executable.has_value())) {
       print_usage();
       return 2;
     }
@@ -1157,7 +1172,9 @@ int main(int argc, char **argv) {
         codex,
         std::nullopt,
         foreign_providers,
-        provider_summaries);
+        provider_summaries,
+        judgment_selectors,
+        list_judgments);
   }
   if (argc >= 3 &&
       (std::string_view(argv[1]) == "test" ||

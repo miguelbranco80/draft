@@ -7,6 +7,7 @@
 #include "elaborator/resolution_store.h"
 #include "compile/compiler.h"
 #include "judgment/evidence_store.h"
+#include "judgment/selection.h"
 #include "judgment/verification.h"
 #include "source/diagnostic.h"
 #include "target/profile.h"
@@ -113,19 +114,33 @@ struct TemporaryWorkspace {
   }
 };
 
-[[nodiscard]] int run_judge(const TemporaryWorkspace &workspace) {
+[[nodiscard]] int run_judge(
+    const TemporaryWorkspace &workspace,
+    const std::vector<std::string> &selectors = {},
+    bool list = false) {
 #if defined(__APPLE__) || defined(__unix__)
   std::vector<std::string> arguments{
       DRAFT_DRIVER_PATH,
       "judge",
       workspace.package.string(),
-      "--codex-distribution-root",
-      workspace.distribution.string(),
-      "--codex-executable",
-      workspace.executable.string(),
-      "--codex-model",
-      "fixture-model",
   };
+  for (const std::string &selector : selectors) {
+    arguments.push_back(selector);
+  }
+  if (list) {
+    arguments.push_back("--list");
+  } else {
+    arguments.insert(
+        arguments.end(),
+        {
+            "--codex-distribution-root",
+            workspace.distribution.string(),
+            "--codex-executable",
+            workspace.executable.string(),
+            "--codex-model",
+            "fixture-model",
+        });
+  }
   std::vector<char *> raw;
   raw.reserve(arguments.size() + 1);
   for (std::string &argument : arguments) raw.push_back(argument.data());
@@ -165,15 +180,33 @@ struct TemporaryWorkspace {
 
 void test_passing_command_selects_evidence(TestState &state) {
   TemporaryWorkspace workspace("pass", true);
-  EXPECT(state, run_judge(workspace) == 0);
+  EXPECT(state, run_judge(workspace, {}, true) == 0);
 
   draft::DiagnosticSink diagnostics;
   draft::ResolutionManifestLoadResult loaded =
       draft::load_resolution_manifest(workspace.root, diagnostics);
   EXPECT(state,
+      loaded.state == draft::ResolutionManifestLoadState::Missing);
+
+  draft::SourceManager discovery_sources;
+  draft::DiagnosticSink discovery_diagnostics;
+  const draft::CompileWorkspaceResult discovered_program = compile_resolved(
+      workspace, discovery_sources, discovery_diagnostics);
+  EXPECT(state, discovered_program.ok);
+  const std::vector<draft::JudgmentSiteDescription> sites =
+      draft::discover_judgment_sites(discovered_program);
+  EXPECT(state, sites.size() == 2);
+  if (sites.size() != 2) return;
+
+  // Exact stable identity selects one site and publishes only its row. Listing
+  // and selection both operate before provider configuration.
+  EXPECT(state, run_judge(workspace, {sites.front().site_identity}) == 0);
+  diagnostics = {};
+  loaded = draft::load_resolution_manifest(workspace.root, diagnostics);
+  EXPECT(state,
       loaded.state == draft::ResolutionManifestLoadState::Loaded);
   EXPECT(state, loaded.manifest.pins.empty());
-  EXPECT(state, loaded.manifest.evidence.size() == 2);
+  EXPECT(state, loaded.manifest.evidence.size() == 1);
   for (const draft::ResolutionEvidencePin &pin : loaded.manifest.evidence) {
     EXPECT(state, pin.kind == "judgment");
     draft::JudgmentEvidenceState evidence;
@@ -187,8 +220,19 @@ void test_passing_command_selects_evidence(TestState &state) {
   }
   EXPECT(state, !diagnostics.has_errors());
 
-  // A second command compiles through the now-present manifest, appends fresh
-  // attempts for the same static keys, and atomically advances both rows.
+  draft::SourceManager partial_sources;
+  draft::DiagnosticSink partial_diagnostics;
+  const draft::CompileWorkspaceResult partial = compile_resolved(
+      workspace, partial_sources, partial_diagnostics);
+  std::vector<draft::Sha256Digest> active;
+  EXPECT(state,
+      !draft::verify_active_judgment_evidence(
+          partial, workspace.root, active, partial_diagnostics));
+  EXPECT(state, partial_diagnostics.has_errors());
+
+  // The default package command selects all sites. It preserves the existing
+  // selected row until its fresh attempt is durable, adds the missing row, and
+  // atomically publishes the complete two-site selection.
   EXPECT(state, run_judge(workspace) == 0);
   diagnostics = {};
   loaded = draft::load_resolution_manifest(workspace.root, diagnostics);
@@ -200,7 +244,14 @@ void test_passing_command_selects_evidence(TestState &state) {
     EXPECT(state,
         draft::load_judgment_evidence_state(
             workspace.root, pin.key, evidence, diagnostics));
-    EXPECT(state, evidence.attempts.size() == 2);
+    EXPECT(state, evidence.active_evidence.has_value());
+    if (evidence.active_evidence.has_value() &&
+        evidence.active_evidence->claim.site_identity ==
+            sites.front().site_identity) {
+      EXPECT(state, evidence.attempts.size() == 2);
+    } else {
+      EXPECT(state, evidence.attempts.size() == 1);
+    }
     EXPECT(state, evidence.active_digest == pin.content_digest);
   }
   EXPECT(state, !diagnostics.has_errors());
@@ -212,7 +263,7 @@ void test_passing_command_selects_evidence(TestState &state) {
   const draft::CompileWorkspaceResult compiled = compile_resolved(
       workspace, sources, verification_diagnostics);
   EXPECT(state, compiled.ok);
-  std::vector<draft::Sha256Digest> active;
+  active.clear();
   EXPECT(state,
       draft::verify_active_judgment_evidence(
           compiled,

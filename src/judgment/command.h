@@ -26,6 +26,7 @@ struct JudgmentCommandOptions {
   // from reusing evidence produced under this first policy.
   std::string policy_identity = std::string(kDefaultJudgmentPolicyIdentity);
   std::vector<JudgmentRequestArtifact> artifacts;
+  std::vector<std::string> selectors;
 };
 
 struct JudgmentCommandResult {
@@ -34,6 +35,7 @@ struct JudgmentCommandResult {
   bool completed = false;
   bool passed = false;
   std::size_t selected_judgments = 0;
+  std::vector<std::string> selected_site_identities;
   // Rows are safe to select in a resolution manifest only when completed and
   // passed are both true. Failed commands retain their rows solely to make
   // testing/auditing the durable attempts possible.

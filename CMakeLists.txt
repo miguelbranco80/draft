@@ -49,6 +49,7 @@ add_library(
   src/judgment/command.cpp
   src/judgment/evidence.cpp
   src/judgment/evidence_store.cpp
+  src/judgment/selection.cpp
   src/judgment/verification.cpp
   src/mir/lower.cpp
   src/mir/mir.cpp

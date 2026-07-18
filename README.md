@@ -306,6 +306,26 @@ the model calls is still current, so concurrent resolution cannot attach a
 verdict to a different program. A failing aggregate never selects its rows and
 revokes any prior active evidence for the same exact claim keys.
 
+`draftc judge path/to/package --list` prints each exact stable `site-...`
+identity with its package, anchor, source file, and occurrence without
+configuring Codex. Positional selectors (or `--select <selector>`) accept that
+exact identity, a package path/identity, or `<package>:<anchor>`. Multiple
+selectors form a de-duplicated union. A partial successful run replaces only
+the selected sites' rows; unrelated judgment and native evidence remains
+selected. For example:
+
+```sh
+build/draftc judge path/to/root codec/jpeg:decode \
+  --codex-distribution-root /absolute/codex-root \
+  --codex-executable /absolute/codex-root/bin/codex \
+  --codex-model <model>
+```
+
+The all-sites locked gate still requires complete coverage. Partial runs are
+therefore useful for iteration but do not satisfy
+`--require-judgment-evidence` until every current site has an active selected
+row.
+
 Pin native inputs during resolution, then reproduce them without a provider:
 
 ```sh

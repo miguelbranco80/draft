@@ -106,6 +106,9 @@ bool load_judgment_evidence_state(
   result.key = raw.key;
   result.attempts = std::move(raw.attempts);
   result.active_digest = raw.active_digest;
+  if (!result.attempts.empty()) {
+    result.latest_evidence = codec_state.decoded;
+  }
   if (raw.status == EvidenceAttemptStateStatus::Active) {
     result.active_evidence = std::move(codec_state.decoded);
   }

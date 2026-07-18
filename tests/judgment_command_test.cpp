@@ -4,6 +4,7 @@
 
 #include "compile/compiler.h"
 #include "judgment/evidence_store.h"
+#include "judgment/selection.h"
 #include "source/diagnostic.h"
 #include "source/source.h"
 #include "target/profile.h"
@@ -148,6 +149,7 @@ void test_execution_revocation_and_reactivation(TestState &state) {
     EXPECT(state, draft::load_judgment_evidence_state(
         root, first.evidence[index].key, loaded, diagnostics));
     EXPECT(state, loaded.attempts.size() == 1);
+    EXPECT(state, loaded.latest_evidence.has_value());
     EXPECT(state, loaded.status ==
         (index == 0
             ? draft::JudgmentEvidenceStateStatus::Active
@@ -181,6 +183,55 @@ void test_execution_revocation_and_reactivation(TestState &state) {
     }
   }
   EXPECT(state, !diagnostics.has_errors());
+
+  const std::vector<draft::JudgmentSiteDescription> sites =
+      draft::discover_judgment_sites(compiled);
+  EXPECT(state, sites.size() == 2);
+  if (sites.size() == 2) {
+    provider.calls = 0;
+    provider.requests.clear();
+    draft::JudgmentCommandOptions selected = command_options(root, provider);
+    selected.selectors.push_back(
+        sites[1].package_selector + ":" + sites[1].anchor_name);
+    const draft::JudgmentCommandResult declaration =
+        draft::execute_judgment_command(
+            compiled, std::move(selected), diagnostics);
+    EXPECT(state, declaration.completed);
+    EXPECT(state, declaration.passed);
+    EXPECT(state, declaration.selected_judgments == 1);
+    EXPECT(state, declaration.selected_site_identities.size() == 1);
+    EXPECT(state,
+        declaration.selected_site_identities.front() ==
+            sites[1].site_identity);
+    EXPECT(state, provider.requests.size() == 1);
+    if (provider.requests.size() == 1) {
+      EXPECT(state, provider.requests.front().claim ==
+          "The local value is well typed at this point.");
+    }
+
+    provider.calls = 0;
+    provider.requests.clear();
+    draft::JudgmentCommandOptions exact = command_options(root, provider);
+    exact.selectors.push_back(sites[0].site_identity);
+    const draft::JudgmentCommandResult one =
+        draft::execute_judgment_command(
+            compiled, std::move(exact), diagnostics);
+    EXPECT(state, one.completed);
+    EXPECT(state, one.selected_judgments == 1);
+    EXPECT(state, provider.requests.size() == 1);
+  }
+
+  draft::DiagnosticSink unmatched_diagnostics;
+  provider.calls = 0;
+  provider.requests.clear();
+  draft::JudgmentCommandOptions unmatched = command_options(root, provider);
+  unmatched.selectors.push_back("no/such/package:missing");
+  const draft::JudgmentCommandResult no_match =
+      draft::execute_judgment_command(
+          compiled, std::move(unmatched), unmatched_diagnostics);
+  EXPECT(state, !no_match.completed);
+  EXPECT(state, unmatched_diagnostics.has_errors());
+  EXPECT(state, provider.calls == 0);
   std::filesystem::remove_all(root, error);
 }
 

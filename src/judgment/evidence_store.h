@@ -21,6 +21,10 @@ struct JudgmentEvidenceState {
   Sha256Digest key;
   std::vector<Sha256Digest> attempts;
   std::optional<Sha256Digest> active_digest;
+  // The last typed attempt is retained even when it failed and revoked active
+  // state. Partial manifest updates need only its immutable site identity to
+  // distinguish selected rows from unrelated judgment rows.
+  std::optional<JudgmentEvidence> latest_evidence;
   std::optional<JudgmentEvidence> active_evidence;
 };
 

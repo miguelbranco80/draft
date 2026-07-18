@@ -4,6 +4,7 @@
 
 #include "judgment/evidence.h"
 #include "judgment/evidence_store.h"
+#include "judgment/selection.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -177,14 +178,15 @@ JudgmentCommandResult execute_judgment_command(
     return result;
   }
   if (!valid_artifacts(options.artifacts, diagnostics)) return result;
-
-  for (const std::optional<CompiledPackage> &package : compiled.packages) {
-    if (!package.has_value()) continue;
-    for (const AgentObligation &obligation : package->obligations.obligations) {
-      if (obligation.kind == AgentConstructKind::Judgment) {
-        ++result.selected_judgments;
-      }
-    }
+  JudgmentSelection selection;
+  if (!select_judgment_sites(
+          compiled, options.selectors, selection, diagnostics)) {
+    return result;
+  }
+  result.selected_judgments = selection.sites.size();
+  result.selected_site_identities.reserve(selection.sites.size());
+  for (const JudgmentSiteDescription &site : selection.sites) {
+    result.selected_site_identities.push_back(site.site_identity);
   }
   if (result.selected_judgments == 0) {
     result.completed = true;
@@ -197,7 +199,11 @@ JudgmentCommandResult execute_judgment_command(
   for (const std::optional<CompiledPackage> &package : compiled.packages) {
     if (!package.has_value()) continue;
     for (const AgentObligation &obligation : package->obligations.obligations) {
-      if (obligation.kind != AgentConstructKind::Judgment) continue;
+      if (obligation.kind != AgentConstructKind::Judgment ||
+          !judgment_selection_contains(
+              selection, obligation.site_identity)) {
+        continue;
+      }
       if (obligation.target.identity != options.target.facts.identity) {
         diagnostics.error(
             SourceRange::invalid(),
