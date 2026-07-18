@@ -3747,12 +3747,19 @@ private:
         expression.kind = HirExpressionKind::Symbol;
         expression.range = node.range;
         expression.symbol = *imported;
+        const TypeId imported_type =
+            substitute_active(symbol.type, node.range);
         expression.type = apply_expected_type(
-            substitute_active(symbol.type, node.range), expected, node.range);
+            imported_type, expected, node.range);
         expression.addressable = symbol.kind == SymbolKind::Variable;
         if (const ConstantValue *constant = imported_constant(*imported)) {
           expression.kind = HirExpressionKind::Constant;
           expression.constant = *constant;
+          contextualize_constant_value(
+              expression.constant,
+              imported_type,
+              expression.type,
+              node.range);
         }
         return hir_.add_expression(std::move(expression));
       }

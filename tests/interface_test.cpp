@@ -138,6 +138,10 @@ pub echo :: proc(point: math.Point) -> math.Point {
 
 callback: proc(a, b: i64) -> i64 = math.Add_Procedure
 
+float_count :: proc() -> f64 {
+    return math.Count
+}
+
 Sized :: struct {
     bytes: [math.Count]u8,
 }
@@ -146,6 +150,7 @@ main :: proc() {
     value := math.add(math.Count, 1)
     assert(value == 8)
     assert(callback(20, 22) == 42)
+    assert(float_count() == 7.0)
 }
 )draft");
   const std::optional<draft::SyntaxReference> import = first_import(consumer);
@@ -180,7 +185,7 @@ main :: proc() {
   EXPECT(state, dependency_interface.declarations.size() == 5);
   EXPECT(state, consumer_semantics.ok);
   EXPECT(state, bodies.ok);
-  EXPECT(state, bodies.checked_procedures == 2);
+  EXPECT(state, bodies.checked_procedures == 3);
   EXPECT(state, consumer_semantics.package.imported_symbols.size() == 5);
   EXPECT(state, consumer_semantics.package.imported_types.size() == 2);
   EXPECT(state, consumer_interface.declarations.size() == 1);

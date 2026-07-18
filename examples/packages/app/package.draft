@@ -8,9 +8,14 @@ when math.Unit == 1 {
     Coordinate :: Does_Not_Exist
 }
 
+float_unit :: proc() -> f64 {
+    return math.Unit
+}
+
 main :: proc() {
     origin := math.Origin{x = 3, y = 4}
     delta: Coordinate = math.Unit
     moved := math.translate(origin, delta)
     assert(moved.x == 4)
+    assert(float_unit() == 1.0)
 }
