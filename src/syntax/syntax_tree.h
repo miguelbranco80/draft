@@ -137,6 +137,13 @@ enum class NodeKind {
   CompositeExpression,
   CompositeElement,
   ContextualAlternativeExpression,
+
+  // Keep Last as the final entry. Parser conformance tests walk the contiguous
+  // range from SourceFile through Last so a newly added concrete production is
+  // not silently left without a valid-source fixture. Last aliases the final
+  // real kind instead of adding a sentinel value that every semantic switch
+  // would need to handle.
+  Last = ContextualAlternativeExpression,
 };
 
 // SyntaxNode covers tokens [token_begin, token_end). children contains only
