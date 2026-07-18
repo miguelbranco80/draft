@@ -6,6 +6,7 @@
 #include "elaborator/resolution.h"
 #include "source/diagnostic.h"
 
+#include <cerrno>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -14,6 +15,13 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <vector>
+
+#if defined(__APPLE__) || defined(__unix__)
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
 
 namespace {
 
@@ -71,6 +79,21 @@ draft::ResolutionManifest manifest_for(
   manifest.resolved_program_digest = draft::sha256("coherent-program-v1");
   manifest.pins.push_back(std::move(pin));
   return manifest;
+}
+
+struct StopAtCheckpoint {
+  draft::ResolutionCommitCheckpoint target =
+      draft::ResolutionCommitCheckpoint::StagingDirectoryCreated;
+  std::size_t visits = 0;
+};
+
+bool stop_at_checkpoint(
+    draft::ResolutionCommitCheckpoint checkpoint,
+    void *opaque) {
+  auto &state = *static_cast<StopAtCheckpoint *>(opaque);
+  if (checkpoint != state.target) return true;
+  ++state.visits;
+  return false;
 }
 
 void test_commit_and_reload(TestState &state) {
@@ -297,6 +320,205 @@ void test_interrupted_publish_recovery(TestState &state) {
   }
 }
 
+void test_injected_transaction_boundaries(TestState &state) {
+  const std::vector checkpoints{
+      draft::ResolutionCommitCheckpoint::StagingDirectoryCreated,
+      draft::ResolutionCommitCheckpoint::ExpansionStaged,
+      draft::ResolutionCommitCheckpoint::ManifestStaged,
+      draft::ResolutionCommitCheckpoint::ExpansionPublished,
+      draft::ResolutionCommitCheckpoint::ExpansionsSynchronized,
+      draft::ResolutionCommitCheckpoint::BeforeManifestPublish,
+      draft::ResolutionCommitCheckpoint::ManifestPublished,
+  };
+
+  for (std::size_t index = 0; index < checkpoints.size(); ++index) {
+    TemporaryWorkspace workspace("fault-" + std::to_string(index));
+    draft::GeneratedExpansion first;
+    first.source = "first fault-injection expansion";
+    first.digest = draft::sha256(first.source);
+    const draft::ResolutionManifest first_manifest = manifest_for(first);
+    draft::DiagnosticSink initial_diagnostics;
+    EXPECT(state,
+        draft::commit_resolution(
+            workspace.path,
+            first_manifest,
+            std::span<const draft::GeneratedExpansion>(&first, 1),
+            initial_diagnostics));
+    if (initial_diagnostics.has_errors()) continue;
+
+    draft::GeneratedExpansion second;
+    second.source = "second fault-injection expansion " +
+        std::to_string(index);
+    second.digest = draft::sha256(second.source);
+    draft::ResolutionManifest second_manifest = manifest_for(second);
+    second_manifest.resolved_program_digest =
+        draft::sha256("fault-injection program " + std::to_string(index));
+
+    StopAtCheckpoint stop{checkpoints[index], 0};
+    draft::DiagnosticSink stopped_diagnostics;
+    EXPECT(state,
+        !draft::commit_resolution(
+            workspace.path,
+            second_manifest,
+            std::span<const draft::GeneratedExpansion>(&second, 1),
+            stopped_diagnostics,
+            {stop_at_checkpoint, &stop}));
+    EXPECT(state, stopped_diagnostics.error_count() == 1);
+    EXPECT(state, stop.visits == 1);
+
+    draft::DiagnosticSink observed_diagnostics;
+    const draft::ResolutionManifestLoadResult observed =
+        draft::load_resolution_manifest(workspace.path, observed_diagnostics);
+    EXPECT(state,
+        observed.state == draft::ResolutionManifestLoadState::Loaded);
+    EXPECT(state, !observed_diagnostics.has_errors());
+    if (observed.manifest.pins.size() == 1) {
+      const bool crossed_visibility = checkpoints[index] ==
+          draft::ResolutionCommitCheckpoint::ManifestPublished;
+      EXPECT(state,
+          observed.manifest.pins[0].expansion_digest ==
+              (crossed_visibility ? second.digest : first.digest));
+    }
+
+    // RAII removes the transaction-private directory at every return point.
+    // An object published before failure may remain as an immutable orphan;
+    // the retry is required to verify and reuse it rather than overwrite it.
+    const std::filesystem::path staging =
+        workspace.path / ".draft" / "staging";
+    EXPECT(state,
+        std::filesystem::directory_iterator(staging) ==
+            std::filesystem::directory_iterator());
+    draft::DiagnosticSink retry_diagnostics;
+    EXPECT(state,
+        draft::commit_resolution(
+            workspace.path,
+            second_manifest,
+            std::span<const draft::GeneratedExpansion>(&second, 1),
+            retry_diagnostics));
+    EXPECT(state, !retry_diagnostics.has_errors());
+    const draft::ResolutionManifestLoadResult recovered =
+        draft::load_resolution_manifest(workspace.path, retry_diagnostics);
+    EXPECT(state,
+        recovered.state == draft::ResolutionManifestLoadState::Loaded);
+    if (recovered.manifest.pins.size() == 1) {
+      EXPECT(state,
+          recovered.manifest.pins[0].expansion_digest == second.digest);
+    }
+  }
+}
+
+void test_concurrent_process_writers(TestState &state) {
+#if defined(__APPLE__) || defined(__unix__)
+  static constexpr std::size_t writer_count = 6;
+  static constexpr std::size_t rounds = 4;
+  for (std::size_t round = 0; round < rounds; ++round) {
+    TemporaryWorkspace workspace("writer-race-" + std::to_string(round));
+    draft::GeneratedExpansion expansion;
+    expansion.source = "shared concurrent expansion " + std::to_string(round);
+    expansion.digest = draft::sha256(expansion.source);
+    std::vector<draft::ResolutionManifest> manifests;
+    manifests.reserve(writer_count);
+    for (std::size_t writer = 0; writer < writer_count; ++writer) {
+      draft::ResolutionManifest manifest = manifest_for(expansion);
+      // Alternate distinct candidate manifests with identical transactions.
+      // The former proves the visible file is one complete atomic winner; the
+      // latter forces all writers through the numbered staging-name collision
+      // path while they race to install the same immutable object.
+      if (round % 2 == 0) {
+        manifest.pins[0].input_digest = draft::sha256(
+            "concurrent obligation " + std::to_string(round) + ":" +
+            std::to_string(writer));
+        manifest.resolved_program_digest = draft::sha256(
+            "concurrent program " + std::to_string(round) + ":" +
+            std::to_string(writer));
+      }
+      manifests.push_back(std::move(manifest));
+    }
+
+    // Children block on one shared pipe until every process exists. Releasing
+    // one byte per child makes staging, exclusive object installation, and
+    // atomic manifest replacement contend on the real host filesystem.
+    int start_pipe[2] = {-1, -1};
+    EXPECT(state, ::pipe(start_pipe) == 0);
+    if (start_pipe[0] < 0 || start_pipe[1] < 0) return;
+    std::vector<pid_t> children;
+    children.reserve(writer_count);
+    for (std::size_t writer = 0; writer < writer_count; ++writer) {
+      const pid_t child = ::fork();
+      EXPECT(state, child >= 0);
+      if (child < 0) break;
+      if (child == 0) {
+        (void)::close(start_pipe[1]);
+        char release = 0;
+        ssize_t count = 0;
+        do {
+          count = ::read(start_pipe[0], &release, 1);
+        } while (count < 0 && errno == EINTR);
+        (void)::close(start_pipe[0]);
+        if (count != 1) _exit(2);
+        draft::DiagnosticSink diagnostics;
+        const bool committed = draft::commit_resolution(
+            workspace.path,
+            manifests[writer],
+            std::span<const draft::GeneratedExpansion>(&expansion, 1),
+            diagnostics);
+        _exit(committed && !diagnostics.has_errors() ? 0 : 3);
+      }
+      children.push_back(child);
+    }
+    (void)::close(start_pipe[0]);
+    const std::string release(children.size(), 'x');
+    std::size_t written = 0;
+    while (written < release.size()) {
+      const ssize_t count = ::write(
+          start_pipe[1], release.data() + written, release.size() - written);
+      if (count < 0 && errno == EINTR) continue;
+      if (count <= 0) break;
+      written += static_cast<std::size_t>(count);
+    }
+    (void)::close(start_pipe[1]);
+    EXPECT(state, written == release.size());
+    for (pid_t child : children) {
+      int status = 0;
+      pid_t waited = -1;
+      do {
+        waited = ::waitpid(child, &status, 0);
+      } while (waited < 0 && errno == EINTR);
+      EXPECT(state, waited == child);
+      EXPECT(state, WIFEXITED(status));
+      if (WIFEXITED(status)) EXPECT(state, WEXITSTATUS(status) == 0);
+    }
+
+    draft::DiagnosticSink diagnostics;
+    const draft::ResolutionManifestLoadResult loaded =
+        draft::load_resolution_manifest(workspace.path, diagnostics);
+    EXPECT(state, loaded.state == draft::ResolutionManifestLoadState::Loaded);
+    EXPECT(state, !diagnostics.has_errors());
+    bool complete_winner = false;
+    for (const draft::ResolutionManifest &candidate : manifests) {
+      if (draft::serialize_resolution_manifest(candidate) ==
+          draft::serialize_resolution_manifest(loaded.manifest)) {
+        complete_winner = true;
+        break;
+      }
+    }
+    EXPECT(state, complete_winner);
+    std::string source;
+    EXPECT(state,
+        draft::load_generated_expansion(
+            workspace.path, expansion.digest, source, diagnostics));
+    EXPECT(state, source == expansion.source);
+    const std::filesystem::path staging =
+        workspace.path / ".draft" / "staging";
+    EXPECT(state,
+        std::filesystem::directory_iterator(staging) ==
+            std::filesystem::directory_iterator());
+  }
+#else
+  (void)state;
+#endif
+}
+
 void test_store_rejects_redirected_and_unbounded_files(TestState &state) {
   draft::GeneratedExpansion expansion;
   expansion.source = "bounded checked expansion";
@@ -439,6 +661,8 @@ int main() {
   test_validation_precedes_writes(state);
   test_corrupt_object_is_rejected(state);
   test_interrupted_publish_recovery(state);
+  test_injected_transaction_boundaries(state);
+  test_concurrent_process_writers(state);
   test_store_rejects_redirected_and_unbounded_files(state);
   if (state.failures != 0) {
     std::cerr << state.failures << " resolution-store expectation(s) failed\n";

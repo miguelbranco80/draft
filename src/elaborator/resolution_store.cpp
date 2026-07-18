@@ -57,6 +57,42 @@ void store_error(DiagnosticSink &diagnostics, std::string message) {
   diagnostics.error(SourceRange::invalid(), std::move(message));
 }
 
+[[nodiscard]] const char *checkpoint_name(
+    ResolutionCommitCheckpoint checkpoint) {
+  switch (checkpoint) {
+  case ResolutionCommitCheckpoint::StagingDirectoryCreated:
+    return "staging-directory-created";
+  case ResolutionCommitCheckpoint::ExpansionStaged:
+    return "expansion-staged";
+  case ResolutionCommitCheckpoint::ManifestStaged:
+    return "manifest-staged";
+  case ResolutionCommitCheckpoint::ExpansionPublished:
+    return "expansion-published";
+  case ResolutionCommitCheckpoint::ExpansionsSynchronized:
+    return "expansions-synchronized";
+  case ResolutionCommitCheckpoint::BeforeManifestPublish:
+    return "before-manifest-publish";
+  case ResolutionCommitCheckpoint::ManifestPublished:
+    return "manifest-published";
+  }
+  return "unknown";
+}
+
+[[nodiscard]] bool continue_commit(
+    ResolutionCommitControl control,
+    ResolutionCommitCheckpoint checkpoint,
+    DiagnosticSink &diagnostics) {
+  if (control.continue_commit == nullptr ||
+      control.continue_commit(checkpoint, control.context)) {
+    return true;
+  }
+  store_error(
+      diagnostics,
+      "resolution commit stopped at checkpoint '" +
+          std::string(checkpoint_name(checkpoint)) + "'");
+  return false;
+}
+
 // Rejecting symlinks keeps a workspace-controlled .draft entry from redirecting
 // compiler writes outside the selected workspace. The caller creates one path
 // component at a time, so no uninspected descendant is traversed.
@@ -82,13 +118,26 @@ void store_error(DiagnosticSink &diagnostics, std::string message) {
     return true;
   }
   error.clear();
-  if (!std::filesystem::create_directory(path, error) || error) {
-    store_error(diagnostics,
-        "cannot create resolution directory '" + path.string() + "': " +
-            error.message());
-    return false;
+  if (std::filesystem::create_directory(path, error) && !error) return true;
+
+  // Another resolver may create the shared directory after our first
+  // inspection. Reinspect the entry instead of treating EEXIST as a failed
+  // transaction, but retain the same no-symlink/no-nondirectory boundary.
+  const std::error_code create_error = error;
+  error.clear();
+  const std::filesystem::file_status raced_status =
+      std::filesystem::symlink_status(path, error);
+  if (!error && std::filesystem::exists(raced_status) &&
+      !std::filesystem::is_symlink(raced_status) &&
+      std::filesystem::is_directory(raced_status)) {
+    return true;
   }
-  return true;
+  const std::string reason = error
+      ? error.message()
+      : (create_error ? create_error.message() : "path is not a real directory");
+  store_error(diagnostics,
+      "cannot create resolution directory '" + path.string() + "': " + reason);
+  return false;
 }
 
 // Read operations also inspect each store directory itself. symlink_status on
@@ -202,6 +251,25 @@ void store_error(DiagnosticSink &diagnostics, std::string message) {
   }
   output.close();
   return true;
+}
+
+// Generated objects are immutable. A normal POSIX rename would silently
+// replace an existing destination, which is the wrong primitive when two
+// resolver processes publish the same digest concurrently. Creating a hard
+// link is atomic, fails if the destination name already exists, and is safe
+// here because staging and generated are deliberately on the same filesystem.
+// Removing the private staging name afterwards leaves the destination as the
+// object's sole link; a crash between the two operations merely leaves an
+// extra link inside a transaction directory that recovery already ignores.
+[[nodiscard]] bool install_immutable_file(
+    const std::filesystem::path &staged,
+    const std::filesystem::path &destination,
+    std::error_code &error) {
+  error.clear();
+  std::filesystem::create_hard_link(staged, destination, error);
+  if (error) return false;
+  std::filesystem::remove(staged, error);
+  return !error;
 }
 
 // fsync is a durability operation, not part of semantic identity. It is kept in
@@ -375,7 +443,8 @@ bool commit_resolution(
     const std::filesystem::path &workspace_directory,
     const ResolutionManifest &manifest,
     std::span<const GeneratedExpansion> expansions,
-    DiagnosticSink &diagnostics) {
+    DiagnosticSink &diagnostics,
+    ResolutionCommitControl control) {
   const std::size_t initial_errors = diagnostics.error_count();
 
   // Round-trip through the strict schema before touching the filesystem. This
@@ -479,6 +548,12 @@ bool commit_resolution(
     return false;
   }
   StagingDirectory staging(staging_path);
+  if (!continue_commit(
+          control,
+          ResolutionCommitCheckpoint::StagingDirectoryCreated,
+          diagnostics)) {
+    return false;
+  }
 
   // Stage only objects that are not already present. Existing objects are read
   // and hash-verified; a same-digest/different-byte condition is treated as a
@@ -509,6 +584,12 @@ bool commit_resolution(
         !synchronize_path(staged, diagnostics)) {
       return false;
     }
+    if (!continue_commit(
+            control,
+            ResolutionCommitCheckpoint::ExpansionStaged,
+            diagnostics)) {
+      return false;
+    }
   }
 
   const std::filesystem::path staged_manifest =
@@ -516,6 +597,12 @@ bool commit_resolution(
   if (!write_file(staged_manifest, manifest_json, diagnostics) ||
       !synchronize_path(staged_manifest, diagnostics) ||
       !synchronize_path(staging.path(), diagnostics)) {
+    return false;
+  }
+  if (!continue_commit(
+          control,
+          ResolutionCommitCheckpoint::ManifestStaged,
+          diagnostics)) {
     return false;
   }
 
@@ -536,9 +623,8 @@ bool commit_resolution(
     }
     const std::filesystem::path destination =
         generated_path(workspace_directory, expansion.digest);
-    std::error_code rename_error;
-    std::filesystem::rename(staged, destination, rename_error);
-    if (rename_error) {
+    std::error_code install_error;
+    if (!install_immutable_file(staged, destination, install_error)) {
       // Another identical transaction may have won the race. Accept that only
       // after reading and verifying the exact destination object.
       std::string concurrent;
@@ -550,12 +636,28 @@ bool commit_resolution(
               diagnostics) ||
           concurrent != expansion.source) {
         store_error(diagnostics,
-            "cannot publish generated expansion: " + rename_error.message());
+            "cannot publish generated expansion: " + install_error.message());
         return false;
       }
     }
+    if (!continue_commit(
+            control,
+            ResolutionCommitCheckpoint::ExpansionPublished,
+            diagnostics)) {
+      return false;
+    }
   }
   if (!synchronize_path(generated, diagnostics)) return false;
+  if (!continue_commit(
+          control,
+          ResolutionCommitCheckpoint::ExpansionsSynchronized,
+          diagnostics) ||
+      !continue_commit(
+          control,
+          ResolutionCommitCheckpoint::BeforeManifestPublish,
+          diagnostics)) {
+    return false;
+  }
 
   // POSIX rename replaces an existing manifest atomically. This is the only
   // point at which readers can observe the new program identity and pin set.
@@ -565,6 +667,12 @@ bool commit_resolution(
   if (rename_error) {
     store_error(diagnostics,
         "cannot publish resolution manifest: " + rename_error.message());
+    return false;
+  }
+  if (!continue_commit(
+          control,
+          ResolutionCommitCheckpoint::ManifestPublished,
+          diagnostics)) {
     return false;
   }
   if (!synchronize_path(store, diagnostics)) return false;

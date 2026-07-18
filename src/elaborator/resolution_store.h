@@ -24,6 +24,34 @@
 
 namespace draft {
 
+// Named transaction boundaries make the crash-safety contract executable in
+// tests without replacing the filesystem with a mock. They are also suitable
+// for a caller that must stop a long store operation cleanly. Every checkpoint
+// before ManifestPublished leaves the previous manifest authoritative;
+// ManifestPublished is intentionally after the atomic visibility point.
+enum class ResolutionCommitCheckpoint {
+  StagingDirectoryCreated,
+  ExpansionStaged,
+  ManifestStaged,
+  ExpansionPublished,
+  ExpansionsSynchronized,
+  BeforeManifestPublish,
+  ManifestPublished,
+};
+
+using ResolutionCommitContinuation = bool (*)(
+    ResolutionCommitCheckpoint checkpoint,
+    void *context);
+
+// A null continuation means an uninterrupted production commit. Returning
+// false records one diagnostic and stops at that exact boundary. The opaque
+// context keeps the store independent from std::function allocation and lets a
+// test use an ordinary small state record.
+struct ResolutionCommitControl {
+  ResolutionCommitContinuation continue_commit = nullptr;
+  void *context = nullptr;
+};
+
 // One proposed persistent object. source contains the exact UTF-8 bytes which
 // were parsed and checked by the elaborator; no newline or normalization is
 // added here. digest must equal SHA-256(source).
@@ -72,6 +100,7 @@ struct ResolutionManifestLoadResult {
     const std::filesystem::path &workspace_directory,
     const ResolutionManifest &manifest,
     std::span<const GeneratedExpansion> expansions,
-    DiagnosticSink &diagnostics);
+    DiagnosticSink &diagnostics,
+    ResolutionCommitControl control = {});
 
 } // namespace draft

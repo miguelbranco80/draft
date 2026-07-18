@@ -336,6 +336,110 @@ void test_deterministic_malformed_byte_corpus(TestState &state) {
   }
 }
 
+void test_deterministic_structural_mutation_corpus(TestState &state) {
+  draft::ResolutionManifest manifest;
+  manifest.target_identity = "aarch64-apple-macos";
+  manifest.resolved_program_digest = draft::sha256("structure-program");
+  manifest.external_inputs.push_back(make_external(
+      draft::ExternalInputKind::Toolchain,
+      "llvm",
+      "toolchain",
+      "bin/clang"));
+  manifest.evidence.push_back(make_evidence(
+      "test", "app", "structure-test", "passing-attempt"));
+  manifest.pins.push_back(make_pin(
+      site('d'),
+      draft::AgentConstructKind::SynthesisStatement,
+      "return",
+      "codex",
+      "model"));
+  const std::string encoded = draft::serialize_resolution_manifest(manifest);
+
+  // Walk only punctuation outside JSON strings. Deleting any canonical
+  // delimiter or replacing it with another delimiter must fail either JSON
+  // structure or the exact manifest schema. This is intentionally distinct
+  // from byte fuzzing: quoted braces, commas, and escapes are not candidates.
+  const std::string structural = "{}[]:,";
+  bool in_string = false;
+  bool escaped = false;
+  for (std::size_t index = 0; index < encoded.size(); ++index) {
+    const char byte = encoded[index];
+    if (in_string) {
+      if (escaped) {
+        escaped = false;
+      } else if (byte == '\\') {
+        escaped = true;
+      } else if (byte == '"') {
+        in_string = false;
+      }
+      continue;
+    }
+    if (byte == '"') {
+      in_string = true;
+      continue;
+    }
+    if (structural.find(byte) == std::string::npos) continue;
+
+    std::string deleted = encoded;
+    deleted.erase(index, 1);
+    expect_rejected(state, deleted);
+    for (char replacement : structural) {
+      if (replacement == byte) continue;
+      std::string replaced = encoded;
+      replaced[index] = replacement;
+      expect_rejected(state, replaced);
+    }
+  }
+
+  // Numeric fields are unsigned decimal byte offsets and lengths. Mutate each
+  // complete token, rather than one byte, through signed, overflowing,
+  // noncanonical, fractional, boolean, null, and string shapes.
+  in_string = false;
+  escaped = false;
+  for (std::size_t index = 0; index < encoded.size();) {
+    const char byte = encoded[index];
+    if (in_string) {
+      if (escaped) {
+        escaped = false;
+      } else if (byte == '\\') {
+        escaped = true;
+      } else if (byte == '"') {
+        in_string = false;
+      }
+      ++index;
+      continue;
+    }
+    if (byte == '"') {
+      in_string = true;
+      ++index;
+      continue;
+    }
+    if (byte < '0' || byte > '9') {
+      ++index;
+      continue;
+    }
+    std::size_t end = index + 1;
+    while (end < encoded.size() && encoded[end] >= '0' && encoded[end] <= '9') {
+      ++end;
+    }
+    const std::string_view replacements[]{
+        "-1",
+        "18446744073709551616",
+        "01",
+        "1.0",
+        "true",
+        "null",
+        "\"\"",
+    };
+    for (std::string_view replacement : replacements) {
+      std::string mutated = encoded;
+      mutated.replace(index, end - index, replacement);
+      expect_rejected(state, mutated);
+    }
+    index = end;
+  }
+}
+
 } // namespace
 
 int main() {
@@ -343,6 +447,7 @@ int main() {
   test_canonical_round_trip(state);
   test_invalid_inputs(state);
   test_deterministic_malformed_byte_corpus(state);
+  test_deterministic_structural_mutation_corpus(state);
   if (state.failures != 0) {
     std::cerr << state.failures << " resolution expectation(s) failed\n";
     return EXIT_FAILURE;
