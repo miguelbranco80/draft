@@ -46,8 +46,11 @@ operation locations, real native line tables, and a canonical native
 operation-correlation sidecar. Validation commands also expose a closed
 diagnostic-instrument vocabulary and fail before compilation when the first
 target lacks a versioned pass/runtime/evidence contract. Pinned-toolchain
-DWARF/dSYM/disassembly qualification now passes for authored source; a real
-synthesized-source native sample, actual coverage/profile instrumentation, and
+DWARF/dSYM/disassembly qualification now passes for authored source. The real
+provider-free synthesized native acceptance program also requires its generated
+expression and statement site identities in both the canonical correlation map
+and linked dSYM payload. Repeating that generated-source proof with the selected
+locked release distribution, actual coverage/profile instrumentation, and
 result ingestion remain.
 
 An isolated locked-build smoke now uses upstream Homebrew LLVM and LLD 22.1.8

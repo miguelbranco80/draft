@@ -848,6 +848,33 @@ void test_interface_sites_precede_dependent_bodies(TestState &state) {
   const std::string first_bytes = first_built.ok
       ? read_binary_file(first_built.output_path)
       : std::string();
+  if (first_built.ok) {
+    // The final native gate must retain generated-source identity through both
+    // public correlation surfaces. The JSON map is intended for profilers and
+    // coverage ingestion; the linked DWARF labels let ordinary native tools
+    // recover the same persistent synthesis site from the dSYM companion.
+    const std::string correlation =
+        read_binary_file(first_built.source_correlation_path);
+    const std::filesystem::path dwarf_payload =
+        std::filesystem::path(first_built.debug_symbols_path) /
+        "Contents" / "Resources" / "DWARF" /
+        std::filesystem::path(first_built.output_path).filename();
+    const std::string linked_dwarf = read_binary_file(dwarf_payload);
+    EXPECT(state, !correlation.empty());
+    EXPECT(state, !linked_dwarf.empty());
+
+    std::size_t executable_generated_sites = 0;
+    for (const draft::ResolutionPin &pin : resolved.manifest.pins) {
+      if (pin.kind != draft::AgentConstructKind::SynthesisExpression &&
+          pin.kind != draft::AgentConstructKind::SynthesisStatement) {
+        continue;
+      }
+      ++executable_generated_sites;
+      EXPECT(state, correlation.find(pin.site_identity) != std::string::npos);
+      EXPECT(state, linked_dwarf.find(pin.site_identity) != std::string::npos);
+    }
+    EXPECT(state, executable_generated_sites == 2);
+  }
   // Output path is part of native artifact identity. Rebuild exactly the same
   // provider-free path so the comparison does not conflate program identity
   // with a changed install name or linker output name.

@@ -972,6 +972,15 @@ remain, and their logical Draft compilation directory/file coordinates agree
 with `draft-source-correlation-v1`. Compiler content v121 makes the expanded
 native artifact contract explicit without changing resolved source semantics.
 
+The resolver's macOS native acceptance case now checks the complementary
+generated-source path. After four declaration/member/expression/statement pins
+are replayed without a provider, it links and runs the program and requires the
+executable expression and statement site identities in both
+`draft-source-correlation-v1` and the linked DWARF payload. Declaration-only
+and layout-only pins are not required to fabricate machine operations. This is
+a real host-toolchain/dSYM gate; the selected locked release distribution must
+still repeat it.
+
 ## Canonical CLI workspace roots
 
 Status: implemented for every package command.
