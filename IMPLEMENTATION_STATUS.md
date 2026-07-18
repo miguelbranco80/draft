@@ -19,8 +19,7 @@ consume those pins offline.
 
 The release acceptance test is still unproved. In particular,
 validation/evidence commands, the complete runtime and initial-core surfaces,
-and generated-source maps do not yet exist; nested higher-order procedure-flow
-arguments are also incomplete.
+and generated-source maps do not yet exist.
 
 ## Requirement audit
 
@@ -30,7 +29,7 @@ arguments are also incomplete.
 | One explicit AArch64 macOS target profile | `src/target/profile.*` and `draft_target_profile_tests` | Implemented for the first target | Final native tests must run on the pinned SDK/toolchain rather than only checking profile data. |
 | Complete lexer, parser, semicolon insertion, and folder packages | `src/source`, `src/syntax`, `src/workspace`, parser/package/workspace tests | Broadly implemented | Add grammar conformance fixtures covering every valid and invalid production, not only representative nodes. |
 | Symbols, scopes, types, constants, layouts, parametrics, and `when` | `src/sema` and semantic/type/constant/interface tests | Broadly implemented | Audit every Draft 1 operator/type combination and complete any missing target validation, especially SIMD and C-layout edge cases. |
-| Canonical interfaces and transitive denials | `src/sema/interface.*`, `effect.*`, `denial.*`, artifact-summary parser/verifier, and tests; target v4 system-symbol summaries | Partially implemented | Direct, returned, and typed-field parameter slots; local and interprocedural pointer-field stores; hidden-Context paths; exact call-site substitution; transitive declaration effects; cross-package return/write contracts; compiler/runtime bridges; target System symbols; package-assembly effects; and exact artifact-bound external audits are implemented. Nested higher-order callback arguments remain. |
+| Canonical interfaces and transitive denials | `src/sema/interface.*`, `effect.*`, `denial.*`, artifact-summary parser/verifier, and tests; target v4 system-symbol summaries | Implemented first-release closure | Direct, returned, typed-field, interprocedural write-back, hidden-Context, and recursively higher-order flows compose at exact call sites and across package interfaces. Transitive declarations, compiler/runtime bridges, target System symbols, package assembly, and artifact-bound external audits are included. Expand malformed-contract and deep-recursion conformance coverage. |
 | Complete handwritten language through HIR, MIR, LLVM, and native execution | `src/sema/body_checker.*`, `src/mir`, `src/backend`, native examples | Partially implemented | Complete the runtime/core surface and release-native conformance matrix. |
 | Runtime context, entry, TLS, failures, allocator, and OS support | entry/runtime lowering, lazy foreign-thread attachment, explicit child-thread Context installation, pthread-key-owned temporary allocation/reset/destruction, stable process argument/environment views with teardown, default allocator/logger/random providers, virtual-memory mappings, typed pathname open/read/write/close/remove through a package-assembly ABI shim, `core/runtime`, and `core/memory` | Partially implemented | Richer runtime/internal-state facilities and a release-native conformance matrix remain to be completed. |
 | Initial core package set from specification section 7 | Every named package exists as inspectable Draft source; allocator-explicit arenas/buffers/owned strings, virtual memory, containers, OS, pthread, compiler-backed atomic, and concurrent atomic examples check, lower, and execute natively | Implemented foundation | Complete the full test/benchmark runners and expand package APIs from the representative first surface as conformance programs require them. |
@@ -56,7 +55,6 @@ validation-selection commands are not implemented yet.
 
 ## Next release-critical slice
 
-The next implementation slice closes nested higher-order callback arguments.
-The validation and evidence harness then needs to exercise complete programs
-through the locked native seam rather than relying only on unit-level compiler
-proofs.
+The next implementation slice is the validation and evidence harness. It needs
+to discover and run complete-program tests, benchmarks, and judgments through
+the locked native seam rather than relying only on unit-level compiler proofs.

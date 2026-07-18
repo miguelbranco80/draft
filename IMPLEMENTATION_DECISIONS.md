@@ -140,8 +140,11 @@ parameter scopes distinct across package interfaces. Typed pointer-field writes
 carry the same value contracts back through local or imported callees; a signed
 address/dereference balance prevents writes to an addressed local copy from
 being misreported as caller mutation. Body replay makes chained write-through
-helpers independent of declaration order. Nested higher-order callback
-arguments remain the next closure extension.
+helpers independent of declaration order. Higher-order FlowCall rows recursively
+retain the typed arguments supplied to the callback, including their own finite
+procedure contracts, and the same shape crosses package interfaces. Callees and
+arguments are snapshotted in source evaluation order before a call's write-back
+becomes visible, so later argument effects cannot rewrite earlier values.
 
 External artifact summaries use the strict
 `draft-provider-denial-summary-v1` line format documented in section 12. The

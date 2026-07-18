@@ -30,45 +30,7 @@
 
 namespace draft {
 
-// SemanticEffect identifies one reachable entity. symbol is meaningful for a
-// package global; text names a context field or gives a stable reason for an
-// unknown edge. Equality is semantic and used for deterministic set union.
-struct SemanticEffect {
-  EffectKind kind = EffectKind::UnknownCall;
-  SymbolId symbol;
-  std::string text;
-  std::string root_identity;
-  std::string root_relative_path;
-  std::string declaration;
-  std::uint32_t flow_parameter = std::numeric_limits<std::uint32_t>::max();
-  // FlowCall rows may select a procedure field nested inside a typed argument.
-  // An empty path retains the original direct procedure-parameter meaning.
-  // Context-rooted paths have no parameter and describe the hidden Context.
-  std::vector<std::string> flow_path;
-  bool flow_context = false;
-
-  SemanticEffect() = default;
-  SemanticEffect(
-      EffectKind effect_kind,
-      SymbolId effect_symbol,
-      std::string effect_text,
-      std::string effect_root_identity,
-      std::string effect_root_relative_path,
-      std::string effect_declaration,
-      std::uint32_t effect_flow_parameter =
-          std::numeric_limits<std::uint32_t>::max(),
-      std::vector<std::string> effect_flow_path = {},
-      bool effect_flow_context = false)
-      : kind(effect_kind), symbol(effect_symbol), text(std::move(effect_text)),
-        root_identity(std::move(effect_root_identity)),
-        root_relative_path(std::move(effect_root_relative_path)),
-        declaration(std::move(effect_declaration)),
-        flow_parameter(effect_flow_parameter),
-        flow_path(std::move(effect_flow_path)),
-        flow_context(effect_flow_context) {}
-
-  bool operator==(const SemanticEffect &) const = default;
-};
+struct SemanticEffect;
 
 // One path-shaped input slot for a procedure value. Parameter slots begin at a
 // zero-based formal parameter and then select named aggregate fields. Context
@@ -96,7 +58,7 @@ struct ProcedureValueSummary {
   std::vector<SemanticEffect> contract_effects;
   bool unknown = false;
 
-  bool operator==(const ProcedureValueSummary &) const = default;
+  bool operator==(const ProcedureValueSummary &) const;
 };
 
 // A call argument can contain several procedure leaves. Each row is relative
@@ -114,6 +76,55 @@ struct ProcedureArgumentSummary {
 
   bool operator==(const ProcedureArgumentSummary &) const = default;
 };
+
+// SemanticEffect identifies one reachable entity. symbol is meaningful for a
+// package global; text names a context field or gives a stable reason for an
+// unknown edge. A FlowCall also retains the typed procedure arguments supplied
+// to the invoked callback. This recursive value is finite because it follows
+// the finite source-level procedure type. Equality is semantic and is used for
+// deterministic set union.
+struct SemanticEffect {
+  EffectKind kind = EffectKind::UnknownCall;
+  SymbolId symbol;
+  std::string text;
+  std::string root_identity;
+  std::string root_relative_path;
+  std::string declaration;
+  std::uint32_t flow_parameter = std::numeric_limits<std::uint32_t>::max();
+  // FlowCall rows may select a procedure field nested inside a typed argument.
+  // An empty path retains the original direct procedure-parameter meaning.
+  // Context-rooted paths have no parameter and describe the hidden Context.
+  std::vector<std::string> flow_path;
+  bool flow_context = false;
+  std::vector<ProcedureArgumentSummary> flow_arguments;
+
+  SemanticEffect() = default;
+  SemanticEffect(
+      EffectKind effect_kind,
+      SymbolId effect_symbol,
+      std::string effect_text,
+      std::string effect_root_identity,
+      std::string effect_root_relative_path,
+      std::string effect_declaration,
+      std::uint32_t effect_flow_parameter =
+          std::numeric_limits<std::uint32_t>::max(),
+      std::vector<std::string> effect_flow_path = {},
+      bool effect_flow_context = false,
+      std::vector<ProcedureArgumentSummary> effect_flow_arguments = {})
+      : kind(effect_kind), symbol(effect_symbol), text(std::move(effect_text)),
+        root_identity(std::move(effect_root_identity)),
+        root_relative_path(std::move(effect_root_relative_path)),
+        declaration(std::move(effect_declaration)),
+        flow_parameter(effect_flow_parameter),
+        flow_path(std::move(effect_flow_path)),
+        flow_context(effect_flow_context),
+        flow_arguments(std::move(effect_flow_arguments)) {}
+
+  bool operator==(const SemanticEffect &) const = default;
+};
+
+inline bool ProcedureValueSummary::operator==(
+    const ProcedureValueSummary &) const = default;
 
 // One procedure leaf written through a typed pointer parameter. indirection is
 // the number of dereferences from that parameter and path is relative to the

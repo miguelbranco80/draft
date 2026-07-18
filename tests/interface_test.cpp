@@ -558,6 +558,13 @@ pub invoke :: proc(callback: proc()) {
     copy()
 }
 
+pub apply :: proc(
+    higher: proc(callback: proc()),
+    callback: proc(),
+) {
+    higher(callback)
+}
+
 pub Callback_Box :: struct {
     callback: proc(),
 }
@@ -627,6 +634,37 @@ pub make_assert :: proc() -> proc() {
               std::vector<std::string>{"callback"});
     }
   }
+  const auto apply_interface = std::find_if(
+      dependency_interface.declarations.begin(),
+      dependency_interface.declarations.end(),
+      [](const draft::InterfaceDeclaration &declaration) {
+        return declaration.name == "apply";
+      });
+  EXPECT(state, apply_interface != dependency_interface.declarations.end());
+  if (apply_interface != dependency_interface.declarations.end()) {
+    const auto flow = std::find_if(
+        apply_interface->effects.begin(),
+        apply_interface->effects.end(),
+        [](const draft::InterfaceDeclaration::Effect &effect) {
+          return effect.kind == draft::EffectKind::FlowCall;
+        });
+    EXPECT(state, flow != apply_interface->effects.end());
+    if (flow != apply_interface->effects.end()) {
+      EXPECT(state, flow->flow_parameter == 0);
+      EXPECT(state, flow->flow_arguments.size() == 1);
+      if (flow->flow_arguments.size() == 1) {
+        EXPECT(state, flow->flow_arguments.front().fields.size() == 1);
+        if (flow->flow_arguments.front().fields.size() == 1) {
+          const draft::InterfaceDeclaration::FlowValue &nested =
+              flow->flow_arguments.front().fields.front().value;
+          EXPECT(state, nested.flow_slots.size() == 1);
+          if (nested.flow_slots.size() == 1) {
+            EXPECT(state, nested.flow_slots.front().parameter == 1);
+          }
+        }
+      }
+    }
+  }
   const auto identity_return_interface = std::find_if(
       dependency_interface.declarations.begin(),
       dependency_interface.declarations.end(),
@@ -686,6 +724,7 @@ danger :: proc() {
 
 caller :: proc() {
     callbacks.invoke(danger)
+    callbacks.apply(callbacks.invoke, danger)
     box: callbacks.Callback_Box
     box.callback = danger
     callbacks.invoke_box(box)

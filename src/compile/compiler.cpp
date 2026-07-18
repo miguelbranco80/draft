@@ -163,6 +163,53 @@ void hash_field(Sha256 &hash, std::string_view value) {
   return false;
 }
 
+[[nodiscard]] ImportedEffect import_interface_effect(
+    SymbolId proxy,
+    const InterfaceDeclaration::Effect &source);
+
+[[nodiscard]] ImportedFlowValue import_interface_flow_value(
+    SymbolId proxy,
+    const InterfaceDeclaration::FlowValue &source) {
+  ImportedFlowValue result;
+  result.unknown = source.unknown;
+  for (const InterfaceDeclaration::ReturnFlowSlot &slot : source.flow_slots) {
+    result.flow_slots.push_back(
+        {slot.parameter, slot.path, slot.context});
+  }
+  for (const InterfaceDeclaration::Effect &effect :
+       source.contract_effects) {
+    result.contract_effects.push_back(
+        import_interface_effect(proxy, effect));
+  }
+  return result;
+}
+
+[[nodiscard]] ImportedEffect import_interface_effect(
+    SymbolId proxy,
+    const InterfaceDeclaration::Effect &source) {
+  ImportedEffect result;
+  result.procedure_proxy = proxy;
+  result.kind = source.kind;
+  result.root_identity = source.root_identity;
+  result.root_relative_path = source.root_relative_path;
+  result.declaration = source.declaration;
+  result.detail = source.detail;
+  result.flow_parameter = source.flow_parameter;
+  result.flow_path = source.flow_path;
+  result.flow_context = source.flow_context;
+  for (const InterfaceDeclaration::FlowArgument &argument :
+       source.flow_arguments) {
+    ImportedFlowArgument imported_argument;
+    for (const InterfaceDeclaration::FlowField &field : argument.fields) {
+      imported_argument.fields.push_back({
+          field.path,
+          import_interface_flow_value(proxy, field.value)});
+    }
+    result.flow_arguments.push_back(std::move(imported_argument));
+  }
+  return result;
+}
+
 // Preliminary interfaces intentionally contain no body-derived effects. Once
 // dependency bodies are checked, refresh each already-bound proxy from the
 // final dependency interface. Concrete generic proxies inherit the public
@@ -204,17 +251,8 @@ void refresh_imported_effects(
     }
     imported.has_effect_summary = declaration->has_effect_summary;
     for (const InterfaceDeclaration::Effect &effect : declaration->effects) {
-      package.imported_effects.push_back({
-          imported.proxy,
-          effect.kind,
-          effect.root_identity,
-          effect.root_relative_path,
-          effect.declaration,
-          effect.detail,
-          effect.flow_parameter,
-          effect.flow_path,
-          effect.flow_context,
-      });
+      package.imported_effects.push_back(
+          import_interface_effect(imported.proxy, effect));
     }
     for (const InterfaceDeclaration::ReturnValue &returned :
          declaration->return_values) {
@@ -229,17 +267,8 @@ void refresh_imported_effects(
       }
       for (const InterfaceDeclaration::Effect &effect :
            returned.contract_effects) {
-        imported_return.contract_effects.push_back({
-            imported.proxy,
-            effect.kind,
-            effect.root_identity,
-            effect.root_relative_path,
-            effect.declaration,
-            effect.detail,
-            effect.flow_parameter,
-            effect.flow_path,
-            effect.flow_context,
-        });
+        imported_return.contract_effects.push_back(
+            import_interface_effect(imported.proxy, effect));
       }
       package.imported_returns.push_back(std::move(imported_return));
     }
@@ -258,17 +287,8 @@ void refresh_imported_effects(
       }
       for (const InterfaceDeclaration::Effect &effect :
            write.value_contract_effects) {
-        imported_write.value_contract_effects.push_back({
-            imported.proxy,
-            effect.kind,
-            effect.root_identity,
-            effect.root_relative_path,
-            effect.declaration,
-            effect.detail,
-            effect.flow_parameter,
-            effect.flow_path,
-            effect.flow_context,
-        });
+        imported_write.value_contract_effects.push_back(
+            import_interface_effect(imported.proxy, effect));
       }
       package.imported_writes.push_back(std::move(imported_write));
     }

@@ -185,9 +185,36 @@ struct ImportedProcedureInstance {
   std::vector<ParametricArgument> arguments;
 };
 
+// Canonical call contract for one procedure leaf returned by an imported
+// declaration. Slots refer to the factory declaration's parameters; effects
+// describe the returned procedure when it is later called.
+struct ImportedReturnFlowSlot {
+  std::uint32_t parameter = std::numeric_limits<std::uint32_t>::max();
+  std::vector<std::string> path;
+  bool context = false;
+};
+
+struct ImportedEffect;
+
+struct ImportedFlowValue {
+  std::vector<ImportedReturnFlowSlot> flow_slots;
+  std::vector<ImportedEffect> contract_effects;
+  bool unknown = false;
+};
+
+struct ImportedFlowField {
+  std::vector<std::string> path;
+  ImportedFlowValue value;
+};
+
+struct ImportedFlowArgument {
+  std::vector<ImportedFlowField> fields;
+};
+
 // ImportedEffect is one canonical dependency effect attached to a public
 // procedure proxy. Origin fields identify referenced dependency declarations
-// without importing their private SymbolIds into the consumer.
+// without importing their private SymbolIds into the consumer. Flow arguments
+// retain nested callback invocations in the same provider-independent form.
 struct ImportedEffect {
   SymbolId procedure_proxy;
   EffectKind kind = EffectKind::UnknownCall;
@@ -198,15 +225,7 @@ struct ImportedEffect {
   std::uint32_t flow_parameter = std::numeric_limits<std::uint32_t>::max();
   std::vector<std::string> flow_path;
   bool flow_context = false;
-};
-
-// Canonical call contract for one procedure leaf returned by an imported
-// declaration. Slots refer to the factory declaration's parameters; effects
-// describe the returned procedure when it is later called.
-struct ImportedReturnFlowSlot {
-  std::uint32_t parameter = std::numeric_limits<std::uint32_t>::max();
-  std::vector<std::string> path;
-  bool context = false;
+  std::vector<ImportedFlowArgument> flow_arguments;
 };
 
 struct ImportedProcedureReturn {

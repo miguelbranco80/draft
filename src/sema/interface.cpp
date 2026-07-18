@@ -256,6 +256,20 @@ private:
     result.flow_parameter = effect.flow_parameter;
     result.flow_path = effect.flow_path;
     result.flow_context = effect.flow_context;
+    for (const ProcedureArgumentSummary &argument : effect.flow_arguments) {
+      InterfaceDeclaration::FlowArgument interface_argument;
+      for (const ProcedureFieldValueSummary &field : argument.fields) {
+        InterfaceDeclaration::FlowField interface_field;
+        interface_field.path = field.path;
+        translate_procedure_value(
+            field.value,
+            interface_field.value.flow_slots,
+            interface_field.value.contract_effects,
+            interface_field.value.unknown);
+        interface_argument.fields.push_back(std::move(interface_field));
+      }
+      result.flow_arguments.push_back(std::move(interface_argument));
+    }
     if (!effect.root_identity.empty()) {
       result.root_identity = effect.root_identity;
       result.root_relative_path = effect.root_relative_path;
@@ -321,16 +335,7 @@ private:
       }
       for (const ImportedEffect &effect : package_.imported_effects) {
         if (effect.procedure_proxy != target) continue;
-        const SemanticEffect semantic_effect{
-            effect.kind,
-            {},
-            effect.detail,
-            effect.root_identity,
-            effect.root_relative_path,
-            effect.declaration,
-            effect.flow_parameter,
-            effect.flow_path,
-            effect.flow_context};
+        const SemanticEffect semantic_effect = import_effect(effect);
         if (std::find(contract.begin(), contract.end(), semantic_effect) ==
             contract.end()) {
           contract.push_back(semantic_effect);
@@ -340,6 +345,44 @@ private:
     for (const SemanticEffect &effect : contract) {
       contract_effects.push_back(translate_effect(effect));
     }
+  }
+
+  [[nodiscard]] ProcedureValueSummary import_flow_value(
+      const ImportedFlowValue &source) const {
+    ProcedureValueSummary result;
+    result.unknown = source.unknown;
+    for (const ImportedReturnFlowSlot &slot : source.flow_slots) {
+      result.flow_slots.push_back(
+          {slot.parameter, slot.path, slot.context});
+    }
+    for (const ImportedEffect &effect : source.contract_effects) {
+      result.contract_effects.push_back(import_effect(effect));
+    }
+    return result;
+  }
+
+  [[nodiscard]] SemanticEffect import_effect(
+      const ImportedEffect &source) const {
+    std::vector<ProcedureArgumentSummary> arguments;
+    for (const ImportedFlowArgument &argument : source.flow_arguments) {
+      ProcedureArgumentSummary semantic_argument;
+      for (const ImportedFlowField &field : argument.fields) {
+        semantic_argument.fields.push_back(
+            {field.path, import_flow_value(field.value)});
+      }
+      arguments.push_back(std::move(semantic_argument));
+    }
+    return {
+        source.kind,
+        {},
+        source.detail,
+        source.root_identity,
+        source.root_relative_path,
+        source.declaration,
+        source.flow_parameter,
+        source.flow_path,
+        source.flow_context,
+        std::move(arguments)};
   }
 
   [[nodiscard]] ConstantValue canonical_constant(ConstantValue value) const {
@@ -670,17 +713,8 @@ public:
           declaration.native_linker_name_spelling,
       });
       for (const InterfaceDeclaration::Effect &effect : declaration.effects) {
-        consumer_.imported_effects.push_back({
-            proxy_id,
-            effect.kind,
-            effect.root_identity,
-            effect.root_relative_path,
-            effect.declaration,
-            effect.detail,
-            effect.flow_parameter,
-            effect.flow_path,
-            effect.flow_context,
-        });
+        consumer_.imported_effects.push_back(
+            import_effect(proxy_id, effect));
       }
       for (const InterfaceDeclaration::ReturnValue &returned :
            declaration.return_values) {
@@ -695,17 +729,8 @@ public:
         }
         for (const InterfaceDeclaration::Effect &effect :
              returned.contract_effects) {
-          imported_return.contract_effects.push_back({
-              proxy_id,
-              effect.kind,
-              effect.root_identity,
-              effect.root_relative_path,
-              effect.declaration,
-              effect.detail,
-              effect.flow_parameter,
-              effect.flow_path,
-              effect.flow_context,
-          });
+          imported_return.contract_effects.push_back(
+              import_effect(proxy_id, effect));
         }
         consumer_.imported_returns.push_back(std::move(imported_return));
       }
@@ -724,17 +749,8 @@ public:
         }
         for (const InterfaceDeclaration::Effect &effect :
              write.value_contract_effects) {
-          imported_write.value_contract_effects.push_back({
-              proxy_id,
-              effect.kind,
-              effect.root_identity,
-              effect.root_relative_path,
-              effect.declaration,
-              effect.detail,
-              effect.flow_parameter,
-              effect.flow_path,
-              effect.flow_context,
-          });
+          imported_write.value_contract_effects.push_back(
+              import_effect(proxy_id, effect));
         }
         consumer_.imported_writes.push_back(std::move(imported_write));
       }
@@ -746,6 +762,48 @@ public:
   }
 
 private:
+  [[nodiscard]] ImportedFlowValue import_flow_value(
+      SymbolId proxy,
+      const InterfaceDeclaration::FlowValue &source) const {
+    ImportedFlowValue result;
+    result.unknown = source.unknown;
+    for (const InterfaceDeclaration::ReturnFlowSlot &slot :
+         source.flow_slots) {
+      result.flow_slots.push_back(
+          {slot.parameter, slot.path, slot.context});
+    }
+    for (const InterfaceDeclaration::Effect &effect :
+         source.contract_effects) {
+      result.contract_effects.push_back(import_effect(proxy, effect));
+    }
+    return result;
+  }
+
+  [[nodiscard]] ImportedEffect import_effect(
+      SymbolId proxy,
+      const InterfaceDeclaration::Effect &source) const {
+    ImportedEffect result;
+    result.procedure_proxy = proxy;
+    result.kind = source.kind;
+    result.root_identity = source.root_identity;
+    result.root_relative_path = source.root_relative_path;
+    result.declaration = source.declaration;
+    result.detail = source.detail;
+    result.flow_parameter = source.flow_parameter;
+    result.flow_path = source.flow_path;
+    result.flow_context = source.flow_context;
+    for (const InterfaceDeclaration::FlowArgument &argument :
+         source.flow_arguments) {
+      ImportedFlowArgument imported_argument;
+      for (const InterfaceDeclaration::FlowField &field : argument.fields) {
+        imported_argument.fields.push_back(
+            {field.path, import_flow_value(proxy, field.value)});
+      }
+      result.flow_arguments.push_back(std::move(imported_argument));
+    }
+    return result;
+  }
+
   [[nodiscard]] InterfaceImportCache &cache_for(const PackageInterface &package) {
     for (InterfaceImportCache &cache : caches_) {
       if (cache.package->identity == package.identity) {

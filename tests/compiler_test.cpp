@@ -766,6 +766,69 @@ void test_runtime_context_bridge_diagnostics(TestState &state) {
   std::filesystem::remove_all(root, error);
 }
 
+void test_cross_package_higher_order_effect(TestState &state) {
+  std::error_code error;
+  const std::filesystem::path root =
+      std::filesystem::temp_directory_path(error) /
+      "draft-bootstrap-higher-order-effect-test";
+  EXPECT(state, !error);
+  std::filesystem::remove_all(root, error);
+  error.clear();
+  std::filesystem::create_directories(root / "app", error);
+  std::filesystem::create_directories(root / "callbacks", error);
+  EXPECT(state, !error);
+  if (error) return;
+
+  std::ofstream dependency(
+      root / "callbacks" / "package.draft", std::ios::binary);
+  dependency <<
+      "package callbacks\n"
+      "pub invoke :: proc(callback: proc()) {\n"
+      "    callback()\n"
+      "}\n"
+      "pub apply :: proc(\n"
+      "    higher: proc(callback: proc()),\n"
+      "    callback: proc(),\n"
+      ") {\n"
+      "    higher(callback)\n"
+      "}\n";
+  dependency.close();
+  EXPECT(state, dependency.good());
+
+  std::ofstream app(root / "app" / "package.draft", std::ios::binary);
+  app <<
+      "package app\n"
+      "import callbacks\n"
+      "danger :: proc() {\n"
+      "    assert(true)\n"
+      "}\n"
+      "deny assert {\n"
+      "    main :: proc() {\n"
+      "        callbacks.apply(callbacks.invoke, danger)\n"
+      "    }\n"
+      "}\n";
+  app.close();
+  EXPECT(state, app.good());
+
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  draft::CompileWorkspaceOptions options;
+  options.target = draft::make_aarch64_macos_profile();
+  options.workspace.workspace_directory = root.string();
+  const draft::CompileWorkspaceResult result = draft::compile_workspace(
+      sources, (root / "app").string(), std::move(options), diagnostics);
+  EXPECT(state, !result.ok);
+  const std::string rendered = draft::render_diagnostics(sources, diagnostics);
+  if (rendered.find("denied assert") == std::string::npos ||
+      rendered.find("unknown call") != std::string::npos) {
+    std::cerr << rendered;
+  }
+  EXPECT(state, rendered.find("denied assert") != std::string::npos);
+  EXPECT(state, rendered.find("unknown call") == std::string::npos);
+
+  std::filesystem::remove_all(root, error);
+}
+
 } // namespace
 
 int main() {
@@ -782,6 +845,7 @@ int main() {
   test_atomic_diagnostics(state);
   test_cross_package_generic_procedures(state);
   test_runtime_context_bridge_diagnostics(state);
+  test_cross_package_higher_order_effect(state);
   if (state.failures != 0) {
     std::cerr << state.failures << " compiler pipeline expectation(s) failed\n";
     return EXIT_FAILURE;

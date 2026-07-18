@@ -123,6 +123,25 @@ struct InterfaceDeclaration {
   std::string native_provider;
   std::string native_linker_name_spelling;
   std::vector<InterfaceParameter> parameters;
+  struct ReturnFlowSlot {
+    std::uint32_t parameter =
+        std::numeric_limits<std::uint32_t>::max();
+    std::vector<std::string> path;
+    bool context = false;
+  };
+  struct Effect;
+  struct FlowValue {
+    std::vector<ReturnFlowSlot> flow_slots;
+    std::vector<Effect> contract_effects;
+    bool unknown = false;
+  };
+  struct FlowField {
+    std::vector<std::string> path;
+    FlowValue value;
+  };
+  struct FlowArgument {
+    std::vector<FlowField> fields;
+  };
   struct Effect {
     EffectKind kind = EffectKind::UnknownCall;
     std::string root_identity;
@@ -133,14 +152,12 @@ struct InterfaceDeclaration {
         std::numeric_limits<std::uint32_t>::max();
     std::vector<std::string> flow_path;
     bool flow_context = false;
+    // Arguments supplied when this FlowCall invokes its selected callback.
+    // Their values are canonical contracts rooted in this declaration's
+    // formal parameters, so arbitrary finite higher-order calls remain exact.
+    std::vector<FlowArgument> flow_arguments;
   };
   std::vector<Effect> effects;
-  struct ReturnFlowSlot {
-    std::uint32_t parameter =
-        std::numeric_limits<std::uint32_t>::max();
-    std::vector<std::string> path;
-    bool context = false;
-  };
   struct ReturnValue {
     std::vector<std::string> path;
     std::vector<ReturnFlowSlot> flow_slots;

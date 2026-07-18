@@ -311,6 +311,40 @@ deny assert {
   EXPECT(state, rendered.find("unknown call") == std::string::npos);
 }
 
+void test_higher_order_substitution(TestState &state) {
+  DenialSource source(R"draft(package denials
+
+invoke_one :: proc(callback: proc()) {
+    callback()
+}
+
+apply :: proc(
+    higher: proc(callback: proc()),
+    callback: proc(),
+) {
+    higher(callback)
+}
+
+danger :: proc() {
+    assert(true)
+}
+
+deny assert {
+    bad :: proc() {
+        apply(invoke_one, danger)
+    }
+}
+)draft");
+  EXPECT(state, source.semantics.ok);
+  EXPECT(state, source.bodies.ok);
+  EXPECT(state, !source.denials_ok);
+  EXPECT(state, source.diagnostics.error_count() == 1);
+  const std::string rendered =
+      draft::render_diagnostics(source.sources, source.diagnostics);
+  EXPECT(state, rendered.find("denied assert") != std::string::npos);
+  EXPECT(state, rendered.find("unknown call") == std::string::npos);
+}
+
 } // namespace
 
 int main() {
@@ -323,6 +357,7 @@ int main() {
   test_transitive_declaration_denial(state);
   test_returned_procedure_substitution(state);
   test_pointer_field_write_substitution(state);
+  test_higher_order_substitution(state);
   if (state.failures != 0) {
     std::cerr << state.failures << " denial expectation(s) failed\n";
     return EXIT_FAILURE;

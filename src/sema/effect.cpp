@@ -238,6 +238,11 @@ private:
     ProcedureValueSummary value;
   };
 
+  struct CompositionFrame {
+    SymbolId callee;
+    std::vector<ProcedureArgumentSummary> arguments;
+  };
+
   [[nodiscard]] bool procedure_type(TypeId type) const {
     return type.is_valid() &&
         package_.types.type(type).kind == TypeKind::Procedure;
@@ -567,6 +572,61 @@ private:
     return result;
   }
 
+  [[nodiscard]] std::vector<ProcedureArgumentSummary> substitute_arguments(
+      const std::vector<ProcedureArgumentSummary> &source,
+      const std::vector<ProcedureArgumentSummary> &arguments) const {
+    std::vector<ProcedureArgumentSummary> result;
+    result.reserve(source.size());
+    for (const ProcedureArgumentSummary &argument : source) {
+      ProcedureArgumentSummary substituted;
+      for (const ProcedureFieldValueSummary &field : argument.fields) {
+        substituted.fields.push_back({
+            field.path,
+            substitute_return_value(field.value, arguments)});
+      }
+      result.push_back(std::move(substituted));
+    }
+    return result;
+  }
+
+  [[nodiscard]] ProcedureValueSummary imported_flow_value(
+      const ImportedFlowValue &source) const {
+    ProcedureValueSummary result;
+    result.unknown = source.unknown;
+    for (const ImportedReturnFlowSlot &slot : source.flow_slots) {
+      result.flow_slots.push_back(
+          {slot.parameter, slot.path, slot.context});
+    }
+    for (const ImportedEffect &effect : source.contract_effects) {
+      add_effect(result.contract_effects, semantic_effect(effect));
+    }
+    return result;
+  }
+
+  [[nodiscard]] SemanticEffect semantic_effect(
+      const ImportedEffect &source) const {
+    std::vector<ProcedureArgumentSummary> arguments;
+    for (const ImportedFlowArgument &argument : source.flow_arguments) {
+      ProcedureArgumentSummary semantic_argument;
+      for (const ImportedFlowField &field : argument.fields) {
+        semantic_argument.fields.push_back(
+            {field.path, imported_flow_value(field.value)});
+      }
+      arguments.push_back(std::move(semantic_argument));
+    }
+    return {
+        source.kind,
+        {},
+        source.detail,
+        source.root_identity,
+        source.root_relative_path,
+        source.declaration,
+        source.flow_parameter,
+        source.flow_path,
+        source.flow_context,
+        std::move(arguments)};
+  }
+
   [[nodiscard]] ProcedureValueSummary imported_return_value(
       SymbolId callee,
       const std::vector<std::string> &path,
@@ -582,17 +642,7 @@ private:
             {slot.parameter, slot.path, slot.context});
       }
       for (const ImportedEffect &effect : returned.contract_effects) {
-        add_effect(
-            canonical.contract_effects,
-            {effect.kind,
-             {},
-             effect.detail,
-             effect.root_identity,
-             effect.root_relative_path,
-             effect.declaration,
-             effect.flow_parameter,
-             effect.flow_path,
-             effect.flow_context});
+        add_effect(canonical.contract_effects, semantic_effect(effect));
       }
     }
     if (!found) canonical.unknown = true;
@@ -609,17 +659,7 @@ private:
           {slot.parameter, slot.path, slot.context});
     }
     for (const ImportedEffect &effect : write.value_contract_effects) {
-      add_effect(
-          canonical.contract_effects,
-          {effect.kind,
-           {},
-           effect.detail,
-           effect.root_identity,
-           effect.root_relative_path,
-           effect.declaration,
-           effect.flow_parameter,
-           effect.flow_path,
-           effect.flow_context});
+      add_effect(canonical.contract_effects, semantic_effect(effect));
     }
     return substitute_return_value(canonical, arguments);
   }
@@ -721,6 +761,7 @@ private:
   }
 
   [[nodiscard]] ProcedureValueSummary call_return_value(
+      HirExpressionId call_id,
       const HirExpression &call,
       const std::vector<std::string> &path) const {
     ProcedureValueSummary result;
@@ -729,8 +770,24 @@ private:
       return result;
     }
     const HirExpression &callee = hir_.expression(call.operands.front());
-    const std::vector<ProcedureArgumentSummary> arguments =
-        call_arguments(call, 1);
+    // record_call captured source-ordered arguments before the call's own
+    // write-back became visible. Reuse that immutable snapshot when deriving a
+    // returned callback instead of rereading possibly mutated storage here.
+    const std::vector<ProcedureArgumentSummary> *arguments = nullptr;
+    if (current_ != nullptr) {
+      for (const ProcedureInvocationSummary &invocation :
+           current_->direct_invocations) {
+        if (invocation.expression == call_id) {
+          arguments = &invocation.arguments;
+          break;
+        }
+      }
+    }
+    std::vector<ProcedureArgumentSummary> fallback_arguments;
+    if (arguments == nullptr) {
+      fallback_arguments = call_arguments(call, 1);
+      arguments = &fallback_arguments;
+    }
     if (callee.kind != HirExpressionKind::Symbol ||
         !callee.symbol.is_valid() ||
         package_.symbols.symbol(callee.symbol).kind != SymbolKind::Procedure) {
@@ -741,7 +798,7 @@ private:
       for (const ProcedureFieldValueSummary &returned :
            summary->return_values) {
         if (returned.path == path) {
-          return substitute_return_value(returned.value, arguments);
+          return substitute_return_value(returned.value, *arguments);
         }
       }
       // The compiler-owned default_context bridge returns a snapshot of the
@@ -762,7 +819,7 @@ private:
       return result;
     }
     if (imported_symbol(callee.symbol) != nullptr) {
-      return imported_return_value(callee.symbol, path, arguments);
+      return imported_return_value(callee.symbol, path, *arguments);
     }
     result.unknown = true;
     return result;
@@ -856,7 +913,7 @@ private:
     }
 
     if (expression.kind == HirExpressionKind::Call) {
-      return call_return_value(expression, relative_path);
+      return call_return_value(id, expression, relative_path);
     }
 
     // Erased raw storage and dynamically selected factories remain explicit
@@ -986,11 +1043,13 @@ private:
     return result;
   }
 
-  void record_call(HirExpressionId call_id, const HirExpression &call) {
+  void record_call(
+      HirExpressionId call_id,
+      const HirExpression &call,
+      ProcedureValueSummary callee_value,
+      std::vector<ProcedureArgumentSummary> arguments) {
     if (call.operands.empty()) return;
     const HirExpression &callee = hir_.expression(call.operands.front());
-    const std::vector<ProcedureArgumentSummary> arguments =
-        call_arguments(call, 1);
     if (callee.kind == HirExpressionKind::Symbol &&
         callee.symbol.is_valid() &&
         package_.symbols.symbol(callee.symbol).kind == SymbolKind::Procedure) {
@@ -1003,7 +1062,7 @@ private:
       return;
     }
     ProcedureFlowInvocationSummary invocation{
-        call_id, procedure_value(call.operands.front()), arguments};
+        call_id, std::move(callee_value), std::move(arguments)};
     for (SymbolId target : invocation.callee.targets) {
       if (has_local_body(target)) add_call(current_->direct_calls, target);
     }
@@ -1014,12 +1073,13 @@ private:
   // callback arguments after that. It participates in the same finite-target
   // composition as an ordinary indirect call.
   void record_context_call(
-      HirExpressionId expression_id, const HirExpression &expression) {
-    if (expression.operands.size() < 2) return;
+      HirExpressionId expression_id,
+      ProcedureValueSummary callee,
+      std::vector<ProcedureArgumentSummary> arguments) {
     ProcedureFlowInvocationSummary invocation;
     invocation.expression = expression_id;
-    invocation.callee = procedure_value(expression.operands[1]);
-    invocation.arguments = call_arguments(expression, 2);
+    invocation.callee = std::move(callee);
+    invocation.arguments = std::move(arguments);
     for (SymbolId target : invocation.callee.targets) {
       if (has_local_body(target)) add_call(current_->direct_calls, target);
     }
@@ -1040,13 +1100,15 @@ private:
     if (effect.kind != EffectKind::FlowCall) {
       return add_composed_effect(destination, effect);
     }
+    const std::vector<ProcedureArgumentSummary> nested_arguments =
+        substitute_arguments(effect.flow_arguments, arguments);
     if (effect.flow_context) {
       ProcedureValueSummary value;
       value.flow_slots.push_back({
           std::numeric_limits<std::uint32_t>::max(),
           effect.flow_path,
           true});
-      return compose_value_call(destination, value, {});
+      return compose_value_call(destination, value, nested_arguments);
     }
     if (effect.flow_parameter >= arguments.size()) {
       return add_composed_effect(
@@ -1061,7 +1123,8 @@ private:
     for (const ProcedureFieldValueSummary &field :
          arguments[effect.flow_parameter].fields) {
       if (field.path == effect.flow_path) {
-        return compose_value_call(destination, field.value, {});
+        return compose_value_call(
+            destination, field.value, nested_arguments);
       }
     }
     return add_composed_effect(
@@ -1093,16 +1156,7 @@ private:
     for (const ImportedEffect &effect : package_.imported_effects) {
       if (effect.procedure_proxy != callee) continue;
       changed = compose_effect(
-          destination,
-          {effect.kind,
-           {},
-           effect.detail,
-           effect.root_identity,
-           effect.root_relative_path,
-           effect.declaration,
-           effect.flow_parameter,
-           effect.flow_path,
-           effect.flow_context},
+          destination, semantic_effect(effect),
           arguments) || changed;
     }
     return changed;
@@ -1200,6 +1254,24 @@ private:
          {},
          {},
          {}});
+    for (const CompositionFrame &frame : composition_stack_) {
+      if (frame.callee != callee) continue;
+      if (frame.arguments == arguments) {
+        // This exact typed call contract is already being expanded. Any direct
+        // effects were copied by the outer frame, so following the same edge
+        // again cannot add a new reachable effect.
+        return changed;
+      }
+      return add_composed_effect(
+          destination,
+          {EffectKind::UnknownCall,
+           callee,
+           "recursive higher-order call changes its callback contract",
+           {},
+           {},
+           {}}) || changed;
+    }
+    composition_stack_.push_back({callee, arguments});
     if (const ProcedureEffectSummary *summary = result_.find(callee)) {
       // Copy the row before adding to destination: recursive calls may make
       // summary and destination the same vector.
@@ -1207,24 +1279,24 @@ private:
       for (const SemanticEffect &effect : effects) {
         changed = compose_effect(destination, effect, arguments) || changed;
       }
-      return changed;
-    }
-    if (const ImportedSymbol *imported = imported_symbol(callee)) {
-      return compose_imported_call(
+    } else if (const ImportedSymbol *imported = imported_symbol(callee)) {
+      changed = compose_imported_call(
           destination, callee, *imported, arguments) || changed;
-    }
-    if (const NativeBinding *binding = native_binding(callee)) {
-      return compose_native_call(
+    } else if (const NativeBinding *binding = native_binding(callee)) {
+      changed = compose_native_call(
           destination, callee, *binding, arguments) || changed;
+    } else {
+      changed = add_composed_effect(
+          destination,
+          {EffectKind::UnknownCall,
+           callee,
+           "callee has no composed summary",
+           {},
+           {},
+           {}}) || changed;
     }
-    return add_composed_effect(
-        destination,
-        {EffectKind::UnknownCall,
-         callee,
-         "callee has no composed summary",
-         {},
-         {},
-         {}}) || changed;
+    composition_stack_.pop_back();
+    return changed;
   }
 
   [[nodiscard]] bool compose_value_call(
@@ -1249,25 +1321,8 @@ private:
            {},
            slot.parameter,
            slot.path,
-           slot.context}) || changed;
-      // Higher-order callback arguments require nested slot paths. Preserve
-      // safety until that shape is expressible instead of silently dropping
-      // the callback's own procedure-valued inputs.
-      for (const ProcedureArgumentSummary &argument : arguments) {
-        for (const ProcedureFieldValueSummary &field : argument.fields) {
-          if (!value_is_empty(field.value)) {
-            changed = add_composed_effect(
-                destination,
-                {EffectKind::UnknownCall,
-                 {},
-                 "higher-order callback argument needs a nested flow slot",
-                 {},
-                 {},
-                 {}}) || changed;
-            break;
-          }
-        }
-      }
+           slot.context,
+           arguments}) || changed;
     }
     if (value.unknown || value_is_empty(value)) {
       changed = add_composed_effect(
@@ -1285,6 +1340,42 @@ private:
   void visit_expression(HirExpressionId id) {
     if (!id.is_valid()) return;
     const HirExpression &expression = hir_.expression(id);
+
+    // Calls evaluate the callee and then each argument in source order. Capture
+    // each procedure value immediately after its own evaluation: a later
+    // argument may call an initializer that mutates callback-bearing storage,
+    // but that cannot retroactively change an earlier argument or callee.
+    if (expression.kind == HirExpressionKind::Call) {
+      if (expression.operands.empty()) return;
+      visit_expression(expression.operands.front());
+      ProcedureValueSummary callee =
+          procedure_value(expression.operands.front());
+      std::vector<ProcedureArgumentSummary> arguments;
+      for (std::size_t index = 1; index < expression.operands.size(); ++index) {
+        visit_expression(expression.operands[index]);
+        arguments.push_back(call_argument(expression.operands[index]));
+      }
+      record_call(
+          id, expression, std::move(callee), std::move(arguments));
+      return;
+    }
+    if (expression.kind == HirExpressionKind::Intrinsic &&
+        expression.constant.kind == ConstantKind::String &&
+        expression.constant.text == "call_with_context") {
+      if (expression.operands.size() < 2) return;
+      visit_expression(expression.operands.front());
+      visit_expression(expression.operands[1]);
+      ProcedureValueSummary callee = procedure_value(expression.operands[1]);
+      std::vector<ProcedureArgumentSummary> arguments;
+      for (std::size_t index = 2; index < expression.operands.size(); ++index) {
+        visit_expression(expression.operands[index]);
+        arguments.push_back(call_argument(expression.operands[index]));
+      }
+      record_context_call(
+          id, std::move(callee), std::move(arguments));
+      return;
+    }
+
     if (expression.kind == HirExpressionKind::Symbol &&
         expression.symbol.is_valid()) {
       const Symbol &symbol = package_.symbols.symbol(expression.symbol);
@@ -1312,10 +1403,6 @@ private:
              {}});
         return;
       }
-    } else if (expression.kind == HirExpressionKind::Intrinsic &&
-               expression.constant.kind == ConstantKind::String &&
-               expression.constant.text == "call_with_context") {
-      record_context_call(id, expression);
     } else if (expression.kind == HirExpressionKind::Intrinsic &&
                expression.constant.kind == ConstantKind::String &&
                expression.constant.text == "assert") {
@@ -1350,9 +1437,6 @@ private:
       }
     }
 
-    if (expression.kind == HirExpressionKind::Call) {
-      record_call(id, expression);
-    }
     for (HirExpressionId operand : expression.operands) {
       visit_expression(operand);
     }
@@ -1427,6 +1511,7 @@ private:
   SymbolId current_procedure_;
   TypeId current_result_type_;
   std::vector<StoredProcedureValue> procedure_values_;
+  std::vector<CompositionFrame> composition_stack_;
 };
 
 } // namespace

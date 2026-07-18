@@ -711,6 +711,222 @@ through_install :: proc() {
       !has_effect(*caller_summary, draft::EffectKind::UnknownCall));
 }
 
+void test_higher_order_flow(TestState &state) {
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  draft::LoadedPackage loaded;
+  loaded.short_name = "higher_effects";
+  draft::LoadedPackageFile file;
+  file.kind = draft::PackageFileKind::DraftSource;
+  file.relative_name = "package.draft";
+  file.source = sources.add_source(
+      "package.draft",
+      R"draft(package higher_effects
+
+Higher_Box :: struct {
+    invoke: proc(callback: proc()),
+}
+
+Callback_Box :: struct {
+    callback: proc(),
+}
+
+Node :: struct {
+    invoke: proc(node: ^Node),
+}
+
+invoke_one :: proc(callback: proc()) {
+    callback()
+}
+
+apply :: proc(
+    higher: proc(callback: proc()),
+    callback: proc(),
+) {
+    higher(callback)
+}
+
+apply_twice :: proc(
+    top: proc(higher: proc(callback: proc()), callback: proc()),
+    higher: proc(callback: proc()),
+    callback: proc(),
+) {
+    top(higher, callback)
+}
+
+apply_box :: proc(box: Higher_Box, callback: proc()) {
+    box.invoke(callback)
+}
+
+danger :: proc() {
+    assert(true)
+}
+
+safe :: proc() {}
+
+select_first :: proc(first: proc(), ignored: i32) -> proc() {
+    return first
+}
+
+install_and_zero :: proc(
+    destination: ^Callback_Box,
+    callback: proc(),
+) -> i32 {
+    destination^.callback = callback
+    return 0
+}
+
+bounce :: proc(node: ^Node) {
+    node^.invoke(node)
+}
+
+caller :: proc() {
+    apply(invoke_one, danger)
+    apply_twice(apply, invoke_one, danger)
+    box: Higher_Box
+    box.invoke = invoke_one
+    apply_box(box, danger)
+}
+
+ordered_caller :: proc() {
+    box: Callback_Box
+    box.callback = safe
+    selected := select_first(
+        box.callback,
+        install_and_zero(&box, danger),
+    )
+    selected()
+}
+
+recursive_caller :: proc() {
+    node: Node
+    node.invoke = bounce
+    bounce(&node)
+}
+)draft");
+  file.syntax.emplace(draft::parse_source_file(sources, file.source, diagnostics));
+  loaded.files.push_back(std::move(file));
+  const draft::TargetProfile target = draft::make_aarch64_macos_profile();
+  draft::SemanticAnalysisResult semantics = draft::analyze_package_semantics(
+      sources, loaded, target.facts, diagnostics);
+  draft::BodyCheckResult bodies = draft::check_package_bodies(
+      sources,
+      loaded,
+      semantics.selections,
+      semantics.package,
+      semantics.constants,
+      target.facts,
+      diagnostics);
+  const draft::EffectSummaryResult effects =
+      draft::summarize_package_effects(
+          semantics.package, bodies.program, &target);
+  if (diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+  }
+  EXPECT(state, semantics.ok);
+  EXPECT(state, bodies.ok);
+
+  const std::optional<draft::SymbolId> apply =
+      symbol(semantics.package, "apply");
+  const std::optional<draft::SymbolId> apply_box =
+      symbol(semantics.package, "apply_box");
+  const std::optional<draft::SymbolId> apply_twice =
+      symbol(semantics.package, "apply_twice");
+  const std::optional<draft::SymbolId> caller =
+      symbol(semantics.package, "caller");
+  const std::optional<draft::SymbolId> ordered_caller =
+      symbol(semantics.package, "ordered_caller");
+  const std::optional<draft::SymbolId> recursive_caller =
+      symbol(semantics.package, "recursive_caller");
+  EXPECT(state, apply.has_value());
+  EXPECT(state, apply_box.has_value());
+  EXPECT(state, apply_twice.has_value());
+  EXPECT(state, caller.has_value());
+  EXPECT(state, ordered_caller.has_value());
+  EXPECT(state, recursive_caller.has_value());
+  if (!apply || !apply_box || !apply_twice || !caller || !ordered_caller ||
+      !recursive_caller) {
+    return;
+  }
+
+  const draft::ProcedureEffectSummary *apply_summary = effects.find(*apply);
+  const draft::ProcedureEffectSummary *box_summary = effects.find(*apply_box);
+  const draft::ProcedureEffectSummary *twice_summary =
+      effects.find(*apply_twice);
+  const draft::ProcedureEffectSummary *caller_summary = effects.find(*caller);
+  const draft::ProcedureEffectSummary *ordered_summary =
+      effects.find(*ordered_caller);
+  const draft::ProcedureEffectSummary *recursive_summary =
+      effects.find(*recursive_caller);
+  EXPECT(state, apply_summary != nullptr);
+  EXPECT(state, box_summary != nullptr);
+  EXPECT(state, twice_summary != nullptr);
+  EXPECT(state, caller_summary != nullptr);
+  EXPECT(state, ordered_summary != nullptr);
+  EXPECT(state, recursive_summary != nullptr);
+  if (apply_summary == nullptr || box_summary == nullptr ||
+      twice_summary == nullptr || caller_summary == nullptr ||
+      ordered_summary == nullptr || recursive_summary == nullptr) {
+    return;
+  }
+
+  const auto flow = std::find_if(
+      apply_summary->effects.begin(),
+      apply_summary->effects.end(),
+      [](const draft::SemanticEffect &effect) {
+        return effect.kind == draft::EffectKind::FlowCall;
+      });
+  EXPECT(state, flow != apply_summary->effects.end());
+  if (flow != apply_summary->effects.end()) {
+    EXPECT(state, flow->flow_parameter == 0);
+    EXPECT(state, flow->flow_arguments.size() == 1);
+    if (flow->flow_arguments.size() == 1) {
+      EXPECT(state, flow->flow_arguments.front().fields.size() == 1);
+      if (flow->flow_arguments.front().fields.size() == 1) {
+        const draft::ProcedureValueSummary &nested =
+            flow->flow_arguments.front().fields.front().value;
+        EXPECT(state, nested.flow_slots.size() == 1);
+        if (nested.flow_slots.size() == 1) {
+          EXPECT(state, nested.flow_slots.front().parameter == 1);
+        }
+      }
+    }
+  }
+  const auto box_flow = std::find_if(
+      box_summary->effects.begin(),
+      box_summary->effects.end(),
+      [](const draft::SemanticEffect &effect) {
+        return effect.kind == draft::EffectKind::FlowCall;
+      });
+  EXPECT(state, box_flow != box_summary->effects.end());
+  if (box_flow != box_summary->effects.end()) {
+    EXPECT(state,
+        box_flow->flow_path == std::vector<std::string>{"invoke"});
+    EXPECT(state, box_flow->flow_arguments.size() == 1);
+  }
+  const auto twice_flow = std::find_if(
+      twice_summary->effects.begin(),
+      twice_summary->effects.end(),
+      [](const draft::SemanticEffect &effect) {
+        return effect.kind == draft::EffectKind::FlowCall;
+      });
+  EXPECT(state, twice_flow != twice_summary->effects.end());
+  if (twice_flow != twice_summary->effects.end()) {
+    EXPECT(state, twice_flow->flow_parameter == 0);
+    EXPECT(state, twice_flow->flow_arguments.size() == 2);
+  }
+  EXPECT(state,
+      has_effect(*caller_summary, draft::EffectKind::RuntimeAssert));
+  EXPECT(state,
+      !has_effect(*caller_summary, draft::EffectKind::UnknownCall));
+  EXPECT(state,
+      !has_effect(*ordered_summary, draft::EffectKind::RuntimeAssert));
+  EXPECT(state,
+      !has_effect(*ordered_summary, draft::EffectKind::UnknownCall));
+  EXPECT(state,
+      !has_effect(*recursive_summary, draft::EffectKind::UnknownCall));
+}
+
 } // namespace
 
 int main() {
@@ -720,6 +936,7 @@ int main() {
   test_typed_and_context_flow_paths(state);
   test_returned_procedure_flow(state);
   test_pointer_field_write_flow(state);
+  test_higher_order_flow(state);
   if (state.failures != 0) {
     std::cerr << state.failures << " effect summary expectation(s) failed\n";
     return EXIT_FAILURE;
