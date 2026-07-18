@@ -382,9 +382,11 @@ void append_constant_context(
           output);
       append_context_field(
           "ARGUMENT_VALUE_EXPRESSION",
-          argument.value_expression.is_valid()
-              ? integer_expression_identity(argument.value_expression)
-              : "none",
+          argument.owner_evaluated_value
+              ? "owner-evaluated"
+              : (argument.value_expression.is_valid()
+                     ? integer_expression_identity(argument.value_expression)
+                     : "none"),
           output);
       append_constant_context(argument.value, output);
     }

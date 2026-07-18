@@ -15,6 +15,10 @@ pub Procedural_Buffer[N: usize] :: struct {
     values: [layout_count(N)]u8,
 }
 
+pub Procedural_Wrapper[N: usize] :: struct {
+    value: Procedural_Buffer[layout_count(N)],
+}
+
 layout_for[T: type] :: proc(extra: usize) -> usize {
     return size_of(T) + extra
 }

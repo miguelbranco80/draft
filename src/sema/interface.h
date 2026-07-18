@@ -62,6 +62,9 @@ struct InterfaceNominalArgument {
   // Parameter leaves use zero-based ordinals in the declaration which owns the
   // surrounding type graph. Concrete arguments leave this expression invalid.
   IntegerExpression value_expression;
+  // The defining package owns a full procedure-dependent source recipe. No
+  // package-local recipe index or syntax coordinate crosses this boundary.
+  bool owner_evaluated_value = false;
 };
 
 // InterfaceType is a package-independent type graph row. element and members

@@ -968,6 +968,14 @@ Procedural_Sized[N: usize] :: struct {
     values: [plus_one(N)]u8,
 }
 
+Procedural_Wrapper[N: usize] :: struct {
+    value: Procedural_Sized[plus_one(N)],
+}
+
+Procedural_Outer[N: usize] :: struct {
+    value: Procedural_Wrapper[plus_one(N)],
+}
+
 Small[N: u8] :: struct {
     values: [cast[usize](N)]u8,
 }
@@ -981,6 +989,8 @@ Procedural_Vector[N: usize] :: struct {
 Procedural_Concrete :: struct {
     array: Procedural_Sized[2],
     vector: Procedural_Vector[3],
+    nested: Procedural_Wrapper[1],
+    outer: Procedural_Outer[1],
 }
 
 Buffer :: struct {
@@ -1061,15 +1071,21 @@ Code :: enum i16 {
   if (procedural_concrete.has_value()) {
     const draft::Type &type = valid.analysis.package.types.type(
         valid.analysis.package.symbols.symbol(*procedural_concrete).type);
-    EXPECT(state, type.layout == draft::TypeLayout({true, 32, 16}));
-    EXPECT(state, type.members.size() == 2);
-    if (type.members.size() == 2) {
+    EXPECT(state, type.layout == draft::TypeLayout({true, 48, 16}));
+    EXPECT(state, type.members.size() == 4);
+    if (type.members.size() == 4) {
       const draft::Type &array =
           valid.analysis.package.types.type(type.members.front());
       const draft::Type &vector =
+          valid.analysis.package.types.type(type.members[1]);
+      const draft::Type &nested =
+          valid.analysis.package.types.type(type.members[2]);
+      const draft::Type &outer =
           valid.analysis.package.types.type(type.members.back());
       EXPECT(state, array.layout == draft::TypeLayout({true, 3, 1}));
       EXPECT(state, vector.layout == draft::TypeLayout({true, 16, 16}));
+      EXPECT(state, nested.layout == draft::TypeLayout({true, 3, 1}));
+      EXPECT(state, outer.layout == draft::TypeLayout({true, 4, 1}));
     }
   }
   EXPECT(state,

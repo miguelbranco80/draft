@@ -119,13 +119,22 @@ struct ParametricInstanceRecord {
 // A nominal template argument is either a type or a compile-time scalar.
 // Concrete scalar applications own value; a template may instead retain a
 // symbolic integer expression whose parameter leaves are ValueParameter
-// SymbolIds. value_type records the declared scalar type in both cases.
+// SymbolIds. A full procedure-dependent expression instead uses the explicit
+// owner marker and a defining-package recipe. value_type records the declared
+// scalar type in every value case.
 struct ParametricArgument {
   bool is_type = true;
   TypeId type;
   TypeId value_type;
   ConstantValue value;
   IntegerExpression value_expression;
+  // Full procedure-dependent expressions cannot be represented by the compact
+  // IntegerExpression tree. The defining package retains their source recipe;
+  // interfaces export only this marker and concrete owner applications replace
+  // it before any runtime-bearing type is lowered.
+  bool owner_evaluated_value = false;
+  std::uint32_t deferred_value_index =
+      std::numeric_limits<std::uint32_t>::max();
 
   bool operator==(const ParametricArgument &) const = default;
 };
@@ -391,6 +400,18 @@ struct DeferredElementCountValueBinding {
   IntegerExpression symbolic_expression;
 };
 
+struct DeferredValueExpression {
+  // The original expression is interpreted only after every captured generic
+  // binding is concrete. Keeping this packet separate from ParametricArgument
+  // prevents source coordinates and package-local IDs from leaking through an
+  // interface.
+  SyntaxReference syntax;
+  ScopeId scope;
+  TypeId expected_type;
+  std::vector<DeferredElementCountTypeBinding> type_bindings;
+  std::vector<DeferredElementCountValueBinding> value_bindings;
+};
+
 // Source-local recipe for an array/SIMD count which must be evaluated by the
 // package that owns the referenced compile-time procedure bodies. type is the
 // unique symbolic Type row carrying this side-table index. syntax and scope are
@@ -458,6 +479,7 @@ struct SemanticPackage {
   std::vector<SemanticSite> sites;
   std::vector<RequiredIntegerExpression> required_integer_expressions;
   std::vector<DeferredElementCount> deferred_element_counts;
+  std::vector<DeferredValueExpression> deferred_value_expressions;
   std::vector<NativeBinding> native_bindings;
 };
 

@@ -73,6 +73,7 @@ void hash_nominal_argument(
   hash_type_id(hash, argument.value_type);
   hash_constant(hash, argument.value);
   hash_integer_expression(hash, argument.value_expression);
+  hash_u64(hash, argument.owner_evaluated_value ? 1 : 0);
 }
 
 void hash_interface_type(Sha256 &hash, const InterfaceType &type) {
@@ -522,6 +523,7 @@ private:
     } else {
       translated.value_type = translate_type(argument.value_type);
       translated.value = argument.value;
+      translated.owner_evaluated_value = argument.owner_evaluated_value;
       if (argument.value_expression.is_valid()) {
         const std::optional<IntegerExpression> expression =
             translate_integer_expression(
@@ -1040,6 +1042,7 @@ private:
       } else {
         translated.value_type = import_type(package, cache, argument.value_type);
         translated.value = argument.value;
+        translated.owner_evaluated_value = argument.owner_evaluated_value;
         if (argument.value_expression.is_valid()) {
           const std::optional<IntegerExpression> expression =
               import_integer_expression(argument.value_expression);
@@ -1367,7 +1370,7 @@ TypeId import_interface_type(
 
 Sha256Digest hash_interface_type_graph(const InterfaceTypeGraph &graph) {
   Sha256 hash;
-  hash_field(hash, "draft.interface-type-graph.v3");
+  hash_field(hash, "draft.interface-type-graph.v4");
   // The exporting package identity is transport context, not necessarily part
   // of the type. Builtins and purely structural types must hash identically in
   // every requester. Locally declared nominal rows already contain their exact

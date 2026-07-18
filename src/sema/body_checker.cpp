@@ -547,6 +547,40 @@ private:
           nominal_application(source);
       if (application.has_value()) {
         std::vector<ParametricArgument> arguments = *application->arguments;
+        const bool owner_evaluated = std::any_of(
+            arguments.begin(),
+            arguments.end(),
+            [](const ParametricArgument &argument) {
+              return argument.owner_evaluated_value;
+            });
+        if (owner_evaluated) {
+          std::vector<DeferredElementCountTypeBinding> deferred_types;
+          for (const TypeSubstitution &substitution : type_substitutions) {
+            deferred_types.push_back(
+                {substitution.parameter, substitution.replacement});
+          }
+          std::vector<DeferredElementCountValueBinding> deferred_values;
+          for (const ValueSubstitution &substitution : value_substitutions) {
+            deferred_values.push_back({
+                substitution.parameter,
+                substitution.value,
+                substitution.symbolic_expression,
+            });
+          }
+          const ConstantTable visible_constants = active_constant_table();
+          return instantiate_owner_evaluated_type_application(
+              sources_,
+              loaded_,
+              semantic_,
+              selections_,
+              source,
+              deferred_types,
+              deferred_values,
+              use_range,
+              visible_constants,
+              target_,
+              diagnostics_);
+        }
         bool changed = false;
         for (ParametricArgument &argument : arguments) {
           if (argument.is_type) {
@@ -2570,7 +2604,9 @@ private:
       if (!application.has_value()) return false;
       for (const ParametricArgument &argument : *application->arguments) {
         if ((argument.is_type && contains_symbolic_type(argument.type)) ||
-            (!argument.is_type && argument.value_expression.is_valid())) {
+            (!argument.is_type &&
+             (argument.value_expression.is_valid() ||
+              argument.owner_evaluated_value))) {
           return true;
         }
       }
@@ -2643,6 +2679,11 @@ private:
         } else {
           if (pattern_argument.value_type != actual_argument.value_type) {
             return false;
+          }
+          if (pattern_argument.owner_evaluated_value ||
+              actual_argument.owner_evaluated_value) {
+            if (pattern_argument != actual_argument) return false;
+            continue;
           }
           const std::optional<std::uint32_t> pattern_parameter =
               single_integer_parameter(pattern_argument.value_expression);
@@ -2810,6 +2851,8 @@ private:
     for (const ParametricArgument &argument : arguments) {
       if (argument.is_type) {
         instance_symbol.name += "$t" + std::to_string(argument.type.value);
+      } else if (argument.owner_evaluated_value) {
+        instance_symbol.name += "$owner";
       } else if (argument.value_expression.is_valid()) {
         instance_symbol.name += "$e" +
             integer_expression_identity(argument.value_expression);

@@ -104,6 +104,22 @@ void test_owner_evaluated_count_interface_marker(TestState &state) {
          draft::hash_interface_type_graph(graph) !=
              draft::hash_interface_type_graph(without_marker));
 
+  // A procedure-dependent nominal value argument uses a different owner
+  // marker, but it has the same identity requirement: pending evaluation must
+  // never collide with an otherwise identical concrete argument packet.
+  draft::InterfaceTypeGraph with_value_marker = graph;
+  draft::InterfaceNominalArgument value_argument;
+  value_argument.is_type = false;
+  value_argument.owner_evaluated_value = true;
+  with_value_marker.types[with_value_marker.root.value]
+      .nominal_arguments.push_back(value_argument);
+  draft::InterfaceTypeGraph without_value_marker = with_value_marker;
+  without_value_marker.types[without_value_marker.root.value]
+      .nominal_arguments.back().owner_evaluated_value = false;
+  EXPECT(state,
+         draft::hash_interface_type_graph(with_value_marker) !=
+             draft::hash_interface_type_graph(without_value_marker));
+
   draft::SemanticPackage consumer;
   const draft::TypeId imported = draft::import_interface_type(
       graph, consumer, diagnostics);

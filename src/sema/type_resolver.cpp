@@ -732,6 +732,29 @@ private:
     return type;
   }
 
+  [[nodiscard]] ParametricArgument defer_value_expression(
+      const SyntaxTree &tree,
+      NodeId expression,
+      ScopeId scope,
+      TypeId expected_type,
+      std::vector<DeferredElementCountTypeBinding> type_bindings = {},
+      std::vector<DeferredElementCountValueBinding> value_bindings = {}) {
+    ParametricArgument argument;
+    argument.is_type = false;
+    argument.value_type = expected_type;
+    argument.owner_evaluated_value = true;
+    argument.deferred_value_index = static_cast<std::uint32_t>(
+        semantic_.deferred_value_expressions.size());
+    semantic_.deferred_value_expressions.push_back({
+        {tree.file(), expression},
+        scope,
+        expected_type,
+        std::move(type_bindings),
+        std::move(value_bindings),
+    });
+    return argument;
+  }
+
   [[nodiscard]] IntegerExpressionType integer_expression_type(
       TypeId type_id) const {
     const Type type = semantic_.types.type(type_id);
@@ -1298,7 +1321,9 @@ private:
         if (semantic_.symbols.symbol(instance.instance).type != type) continue;
         for (const ParametricArgument &argument : instance.arguments) {
           if ((argument.is_type && type_has_parameters(argument.type, active)) ||
-              (!argument.is_type && argument.value_expression.is_valid())) {
+              (!argument.is_type &&
+               (argument.value_expression.is_valid() ||
+                argument.owner_evaluated_value))) {
             result = true;
             break;
           }
@@ -1310,7 +1335,9 @@ private:
           if (imported.type != type) continue;
           for (const ParametricArgument &argument : imported.arguments) {
             if ((argument.is_type && type_has_parameters(argument.type, active)) ||
-                (!argument.is_type && argument.value_expression.is_valid())) {
+                (!argument.is_type &&
+                 (argument.value_expression.is_valid() ||
+                  argument.owner_evaluated_value))) {
               result = true;
               break;
             }
@@ -1348,6 +1375,34 @@ private:
         }
       }
     }
+    if (!result &&
+        (value.kind == TypeKind::Struct || value.kind == TypeKind::Enum ||
+         value.kind == TypeKind::TaggedUnion ||
+         value.kind == TypeKind::RawUnion)) {
+      for (const ParametricTypeInstanceRecord &instance :
+           semantic_.parametric_type_instances) {
+        if (semantic_.symbols.symbol(instance.instance).type != type) continue;
+        for (const ParametricArgument &argument : instance.arguments) {
+          if (argument.owner_evaluated_value) {
+            result = true;
+            break;
+          }
+        }
+        break;
+      }
+      if (!result) {
+        for (const ImportedType &imported : semantic_.imported_types) {
+          if (imported.type != type) continue;
+          for (const ParametricArgument &argument : imported.arguments) {
+            if (argument.owner_evaluated_value) {
+              result = true;
+              break;
+            }
+          }
+          break;
+        }
+      }
+    }
     active.pop_back();
     return result;
   }
@@ -1355,6 +1410,186 @@ private:
   [[nodiscard]] bool type_requires_owner_evaluation(TypeId type) const {
     std::vector<TypeId> active;
     return type_requires_owner_evaluation(type, active);
+  }
+
+  [[nodiscard]] std::optional<ParametricArgument>
+  substitute_deferred_value_argument(
+      const ParametricArgument &source,
+      const std::vector<ResolverTypeSubstitution> &substitutions,
+      const std::vector<ResolverValueSubstitution> &value_substitutions,
+      SourceRange use_range) {
+    if (!source.owner_evaluated_value) return source;
+    if (source.deferred_value_index >=
+        semantic_.deferred_value_expressions.size()) {
+      // Imported templates carry only the owner marker. The enclosing public
+      // type request is sent back to its defining package before this
+      // provisional consumer graph is used for body checking.
+      return source;
+    }
+
+    const DeferredValueExpression recipe =
+        semantic_.deferred_value_expressions[source.deferred_value_index];
+    std::vector<DeferredElementCountTypeBinding> type_bindings =
+        recipe.type_bindings;
+    std::vector<DeferredElementCountValueBinding> value_bindings =
+        recipe.value_bindings;
+    for (DeferredElementCountTypeBinding &binding : type_bindings) {
+      binding.replacement = substitute_type(
+          binding.replacement,
+          substitutions,
+          value_substitutions,
+          use_range);
+    }
+    for (const ResolverTypeSubstitution &substitution : substitutions) {
+      const bool present = std::any_of(
+          type_bindings.begin(),
+          type_bindings.end(),
+          [&](const DeferredElementCountTypeBinding &binding) {
+            return binding.parameter == substitution.parameter;
+          });
+      if (!present) {
+        type_bindings.push_back(
+            {substitution.parameter, substitution.replacement});
+      }
+    }
+
+    const std::vector<IntegerExpressionReplacement> replacements =
+        integer_expression_replacements(value_substitutions);
+    for (DeferredElementCountValueBinding &binding : value_bindings) {
+      if (!binding.symbolic_expression.is_valid()) continue;
+      std::string error;
+      const std::optional<IntegerExpression> replacement =
+          substitute_integer_expression(
+              binding.symbolic_expression, replacements, error);
+      if (!replacement.has_value()) {
+        diagnostics_.error(use_range, error);
+        return std::nullopt;
+      }
+      binding.symbolic_expression = *replacement;
+      if (!integer_expression_has_parameters(binding.symbolic_expression)) {
+        const IntegerExpressionResult evaluated =
+            evaluate_integer_expression(binding.symbolic_expression);
+        if (!evaluated.ok) {
+          diagnostics_.error(use_range, evaluated.error);
+          return std::nullopt;
+        }
+        binding.value = ConstantValue::make_integer(evaluated.value);
+        binding.symbolic_expression = {};
+      }
+    }
+    for (const ResolverValueSubstitution &substitution : value_substitutions) {
+      const SymbolId parameter{substitution.parameter};
+      const bool present = std::any_of(
+          value_bindings.begin(),
+          value_bindings.end(),
+          [&](const DeferredElementCountValueBinding &binding) {
+            return binding.parameter == parameter;
+          });
+      if (present) continue;
+      DeferredElementCountValueBinding binding;
+      binding.parameter = parameter;
+      binding.symbolic_expression = substitution.symbolic_expression;
+      if (!binding.symbolic_expression.is_valid()) {
+        binding.value = ConstantValue::make_integer(substitution.replacement);
+      }
+      value_bindings.push_back(std::move(binding));
+    }
+
+    bool symbolic = false;
+    for (const DeferredElementCountTypeBinding &binding : type_bindings) {
+      if (type_has_parameters(binding.replacement)) {
+        symbolic = true;
+        break;
+      }
+    }
+    if (!symbolic) {
+      for (const DeferredElementCountValueBinding &binding : value_bindings) {
+        if (binding.symbolic_expression.is_valid()) {
+          symbolic = true;
+          break;
+        }
+      }
+    }
+    const SyntaxTree *tree = find_tree(recipe.syntax.file);
+    if (tree == nullptr || !recipe.syntax.node.is_valid()) {
+      diagnostics_.error(
+          use_range, "owner-evaluated generic argument has no source recipe");
+      return std::nullopt;
+    }
+    if (symbolic || target_ == nullptr) {
+      return defer_value_expression(
+          *tree,
+          recipe.syntax.node,
+          recipe.scope,
+          recipe.expected_type,
+          std::move(type_bindings),
+          std::move(value_bindings));
+    }
+
+    ConstantTable constants;
+    for (const DeferredElementCountValueBinding &binding : value_bindings) {
+      constants.bindings.push_back({binding.parameter, binding.value});
+    }
+    if (active_constants_ != nullptr) {
+      for (const ConstantBinding &binding : active_constants_->bindings) {
+        if (constants.find(binding.symbol) == nullptr) {
+          constants.bindings.push_back(binding);
+        }
+      }
+    }
+    std::vector<ConstantTypeBinding> types;
+    for (const DeferredElementCountTypeBinding &binding : type_bindings) {
+      types.push_back({binding.parameter, binding.replacement});
+    }
+    if (active_types_ != nullptr) {
+      for (const ConstantTypeBinding &binding : *active_types_) {
+        const bool present = std::any_of(
+            types.begin(),
+            types.end(),
+            [&](const ConstantTypeBinding &candidate) {
+              return candidate.parameter == binding.parameter;
+            });
+        if (!present) types.push_back(binding);
+      }
+    }
+    const std::optional<EvaluatedConstant> evaluated =
+        evaluate_typed_constant_expression(
+            sources_,
+            loaded_,
+            semantic_,
+            *target_,
+            *tree,
+            recipe.syntax.node,
+            recipe.scope,
+            diagnostics_,
+            &constants,
+            &types,
+            recipe.expected_type);
+    if (!evaluated.has_value() ||
+        evaluated->value.kind != ConstantKind::Integer) {
+      return std::nullopt;
+    }
+    const TypeKind result_kind = evaluated->type.is_valid()
+        ? semantic_.types.type(evaluated->type).kind
+        : TypeKind::Invalid;
+    if (evaluated->type != recipe.expected_type &&
+        result_kind != TypeKind::UntypedInteger) {
+      diagnostics_.error(
+          tree->node(recipe.syntax.node).range,
+          "compile-time value argument has the wrong concrete integer type");
+      return std::nullopt;
+    }
+    if (!integer_fits_type(evaluated->value.integer, recipe.expected_type)) {
+      diagnostics_.error(
+          tree->node(recipe.syntax.node).range,
+          "compile-time value argument is not representable in its parameter type");
+      return std::nullopt;
+    }
+    ParametricArgument result;
+    result.is_type = false;
+    result.value_type = recipe.expected_type;
+    result.value = evaluated->value;
+    return result;
   }
 
   [[nodiscard]] TypeId instantiate_deferred_element_count(
@@ -1600,6 +1835,20 @@ private:
             argument.type = replacement;
             continue;
           }
+          if (argument.owner_evaluated_value) {
+            const std::optional<ParametricArgument> replacement =
+                substitute_deferred_value_argument(
+                    argument,
+                    substitutions,
+                    value_substitutions,
+                    use_range);
+            if (!replacement.has_value()) {
+              return semantic_.types.builtins().invalid;
+            }
+            changed = changed || *replacement != argument;
+            argument = *replacement;
+            continue;
+          }
           if (!argument.value_expression.is_valid()) continue;
           std::string error;
           const std::optional<IntegerExpression> replacement =
@@ -1785,6 +2034,9 @@ private:
     for (const ParametricArgument &argument : arguments) {
       if (argument.is_type) {
         instance_name += "$t" + std::to_string(argument.type.value);
+      } else if (argument.owner_evaluated_value) {
+        instance_name += "$owner" +
+            std::to_string(argument.deferred_value_index);
       } else if (argument.value_expression.is_valid()) {
         instance_name += "$e" +
             integer_expression_identity(argument.value_expression);
@@ -1963,6 +2215,7 @@ private:
 
     std::vector<ResolverTypeSubstitution> substitutions;
     std::vector<ResolverValueSubstitution> value_substitutions;
+    bool has_owner_evaluated_argument = false;
     substitutions.reserve(parameters.size());
     value_substitutions.reserve(parameters.size());
     for (std::size_t index = 0; index < parameters.size(); ++index) {
@@ -1975,6 +2228,18 @@ private:
         }
         const TypeId required_type =
             semantic_.symbols.symbol(parameter.parameter).type;
+        if (arguments[index].owner_evaluated_value) {
+          if (arguments[index].value_type.is_valid() &&
+              arguments[index].value_type != required_type) {
+            diagnostics_.error(
+                use_range,
+                "owner-evaluated value argument has the wrong result type");
+            return semantic_.types.builtins().invalid;
+          }
+          arguments[index].value_type = required_type;
+          has_owner_evaluated_argument = true;
+          continue;
+        }
         if (arguments[index].value_expression.is_valid()) {
           const IntegerExpressionNode &root =
               arguments[index].value_expression.nodes[
@@ -2097,6 +2362,12 @@ private:
         template_type.kind != TypeKind::Enum &&
         template_type.kind != TypeKind::TaggedUnion &&
         template_type.kind != TypeKind::RawUnion) {
+      if (has_owner_evaluated_argument) {
+        diagnostics_.error(
+            use_range,
+            "procedure-dependent value arguments currently require a nominal type template");
+        return semantic_.types.builtins().invalid;
+      }
       // Parametric aliases are purely structural and therefore need no member
       // scope or nominal instance identity.
       return substitute_type(
@@ -2107,6 +2378,9 @@ private:
     for (const ParametricArgument &argument : arguments) {
       if (argument.is_type) {
         instance_name += "$t" + std::to_string(argument.type.value);
+      } else if (argument.owner_evaluated_value) {
+        instance_name += "$owner" +
+            std::to_string(argument.deferred_value_index);
       } else if (argument.value_expression.is_valid()) {
         instance_name += "$e" +
             integer_expression_identity(argument.value_expression);
@@ -2147,11 +2421,18 @@ private:
       Symbol concrete_member = semantic_.symbols.symbol(member.member);
       const SymbolId template_member = member.member;
       concrete_member.scope = member_scope;
-      concrete_member.type = substitute_type(
-          concrete_member.type,
-          substitutions,
-          value_substitutions,
-          use_range);
+      // An owner-evaluated nominal argument makes this entire instance a
+      // symbolic placeholder. Preserve the template member packet unchanged;
+      // partially substituting it could accidentally evaluate a nested recipe
+      // with one of the callee's value parameters still unbound. Once the outer
+      // recipe becomes concrete, a new ordinary instance is built here.
+      if (!has_owner_evaluated_argument) {
+        concrete_member.type = substitute_type(
+            concrete_member.type,
+            substitutions,
+            value_substitutions,
+            use_range);
+      }
       const SymbolId member_id =
           semantic_.symbols.declare(std::move(concrete_member), diagnostics_);
       if (!member_id.is_valid()) continue;
@@ -2175,10 +2456,20 @@ private:
     }
 
     TypeLayout layout;
-    TypeId element = substitute_type(
-        template_type.element, substitutions, value_substitutions, use_range);
+    TypeId element = template_type.element;
+    if (!has_owner_evaluated_argument) {
+      element = substitute_type(
+          template_type.element,
+          substitutions,
+          value_substitutions,
+          use_range);
+    }
     semantic_.types.type_mut(concrete).element = element;
-    if (template_type.kind == TypeKind::Struct) {
+    if (has_owner_evaluated_argument) {
+      // The member packet remains useful for symbolic checking, but no physical
+      // layout exists until the defining package evaluates the argument.
+      layout = {};
+    } else if (template_type.kind == TypeKind::Struct) {
       layout = struct_layout(data);
     } else if (template_type.kind == TypeKind::RawUnion) {
       layout = raw_union_layout(data);
@@ -2270,6 +2561,12 @@ private:
             dependent_integer_expression(
                 tree, argument_node, scope, required);
         if (!symbolic.has_value()) {
+          if (expression_references_parametric_parameter(
+                  tree, argument_node, scope)) {
+            arguments.push_back(defer_value_expression(
+                tree, argument_node, scope, required));
+            continue;
+          }
           require_integer_expression(tree, argument_node, scope);
           diagnostics_.error(
               tree.node(argument_node).range,

@@ -413,7 +413,8 @@ table discipline.
 ## Owner-evaluated generic layout constants
 
 Status: implemented for array/SIMD recipes in local generic types, generic
-procedure signatures, and concrete cross-package public type applications.
+procedure signatures, nested procedure-dependent nominal value arguments, and
+concrete cross-package public type applications.
 
 The compact dependent-integer tree remains the canonical representation for
 arithmetic and casts such as `[N + 1]T`. It must not pretend to represent a call
@@ -439,6 +440,14 @@ graphs. Private requester nominals returning through the owner graph resolve to
 their original local TypeId. This mirrors cross-package generic procedure
 instantiation and preserves private implementation details without making
 consumer semantics read dependency source.
+
+The same boundary applies when a nominal application itself supplies a full
+procedure-dependent value such as `Buffer[increment(N)]`. Its ParametricArgument
+carries an explicit owner-evaluated marker while the defining SemanticPackage
+retains the recipe. A symbolic nominal instance has members for type checking but
+an unknown layout. Substitution composes the captured environment through nested
+templates; once concrete, it evaluates the argument and constructs the ordinary
+canonical nominal instance. Interfaces again export only the marker.
 
 ## Hosted process views and core threads
 

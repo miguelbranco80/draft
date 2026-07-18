@@ -12,6 +12,7 @@ import lib/generic as generic
 Shared_Alias :: left.Shared_Value
 Box_Alias :: generic.Box[u64]
 Procedural_Buffer_Alias :: generic.Procedural_Buffer[2]
+Procedural_Wrapper_Alias :: generic.Procedural_Wrapper[1]
 
 // Private_Value intentionally does not appear in this package's public
 // interface. Passing it to a dependency template exercises the separate
@@ -39,6 +40,8 @@ main :: proc() {
     assert(box.value == 42)
     procedural: Procedural_Buffer_Alias
     assert(len(procedural.values) == 3)
+    wrapped: Procedural_Wrapper_Alias
+    assert(len(wrapped.value.values) == 3)
     private_procedural: Private_Procedural_Buffer
     assert(len(private_procedural.values) == 10)
 }
