@@ -866,7 +866,8 @@ void print_usage() {
             << "      [--provider name=object|archive|shared-library:<path>]...\n"
             << "      [--provider-summary name:<path>]...\n"
             << "  draftc resolve <package-directory> [--revalidate]\n"
-            << "      [--codex-executable <path> --codex-model <model>]\n"
+            << "      [--codex-distribution-root <directory>\n"
+            << "       --codex-executable <path> --codex-model <model>]\n"
             << "      [--allow-host-toolchain]\n"
             << "      [--toolchain-root <directory> --sdk-root <directory>]\n"
             << "      [--provider name=object|archive|shared-library:<path>]...\n"
@@ -903,6 +904,7 @@ int main(int argc, char **argv) {
   if (argc >= 3 && std::string_view(argv[1]) == "resolve") {
     bool revalidate = false;
     bool allow_host_toolchain = false;
+    std::optional<std::string> codex_distribution_root;
     std::optional<std::string> codex_executable;
     std::optional<std::string> codex_model;
     std::optional<std::string> toolchain_root;
@@ -919,6 +921,9 @@ int main(int argc, char **argv) {
       } else if (argument == "--codex-executable" &&
                  !codex_executable.has_value() && index + 1 < argc) {
         codex_executable = argv[++index];
+      } else if (argument == "--codex-distribution-root" &&
+                 !codex_distribution_root.has_value() && index + 1 < argc) {
+        codex_distribution_root = argv[++index];
       } else if (argument == "--codex-model" &&
                  !codex_model.has_value() && index + 1 < argc) {
         codex_model = argv[++index];
@@ -951,6 +956,7 @@ int main(int argc, char **argv) {
       }
     }
     if (codex_executable.has_value() != codex_model.has_value() ||
+        codex_executable.has_value() != codex_distribution_root.has_value() ||
         toolchain_root.has_value() != sdk_root.has_value() ||
         (revalidate && codex_executable.has_value()) ||
         (allow_host_toolchain && toolchain_root.has_value())) {
@@ -962,6 +968,7 @@ int main(int argc, char **argv) {
     std::optional<draft::CodexCliProviderOptions> codex;
     if (codex_executable.has_value()) {
       codex.emplace();
+      codex->distribution_root = *codex_distribution_root;
       codex->executable = *codex_executable;
       codex->model = *codex_model;
       codex->cancellation_requested = command_cancellation_requested;

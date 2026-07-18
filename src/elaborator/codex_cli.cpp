@@ -9,6 +9,7 @@
 
 #include "elaborator/codex_cli.h"
 
+#include "base/content_tree.h"
 #include "base/sha256.h"
 #include "sema/symbol.h"
 
@@ -775,6 +776,37 @@ private:
       state.cancellation_requested(state.cancellation_state);
 }
 
+[[nodiscard]] bool hash_codex_distribution(
+    const std::filesystem::path &root,
+    Sha256Digest &digest,
+    DiagnosticSink &diagnostics) {
+  DiagnosticSink tree_diagnostics;
+  if (hash_content_tree(root, digest, tree_diagnostics)) return true;
+  const std::string detail = tree_diagnostics.diagnostics().empty()
+      ? std::string("unknown content-tree error")
+      : tree_diagnostics.diagnostics().back().message;
+  provider_error(
+      diagnostics, "cannot hash Codex distribution: " + detail);
+  return false;
+}
+
+[[nodiscard]] bool verify_codex_distribution(
+    const CodexCliProviderState &state,
+    DiagnosticSink &diagnostics) {
+  Sha256Digest observed;
+  if (!hash_codex_distribution(
+          state.distribution_root, observed, diagnostics)) {
+    return false;
+  }
+  if (observed != state.distribution_digest) {
+    provider_error(
+        diagnostics,
+        "Codex distribution changed after provider configuration");
+    return false;
+  }
+  return true;
+}
+
 // Starts exactly one documented non-interactive Codex process. All arguments
 // are separate execv entries and the prompt is an already-opened regular file.
 [[nodiscard]] bool run_codex_once(
@@ -899,6 +931,7 @@ private:
     SynthesisResponse &response,
     DiagnosticSink &diagnostics) {
   auto *state = static_cast<CodexCliProviderState *>(opaque);
+  if (!verify_codex_distribution(*state, diagnostics)) return false;
   TemporaryDirectory temporary;
   if (!temporary.create(diagnostics)) return false;
   std::string prompt;
@@ -954,36 +987,10 @@ private:
         diagnostics, "Codex final response does not match the source schema");
     return false;
   }
-  return true;
-}
-
-// Hashes one regular executable without inserting it into SourceManager. The
-// executable may be a script or native binary; exact bytes, not file metadata,
-// are the configuration input.
-[[nodiscard]] std::optional<Sha256Digest> hash_executable(
-    const std::filesystem::path &path,
-    DiagnosticSink &diagnostics) {
-  std::ifstream input(path, std::ios::binary);
-  if (!input) {
-    provider_error(
-        diagnostics, "cannot open Codex executable '" + path.string() + "'");
-    return std::nullopt;
-  }
-  Sha256 hash;
-  std::array<char, 64 * 1024> buffer{};
-  while (input) {
-    input.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
-    const std::streamsize count = input.gcount();
-    if (count > 0) {
-      hash.update(std::string_view(
-          buffer.data(), static_cast<std::size_t>(count)));
-    }
-  }
-  if (!input.eof()) {
-    provider_error(diagnostics, "cannot read complete Codex executable");
-    return std::nullopt;
-  }
-  return hash.finalize();
+  // A preflight hash prevents known-stale execution; the second hash rejects a
+  // distribution that changed while the child was active. Only a response from
+  // the exact configured tree can cross the provider boundary.
+  return verify_codex_distribution(*state, diagnostics);
 }
 
 } // namespace
@@ -1005,6 +1012,25 @@ SynthesisProvider configure_codex_cli_provider(
     return {};
   }
   std::error_code error;
+  const std::filesystem::file_status root_status =
+      std::filesystem::symlink_status(options.distribution_root, error);
+  if (error || std::filesystem::is_symlink(root_status) ||
+      !std::filesystem::is_directory(root_status)) {
+    provider_error(
+        diagnostics,
+        "Codex distribution root is invalid: '" +
+            options.distribution_root.string() + "'");
+    return {};
+  }
+  const std::filesystem::path distribution_root =
+      std::filesystem::canonical(options.distribution_root, error);
+  if (error) {
+    provider_error(
+        diagnostics,
+        "Codex distribution root cannot be canonicalized: '" +
+            options.distribution_root.string() + "'");
+    return {};
+  }
   const std::filesystem::path executable =
       std::filesystem::canonical(options.executable, error);
   if (error || !std::filesystem::is_regular_file(executable, error) || error) {
@@ -1013,13 +1039,29 @@ SynthesisProvider configure_codex_cli_provider(
         "Codex executable path is invalid: '" + options.executable.string() + "'");
     return {};
   }
-  const std::optional<Sha256Digest> executable_digest =
-      hash_executable(executable, diagnostics);
-  if (!executable_digest.has_value()) return {};
+  const std::filesystem::path relative_executable =
+      executable.lexically_relative(distribution_root);
+  bool executable_is_inside = !relative_executable.empty() &&
+      !relative_executable.is_absolute();
+  for (const std::filesystem::path &component : relative_executable) {
+    if (component == "..") executable_is_inside = false;
+  }
+  if (!executable_is_inside) {
+    provider_error(
+        diagnostics, "Codex executable is outside its distribution root");
+    return {};
+  }
+  Sha256Digest distribution_digest;
+  if (!hash_codex_distribution(
+          distribution_root, distribution_digest, diagnostics)) {
+    return {};
+  }
 
   Sha256 configuration;
-  configuration.update("draft.codex-cli-provider.v11");
-  configuration.update(executable_digest->bytes);
+  configuration.update("draft.codex-cli-provider.v12");
+  configuration.update(distribution_digest.bytes);
+  configuration.update(
+      sha256(relative_executable.generic_string()).bytes);
   configuration.update(options.model);
   configuration.update(";timeout-ms=");
   configuration.update(std::to_string(options.timeout_milliseconds));
@@ -1030,7 +1072,10 @@ SynthesisProvider configure_codex_cli_provider(
   configuration.update(
       "exec;ephemeral;sandbox=read-only;skip-git;ignore-user-config;"
       "ignore-rules;color=never;stdin;output-schema;output-last-message");
+  state.distribution_root = distribution_root;
   state.executable = executable;
+  state.executable_relative_path = relative_executable.generic_string();
+  state.distribution_digest = distribution_digest;
   state.model = options.model;
   state.timeout_milliseconds = options.timeout_milliseconds;
   state.maximum_attempts = options.maximum_attempts;
@@ -1040,7 +1085,7 @@ SynthesisProvider configure_codex_cli_provider(
       "codex-config-" + configuration.finalize().hex();
 
   SynthesisProvider provider;
-  provider.provider_identity = "openai-codex-cli-v17";
+  provider.provider_identity = "openai-codex-cli-v18";
   provider.model_identity = state.model;
   provider.configuration_identity = state.configuration_identity;
   provider.state = &state;

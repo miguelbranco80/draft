@@ -280,7 +280,11 @@ identities must match the pin; any changed selection regenerates the expansion.
 The first Codex adapter permits two attempts, each with a five-minute deadline.
 That policy is part of adapter configuration identity. A timed-out child is
 killed and reaped before another attempt starts, and only a successful complete
-response can reach the compiler-owned resolution transaction.
+response can reach the compiler-owned resolution transaction. Configuration
+also binds the exact non-followed content tree of an explicit Codex distribution
+root and the launcher's root-relative canonical target. The tree is rehashed
+before and after every child invocation; mutation rejects the response even
+when the selected launcher file itself did not change.
 
 ## Native artifact ownership and visibility
 

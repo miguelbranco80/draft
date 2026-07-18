@@ -237,10 +237,12 @@ Pass the same `--provider` row to `draftc resolve` to record its content identit
 and to later builds to supply a relocated matching file. Unmapped, duplicate,
 unused, stale, or attempts to remap target-owned providers are errors.
 
-`build/draftc resolve path/to/package --codex-executable /absolute/path/to/codex
---codex-model <model>` invokes Codex only for missing or stale sites. Executable
-bytes, the explicit model, fixed non-interactive adapter contract, prompt format,
-and output schema form the provider configuration identity stored with each pin.
+`build/draftc resolve path/to/package --codex-distribution-root /absolute/codex-root
+--codex-executable /absolute/codex-root/bin/codex --codex-model <model>` invokes
+Codex only for missing or stale sites. The complete non-followed distribution
+tree, root-relative launcher, explicit model, fixed non-interactive adapter
+contract, prompt format, and output schema form the provider configuration
+identity stored with each pin. The tree is reverified before and after execution.
 An explicitly changed provider, model, or adapter configuration regenerates an
 otherwise type-fresh site; provider-free offline builds continue to reuse it.
 Each Codex call has a five-minute per-attempt deadline and at most two attempts;

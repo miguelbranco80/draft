@@ -31,9 +31,14 @@ namespace draft {
 using CodexCancellationRequested = bool (*)(void *state);
 
 struct CodexCliProviderOptions {
+  // distribution_root is the exact immutable installation tree. The executable
+  // must resolve inside it. Hashing only a launcher is insufficient because
+  // scripts, dynamic resources, and bundled helper binaries can change model
+  // behavior without changing that one file.
+  std::filesystem::path distribution_root;
   // executable must resolve to an existing regular file. Symlinks are
-  // canonicalized before hashing and execution so their target, not spelling,
-  // defines provider configuration identity.
+  // canonicalized before execution; its root-relative target path and the full
+  // non-followed distribution tree define provider configuration identity.
   std::filesystem::path executable;
   std::string model;
   // Resolution must never wait forever on an external provider. The defaults
@@ -49,7 +54,10 @@ struct CodexCliProviderOptions {
 // SynthesisProvider returned from configure_codex_cli_provider. Callers normally
 // keep both values in one driver stack frame for the entire resolver call.
 struct CodexCliProviderState {
+  std::filesystem::path distribution_root;
   std::filesystem::path executable;
+  std::string executable_relative_path;
+  Sha256Digest distribution_digest;
   std::string model;
   std::string configuration_identity;
   std::uint32_t timeout_milliseconds = 0;
