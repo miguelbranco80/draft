@@ -63,7 +63,7 @@ Package_Context_Version :: 1
 
 docs "Public operation."
     file "DESIGN.md"
-pub work :: proc(
+pub work[T: integer, N: usize] :: proc(
     values: []u32,
     callback: proc(value: ^i16, bytes: [4]u8) -> (bool, i64),
 ) -> i64 {
@@ -205,6 +205,23 @@ void test_agent_records(TestState &state) {
           draft::sha256(
               synthesis_obligation.active_denials[1].selector) ==
               synthesis_obligation.active_denials[1].selector_digest);
+    }
+    EXPECT(state, synthesis_obligation.parametric_parameters.size() == 2);
+    if (synthesis_obligation.parametric_parameters.size() == 2) {
+      const draft::AgentParametricParameter &type_parameter =
+          synthesis_obligation.parametric_parameters[0];
+      const draft::AgentParametricParameter &value_parameter =
+          synthesis_obligation.parametric_parameters[1];
+      EXPECT(state, type_parameter.name == "T");
+      EXPECT(state,
+          type_parameter.kind == draft::SymbolKind::TypeParameter);
+      EXPECT(state, type_parameter.constraint == "integer");
+      EXPECT(state, type_parameter.type_text == "T");
+      EXPECT(state, value_parameter.name == "N");
+      EXPECT(state,
+          value_parameter.kind == draft::SymbolKind::ValueParameter);
+      EXPECT(state, value_parameter.constraint == "value");
+      EXPECT(state, value_parameter.type_text == "usize");
     }
     EXPECT(state, !synthesis_obligation.visible_bindings.empty());
     bool saw_values = false;

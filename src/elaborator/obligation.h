@@ -93,6 +93,17 @@ struct AgentActiveDenial {
   Sha256Digest selector_digest;
 };
 
+// Ordered compile-time parameters of the enclosing generic declaration.
+// constraint uses Draft source vocabulary (`type`, `integer`, `float`,
+// `number`, or `value`) rather than exposing the compiler enum to providers.
+struct AgentParametricParameter {
+  std::string name;
+  SymbolKind kind = SymbolKind::TypeParameter;
+  std::string constraint;
+  std::string type_text;
+  Sha256Digest type_digest;
+};
+
 // AgentObligation is the immutable input side of one provider transaction.
 // site_identity deliberately excludes prompt and type content so ordinary edits
 // stale the input digest without automatically baptizing a new site. occurrence
@@ -119,6 +130,7 @@ struct AgentObligation {
   AgentTargetContext target;
   AgentEnclosingDeclarationContext enclosing_declaration;
   std::vector<AgentActiveDenial> active_denials;
+  std::vector<AgentParametricParameter> parametric_parameters;
   std::vector<AgentDocumentationContext> documentation;
 };
 

@@ -324,6 +324,60 @@ void hash_field(Sha256 &hash, std::string_view value) {
   return result;
 }
 
+[[nodiscard]] std::string_view constraint_name(TypeConstraintKind kind) {
+  switch (kind) {
+  case TypeConstraintKind::AnyType: return "type";
+  case TypeConstraintKind::Integer: return "integer";
+  case TypeConstraintKind::Float: return "float";
+  case TypeConstraintKind::Number: return "number";
+  case TypeConstraintKind::CompileTimeValue: return "value";
+  }
+  return "invalid";
+}
+
+[[nodiscard]] std::vector<AgentParametricParameter> parametric_context(
+    const PackageIdentity &identity,
+    const SemanticPackage &package,
+    const AgentRecord &record,
+    DiagnosticSink &diagnostics) {
+  std::vector<AgentParametricParameter> result;
+  if (!record.anchor.is_valid()) return result;
+
+  // Concrete generic bodies retain their source declaration's parameter
+  // contract. The instance symbol has concrete substitutions elsewhere, but
+  // the provider still needs to understand the template syntax it is filling.
+  SymbolId owner = record.anchor;
+  for (const ParametricInstanceRecord &instance :
+       package.parametric_instances) {
+    if (instance.instance == owner) {
+      owner = instance.source;
+      break;
+    }
+  }
+  for (const ParametricParameterRecord &parameter :
+       package.parametric_parameters) {
+    if (parameter.owner != owner) continue;
+    const Symbol &symbol = package.symbols.symbol(parameter.parameter);
+    if (!symbol.type.is_valid() ||
+        package.types.type(symbol.type).kind == TypeKind::Invalid) {
+      diagnostics.error(
+          symbol.name_range,
+          "agent parametric parameter has no complete type");
+      continue;
+    }
+    const InterfaceTypeGraph type = export_interface_type(
+        identity, package, symbol.type, diagnostics);
+    result.push_back({
+        symbol.name,
+        symbol.kind,
+        std::string(constraint_name(parameter.constraint)),
+        type_text(package, symbol.type),
+        hash_interface_type_graph(type),
+    });
+  }
+  return result;
+}
+
 // Walks lexical scopes from inner to outer. The first declaration of a name is
 // the visible one; later declarations in the same block are excluded by source
 // position. Sorting happens only after shadowing, so it cannot change meaning.
@@ -410,7 +464,7 @@ void hash_field(Sha256 &hash, std::string_view value) {
     const AgentObligation &obligation,
     const TargetProfile &target) {
   Sha256 hash;
-  hash_field(hash, "draft-agent-obligation-v4");
+  hash_field(hash, "draft-agent-obligation-v5");
   hash_field(hash, obligation.site_identity);
   hash.update(obligation.record_digest.bytes);
   hash.update(obligation.expected_type_digest.bytes);
@@ -458,6 +512,17 @@ void hash_field(Sha256 &hash, std::string_view value) {
   for (const AgentActiveDenial &denial : obligation.active_denials) {
     hash_field(hash, denial.selector);
     hash.update(denial.selector_digest.bytes);
+  }
+  hash_u64(
+      hash,
+      static_cast<std::uint64_t>(obligation.parametric_parameters.size()));
+  for (const AgentParametricParameter &parameter :
+       obligation.parametric_parameters) {
+    hash_field(hash, parameter.name);
+    hash_u64(hash, static_cast<std::uint64_t>(parameter.kind));
+    hash_field(hash, parameter.constraint);
+    hash_field(hash, parameter.type_text);
+    hash.update(parameter.type_digest.bytes);
   }
   hash_u64(
       hash,
@@ -580,6 +645,8 @@ AgentObligationResult build_agent_obligations(
         sources, loaded, package, record, diagnostics);
     obligation.active_denials = active_denial_context(
         sources, loaded, record, diagnostics);
+    obligation.parametric_parameters = parametric_context(
+        identity, package, record, diagnostics);
     obligation.documentation = documentation_context(package, metadata, record);
     obligation.site_identity = "site-" + site_identity_digest(obligation).hex();
     obligation.input_digest = input_digest(obligation, target);

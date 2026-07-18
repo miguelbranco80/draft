@@ -43,7 +43,7 @@ namespace {
 constexpr std::uintmax_t kMaximumCodexOutputBytes = 64U * 1024U * 1024U;
 constexpr std::uintmax_t kMaximumCodexLogBytes = 4U * 1024U * 1024U;
 constexpr std::string_view kPromptContractIdentity =
-    "draft-codex-synthesis-prompt-v5";
+    "draft-codex-synthesis-prompt-v6";
 constexpr std::string_view kOutputSchema =
     "{\n"
     "  \"type\": \"object\",\n"
@@ -330,6 +330,20 @@ void append_field(
     }
     append_field("DENIAL_SELECTOR", denial.selector, prompt);
     append_field("DENIAL_SHA256", denial.selector_digest.hex(), prompt);
+  }
+  prompt += "PARAMETRIC_PARAMETERS ";
+  append_u64(
+      static_cast<std::uint64_t>(
+          request.obligation.parametric_parameters.size()),
+      prompt);
+  for (const AgentParametricParameter &parameter :
+       request.obligation.parametric_parameters) {
+    append_field("PARAMETER_NAME", parameter.name, prompt);
+    append_field(
+        "PARAMETER_KIND", symbol_kind_name(parameter.kind), prompt);
+    append_field("PARAMETER_CONSTRAINT", parameter.constraint, prompt);
+    append_field("PARAMETER_TYPE_TEXT", parameter.type_text, prompt);
+    append_field("PARAMETER_TYPE_SHA256", parameter.type_digest.hex(), prompt);
   }
   prompt += "DOCUMENTATION ";
   append_u64(
@@ -774,7 +788,7 @@ SynthesisProvider configure_codex_cli_provider(
       "codex-config-" + configuration.finalize().hex();
 
   SynthesisProvider provider;
-  provider.provider_identity = "openai-codex-cli-v6";
+  provider.provider_identity = "openai-codex-cli-v7";
   provider.model_identity = state.model;
   provider.configuration_identity = state.configuration_identity;
   provider.state = &state;

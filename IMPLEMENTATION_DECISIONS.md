@@ -164,7 +164,7 @@ An omitted symbol is unknown, and compiler-, package-assembly-, and target-owned
 providers cannot be overridden by an external audit.
 
 Provider requests never substitute hashes for information the synthesizer must
-understand. `draft-synthesis-request-v5` carries canonical Draft spellings for
+understand. `draft-synthesis-request-v6` carries canonical Draft spellings for
 the expected type and every visible binding, together with explicit target,
 SIMD, and parsed-assembly facts. Package and enclosing-declaration documentation
 retain their anchor, text, and exact isolated attachment bytes. The same rows
@@ -184,6 +184,11 @@ spellings in outer-to-inner order. These facts are readable policy instructions
 and obligation hash inputs. Ordinary semantic denial checking still resolves
 the selectors and rejects generated operations; the provider cannot waive that
 compiler-owned check.
+
+Parametric sites additionally receive the enclosing declaration's parameters in
+source order, with their type/value kind, source constraint vocabulary, and
+canonical type spelling and digest. Concrete body instances route back to their
+template parameter contract rather than silently losing generic constraints.
 
 A provider-free compile or resolution revalidation may consume a content-fresh
 pin without installing its original provider. When `draft resolve` explicitly
