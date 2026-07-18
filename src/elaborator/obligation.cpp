@@ -158,6 +158,12 @@ void hash_field(Sha256 &hash, std::string_view value) {
   hash_field(hash, target.llvm_feature_string);
   hash_field(hash, target.parsed_assembly_architecture);
   hash_field(hash, target.parsed_assembly_dialect);
+  hash_u64(
+      hash,
+      static_cast<std::uint64_t>(target.parsed_assembly_instructions.size()));
+  for (const std::string &instruction : target.parsed_assembly_instructions) {
+    hash_field(hash, instruction);
+  }
   hash_u64(hash, static_cast<std::uint64_t>(obligation.visible_bindings.size()));
   for (const AgentVisibleBinding &binding : obligation.visible_bindings) {
     hash_field(hash, binding.name);

@@ -11,6 +11,67 @@ increment :: proc(value: u64) -> u64 {
     }
 }
 
+// Condition flags are internal dataflow too: `cmp` initializes them and the
+// following select consumes them.  The declaration describes their externally
+// visible destruction to the compiler.
+larger :: proc(left, right: u64) -> u64 {
+    return asm aarch64 -> u64 {
+        in x0 = left
+        in x1 = right
+        out x0
+        clobber flags
+
+        cmp x0, x1
+        csel x0, x0, x1, ge
+    }
+}
+
+// These two procedures keep scaled addressing and pair loads on the native
+// assembly path even though the small executable does not need to call them.
+load_second :: proc(pointer: ^u64) -> u64 {
+    return asm aarch64 -> u64 {
+        in x0 = pointer
+        out x1
+
+        ldr x1, [x0, #8]
+    }
+}
+
+load_pair_sum :: proc(pointer: ^u64) -> u64 {
+    return asm aarch64 -> u64 {
+        in x0 = pointer
+        out x1
+        clobber x2
+
+        ldp x1, x2, [x0, #0]
+        add x1, x1, x2
+    }
+}
+
+round_trip_integer :: proc(value: u64) -> u64 {
+    return asm aarch64 -> u64 {
+        in x0 = value
+        out x0
+        clobber d0
+
+        scvtf d0, x0
+        fcvtzu x0, d0
+    }
+}
+
+// Lane-qualified operands name the same physical register as the q0 boundary
+// declaration.  The v2 dialect accepts only whole-vector baseline forms.
+double_vector :: proc(value: #simd[2]u64) -> #simd[2]u64 {
+    return asm aarch64 -> #simd[2]u64 {
+        in q0 = value
+        out q0
+
+        add v0.2d, v0.2d, v0.2d
+    }
+}
+
 main :: proc() {
     assert(increment(40) == 41)
+    assert(larger(19, 23) == 23)
+    assert(round_trip_integer(31) == 31)
 }

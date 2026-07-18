@@ -42,7 +42,7 @@ ending in the alias therefore receives ordinary identifier semicolon behavior.
 
 ## Initial AArch64 macOS profile
 
-Status: bootstrap target contract; versioned as `draft-aarch64-macos-v1`.
+Status: bootstrap target contract; versioned as `draft-aarch64-macos-v2`.
 
 The first profile targets `arm64-apple-macosx14.0.0`, uses the generic AArch64
 CPU with baseline NEON, 64-bit little-endian pointers, 16 KiB pages, Mach-O,
@@ -53,7 +53,9 @@ deployment floor. Its pinned LLVM data-layout string is:
 e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32
 ```
 
-The parsed inline-assembly dialect identity is `draft-aarch64-apple-v1`.
+The parsed inline-assembly dialect identity is `draft-aarch64-apple-v2`; its
+closed register, operand, addressing, condition, and instruction grammar is
+enumerated in [AARCH64_ASSEMBLY_PROFILE.md](AARCH64_ASSEMBLY_PROFILE.md).
 Package `.s`, `.S`, and `.asm` inputs all contain exact non-preprocessed bytes;
 in particular, `.S` does not inherit the host C driver's preprocessing rule.
 Changing any of these facts creates a new target-profile identity rather than
@@ -68,12 +70,14 @@ operands, synthesis sites, source ranges, effects, and denial interactions from
 the beginning. Target-independent MIR originally rejected an assembly region
 until ordinary Draft MIR had a working AArch64 macOS emission path. That staging
 boundary has now been crossed: language-owned directives are structural syntax,
-the `draft-aarch64-apple-v1` analyzer validates fixed general, scalar FP, and
-fixed-vector registers, direct typed loads and stores, the initial integer/FP
-and barrier vocabulary, and register/flags/memory declarations. MIR lowers
-accepted regions as volatile assembly. More complex addressing, lane-qualified
-SIMD operations, and the remainder of the closed Draft 1 instruction vocabulary
-are still required before the agent-free implementation is declared complete.
+the `draft-aarch64-apple-v2` analyzer validates fixed general, scalar FP, and
+fixed-vector registers; scaled, unscaled, paired, narrow, and ordered memory
+operations; the closed integer, selection, conversion, scalar FP, baseline NEON,
+and barrier vocabulary; and register/flags/memory declarations. It also treats
+condition flags as local dataflow so a select cannot consume ambient flags. MIR
+lowers accepted regions as volatile assembly. Instructions outside that profile,
+lane selection, address writeback, labels, branches, calls, stack changes, and
+unwinding remain external-file features rather than implicit assembler syntax.
 
 Package assembly follows the separate file contract in section 3. The compiler
 copies every selected file's exact bytes into the compiled package snapshot;

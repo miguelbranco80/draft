@@ -55,6 +55,8 @@ handwritten code.
   documentation, judgments, `...`, resolution, and deterministic builds.
 - [Native interop (§§11–12)](04-native-interop.md) — parsed assembly, C ABI,
   foreign imports, exports, and linking.
+- [AArch64 parsed assembly profile](AARCH64_ASSEMBLY_PROFILE.md) — the exact
+  closed inline instruction and operand grammar for the first target.
 - [Denials and validation (§§13–14)](05-denials-validation.md) — semantic
   restrictions, tests, instrumentation, and performance evidence.
 - [Compiler architecture (§15)](06-compiler.md) — lowering, semantic context
@@ -96,8 +98,9 @@ adapter emits AArch64 Mach-O objects and links an executable. Normal builds
 require the pinned LLVM/Clang 22.1.x distribution; local bring-up can explicitly
 permit another host Clang without changing the target profile. Parsed AArch64
 assembly now has structural inputs, outputs, clobbers, and instruction rows; the
-initial fixed-register integer/barrier vocabulary validates register dataflow
-and declared effects before lowering to volatile inline assembly. The
+closed v2 scalar, memory, selection, conversion, NEON, and barrier vocabulary
+validates register and flag dataflow plus declared effects before lowering to
+volatile inline assembly. The
 `examples/assembly` package exercises that path through a native executable.
 Selected package `.s`, `.S`, and `.asm` files are also captured as exact build
 inputs, assembled with preprocessing explicitly disabled, and linked in

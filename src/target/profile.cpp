@@ -33,7 +33,7 @@ namespace {
 
 TargetProfile make_aarch64_macos_profile() {
   TargetProfile profile;
-  profile.facts.identity = "draft-aarch64-macos-v1";
+  profile.facts.identity = "draft-aarch64-macos-v2";
   profile.facts.arch = "aarch64";
   profile.facts.os = "macos";
   profile.facts.abi = "darwin_arm64";
@@ -60,7 +60,20 @@ TargetProfile make_aarch64_macos_profile() {
   profile.code_model = TargetCodeModel::Small;
   profile.tls_model = TargetTlsModel::GeneralDynamic;
   profile.parsed_assembly_architecture = "aarch64";
-  profile.parsed_assembly_dialect = "draft-aarch64-apple-v1";
+  profile.parsed_assembly_dialect = "draft-aarch64-apple-v2";
+  profile.parsed_assembly_instructions = {
+      "adc", "adcs", "add", "adds", "and", "ands", "asr", "bic",
+      "cls", "clz", "cmn", "cmp", "csel", "cset", "csetm", "csinc",
+      "csinv", "csneg", "dmb", "dsb", "dup", "eon", "eor", "fabs",
+      "fadd", "fcmp", "fcsel", "fcvt", "fcvtzs", "fcvtzu", "fdiv",
+      "fmax", "fmaxnm", "fmin", "fminnm", "fmov", "fmul", "fneg",
+      "fsqrt", "fsub", "isb", "ldar", "ldp", "ldr", "ldrb", "ldrh",
+      "ldrsb", "ldrsh", "ldrsw", "ldur", "lsl", "lsr", "madd", "mov",
+      "msub", "mul", "mvn", "neg", "negs", "nop", "orn", "orr", "rbit",
+      "rev", "rev16", "rev32", "ror", "sbc", "sbcs", "scvtf", "sdiv",
+      "stlr", "stp", "str", "strb", "strh", "stur", "sub", "subs", "tst",
+      "ucvtf", "udiv",
+  };
   profile.assembly_files = {
       {".S", AssemblyPreprocessing::None},
       {".asm", AssemblyPreprocessing::None},
@@ -110,6 +123,11 @@ bool validate_target_profile(const TargetProfile &profile, std::string &reason) 
   if (profile.parsed_assembly_architecture != profile.facts.arch ||
       profile.parsed_assembly_dialect.empty()) {
     reason = "parsed assembly architecture must match the target architecture";
+    return false;
+  }
+  if (profile.parsed_assembly_instructions.empty() ||
+      !bytewise_sorted_unique(profile.parsed_assembly_instructions)) {
+    reason = "parsed assembly instruction vocabulary must be sorted and unique";
     return false;
   }
   const std::vector<std::string> expected_extensions = {".S", ".asm", ".s"};

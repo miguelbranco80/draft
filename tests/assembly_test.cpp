@@ -124,6 +124,53 @@ barrier :: proc() {
     }
 }
 
+select_larger :: proc(left, right: u64) -> u64 {
+    return asm aarch64 -> u64 {
+        in x0 = left
+        in x1 = right
+        out x0
+        clobber flags
+        cmp x0, x1
+        csel x0, x0, x1, ge
+    }
+}
+
+load_second :: proc(pointer: ^u64) -> u64 {
+    return asm aarch64 -> u64 {
+        in x0 = pointer
+        out x1
+        ldr x1, [x0, #8]
+    }
+}
+
+load_pair_sum :: proc(pointer: ^u64) -> u64 {
+    return asm aarch64 -> u64 {
+        in x0 = pointer
+        out x1
+        clobber x2
+        ldp x1, x2, [x0, #0]
+        add x1, x1, x2
+    }
+}
+
+round_trip_integer :: proc(value: u64) -> u64 {
+    return asm aarch64 -> u64 {
+        in x0 = value
+        out x0
+        clobber d0
+        scvtf d0, x0
+        fcvtzu x0, d0
+    }
+}
+
+double_vector :: proc(value: #simd[2]u64) -> #simd[2]u64 {
+    return asm aarch64 -> #simd[2]u64 {
+        in q0 = value
+        out q0
+        add v0.2d, v0.2d, v0.2d
+    }
+}
+
 main :: proc() -> int {
     return cast[int](increment(40))
 }
@@ -136,8 +183,8 @@ main :: proc() -> int {
   EXPECT(state, source.bodies.ok);
   EXPECT(state, source.assembly.ok);
   EXPECT(state, !source.diagnostics.has_errors());
-  EXPECT(state, source.assembly.regions.size() == 6);
-  if (source.assembly.regions.size() == 6) {
+  EXPECT(state, source.assembly.regions.size() == 11);
+  if (source.assembly.regions.size() == 11) {
     EXPECT(state, source.assembly.regions[0].llvm_constraints == "={x0},0");
     EXPECT(state, source.assembly.regions[0].instruction_text ==
         "add x0, x0, #1");
@@ -147,9 +194,17 @@ main :: proc() -> int {
         "={d0},0,{d1}");
     EXPECT(state, source.assembly.regions[3].llvm_constraints ==
         "={q0},{x0},~{memory}");
-    EXPECT(state, source.assembly.regions[4].llvm_constraints ==
+    EXPECT(state, source.assembly.regions[4].instruction_text ==
+        "cmp x0, x1\n\tcsel x0, x0, x1, ge");
+    EXPECT(state, source.assembly.regions[5].instruction_text ==
+        "ldr x1, [x0, #8]");
+    EXPECT(state, source.assembly.regions[6].instruction_text ==
+        "ldp x1, x2, [x0, #0]\n\tadd x1, x1, x2");
+    EXPECT(state, source.assembly.regions[8].instruction_text ==
+        "add v0.2d, v0.2d, v0.2d");
+    EXPECT(state, source.assembly.regions[9].llvm_constraints ==
         "{x0},{w1},~{memory}");
-    EXPECT(state, source.assembly.regions[5].llvm_constraints == "~{memory}");
+    EXPECT(state, source.assembly.regions[10].llvm_constraints == "~{memory}");
   }
 
   const draft::MirLoweringResult mir = draft::lower_package_to_mir(
@@ -184,6 +239,10 @@ main :: proc() -> int {
       std::string::npos);
   EXPECT(state, llvm.text.find(
       "asm sideeffect \"ldr q0, [x0]\", \"={q0},{x0},~{memory}\"") !=
+      std::string::npos);
+  EXPECT(state, llvm.text.find("csel x0, x0, x1, ge") != std::string::npos);
+  EXPECT(state, llvm.text.find("ldr x1, [x0, #8]") != std::string::npos);
+  EXPECT(state, llvm.text.find("add v0.2d, v0.2d, v0.2d") !=
       std::string::npos);
 }
 
@@ -224,6 +283,31 @@ bad_memory_width :: proc(pointer: ^u32) -> u64 {
         ldr x1, [x0]
     }
 }
+
+bad_offset :: proc(pointer: ^u64) -> u64 {
+    return asm aarch64 -> u64 {
+        in x0 = pointer
+        out x1
+        ldr x1, [x0, #7]
+    }
+}
+
+bad_flags :: proc(left, right: u64) -> u64 {
+    return asm aarch64 -> u64 {
+        in x0 = left
+        in x1 = right
+        out x0
+        csel x0, x0, x1, ge
+    }
+}
+
+bad_vector_shape :: proc(value: #simd[2]u64) -> #simd[2]u64 {
+    return asm aarch64 -> #simd[2]u64 {
+        in q0 = value
+        out q0
+        mul v0.2d, v0.2d, v0.2d
+    }
+}
 )draft");
 
   EXPECT(state, source.semantics.ok);
@@ -239,6 +323,12 @@ bad_memory_width :: proc(pointer: ^u32) -> u64 {
   EXPECT(state, rendered.find("output register is never written") !=
                     std::string::npos);
   EXPECT(state, rendered.find("memory access is not typed by a matching pointer") !=
+                    std::string::npos);
+  EXPECT(state, rendered.find("invalid operands for AArch64 instruction 'ldr'") !=
+                    std::string::npos);
+  EXPECT(state, rendered.find("reads condition flags before") !=
+                    std::string::npos);
+  EXPECT(state, rendered.find("invalid operands for AArch64 instruction 'mul'") !=
                     std::string::npos);
 }
 

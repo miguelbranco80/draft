@@ -144,6 +144,11 @@ int print_target() {
             << "page-size " << profile.facts.page_size << '\n'
             << "object-format " << profile.facts.object_format << '\n'
             << "assembly-dialect " << profile.parsed_assembly_dialect << '\n'
+            << "assembly-instructions";
+  for (const std::string &instruction : profile.parsed_assembly_instructions) {
+    std::cout << ' ' << instruction;
+  }
+  std::cout << '\n'
             << "relocation-model "
             << draft::relocation_model_name(profile.relocation_model) << '\n'
             << "code-model " << draft::code_model_name(profile.code_model) << '\n'

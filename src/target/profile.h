@@ -60,6 +60,11 @@ struct TargetProfile {
   TargetTlsModel tls_model = TargetTlsModel::GeneralDynamic;
   std::string parsed_assembly_architecture;
   std::string parsed_assembly_dialect;
+  // This sorted list is the closed mnemonic vocabulary of the parsed dialect.
+  // Operand forms remain versioned by parsed_assembly_dialect and are checked
+  // by the architecture analyzer.  Keeping the names here makes profile drift
+  // visible in target reports, resolved-program hashes, and tests.
+  std::vector<std::string> parsed_assembly_instructions;
   std::vector<AssemblyFileRule> assembly_files;
 };
 

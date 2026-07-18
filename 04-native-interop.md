@@ -31,6 +31,10 @@ and its instruction and operand grammar. `asm architecture` must match that
 profile; unsupported architectures, instructions, operands, registers, or
 features are compile errors.
 
+The initial concrete grammar is recorded in
+[the AArch64 parsed assembly profile](AARCH64_ASSEMBLY_PROFILE.md). That profile
+is part of the compiler input rather than ambient host-assembler behavior.
+
 Draft 1 assembly is straight-line and uses fixed registers, immediates, memory
 operands, typed inputs, ordered outputs, and explicit register, flags, and memory
 clobbers. Labels, branch instructions, calls, stack-pointer modification, and

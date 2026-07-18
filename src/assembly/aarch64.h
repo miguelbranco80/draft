@@ -32,10 +32,10 @@ struct AssemblyProgram {
 };
 
 // Parses and validates every HIR assembly site against the closed
-// draft-aarch64-apple-v1 vocabulary. The first instruction set intentionally
-// covers straight-line integer, floating-point, fixed-vector, typed-memory, and
-// barrier operations; unsupported instructions are hard diagnostics, never
-// unparsed strings passed to LLVM.
+// draft-aarch64-apple-v2 vocabulary. It covers the documented straight-line
+// integer, floating-point, fixed-vector, typed-memory, selection, conversion,
+// and barrier operations; unsupported instructions are hard diagnostics,
+// never unparsed strings passed to LLVM.
 [[nodiscard]] AssemblyProgram analyze_aarch64_assembly(
     const SourceManager &sources,
     const LoadedPackage &loaded,
