@@ -141,6 +141,14 @@ public:
     return resolve_type(tree, type, scope);
   }
 
+  [[nodiscard]] TypeId instantiate_one_type(
+      SymbolId source,
+      std::vector<ParametricArgument> arguments,
+      SourceRange use_range) {
+    return instantiate_parametric_type(
+        source, std::move(arguments), use_range);
+  }
+
 private:
   // Finds the immutable parsed tree owning a SyntaxReference. LoadedPackage
   // keeps files in canonical order, making this linear scan deterministic.
@@ -478,13 +486,44 @@ private:
     return result;
   }
 
+  [[nodiscard]] std::optional<TypeConstraintKind> type_constraint(
+      TypeId type) const {
+    if (!type.is_valid() ||
+        semantic_.types.type(type).kind != TypeKind::TypeParameter) {
+      return std::nullopt;
+    }
+    for (const ParametricParameterRecord &parameter :
+         semantic_.parametric_parameters) {
+      if (semantic_.symbols.symbol(parameter.parameter).type == type) {
+        return parameter.constraint;
+      }
+    }
+    return std::nullopt;
+  }
+
   [[nodiscard]] bool type_satisfies_constraint(
       TypeId argument, TypeConstraintKind constraint) const {
     if (!argument.is_valid()) return false;
     const TypeKind kind = semantic_.types.type(argument).kind;
-    if (kind == TypeKind::Invalid || kind == TypeKind::TypeParameter ||
+    if (kind == TypeKind::Invalid ||
         kind == TypeKind::UntypedInteger || kind == TypeKind::UntypedFloat) {
       return false;
+    }
+    // A symbolic parameter can flow into another parametric type when its own
+    // declared constraint is at least as strong as the destination's. This is
+    // the signature-resolution counterpart to body checker's procedure-template
+    // rule. Concrete instantiation still rechecks the actual type.
+    if (kind == TypeKind::TypeParameter) {
+      const std::optional<TypeConstraintKind> actual =
+          type_constraint(argument);
+      if (!actual.has_value()) return false;
+      if (constraint == TypeConstraintKind::AnyType) return true;
+      if (constraint == TypeConstraintKind::Number) {
+        return *actual == TypeConstraintKind::Integer ||
+            *actual == TypeConstraintKind::Float ||
+            *actual == TypeConstraintKind::Number;
+      }
+      return *actual == constraint;
     }
     if (constraint == TypeConstraintKind::AnyType) return true;
     if (constraint == TypeConstraintKind::Integer) {
@@ -2005,6 +2044,20 @@ TypeId resolve_type_syntax(
     DiagnosticSink &diagnostics) {
   TypeResolver resolver(sources, loaded, package, selections, diagnostics);
   return resolver.resolve_one_type(tree, type, scope);
+}
+
+TypeId instantiate_parametric_type_application(
+    const SourceManager &sources,
+    const LoadedPackage &loaded,
+    SemanticPackage &package,
+    const ConditionalSelections &selections,
+    SymbolId source,
+    std::vector<ParametricArgument> arguments,
+    SourceRange use_range,
+    DiagnosticSink &diagnostics) {
+  TypeResolver resolver(sources, loaded, package, selections, diagnostics);
+  return resolver.instantiate_one_type(
+      source, std::move(arguments), use_range);
 }
 
 } // namespace draft

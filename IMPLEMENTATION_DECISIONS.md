@@ -154,3 +154,23 @@ and temporary allocation. The hosted runtime now installs a stderr logger and
 resettable temporary arena remains runtime work; `core/memory` currently
 exposes the honest byte-level substrate and explicit allocator forms without
 pretending that arena policy exists.
+
+## Nominal generic inference and transitive interfaces
+
+Status: Draft 1 semantic rule and bootstrap representation.
+
+Procedure inference unifies nominal template applications by their retained
+template identity and ordered arguments. It never compares aggregate layouts or
+member names: unrelated structs remain different even when their bytes match.
+After an earlier argument fixes a type parameter, later arguments receive the
+substituted expected type, allowing ordinary literals in calls such as
+`array.append(&values, 42)` without weakening the rule that every parameter must
+be inferred uniquely.
+
+An imported nominal type may occur only inside another declaration's procedure
+signature. Interface import therefore creates a private compiler-owned type
+owner for its retained member packet even when the immediate dependency does
+not publish a type declaration for it. This makes transitive values fully
+usable—for example, the `runtime.Allocator` returned by `core/heap` still has
+its `procedure` and `user` members—and lets a subsequent interface export carry
+the same member information onward.

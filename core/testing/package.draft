@@ -1,0 +1,28 @@
+package testing
+
+// Test is harness-owned mutable state. Expectations record failures instead of
+// trapping, allowing one test procedure to report more than one fact. The
+// harness may store private runner state in user without changing this ABI.
+pub Test :: struct {
+    checks: usize,
+    failures: usize,
+    user: rawptr,
+}
+
+pub expect :: proc(test: ^Test, condition: bool) {
+    test^.checks += 1
+    if !condition {
+        test^.failures += 1
+    }
+}
+
+pub expect_message :: proc(test: ^Test, condition: bool, message: string) {
+    // Message consumption belongs to the harness reporter. Keeping it in the
+    // typed API now makes validation definitions stable before that callback
+    // is added to the private Test state.
+    expect(test, condition)
+}
+
+pub failed :: proc(test: ^Test) -> bool {
+    return test^.failures != 0
+}

@@ -33,7 +33,7 @@ not yet exist.
 | Canonical interfaces and transitive denials | `src/sema/interface.*`, `effect.*`, `denial.*` and tests | Partially implemented | Flow-through procedure slots and exact foreign-provider summaries/artifact binding are absent. |
 | Complete handwritten language through HIR, MIR, LLVM, and native execution | `src/sema/body_checker.*`, `src/mir`, `src/backend`, native examples | Partially implemented | Complete the closed parsed-assembly vocabulary, foreign aggregate ABI coverage, runtime/core surface, and release-native conformance matrix. |
 | Runtime context, entry, TLS, failures, allocator, and OS support | entry/runtime lowering, lazy foreign-thread TLS attachment, default allocator/logger/random providers, `core/runtime`, and `core/memory` | Partially implemented | Thread-owned temporary arena, process environment/argument library exposure, and runtime teardown are missing. |
-| Initial core package set from specification section 7 | `core/runtime`, `c`, `option`, `result`, and `memory` | Incomplete | `heap`, `array`, `map`, `io`, `os`, `atomic`, `thread`, `testing`, `benchmark`, and `time` are absent; memory arenas/owned buffers/strings/virtual memory are also absent. |
+| Initial core package set from specification section 7 | `core/runtime`, `c`, `option`, `result`, `memory`, `heap`, `array`, `io`, `testing`, `benchmark`, and `time`; the nine-package `examples/core-array` graph checks and lowers | Incomplete | `map`, `os`, `atomic`, and `thread` are absent; memory arenas/owned buffers/strings/virtual memory and full test/benchmark runners are also absent. |
 | Parsed inline assembly plus package assembly | `src/assembly`, `examples/assembly`, `examples/external-assembly`, assembly/toolchain tests | Partially implemented | External assembly is complete for the first seam. Inline assembly still needs the remainder of the target profile's closed instruction/addressing/SIMD vocabulary. Labels and calls intentionally remain external-file features. |
 | C imports/exports and native artifacts | `src/interop`, scalar and aggregate Darwin ABI tests, `examples/c-interop` | Partially implemented | Exact provider-to-library mapping and object/static/shared-library/C-header/assembly artifact commands are missing. |
 | Provider-independent docs, judgments, and synthesis obligations | agent metadata/obligation modules and tests | Implemented foundation | Context still lacks the full bounded semantic dependency closure, active denial facts, enclosing skeletons, tests, benchmarks, and dominating judgment claims. |
@@ -55,7 +55,8 @@ artifact-output modes are not implemented yet.
 
 ## Next release-critical slice
 
-The next implementation slice completes remaining Draft 1 runtime, core-library,
-assembly, and C ABI surfaces needed by representative programs. The validation
-and evidence harness then needs to exercise those complete programs through the
-locked native seam rather than relying only on unit-level compiler proofs.
+The next implementation slice completes `core/map`, OS/process exposure,
+atomics, threads, and the remaining Draft 1 runtime, assembly, and C ABI
+surfaces needed by representative programs. The validation and evidence harness
+then needs to exercise those complete programs through the locked native seam
+rather than relying only on unit-level compiler proofs.

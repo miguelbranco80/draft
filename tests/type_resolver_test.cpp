@@ -73,6 +73,13 @@ Cache_Alignment :: 1 << 6
 Alias :: u32
 Duration :: distinct i64
 
+Number_Box[T: number] :: struct {
+    value: T,
+}
+
+box_pointer[T: type] :: proc(value: ^Box[T]) -> ^Box[T]
+number_pointer[T: integer] :: proc(value: ^Number_Box[T]) -> ^Number_Box[T]
+
 Header :: struct {
     tag: u8,
     value: u64,
@@ -319,8 +326,8 @@ take[T: type] :: proc(value: ^T) -> ^T {
       EXPECT(state, source.semantic.types.type(data.element).name == "u16");
     }
   }
-  EXPECT(state, source.semantic.parametric_type_instances.size() == 3);
-  EXPECT(state, source.semantic.parametric_parameters.size() == 7);
+  EXPECT(state, source.semantic.parametric_type_instances.size() == 5);
+  EXPECT(state, source.semantic.parametric_parameters.size() == 10);
   EXPECT(state, take->flags.parametric);
 }
 

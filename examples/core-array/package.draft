@@ -1,0 +1,32 @@
+package core_array
+
+import core/array
+import core/benchmark
+import core/heap
+import core/io
+import core/testing
+import core/time
+
+main :: proc() {
+    values: array.Dynamic[u64]
+    array.init(&values)
+    defer array.destroy(&values)
+    array.append(&values, 10)
+    array.append(&values, 20)
+    array.append(&values, 30)
+    array.remove(&values, 1)
+    view := array.view(&values)
+    assert(len(view) == 2)
+    assert(view[0] == 10 && view[1] == 30)
+
+    test: testing.Test
+    testing.expect(&test, 2 * time.millisecond > time.millisecond)
+    assert(!testing.failed(&test))
+
+    allocator := heap.allocator()
+    assert(allocator.procedure != nil)
+
+    reader: io.Reader
+    bench: benchmark.Benchmark
+    assert(reader.procedure == nil && !benchmark.failed(&bench))
+}

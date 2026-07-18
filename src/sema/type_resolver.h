@@ -45,6 +45,21 @@ void resolve_package_types(
     ScopeId scope,
     DiagnosticSink &diagnostics);
 
+// Creates or reuses one nominal type application from already resolved,
+// consumer-local arguments. Body checking uses this when substituting a
+// procedure template signature such as `^Dynamic[T]` after T was inferred.
+// Keeping construction in the type resolver preserves the single cache and
+// layout path used by source-written applications.
+[[nodiscard]] TypeId instantiate_parametric_type_application(
+    const SourceManager &sources,
+    const LoadedPackage &loaded,
+    SemanticPackage &package,
+    const ConditionalSelections &selections,
+    SymbolId source,
+    std::vector<ParametricArgument> arguments,
+    SourceRange use_range,
+    DiagnosticSink &diagnostics);
+
 // Selection-aware form used by the semantic fixed-point driver. Selected
 // member-level `when` regions contribute directly to their owning type scope.
 void resolve_package_types(

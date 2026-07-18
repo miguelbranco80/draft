@@ -1,0 +1,27 @@
+package heap
+
+import core/memory
+import core/runtime
+
+// heap names the direct general-purpose heap capability. The implementation is
+// still an ordinary runtime.Allocator record, so replacing context.allocator
+// changes these operations exactly like it changes memory.allocate.
+
+pub allocator :: proc() -> runtime.Allocator {
+    return context.allocator
+}
+
+pub allocate :: proc(size, alignment: usize) -> rawptr {
+    return memory.allocate(size, alignment)
+}
+
+pub resize :: proc(
+    storage: rawptr,
+    old_size, new_size, alignment: usize,
+) -> rawptr {
+    return memory.resize(storage, old_size, new_size, alignment)
+}
+
+pub free :: proc(storage: rawptr, size, alignment: usize) {
+    memory.free_bytes(storage, size, alignment)
+}

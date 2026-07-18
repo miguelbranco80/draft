@@ -1,0 +1,22 @@
+package time
+
+// Duration is a semantic unit rather than an alias. Distinct arithmetic keeps
+// expressions such as `200 * nanosecond` in Duration while requiring explicit
+// casts at unrelated integer boundaries.
+pub Duration :: distinct i64
+
+pub nanosecond :: cast[Duration](1)
+pub microsecond :: cast[Duration](1000)
+pub millisecond :: cast[Duration](1000 * 1000)
+pub second :: cast[Duration](1000 * 1000 * 1000)
+
+// clock_gettime_nsec_np is a Darwin scalar C ABI supplied by libSystem. Value 4
+// is CLOCK_MONOTONIC_RAW in the fixed AArch64 macOS target SDK. The returned
+// counter has no wall-clock adjustments and is suitable for elapsed durations.
+foreign darwin {
+    clock_gettime_nsec_np :: c "clock_gettime_nsec_np" proc(clock: u32) -> u64
+}
+
+pub monotonic_now :: proc() -> Duration {
+    return cast[Duration](cast[i64](clock_gettime_nsec_np(4)))
+}

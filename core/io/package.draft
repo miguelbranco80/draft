@@ -1,0 +1,41 @@
+package io
+
+// Stream procedures are ordinary Draft callbacks, so they inherit the active
+// Context and participate in denial/effect summaries. Concrete OS, memory, and
+// test streams can share these small records without language-level interfaces.
+pub Error :: enum u8 {
+    none,
+    end_of_input,
+    unavailable,
+    invalid,
+}
+
+pub Reader_Proc :: proc(
+    user: rawptr,
+    destination: []u8,
+) -> (usize, Error)
+
+pub Writer_Proc :: proc(
+    user: rawptr,
+    source: []u8,
+) -> (usize, Error)
+
+pub Reader :: struct {
+    procedure: Reader_Proc,
+    user: rawptr,
+}
+
+pub Writer :: struct {
+    procedure: Writer_Proc,
+    user: rawptr,
+}
+
+pub read :: proc(reader: Reader, destination: []u8) -> (usize, Error) {
+    assert(reader.procedure != nil, "reader procedure is nil")
+    return reader.procedure(reader.user, destination)
+}
+
+pub write :: proc(writer: Writer, source: []u8) -> (usize, Error) {
+    assert(writer.procedure != nil, "writer procedure is nil")
+    return writer.procedure(writer.user, source)
+}

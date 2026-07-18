@@ -834,6 +834,32 @@ private:
       consumer_.types.type_mut(result).element = element;
       consumer_.types.complete_nominal(
           result, source.layout, std::move(members), source.member_offsets);
+
+      // A nominal may arrive only as a nested procedure parameter or result,
+      // with no public type declaration in this immediate package interface.
+      // It still needs an owner symbol and Type scope so ordinary member lookup
+      // works and a later interface export can carry those members onward.
+      // '$' is not a source identifier character, keeping this compiler-owned
+      // name disjoint from user declarations in the package scope.
+      if (!source.nominal_members.empty()) {
+        Symbol owner;
+        owner.name = "$interface_nominal$" + std::to_string(result.value);
+        owner.kind = SymbolKind::Type;
+        owner.visibility = Visibility::Private;
+        owner.scope = consumer_.package_scope;
+        owner.type = result;
+        owner.name_range = SourceRange::invalid();
+        const SymbolId owner_id =
+            consumer_.symbols.declare(std::move(owner), diagnostics_);
+        if (owner_id.is_valid()) {
+          bind_nominal_members(
+              owner_id,
+              consumer_.package_scope,
+              package,
+              cache,
+              source_id);
+        }
+      }
       return result;
     }
     default:

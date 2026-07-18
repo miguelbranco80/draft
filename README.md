@@ -115,12 +115,15 @@ calls made in that scope receive the copy as their hidden argument. The narrow
 `runtime.default_context` and `runtime.call_with_context` bridges let
 context-free C callbacks acquire a compatible value and enter an ordinary Draft
 callback without exposing Context as a generally legal C aggregate. The
-compiler-distributed `core/runtime`, `core/c`, `core/option`, `core/result`, and
-`core/memory` packages are ordinary
-inspectable Draft source; `examples/core-runtime` checks their import, generic,
-layout, and native paths, while `examples/core-memory` checks cross-package
-typed `new`/`free`, explicit allocators and alignment, resize preservation, and
-release through the Context ABI.
+compiler-distributed `core/runtime`, `core/c`, `core/option`, `core/result`,
+`core/memory`, `core/heap`, `core/array`, `core/io`, `core/testing`,
+`core/benchmark`, and `core/time` packages are ordinary inspectable Draft
+source. `examples/core-runtime` checks the Context import, layout, and callback
+paths; `examples/core-memory` checks cross-package typed `new`/`free`, explicit
+allocators and alignment, resize preservation, and release; and
+`examples/core-array` checks inferred nominal generics, ownership operations,
+transitively exported nominal types, test records, benchmark records, streams,
+and the Darwin monotonic clock through a nine-package graph.
 
 Synthesis resolution now has a provider-neutral transaction and an explicit
 Codex CLI adapter. Declaration and aggregate-member sites form an early opaque

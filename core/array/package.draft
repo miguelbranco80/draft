@@ -1,0 +1,94 @@
+package array
+
+import core/memory
+import core/runtime
+
+// Dynamic owns one contiguous allocation. A zero value owns nothing; init
+// installs the allocator that every later growth and destruction operation
+// must use. Copying Dynamic copies ownership metadata and is therefore a
+// programmer-level ownership error, just as copying any other resource handle
+// is; Draft 1 deliberately has no hidden move or destructor behavior.
+pub Dynamic[T: type] :: struct {
+    data: [^]T,
+    length: usize,
+    capacity: usize,
+    allocator: runtime.Allocator,
+}
+
+pub init[T: type] :: proc(dynamic: ^Dynamic[T]) {
+    init_with_allocator(dynamic, context.allocator)
+}
+
+pub init_with_allocator[T: type] :: proc(
+    dynamic: ^Dynamic[T],
+    allocator: runtime.Allocator,
+) {
+    assert(dynamic^.data == nil && dynamic^.length == 0 &&
+        dynamic^.capacity == 0, "array must be empty before initialization")
+    assert(allocator.procedure != nil, "array allocator is nil")
+    dynamic^.allocator = allocator
+}
+
+pub destroy[T: type] :: proc(dynamic: ^Dynamic[T]) {
+    if dynamic^.data != nil {
+        memory.free_bytes_with_allocator(
+            cast[rawptr](dynamic^.data),
+            dynamic^.capacity * size_of(T),
+            align_of(T),
+            dynamic^.allocator,
+        )
+    }
+    dynamic^.data = nil
+    dynamic^.length = 0
+    dynamic^.capacity = 0
+}
+
+pub reserve[T: type] :: proc(dynamic: ^Dynamic[T], minimum: usize) {
+    if minimum <= dynamic^.capacity {
+        return
+    }
+    assert(dynamic^.allocator.procedure != nil, "array is not initialized")
+    storage := memory.resize_with_allocator(
+        cast[rawptr](dynamic^.data),
+        dynamic^.capacity * size_of(T),
+        minimum * size_of(T),
+        align_of(T),
+        dynamic^.allocator,
+    )
+    dynamic^.data = cast[[^]T](storage)
+    dynamic^.capacity = minimum
+}
+
+pub append[T: type] :: proc(dynamic: ^Dynamic[T], value: T) {
+    if dynamic^.length == dynamic^.capacity {
+        next := dynamic^.capacity * 2
+        if next < 4 {
+            next = 4
+        }
+        reserve(dynamic, next)
+    }
+    dynamic^.data[dynamic^.length] = value
+    dynamic^.length += 1
+}
+
+pub remove[T: type] :: proc(dynamic: ^Dynamic[T], index: usize) {
+    assert(index < dynamic^.length, "array removal index is out of bounds")
+    for cursor: usize = index; cursor + 1 < dynamic^.length; cursor += 1 {
+        dynamic^.data[cursor] = dynamic^.data[cursor + 1]
+    }
+    dynamic^.length -= 1
+    zero: T
+    dynamic^.data[dynamic^.length] = zero
+}
+
+pub clear[T: type] :: proc(dynamic: ^Dynamic[T]) {
+    for index: usize = 0; index < dynamic^.length; index += 1 {
+        zero: T
+        dynamic^.data[index] = zero
+    }
+    dynamic^.length = 0
+}
+
+pub view[T: type] :: proc(dynamic: ^Dynamic[T]) -> []T {
+    return dynamic^.data[:dynamic^.length]
+}

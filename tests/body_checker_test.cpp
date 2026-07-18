@@ -287,6 +287,14 @@ sum[T: number] :: proc(values: []T) -> T {
     return result
 }
 
+Box[T: type] :: struct {
+    value: T,
+}
+
+store[T: type] :: proc(box: ^Box[T], value: T) {
+    box^.value = value
+}
+
 last[N: usize] :: proc(values: [N]i64) -> i64 {
     static_assert(N > 0)
     return values[N - 1]
@@ -296,6 +304,8 @@ main :: proc() -> i64 {
     value: u32 = 42
     explicit := identity[u32](&value)
     inferred := identity(&value)
+    box: Box[u32]
+    store(&box, 42)
     values := [3]i64{1, 2, 3}
     if explicit^ != inferred^ {
         return 0
@@ -312,8 +322,8 @@ main :: proc() -> i64 {
   EXPECT(state, source.semantics.ok);
   EXPECT(state, source.bodies.ok);
   EXPECT(state, !source.diagnostics.has_errors());
-  EXPECT(state, source.bodies.checked_procedures == 7);
-  EXPECT(state, source.bodies.program.procedures().size() == 7);
+  EXPECT(state, source.bodies.checked_procedures == 9);
+  EXPECT(state, source.bodies.program.procedures().size() == 9);
   std::size_t templates = 0;
   std::size_t concrete_instances = 0;
   for (const draft::HirProcedure &procedure :
@@ -336,8 +346,8 @@ main :: proc() -> i64 {
       }
     }
   }
-  EXPECT(state, templates == 3);
-  EXPECT(state, concrete_instances == 3);
+  EXPECT(state, templates == 4);
+  EXPECT(state, concrete_instances == 4);
 }
 
 void test_string_index_is_immutable(TestState &state) {

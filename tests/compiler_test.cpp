@@ -304,6 +304,58 @@ void test_compiler_distributed_memory(TestState &state) {
   }
 }
 
+void test_compiler_distributed_array_and_support(TestState &state) {
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  draft::CompileWorkspaceOptions options;
+  options.target = draft::make_aarch64_macos_profile();
+  options.workspace.workspace_directory =
+      std::string(DRAFT_SOURCE_DIRECTORY) + "/examples";
+  options.workspace.core_directory =
+      std::string(DRAFT_SOURCE_DIRECTORY) + "/core";
+  options.workspace.core_content_identity = "draft-core-test-v1";
+  options.lower_mir = true;
+  options.emit_llvm = true;
+  const draft::CompileWorkspaceResult result = draft::compile_workspace(
+      sources,
+      std::string(DRAFT_SOURCE_DIRECTORY) + "/examples/core-array",
+      std::move(options),
+      diagnostics);
+  if (diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+  }
+  EXPECT(state, result.ok);
+  EXPECT(state, !diagnostics.has_errors());
+  EXPECT(state, result.graph.packages.size() == 9);
+  if (!result.ok || !result.graph.root_package.is_valid()) return;
+
+  const std::optional<draft::CompiledPackage> &root =
+      result.packages[result.graph.root_package.value];
+  EXPECT(state, root.has_value());
+  if (!root.has_value()) return;
+  EXPECT(state, root->llvm.ok);
+  EXPECT(state, root->llvm.text.find(".array.append_24mono_24") !=
+      std::string::npos);
+  EXPECT(state, root->llvm.text.find(".heap.allocator\"") !=
+      std::string::npos);
+  EXPECT(state,
+      root->semantics.package.imported_procedure_instances.size() == 5);
+
+  const draft::CompiledPackage *array = nullptr;
+  for (const std::optional<draft::CompiledPackage> &package : result.packages) {
+    if (package.has_value() &&
+        package->identity.root_relative_path == "array") {
+      array = &*package;
+      break;
+    }
+  }
+  EXPECT(state, array != nullptr);
+  if (array != nullptr) {
+    EXPECT(state, array->llvm.ok);
+    EXPECT(state, array->semantics.package.parametric_instances.size() >= 5);
+  }
+}
+
 void test_cross_package_generic_procedures(TestState &state) {
   draft::SourceManager sources;
   draft::DiagnosticSink diagnostics;
@@ -421,6 +473,7 @@ int main() {
   test_hosted_entry_contract(state);
   test_compiler_distributed_core(state);
   test_compiler_distributed_memory(state);
+  test_compiler_distributed_array_and_support(state);
   test_cross_package_generic_procedures(state);
   test_runtime_context_bridge_diagnostics(state);
   if (state.failures != 0) {

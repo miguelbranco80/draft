@@ -448,6 +448,66 @@ private:
       if (substitution.parameter == source) return substitution.replacement;
     }
     const Type value = semantic_.types.type(source);
+
+    // A nominal application cannot be rebuilt by recursively substituting its
+    // physical members: doing so would manufacture an unrelated anonymous
+    // layout. Substitute its retained arguments, then ask TypeResolver for the
+    // canonical application of the original template.
+    if (value.kind == TypeKind::Struct || value.kind == TypeKind::Enum ||
+        value.kind == TypeKind::TaggedUnion ||
+        value.kind == TypeKind::RawUnion) {
+      const std::optional<NominalApplication> application =
+          nominal_application(source);
+      if (application.has_value()) {
+        std::vector<ParametricArgument> arguments = *application->arguments;
+        bool changed = false;
+        for (ParametricArgument &argument : arguments) {
+          if (!argument.is_type) continue;
+          const TypeId replacement = substitute_type(
+              argument.type,
+              type_substitutions,
+              value_substitutions,
+              use_range);
+          changed = changed || replacement != argument.type;
+          argument.type = replacement;
+        }
+        if (!changed) return source;
+
+        std::optional<SymbolId> template_source = application->source;
+        if (!template_source.has_value() && application->imported != nullptr) {
+          for (const ImportedSymbol &imported : semantic_.imported_symbols) {
+            if (imported.root_identity != application->imported->root_identity ||
+                imported.root_relative_path !=
+                    application->imported->root_relative_path ||
+                imported.public_name != application->imported->public_name) {
+              continue;
+            }
+            const Symbol &candidate = semantic_.symbols.symbol(imported.proxy);
+            if (candidate.kind == SymbolKind::Type &&
+                candidate.flags.parametric) {
+              template_source = imported.proxy;
+              break;
+            }
+          }
+        }
+        if (!template_source.has_value()) {
+          diagnostics_.error(
+              use_range,
+              "cannot recover the template declaration for nominal substitution");
+          return semantic_.types.builtins().invalid;
+        }
+        return instantiate_parametric_type_application(
+            sources_,
+            loaded_,
+            semantic_,
+            selections_,
+            *template_source,
+            std::move(arguments),
+            use_range,
+            diagnostics_);
+      }
+    }
+
     switch (value.kind) {
     case TypeKind::Pointer:
       return semantic_.types.pointer(substitute_type(
@@ -1533,6 +1593,116 @@ private:
   // Draft inference is deliberately unique and structural; it never chooses a
   // default for an untyped literal or guesses a parameter visible only in the
   // result type.
+  struct NominalApplication {
+    std::optional<SymbolId> source;
+    const ImportedType *imported = nullptr;
+    const std::vector<ParametricArgument> *arguments = nullptr;
+  };
+
+  // Nominal applications are deliberately not reconstructed from aggregate
+  // members. Two public structs may have identical layouts without being the
+  // same type. The semantic package already retains the template source and
+  // ordered arguments for local applications, and stable package provenance
+  // for imported applications, so inference can use exact nominal identity.
+  [[nodiscard]] std::optional<NominalApplication> nominal_application(
+      TypeId type) const {
+    for (const ParametricTypeInstanceRecord &instance :
+         semantic_.parametric_type_instances) {
+      if (semantic_.symbols.symbol(instance.instance).type == type) {
+        return NominalApplication{
+            instance.source, nullptr, &instance.arguments};
+      }
+    }
+    for (const ImportedType &imported : semantic_.imported_types) {
+      if (imported.type == type && !imported.arguments.empty()) {
+        return NominalApplication{
+            std::nullopt, &imported, &imported.arguments};
+      }
+    }
+    return std::nullopt;
+  }
+
+  struct NominalOrigin {
+    std::string_view root_identity;
+    std::string_view root_relative_path;
+    std::string_view public_name;
+  };
+
+  [[nodiscard]] std::optional<NominalOrigin> nominal_origin(
+      const NominalApplication &application) const {
+    if (application.imported != nullptr) {
+      return NominalOrigin{
+          application.imported->root_identity,
+          application.imported->root_relative_path,
+          application.imported->public_name};
+    }
+    if (!application.source.has_value()) return std::nullopt;
+    for (const ImportedSymbol &imported : semantic_.imported_symbols) {
+      if (imported.proxy == *application.source) {
+        return NominalOrigin{
+            imported.root_identity,
+            imported.root_relative_path,
+            imported.public_name};
+      }
+    }
+    return std::nullopt;
+  }
+
+  [[nodiscard]] bool same_nominal_template(
+      const NominalApplication &pattern,
+      const NominalApplication &actual) const {
+    if (pattern.source.has_value() && actual.source.has_value() &&
+        *pattern.source == *actual.source) {
+      return true;
+    }
+    const std::optional<NominalOrigin> pattern_origin = nominal_origin(pattern);
+    const std::optional<NominalOrigin> actual_origin = nominal_origin(actual);
+    return pattern_origin.has_value() && actual_origin.has_value() &&
+        pattern_origin->root_identity == actual_origin->root_identity &&
+        pattern_origin->root_relative_path ==
+            actual_origin->root_relative_path &&
+        pattern_origin->public_name == actual_origin->public_name;
+  }
+
+  // An argument only receives an expected type after all compile-time pieces
+  // of that type are known. This still lets an earlier `^Dynamic[u64]`
+  // argument contextually type a later integer literal as u64, while avoiding
+  // any attempt to use an unresolved T as a runtime type.
+  [[nodiscard]] bool contains_symbolic_type(TypeId type) const {
+    if (!type.is_valid()) return false;
+    const Type value = semantic_.types.type(type);
+    if (value.kind == TypeKind::TypeParameter) return true;
+    if ((value.kind == TypeKind::Array || value.kind == TypeKind::Simd) &&
+        value.element_count_parameter !=
+            std::numeric_limits<std::uint32_t>::max()) {
+      return true;
+    }
+    if (value.kind == TypeKind::Pointer ||
+        value.kind == TypeKind::MultiPointer || value.kind == TypeKind::Slice ||
+        value.kind == TypeKind::Array || value.kind == TypeKind::Simd) {
+      return contains_symbolic_type(value.element);
+    }
+    if (value.kind == TypeKind::Tuple || value.kind == TypeKind::Procedure) {
+      for (TypeId member : value.members) {
+        if (contains_symbolic_type(member)) return true;
+      }
+      return false;
+    }
+    if (value.kind == TypeKind::Struct || value.kind == TypeKind::Enum ||
+        value.kind == TypeKind::TaggedUnion ||
+        value.kind == TypeKind::RawUnion) {
+      const std::optional<NominalApplication> application =
+          nominal_application(type);
+      if (!application.has_value()) return false;
+      for (const ParametricArgument &argument : *application->arguments) {
+        if (argument.is_type && contains_symbolic_type(argument.type)) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
   [[nodiscard]] bool infer_type_argument(
       SymbolId owner,
       TypeId pattern_id,
@@ -1559,6 +1729,54 @@ private:
     const Type pattern = semantic_.types.type(pattern_id);
     const Type actual = semantic_.types.type(actual_id);
     if (pattern.kind != actual.kind) return false;
+
+    // Aggregate template applications are nominal at the outer layer and
+    // structural only in their ordered template arguments. This is the case
+    // that permits `append(^Dynamic[T], T)` to infer T from `^Dynamic[u64]`.
+    // Comparing members here would both miss T (the concrete layout contains
+    // no symbolic type) and incorrectly equate unrelated aggregate templates.
+    if (pattern.kind == TypeKind::Struct || pattern.kind == TypeKind::Enum ||
+        pattern.kind == TypeKind::TaggedUnion ||
+        pattern.kind == TypeKind::RawUnion) {
+      const std::optional<NominalApplication> pattern_application =
+          nominal_application(pattern_id);
+      const std::optional<NominalApplication> actual_application =
+          nominal_application(actual_id);
+      if (!pattern_application.has_value() ||
+          !actual_application.has_value() ||
+          !same_nominal_template(*pattern_application, *actual_application) ||
+          pattern_application->arguments->size() !=
+              actual_application->arguments->size()) {
+        return false;
+      }
+      for (std::size_t index = 0;
+           index < pattern_application->arguments->size(); ++index) {
+        const ParametricArgument &pattern_argument =
+            (*pattern_application->arguments)[index];
+        const ParametricArgument &actual_argument =
+            (*actual_application->arguments)[index];
+        if (pattern_argument.is_type != actual_argument.is_type) return false;
+        if (pattern_argument.is_type) {
+          if (!infer_type_argument(
+                  owner,
+                  pattern_argument.type,
+                  actual_argument.type,
+                  type_substitutions,
+                  value_substitutions)) {
+            return false;
+          }
+        } else if (pattern_argument.value_type != actual_argument.value_type ||
+                   pattern_argument.value != actual_argument.value) {
+          // Symbolic value arguments are not yet represented by
+          // ParametricArgument. Concrete applications still compare exactly;
+          // dependent arrays and SIMD vectors infer through their dedicated
+          // representation below.
+          return false;
+        }
+      }
+      return true;
+    }
+
     switch (pattern.kind) {
     case TypeKind::Pointer:
     case TypeKind::MultiPointer:
@@ -2680,8 +2898,21 @@ private:
             std::vector<TypeSubstitution> type_substitutions;
             std::vector<ValueSubstitution> value_substitutions;
             for (std::size_t index = 0; index < parameter_count; ++index) {
+              const TypeId argument_pattern = substitute_type(
+                  template_signature.members[index],
+                  type_substitutions,
+                  value_substitutions,
+                  tree.node(node.children[index + 1]).range);
+              const TypeId argument_expected =
+                  contains_symbolic_type(argument_pattern)
+                  ? TypeId{}
+                  : argument_pattern;
               const HirExpressionId argument =
-                  check_expression(tree, node.children[index + 1], scope);
+                  check_expression(
+                      tree,
+                      node.children[index + 1],
+                      scope,
+                      argument_expected);
               arguments.push_back(argument);
               if (!infer_type_argument(
                       *inferred_template,
