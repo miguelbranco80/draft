@@ -148,6 +148,17 @@ Float_Overlay :: @repr(C) raw union {
     pair: [2]f32,
 }
 
+Unsigned_Code :: @repr(C) enum u8 {
+    zero,
+    one,
+}
+
+Signed_Code :: @repr(C) enum i8 {
+    negative = -1,
+    zero = 0,
+    positive = 1,
+}
+
 C24 :: @repr(C) struct {
     words: [3]i64,
 }
@@ -158,6 +169,8 @@ foreign provider {
     aligned :: c "aligned" proc(value: C16_Aligned) -> C16_Aligned
     floats :: c "floats" proc(value: HF2) -> HF2
     float_overlay :: c "float_overlay" proc(value: Float_Overlay) -> Float_Overlay
+    unsigned_code :: c "unsigned_code" proc(value: Unsigned_Code) -> Unsigned_Code
+    signed_code :: c "signed_code" proc(value: Signed_Code) -> Signed_Code
     large :: c "large" proc(value: C24) -> C24
     narrow :: c "narrow" proc(signed: i8, unsigned: u16) -> i8
 }
@@ -182,6 +195,18 @@ export wrap_float_overlay :: c "wrap_float_overlay" proc(
     value: Float_Overlay,
 ) -> Float_Overlay {
     return float_overlay(value)
+}
+
+export wrap_unsigned_code :: c "wrap_unsigned_code" proc(
+    value: Unsigned_Code,
+) -> Unsigned_Code {
+    return unsigned_code(value)
+}
+
+export wrap_signed_code :: c "wrap_signed_code" proc(
+    value: Signed_Code,
+) -> Signed_Code {
+    return signed_code(value)
 }
 
 export wrap_large :: c "wrap_large" proc(value: C24) -> C24 {
@@ -231,6 +256,18 @@ export wrap_large :: c "wrap_large" proc(value: C24) -> C24 {
                     std::string::npos);
   EXPECT(state, llvm.text.find(
                     "@\"wrap_float_overlay\"([2 x float] %arg0)") !=
+                    std::string::npos);
+  EXPECT(state, llvm.text.find(
+                    "declare zeroext i8 @\"unsigned_code\"(i8 zeroext)") !=
+                    std::string::npos);
+  EXPECT(state, llvm.text.find(
+                    "define zeroext i8 @\"wrap_unsigned_code\"(i8 zeroext %arg0)") !=
+                    std::string::npos);
+  EXPECT(state, llvm.text.find(
+                    "declare signext i8 @\"signed_code\"(i8 signext)") !=
+                    std::string::npos);
+  EXPECT(state, llvm.text.find(
+                    "define signext i8 @\"wrap_signed_code\"(i8 signext %arg0)") !=
                     std::string::npos);
   EXPECT(state, llvm.text.find("declare void @\"large\"(ptr sret(") !=
                     std::string::npos);

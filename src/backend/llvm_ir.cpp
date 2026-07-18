@@ -1617,6 +1617,13 @@ private:
   // and therefore belong on declarations, definitions, and every call site.
   [[nodiscard]] std::string c_integer_extension(TypeId type_id) const {
     const Type &value = type(type_id);
+    // A fixed-backing C enum crosses the ABI exactly like its backing scalar.
+    // Looking only at the nominal enum row loses both width and signedness
+    // because those live on `element`; Darwin Clang requires zeroext/signext
+    // on narrow enum parameters and results just as it does for u8/i8.
+    if (value.kind == TypeKind::Enum && value.element.is_valid()) {
+      return c_integer_extension(value.element);
+    }
     if (value.bit_width >= 32) return {};
     if (value.kind == TypeKind::SignedInteger) return "signext";
     if (value.kind == TypeKind::UnsignedInteger ||
