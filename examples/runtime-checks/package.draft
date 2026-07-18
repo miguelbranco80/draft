@@ -84,6 +84,12 @@ shift :: proc(value: u32, count: usize) -> u32 {
     return value << count
 }
 
+compound_shift :: proc(value: u32, count: usize) -> u32 {
+    result := value
+    result <<= count
+    return result
+}
+
 scale :: proc(value: f64) -> f64 {
     return value * 0.5
 }
@@ -322,6 +328,7 @@ main :: proc() {
     assert(global_overlay.word == 0x1020304050607080)
     assert(divide(84, 2) == 42)
     assert(shift(1, 5) == 32)
+    assert(compound_shift(1, 5) == 32)
     assert(scale(3.0) == 1.5)
     assert(identity[i64](42) == 42)
     value: u32 = 17

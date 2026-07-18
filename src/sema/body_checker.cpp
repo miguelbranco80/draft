@@ -1085,6 +1085,52 @@ private:
     }
   }
 
+  // A compound assignment is exactly one binary operator followed by a store;
+  // it does not gain a wider operator set merely because the parser represents
+  // it as a statement. The left side supplies the result type. Shift counts are
+  // the one asymmetric case: any integer type is valid, just as it is for an
+  // ordinary shift expression, so a concrete count is not coerced to the
+  // target's integer type.
+  void check_compound_assignment_operator(
+      HirOperation operation,
+      TypeId target,
+      TypeId value,
+      SourceRange range) {
+    if (is_invalid_type(target) || is_invalid_type(value)) return;
+    switch (operation) {
+    case HirOperation::Add:
+    case HirOperation::Subtract:
+    case HirOperation::Multiply:
+    case HirOperation::Divide:
+      if (!is_numeric(target) || !is_numeric(value)) {
+        diagnostics_.error(
+            range, "compound assignment operator requires numeric operands");
+      }
+      return;
+    case HirOperation::Remainder:
+    case HirOperation::BitwiseAnd:
+    case HirOperation::BitwiseOr:
+    case HirOperation::BitwiseXor:
+      if (!is_integer(target) || !is_integer(value)) {
+        diagnostics_.error(
+            range, "compound assignment operator requires integer operands");
+      }
+      return;
+    case HirOperation::ShiftLeft:
+    case HirOperation::ShiftRight:
+      if (!is_integer(target) || !is_integer(value)) {
+        diagnostics_.error(
+            range, "compound shift assignment requires integer operands");
+      }
+      return;
+    case HirOperation::Assign:
+      return;
+    default:
+      diagnostics_.error(range, "unsupported compound assignment operator");
+      return;
+    }
+  }
+
   // HIR stores the mathematical integer rather than source spelling. Narrowing
   // is used only for grammar-defined indices such as tuple `.0`, never for an
   // ordinary runtime literal.
@@ -4220,7 +4266,11 @@ private:
       if (index < paired) {
         const HirExpression &target = hir_.expression(
             statement.expressions[index]);
-        if (target.kind != HirExpressionKind::Discard) expected = target.type;
+        if (target.kind != HirExpressionKind::Discard &&
+            statement.operation != HirOperation::ShiftLeft &&
+            statement.operation != HirOperation::ShiftRight) {
+          expected = target.type;
+        }
       }
       const HirExpressionId value = check_expression(
           tree, node.children[left_count + index], scope, expected);
@@ -4230,6 +4280,17 @@ private:
         contextualize_inferred_runtime_expression(value, concrete);
       }
       statement.expressions.push_back(value);
+      if (index < paired && statement.operation != HirOperation::Assign) {
+        const HirExpression &target =
+            hir_.expression(statement.expressions[index]);
+        if (target.kind != HirExpressionKind::Discard) {
+          check_compound_assignment_operator(
+              statement.operation,
+              target.type,
+              hir_.expression(value).type,
+              node.range);
+        }
+      }
     }
     return hir_.add_statement(std::move(statement));
   }

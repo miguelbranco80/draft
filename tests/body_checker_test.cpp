@@ -1355,6 +1355,64 @@ mask :: proc(bits: uint) -> uint {
   EXPECT(state, !source.diagnostics.has_errors());
 }
 
+void test_compound_assignment_operators(TestState &state) {
+  CheckedSource valid(R"draft(
+package bodies
+
+apply :: proc(start: u32, count: usize) -> u32 {
+    value := start
+    value += 1
+    value %= 7
+    value &= 3
+    value <<= count
+    return value
+}
+)draft");
+  if (valid.diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(valid.sources, valid.diagnostics);
+  }
+  EXPECT(state, valid.bodies.ok);
+  EXPECT(state, !valid.diagnostics.has_errors());
+
+  CheckedSource invalid(R"draft(
+package bodies
+
+bad :: proc() {
+    flag := true
+    flag += true
+
+    floating: f64 = 4.0
+    floating %= 2.0
+
+    character := 'a'
+    character += 'b'
+
+    stored := cast[u32be](cast[u32](1))
+    stored += cast[u32be](cast[u32](1))
+
+    bits: u32 = 1
+    bits <<= 1.5
+}
+)draft");
+  if (invalid.diagnostics.error_count() != 5) {
+    std::cerr << draft::render_diagnostics(
+        invalid.sources, invalid.diagnostics);
+  }
+  EXPECT(state, !invalid.bodies.ok);
+  EXPECT(state, invalid.diagnostics.error_count() == 5);
+  const std::string rendered =
+      draft::render_diagnostics(invalid.sources, invalid.diagnostics);
+  EXPECT(state, rendered.find(
+                    "compound assignment operator requires numeric operands") !=
+                    std::string::npos);
+  EXPECT(state, rendered.find(
+                    "compound assignment operator requires integer operands") !=
+                    std::string::npos);
+  EXPECT(state, rendered.find(
+                    "compound shift assignment requires integer operands") !=
+                    std::string::npos);
+}
+
 void test_builtin_context_value(TestState &state) {
   CheckedSource valid(R"draft(
 package bodies
@@ -1430,6 +1488,7 @@ int main() {
   test_checked_numeric_casts(state);
   test_storage_pointer_and_distinct_semantics(state);
   test_integer_shift_count_types(state);
+  test_compound_assignment_operators(state);
   test_builtin_context_value(state);
 
   if (state.failures != 0) {
