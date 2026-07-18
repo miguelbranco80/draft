@@ -31,6 +31,19 @@ struct TestState {
 
 #define EXPECT(state, expression) (state).expect((expression), #expression, __LINE__)
 
+[[nodiscard]] std::size_t occurrence_count(
+    std::string_view text,
+    std::string_view needle) {
+  std::size_t count = 0;
+  std::size_t cursor = 0;
+  while (true) {
+    cursor = text.find(needle, cursor);
+    if (cursor == std::string_view::npos) return count;
+    ++count;
+    cursor += needle.size();
+  }
+}
+
 void test_multi_package_native_pipeline(TestState &state) {
   draft::SourceManager sources;
   draft::DiagnosticSink diagnostics;
@@ -110,6 +123,88 @@ void test_hosted_entry_contract(TestState &state) {
   }
   EXPECT(state, rendered.find("main result must be void or int") !=
       std::string::npos);
+
+  std::filesystem::remove_all(root, error);
+}
+
+void test_file_local_imports_share_one_llvm_declaration(TestState &state) {
+  std::error_code error;
+  const std::filesystem::path root =
+      std::filesystem::temp_directory_path(error) /
+      "draft-bootstrap-duplicate-import-llvm-test";
+  EXPECT(state, !error);
+  std::filesystem::remove_all(root, error);
+  error.clear();
+  std::filesystem::create_directories(root / "app", error);
+  std::filesystem::create_directories(root / "lib", error);
+  EXPECT(state, !error);
+  if (error) return;
+
+  std::ofstream dependency(root / "lib" / "package.draft", std::ios::binary);
+  dependency <<
+      "package lib\n"
+      "pub base :: proc() -> i64 {\n"
+      "    return 40\n"
+      "}\n";
+  dependency.close();
+  EXPECT(state, dependency.good());
+
+  // Imports are intentionally repeated in different files. They create two
+  // file-local semantic proxies but refer to one package-qualified LLVM symbol.
+  std::ofstream main_source(
+      root / "app" / "package.draft", std::ios::binary);
+  main_source <<
+      "package app\n"
+      "import lib\n"
+      "main :: proc() {\n"
+      "    assert(lib.base() == 40)\n"
+      "}\n";
+  main_source.close();
+  EXPECT(state, main_source.good());
+  std::ofstream other_source(
+      root / "app" / "other.draft", std::ios::binary);
+  other_source <<
+      "package app\n"
+      "import lib\n"
+      "other :: proc() -> i64 {\n"
+      "    return lib.base()\n"
+      "}\n";
+  other_source.close();
+  EXPECT(state, other_source.good());
+
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  draft::CompileWorkspaceOptions options;
+  options.target = draft::make_aarch64_macos_profile();
+  options.workspace.workspace_directory = root.string();
+  options.lower_mir = true;
+  options.emit_llvm = true;
+  const draft::CompileWorkspaceResult result = draft::compile_workspace(
+      sources,
+      (root / "app").string(),
+      std::move(options),
+      diagnostics);
+  if (!result.ok) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+  }
+  EXPECT(state, result.ok);
+  EXPECT(state, !diagnostics.has_errors());
+  EXPECT(state, result.graph.root_package.is_valid());
+  if (result.graph.root_package.is_valid()) {
+    const std::optional<draft::CompiledPackage> &package =
+        result.packages[result.graph.root_package.value];
+    EXPECT(state, package.has_value());
+    if (package.has_value()) {
+      EXPECT(state,
+          occurrence_count(
+              package->llvm.text,
+              "declare i64 @\"draft.workspace.lib.base\"(ptr)\n") == 1);
+      EXPECT(state,
+          occurrence_count(
+              package->llvm.text,
+              "call i64 @\"draft.workspace.lib.base\"(ptr %context)") == 2);
+    }
+  }
 
   std::filesystem::remove_all(root, error);
 }
@@ -874,6 +969,7 @@ int main() {
   TestState state;
   test_multi_package_native_pipeline(state);
   test_hosted_entry_contract(state);
+  test_file_local_imports_share_one_llvm_declaration(state);
   test_compiler_distributed_core(state);
   test_compiler_distributed_memory(state);
   test_compiler_distributed_array_and_support(state);

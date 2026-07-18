@@ -80,6 +80,16 @@ struct BoundsSite {
   LineColumn location;
 };
 
+// Source imports are file-local, so two files may own distinct semantic proxy
+// symbols for one public dependency declaration. LLVM module symbols are
+// package-qualified and therefore shared. This row records the first exact
+// declaration emitted under one LLVM name; an identical later proxy is folded,
+// while a different type/linkage spelling under that name is a compiler error.
+struct ExternalDeclaration {
+  std::string name;
+  std::string text;
+};
+
 // LLVM debug metadata is kept deliberately smaller than the semantic source
 // model. A coordinate names one stable logical file, its user-facing location,
 // and, for synthesized bytes, the exact generated location and persistent site
@@ -1825,6 +1835,28 @@ private:
     output_ << '\n';
   }
 
+  // Emits one LLVM declaration for one package-qualified or foreign symbol.
+  // File-local import proxies may reach this operation more than once. Folding
+  // is valid only when their complete declaration text agrees; otherwise LLVM
+  // would either reject the module or assign one name two incompatible ABIs.
+  void emit_external_declaration(
+      std::string name,
+      std::string declaration,
+      SourceRange source_range) {
+    for (const ExternalDeclaration &existing : external_declarations_) {
+      if (existing.name != name) continue;
+      if (existing.text != declaration) {
+        error(
+            source_range,
+            "external symbol '" + name +
+                "' has conflicting declarations in one module");
+      }
+      return;
+    }
+    external_declarations_.push_back({std::move(name), declaration});
+    output_ << declaration;
+  }
+
   void emit_external_declarations() {
     for (const ImportedSymbol &imported : semantic_.imported_symbols) {
       const Symbol &symbol = semantic_.symbols.symbol(imported.proxy);
@@ -1834,12 +1866,19 @@ private:
         // TypeParameter pseudo-types. Calls always reference one of the
         // concrete imported instance proxies created by body checking.
         if (symbol.flags.parametric) continue;
-        output_ << "declare " << llvm_function_result(symbol.type) << ' '
-                << symbol_name(imported.proxy)
-                << function_signature(symbol.type, false) << "\n";
+        const std::string name = symbol_name(imported.proxy);
+        emit_external_declaration(
+            name,
+            "declare " + llvm_function_result(symbol.type) + " " + name +
+                function_signature(symbol.type, false) + "\n",
+            symbol.name_range);
       } else if (symbol.kind == SymbolKind::Variable) {
-        output_ << symbol_name(imported.proxy) << " = external hidden global "
-                << llvm_type(symbol.type) << "\n";
+        const std::string name = symbol_name(imported.proxy);
+        emit_external_declaration(
+            name,
+            name + " = external hidden global " + llvm_type(symbol.type) +
+                "\n",
+            symbol.name_range);
       }
     }
     const Scope &package_scope =
@@ -1854,13 +1893,19 @@ private:
           !has_body(symbol_id) &&
           !is_imported_symbol(symbol_id) &&
           !root_runtime_defines(symbol_id)) {
-        output_ << "declare " << llvm_function_result(symbol.type) << ' '
-                << symbol_name(symbol_id)
-                << function_signature(symbol.type, false) << "\n";
+        const std::string name = symbol_name(symbol_id);
+        emit_external_declaration(
+            name,
+            "declare " + llvm_function_result(symbol.type) + " " + name +
+                function_signature(symbol.type, false) + "\n",
+            symbol.name_range);
       } else if (symbol.kind == SymbolKind::Variable && symbol.flags.foreign) {
-        output_ << symbol_name(symbol_id) << " = external ";
-        if (symbol.flags.is_thread_local) output_ << "thread_local ";
-        output_ << "global " << llvm_type(symbol.type) << "\n";
+        const std::string name = symbol_name(symbol_id);
+        std::string declaration = name + " = external ";
+        if (symbol.flags.is_thread_local) declaration += "thread_local ";
+        declaration += "global " + llvm_type(symbol.type) + "\n";
+        emit_external_declaration(
+            name, std::move(declaration), symbol.name_range);
       }
     }
     output_ << '\n';
@@ -4103,6 +4148,7 @@ private:
   std::vector<StringConstant> strings_;
   std::vector<AssertionSite> assertion_sites_;
   std::vector<BoundsSite> bounds_sites_;
+  std::vector<ExternalDeclaration> external_declarations_;
   std::vector<DebugMetadataNode> debug_metadata_;
   std::vector<DebugFile> debug_files_;
   std::vector<DebugScope> debug_scopes_;

@@ -916,7 +916,7 @@ upper source re-evaluates to the displayed value at the site. Other loop shapes
 produce no inferred range.
 
 `draft-agent-obligation-v19`, synthesis request v21 / prompt v20, judgment
-request/prompt v4, and compiler content v123 identities make these facts and
+request/prompt v4, and compiler content v124 identities make these facts and
 the compiler-checked correction policy stale-pin and evidence inputs. The
 synthesis adapter uses provider identity `openai-codex-cli-v24`; the unchanged
 judgment adapter remains `openai-codex-cli-v22`. Both recheck the canonical
@@ -1042,7 +1042,7 @@ traps, and message construction used solely by an assertion cannot survive,
 and no condition is converted into an optimizer assumption.
 
 The versioned `draft.resolved-program.v4` hash records the assertion mode beside
-compiler content v123. `build`, `resolve`, and `judge` expose the same explicit
+compiler content v124. `build`, `resolve`, and `judge` expose the same explicit
 flag so an offline or locked manifest cannot be replayed under a different
 mode. Test and benchmark compilations deliberately override the release choice
 to assertions on and receive their own resolved validation digest; disabling
