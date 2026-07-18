@@ -340,7 +340,7 @@ Development-only resolution may add `--allow-host-toolchain`; release resolution
 supplies the pinned roots below. Packages without selected validation need no
 native runner.
 
-Add `--judge` to run every authored judgment after synthesis checking and native
+Use `--judge` to run every authored judgment after synthesis checking and native
 Test/Benchmark validation, but before the resolver's one final manifest commit.
 `--judge-select <selector>` repeats the same operation for an exact site,
 package, or `<package>:<anchor>` selection. Passing judgment attempts are
