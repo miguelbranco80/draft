@@ -301,6 +301,14 @@ last[N: usize] :: proc(values: [N]i64) -> i64 {
     return values[N - 1]
 }
 
+plus_one :: proc(value: usize) -> usize {
+    return value + 1
+}
+
+procedural_last[N: usize] :: proc(values: [plus_one(N)]i64) -> i64 {
+    return values[N]
+}
+
 main :: proc() -> i64 {
     value: u32 = 42
     explicit := identity[u32](&value)
@@ -313,7 +321,9 @@ main :: proc() -> i64 {
     }
     explicit_last := last[3](values)
     inferred_last := last(values)
-    return sum[i64](values[:]) + explicit_last + inferred_last
+    procedural_last_value := procedural_last[2](values)
+    return sum[i64](values[:]) + explicit_last + inferred_last +
+        procedural_last_value
 }
 )draft");
 
@@ -323,8 +333,8 @@ main :: proc() -> i64 {
   EXPECT(state, source.semantics.ok);
   EXPECT(state, source.bodies.ok);
   EXPECT(state, !source.diagnostics.has_errors());
-  EXPECT(state, source.bodies.checked_procedures == 9);
-  EXPECT(state, source.bodies.program.procedures().size() == 9);
+  EXPECT(state, source.bodies.checked_procedures == 12);
+  EXPECT(state, source.bodies.program.procedures().size() == 12);
   std::size_t templates = 0;
   std::size_t concrete_instances = 0;
   for (const draft::HirProcedure &procedure :
@@ -347,8 +357,8 @@ main :: proc() -> i64 {
       }
     }
   }
-  EXPECT(state, templates == 4);
-  EXPECT(state, concrete_instances == 4);
+  EXPECT(state, templates == 5);
+  EXPECT(state, concrete_instances == 5);
 }
 
 void test_value_parametric_nominal_composition(TestState &state) {

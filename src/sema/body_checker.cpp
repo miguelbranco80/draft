@@ -616,6 +616,7 @@ private:
             *template_source,
             std::move(arguments),
             use_range,
+            target_,
             diagnostics_);
       }
     }
@@ -632,6 +633,34 @@ private:
           value.element, type_substitutions, value_substitutions, use_range));
     case TypeKind::Array:
     case TypeKind::Simd: {
+      if (value.owner_evaluated_element_count) {
+        std::vector<DeferredElementCountTypeBinding> deferred_types;
+        for (const TypeSubstitution &substitution : type_substitutions) {
+          deferred_types.push_back(
+              {substitution.parameter, substitution.replacement});
+        }
+        std::vector<DeferredElementCountValueBinding> deferred_values;
+        for (const ValueSubstitution &substitution : value_substitutions) {
+          deferred_values.push_back({
+              substitution.parameter,
+              substitution.value,
+              substitution.symbolic_expression,
+          });
+        }
+        const ConstantTable visible_constants = active_constant_table();
+        return instantiate_owner_evaluated_type_application(
+            sources_,
+            loaded_,
+            semantic_,
+            selections_,
+            source,
+            deferred_types,
+            deferred_values,
+            use_range,
+            visible_constants,
+            target_,
+            diagnostics_);
+      }
       std::uint64_t count = value.element_count;
       if (value.element_count_expression.is_valid()) {
         std::string error;
@@ -2176,6 +2205,7 @@ private:
       return substitute_active(
           resolve_type_syntax(
               sources_, loaded_, semantic_, selections_, tree, node_id, scope,
+              target_,
               diagnostics_),
           node.range);
     }
@@ -4638,7 +4668,8 @@ private:
       for (NodeId child : node.children) {
         if (node_is_type_syntax(tree.node(child).kind)) {
           result = resolve_type_syntax(
-              sources_, loaded_, semantic_, selections_, tree, child, scope, diagnostics_);
+              sources_, loaded_, semantic_, selections_, tree, child, scope,
+              target_, diagnostics_);
         } else if (tree.node(child).kind == NodeKind::AsmInput &&
                    !tree.node(child).children.empty()) {
           expression.operands.push_back(check_expression(
@@ -4948,6 +4979,7 @@ private:
         id,
         visible_constants,
         visible_types,
+        target_,
         diagnostics_);
     return hir_.add_statement(std::move(statement));
   }
@@ -5113,6 +5145,7 @@ private:
         procedure_id,
         scope,
         id,
+        target_,
         diagnostics_);
     signature = substitute_active(signature, declaration.range);
     semantic_.symbols.symbol_mut(id).type = signature;
@@ -5207,7 +5240,8 @@ private:
       const NodeId child = declaration.children[index];
       if (node_is_type_syntax(tree.node(child).kind)) {
         declared_type = resolve_type_syntax(
-            sources_, loaded_, semantic_, selections_, tree, child, scope, diagnostics_);
+            sources_, loaded_, semantic_, selections_, tree, child, scope,
+            target_, diagnostics_);
         declared_type = substitute_active(
             declared_type, tree.node(child).range);
       } else if (tree.node(child).kind != NodeKind::ParametricParameterList) {

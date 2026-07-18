@@ -8,6 +8,7 @@
 #include "elaborator/resolution_store.h"
 #include "elaborator/resolved_program.h"
 #include "sema/denial.h"
+#include "sema/type_resolver.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -103,6 +104,122 @@ void hash_field(Sha256 &hash, std::string_view value) {
     if (declaration.name == name) return &declaration;
   }
   return nullptr;
+}
+
+// Executes concrete generic-type layout requests in the package which owns the
+// template syntax and compile-time procedure bodies. The requester contributes
+// only canonical type graphs and exact scalar values. The returned concrete
+// graph is attached to the owner's interface, so the requester's next clean
+// semantic rebuild finds it through ordinary imported nominal identity.
+[[nodiscard]] std::size_t publish_type_instantiation_requests(
+    SourceManager &sources,
+    CompileWorkspaceResult &result,
+    const CompiledPackage &requester,
+    const TargetProfile &target,
+    DiagnosticSink &diagnostics) {
+  std::size_t published = 0;
+  for (const ImportedTypeInstantiationRequest &request :
+       requester.semantics.package.imported_type_instantiation_requests) {
+    const std::optional<std::size_t> owner_index = package_index_for(
+        result, request.root_identity, request.root_relative_path);
+    if (!owner_index.has_value() ||
+        !result.packages[*owner_index].has_value()) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "generic type owner is unavailable during layout instantiation");
+      continue;
+    }
+    CompiledPackage &owner = *result.packages[*owner_index];
+    const std::optional<SymbolId> source =
+        owner.semantics.package.symbols.lookup_direct(
+            owner.semantics.package.package_scope,
+            request.public_template_name);
+    if (!source.has_value()) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "generic type request names no public declaration '" +
+              request.public_template_name + "'");
+      continue;
+    }
+    const Symbol source_symbol =
+        owner.semantics.package.symbols.symbol(*source);
+    if (source_symbol.kind != SymbolKind::Type ||
+        !source_symbol.flags.parametric ||
+        source_symbol.visibility != Visibility::Public) {
+      diagnostics.error(
+          source_symbol.name_range,
+          "generic type layout request does not name a public parametric type");
+      continue;
+    }
+
+    std::vector<ParametricArgument> transferred_arguments;
+    transferred_arguments.reserve(request.arguments.size());
+    for (const ParametricArgument &argument : request.arguments) {
+      ParametricArgument transferred;
+      transferred.is_type = argument.is_type;
+      const TypeId argument_type = argument.is_type
+          ? argument.type
+          : argument.value_type;
+      const InterfaceTypeGraph graph = export_interface_type(
+          requester.identity,
+          requester.semantics.package,
+          argument_type,
+          diagnostics);
+      const TypeId imported = import_interface_type(
+          graph, owner.semantics.package, diagnostics);
+      if (argument.is_type) {
+        transferred.type = imported;
+      } else {
+        transferred.value_type = imported;
+        transferred.value = argument.value;
+      }
+      transferred_arguments.push_back(std::move(transferred));
+    }
+
+    const TypeId concrete = instantiate_parametric_type_application(
+        sources,
+        result.graph.packages[*owner_index].loaded,
+        owner.semantics.package,
+        owner.semantics.selections,
+        *source,
+        std::move(transferred_arguments),
+        source_symbol.name_range,
+        target.facts,
+        diagnostics);
+    if (!concrete.is_valid() ||
+        owner.semantics.package.types.type(concrete).kind == TypeKind::Invalid) {
+      continue;
+    }
+    const InterfaceTypeGraph graph = export_interface_type(
+        owner.identity,
+        owner.semantics.package,
+        concrete,
+        diagnostics);
+    bool still_deferred = false;
+    for (const InterfaceType &type : graph.types) {
+      still_deferred = still_deferred || type.owner_evaluated_element_count;
+    }
+    if (still_deferred) {
+      diagnostics.error(
+          source_symbol.name_range,
+          "generic type layout request did not produce a concrete owner result");
+      continue;
+    }
+    const Sha256Digest digest = hash_interface_type_graph(graph);
+    bool duplicate = false;
+    for (const InterfaceTypeGraph &existing :
+         owner.interface.instantiated_types) {
+      if (hash_interface_type_graph(existing) == digest) {
+        duplicate = true;
+        break;
+      }
+    }
+    if (!duplicate) {
+      owner.interface.instantiated_types.push_back(graph);
+      ++published;
+    }
+  }
+  return published;
 }
 
 // Resolution pins apply only to grammar-producing sites. Documentation and
@@ -530,6 +647,7 @@ CompileWorkspaceResult compile_workspace(
     const std::size_t package_index = *position;
     WorkspacePackage &workspace_package = result.graph.packages[package_index];
     AvailablePackageImports available;
+    available.consumer_identity = workspace_package.identity;
     bool dependencies_ready = true;
     for (const PackageImport &import : result.graph.imports) {
       if (static_cast<std::size_t>(import.importing_package.value) != package_index) {
@@ -577,6 +695,31 @@ CompileWorkspaceResult compile_workspace(
         options.target.facts,
         available,
         diagnostics);
+    // Imported procedure-dependent layouts are discovered only after the
+    // consumer supplies concrete arguments. Publish each owner result, then
+    // rebuild this package from its unchanged source and the enriched dependency
+    // interfaces. A successful rebuild contains no placeholder requests.
+    while (package.semantics.ok &&
+           !package.semantics.package
+                .imported_type_instantiation_requests.empty()) {
+      const std::size_t published = publish_type_instantiation_requests(
+          sources, result, package, options.target, diagnostics);
+      if (published == 0) break;
+      package.semantics = analyze_package_semantics(
+          sources,
+          workspace_package.loaded,
+          options.target.facts,
+          available,
+          diagnostics);
+    }
+    if (package.semantics.ok &&
+        !package.semantics.package
+             .imported_type_instantiation_requests.empty()) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "generic type layout requests made no semantic progress");
+      package.semantics.ok = false;
+    }
     if (!package.semantics.ok) continue;
     // Public package/declaration documentation is an interface input just like
     // public types and constants. Collect it before consumers bind dependency

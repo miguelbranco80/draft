@@ -203,14 +203,6 @@ struct InterfaceDocumentation {
   Sha256Digest record_digest;
 };
 
-struct PackageInterface {
-  PackageIdentity identity;
-  std::string short_name;
-  std::vector<InterfaceType> types;
-  std::vector<InterfaceDeclaration> declarations;
-  std::vector<InterfaceDocumentation> documentation;
-};
-
 // A concrete type argument sometimes has to cross a package boundary even
 // though it is not part of either package's public API.  The important example
 // is `dependency.make[Private_App_Type]()`: the dependency must compile the
@@ -228,6 +220,19 @@ struct InterfaceTypeGraph {
   InterfaceTypeId root;
 };
 
+struct PackageInterface {
+  PackageIdentity identity;
+  std::string short_name;
+  std::vector<InterfaceType> types;
+  std::vector<InterfaceDeclaration> declarations;
+  std::vector<InterfaceDocumentation> documentation;
+  // Concrete public generic applications whose layout had to execute in this
+  // defining package. Consumers import these self-contained graphs before
+  // resolving their own applications; nominal origin plus canonical arguments
+  // inside each root row form the cache key.
+  std::vector<InterfaceTypeGraph> instantiated_types;
+};
+
 // AvailablePackageImport binds one exact source import clause to the already
 // analyzed dependency interface selected by WorkspaceGraph. The pointer must
 // remain valid only for the analyze_package_semantics call that consumes it.
@@ -237,6 +242,7 @@ struct AvailablePackageImport {
 };
 
 struct AvailablePackageImports {
+  PackageIdentity consumer_identity;
   std::vector<AvailablePackageImport> entries;
 
   [[nodiscard]] const PackageInterface *find(SyntaxReference syntax) const;

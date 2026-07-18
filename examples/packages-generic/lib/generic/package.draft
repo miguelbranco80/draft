@@ -5,6 +5,24 @@ pub Box[T: type] :: struct {
     value: T,
 }
 
+// Layout procedures stay private to their defining package. A consumer of this
+// public template receives only the concrete owner-produced type graph.
+layout_count :: proc(value: usize) -> usize {
+    return value + 1
+}
+
+pub Procedural_Buffer[N: usize] :: struct {
+    values: [layout_count(N)]u8,
+}
+
+layout_for[T: type] :: proc(extra: usize) -> usize {
+    return size_of(T) + extra
+}
+
+pub Typed_Procedural_Buffer[T: type, N: usize] :: struct {
+    values: [layout_for[T](N)]u8,
+}
+
 // Public generic procedure bodies are compiled here, in their defining
 // package, after consumers have published every concrete type/value request.
 pub identity[T: type] :: proc(value: T) -> T {

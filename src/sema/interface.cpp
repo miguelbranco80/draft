@@ -712,7 +712,12 @@ public:
     PackageInterface package;
     package.identity = graph.identity;
     package.types = graph.types;
-    InterfaceImportCache &cache = cache_for(package);
+    // A standalone graph is a short-lived packet, not one of the borrowed
+    // PackageInterface objects held by caches_. Keep its translation cache on
+    // this stack so no pointer to the temporary package can escape this call.
+    InterfaceImportCache cache;
+    cache.package = &package;
+    cache.translated.resize(package.types.size());
     return import_type(package, cache, graph.root);
   }
 
@@ -809,6 +814,9 @@ public:
         bind_nominal_members(
             proxy_id, imported_scope, package, cache, declaration.type);
       }
+    }
+    for (const InterfaceTypeGraph &instance : package.instantiated_types) {
+      (void)import_graph(instance);
     }
     for (const InterfaceDocumentation &documentation :
          package.documentation) {
@@ -920,6 +928,29 @@ private:
   [[nodiscard]] std::optional<TypeId> find_nominal(
       const InterfaceType &source,
       const std::vector<ParametricArgument> &arguments) const {
+    // A private requester type may travel to a generic owner as a canonical
+    // argument and return inside the concrete result graph. Reuse the original
+    // local nominal when that graph comes home; creating an imported duplicate
+    // would make the result's argument key differ from the source application.
+    if (source.nominal_root_identity == consumer_.identity.root_identity &&
+        source.nominal_root_relative_path ==
+            consumer_.identity.root_relative_path) {
+      const std::optional<SymbolId> local = consumer_.symbols.lookup_direct(
+          consumer_.package_scope, source.nominal_public_name);
+      if (local.has_value()) {
+        const Symbol &symbol = consumer_.symbols.symbol(*local);
+        if (arguments.empty() && symbol.type.is_valid() &&
+            consumer_.types.type(symbol.type).kind == source.kind) {
+          return symbol.type;
+        }
+        for (const ParametricTypeInstanceRecord &instance :
+             consumer_.parametric_type_instances) {
+          if (instance.source == *local && instance.arguments == arguments) {
+            return consumer_.symbols.symbol(instance.instance).type;
+          }
+        }
+      }
+    }
     for (const ImportedNominalCache &nominal : nominals_) {
       if (nominal.kind == source.kind &&
           nominal.root_identity == source.nominal_root_identity &&

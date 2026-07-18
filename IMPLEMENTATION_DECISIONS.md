@@ -412,8 +412,8 @@ table discipline.
 
 ## Owner-evaluated generic layout constants
 
-Status: bootstrap staging contract; interface marker is implemented and the
-request/evaluation fixed point is the next semantic slice.
+Status: implemented for array/SIMD recipes in local generic types, generic
+procedure signatures, and concrete cross-package public type applications.
 
 The compact dependent-integer tree remains the canonical representation for
 arithmetic and casts such as `[N + 1]T`. It must not pretend to represent a call
@@ -427,15 +427,18 @@ SemanticPackage retains the source recipe in a package-local side table. A
 canonical package interface exports only the marker. It never exports FileId,
 NodeId, ScopeId, a private procedure SymbolId, or an ambient source pointer.
 
-A consumer which later supplies concrete generic arguments will form a stable
+A consumer which later supplies concrete generic arguments forms a stable
 instantiation request. Compiler orchestration sends that request to the package
 which owns the template and procedure bodies. The owner evaluates the recipe
 with the normal compile-time interpreter and returns a complete concrete
 InterfaceTypeGraph; the consumer imports that graph exactly like any other
-owner-produced generic result. Requests and results are ordered and keyed by
-package identity, public template identity, and canonical argument graphs.
-This mirrors cross-package generic procedure instantiation and preserves private
-implementation details without making consumer semantics read dependency source.
+owner-produced generic result. A clean consumer rebuild removes the provisional
+unknown-layout marker before body checking. Requests and results are ordered and
+keyed by package identity, public template identity, and canonical argument
+graphs. Private requester nominals returning through the owner graph resolve to
+their original local TypeId. This mirrors cross-package generic procedure
+instantiation and preserves private implementation details without making
+consumer semantics read dependency source.
 
 ## Hosted process views and core threads
 

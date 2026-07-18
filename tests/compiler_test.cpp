@@ -713,6 +713,10 @@ void test_cross_package_generic_procedures(TestState &state) {
       right->semantics.package.imported_procedure_instances.size() == 2);
   EXPECT(state, generic->semantics.package.parametric_instances.size() == 5);
   EXPECT(state, left->semantics.package.parametric_instances.size() == 2);
+  EXPECT(state,
+      app->semantics.package.imported_type_instantiation_requests.empty());
+  EXPECT(state,
+      generic->semantics.package.parametric_type_instances.size() == 2);
   EXPECT(state, app->llvm.text.find("_24mono_24") != std::string::npos);
   EXPECT(state, left->llvm.text.find("_24mono_24") != std::string::npos);
   EXPECT(state, right->llvm.text.find("_24mono_24") != std::string::npos);

@@ -25,6 +25,7 @@
 #include "source/diagnostic.h"
 #include "source/source.h"
 #include "workspace/package.h"
+#include "workspace/workspace.h"
 
 #include <cstdint>
 #include <limits>
@@ -208,6 +209,20 @@ struct ImportedProcedureInstance {
   std::vector<ParametricArgument> arguments;
 };
 
+// A consumer cannot execute a procedure-dependent layout recipe imported from
+// another package: only the defining package owns that syntax and the private
+// helper bodies it may call. Type resolution records the concrete application
+// here. Workspace orchestration transfers its arguments, asks the owner to
+// instantiate the public template, publishes the returned interface graph, and
+// rebuilds the consumer. No placeholder is allowed to reach body lowering.
+struct ImportedTypeInstantiationRequest {
+  SymbolId source_proxy;
+  std::string root_identity;
+  std::string root_relative_path;
+  std::string public_template_name;
+  std::vector<ParametricArgument> arguments;
+};
+
 // Canonical call contract for one procedure leaf returned by an imported
 // declaration. Slots refer to the factory declaration's parameters; effects
 // describe the returned procedure when it is later called.
@@ -357,6 +372,25 @@ struct ResolvedIntegerExpression {
   std::optional<IntegerExpressionType> type;
 };
 
+// One captured type/value environment for an owner-evaluated layout recipe.
+// The bindings compose when one generic template is used inside another. They
+// remain package-local because their keys are the defining declaration's exact
+// semantic parameters; only the eventual concrete type graph crosses an
+// interface boundary.
+struct DeferredElementCountTypeBinding {
+  TypeId parameter;
+  TypeId replacement;
+};
+
+struct DeferredElementCountValueBinding {
+  SymbolId parameter;
+  ConstantValue value;
+  // A template-to-template application maps the defining parameter to an
+  // expression over the outer template's parameters. A concrete binding leaves
+  // this invalid and stores the exact arbitrary-precision value above.
+  IntegerExpression symbolic_expression;
+};
+
 // Source-local recipe for an array/SIMD count which must be evaluated by the
 // package that owns the referenced compile-time procedure bodies. type is the
 // unique symbolic Type row carrying this side-table index. syntax and scope are
@@ -366,6 +400,8 @@ struct DeferredElementCount {
   TypeId type;
   SyntaxReference syntax;
   ScopeId scope;
+  std::vector<DeferredElementCountTypeBinding> type_bindings;
+  std::vector<DeferredElementCountValueBinding> value_bindings;
 };
 
 enum class NativeBindingKind {
@@ -390,6 +426,10 @@ struct NativeBinding {
 // table rows and stable IDs rather than a deep accessor/object hierarchy.
 struct SemanticPackage {
   std::string short_name;
+  // Workspace identity is present for package-aware analysis and empty in
+  // isolated semantic unit tests. Interface import uses it to recognize a
+  // private nominal type returning home through an owner-instantiation graph.
+  PackageIdentity identity;
   TypeStore types;
   SymbolTable symbols;
   ScopeId package_scope;
@@ -408,6 +448,8 @@ struct SemanticPackage {
   std::vector<ImportedSymbol> imported_symbols;
   std::vector<ImportedDocumentation> imported_documentation;
   std::vector<ImportedProcedureInstance> imported_procedure_instances;
+  std::vector<ImportedTypeInstantiationRequest>
+      imported_type_instantiation_requests;
   std::vector<ImportedType> imported_types;
   std::vector<ImportedEffect> imported_effects;
   std::vector<ImportedProcedureReturn> imported_returns;

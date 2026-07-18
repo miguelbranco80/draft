@@ -130,12 +130,13 @@ public:
       DiagnosticSink &diagnostics,
       const ConstantTable *active_constants = nullptr,
       const std::vector<ConstantTypeBinding> *active_types = nullptr,
-      const std::vector<ResolvedIntegerExpression> *resolved_integers = nullptr)
+      const std::vector<ResolvedIntegerExpression> *resolved_integers = nullptr,
+      const TargetFacts *target = nullptr)
       : sources_(sources), loaded_(loaded), semantic_(semantic), selections_(selections),
         diagnostics_(diagnostics),
         states_(semantic.symbols.symbol_count(), ResolutionState::Unvisited),
         active_constants_(active_constants), active_types_(active_types),
-        resolved_integers_(resolved_integers) {}
+        resolved_integers_(resolved_integers), target_(target) {}
 
   // Resolves only the symbols originally installed in the package scope.
   // Nested symbols are resolved synchronously as their owner is processed.
@@ -172,6 +173,38 @@ public:
       SourceRange use_range) {
     return instantiate_parametric_type(
         source, std::move(arguments), use_range);
+  }
+
+  // Body checking owns procedure-template substitutions, while this resolver
+  // owns the single implementation of deferred layout evaluation. Convert the
+  // shared package-local binding records back into the resolver's compact
+  // substitution form and run the ordinary recursive type path.
+  [[nodiscard]] TypeId instantiate_one_owner_evaluated_type(
+      TypeId source,
+      const std::vector<DeferredElementCountTypeBinding> &type_bindings,
+      const std::vector<DeferredElementCountValueBinding> &value_bindings,
+      SourceRange use_range) {
+    std::vector<ResolverTypeSubstitution> types;
+    for (const DeferredElementCountTypeBinding &binding : type_bindings) {
+      types.push_back({binding.parameter, binding.replacement});
+    }
+    std::vector<ResolverValueSubstitution> values;
+    for (const DeferredElementCountValueBinding &binding : value_bindings) {
+      ResolverValueSubstitution value;
+      value.parameter = binding.parameter.value;
+      value.symbolic_expression = binding.symbolic_expression;
+      if (!value.symbolic_expression.is_valid()) {
+        if (binding.value.kind != ConstantKind::Integer) {
+          diagnostics_.error(
+              use_range,
+              "owner-evaluated layout parameter must be an integer");
+          return semantic_.types.builtins().invalid;
+        }
+        value.replacement = binding.value.integer;
+      }
+      values.push_back(std::move(value));
+    }
+    return substitute_type(source, types, values, use_range);
   }
 
   // Local procedures arrive after the package-wide resolver has finished, but
@@ -642,6 +675,61 @@ private:
       if (entry.syntax == syntax) return;
     }
     semantic_.required_integer_expressions.push_back({syntax, scope});
+  }
+
+  // The compact dependent-integer builder intentionally rejects calls and
+  // other full language expressions. Before treating such a failure as an
+  // ordinary unresolved constant, distinguish a generic recipe which must wait
+  // for its value/type parameters. Every parameter reference remains visible
+  // in the parsed subtree, including explicit arguments to generic helpers.
+  [[nodiscard]] bool expression_references_parametric_parameter(
+      const SyntaxTree &tree, NodeId expression, ScopeId scope) const {
+    const SyntaxNode &node = tree.node(expression);
+    if (node.kind == NodeKind::NameExpression ||
+        node.kind == NodeKind::NamedType) {
+      const std::vector<SourceName> names = names_in_span(
+          tree, node.token_begin, node.token_end);
+      if (names.size() == 1) {
+        const std::optional<SymbolId> symbol =
+            semantic_.symbols.lookup(scope, names.front().text);
+        if (symbol.has_value()) {
+          const SymbolKind kind = semantic_.symbols.symbol(*symbol).kind;
+          if (kind == SymbolKind::TypeParameter ||
+              kind == SymbolKind::ValueParameter) {
+            return true;
+          }
+        }
+      }
+    }
+    for (NodeId child : node.children) {
+      if (expression_references_parametric_parameter(tree, child, scope)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  [[nodiscard]] TypeId defer_element_count(
+      TypeKind kind,
+      TypeId element,
+      const SyntaxTree &tree,
+      NodeId expression,
+      ScopeId scope,
+      std::vector<DeferredElementCountTypeBinding> type_bindings = {},
+      std::vector<DeferredElementCountValueBinding> value_bindings = {}) {
+    const std::uint32_t index = static_cast<std::uint32_t>(
+        semantic_.deferred_element_counts.size());
+    const TypeId type = kind == TypeKind::Array
+        ? semantic_.types.owner_evaluated_array(element, index)
+        : semantic_.types.owner_evaluated_simd(element, index);
+    semantic_.deferred_element_counts.push_back({
+        type,
+        {tree.file(), expression},
+        scope,
+        std::move(type_bindings),
+        std::move(value_bindings),
+    });
+    return type;
   }
 
   [[nodiscard]] IntegerExpressionType integer_expression_type(
@@ -1172,6 +1260,297 @@ private:
     return false;
   }
 
+  [[nodiscard]] bool type_has_parameters(
+      TypeId type, std::vector<TypeId> &active) const {
+    if (!type.is_valid()) return false;
+    if (std::find(active.begin(), active.end(), type) != active.end()) {
+      return false;
+    }
+    active.push_back(type);
+    const Type value = semantic_.types.type(type);
+    bool result = value.kind == TypeKind::TypeParameter ||
+        value.owner_evaluated_element_count ||
+        value.element_count_expression.is_valid();
+    if (!result &&
+        (value.kind == TypeKind::Pointer ||
+         value.kind == TypeKind::MultiPointer ||
+         value.kind == TypeKind::Slice ||
+         value.kind == TypeKind::Array ||
+         value.kind == TypeKind::Simd ||
+         value.kind == TypeKind::Distinct)) {
+      result = type_has_parameters(value.element, active);
+    }
+    if (!result &&
+        (value.kind == TypeKind::Tuple || value.kind == TypeKind::Procedure)) {
+      for (TypeId member : value.members) {
+        if (type_has_parameters(member, active)) {
+          result = true;
+          break;
+        }
+      }
+    }
+    if (!result &&
+        (value.kind == TypeKind::Struct || value.kind == TypeKind::Enum ||
+         value.kind == TypeKind::TaggedUnion ||
+         value.kind == TypeKind::RawUnion)) {
+      for (const ParametricTypeInstanceRecord &instance :
+           semantic_.parametric_type_instances) {
+        if (semantic_.symbols.symbol(instance.instance).type != type) continue;
+        for (const ParametricArgument &argument : instance.arguments) {
+          if ((argument.is_type && type_has_parameters(argument.type, active)) ||
+              (!argument.is_type && argument.value_expression.is_valid())) {
+            result = true;
+            break;
+          }
+        }
+        break;
+      }
+      if (!result) {
+        for (const ImportedType &imported : semantic_.imported_types) {
+          if (imported.type != type) continue;
+          for (const ParametricArgument &argument : imported.arguments) {
+            if ((argument.is_type && type_has_parameters(argument.type, active)) ||
+                (!argument.is_type && argument.value_expression.is_valid())) {
+              result = true;
+              break;
+            }
+          }
+          break;
+        }
+      }
+    }
+    active.pop_back();
+    return result;
+  }
+
+  [[nodiscard]] bool type_has_parameters(TypeId type) const {
+    std::vector<TypeId> active;
+    return type_has_parameters(type, active);
+  }
+
+  [[nodiscard]] bool type_requires_owner_evaluation(
+      TypeId type, std::vector<TypeId> &active) const {
+    if (!type.is_valid() ||
+        std::find(active.begin(), active.end(), type) != active.end()) {
+      return false;
+    }
+    active.push_back(type);
+    const Type value = semantic_.types.type(type);
+    bool result = value.owner_evaluated_element_count;
+    if (!result && value.element.is_valid()) {
+      result = type_requires_owner_evaluation(value.element, active);
+    }
+    if (!result) {
+      for (TypeId member : value.members) {
+        if (type_requires_owner_evaluation(member, active)) {
+          result = true;
+          break;
+        }
+      }
+    }
+    active.pop_back();
+    return result;
+  }
+
+  [[nodiscard]] bool type_requires_owner_evaluation(TypeId type) const {
+    std::vector<TypeId> active;
+    return type_requires_owner_evaluation(type, active);
+  }
+
+  [[nodiscard]] TypeId instantiate_deferred_element_count(
+      const Type &source,
+      TypeId element,
+      const std::vector<ResolverTypeSubstitution> &substitutions,
+      const std::vector<ResolverValueSubstitution> &value_substitutions,
+      SourceRange use_range) {
+    if (source.deferred_element_count_index >=
+        semantic_.deferred_element_counts.size()) {
+      // An imported marker has no defining-package recipe. Workspace
+      // orchestration replaces it with an owner-produced concrete graph before
+      // a consumer may enter body checking. Preserve an explicitly unknown
+      // placeholder in the provisional graph so the request can be collected
+      // without inventing a zero-length layout or producing a user diagnostic.
+      return source.kind == TypeKind::Array
+          ? semantic_.types.owner_evaluated_array(element)
+          : semantic_.types.owner_evaluated_simd(element);
+    }
+
+    // Copy before recursive substitution or interpretation: both operations may
+    // append semantic rows and therefore invalidate vector element references.
+    const DeferredElementCount recipe =
+        semantic_.deferred_element_counts[
+            source.deferred_element_count_index];
+    std::vector<DeferredElementCountTypeBinding> type_bindings =
+        recipe.type_bindings;
+    std::vector<DeferredElementCountValueBinding> value_bindings =
+        recipe.value_bindings;
+
+    for (DeferredElementCountTypeBinding &binding : type_bindings) {
+      binding.replacement = substitute_type(
+          binding.replacement,
+          substitutions,
+          value_substitutions,
+          use_range);
+    }
+    for (const ResolverTypeSubstitution &substitution : substitutions) {
+      const bool present = std::any_of(
+          type_bindings.begin(),
+          type_bindings.end(),
+          [&](const DeferredElementCountTypeBinding &binding) {
+            return binding.parameter == substitution.parameter;
+          });
+      if (!present) {
+        type_bindings.push_back(
+            {substitution.parameter, substitution.replacement});
+      }
+    }
+
+    const std::vector<IntegerExpressionReplacement> replacements =
+        integer_expression_replacements(value_substitutions);
+    for (DeferredElementCountValueBinding &binding : value_bindings) {
+      if (!binding.symbolic_expression.is_valid()) continue;
+      std::string error;
+      const std::optional<IntegerExpression> replacement =
+          substitute_integer_expression(
+              binding.symbolic_expression, replacements, error);
+      if (!replacement.has_value()) {
+        diagnostics_.error(use_range, error);
+        return semantic_.types.builtins().invalid;
+      }
+      binding.symbolic_expression = *replacement;
+      if (!integer_expression_has_parameters(binding.symbolic_expression)) {
+        const IntegerExpressionResult evaluated =
+            evaluate_integer_expression(binding.symbolic_expression);
+        if (!evaluated.ok) {
+          diagnostics_.error(use_range, evaluated.error);
+          return semantic_.types.builtins().invalid;
+        }
+        binding.value = ConstantValue::make_integer(evaluated.value);
+        binding.symbolic_expression = {};
+      }
+    }
+    for (const ResolverValueSubstitution &substitution : value_substitutions) {
+      const SymbolId parameter{substitution.parameter};
+      const bool present = std::any_of(
+          value_bindings.begin(),
+          value_bindings.end(),
+          [&](const DeferredElementCountValueBinding &binding) {
+            return binding.parameter == parameter;
+          });
+      if (present) continue;
+      DeferredElementCountValueBinding binding;
+      binding.parameter = parameter;
+      binding.symbolic_expression = substitution.symbolic_expression;
+      if (!binding.symbolic_expression.is_valid()) {
+        binding.value = ConstantValue::make_integer(substitution.replacement);
+      }
+      value_bindings.push_back(std::move(binding));
+    }
+
+    bool symbolic = false;
+    for (const DeferredElementCountTypeBinding &binding : type_bindings) {
+      if (type_has_parameters(binding.replacement)) {
+        symbolic = true;
+        break;
+      }
+    }
+    if (!symbolic) {
+      for (const DeferredElementCountValueBinding &binding : value_bindings) {
+        if (binding.symbolic_expression.is_valid()) {
+          symbolic = true;
+          break;
+        }
+      }
+    }
+
+    const SyntaxTree *tree = find_tree(recipe.syntax.file);
+    if (tree == nullptr || !recipe.syntax.node.is_valid()) {
+      diagnostics_.error(
+          use_range, "owner-evaluated generic layout has no source recipe");
+      return semantic_.types.builtins().invalid;
+    }
+    if (symbolic || target_ == nullptr) {
+      return defer_element_count(
+          source.kind,
+          element,
+          *tree,
+          recipe.syntax.node,
+          recipe.scope,
+          std::move(type_bindings),
+          std::move(value_bindings));
+    }
+
+    ConstantTable constants;
+    for (const DeferredElementCountValueBinding &binding : value_bindings) {
+      constants.bindings.push_back({binding.parameter, binding.value});
+    }
+    if (active_constants_ != nullptr) {
+      for (const ConstantBinding &binding : active_constants_->bindings) {
+        if (constants.find(binding.symbol) == nullptr) {
+          constants.bindings.push_back(binding);
+        }
+      }
+    }
+    std::vector<ConstantTypeBinding> types;
+    for (const DeferredElementCountTypeBinding &binding : type_bindings) {
+      types.push_back({binding.parameter, binding.replacement});
+    }
+    if (active_types_ != nullptr) {
+      for (const ConstantTypeBinding &binding : *active_types_) {
+        const bool present = std::any_of(
+            types.begin(),
+            types.end(),
+            [&](const ConstantTypeBinding &candidate) {
+              return candidate.parameter == binding.parameter;
+            });
+        if (!present) types.push_back(binding);
+      }
+    }
+
+    const std::optional<EvaluatedConstant> evaluated =
+        evaluate_typed_constant_expression(
+            sources_,
+            loaded_,
+            semantic_,
+            *target_,
+            *tree,
+            recipe.syntax.node,
+            recipe.scope,
+            diagnostics_,
+            &constants,
+            &types,
+            semantic_.types.builtins().usize_type);
+    if (!evaluated.has_value() ||
+        evaluated->value.kind != ConstantKind::Integer) {
+      return semantic_.types.builtins().invalid;
+    }
+    const TypeKind result_kind = evaluated->type.is_valid()
+        ? semantic_.types.type(evaluated->type).kind
+        : TypeKind::Invalid;
+    if (evaluated->type != semantic_.types.builtins().usize_type &&
+        result_kind != TypeKind::UntypedInteger) {
+      diagnostics_.error(
+          tree->node(recipe.syntax.node).range,
+          source.kind == TypeKind::Array
+              ? "array length must have type 'usize'"
+              : "SIMD lane count must have type 'usize'");
+      return semantic_.types.builtins().invalid;
+    }
+    const std::optional<std::uint64_t> count =
+        evaluated->value.integer.to_u64();
+    if (!count.has_value() || *count == 0) {
+      diagnostics_.error(
+          tree->node(recipe.syntax.node).range,
+          source.kind == TypeKind::Array
+              ? "array length must be a nonzero compile-time usize"
+              : "SIMD lane count must be a nonzero compile-time usize");
+      return semantic_.types.builtins().invalid;
+    }
+    return source.kind == TypeKind::Array
+        ? semantic_.types.array(element, *count)
+        : semantic_.types.simd(element, *count, use_range);
+  }
+
   [[nodiscard]] TypeId substitute_type(
       TypeId source,
       const std::vector<ResolverTypeSubstitution> &substitutions,
@@ -1296,6 +1675,16 @@ private:
           value.element, substitutions, value_substitutions, use_range));
     case TypeKind::Array:
     case TypeKind::Simd: {
+      const TypeId element = substitute_type(
+          value.element, substitutions, value_substitutions, use_range);
+      if (value.owner_evaluated_element_count) {
+        return instantiate_deferred_element_count(
+            value,
+            element,
+            substitutions,
+            value_substitutions,
+            use_range);
+      }
       std::uint64_t count = value.element_count;
       if (value.element_count_expression.is_valid()) {
         std::string error;
@@ -1308,8 +1697,6 @@ private:
           diagnostics_.error(use_range, error);
           return semantic_.types.builtins().invalid;
         }
-        const TypeId element = substitute_type(
-            value.element, substitutions, value_substitutions, use_range);
         if (integer_expression_has_parameters(*replacement)) {
           return value.kind == TypeKind::Array
               ? semantic_.types.parametric_array(element, *replacement)
@@ -1329,8 +1716,6 @@ private:
         }
         count = *concrete;
       }
-      const TypeId element = substitute_type(
-          value.element, substitutions, value_substitutions, use_range);
       return value.kind == TypeKind::Array
           ? semantic_.types.array(element, count)
           : semantic_.types.simd(element, count, use_range);
@@ -1672,8 +2057,10 @@ private:
     // interface (for example Key_Ops[string] as another procedure's result).
     // Reuse that consumer-local TypeId instead of creating a second nominal
     // type for the same public template identity and arguments.
+    std::optional<ImportedSymbol> imported_origin;
     for (const ImportedSymbol &origin : semantic_.imported_symbols) {
       if (origin.proxy != source) continue;
+      imported_origin = origin;
       for (const ImportedType &imported : semantic_.imported_types) {
         if (imported.root_identity == origin.root_identity &&
             imported.root_relative_path == origin.root_relative_path &&
@@ -1686,6 +2073,26 @@ private:
     }
 
     const Type template_type = semantic_.types.type(template_symbol.type);
+    if (imported_origin.has_value() &&
+        type_requires_owner_evaluation(template_symbol.type)) {
+      bool already_requested = false;
+      for (const ImportedTypeInstantiationRequest &request :
+           semantic_.imported_type_instantiation_requests) {
+        if (request.source_proxy == source && request.arguments == arguments) {
+          already_requested = true;
+          break;
+        }
+      }
+      if (!already_requested) {
+        semantic_.imported_type_instantiation_requests.push_back({
+            source,
+            imported_origin->root_identity,
+            imported_origin->root_relative_path,
+            imported_origin->public_name,
+            arguments,
+        });
+      }
+    }
     if (template_type.kind != TypeKind::Struct &&
         template_type.kind != TypeKind::Enum &&
         template_type.kind != TypeKind::TaggedUnion &&
@@ -2132,6 +2539,8 @@ private:
       if (node.children.size() < 2) {
         return invalid;
       }
+      const TypeId element =
+          resolve_type(tree, node.children.back(), scope);
       const std::optional<std::uint64_t> count =
           layout_integer(tree, node.children.front(), scope);
       if (count.has_value() &&
@@ -2152,8 +2561,16 @@ private:
                 semantic_.types.builtins().usize_type);
         if (expression.has_value()) {
           return semantic_.types.parametric_array(
-              resolve_type(tree, node.children.back(), scope),
-              *expression);
+              element, *expression);
+        }
+        if (expression_references_parametric_parameter(
+                tree, node.children.front(), scope)) {
+          return defer_element_count(
+              TypeKind::Array,
+              element,
+              tree,
+              node.children.front(),
+              scope);
         }
         require_integer_expression(tree, node.children.front(), scope);
       }
@@ -2163,14 +2580,15 @@ private:
             "array length must be a nonzero compile-time usize");
         return invalid;
       }
-      return semantic_.types.array(
-          resolve_type(tree, node.children.back(), scope), *count);
+      return semantic_.types.array(element, *count);
     }
 
     case NodeKind::SimdType: {
       if (node.children.size() < 2) {
         return invalid;
       }
+      const TypeId element =
+          resolve_type(tree, node.children.back(), scope);
       const std::optional<std::uint64_t> lanes =
           layout_integer(tree, node.children.front(), scope);
       if (lanes.has_value() &&
@@ -2191,8 +2609,16 @@ private:
                 semantic_.types.builtins().usize_type);
         if (expression.has_value()) {
           return semantic_.types.parametric_simd(
-              resolve_type(tree, node.children.back(), scope),
-              *expression);
+              element, *expression);
+        }
+        if (expression_references_parametric_parameter(
+                tree, node.children.front(), scope)) {
+          return defer_element_count(
+              TypeKind::Simd,
+              element,
+              tree,
+              node.children.front(),
+              scope);
         }
         require_integer_expression(tree, node.children.front(), scope);
       }
@@ -2202,8 +2628,7 @@ private:
             "SIMD lane count must be a nonzero compile-time usize");
         return invalid;
       }
-      return semantic_.types.simd(
-          resolve_type(tree, node.children.back(), scope), *lanes, node.range);
+      return semantic_.types.simd(element, *lanes, node.range);
     }
 
     case NodeKind::TupleType: {
@@ -3162,6 +3587,7 @@ private:
   const ConstantTable *active_constants_ = nullptr;
   const std::vector<ConstantTypeBinding> *active_types_ = nullptr;
   const std::vector<ResolvedIntegerExpression> *resolved_integers_ = nullptr;
+  const TargetFacts *target_ = nullptr;
 };
 
 } // namespace
@@ -3182,6 +3608,7 @@ void resolve_package_types(
     SemanticPackage &package,
     const ConditionalSelections &selections,
     const std::vector<ResolvedIntegerExpression> &resolved_integers,
+    const TargetFacts &target,
     DiagnosticSink &diagnostics) {
   TypeResolver resolver(
       sources,
@@ -3191,7 +3618,8 @@ void resolve_package_types(
       diagnostics,
       nullptr,
       nullptr,
-      &resolved_integers);
+      &resolved_integers,
+      &target);
   resolver.resolve();
 }
 
@@ -3213,8 +3641,11 @@ TypeId resolve_type_syntax(
     const SyntaxTree &tree,
     NodeId type,
     ScopeId scope,
+    const TargetFacts &target,
     DiagnosticSink &diagnostics) {
-  TypeResolver resolver(sources, loaded, package, selections, diagnostics);
+  TypeResolver resolver(
+      sources, loaded, package, selections, diagnostics,
+      nullptr, nullptr, nullptr, &target);
   return resolver.resolve_one_type(tree, type, scope);
 }
 
@@ -3251,8 +3682,11 @@ TypeId resolve_local_procedure_signature(
     NodeId procedure,
     ScopeId scope,
     SymbolId owner,
+    const TargetFacts &target,
     DiagnosticSink &diagnostics) {
-  TypeResolver resolver(sources, loaded, package, selections, diagnostics);
+  TypeResolver resolver(
+      sources, loaded, package, selections, diagnostics,
+      nullptr, nullptr, nullptr, &target);
   return resolver.resolve_one_procedure(
       tree, declaration, procedure, scope, owner);
 }
@@ -3269,6 +3703,7 @@ TypeId resolve_local_type_declaration(
     SymbolId owner,
     const ConstantTable &active_constants,
     const std::vector<ConstantTypeBinding> &active_types,
+    const TargetFacts &target,
     DiagnosticSink &diagnostics) {
   TypeResolver resolver(
       sources,
@@ -3277,7 +3712,9 @@ TypeId resolve_local_type_declaration(
       selections,
       diagnostics,
       &active_constants,
-      &active_types);
+      &active_types,
+      nullptr,
+      &target);
   return resolver.resolve_one_local_type(
       tree, declaration, type, scope, owner);
 }
@@ -3290,10 +3727,43 @@ TypeId instantiate_parametric_type_application(
     SymbolId source,
     std::vector<ParametricArgument> arguments,
     SourceRange use_range,
+    const TargetFacts &target,
     DiagnosticSink &diagnostics) {
-  TypeResolver resolver(sources, loaded, package, selections, diagnostics);
+  TypeResolver resolver(
+      sources, loaded, package, selections, diagnostics,
+      nullptr, nullptr, nullptr, &target);
   return resolver.instantiate_one_type(
       source, std::move(arguments), use_range);
+}
+
+TypeId instantiate_owner_evaluated_type_application(
+    const SourceManager &sources,
+    const LoadedPackage &loaded,
+    SemanticPackage &package,
+    const ConditionalSelections &selections,
+    TypeId source,
+    const std::vector<DeferredElementCountTypeBinding> &type_bindings,
+    const std::vector<DeferredElementCountValueBinding> &value_bindings,
+    SourceRange use_range,
+    const ConstantTable &active_constants,
+    const TargetFacts &target,
+    DiagnosticSink &diagnostics) {
+  std::vector<ConstantTypeBinding> active_types;
+  for (const DeferredElementCountTypeBinding &binding : type_bindings) {
+    active_types.push_back({binding.parameter, binding.replacement});
+  }
+  TypeResolver resolver(
+      sources,
+      loaded,
+      package,
+      selections,
+      diagnostics,
+      &active_constants,
+      &active_types,
+      nullptr,
+      &target);
+  return resolver.instantiate_one_owner_evaluated_type(
+      source, type_bindings, value_bindings, use_range);
 }
 
 } // namespace draft

@@ -44,6 +44,7 @@ void resolve_package_types(
     const SyntaxTree &tree,
     NodeId type,
     ScopeId scope,
+    const TargetFacts &target,
     DiagnosticSink &diagnostics);
 
 // Preserves one integer expression that still mentions compile-time value
@@ -79,6 +80,7 @@ resolve_dependent_integer_expression_syntax(
     NodeId procedure,
     ScopeId scope,
     SymbolId owner,
+    const TargetFacts &target,
     DiagnosticSink &diagnostics);
 
 // Resolves one named type declaration introduced by a procedure body. The
@@ -100,6 +102,7 @@ resolve_dependent_integer_expression_syntax(
     SymbolId owner,
     const ConstantTable &active_constants,
     const std::vector<ConstantTypeBinding> &active_types,
+    const TargetFacts &target,
     DiagnosticSink &diagnostics);
 
 // Creates or reuses one nominal type application from already resolved,
@@ -115,6 +118,25 @@ resolve_dependent_integer_expression_syntax(
     SymbolId source,
     std::vector<ParametricArgument> arguments,
     SourceRange use_range,
+    const TargetFacts &target,
+    DiagnosticSink &diagnostics);
+
+// Concretizes an Array/SIMD row whose count recipe belongs to this package.
+// Procedure body checking supplies its exact generic environment through the
+// shared deferred-binding records; the type resolver composes nested templates
+// and invokes the normal compile-time interpreter. This keeps one evaluator and
+// one structural-type construction path across declaration and body phases.
+[[nodiscard]] TypeId instantiate_owner_evaluated_type_application(
+    const SourceManager &sources,
+    const LoadedPackage &loaded,
+    SemanticPackage &package,
+    const ConditionalSelections &selections,
+    TypeId source,
+    const std::vector<DeferredElementCountTypeBinding> &type_bindings,
+    const std::vector<DeferredElementCountValueBinding> &value_bindings,
+    SourceRange use_range,
+    const ConstantTable &active_constants,
+    const TargetFacts &target,
     DiagnosticSink &diagnostics);
 
 // Selection-aware form used by the semantic fixed-point driver. Selected
@@ -135,6 +157,7 @@ void resolve_package_types(
     SemanticPackage &package,
     const ConditionalSelections &selections,
     const std::vector<ResolvedIntegerExpression> &resolved_integers,
+    const TargetFacts &target,
     DiagnosticSink &diagnostics);
 
 } // namespace draft

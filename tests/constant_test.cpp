@@ -964,11 +964,24 @@ Sized[N: usize] :: struct {
     values: [N]u8,
 }
 
+Procedural_Sized[N: usize] :: struct {
+    values: [plus_one(N)]u8,
+}
+
 Small[N: u8] :: struct {
     values: [cast[usize](N)]u8,
 }
 
 Computed_Vector :: #simd[choose_size(true)]u32
+
+Procedural_Vector[N: usize] :: struct {
+    values: #simd[plus_one(N)]u32,
+}
+
+Procedural_Concrete :: struct {
+    array: Procedural_Sized[2],
+    vector: Procedural_Vector[3],
+}
 
 Buffer :: struct {
     direct: [plus_one(2)]u8,
@@ -1013,10 +1026,13 @@ Code :: enum i16 {
       find_symbol(valid.analysis.package, "Measured");
   const std::optional<draft::SymbolId> computed_vector =
       find_symbol(valid.analysis.package, "Computed_Vector");
+  const std::optional<draft::SymbolId> procedural_concrete =
+      find_symbol(valid.analysis.package, "Procedural_Concrete");
   EXPECT(state, buffer.has_value());
   EXPECT(state, aligned.has_value());
   EXPECT(state, measured.has_value());
   EXPECT(state, computed_vector.has_value());
+  EXPECT(state, procedural_concrete.has_value());
   EXPECT(state, find_symbol(
                     valid.analysis.package, "Layout_Selected").has_value());
   EXPECT(state, !find_symbol(
@@ -1042,6 +1058,20 @@ Code :: enum i16 {
     EXPECT(state, type.kind == draft::TypeKind::Simd);
     EXPECT(state, type.element_count == 4);
   }
+  if (procedural_concrete.has_value()) {
+    const draft::Type &type = valid.analysis.package.types.type(
+        valid.analysis.package.symbols.symbol(*procedural_concrete).type);
+    EXPECT(state, type.layout == draft::TypeLayout({true, 32, 16}));
+    EXPECT(state, type.members.size() == 2);
+    if (type.members.size() == 2) {
+      const draft::Type &array =
+          valid.analysis.package.types.type(type.members.front());
+      const draft::Type &vector =
+          valid.analysis.package.types.type(type.members.back());
+      EXPECT(state, array.layout == draft::TypeLayout({true, 3, 1}));
+      EXPECT(state, vector.layout == draft::TypeLayout({true, 16, 16}));
+    }
+  }
   EXPECT(state,
          valid.analysis.package.required_integer_expressions.empty());
 
@@ -1065,12 +1095,21 @@ wrong_count :: proc() -> u64 {
     return 4
 }
 
+wrong_generic_count :: proc(value: usize) -> u64 {
+    return value
+}
+
+Bad_Generic[N: usize] :: struct {
+    values: [wrong_generic_count(N)]u8,
+}
+
 Sized[N: usize] :: struct {
     values: [N]u8,
 }
 
 Bad :: struct {
     value: Sized[wrong_count()],
+    generic: Bad_Generic[4],
 }
 
 Bad_Array :: struct {
@@ -1086,7 +1125,7 @@ Bad_Aligned :: @align(wrong_count()) struct {
   EXPECT(state, !invalid.analysis.ok);
   const std::string rendered =
       draft::render_diagnostics(invalid.sources, invalid.diagnostics);
-  EXPECT(state, rendered.find("package.draft:13:18") != std::string::npos);
+  EXPECT(state, rendered.find("package.draft:21:18") != std::string::npos);
   EXPECT(state, rendered.find(
                     "compile-time value argument has the wrong concrete integer type") !=
                     std::string::npos);

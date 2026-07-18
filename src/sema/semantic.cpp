@@ -145,6 +145,7 @@ SemanticAnalysisResult analyze_package_semantics(
     DiagnosticSink provisional_diagnostics;
     SemanticPackage provisional = collect_package_declarations(
         sources, loaded, result.selections, provisional_diagnostics);
+    provisional.identity = imports.consumer_identity;
     bind_package_interfaces(provisional, imports, provisional_diagnostics);
     resolve_package_types(
         sources,
@@ -152,6 +153,7 @@ SemanticAnalysisResult analyze_package_semantics(
         provisional,
         result.selections,
         resolved_integers,
+        target,
         provisional_diagnostics);
     const CompileTimeRoundResult round = evaluate_compile_time_round(
         sources,
@@ -179,6 +181,7 @@ SemanticAnalysisResult analyze_package_semantics(
   // HIR construction, so stable IDs cannot refer into discarded rounds.
   result.package = collect_package_declarations(
       sources, loaded, result.selections, diagnostics);
+  result.package.identity = imports.consumer_identity;
   bind_package_interfaces(result.package, imports, diagnostics);
   resolve_package_types(
       sources,
@@ -186,6 +189,7 @@ SemanticAnalysisResult analyze_package_semantics(
       result.package,
       result.selections,
       resolved_integers,
+      target,
       diagnostics);
   // Declaration/member synthesis runs before bodies. Install the built-in
   // Context now so those early requests receive the same typed field set as
