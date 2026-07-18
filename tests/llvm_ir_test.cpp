@@ -32,6 +32,89 @@ struct TestState {
 
 #define EXPECT(state, expression) (state).expect((expression), #expression, __LINE__)
 
+struct EmittedFixture {
+  bool ok = false;
+  std::string text;
+  std::string diagnostics;
+};
+
+// Runs the complete agent-free semantic/MIR/LLVM path for one in-memory file.
+// Keeping this helper local makes byte-for-byte comparisons independent from
+// filesystem order and from the native toolchain adapter.
+[[nodiscard]] EmittedFixture emit_fixture(std::string text) {
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  draft::LoadedPackage loaded;
+  loaded.short_name = "agent_noop";
+  draft::LoadedPackageFile file;
+  file.kind = draft::PackageFileKind::DraftSource;
+  file.relative_name = "package.draft";
+  file.source = sources.add_source("package.draft", std::move(text));
+  file.syntax.emplace(draft::parse_source_file(sources, file.source, diagnostics));
+  loaded.files.push_back(std::move(file));
+
+  const draft::TargetProfile target = draft::make_aarch64_macos_profile();
+  draft::SemanticAnalysisResult semantics = draft::analyze_package_semantics(
+      sources, loaded, target.facts, diagnostics);
+  draft::BodyCheckResult bodies = draft::check_package_bodies(
+      sources,
+      loaded,
+      semantics.selections,
+      semantics.package,
+      semantics.constants,
+      target.facts,
+      diagnostics);
+  draft::MirLoweringResult mir = draft::lower_package_to_mir(
+      semantics.package, bodies.program, diagnostics);
+  draft::LlvmIrOptions options;
+  options.package = {"workspace", "agent-noop"};
+  draft::LlvmIrResult module = draft::emit_llvm_ir(
+      target,
+      sources,
+      options,
+      semantics.package,
+      semantics.global_initializers,
+      mir.program,
+      diagnostics);
+
+  EmittedFixture result;
+  result.ok = semantics.ok && bodies.ok && mir.ok && module.ok &&
+      !diagnostics.has_errors();
+  result.text = std::move(module.text);
+  result.diagnostics = draft::render_diagnostics(sources, diagnostics);
+  return result;
+}
+
+void test_agent_constructs_have_no_runtime_footprint(TestState &state) {
+  // The comments occupy exactly the lines used by docs/judge in the second
+  // fixture. Source coordinates therefore remain stable; exact module equality
+  // proves the constructs add neither an instruction nor a hidden data object.
+  const EmittedFixture baseline = emit_fixture(R"draft(package agent_noop
+
+// Public increment operation.
+pub increment :: proc(value: i64) -> i64 {
+    result := value + 1
+    // The result is one greater than the input.
+    return result
+}
+)draft");
+  const EmittedFixture with_agents = emit_fixture(R"draft(package agent_noop
+
+docs "Public increment operation."
+pub increment :: proc(value: i64) -> i64 {
+    result := value + 1
+    judge "The result is one greater than the input."
+    return result
+}
+)draft");
+
+  if (!baseline.ok) std::cerr << baseline.diagnostics;
+  if (!with_agents.ok) std::cerr << with_agents.diagnostics;
+  EXPECT(state, baseline.ok);
+  EXPECT(state, with_agents.ok);
+  EXPECT(state, baseline.text == with_agents.text);
+}
+
 void test_scalar_executable_module(TestState &state) {
   draft::SourceManager sources;
   draft::DiagnosticSink diagnostics;
@@ -479,6 +562,7 @@ main :: proc() -> int {
 
 int main() {
   TestState state;
+  test_agent_constructs_have_no_runtime_footprint(state);
   test_scalar_executable_module(state);
   if (state.failures != 0) {
     std::cerr << state.failures << " LLVM IR expectation(s) failed\n";
