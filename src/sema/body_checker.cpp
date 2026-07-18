@@ -1171,6 +1171,18 @@ private:
     }
     if (!is_invalid_type(target) &&
         semantic_.types.type(target).kind == TypeKind::Tuple &&
+        expression.kind == HirExpressionKind::Conditional &&
+        expression.operands.size() == 3) {
+      // Operand zero is the bool condition. Only the two selected values
+      // acquire the inferred tuple context, and each branch applies it through
+      // its own literal/constant tree.
+      contextualize_inferred_runtime_expression(expression.operands[1], target);
+      contextualize_inferred_runtime_expression(expression.operands[2], target);
+      expression.type = target;
+      return;
+    }
+    if (!is_invalid_type(target) &&
+        semantic_.types.type(target).kind == TypeKind::Tuple &&
         (expression.kind == HirExpressionKind::Tuple ||
          expression.kind == HirExpressionKind::Composite)) {
       const std::vector<TypeId> members = semantic_.types.type(target).members;

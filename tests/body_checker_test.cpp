@@ -1506,6 +1506,11 @@ destructure_tuple_constant :: proc() -> f64 {
     (assigned_left, assigned_right) = Untyped_Tuple
     return left + right + assigned_left + assigned_right
 }
+
+inferred_tuple_conditional :: proc(condition: bool) -> f64 {
+    pair := Untyped_Tuple if condition else (3, 4.5)
+    return cast[f64](pair.0) + pair.1
+}
 )draft");
   if (valid.diagnostics.has_errors()) {
     std::cerr << draft::render_diagnostics(valid.sources, valid.diagnostics);

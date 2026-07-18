@@ -122,6 +122,11 @@ contextual_tuple_constant :: proc() -> (f64, f64) {
     return Untyped_Tuple
 }
 
+inferred_tuple_conditional :: proc(condition: bool) -> f64 {
+    pair := Untyped_Tuple if condition else (3, 4.5)
+    return cast[f64](pair.0) + pair.1
+}
+
 identity[T: number] :: proc(value: T) -> T {
     return value
 }
@@ -376,6 +381,8 @@ main :: proc() {
     assert(contextual_float_constants() == 5.5)
     contextual_tuple := contextual_tuple_constant()
     assert(contextual_tuple.0 == 1.0 && contextual_tuple.1 == 2.5)
+    assert(inferred_tuple_conditional(true) == 3.5)
+    assert(inferred_tuple_conditional(false) == 7.5)
     assert(identity[i64](42) == 42)
     value: u32 = 17
     assert(identity(value) == 17)
