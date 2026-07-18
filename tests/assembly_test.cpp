@@ -124,8 +124,8 @@ barrier :: proc() {
     }
 }
 
-main :: proc() -> i32 {
-    return cast[i32](increment(40))
+main :: proc() -> int {
+    return cast[int](increment(40))
 }
 )draft");
 

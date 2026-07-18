@@ -237,7 +237,7 @@ pointer_distance :: proc(value: [^]i64, count: isize) -> isize {
     return ptr_sub(ptr_offset(value, count), value)
 }
 
-main :: proc() -> i32 {
+main :: proc() -> int {
     assert(global_callback(41) == 42)
     assert(global_answer == 42)
     global_answer = global_answer + 1
@@ -298,7 +298,7 @@ main :: proc() -> i32 {
     assert(len(pointer_view) == 3)
     assert(pointer_view[2] == 42)
     assert(small == 3)
-    return cast[i32](value)
+    return cast[int](value)
 }
 )draft");
   file.syntax.emplace(draft::parse_source_file(sources, file.source, diagnostics));
@@ -396,6 +396,18 @@ main :: proc() -> i32 {
   EXPECT(state, module.text.find("package.draft") != std::string::npos);
   EXPECT(state, module.text.find("define i32 @main(i32 %argc, ptr %argv)") !=
       std::string::npos);
+  EXPECT(state, module.text.find(
+      "%draft.runtime.Context = type { %draft.runtime.Allocator, "
+      "%draft.runtime.Allocator, ptr, %draft.runtime.Logger, "
+      "%draft.runtime.RandomGenerator, ptr, i64, ptr }") !=
+      std::string::npos);
+  EXPECT(state, module.text.find(
+      "call void %handler(ptr %context, { ptr, i64 } %condition_text") !=
+      std::string::npos);
+  EXPECT(state, module.text.find(
+      "store i32 %argc, ptr @__draft.process_argc") != std::string::npos);
+  EXPECT(state, module.text.find(
+      "store ptr %argv, ptr @__draft.process_argv") != std::string::npos);
   EXPECT(state, module.text.find("ptr @__draft.root_context") != std::string::npos);
   EXPECT(state, module.text.find("(ptr null)") == std::string::npos);
   EXPECT(state, module.text.find("trunc i64") != std::string::npos);

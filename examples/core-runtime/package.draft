@@ -1,0 +1,32 @@
+package core_runtime
+
+import core/c as c
+import core/option
+import core/result
+import core/runtime
+
+read_option :: proc(value: option.Option[i64]) -> i64 {
+    switch value {
+    case .some(payload):
+        return payload
+    case .none:
+        return 0
+    }
+}
+
+read_result :: proc(value: result.Result[i64, c.int]) -> i64 {
+    switch value {
+    case .success(payload):
+        return payload
+    case .failure(_):
+        return -1
+    }
+}
+
+main :: proc() {
+    empty := runtime.empty_context()
+    assert(empty.user_ptr == nil)
+    assert(empty.user_index == 0)
+    assert(read_option(.some(42)) == 42)
+    assert(read_result(.success(42)) == 42)
+}

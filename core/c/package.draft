@@ -1,0 +1,19 @@
+package c_abi
+
+// AArch64 Darwin C scalar aliases.  These are ordinary Draft aliases so C ABI
+// declarations stay explicit and source tools can inspect their exact widths.
+pub char :: i8
+pub signed_char :: i8
+pub unsigned_char :: u8
+pub short :: i16
+pub unsigned_short :: u16
+pub int :: i32
+pub unsigned_int :: u32
+pub long :: i64
+pub unsigned_long :: u64
+pub long_long :: i64
+pub unsigned_long_long :: u64
+pub size_t :: usize
+pub ssize_t :: isize
+pub intptr_t :: isize
+pub uintptr_t :: uintptr

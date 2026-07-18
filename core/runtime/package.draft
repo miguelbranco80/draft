@@ -1,0 +1,79 @@
+package runtime
+
+// This package is the source-visible half of the private runtime ABI.  The
+// compiler entry shim owns the root Context storage; ordinary Draft code sees
+// the same record shape here and may pass Context values through explicit
+// runtime bridges.
+
+pub Allocator_Operation :: enum u8 {
+    allocate,
+    resize,
+    free,
+}
+
+// An allocator receives its provider-owned state first.  old_memory and
+// old_size describe an existing allocation for resize/free and are nil/zero
+// for a fresh allocation.  Returning nil reports allocation failure.
+pub Allocator_Proc :: proc(
+    user: rawptr,
+    operation: Allocator_Operation,
+    old_memory: rawptr,
+    old_size, new_size, alignment: usize,
+) -> rawptr
+
+pub Allocator :: @repr(C) struct {
+    procedure: Allocator_Proc,
+    user: rawptr,
+}
+
+pub Log_Level :: enum u8 {
+    debug,
+    information,
+    warning,
+    error,
+}
+
+pub Logger_Proc :: proc(user: rawptr, level: Log_Level, message: string)
+
+pub Logger :: @repr(C) struct {
+    procedure: Logger_Proc,
+    user: rawptr,
+}
+
+pub Random_Generator_Proc :: proc(
+    user: rawptr,
+    output: [^]u8,
+    count: usize,
+) -> bool
+
+pub Random_Generator :: @repr(C) struct {
+    procedure: Random_Generator_Proc,
+    user: rawptr,
+}
+
+pub Assertion_Failure_Proc :: proc(
+    condition, message, source_file: string,
+    line, column: usize,
+)
+
+// Field order is versioned runtime ABI, not an implementation convenience.
+// Keep this declaration synchronized with the layout facts tested by the
+// backend.  Provider records are two pointers each on AArch64 macOS.
+pub Context :: @repr(C) struct {
+    allocator: Allocator,
+    temp_allocator: Allocator,
+    assertion_failure_proc: Assertion_Failure_Proc,
+    logger: Logger,
+    random_generator: Random_Generator,
+    user_ptr: rawptr,
+    user_index: int,
+    _internal: rawptr,
+}
+
+// This ordinary fallback makes the Context type useful before the context-free
+// foreign-thread bridge is connected.  The hosted entry shim installs its own
+// diagnostic assertion handler in the actual root Context.
+pub empty_context :: proc() -> Context {
+    result: Context
+    return result
+}

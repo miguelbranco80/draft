@@ -1,0 +1,8 @@
+package option
+
+// Option is intentionally an ordinary tagged union.  It has no compiler magic:
+// zero initialization selects none, and switch payload binding unwraps some.
+pub Option[T: type] :: union {
+    none,
+    some: T,
+}

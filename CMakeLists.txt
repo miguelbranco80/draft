@@ -95,6 +95,12 @@ endif()
 
 add_executable(draftc src/driver/main.cpp)
 target_link_libraries(draftc PRIVATE draft_compiler)
+target_compile_definitions(
+  draftc
+  PRIVATE
+    DRAFT_CORE_DIRECTORY="${CMAKE_CURRENT_SOURCE_DIR}/core"
+    DRAFT_CORE_CONTENT_IDENTITY="draft-core-bootstrap-v1"
+)
 
 include(CTest)
 if(BUILD_TESTING)

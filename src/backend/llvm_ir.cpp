@@ -464,25 +464,77 @@ private:
   }
 
   void emit_runtime_declarations() {
-    // Until core/runtime is compiled as ordinary Draft source, the bootstrap
-    // context contains only the assertion callback needed by the implemented
-    // language subset. It is deliberately private: source-visible Context
-    // layout must come from core/runtime rather than becoming a backend fact.
-    output_ << "%draft.bootstrap.Context = type { ptr }\n"
-            << "@__draft.root_context = internal global %draft.bootstrap.Context "
-               "{ ptr @__draft.default_assertion_failure }, align 8\n\n"
-            << "declare void @llvm.trap() cold noreturn nounwind\n"
+    // LLVM intrinsics are declared in every package module that may use them.
+    // The Draft runtime helpers below are different: dependency modules only
+    // declare them, while the executable root owns their single definitions
+    // and the one process-wide root context.
+    output_ << "declare void @llvm.trap() cold noreturn nounwind\n"
             << "declare i16 @llvm.bswap.i16(i16)\n"
             << "declare i32 @llvm.bswap.i32(i32)\n"
             << "declare i64 @llvm.bswap.i64(i64)\n"
-            << "declare i128 @llvm.bswap.i128(i128)\n\n"
+            << "declare i128 @llvm.bswap.i128(i128)\n\n";
+    if (!options_.emit_program_entry) {
+      output_ << "declare hidden void @__draft.assert(ptr, i1, { ptr, i64 }, "
+                 "{ ptr, i64 }, { ptr, i64 }, i64, i64)\n"
+              << "declare hidden void @__draft.bounds(i64, i64, ptr, i64, i64)\n"
+              << "declare hidden void @__draft.slice_bounds("
+                 "i64, i64, i64, ptr, i64, i64)\n\n";
+      return;
+    }
+
+    // These layout-only handle records are the physical ABI shared with the
+    // compiler-distributed core/runtime Context declaration.  Each provider is
+    // a procedure pointer paired with provider-owned state.  Keeping the full
+    // Context shape here, even before all providers are populated, prevents an
+    // early one-field bootstrap layout from becoming an accidental ABI.
+    output_ << "%draft.runtime.Allocator = type { ptr, ptr }\n"
+            << "%draft.runtime.Logger = type { ptr, ptr }\n"
+            << "%draft.runtime.RandomGenerator = type { ptr, ptr }\n"
+            << "%draft.runtime.Context = type { "
+               "%draft.runtime.Allocator, %draft.runtime.Allocator, ptr, "
+               "%draft.runtime.Logger, %draft.runtime.RandomGenerator, "
+               "ptr, i64, ptr }\n"
+            << "@__draft.process_argc = internal global i32 0, align 4\n"
+            << "@__draft.process_argv = internal global ptr null, align 8\n"
+            << "@__draft.root_context = internal global %draft.runtime.Context "
+               "{ %draft.runtime.Allocator zeroinitializer, "
+               "%draft.runtime.Allocator zeroinitializer, "
+               "ptr @__draft.default_assertion_failure, "
+               "%draft.runtime.Logger zeroinitializer, "
+               "%draft.runtime.RandomGenerator zeroinitializer, "
+               "ptr null, i64 0, ptr null }, align 8\n\n";
+
+    const std::string assertion_prefix = "Draft assertion failed: ";
+    const std::string bounds_prefix = "Draft bounds check failed";
+    const std::string newline = "\n";
+    output_ << "@.draft.runtime.assertion_prefix = private unnamed_addr "
+               "constant [" << assertion_prefix.size() << " x i8] c\""
+            << llvm_bytes(assertion_prefix) << "\", align 1\n"
+            << "@.draft.runtime.bounds_prefix = private unnamed_addr constant ["
+            << bounds_prefix.size() << " x i8] c\""
+            << llvm_bytes(bounds_prefix) << "\", align 1\n"
+            << "@.draft.runtime.newline = private unnamed_addr constant [1 x i8] "
+               "c\"" << llvm_bytes(newline) << "\", align 1\n\n"
+            << "declare i64 @write(i32, ptr, i64)\n\n"
             << "define internal void @__draft.default_assertion_failure("
-               "{ ptr, i64 } %condition_text, { ptr, i64 } %message, "
-               "{ ptr, i64 } %file, i64 %line, i64 %column) {\n"
+               "ptr %context, { ptr, i64 } %condition_text, "
+               "{ ptr, i64 } %message, { ptr, i64 } %file, "
+               "i64 %line, i64 %column) {\n"
             << "entry:\n"
+            << "  %condition.pointer = extractvalue { ptr, i64 } "
+               "%condition_text, 0\n"
+            << "  %condition.length = extractvalue { ptr, i64 } "
+               "%condition_text, 1\n"
+            << "  %write.prefix = call i64 @write(i32 2, ptr "
+               "@.draft.runtime.assertion_prefix, i64 "
+            << assertion_prefix.size() << ")\n"
+            << "  %write.condition = call i64 @write(i32 2, "
+               "ptr %condition.pointer, i64 %condition.length)\n"
+            << "  %write.newline = call i64 @write(i32 2, ptr "
+               "@.draft.runtime.newline, i64 1)\n"
             << "  ret void\n"
             << "}\n\n"
-            << "define internal void @__draft.assert(ptr %context, i1 %condition, "
+            << "define hidden void @__draft.assert(ptr %context, i1 %condition, "
                "{ ptr, i64 } %condition_text, { ptr, i64 } %message, "
                "{ ptr, i64 } %file, i64 %line, i64 %column) {\n"
             << "entry:\n"
@@ -491,15 +543,15 @@ private:
             << "  %has.context = icmp ne ptr %context, null\n"
             << "  br i1 %has.context, label %load.handler, label %trap\n"
             << "load.handler:\n"
-            << "  %handler.slot = getelementptr %draft.bootstrap.Context, "
-               "ptr %context, i32 0, i32 0\n"
+            << "  %handler.slot = getelementptr %draft.runtime.Context, "
+               "ptr %context, i32 0, i32 2\n"
             << "  %handler = load ptr, ptr %handler.slot, align 8\n"
             << "  %has.handler = icmp ne ptr %handler, null\n"
             << "  br i1 %has.handler, label %call.handler, label %trap\n"
             << "call.handler:\n"
-            << "  call void %handler({ ptr, i64 } %condition_text, "
-               "{ ptr, i64 } %message, { ptr, i64 } %file, i64 %line, "
-               "i64 %column)\n"
+            << "  call void %handler(ptr %context, "
+               "{ ptr, i64 } %condition_text, { ptr, i64 } %message, "
+               "{ ptr, i64 } %file, i64 %line, i64 %column)\n"
             << "  br label %trap\n"
             << "trap:\n"
             << "  call void @llvm.trap()\n"
@@ -511,9 +563,14 @@ private:
                "i64 %first, i64 %second, i64 %length, ptr %file, "
                "i64 %line, i64 %column) {\n"
             << "entry:\n"
+            << "  %write.bounds = call i64 @write(i32 2, ptr "
+               "@.draft.runtime.bounds_prefix, i64 "
+            << bounds_prefix.size() << ")\n"
+            << "  %write.bounds.newline = call i64 @write(i32 2, ptr "
+               "@.draft.runtime.newline, i64 1)\n"
             << "  ret void\n"
             << "}\n\n"
-            << "define internal void @__draft.bounds(i64 %index, i64 %length, "
+            << "define hidden void @__draft.bounds(i64 %index, i64 %length, "
                "ptr %file, i64 %line, i64 %column) {\n"
             << "entry:\n"
             << "  %inside = icmp ult i64 %index, %length\n"
@@ -526,7 +583,8 @@ private:
             << "ok:\n"
             << "  ret void\n"
             << "}\n\n"
-            << "define internal void @__draft.slice_bounds(i64 %low, i64 %high, "
+            << "define hidden void @__draft.slice_bounds("
+               "i64 %low, i64 %high, "
                "i64 %length, ptr %file, i64 %line, i64 %column) {\n"
             << "entry:\n"
             << "  %ordered = icmp ule i64 %low, %high\n"
@@ -2595,34 +2653,30 @@ private:
     const std::size_t parameters = signature.members.empty()
         ? 0
         : signature.members.size() - 1;
-    if (parameters != 0 || signature.c_calling_convention) {
-      error(symbol.name_range, "Draft main must be an ordinary zero-parameter procedure");
+    if (parameters != 0 || signature.c_calling_convention ||
+        symbol.flags.parametric) {
+      error(
+          symbol.name_range,
+          "Draft main must be a non-parametric ordinary zero-parameter procedure");
       return;
     }
     const TypeId result_type = function_result(symbol.type);
     output_ << "define i32 @main(i32 %argc, ptr %argv) {\n"
-            << "entry:\n";
+            << "entry:\n"
+            << "  store i32 %argc, ptr @__draft.process_argc, align 4\n"
+            << "  store ptr %argv, ptr @__draft.process_argv, align 8\n";
     if (result_type == semantic_.types.builtins().void_type) {
       output_ << "  call void " << symbol_name(*entry)
               << "(ptr @__draft.root_context)\n"
               << "  ret i32 0\n";
-    } else if (integer_kind(type(result_type).kind)) {
+    } else if (result_type == semantic_.types.builtins().int_type) {
       output_ << "  %draft.result = call " << llvm_type(result_type) << ' '
               << symbol_name(*entry) << "(ptr @__draft.root_context)\n";
-      const std::uint32_t bits = integer_bits(result_type);
-      if (bits > 32) {
-        output_ << "  %exit.result = trunc " << llvm_type(result_type)
-                << " %draft.result to i32\n"
-                << "  ret i32 %exit.result\n";
-      } else if (bits < 32) {
-        output_ << "  %exit.result = zext " << llvm_type(result_type)
-                << " %draft.result to i32\n"
-                << "  ret i32 %exit.result\n";
-      } else {
-        output_ << "  ret i32 %draft.result\n";
-      }
+      output_ << "  %exit.result = trunc " << llvm_type(result_type)
+              << " %draft.result to i32\n"
+              << "  ret i32 %exit.result\n";
     } else {
-      error(symbol.name_range, "Draft main result must be void or an integer");
+      error(symbol.name_range, "Draft main result must be void or int");
       output_ << "  ret i32 1\n";
     }
     output_ << "}\n\n";

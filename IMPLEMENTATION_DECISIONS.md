@@ -74,3 +74,20 @@ and barrier vocabulary, and register/flags/memory declarations. MIR lowers
 accepted regions as volatile assembly. More complex addressing, lane-qualified
 SIMD operations, and the remainder of the closed Draft 1 instruction vocabulary
 are still required before the agent-free implementation is declared complete.
+
+## Initial hosted runtime context layout
+
+Status: bootstrap runtime ABI; synchronized with `core/runtime` by tests.
+
+The AArch64 macOS root Context is 96 bytes with 8-byte alignment. Its fields
+begin at offsets 0, 16, 32, 40, 56, 72, 80, and 88, in the source order declared
+by `core/runtime.Context`. Allocator, logger, and random-generator provider
+records each contain a procedure pointer and a provider-state pointer. The
+assertion callback is an ordinary Draft procedure pointer, so its physical call
+prepends the active Context pointer.
+
+Only the executable root module defines runtime failure helpers and root process
+state. Dependency modules reference those hidden link-unit symbols. This gives
+all ordinary calls one coherent Context and prevents per-package runtime state
+from emerging as a bootstrap artifact. Changing this layout or helper contract
+requires a new runtime ABI and core distribution identity.

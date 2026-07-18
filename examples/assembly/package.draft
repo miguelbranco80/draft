@@ -11,6 +11,6 @@ increment :: proc(value: u64) -> u64 {
     }
 }
 
-main :: proc() -> i32 {
-    return cast[i32](increment(40))
+main :: proc() {
+    assert(increment(40) == 41)
 }

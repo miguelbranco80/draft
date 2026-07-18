@@ -29,6 +29,14 @@
 
 namespace {
 
+// The bootstrap binary is built together with its core source tree.  Installed
+// distributions will replace this build-time path with their versioned resource
+// locator, but both forms feed the same explicit WorkspaceLoadOptions boundary.
+void configure_core_distribution(draft::WorkspaceLoadOptions &options) {
+  options.core_directory = DRAFT_CORE_DIRECTORY;
+  options.core_content_identity = DRAFT_CORE_CONTENT_IDENTITY;
+}
+
 [[nodiscard]] std::string escaped(std::string_view text) {
   std::string result;
   for (const char byte : text) {
@@ -141,6 +149,7 @@ int compile_package(const std::string &directory, bool emit_llvm) {
   options.target = draft::make_aarch64_macos_profile();
   options.workspace.workspace_directory =
       absolute_directory.parent_path().string();
+  configure_core_distribution(options.workspace);
   options.lower_mir = emit_llvm;
   options.emit_llvm = emit_llvm;
   draft::CompileWorkspaceResult compiled = draft::compile_workspace(
@@ -200,6 +209,7 @@ int build_package(
   compile_options.target = target;
   compile_options.workspace.workspace_directory =
       absolute_directory.parent_path().string();
+  configure_core_distribution(compile_options.workspace);
   compile_options.lower_mir = true;
   compile_options.emit_llvm = true;
   const draft::CompileWorkspaceResult compiled = draft::compile_workspace(

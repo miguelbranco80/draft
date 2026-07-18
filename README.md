@@ -74,10 +74,11 @@ target-qualified folder-package loading. The semantic foundation now loads an
 acyclic, explicitly rooted package graph; derives public package interfaces;
 binds file-local imports without leaking package-local IDs; assigns stable
 scopes, symbols, and types; resolves signatures and aggregate layouts; evaluates
-arbitrary-precision integer and exact rational numeric constants; interprets
-required scalar compile-time procedures with bounded loops, recursion, switches,
-parametric values, and type/layout queries; and selects declaration/member `when`
-branches through deterministic fixed-point rounds.
+arbitrary-precision integers and exactly rounded IEEE floating-point constants;
+interprets scalar and aggregate compile-time procedures with locals, assignment,
+bounded loops, recursion, switches, parametric values, and type/layout queries;
+and selects declaration/member `when` branches through deterministic fixed-point
+rounds.
 Provider-independent docs, judgments, and synthesis sites retain decoded text,
 typed expectations, secure package-relative attachments, and SHA-256 content
 identities; public docs cross package-interface boundaries. Procedure effect
@@ -100,6 +101,12 @@ and declared effects before lowering to volatile inline assembly. The
 `examples/assembly` package exercises that path through a native executable.
 Scalar/pointer `c proc` imports and exports are checked at a separate C ABI
 boundary and retain exact linker names; `examples/c-interop` exercises both.
+The hosted entry shim owns one runtime Context across the linked package graph,
+captures process arguments, enforces the exact `main` signature, and reports
+assertion and bounds failures before trapping. The compiler-distributed
+`core/runtime`, `core/c`, `core/option`, and `core/result` packages are ordinary
+inspectable Draft source; `examples/core-runtime` checks their import, generic,
+layout, and native paths.
 
 Configure, build, and test the current compiler with:
 
