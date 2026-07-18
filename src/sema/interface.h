@@ -182,14 +182,17 @@ struct InterfaceDeclaration {
   std::vector<FieldWrite> field_writes;
 };
 
-// InterfaceDocumentation contains only content-addressed public design context;
-// it intentionally omits FileId, SyntaxReference, and physical paths.
-// declaration is empty for package documentation and names the public anchor
-// otherwise. files are already canonical package-relative attachment records.
+// InterfaceDocumentation contains public design context and its exact explicit
+// attachment bytes for process-local dependency context construction. It
+// intentionally omits FileId, SyntaxReference, and physical paths and is never
+// serialized into a resolution manifest. declaration is empty for package
+// documentation and names the public anchor otherwise. files are canonical
+// package-relative attachment records parallel to file_contents.
 struct InterfaceDocumentation {
   std::string declaration;
   std::string text;
   std::vector<AttachedFile> files;
+  std::vector<std::string> file_contents;
   Sha256Digest record_digest;
 };
 

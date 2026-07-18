@@ -541,18 +541,25 @@ CompileWorkspaceResult compile_workspace(
         available,
         diagnostics);
     if (!package.semantics.ok) continue;
+    // Public package/declaration documentation is an interface input just like
+    // public types and constants. Collect it before consumers bind dependency
+    // interfaces; waiting for the body pass would make those exact docs and
+    // attachment bytes permanently unavailable in the consumer semantic graph.
+    // Body-local judgments and synthesis sites are added by the later complete
+    // recollection after HIR checking.
+    package.metadata = collect_agent_metadata(
+        sources,
+        workspace_package.loaded,
+        package.semantics.package,
+        options.attachments,
+        diagnostics);
     package.interface = build_package_interface(
         workspace_package.identity,
         package.semantics.package,
         package.semantics.constants,
+        package.metadata,
         diagnostics);
     if (options.stage == CompileWorkspaceStage::DiscoverInterfaceSynthesis) {
-      package.metadata = collect_agent_metadata(
-          sources,
-          workspace_package.loaded,
-          package.semantics.package,
-          options.attachments,
-          diagnostics);
       package.obligations = build_agent_obligations(
           workspace_package.identity,
           sources,
@@ -560,12 +567,6 @@ CompileWorkspaceResult compile_workspace(
           package.semantics.package,
           package.metadata,
           options.target,
-          diagnostics);
-      package.interface = build_package_interface(
-          workspace_package.identity,
-          package.semantics.package,
-          package.semantics.constants,
-          package.metadata,
           diagnostics);
     }
     result.packages[package_index] = std::move(package);

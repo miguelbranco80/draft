@@ -594,10 +594,14 @@ void test_visible_import_interface_is_context(TestState &state) {
   write_file(
       workspace / "lib" / "package.draft",
       "package lib\n"
+      "docs \"Library design.\" file \"GUIDE.md\"\n"
       "pub Answer :: 42\n"
+      "docs \"Record design.\" file \"RECORD.md\"\n"
       "pub Record :: struct {\n"
       "    count: u32,\n"
       "}\n");
+  write_file(workspace / "lib" / "GUIDE.md", "library design bytes\n");
+  write_file(workspace / "lib" / "RECORD.md", "record design bytes\n");
   write_file(
       workspace / "app" / "package.draft",
       "package app\n"
@@ -656,6 +660,33 @@ void test_visible_import_interface_is_context(TestState &state) {
             std::string::npos);
     EXPECT(state,
         draft::sha256(context.definition) == context.definition_digest);
+    EXPECT(state, context.documentation.size() == 2);
+    bool saw_library_docs = false;
+    bool saw_record_docs = false;
+    for (const draft::AgentDocumentationContext &documentation :
+         context.documentation) {
+      if (documentation.text == "Library design.") {
+        EXPECT(state, documentation.file_contents.size() == 1);
+        if (documentation.file_contents.size() == 1) {
+          EXPECT(state,
+              documentation.file_contents.front() ==
+                  "library design bytes\n");
+        }
+        saw_library_docs = true;
+      }
+      if (documentation.text == "Record design.") {
+        EXPECT(state, documentation.anchor_name == "Record");
+        EXPECT(state, documentation.file_contents.size() == 1);
+        if (documentation.file_contents.size() == 1) {
+          EXPECT(state,
+              documentation.file_contents.front() ==
+                  "record design bytes\n");
+        }
+        saw_record_docs = true;
+      }
+    }
+    EXPECT(state, saw_library_docs);
+    EXPECT(state, saw_record_docs);
   }
 
   // A dependency constant is part of its visible compact interface even when
@@ -664,7 +695,9 @@ void test_visible_import_interface_is_context(TestState &state) {
   write_file(
       workspace / "lib" / "package.draft",
       "package lib\n"
+      "docs \"Library design.\" file \"GUIDE.md\"\n"
       "pub Answer :: 43\n"
+      "docs \"Record design.\" file \"RECORD.md\"\n"
       "pub Record :: struct {\n"
       "    count: u32,\n"
       "}\n");
@@ -704,8 +737,14 @@ void test_denied_imports_are_removed_from_usable_context(TestState &state) {
   write_file(
       workspace / "lib" / "package.draft",
       "package lib\n"
+      "docs \"Library design.\" file \"GUIDE.md\"\n"
+      "docs \"Answer design.\" file \"ANSWER.md\"\n"
       "pub Answer :: 42\n"
+      "docs \"Record design.\" file \"RECORD.md\"\n"
       "pub Record :: struct { count: u32, }\n");
+  write_file(workspace / "lib" / "GUIDE.md", "library bytes\n");
+  write_file(workspace / "lib" / "ANSWER.md", "answer bytes\n");
+  write_file(workspace / "lib" / "RECORD.md", "record bytes\n");
   write_file(
       workspace / "app" / "package.draft",
       "package app\n"
@@ -770,6 +809,22 @@ void test_denied_imports_are_removed_from_usable_context(TestState &state) {
       EXPECT(state,
           definition.find("DECLARATION_NAME 6\nRecord") !=
               std::string::npos);
+      bool saw_answer_docs = false;
+      bool saw_record_docs = false;
+      for (const draft::AgentDocumentationContext &documentation :
+           member->imported_packages.front().documentation) {
+        if (documentation.anchor_name == "Answer") saw_answer_docs = true;
+        if (documentation.anchor_name == "Record") {
+          EXPECT(state, documentation.file_contents.size() == 1);
+          if (documentation.file_contents.size() == 1) {
+            EXPECT(state,
+                documentation.file_contents.front() == "record bytes\n");
+          }
+          saw_record_docs = true;
+        }
+      }
+      EXPECT(state, !saw_answer_docs);
+      EXPECT(state, saw_record_docs);
     }
   }
   if (whole_package != nullptr) {

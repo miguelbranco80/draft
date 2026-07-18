@@ -171,7 +171,7 @@ An omitted symbol is unknown, and compiler-, package-assembly-, and target-owned
 providers cannot be overridden by an external audit.
 
 Provider requests never substitute hashes for information the synthesizer must
-understand. `draft-synthesis-request-v10` carries canonical Draft spellings for
+understand. `draft-synthesis-request-v11` carries canonical Draft spellings for
 the expected type and every visible binding, together with explicit target,
 SIMD, and parsed-assembly facts. It also carries the checked runtime `Context`
 fields with exact offsets and types. Active denials resolve through the ordinary
@@ -182,6 +182,13 @@ diagnostic policy selector. Package and enclosing-declaration documentation
 retain their anchor, text, and exact isolated attachment bytes. The same rows
 remain content-hashed, so their human-readable representation is both useful to
 Codex and a stale-pin input.
+
+Public dependency documentation is published in the early package interface,
+alongside types and constants, rather than after consumers have already bound
+it. Its exact explicit attachment bytes remain process-local and are never
+written into the resolution manifest. Imported package and declaration anchors
+survive into the provider request; denying one imported declaration redacts its
+documentation and attachments together with its interface row.
 
 The request also carries persistent package and source coordinates plus a
 canonical token rendering of the enclosing procedure or type declaration.

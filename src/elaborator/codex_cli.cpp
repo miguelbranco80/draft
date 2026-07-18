@@ -43,7 +43,7 @@ namespace {
 constexpr std::uintmax_t kMaximumCodexOutputBytes = 64U * 1024U * 1024U;
 constexpr std::uintmax_t kMaximumCodexLogBytes = 4U * 1024U * 1024U;
 constexpr std::string_view kPromptContractIdentity =
-    "draft-codex-synthesis-prompt-v10";
+    "draft-codex-synthesis-prompt-v11";
 constexpr std::string_view kOutputSchema =
     "{\n"
     "  \"type\": \"object\",\n"
@@ -218,6 +218,20 @@ void append_field(
       ".bin";
 }
 
+[[nodiscard]] std::string imported_documentation_attachment_name(
+    std::size_t package_index,
+    std::size_t documentation_index,
+    std::size_t attachment_index) {
+  const auto padded = [](std::size_t value) {
+    std::string digits = std::to_string(value);
+    const std::size_t zeroes = digits.size() < 8 ? 8 - digits.size() : 0;
+    return std::string(zeroes, '0') + digits;
+  };
+  return "import-" + padded(package_index) + "-documentation-" +
+      padded(documentation_index) + "-attachment-" +
+      padded(attachment_index) + ".bin";
+}
+
 // Constructs the complete model instruction. The output contract is repeated
 // in prose as well as enforced by the CLI JSON Schema. No surface or generated
 // workspace path is exposed.
@@ -386,8 +400,11 @@ void append_field(
   append_u64(
       static_cast<std::uint64_t>(request.obligation.imported_packages.size()),
       prompt);
-  for (const AgentImportedPackageContext &package :
-       request.obligation.imported_packages) {
+  for (std::size_t package_index = 0;
+       package_index < request.obligation.imported_packages.size();
+       ++package_index) {
+    const AgentImportedPackageContext &package =
+        request.obligation.imported_packages[package_index];
     if (sha256(package.definition) != package.definition_digest) {
       provider_error(
           diagnostics, "Codex imported package identity is inconsistent");
@@ -400,6 +417,49 @@ void append_field(
     append_field(
         "IMPORT_DEFINITION_SHA256", package.definition_digest.hex(), prompt);
     append_field("IMPORT_DEFINITION", package.definition, prompt);
+    prompt += "IMPORT_DOCUMENTATION ";
+    append_u64(
+        static_cast<std::uint64_t>(package.documentation.size()), prompt);
+    for (std::size_t documentation_index = 0;
+         documentation_index < package.documentation.size();
+         ++documentation_index) {
+      const AgentDocumentationContext &documentation =
+          package.documentation[documentation_index];
+      if (documentation.files.size() !=
+          documentation.file_contents.size()) {
+        provider_error(
+            diagnostics,
+            "Codex imported documentation identities are inconsistent");
+        return false;
+      }
+      append_field("IMPORT_DOC_ANCHOR", documentation.anchor_name, prompt);
+      append_field("IMPORT_DOC_TEXT", documentation.text, prompt);
+      append_field(
+          "IMPORT_DOC_SHA256", documentation.record_digest.hex(), prompt);
+      prompt += "IMPORT_DOC_ATTACHMENTS ";
+      append_u64(
+          static_cast<std::uint64_t>(documentation.files.size()), prompt);
+      for (std::size_t attachment_index = 0;
+           attachment_index < documentation.files.size();
+           ++attachment_index) {
+        const AttachedFile &file = documentation.files[attachment_index];
+        const std::string &contents =
+            documentation.file_contents[attachment_index];
+        if (contents.size() != file.size || sha256(contents) != file.digest) {
+          provider_error(
+              diagnostics,
+              "Codex imported documentation attachment is inconsistent");
+          return false;
+        }
+        const std::string name = imported_documentation_attachment_name(
+            package_index, documentation_index, attachment_index);
+        if (!write_file(directory / name, contents, diagnostics)) return false;
+        append_field("IMPORT_DOC_ATTACHMENT_PATH", file.relative_path, prompt);
+        append_field("IMPORT_DOC_ATTACHMENT_FILE", name, prompt);
+        append_field(
+            "IMPORT_DOC_ATTACHMENT_SHA256", file.digest.hex(), prompt);
+      }
+    }
   }
   prompt += "GUIDING_JUDGMENTS ";
   append_u64(
@@ -862,7 +922,7 @@ SynthesisProvider configure_codex_cli_provider(
   if (!executable_digest.has_value()) return {};
 
   Sha256 configuration;
-  configuration.update("draft.codex-cli-provider.v5");
+  configuration.update("draft.codex-cli-provider.v6");
   configuration.update(executable_digest->bytes);
   configuration.update(options.model);
   configuration.update(";timeout-ms=");
@@ -882,7 +942,7 @@ SynthesisProvider configure_codex_cli_provider(
       "codex-config-" + configuration.finalize().hex();
 
   SynthesisProvider provider;
-  provider.provider_identity = "openai-codex-cli-v11";
+  provider.provider_identity = "openai-codex-cli-v12";
   provider.model_identity = state.model;
   provider.configuration_identity = state.configuration_identity;
   provider.state = &state;

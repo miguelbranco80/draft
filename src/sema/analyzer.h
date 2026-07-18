@@ -18,6 +18,7 @@
 
 #pragma once
 
+#include "base/sha256.h"
 #include "sema/constant_value.h"
 #include "sema/symbol.h"
 #include "sema/type.h"
@@ -164,6 +165,25 @@ struct ImportedSymbol {
   bool has_effect_summary = false;
   std::string native_provider;
   std::string native_linker_name_spelling;
+};
+
+// Public documentation crosses an import only as explicit, content-addressed
+// provider context. The consumer keeps the local import alias separately from
+// the dependency declaration anchor so denial filtering can redact docs for a
+// denied member without hiding unrelated package design material.
+struct ImportedDocumentationFile {
+  std::string relative_path;
+  std::uint64_t size = 0;
+  Sha256Digest digest;
+};
+
+struct ImportedDocumentation {
+  SymbolId import_symbol;
+  std::string declaration;
+  std::string text;
+  std::vector<ImportedDocumentationFile> files;
+  std::vector<std::string> file_contents;
+  Sha256Digest record_digest;
 };
 
 // A use of a public parametric procedure creates a concrete consumer-local
@@ -344,6 +364,7 @@ struct SemanticPackage {
   std::vector<ParametricTypeInstanceRecord> parametric_type_instances;
   std::vector<ImportBinding> imports;
   std::vector<ImportedSymbol> imported_symbols;
+  std::vector<ImportedDocumentation> imported_documentation;
   std::vector<ImportedProcedureInstance> imported_procedure_instances;
   std::vector<ImportedType> imported_types;
   std::vector<ImportedEffect> imported_effects;

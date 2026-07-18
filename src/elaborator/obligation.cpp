@@ -454,6 +454,20 @@ void append_imported_effect_context(
   return false;
 }
 
+[[nodiscard]] std::optional<SymbolId> imported_public_symbol(
+    const SemanticPackage &package,
+    SymbolId import_symbol,
+    std::string_view public_name) {
+  for (const ImportedSymbol &imported : package.imported_symbols) {
+    if (imported.import_symbol == import_symbol &&
+        imported.public_name == public_name &&
+        !is_concrete_imported_instance(package, imported.proxy)) {
+      return imported.proxy;
+    }
+  }
+  return std::nullopt;
+}
+
 [[nodiscard]] std::string imported_package_definition(
     const PackageIdentity &identity,
     const SemanticPackage &package,
@@ -661,6 +675,38 @@ imported_package_context(
           type_contexts,
           diagnostics);
       context.definition_digest = sha256(context.definition);
+      for (const ImportedDocumentation &documentation :
+           package.imported_documentation) {
+        if (documentation.import_symbol != binding->symbol) continue;
+        if (!documentation.declaration.empty()) {
+          const std::optional<SymbolId> anchor = imported_public_symbol(
+              package, binding->symbol, documentation.declaration);
+          if (!anchor.has_value()) {
+            diagnostics.error(
+                symbol.name_range,
+                "imported documentation has no public declaration anchor");
+            continue;
+          }
+          if (denies_symbol(denials, *anchor)) continue;
+        }
+        if (documentation.files.size() !=
+            documentation.file_contents.size()) {
+          diagnostics.error(
+              symbol.name_range,
+              "imported documentation attachment identities are inconsistent");
+          continue;
+        }
+        AgentDocumentationContext imported_documentation;
+        imported_documentation.anchor_name = documentation.declaration;
+        imported_documentation.text = documentation.text;
+        for (const ImportedDocumentationFile &file : documentation.files) {
+          imported_documentation.files.push_back(
+              {file.relative_path, file.size, file.digest});
+        }
+        imported_documentation.file_contents = documentation.file_contents;
+        imported_documentation.record_digest = documentation.record_digest;
+        context.documentation.push_back(std::move(imported_documentation));
+      }
       result.push_back(std::move(context));
     }
     scope = current.parent;
@@ -1173,7 +1219,7 @@ struct ActiveDenialContext {
     const AgentObligation &obligation,
     const TargetProfile &target) {
   Sha256 hash;
-  hash_field(hash, "draft-agent-obligation-v9");
+  hash_field(hash, "draft-agent-obligation-v10");
   hash_field(hash, obligation.site_identity);
   hash.update(obligation.record_digest.bytes);
   hash.update(obligation.expected_type_digest.bytes);
@@ -1256,6 +1302,21 @@ struct ActiveDenialContext {
     hash_field(hash, package.root_relative_path);
     hash.update(package.definition_digest.bytes);
     hash_field(hash, package.definition);
+    hash_u64(
+        hash, static_cast<std::uint64_t>(package.documentation.size()));
+    for (const AgentDocumentationContext &documentation :
+         package.documentation) {
+      hash_field(hash, documentation.anchor_name);
+      hash_field(hash, documentation.text);
+      hash.update(documentation.record_digest.bytes);
+      hash_u64(
+          hash, static_cast<std::uint64_t>(documentation.files.size()));
+      for (const AttachedFile &file : documentation.files) {
+        hash_field(hash, file.relative_path);
+        hash_u64(hash, file.size);
+        hash.update(file.digest.bytes);
+      }
+    }
   }
   hash_u64(
       hash,

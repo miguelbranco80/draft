@@ -226,6 +226,7 @@ public:
         }
         documentation.text = record.text;
         documentation.files = record.files;
+        documentation.file_contents = record.file_contents;
         documentation.record_digest = record.record_digest;
         result_.documentation.push_back(std::move(documentation));
       }
@@ -758,6 +759,20 @@ public:
         bind_nominal_members(
             proxy_id, imported_scope, package, cache, declaration.type);
       }
+    }
+    for (const InterfaceDocumentation &documentation :
+         package.documentation) {
+      ImportedDocumentation imported;
+      imported.import_symbol = binding.symbol;
+      imported.declaration = documentation.declaration;
+      imported.text = documentation.text;
+      for (const AttachedFile &file : documentation.files) {
+        imported.files.push_back(
+            {file.relative_path, file.size, file.digest});
+      }
+      imported.file_contents = documentation.file_contents;
+      imported.record_digest = documentation.record_digest;
+      consumer_.imported_documentation.push_back(std::move(imported));
     }
   }
 

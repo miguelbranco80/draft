@@ -135,6 +135,7 @@ struct AgentImportedPackageContext {
   std::string root_relative_path;
   Sha256Digest definition_digest;
   std::string definition;
+  std::vector<AgentDocumentationContext> documentation;
 };
 
 // A surface judgment whose position permits it to guide this synthesis site.
