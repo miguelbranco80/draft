@@ -4,10 +4,16 @@ import core/thread
 import core/memory
 import core/runtime
 
+// This is language-level package TLS, distinct from the runtime's private TLS
+// Context record. Each attached thread must receive its own initialized value.
+thread_local local_counter: u64 = 7
+
 Observation :: struct {
     value: u64,
     context_index: int,
     temporary_is_thread_owned: bool,
+    initial_thread_local: u64,
+    final_thread_local: u64,
     ready: bool,
 }
 
@@ -20,6 +26,8 @@ Work :: struct {
 worker :: proc(user: rawptr) {
     work := cast[^Work](user)
     snapshot := runtime.default_context()
+    initial_thread_local := local_counter
+    local_counter = 42
     temporary := memory.temporary_new[u64]()
     temporary^ = 91
     assert(temporary^ == 91)
@@ -32,12 +40,16 @@ worker :: proc(user: rawptr) {
     work^.observation^.context_index = snapshot.user_index
     work^.observation^.temporary_is_thread_owned =
         snapshot.temp_allocator.procedure != snapshot.allocator.procedure
+    work^.observation^.initial_thread_local = initial_thread_local
+    work^.observation^.final_thread_local = local_counter
     work^.observation^.ready = true
     thread.condition_signal(work^.condition)
     thread.mutex_unlock(work^.mutex)
 }
 
 main :: proc() {
+    assert(local_counter == 7)
+    local_counter = 99
     context.user_index = 73
     // A child must not inherit this deliberately non-temporary provider. The
     // hosted runtime replaces it with state owned by the new OS thread.
@@ -64,9 +76,12 @@ main :: proc() {
     assert(observation.value == 42)
     assert(observation.context_index == 73)
     assert(observation.temporary_is_thread_owned)
+    assert(observation.initial_thread_local == 7)
+    assert(observation.final_thread_local == 42)
     thread.mutex_unlock(&mutex)
 
     assert(thread.join(&child))
+    assert(local_counter == 99)
     assert(thread.current_id() != 0)
     thread.yield()
 
