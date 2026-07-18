@@ -148,6 +148,7 @@ private:
       }
       return;
     case HirExpressionKind::Invalid:
+    case HirExpressionKind::Discard:
     case HirExpressionKind::Constant:
     case HirExpressionKind::Synthesis:
       return;
@@ -170,7 +171,8 @@ private:
   }
 
   void check_assignment(const HirStatement &statement, State &state) {
-    const std::size_t left_count = statement.expressions.size() / 2;
+    const std::size_t left_count = std::min(
+        statement.assignment_target_count, statement.expressions.size());
     for (std::size_t index = 0; index < left_count; ++index) {
       check_expression(
           statement.expressions[index],

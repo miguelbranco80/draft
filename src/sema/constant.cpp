@@ -2694,6 +2694,99 @@ private:
       if (tree.node(child).token_end <= *operator_index) ++left_count;
     }
     const std::size_t right_count = assignment.children.size() - left_count;
+
+    // A parenthesized assignment pattern consumes one tuple value. Resolve all
+    // destination paths before evaluating that value, then convert and stage
+    // every selected member before performing any write. This matches runtime
+    // assignment ordering and permits swaps such as `(left, right) =
+    // (right, left)` during compile-time procedure execution.
+    if (left_count == 1 && right_count == 1 &&
+        tree.token(*operator_index).kind == TokenKind::Equal &&
+        tree.node(assignment.children.front()).kind ==
+            NodeKind::TupleExpression) {
+      const SyntaxNode &pattern = tree.node(assignment.children.front());
+      std::vector<std::optional<LocalTarget>> targets;
+      targets.reserve(pattern.children.size());
+      for (NodeId target_id : pattern.children) {
+        const SyntaxNode &target_expression = tree.node(target_id);
+        const std::optional<std::string> name =
+            target_expression.kind == NodeKind::NameExpression
+            ? final_name(tree, target_expression)
+            : std::nullopt;
+        if (name.has_value() && *name == "_") {
+          targets.push_back(std::nullopt);
+          continue;
+        }
+        const LocalTargetResult resolved = local_target(
+            tree, target_id, scope, required);
+        if (resolved.status != EvalStatus::Ready ||
+            !resolved.target.has_value()) {
+          if (resolved.status == EvalStatus::Error) {
+            return failed_execution(EvalStatus::Error);
+          }
+          return failed_execution(fail(
+              target_expression.range,
+              "compile-time tuple assignment cannot write runtime or unknown storage",
+              required));
+        }
+        targets.push_back(*resolved.target);
+      }
+
+      const NodeId value_id = assignment.children.back();
+      const EvalResult value = evaluate_expression(
+          tree, value_id, scope, required);
+      if (value.status != EvalStatus::Ready) return failed_execution(value);
+      if (!value.type.is_valid() ||
+          semantic_.types.type(value.type).kind != TypeKind::Tuple ||
+          value.value.kind != ConstantKind::Aggregate ||
+          value.value.elements.size() != pattern.children.size()) {
+        return failed_execution(fail(
+            tree.node(value_id).range,
+            "compile-time tuple assignment requires a tuple of matching arity",
+            required));
+      }
+
+      std::vector<std::optional<ConstantValue>> stored_values;
+      stored_values.reserve(targets.size());
+      for (std::size_t index = 0; index < targets.size(); ++index) {
+        if (!targets[index].has_value()) {
+          stored_values.push_back(std::nullopt);
+          continue;
+        }
+        const LocalTarget &target = *targets[index];
+        const TypeId member_type =
+            semantic_.types.type(value.type).members[index];
+        ConstantValue stored = value.value.elements[index];
+        if (target.type.is_valid() &&
+            target.type != semantic_.types.builtins().invalid &&
+            member_type != target.type) {
+          const EvalResult converted = convert_to_type(
+              stored,
+              target.type,
+              false,
+              tree.node(value_id).range,
+              required);
+          if (converted.status != EvalStatus::Ready) {
+            return failed_execution(converted);
+          }
+          stored = converted.value;
+        }
+        stored_values.push_back(std::move(stored));
+      }
+      for (std::size_t index = 0; index < targets.size(); ++index) {
+        if (!targets[index].has_value()) continue;
+        if (!stored_values[index].has_value() ||
+            !store_local_target(
+                *targets[index], std::move(*stored_values[index]))) {
+          return failed_execution(fail(
+              tree.node(pattern.children[index]).range,
+              "compile-time tuple assignment target became unavailable",
+              required));
+        }
+      }
+      return {};
+    }
+
     if (left_count == 0 || left_count != right_count) {
       return failed_execution(fail(
           assignment.range,

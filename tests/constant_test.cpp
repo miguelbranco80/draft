@@ -191,6 +191,8 @@ statement_forms :: proc() -> u32 {
     scratch: u32 = ---
     scratch = first + second
     _, grouped_left = grouped_right, first
+    (first, second) = (second, first)
+    (_, second) = (999, 10)
     return scratch + grouped_left + second
 }
 

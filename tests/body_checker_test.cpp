@@ -522,6 +522,75 @@ bad :: proc(parameter: i64) -> i64 {
   EXPECT(state, item_range);
 }
 
+void test_assignment_discards_and_tuple_patterns(TestState &state) {
+  CheckedSource source(R"draft(
+package bodies
+
+pair :: proc() -> (i64, i64) {
+    return (20, 22)
+}
+
+main :: proc() -> i64 {
+    left: i64
+    right: i64
+    left, _ = 10, 99
+    (_, right) = pair()
+    (left, right) = (right, left)
+    _ = 123
+    return left + right
+}
+)draft");
+
+  if (source.diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(source.sources, source.diagnostics);
+  }
+  EXPECT(state, source.bodies.ok);
+  EXPECT(state, !source.diagnostics.has_errors());
+
+  std::size_t discard_rows = 0;
+  std::size_t tuple_assignments = 0;
+  for (std::size_t index = 0;
+       index < source.bodies.program.statement_count();
+       ++index) {
+    const draft::HirStatement &statement = source.bodies.program.statement(
+        draft::HirStatementId{static_cast<std::uint32_t>(index)});
+    if (statement.kind != draft::HirStatementKind::Assignment) continue;
+    if (statement.assignment_destructures_tuple) {
+      ++tuple_assignments;
+      EXPECT(
+          state,
+          statement.assignment_member_indices.size() ==
+              statement.assignment_target_count);
+    }
+    for (std::size_t expression = 0;
+         expression < statement.assignment_target_count;
+         ++expression) {
+      if (source.bodies.program.expression(
+              statement.expressions[expression]).kind ==
+          draft::HirExpressionKind::Discard) {
+        ++discard_rows;
+      }
+    }
+  }
+  EXPECT(state, tuple_assignments == 2);
+  EXPECT(state, discard_rows == 2);
+
+  CheckedSource invalid(R"draft(
+package bodies
+
+main :: proc() {
+    _ += 1
+}
+)draft");
+  EXPECT(state, !invalid.bodies.ok);
+  const std::string rendered =
+      draft::render_diagnostics(invalid.sources, invalid.diagnostics);
+  EXPECT(
+      state,
+      rendered.find("discard cannot be used with compound assignment") !=
+          std::string::npos);
+}
+
 void test_local_type_declarations(TestState &state) {
   CheckedSource source(R"draft(
 package bodies
@@ -1102,6 +1171,7 @@ int main() {
   test_parametric_procedure_instances(state);
   test_nested_procedures(state);
   test_nested_procedure_capture_diagnostics(state);
+  test_assignment_discards_and_tuple_patterns(state);
   test_local_type_declarations(state);
   test_string_index_is_immutable(state);
   test_multi_pointer_slice_shape(state);

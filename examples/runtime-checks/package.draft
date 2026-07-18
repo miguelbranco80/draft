@@ -136,6 +136,37 @@ observe_boolean :: proc(count: ^usize, value: bool) -> bool {
     return value
 }
 
+observe_assignment :: proc(count: ^usize, value: i64) -> i64 {
+    count^ += 1
+    return value
+}
+
+exercise_assignment_patterns :: proc() {
+    calls: usize
+    left: i64
+    right: i64
+
+    // Discarding a result never suppresses its evaluation.
+    left, _ = observe_assignment(&calls, 20),
+        observe_assignment(&calls, 99)
+    assert(left == 20 && calls == 2)
+
+    // A parenthesized pattern consumes one tuple and writes only selected
+    // members. The first member is still evaluated before it is discarded.
+    (_, right) = (
+        observe_assignment(&calls, 100),
+        observe_assignment(&calls, 22),
+    )
+    assert(right == 22 && calls == 4)
+
+    // Stores begin only after the complete tuple value exists, so this is an
+    // ordinary swap rather than two sequential assignments.
+    (left, right) = (right, left)
+    assert(left == 22 && right == 20)
+    _ = observe_assignment(&calls, 123)
+    assert(calls == 5)
+}
+
 exercise_expression_control :: proc() {
     calls: usize
     assert(!(false && observe_boolean(&calls, true)))
@@ -281,6 +312,7 @@ main :: proc() {
     assert(last[3](pointer_values) == 42)
     assert(last(pointer_values) == 42)
 
+    exercise_assignment_patterns()
     exercise_expression_control()
     exercise_loop_forms()
 

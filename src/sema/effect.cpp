@@ -912,6 +912,22 @@ private:
       return value;
     }
 
+    if (expression.kind == HirExpressionKind::Tuple &&
+        !relative_path.empty()) {
+      const std::optional<BigInteger> parsed =
+          BigInteger::parse_literal(relative_path.front());
+      const std::optional<std::uint64_t> index =
+          parsed.has_value() ? parsed->to_u64() : std::nullopt;
+      if (!index.has_value() || *index >= expression.operands.size()) {
+        value.unknown = true;
+        return value;
+      }
+      const std::vector<std::string> remainder(
+          relative_path.begin() + 1, relative_path.end());
+      return procedure_value_at(
+          expression.operands[static_cast<std::size_t>(*index)], remainder);
+    }
+
     if (expression.kind == HirExpressionKind::Call) {
       return call_return_value(id, expression, relative_path);
     }
@@ -956,10 +972,11 @@ private:
         value});
   }
 
-  void merge_assignment_value(
+  void merge_assignment_value_from_path(
       StoragePath destination,
       TypeId destination_type,
-      HirExpressionId source) {
+      HirExpressionId source,
+      const std::vector<std::string> &source_prefix) {
     for (const std::vector<std::string> &relative :
          procedure_paths(destination_type)) {
       std::vector<std::string> complete = destination.fields;
@@ -988,8 +1005,11 @@ private:
               destination.context);
         }
       }
+      std::vector<std::string> source_path = source_prefix;
+      source_path.insert(
+          source_path.end(), relative.begin(), relative.end());
       const ProcedureValueSummary assigned =
-          procedure_value_at(source, relative);
+          procedure_value_at(source, source_path);
       merge_field_write(destination, complete, assigned);
       merge_stored_value(
           destination.symbol,
@@ -997,6 +1017,14 @@ private:
           assigned,
           destination.context);
     }
+  }
+
+  void merge_assignment_value(
+      StoragePath destination,
+      TypeId destination_type,
+      HirExpressionId source) {
+    merge_assignment_value_from_path(
+        std::move(destination), destination_type, source, {});
   }
 
   void merge_binding_value(
@@ -1477,8 +1505,29 @@ private:
           statement.expressions.front());
     } else if (statement.kind == HirStatementKind::Assignment &&
                statement.operation == HirOperation::Assign) {
-      const std::size_t left_count = statement.expressions.size() / 2;
-      for (std::size_t index = 0; index < left_count; ++index) {
+      const std::size_t left_count = std::min(
+          statement.assignment_target_count, statement.expressions.size());
+      if (statement.assignment_destructures_tuple &&
+          statement.expressions.size() > left_count &&
+          statement.assignment_member_indices.size() == left_count) {
+        const HirExpressionId source = statement.expressions[left_count];
+        for (std::size_t index = 0; index < left_count; ++index) {
+          const HirExpression &left =
+              hir_.expression(statement.expressions[index]);
+          std::optional<StoragePath> destination =
+              storage_path(statement.expressions[index]);
+          if (!destination.has_value()) continue;
+          merge_assignment_value_from_path(
+              std::move(*destination),
+              left.type,
+              source,
+              {std::to_string(statement.assignment_member_indices[index])});
+        }
+        return;
+      }
+      const std::size_t right_count = statement.expressions.size() - left_count;
+      const std::size_t paired = std::min(left_count, right_count);
+      for (std::size_t index = 0; index < paired; ++index) {
         const HirExpression &left = hir_.expression(statement.expressions[index]);
         std::optional<StoragePath> destination =
             storage_path(statement.expressions[index]);

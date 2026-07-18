@@ -46,6 +46,9 @@ struct HirBlockId {
 
 enum class HirExpressionKind {
   Invalid,
+  // A discard occupies one assignment target position but has no address or
+  // value. Its matching right-hand expression is still checked and lowered.
+  Discard,
   Constant,
   Symbol,
   Context,
@@ -205,7 +208,9 @@ enum class HirForKind {
 
 // HirStatement owns references to evaluated expressions, nested structured
 // blocks, and any local symbols it introduces. Assignment lvalues precede their
-// right-hand expressions in expressions, preserving Draft evaluation order.
+// right-hand expressions in expressions, preserving Draft evaluation order;
+// assignment_target_count records the exact boundary even when tuple
+// destructuring collapses discarded pattern positions.
 // header_statements stores three-clause loop initialization and post operations
 // without pretending they are body statements.
 struct HirStatement {
@@ -220,6 +225,10 @@ struct HirStatement {
   // those source member indices; discarded `_` positions simply have no row.
   // Ordinary declarations and iteration bindings leave it empty.
   std::vector<std::size_t> binding_member_indices;
+  // A tuple assignment likewise stores only non-discard lvalues. This vector
+  // maps each stored target to its source tuple member; ordinary assignments
+  // leave it empty and retain one expression row per target, including `_`.
+  std::vector<std::size_t> assignment_member_indices;
   std::vector<HirStatementId> header_statements;
   HirOperation operation = HirOperation::None;
   std::vector<HirSwitchCase> switch_cases;
@@ -227,8 +236,10 @@ struct HirStatement {
   // Clause loops retain initialization and post statements in one ordered
   // vector; this boundary tells CFG lowering where the post sequence begins.
   std::size_t for_initialization_count = 0;
+  std::size_t assignment_target_count = 0;
   bool local_is_uninitialized = false;
   bool local_destructures_tuple = false;
+  bool assignment_destructures_tuple = false;
   // Set after semantic coverage checking. A default makes any switch
   // exhaustive; enum and tagged-union switches are also exhaustive when every
   // declared alternative is covered exactly once.

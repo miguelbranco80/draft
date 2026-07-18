@@ -3909,6 +3909,187 @@ private:
     return std::nullopt;
   }
 
+  [[nodiscard]] bool is_discard_target(
+      const SyntaxTree &tree, NodeId expression) const {
+    const std::optional<SourceName> name =
+        single_name_expression(tree, expression);
+    return name.has_value() && name->text == "_";
+  }
+
+  [[nodiscard]] HirExpressionId discard_expression(SourceRange range) {
+    HirExpression expression;
+    expression.kind = HirExpressionKind::Discard;
+    expression.range = range;
+    expression.type = semantic_.types.builtins().invalid;
+    return hir_.add_expression(std::move(expression));
+  }
+
+  // Checks `(a, _, b) = tuple` as one aggregate evaluation followed by stores
+  // to the non-discard targets. Target addresses remain first in HIR source
+  // order, and assignment_member_indices retains the corresponding aggregate
+  // positions for MIR extraction.
+  [[nodiscard]] HirStatementId check_tuple_assignment(
+      const SyntaxTree &tree,
+      NodeId statement_id,
+      ScopeId scope,
+      const SyntaxNode &node,
+      const SyntaxNode &pattern,
+      std::size_t right_count) {
+    HirStatement statement;
+    statement.kind = HirStatementKind::Assignment;
+    statement.range = node.range;
+    statement.syntax = {tree.file(), statement_id};
+    statement.operation = HirOperation::Assign;
+    statement.assignment_destructures_tuple = true;
+    if (right_count != 1) {
+      diagnostics_.error(
+          node.range, "tuple assignment requires exactly one right-hand value");
+    }
+
+    std::vector<TypeId> target_types(
+        pattern.children.size(), semantic_.types.builtins().invalid);
+    for (std::size_t index = 0; index < pattern.children.size(); ++index) {
+      const NodeId target_id = pattern.children[index];
+      if (is_discard_target(tree, target_id)) continue;
+      const HirExpressionId target = check_expression(tree, target_id, scope);
+      statement.expressions.push_back(target);
+      statement.assignment_member_indices.push_back(index);
+      target_types[index] = hir_.expression(target).type;
+      if (!hir_.expression(target).addressable) {
+        diagnostics_.error(
+            tree.node(target_id).range,
+            "tuple assignment target is not addressable");
+      }
+    }
+    statement.assignment_target_count = statement.expressions.size();
+
+    if (right_count == 0) return hir_.add_statement(std::move(statement));
+    const NodeId value_id = node.children.back();
+    const HirExpressionId value = check_expression(tree, value_id, scope);
+    statement.expressions.push_back(value);
+    const TypeId value_type = hir_.expression(value).type;
+    if (is_invalid_type(value_type) ||
+        semantic_.types.type(value_type).kind != TypeKind::Tuple) {
+      diagnostics_.error(
+          tree.node(value_id).range,
+          "tuple assignment requires a tuple value");
+      return hir_.add_statement(std::move(statement));
+    }
+
+    const Type tuple = semantic_.types.type(value_type);
+    if (tuple.members.size() != pattern.children.size()) {
+      diagnostics_.error(
+          pattern.range, "tuple assignment pattern has the wrong arity");
+      return hir_.add_statement(std::move(statement));
+    }
+
+    // A direct tuple literal may still contain exact untyped numerics. Apply a
+    // target's expected type before defaulting discarded positions to int/f64,
+    // then replace the tuple's pseudo-type with its complete physical type.
+    std::vector<TypeId> concrete_members = tuple.members;
+    const HirExpression tuple_expression = hir_.expression(value);
+    for (std::size_t index = 0; index < tuple.members.size(); ++index) {
+      const bool has_target = !is_invalid_type(target_types[index]);
+      concrete_members[index] = has_target
+          ? apply_expected_type(
+                tuple.members[index],
+                target_types[index],
+                tree.node(pattern.children[index]).range)
+          : default_inferred_runtime_type(tuple.members[index]);
+      if (tuple_expression.kind == HirExpressionKind::Tuple &&
+          index < tuple_expression.operands.size()) {
+        contextualize_inferred_runtime_expression(
+            tuple_expression.operands[index], concrete_members[index]);
+      }
+    }
+    if (tuple_expression.kind == HirExpressionKind::Tuple) {
+      hir_.expression_mut(value).type =
+          semantic_.types.tuple(concrete_members);
+    }
+    return hir_.add_statement(std::move(statement));
+  }
+
+  // Checks ordinary one-to-one assignment, retaining explicit Discard rows so
+  // target and value positions remain parallel. A discard is valid only for
+  // plain `=`; compound assignment necessarily reads and writes its target.
+  [[nodiscard]] HirStatementId check_assignment_statement(
+      const SyntaxTree &tree,
+      NodeId statement_id,
+      ScopeId scope) {
+    const SyntaxNode &node = tree.node(statement_id);
+    HirStatement statement;
+    statement.kind = HirStatementKind::Assignment;
+    statement.range = node.range;
+    statement.syntax = {tree.file(), statement_id};
+    const std::optional<std::uint32_t> operation =
+        assignment_operator_index(tree, node);
+    if (!operation.has_value()) {
+      diagnostics_.error(node.range, "assignment has no operator");
+      return hir_.add_statement(std::move(statement));
+    }
+    statement.operation = hir_operation(tree.token(*operation).kind);
+    std::size_t left_count = 0;
+    for (NodeId child : node.children) {
+      if (tree.node(child).token_end <= *operation) ++left_count;
+    }
+    const std::size_t right_count = node.children.size() - left_count;
+    if (left_count == 1 && statement.operation == HirOperation::Assign &&
+        tree.node(node.children.front()).kind == NodeKind::TupleExpression) {
+      return check_tuple_assignment(
+          tree,
+          statement_id,
+          scope,
+          node,
+          tree.node(node.children.front()),
+          right_count);
+    }
+    if (left_count != right_count) {
+      diagnostics_.error(
+          node.range, "assignment sides must have equal arity");
+    }
+
+    for (std::size_t index = 0; index < left_count; ++index) {
+      const NodeId target_id = node.children[index];
+      if (is_discard_target(tree, target_id)) {
+        if (statement.operation != HirOperation::Assign) {
+          diagnostics_.error(
+              tree.node(target_id).range,
+              "discard cannot be used with compound assignment");
+        }
+        statement.expressions.push_back(
+            discard_expression(tree.node(target_id).range));
+        continue;
+      }
+      const HirExpressionId target = check_expression(tree, target_id, scope);
+      statement.expressions.push_back(target);
+      if (!hir_.expression(target).addressable) {
+        diagnostics_.error(
+            tree.node(target_id).range,
+            "assignment target is not addressable");
+      }
+    }
+    statement.assignment_target_count = left_count;
+
+    const std::size_t paired = std::min(left_count, right_count);
+    for (std::size_t index = 0; index < right_count; ++index) {
+      TypeId expected;
+      if (index < paired) {
+        const HirExpression &target = hir_.expression(
+            statement.expressions[index]);
+        if (target.kind != HirExpressionKind::Discard) expected = target.type;
+      }
+      const HirExpressionId value = check_expression(
+          tree, node.children[left_count + index], scope, expected);
+      if (!expected.is_valid()) {
+        const TypeId concrete =
+            default_inferred_runtime_type(hir_.expression(value).type);
+        contextualize_inferred_runtime_expression(value, concrete);
+      }
+      statement.expressions.push_back(value);
+    }
+    return hir_.add_statement(std::move(statement));
+  }
+
   // Declares and resolves one lexical type. Like a package type declaration,
   // its source name is installed before members are visited so recursive
   // pointer fields and nested procedure signatures can refer to it. The HIR row
@@ -4352,9 +4533,9 @@ private:
     return hir_.add_block(std::move(block));
   }
 
-  // Checks the common structured statement forms. Complex iteration bindings,
-  // switch exhaustiveness, and body-level compile-time `when` remain explicit
-  // diagnostics until their dedicated data-flow passes are connected.
+  // Checks the closed structured-statement vocabulary into typed HIR. Helpers
+  // above keep declaration and assignment pattern mechanics out of this main
+  // control-flow dispatch.
   [[nodiscard]] HirStatementId check_statement(
       const SyntaxTree &tree,
       NodeId statement_id,
@@ -4376,39 +4557,8 @@ private:
       }
       break;
 
-    case NodeKind::AssignmentStatement: {
-      statement.kind = HirStatementKind::Assignment;
-      const std::optional<std::uint32_t> operation =
-          assignment_operator_index(tree, node);
-      if (!operation.has_value()) {
-        diagnostics_.error(node.range, "assignment has no operator");
-        break;
-      }
-      statement.operation = hir_operation(tree.token(*operation).kind);
-      std::size_t left_count = 0;
-      for (NodeId child : node.children) {
-        if (tree.node(child).token_end <= *operation) ++left_count;
-      }
-      const std::size_t right_count = node.children.size() - left_count;
-      if (left_count != right_count) {
-        diagnostics_.error(node.range, "assignment sides must have equal arity");
-      }
-      for (std::size_t index = 0; index < left_count; ++index) {
-        const HirExpressionId left = check_expression(tree, node.children[index], scope);
-        statement.expressions.push_back(left);
-        if (!hir_.expression(left).addressable) {
-          diagnostics_.error(tree.node(node.children[index]).range, "assignment target is not addressable");
-        }
-      }
-      const std::size_t paired = std::min(left_count, right_count);
-      for (std::size_t index = 0; index < right_count; ++index) {
-        TypeId expected;
-        if (index < paired) expected = hir_.expression(statement.expressions[index]).type;
-        statement.expressions.push_back(check_expression(
-            tree, node.children[left_count + index], scope, expected));
-      }
-      break;
-    }
+    case NodeKind::AssignmentStatement:
+      return check_assignment_statement(tree, statement_id, scope);
 
     case NodeKind::ReturnStatement:
       statement.kind = HirStatementKind::Return;

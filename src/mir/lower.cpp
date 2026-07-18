@@ -1021,6 +1021,9 @@ private:
   [[nodiscard]] MirValueId lower_expression(HirExpressionId expression_id) {
     const HirExpression &expression = hir_.expression(expression_id);
     switch (expression.kind) {
+    case HirExpressionKind::Discard:
+      // Discards are consumed by assignment lowering and have no MIR value.
+      return {};
     case HirExpressionKind::Constant:
       return constant(
           expression.constant,
@@ -1313,7 +1316,8 @@ private:
   [[nodiscard]] bool statement_requires_context_copy(
       const HirStatement &statement) const {
     if (statement.kind == HirStatementKind::Assignment) {
-      const std::size_t left_count = statement.expressions.size() / 2;
+      const std::size_t left_count = std::min(
+          statement.assignment_target_count, statement.expressions.size());
       for (std::size_t index = 0; index < left_count; ++index) {
         if (rooted_in_context(statement.expressions[index])) return true;
       }
@@ -1427,32 +1431,78 @@ private:
   }
 
   void lower_assignment(const HirStatement &statement) {
-    const std::size_t left_count = statement.expressions.size() / 2;
+    const std::size_t left_count = std::min(
+        statement.assignment_target_count, statement.expressions.size());
     std::vector<MirValueId> addresses;
     std::vector<MirValueId> left_values;
     std::vector<MirValueId> right_values;
     addresses.reserve(left_count);
     for (std::size_t index = 0; index < left_count; ++index) {
-      addresses.push_back(lower_address(statement.expressions[index]));
+      const HirExpression &target = hir_.expression(statement.expressions[index]);
+      addresses.push_back(target.kind == HirExpressionKind::Discard
+          ? MirValueId{}
+          : lower_address(statement.expressions[index]));
+    }
+    if (statement.assignment_destructures_tuple) {
+      if (statement.expressions.size() <= left_count ||
+          statement.assignment_member_indices.size() != left_count) {
+        diagnostics_.error(
+            statement.range, "tuple assignment HIR is inconsistent");
+        return;
+      }
+      const MirValueId tuple_value =
+          lower_expression(statement.expressions[left_count]);
+      const Type tuple = semantic_.types.type(
+          hir_.expression(statement.expressions[left_count]).type);
+      if (tuple.kind != TypeKind::Tuple) {
+        diagnostics_.error(
+            statement.range, "tuple assignment HIR has a non-tuple value");
+        return;
+      }
+      for (std::size_t index = 0; index < left_count; ++index) {
+        const std::size_t member = statement.assignment_member_indices[index];
+        if (member >= tuple.members.size() || member >= tuple.member_offsets.size()) {
+          diagnostics_.error(
+              statement.range, "tuple assignment member index is invalid");
+          return;
+        }
+        MirInstruction extract;
+        extract.kind = MirInstructionKind::ExtractMember;
+        extract.range = statement.range;
+        extract.type = tuple.members[member];
+        extract.offset = tuple.member_offsets[member];
+        extract.operands.push_back(tuple_value);
+        store(
+            addresses[index],
+            emit_value(std::move(extract)),
+            statement.range);
+      }
+      return;
     }
     if (statement.operation != HirOperation::Assign) {
       for (std::size_t index = 0; index < left_count; ++index) {
         const HirExpression &left = hir_.expression(statement.expressions[index]);
+        if (left.kind == HirExpressionKind::Discard) continue;
         left_values.push_back(load(addresses[index], left.type, left.range));
       }
     }
-    for (std::size_t index = 0; index < left_count; ++index) {
+    const std::size_t right_count = statement.expressions.size() - left_count;
+    for (std::size_t index = 0; index < right_count; ++index) {
       right_values.push_back(
           lower_expression(statement.expressions[left_count + index]));
     }
-    for (std::size_t index = 0; index < left_count; ++index) {
+    const std::size_t paired = std::min(left_count, right_values.size());
+    std::size_t loaded_index = 0;
+    for (std::size_t index = 0; index < paired; ++index) {
+      const HirExpression &left = hir_.expression(statement.expressions[index]);
+      if (left.kind == HirExpressionKind::Discard) continue;
       MirValueId value = right_values[index];
       if (statement.operation != HirOperation::Assign) {
         value = checked_binary(
             statement.operation,
-            left_values[index],
+            left_values[loaded_index++],
             value,
-            hir_.expression(statement.expressions[index]).type,
+            left.type,
             statement.range);
       }
       store(addresses[index], value, statement.range);

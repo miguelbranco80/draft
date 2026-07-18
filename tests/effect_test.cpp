@@ -803,6 +803,15 @@ recursive_caller :: proc() {
     node.invoke = bounce
     bounce(&node)
 }
+
+tuple_assignment_caller :: proc() {
+    first: proc() = safe
+    second: proc() = safe
+    (first, second) = (danger, safe)
+    (_, second) = (danger, safe)
+    first()
+    second()
+}
 )draft");
   file.syntax.emplace(draft::parse_source_file(sources, file.source, diagnostics));
   loaded.files.push_back(std::move(file));
@@ -838,14 +847,17 @@ recursive_caller :: proc() {
       symbol(semantics.package, "ordered_caller");
   const std::optional<draft::SymbolId> recursive_caller =
       symbol(semantics.package, "recursive_caller");
+  const std::optional<draft::SymbolId> tuple_assignment_caller =
+      symbol(semantics.package, "tuple_assignment_caller");
   EXPECT(state, apply.has_value());
   EXPECT(state, apply_box.has_value());
   EXPECT(state, apply_twice.has_value());
   EXPECT(state, caller.has_value());
   EXPECT(state, ordered_caller.has_value());
   EXPECT(state, recursive_caller.has_value());
+  EXPECT(state, tuple_assignment_caller.has_value());
   if (!apply || !apply_box || !apply_twice || !caller || !ordered_caller ||
-      !recursive_caller) {
+      !recursive_caller || !tuple_assignment_caller) {
     return;
   }
 
@@ -858,15 +870,19 @@ recursive_caller :: proc() {
       effects.find(*ordered_caller);
   const draft::ProcedureEffectSummary *recursive_summary =
       effects.find(*recursive_caller);
+  const draft::ProcedureEffectSummary *tuple_assignment_summary =
+      effects.find(*tuple_assignment_caller);
   EXPECT(state, apply_summary != nullptr);
   EXPECT(state, box_summary != nullptr);
   EXPECT(state, twice_summary != nullptr);
   EXPECT(state, caller_summary != nullptr);
   EXPECT(state, ordered_summary != nullptr);
   EXPECT(state, recursive_summary != nullptr);
+  EXPECT(state, tuple_assignment_summary != nullptr);
   if (apply_summary == nullptr || box_summary == nullptr ||
       twice_summary == nullptr || caller_summary == nullptr ||
-      ordered_summary == nullptr || recursive_summary == nullptr) {
+      ordered_summary == nullptr || recursive_summary == nullptr ||
+      tuple_assignment_summary == nullptr) {
     return;
   }
 
@@ -925,6 +941,10 @@ recursive_caller :: proc() {
       !has_effect(*ordered_summary, draft::EffectKind::UnknownCall));
   EXPECT(state,
       !has_effect(*recursive_summary, draft::EffectKind::UnknownCall));
+  EXPECT(state,
+      has_effect(*tuple_assignment_summary, draft::EffectKind::RuntimeAssert));
+  EXPECT(state,
+      !has_effect(*tuple_assignment_summary, draft::EffectKind::UnknownCall));
 }
 
 } // namespace
