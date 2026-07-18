@@ -1,0 +1,185 @@
+// Real AArch64 macOS execution matrix for handwritten Draft programs.
+//
+// Semantic and LLVM snapshot tests localize compiler failures well, but they do
+// not prove that runtime Context setup, the Darwin ABI, package assembly,
+// atomics, pthread bridges, and system linking agree in a launched process.
+// This Apple-host-only gate compiles each representative package through the
+// public compiler/native APIs and requires its complete executable to exit 0.
+
+#include "backend/toolchain.h"
+#include "compile/compiler.h"
+#include "source/diagnostic.h"
+#include "source/source.h"
+#include "target/profile.h"
+
+#include <array>
+#include <cerrno>
+#include <cstdlib>
+#include <filesystem>
+#include <iostream>
+#include <string>
+#include <string_view>
+#include <system_error>
+#include <utility>
+
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+namespace {
+
+struct TestState {
+  int failures = 0;
+
+  void expect(
+      bool condition,
+      std::string_view package,
+      std::string_view expression,
+      int line) {
+    if (!condition) {
+      ++failures;
+      std::cerr << "native_conformance_test.cpp:" << line << ": " << package
+                << ": expectation failed: " << expression << '\n';
+    }
+  }
+};
+
+#define EXPECT(state, package, expression) \
+  (state).expect((expression), (package), #expression, __LINE__)
+
+struct ConformanceCase {
+  std::string_view name;
+  std::string_view workspace;
+  std::string_view package;
+};
+
+// Runs an already linked path directly. No shell, inherited command search, or
+// source-authored byte can become command syntax. The child uses an isolated
+// working directory so relative process state cannot leak between fixtures.
+[[nodiscard]] bool run_executable(
+    const std::filesystem::path &executable,
+    const std::filesystem::path &working_directory,
+    int &status) {
+  const pid_t child = ::fork();
+  if (child < 0) return false;
+  if (child == 0) {
+    if (::chdir(working_directory.c_str()) != 0) _exit(126);
+    ::execl(executable.c_str(), executable.c_str(), nullptr);
+    _exit(127);
+  }
+  while (::waitpid(child, &status, 0) < 0) {
+    if (errno != EINTR) return false;
+  }
+  return true;
+}
+
+void test_native_examples(TestState &state) {
+  constexpr std::array cases{
+      ConformanceCase{"hello", "examples", "examples/hello"},
+      ConformanceCase{
+          "runtime-checks", "examples", "examples/runtime-checks"},
+      ConformanceCase{
+          "core-runtime", "examples", "examples/core-runtime"},
+      ConformanceCase{"core-memory", "examples", "examples/core-memory"},
+      ConformanceCase{"core-array", "examples", "examples/core-array"},
+      ConformanceCase{"core-map", "examples", "examples/core-map"},
+      ConformanceCase{"core-os", "examples", "examples/core-os"},
+      ConformanceCase{"core-thread", "examples", "examples/core-thread"},
+      ConformanceCase{"core-atomic", "examples", "examples/core-atomic"},
+      ConformanceCase{
+          "core-atomic-thread", "examples", "examples/core-atomic-thread"},
+      ConformanceCase{"assembly", "examples", "examples/assembly"},
+      ConformanceCase{
+          "external-assembly", "examples", "examples/external-assembly"},
+      ConformanceCase{"c-interop", "examples", "examples/c-interop"},
+      ConformanceCase{
+          "packages", "examples/packages", "examples/packages/app"},
+      ConformanceCase{
+          "packages-generic",
+          "examples/packages-generic",
+          "examples/packages-generic/app"},
+  };
+
+  std::error_code error;
+  const std::filesystem::path temporary =
+      std::filesystem::temp_directory_path(error) /
+      ("draft-native-conformance-" + std::to_string(getpid()));
+  EXPECT(state, "setup", !error);
+  if (error) return;
+  std::filesystem::remove_all(temporary, error);
+  error.clear();
+  std::filesystem::create_directories(temporary, error);
+  EXPECT(state, "setup", !error);
+  if (error) return;
+
+  const std::filesystem::path source_root(DRAFT_SOURCE_DIRECTORY);
+  for (const ConformanceCase &test : cases) {
+    draft::SourceManager sources;
+    draft::DiagnosticSink diagnostics;
+    draft::CompileWorkspaceOptions compile_options;
+    compile_options.target = draft::make_aarch64_macos_profile();
+    compile_options.workspace.workspace_directory =
+        (source_root / test.workspace).string();
+    compile_options.workspace.core_directory =
+        (source_root / "core").string();
+    compile_options.workspace.core_content_identity =
+        "draft-core-bootstrap-v1";
+    compile_options.lower_mir = true;
+    compile_options.emit_llvm = true;
+    const draft::CompileWorkspaceResult compiled = draft::compile_workspace(
+        sources,
+        (source_root / test.package).string(),
+        std::move(compile_options),
+        diagnostics);
+    if (diagnostics.has_errors()) {
+      std::cerr << draft::render_diagnostics(sources, diagnostics);
+    }
+    EXPECT(state, test.name, compiled.ok);
+    if (!compiled.ok) continue;
+
+    const std::filesystem::path case_directory = temporary / test.name;
+    draft::NativeBuildOptions native_options;
+    native_options.build_directory = (case_directory / "build").string();
+    native_options.output_path = (case_directory / "program").string();
+    native_options.allow_unpinned_toolchain = true;
+    const draft::NativeBuildResult built = draft::build_native_executable(
+        draft::make_aarch64_macos_profile(),
+        compiled,
+        native_options,
+        diagnostics);
+    if (diagnostics.has_errors()) {
+      std::cerr << draft::render_diagnostics(sources, diagnostics);
+    }
+    EXPECT(state, test.name, built.ok);
+    if (!built.ok) continue;
+
+    std::filesystem::create_directories(case_directory, error);
+    EXPECT(state, test.name, !error);
+    if (error) {
+      error.clear();
+      continue;
+    }
+    int process_status = 0;
+    EXPECT(state, test.name,
+        run_executable(built.output_path, case_directory, process_status));
+    EXPECT(state, test.name, WIFEXITED(process_status));
+    if (WIFEXITED(process_status)) {
+      EXPECT(state, test.name, WEXITSTATUS(process_status) == 0);
+    }
+  }
+
+  std::filesystem::remove_all(temporary, error);
+}
+
+} // namespace
+
+int main() {
+  TestState state;
+  test_native_examples(state);
+  if (state.failures != 0) {
+    std::cerr << state.failures
+              << " native-conformance expectation(s) failed\n";
+    return EXIT_FAILURE;
+  }
+  return EXIT_SUCCESS;
+}

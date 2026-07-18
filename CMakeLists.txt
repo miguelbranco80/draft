@@ -277,6 +277,20 @@ if(BUILD_TESTING)
       NAME draft_native_determinism_tests
       COMMAND draft_native_determinism_tests
     )
+
+    add_executable(
+      draft_native_conformance_tests
+      tests/native_conformance_test.cpp
+    )
+    target_link_libraries(draft_native_conformance_tests PRIVATE draft_compiler)
+    target_compile_definitions(
+      draft_native_conformance_tests
+      PRIVATE DRAFT_SOURCE_DIRECTORY="${CMAKE_CURRENT_SOURCE_DIR}"
+    )
+    add_test(
+      NAME draft_native_conformance_tests
+      COMMAND draft_native_conformance_tests
+    )
   endif()
 
   add_executable(

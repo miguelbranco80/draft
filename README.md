@@ -150,6 +150,12 @@ graph, definitions, target, compiler/toolchain, runner environment, artifact,
 and policy. Failed attempts revoke prior passing evidence for only that key;
 locked builds can verify required active evidence without rerunning it.
 
+On Apple hosts, the test suite also compiles, links, launches, and requires a
+zero exit from 15 handwritten programs spanning the runtime/core facilities,
+multi-package generics, parsed and package assembly, C interop, atomics, and
+pthreads. This complements phase-local tests with a real AArch64 macOS ABI and
+linker conformance gate.
+
 Synthesis resolution now has a provider-neutral transaction and an explicit
 Codex CLI adapter. Declaration and aggregate-member sites form an early opaque
 interface stage; dependent bodies are checked only after those expansions are
