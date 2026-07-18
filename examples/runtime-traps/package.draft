@@ -1,0 +1,73 @@
+package runtime_traps
+
+import core/os
+
+// This package is launched repeatedly by the native conformance gate. The
+// selector comes from the process argument vector, so every invalid value is a
+// runtime value even though each case is deliberately small and transparent.
+// Successful compilation proves the source is legal; Darwin's SIGTRAP result
+// proves lowering reaches the target's fixed llvm.trap termination path.
+
+Mode :: enum u8 {
+    none,
+    ready,
+}
+
+main :: proc() -> int {
+    arguments := os.args()
+    if len(arguments) != 2 || len(arguments[1]) != 1 {
+        return 2
+    }
+
+    selector := arguments[1][0]
+    dynamic_zero := cast[i64](selector - selector)
+
+    if selector == cast[u8]('d') {
+        return cast[int](42 / dynamic_zero)
+    }
+    if selector == cast[u8]('o') {
+        minimum: i64 = -9223372036854775807 - 1
+        negative_one := dynamic_zero - 1
+        return cast[int](minimum / negative_one)
+    }
+    if selector == cast[u8]('s') {
+        value: u64 = 1
+        count := cast[usize](dynamic_zero) + 64
+        return cast[int](value << count)
+    }
+    if selector == cast[u8]('n') {
+        value: u64 = 1
+        count := dynamic_zero - 1
+        return cast[int](value << count)
+    }
+    if selector == cast[u8]('f') {
+        // Multiplication by the runtime selector prevents this from becoming a
+        // required compile-time conversion while remaining far outside i64.
+        huge := cast[f64](cast[u64](selector)) * 1.0e300
+        return cast[int](cast[i64](huge))
+    }
+    if selector == cast[u8]('q') {
+        floating_zero := cast[f64](dynamic_zero)
+        not_a_number := floating_zero / floating_zero
+        return cast[int](cast[i64](not_a_number))
+    }
+    if selector == cast[u8]('r') {
+        invalid_scalar := dynamic_zero + 0x110000
+        return cast[int](cast[rune](invalid_scalar))
+    }
+    if selector == cast[u8]('e') {
+        return cast[int](cast[u8](cast[Mode](selector)))
+    }
+    if selector == cast[u8]('i') {
+        values := [1]u8{42}
+        index := cast[usize](selector)
+        return cast[int](values[index])
+    }
+    if selector == cast[u8]('l') {
+        values := [1]u8{42}
+        high := cast[usize](selector)
+        view := values[0:high]
+        return cast[int](len(view))
+    }
+    return 3
+}

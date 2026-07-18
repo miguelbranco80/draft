@@ -14,6 +14,7 @@
 
 #include <array>
 #include <cerrno>
+#include <csignal>
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
@@ -59,12 +60,25 @@ struct ConformanceCase {
 [[nodiscard]] bool run_executable(
     const std::filesystem::path &executable,
     const std::filesystem::path &working_directory,
+    std::string_view argument,
     int &status) {
+  // Materialize the optional argument before fork. The child performs only the
+  // small async-signal-safe setup needed for exec and never allocates through
+  // a post-fork C++ library path.
+  const std::string argument_storage(argument);
   const pid_t child = ::fork();
   if (child < 0) return false;
   if (child == 0) {
     if (::chdir(working_directory.c_str()) != 0) _exit(126);
-    ::execl(executable.c_str(), executable.c_str(), nullptr);
+    if (argument_storage.empty()) {
+      ::execl(executable.c_str(), executable.c_str(), nullptr);
+    } else {
+      ::execl(
+          executable.c_str(),
+          executable.c_str(),
+          argument_storage.c_str(),
+          nullptr);
+    }
     _exit(127);
   }
   while (::waitpid(child, &status, 0) < 0) {
@@ -78,6 +92,8 @@ void test_native_examples(TestState &state) {
       ConformanceCase{"hello", "examples", "examples/hello"},
       ConformanceCase{
           "runtime-checks", "examples", "examples/runtime-checks"},
+      ConformanceCase{
+          "runtime-traps", "examples", "examples/runtime-traps"},
       ConformanceCase{
           "core-runtime", "examples", "examples/core-runtime"},
       ConformanceCase{"core-memory", "examples", "examples/core-memory"},
@@ -159,12 +175,45 @@ void test_native_examples(TestState &state) {
       error.clear();
       continue;
     }
-    int process_status = 0;
-    EXPECT(state, test.name,
-        run_executable(built.output_path, case_directory, process_status));
-    EXPECT(state, test.name, WIFEXITED(process_status));
-    if (WIFEXITED(process_status)) {
-      EXPECT(state, test.name, WEXITSTATUS(process_status) == 0);
+    if (test.name == "runtime-traps") {
+      // One runtime-selected package covers every mandatory trap class without
+      // recompiling eight nearly identical fixtures. Each selector enters one
+      // path whose invalid value depends on argv, keeping the failure at
+      // runtime rather than turning it into a required-constant diagnostic.
+      constexpr std::array trap_selectors{
+          "d", // Integer division by zero.
+          "o", // Signed minimum divided by negative one.
+          "s", // Out-of-range shift count.
+          "n", // Negative shift count.
+          "f", // Out-of-range float-to-integer conversion.
+          "q", // NaN-to-integer conversion.
+          "r", // Invalid Unicode scalar conversion.
+          "e", // Invalid enum backing value.
+          "i", // Array index out of bounds.
+          "l", // Slice bound out of range.
+      };
+      for (const std::string_view selector : trap_selectors) {
+        int process_status = 0;
+        EXPECT(state, test.name,
+            run_executable(
+                built.output_path, case_directory, selector, process_status));
+        EXPECT(state, test.name, WIFSIGNALED(process_status));
+        if (WIFSIGNALED(process_status)) {
+          // Apple arm64 lowers llvm.trap to BRK, which Darwin reports to a
+          // parent process as SIGTRAP. Requiring that exact target behavior
+          // distinguishes the compiler's deliberate trap edge from an
+          // accidental arithmetic or memory fault.
+          EXPECT(state, test.name, WTERMSIG(process_status) == SIGTRAP);
+        }
+      }
+    } else {
+      int process_status = 0;
+      EXPECT(state, test.name,
+          run_executable(built.output_path, case_directory, {}, process_status));
+      EXPECT(state, test.name, WIFEXITED(process_status));
+      if (WIFEXITED(process_status)) {
+        EXPECT(state, test.name, WEXITSTATUS(process_status) == 0);
+      }
     }
   }
 
