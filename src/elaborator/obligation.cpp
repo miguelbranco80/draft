@@ -142,6 +142,181 @@ void hash_field(Sha256 &hash, std::string_view value) {
   return "<invalid>";
 }
 
+void append_context_u64(std::uint64_t value, std::string &output) {
+  output += std::to_string(value);
+  output.push_back('\n');
+}
+
+void append_context_field(
+    std::string_view name,
+    std::string_view value,
+    std::string &output) {
+  output += name;
+  output.push_back(' ');
+  append_context_u64(static_cast<std::uint64_t>(value.size()), output);
+  output.append(value);
+  output.push_back('\n');
+}
+
+[[nodiscard]] std::string interface_id_text(InterfaceTypeId id) {
+  return id.is_valid() ? std::to_string(id.value) : "invalid";
+}
+
+// Constant payloads appear in generic value arguments. Every field is emitted
+// even when the current kind does not use it; that makes this representation a
+// direct, future-auditable reflection of the canonical interface row rather
+// than a second semantic interpretation of constants.
+void append_constant_context(
+    const ConstantValue &value,
+    std::string &output) {
+  append_context_field(
+      "CONSTANT_KIND",
+      std::to_string(static_cast<std::uint32_t>(value.kind)),
+      output);
+  append_context_field(
+      "CONSTANT_BOOL", value.boolean ? "true" : "false", output);
+  append_context_field(
+      "CONSTANT_INTEGER", value.integer.to_decimal(), output);
+  append_context_field(
+      "CONSTANT_FLOAT", value.floating.to_fraction(), output);
+  append_context_field(
+      "CONSTANT_FLOAT_BITS", std::to_string(value.float_bit_width), output);
+  append_context_field(
+      "CONSTANT_FLOAT_PAYLOAD", std::to_string(value.float_bits), output);
+  append_context_field("CONSTANT_TEXT", value.text, output);
+  append_context_field(
+      "CONSTANT_SYMBOL_INDEX", std::to_string(value.symbol_index), output);
+  append_context_field(
+      "CONSTANT_ROOT_IDENTITY", value.root_identity, output);
+  append_context_field(
+      "CONSTANT_ROOT_RELATIVE_PATH", value.root_relative_path, output);
+  append_context_field(
+      "CONSTANT_VARIANT", std::to_string(value.variant_index), output);
+  output += "CONSTANT_ELEMENTS ";
+  append_context_u64(
+      static_cast<std::uint64_t>(value.elements.size()), output);
+  for (const ConstantValue &element : value.elements) {
+    append_constant_context(element, output);
+  }
+}
+
+// This is deliberately a labeled, length-prefixed text format rather than a
+// JSON dependency. It is readable in a provider prompt, unambiguous for strings
+// containing whitespace, and simple enough to keep beside the type graph whose
+// fields it mirrors.
+[[nodiscard]] std::string render_type_context(
+    const InterfaceTypeGraph &graph) {
+  std::string output;
+  append_context_field(
+      "TYPE_GRAPH_ROOT", interface_id_text(graph.root), output);
+  output += "TYPE_ROWS ";
+  append_context_u64(
+      static_cast<std::uint64_t>(graph.types.size()), output);
+  for (std::size_t index = 0; index < graph.types.size(); ++index) {
+    const InterfaceType &type = graph.types[index];
+    append_context_field("TYPE_ROW", std::to_string(index), output);
+    append_context_field(
+        "TYPE_KIND", std::string(type_kind_name(type.kind)), output);
+    append_context_field("TYPE_NAME", type.name, output);
+    append_context_field(
+        "TYPE_NOMINAL_ROOT_IDENTITY", type.nominal_root_identity, output);
+    append_context_field(
+        "TYPE_NOMINAL_ROOT_RELATIVE_PATH",
+        type.nominal_root_relative_path,
+        output);
+    append_context_field(
+        "TYPE_NOMINAL_PUBLIC_NAME", type.nominal_public_name, output);
+    append_context_field(
+        "TYPE_LAYOUT_KNOWN", type.layout.known ? "true" : "false", output);
+    append_context_field(
+        "TYPE_SIZE", std::to_string(type.layout.size), output);
+    append_context_field(
+        "TYPE_ALIGNMENT", std::to_string(type.layout.alignment), output);
+    append_context_field(
+        "TYPE_BIT_WIDTH", std::to_string(type.bit_width), output);
+    append_context_field(
+        "TYPE_ELEMENT", interface_id_text(type.element), output);
+    append_context_field(
+        "TYPE_ELEMENT_COUNT", std::to_string(type.element_count), output);
+    append_context_field(
+        "TYPE_ELEMENT_COUNT_PARAMETER",
+        std::to_string(type.element_count_parameter),
+        output);
+    append_context_field(
+        "TYPE_C_CALLING_CONVENTION",
+        type.c_calling_convention ? "true" : "false",
+        output);
+    append_context_field(
+        "TYPE_C_REPRESENTATION",
+        type.c_representation ? "true" : "false",
+        output);
+    append_context_field(
+        "TYPE_REQUESTED_ALIGNMENT",
+        std::to_string(type.requested_alignment),
+        output);
+    output += "TYPE_MEMBERS ";
+    append_context_u64(
+        static_cast<std::uint64_t>(type.members.size()), output);
+    for (InterfaceTypeId member : type.members) {
+      append_context_field("TYPE_MEMBER", interface_id_text(member), output);
+    }
+    output += "TYPE_MEMBER_OFFSETS ";
+    append_context_u64(
+        static_cast<std::uint64_t>(type.member_offsets.size()), output);
+    for (std::uint64_t offset : type.member_offsets) {
+      append_context_field("TYPE_MEMBER_OFFSET", std::to_string(offset), output);
+    }
+    output += "TYPE_NOMINAL_MEMBERS ";
+    append_context_u64(
+        static_cast<std::uint64_t>(type.nominal_members.size()), output);
+    for (const InterfaceMember &member : type.nominal_members) {
+      append_context_field("MEMBER_NAME", member.name, output);
+      append_context_field(
+          "MEMBER_KIND", std::string(symbol_kind_name(member.kind)), output);
+      append_context_field("MEMBER_TYPE", interface_id_text(member.type), output);
+      append_context_field(
+          "MEMBER_OFFSET", std::to_string(member.offset), output);
+      append_context_field(
+          "MEMBER_HAS_ENUM_VALUE",
+          member.has_enum_value ? "true" : "false",
+          output);
+      append_context_field(
+          "MEMBER_ENUM_VALUE", member.enum_value.to_decimal(), output);
+    }
+    output += "TYPE_NOMINAL_ARGUMENTS ";
+    append_context_u64(
+        static_cast<std::uint64_t>(type.nominal_arguments.size()), output);
+    for (const InterfaceNominalArgument &argument : type.nominal_arguments) {
+      append_context_field(
+          "ARGUMENT_KIND", argument.is_type ? "type" : "value", output);
+      append_context_field(
+          "ARGUMENT_TYPE", interface_id_text(argument.type), output);
+      append_context_field(
+          "ARGUMENT_VALUE_TYPE",
+          interface_id_text(argument.value_type),
+          output);
+      append_constant_context(argument.value, output);
+    }
+  }
+  return output;
+}
+
+void add_type_context(
+    const InterfaceTypeGraph &graph,
+    std::vector<AgentTypeContext> &contexts) {
+  AgentTypeContext context;
+  context.type_digest = hash_interface_type_graph(graph);
+  context.definition = render_type_context(graph);
+  context.definition_digest = sha256(context.definition);
+  for (const AgentTypeContext &existing : contexts) {
+    if (existing.type_digest == context.type_digest &&
+        existing.definition_digest == context.definition_digest) {
+      return;
+    }
+  }
+  contexts.push_back(std::move(context));
+}
+
 [[nodiscard]] AgentTargetContext target_context(const TargetProfile &target) {
   AgentTargetContext result;
   result.identity = target.facts.identity;
@@ -484,6 +659,7 @@ void hash_field(Sha256 &hash, std::string_view value) {
     const LoadedPackage &loaded,
     const SemanticPackage &package,
     const AgentRecord &record,
+    std::vector<AgentTypeContext> &type_contexts,
     DiagnosticSink &diagnostics) {
   std::vector<AgentVisibleBinding> result;
   std::vector<std::string> names;
@@ -510,6 +686,7 @@ void hash_field(Sha256 &hash, std::string_view value) {
       }
       const InterfaceTypeGraph type = export_interface_type(
           identity, package, symbol.type, diagnostics);
+      add_type_context(type, type_contexts);
       result.push_back({
           symbol.name,
           symbol.kind,
@@ -562,7 +739,7 @@ void hash_field(Sha256 &hash, std::string_view value) {
     const AgentObligation &obligation,
     const TargetProfile &target) {
   Sha256 hash;
-  hash_field(hash, "draft-agent-obligation-v6");
+  hash_field(hash, "draft-agent-obligation-v7");
   hash_field(hash, obligation.site_identity);
   hash.update(obligation.record_digest.bytes);
   hash.update(obligation.expected_type_digest.bytes);
@@ -621,6 +798,12 @@ void hash_field(Sha256 &hash, std::string_view value) {
     hash_field(hash, parameter.constraint);
     hash_field(hash, parameter.type_text);
     hash.update(parameter.type_digest.bytes);
+  }
+  hash_u64(hash, static_cast<std::uint64_t>(obligation.type_contexts.size()));
+  for (const AgentTypeContext &type : obligation.type_contexts) {
+    hash.update(type.type_digest.bytes);
+    hash.update(type.definition_digest.bytes);
+    hash_field(hash, type.definition);
   }
   hash_u64(
       hash,
@@ -750,9 +933,15 @@ AgentObligationResult build_agent_obligations(
           identity, package, record.expected_type, diagnostics);
       obligation.expected_type_digest = hash_interface_type_graph(expected);
       obligation.expected_type_text = type_text(package, record.expected_type);
+      add_type_context(expected, obligation.type_contexts);
     }
     obligation.visible_bindings = visible_bindings(
-        identity, loaded, package, record, diagnostics);
+        identity,
+        loaded,
+        package,
+        record,
+        obligation.type_contexts,
+        diagnostics);
     obligation.target = target_context(target);
     obligation.enclosing_declaration = enclosing_declaration_context(
         sources, loaded, package, record, diagnostics);

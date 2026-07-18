@@ -104,6 +104,16 @@ struct AgentParametricParameter {
   Sha256Digest type_digest;
 };
 
+// Complete canonical graph for a type referenced by the expected result or a
+// visible binding. type_digest is the compact identity used on those rows;
+// definition_digest covers the readable graph including nominal member names,
+// layouts, offsets, and generic arguments.
+struct AgentTypeContext {
+  Sha256Digest type_digest;
+  Sha256Digest definition_digest;
+  std::string definition;
+};
+
 // A surface judgment whose position permits it to guide this synthesis site.
 // These are claims, not passing verdicts: including one never evaluates it or
 // weakens ordinary syntax, type, denial, test, or benchmark validation.
@@ -142,6 +152,7 @@ struct AgentObligation {
   AgentEnclosingDeclarationContext enclosing_declaration;
   std::vector<AgentActiveDenial> active_denials;
   std::vector<AgentParametricParameter> parametric_parameters;
+  std::vector<AgentTypeContext> type_contexts;
   std::vector<AgentJudgmentContext> guiding_judgments;
   std::vector<AgentDocumentationContext> documentation;
 };

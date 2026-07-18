@@ -44,6 +44,20 @@ void write_file(const std::filesystem::path &path, std::string_view contents) {
   output.write(contents.data(), static_cast<std::streamsize>(contents.size()));
 }
 
+std::string read_file(const std::filesystem::path &path) {
+  std::ifstream input(path, std::ios::binary);
+  input.seekg(0, std::ios::end);
+  const std::streamoff end = input.tellg();
+  if (!input || end < 0) std::exit(EXIT_FAILURE);
+  std::string contents(static_cast<std::size_t>(end), '\0');
+  input.seekg(0, std::ios::beg);
+  if (!contents.empty()) {
+    input.read(contents.data(), static_cast<std::streamsize>(contents.size()));
+  }
+  if (!input) std::exit(EXIT_FAILURE);
+  return contents;
+}
+
 struct TemporaryPackage {
   std::filesystem::path path;
   TemporaryPackage() {
@@ -61,10 +75,15 @@ docs "Package design\ncontext."
 
 Package_Context_Version :: 1
 
+Record :: struct {
+    count: u32,
+}
+
 docs "Public operation."
     file "DESIGN.md"
 pub work[T: integer, N: usize] :: proc(
     values: []u32,
+    record: Record,
     callback: proc(value: ^i16, bytes: [4]u8) -> (bool, i64),
 ) -> i64 {
     judge "The implementation preserves the invariant."
@@ -223,6 +242,18 @@ void test_agent_records(TestState &state) {
       EXPECT(state, value_parameter.constraint == "value");
       EXPECT(state, value_parameter.type_text == "usize");
     }
+    bool saw_record_definition = false;
+    for (const draft::AgentTypeContext &type :
+         synthesis_obligation.type_contexts) {
+      EXPECT(state, draft::sha256(type.definition) == type.definition_digest);
+      if (type.definition.find("TYPE_NOMINAL_PUBLIC_NAME 6\nRecord") !=
+              std::string::npos &&
+          type.definition.find("MEMBER_NAME 5\ncount") !=
+              std::string::npos) {
+        saw_record_definition = true;
+      }
+    }
+    EXPECT(state, saw_record_definition);
     EXPECT(state, synthesis_obligation.guiding_judgments.size() == 1);
     if (synthesis_obligation.guiding_judgments.size() == 1) {
       const draft::AgentJudgmentContext &guidance =
@@ -315,6 +346,92 @@ void test_agent_records(TestState &state) {
       EXPECT(state,
           changed_obligations.obligations[1].input_digest !=
               synthesis_obligation.input_digest);
+
+      // A nominal type keeps the same compact nominal identity when one of its
+      // fields changes. The supplied complete definition must nevertheless
+      // change and stale the site; otherwise `record: Record` would hide the
+      // only information a provider needs to use the value correctly.
+      std::string changed_source = read_file(temporary.path / "package.draft");
+      const std::size_t member = changed_source.find("count: u32");
+      EXPECT(state, member != std::string::npos);
+      if (member != std::string::npos) {
+        changed_source.replace(member, std::string_view("count").size(), "total");
+        write_file(temporary.path / "package.draft", changed_source);
+
+        draft::SourceManager member_sources;
+        draft::DiagnosticSink member_diagnostics;
+        const draft::PackageLoadResult member_loaded = draft::load_package(
+            member_sources,
+            temporary.path.string(),
+            load_options,
+            member_diagnostics);
+        draft::SemanticAnalysisResult member_semantics =
+            draft::analyze_package_semantics(
+                member_sources,
+                member_loaded.package,
+                target.facts,
+                member_diagnostics);
+        const draft::BodyCheckResult member_bodies =
+            draft::check_package_bodies(
+                member_sources,
+                member_loaded.package,
+                member_semantics.selections,
+                member_semantics.package,
+                member_semantics.constants,
+                target.facts,
+                member_diagnostics);
+        const draft::AgentMetadataResult member_metadata =
+            draft::collect_agent_metadata(
+                member_sources,
+                member_loaded.package,
+                member_semantics.package,
+                policy,
+                member_diagnostics);
+        const draft::AgentObligationResult member_obligations =
+            draft::build_agent_obligations(
+                {"workspace", "context"},
+                member_sources,
+                member_loaded.package,
+                member_semantics.package,
+                member_metadata,
+                target,
+                member_diagnostics);
+        EXPECT(state, member_loaded.ok);
+        EXPECT(state, member_semantics.ok);
+        EXPECT(state, member_bodies.ok);
+        EXPECT(state, member_metadata.ok);
+        EXPECT(state, member_obligations.ok);
+        EXPECT(state, !member_diagnostics.has_errors());
+        EXPECT(state, member_obligations.obligations.size() == 2);
+        if (member_obligations.obligations.size() == 2) {
+          const draft::AgentObligation &member_synthesis =
+              member_obligations.obligations[1];
+          const draft::AgentObligation &before_member_change =
+              changed_obligations.obligations[1];
+          EXPECT(state,
+              member_synthesis.site_identity ==
+                  before_member_change.site_identity);
+          EXPECT(state,
+              member_synthesis.input_digest !=
+                  before_member_change.input_digest);
+          const draft::AgentVisibleBinding *before_record = nullptr;
+          const draft::AgentVisibleBinding *after_record = nullptr;
+          for (const draft::AgentVisibleBinding &binding :
+               before_member_change.visible_bindings) {
+            if (binding.name == "record") before_record = &binding;
+          }
+          for (const draft::AgentVisibleBinding &binding :
+               member_synthesis.visible_bindings) {
+            if (binding.name == "record") after_record = &binding;
+          }
+          EXPECT(state, before_record != nullptr);
+          EXPECT(state, after_record != nullptr);
+          if (before_record != nullptr && after_record != nullptr) {
+            EXPECT(state,
+                before_record->type_digest == after_record->type_digest);
+          }
+        }
+      }
     }
   }
 }

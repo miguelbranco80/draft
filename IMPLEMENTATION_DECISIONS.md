@@ -164,7 +164,7 @@ An omitted symbol is unknown, and compiler-, package-assembly-, and target-owned
 providers cannot be overridden by an external audit.
 
 Provider requests never substitute hashes for information the synthesizer must
-understand. `draft-synthesis-request-v7` carries canonical Draft spellings for
+understand. `draft-synthesis-request-v8` carries canonical Draft spellings for
 the expected type and every visible binding, together with explicit target,
 SIMD, and parsed-assembly facts. Package and enclosing-declaration documentation
 retain their anchor, text, and exact isolated attachment bytes. The same rows
@@ -196,6 +196,13 @@ an earlier direct item of a member/statement list that structurally encloses a
 later item containing the site; claims inside a sibling branch therefore do not
 leak. Claim text and exact attachment bytes are context and stale-pin inputs,
 but no verdict is implied and no judgment is executed during synthesis.
+
+Expected and visible-binding types also carry deduplicated complete interface
+type graphs. The labeled length-prefixed rendering includes nominal identity,
+layout, members, offsets, structural children, calling convention, and generic
+type/value arguments. Its definition digest is a separate obligation input from
+the compact reference digest, so changing fields of a same-named nominal type
+correctly stales synthesis and still gives Codex the facts it needs.
 
 A provider-free compile or resolution revalidation may consume a content-fresh
 pin without installing its original provider. When `draft resolve` explicitly

@@ -162,7 +162,8 @@ Codex CLI adapter. Declaration and aggregate-member sites form an early opaque
 interface stage; dependent bodies are checked only after those expansions are
 installed, then statement, expression, and assembly sites run in the later body
 stage. Provider requests carry canonical expected and visible-binding type
-spellings plus explicit target, SIMD, and parsed-assembly facts; digests remain
+spellings plus complete referenced type graphs, layouts, and members, along
+with explicit target, SIMD, and parsed-assembly facts; digests remain
 verification identities rather than opaque substitutes for usable context.
 They also carry stable package/source coordinates and a comment-free canonical
 token view of the enclosing procedure or type declaration, all covered by the

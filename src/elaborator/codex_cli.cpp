@@ -43,7 +43,7 @@ namespace {
 constexpr std::uintmax_t kMaximumCodexOutputBytes = 64U * 1024U * 1024U;
 constexpr std::uintmax_t kMaximumCodexLogBytes = 4U * 1024U * 1024U;
 constexpr std::string_view kPromptContractIdentity =
-    "draft-codex-synthesis-prompt-v7";
+    "draft-codex-synthesis-prompt-v8";
 constexpr std::string_view kOutputSchema =
     "{\n"
     "  \"type\": \"object\",\n"
@@ -357,6 +357,20 @@ void append_field(
     append_field("PARAMETER_CONSTRAINT", parameter.constraint, prompt);
     append_field("PARAMETER_TYPE_TEXT", parameter.type_text, prompt);
     append_field("PARAMETER_TYPE_SHA256", parameter.type_digest.hex(), prompt);
+  }
+  prompt += "TYPE_CONTEXTS ";
+  append_u64(
+      static_cast<std::uint64_t>(request.obligation.type_contexts.size()),
+      prompt);
+  for (const AgentTypeContext &type : request.obligation.type_contexts) {
+    if (sha256(type.definition) != type.definition_digest) {
+      provider_error(
+          diagnostics, "Codex type context identity is inconsistent");
+      return false;
+    }
+    append_field("TYPE_REFERENCE_SHA256", type.type_digest.hex(), prompt);
+    append_field("TYPE_DEFINITION_SHA256", type.definition_digest.hex(), prompt);
+    append_field("TYPE_DEFINITION", type.definition, prompt);
   }
   prompt += "GUIDING_JUDGMENTS ";
   append_u64(
@@ -839,7 +853,7 @@ SynthesisProvider configure_codex_cli_provider(
       "codex-config-" + configuration.finalize().hex();
 
   SynthesisProvider provider;
-  provider.provider_identity = "openai-codex-cli-v8";
+  provider.provider_identity = "openai-codex-cli-v9";
   provider.model_identity = state.model;
   provider.configuration_identity = state.configuration_identity;
   provider.state = &state;
