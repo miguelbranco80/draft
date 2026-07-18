@@ -55,6 +55,10 @@ struct ResolverTypeSubstitution {
 struct ResolverValueSubstitution {
   std::uint32_t parameter = std::numeric_limits<std::uint32_t>::max();
   BigInteger replacement;
+  // A template-to-template substitution retains the destination's local value
+  // parameter instead of manufacturing a concrete integer.
+  std::uint32_t symbolic_parameter =
+      std::numeric_limits<std::uint32_t>::max();
 };
 
 // Parsed representation attributes are kept small and explicit. Zero means no
@@ -664,14 +668,34 @@ private:
       if (!arguments.empty()) {
         bool changed = false;
         for (ParametricArgument &argument : arguments) {
-          if (!argument.is_type) continue;
-          const TypeId replacement = substitute_type(
-              argument.type,
-              substitutions,
-              value_substitutions,
-              use_range);
-          changed = changed || replacement != argument.type;
-          argument.type = replacement;
+          if (argument.is_type) {
+            const TypeId replacement = substitute_type(
+                argument.type,
+                substitutions,
+                value_substitutions,
+                use_range);
+            changed = changed || replacement != argument.type;
+            argument.type = replacement;
+            continue;
+          }
+          if (!argument.value_parameter.is_valid()) continue;
+          for (const ResolverValueSubstitution &substitution :
+               value_substitutions) {
+            if (substitution.parameter != argument.value_parameter.value) {
+              continue;
+            }
+            if (substitution.symbolic_parameter !=
+                std::numeric_limits<std::uint32_t>::max()) {
+              argument.value_parameter =
+                  SymbolId{substitution.symbolic_parameter};
+            } else {
+              argument.value = ConstantValue::make_integer(
+                  substitution.replacement);
+              argument.value_parameter = {};
+            }
+            changed = true;
+            break;
+          }
         }
         if (!changed) return source;
 
@@ -730,6 +754,16 @@ private:
         bool found = false;
         for (const ResolverValueSubstitution &substitution : value_substitutions) {
           if (substitution.parameter != value.element_count_parameter) continue;
+          if (substitution.symbolic_parameter !=
+              std::numeric_limits<std::uint32_t>::max()) {
+            const TypeId element = substitute_type(
+                value.element, substitutions, value_substitutions, use_range);
+            return value.kind == TypeKind::Array
+                ? semantic_.types.parametric_array(
+                      element, substitution.symbolic_parameter)
+                : semantic_.types.parametric_simd(
+                      element, substitution.symbolic_parameter);
+          }
           const std::optional<std::uint64_t> concrete =
               substitution.replacement.to_u64();
           if (!concrete.has_value() || *concrete == 0) {
@@ -813,9 +847,14 @@ private:
 
     std::string instance_name = origin.public_name + "$transitive_instance";
     for (const ParametricArgument &argument : arguments) {
-      instance_name += argument.is_type
-          ? "$t" + std::to_string(argument.type.value)
-          : "$v" + argument.value.integer.to_decimal();
+      if (argument.is_type) {
+        instance_name += "$t" + std::to_string(argument.type.value);
+      } else if (argument.value_parameter.is_valid()) {
+        instance_name += "$p" +
+            std::to_string(argument.value_parameter.value);
+      } else {
+        instance_name += "$v" + argument.value.integer.to_decimal();
+      }
     }
     const TypeId concrete = semantic_.types.begin_nominal(
         pattern_type.kind, instance_name, use_range);
@@ -993,14 +1032,36 @@ private:
     for (std::size_t index = 0; index < parameters.size(); ++index) {
       const ParametricParameterRecord &parameter = parameters[index];
       if (parameter.constraint == TypeConstraintKind::CompileTimeValue) {
-        if (arguments[index].is_type ||
-            arguments[index].value.kind != ConstantKind::Integer) {
+        if (arguments[index].is_type) {
           diagnostics_.error(
               use_range, "value parameter requires a compile-time integer argument");
           return semantic_.types.builtins().invalid;
         }
         const TypeId required_type =
             semantic_.symbols.symbol(parameter.parameter).type;
+        if (arguments[index].value_parameter.is_valid()) {
+          const Symbol &supplied = semantic_.symbols.symbol(
+              arguments[index].value_parameter);
+          if (supplied.kind != SymbolKind::ValueParameter ||
+              supplied.type != required_type) {
+            diagnostics_.error(
+                use_range,
+                "symbolic type value argument has the wrong parameter type");
+            return semantic_.types.builtins().invalid;
+          }
+          arguments[index].value_type = required_type;
+          value_substitutions.push_back({
+              parameter.parameter.value,
+              {},
+              arguments[index].value_parameter.value,
+          });
+          continue;
+        }
+        if (arguments[index].value.kind != ConstantKind::Integer) {
+          diagnostics_.error(
+              use_range, "value parameter requires a compile-time integer argument");
+          return semantic_.types.builtins().invalid;
+        }
         if (!semantic_.types.is_integer(required_type) ||
             !integer_fits_type(arguments[index].value.integer, required_type)) {
           diagnostics_.error(
@@ -1012,6 +1073,7 @@ private:
         value_substitutions.push_back({
             parameter.parameter.value,
             arguments[index].value.integer,
+            std::numeric_limits<std::uint32_t>::max(),
         });
         continue;
       }
@@ -1065,9 +1127,14 @@ private:
 
     std::string instance_name = template_symbol.name + "$instance";
     for (const ParametricArgument &argument : arguments) {
-      instance_name += argument.is_type
-          ? "$t" + std::to_string(argument.type.value)
-          : "$v" + argument.value.integer.to_decimal();
+      if (argument.is_type) {
+        instance_name += "$t" + std::to_string(argument.type.value);
+      } else if (argument.value_parameter.is_valid()) {
+        instance_name += "$p" +
+            std::to_string(argument.value_parameter.value);
+      } else {
+        instance_name += "$v" + argument.value.integer.to_decimal();
+      }
     }
     Symbol instance_symbol = template_symbol;
     instance_symbol.name = instance_name;
@@ -1194,10 +1261,29 @@ private:
       const std::optional<BigInteger> value = integer_constant_expression(
           tree, argument_node, scope);
       if (!value.has_value()) {
-        diagnostics_.error(
-            tree.node(argument_node).range,
-            "value parameter argument must be a compile-time integer expression");
-        return semantic_.types.builtins().invalid;
+        const std::optional<SymbolId> symbolic = value_parameter_name(
+            tree, argument_node, scope);
+        if (!symbolic.has_value()) {
+          diagnostics_.error(
+              tree.node(argument_node).range,
+              "value parameter argument must be a compile-time integer expression");
+          return semantic_.types.builtins().invalid;
+        }
+        const TypeId required =
+            semantic_.symbols.symbol(parameter.parameter).type;
+        const TypeId supplied = semantic_.symbols.symbol(*symbolic).type;
+        if (required != supplied) {
+          diagnostics_.error(
+              tree.node(argument_node).range,
+              "symbolic type value argument has the wrong parameter type");
+          return semantic_.types.builtins().invalid;
+        }
+        ParametricArgument argument;
+        argument.is_type = false;
+        argument.value_type = required;
+        argument.value_parameter = *symbolic;
+        arguments.push_back(std::move(argument));
+        continue;
       }
       ParametricArgument argument;
       argument.is_type = false;

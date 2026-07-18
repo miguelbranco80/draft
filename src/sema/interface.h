@@ -59,6 +59,10 @@ struct InterfaceNominalArgument {
   InterfaceTypeId type;
   InterfaceTypeId value_type;
   ConstantValue value;
+  // Symbolic value arguments use their zero-based ordinal in the declaration
+  // which owns the surrounding type graph. Concrete values retain max here.
+  std::uint32_t value_parameter =
+      std::numeric_limits<std::uint32_t>::max();
 };
 
 // InterfaceType is a package-independent type graph row. element and members
@@ -89,10 +93,11 @@ struct InterfaceType {
   bool c_representation = false;
   std::uint32_t requested_alignment = 0;
   std::vector<InterfaceMember> nominal_members;
-  // A concrete nominal template application retains the template identity in
-  // the nominal_* fields and its type/value arguments here. This makes both
-  // `dep.Maybe[i64]` and `dep.Buffer[u8, 64]` retain nominal identity when they
-  // cross more than one package boundary.
+  // A nominal template application retains the template identity in the
+  // nominal_* fields and its type/value arguments here. Arguments may still
+  // name the surrounding template's value parameter. This makes both concrete
+  // `dep.Buffer[u8, 64]` and symbolic `dep.Buffer[u8, N]` retain nominal
+  // identity when they cross more than one package boundary.
   std::vector<InterfaceNominalArgument> nominal_arguments;
 };
 

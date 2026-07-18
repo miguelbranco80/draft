@@ -351,6 +351,55 @@ main :: proc() -> i64 {
   EXPECT(state, concrete_instances == 4);
 }
 
+void test_value_parametric_nominal_composition(TestState &state) {
+  CheckedSource source(R"draft(
+package bodies
+
+Buffer[N: usize] :: struct {
+    values: [N]i64,
+}
+
+Envelope[N: usize] :: struct {
+    buffer: Buffer[N],
+}
+
+last[N: usize] :: proc(value: ^Envelope[N]) -> i64 {
+    return value^.buffer.values[N - 1]
+}
+
+main :: proc() -> i64 {
+    value: Envelope[3]
+    value.buffer.values[2] = 42
+    return last(&value)
+}
+)draft");
+
+  if (source.diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(
+        source.sources, source.diagnostics);
+  }
+  EXPECT(state, source.semantics.ok);
+  EXPECT(state, source.bodies.ok);
+  EXPECT(state, !source.diagnostics.has_errors());
+
+  bool saw_concrete_envelope = false;
+  for (const draft::ParametricTypeInstanceRecord &instance :
+       source.semantics.package.parametric_type_instances) {
+    const draft::Symbol &template_symbol =
+        source.semantics.package.symbols.symbol(instance.source);
+    if (template_symbol.name != "Envelope" || instance.arguments.size() != 1 ||
+        instance.arguments.front().value_parameter.is_valid()) {
+      continue;
+    }
+    const draft::TypeId type =
+        source.semantics.package.symbols.symbol(instance.instance).type;
+    saw_concrete_envelope = true;
+    EXPECT(state, source.semantics.package.types.type(type).layout ==
+                      draft::TypeLayout({true, 24, 8}));
+  }
+  EXPECT(state, saw_concrete_envelope);
+}
+
 void test_nested_procedures(TestState &state) {
   const std::string text = R"draft(
 package bodies
@@ -1706,6 +1755,7 @@ int main() {
   test_common_typed_bodies(state);
   test_body_diagnostics(state);
   test_parametric_procedure_instances(state);
+  test_value_parametric_nominal_composition(state);
   test_nested_procedures(state);
   test_nested_procedure_capture_diagnostics(state);
   test_assignment_discards_and_tuple_patterns(state);

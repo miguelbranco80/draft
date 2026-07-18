@@ -373,6 +373,12 @@ void append_constant_context(
           "ARGUMENT_VALUE_TYPE",
           interface_id_text(argument.value_type),
           output);
+      append_context_field(
+          "ARGUMENT_VALUE_PARAMETER",
+          argument.value_parameter == std::numeric_limits<std::uint32_t>::max()
+              ? "none"
+              : std::to_string(argument.value_parameter),
+          output);
       append_constant_context(argument.value, output);
     }
   }

@@ -285,7 +285,7 @@ private:
         const ParametricParameterRecord &parameter = parameters[index];
         const ParametricArgument &argument = seed.arguments[index];
         if (parameter.constraint == TypeConstraintKind::CompileTimeValue) {
-          if (argument.is_type) {
+          if (argument.is_type || argument.value_parameter.is_valid()) {
             valid = false;
             break;
           }
@@ -516,14 +516,28 @@ private:
         std::vector<ParametricArgument> arguments = *application->arguments;
         bool changed = false;
         for (ParametricArgument &argument : arguments) {
-          if (!argument.is_type) continue;
-          const TypeId replacement = substitute_type(
-              argument.type,
-              type_substitutions,
-              value_substitutions,
-              use_range);
-          changed = changed || replacement != argument.type;
-          argument.type = replacement;
+          if (argument.is_type) {
+            const TypeId replacement = substitute_type(
+                argument.type,
+                type_substitutions,
+                value_substitutions,
+                use_range);
+            changed = changed || replacement != argument.type;
+            argument.type = replacement;
+            continue;
+          }
+          if (!argument.value_parameter.is_valid()) continue;
+          for (const ValueSubstitution &substitution : value_substitutions) {
+            if (substitution.parameter != argument.value_parameter) continue;
+            if (substitution.symbolic_parameter.is_valid()) {
+              argument.value_parameter = substitution.symbolic_parameter;
+            } else {
+              argument.value = substitution.value;
+              argument.value_parameter = {};
+            }
+            changed = true;
+            break;
+          }
         }
         if (!changed) return source;
 
@@ -2291,14 +2305,15 @@ private:
     return std::nullopt;
   }
 
-  // Binds a dependent array/SIMD count during call inference. The structural
-  // type already guarantees a concrete u64 count; this step additionally checks
-  // that the number fits the declared parameter type (for example `N: u8`).
-  // Repeated appearances of N must infer the same exact value.
-  [[nodiscard]] bool infer_value_argument(
+  // Binds one exact scalar during call inference. Repeated appearances of the
+  // same parameter must infer the same value, and the source value type must
+  // match the declaration because symbolic value parameters do not perform an
+  // implicit narrowing conversion.
+  [[nodiscard]] bool infer_exact_value_argument(
       SymbolId owner,
       SymbolId parameter,
-      std::uint64_t value,
+      const ConstantValue &value,
+      TypeId value_type,
       std::vector<ValueSubstitution> &substitutions) {
     const std::vector<ParametricParameterRecord> parameters =
         parameters_for(owner);
@@ -2308,18 +2323,62 @@ private:
         continue;
       }
       const TypeId required_type = semantic_.symbols.symbol(parameter).type;
-      const ConstantValue constant = ConstantValue::make_integer(
-          BigInteger::from_u64(value));
-      if (!semantic_.types.is_integer(required_type) ||
-          !integer_representable(constant.integer, required_type)) {
+      if (value_type != required_type ||
+          value.kind != ConstantKind::Integer ||
+          !semantic_.types.is_integer(required_type) ||
+          !integer_representable(value.integer, required_type)) {
         return false;
       }
       const std::optional<std::size_t> existing =
           value_substitution_index(substitutions, parameter);
       if (existing.has_value()) {
-        return substitutions[*existing].value == constant;
+        return !substitutions[*existing].symbolic_parameter.is_valid() &&
+            substitutions[*existing].value == value;
       }
-      substitutions.push_back({parameter, constant, {}});
+      substitutions.push_back({parameter, value, {}});
+      return true;
+    }
+    return false;
+  }
+
+  // Dependent array/SIMD counts carry a concrete u64 in their structural type
+  // rather than the original expression type. The destination parameter's
+  // declared type supplies that already-validated context here.
+  [[nodiscard]] bool infer_value_argument(
+      SymbolId owner,
+      SymbolId parameter,
+      std::uint64_t value,
+      std::vector<ValueSubstitution> &substitutions) {
+    return infer_exact_value_argument(
+        owner,
+        parameter,
+        ConstantValue::make_integer(BigInteger::from_u64(value)),
+        semantic_.symbols.symbol(parameter).type,
+        substitutions);
+  }
+
+  [[nodiscard]] bool infer_symbolic_value_argument(
+      SymbolId owner,
+      SymbolId parameter,
+      SymbolId supplied,
+      std::vector<ValueSubstitution> &substitutions) {
+    for (const ParametricParameterRecord &record : parameters_for(owner)) {
+      if (record.parameter != parameter ||
+          record.constraint != TypeConstraintKind::CompileTimeValue) {
+        continue;
+      }
+      const Symbol &destination = semantic_.symbols.symbol(parameter);
+      const Symbol &source = semantic_.symbols.symbol(supplied);
+      if (source.kind != SymbolKind::ValueParameter ||
+          source.type != destination.type) {
+        return false;
+      }
+      const std::optional<std::size_t> existing =
+          value_substitution_index(substitutions, parameter);
+      if (existing.has_value()) {
+        return substitutions[*existing].symbolic_parameter == supplied;
+      }
+      substitutions.push_back({parameter, {}, supplied});
       return true;
     }
     return false;
@@ -2431,7 +2490,8 @@ private:
           nominal_application(type);
       if (!application.has_value()) return false;
       for (const ParametricArgument &argument : *application->arguments) {
-        if (argument.is_type && contains_symbolic_type(argument.type)) {
+        if ((argument.is_type && contains_symbolic_type(argument.type)) ||
+            (!argument.is_type && argument.value_parameter.is_valid())) {
           return true;
         }
       }
@@ -2501,13 +2561,28 @@ private:
                   value_substitutions)) {
             return false;
           }
-        } else if (pattern_argument.value_type != actual_argument.value_type ||
-                   pattern_argument.value != actual_argument.value) {
-          // Symbolic value arguments are not yet represented by
-          // ParametricArgument. Concrete applications still compare exactly;
-          // dependent arrays and SIMD vectors infer through their dedicated
-          // representation below.
-          return false;
+        } else {
+          if (pattern_argument.value_type != actual_argument.value_type) {
+            return false;
+          }
+          if (pattern_argument.value_parameter.is_valid()) {
+            const bool inferred = actual_argument.value_parameter.is_valid()
+                ? infer_symbolic_value_argument(
+                      owner,
+                      pattern_argument.value_parameter,
+                      actual_argument.value_parameter,
+                      value_substitutions)
+                : infer_exact_value_argument(
+                      owner,
+                      pattern_argument.value_parameter,
+                      actual_argument.value,
+                      actual_argument.value_type,
+                      value_substitutions);
+            if (!inferred) return false;
+          } else if (actual_argument.value_parameter.is_valid() ||
+                     pattern_argument.value != actual_argument.value) {
+            return false;
+          }
         }
       }
       return true;
@@ -2600,7 +2675,12 @@ private:
             value_substitutions, parameter.parameter);
         argument.is_type = false;
         argument.value_type = semantic_.symbols.symbol(parameter.parameter).type;
-        argument.value = value_substitutions[index].value;
+        if (value_substitutions[index].symbolic_parameter.is_valid()) {
+          argument.value_parameter =
+              value_substitutions[index].symbolic_parameter;
+        } else {
+          argument.value = value_substitutions[index].value;
+        }
       } else {
         const TypeId parameter_type =
             semantic_.symbols.symbol(parameter.parameter).type;
@@ -2640,6 +2720,9 @@ private:
     for (const ParametricArgument &argument : arguments) {
       if (argument.is_type) {
         instance_symbol.name += "$t" + std::to_string(argument.type.value);
+      } else if (argument.value_parameter.is_valid()) {
+        instance_symbol.name += "$p" +
+            std::to_string(argument.value_parameter.value);
       } else {
         instance_symbol.name += "$v" + argument.value.integer.to_decimal();
       }

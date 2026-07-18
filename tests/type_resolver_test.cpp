@@ -423,16 +423,22 @@ Buffer[T: type, N: u8] :: struct {
     data: [N]T,
 }
 
+Mismatched[N: usize] :: struct {
+    value: Buffer[u8, N],
+}
+
 Zero :: struct { value: Buffer[u8, 0], }
 Too_Wide :: struct { value: Buffer[u8, 256], }
 )draft");
 
-  EXPECT(state, source.diagnostics.error_count() == 2);
+  EXPECT(state, source.diagnostics.error_count() == 3);
   const std::string rendered =
       draft::render_diagnostics(source.sources, source.diagnostics);
   EXPECT(state, rendered.find("must instantiate to a nonzero u64") !=
                     std::string::npos);
   EXPECT(state, rendered.find("not representable in its parameter type") !=
+                    std::string::npos);
+  EXPECT(state, rendered.find("symbolic type value argument has the wrong parameter type") !=
                     std::string::npos);
 }
 

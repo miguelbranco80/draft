@@ -316,6 +316,10 @@ pub Maybe[T: type] :: union {
 pub Buffer[T: type, N: usize] :: struct {
     data: [N]T,
 }
+
+pub Packet[N: usize] :: struct {
+    bytes: Buffer[u8, N],
+}
 )draft");
   draft::SemanticAnalysisResult dependency_semantics =
       draft::analyze_package_semantics(
@@ -341,6 +345,7 @@ import lib/option as option
 pub Holder :: struct {
     value: option.Maybe[i64],
     bytes: option.Buffer[u16, 3],
+    packet: option.Packet[5],
 }
 
 pub unwrap :: proc(value: option.Maybe[i64]) -> i64 {
@@ -409,7 +414,7 @@ pub relay :: proc(holder: middle.Holder) -> i64 {
     std::cerr << draft::render_diagnostics(sources, diagnostics);
   }
   EXPECT(state, dependency_semantics.ok);
-  EXPECT(state, dependency_interface.declarations.size() == 2);
+  EXPECT(state, dependency_interface.declarations.size() == 3);
   if (!dependency_interface.declarations.empty()) {
     const draft::InterfaceDeclaration &maybe =
         dependency_interface.declarations.front();
@@ -422,7 +427,7 @@ pub relay :: proc(holder: middle.Holder) -> i64 {
                         draft::TypeConstraintKind::AnyType);
     }
   }
-  if (dependency_interface.declarations.size() == 2) {
+  if (dependency_interface.declarations.size() >= 2) {
     const draft::InterfaceDeclaration &buffer =
         dependency_interface.declarations[1];
     EXPECT(state, buffer.name == "Buffer");
@@ -448,10 +453,30 @@ pub relay :: proc(holder: middle.Holder) -> i64 {
       EXPECT(state, data.element_count_parameter == 1);
     }
   }
+  if (dependency_interface.declarations.size() == 3) {
+    const draft::InterfaceDeclaration &packet =
+        dependency_interface.declarations[2];
+    EXPECT(state, packet.name == "Packet");
+    const draft::InterfaceType &packet_type =
+        dependency_interface.types[packet.type.value];
+    EXPECT(state, packet_type.members.size() == 1);
+    if (packet_type.members.size() == 1) {
+      const draft::InterfaceType &symbolic_buffer =
+          dependency_interface.types[packet_type.members.front().value];
+      EXPECT(state, symbolic_buffer.nominal_public_name == "Buffer");
+      EXPECT(state, symbolic_buffer.nominal_arguments.size() == 2);
+      if (symbolic_buffer.nominal_arguments.size() == 2) {
+        const draft::InterfaceNominalArgument &count =
+            symbolic_buffer.nominal_arguments[1];
+        EXPECT(state, !count.is_type);
+        EXPECT(state, count.value_parameter == 0);
+      }
+    }
+  }
   EXPECT(state, consumer_semantics.ok);
   EXPECT(state, bodies.ok);
-  EXPECT(state, consumer_semantics.package.parametric_parameters.size() == 3);
-  EXPECT(state, consumer_semantics.package.parametric_type_instances.size() == 2);
+  EXPECT(state, consumer_semantics.package.parametric_parameters.size() == 4);
+  EXPECT(state, consumer_semantics.package.parametric_type_instances.size() == 4);
   EXPECT(state, final_semantics.ok);
   EXPECT(state, final_bodies.ok);
   EXPECT(state, !diagnostics.has_errors());
@@ -474,7 +499,12 @@ pub relay :: proc(holder: middle.Holder) -> i64 {
     }
     if (type.kind == draft::TypeKind::Struct &&
         type.nominal_public_name == "Buffer" &&
-        type.nominal_arguments.size() == 2) {
+        type.nominal_arguments.size() == 2 &&
+        type.nominal_arguments[1].value_parameter ==
+            std::numeric_limits<std::uint32_t>::max() &&
+        type.nominal_arguments[1].value.kind ==
+            draft::ConstantKind::Integer &&
+        type.nominal_arguments[1].value.integer.to_decimal() == "3") {
       saw_buffer_specialization = true;
       EXPECT(state, type.nominal_root_identity == "workspace");
       EXPECT(state, type.nominal_root_relative_path == "lib/option");

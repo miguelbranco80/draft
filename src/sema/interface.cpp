@@ -56,6 +56,7 @@ void hash_nominal_argument(
   hash_type_id(hash, argument.type);
   hash_type_id(hash, argument.value_type);
   hash_constant(hash, argument.value);
+  hash_u64(hash, argument.value_parameter);
 }
 
 void hash_interface_type(Sha256 &hash, const InterfaceType &type) {
@@ -479,6 +480,17 @@ private:
     } else {
       translated.value_type = translate_type(argument.value_type);
       translated.value = argument.value;
+      if (argument.value_parameter.is_valid()) {
+        const std::optional<std::uint32_t> ordinal =
+            parameter_ordinal(argument.value_parameter.value);
+        if (ordinal.has_value()) {
+          translated.value_parameter = *ordinal;
+        } else {
+          diagnostics_.error(
+              SourceRange::invalid(),
+              "symbolic nominal argument has no owning value parameter");
+        }
+      }
     }
     return translated;
   }
@@ -933,6 +945,17 @@ private:
       } else {
         translated.value_type = import_type(package, cache, argument.value_type);
         translated.value = argument.value;
+        if (argument.value_parameter !=
+            std::numeric_limits<std::uint32_t>::max()) {
+          if (argument.value_parameter >= active_parameters_.size()) {
+            diagnostics_.error(
+                SourceRange::invalid(),
+                "package interface contains an invalid nominal value-parameter ordinal");
+          } else {
+            translated.value_parameter =
+                active_parameters_[argument.value_parameter];
+          }
+        }
       }
       nominal_arguments.push_back(std::move(translated));
     }
@@ -1179,7 +1202,8 @@ private:
   std::vector<InterfaceImportCache> caches_;
   std::vector<ImportedNominalCache> nominals_;
   // Temporarily names the consumer-local parameters of the declaration whose
-  // type graph is being rebuilt. Only dependent array/SIMD rows consult it.
+  // type graph is being rebuilt. Dependent array/SIMD rows and symbolic nominal
+  // value arguments replace their stable interface ordinals through this list.
   std::vector<SymbolId> active_parameters_;
 };
 
