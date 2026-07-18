@@ -45,6 +45,7 @@ add_library(
   src/interop/aarch64_abi.cpp
   src/interop/c_header.cpp
   src/interop/native.cpp
+  src/judgment/evidence.cpp
   src/mir/lower.cpp
   src/mir/mir.cpp
   src/mir/verify.cpp
@@ -337,6 +338,10 @@ if(BUILD_TESTING)
   add_executable(draft_validation_evidence_tests tests/validation_evidence_test.cpp)
   target_link_libraries(draft_validation_evidence_tests PRIVATE draft_compiler)
   add_test(NAME draft_validation_evidence_tests COMMAND draft_validation_evidence_tests)
+
+  add_executable(draft_judgment_evidence_tests tests/judgment_evidence_test.cpp)
+  target_link_libraries(draft_judgment_evidence_tests PRIVATE draft_compiler)
+  add_test(NAME draft_judgment_evidence_tests COMMAND draft_judgment_evidence_tests)
 
   add_executable(
     draft_validation_evidence_store_tests
