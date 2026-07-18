@@ -36,6 +36,11 @@ layout offset. Explicit tuple member types also contextualize symbolic enum and
 tagged-union alternatives during constant evaluation before aggregate
 conversion.
 
+The native scalar conformance program now exercises every boolean-storage width
+and both byte-order variants of every fixed integer and floating storage scalar.
+Each matrix is also executed by `static_assert`, proving the same conversions
+and equality rules in the compile-time evaluator before native execution.
+
 Dependent integer type/value expressions now use a canonical typed post-order
 tree rather than a one-parameter special case. Arithmetic expressions survive
 nested nominal substitution, explicit parametric procedure applications, and

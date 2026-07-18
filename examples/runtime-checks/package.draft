@@ -510,6 +510,65 @@ endian_roundtrip :: proc(value: u32) -> u32 {
     return cast[u32](big) + cast[u32](little)
 }
 
+boolean_storage_matrix :: proc() -> bool {
+    true8 := cast[b8](true)
+    false8 := cast[b8](false)
+    true16 := cast[b16](true)
+    false16 := cast[b16](false)
+    true32 := cast[b32](true)
+    false32 := cast[b32](false)
+    true64 := cast[b64](true)
+    false64 := cast[b64](false)
+    return cast[bool](true8) && !cast[bool](false8) && true8 != false8 &&
+        cast[bool](true16) && !cast[bool](false16) && true16 != false16 &&
+        cast[bool](true32) && !cast[bool](false32) && true32 != false32 &&
+        cast[bool](true64) && !cast[bool](false64) && true64 != false64
+}
+
+endian_integer_matrix :: proc() -> bool {
+    signed16: i16 = -123
+    signed32: i32 = -1234567
+    signed64: i64 = -123456789
+    signed128: i128 = -123456789
+    unsigned16: u16 = 0x1234
+    unsigned32: u32 = 0x12345678
+    unsigned64: u64 = 0x123456789abcdef0
+    unsigned128: u128 = 0x123456789abcdef0
+
+    return cast[i16](cast[i16le](signed16)) == signed16 &&
+        cast[i16](cast[i16be](signed16)) == signed16 &&
+        cast[i16le](signed16) == cast[i16le](signed16) &&
+        cast[i16be](signed16) == cast[i16be](signed16) &&
+        cast[i32](cast[i32le](signed32)) == signed32 &&
+        cast[i32](cast[i32be](signed32)) == signed32 &&
+        cast[i64](cast[i64le](signed64)) == signed64 &&
+        cast[i64](cast[i64be](signed64)) == signed64 &&
+        cast[i128](cast[i128le](signed128)) == signed128 &&
+        cast[i128](cast[i128be](signed128)) == signed128 &&
+        cast[u16](cast[u16le](unsigned16)) == unsigned16 &&
+        cast[u16](cast[u16be](unsigned16)) == unsigned16 &&
+        cast[u32](cast[u32le](unsigned32)) == unsigned32 &&
+        cast[u32](cast[u32be](unsigned32)) == unsigned32 &&
+        cast[u64](cast[u64le](unsigned64)) == unsigned64 &&
+        cast[u64](cast[u64be](unsigned64)) == unsigned64 &&
+        cast[u128](cast[u128le](unsigned128)) == unsigned128 &&
+        cast[u128](cast[u128be](unsigned128)) == unsigned128
+}
+
+endian_float_matrix :: proc() -> bool {
+    half: f16 = 1.5
+    single: f32 = -123.5
+    double: f64 = 123456.25
+    return cast[f16](cast[f16le](half)) == half &&
+        cast[f16](cast[f16be](half)) == half &&
+        cast[f16le](half) == cast[f16le](half) &&
+        cast[f16be](half) == cast[f16be](half) &&
+        cast[f32](cast[f32le](single)) == single &&
+        cast[f32](cast[f32be](single)) == single &&
+        cast[f64](cast[f64le](double)) == double &&
+        cast[f64](cast[f64be](double)) == double
+}
+
 pointer_distance :: proc(value: [^]i64, count: isize) -> isize {
     return ptr_sub(ptr_offset(value, count), value)
 }
@@ -662,6 +721,12 @@ exercise_control_exit_defers :: proc(trace: [^]i64, count: ^usize) {
 }
 
 main :: proc() {
+    // The same closed storage-scalar vocabulary must agree in the compile-time
+    // evaluator and the native pipeline. Runtime assertions below execute each
+    // function again after LLVM lowering.
+    static_assert(boolean_storage_matrix())
+    static_assert(endian_integer_matrix())
+    static_assert(endian_float_matrix())
     assert(len(Compile_Time_Text) == 3)
     assert(Compile_Time_Text[0] == cast[u8]('r'))
     assert(Compile_Time_Text[2] == cast[u8]('f'))
@@ -790,6 +855,9 @@ main :: proc() {
     assert(cast[i64](to_rune(65)) == 65)
     assert(to_code(7) == .Seven)
     assert(storage_roundtrip(false, cast[b32](true)))
+    assert(boolean_storage_matrix())
+    assert(endian_integer_matrix())
+    assert(endian_float_matrix())
     truth := cast[Truth](true)
     falsehood := cast[Truth](false)
     assert(cast[bool](distinct_logical(falsehood, truth)))
