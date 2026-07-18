@@ -814,6 +814,12 @@ Mode :: enum {
     One,
 }
 
+bad_compound :: proc() -> rune {
+    value := 'a'
+    value += 'b'
+    return value
+}
+
 Bad_String :: "draft" == "draft"
 Bad_Target_String :: target.file_tag == "aarch64-macos"
 Bad_Mixed_Numeric :: cast[u32](1) + cast[u64](2)
@@ -822,17 +828,24 @@ Bad_Endian_Order ::
 Bad_Enum_Arithmetic ::
     cast[Mode](cast[int](1)) + cast[Mode](cast[int](1))
 Bad_Rune_Arithmetic :: 'a' + 'b'
+Bad_Rune_Negate :: -'a'
+Bad_Endian_Not :: ~cast[u32be](cast[u32](1))
+Bad_Enum_Negate :: -cast[Mode](cast[int](1))
+Bad_Compound :: bad_compound()
 )draft");
-  if (invalid.diagnostics.error_count() < 6) {
+  if (invalid.diagnostics.error_count() < 10) {
     std::cerr << draft::render_diagnostics(
         invalid.sources, invalid.diagnostics);
   }
   EXPECT(state, !invalid.analysis.ok);
-  EXPECT(state, invalid.diagnostics.error_count() >= 6);
+  EXPECT(state, invalid.diagnostics.error_count() >= 10);
   const std::string rendered =
       draft::render_diagnostics(invalid.sources, invalid.diagnostics);
   EXPECT(state, rendered.find(
                     "compile-time operator is not defined for operand types") !=
+                    std::string::npos);
+  EXPECT(state, rendered.find(
+                    "compile-time unary operator is not defined for operand type") !=
                     std::string::npos);
 }
 

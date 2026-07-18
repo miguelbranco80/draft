@@ -657,6 +657,30 @@ private:
         required);
   }
 
+  [[nodiscard]] std::optional<EvalResult> invalid_unary_type(
+      TokenKind operation,
+      TypeId operand,
+      SourceRange range,
+      bool required) {
+    if (!operand.is_valid() ||
+        semantic_.types.type(operand).kind == TypeKind::Invalid) {
+      return std::nullopt;
+    }
+    bool valid = false;
+    if (operation == TokenKind::Plus || operation == TokenKind::Minus) {
+      valid = numeric_operand(operand);
+    } else if (operation == TokenKind::Tilde) {
+      valid = integer_operand(operand);
+    } else if (operation == TokenKind::Bang) {
+      valid = operand == semantic_.types.builtins().bool_type;
+    }
+    if (valid) return std::nullopt;
+    return fail(
+        range,
+        "compile-time unary operator is not defined for operand type",
+        required);
+  }
+
   // Finds a concrete numeric type without evaluating the expression.  This is
   // intentionally a small syntactic query, not a second type checker.  Its job
   // is to discover context supplied by the opposite operand before source-order
@@ -2992,6 +3016,14 @@ private:
               "invalid compile-time compound assignment",
               required));
         }
+        if (std::optional<EvalResult> invalid = invalid_binary_types(
+                binary,
+                target.type,
+                right.type,
+                assignment.range,
+                required)) {
+          return failed_execution(std::move(*invalid));
+        }
         const EvalResult result =
             runtime_type(target.type).kind == TypeKind::Float
             ? evaluate_typed_float_binary(
@@ -3819,6 +3851,10 @@ private:
               tree, node.children.front(), scope, required, expected);
       if (operand.status != EvalStatus::Ready) return operand;
       const TokenKind operation = tree.token(node.token_begin).kind;
+      if (std::optional<EvalResult> invalid = invalid_unary_type(
+              operation, operand.type, node.range, required)) {
+        return std::move(*invalid);
+      }
       if (operation == TokenKind::Bang && operand.value.kind == ConstantKind::Bool) {
         return ready(
             ConstantValue::make_bool(!operand.value.boolean),
