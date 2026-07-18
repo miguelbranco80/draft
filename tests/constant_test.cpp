@@ -233,6 +233,7 @@ Has_Neon :: target.has_feature("neon")
 Bit_Value :: (2 << 5) | 1
 Huge :: 340282366920938463463374607431768211456 + 7
 Fraction :: 1.25 + 0.75
+Mixed_Untyped_Fraction :: 1 + 1.5
 Accent :: 'é'
 Odd_Mask :: make_mask(8)
 Factorial_10 :: factorial(10)
@@ -380,6 +381,8 @@ when Accent == '\u{e9}' {
       find_symbol(source.analysis.package, "Huge");
   const std::optional<draft::SymbolId> fraction =
       find_symbol(source.analysis.package, "Fraction");
+  const std::optional<draft::SymbolId> mixed_untyped_fraction =
+      find_symbol(source.analysis.package, "Mixed_Untyped_Fraction");
   const std::optional<draft::SymbolId> header_size =
       find_symbol(source.analysis.package, "Header_Size");
   const std::optional<draft::SymbolId> header_alignment =
@@ -448,6 +451,7 @@ when Accent == '\u{e9}' {
   EXPECT(state, bit_value.has_value());
   EXPECT(state, huge.has_value());
   EXPECT(state, fraction.has_value());
+  EXPECT(state, mixed_untyped_fraction.has_value());
   EXPECT(state, header_size.has_value());
   EXPECT(state, header_alignment.has_value());
   EXPECT(state, accent.has_value());
@@ -480,6 +484,7 @@ when Accent == '\u{e9}' {
   EXPECT(state, nan_differs.has_value());
   EXPECT(state, negative_zero_f32.has_value());
   if (bits && derived && feature && bit_value && huge && fraction &&
+      mixed_untyped_fraction &&
       header_size && header_alignment && accent && odd_mask && factorial &&
       class_two && class_default && target_word && wrapped_byte && measured_u32 &&
       table && table_sum && header_value && tuple_value) {
@@ -489,6 +494,8 @@ when Accent == '\u{e9}' {
     const draft::ConstantValue *bit_result = source.analysis.constants.find(*bit_value);
     const draft::ConstantValue *huge_result = source.analysis.constants.find(*huge);
     const draft::ConstantValue *fraction_result = source.analysis.constants.find(*fraction);
+    const draft::ConstantValue *mixed_untyped_fraction_result =
+        source.analysis.constants.find(*mixed_untyped_fraction);
     const draft::ConstantValue *size_result =
         source.analysis.constants.find(*header_size);
     const draft::ConstantValue *alignment_result =
@@ -584,6 +591,7 @@ when Accent == '\u{e9}' {
     EXPECT(state, bit_result != nullptr);
     EXPECT(state, huge_result != nullptr);
     EXPECT(state, fraction_result != nullptr);
+    EXPECT(state, mixed_untyped_fraction_result != nullptr);
     EXPECT(state, size_result != nullptr);
     EXPECT(state, alignment_result != nullptr);
     EXPECT(state, accent_result != nullptr);
@@ -627,6 +635,12 @@ when Accent == '\u{e9}' {
     if (fraction_result) {
       EXPECT(state, fraction_result->kind == draft::ConstantKind::Float);
       EXPECT(state, fraction_result->floating.to_fraction() == "2/1");
+    }
+    if (mixed_untyped_fraction_result) {
+      EXPECT(state,
+             mixed_untyped_fraction_result->kind == draft::ConstantKind::Float);
+      EXPECT(state,
+             mixed_untyped_fraction_result->floating.to_fraction() == "5/2");
     }
     if (size_result) EXPECT(state, size_result->integer.to_decimal() == "16");
     if (alignment_result) {

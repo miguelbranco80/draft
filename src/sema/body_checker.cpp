@@ -702,10 +702,16 @@ private:
   }
 
   // Selects one common numeric operand type without implicit conversion between
-  // concrete numeric types.
+  // concrete numeric types. An integer and decimal that are both still
+  // untyped are the language-defined exception: their arithmetic stays exact
+  // and produces an untyped floating constant until a later context rounds it.
   [[nodiscard]] TypeId common_numeric_type(
       TypeId left, TypeId right, SourceRange range) {
     if (left == right && is_numeric(left)) return left;
+    if ((is_untyped_integer(left) && is_untyped_float(right)) ||
+        (is_untyped_float(left) && is_untyped_integer(right))) {
+      return semantic_.types.builtins().untyped_float;
+    }
     if (is_untyped_integer(left) && is_numeric(right) &&
         !is_untyped_integer(right) && !is_untyped_float(right)) {
       return right;
@@ -1038,8 +1044,10 @@ private:
 
   // Applies a concrete numeric context to an already checked untyped tree.
   // This is needed when `:=` chooses int/f64 after seeing the complete
-  // initializer. It changes semantic types only; exact constant payloads remain
-  // intact until LLVM conversion.
+  // initializer. Integer payloads may remain mathematical integers because
+  // their LLVM spelling is type-independent after the range check. Floating
+  // leaves are rounded here into the concrete IEEE payload expected by MIR;
+  // MIR constants are already typed values, not implicit conversion requests.
   void contextualize_numeric_expression(
       HirExpressionId expression_id, TypeId target) {
     HirExpression &expression = hir_.expression_mut(expression_id);
@@ -1051,6 +1059,13 @@ private:
         semantic_.types.is_float(target);
     if (!integer && !floating) return;
     if (integer) check_constant_range(expression.constant, target, expression.range);
+    if (floating &&
+        (expression.constant.kind == ConstantKind::Integer ||
+         expression.constant.kind == ConstantKind::Float)) {
+      const std::optional<ConstantValue> converted = convert_numeric_constant(
+          expression.constant, target, expression.range);
+      if (converted.has_value()) expression.constant = *converted;
+    }
     expression.type = target;
     const std::vector<HirExpressionId> operands = expression.operands;
     for (HirExpressionId operand : operands) {
@@ -4017,11 +4032,21 @@ private:
           tree, node.children[1], scope, semantic_.types.builtins().bool_type);
       const HirExpressionId left = check_expression(tree, node.children[0], scope, expected);
       const TypeId left_type = hir_.expression(left).type;
+      // A concrete left branch supplies useful context to `nil`, contextual
+      // alternatives, and untyped constants on the right. An untyped numeric
+      // left branch does not: both untyped branches must be inspected before
+      // deciding whether their common exact domain is integer or floating.
+      TypeId right_expected = expected;
+      if (!right_expected.is_valid() &&
+          !is_untyped_integer(left_type) &&
+          !is_untyped_float(left_type)) {
+        right_expected = left_type;
+      }
       const HirExpressionId right = check_expression(
           tree,
           node.children[2],
           scope,
-          expected.is_valid() ? expected : left_type);
+          right_expected);
       TypeId result = left_type;
       if (hir_.expression(right).type != left_type) {
         result = common_numeric_type(left_type, hir_.expression(right).type, node.range);

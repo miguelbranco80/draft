@@ -1476,6 +1476,12 @@ package bodies
 floating :: proc(value: f32) -> f32 {
     return value + 1
 }
+
+mixed_untyped :: proc(condition: bool) -> f64 {
+    arithmetic := 1 + 1.5
+    selected := 1 if condition else 2.5
+    return arithmetic + selected
+}
 )draft");
   if (valid.diagnostics.has_errors()) {
     std::cerr << draft::render_diagnostics(valid.sources, valid.diagnostics);

@@ -98,6 +98,12 @@ scale :: proc(value: f64) -> f64 {
     return value * 0.5
 }
 
+mixed_untyped_numeric :: proc(condition: bool) -> f64 {
+    arithmetic := 1 + 1.5
+    selected := 1 if condition else 2.5
+    return arithmetic + selected
+}
+
 identity[T: number] :: proc(value: T) -> T {
     return value
 }
@@ -338,6 +344,8 @@ main :: proc() {
     assert(shift(1, 5) == 32)
     assert(compound_shift(1, 5) == 32)
     assert(scale(3.0) == 1.5)
+    assert(mixed_untyped_numeric(true) == 3.5)
+    assert(mixed_untyped_numeric(false) == 5.0)
     assert(identity[i64](42) == 42)
     value: u32 = 17
     assert(identity(value) == 17)
