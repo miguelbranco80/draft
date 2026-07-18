@@ -410,6 +410,33 @@ converge on the in-progress TypeId. Recursive instantiation snapshots aggregate
 rows before appending new ones; sanitizer coverage enforces this append-only
 table discipline.
 
+## Owner-evaluated generic layout constants
+
+Status: bootstrap staging contract; interface marker is implemented and the
+request/evaluation fixed point is the next semantic slice.
+
+The compact dependent-integer tree remains the canonical representation for
+arithmetic and casts such as `[N + 1]T`. It must not pretend to represent a call
+to an ordinary compile-time procedure: that procedure may contain conditionals,
+loops, switches, recursion, aggregate values, and further calls, all of which
+belong to the full interpreter rather than a second reduced evaluator.
+
+When a parameter-dependent array or SIMD count needs that full interpreter, its
+symbolic Type row carries an explicit owner-evaluated marker and the defining
+SemanticPackage retains the source recipe in a package-local side table. A
+canonical package interface exports only the marker. It never exports FileId,
+NodeId, ScopeId, a private procedure SymbolId, or an ambient source pointer.
+
+A consumer which later supplies concrete generic arguments will form a stable
+instantiation request. Compiler orchestration sends that request to the package
+which owns the template and procedure bodies. The owner evaluates the recipe
+with the normal compile-time interpreter and returns a complete concrete
+InterfaceTypeGraph; the consumer imports that graph exactly like any other
+owner-produced generic result. Requests and results are ordered and keyed by
+package identity, public template identity, and canonical argument graphs.
+This mirrors cross-package generic procedure instantiation and preserves private
+implementation details without making consumer semantics read dependency source.
+
 ## Hosted process views and core threads
 
 Status: AArch64 macOS hosted runtime contract.

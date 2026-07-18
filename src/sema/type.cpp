@@ -276,6 +276,19 @@ TypeId TypeStore::parametric_array(
   return add(std::move(result));
 }
 
+TypeId TypeStore::owner_evaluated_array(
+    TypeId element, std::uint32_t deferred_index) {
+  // Do not intern these rows by element alone: two source expressions may call
+  // different private procedures yet currently have the same element type.
+  // Their defining-package side-table entries are the only equality evidence.
+  Type result;
+  result.kind = TypeKind::Array;
+  result.element = element;
+  result.owner_evaluated_element_count = true;
+  result.deferred_element_count_index = deferred_index;
+  return add(std::move(result));
+}
+
 TypeId TypeStore::simd(
     TypeId element,
     std::uint64_t lanes,
@@ -329,6 +342,18 @@ TypeId TypeStore::parametric_simd(
   result.kind = TypeKind::Simd;
   result.element = element;
   result.element_count_expression = std::move(lanes);
+  return add(std::move(result));
+}
+
+TypeId TypeStore::owner_evaluated_simd(
+    TypeId element, std::uint32_t deferred_index) {
+  // SIMD uses the same owner-evaluation contract as arrays. Target shape
+  // validation waits for the later concrete row and never guesses lane count.
+  Type result;
+  result.kind = TypeKind::Simd;
+  result.element = element;
+  result.owner_evaluated_element_count = true;
+  result.deferred_element_count_index = deferred_index;
   return add(std::move(result));
 }
 

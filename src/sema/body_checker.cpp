@@ -2517,7 +2517,8 @@ private:
     const Type value = semantic_.types.type(type);
     if (value.kind == TypeKind::TypeParameter) return true;
     if ((value.kind == TypeKind::Array || value.kind == TypeKind::Simd) &&
-        value.element_count_expression.is_valid()) {
+        (value.element_count_expression.is_valid() ||
+         value.owner_evaluated_element_count)) {
       return true;
     }
     if (value.kind == TypeKind::Pointer ||

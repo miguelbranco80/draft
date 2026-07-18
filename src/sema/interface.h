@@ -84,6 +84,11 @@ struct InterfaceType {
   // Parameter leaves use zero-based declaration ordinals. A consumer remaps
   // them to local ValueParameter SymbolIds while rebuilding the template graph.
   IntegerExpression element_count_expression;
+  // True means the compact expression above is intentionally absent: the
+  // defining package owns a procedure-dependent recipe and must return a
+  // concrete instantiation when arguments become known. No source coordinate,
+  // local symbol, or implementation detail crosses this interface boundary.
+  bool owner_evaluated_element_count = false;
   std::vector<InterfaceTypeId> members;
   std::vector<std::uint64_t> member_offsets;
   bool c_calling_convention = false;

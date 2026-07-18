@@ -96,6 +96,7 @@ void hash_interface_type(Sha256 &hash, const InterfaceType &type) {
   hash_type_id(hash, type.element);
   hash_u64(hash, type.element_count);
   hash_integer_expression(hash, type.element_count_expression);
+  hash_u64(hash, type.owner_evaluated_element_count ? 1 : 0);
   hash_u64(hash, static_cast<std::uint64_t>(type.members.size()));
   for (InterfaceTypeId member : type.members) hash_type_id(hash, member);
   hash_u64(hash, static_cast<std::uint64_t>(type.member_offsets.size()));
@@ -597,6 +598,8 @@ private:
         translated.element_count_expression = *expression;
       }
     }
+    translated.owner_evaluated_element_count =
+        source_type.owner_evaluated_element_count;
     translated.member_offsets = source_type.member_offsets;
     translated.c_calling_convention = source_type.c_calling_convention;
     translated.c_representation = source_type.c_representation;
@@ -1046,7 +1049,10 @@ private:
       result = consumer_.types.slice(import_type(package, cache, source.element));
       break;
     case TypeKind::Array:
-      if (source.element_count_expression.is_valid()) {
+      if (source.owner_evaluated_element_count) {
+        result = consumer_.types.owner_evaluated_array(
+            import_type(package, cache, source.element));
+      } else if (source.element_count_expression.is_valid()) {
         const std::optional<IntegerExpression> expression =
             import_integer_expression(source.element_count_expression);
         if (!expression.has_value()) {
@@ -1062,7 +1068,10 @@ private:
       }
       break;
     case TypeKind::Simd:
-      if (source.element_count_expression.is_valid()) {
+      if (source.owner_evaluated_element_count) {
+        result = consumer_.types.owner_evaluated_simd(
+            import_type(package, cache, source.element));
+      } else if (source.element_count_expression.is_valid()) {
         const std::optional<IntegerExpression> expression =
             import_integer_expression(source.element_count_expression);
         if (!expression.has_value()) {
@@ -1327,7 +1336,7 @@ TypeId import_interface_type(
 
 Sha256Digest hash_interface_type_graph(const InterfaceTypeGraph &graph) {
   Sha256 hash;
-  hash_field(hash, "draft.interface-type-graph.v2");
+  hash_field(hash, "draft.interface-type-graph.v3");
   // The exporting package identity is transport context, not necessarily part
   // of the type. Builtins and purely structural types must hash identically in
   // every requester. Locally declared nominal rows already contain their exact

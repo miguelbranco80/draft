@@ -58,6 +58,27 @@ void test_builtin_and_structural_types(TestState &state) {
   const draft::TypeId array = types.array(*u32, 5);
   EXPECT(state, types.type(array).layout == draft::TypeLayout({true, 20, 4}));
 
+  // Procedure-dependent generic counts are not equal merely because they have
+  // the same element type. Each source recipe owns a distinct side-table row
+  // until its defining package returns a concrete count.
+  const draft::TypeId deferred_array_a =
+      types.owner_evaluated_array(*u32, 0);
+  const draft::TypeId deferred_array_b =
+      types.owner_evaluated_array(*u32, 1);
+  EXPECT(state, deferred_array_a != deferred_array_b);
+  EXPECT(state,
+         types.type(deferred_array_a).owner_evaluated_element_count);
+  EXPECT(state,
+         types.type(deferred_array_a).deferred_element_count_index == 0);
+  EXPECT(state, !types.type(deferred_array_a).layout.known);
+
+  const draft::TypeId deferred_simd =
+      types.owner_evaluated_simd(*u32, 2);
+  EXPECT(state, types.type(deferred_simd).owner_evaluated_element_count);
+  EXPECT(state,
+         types.type(deferred_simd).deferred_element_count_index == 2);
+  EXPECT(state, !types.type(deferred_simd).layout.known);
+
   const draft::TypeId tuple_a = types.tuple({*u8, *u64});
   const draft::TypeId tuple_b = types.tuple({*u8, *u64});
   EXPECT(state, tuple_a == tuple_b);

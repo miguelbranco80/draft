@@ -149,7 +149,9 @@ void hash_field(Sha256 &hash, std::string_view value) {
   case TypeKind::Array:
   case TypeKind::Simd: {
     std::string count = std::to_string(type.element_count);
-    if (type.element_count_expression.is_valid()) {
+    if (type.owner_evaluated_element_count) {
+      count = "owner-evaluated";
+    } else if (type.element_count_expression.is_valid()) {
       count = integer_expression_identity(type.element_count_expression);
     }
     const std::string prefix =
@@ -315,9 +317,15 @@ void append_constant_context(
         "TYPE_ELEMENT_COUNT", std::to_string(type.element_count), output);
     append_context_field(
         "TYPE_ELEMENT_COUNT_EXPRESSION",
-        type.element_count_expression.is_valid()
+        type.owner_evaluated_element_count
+            ? "owner-evaluated"
+            : type.element_count_expression.is_valid()
             ? integer_expression_identity(type.element_count_expression)
             : "none",
+        output);
+    append_context_field(
+        "TYPE_OWNER_EVALUATED_ELEMENT_COUNT",
+        type.owner_evaluated_element_count ? "true" : "false",
         output);
     append_context_field(
         "TYPE_C_CALLING_CONVENTION",

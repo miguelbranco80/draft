@@ -4,8 +4,9 @@
 // and nominal type in one semantic program. Structural constructors are interned:
 // asking twice for `^u32` or `(u32, bool)` returns the same ID. Nominal types are
 // created once at their declarations and remain distinct even when layout is
-// identical. No syntax or LLVM type is stored here; this table is Draft's type
-// identity authority and will later be reproduced by the self-hosted compiler.
+// identical. No syntax or LLVM type is stored here; source for an owner-evaluated
+// generic count lives in SemanticPackage's side table. This table is Draft's
+// type identity authority and will later be reproduced by the self-hosted compiler.
 //
 // Layout values are byte counts for the selected AArch64 macOS profile. Unknown
 // layout is explicit and occurs while a nominal type is incomplete or when a
@@ -92,6 +93,9 @@ struct TypeLayout {
 //   element for its native counterpart and scalar_byte_order for storage order;
 // - Pointer, MultiPointer, Slice, Array, Simd, and Distinct use element;
 // - Array and Simd use element_count;
+// - an Array or Simd whose count must run in its defining package sets
+//   owner_evaluated_element_count and uses deferred_element_count_index only as
+//   a package-round side-table key; neither package-local number is serialized;
 // - Tuple and Procedure use members (procedure parameters followed by result);
 // - nominal kinds use name, declaration, and an initially unknown layout.
 //
@@ -113,6 +117,14 @@ struct Type {
   // expression. Parameter leaves contain local ValueParameter SymbolIds.
   // Concrete rows leave this invalid and use element_count above.
   IntegerExpression element_count_expression;
+  // Some parameter-dependent constants cannot be reduced to the compact
+  // IntegerExpression tree because they call ordinary compile-time procedures.
+  // The defining package must evaluate those calls after concrete arguments
+  // arrive. The index names SemanticPackage::deferred_element_counts and is
+  // invalid on an imported interface marker until an owner request is formed.
+  bool owner_evaluated_element_count = false;
+  std::uint32_t deferred_element_count_index =
+      std::numeric_limits<std::uint32_t>::max();
   std::vector<TypeId> members;
   std::vector<std::uint64_t> member_offsets;
   bool c_calling_convention = false;
@@ -166,6 +178,16 @@ public:
       TypeId element, IntegerExpression count);
   [[nodiscard]] TypeId parametric_simd(
       TypeId element, IntegerExpression lanes);
+  // Creates a deliberately non-interned symbolic row. Until the defining
+  // package evaluates its side-table request, no element count or layout is
+  // available. deferred_index is package-local and may be invalid for an
+  // imported marker; callers must never treat it as interface identity.
+  [[nodiscard]] TypeId owner_evaluated_array(
+      TypeId element,
+      std::uint32_t deferred_index = std::numeric_limits<std::uint32_t>::max());
+  [[nodiscard]] TypeId owner_evaluated_simd(
+      TypeId element,
+      std::uint32_t deferred_index = std::numeric_limits<std::uint32_t>::max());
   [[nodiscard]] TypeId tuple(const std::vector<TypeId> &members);
   [[nodiscard]] TypeId procedure(
       const std::vector<TypeId> &parameters, TypeId result, bool c_calling_convention);

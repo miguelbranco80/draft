@@ -44,6 +44,7 @@ bool validate_target_types(
     // parameter in the generic declaration; its concrete substitution is the
     // representation-bearing type that the profile must name.
     if (type.element_count_expression.is_valid() ||
+        type.owner_evaluated_element_count ||
         !type.element.is_valid() ||
         types.type(type.element).kind == TypeKind::TypeParameter) {
       continue;

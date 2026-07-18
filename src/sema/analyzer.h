@@ -357,6 +357,17 @@ struct ResolvedIntegerExpression {
   std::optional<IntegerExpressionType> type;
 };
 
+// Source-local recipe for an array/SIMD count which must be evaluated by the
+// package that owns the referenced compile-time procedure bodies. type is the
+// unique symbolic Type row carrying this side-table index. syntax and scope are
+// valid only for the current immutable LoadedPackage and semantic rebuild; an
+// interface exports only the owner-evaluation marker, never these local IDs.
+struct DeferredElementCount {
+  TypeId type;
+  SyntaxReference syntax;
+  ScopeId scope;
+};
+
 enum class NativeBindingKind {
   ForeignImport,
   CExport,
@@ -404,6 +415,7 @@ struct SemanticPackage {
   std::vector<DeclarationDenial> declaration_denials;
   std::vector<SemanticSite> sites;
   std::vector<RequiredIntegerExpression> required_integer_expressions;
+  std::vector<DeferredElementCount> deferred_element_counts;
   std::vector<NativeBinding> native_bindings;
 };
 

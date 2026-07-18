@@ -74,6 +74,52 @@ std::optional<draft::SyntaxReference> first_import(const draft::LoadedPackage &p
   return std::nullopt;
 }
 
+void test_owner_evaluated_count_interface_marker(TestState &state) {
+  draft::SemanticPackage producer;
+  draft::DiagnosticSink diagnostics;
+  const std::optional<draft::TypeId> u8 = producer.types.find_builtin("u8");
+  EXPECT(state, u8.has_value());
+  if (!u8.has_value()) return;
+
+  const draft::TypeId deferred =
+      producer.types.owner_evaluated_array(*u8, 7);
+  const draft::PackageIdentity identity{"workspace", "lib/deferred"};
+  const draft::InterfaceTypeGraph graph = draft::export_interface_type(
+      identity, producer, deferred, diagnostics);
+  EXPECT(state, graph.root.is_valid());
+  EXPECT(state, graph.root.value < graph.types.size());
+  if (!graph.root.is_valid() || graph.root.value >= graph.types.size()) return;
+  const draft::InterfaceType &exported = graph.types[graph.root.value];
+  EXPECT(state, exported.owner_evaluated_element_count);
+  EXPECT(state, !exported.element_count_expression.is_valid());
+  EXPECT(state, exported.element_count == 0);
+
+  // The marker is a semantic interface fact and must participate in concrete
+  // graph identity. Otherwise a pending owner request could hash like a real
+  // zero-length row and poison generic-instance reuse.
+  draft::InterfaceTypeGraph without_marker = graph;
+  without_marker.types[without_marker.root.value]
+      .owner_evaluated_element_count = false;
+  EXPECT(state,
+         draft::hash_interface_type_graph(graph) !=
+             draft::hash_interface_type_graph(without_marker));
+
+  draft::SemanticPackage consumer;
+  const draft::TypeId imported = draft::import_interface_type(
+      graph, consumer, diagnostics);
+  EXPECT(state, imported.is_valid());
+  if (imported.is_valid()) {
+    const draft::Type &type = consumer.types.type(imported);
+    EXPECT(state, type.kind == draft::TypeKind::Array);
+    EXPECT(state, type.owner_evaluated_element_count);
+    EXPECT(state,
+           type.deferred_element_count_index ==
+               std::numeric_limits<std::uint32_t>::max());
+    EXPECT(state, !type.layout.known);
+  }
+  EXPECT(state, !diagnostics.has_errors());
+}
+
 void test_imported_public_semantics(TestState &state) {
   draft::SourceManager sources;
   draft::DiagnosticSink diagnostics;
@@ -852,6 +898,7 @@ caller :: proc() {
 
 int main() {
   TestState state;
+  test_owner_evaluated_count_interface_marker(state);
   test_imported_public_semantics(state);
   test_private_name_is_not_imported(state);
   test_imported_parametric_type(state);
