@@ -122,17 +122,22 @@ struct AgentEnclosingDeclarationContext {
   Sha256Digest semantic_skeleton_digest;
 };
 
-// A canonical static path fact at a body-level judgment or synthesis site.
-// subject and values are normalized, comment-free Draft expressions. A true or
-// false condition has no values; a switch case lists its matching labels; a
-// switch default lists every explicit label it proves did not match. The
-// subject type is both readable and backed by the complete AgentTypeContext
-// graph referenced by type_digest.
+// A canonical structured entry decision on the path to a body-level judgment
+// or synthesis site. subject and values are normalized, comment-free Draft
+// expressions. A true or false condition has no values; a switch case lists
+// its matching labels; a switch default lists every explicit label that failed
+// at dispatch; loop rows describe the decision/iterable that admitted the
+// current iteration. These are historical control-flow facts, not assertions
+// that mutable source expressions would re-evaluate identically at the site.
+// The subject type is both readable and backed by the complete
+// AgentTypeContext graph referenced by type_digest.
 enum class AgentBranchRefinementKind {
   ConditionTrue,
   ConditionFalse,
   SwitchCase,
   SwitchDefault,
+  LoopConditionTrue,
+  LoopIteration,
 };
 
 struct AgentBranchRefinement {

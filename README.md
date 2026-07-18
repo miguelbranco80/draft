@@ -210,11 +210,14 @@ generic constraints, native bindings, and typed effect contracts; those
 interfaces are also stale-pin inputs.
 They also carry stable package/source coordinates and a comment-free canonical
 token view of the enclosing procedure or type declaration, all covered by the
-site input digest. Body sites additionally carry typed outer-to-inner `if` and
-`switch` path refinements; a default switch fact names the complete explicit
-label set that did not match. Lexically active `deny` selectors are sent and
-hashed in outer-to-inner order, and parametric sites carry ordered type/value
-constraints.
+site input digest. Body sites additionally carry typed outer-to-inner `if`,
+`switch`, and loop-entry decisions; a default switch row names the complete
+explicit label set that did not match, while conditional/clause and iteration
+loops name the decision or iterable that admitted the current iteration. These
+are historical control-flow facts, not claims that a mutable expression would
+re-evaluate identically later in the body. Lexically active `deny` selectors are
+sent and hashed in outer-to-inner order, and parametric sites carry ordered
+type/value constraints.
 Package-wide and structurally dominating judgment claims can guide synthesis
 without being treated as passing verdicts. Package documentation reaches every
 site, and enclosing-declaration docs reach sites inside that declaration, with

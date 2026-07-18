@@ -135,7 +135,7 @@ void test_execution_revocation_and_reactivation(TestState &state) {
   EXPECT(state, provider.calls == 2);
   EXPECT(state, provider.requests.size() == 2);
   if (provider.requests.size() == 2) {
-    EXPECT(state, provider.requests[0].format == "draft-judgment-request-v2");
+    EXPECT(state, provider.requests[0].format == "draft-judgment-request-v3");
     EXPECT(state, provider.requests[0].obligation.syntax == draft::SyntaxReference{});
     EXPECT(state, provider.requests[0].resolved_program ==
         *compiled.resolved_program_digest);

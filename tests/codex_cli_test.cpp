@@ -97,7 +97,7 @@ struct TemporaryFixture {
         "test \"$(cat \"$work/import-00000000-documentation-00000000-attachment-00000000.bin\")\" = imported-design-bytes || exit 34\n"
         "prompt=$(cat)\n"
         "case \"$prompt\" in\n"
-        "  *REQUEST_FORMAT*draft-synthesis-request-v16*ROOT_IDENTITY*workspace*SOURCE_RELATIVE_PATH*package.draft*ANCHOR_NAME*visible_name*EXPECTED_TYPE_TEXT*i64*TARGET_IDENTITY*draft-aarch64-macos-v5*ENCLOSING_DECLARATION_NAME*visible_name*ENCLOSING_DECLARATION_SOURCE*visible_name*ENCLOSING_SEMANTIC_SKELETON*fixture-skeleton*BRANCH_REFINEMENTS*BRANCH_KIND*condition-true*BRANCH_SUBJECT*ready*BRANCH_SUBJECT_TYPE_TEXT*bool*ACTIVE_DENIALS*DENIAL_SELECTOR*assert*PERMITTED_CONTEXT_FIELDS*CONTEXT_FIELD_NAME*allocator*CONTEXT_FIELD_TYPE_TEXT*runtime.Allocator*PARAMETRIC_PARAMETERS*PARAMETER_NAME*T*PARAMETER_CONSTRAINT*integer*PARAMETER_TYPE_TEXT*T*TYPE_CONTEXTS*TYPE_REFERENCE_SHA256*TYPE_DEFINITION*MEMBER_NAME*IMPORTED_PACKAGES*IMPORT_ALIAS*lib*IMPORT_DEFINITION*DECLARATION_NAME*make*IMPORT_DOCUMENTATION*IMPORT_DOC_ANCHOR*make*IMPORT_DOC_TEXT*imported-design*IMPORT_DOC_ATTACHMENT_PATH*IMPORTED.md*GUIDING_JUDGMENTS*JUDGMENT_ANCHOR*visible_name*JUDGMENT_CLAIM*preserve-invariant*JUDGMENT_ATTACHMENT_PATH*EVIDENCE.md*DOCUMENTATION*DOC_ANCHOR*visible_name*DOC_TEXT*design-context*DOC_ATTACHMENT_PATH*DESIGN.md*VALIDATION_CONTEXT*VALIDATION_KIND*test*VALIDATION_SOURCE_PATH*behavior_test.draft*VALIDATION_SOURCE*test_fixture*AUTHOR_PROMPT*make-answer*BINDING_NAME*visible_name*BINDING_TYPE_TEXT*u32*BINDING_HAS_CONSTANT*true*BINDING_CONSTANT*fixture-constant*BINDING_HAS_SOURCE_DEFINITION*true*BINDING_SOURCE_DEFINITION*visible_name*) ;;\n"
+        "  *REQUEST_FORMAT*draft-synthesis-request-v17*ROOT_IDENTITY*workspace*SOURCE_RELATIVE_PATH*package.draft*ANCHOR_NAME*visible_name*EXPECTED_TYPE_TEXT*i64*TARGET_IDENTITY*draft-aarch64-macos-v5*ENCLOSING_DECLARATION_NAME*visible_name*ENCLOSING_DECLARATION_SOURCE*visible_name*ENCLOSING_SEMANTIC_SKELETON*fixture-skeleton*BRANCH_REFINEMENTS*BRANCH_KIND*loop-condition-entered*BRANCH_SUBJECT*ready*BRANCH_SUBJECT_TYPE_TEXT*bool*ACTIVE_DENIALS*DENIAL_SELECTOR*assert*PERMITTED_CONTEXT_FIELDS*CONTEXT_FIELD_NAME*allocator*CONTEXT_FIELD_TYPE_TEXT*runtime.Allocator*PARAMETRIC_PARAMETERS*PARAMETER_NAME*T*PARAMETER_CONSTRAINT*integer*PARAMETER_TYPE_TEXT*T*TYPE_CONTEXTS*TYPE_REFERENCE_SHA256*TYPE_DEFINITION*MEMBER_NAME*IMPORTED_PACKAGES*IMPORT_ALIAS*lib*IMPORT_DEFINITION*DECLARATION_NAME*make*IMPORT_DOCUMENTATION*IMPORT_DOC_ANCHOR*make*IMPORT_DOC_TEXT*imported-design*IMPORT_DOC_ATTACHMENT_PATH*IMPORTED.md*GUIDING_JUDGMENTS*JUDGMENT_ANCHOR*visible_name*JUDGMENT_CLAIM*preserve-invariant*JUDGMENT_ATTACHMENT_PATH*EVIDENCE.md*DOCUMENTATION*DOC_ANCHOR*visible_name*DOC_TEXT*design-context*DOC_ATTACHMENT_PATH*DESIGN.md*VALIDATION_CONTEXT*VALIDATION_KIND*test*VALIDATION_SOURCE_PATH*behavior_test.draft*VALIDATION_SOURCE*test_fixture*AUTHOR_PROMPT*make-answer*BINDING_NAME*visible_name*BINDING_TYPE_TEXT*u32*BINDING_HAS_CONSTANT*true*BINDING_CONSTANT*fixture-constant*BINDING_HAS_SOURCE_DEFINITION*true*BINDING_SOURCE_DEFINITION*visible_name*) ;;\n"
         "  *) exit 28 ;;\n"
         "esac\n"
         "printf '%s' '{\"source\":\"40 + 2\\n\"}' > \"$output\"\n";
@@ -153,7 +153,7 @@ draft::SynthesisRequest make_request() {
       draft::sha256(
           request.obligation.enclosing_declaration.semantic_skeleton);
   draft::AgentBranchRefinement refinement;
-  refinement.kind = draft::AgentBranchRefinementKind::ConditionTrue;
+  refinement.kind = draft::AgentBranchRefinementKind::LoopConditionTrue;
   refinement.subject = "ready";
   refinement.subject_digest = draft::sha256(refinement.subject);
   refinement.type_digest = draft::sha256("bool-type");
@@ -269,7 +269,7 @@ void test_adapter_contract_and_identity(TestState &state) {
   const draft::SynthesisProvider provider =
       draft::configure_codex_cli_provider(options, provider_state, diagnostics);
   EXPECT(state, provider.synthesize != nullptr);
-  EXPECT(state, provider.provider_identity == "openai-codex-cli-v20");
+  EXPECT(state, provider.provider_identity == "openai-codex-cli-v21");
   EXPECT(state, provider.model_identity == "fixture-model");
   EXPECT(state, provider.configuration_identity ==
       provider_state.configuration_identity);

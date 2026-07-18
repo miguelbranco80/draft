@@ -45,7 +45,7 @@ namespace {
 constexpr std::uintmax_t kMaximumCodexOutputBytes = 64U * 1024U * 1024U;
 constexpr std::uintmax_t kMaximumCodexLogBytes = 4U * 1024U * 1024U;
 constexpr std::string_view kPromptContractIdentity =
-    "draft-codex-synthesis-prompt-v16";
+    "draft-codex-synthesis-prompt-v17";
 constexpr std::string_view kOutputSchema =
     "{\n"
     "  \"type\": \"object\",\n"
@@ -1231,7 +1231,7 @@ SynthesisProvider configure_codex_cli_provider(
   }
 
   SynthesisProvider provider;
-  provider.provider_identity = "openai-codex-cli-v20";
+  provider.provider_identity = "openai-codex-cli-v21";
   provider.model_identity = state.model;
   provider.configuration_identity = state.configuration_identity;
   provider.state = &state;

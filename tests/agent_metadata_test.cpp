@@ -654,7 +654,7 @@ void test_body_sites_receive_typed_branch_refinements(TestState &state) {
       temporary.path / "package.draft",
       R"draft(package branch_context
 
-work :: proc(flag: bool, value: i64) {
+work :: proc(flag: bool, value: i64, values: []i64) {
     if flag {
         isolated :: proc() {
             judge "nested static"
@@ -663,8 +663,22 @@ work :: proc(flag: bool, value: i64) {
         if value > 0 {
             judge "positive"
         }
+        for value > 0 {
+            judge "conditional loop"
+            break
+        }
     } else {
         judge "negative flag"
+    }
+    for index: i64 = 0; index < value; index += 1 {
+        judge "clause loop"
+        break
+    }
+    for element, index in values {
+        _ = element
+        _ = index
+        judge "iteration loop"
+        break
     }
     switch value {
     case 1, 2:
@@ -743,11 +757,20 @@ work :: proc(flag: bool, value: i64) {
       obligation_for_claim("selected values");
   const draft::AgentObligation *other =
       obligation_for_claim("other values");
+  const draft::AgentObligation *conditional_loop =
+      obligation_for_claim("conditional loop");
+  const draft::AgentObligation *clause_loop =
+      obligation_for_claim("clause loop");
+  const draft::AgentObligation *iteration_loop =
+      obligation_for_claim("iteration loop");
   EXPECT(state, positive != nullptr);
   EXPECT(state, negative != nullptr);
   EXPECT(state, nested != nullptr);
   EXPECT(state, selected != nullptr);
   EXPECT(state, other != nullptr);
+  EXPECT(state, conditional_loop != nullptr);
+  EXPECT(state, clause_loop != nullptr);
+  EXPECT(state, iteration_loop != nullptr);
 
   if (positive != nullptr) {
     EXPECT(state, positive->branch_refinements.size() == 2);
@@ -804,6 +827,47 @@ work :: proc(flag: bool, value: i64) {
       EXPECT(state, refinement.type_text == "i64");
       EXPECT(state,
           refinement.values == std::vector<std::string>({"1", "2"}));
+    }
+  }
+  if (conditional_loop != nullptr) {
+    EXPECT(state, conditional_loop->branch_refinements.size() == 2);
+    if (conditional_loop->branch_refinements.size() == 2) {
+      EXPECT(state,
+          conditional_loop->branch_refinements[0].kind ==
+              draft::AgentBranchRefinementKind::ConditionTrue);
+      EXPECT(state,
+          conditional_loop->branch_refinements[0].subject == "flag");
+      EXPECT(state,
+          conditional_loop->branch_refinements[1].kind ==
+              draft::AgentBranchRefinementKind::LoopConditionTrue);
+      EXPECT(state,
+          conditional_loop->branch_refinements[1].subject == "value > 0");
+      EXPECT(state,
+          conditional_loop->branch_refinements[1].type_text == "bool");
+    }
+  }
+  if (clause_loop != nullptr) {
+    EXPECT(state, clause_loop->branch_refinements.size() == 1);
+    if (clause_loop->branch_refinements.size() == 1) {
+      const draft::AgentBranchRefinement &refinement =
+          clause_loop->branch_refinements.front();
+      EXPECT(state,
+          refinement.kind ==
+              draft::AgentBranchRefinementKind::LoopConditionTrue);
+      EXPECT(state, refinement.subject == "index < value");
+      EXPECT(state, refinement.type_text == "bool");
+    }
+  }
+  if (iteration_loop != nullptr) {
+    EXPECT(state, iteration_loop->branch_refinements.size() == 1);
+    if (iteration_loop->branch_refinements.size() == 1) {
+      const draft::AgentBranchRefinement &refinement =
+          iteration_loop->branch_refinements.front();
+      EXPECT(state,
+          refinement.kind ==
+              draft::AgentBranchRefinementKind::LoopIteration);
+      EXPECT(state, refinement.subject == "values");
+      EXPECT(state, refinement.type_text == "[]i64");
     }
   }
 }

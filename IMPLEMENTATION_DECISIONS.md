@@ -204,7 +204,7 @@ An omitted symbol is unknown, and compiler-, package-assembly-, and target-owned
 providers cannot be overridden by an external audit.
 
 Provider requests never substitute hashes for information the synthesizer must
-understand. `draft-synthesis-request-v16` carries canonical Draft spellings for
+understand. `draft-synthesis-request-v17` carries canonical Draft spellings for
 the expected type and every visible binding, together with complete canonical
 values for visible compile-time constants and explicit target, SIMD, and
 parsed-assembly facts. Procedure-valued constants lose their process-local
@@ -788,7 +788,7 @@ unchanged resolution.
 
 ## Typed branch facts in agent obligations
 
-Status: conditional and switch refinements implemented.
+Status: conditional, switch, and loop-entry decisions implemented.
 
 The body checker snapshots static control-flow facts at every body judgment and
 synthesis site while it is already traversing structured HIR. Runtime `if`
@@ -798,18 +798,25 @@ matching labels. A default contributes the complete explicit label set from the
 whole switch, including labels written after the default, because reaching that
 body proves that none matched.
 
+Conditional and three-clause loop bodies carry the typed condition decision
+that admitted the current iteration. Array/slice iteration bodies carry the
+typed iterable expression. All rows describe historical structured-control
+decisions: if code mutates an operand afterward, the row does not assert that
+re-evaluating the displayed source at the agent site would produce the entry
+value. The provider spellings make this explicit with `*-entered-*` kinds.
+
 The semantic rows retain only process-local syntax references and TypeIds.
 Obligation construction converts them to comment-free canonical Draft source,
 the readable subject type, and the same portable interface type graph used by
 other provider context. Source and duplicated digests are rechecked by the
 shared Codex renderer before either synthesis or judgment starts a child. The
-`draft-agent-obligation-v15`, synthesis request/prompt v16, judgment
-request/prompt v2, and compiler content v108 identities make these new facts a
+`draft-agent-obligation-v16`, synthesis request/prompt v17, judgment
+request/prompt v3, and compiler content v109 identities make these new facts a
 stale-pin and evidence input.
 
 Nested procedures are static and cannot capture runtime locals. Checking a
 nested body therefore clears the declaration point's active branch stack and
 restores it afterward; only branches inside that procedure refine its sites.
-Package and type-member sites have an empty stack. Conditional-loop fixed-point
-facts remain a separate context extension because they require loop data-flow,
-not merely structured branch ancestry.
+Package and type-member sites have an empty stack. Mutable-state fixed-point
+facts and inferred iteration ranges remain a separate context extension because
+they require loop data-flow, not merely structured entry ancestry.

@@ -340,8 +340,11 @@ enum class SemanticSiteKind {
   DenialExpression,
 };
 
-// One control-flow fact known whenever execution reaches a body-level agent
-// site. The source references and TypeId are process-local semantic routes;
+// One structured control-flow decision on the path to a body-level agent site.
+// The subject records the expression evaluated when that branch/iteration was
+// entered; mutation later in the body does not claim that re-evaluating the
+// source expression at the site would produce the same value. The source
+// references and TypeId are process-local semantic routes;
 // obligation construction later converts them to canonical Draft source and a
 // portable interface type graph. SwitchDefault stores every explicit label in
 // values because reaching default proves that none of those labels matched.
@@ -350,6 +353,12 @@ enum class SemanticBranchRefinementKind {
   ConditionFalse,
   SwitchCase,
   SwitchDefault,
+  // The loop header admitted the current iteration. This is an entry-decision
+  // fact, not a claim that re-evaluating a mutable condition later is true.
+  LoopConditionTrue,
+  // The current body execution belongs to one iteration over subject. Binding
+  // types and names remain in ordinary visible-binding context.
+  LoopIteration,
 };
 
 struct SemanticBranchRefinement {

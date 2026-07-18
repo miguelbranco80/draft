@@ -5795,12 +5795,19 @@ private:
           if (binding_id.is_valid()) statement.bindings.push_back(binding_id);
         }
         if (node.children.size() >= 2) {
+          SemanticBranchRefinement refinement;
+          refinement.kind =
+              SemanticBranchRefinementKind::LoopIteration;
+          refinement.subject = {tree.file(), header.children.front()};
+          refinement.subject_type = hir_.expression(iterable).type;
+          active_branch_refinements_.push_back(std::move(refinement));
           statement.blocks.push_back(check_block(
               tree,
               node.children.back(),
               loop_scope,
               result_type,
               {depth.breakable + 1, depth.loops + 1}));
+          active_branch_refinements_.pop_back();
         }
       } else if (tree.node(node.children.front()).kind == NodeKind::ForClause) {
         statement.for_kind = HirForKind::Clause;
@@ -5808,6 +5815,7 @@ private:
         const ScopeId loop_scope = semantic_.symbols.add_scope(
             ScopeKind::Block, scope, clause.range);
         std::vector<std::uint32_t> separators;
+        std::optional<SemanticBranchRefinement> loop_condition;
         for (std::uint32_t index = clause.token_begin; index < clause.token_end; ++index) {
           if (tree.token(index).kind == TokenKind::Semicolon) separators.push_back(index);
         }
@@ -5826,26 +5834,43 @@ private:
             statement.header_statements.push_back(check_statement(
                 tree, header_child, loop_scope, result_type, depth));
           } else {
-            statement.expressions.push_back(check_expression(
+            const HirExpressionId condition = check_expression(
                 tree,
                 header_child,
                 loop_scope,
-                semantic_.types.builtins().bool_type));
+                semantic_.types.builtins().bool_type);
+            statement.expressions.push_back(condition);
+            SemanticBranchRefinement refinement;
+            refinement.kind =
+                SemanticBranchRefinementKind::LoopConditionTrue;
+            refinement.subject = {tree.file(), header_child};
+            refinement.subject_type = hir_.expression(condition).type;
+            loop_condition = std::move(refinement);
           }
         }
         if (node.children.size() >= 2) {
+          if (loop_condition.has_value()) {
+            active_branch_refinements_.push_back(*loop_condition);
+          }
           statement.blocks.push_back(check_block(
               tree,
               node.children.back(),
               loop_scope,
               result_type,
               {depth.breakable + 1, depth.loops + 1}));
+          if (loop_condition.has_value()) {
+            active_branch_refinements_.pop_back();
+          }
         }
       } else {
         // Infinite loops contain only a block; conditional loops contain a bool
         // expression followed by the block.
+        std::optional<SemanticBranchRefinement> loop_condition;
         for (NodeId child : node.children) {
           if (tree.node(child).kind == NodeKind::Block) {
+            if (loop_condition.has_value()) {
+              active_branch_refinements_.push_back(*loop_condition);
+            }
             statement.blocks.push_back(
                 check_block(
                     tree,
@@ -5853,21 +5878,40 @@ private:
                     scope,
                     result_type,
                     {depth.breakable + 1, depth.loops + 1}));
+            if (loop_condition.has_value()) {
+              active_branch_refinements_.pop_back();
+            }
           } else if (tree.node(child).kind == NodeKind::ExpressionStatement &&
                      tree.node(child).children.size() == 1) {
             statement.for_kind = HirForKind::Conditional;
-            statement.expressions.push_back(check_expression(
+            const NodeId condition_syntax =
+                tree.node(child).children.front();
+            const HirExpressionId condition = check_expression(
                 tree,
-                tree.node(child).children.front(),
+                condition_syntax,
                 scope,
-                semantic_.types.builtins().bool_type));
+                semantic_.types.builtins().bool_type);
+            statement.expressions.push_back(condition);
+            SemanticBranchRefinement refinement;
+            refinement.kind =
+                SemanticBranchRefinementKind::LoopConditionTrue;
+            refinement.subject = {tree.file(), condition_syntax};
+            refinement.subject_type = hir_.expression(condition).type;
+            loop_condition = std::move(refinement);
           } else {
             statement.for_kind = HirForKind::Conditional;
-            statement.expressions.push_back(check_expression(
+            const HirExpressionId condition = check_expression(
                 tree,
                 child,
                 scope,
-                semantic_.types.builtins().bool_type));
+                semantic_.types.builtins().bool_type);
+            statement.expressions.push_back(condition);
+            SemanticBranchRefinement refinement;
+            refinement.kind =
+                SemanticBranchRefinementKind::LoopConditionTrue;
+            refinement.subject = {tree.file(), child};
+            refinement.subject_type = hir_.expression(condition).type;
+            loop_condition = std::move(refinement);
           }
         }
         if (statement.expressions.empty()) {

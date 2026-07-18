@@ -848,6 +848,10 @@ imported_package_context(
     return AgentBranchRefinementKind::SwitchCase;
   case SemanticBranchRefinementKind::SwitchDefault:
     return AgentBranchRefinementKind::SwitchDefault;
+  case SemanticBranchRefinementKind::LoopConditionTrue:
+    return AgentBranchRefinementKind::LoopConditionTrue;
+  case SemanticBranchRefinementKind::LoopIteration:
+    return AgentBranchRefinementKind::LoopIteration;
   }
   return AgentBranchRefinementKind::ConditionTrue;
 }
@@ -1505,7 +1509,7 @@ struct ActiveDenialContext {
     const AgentObligation &obligation,
     const TargetProfile &target) {
   Sha256 hash;
-  hash_field(hash, "draft-agent-obligation-v15");
+  hash_field(hash, "draft-agent-obligation-v16");
   hash_field(hash, obligation.site_identity);
   hash.update(obligation.record_digest.bytes);
   hash.update(obligation.expected_type_digest.bytes);
@@ -1767,10 +1771,18 @@ std::string_view agent_construct_kind_name(AgentConstructKind kind) {
 std::string_view agent_branch_refinement_kind_name(
     AgentBranchRefinementKind kind) {
   switch (kind) {
-  case AgentBranchRefinementKind::ConditionTrue: return "condition-true";
-  case AgentBranchRefinementKind::ConditionFalse: return "condition-false";
-  case AgentBranchRefinementKind::SwitchCase: return "switch-case";
-  case AgentBranchRefinementKind::SwitchDefault: return "switch-default";
+  case AgentBranchRefinementKind::ConditionTrue:
+    return "if-condition-entered-true";
+  case AgentBranchRefinementKind::ConditionFalse:
+    return "if-condition-entered-false";
+  case AgentBranchRefinementKind::SwitchCase:
+    return "switch-entered-case";
+  case AgentBranchRefinementKind::SwitchDefault:
+    return "switch-entered-default";
+  case AgentBranchRefinementKind::LoopConditionTrue:
+    return "loop-condition-entered";
+  case AgentBranchRefinementKind::LoopIteration:
+    return "loop-iteration-entered";
   }
   return "invalid";
 }
