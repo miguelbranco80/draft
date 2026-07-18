@@ -40,7 +40,10 @@ struct LoweredSource {
   draft::BodyCheckResult bodies;
   draft::MirLoweringResult mir;
 
-  explicit LoweredSource(std::string text) {
+  explicit LoweredSource(
+      std::string text,
+      draft::RuntimeAssertionMode runtime_assertions =
+          draft::RuntimeAssertionMode::On) {
     loaded.short_name = "mir";
     draft::LoadedPackageFile file;
     file.kind = draft::PackageFileKind::DraftSource;
@@ -60,7 +63,7 @@ struct LoweredSource {
         target.facts,
         diagnostics);
     mir = draft::lower_package_to_mir(
-        semantics.package, bodies.program, diagnostics);
+        semantics.package, bodies.program, runtime_assertions, diagnostics);
   }
 };
 
@@ -253,6 +256,68 @@ wide_shift :: proc(value: u128, count: i8) -> u128 {
   EXPECT(state, full_width_count_conversions == 2);
 }
 
+void test_disabled_assertions_do_not_evaluate_operands(TestState &state) {
+  const std::string program = R"draft(
+package mir
+
+condition :: proc(value: ^i64) -> bool {
+    value^ += 1
+    return true
+}
+
+message :: proc(value: ^i64) -> string {
+    value^ += 10
+    return "assertion message"
+}
+
+main :: proc() -> i64 {
+    value: i64 = 0
+    assert(condition(&value), message(&value))
+    return value
+}
+)draft";
+
+  LoweredSource enabled(program, draft::RuntimeAssertionMode::On);
+  LoweredSource disabled(program, draft::RuntimeAssertionMode::Off);
+  if (enabled.diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(
+        enabled.sources, enabled.diagnostics);
+  }
+  if (disabled.diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(
+        disabled.sources, disabled.diagnostics);
+  }
+  EXPECT(state, enabled.mir.ok);
+  EXPECT(state, disabled.mir.ok);
+
+  auto main_counts = [](const LoweredSource &source) {
+    std::size_t calls = 0;
+    std::size_t assertions = 0;
+    for (const draft::MirProcedure &procedure :
+         source.mir.program.procedures()) {
+      if (source.semantics.package.symbols.symbol(procedure.symbol).name !=
+          "main") {
+        continue;
+      }
+      for (const draft::MirInstruction &instruction :
+           procedure.instructions) {
+        if (instruction.kind == draft::MirInstructionKind::Call) ++calls;
+        if (instruction.kind == draft::MirInstructionKind::Assert) {
+          ++assertions;
+        }
+      }
+    }
+    return std::pair(calls, assertions);
+  };
+
+  const auto [enabled_calls, enabled_assertions] = main_counts(enabled);
+  const auto [disabled_calls, disabled_assertions] = main_counts(disabled);
+  EXPECT(state, enabled_calls == 2);
+  EXPECT(state, enabled_assertions == 1);
+  EXPECT(state, disabled_calls == 0);
+  EXPECT(state, disabled_assertions == 0);
+}
+
 } // namespace
 
 int main() {
@@ -260,6 +325,7 @@ int main() {
   test_structured_lowering(state);
   test_unresolved_synthesis_stops_lowering(state);
   test_required_integer_traps_are_explicit(state);
+  test_disabled_assertions_do_not_evaluate_operands(state);
 
   if (state.failures != 0) {
     std::cerr << state.failures << " MIR expectation(s) failed\n";

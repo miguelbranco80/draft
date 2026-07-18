@@ -3,6 +3,7 @@
 #pragma once
 
 #include "assembly/aarch64.h"
+#include "compile/configuration.h"
 #include "mir/mir.h"
 #include "sema/analyzer.h"
 #include "sema/hir.h"
@@ -26,10 +27,26 @@ struct MirLoweringResult {
     const HirProgram &hir,
     DiagnosticSink &diagnostics);
 
+// Disabled assertions are removed before lowering either operand. The source
+// still passed parsing and type checking, but no runtime evaluation or optimizer
+// assumption survives into MIR.
+[[nodiscard]] MirLoweringResult lower_package_to_mir(
+    SemanticPackage &semantic,
+    const HirProgram &hir,
+    RuntimeAssertionMode runtime_assertions,
+    DiagnosticSink &diagnostics);
+
 [[nodiscard]] MirLoweringResult lower_package_to_mir(
     SemanticPackage &semantic,
     const HirProgram &hir,
     const AssemblyProgram &assembly,
+    DiagnosticSink &diagnostics);
+
+[[nodiscard]] MirLoweringResult lower_package_to_mir(
+    SemanticPackage &semantic,
+    const HirProgram &hir,
+    const AssemblyProgram &assembly,
+    RuntimeAssertionMode runtime_assertions,
     DiagnosticSink &diagnostics);
 
 } // namespace draft

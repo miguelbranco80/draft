@@ -41,6 +41,8 @@ handwritten code.
 - Direct C ABI import and export.
 - Compiler denials over ordinary resolved names and built-in constructs.
 - Runtime and compile-time assertions with explicit failure semantics.
+- Explicit `--assertions=off` release builds that remove both runtime-assertion
+  operands during MIR lowering while retaining ordinary parsing and checking.
 - `...` as a typed synthesis construct in complete surface programs.
 - Optional agent judgments as pinned validation evidence, never runtime semantics.
 - Deterministic locked builds from pinned, inspectable expansions.

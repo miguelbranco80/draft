@@ -4,6 +4,7 @@
 
 #include "assembly/aarch64.h"
 #include "backend/llvm_ir.h"
+#include "compile/configuration.h"
 #include "elaborator/obligation.h"
 #include "elaborator/resolution.h"
 #include "interop/native.h"
@@ -45,7 +46,11 @@ struct CompileWorkspaceOptions {
   // Versioned identity of the compiler semantics and manifest algorithm. It is
   // a resolved-program input and must change when an implementation change can
   // alter accepted meaning or emitted behavior for the same other inputs.
-  std::string compiler_content_identity = "draft-bootstrap-cpp-v121";
+  std::string compiler_content_identity = "draft-bootstrap-cpp-v122";
+  // Explicit build-time language choices are kept together and included in
+  // resolved-program identity. They are not inferred from host environment or
+  // optimization level.
+  CompileConfiguration configuration;
   CompileWorkspaceStage stage = CompileWorkspaceStage::Complete;
   bool lower_mir = false;
   bool emit_llvm = false;
@@ -93,6 +98,7 @@ struct CompiledPackage {
 struct CompileWorkspaceResult {
   bool ok = false;
   std::string compiler_content_identity;
+  CompileConfiguration configuration;
   WorkspaceGraph graph;
   // Indices exactly match graph.packages. In Complete, a missing row means the
   // package failed before publishing an interface. Interface discovery may

@@ -52,9 +52,11 @@ public:
       const HirProgram &hir,
       const HirProcedure &source,
       const AssemblyProgram *assembly,
+      RuntimeAssertionMode runtime_assertions,
       DiagnosticSink &diagnostics)
       : semantic_(semantic), hir_(hir), source_(source),
-        assembly_(assembly), diagnostics_(diagnostics) {}
+        assembly_(assembly), runtime_assertions_(runtime_assertions),
+        diagnostics_(diagnostics) {}
 
   [[nodiscard]] MirProcedure run() {
     procedure_.symbol = source_.symbol;
@@ -1217,6 +1219,11 @@ private:
             expression.range);
       }
       if (expression.constant.text == "assert") {
+        // Do not lower either operand when assertions are disabled. In
+        // particular, lowering the condition and then discarding the Assert
+        // instruction would retain calls, traps, or stores used only by the
+        // assertion and violate the language's no-evaluation rule.
+        if (runtime_assertions_ == RuntimeAssertionMode::Off) return {};
         MirInstruction instruction;
         instruction.kind = MirInstructionKind::Assert;
         instruction.range = expression.range;
@@ -2010,6 +2017,7 @@ private:
   const HirProgram &hir_;
   const HirProcedure &source_;
   const AssemblyProgram *assembly_ = nullptr;
+  RuntimeAssertionMode runtime_assertions_ = RuntimeAssertionMode::On;
   DiagnosticSink &diagnostics_;
   MirProcedure procedure_;
   MirBlockId current_;
@@ -2027,13 +2035,20 @@ MirLoweringResult lower_package_to_mir(
     SemanticPackage &semantic,
     const HirProgram &hir,
     const AssemblyProgram *assembly,
+    RuntimeAssertionMode runtime_assertions,
     DiagnosticSink &diagnostics) {
   MirLoweringResult result;
   const std::size_t initial_errors = diagnostics.error_count();
   for (const HirProcedure &procedure : hir.procedures()) {
     if (procedure.parametric_template) continue;
     MirProcedure lowered =
-        ProcedureLowerer(semantic, hir, procedure, assembly, diagnostics).run();
+        ProcedureLowerer(
+            semantic,
+            hir,
+            procedure,
+            assembly,
+            runtime_assertions,
+            diagnostics).run();
     if (lowered.valid) ++result.lowered_procedures;
     result.program.add_procedure(std::move(lowered));
   }
@@ -2047,7 +2062,17 @@ MirLoweringResult lower_package_to_mir(
     SemanticPackage &semantic,
     const HirProgram &hir,
     DiagnosticSink &diagnostics) {
-  return lower_package_to_mir(semantic, hir, nullptr, diagnostics);
+  return lower_package_to_mir(
+      semantic, hir, nullptr, RuntimeAssertionMode::On, diagnostics);
+}
+
+MirLoweringResult lower_package_to_mir(
+    SemanticPackage &semantic,
+    const HirProgram &hir,
+    RuntimeAssertionMode runtime_assertions,
+    DiagnosticSink &diagnostics) {
+  return lower_package_to_mir(
+      semantic, hir, nullptr, runtime_assertions, diagnostics);
 }
 
 MirLoweringResult lower_package_to_mir(
@@ -2055,7 +2080,18 @@ MirLoweringResult lower_package_to_mir(
     const HirProgram &hir,
     const AssemblyProgram &assembly,
     DiagnosticSink &diagnostics) {
-  return lower_package_to_mir(semantic, hir, &assembly, diagnostics);
+  return lower_package_to_mir(
+      semantic, hir, &assembly, RuntimeAssertionMode::On, diagnostics);
+}
+
+MirLoweringResult lower_package_to_mir(
+    SemanticPackage &semantic,
+    const HirProgram &hir,
+    const AssemblyProgram &assembly,
+    RuntimeAssertionMode runtime_assertions,
+    DiagnosticSink &diagnostics) {
+  return lower_package_to_mir(
+      semantic, hir, &assembly, runtime_assertions, diagnostics);
 }
 
 } // namespace draft

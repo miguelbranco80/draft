@@ -954,7 +954,8 @@ void bind_handwritten_program_identity(
       result.graph,
       options.target,
       empty_manifest,
-      options.compiler_content_identity);
+      options.compiler_content_identity,
+      options.configuration);
 }
 
 } // namespace
@@ -966,6 +967,7 @@ CompileWorkspaceResult compile_workspace(
     DiagnosticSink &diagnostics) {
   CompileWorkspaceResult result;
   result.compiler_content_identity = options.compiler_content_identity;
+  result.configuration = options.configuration;
   result.foreign_provider_audits = options.foreign_provider_audits;
   const std::size_t initial_errors = diagnostics.error_count();
   if (options.compiler_content_identity.empty()) {
@@ -1478,6 +1480,7 @@ CompileWorkspaceResult compile_workspace(
           package.semantics.package,
           package.bodies.program,
           package.assembly,
+          options.configuration.runtime_assertions,
           diagnostics);
       if (!package.mir.ok) continue;
     }
@@ -1702,7 +1705,8 @@ CompileWorkspaceResult compile_workspace_with_resolution(
           handwritten.graph,
           body_options.target,
           empty_manifest,
-          handwritten.compiler_content_identity);
+          handwritten.compiler_content_identity,
+          body_options.configuration);
     }
     return handwritten;
   }
@@ -1770,7 +1774,8 @@ CompileWorkspaceResult compile_workspace_with_resolution(
         resolved.graph,
         options.target,
         loaded_manifest.manifest,
-        options.compiler_content_identity);
+        options.compiler_content_identity,
+        options.configuration);
     resolved.resolved_program_digest = program_digest;
     if (options.validation_kind == ValidationKind::None &&
         program_digest != loaded_manifest.manifest.resolved_program_digest) {

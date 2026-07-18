@@ -410,6 +410,7 @@ int build_package(
     const std::string &directory,
     const std::optional<std::string> &requested_output,
     draft::NativeArtifactKind artifact_kind,
+    draft::RuntimeAssertionMode runtime_assertions,
     bool allow_host_toolchain,
     const std::optional<draft::LockedNativeInputRoots> &locked_inputs,
     const std::vector<draft::ForeignProviderInput> &foreign_providers,
@@ -432,6 +433,7 @@ int build_package(
   const draft::TargetProfile target = draft::make_aarch64_macos_profile();
   draft::CompileWorkspaceOptions compile_options;
   compile_options.target = target;
+  compile_options.configuration.runtime_assertions = runtime_assertions;
   compile_options.workspace.workspace_directory =
       absolute_directory.parent_path().string();
   configure_core_distribution(compile_options.workspace);
@@ -853,7 +855,9 @@ int run_agent_command(
     const std::vector<draft::JudgmentRequestArtifact> &judgment_artifacts = {},
     const std::vector<std::string> &judgment_selectors = {},
     bool list_judgments = false,
-    bool judge_during_resolution = false) {
+    bool judge_during_resolution = false,
+    draft::RuntimeAssertionMode runtime_assertions =
+        draft::RuntimeAssertionMode::On) {
   draft::SourceManager sources;
   draft::DiagnosticSink diagnostics;
   std::filesystem::path absolute_directory;
@@ -866,6 +870,7 @@ int run_agent_command(
 
   draft::CompileWorkspaceOptions options;
   options.target = draft::make_aarch64_macos_profile();
+  options.configuration.runtime_assertions = runtime_assertions;
   options.workspace.workspace_directory =
       absolute_directory.parent_path().string();
   configure_core_distribution(options.workspace);
@@ -1132,6 +1137,7 @@ void print_usage() {
             << "  draftc emit-c-header <package-directory> [-o <output.h>]\n"
             << "  draftc build <package-directory> [-o <output>]\n"
             << "      [--kind executable|object|static-library|dynamic-library|assembly]\n"
+            << "      [--assertions=off]\n"
             << "      [--allow-host-toolchain]\n"
             << "      [--provider name=object|archive|shared-library:<path>]...\n"
             << "      [--provider-summary name:<path>]...\n"
@@ -1155,6 +1161,7 @@ void print_usage() {
             << "      [--provider-summary name:<path>]...\n"
             << "      [--runtime-asset name:<file-or-directory>]...\n"
             << "  draftc resolve <package-directory> [--revalidate] [--judge]\n"
+            << "      [--assertions=off]\n"
             << "      [--judge-select <selector>]...\n"
             << "      [--judge-validator <identity>:<model>]...\n"
             << "      [--judge-artifact <kind>:<path>]...\n"
@@ -1166,6 +1173,7 @@ void print_usage() {
             << "      [--provider-summary name:<path>]...\n"
             << "      [--runtime-asset name:<file-or-directory>]...\n"
             << "  draftc judge <package-directory> [<selector>...] [--list]\n"
+            << "      [--assertions=off]\n"
             << "      [--judge-validator <identity>:<model>]...\n"
             << "      [--judge-artifact <kind>:<path>]...\n"
             << "      [--codex-distribution-root <directory>\n"
@@ -1204,6 +1212,7 @@ int main(int argc, char **argv) {
     bool revalidate = false;
     bool judge_during_resolution = false;
     bool allow_host_toolchain = false;
+    bool assertions_off = false;
     std::optional<std::string> codex_distribution_root;
     std::optional<std::string> codex_executable;
     std::optional<std::string> codex_model;
@@ -1219,6 +1228,8 @@ int main(int argc, char **argv) {
       const std::string_view argument(argv[index]);
       if (argument == "--revalidate" && !revalidate) {
         revalidate = true;
+      } else if (argument == "--assertions=off" && !assertions_off) {
+        assertions_off = true;
       } else if (argument == "--judge" &&
                  !judge_during_resolution) {
         judge_during_resolution = true;
@@ -1358,13 +1369,17 @@ int main(int argc, char **argv) {
         judgment_artifacts,
         judgment_selectors,
         false,
-        judge_during_resolution);
+        judge_during_resolution,
+        assertions_off
+            ? draft::RuntimeAssertionMode::Off
+            : draft::RuntimeAssertionMode::On);
   }
   if (argc >= 3 && std::string_view(argv[1]) == "judge") {
     std::optional<std::string> codex_distribution_root;
     std::optional<std::string> codex_executable;
     std::optional<std::string> codex_model;
     bool list_judgments = false;
+    bool assertions_off = false;
     std::vector<std::string> judgment_selectors;
     std::vector<NamedCodexJudgmentValidator> judgment_validators;
     std::vector<JudgmentArtifactPath> judgment_artifact_paths;
@@ -1375,6 +1390,8 @@ int main(int argc, char **argv) {
       if (argument == "--codex-executable" &&
           !codex_executable.has_value() && index + 1 < argc) {
         codex_executable = argv[++index];
+      } else if (argument == "--assertions=off" && !assertions_off) {
+        assertions_off = true;
       } else if (argument == "--codex-distribution-root" &&
                  !codex_distribution_root.has_value() && index + 1 < argc) {
         codex_distribution_root = argv[++index];
@@ -1481,7 +1498,11 @@ int main(int argc, char **argv) {
         judgment_validators,
         judgment_artifacts,
         judgment_selectors,
-        list_judgments);
+        list_judgments,
+        false,
+        assertions_off
+            ? draft::RuntimeAssertionMode::Off
+            : draft::RuntimeAssertionMode::On);
   }
   if (argc >= 3 &&
       (std::string_view(argv[1]) == "test" ||
@@ -1593,6 +1614,7 @@ int main(int argc, char **argv) {
     bool require_test_evidence = false;
     bool require_benchmark_evidence = false;
     bool require_judgment_evidence = false;
+    bool assertions_off = false;
     draft::JudgmentVerificationPolicy judgment_policy;
     bool custom_judgment_validators = false;
     std::optional<std::string> toolchain_root;
@@ -1604,6 +1626,8 @@ int main(int argc, char **argv) {
       const std::string_view argument(argv[index]);
       if (argument == "--allow-host-toolchain") {
         allow_host_toolchain = true;
+      } else if (argument == "--assertions=off" && !assertions_off) {
+        assertions_off = true;
       } else if (argument == "--require-test-evidence" &&
                  !require_test_evidence) {
         require_test_evidence = true;
@@ -1714,6 +1738,9 @@ int main(int argc, char **argv) {
         argv[2],
         output,
         artifact_kind,
+        assertions_off
+            ? draft::RuntimeAssertionMode::Off
+            : draft::RuntimeAssertionMode::On,
         allow_host_toolchain,
         locked_inputs,
         foreign_providers,

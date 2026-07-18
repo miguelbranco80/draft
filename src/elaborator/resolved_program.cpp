@@ -110,10 +110,14 @@ Sha256Digest hash_resolved_program(
     const WorkspaceGraph &graph,
     const TargetProfile &target,
     const ResolutionManifest &manifest,
-    std::string_view compiler_content_identity) {
+    std::string_view compiler_content_identity,
+    const CompileConfiguration &configuration) {
   Sha256 hash;
-  hash_field(hash, "draft.resolved-program.v3");
+  hash_field(hash, "draft.resolved-program.v4");
   hash_field(hash, compiler_content_identity);
+  hash_field(
+      hash,
+      runtime_assertion_mode_name(configuration.runtime_assertions));
   hash_target(hash, target);
 
   // Root physical directories are intentionally absent. Kind, identity, and

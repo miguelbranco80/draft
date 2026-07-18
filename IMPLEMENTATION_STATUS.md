@@ -220,6 +220,13 @@ not a private caller helper, reaches the callee's owner.
 
 ## Current executable commands
 
+The production audit now implements the specified runtime-assertion build
+mode. `--assertions=off` removes the condition and message before either operand
+is lowered, is bound into `draft.resolved-program.v4` under compiler content
+v122, and is accepted consistently by `build`, `resolve`, and `judge`. Test and
+benchmark validation always overrides this release choice to assertions on and
+uses its own exact validation-program digest.
+
 The driver currently exposes `lex`, `syntax`, `target`, `check`, `emit-llvm`,
 `emit-c-header`, ordinary and locked `build` for executable, object, static
 library, dynamic library, and assembly-bundle kinds, `test`, `bench --verify`,
@@ -231,7 +238,8 @@ evidence attempts under `.draft/evidence`. Locked builds may require matching
 active evidence with `--require-test-evidence` and
 `--require-benchmark-evidence`, plus all current judgments with
 `--require-judgment-evidence`; they verify it without executing validation or
-contacting a provider.
+contacting a provider. Release builds and the manifest-producing/consuming
+agent commands also accept `--assertions=off`.
 
 ## Next release-critical slice
 

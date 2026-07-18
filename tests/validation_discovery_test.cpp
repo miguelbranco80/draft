@@ -122,7 +122,8 @@ void test_checked_test_harness(TestState &state) {
       ordinary.graph,
       target,
       manifest,
-      compiler_identity);
+      compiler_identity,
+      ordinary.configuration);
   EXPECT(state, draft::commit_resolution(root, manifest, {}, ordinary_diagnostics));
   if (ordinary_diagnostics.has_errors()) {
     std::cerr << draft::render_diagnostics(

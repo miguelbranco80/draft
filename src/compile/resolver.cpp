@@ -518,7 +518,8 @@ ResolveWorkspaceResult resolve_workspace(
       resolved.graph,
       options.compile.target,
       manifest,
-      options.compile.compiler_content_identity);
+      options.compile.compiler_content_identity,
+      options.compile.configuration);
 
   // Existing judgment evidence remains meaningful only when this exact
   // transaction reconstructed the same resolved program. Native validation
@@ -545,6 +546,11 @@ ResolveWorkspaceResult resolve_workspace(
   for (ValidationKind validation_kind : validation_kinds) {
     if (resolution_cancelled(options, diagnostics)) return result;
     CompileWorkspaceOptions validation_options = options.compile;
+    // Validation is never permitted to erase runtime assertions. A release
+    // configured with assertions off still proves its tests and benchmarks
+    // using an assertion-enabled validation program with its own exact digest.
+    validation_options.configuration.runtime_assertions =
+        RuntimeAssertionMode::On;
     validation_options.validation_kind = validation_kind;
     validation_options.lower_mir = true;
     validation_options.emit_llvm = true;
@@ -561,7 +567,8 @@ ResolveWorkspaceResult resolve_workspace(
         validation.graph,
         options.compile.target,
         manifest,
-        options.compile.compiler_content_identity);
+        options.compile.compiler_content_identity,
+        validation.configuration);
     if (validation_kind == ValidationKind::Test) {
       result.tested_procedures = validation.validation_entries.size();
     } else {

@@ -231,7 +231,21 @@ void test_pinned_expression_reenters_compiler(TestState &state) {
       identity_program.graph,
       identity_options.target,
       manifest,
-      identity_options.compiler_content_identity);
+      identity_options.compiler_content_identity,
+      identity_options.configuration);
+  draft::CompileConfiguration disabled_assertions =
+      identity_options.configuration;
+  disabled_assertions.runtime_assertions =
+      draft::RuntimeAssertionMode::Off;
+  EXPECT(
+      state,
+      manifest.resolved_program_digest != draft::hash_resolved_program(
+          identity_sources,
+          identity_program.graph,
+          identity_options.target,
+          manifest,
+          identity_options.compiler_content_identity,
+          disabled_assertions));
   EXPECT(state,
       draft::commit_resolution(
           workspace.root,

@@ -448,7 +448,7 @@ if(BUILD_TESTING)
   add_test(
     NAME draft_judgment_evidence_requires_locked
     COMMAND draftc build "${CMAKE_CURRENT_SOURCE_DIR}/examples/validation"
-      --require-judgment-evidence
+      --assertions=off --require-judgment-evidence
   )
   set_tests_properties(
     draft_judgment_evidence_requires_locked
@@ -460,6 +460,7 @@ if(BUILD_TESTING)
   add_test(
     NAME draft_resolve_requires_provider
     COMMAND draftc resolve "${CMAKE_CURRENT_SOURCE_DIR}/examples/agent-pending"
+      --assertions=off
   )
   set_tests_properties(
     draft_resolve_requires_provider
@@ -469,6 +470,7 @@ if(BUILD_TESTING)
   add_test(
     NAME draft_judge_requires_provider
     COMMAND draftc judge "${CMAKE_CURRENT_SOURCE_DIR}/examples/agent-pending"
+      --assertions=off
   )
   set_tests_properties(
     draft_judge_requires_provider

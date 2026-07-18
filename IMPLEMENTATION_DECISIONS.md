@@ -1006,3 +1006,23 @@ validation-evidence format/key revision. Language-level traps and the bootstrap
 compiler's own ASan/UBSan suite do not satisfy that contract. This preserves the
 specification rule that unavailable required instrumentation fails rather than
 being silently omitted.
+
+## Runtime assertion build mode
+
+Status: implemented and bound to resolved-program identity.
+
+`--assertions=off` is a target-independent compile configuration, not an LLVM
+optimization flag. Source still parses, resolves, type-checks, and participates
+in effect and denial analysis normally. MIR lowering recognizes the typed
+`assert` intrinsic before visiting its operands and emits nothing. This is the
+only placement that directly proves the specified behavior: calls, stores,
+traps, and message construction used solely by an assertion cannot survive,
+and no condition is converted into an optimizer assumption.
+
+The versioned `draft.resolved-program.v4` hash records the assertion mode beside
+compiler content v122. `build`, `resolve`, and `judge` expose the same explicit
+flag so an offline or locked manifest cannot be replayed under a different
+mode. Test and benchmark compilations deliberately override the release choice
+to assertions on and receive their own resolved validation digest; disabling
+release assertions must never weaken the validation program that authorizes a
+release.
