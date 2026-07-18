@@ -69,8 +69,12 @@ pub work :: proc(
 ) -> i64 {
     judge "The implementation preserves the invariant."
         folder "notes"
-    // This local comment is deliberately not agent semantic context.
-    return ... "produce the answer" file "PROMPT.txt"
+    deny assert {
+        deny context.user_index {
+            // This local comment is deliberately not agent semantic context.
+            return ... "produce the answer" file "PROMPT.txt"
+        }
+    }
 }
 )draft");
     write_file(path / "DESIGN.md", "stable design bytes\n");
@@ -190,6 +194,18 @@ void test_agent_records(TestState &state) {
         draft::sha256(
             synthesis_obligation.enclosing_declaration.source) ==
             synthesis_obligation.enclosing_declaration.source_digest);
+    EXPECT(state, synthesis_obligation.active_denials.size() == 2);
+    if (synthesis_obligation.active_denials.size() == 2) {
+      EXPECT(state,
+          synthesis_obligation.active_denials[0].selector == "assert");
+      EXPECT(state,
+          synthesis_obligation.active_denials[1].selector ==
+              "context.user_index");
+      EXPECT(state,
+          draft::sha256(
+              synthesis_obligation.active_denials[1].selector) ==
+              synthesis_obligation.active_denials[1].selector_digest);
+    }
     EXPECT(state, !synthesis_obligation.visible_bindings.empty());
     bool saw_values = false;
     bool saw_callback = false;

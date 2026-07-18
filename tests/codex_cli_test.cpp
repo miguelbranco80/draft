@@ -86,7 +86,7 @@ struct TemporaryFixture {
         "test \"$(cat \"$work/documentation-00000000-attachment-00000000.bin\")\" = design-bytes || exit 30\n"
         "prompt=$(cat)\n"
         "case \"$prompt\" in\n"
-        "  *REQUEST_FORMAT*draft-synthesis-request-v4*ROOT_IDENTITY*workspace*SOURCE_RELATIVE_PATH*package.draft*ANCHOR_NAME*visible_name*EXPECTED_TYPE_TEXT*i64*TARGET_IDENTITY*draft-aarch64-macos-v5*ENCLOSING_DECLARATION_NAME*visible_name*ENCLOSING_DECLARATION_SOURCE*visible_name*DOCUMENTATION*DOC_ANCHOR*visible_name*DOC_TEXT*design-context*DOC_ATTACHMENT_PATH*DESIGN.md*AUTHOR_PROMPT*make-answer*BINDING_NAME*visible_name*BINDING_TYPE_TEXT*u32*) ;;\n"
+        "  *REQUEST_FORMAT*draft-synthesis-request-v5*ROOT_IDENTITY*workspace*SOURCE_RELATIVE_PATH*package.draft*ANCHOR_NAME*visible_name*EXPECTED_TYPE_TEXT*i64*TARGET_IDENTITY*draft-aarch64-macos-v5*ENCLOSING_DECLARATION_NAME*visible_name*ENCLOSING_DECLARATION_SOURCE*visible_name*ACTIVE_DENIALS*DENIAL_SELECTOR*assert*DOCUMENTATION*DOC_ANCHOR*visible_name*DOC_TEXT*design-context*DOC_ATTACHMENT_PATH*DESIGN.md*AUTHOR_PROMPT*make-answer*BINDING_NAME*visible_name*BINDING_TYPE_TEXT*u32*) ;;\n"
         "  *) exit 28 ;;\n"
         "esac\n"
         "printf '%s' '{\"source\":\"40 + 2\\n\"}' > \"$output\"\n";
@@ -136,6 +136,10 @@ draft::SynthesisRequest make_request() {
       "visible_name :: proc() -> i64 { return ... }";
   request.obligation.enclosing_declaration.source_digest = draft::sha256(
       request.obligation.enclosing_declaration.source);
+  draft::AgentActiveDenial denial;
+  denial.selector = "assert";
+  denial.selector_digest = draft::sha256(denial.selector);
+  request.obligation.active_denials.push_back(std::move(denial));
   draft::AgentDocumentationContext documentation;
   documentation.anchor_name = "visible_name";
   documentation.text = "design-context";
@@ -174,7 +178,7 @@ void test_adapter_contract_and_identity(TestState &state) {
   const draft::SynthesisProvider provider =
       draft::configure_codex_cli_provider(options, provider_state, diagnostics);
   EXPECT(state, provider.synthesize != nullptr);
-  EXPECT(state, provider.provider_identity == "openai-codex-cli-v5");
+  EXPECT(state, provider.provider_identity == "openai-codex-cli-v6");
   EXPECT(state, provider.model_identity == "fixture-model");
   EXPECT(state, provider.configuration_identity ==
       provider_state.configuration_identity);

@@ -257,6 +257,73 @@ void hash_field(Sha256 &hash, std::string_view value) {
   return result;
 }
 
+[[nodiscard]] bool is_denial_node(NodeKind kind) {
+  return kind == NodeKind::DenyDeclaration ||
+      kind == NodeKind::DenyMember ||
+      kind == NodeKind::DenyStatement ||
+      kind == NodeKind::DenyExpression;
+}
+
+// Finds lexical denial ancestors without relying on NodeId allocation order.
+// SyntaxTree intentionally has no parent links, but its half-open ranges make
+// containment unambiguous. Sorting by start and then widest end produces a
+// stable outer-to-inner order even though parser nodes are appended bottom-up.
+[[nodiscard]] std::vector<AgentActiveDenial> active_denial_context(
+    const SourceManager &sources,
+    const LoadedPackage &loaded,
+    const AgentRecord &record,
+    DiagnosticSink &diagnostics) {
+  std::vector<AgentActiveDenial> result;
+  const SyntaxTree *tree = find_tree(loaded, record.syntax.file);
+  if (tree == nullptr || !record.syntax.node.is_valid()) {
+    diagnostics.error(
+        SourceRange::invalid(), "agent obligation has no syntax for denials");
+    return result;
+  }
+  const SourceRange site = tree->node(record.syntax.node).range;
+  std::vector<NodeId> ancestors;
+  for (std::size_t index = 0; index < tree->nodes().size(); ++index) {
+    const SyntaxNode &candidate = tree->nodes()[index];
+    if (!is_denial_node(candidate.kind) ||
+        candidate.range.begin.offset > site.begin.offset ||
+        candidate.range.end.offset < site.end.offset) {
+      continue;
+    }
+    ancestors.push_back(NodeId{static_cast<std::uint32_t>(index)});
+  }
+  std::sort(
+      ancestors.begin(), ancestors.end(),
+      [tree](NodeId left, NodeId right) {
+        const SourceRange left_range = tree->node(left).range;
+        const SourceRange right_range = tree->node(right).range;
+        if (left_range.begin.offset != right_range.begin.offset) {
+          return left_range.begin.offset < right_range.begin.offset;
+        }
+        if (left_range.end.offset != right_range.end.offset) {
+          return left_range.end.offset > right_range.end.offset;
+        }
+        return left.value < right.value;
+      });
+
+  for (NodeId ancestor : ancestors) {
+    const SyntaxNode &denial = tree->node(ancestor);
+    // Every denial grammar stores selectors first and its governed declaration
+    // list, member list, block, or expression as the final child.
+    if (denial.children.size() < 2) {
+      diagnostics.error(denial.range, "deny region has no governed syntax");
+      continue;
+    }
+    for (std::size_t index = 0; index + 1 < denial.children.size(); ++index) {
+      AgentActiveDenial active;
+      active.selector = canonical_token_source(
+          sources, *tree, tree->node(denial.children[index]));
+      active.selector_digest = sha256(active.selector);
+      result.push_back(std::move(active));
+    }
+  }
+  return result;
+}
+
 // Walks lexical scopes from inner to outer. The first declaration of a name is
 // the visible one; later declarations in the same block are excluded by source
 // position. Sorting happens only after shadowing, so it cannot change meaning.
@@ -343,7 +410,7 @@ void hash_field(Sha256 &hash, std::string_view value) {
     const AgentObligation &obligation,
     const TargetProfile &target) {
   Sha256 hash;
-  hash_field(hash, "draft-agent-obligation-v3");
+  hash_field(hash, "draft-agent-obligation-v4");
   hash_field(hash, obligation.site_identity);
   hash.update(obligation.record_digest.bytes);
   hash.update(obligation.expected_type_digest.bytes);
@@ -386,6 +453,11 @@ void hash_field(Sha256 &hash, std::string_view value) {
         static_cast<std::uint64_t>(obligation.enclosing_declaration.kind));
     hash_field(hash, obligation.enclosing_declaration.source);
     hash.update(obligation.enclosing_declaration.source_digest.bytes);
+  }
+  hash_u64(hash, static_cast<std::uint64_t>(obligation.active_denials.size()));
+  for (const AgentActiveDenial &denial : obligation.active_denials) {
+    hash_field(hash, denial.selector);
+    hash.update(denial.selector_digest.bytes);
   }
   hash_u64(
       hash,
@@ -506,6 +578,8 @@ AgentObligationResult build_agent_obligations(
     obligation.target = target_context(target);
     obligation.enclosing_declaration = enclosing_declaration_context(
         sources, loaded, package, record, diagnostics);
+    obligation.active_denials = active_denial_context(
+        sources, loaded, record, diagnostics);
     obligation.documentation = documentation_context(package, metadata, record);
     obligation.site_identity = "site-" + site_identity_digest(obligation).hex();
     obligation.input_digest = input_digest(obligation, target);

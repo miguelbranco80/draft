@@ -43,7 +43,7 @@ namespace {
 constexpr std::uintmax_t kMaximumCodexOutputBytes = 64U * 1024U * 1024U;
 constexpr std::uintmax_t kMaximumCodexLogBytes = 4U * 1024U * 1024U;
 constexpr std::string_view kPromptContractIdentity =
-    "draft-codex-synthesis-prompt-v4";
+    "draft-codex-synthesis-prompt-v5";
 constexpr std::string_view kOutputSchema =
     "{\n"
     "  \"type\": \"object\",\n"
@@ -316,6 +316,20 @@ void append_field(
         enclosing.source_digest.hex(),
         prompt);
     append_field("ENCLOSING_DECLARATION_SOURCE", enclosing.source, prompt);
+  }
+  prompt += "ACTIVE_DENIALS ";
+  append_u64(
+      static_cast<std::uint64_t>(request.obligation.active_denials.size()),
+      prompt);
+  for (const AgentActiveDenial &denial :
+       request.obligation.active_denials) {
+    if (sha256(denial.selector) != denial.selector_digest) {
+      provider_error(
+          diagnostics, "Codex active denial identity is inconsistent");
+      return false;
+    }
+    append_field("DENIAL_SELECTOR", denial.selector, prompt);
+    append_field("DENIAL_SHA256", denial.selector_digest.hex(), prompt);
   }
   prompt += "DOCUMENTATION ";
   append_u64(
@@ -760,7 +774,7 @@ SynthesisProvider configure_codex_cli_provider(
       "codex-config-" + configuration.finalize().hex();
 
   SynthesisProvider provider;
-  provider.provider_identity = "openai-codex-cli-v5";
+  provider.provider_identity = "openai-codex-cli-v6";
   provider.model_identity = state.model;
   provider.configuration_identity = state.configuration_identity;
   provider.state = &state;

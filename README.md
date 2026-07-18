@@ -166,7 +166,8 @@ spellings plus explicit target, SIMD, and parsed-assembly facts; digests remain
 verification identities rather than opaque substitutes for usable context.
 They also carry stable package/source coordinates and a comment-free canonical
 token view of the enclosing procedure or type declaration, all covered by the
-site input digest. Package documentation reaches every site, and
+site input digest. Lexically active `deny` selectors are sent and hashed in
+outer-to-inner order. Package documentation reaches every site, and
 enclosing-declaration docs reach
 sites inside that declaration, with exact attachment bytes copied into the
 isolated request. Proposed and stored source is barred from introducing another

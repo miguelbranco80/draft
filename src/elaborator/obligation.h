@@ -84,6 +84,15 @@ struct AgentEnclosingDeclarationContext {
   Sha256Digest source_digest;
 };
 
+// One source-authored selector from a lexically enclosing deny region. The
+// spelling is canonical nontrivia Draft source such as `assert`, `asm`, or
+// `context.allocator`. Semantic denial checking remains authoritative; this
+// row makes the already-active policy visible to synthesis.
+struct AgentActiveDenial {
+  std::string selector;
+  Sha256Digest selector_digest;
+};
+
 // AgentObligation is the immutable input side of one provider transaction.
 // site_identity deliberately excludes prompt and type content so ordinary edits
 // stale the input digest without automatically baptizing a new site. occurrence
@@ -109,6 +118,7 @@ struct AgentObligation {
   std::vector<AgentVisibleBinding> visible_bindings;
   AgentTargetContext target;
   AgentEnclosingDeclarationContext enclosing_declaration;
+  std::vector<AgentActiveDenial> active_denials;
   std::vector<AgentDocumentationContext> documentation;
 };
 
