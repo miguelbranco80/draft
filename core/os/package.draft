@@ -27,9 +27,9 @@ pub environment :: proc() -> []string {
 }
 
 // File is a small non-owning descriptor handle. Closing it is explicit, and a
-// copied File aliases the same OS resource. The package deliberately exposes a
-// descriptor constructor because Draft 1 requires a fixed-signature native
-// wrapper before it can safely offer Darwin's variadic open(2).
+// copied File aliases the same OS resource. A failed open returns a File whose
+// descriptor is -1. Keeping that sentinel in the ordinary value means callers
+// can initialize and clean up a handle without a second representation.
 pub File :: @repr(C) struct {
     descriptor: c.int,
 }
@@ -37,6 +37,37 @@ pub File :: @repr(C) struct {
 pub standard_input: File = File{descriptor = 0}
 pub standard_output: File = File{descriptor = 1}
 pub standard_error: File = File{descriptor = 2}
+
+// These constants are the exact Darwin values owned by the first target
+// profile. They intentionally use the C integer types consumed by open(2), so
+// combining them does not depend on Draft's default integer width.
+//
+// Access modes occupy the low two bits and must not be combined with each
+// other. Creation flags may be combined with one access mode using `|`.
+pub open_read_only :: cast[c.int](0)
+pub open_write_only :: cast[c.int](1)
+pub open_read_write :: cast[c.int](2)
+pub open_append :: cast[c.int](0x0008)
+pub open_create :: cast[c.int](0x0200)
+pub open_truncate :: cast[c.int](0x0400)
+pub open_exclusive :: cast[c.int](0x0800)
+
+// New files receive rw-rw-rw- before the process umask removes permissions.
+// The decimal spelling is octal 0666; naming the policy is clearer at call
+// sites than repeating a target-shaped numeric literal.
+pub default_creation_permissions :: cast[c.unsigned_int](438)
+
+// Darwin declares open(2) as variadic because the mode argument is consumed
+// only when O_CREAT is present. Draft 1 deliberately rejects variadic foreign
+// declarations, so open.s supplies this fixed three-argument C ABI wrapper and
+// always forwards a mode value. The kernel ignores that value without O_CREAT.
+foreign package_assembly {
+    native_open :: c "draft_os_open_fixed" proc(
+        path: cstring,
+        flags: c.int,
+        mode: c.unsigned_int,
+    ) -> c.int
+}
 
 foreign darwin {
     native_read :: c "read" proc(
@@ -50,12 +81,42 @@ foreign darwin {
         count: c.size_t,
     ) -> c.ssize_t
     native_close :: c "close" proc(descriptor: c.int) -> c.int
+    native_unlink :: c "unlink" proc(path: cstring) -> c.int
     native_process_id :: c "getpid" proc() -> c.int
     native_exit :: c "_exit" proc(status: c.int)
 }
 
 pub file_from_descriptor :: proc(descriptor: c.int) -> File {
     return File{descriptor = descriptor}
+}
+
+// Opens a pathname through the fixed-signature package-assembly adapter.
+// `mode` is used only when flags contains open_create. The low-level form stays
+// public because systems code needs combinations such as append or exclusive
+// creation, while the convenience procedures below cover the common cases.
+pub open :: proc(
+    path: cstring,
+    flags: c.int,
+    mode: c.unsigned_int,
+) -> (File, io.Error) {
+    descriptor := native_open(path, flags, mode)
+    if descriptor < 0 {
+        return (File{descriptor = -1}, .unavailable)
+    }
+    return (File{descriptor = descriptor}, .none)
+}
+
+// Opens an existing file for reading. The ignored mode is explicitly zero so
+// the fixed native signature has one unsurprising call convention everywhere.
+pub open_for_reading :: proc(path: cstring) -> (File, io.Error) {
+    return open(path, open_read_only, 0)
+}
+
+// Creates a file for writing, truncating an existing file. The process umask
+// remains the final authority over permissions, exactly as for C open(2).
+pub create_for_writing :: proc(path: cstring) -> (File, io.Error) {
+    flags := open_write_only | open_create | open_truncate
+    return open(path, flags, default_creation_permissions)
 }
 
 pub read :: proc(handle: File, destination: []u8) -> (usize, io.Error) {
@@ -95,6 +156,12 @@ pub close :: proc(handle: ^File) -> bool {
         return true
     }
     return false
+}
+
+// Removes one pathname. Open handles remain valid until closed, following the
+// target operating system's ordinary unlink semantics.
+pub remove :: proc(path: cstring) -> bool {
+    return native_unlink(path) == 0
 }
 
 pub process_id :: proc() -> u64 {

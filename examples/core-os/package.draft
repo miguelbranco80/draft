@@ -1,6 +1,7 @@
 package core_os
 
 import core/os
+import core/memory
 
 main :: proc() {
     arguments := os.args()
@@ -17,4 +18,33 @@ main :: proc() {
     if len(variables) != 0 {
         assert(len(variables[0]) != 0)
     }
+
+    // Exercise the complete pathname seam through real target assembly and
+    // Darwin syscalls. The fixed path is removed before and after the test so
+    // a previously interrupted run cannot affect the result.
+    path: memory.Owned_String
+    memory.owned_string_copy(&path, "/tmp/draft-core-os-round-trip")
+    defer memory.owned_string_destroy(&path)
+    native_path := memory.owned_string_cstring(&path)
+    os.remove(native_path)
+
+    (output, create_error) := os.create_for_writing(native_path)
+    assert(create_error == .none)
+    bytes := [6]u8{68, 114, 97, 102, 116, 10}
+    (written, write_error) := os.write(output, bytes[:])
+    assert(write_error == .none)
+    assert(written == len(bytes))
+    assert(os.close(&output))
+
+    (input, open_error) := os.open_for_reading(native_path)
+    assert(open_error == .none)
+    received: [6]u8
+    (read_count, read_error) := os.read(input, received[:])
+    assert(read_error == .none)
+    assert(read_count == len(received))
+    for index: usize = 0; index < len(received); index += 1 {
+        assert(received[index] == bytes[index])
+    }
+    assert(os.close(&input))
+    assert(os.remove(native_path))
 }

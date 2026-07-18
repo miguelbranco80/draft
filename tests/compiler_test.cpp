@@ -450,7 +450,8 @@ void test_compiler_distributed_os(TestState &state) {
   }
   EXPECT(state, result.ok);
   EXPECT(state, !diagnostics.has_errors());
-  EXPECT(state, result.graph.packages.size() == 4);
+  // root, os, io, c, memory, and runtime form the native round-trip graph.
+  EXPECT(state, result.graph.packages.size() == 6);
   if (!result.ok || !result.graph.root_package.is_valid()) return;
 
   const std::optional<draft::CompiledPackage> &root =
@@ -479,7 +480,15 @@ void test_compiler_distributed_os(TestState &state) {
     EXPECT(state, os->llvm.text.find("@\"__draft.os.args_data\"") !=
         std::string::npos);
     EXPECT(state, os->llvm.text.find("@\"getpid\"") != std::string::npos);
-    EXPECT(state, os->native_interop.providers.size() == 2);
+    EXPECT(state, os->llvm.text.find("@\"draft_os_open_fixed\"") !=
+        std::string::npos);
+    EXPECT(state, os->assembly_sources.size() == 1);
+    if (os->assembly_sources.size() == 1) {
+      EXPECT(state, os->assembly_sources.front().relative_name == "open.s");
+      EXPECT(state, os->assembly_sources.front().contents.find(
+          "_draft_os_open_fixed:") != std::string::npos);
+    }
+    EXPECT(state, os->native_interop.providers.size() == 3);
   }
 }
 
