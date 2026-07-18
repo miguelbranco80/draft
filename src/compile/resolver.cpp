@@ -7,6 +7,7 @@
 
 #include "compile/resolver.h"
 
+#include "elaborator/generated_source.h"
 #include "elaborator/resolved_program.h"
 #include "elaborator/resolution_overlay.h"
 #include "elaborator/resolution_store.h"
@@ -125,42 +126,36 @@ namespace {
   return true;
 }
 
-} // namespace
-
-ResolveWorkspaceResult resolve_workspace(
-    SourceManager &sources,
-    const std::string &root_package_directory,
-    ResolveWorkspaceOptions options,
-    DiagnosticSink &diagnostics) {
-  ResolveWorkspaceResult result;
-  const std::size_t initial_errors = diagnostics.error_count();
-
-  // Surface compilation owns typing the holes. Resolution never starts from an
-  // existing overlay because that would let old generated declarations create
-  // dependency edges unavailable to a clean first resolution.
-  CompileWorkspaceOptions surface_options = options.compile;
-  surface_options.lower_mir = false;
-  surface_options.emit_llvm = false;
-  surface_options.workspace.source_overrides.clear();
-  CompileWorkspaceResult surface = compile_workspace(
-      sources,
-      root_package_directory,
-      std::move(surface_options),
-      diagnostics);
-  if (!surface.ok) return result;
-
-  const ResolutionManifestLoadResult loaded = load_resolution_manifest(
-      options.compile.workspace.workspace_directory, diagnostics);
-  if (loaded.state == ResolutionManifestLoadState::Invalid) return result;
-
-  std::vector<ResolutionSurfacePackage> surface_packages;
-  std::vector<GeneratedExpansion> expansions;
+// One elaboration stage owns exactly the synthesis sites visible in its input
+// compilation. Interface discovery contains declaration/member sites; the body
+// compilation after those edits contains statement/expression/assembly sites.
+// The stage manifest is intentionally separate because the overlay builder
+// requires no unrelated pins.
+struct ResolvedStage {
+  bool ok = false;
   ResolutionManifest manifest;
-  manifest.target_identity = options.compile.target.facts.identity;
+  std::vector<WorkspaceSourceOverride> overrides;
+};
 
-  // Process sites in the compiler's deterministic package and metadata order.
-  // A fresh pin contributes its exact stored bytes; revalidation retains stale
-  // bytes; normal resolution calls the provider for stale or missing pins.
+// Resolves every synthesis obligation in one already checked stage and builds
+// complete-file source overrides against that stage's exact source buffers.
+// All obligations are computed before any proposal is installed, so sites in
+// one interface completeness set cannot observe another site's generated names.
+[[nodiscard]] ResolvedStage resolve_stage(
+    SourceManager &sources,
+    const CompileWorkspaceResult &surface,
+    const ResolutionManifestLoadResult &loaded,
+    const ResolveWorkspaceOptions &options,
+    ResolveWorkspaceResult &result,
+    std::vector<GeneratedExpansion> &expansions,
+    DiagnosticSink &diagnostics) {
+  ResolvedStage stage;
+  stage.manifest.target_identity = options.compile.target.facts.identity;
+  std::vector<ResolutionSurfacePackage> surface_packages;
+
+  // Process sites in deterministic package and obligation order. Fresh pins
+  // reuse verified store bytes; stale or missing pins call the provider unless
+  // this is the provider-free revalidation mode.
   for (std::size_t package_index = 0;
        package_index < surface.packages.size(); ++package_index) {
     if (!surface.packages[package_index].has_value()) continue;
@@ -190,7 +185,7 @@ ResolveWorkspaceResult resolve_workspace(
                 existing->expansion_digest,
                 expansion.source,
                 diagnostics)) {
-          return result;
+          return stage;
         }
         expansion.digest = existing->expansion_digest;
         pin.expansion_digest = existing->expansion_digest;
@@ -203,18 +198,18 @@ ResolveWorkspaceResult resolve_workspace(
           diagnostics.error(
               SourceRange::invalid(),
               "revalidation cannot fill a missing synthesis pin");
-          return result;
+          return stage;
         }
-        if (!provider_is_configured(options.provider, diagnostics)) return result;
+        if (!provider_is_configured(options.provider, diagnostics)) return stage;
         const AgentRecord *record = find_record(package, obligation.syntax);
         if (record == nullptr) {
           diagnostics.error(
               SourceRange::invalid(),
               "synthesis obligation has no provider metadata record");
-          return result;
+          return stage;
         }
         SynthesisRequest request;
-        if (!build_request(obligation, *record, request, diagnostics)) return result;
+        if (!build_request(obligation, *record, request, diagnostics)) return stage;
         SynthesisResponse response;
         const std::size_t before_provider = diagnostics.error_count();
         if (!options.provider.synthesize(
@@ -227,7 +222,7 @@ ResolveWorkspaceResult resolve_workspace(
                 SourceRange::invalid(),
                 "synthesis provider failed without a diagnostic");
           }
-          return result;
+          return stage;
         }
         expansion.source = std::move(response.source);
         expansion.digest = sha256(expansion.source);
@@ -237,42 +232,176 @@ ResolveWorkspaceResult resolve_workspace(
         pin.configuration_identity = options.provider.configuration_identity;
         ++result.synthesized_sites;
       }
-      if (!add_expansion(expansions, std::move(expansion), diagnostics)) {
-        return result;
+
+      // This check runs for reused bytes as well as new proposals. It prevents
+      // an older or externally supplied store from smuggling provider work into
+      // the next stage before the complete resolved-program check can run.
+      const std::string display_name =
+          "<generated/" + obligation.site_identity + ">";
+      if (!validate_generated_source_boundary(
+              sources,
+              display_name,
+              expansion.source,
+              diagnostics)) {
+        return stage;
       }
-      manifest.pins.push_back(std::move(pin));
+      if (!add_expansion(expansions, std::move(expansion), diagnostics)) {
+        return stage;
+      }
+      stage.manifest.pins.push_back(std::move(pin));
     }
   }
 
+  const ResolutionOverlayResult overlays = build_resolution_overlays(
+      sources,
+      surface_packages,
+      stage.manifest,
+      options.compile.target.facts.identity,
+      options.compile.workspace.workspace_directory,
+      expansions,
+      diagnostics);
+  if (!overlays.ok) return stage;
+  stage.overrides = overlays.sources;
+  stage.ok = true;
+  return stage;
+}
+
+// Later-stage overrides contain complete files based on the already overlaid
+// interface source. They replace an earlier row for the same semantic package
+// and filename; unrelated early files remain present. Vector order stays the
+// deterministic package/file discovery order established by the first stage.
+void merge_overrides(
+    std::vector<WorkspaceSourceOverride> &combined,
+    std::vector<WorkspaceSourceOverride> later) {
+  for (WorkspaceSourceOverride &candidate : later) {
+    bool replaced = false;
+    for (WorkspaceSourceOverride &existing : combined) {
+      if (existing.identity == candidate.identity &&
+          existing.source.relative_name == candidate.source.relative_name) {
+        existing.source.contents = std::move(candidate.source.contents);
+        replaced = true;
+        break;
+      }
+    }
+    if (!replaced) combined.push_back(std::move(candidate));
+  }
+}
+
+// Appends one stage's disjoint pin set into the coherent transaction manifest.
+// A duplicate means site association changed between stages, which must be
+// diagnosed instead of being resolved by stage order.
+[[nodiscard]] bool append_stage_pins(
+    ResolutionManifest &combined,
+    ResolutionManifest stage,
+    DiagnosticSink &diagnostics) {
+  for (ResolutionPin &pin : stage.pins) {
+    for (const ResolutionPin &existing : combined.pins) {
+      if (existing.site_identity == pin.site_identity) {
+        diagnostics.error(
+            SourceRange::invalid(),
+            "synthesis site appeared in more than one elaboration stage");
+        return false;
+      }
+    }
+    combined.pins.push_back(std::move(pin));
+  }
+  return true;
+}
+
+} // namespace
+
+ResolveWorkspaceResult resolve_workspace(
+    SourceManager &sources,
+    const std::string &root_package_directory,
+    ResolveWorkspaceOptions options,
+    DiagnosticSink &diagnostics) {
+  ResolveWorkspaceResult result;
+  const std::size_t initial_errors = diagnostics.error_count();
+
+  // Stage 1 stops before bodies. Declaration and member obligations are all
+  // derived from the same physical surface graph, so existing generated names
+  // can never create edges unavailable on a clean resolution.
+  CompileWorkspaceOptions interface_options = options.compile;
+  interface_options.stage = CompileWorkspaceStage::DiscoverInterfaceSynthesis;
+  interface_options.lower_mir = false;
+  interface_options.emit_llvm = false;
+  interface_options.workspace.source_overrides.clear();
+  CompileWorkspaceResult interface_surface = compile_workspace(
+      sources,
+      root_package_directory,
+      std::move(interface_options),
+      diagnostics);
+  if (!interface_surface.ok) return result;
+
+  const ResolutionManifestLoadResult loaded = load_resolution_manifest(
+      options.compile.workspace.workspace_directory, diagnostics);
+  if (loaded.state == ResolutionManifestLoadState::Invalid) return result;
+
+  std::vector<GeneratedExpansion> expansions;
+  ResolutionManifest manifest;
+  manifest.target_identity = options.compile.target.facts.identity;
+  ResolvedStage interface_stage = resolve_stage(
+      sources,
+      interface_surface,
+      loaded,
+      options,
+      result,
+      expansions,
+      diagnostics);
+  if (!interface_stage.ok ||
+      !append_stage_pins(
+          manifest, std::move(interface_stage.manifest), diagnostics)) {
+    return result;
+  }
+
+  // Stage 2 type-checks bodies only after all interface edits are installed.
+  // Its obligations therefore include exact expected expression types and
+  // visible locals together with the generated interface dependencies.
+  CompileWorkspaceOptions body_options = options.compile;
+  body_options.stage = CompileWorkspaceStage::Complete;
+  body_options.lower_mir = false;
+  body_options.emit_llvm = false;
+  body_options.workspace.source_overrides = interface_stage.overrides;
+  CompileWorkspaceResult body_surface = compile_workspace(
+      sources,
+      root_package_directory,
+      body_options,
+      diagnostics);
+  if (!body_surface.ok) return result;
+
+  ResolvedStage body_stage = resolve_stage(
+      sources,
+      body_surface,
+      loaded,
+      options,
+      result,
+      expansions,
+      diagnostics);
+  if (!body_stage.ok ||
+      !append_stage_pins(
+          manifest, std::move(body_stage.manifest), diagnostics)) {
+    return result;
+  }
+
   // With no sites and no prior manifest there is no transaction to perform.
-  // An existing manifest still runs through the pipeline so obsolete pins are
-  // replaced by the current empty map and program identity.
+  // An existing manifest still proceeds so obsolete pins become an empty map.
   if (manifest.pins.empty() &&
       loaded.state == ResolutionManifestLoadState::Missing) {
     result.ok = diagnostics.error_count() == initial_errors;
     return result;
   }
 
-  const ResolutionOverlayResult overlays = build_resolution_overlays(
-      sources,
-      surface_packages,
-      manifest,
-      options.compile.target.facts.identity,
-      options.compile.workspace.workspace_directory,
-      expansions,
-      diagnostics);
-  if (!overlays.ok) return result;
-
+  std::vector<WorkspaceSourceOverride> complete_overrides =
+      std::move(interface_stage.overrides);
+  merge_overrides(complete_overrides, std::move(body_stage.overrides));
+  options.compile.stage = CompileWorkspaceStage::Complete;
   options.compile.lower_mir = false;
   options.compile.emit_llvm = false;
-  options.compile.workspace.source_overrides = overlays.sources;
+  options.compile.workspace.source_overrides = std::move(complete_overrides);
   CompileWorkspaceResult resolved = compile_workspace(
-      sources,
-      root_package_directory,
-      options.compile,
-      diagnostics);
-  if (!resolved.ok ||
-      !validate_resolved_agent_boundaries(surface, resolved, diagnostics)) {
+      sources, root_package_directory, options.compile, diagnostics);
+  if (!resolved.ok || !validate_resolved_agent_boundaries(
+          body_surface, resolved, diagnostics)) {
     return result;
   }
 

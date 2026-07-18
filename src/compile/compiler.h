@@ -23,6 +23,16 @@
 
 namespace draft {
 
+// Interface synthesis must be discovered before bodies that may name generated
+// declarations or aggregate members. Complete performs every provider-free
+// phase. DiscoverInterfaceSynthesis stops after dependency interfaces, type
+// skeletons, constants, and early agent metadata are available; no body error
+// can therefore preempt a declaration/member obligation that would repair it.
+enum class CompileWorkspaceStage {
+  Complete,
+  DiscoverInterfaceSynthesis,
+};
+
 struct CompileWorkspaceOptions {
   TargetProfile target;
   WorkspaceLoadOptions workspace;
@@ -30,7 +40,8 @@ struct CompileWorkspaceOptions {
   // Versioned identity of the compiler semantics and manifest algorithm. It is
   // a resolved-program input and must change when an implementation change can
   // alter accepted meaning or emitted behavior for the same other inputs.
-  std::string compiler_content_identity = "draft-bootstrap-cpp-v1";
+  std::string compiler_content_identity = "draft-bootstrap-cpp-v2";
+  CompileWorkspaceStage stage = CompileWorkspaceStage::Complete;
   bool lower_mir = false;
   bool emit_llvm = false;
 };
@@ -99,9 +110,10 @@ struct CompileWorkspaceResult {
 // synthesis or judgment site. A handwritten graph with no manifest or
 // synthesis sites behaves exactly like compile_workspace.
 //
-// `draft resolve` deliberately calls compile_workspace instead so it can inspect
-// missing/stale surface obligations. Ordinary check/build/emit operations call
-// this function and never contact a provider or modify the pin store.
+// `draft resolve` uses the same two compiler stages through resolver.cpp so it
+// can inspect missing/stale obligations before committing. Ordinary
+// check/build/emit operations call this function and never contact a provider
+// or modify the pin store.
 [[nodiscard]] CompileWorkspaceResult compile_workspace_with_resolution(
     SourceManager &sources,
     const std::string &root_package_directory,

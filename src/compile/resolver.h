@@ -7,11 +7,12 @@
 // commits through the resolution store. No provider proposal is trusted before
 // the ordinary compiler accepts the complete program.
 //
-// The first scheduler handles sites whose surface graph can reach complete typed
-// obligations in one pass. Declaration/member dependency staging remains an
-// explicit later extension; the transaction, provider, overlay, and checking
-// boundaries do not change. Relevant specification: 03-agent-synthesis.md
-// sections 9-10 and 06-compiler.md section 15.
+// Declaration/member sites form an early opaque interface stage; statement,
+// expression, and assembly sites run only after those interfaces are installed
+// and bodies can be checked. Both stages share one atomic transaction and never
+// expose one same-stage proposal while computing another obligation. Relevant
+// specification: 03-agent-synthesis.md sections 9-10 and 06-compiler.md
+// section 15.
 
 #pragma once
 

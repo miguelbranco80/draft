@@ -17,6 +17,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <vector>
 
 namespace {
 
@@ -68,6 +69,24 @@ struct TemporaryWorkspace {
            << "main :: proc() {\n"
            << "}\n";
   }
+
+  // The body names both an entire declaration and one aggregate field supplied
+  // by early synthesis. A one-pass body checker would reject these names before
+  // the provider could make the program complete.
+  void write_staged_source() const {
+    std::ofstream source(
+        package / "package.draft", std::ios::binary | std::ios::trunc);
+    source << "package app\n\n"
+           << "... \"declare answer\"\n\n"
+           << "Packet :: struct {\n"
+           << "    ... \"add value field\"\n"
+           << "}\n\n"
+           << "main :: proc() {\n"
+           << "    packet: Packet\n"
+           << "    packet.value = answer\n"
+           << "    ... \"verify generated values\"\n"
+           << "}\n";
+  }
 };
 
 struct FakeProviderState {
@@ -75,6 +94,8 @@ struct FakeProviderState {
   std::string response = "42";
   std::string last_prompt;
   std::string last_attachment;
+  bool staged_responses = false;
+  std::vector<draft::AgentConstructKind> kinds;
 };
 
 // The fake intentionally performs no language validation. This proves the
@@ -87,11 +108,31 @@ bool synthesize(
   (void)diagnostics;
   auto *state = static_cast<FakeProviderState *>(opaque);
   ++state->calls;
+  state->kinds.push_back(request.obligation.kind);
   state->last_prompt = request.prompt;
   state->last_attachment = request.attachments.empty()
       ? std::string()
       : request.attachments[0].contents;
-  response.source = state->response;
+  if (state->staged_responses) {
+    switch (request.obligation.kind) {
+    case draft::AgentConstructKind::SynthesisDeclaration:
+      response.source = "answer :: 42;";
+      break;
+    case draft::AgentConstructKind::SynthesisMember:
+      response.source = "value: i64,";
+      break;
+    case draft::AgentConstructKind::SynthesisStatement:
+      response.source = "assert(packet.value == answer)";
+      break;
+    default:
+      diagnostics.error(
+          draft::SourceRange::invalid(),
+          "fixture received an unexpected synthesis category");
+      return false;
+    }
+  } else {
+    response.source = state->response;
+  }
   return true;
 }
 
@@ -217,11 +258,75 @@ void test_resolution_reuse_revalidation_and_failure(TestState &state) {
           committed_manifest);
 }
 
+void test_interface_sites_precede_dependent_bodies(TestState &state) {
+  TemporaryWorkspace workspace;
+  workspace.write_staged_source();
+  FakeProviderState provider;
+  provider.staged_responses = true;
+
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  const draft::ResolveWorkspaceResult resolved = draft::resolve_workspace(
+      sources,
+      workspace.package.string(),
+      resolve_options(workspace, provider),
+      diagnostics);
+  if (!resolved.ok) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+  }
+  EXPECT(state, resolved.ok);
+  EXPECT(state, resolved.committed);
+  EXPECT(state, resolved.synthesized_sites == 3);
+  EXPECT(state, provider.calls == 3);
+  EXPECT(state, provider.kinds.size() == 3);
+  if (provider.kinds.size() == 3) {
+    EXPECT(state, provider.kinds[0] ==
+        draft::AgentConstructKind::SynthesisDeclaration);
+    EXPECT(state, provider.kinds[1] ==
+        draft::AgentConstructKind::SynthesisMember);
+    EXPECT(state, provider.kinds[2] ==
+        draft::AgentConstructKind::SynthesisStatement);
+  }
+
+  // The committed result must be consumable by the provider-free compiler,
+  // which has to reproduce the same interface/body staging from stored pins.
+  draft::SourceManager offline_sources;
+  draft::DiagnosticSink offline_diagnostics;
+  draft::CompileWorkspaceOptions offline_options = compile_options(workspace);
+  offline_options.lower_mir = true;
+  offline_options.emit_llvm = true;
+  const draft::CompileWorkspaceResult offline =
+      draft::compile_workspace_with_resolution(
+          offline_sources,
+          workspace.package.string(),
+          offline_options,
+          offline_diagnostics);
+  if (!offline.ok) {
+    std::cerr << draft::render_diagnostics(
+        offline_sources, offline_diagnostics);
+  }
+  EXPECT(state, offline.ok);
+  EXPECT(state, !offline_diagnostics.has_errors());
+
+  draft::SourceManager reuse_sources;
+  draft::DiagnosticSink reuse_diagnostics;
+  const draft::ResolveWorkspaceResult reused = draft::resolve_workspace(
+      reuse_sources,
+      workspace.package.string(),
+      resolve_options(workspace, provider),
+      reuse_diagnostics);
+  EXPECT(state, reused.ok);
+  EXPECT(state, reused.synthesized_sites == 0);
+  EXPECT(state, reused.reused_sites == 3);
+  EXPECT(state, provider.calls == 3);
+}
+
 } // namespace
 
 int main() {
   TestState state;
   test_resolution_reuse_revalidation_and_failure(state);
+  test_interface_sites_precede_dependent_bodies(state);
   if (state.failures != 0) {
     std::cerr << state.failures << " resolver expectation(s) failed\n";
     return EXIT_FAILURE;

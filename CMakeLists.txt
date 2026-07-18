@@ -32,6 +32,7 @@ add_library(
   src/compile/compiler.cpp
   src/compile/resolver.cpp
   src/elaborator/codex_cli.cpp
+  src/elaborator/generated_source.cpp
   src/elaborator/obligation.cpp
   src/elaborator/resolution.cpp
   src/elaborator/resolution_overlay.cpp
