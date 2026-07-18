@@ -25,7 +25,7 @@
 namespace draft {
 
 // Hashes fields with explicit lengths and collection counts under the versioned
-// `draft.resolved-program.v2` domain. Graph package/file order is already
+// `draft.resolved-program.v3` domain. Graph package/file order is already
 // canonical; external inputs and pins are sorted inside this operation so
 // caller vector order cannot affect the result.
 [[nodiscard]] Sha256Digest hash_resolved_program(

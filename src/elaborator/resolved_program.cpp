@@ -112,7 +112,7 @@ Sha256Digest hash_resolved_program(
     const ResolutionManifest &manifest,
     std::string_view compiler_content_identity) {
   Sha256 hash;
-  hash_field(hash, "draft.resolved-program.v2");
+  hash_field(hash, "draft.resolved-program.v3");
   hash_field(hash, compiler_content_identity);
   hash_target(hash, target);
 
@@ -185,6 +185,12 @@ Sha256Digest hash_resolved_program(
     hash_field(hash, agent_construct_kind_name(pin.kind));
     hash.update(pin.input_digest.bytes);
     hash.update(pin.expansion_digest.bytes);
+    hash_field(hash, pin.source_map.root_identity);
+    hash_field(hash, pin.source_map.root_relative_path);
+    hash_field(hash, pin.source_map.source_relative_path);
+    hash_u64(hash, pin.source_map.surface_begin);
+    hash_u64(hash, pin.source_map.surface_end);
+    hash_u64(hash, pin.source_map.expansion_bytes);
     hash_field(hash, pin.provider_identity);
     hash_field(hash, pin.model_identity);
     hash_field(hash, pin.configuration_identity);

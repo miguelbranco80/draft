@@ -13,6 +13,7 @@
 #include "elaborator/resolution_store.h"
 
 #include <cstddef>
+#include <cstdint>
 #include <span>
 #include <string>
 #include <string_view>
@@ -53,6 +54,22 @@ namespace {
     if (record.syntax == syntax) return &record;
   }
   return nullptr;
+}
+
+// Resolves the process-local syntax route while its surface package is alive.
+// Only the returned byte offsets enter the persistent map; FileId and NodeId
+// remain compiler-invocation details.
+[[nodiscard]] SourceRange obligation_range(
+    const LoadedPackage &loaded,
+    const AgentObligation &obligation) {
+  for (const LoadedPackageFile &file : loaded.files) {
+    if (file.source != obligation.syntax.file || !file.syntax.has_value() ||
+        !obligation.syntax.node.is_valid()) {
+      continue;
+    }
+    return file.syntax->node(obligation.syntax.node).range;
+  }
+  return SourceRange::invalid();
 }
 
 // Keeps one copy of shared content-addressed bytes. Two sites may legitimately
@@ -233,6 +250,22 @@ struct ResolvedStage {
         ++result.synthesized_sites;
       }
 
+      const SourceRange surface_range = obligation_range(
+          surface.graph.packages[package_index].loaded, obligation);
+      if (!surface_range.is_valid()) {
+        diagnostics.error(
+            SourceRange::invalid(),
+            "synthesis obligation has no source range for its persistent map");
+        return stage;
+      }
+      pin.source_map.root_identity = obligation.root_identity;
+      pin.source_map.root_relative_path = obligation.root_relative_path;
+      pin.source_map.source_relative_path = obligation.source_relative_path;
+      pin.source_map.surface_begin = surface_range.begin.offset;
+      pin.source_map.surface_end = surface_range.end.offset;
+      pin.source_map.expansion_bytes =
+          static_cast<std::uint64_t>(expansion.source.size());
+
       // This check runs for reused bytes as well as new proposals. It prevents
       // an older or externally supplied store from smuggling provider work into
       // the next stage before the complete resolved-program check can run.
@@ -278,7 +311,7 @@ void merge_overrides(
     for (WorkspaceSourceOverride &existing : combined) {
       if (existing.identity == candidate.identity &&
           existing.source.relative_name == candidate.source.relative_name) {
-        existing.source.contents = std::move(candidate.source.contents);
+        existing.source = std::move(candidate.source);
         replaced = true;
         break;
       }

@@ -41,6 +41,10 @@ draft::ResolutionPin make_pin(
   pin.kind = kind;
   pin.input_digest = draft::sha256("typed obligation");
   pin.expansion_digest = draft::sha256(expansion);
+  pin.source_map = {
+      "workspace", ".", "package.draft", 10, 13,
+      static_cast<std::uint64_t>(expansion.size()),
+  };
   pin.provider_identity = std::move(provider);
   pin.model_identity = std::move(model);
   pin.configuration_identity = "resolver-config-v1";
@@ -101,7 +105,7 @@ void test_canonical_round_trip(TestState &state) {
   EXPECT(state,
       draft::parse_resolution_manifest(encoded, parsed, diagnostics));
   EXPECT(state, !diagnostics.has_errors());
-  EXPECT(state, parsed.format == "draft-resolution-v2");
+  EXPECT(state, parsed.format == "draft-resolution-v3");
   EXPECT(state, parsed.target_identity == manifest.target_identity);
   EXPECT(state,
       parsed.resolved_program_digest == manifest.resolved_program_digest);
@@ -124,6 +128,10 @@ void test_canonical_round_trip(TestState &state) {
     EXPECT(state, parsed.pins[1].model_identity == "model-\"one\"");
     EXPECT(state,
         parsed.pins[1].configuration_identity == "resolver-config-v1");
+    EXPECT(state, parsed.pins[1].source_map.source_relative_path ==
+        "package.draft");
+    EXPECT(state, parsed.pins[1].source_map.expansion_bytes ==
+        std::string_view("add x0, x0, #1\n").size());
   }
   EXPECT(state, draft::serialize_resolution_manifest(parsed) == encoded);
 }
@@ -171,6 +179,12 @@ void test_invalid_inputs(TestState &state) {
   expect_rejected(state, draft::serialize_resolution_manifest(manifest));
   manifest.external_inputs.pop_back();
 
+  manifest.pins[0].source_map.surface_begin = 20;
+  manifest.pins[0].source_map.surface_end = 10;
+  expect_rejected(state, draft::serialize_resolution_manifest(manifest));
+  manifest.pins[0].source_map.surface_begin = 10;
+  manifest.pins[0].source_map.surface_end = 13;
+
   std::string escaping_entry = encoded;
   const std::size_t entry = escaping_entry.find("bin/clang");
   EXPECT(state, entry != std::string::npos);
@@ -204,6 +218,17 @@ void test_invalid_inputs(TestState &state) {
     unknown_field.replace(target, std::string_view("\"target\"").size(), "\"trg\"");
   }
   expect_rejected(state, unknown_field);
+
+  std::string escaping_source = encoded;
+  const std::size_t source_file = escaping_source.find("package.draft");
+  EXPECT(state, source_file != std::string::npos);
+  if (source_file != std::string::npos) {
+    escaping_source.replace(
+        source_file,
+        std::string_view("package.draft").size(),
+        "../package.draft");
+  }
+  expect_rejected(state, escaping_source);
 }
 
 } // namespace

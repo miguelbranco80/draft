@@ -17,11 +17,26 @@
 #include "sema/agent_metadata.h"
 #include "source/diagnostic.h"
 
+#include <cstdint>
 #include <string>
 #include <string_view>
 #include <vector>
 
 namespace draft {
+
+// Persistent origin of one generated fragment. Package/file identity is
+// semantic and path-independent; byte offsets are half-open coordinates in the
+// exact surface file whose content contributed to the obligation digest.
+// expansion_bytes closes the map without loading the object and is reverified
+// against content-addressed bytes whenever an overlay is built.
+struct ResolutionSourceMap {
+  std::string root_identity;
+  std::string root_relative_path;
+  std::string source_relative_path;
+  std::uint64_t surface_begin = 0;
+  std::uint64_t surface_end = 0;
+  std::uint64_t expansion_bytes = 0;
+};
 
 // One immutable selection for a synthesis site. site_identity is structural;
 // input_digest changes when any supplied semantic context changes; expansion
@@ -34,6 +49,7 @@ struct ResolutionPin {
   AgentConstructKind kind = AgentConstructKind::SynthesisExpression;
   Sha256Digest input_digest;
   Sha256Digest expansion_digest;
+  ResolutionSourceMap source_map;
   std::string provider_identity;
   std::string model_identity;
   std::string configuration_identity;
@@ -72,7 +88,7 @@ struct ExternalInputPin {
 // compact ownership. resolved_program_digest is computed only after every
 // selected expansion has passed the ordinary compiler pipeline.
 struct ResolutionManifest {
-  std::string format = "draft-resolution-v2";
+  std::string format = "draft-resolution-v3";
   std::string target_identity;
   Sha256Digest resolved_program_digest;
   std::vector<ExternalInputPin> external_inputs;

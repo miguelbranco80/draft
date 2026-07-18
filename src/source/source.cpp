@@ -39,13 +39,25 @@ SourceRange SourceRange::at(FileId file, std::uint32_t offset) {
   return {location, location};
 }
 
-FileId SourceManager::add_source(std::string display_path, std::string text) {
+FileId SourceManager::add_source(
+    std::string display_path,
+    std::string text,
+    std::vector<SourceExpansionMap> expansion_maps) {
   assert(files_.size() < static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max()));
 
   SourceFile source;
   source.display_path = std::move(display_path);
   source.text = std::move(text);
+  source.expansion_maps = std::move(expansion_maps);
   source.line_starts.push_back(0);
+
+  std::uint32_t previous_end = 0;
+  for (const SourceExpansionMap &map : source.expansion_maps) {
+    assert(map.generated_begin >= previous_end);
+    assert(map.generated_begin <= map.generated_end);
+    assert(static_cast<std::size_t>(map.generated_end) <= source.text.size());
+    previous_end = map.generated_end;
+  }
 
   // Line starts are byte offsets because every compiler source range is byte
   // addressed. UTF-8 is decoded only when converting a byte offset to a display
@@ -136,6 +148,18 @@ std::string_view SourceManager::line_text(FileId file_id, std::uint32_t one_base
     --end;
   }
   return std::string_view(source.text).substr(start, end - start);
+}
+
+const SourceExpansionMap *SourceManager::expansion_map(
+    SourceLocation location) const {
+  if (!location.is_valid()) return nullptr;
+  for (const SourceExpansionMap &map : file(location.file).expansion_maps) {
+    if (location.offset >= map.generated_begin &&
+        location.offset < map.generated_end) {
+      return &map;
+    }
+  }
+  return nullptr;
 }
 
 std::size_t SourceManager::file_count() const {

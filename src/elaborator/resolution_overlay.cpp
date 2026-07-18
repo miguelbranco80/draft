@@ -16,6 +16,9 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdint>
+#include <limits>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -95,6 +98,28 @@ struct SourceEdit {
     if (expansion.digest == digest) return &expansion;
   }
   return nullptr;
+}
+
+// Translates one byte boundary from the input file to the composed output.
+// A boundary inside a replaced site has no surviving location and returns
+// nullopt. Boundaries at an edit begin stay before the replacement; boundaries
+// at its end move after it. This is used only to carry earlier-stage maps across
+// a later whole-file overlay.
+[[nodiscard]] std::optional<std::size_t> composed_offset(
+    std::size_t offset,
+    const std::vector<const SourceEdit *> &edits) {
+  std::size_t source_cursor = 0;
+  std::size_t output_cursor = 0;
+  for (const SourceEdit *edit : edits) {
+    const std::size_t begin = edit->range.begin.offset;
+    const std::size_t end = edit->range.end.offset;
+    if (offset <= begin) return output_cursor + (offset - source_cursor);
+    if (offset < end) return std::nullopt;
+    output_cursor += begin - source_cursor;
+    output_cursor += edit->replacement.size();
+    source_cursor = end;
+  }
+  return output_cursor + (offset - source_cursor);
 }
 
 } // namespace
@@ -181,6 +206,18 @@ ResolutionOverlayResult build_resolution_overlays(
           continue;
         }
       }
+      const ResolutionSourceMap &map = pin->source_map;
+      if (map.root_identity != package.identity->root_identity ||
+          map.root_relative_path != package.identity->root_relative_path ||
+          map.source_relative_path != file->relative_name ||
+          map.surface_begin != range.begin.offset ||
+          map.surface_end != range.end.offset ||
+          map.expansion_bytes != expansion.size()) {
+        diagnostics.error(
+            range,
+            "resolution pin generated-source map is stale or inconsistent");
+        continue;
+      }
       edits.push_back({
           file->source,
           range,
@@ -225,8 +262,27 @@ ResolutionOverlayResult build_resolution_overlays(
           });
 
       const std::string_view surface = surface_sources.text(file.source);
+      const SourceFile &surface_file = surface_sources.file(file.source);
       std::size_t cursor = 0;
       std::string resolved;
+      std::vector<SourceExpansionMap> expansion_maps;
+      for (const SourceExpansionMap &existing : surface_file.expansion_maps) {
+        const std::optional<std::size_t> begin = composed_offset(
+            existing.generated_begin, file_edits);
+        const std::optional<std::size_t> end = composed_offset(
+            existing.generated_end, file_edits);
+        if (!begin.has_value() || !end.has_value() || *begin > *end ||
+            *end > std::numeric_limits<std::uint32_t>::max()) {
+          diagnostics.error(
+              SourceRange::invalid(),
+              "later synthesis site overlaps an earlier generated-source map");
+          continue;
+        }
+        SourceExpansionMap translated = existing;
+        translated.generated_begin = static_cast<std::uint32_t>(*begin);
+        translated.generated_end = static_cast<std::uint32_t>(*end);
+        expansion_maps.push_back(std::move(translated));
+      }
       for (const SourceEdit *edit : file_edits) {
         const std::size_t begin = edit->range.begin.offset;
         const std::size_t end = edit->range.end.offset;
@@ -239,15 +295,49 @@ ResolutionOverlayResult build_resolution_overlays(
           continue;
         }
         resolved.append(surface.substr(cursor, begin - cursor));
+        const std::size_t generated_begin = resolved.size();
         resolved.append(edit->replacement);
+        const std::size_t generated_end = resolved.size();
+        if (generated_end > std::numeric_limits<std::uint32_t>::max()) {
+          diagnostics.error(
+              edit->range,
+              "resolved source exceeds the source-map offset range");
+          continue;
+        }
+        expansion_maps.push_back({
+            static_cast<std::uint32_t>(generated_begin),
+            static_cast<std::uint32_t>(generated_end),
+            surface_file.display_path,
+            surface_sources.line_column(edit->range.begin),
+            surface_sources.line_column(edit->range.end),
+            edit->site_identity,
+        });
         cursor = end;
         ++result.applied_sites;
       }
       if (diagnostics.error_count() != initial_errors) continue;
       resolved.append(surface.substr(cursor));
+      std::sort(
+          expansion_maps.begin(),
+          expansion_maps.end(),
+          [](const SourceExpansionMap &left, const SourceExpansionMap &right) {
+            if (left.generated_begin != right.generated_begin) {
+              return left.generated_begin < right.generated_begin;
+            }
+            return left.site_identity < right.site_identity;
+          });
+      for (std::size_t index = 1; index < expansion_maps.size(); ++index) {
+        if (expansion_maps[index - 1].generated_end >
+            expansion_maps[index].generated_begin) {
+          diagnostics.error(
+              SourceRange::invalid(),
+              "generated-source maps overlap after resolution composition");
+        }
+      }
+      if (diagnostics.error_count() != initial_errors) continue;
       result.sources.push_back({
           *package.identity,
-          {file.relative_name, std::move(resolved)},
+          {file.relative_name, std::move(resolved), std::move(expansion_maps)},
       });
     }
   }

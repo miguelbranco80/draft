@@ -58,6 +58,10 @@ draft::ResolutionManifest manifest_for(
   pin.kind = draft::AgentConstructKind::SynthesisExpression;
   pin.input_digest = draft::sha256("obligation-v1");
   pin.expansion_digest = expansion.digest;
+  pin.source_map = {
+      "workspace", ".", "package.draft", 10, 13,
+      static_cast<std::uint64_t>(expansion.source.size()),
+  };
   pin.provider_identity = "fake-provider-v1";
   pin.model_identity = "deterministic-model-v1";
   pin.configuration_identity = "resolver-config-v1";
@@ -157,6 +161,23 @@ void test_validation_precedes_writes(TestState &state) {
           diagnostics));
   EXPECT(state, diagnostics.has_errors());
   EXPECT(state, !std::filesystem::exists(workspace.path / ".draft"));
+
+  // A correct content digest is insufficient when the persistent source map
+  // claims a different generated interval length. Reject that mismatch before
+  // the object or manifest becomes visible.
+  TemporaryWorkspace wrong_map("wrong-map");
+  expansion.digest = draft::sha256(expansion.source);
+  draft::ResolutionManifest wrong_map_manifest = manifest_for(expansion);
+  ++wrong_map_manifest.pins[0].source_map.expansion_bytes;
+  draft::DiagnosticSink wrong_map_diagnostics;
+  EXPECT(state,
+      !draft::commit_resolution(
+          wrong_map.path,
+          wrong_map_manifest,
+          std::span<const draft::GeneratedExpansion>(&expansion, 1),
+          wrong_map_diagnostics));
+  EXPECT(state, wrong_map_diagnostics.has_errors());
+  EXPECT(state, !std::filesystem::exists(wrong_map.path / ".draft"));
 
   // A manifest which references neither supplied nor stored source also fails
   // before creating store directories.

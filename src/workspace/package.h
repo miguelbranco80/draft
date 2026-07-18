@@ -39,6 +39,10 @@ enum class PackageFileKind {
 struct PackageSourceOverride {
   std::string relative_name;
   std::string contents;
+  // Coordinates refer to contents, not the physical surface file. Persistent
+  // surface identity has already been converted to display coordinates so the
+  // override can safely cross SourceManager instances in tests and embeddings.
+  std::vector<SourceExpansionMap> expansion_maps;
 };
 
 // PackageLoadOptions contains only selection facts defined by the target and

@@ -225,7 +225,9 @@ PackageLoadResult load_package(
     if (source_override != nullptr) {
       load.ok = true;
       load.file = sources.add_source(
-          physical.string() + " [resolved]", source_override->contents);
+          physical.string() + " [resolved]",
+          source_override->contents,
+          source_override->expansion_maps);
       used_overrides.push_back(source_override->relative_name);
     } else {
       load = sources.load_file(physical.string());

@@ -64,6 +64,21 @@ struct LineColumn {
   std::uint32_t column = 1;
 };
 
+// One generated interval in a complete resolved source file. generated_begin
+// and generated_end are half-open byte offsets in the owning SourceFile. The
+// surface coordinates and persistent site identity remain valid when an
+// override is copied into a new SourceManager, unlike process-local FileId.
+// Entries are ordered and non-overlapping; they affect presentation and later
+// debug/profile adapters but never parsing or semantic identity.
+struct SourceExpansionMap {
+  std::uint32_t generated_begin = 0;
+  std::uint32_t generated_end = 0;
+  std::string surface_display_path;
+  LineColumn surface_begin;
+  LineColumn surface_end;
+  std::string site_identity;
+};
+
 // SourceFile owns one immutable source buffer after insertion. line_starts[0]
 // is always zero; each later entry is the byte after a '\n'. A SourceFile value
 // can move when another file is added, so callers retain FileId and string_view
@@ -72,6 +87,7 @@ struct SourceFile {
   std::string display_path;
   std::string text;
   std::vector<std::uint32_t> line_starts;
+  std::vector<SourceExpansionMap> expansion_maps;
 };
 
 // LoadFileResult distinguishes an I/O failure from a valid empty file without
@@ -92,7 +108,10 @@ public:
   // point is also used by tests and, later, content-addressed generated source.
   // The bytes are not required to be valid UTF-8 here because the lexer must
   // produce a source-located diagnostic for invalid input.
-  [[nodiscard]] FileId add_source(std::string display_path, std::string text);
+  [[nodiscard]] FileId add_source(
+      std::string display_path,
+      std::string text,
+      std::vector<SourceExpansionMap> expansion_maps = {});
 
   // Loads one file as binary bytes and inserts it only after a complete read.
   // The function never throws and does not mutate the manager on failure.
@@ -103,6 +122,11 @@ public:
   [[nodiscard]] std::string_view text(SourceRange range) const;
   [[nodiscard]] LineColumn line_column(SourceLocation location) const;
   [[nodiscard]] std::string_view line_text(FileId file, std::uint32_t one_based_line) const;
+  // Returns the expansion interval containing location, or null when the byte
+  // came from handwritten source. A location at an interval's end belongs to
+  // following source because intervals are half-open.
+  [[nodiscard]] const SourceExpansionMap *expansion_map(
+      SourceLocation location) const;
   [[nodiscard]] std::size_t file_count() const;
 
 private:

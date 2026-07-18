@@ -368,6 +368,13 @@ void refresh_imported_effects(
             diagnostics)) {
       return false;
     }
+    if (pin.source_map.expansion_bytes !=
+        static_cast<std::uint64_t>(source.size())) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "generated expansion length does not match its resolution source map");
+      return false;
+    }
     if (!validate_generated_source_boundary(
             sources,
             "<generated/" + pin.site_identity + ">",
@@ -390,7 +397,7 @@ void merge_resolution_overrides(
     for (WorkspaceSourceOverride &existing : combined) {
       if (existing.identity == candidate.identity &&
           existing.source.relative_name == candidate.source.relative_name) {
-        existing.source.contents = std::move(candidate.source.contents);
+        existing.source = std::move(candidate.source);
         replaced = true;
         break;
       }

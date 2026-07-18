@@ -7,6 +7,8 @@
 #include <algorithm>
 #include <cctype>
 #include <cstddef>
+#include <cstdint>
+#include <limits>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -109,7 +111,7 @@ public:
     }
     whitespace();
     if (position_ != input_.size()) return fail("trailing bytes after manifest");
-    if (parsed.format != "draft-resolution-v2") {
+    if (parsed.format != "draft-resolution-v3") {
       return fail("unsupported resolution manifest format");
     }
     if (parsed.target_identity.empty()) {
@@ -255,12 +257,51 @@ private:
     return true;
   }
 
+  // Manifest offsets are canonical unsigned JSON integers: zero is written as
+  // `0`, other values have no leading zero, and overflow is rejected before a
+  // host arithmetic operation can wrap.
+  [[nodiscard]] bool unsigned_integer(std::uint64_t &result) {
+    whitespace();
+    if (position_ >= input_.size() || input_[position_] < '0' ||
+        input_[position_] > '9') {
+      return fail("expected unsigned integer");
+    }
+    if (input_[position_] == '0' && position_ + 1 < input_.size() &&
+        input_[position_ + 1] >= '0' && input_[position_ + 1] <= '9') {
+      return fail("unsigned integer has a noncanonical leading zero");
+    }
+    result = 0;
+    while (position_ < input_.size() && input_[position_] >= '0' &&
+           input_[position_] <= '9') {
+      const std::uint64_t digit =
+          static_cast<std::uint64_t>(input_[position_] - '0');
+      if (result > (std::numeric_limits<std::uint64_t>::max() - digit) / 10U) {
+        return fail("unsigned integer is out of range");
+      }
+      result = result * 10U + digit;
+      ++position_;
+    }
+    return true;
+  }
+
   [[nodiscard]] bool pin(ResolutionPin &pin) {
     std::string kind;
     if (!punctuation('{') || !key("site") || !string(pin.site_identity) ||
         !comma() || !key("kind") || !string(kind) || !comma() ||
         !key("input") || !digest(pin.input_digest) || !comma() ||
         !key("expansion") || !digest(pin.expansion_digest) || !comma() ||
+        !key("source_root") ||
+        !string(pin.source_map.root_identity) || !comma() ||
+        !key("source_package") ||
+        !string(pin.source_map.root_relative_path) || !comma() ||
+        !key("source_file") ||
+        !string(pin.source_map.source_relative_path) || !comma() ||
+        !key("surface_begin") ||
+        !unsigned_integer(pin.source_map.surface_begin) || !comma() ||
+        !key("surface_end") ||
+        !unsigned_integer(pin.source_map.surface_end) || !comma() ||
+        !key("expansion_bytes") ||
+        !unsigned_integer(pin.source_map.expansion_bytes) || !comma() ||
         !key("provider") || !string(pin.provider_identity) || !comma() ||
         !key("model") || !string(pin.model_identity) || !comma() ||
         !key("configuration") || !string(pin.configuration_identity) ||
@@ -283,6 +324,15 @@ private:
       return fail(
           "resolution pin provider, model, and configuration identities "
           "must not be empty");
+    }
+    if (pin.source_map.root_identity.empty() ||
+        pin.source_map.root_relative_path.empty() ||
+        pin.source_map.source_relative_path.empty() ||
+        pin.source_map.surface_begin > pin.source_map.surface_end ||
+        !valid_relative_entry(pin.source_map.source_relative_path) ||
+        (pin.source_map.root_relative_path != "." &&
+         !valid_relative_entry(pin.source_map.root_relative_path))) {
+      return fail("resolution pin has an invalid generated-source map");
     }
     return true;
   }
@@ -422,6 +472,18 @@ std::string serialize_resolution_manifest(const ResolutionManifest &manifest) {
     append_json_string(pin.input_digest.hex(), output);
     output += ", \"expansion\": ";
     append_json_string(pin.expansion_digest.hex(), output);
+    output += ", \"source_root\": ";
+    append_json_string(pin.source_map.root_identity, output);
+    output += ", \"source_package\": ";
+    append_json_string(pin.source_map.root_relative_path, output);
+    output += ", \"source_file\": ";
+    append_json_string(pin.source_map.source_relative_path, output);
+    output += ", \"surface_begin\": " +
+        std::to_string(pin.source_map.surface_begin);
+    output += ", \"surface_end\": " +
+        std::to_string(pin.source_map.surface_end);
+    output += ", \"expansion_bytes\": " +
+        std::to_string(pin.source_map.expansion_bytes);
     output += ", \"provider\": ";
     append_json_string(pin.provider_identity, output);
     output += ", \"model\": ";

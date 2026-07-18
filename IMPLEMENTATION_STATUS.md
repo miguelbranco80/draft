@@ -18,8 +18,9 @@ resolve every synthesis grammar category through transactional pins, and
 consume those pins offline.
 
 The release acceptance test is still unproved. In particular, complete
-runtime/initial-core conformance, judgment-provider evidence, and
-generated-source maps do not yet exist.
+runtime/initial-core conformance and judgment-provider evidence do not yet
+exist; generated-source maps now cover manifests and diagnostics but not every
+downstream debug/profile artifact.
 
 ## Requirement audit
 
@@ -38,11 +39,11 @@ generated-source maps do not yet exist.
 | Provider-independent docs, judgments, and synthesis obligations | agent metadata/obligation modules and tests | Implemented foundation | Context still lacks the full bounded semantic dependency closure, active denial facts, enclosing skeletons, tests, benchmarks, and dominating judgment claims. |
 | Dependency-ordered synthesis and opaque interface completeness sets | staged resolver/compiler passes and resolver tests | Implemented for package dependency rounds | Add finer early compile-time dependencies inside one package and prove that each same-set expansion cannot type-check by observing another expansion. |
 | Codex adapter behind a provider-neutral boundary | `src/elaborator/codex_cli.*` and adapter tests | Implemented first adapter | Pin the complete executable distribution identity, not merely the selected launcher bytes, and add bounded cancellation/timeout/retry policy. |
-| Content-addressed generated source and atomic manifest commit | resolution/store/overlay modules and tests | Implemented foundation | Add generated-source maps and evidence references to the manifest schema. |
+| Content-addressed generated source and atomic manifest commit | v3 resolution manifests, resolution/store/overlay modules, and tests | Implemented foundation | Add exact validation/judgment evidence references to the manifest schema. |
 | Ordinary offline builds consume pins without a provider | staged offline compiler path, resolver tests, and locked executable/archive adapter tests | Implemented | Extend byte-for-byte release proof across every output kind. |
 | `draft build --locked` with no ambient external search | Versioned external-input rows, resolved-program binding, content-tree verification, explicit toolchain/SDK/provider/summary CLI roots, clean process environment, absolute Clang/linker/archiver paths, provider snapshots, consumed summary verification, SDK/link flags, and optional exact-key test/benchmark evidence gates | Implemented through foreign link artifacts, audits, and validation evidence | Add runtime-asset mappings; locked builds reject unsupported external roles. |
 | Tests, benchmarks, judgments, and validation evidence | Typed core-nominal discovery, target-qualified file selection, canonical package/declaration order, compiler-owned isolated native harnesses, private result pipe, direct process runner, process-isolated benchmark warmup/sampling, canonical content-addressed evidence, exact environment/tool/policy keys, append-only attempt history, failure revocation, locked evidence gates, validation tests, and `examples/validation` | Implemented for tests and first benchmark profile | Judgment execution remains the provider-free typed boundary described by the initial plan. Add richer instrumentation profiles, statistical aggregation/tolerances, and Codex judgment evidence. |
-| Generated-source diagnostics/source maps | Resolved whole-file overrides only | Missing | Preserve expansion-to-site mapping through diagnostics, debug locations, coverage, profiles, and disassembly; serialize maps in the manifest. |
+| Generated-source diagnostics/source maps | Per-pin persistent surface/expansion byte maps, composed in-memory maps, and diagnostic origin notes | Implemented foundation | Carry the same mapping into emitted debug locations, coverage, profiles, and disassembly. |
 | Crash-safe and deterministic release verification | Atomic pin-store tests and deterministic serializers | Partially implemented | Add fault-injection recovery, byte-for-byte clean-workspace rebuild tests, malformed-store fuzz/conformance cases, and final sanitizer/native gates. |
 
 ## Current executable commands
@@ -61,5 +62,5 @@ active evidence with `--require-test-evidence` and
 
 The next implementation slice returns to runtime/core conformance and the final
 release gates: sanitizer builds, pinned-native execution, deterministic clean
-rebuilds, malformed-store recovery, and the remaining generated-source mapping
-and judgment-provider boundaries.
+rebuilds, malformed-store recovery, downstream generated-source mapping, and
+the judgment-provider boundary.

@@ -259,6 +259,25 @@ void store_error(DiagnosticSink &diagnostics, std::string message) {
   return false;
 }
 
+// Every pin sharing a content object must agree on its byte length. The digest
+// already protects contents; this independent check protects the manifest map
+// from claiming a generated interval that cannot contain those contents.
+[[nodiscard]] bool manifest_maps_expansion_size(
+    const ResolutionManifest &manifest,
+    const Sha256Digest &digest,
+    std::size_t size) {
+  bool referenced = false;
+  for (const ResolutionPin &pin : manifest.pins) {
+    if (pin.expansion_digest != digest) continue;
+    referenced = true;
+    if (pin.source_map.expansion_bytes !=
+        static_cast<std::uint64_t>(size)) {
+      return false;
+    }
+  }
+  return referenced;
+}
+
 [[nodiscard]] std::filesystem::path generated_path(
     const std::filesystem::path &workspace_directory,
     const Sha256Digest &digest) {
@@ -387,6 +406,13 @@ bool commit_resolution(
     if (!manifest_references(checked_manifest, expansion.digest)) {
       store_error(diagnostics,
           "supplied expansion is not referenced by the resolution manifest");
+    } else if (!manifest_maps_expansion_size(
+                   checked_manifest,
+                   expansion.digest,
+                   expansion.source.size())) {
+      store_error(
+          diagnostics,
+          "supplied expansion length does not match its generated-source map");
     }
     for (std::size_t earlier = 0; earlier < index; ++earlier) {
       if (expansions[earlier].digest == expansion.digest) {
@@ -410,6 +436,13 @@ bool commit_resolution(
             true,
             existing,
             diagnostics)) {
+      return false;
+    }
+    if (pin.source_map.expansion_bytes !=
+        static_cast<std::uint64_t>(existing.size())) {
+      store_error(
+          diagnostics,
+          "stored expansion length does not match its generated-source map");
       return false;
     }
   }

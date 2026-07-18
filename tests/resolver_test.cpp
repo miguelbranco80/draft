@@ -409,6 +409,21 @@ void test_interface_sites_precede_dependent_bodies(TestState &state) {
   }
   EXPECT(state, offline.ok);
   EXPECT(state, !offline_diagnostics.has_errors());
+  EXPECT(state, resolved.manifest.format == "draft-resolution-v3");
+  EXPECT(state, resolved.manifest.pins.size() == 3);
+  std::size_t composed_maps = 0;
+  for (const draft::WorkspacePackage &package : offline.graph.packages) {
+    for (const draft::LoadedPackageFile &file : package.loaded.files) {
+      const std::vector<draft::SourceExpansionMap> &maps =
+          offline_sources.file(file.source).expansion_maps;
+      composed_maps += maps.size();
+      for (std::size_t index = 1; index < maps.size(); ++index) {
+        EXPECT(state, maps[index - 1].generated_end <=
+            maps[index].generated_begin);
+      }
+    }
+  }
+  EXPECT(state, composed_maps == 3);
 
   draft::SourceManager reuse_sources;
   draft::DiagnosticSink reuse_diagnostics;
