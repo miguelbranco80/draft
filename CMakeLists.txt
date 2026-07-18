@@ -256,6 +256,25 @@ if(BUILD_TESTING)
   )
   add_test(NAME draft_toolchain_tests COMMAND draft_toolchain_tests)
 
+  # This is intentionally a host integration test rather than another fake
+  # toolchain test. The first target is macOS, so an Apple test host can prove
+  # that two complete links to the same named output are byte-for-byte equal.
+  if(APPLE)
+    add_executable(
+      draft_native_determinism_tests
+      tests/native_determinism_test.cpp
+    )
+    target_link_libraries(draft_native_determinism_tests PRIVATE draft_compiler)
+    target_compile_definitions(
+      draft_native_determinism_tests
+      PRIVATE DRAFT_SOURCE_DIRECTORY="${CMAKE_CURRENT_SOURCE_DIR}"
+    )
+    add_test(
+      NAME draft_native_determinism_tests
+      COMMAND draft_native_determinism_tests
+    )
+  endif()
+
   add_executable(
     draft_validation_discovery_tests
     tests/validation_discovery_test.cpp

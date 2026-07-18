@@ -230,6 +230,73 @@ void test_corrupt_object_is_rejected(TestState &state) {
   EXPECT(state, corrupt_diagnostics.has_errors());
 }
 
+void test_interrupted_publish_recovery(TestState &state) {
+  TemporaryWorkspace workspace("interrupted");
+  draft::GeneratedExpansion first;
+  first.source = "first checked expansion";
+  first.digest = draft::sha256(first.source);
+  const draft::ResolutionManifest first_manifest = manifest_for(first);
+  draft::DiagnosticSink diagnostics;
+  EXPECT(state,
+      draft::commit_resolution(
+          workspace.path,
+          first_manifest,
+          std::span<const draft::GeneratedExpansion>(&first, 1),
+          diagnostics));
+  if (diagnostics.has_errors()) return;
+
+  draft::GeneratedExpansion second;
+  second.source = "second checked expansion";
+  second.digest = draft::sha256(second.source);
+  draft::ResolutionManifest second_manifest = manifest_for(second);
+  second_manifest.resolved_program_digest = draft::sha256("second program");
+
+  // Model a process stop after the immutable object rename but before the
+  // manifest rename. The abandoned staged manifest must remain invisible; the
+  // old manifest is still authoritative even though the new object is present.
+  const std::filesystem::path generated = workspace.path / ".draft" / "generated";
+  std::ofstream(
+      generated / (second.digest.hex() + ".draft"),
+      std::ios::binary) << second.source;
+  const std::filesystem::path abandoned =
+      workspace.path / ".draft" / "staging" / "abandoned-after-object";
+  std::error_code error;
+  std::filesystem::create_directories(abandoned, error);
+  EXPECT(state, !error);
+  std::ofstream(abandoned / "resolution.json", std::ios::binary)
+      << draft::serialize_resolution_manifest(second_manifest);
+
+  draft::DiagnosticSink interrupted_diagnostics;
+  const draft::ResolutionManifestLoadResult interrupted =
+      draft::load_resolution_manifest(workspace.path, interrupted_diagnostics);
+  EXPECT(state,
+      interrupted.state == draft::ResolutionManifestLoadState::Loaded);
+  EXPECT(state, !interrupted_diagnostics.has_errors());
+  if (interrupted.manifest.pins.size() == 1) {
+    EXPECT(state,
+        interrupted.manifest.pins[0].expansion_digest == first.digest);
+  }
+
+  // A subsequent transaction may reuse the already durable orphan object and
+  // publish the new manifest. Stale private staging directories are ignored and
+  // cannot affect which coherent program is selected.
+  draft::DiagnosticSink recovery_diagnostics;
+  EXPECT(state,
+      draft::commit_resolution(
+          workspace.path,
+          second_manifest,
+          std::span<const draft::GeneratedExpansion>(),
+          recovery_diagnostics));
+  EXPECT(state, !recovery_diagnostics.has_errors());
+  const draft::ResolutionManifestLoadResult recovered =
+      draft::load_resolution_manifest(workspace.path, recovery_diagnostics);
+  EXPECT(state, recovered.state == draft::ResolutionManifestLoadState::Loaded);
+  if (recovered.manifest.pins.size() == 1) {
+    EXPECT(state,
+        recovered.manifest.pins[0].expansion_digest == second.digest);
+  }
+}
+
 } // namespace
 
 int main() {
@@ -237,6 +304,7 @@ int main() {
   test_commit_and_reload(state);
   test_validation_precedes_writes(state);
   test_corrupt_object_is_rejected(state);
+  test_interrupted_publish_recovery(state);
   if (state.failures != 0) {
     std::cerr << state.failures << " resolution-store expectation(s) failed\n";
     return EXIT_FAILURE;

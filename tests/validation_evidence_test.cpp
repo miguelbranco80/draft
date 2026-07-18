@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <cstdint>
 #include <iostream>
+#include <limits>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -92,6 +93,24 @@ void test_round_trip_and_key(TestState &state) {
   EXPECT(state, !draft::parse_validation_evidence(
       corrupt, parsed, corrupt_diagnostics));
   EXPECT(state, corrupt_diagnostics.has_errors());
+
+  // Parsed evidence is untrusted. A maximum offset used to wrap when the
+  // invariant added the eight-byte failure field width.
+  std::string overflowing = json;
+  const std::string original_offset = "\"failure_offset\": 8";
+  const std::size_t offset = overflowing.find(original_offset);
+  EXPECT(state, offset != std::string::npos);
+  if (offset != std::string::npos) {
+    overflowing.replace(
+        offset,
+        original_offset.size(),
+        "\"failure_offset\": " +
+            std::to_string(std::numeric_limits<std::uint64_t>::max()));
+  }
+  draft::DiagnosticSink overflow_diagnostics;
+  EXPECT(state, !draft::parse_validation_evidence(
+      overflowing, parsed, overflow_diagnostics));
+  EXPECT(state, overflow_diagnostics.has_errors());
 }
 
 void test_report_decoding(TestState &state) {

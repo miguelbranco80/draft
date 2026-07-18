@@ -130,9 +130,6 @@ void append_locked_arguments(
   arguments.push_back(inputs.sdk_root.string());
   if (link) {
     arguments.push_back("--ld-path=" + inputs.linker.string());
-    // Mach-O UUID generation is unnecessary for the bootstrap executable and
-    // can otherwise introduce a link-specific identity into repeat builds.
-    arguments.push_back("-Wl,-no_uuid");
   }
 }
 
@@ -709,6 +706,10 @@ NativeBuildResult build_native_artifact(
   if (options.locked) {
     append_locked_arguments(locked_inputs, true, link_arguments);
   }
+  // Keep the Mach-O UUID load command. Current macOS loaders require it for an
+  // executable, and Apple's linker derives it deterministically from the link
+  // result. The native determinism integration test verifies that contract by
+  // comparing two complete outputs at the same explicit path.
   link_arguments.push_back("-target");
   link_arguments.push_back(target.llvm_triple);
   link_arguments.push_back(

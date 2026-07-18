@@ -26,7 +26,7 @@ downstream debug/profile artifact.
 
 | Plan requirement | Current evidence | Assessment | Remaining proof or work |
 | --- | --- | --- | --- |
-| Small, direct C++20 bootstrap with warnings, sanitizers, and tests | `AGENTS.md`, root `CMakeLists.txt`, and the compiler/test targets | Implemented foundation | Run the final suite under the sanitizer configuration and both supported host compilers available to release engineering. |
+| Small, direct C++20 bootstrap with warnings, sanitizers, and tests | `AGENTS.md`, root `CMakeLists.txt`, the compiler/test targets, and a passing 38-test AddressSanitizer/UndefinedBehaviorSanitizer run | Implemented foundation | Repeat the release matrix with both supported host compilers available to release engineering. |
 | One explicit AArch64 macOS target profile | `src/target/profile.*` and `draft_target_profile_tests` | Implemented for the first target | Final native tests must run on the pinned SDK/toolchain rather than only checking profile data. |
 | Complete lexer, parser, semicolon insertion, and folder packages | `src/source`, `src/syntax`, `src/workspace`, parser/package/workspace tests | Broadly implemented | Add grammar conformance fixtures covering every valid and invalid production, not only representative nodes. |
 | Symbols, scopes, types, constants, layouts, parametrics, and `when` | `src/sema` and semantic/type/constant/interface tests; target-owned SIMD shape validation | Broadly implemented | Audit every Draft 1 operator/type combination and complete remaining C-layout edge-case coverage. |
@@ -44,7 +44,7 @@ downstream debug/profile artifact.
 | `draft build --locked` with no ambient external search | Versioned external-input rows, resolved-program binding, content-tree verification, explicit toolchain/SDK/provider/summary CLI roots, clean process environment, absolute Clang/linker/archiver paths, provider snapshots, consumed summary verification, SDK/link flags, and optional exact-key test/benchmark evidence gates | Implemented through foreign link artifacts, audits, and validation evidence | Add runtime-asset mappings; locked builds reject unsupported external roles. |
 | Tests, benchmarks, judgments, and validation evidence | Typed core-nominal discovery, target-qualified file selection, canonical package/declaration order, compiler-owned isolated native harnesses, private result pipe, direct process runner, process-isolated benchmark warmup/sampling, canonical content-addressed evidence, exact environment/tool/policy keys, append-only attempt history, failure revocation, locked evidence gates, validation tests, and `examples/validation` | Implemented for tests and first benchmark profile | Judgment execution remains the provider-free typed boundary described by the initial plan. Add richer instrumentation profiles, statistical aggregation/tolerances, and Codex judgment evidence. |
 | Generated-source diagnostics/source maps | Per-pin persistent surface/expansion byte maps, composed in-memory maps, and diagnostic origin notes | Implemented foundation | Carry the same mapping into emitted debug locations, coverage, profiles, and disassembly. |
-| Crash-safe and deterministic release verification | Atomic pin-store tests and deterministic serializers | Partially implemented | Add fault-injection recovery, byte-for-byte clean-workspace rebuild tests, malformed-store fuzz/conformance cases, and final sanitizer/native gates. |
+| Crash-safe and deterministic release verification | Atomic pin-store tests, interrupted object-before-manifest recovery, deterministic serializers, a real same-path byte-identical Mach-O rebuild test, and passing ordinary/sanitized 38-test suites | Implemented foundation | Expand fault injection and malformed-store fuzzing, prove every artifact kind, and run the same gates through the pinned LLVM 22.1/SDK distribution. |
 
 ## Current executable commands
 
@@ -61,6 +61,5 @@ active evidence with `--require-test-evidence` and
 ## Next release-critical slice
 
 The next implementation slice returns to runtime/core conformance and the final
-release gates: sanitizer builds, pinned-native execution, deterministic clean
-rebuilds, malformed-store recovery, downstream generated-source mapping, and
-the judgment-provider boundary.
+release gates: pinned-native execution, wider malformed-store coverage,
+downstream generated-source mapping, and the judgment-provider boundary.

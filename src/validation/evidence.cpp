@@ -452,8 +452,12 @@ private:
     for (std::size_t index = 0; index < evidence.entries.size(); ++index) {
       const ValidationEntry &entry = evidence.entries[index];
       const ValidationObservation &observation = evidence.observations[index];
+      const bool failure_field_fits =
+          entry.failure_offset <=
+          std::numeric_limits<std::uint64_t>::max() - 8;
       if (entry.kind != evidence.kind || entry.state_size == 0 ||
           entry.state_alignment == 0 || entry.report_size == 0 ||
+          !failure_field_fits ||
           entry.failure_offset + 8 != entry.report_size ||
           entry.report_size > entry.state_size ||
           entry.package != observation.package ||
