@@ -11,6 +11,18 @@ Outcome :: union {
     failure: u32,
 }
 
+Text_Outcome :: union {
+    empty,
+    value: string,
+}
+
+Overlay :: raw union {
+    byte: u8,
+    word: u64,
+}
+
+Distance :: distinct i64
+
 Pair[T: type, U: type] :: struct {
     first: T,
     second: U,
@@ -20,6 +32,18 @@ Maybe[T: type] :: union {
     none,
     some: T,
 }
+
+increment_value :: proc(value: i64) -> i64 {
+    return value + 1
+}
+
+Increment_Callback :: increment_value
+global_callback: proc(value: i64) -> i64 = Increment_Callback
+global_table: [4]u32 = [4]u32{1, 4, 9, 16}
+global_tuple: (i32, u64) = (7, 9)
+global_outcome: Outcome = .value(42)
+global_text_outcome: Text_Outcome = .value("draft")
+global_overlay: Overlay = Overlay{word = 0x1020304050607080}
 
 pair_total :: proc(pair: Pair[i64, i64]) -> i64 {
     return pair.first + pair.second
@@ -77,6 +101,95 @@ to_code :: proc(value: i64) -> Code {
     return cast[Code](cast[i16](value))
 }
 
+read_text_outcome :: proc(value: Text_Outcome) -> usize {
+    switch value {
+    case .value(payload):
+        return len(payload)
+    case .empty:
+        return 0
+    }
+}
+
+last[N: usize] :: proc(values: [N]i64) -> i64 {
+    static_assert(N > 0)
+    return values[N - 1]
+}
+
+storage_roundtrip :: proc(flag: bool, bits: b32) -> bool {
+    encoded := cast[b32](flag)
+    return cast[bool](encoded) || cast[bool](bits)
+}
+
+endian_roundtrip :: proc(value: u32) -> u32 {
+    big := cast[u32be](value)
+    little := cast[u32le](value)
+    assert(big == cast[u32be](value))
+    return cast[u32](big) + cast[u32](little)
+}
+
+pointer_distance :: proc(value: [^]i64, count: isize) -> isize {
+    return ptr_sub(ptr_offset(value, count), value)
+}
+
+observe_boolean :: proc(count: ^usize, value: bool) -> bool {
+    count^ += 1
+    return value
+}
+
+exercise_expression_control :: proc() {
+    calls: usize
+    assert(!(false && observe_boolean(&calls, true)))
+    assert(calls == 0)
+    assert(true || observe_boolean(&calls, false))
+    assert(calls == 0)
+    assert(true && observe_boolean(&calls, true))
+    assert(calls == 1)
+    assert(!(false || observe_boolean(&calls, false)))
+    assert(calls == 2)
+
+    // Only the selected conditional-expression value may run.
+    selected := (
+        observe_boolean(&calls, true) if true else
+        observe_boolean(&calls, false)
+    )
+    assert(selected && calls == 3)
+    selected = (
+        observe_boolean(&calls, true) if false else
+        observe_boolean(&calls, false)
+    )
+    assert(!selected && calls == 4)
+}
+
+exercise_loop_forms :: proc() {
+    infinite_count: usize
+    for {
+        infinite_count += 1
+        if infinite_count == 3 {
+            break
+        }
+    }
+    assert(infinite_count == 3)
+
+    conditional_count: usize
+    for conditional_count < 3 {
+        conditional_count += 1
+    }
+    assert(conditional_count == 3)
+
+    clause_total: usize
+    for index: usize = 0; index < 4; index += 1 {
+        clause_total += index
+    }
+    assert(clause_total == 6)
+
+    values := [3]i64{10, 20, 12}
+    iteration_total: i64
+    for value, index in values {
+        iteration_total += value + cast[i64](index)
+    }
+    assert(iteration_total == 45)
+}
+
 record_defer :: proc(trace: [^]i64, count: ^usize, value: i64) {
     trace[count^] = value
     count^ += 1
@@ -127,6 +240,12 @@ exercise_control_exit_defers :: proc(trace: [^]i64, count: ^usize) {
 }
 
 main :: proc() {
+    assert(global_callback(41) == 42)
+    assert(global_table[3] == 16)
+    assert(global_tuple.0 == 7 && global_tuple.1 == 9)
+    assert(read_outcome(global_outcome) == 42)
+    assert(read_text_outcome(global_text_outcome) == 5)
+    assert(global_overlay.word == 0x1020304050607080)
     assert(divide(84, 2) == 42)
     assert(shift(1, 5) == 32)
     assert(scale(3.0) == 1.5)
@@ -148,6 +267,22 @@ main :: proc() {
     assert(narrow(42.75) == 42)
     assert(cast[i64](to_rune(65)) == 65)
     assert(to_code(7) == .Seven)
+    assert(storage_roundtrip(false, cast[b32](true)))
+    assert(endian_roundtrip(21) == 42)
+
+    distance := cast[Distance](cast[i64](40))
+    distance += 2
+    assert(cast[i64](distance) == 42)
+
+    pointer_values := [3]i64{10, 20, 42}
+    multi := cast[[^]i64](&pointer_values[0])
+    assert(ptr_offset(multi, 2)^ == 42)
+    assert(pointer_distance(multi, 2) == 2)
+    assert(last[3](pointer_values) == 42)
+    assert(last(pointer_values) == 42)
+
+    exercise_expression_control()
+    exercise_loop_forms()
 
     defer_trace: [8]i64
     defer_count: usize
