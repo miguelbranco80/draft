@@ -33,6 +33,7 @@ add_library(
   src/elaborator/obligation.cpp
   src/elaborator/resolution.cpp
   src/elaborator/resolution_overlay.cpp
+  src/elaborator/resolved_program.cpp
   src/elaborator/resolution_store.cpp
   src/interop/aarch64_abi.cpp
   src/interop/native.cpp

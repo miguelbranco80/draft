@@ -43,6 +43,7 @@ draft::ResolutionPin make_pin(
   pin.expansion_digest = draft::sha256(expansion);
   pin.provider_identity = std::move(provider);
   pin.model_identity = std::move(model);
+  pin.configuration_identity = "resolver-config-v1";
   return pin;
 }
 
@@ -89,6 +90,8 @@ void test_canonical_round_trip(TestState &state) {
             draft::AgentConstructKind::SynthesisExpression);
     EXPECT(state, parsed.pins[1].provider_identity == "codex\nlocal");
     EXPECT(state, parsed.pins[1].model_identity == "model-\"one\"");
+    EXPECT(state,
+        parsed.pins[1].configuration_identity == "resolver-config-v1");
   }
   EXPECT(state, draft::serialize_resolution_manifest(parsed) == encoded);
 }

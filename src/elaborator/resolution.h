@@ -23,6 +23,12 @@
 
 namespace draft {
 
+// One immutable selection for a synthesis site. site_identity is structural;
+// input_digest changes when any supplied semantic context changes; expansion
+// identifies exact generated Draft bytes. The three provider strings are
+// opaque, nonempty, versioned policy identities and collectively distinguish
+// the implementation, model, and full resolver configuration used to produce
+// the bytes. No process-local ID or physical path is serialized.
 struct ResolutionPin {
   std::string site_identity;
   AgentConstructKind kind = AgentConstructKind::SynthesisExpression;
@@ -30,8 +36,13 @@ struct ResolutionPin {
   Sha256Digest expansion_digest;
   std::string provider_identity;
   std::string model_identity;
+  std::string configuration_identity;
 };
 
+// The manifest selects one target-qualified coherent program. Pins are a
+// logical map keyed by site_identity even though a vector retains deterministic
+// compact ownership. resolved_program_digest is computed only after every
+// selected expansion has passed the ordinary compiler pipeline.
 struct ResolutionManifest {
   std::string format = "draft-resolution-v1";
   std::string target_identity;

@@ -5,6 +5,7 @@
 #include "base/sha256.h"
 #include "elaborator/resolution_overlay.h"
 #include "elaborator/resolution_store.h"
+#include "elaborator/resolved_program.h"
 #include "sema/denial.h"
 
 #include <algorithm>
@@ -207,6 +208,12 @@ CompileWorkspaceResult compile_workspace(
     DiagnosticSink &diagnostics) {
   CompileWorkspaceResult result;
   const std::size_t initial_errors = diagnostics.error_count();
+  if (options.compiler_content_identity.empty()) {
+    diagnostics.error(
+        SourceRange::invalid(),
+        "compiler content identity must not be empty");
+    return result;
+  }
   std::string profile_error;
   if (!validate_target_profile(options.target, profile_error)) {
     diagnostics.error(
@@ -561,7 +568,7 @@ CompileWorkspaceResult compile_workspace_with_resolution(
 
   options.workspace.source_overrides = overlays.sources;
   CompileWorkspaceResult resolved = compile_workspace(
-      sources, root_package_directory, std::move(options), diagnostics);
+      sources, root_package_directory, options, diagnostics);
   if (!resolved.ok) return resolved;
 
   // Generated source is allowed to contain ordinary docs but not another
@@ -601,6 +608,19 @@ CompileWorkspaceResult compile_workspace_with_resolution(
             SourceRange::invalid(),
             "resolved source displaced a surface judgment site");
       }
+    }
+  }
+  if (diagnostics.error_count() == initial_errors) {
+    const Sha256Digest program_digest = hash_resolved_program(
+        sources,
+        resolved.graph,
+        options.target,
+        loaded_manifest.manifest,
+        options.compiler_content_identity);
+    if (program_digest != loaded_manifest.manifest.resolved_program_digest) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "resolution manifest resolved-program identity is stale");
     }
   }
   resolved.ok = diagnostics.error_count() == initial_errors;

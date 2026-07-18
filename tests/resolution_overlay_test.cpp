@@ -1,6 +1,7 @@
 // Offline pin application through the ordinary package and compiler pipeline.
 
 #include "compile/compiler.h"
+#include "elaborator/resolved_program.h"
 #include "elaborator/resolution_overlay.h"
 #include "elaborator/resolution_store.h"
 
@@ -116,6 +117,7 @@ void test_pinned_expression_reenters_compiler(TestState &state) {
   pin.expansion_digest = expansion.digest;
   pin.provider_identity = "deterministic-test-provider";
   pin.model_identity = "fixture-v1";
+  pin.configuration_identity = "resolver-config-v1";
   draft::ResolutionManifest manifest;
   manifest.target_identity = target_identity();
   manifest.resolved_program_digest = draft::sha256("resolved fixture");
@@ -147,6 +149,36 @@ void test_pinned_expression_reenters_compiler(TestState &state) {
   EXPECT(state, overlay.applied_sites == 1);
   EXPECT(state, overlay.sources.size() == 1);
 
+  // Resolution computes the coherent program identity only after the proposed
+  // expansion has passed a complete ordinary compilation. The test performs
+  // that provider-independent transaction phase explicitly, then republishes
+  // the same content-addressed expansion under the final manifest digest.
+  draft::SourceManager identity_sources;
+  draft::CompileWorkspaceOptions identity_options =
+      compile_options(workspace, false);
+  identity_options.workspace.source_overrides = overlay.sources;
+  draft::DiagnosticSink identity_diagnostics;
+  const draft::CompileWorkspaceResult identity_program =
+      draft::compile_workspace(
+          identity_sources,
+          workspace.package.string(),
+          identity_options,
+          identity_diagnostics);
+  EXPECT(state, identity_program.ok);
+  if (!identity_program.ok) return;
+  manifest.resolved_program_digest = draft::hash_resolved_program(
+      identity_sources,
+      identity_program.graph,
+      identity_options.target,
+      manifest,
+      identity_options.compiler_content_identity);
+  EXPECT(state,
+      draft::commit_resolution(
+          workspace.root,
+          manifest,
+          std::span<const draft::GeneratedExpansion>(),
+          diagnostics));
+
   // The public offline compiler repeats the same surface-to-overlay operation
   // internally. No provider object or callback is available in this process.
   draft::SourceManager resolved_sources;
@@ -170,6 +202,32 @@ void test_pinned_expression_reenters_compiler(TestState &state) {
         resolved.packages[0]->llvm.text.find("ret i64 42") !=
             std::string::npos);
   }
+
+  manifest.resolved_program_digest = draft::sha256("wrong program identity");
+  EXPECT(state,
+      draft::commit_resolution(
+          workspace.root,
+          manifest,
+          std::span<const draft::GeneratedExpansion>(),
+          diagnostics));
+  draft::SourceManager stale_program_sources;
+  draft::DiagnosticSink stale_program_diagnostics;
+  const draft::CompileWorkspaceResult stale_program =
+      draft::compile_workspace_with_resolution(
+          stale_program_sources,
+          workspace.package.string(),
+          compile_options(workspace, false),
+          stale_program_diagnostics);
+  EXPECT(state, !stale_program.ok);
+  bool saw_stale_program = false;
+  for (const draft::Diagnostic &diagnostic :
+       stale_program_diagnostics.diagnostics()) {
+    if (diagnostic.message.find("resolved-program identity is stale") !=
+        std::string::npos) {
+      saw_stale_program = true;
+    }
+  }
+  EXPECT(state, saw_stale_program);
 }
 
 void test_generated_judgment_is_rejected(TestState &state) {
@@ -209,6 +267,7 @@ main :: proc() {
   pin.expansion_digest = expansion.digest;
   pin.provider_identity = "test-provider";
   pin.model_identity = "fixture";
+  pin.configuration_identity = "resolver-config-v1";
   draft::ResolutionManifest manifest;
   manifest.target_identity = target_identity();
   manifest.resolved_program_digest = draft::sha256("invalid generated judgment");
@@ -264,6 +323,7 @@ void test_stale_pin_produces_no_overlay(TestState &state) {
   pin.expansion_digest = expansion.digest;
   pin.provider_identity = "test-provider";
   pin.model_identity = "fixture";
+  pin.configuration_identity = "resolver-config-v1";
   draft::ResolutionManifest manifest;
   manifest.target_identity = target_identity();
   manifest.resolved_program_digest = draft::sha256("stale program");

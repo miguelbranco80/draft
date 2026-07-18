@@ -207,7 +207,9 @@ private:
         !key("input") || !digest(pin.input_digest) || !comma() ||
         !key("expansion") || !digest(pin.expansion_digest) || !comma() ||
         !key("provider") || !string(pin.provider_identity) || !comma() ||
-        !key("model") || !string(pin.model_identity) || !punctuation('}')) {
+        !key("model") || !string(pin.model_identity) || !comma() ||
+        !key("configuration") || !string(pin.configuration_identity) ||
+        !punctuation('}')) {
       return false;
     }
     const std::optional<AgentConstructKind> parsed_kind = parse_kind(kind);
@@ -221,8 +223,11 @@ private:
              .has_value()) {
       return fail("resolution pin has an invalid site identity");
     }
-    if (pin.provider_identity.empty() || pin.model_identity.empty()) {
-      return fail("resolution pin provider and model identities must not be empty");
+    if (pin.provider_identity.empty() || pin.model_identity.empty() ||
+        pin.configuration_identity.empty()) {
+      return fail(
+          "resolution pin provider, model, and configuration identities "
+          "must not be empty");
     }
     return true;
   }
@@ -284,6 +289,8 @@ std::string serialize_resolution_manifest(const ResolutionManifest &manifest) {
     append_json_string(pin.provider_identity, output);
     output += ", \"model\": ";
     append_json_string(pin.model_identity, output);
+    output += ", \"configuration\": ";
+    append_json_string(pin.configuration_identity, output);
     output += '}';
   }
   if (!pins.empty()) output += '\n';

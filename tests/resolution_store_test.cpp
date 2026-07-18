@@ -60,6 +60,7 @@ draft::ResolutionManifest manifest_for(
   pin.expansion_digest = expansion.digest;
   pin.provider_identity = "fake-provider-v1";
   pin.model_identity = "deterministic-model-v1";
+  pin.configuration_identity = "resolver-config-v1";
 
   draft::ResolutionManifest manifest;
   manifest.target_identity = "aarch64-apple-macos";
