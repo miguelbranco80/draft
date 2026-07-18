@@ -18,5 +18,31 @@ int main(void) {
     number = draft_number_identity(number);
     if (number.integer != 42) return 3;
     if (draft_apply(add_one, 41) != 42) return 4;
+
+    // Three-byte results use an exact i24 return container while arguments use
+    // one full general-purpose register. This is an easy place for independent
+    // front ends to agree on layout but disagree on call lowering.
+    draft_c_library_Odd_Bytes odd = {{17, 33, 65}};
+    odd = draft_odd_bytes_identity(odd);
+    if (odd.bytes[0] != 17 || odd.bytes[1] != 33 || odd.bytes[2] != 65) return 5;
+
+    // Darwin passes this 16-byte, 16-aligned record as one 128-bit container.
+    draft_c_library_Aligned_Word aligned = {73};
+    aligned = draft_aligned_word_identity(aligned);
+    if (aligned.word != 73) return 6;
+
+    // Homogeneous float aggregates travel through SIMD/FP registers rather
+    // than the integer containers used by ordinary small structs.
+    draft_c_library_Float_Pair floats = {1.25f, -2.5f};
+    floats = draft_float_pair_identity(floats);
+    if (floats.left != 1.25f || floats.right != -2.5f) return 7;
+
+    // Records larger than sixteen bytes use an indirect result and an indirect
+    // by-value argument. The copies must remain value copies on both sides.
+    draft_c_library_Large_Record large = {{11, 22, 33}};
+    large = draft_large_record_identity(large);
+    if (large.words[0] != 11 || large.words[1] != 22 || large.words[2] != 33) {
+        return 8;
+    }
     return 0;
 }

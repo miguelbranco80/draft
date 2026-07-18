@@ -124,7 +124,8 @@ export widen :: c "draft_widen" proc(
   EXPECT(state, header.text.find(
       "uint8_t bytes[3];") != std::string::npos);
   EXPECT(state, header.text.find(
-      "__attribute__((aligned(16)))") != std::string::npos);
+      "struct __attribute__((aligned(16))) draft_c_library_Aligned {") !=
+      std::string::npos);
   EXPECT(state, header.text.find(
       "DRAFT_STATIC_ASSERT(offsetof(draft_c_library_Pair, right) == 4") !=
       std::string::npos);

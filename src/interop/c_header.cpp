@@ -411,11 +411,15 @@ private:
     const Type &value = type(id);
     const bool structure = value.kind == TypeKind::Struct;
     const std::vector<SymbolId> fields = aggregate_fields(id);
-    output_ << (structure ? "struct " : "union ") << nominal_name(id);
+    output_ << (structure ? "struct " : "union ");
     if (value.requested_alignment != 0) {
-      output_ << " __attribute__((aligned(" << value.requested_alignment << ")))";
+      // Clang accepts a type attribute between the struct/union keyword and
+      // its tag. Placing it after the tag but before the opening brace looks
+      // plausible, but is not valid C and used to leave only an incomplete
+      // forward declaration in generated headers.
+      output_ << "__attribute__((aligned(" << value.requested_alignment << "))) ";
     }
-    output_ << " {\n";
+    output_ << nominal_name(id) << " {\n";
     for (std::size_t index = 0; index < value.members.size(); ++index) {
       const std::string field = index < fields.size()
           ? safe_identifier(semantic_.symbols.symbol(fields[index]).name)

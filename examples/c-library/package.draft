@@ -19,6 +19,27 @@ Number :: @repr(C) raw union {
     decimal: f64,
 }
 
+// These records deliberately select the remaining Darwin arm64 aggregate
+// classes. The C client below calls every one through a real dylib, so changes
+// to packing, register classification, or sret handling cannot hide behind an
+// LLVM text snapshot.
+Odd_Bytes :: @repr(C) struct {
+    bytes: [3]u8,
+}
+
+Aligned_Word :: @repr(C) @align(16) struct {
+    word: i64,
+}
+
+Float_Pair :: @repr(C) struct {
+    left: f32,
+    right: f32,
+}
+
+Large_Record :: @repr(C) struct {
+    words: [3]i64,
+}
+
 export pair_identity :: c "draft_pair_identity" proc(value: Pair) -> Pair {
     return value
 }
@@ -28,6 +49,30 @@ export choice_identity :: c "draft_choice_identity" proc(value: Choice) -> Choic
 }
 
 export number_identity :: c "draft_number_identity" proc(value: Number) -> Number {
+    return value
+}
+
+export odd_bytes_identity :: c "draft_odd_bytes_identity" proc(
+    value: Odd_Bytes,
+) -> Odd_Bytes {
+    return value
+}
+
+export aligned_word_identity :: c "draft_aligned_word_identity" proc(
+    value: Aligned_Word,
+) -> Aligned_Word {
+    return value
+}
+
+export float_pair_identity :: c "draft_float_pair_identity" proc(
+    value: Float_Pair,
+) -> Float_Pair {
+    return value
+}
+
+export large_record_identity :: c "draft_large_record_identity" proc(
+    value: Large_Record,
+) -> Large_Record {
     return value
 }
 
