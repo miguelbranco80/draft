@@ -819,6 +819,80 @@ Bad_Uninitialized :: reads_uninitialized()
   EXPECT(state, rendered.find("reads an uninitialized local") != std::string::npos);
 }
 
+void test_compile_time_defer(TestState &state) {
+  AnalyzedSource valid(R"draft(
+package conditions
+
+require_saved_one :: proc(value: int) {
+    if value != 1 {
+        impossible := 1 / (value - value)
+    }
+}
+
+consume[T: type] :: proc(value: T) {
+}
+
+deferred_result :: proc() -> int {
+    value := 1
+    cleanup := require_saved_one
+    defer cleanup(value)
+    defer consume[int](value)
+    value = 2
+    return value
+}
+
+Deferred_Result :: deferred_result()
+)draft");
+  if (valid.diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(valid.sources, valid.diagnostics);
+  }
+  EXPECT(state, valid.analysis.ok);
+  EXPECT(state, !valid.diagnostics.has_errors());
+  const std::optional<draft::SymbolId> result =
+      find_symbol(valid.analysis.package, "Deferred_Result");
+  EXPECT(state, result.has_value());
+  const draft::ConstantValue *value = result.has_value()
+      ? valid.analysis.constants.find(*result)
+      : nullptr;
+  EXPECT(state, value != nullptr);
+  if (value != nullptr) {
+    EXPECT(state, value->kind == draft::ConstantKind::Integer);
+    EXPECT(state, value->integer.to_decimal() == "2");
+  }
+
+  AnalyzedSource invalid(R"draft(
+package conditions
+
+divide_by_saved_zero :: proc(value: int) -> int {
+    return 1 / (value - value)
+}
+
+shift_by_saved_large_value :: proc(value: int) -> int {
+    return 1 << (value + 1000)
+}
+
+no_value :: proc() {
+}
+
+deferred_order :: proc() -> int {
+    defer divide_by_saved_zero(1)
+    defer shift_by_saved_large_value(1)
+    return 7
+}
+
+Bad_Deferred_Order :: deferred_order()
+Bad_Void_Value :: no_value()
+)draft");
+  EXPECT(state, !invalid.analysis.ok);
+  const std::string rendered =
+      draft::render_diagnostics(invalid.sources, invalid.diagnostics);
+  EXPECT(state, rendered.find("shift count traps") != std::string::npos);
+  EXPECT(state, rendered.find("division by zero") == std::string::npos);
+  EXPECT(state, rendered.find(
+                    "void compile-time procedure call does not produce a value") !=
+                    std::string::npos);
+}
+
 void test_operator_type_boundaries(TestState &state) {
   AnalyzedSource valid(R"draft(
 package conditions
@@ -1194,6 +1268,7 @@ int main() {
   test_constants_and_conditional_rounds(state);
   test_invalid_required_constants(state);
   test_invalid_procedural_constants(state);
+  test_compile_time_defer(state);
   test_operator_type_boundaries(state);
   test_global_initializers(state);
 

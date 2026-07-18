@@ -83,7 +83,8 @@ arbitrary-precision integers and exactly rounded IEEE floating-point constants;
 validates that every enum has a real all-zero member and that every tagged-union
 alternative fits its chosen discriminator;
 interprets scalar and aggregate compile-time procedures with locals, assignment,
-bounded loops, recursion, switches, parametric values, and type/layout queries;
+bounded loops, recursion, switches, saved-argument lexical `defer`, parametric
+values, and type/layout queries;
 enforces positional array, named struct, and single-field raw-union literals
 with zero-filled omissions consistently at compile time and runtime;
 and selects declaration/member `when` branches through deterministic fixed-point

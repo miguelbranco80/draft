@@ -68,12 +68,27 @@ struct LocalBinding {
   TypeId type;
 };
 
+// A deferred call owns the values which were produced at the defer statement.
+// Keeping the prepared bindings, rather than the call syntax, is important:
+// later assignments in the surrounding procedure must not change a saved
+// argument, and argument expressions with procedure calls must execute only
+// once.  The callee body is looked up again by its stable SymbolId when the
+// lexical scope exits.
+struct PreparedProcedureCall {
+  SymbolId procedure;
+  std::vector<LocalBinding> bindings;
+  std::vector<ConstantTypeBinding> type_bindings;
+  TypeId result_type;
+  SourceRange range;
+};
+
 // A procedure call is a lexical boundary.  Its block scopes may see parameters
 // and their own ancestors, but never the caller's locals.  Keeping frames and
 // scopes as small vectors makes shadowing order explicit and deterministic.
 struct LocalFrame {
   std::vector<std::vector<LocalBinding>> scopes;
   std::vector<ConstantTypeBinding> type_bindings;
+  std::vector<std::vector<PreparedProcedureCall>> defer_scopes;
   TypeId result_type;
 };
 
@@ -1788,16 +1803,28 @@ private:
     return substitute_local_type(symbol.type);
   }
 
-  [[nodiscard]] TypeId substitute_local_type(TypeId source) const {
-    if (!local_frames_.empty()) {
-      for (const ConstantTypeBinding &binding :
-           local_frames_.back().type_bindings) {
-        if (binding.parameter == source) return binding.replacement;
-      }
+  [[nodiscard]] TypeId substitute_type_bindings(
+      TypeId source,
+      const std::vector<ConstantTypeBinding> &bindings) const {
+    for (const ConstantTypeBinding &binding : bindings) {
+      if (binding.parameter == source) return binding.replacement;
     }
     if (local_types_ == nullptr) return source;
     for (const ConstantTypeBinding &binding : *local_types_) {
       if (binding.parameter == source) return binding.replacement;
+    }
+    return source;
+  }
+
+  [[nodiscard]] TypeId substitute_local_type(TypeId source) const {
+    if (!local_frames_.empty()) {
+      return substitute_type_bindings(
+          source, local_frames_.back().type_bindings);
+    }
+    if (local_types_ != nullptr) {
+      for (const ConstantTypeBinding &binding : *local_types_) {
+        if (binding.parameter == source) return binding.replacement;
+      }
     }
     return source;
   }
@@ -2340,11 +2367,16 @@ private:
     return pending();
   }
 
-  [[nodiscard]] EvalResult evaluate_procedure_call(
+  // Resolves a source call and evaluates all of its inputs without entering
+  // the callee.  Ordinary calls invoke the result immediately; defer stores it
+  // until lexical exit.  This shared preparation is what gives both paths the
+  // same conversion rules and the same left-to-right argument evaluation.
+  [[nodiscard]] EvalResult prepare_procedure_call(
       const SyntaxTree &tree,
       const SyntaxNode &call,
       ScopeId scope,
-      bool required) {
+      bool required,
+      PreparedProcedureCall &prepared) {
     if (call.children.empty()) return pending();
     const SyntaxNode &callee = tree.node(call.children.front());
     NodeId base_callee = call.children.front();
@@ -2393,13 +2425,6 @@ private:
           "foreign calls are unavailable during compile-time evaluation",
           required);
     }
-    if (procedure_call_depth_ >= kMaximumProcedureCallDepth) {
-      return fail(
-          call.range,
-          "compile-time procedure recursion limit exceeded",
-          required);
-    }
-    if (!consume_execution_step(call.range, required)) return error_result();
 
     const SyntaxTree *procedure_tree = find_tree(symbol.syntax.file);
     if (procedure_tree == nullptr) return pending();
@@ -2440,8 +2465,9 @@ private:
     // Evaluate every input in the caller before installing the callee frame.
     // This preserves source evaluation order and prevents accidental dynamic
     // scoping when a caller local shares a callee parameter name.
-    LocalFrame frame;
-    frame.scopes.emplace_back();
+    prepared = {};
+    prepared.procedure = *found;
+    prepared.range = call.range;
     for (std::size_t index = 0; index < compile_parameters.size(); ++index) {
       const ParametricParameterRecord &parameter = compile_parameters[index];
       const Symbol &parameter_symbol =
@@ -2455,7 +2481,8 @@ private:
               "compile-time type parameter requires a type argument",
               required);
         }
-        frame.type_bindings.push_back({parameter_symbol.type, *supplied});
+        prepared.type_bindings.push_back(
+            {parameter_symbol.type, *supplied});
         continue;
       }
       const EvalResult supplied = evaluate_expression(
@@ -2468,7 +2495,7 @@ private:
           tree.node(compile_time_arguments[index]).range,
           required);
       if (converted.status != EvalStatus::Ready) return converted;
-      frame.scopes.back().push_back(
+      prepared.bindings.push_back(
           {parameter_symbol.name, converted.value, parameter_symbol.type});
     }
 
@@ -2477,7 +2504,7 @@ private:
     for (const std::string &parameter_name : parameters) {
       TypeId parameter_type = procedure_parameter_type(
           body_scope, parameter_name);
-      for (const ConstantTypeBinding &binding : frame.type_bindings) {
+      for (const ConstantTypeBinding &binding : prepared.type_bindings) {
         if (binding.parameter == parameter_type) {
           parameter_type = binding.replacement;
           break;
@@ -2498,14 +2525,12 @@ private:
       supplied_arguments.push_back(argument);
     }
 
-    local_frames_.push_back(std::move(frame));
     for (std::size_t index = 0; index < supplied_arguments.size(); ++index) {
       const TypeId parameter_type = parameter_types[index];
       const EvalResult &argument = supplied_arguments[index];
       if (argument.value.kind == ConstantKind::Procedure &&
           parameter_type.is_valid() && argument.type.is_valid() &&
           argument.type != parameter_type) {
-        local_frames_.pop_back();
         return fail(
             tree.node(call.children[index + 1]).range,
             "compile-time procedure argument has a different procedure type",
@@ -2521,25 +2546,86 @@ private:
                 required)
           : argument;
       if (converted.status != EvalStatus::Ready) {
-        local_frames_.pop_back();
         return converted;
       }
-      local_frames_.back().scopes.back().push_back(
+      prepared.bindings.push_back(
           {parameters[index], converted.value, parameter_type});
     }
     const Type &procedure_type = semantic_.types.type(symbol.type);
-    local_frames_.back().result_type = procedure_type.members.empty()
+    prepared.result_type = procedure_type.members.empty()
         ? semantic_.types.builtins().invalid
-        : substitute_local_type(procedure_type.members.back());
+        : substitute_type_bindings(
+              procedure_type.members.back(), prepared.type_bindings);
+    return ready(ConstantValue::make_bool(true));
+  }
+
+  // Executes a call whose callee and arguments have already been saved.  The
+  // caller frame remains below the new frame only so nested evaluator work can
+  // return to it; name lookup always consults the top frame and therefore
+  // cannot accidentally become dynamically scoped.
+  [[nodiscard]] EvalResult invoke_prepared_procedure_call(
+      PreparedProcedureCall prepared,
+      bool required,
+      bool allow_void_result) {
+    const Symbol symbol = semantic_.symbols.symbol(prepared.procedure);
+    if (procedure_call_depth_ >= kMaximumProcedureCallDepth) {
+      return fail(
+          prepared.range,
+          "compile-time procedure recursion limit exceeded",
+          required);
+    }
+    if (!consume_execution_step(prepared.range, required)) {
+      return error_result();
+    }
+
+    const SyntaxTree *procedure_tree = find_tree(symbol.syntax.file);
+    if (procedure_tree == nullptr) return pending();
+    const std::optional<NodeId> payload =
+        procedure_payload(*procedure_tree, symbol);
+    if (!payload.has_value()) {
+      return fail(
+          prepared.range,
+          "compile-time call requires a procedure body",
+          required);
+    }
+    const SyntaxNode &procedure = procedure_tree->node(*payload);
+    const std::optional<NodeId> body =
+        procedure_body(*procedure_tree, procedure);
+    if (!body.has_value()) {
+      return fail(
+          prepared.range,
+          "compile-time call requires a procedure body",
+          required);
+    }
+    const ScopeId body_scope = procedure_scope(prepared.procedure).value_or(
+        file_scope(symbol.syntax.file));
+
+    LocalFrame frame;
+    frame.scopes.push_back(std::move(prepared.bindings));
+    frame.type_bindings = std::move(prepared.type_bindings);
+    frame.result_type = prepared.result_type;
+    local_frames_.push_back(std::move(frame));
     ++procedure_call_depth_;
     const ExecutionResult execution = execute_block(
         *procedure_tree, *body, body_scope, required);
     const TypeId result_type = local_frames_.back().result_type;
     --procedure_call_depth_;
     local_frames_.pop_back();
+    const bool returns_void =
+        result_type == semantic_.types.builtins().invalid ||
+        (result_type.is_valid() &&
+         semantic_.types.type(result_type).kind == TypeKind::Void);
 
     if (execution.signal == ExecutionSignal::Return) {
       if (execution.value.kind == ConstantKind::Unavailable) {
+        if (returns_void) {
+          return allow_void_result
+              ? ready(ConstantValue::make_bool(true))
+              : fail(
+                    prepared.range,
+                    "void compile-time procedure call does not produce a value",
+                    required);
+        }
         return fail(
             procedure.range,
             "compile-time procedure returned no value",
@@ -2571,10 +2657,54 @@ private:
           "compile-time procedure has control flow escaping its body",
           required);
     }
+    if (returns_void) {
+      // Statement evaluation needs a Ready value even though Draft has no
+      // source-level void constant.  The boolean is an interpreter sentinel
+      // and is never exposed as the procedure's result type.
+      return allow_void_result
+          ? ready(ConstantValue::make_bool(true))
+          : fail(
+                prepared.range,
+                "void compile-time procedure call does not produce a value",
+                required);
+    }
     return fail(
         procedure.range,
         "compile-time procedure completed without returning a value",
         required);
+  }
+
+  [[nodiscard]] EvalResult evaluate_procedure_call(
+      const SyntaxTree &tree,
+      const SyntaxNode &call,
+      ScopeId scope,
+      bool required,
+      bool allow_void_result) {
+    PreparedProcedureCall prepared;
+    const EvalResult preparation = prepare_procedure_call(
+        tree, call, scope, required, prepared);
+    if (preparation.status != EvalStatus::Ready) return preparation;
+    return invoke_prepared_procedure_call(
+        std::move(prepared), required, allow_void_result);
+  }
+
+  [[nodiscard]] EvalResult evaluate_call_expression(
+      const SyntaxTree &tree,
+      const SyntaxNode &call,
+      ScopeId scope,
+      bool required,
+      bool allow_void_result) {
+    const EvalResult layout =
+        evaluate_layout_call(tree, call, scope, required);
+    if (layout.status != EvalStatus::Pending) return layout;
+    const EvalResult target_call =
+        evaluate_target_call(tree, call, scope, required);
+    if (target_call.status != EvalStatus::Pending) return target_call;
+    const EvalResult intrinsic =
+        evaluate_intrinsic_call(tree, call, scope, required);
+    if (intrinsic.status != EvalStatus::Pending) return intrinsic;
+    return evaluate_procedure_call(
+        tree, call, scope, required, allow_void_result);
   }
 
   [[nodiscard]] ExecutionResult execute_declaration(
@@ -3147,6 +3277,44 @@ private:
     return {};
   }
 
+  // Runs one lexical scope's saved calls in reverse source order.  Move the
+  // list out before invoking anything: entering a callee may grow
+  // local_frames_, so retaining references into the caller frame across that
+  // operation would be unsafe.  A failed deferred call replaces the pending
+  // return/break/continue just as a runtime trap prevents that exit.
+  [[nodiscard]] ExecutionResult execute_current_defers(bool required) {
+    if (local_frames_.empty() ||
+        local_frames_.back().defer_scopes.empty()) {
+      return {};
+    }
+    std::vector<PreparedProcedureCall> calls = std::move(
+        local_frames_.back().defer_scopes.back());
+    for (std::size_t remaining = calls.size(); remaining > 0; --remaining) {
+      const EvalResult result = invoke_prepared_procedure_call(
+          std::move(calls[remaining - 1]), required, true);
+      if (result.status != EvalStatus::Ready) {
+        return failed_execution(result);
+      }
+    }
+    return {};
+  }
+
+  // Completes a scope after its statements have chosen their control result.
+  // Defers run for every ordinary lexical exit, including return, break, and
+  // continue.  Evaluation failures model traps and therefore do not start
+  // additional cleanup work.
+  [[nodiscard]] ExecutionResult finish_local_scope(
+      ExecutionResult result,
+      bool required) {
+    if (result.signal != ExecutionSignal::Failed) {
+      const ExecutionResult deferred = execute_current_defers(required);
+      if (deferred.signal == ExecutionSignal::Failed) result = deferred;
+    }
+    local_frames_.back().defer_scopes.pop_back();
+    local_frames_.back().scopes.pop_back();
+    return result;
+  }
+
   [[nodiscard]] ExecutionResult execute_block(
       const SyntaxTree &tree,
       NodeId block_id,
@@ -3158,10 +3326,10 @@ private:
           block.range, "malformed compile-time procedure block", required));
     }
     local_frames_.back().scopes.emplace_back();
-    const ExecutionResult result = execute_statement_list(
+    local_frames_.back().defer_scopes.emplace_back();
+    ExecutionResult result = execute_statement_list(
         tree, tree.node(block.children.front()), scope, required);
-    local_frames_.back().scopes.pop_back();
-    return result;
+    return finish_local_scope(std::move(result), required);
   }
 
   [[nodiscard]] ExecutionResult execute_if(
@@ -3474,6 +3642,7 @@ private:
     if (!selected.has_value()) return {};
 
     local_frames_.back().scopes.emplace_back();
+    local_frames_.back().defer_scopes.emplace_back();
     if (selected_payload.has_value()) {
       declare_local(
           selected_payload->name,
@@ -3482,7 +3651,7 @@ private:
     }
     ExecutionResult result = execute_statement_list(
         tree, tree.node(*selected), scope, required);
-    local_frames_.back().scopes.pop_back();
+    result = finish_local_scope(std::move(result), required);
     if (result.signal == ExecutionSignal::Break) result.signal = ExecutionSignal::Normal;
     return result;
   }
@@ -3495,6 +3664,44 @@ private:
     // Body-level when is evaluated directly.  The ordinary body checker later
     // uses the same constant engine and validates only the selected branch.
     return execute_if(tree, statement, scope, required);
+  }
+
+  [[nodiscard]] ExecutionResult execute_defer(
+      const SyntaxTree &tree,
+      const SyntaxNode &statement,
+      ScopeId scope,
+      bool required) {
+    if (statement.children.size() != 1 ||
+        tree.node(statement.children.front()).kind != NodeKind::CallExpression) {
+      return failed_execution(fail(
+          statement.range,
+          "defer requires a compile-time procedure call",
+          required));
+    }
+    if (local_frames_.empty() ||
+        local_frames_.back().defer_scopes.empty()) {
+      return failed_execution(fail(
+          statement.range,
+          "compile-time defer has no enclosing lexical scope",
+          required));
+    }
+
+    PreparedProcedureCall prepared;
+    const SyntaxNode &call = tree.node(statement.children.front());
+    EvalResult preparation = prepare_procedure_call(
+        tree, call, scope, required, prepared);
+    if (preparation.status == EvalStatus::Pending && required) {
+      preparation = fail(
+          call.range,
+          "defer target is not a compile-time procedure",
+          true);
+    }
+    if (preparation.status != EvalStatus::Ready) {
+      return failed_execution(preparation);
+    }
+    local_frames_.back().defer_scopes.back().push_back(
+        std::move(prepared));
+    return {};
   }
 
   [[nodiscard]] ExecutionResult execute_statement(
@@ -3520,8 +3727,11 @@ private:
       return {};
     case NodeKind::ExpressionStatement:
       if (!statement.children.empty()) {
-        const EvalResult value =
-            evaluate_expression(tree, statement.children.front(), scope, required);
+        const SyntaxNode &expression = tree.node(statement.children.front());
+        const EvalResult value = expression.kind == NodeKind::CallExpression
+            ? evaluate_call_expression(tree, expression, scope, required, true)
+            : evaluate_expression(
+                  tree, statement.children.front(), scope, required);
         if (value.status != EvalStatus::Ready) return failed_execution(value);
       }
       return {};
@@ -3578,10 +3788,7 @@ private:
     case NodeKind::Judgment:
       return {};
     case NodeKind::DeferStatement:
-      return failed_execution(fail(
-          statement.range,
-          "defer is unavailable during compile-time evaluation",
-          required));
+      return execute_defer(tree, statement, scope, required);
     case NodeKind::AsmStatement:
     case NodeKind::AsmExpression:
       return failed_execution(fail(
@@ -4205,16 +4412,7 @@ private:
     }
 
     case NodeKind::CallExpression: {
-      const EvalResult layout =
-          evaluate_layout_call(tree, node, scope, required);
-      if (layout.status != EvalStatus::Pending) return layout;
-      const EvalResult target_call =
-          evaluate_target_call(tree, node, scope, required);
-      if (target_call.status != EvalStatus::Pending) return target_call;
-      const EvalResult intrinsic =
-          evaluate_intrinsic_call(tree, node, scope, required);
-      if (intrinsic.status != EvalStatus::Pending) return intrinsic;
-      return evaluate_procedure_call(tree, node, scope, required);
+      return evaluate_call_expression(tree, node, scope, required, false);
     }
 
     case NodeKind::DenyExpression:
