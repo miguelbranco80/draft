@@ -161,7 +161,10 @@ Synthesis resolution now has a provider-neutral transaction and an explicit
 Codex CLI adapter. Declaration and aggregate-member sites form an early opaque
 interface stage; dependent bodies are checked only after those expansions are
 installed, then statement, expression, and assembly sites run in the later body
-stage. Proposed and stored source is barred from introducing another `...` or
+stage. Provider requests carry canonical expected and visible-binding type
+spellings plus explicit target, SIMD, and parsed-assembly facts; digests remain
+verification identities rather than opaque substitutes for usable context.
+Proposed and stored source is barred from introducing another `...` or
 `judge`. A successful resolution writes exact content-addressed expansion bytes
 and one canonical manifest atomically; normal checks and builds reproduce both
 stages from pins without contacting a model. Before that manifest rename, the

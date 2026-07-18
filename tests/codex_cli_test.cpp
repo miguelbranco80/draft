@@ -83,7 +83,7 @@ struct TemporaryFixture {
         "test \"$(cat \"$work/attachment-00000000.bin\")\" = attachment-bytes || exit 27\n"
         "prompt=$(cat)\n"
         "case \"$prompt\" in\n"
-        "  *AUTHOR_PROMPT*make-answer*BINDING_NAME*visible_name*) ;;\n"
+        "  *REQUEST_FORMAT*draft-synthesis-request-v2*EXPECTED_TYPE_TEXT*i64*TARGET_IDENTITY*draft-aarch64-macos-v5*AUTHOR_PROMPT*make-answer*BINDING_NAME*visible_name*BINDING_TYPE_TEXT*u32*) ;;\n"
         "  *) exit 28 ;;\n"
         "esac\n"
         "printf '%s' '{\"source\":\"40 + 2\\n\"}' > \"$output\"\n";
@@ -106,10 +106,26 @@ draft::SynthesisRequest make_request() {
   request.obligation.site_identity = "agent-site-fixture";
   request.obligation.input_digest = draft::sha256("input");
   request.obligation.expected_type_digest = draft::sha256("i64");
+  request.obligation.expected_type_text = "i64";
+  request.obligation.target.identity = "draft-aarch64-macos-v5";
+  request.obligation.target.arch = "aarch64";
+  request.obligation.target.os = "macos";
+  request.obligation.target.abi = "darwin_arm64";
+  request.obligation.target.byte_order = "little";
+  request.obligation.target.object_format = "macho";
+  request.obligation.target.file_tag = "aarch64-macos";
+  request.obligation.target.pointer_bits = 64;
+  request.obligation.target.page_size = 16384;
+  request.obligation.target.features = {"neon"};
+  request.obligation.target.simd_shapes = {{"u32", 4}};
+  request.obligation.target.assembly_architecture = "aarch64";
+  request.obligation.target.assembly_dialect = "draft-aarch64-apple-v2";
+  request.obligation.target.assembly_instructions = {"add"};
   draft::AgentVisibleBinding binding;
   binding.name = "visible_name";
   binding.kind = draft::SymbolKind::Constant;
   binding.type_digest = draft::sha256("binding-type");
+  binding.type_text = "u32";
   request.obligation.visible_bindings.push_back(std::move(binding));
   request.prompt = "make-answer";
 
@@ -132,7 +148,7 @@ void test_adapter_contract_and_identity(TestState &state) {
   const draft::SynthesisProvider provider =
       draft::configure_codex_cli_provider(options, provider_state, diagnostics);
   EXPECT(state, provider.synthesize != nullptr);
-  EXPECT(state, provider.provider_identity == "openai-codex-cli-v1");
+  EXPECT(state, provider.provider_identity == "openai-codex-cli-v2");
   EXPECT(state, provider.model_identity == "fixture-model");
   EXPECT(state, provider.configuration_identity ==
       provider_state.configuration_identity);

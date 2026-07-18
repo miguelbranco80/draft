@@ -39,6 +39,8 @@ namespace {
 
 constexpr std::uintmax_t kMaximumCodexOutputBytes = 64U * 1024U * 1024U;
 constexpr std::uintmax_t kMaximumCodexLogBytes = 4U * 1024U * 1024U;
+constexpr std::string_view kPromptContractIdentity =
+    "draft-codex-synthesis-prompt-v2";
 constexpr std::string_view kOutputSchema =
     "{\n"
     "  \"type\": \"object\",\n"
@@ -213,6 +215,57 @@ void append_field(
       "EXPECTED_TYPE_SHA256",
       request.obligation.expected_type_digest.hex(),
       prompt);
+  append_field(
+      "EXPECTED_TYPE_TEXT",
+      request.obligation.expected_type_text,
+      prompt);
+  append_field("TARGET_IDENTITY", request.obligation.target.identity, prompt);
+  append_field("TARGET_ARCH", request.obligation.target.arch, prompt);
+  append_field("TARGET_OS", request.obligation.target.os, prompt);
+  append_field("TARGET_ABI", request.obligation.target.abi, prompt);
+  append_field(
+      "TARGET_BYTE_ORDER", request.obligation.target.byte_order, prompt);
+  append_field(
+      "TARGET_OBJECT_FORMAT", request.obligation.target.object_format, prompt);
+  append_field("TARGET_FILE_TAG", request.obligation.target.file_tag, prompt);
+  append_field(
+      "TARGET_POINTER_BITS",
+      std::to_string(request.obligation.target.pointer_bits),
+      prompt);
+  append_field(
+      "TARGET_PAGE_SIZE",
+      std::to_string(request.obligation.target.page_size),
+      prompt);
+  prompt += "TARGET_FEATURES ";
+  append_u64(
+      static_cast<std::uint64_t>(request.obligation.target.features.size()),
+      prompt);
+  for (const std::string &feature : request.obligation.target.features) {
+    append_field("TARGET_FEATURE", feature, prompt);
+  }
+  prompt += "TARGET_SIMD_SHAPES ";
+  append_u64(
+      static_cast<std::uint64_t>(request.obligation.target.simd_shapes.size()),
+      prompt);
+  for (const TargetSimdShape &shape : request.obligation.target.simd_shapes) {
+    append_field("TARGET_SIMD_ELEMENT", shape.element, prompt);
+    append_field("TARGET_SIMD_LANES", std::to_string(shape.lanes), prompt);
+  }
+  append_field(
+      "ASSEMBLY_ARCHITECTURE",
+      request.obligation.target.assembly_architecture,
+      prompt);
+  append_field(
+      "ASSEMBLY_DIALECT", request.obligation.target.assembly_dialect, prompt);
+  prompt += "ASSEMBLY_INSTRUCTIONS ";
+  append_u64(
+      static_cast<std::uint64_t>(
+          request.obligation.target.assembly_instructions.size()),
+      prompt);
+  for (const std::string &instruction :
+       request.obligation.target.assembly_instructions) {
+    append_field("ASSEMBLY_INSTRUCTION", instruction, prompt);
+  }
   append_field("AUTHOR_PROMPT", request.prompt, prompt);
   prompt += "VISIBLE_BINDINGS ";
   append_u64(
@@ -223,6 +276,7 @@ void append_field(
     append_field("BINDING_NAME", binding.name, prompt);
     append_field("BINDING_KIND", symbol_kind_name(binding.kind), prompt);
     append_field("BINDING_TYPE_SHA256", binding.type_digest.hex(), prompt);
+    append_field("BINDING_TYPE_TEXT", binding.type_text, prompt);
   }
   prompt += "ATTACHMENTS ";
   append_u64(static_cast<std::uint64_t>(request.attachments.size()), prompt);
@@ -541,9 +595,10 @@ SynthesisProvider configure_codex_cli_provider(
   if (!executable_digest.has_value()) return {};
 
   Sha256 configuration;
-  configuration.update("draft.codex-cli-provider.v1");
+  configuration.update("draft.codex-cli-provider.v2");
   configuration.update(executable_digest->bytes);
   configuration.update(options.model);
+  configuration.update(kPromptContractIdentity);
   configuration.update(kOutputSchema);
   configuration.update(
       "exec;ephemeral;sandbox=read-only;skip-git;ignore-user-config;"
@@ -554,7 +609,7 @@ SynthesisProvider configure_codex_cli_provider(
       "codex-config-" + configuration.finalize().hex();
 
   SynthesisProvider provider;
-  provider.provider_identity = "openai-codex-cli-v1";
+  provider.provider_identity = "openai-codex-cli-v2";
   provider.model_identity = state.model;
   provider.configuration_identity = state.configuration_identity;
   provider.state = &state;

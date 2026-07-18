@@ -35,12 +35,13 @@ struct SynthesisRequestFile {
 };
 
 // One complete provider request for the current bootstrap context format.
-// obligation includes grammar category, expected-type identity, visible binding
-// names/types, target-covered input digest, and stable site identity. prompt and
-// attachments contain source-authored bounded context. Later context-closure
-// rows can extend this versioned struct without exposing semantic arena IDs.
+// obligation includes grammar category, usable canonical type spellings,
+// visible binding names/types, explicit target and assembly facts, the exact
+// input digest, and stable site identity. prompt and attachments contain
+// source-authored bounded context. Later context-closure rows can extend this
+// versioned struct without exposing semantic arena IDs.
 struct SynthesisRequest {
-  std::string format = "draft-synthesis-request-v1";
+  std::string format = "draft-synthesis-request-v2";
   AgentObligation obligation;
   std::string prompt;
   std::vector<SynthesisRequestFile> attachments;

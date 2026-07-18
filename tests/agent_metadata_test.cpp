@@ -61,7 +61,10 @@ docs "Package design\ncontext."
 
 docs "Public operation."
     file "DESIGN.md"
-pub work :: proc() -> i64 {
+pub work :: proc(
+    values: []u32,
+    callback: proc(value: ^i16, bytes: [4]u8) -> (bool, i64),
+) -> i64 {
     judge "The implementation preserves the invariant."
         folder "notes"
     return ... "produce the answer" file "PROMPT.txt"
@@ -165,9 +168,33 @@ void test_agent_records(TestState &state) {
     EXPECT(state,
         synthesis_obligation.expected_type_digest.hex() !=
             std::string(64, '0'));
+    EXPECT(state, synthesis_obligation.expected_type_text == "i64");
     EXPECT(state, synthesis_obligation.anchor_name == "work");
     EXPECT(state, synthesis_obligation.source_relative_path == "package.draft");
     EXPECT(state, !synthesis_obligation.visible_bindings.empty());
+    bool saw_values = false;
+    bool saw_callback = false;
+    for (const draft::AgentVisibleBinding &binding :
+         synthesis_obligation.visible_bindings) {
+      if (binding.name == "values") {
+        EXPECT(state, binding.type_text == "[]u32");
+        saw_values = true;
+      }
+      if (binding.name == "callback") {
+        EXPECT(state,
+            binding.type_text == "proc(^i16, [4]u8) -> (bool, i64)");
+        saw_callback = true;
+      }
+    }
+    EXPECT(state, saw_values);
+    EXPECT(state, saw_callback);
+    EXPECT(state,
+        synthesis_obligation.target.identity == "draft-aarch64-macos-v5");
+    EXPECT(state, synthesis_obligation.target.arch == "aarch64");
+    EXPECT(state, synthesis_obligation.target.pointer_bits == 64);
+    EXPECT(state,
+        synthesis_obligation.target.assembly_dialect ==
+            "draft-aarch64-apple-v2");
     EXPECT(state,
         synthesis_obligation.input_digest != judgment_obligation.input_digest);
   }

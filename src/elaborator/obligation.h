@@ -34,6 +34,30 @@ struct AgentVisibleBinding {
   std::string name;
   SymbolKind kind = SymbolKind::UnresolvedDeclaration;
   Sha256Digest type_digest;
+  // A digest is useful to the compiler but opaque to a provider. This
+  // canonical Draft spelling is the actual type contract presented in a
+  // synthesis request. It is hashed with the rest of the obligation.
+  std::string type_text;
+};
+
+// Provider-facing target facts are copied out of the target profile so an
+// adapter never has to infer architecture or assembly rules from an identity
+// hash. These are semantic/compiler contract values, not facts from the host.
+struct AgentTargetContext {
+  std::string identity;
+  std::string arch;
+  std::string os;
+  std::string abi;
+  std::string byte_order;
+  std::string object_format;
+  std::string file_tag;
+  std::uint64_t pointer_bits = 0;
+  std::uint64_t page_size = 0;
+  std::vector<std::string> features;
+  std::vector<TargetSimdShape> simd_shapes;
+  std::string assembly_architecture;
+  std::string assembly_dialect;
+  std::vector<std::string> assembly_instructions;
 };
 
 // AgentObligation is the immutable input side of one provider transaction.
@@ -57,7 +81,9 @@ struct AgentObligation {
   std::uint64_t occurrence = 0;
   Sha256Digest record_digest;
   Sha256Digest expected_type_digest;
+  std::string expected_type_text;
   std::vector<AgentVisibleBinding> visible_bindings;
+  AgentTargetContext target;
 };
 
 struct AgentObligationResult {

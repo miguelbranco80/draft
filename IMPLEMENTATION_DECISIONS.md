@@ -163,6 +163,12 @@ adapter to reject a manifest summary row that semantic checking did not consume.
 An omitted symbol is unknown, and compiler-, package-assembly-, and target-owned
 providers cannot be overridden by an external audit.
 
+Provider requests never substitute hashes for information the synthesizer must
+understand. `draft-synthesis-request-v2` carries canonical Draft spellings for
+the expected type and every visible binding, together with explicit target,
+SIMD, and parsed-assembly facts. The same rows remain content-hashed, so their
+human-readable representation is both useful to Codex and a stale-pin input.
+
 ## Native artifact ownership and visibility
 
 Status: first AArch64 macOS artifact contract.
