@@ -78,6 +78,8 @@ acyclic, explicitly rooted package graph; derives public package interfaces;
 binds file-local imports without leaking package-local IDs; assigns stable
 scopes, symbols, and types; resolves signatures and aggregate layouts; evaluates
 arbitrary-precision integers and exactly rounded IEEE floating-point constants;
+validates that every enum has a real all-zero member and that every tagged-union
+alternative fits its chosen discriminator;
 interprets scalar and aggregate compile-time procedures with locals, assignment,
 bounded loops, recursion, switches, parametric values, and type/layout queries;
 enforces positional array, named struct, and single-field raw-union literals

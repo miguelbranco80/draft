@@ -435,20 +435,45 @@ void test_invalid_enum_values(TestState &state) {
 package types
 
 Duplicate :: enum {
+    Zero,
     First = 4,
     Second = 4,
 }
 
 Too_Wide :: enum u8 {
+    Zero,
     Value = 256,
+}
+
+Missing_Zero :: enum {
+    Only = 1,
 }
 )draft");
 
-  EXPECT(state, source.diagnostics.error_count() == 2);
+  EXPECT(state, source.diagnostics.error_count() == 3);
   const std::string rendered =
       draft::render_diagnostics(source.sources, source.diagnostics);
   EXPECT(state, rendered.find("duplicate enum value") != std::string::npos);
   EXPECT(state, rendered.find("not representable") != std::string::npos);
+  EXPECT(state, rendered.find("must declare a zero-valued member") !=
+                    std::string::npos);
+}
+
+void test_tagged_union_discriminator_capacity(TestState &state) {
+  std::string text = "package types\n\nToo_Many :: union u8 {\n";
+  // u8 can represent discriminators 0 through 255. The 257th source-order
+  // alternative therefore proves that the complete range is validated.
+  for (std::size_t index = 0; index < 257; ++index) {
+    text += "    Case_" + std::to_string(index) + ",\n";
+  }
+  text += "}\n";
+  SemanticSource source(std::move(text));
+
+  EXPECT(state, source.diagnostics.error_count() == 1);
+  const std::string rendered =
+      draft::render_diagnostics(source.sources, source.diagnostics);
+  EXPECT(state, rendered.find("do not fit its discriminator type") !=
+                    std::string::npos);
 }
 
 void test_invalid_representation_attributes(TestState &state) {
@@ -509,6 +534,7 @@ int main() {
   test_parametric_type_diagnostics(state);
   test_value_parameter_diagnostics(state);
   test_invalid_enum_values(state);
+  test_tagged_union_discriminator_capacity(state);
   test_invalid_representation_attributes(state);
   test_cyclic_layout_constant(state);
 

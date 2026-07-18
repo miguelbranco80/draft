@@ -2242,6 +2242,15 @@ private:
       } else if (kind == TypeKind::RawUnion) {
         layout = raw_union_layout(data);
       } else if (kind == TypeKind::Enum) {
+        const bool has_zero_member = std::any_of(
+            data.enum_values.begin(),
+            data.enum_values.end(),
+            [](const BigInteger &value) { return value.is_zero(); });
+        if (!has_zero_member) {
+          diagnostics_.error(
+              aggregate.range,
+              "enum must declare a zero-valued member for its zero value");
+        }
         TypeId backing = explicit_backing.has_value()
             ? resolve_type(tree, *explicit_backing, parent)
             : (attributes.c_representation
@@ -2274,6 +2283,16 @@ private:
           diagnostics_.error(
               aggregate.range, "tagged-union discriminator must be an integer type");
           discriminator = semantic_.types.builtins().invalid;
+        } else if (!data.symbols.empty()) {
+          // Source-order discriminators are 0 through alternative_count - 1.
+          // Checking the greatest one proves the complete nonnegative range.
+          const BigInteger greatest = BigInteger::from_u64(
+              static_cast<std::uint64_t>(data.symbols.size() - 1));
+          if (!integer_fits_type(greatest, discriminator)) {
+            diagnostics_.error(
+                aggregate.range,
+                "tagged-union alternatives do not fit its discriminator type");
+          }
         }
         semantic_.types.type_mut(nominal).element = discriminator;
         layout = tagged_union_layout(discriminator, data);

@@ -53,6 +53,7 @@ Aligned :: @repr(C) @align(16) struct {
 
 Choice :: @repr(C) enum {
     neither = -1,
+    none = 0,
     first = 2,
 }
 

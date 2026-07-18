@@ -12,6 +12,7 @@ Pair :: @repr(C) struct {
 
 Choice :: @repr(C) enum {
     neither = -1,
+    none = 0,
     left = 1,
     right = 2,
 }
