@@ -3,6 +3,7 @@
 #include "validation/runner.h"
 
 #include <cerrno>
+#include <cstdint>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -35,6 +36,7 @@ namespace {
 enum class ChildFailureStage : int {
   ChangeDirectory = 1,
   Execute = 2,
+  InstallReportPipe = 3,
 };
 
 struct ChildFailure {
@@ -64,6 +66,8 @@ void write_child_failure(int descriptor, ChildFailureStage stage) {
   const std::string operation =
       failure.stage == static_cast<int>(ChildFailureStage::ChangeDirectory)
       ? "cannot enter validation working directory"
+      : failure.stage == static_cast<int>(ChildFailureStage::InstallReportPipe)
+      ? "cannot install validation report pipe"
       : "cannot execute validation artifact";
   return operation + ": " + std::strerror(failure.error);
 }
@@ -104,11 +108,25 @@ ValidationRunResult run_validation_executable(
     return result;
   }
 
+  int report_pipe[2] = {-1, -1};
+  if (::pipe(report_pipe) != 0) {
+    const int failure = errno;
+    ::close(failure_pipe[0]);
+    ::close(failure_pipe[1]);
+    diagnostics.error(
+        SourceRange::invalid(),
+        "cannot create validation report pipe: " +
+            std::string(std::strerror(failure)));
+    return result;
+  }
+
   const pid_t child = ::fork();
   if (child < 0) {
     const int failure = errno;
     ::close(failure_pipe[0]);
     ::close(failure_pipe[1]);
+    ::close(report_pipe[0]);
+    ::close(report_pipe[1]);
     diagnostics.error(
         SourceRange::invalid(),
         "cannot create validation process: " +
@@ -117,6 +135,16 @@ ValidationRunResult run_validation_executable(
   }
   if (child == 0) {
     ::close(failure_pipe[0]);
+    ::close(report_pipe[0]);
+    constexpr int report_descriptor = 3;
+    if (report_pipe[1] != report_descriptor) {
+      if (::dup2(report_pipe[1], report_descriptor) < 0) {
+        write_child_failure(
+            failure_pipe[1], ChildFailureStage::InstallReportPipe);
+        ::_exit(127);
+      }
+      ::close(report_pipe[1]);
+    }
     if (!options.working_directory.empty() &&
         ::chdir(options.working_directory.c_str()) != 0) {
       write_child_failure(
@@ -136,6 +164,7 @@ ValidationRunResult run_validation_executable(
   }
 
   ::close(failure_pipe[1]);
+  ::close(report_pipe[1]);
   ChildFailure child_failure;
   char *failure_bytes = reinterpret_cast<char *>(&child_failure);
   std::size_t received = 0;
@@ -154,6 +183,32 @@ ValidationRunResult run_validation_executable(
   }
   ::close(failure_pipe[0]);
 
+  // Read before wait so a large suite cannot fill the pipe and deadlock while
+  // the parent waits for a child that is blocked reporting its final rows.
+  constexpr std::size_t maximum_report_bytes = 16U * 1024U * 1024U;
+  bool report_read_failed = false;
+  std::uint8_t buffer[4096];
+  while (true) {
+    const ssize_t count = ::read(report_pipe[0], buffer, sizeof(buffer));
+    if (count > 0) {
+      const std::size_t byte_count = static_cast<std::size_t>(count);
+      if (byte_count <= maximum_report_bytes - result.report.size()) {
+        result.report.insert(
+            result.report.end(), buffer, buffer + byte_count);
+      } else {
+        report_read_failed = true;
+      }
+    } else if (count < 0 && errno == EINTR) {
+      continue;
+    } else if (count < 0) {
+      report_read_failed = true;
+      break;
+    } else {
+      break;
+    }
+  }
+  ::close(report_pipe[0]);
+
   int status = 0;
   pid_t waited = -1;
   do {
@@ -164,6 +219,12 @@ ValidationRunResult run_validation_executable(
         SourceRange::invalid(),
         "cannot wait for validation process: " +
             std::string(std::strerror(errno)));
+    return result;
+  }
+  if (report_read_failed) {
+    diagnostics.error(
+        SourceRange::invalid(),
+        "validation report exceeded the 16 MiB limit or could not be read");
     return result;
   }
   if (received != 0) {

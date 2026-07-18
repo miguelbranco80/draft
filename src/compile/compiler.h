@@ -43,7 +43,7 @@ struct CompileWorkspaceOptions {
   // Versioned identity of the compiler semantics and manifest algorithm. It is
   // a resolved-program input and must change when an implementation change can
   // alter accepted meaning or emitted behavior for the same other inputs.
-  std::string compiler_content_identity = "draft-bootstrap-cpp-v19";
+  std::string compiler_content_identity = "draft-bootstrap-cpp-v20";
   CompileWorkspaceStage stage = CompileWorkspaceStage::Complete;
   bool lower_mir = false;
   bool emit_llvm = false;
@@ -89,6 +89,7 @@ struct CompiledPackage {
 
 struct CompileWorkspaceResult {
   bool ok = false;
+  std::string compiler_content_identity;
   WorkspaceGraph graph;
   // Indices exactly match graph.packages. In Complete, a missing row means the
   // package failed before publishing an interface. Interface discovery may
@@ -100,6 +101,10 @@ struct CompileWorkspaceResult {
   // native building from rereading a manifest that may have changed after
   // semantic checking. Direct compiler phases leave this empty.
   std::optional<ResolutionManifest> resolution_manifest;
+  // Present for every successful resolved-program orchestration, including a
+  // handwritten graph with no on-disk resolution manifest. Validation graphs
+  // include their selected test or benchmark definitions in this identity.
+  std::optional<Sha256Digest> resolved_program_digest;
   // Retained so the native adapter can prove that manifest ProviderSummary
   // rows were consumed by this exact semantic compilation.
   std::vector<ForeignProviderAudit> foreign_provider_audits;

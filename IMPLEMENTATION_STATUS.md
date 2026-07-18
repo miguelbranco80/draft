@@ -17,9 +17,9 @@ AArch64 macOS executables and library artifacts, link exact package assembly,
 resolve every synthesis grammar category through transactional pins, and
 consume those pins offline.
 
-The release acceptance test is still unproved. In particular, persistent
-validation evidence/revocation, the complete runtime and initial-core surfaces,
-and generated-source maps do not yet exist.
+The release acceptance test is still unproved. In particular, complete
+runtime/initial-core conformance, judgment-provider evidence, and
+generated-source maps do not yet exist.
 
 ## Requirement audit
 
@@ -40,8 +40,8 @@ and generated-source maps do not yet exist.
 | Codex adapter behind a provider-neutral boundary | `src/elaborator/codex_cli.*` and adapter tests | Implemented first adapter | Pin the complete executable distribution identity, not merely the selected launcher bytes, and add bounded cancellation/timeout/retry policy. |
 | Content-addressed generated source and atomic manifest commit | resolution/store/overlay modules and tests | Implemented foundation | Add generated-source maps and evidence references to the manifest schema. |
 | Ordinary offline builds consume pins without a provider | staged offline compiler path, resolver tests, and locked executable/archive adapter tests | Implemented | Extend byte-for-byte release proof across every output kind. |
-| `draft build --locked` with no ambient external search | Versioned external-input rows, resolved-program binding, content-tree verification, explicit toolchain/SDK/provider/summary CLI roots, clean process environment, absolute Clang/linker/archiver paths, provider snapshots, consumed summary verification, and SDK/link flags | Implemented through foreign link artifacts and audits | Add runtime-asset mappings; locked builds reject unsupported external roles. |
-| Tests, benchmarks, judgments, and validation evidence | Typed core-nominal discovery, target-qualified file selection, canonical package/declaration order, compiler-owned isolated native harnesses, direct process runner, `draft test`, `draft bench --verify`, validation tests, and `examples/validation` | Implemented execution foundation | Add evidence keys/store, benchmark distributions and runner policy, attempt history/revocation, judgment aggregation, and locked evidence verification. |
+| `draft build --locked` with no ambient external search | Versioned external-input rows, resolved-program binding, content-tree verification, explicit toolchain/SDK/provider/summary CLI roots, clean process environment, absolute Clang/linker/archiver paths, provider snapshots, consumed summary verification, SDK/link flags, and optional exact-key test/benchmark evidence gates | Implemented through foreign link artifacts, audits, and validation evidence | Add runtime-asset mappings; locked builds reject unsupported external roles. |
+| Tests, benchmarks, judgments, and validation evidence | Typed core-nominal discovery, target-qualified file selection, canonical package/declaration order, compiler-owned isolated native harnesses, private result pipe, direct process runner, process-isolated benchmark warmup/sampling, canonical content-addressed evidence, exact environment/tool/policy keys, append-only attempt history, failure revocation, locked evidence gates, validation tests, and `examples/validation` | Implemented for tests and first benchmark profile | Judgment execution remains the provider-free typed boundary described by the initial plan. Add richer instrumentation profiles, statistical aggregation/tolerances, and Codex judgment evidence. |
 | Generated-source diagnostics/source maps | Resolved whole-file overrides only | Missing | Preserve expansion-to-site mapping through diagnostics, debug locations, coverage, profiles, and disassembly; serialize maps in the manifest. |
 | Crash-safe and deterministic release verification | Atomic pin-store tests and deterministic serializers | Partially implemented | Add fault-injection recovery, byte-for-byte clean-workspace rebuild tests, malformed-store fuzz/conformance cases, and final sanitizer/native gates. |
 
@@ -52,10 +52,14 @@ The driver currently exposes `lex`, `syntax`, `target`, `check`, `emit-llvm`,
 library, dynamic library, and assembly-bundle kinds, `test`, `bench --verify`,
 `resolve`, and the provider-free `judge` boundary. Test and benchmark commands
 compile their otherwise excluded files into a compiler-owned AArch64 macOS
-harness and execute selected procedures in canonical order.
+harness, execute selected procedures in canonical order, and append immutable
+evidence attempts under `.draft/evidence`. Locked builds may require matching
+active evidence with `--require-test-evidence` and
+`--require-benchmark-evidence`; they verify it without executing validation.
 
 ## Next release-critical slice
 
-The next implementation slice is persistent validation evidence. It must bind
-every attempt to the resolved program, selected definitions, target, tools, and
-runner policy; failed attempts must revoke passing evidence for the exact key.
+The next implementation slice returns to runtime/core conformance and the final
+release gates: sanitizer builds, pinned-native execution, deterministic clean
+rebuilds, malformed-store recovery, and the remaining generated-source mapping
+and judgment-provider boundaries.

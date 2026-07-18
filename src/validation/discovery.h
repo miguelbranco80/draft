@@ -38,6 +38,9 @@ struct ValidationEntry {
   std::uint64_t state_size = 0;
   std::uint64_t state_alignment = 1;
   std::uint64_t failure_offset = 0;
+  // The harness reports the stable scalar prefix through and including the
+  // failures field. Private user pointers never cross the runner boundary.
+  std::uint64_t report_size = 0;
 
   bool operator==(const ValidationEntry &) const = default;
 };

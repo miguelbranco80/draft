@@ -21,7 +21,7 @@
 #include "syntax/syntax_tree.h"
 #include "syntax/token.h"
 #include "target/profile.h"
-#include "validation/runner.h"
+#include "validation/command.h"
 #include "workspace/package.h"
 #include "workspace/workspace.h"
 
@@ -328,7 +328,9 @@ int build_package(
     bool allow_host_toolchain,
     const std::optional<draft::LockedNativeInputRoots> &locked_inputs,
     const std::vector<draft::ForeignProviderInput> &foreign_providers,
-    const std::vector<draft::ForeignProviderSummaryInput> &provider_summaries) {
+    const std::vector<draft::ForeignProviderSummaryInput> &provider_summaries,
+    bool require_test_evidence,
+    bool require_benchmark_evidence) {
   draft::SourceManager sources;
   draft::DiagnosticSink diagnostics;
   std::error_code path_error;
@@ -365,6 +367,32 @@ int build_package(
           std::move(compile_options),
           diagnostics);
   if (compiled.ok) {
+    auto verify_evidence = [&](draft::ValidationKind kind) {
+      draft::ValidationEvidenceRequirement requirement;
+      requirement.package_directory = absolute_directory;
+      requirement.target = target;
+      requirement.workspace.workspace_directory =
+          absolute_directory.parent_path().string();
+      configure_core_distribution(requirement.workspace);
+      requirement.kind = kind;
+      requirement.foreign_provider_audits =
+          compiled.foreign_provider_audits;
+      draft::Sha256Digest active;
+      if (draft::verify_active_validation_evidence(
+              sources,
+              std::move(requirement),
+              active,
+              diagnostics)) {
+        std::cout << "verified " << draft::validation_kind_name(kind)
+                  << " evidence " << active.hex() << '\n';
+      }
+    };
+    if (require_test_evidence) {
+      verify_evidence(draft::ValidationKind::Test);
+    }
+    if (require_benchmark_evidence) {
+      verify_evidence(draft::ValidationKind::Benchmark);
+    }
     const std::filesystem::path build_directory =
         absolute_directory / ".draft" / "build";
     const std::string package_name = absolute_directory.filename().string();
@@ -437,81 +465,49 @@ int validate_package(
     return 1;
   }
 
-  const draft::TargetProfile target = draft::make_aarch64_macos_profile();
-  draft::CompileWorkspaceOptions compile_options;
-  compile_options.target = target;
-  compile_options.workspace.workspace_directory =
+  draft::ValidationCommandOptions options;
+  options.package_directory = absolute_directory;
+  options.target = draft::make_aarch64_macos_profile();
+  options.workspace.workspace_directory =
       absolute_directory.parent_path().string();
-  configure_core_distribution(compile_options.workspace);
+  configure_core_distribution(options.workspace);
   if (!load_foreign_provider_audits(
-          compile_options.workspace.workspace_directory,
+          options.workspace.workspace_directory,
           provider_summaries,
           foreign_providers,
-          compile_options.foreign_provider_audits,
+          options.foreign_provider_audits,
           diagnostics)) {
     std::cerr << draft::render_diagnostics(sources, diagnostics);
     return 1;
   }
-  compile_options.validation_kind = kind;
-  compile_options.lower_mir = true;
-  compile_options.emit_llvm = true;
-  compile_options.emit_program_entry = true;
-  const draft::CompileWorkspaceResult compiled =
-      draft::compile_workspace_with_resolution(
-          sources,
-          absolute_directory.string(),
-          std::move(compile_options),
-          diagnostics);
-
-  draft::NativeBuildResult built;
-  if (compiled.ok) {
-    const std::string command(draft::validation_kind_name(kind));
-    const std::filesystem::path build_directory =
-        absolute_directory / ".draft" / "build" / command;
-    const std::filesystem::path output =
-        absolute_directory / ".draft" / "build" /
-        (absolute_directory.filename().string() + "-" + command);
-    draft::NativeBuildOptions native_options;
-    native_options.build_directory = build_directory.string();
-    native_options.output_path = output.string();
-    native_options.artifact_kind = draft::NativeArtifactKind::Executable;
-    native_options.allow_unpinned_toolchain = allow_host_toolchain;
-    native_options.foreign_providers = foreign_providers;
-    if (locked_inputs.has_value()) {
-      native_options.locked = true;
-      native_options.locked_inputs = *locked_inputs;
-    }
-    built = draft::build_native_executable(
-        target, compiled, native_options, diagnostics);
+  options.kind = kind;
+  options.allow_unpinned_toolchain = allow_host_toolchain;
+  options.foreign_providers = foreign_providers;
+  if (locked_inputs.has_value()) {
+    options.locked = true;
+    options.locked_inputs = *locked_inputs;
   }
+  const draft::ValidationCommandResult result =
+      draft::execute_validation_command(
+          sources, std::move(options), diagnostics);
 
-  draft::ValidationRunResult run;
-  if (built.ok && !diagnostics.has_errors()) {
-    draft::ValidationRunOptions run_options;
-    run_options.executable = built.output_path;
-    run_options.working_directory = absolute_directory.string();
-    run = draft::run_validation_executable(run_options, diagnostics);
-  }
   if (!diagnostics.diagnostics().empty()) {
     std::cerr << draft::render_diagnostics(sources, diagnostics);
   }
-  if (diagnostics.has_errors() || !built.ok || !run.started) return 1;
-
+  if (!result.completed) return 1;
   const std::string_view command = draft::validation_kind_name(kind);
-  if (!run.exited) {
-    std::cerr << command << " process terminated by signal "
-              << run.signal << '\n';
-    return 1;
-  }
-  if (run.exit_code != 0) {
+  if (!result.passed) {
     std::cerr << command << " failed: "
-              << compiled.validation_entries.size()
-              << " selected procedures, exit " << run.exit_code << '\n';
+              << result.selected_procedures
+              << " selected procedures; evidence attempt "
+              << result.attempt << " revoked key\n";
     return 1;
   }
   std::cout << command << " passed: "
-            << compiled.validation_entries.size()
-            << " selected procedures\n";
+            << result.selected_procedures
+            << " selected procedures; evidence "
+            << result.evidence_digest.hex() << " (attempt "
+            << result.attempt << ")\n";
   return 0;
 }
 
@@ -780,6 +776,7 @@ void print_usage() {
             << "      [--provider-summary name:<path>]...\n"
             << "  draftc build <package-directory> --locked\n"
             << "      --toolchain-root <directory> --sdk-root <directory> [-o <output>]\n"
+            << "      [--require-test-evidence] [--require-benchmark-evidence]\n"
             << "  draftc test <package-directory> [--allow-host-toolchain]\n"
             << "      [--locked --toolchain-root <directory> --sdk-root <directory>]\n"
             << "      [--provider name=object|archive|shared-library:<path>]...\n"
@@ -924,9 +921,9 @@ int main(int argc, char **argv) {
         locked = true;
       } else if (argument == "--verify" && !verify &&
                  validation_kind == draft::ValidationKind::Benchmark) {
-        // Bench currently always executes its selected budgets. Accepting the
-        // explicit spelling now keeps the release/CI command stable when
-        // reusable benchmark evidence is added below this adapter.
+        // Bench executes and records fresh evidence; --verify is the explicit
+        // release/CI spelling distinguished from locked build-time evidence
+        // reuse, which never enters this command path.
         verify = true;
       } else if (argument == "--toolchain-root" &&
                  !toolchain_root.has_value() && index + 1 < argc) {
@@ -987,6 +984,8 @@ int main(int argc, char **argv) {
     bool artifact_kind_set = false;
     bool allow_host_toolchain = false;
     bool locked = false;
+    bool require_test_evidence = false;
+    bool require_benchmark_evidence = false;
     std::optional<std::string> toolchain_root;
     std::optional<std::string> sdk_root;
     std::vector<draft::ForeignProviderInput> foreign_providers;
@@ -995,6 +994,12 @@ int main(int argc, char **argv) {
       const std::string_view argument(argv[index]);
       if (argument == "--allow-host-toolchain") {
         allow_host_toolchain = true;
+      } else if (argument == "--require-test-evidence" &&
+                 !require_test_evidence) {
+        require_test_evidence = true;
+      } else if (argument == "--require-benchmark-evidence" &&
+                 !require_benchmark_evidence) {
+        require_benchmark_evidence = true;
       } else if (argument == "--kind" && !artifact_kind_set &&
                  index + 1 < argc) {
         const std::string_view spelling(argv[++index]);
@@ -1048,7 +1053,8 @@ int main(int argc, char **argv) {
     }
     if (toolchain_root.has_value() != sdk_root.has_value() ||
         locked != toolchain_root.has_value() ||
-        (locked && allow_host_toolchain)) {
+        (locked && allow_host_toolchain) ||
+        ((require_test_evidence || require_benchmark_evidence) && !locked)) {
       print_usage();
       return 2;
     }
@@ -1069,7 +1075,9 @@ int main(int argc, char **argv) {
         allow_host_toolchain,
         locked_inputs,
         foreign_providers,
-        provider_summaries);
+        provider_summaries,
+        require_test_evidence,
+        require_benchmark_evidence);
   }
   if (argc == 2 && std::string_view(argv[1]) == "target") {
     return print_target();

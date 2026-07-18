@@ -11,6 +11,10 @@
 #include <string_view>
 #include <system_error>
 
+#if !defined(_WIN32)
+#include <unistd.h>
+#endif
+
 namespace {
 
 struct TestState {
@@ -31,12 +35,18 @@ void test_outcomes(TestState &state, const std::string &executable) {
   draft::DiagnosticSink diagnostics;
   draft::ValidationRunOptions options;
   options.executable = executable;
-  options.arguments = {"--child-pass"};
+  options.arguments = {"--child-report"};
   draft::ValidationRunResult result =
       draft::run_validation_executable(options, diagnostics);
   EXPECT(state, result.started);
   EXPECT(state, result.exited);
   EXPECT(state, result.exit_code == 0);
+  EXPECT(state, result.report.size() == 3);
+  if (result.report.size() == 3) {
+    EXPECT(state, result.report[0] == static_cast<std::uint8_t>('o'));
+    EXPECT(state, result.report[1] == static_cast<std::uint8_t>('k'));
+    EXPECT(state, result.report[2] == static_cast<std::uint8_t>('!'));
+  }
   EXPECT(state, !diagnostics.has_errors());
 
   options.arguments = {"--child-fail"};
@@ -75,6 +85,12 @@ void test_launch_failures(TestState &state, const std::string &executable) {
 
 int main(int argc, char **argv) {
   if (argc == 2 && std::string_view(argv[1]) == "--child-pass") return 0;
+#if !defined(_WIN32)
+  if (argc == 2 && std::string_view(argv[1]) == "--child-report") {
+    const char report[] = "ok!";
+    return ::write(3, report, 3) == 3 ? 0 : 1;
+  }
+#endif
   if (argc == 2 && std::string_view(argv[1]) == "--child-fail") return 7;
   if (argc == 2 && std::string_view(argv[1]) == "--child-signal") {
     std::raise(SIGTERM);

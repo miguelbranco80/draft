@@ -399,6 +399,21 @@ void merge_resolution_overrides(
   }
 }
 
+void bind_handwritten_program_identity(
+    const SourceManager &sources,
+    const CompileWorkspaceOptions &options,
+    CompileWorkspaceResult &result) {
+  if (!result.ok) return;
+  ResolutionManifest empty_manifest;
+  empty_manifest.target_identity = options.target.facts.identity;
+  result.resolved_program_digest = hash_resolved_program(
+      sources,
+      result.graph,
+      options.target,
+      empty_manifest,
+      options.compiler_content_identity);
+}
+
 } // namespace
 
 CompileWorkspaceResult compile_workspace(
@@ -407,6 +422,7 @@ CompileWorkspaceResult compile_workspace(
     CompileWorkspaceOptions options,
     DiagnosticSink &diagnostics) {
   CompileWorkspaceResult result;
+  result.compiler_content_identity = options.compiler_content_identity;
   result.foreign_provider_audits = options.foreign_provider_audits;
   const std::size_t initial_errors = diagnostics.error_count();
   if (options.compiler_content_identity.empty()) {
@@ -855,6 +871,24 @@ CompileWorkspaceResult compile_workspace_with_resolution(
     return {};
   }
 
+  // A normal resolution manifest identifies the ordinary program graph, while
+  // a validation command deliberately adds command-only files and imports.
+  // Reproduce the ordinary graph once to authenticate the manifest before the
+  // validation graph derives its separate, definition-inclusive identity.
+  if (loaded_manifest.state == ResolutionManifestLoadState::Loaded &&
+      options.validation_kind != ValidationKind::None) {
+    CompileWorkspaceOptions base_options = options;
+    base_options.validation_kind = ValidationKind::None;
+    base_options.lower_mir = false;
+    base_options.emit_llvm = false;
+    const CompileWorkspaceResult base = compile_workspace_with_resolution(
+        sources,
+        root_package_directory,
+        std::move(base_options),
+        diagnostics);
+    if (!base.ok) return base;
+  }
+
   std::vector<bool> matched_pins;
   std::vector<WorkspaceSourceOverride> interface_overrides;
   if (loaded_manifest.state == ResolutionManifestLoadState::Loaded) {
@@ -952,11 +986,28 @@ CompileWorkspaceResult compile_workspace_with_resolution(
       body_surface.ok = false;
       return body_surface;
     }
-    if (!options.lower_mir && !options.emit_llvm) return body_surface;
+    if (!options.lower_mir && !options.emit_llvm) {
+      bind_handwritten_program_identity(sources, options, body_surface);
+      return body_surface;
+    }
     options.stage = CompileWorkspaceStage::Complete;
     options.workspace.source_overrides.clear();
-    return compile_workspace(
+    CompileWorkspaceResult handwritten = compile_workspace(
         sources, root_package_directory, std::move(options), diagnostics);
+    // compile_workspace retained the exact compiler identity, so reconstruct
+    // the two option fields consumed by the moved value without a magic
+    // duplicate version string.
+    if (handwritten.ok) {
+      ResolutionManifest empty_manifest;
+      empty_manifest.target_identity = body_options.target.facts.identity;
+      handwritten.resolved_program_digest = hash_resolved_program(
+          sources,
+          handwritten.graph,
+          body_options.target,
+          empty_manifest,
+          handwritten.compiler_content_identity);
+    }
+    return handwritten;
   }
 
   ResolutionManifest body_manifest = select_stage_manifest(
@@ -1023,7 +1074,9 @@ CompileWorkspaceResult compile_workspace_with_resolution(
         options.target,
         loaded_manifest.manifest,
         options.compiler_content_identity);
-    if (program_digest != loaded_manifest.manifest.resolved_program_digest) {
+    resolved.resolved_program_digest = program_digest;
+    if (options.validation_kind == ValidationKind::None &&
+        program_digest != loaded_manifest.manifest.resolved_program_digest) {
       diagnostics.error(
           SourceRange::invalid(),
           "resolution manifest resolved-program identity is stale");
@@ -1032,6 +1085,10 @@ CompileWorkspaceResult compile_workspace_with_resolution(
   resolved.ok = diagnostics.error_count() == initial_errors;
   if (resolved.ok) {
     resolved.resolution_manifest = loaded_manifest.manifest;
+    if (!resolved.resolved_program_digest.has_value()) {
+      resolved.resolved_program_digest =
+          loaded_manifest.manifest.resolved_program_digest;
+    }
   }
   return resolved;
 }

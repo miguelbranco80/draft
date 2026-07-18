@@ -4,6 +4,7 @@
 
 #include "source/diagnostic.h"
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -24,6 +25,7 @@ struct ValidationRunResult {
   bool exited = false;
   int exit_code = 0;
   int signal = 0;
+  std::vector<std::uint8_t> report;
 };
 
 [[nodiscard]] ValidationRunResult run_validation_executable(

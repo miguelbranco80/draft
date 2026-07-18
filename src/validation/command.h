@@ -1,0 +1,69 @@
+// Complete native test/benchmark execution and locked evidence verification.
+
+#pragma once
+
+#include "backend/toolchain.h"
+#include "sema/foreign_summary.h"
+#include "source/diagnostic.h"
+#include "source/source.h"
+#include "target/profile.h"
+#include "validation/discovery.h"
+#include "workspace/workspace.h"
+
+#include <cstddef>
+#include <cstdint>
+#include <filesystem>
+#include <optional>
+#include <vector>
+
+namespace draft {
+
+struct ValidationCommandOptions {
+  std::filesystem::path package_directory;
+  TargetProfile target;
+  WorkspaceLoadOptions workspace;
+  ValidationKind kind = ValidationKind::None;
+  bool allow_unpinned_toolchain = false;
+  bool locked = false;
+  LockedNativeInputRoots locked_inputs;
+  std::vector<ForeignProviderInput> foreign_providers;
+  std::vector<ForeignProviderAudit> foreign_provider_audits;
+};
+
+struct ValidationCommandResult {
+  bool completed = false;
+  bool passed = false;
+  std::size_t selected_procedures = 0;
+  Sha256Digest evidence_digest;
+  std::uint64_t attempt = 0;
+  int exit_code = 0;
+  int signal = 0;
+};
+
+// Compiles one command-selected validation graph, emits its native harness,
+// executes the fixed test or benchmark policy, and commits an immutable attempt
+// plus active/revoked state. A launch failure is not an execution attempt and
+// therefore does not modify evidence.
+[[nodiscard]] ValidationCommandResult execute_validation_command(
+    SourceManager &sources,
+    ValidationCommandOptions options,
+    DiagnosticSink &diagnostics);
+
+struct ValidationEvidenceRequirement {
+  std::filesystem::path package_directory;
+  TargetProfile target;
+  WorkspaceLoadOptions workspace;
+  ValidationKind kind = ValidationKind::None;
+  std::vector<ForeignProviderAudit> foreign_provider_audits;
+};
+
+// Recompiles only the selected typed definitions and checks exact active
+// evidence. It performs no native lowering, provider call, validation process,
+// or store mutation, making it safe for locked build verification.
+[[nodiscard]] bool verify_active_validation_evidence(
+    SourceManager &sources,
+    ValidationEvidenceRequirement requirement,
+    Sha256Digest &active_digest,
+    DiagnosticSink &diagnostics);
+
+} // namespace draft

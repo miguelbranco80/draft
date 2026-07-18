@@ -74,6 +74,9 @@ add_library(
   src/syntax/token.cpp
   src/target/profile.cpp
   src/validation/discovery.cpp
+  src/validation/command.cpp
+  src/validation/evidence.cpp
+  src/validation/evidence_store.cpp
   src/validation/runner.cpp
   src/workspace/package.cpp
   src/workspace/workspace.cpp
@@ -269,6 +272,22 @@ if(BUILD_TESTING)
   add_executable(draft_validation_runner_tests tests/validation_runner_test.cpp)
   target_link_libraries(draft_validation_runner_tests PRIVATE draft_compiler)
   add_test(NAME draft_validation_runner_tests COMMAND draft_validation_runner_tests)
+
+  add_executable(draft_validation_evidence_tests tests/validation_evidence_test.cpp)
+  target_link_libraries(draft_validation_evidence_tests PRIVATE draft_compiler)
+  add_test(NAME draft_validation_evidence_tests COMMAND draft_validation_evidence_tests)
+
+  add_executable(
+    draft_validation_evidence_store_tests
+    tests/validation_evidence_store_test.cpp
+  )
+  target_link_libraries(
+    draft_validation_evidence_store_tests PRIVATE draft_compiler
+  )
+  add_test(
+    NAME draft_validation_evidence_store_tests
+    COMMAND draft_validation_evidence_store_tests
+  )
 
   # Provider-free agent commands must recognize real typed sites but fail
   # before writing anything when no provider adapter is configured.

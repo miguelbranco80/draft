@@ -3516,6 +3516,13 @@ private:
               << " = icmp ne i64 %validation.failures." << suffix << ", 0\n"
               << "  %validation.any_failed." << suffix << " = or i1 "
               << accumulated << ", %validation.failed." << suffix << '\n'
+              // Descriptor 3 is a private pipe installed by the validation
+              // runner. Running the artifact directly may make this write
+              // fail, but validation behavior and the aggregate exit status
+              // remain unchanged.
+              << "  %validation.reported." << suffix
+              << " = call i64 @write(i32 3, ptr %validation.state."
+              << suffix << ", i64 " << entry.report_size << ")\n"
               << "  call void "
                  "@\"__draft.runtime.reset_temporary_allocator\"()\n";
       accumulated = "%validation.any_failed." + suffix;

@@ -151,6 +151,7 @@ struct ExpectedState {
   result.state_size = state.layout.size;
   result.state_alignment = state.layout.alignment;
   result.failure_offset = failure_offset;
+  result.report_size = failure_offset + 8;
   return result;
 }
 
