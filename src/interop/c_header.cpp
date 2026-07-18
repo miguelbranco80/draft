@@ -326,16 +326,6 @@ private:
     return base_type(id) + " " + name;
   }
 
-  [[nodiscard]] std::string result_type(TypeId id) const {
-    const Type &value = type(id);
-    if (value.kind == TypeKind::Pointer || value.kind == TypeKind::MultiPointer) {
-      return typed_pointer_element(value.element)
-          ? base_type(value.element) + " *"
-          : "void *";
-    }
-    return base_type(id);
-  }
-
   [[nodiscard]] std::string parameter_list(const Type &signature) const {
     if (signature.members.size() <= 1) return "void";
     std::string result;
@@ -384,9 +374,14 @@ private:
     for (TypeId id : procedure_types_) {
       const Type &signature = type(id);
       if (!signature.c_calling_convention || signature.members.empty()) continue;
-      output_ << "typedef " << result_type(signature.members.back())
-              << " (*" << procedure_name(id) << ")(" << parameter_list(signature)
-              << ");\n";
+      // Feed the entire function-pointer declarator through the result type.
+      // This keeps nested pointers and pointer-to-array returns in their C
+      // binding positions instead of flattening them into an approximate base
+      // spelling.
+      const std::string declarator =
+          "(*" + procedure_name(id) + ")(" + parameter_list(signature) + ")";
+      output_ << "typedef "
+              << declaration(signature.members.back(), declarator) << ";\n";
     }
     if (!procedure_types_.empty()) output_ << '\n';
   }
@@ -488,8 +483,10 @@ private:
       const std::string declaration_name = direct_name
           ? *exact
           : package_prefix() + "_" + safe_identifier(symbol.name);
-      output_ << "extern " << result_type(signature.members.back()) << ' '
-              << declaration_name << '(' << parameter_list(signature) << ')';
+      const std::string declarator =
+          declaration_name + "(" + parameter_list(signature) + ")";
+      output_ << "extern "
+              << declaration(signature.members.back(), declarator);
       if (!direct_name) {
         // Clang's Darwin asm label is the final Mach-O spelling, including the
         // platform's leading underscore normally added to a C identifier.

@@ -76,6 +76,21 @@ export large_record_identity :: c "draft_large_record_identity" proc(
     return value
 }
 
+// Return declarators are more subtle than parameters in C: the function name
+// must be nested inside every pointer/array layer. These two exports keep the
+// generated header and the physical direct-pointer ABI honest.
+export pointer_pointer_identity :: c "draft_pointer_pointer_identity" proc(
+    value: ^^u8,
+) -> ^^u8 {
+    return value
+}
+
+export row_pointer_identity :: c "draft_row_pointer_identity" proc(
+    value: ^[3]u8,
+) -> ^[3]u8 {
+    return value
+}
+
 export apply :: c "draft_apply" proc(
     callback: c proc(value: i32) -> i32,
     value: i32,

@@ -88,6 +88,12 @@ export widen :: c "draft_widen" proc(
 ) -> u128 {
     return cast[u128](value)
 }
+
+export return_grid :: c "draft_return_grid" proc(
+    value: ^[4]u8,
+) -> ^[4]u8 {
+    return value
+}
 )draft");
   file.syntax.emplace(draft::parse_source_file(sources, file.source, diagnostics));
   loaded.files.push_back(std::move(file));
@@ -115,7 +121,7 @@ export widen :: c "draft_widen" proc(
   EXPECT(state, bodies.ok);
   EXPECT(state, native.ok);
   EXPECT(state, header.ok);
-  EXPECT(state, header.export_count == 3);
+  EXPECT(state, header.export_count == 4);
   EXPECT(state, header.text.find(
       "typedef struct draft_c_library_Pair draft_c_library_Pair;") !=
       std::string::npos);
@@ -145,6 +151,9 @@ export widen :: c "draft_widen" proc(
   EXPECT(state, header.text.find(
       "extern unsigned __int128 draft_widen(__int128 arg0, uint8_t **arg1, "
       "draft_c_library_Wide *arg2);") != std::string::npos);
+  EXPECT(state, header.text.find(
+      "extern uint8_t (*draft_return_grid(uint8_t (*arg0)[4]))[4];") !=
+      std::string::npos);
 }
 
 } // namespace

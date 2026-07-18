@@ -44,5 +44,14 @@ int main(void) {
     if (large.words[0] != 11 || large.words[1] != 22 || large.words[2] != 33) {
         return 8;
     }
+
+    uint8_t byte = 91;
+    uint8_t *byte_pointer = &byte;
+    uint8_t **pointer_pointer = &byte_pointer;
+    if (draft_pointer_pointer_identity(pointer_pointer) != pointer_pointer) return 9;
+
+    uint8_t row[3] = {5, 8, 13};
+    uint8_t (*row_pointer)[3] = &row;
+    if (draft_row_pointer_identity(row_pointer) != row_pointer) return 10;
     return 0;
 }
