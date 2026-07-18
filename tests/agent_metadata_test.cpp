@@ -319,6 +319,7 @@ void test_agent_records(TestState &state) {
          synthesis_obligation.visible_bindings) {
       if (binding.name == "values") {
         EXPECT(state, binding.type_text == "[]u32");
+        EXPECT(state, !binding.has_source_definition);
         saw_values = true;
       }
       if (binding.name == "callback") {
@@ -328,16 +329,30 @@ void test_agent_records(TestState &state) {
       }
       if (binding.name == "blocked") {
         EXPECT(state, binding.type_text == "bool");
+        EXPECT(state, binding.has_source_definition);
+        EXPECT(state,
+            draft::sha256(binding.source_definition) ==
+                binding.source_definition_digest);
+        EXPECT(state,
+            binding.source_definition.find("blocked := false") !=
+                std::string::npos);
+        EXPECT(state,
+            binding.source_definition.find("local comment") ==
+                std::string::npos);
         saw_shadowed_blocked = true;
       }
       if (binding.name == "secret") saw_denied_secret = true;
       if (binding.name == "Package_Context_Version") {
         EXPECT(state, binding.has_constant);
+        EXPECT(state, binding.has_source_definition);
         EXPECT(state,
             draft::sha256(binding.constant_definition) ==
                 binding.constant_digest);
         EXPECT(state,
             binding.constant_definition.find("CONSTANT_INTEGER 1\n1\n") !=
+                std::string::npos);
+        EXPECT(state,
+            binding.source_definition.find("Package_Context_Version :: 1") !=
                 std::string::npos);
         saw_package_version = true;
       }

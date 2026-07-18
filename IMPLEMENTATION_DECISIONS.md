@@ -171,7 +171,7 @@ An omitted symbol is unknown, and compiler-, package-assembly-, and target-owned
 providers cannot be overridden by an external audit.
 
 Provider requests never substitute hashes for information the synthesizer must
-understand. `draft-synthesis-request-v13` carries canonical Draft spellings for
+understand. `draft-synthesis-request-v14` carries canonical Draft spellings for
 the expected type and every visible binding, together with complete canonical
 values for visible compile-time constants and explicit target, SIMD, and
 parsed-assembly facts. Procedure-valued constants lose their process-local
@@ -185,6 +185,13 @@ diagnostic policy selector. Package and enclosing-declaration documentation
 retain their anchor, text, and exact isolated attachment bytes. The same rows
 remain content-hashed, so their human-readable representation is both useful to
 Codex and a stale-pin input.
+
+Each permitted visible source declaration or local binding also carries its
+one canonical comment-free declaration node and digest. Parameters remain the
+smaller name/type rows, aggregate fields remain in canonical type graphs,
+imports remain compact package interfaces, and the current anchor remains in
+its dedicated enclosing-declaration fields. This is a bounded direct semantic
+closure: it exposes no whole source file and no process-local symbol identity.
 
 Public dependency documentation is published in the early package interface,
 alongside types and constants, rather than after consumers have already bound

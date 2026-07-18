@@ -1234,6 +1234,7 @@ struct ActiveDenialContext {
 // position. Sorting happens only after shadowing, so it cannot change meaning.
 [[nodiscard]] std::vector<AgentVisibleBinding> visible_bindings(
     const PackageIdentity &identity,
+    const SourceManager &sources,
     const LoadedPackage &loaded,
     const SemanticPackage &package,
     const ConstantTable &constants,
@@ -1279,6 +1280,33 @@ struct ActiveDenialContext {
             canonical_constant(identity, package, *constant),
             binding.constant_definition);
         binding.constant_digest = sha256(binding.constant_definition);
+      }
+
+      // Parameters already have exact names and types, fields live in their
+      // canonical type graph, and imported declarations live in their compact
+      // package interface. The remaining source-declared binding kinds are the
+      // bounded private/local definition closure that public interfaces cannot
+      // provide. Reusing the symbol's declaration node handles grouped local
+      // bindings without inventing a compiler-specific source representation.
+      const bool source_definition_kind =
+          symbol.kind == SymbolKind::Type ||
+          symbol.kind == SymbolKind::Constant ||
+          symbol.kind == SymbolKind::Variable ||
+          symbol.kind == SymbolKind::Procedure ||
+          symbol.kind == SymbolKind::Local;
+      if (source_definition_kind && symbol_id != record.anchor) {
+        const SyntaxTree *definition_tree = find_tree(loaded, symbol.syntax.file);
+        if (definition_tree != nullptr && symbol.syntax.node.is_valid()) {
+          binding.source_definition = canonical_token_source(
+              sources,
+              *definition_tree,
+              definition_tree->node(symbol.syntax.node));
+          binding.has_source_definition = !binding.source_definition.empty();
+          if (binding.has_source_definition) {
+            binding.source_definition_digest =
+                sha256(binding.source_definition);
+          }
+        }
       }
       result.push_back(std::move(binding));
     }
@@ -1371,7 +1399,7 @@ struct ActiveDenialContext {
     const AgentObligation &obligation,
     const TargetProfile &target) {
   Sha256 hash;
-  hash_field(hash, "draft-agent-obligation-v12");
+  hash_field(hash, "draft-agent-obligation-v13");
   hash_field(hash, obligation.site_identity);
   hash.update(obligation.record_digest.bytes);
   hash.update(obligation.expected_type_digest.bytes);
@@ -1554,6 +1582,11 @@ struct ActiveDenialContext {
       hash.update(binding.constant_digest.bytes);
       hash_field(hash, binding.constant_definition);
     }
+    hash_u64(hash, binding.has_source_definition ? 1 : 0);
+    if (binding.has_source_definition) {
+      hash.update(binding.source_definition_digest.bytes);
+      hash_field(hash, binding.source_definition);
+    }
   }
   return hash.finalize();
 }
@@ -1620,6 +1653,7 @@ AgentObligationResult build_agent_obligations(
         diagnostics);
     obligation.visible_bindings = visible_bindings(
         identity,
+        sources,
         loaded,
         package,
         constants,

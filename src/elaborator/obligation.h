@@ -42,6 +42,14 @@ struct AgentVisibleBinding {
   bool has_constant = false;
   Sha256Digest constant_digest;
   std::string constant_definition;
+  // A visible source declaration is especially useful for private helpers and
+  // locals that cannot appear in a public package interface. The compiler
+  // supplies one bounded, comment-free declaration node rather than an
+  // enclosing file. The current anchor is omitted because it already has its
+  // richer enclosing-declaration context.
+  bool has_source_definition = false;
+  Sha256Digest source_definition_digest;
+  std::string source_definition;
 };
 
 // One source-visible field of the compiler-managed runtime Context. Active
