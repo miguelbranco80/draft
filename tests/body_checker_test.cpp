@@ -1758,12 +1758,16 @@ Choice :: union {
 }
 
 choose_pointer :: proc(condition: bool, fallback: ^i64) -> ^i64 {
-    selected := nil if condition else fallback
+    selected := (nil if condition else nil) if condition else fallback
     return selected
 }
 
+grouped_nil_comparison :: proc(value: ^i64) -> bool {
+    return (nil) != value && value != (nil)
+}
+
 choose_mode :: proc(condition: bool, fallback: Mode) -> Mode {
-    selected := .On if condition else fallback
+    selected := (.On) if condition else fallback
     return selected
 }
 

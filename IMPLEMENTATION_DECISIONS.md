@@ -565,7 +565,9 @@ its type from the opposite, independently typed branch regardless of whether it
 appears on the left or right. This is a type-checking dependency only: runtime
 evaluation still executes the condition first and then exactly one value branch.
 If both branches require context, the compiler does not guess an owner or pointer
-kind; an outer expected type remains mandatory.
+kind; an outer expected type remains mandatory. Grouping and denial wrappers do
+not change this rule, and a nested conditional requests outer context exactly
+when both of its own value branches require it.
 
 ## Hosted process views and core threads
 

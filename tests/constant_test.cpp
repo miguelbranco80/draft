@@ -1296,8 +1296,9 @@ Generic_Selected :: identity[bool](false && true)
 callback :: proc() {
 }
 Good_Nil :: callback != nil
-Inferred_Nil_Callback :: nil if true else callback
-Inferred_Mode :: .One if true else cast[Mode](cast[u8](0))
+Inferred_Nil_Callback ::
+    ((nil if true else nil)) if true else callback
+Inferred_Mode :: (.One) if true else cast[Mode](cast[u8](0))
 Short_Circuit_Division :: false && ((1 / 0) == 0)
 Selected_Conditional :: 42 if true else (1 / 0)
 )draft");

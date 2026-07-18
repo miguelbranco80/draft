@@ -199,15 +199,19 @@ inferred_pointer_conditional :: proc(
     condition: bool,
     fallback: ^i64,
 ) -> ^i64 {
-    selected := nil if condition else fallback
+    selected := (nil if condition else nil) if condition else fallback
     return selected
+}
+
+grouped_nil_comparison :: proc(value: ^i64) -> bool {
+    return (nil) != value && value != (nil)
 }
 
 inferred_code_conditional :: proc(
     condition: bool,
     fallback: Code,
 ) -> Code {
-    selected := .Seven if condition else fallback
+    selected := (.Seven) if condition else fallback
     return selected
 }
 
@@ -571,6 +575,7 @@ main :: proc() {
     assert(inferred_pointer_conditional(true, &conditional_pointee) == nil)
     assert(inferred_pointer_conditional(false, &conditional_pointee) ==
         &conditional_pointee)
+    assert(grouped_nil_comparison(&conditional_pointee))
     assert(inferred_code_conditional(true, .Zero) == .Seven)
     assert(inferred_code_conditional(false, .Zero) == .Zero)
     conditional_outcome: Outcome = .failure(7)

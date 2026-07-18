@@ -726,9 +726,22 @@ private:
 
   [[nodiscard]] bool needs_value_context(
       const SyntaxTree &tree, NodeId expression_id) const {
-    return is_nil_literal(tree, expression_id) ||
-        tree.node(expression_id).kind ==
-            NodeKind::ContextualAlternativeExpression;
+    if (is_nil_literal(tree, expression_id)) return true;
+    const SyntaxNode &expression = tree.node(expression_id);
+    if (expression.kind == NodeKind::ContextualAlternativeExpression) {
+      return true;
+    }
+    if ((expression.kind == NodeKind::GroupExpression ||
+         expression.kind == NodeKind::DenyExpression) &&
+        !expression.children.empty()) {
+      return needs_value_context(tree, expression.children.back());
+    }
+    if (expression.kind == NodeKind::ConditionalExpression &&
+        expression.children.size() == 3) {
+      return needs_value_context(tree, expression.children[0]) &&
+          needs_value_context(tree, expression.children[2]);
+    }
+    return false;
   }
 
   // Finds the declared type of a non-executed expression when that type is
@@ -841,10 +854,22 @@ private:
         semantic_.types.type(hinted_type).kind == TypeKind::Invalid) {
       return false;
     }
-    const TypeKind kind = runtime_type(hinted_type).kind;
+    const SyntaxNode &expression = tree.node(contextual_expression);
+    if ((expression.kind == NodeKind::GroupExpression ||
+         expression.kind == NodeKind::DenyExpression) &&
+        !expression.children.empty()) {
+      return accepts_context_hint(
+          tree, expression.children.back(), hinted_type);
+    }
+    if (expression.kind == NodeKind::ConditionalExpression &&
+        expression.children.size() == 3) {
+      return accepts_context_hint(tree, expression.children[0], hinted_type) &&
+          accepts_context_hint(tree, expression.children[2], hinted_type);
+    }
     if (is_nil_literal(tree, contextual_expression)) {
       return nil_context_type(hinted_type);
     }
+    const TypeKind kind = runtime_type(hinted_type).kind;
     return kind == TypeKind::Enum || kind == TypeKind::TaggedUnion;
   }
 
