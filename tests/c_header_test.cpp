@@ -105,6 +105,17 @@ export opaque_chain :: c "draft_opaque_chain" proc(
 ) -> ^^Hidden {
     return value
 }
+
+export opaque_draft_callback :: c "draft_opaque_draft_callback" proc(
+    value: ^proc(value: i32) -> i32,
+    slot: ^^proc(value: i32) -> i32,
+) -> ^proc(value: i32) -> i32 {
+    return value
+}
+
+export echo_rune :: c "draft_echo_rune" proc(value: rune) -> rune {
+    return value
+}
 )draft");
   file.syntax.emplace(draft::parse_source_file(sources, file.source, diagnostics));
   loaded.files.push_back(std::move(file));
@@ -132,7 +143,7 @@ export opaque_chain :: c "draft_opaque_chain" proc(
   EXPECT(state, bodies.ok);
   EXPECT(state, native.ok);
   EXPECT(state, header.ok);
-  EXPECT(state, header.export_count == 5);
+  EXPECT(state, header.export_count == 7);
   EXPECT(state, header.text.find(
       "typedef struct draft_c_library_Pair draft_c_library_Pair;") !=
       std::string::npos);
@@ -167,6 +178,12 @@ export opaque_chain :: c "draft_opaque_chain" proc(
       std::string::npos);
   EXPECT(state, header.text.find(
       "extern void **draft_opaque_chain(void **arg0);") !=
+      std::string::npos);
+  EXPECT(state, header.text.find(
+      "extern void *draft_opaque_draft_callback(void *arg0, void **arg1);") !=
+      std::string::npos);
+  EXPECT(state, header.text.find(
+      "extern int32_t draft_echo_rune(int32_t arg0);") !=
       std::string::npos);
 }
 

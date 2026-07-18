@@ -262,6 +262,27 @@ foreign provider {
   EXPECT(state, rendered.find("C-ABI-legal 'c proc'") != std::string::npos);
 }
 
+void test_invalid_local_c_procedure_type(TestState &state) {
+  CheckedSource source(R"draft(
+package native
+
+Bad_Callback :: c proc(value: []u8)
+
+bad_callback :: c proc(value: []u8) {
+}
+
+callback_slot: Bad_Callback
+)draft");
+  const draft::NativeInteropResult native = draft::validate_native_interop(
+      source.semantics.package, source.bodies.program, source.diagnostics);
+  EXPECT(state, !native.ok);
+  const std::string rendered =
+      draft::render_diagnostics(source.sources, source.diagnostics);
+  EXPECT(state, rendered.find(
+                    "c proc parameter and result types must be Draft 1 C-ABI-legal") !=
+                    std::string::npos);
+}
+
 } // namespace
 
 int main() {
@@ -270,6 +291,7 @@ int main() {
   test_invalid_c_boundaries(state);
   test_aggregate_c_abi_lowering(state);
   test_invalid_c_aggregate_member(state);
+  test_invalid_local_c_procedure_type(state);
   if (state.failures != 0) {
     std::cerr << state.failures << " native interop expectation(s) failed\n";
     return EXIT_FAILURE;

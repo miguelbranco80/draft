@@ -87,6 +87,10 @@ Mixed_Union :: @repr(C) raw union { first: f32, second: f64, }
 Default_Record :: struct { value: i64, }
 Bad_Member :: @repr(C) struct { value: []u8, }
 C_Enum :: @repr(C) enum { off, on, }
+Bad_Callback :: c proc(value: []u8)
+Recursive_Callback_Record :: @repr(C) struct {
+    callback: c proc(value: Recursive_Callback_Record),
+}
 )draft");
   if (source.diagnostics.has_errors()) {
     std::cerr << draft::render_diagnostics(source.sources, source.diagnostics);
@@ -149,6 +153,10 @@ C_Enum :: @repr(C) enum { off, on, }
                     draft::Aarch64CAbiClass::Illegal);
   EXPECT(state, classify("C_Enum").classification ==
                     draft::Aarch64CAbiClass::Direct);
+  EXPECT(state, classify("Bad_Callback").classification ==
+                    draft::Aarch64CAbiClass::Illegal);
+  EXPECT(state, classify("Recursive_Callback_Record").classification ==
+                    draft::Aarch64CAbiClass::SmallAggregate);
 }
 
 } // namespace

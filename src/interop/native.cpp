@@ -10,6 +10,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace draft {
 namespace {
@@ -79,6 +80,86 @@ namespace {
       context.layout.alignment == 8;
 }
 
+[[nodiscard]] bool contains_type(
+    const std::vector<TypeId> &types, TypeId candidate) {
+  return std::find(types.begin(), types.end(), candidate) != types.end();
+}
+
+// The compiler-owned default-context entry is the sole intentionally private
+// C signature in Draft 1. Consumer packages receive it through the canonical
+// core/runtime interface, where it must retain the same narrow exemption as
+// the defining package's native binding. Matching provider and linker identity
+// prevents an unrelated package member named default_context from borrowing it.
+[[nodiscard]] bool imported_default_context_bridge(
+    const SemanticPackage &semantic, SymbolId symbol) {
+  for (const ImportedSymbol &imported : semantic.imported_symbols) {
+    if (imported.proxy != symbol || imported.public_name != "default_context" ||
+        imported.root_relative_path != "runtime" ||
+        imported.native_provider != "draft_runtime") {
+      continue;
+    }
+    const std::optional<std::string> linker_name =
+        decode_linker_name(imported.native_linker_name_spelling);
+    return linker_name.has_value() &&
+        *linker_name == "__draft.runtime.default_context";
+  }
+  return false;
+}
+
+[[nodiscard]] bool local_default_context_bridge(
+    const SemanticPackage &semantic, SymbolId symbol) {
+  const Symbol &candidate = semantic.symbols.symbol(symbol);
+  for (const NativeBinding &binding : semantic.native_bindings) {
+    if (binding.symbol != symbol) continue;
+    const std::optional<std::string> linker_name =
+        decode_linker_name(binding.linker_name_spelling);
+    return valid_default_context_bridge(
+        semantic, binding, candidate, linker_name);
+  }
+  return false;
+}
+
+// Finds concrete C procedure types even when they are nested behind pointers,
+// arrays, records, or other procedure signatures. A pointer can make its
+// pointee opaque at one C data boundary, but source code can later dereference
+// and call a c proc value, so that callable's own ABI must still be valid.
+void validate_c_procedure_type_graph(
+    const SemanticPackage &semantic,
+    TypeId root,
+    SourceRange diagnostic_range,
+    bool exempt_root,
+    std::vector<TypeId> &diagnosed,
+    DiagnosticSink &diagnostics) {
+  std::vector<TypeId> visited;
+  const auto visit = [&](const auto &self, TypeId type_id, bool is_root) -> void {
+    if (!type_id.is_valid() || contains_type(visited, type_id)) return;
+    visited.push_back(type_id);
+    const Type &type = semantic.types.type(type_id);
+    if (type.kind == TypeKind::Procedure && type.c_calling_convention) {
+      const bool legal =
+          classify_aarch64_darwin_c_type(semantic.types, type_id)
+              .classification != Aarch64CAbiClass::Illegal;
+      if (!legal) {
+        if (!(is_root && exempt_root) && !contains_type(diagnosed, type_id)) {
+          diagnostics.error(
+              diagnostic_range,
+              "c proc parameter and result types must be Draft 1 C-ABI-legal");
+          diagnosed.push_back(type_id);
+        }
+        return;
+      }
+    }
+    if (type.kind == TypeKind::Pointer ||
+        type.kind == TypeKind::MultiPointer || type.kind == TypeKind::Slice ||
+        type.kind == TypeKind::Array || type.kind == TypeKind::Simd ||
+        type.kind == TypeKind::Distinct) {
+      self(self, type.element, false);
+    }
+    for (TypeId member : type.members) self(self, member, false);
+  };
+  visit(visit, root, true);
+}
+
 } // namespace
 
 NativeInteropResult validate_native_interop(
@@ -87,6 +168,7 @@ NativeInteropResult validate_native_interop(
     DiagnosticSink &diagnostics) {
   NativeInteropResult result;
   const std::size_t initial_errors = diagnostics.error_count();
+  std::vector<TypeId> diagnosed_c_procedures;
   for (const NativeBinding &binding : semantic.native_bindings) {
     const Symbol &symbol = semantic.symbols.symbol(binding.symbol);
     if (symbol.kind != SymbolKind::Procedure || !symbol.type.is_valid() ||
@@ -103,6 +185,7 @@ NativeInteropResult validate_native_interop(
       diagnostics.error(
           symbol.name_range,
           "native import or export requires a Draft 1 C-ABI-legal 'c proc' signature");
+      diagnosed_c_procedures.push_back(symbol.type);
     }
     const bool body = has_body(hir, binding.symbol);
     if (binding.kind == NativeBindingKind::ForeignImport && body) {
@@ -121,6 +204,25 @@ NativeInteropResult validate_native_interop(
             result.providers.end()) {
       result.providers.push_back(binding.provider);
     }
+  }
+
+  // A local c proc, callback type, or callback nested in a record uses the same
+  // ABI as an import/export and therefore needs the same legality check. Native
+  // bindings above keep their more specific diagnostic; this walk covers every
+  // remaining symbol/type use and reports one error for each interned signature.
+  for (std::size_t index = 0; index < semantic.symbols.symbol_count(); ++index) {
+    const SymbolId symbol_id{static_cast<std::uint32_t>(index)};
+    const Symbol &symbol = semantic.symbols.symbol(symbol_id);
+    if (!symbol.type.is_valid()) continue;
+    const bool bridge = imported_default_context_bridge(semantic, symbol_id) ||
+        local_default_context_bridge(semantic, symbol_id);
+    validate_c_procedure_type_graph(
+        semantic,
+        symbol.type,
+        symbol.name_range,
+        bridge,
+        diagnosed_c_procedures,
+        diagnostics);
   }
   result.ok = diagnostics.error_count() == initial_errors;
   return result;

@@ -260,8 +260,12 @@ private:
     case TypeKind::Void: return "void";
     case TypeKind::SignedInteger:
     case TypeKind::UnsignedInteger: return integer_name(value);
-    case TypeKind::BooleanStorage:
     case TypeKind::Rune:
+      // rune is a distinct i32 in the language. Its valid values happen to be
+      // nonnegative Unicode scalars, but the C spelling must still preserve
+      // the declared signed machine type rather than silently advertise u32.
+      return "int32_t";
+    case TypeKind::BooleanStorage:
     case TypeKind::EndianScalar:
       if (value.bit_width == 8) return "uint8_t";
       if (value.bit_width == 16) return "uint16_t";
@@ -294,9 +298,16 @@ private:
         value.kind == TypeKind::UnsignedInteger ||
         value.kind == TypeKind::BooleanStorage || value.kind == TypeKind::Rune ||
         value.kind == TypeKind::EndianScalar || value.kind == TypeKind::Float ||
-        value.kind == TypeKind::RawPointer || value.kind == TypeKind::CString ||
-        value.kind == TypeKind::Procedure) {
+        value.kind == TypeKind::RawPointer || value.kind == TypeKind::CString) {
       return true;
+    }
+    // Only a C procedure has a C function-pointer declarator. An ordinary
+    // Draft procedure carries the hidden Context ABI and is deliberately not
+    // representable in a generated C header. A data pointer may still point to
+    // storage containing that value under the general opaque-pointee rule, so
+    // render ^proc as void * (and preserve any additional pointer layers).
+    if (value.kind == TypeKind::Procedure) {
+      return value.c_calling_convention;
     }
     return (value.kind == TypeKind::Struct || value.kind == TypeKind::RawUnion ||
             value.kind == TypeKind::Enum) &&

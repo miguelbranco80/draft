@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <optional>
+#include <vector>
 
 namespace draft {
 namespace {
@@ -14,7 +15,15 @@ struct HomogeneousFloatInfo {
   std::uint32_t count = 0;
 };
 
-[[nodiscard]] bool direct_scalar(const TypeStore &types, TypeId id) {
+[[nodiscard]] Aarch64CAbiType classify_with_active_procedures(
+    const TypeStore &types,
+    TypeId type_id,
+    std::vector<TypeId> &active_procedures);
+
+[[nodiscard]] bool direct_scalar(
+    const TypeStore &types,
+    TypeId id,
+    std::vector<TypeId> &active_procedures) {
   const Type &type = types.type(id);
   switch (type.kind) {
   case TypeKind::SignedInteger:
@@ -28,11 +37,40 @@ struct HomogeneousFloatInfo {
   case TypeKind::Pointer:
   case TypeKind::MultiPointer:
     return true;
-  case TypeKind::Procedure:
-    return type.c_calling_convention;
+  case TypeKind::Procedure: {
+    // A procedure value is a C function pointer only when its complete nested
+    // signature is C-ABI legal. Checking just the calling-convention bit would
+    // incorrectly admit callbacks such as `c proc(value: []u8)` as fields of a
+    // C record, even though the slice cannot cross that callback boundary.
+    if (!type.c_calling_convention || type.members.empty()) return false;
+    // C records and callback signatures may refer to one another recursively:
+    // `struct Node { void (*visit)(struct Node); }` is a finite C layout even
+    // though its type graph has a cycle. Reaching a procedure already being
+    // checked means the cycle itself has supplied no illegal leaf; accept that
+    // edge provisionally while the outer walk validates the remaining fields.
+    if (std::find(active_procedures.begin(), active_procedures.end(), id) !=
+        active_procedures.end()) {
+      return true;
+    }
+    active_procedures.push_back(id);
+    for (std::size_t index = 0; index + 1 < type.members.size(); ++index) {
+      if (classify_with_active_procedures(
+              types, type.members[index], active_procedures)
+              .classification == Aarch64CAbiClass::Illegal) {
+        active_procedures.pop_back();
+        return false;
+      }
+    }
+    const TypeId result = type.members.back();
+    const bool legal_result = result == types.builtins().void_type ||
+        classify_with_active_procedures(types, result, active_procedures)
+                .classification != Aarch64CAbiClass::Illegal;
+    active_procedures.pop_back();
+    return legal_result;
+  }
   case TypeKind::Enum:
     return type.c_representation && type.element.is_valid() &&
-        direct_scalar(types, type.element);
+        direct_scalar(types, type.element, active_procedures);
   default:
     return false;
   }
@@ -41,20 +79,23 @@ struct HomogeneousFloatInfo {
 // Member legality is recursive because C-represented aggregates may contain
 // arrays and other C-represented aggregates by value. Pointer pointees are not
 // traversed: C permits pointers to opaque and non-C Draft types.
-[[nodiscard]] bool aggregate_member_legal(const TypeStore &types, TypeId id) {
-  if (direct_scalar(types, id)) {
+[[nodiscard]] bool aggregate_member_legal(
+    const TypeStore &types,
+    TypeId id,
+    std::vector<TypeId> &active_procedures) {
+  if (direct_scalar(types, id, active_procedures)) {
     return true;
   }
   const Type &type = types.type(id);
   if (type.kind == TypeKind::Array) {
-    return aggregate_member_legal(types, type.element);
+    return aggregate_member_legal(types, type.element, active_procedures);
   }
   if ((type.kind != TypeKind::Struct && type.kind != TypeKind::RawUnion) ||
       !type.c_representation || !type.layout.known) {
     return false;
   }
   for (TypeId member : type.members) {
-    if (!aggregate_member_legal(types, member)) {
+    if (!aggregate_member_legal(types, member, active_procedures)) {
       return false;
     }
   }
@@ -131,22 +172,22 @@ struct HomogeneousFloatInfo {
   return result;
 }
 
-} // namespace
-
-Aarch64CAbiType classify_aarch64_darwin_c_type(
-    const TypeStore &types, TypeId type_id) {
+[[nodiscard]] Aarch64CAbiType classify_with_active_procedures(
+    const TypeStore &types,
+    TypeId type_id,
+    std::vector<TypeId> &active_procedures) {
   const Type &type = types.type(type_id);
   Aarch64CAbiType result;
   result.size = type.layout.size;
   result.alignment = type.layout.alignment;
 
-  if (direct_scalar(types, type_id)) {
+  if (direct_scalar(types, type_id, active_procedures)) {
     result.classification = Aarch64CAbiClass::Direct;
     return result;
   }
   if ((type.kind != TypeKind::Struct && type.kind != TypeKind::RawUnion) ||
       !type.c_representation || !type.layout.known || type.layout.size == 0 ||
-      !aggregate_member_legal(types, type_id)) {
+      !aggregate_member_legal(types, type_id, active_procedures)) {
     return result;
   }
 
@@ -182,6 +223,14 @@ Aarch64CAbiType classify_aarch64_darwin_c_type(
 
   result.classification = Aarch64CAbiClass::Indirect;
   return result;
+}
+
+} // namespace
+
+Aarch64CAbiType classify_aarch64_darwin_c_type(
+    const TypeStore &types, TypeId type_id) {
+  std::vector<TypeId> active_procedures;
+  return classify_with_active_procedures(types, type_id, active_procedures);
 }
 
 } // namespace draft
