@@ -77,6 +77,55 @@ to_code :: proc(value: i64) -> Code {
     return cast[Code](cast[i16](value))
 }
 
+record_defer :: proc(trace: [^]i64, count: ^usize, value: i64) {
+    trace[count^] = value
+    count^ += 1
+}
+
+exercise_return_defers :: proc(trace: [^]i64, count: ^usize) -> i64 {
+    // Defer captures arguments when the statement executes. Mutating `saved`
+    // afterward must not change the first recorded value; return 42 is also
+    // evaluated before either deferred call runs.
+    saved: i64 = 1
+    defer record_defer(trace, count, saved)
+    saved = 99
+    defer record_defer(trace, count, 2)
+    return 42
+}
+
+exercise_control_exit_defers :: proc(trace: [^]i64, count: ^usize) {
+    // Each loop iteration owns one lexical activation. Both continue and break
+    // must discharge that activation before selecting their next CFG target.
+    for index: i64 = 0; index < 4; index += 1 {
+        defer record_defer(trace, count, 10 + index)
+        if index == 0 {
+            continue
+        }
+        if index == 1 {
+            break
+        }
+    }
+
+    // A switch case is another defer scope even though cases never fall
+    // through. break exits the switch only after its case cleanup.
+    subject: i64 = 1
+    switch subject {
+    case 1:
+        defer record_defer(trace, count, 20)
+        break
+    case:
+        return
+    }
+
+    // Nested fallthrough unwinds the inner scope before the outer one.
+    {
+        defer record_defer(trace, count, 30)
+        {
+            defer record_defer(trace, count, 31)
+        }
+    }
+}
+
 main :: proc() {
     assert(divide(84, 2) == 42)
     assert(shift(1, 5) == 32)
@@ -99,4 +148,20 @@ main :: proc() {
     assert(narrow(42.75) == 42)
     assert(cast[i64](to_rune(65)) == 65)
     assert(to_code(7) == .Seven)
+
+    defer_trace: [8]i64
+    defer_count: usize
+    assert(exercise_return_defers(
+        cast[[^]i64](&defer_trace[0]),
+        &defer_count,
+    ) == 42)
+    exercise_control_exit_defers(
+        cast[[^]i64](&defer_trace[0]),
+        &defer_count,
+    )
+    assert(defer_count == 7)
+    expected := [7]i64{2, 1, 10, 11, 20, 31, 30}
+    for value, index in expected {
+        assert(defer_trace[index] == value)
+    }
 }
