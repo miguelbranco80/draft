@@ -187,9 +187,19 @@ struct ResolvedStage {
          package.obligations.obligations) {
       if (!is_synthesis(obligation.kind)) continue;
       const ResolutionPin *existing = find_pin(loaded, obligation.site_identity);
+      // Provider-free operation intentionally accepts a content-fresh pin: it
+      // is the offline path. Once a caller explicitly configures a provider,
+      // that selection is semantic input and must match the pin exactly.
+      const bool provider_matches = options.provider.synthesize == nullptr ||
+          (existing != nullptr &&
+           existing->provider_identity == options.provider.provider_identity &&
+           existing->model_identity == options.provider.model_identity &&
+           existing->configuration_identity ==
+               options.provider.configuration_identity);
       const bool fresh = existing != nullptr &&
           existing->kind == obligation.kind &&
-          existing->input_digest == obligation.input_digest;
+          existing->input_digest == obligation.input_digest &&
+          provider_matches;
 
       GeneratedExpansion expansion;
       ResolutionPin pin;

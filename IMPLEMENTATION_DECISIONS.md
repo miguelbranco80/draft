@@ -171,6 +171,11 @@ retain their anchor, text, and exact isolated attachment bytes. The same rows
 remain content-hashed, so their human-readable representation is both useful to
 Codex and a stale-pin input.
 
+A provider-free compile or resolution revalidation may consume a content-fresh
+pin without installing its original provider. When `draft resolve` explicitly
+selects a provider, however, provider, model, and complete adapter-configuration
+identities must match the pin; any changed selection regenerates the expansion.
+
 ## Native artifact ownership and visibility
 
 Status: first AArch64 macOS artifact contract.
