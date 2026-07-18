@@ -2387,31 +2387,19 @@ private:
           compile_time_arguments.end(),
           callee.children.begin() + 1,
           callee.children.end());
-    } else if (callee.kind != NodeKind::NameExpression) {
-      return pending();
     }
-    const SyntaxNode &base = tree.node(base_callee);
-    if (base.kind != NodeKind::NameExpression) return pending();
-    const std::optional<std::string> name = final_name(tree, base);
-    if (!name.has_value()) return pending();
-    std::optional<SymbolId> found;
-    if (const LocalBinding *local = local_binding(*name)) {
-      found = procedure_symbol(local->value);
+
+    // The callee is an ordinary expression and is evaluated before every
+    // argument.  This admits grouped and selected procedure values, procedure
+    // fields in constant aggregates, and imported procedure identities instead
+    // of giving compile-time calls a narrower grammar than runtime calls.
+    const EvalResult evaluated_callee = evaluate_expression(
+        tree, base_callee, scope, required);
+    if (evaluated_callee.status != EvalStatus::Ready) {
+      return evaluated_callee;
     }
-    if (!found.has_value()) {
-      const std::optional<SymbolId> named =
-          semantic_.symbols.lookup(scope, *name);
-      if (!named.has_value()) return pending();
-      const Symbol &binding = semantic_.symbols.symbol(*named);
-      if (binding.kind == SymbolKind::Procedure) {
-        found = *named;
-      } else if (binding.kind == SymbolKind::Constant ||
-                 binding.kind == SymbolKind::UnresolvedDeclaration) {
-        const EvalResult value = evaluate_binding(*named, required);
-        if (value.status != EvalStatus::Ready) return value;
-        found = procedure_symbol(value.value);
-      }
-    }
+    const std::optional<SymbolId> found =
+        procedure_symbol(evaluated_callee.value);
     if (!found.has_value()) {
       return fail(
           call.range,

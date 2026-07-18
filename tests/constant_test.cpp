@@ -893,6 +893,50 @@ Bad_Void_Value :: no_value()
                     std::string::npos);
 }
 
+void test_compile_time_callee_expressions(TestState &state) {
+  AnalyzedSource source(R"draft(
+package conditions
+
+Operation_Box :: struct {
+    operation: proc(value: int) -> int,
+}
+
+increment :: proc(value: int) -> int {
+    return value + 1
+}
+
+decrement :: proc(value: int) -> int {
+    return value - 1
+}
+
+Box :: Operation_Box{operation = increment}
+From_Field :: Box.operation(41)
+From_Group :: (increment)(41)
+From_Selection :: (increment if true else decrement)(41)
+)draft");
+  if (source.diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(source.sources, source.diagnostics);
+  }
+  EXPECT(state, source.analysis.ok);
+  EXPECT(state, !source.diagnostics.has_errors());
+  for (std::string_view name : {
+           std::string_view("From_Field"),
+           std::string_view("From_Group"),
+           std::string_view("From_Selection")}) {
+    const std::optional<draft::SymbolId> symbol =
+        find_symbol(source.analysis.package, name);
+    EXPECT(state, symbol.has_value());
+    const draft::ConstantValue *value = symbol.has_value()
+        ? source.analysis.constants.find(*symbol)
+        : nullptr;
+    EXPECT(state, value != nullptr);
+    if (value != nullptr) {
+      EXPECT(state, value->kind == draft::ConstantKind::Integer);
+      EXPECT(state, value->integer.to_decimal() == "42");
+    }
+  }
+}
+
 void test_operator_type_boundaries(TestState &state) {
   AnalyzedSource valid(R"draft(
 package conditions
@@ -1269,6 +1313,7 @@ int main() {
   test_invalid_required_constants(state);
   test_invalid_procedural_constants(state);
   test_compile_time_defer(state);
+  test_compile_time_callee_expressions(state);
   test_operator_type_boundaries(state);
   test_global_initializers(state);
 
