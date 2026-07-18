@@ -49,18 +49,124 @@ struct TestState {
 
 draft::CompileWorkspaceResult compile_fixture(
     draft::SourceManager &sources,
-    draft::DiagnosticSink &diagnostics) {
+    draft::DiagnosticSink &diagnostics,
+    bool emit_program_entry = true) {
   draft::CompileWorkspaceOptions options;
   options.target = draft::make_aarch64_macos_profile();
   options.workspace.workspace_directory =
       std::string(DRAFT_SOURCE_DIRECTORY) + "/examples";
   options.lower_mir = true;
   options.emit_llvm = true;
+  options.emit_program_entry = emit_program_entry;
   return draft::compile_workspace(
       sources,
       std::string(DRAFT_SOURCE_DIRECTORY) + "/examples/external-assembly",
       std::move(options),
       diagnostics);
+}
+
+void test_all_native_artifact_kinds(TestState &state) {
+  std::error_code error;
+  const std::filesystem::path temporary =
+      std::filesystem::temp_directory_path(error) /
+      "draft-native-artifact-kinds-test";
+  EXPECT(state, !error);
+  std::filesystem::remove_all(temporary, error);
+  error.clear();
+  std::filesystem::create_directories(temporary, error);
+  EXPECT(state, !error);
+  if (error) return;
+
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  const draft::CompileWorkspaceResult compiled =
+      compile_fixture(sources, diagnostics, false);
+  EXPECT(state, compiled.ok);
+  EXPECT(state, compiled.packages.size() == 1);
+  if (!compiled.ok || compiled.packages.empty() ||
+      !compiled.packages.front().has_value()) {
+    std::filesystem::remove_all(temporary, error);
+    return;
+  }
+  const std::string &llvm = compiled.packages.front()->llvm.text;
+  EXPECT(state, llvm.find("define i32 @main(") == std::string::npos);
+  EXPECT(state, llvm.find(
+      "define hidden void @\"__draft.runtime.default_context\"") !=
+      std::string::npos);
+
+  const std::filesystem::path log = temporary / "arguments.log";
+  const std::filesystem::path fake_clang = temporary / "record-clang";
+  {
+    std::ofstream script(fake_clang, std::ios::binary);
+    script << "#!/bin/sh\n"
+              "if [ \"$1\" = \"--version\" ]; then\n"
+              "  echo 'clang version 22.1.0'\n"
+              "  exit 0\n"
+              "fi\n"
+              "printf '%s\\n' '-- clang --' \"$@\" >> '"
+           << log.string()
+           << "'\n"
+              "previous=''\n"
+              "for argument in \"$@\"; do\n"
+              "  if [ \"$previous\" = \"-o\" ]; then : > \"$argument\"; fi\n"
+              "  previous=\"$argument\"\n"
+              "done\n"
+              "exit 0\n";
+  }
+  const std::filesystem::path fake_archiver = temporary / "record-ar";
+  {
+    std::ofstream script(fake_archiver, std::ios::binary);
+    script << "#!/bin/sh\n"
+              "printf '%s\\n' '-- ar --' \"$@\" >> '"
+           << log.string()
+           << "'\n"
+              ": > \"$2\"\n"
+              "exit 0\n";
+  }
+  EXPECT(state, chmod(fake_clang.c_str(), 0700) == 0);
+  EXPECT(state, chmod(fake_archiver.c_str(), 0700) == 0);
+
+  const draft::TargetProfile target = draft::make_aarch64_macos_profile();
+  const auto build = [&](draft::NativeArtifactKind kind,
+                         const std::filesystem::path &output) {
+    draft::NativeBuildOptions options;
+    options.clang_path = fake_clang.string();
+    options.archiver_path = fake_archiver.string();
+    options.build_directory = (temporary / "build").string();
+    options.output_path = output.string();
+    options.artifact_kind = kind;
+    return draft::build_native_artifact(
+        target, compiled, options, diagnostics);
+  };
+
+  EXPECT(state, build(
+      draft::NativeArtifactKind::Object,
+      temporary / "library.o").ok);
+  EXPECT(state, build(
+      draft::NativeArtifactKind::StaticLibrary,
+      temporary / "library.a").ok);
+  EXPECT(state, build(
+      draft::NativeArtifactKind::DynamicLibrary,
+      temporary / "library.dylib").ok);
+  EXPECT(state, build(
+      draft::NativeArtifactKind::Assembly,
+      temporary / "assembly").ok);
+  EXPECT(state, !diagnostics.has_errors());
+  EXPECT(state, std::filesystem::exists(temporary / "library.o"));
+  EXPECT(state, std::filesystem::exists(temporary / "library.a"));
+  EXPECT(state, std::filesystem::exists(temporary / "library.dylib"));
+  EXPECT(state, std::filesystem::exists(temporary / "assembly" / "package-0.s"));
+  EXPECT(state, read_file(
+      temporary / "assembly" / "package-0-assembly-0.s") ==
+      compiled.packages.front()->assembly_sources.front().contents);
+
+  const std::string arguments = read_file(log);
+  EXPECT(state, arguments.find("\n-Wl,-r\n") != std::string::npos);
+  EXPECT(state, arguments.find("\n-dynamiclib\n") != std::string::npos);
+  EXPECT(state, arguments.find("\n-- ar --\n-rcs\n") != std::string::npos);
+  EXPECT(state, arguments.find("\n-S\n") != std::string::npos);
+
+  std::filesystem::remove_all(temporary, error);
 }
 
 void test_package_assembly_reaches_link(TestState &state) {
@@ -192,10 +298,21 @@ void test_locked_build_verifies_and_isolates_inputs(TestState &state) {
     std::ofstream script(linker, std::ios::binary);
     script << "#!/bin/sh\nexit 0\n";
   }
+  const std::filesystem::path archiver = toolchain / "bin" / "llvm-ar";
+  {
+    std::ofstream script(archiver, std::ios::binary);
+    script << "#!/bin/sh\n"
+              "printf '%s\\n' '-- archive --' \"$@\" >> '"
+           << log.string()
+           << "'\n"
+              ": > \"$2\"\n"
+              "exit 0\n";
+  }
   std::ofstream(sdk / "usr" / "lib" / "libSystem.tbd", std::ios::binary)
       << "pinned SDK bytes\n";
   EXPECT(state, chmod(clang.c_str(), 0700) == 0);
   EXPECT(state, chmod(linker.c_str(), 0700) == 0);
+  EXPECT(state, chmod(archiver.c_str(), 0700) == 0);
 
   draft::LockedNativeInputRoots roots;
   roots.toolchain_root = toolchain;
@@ -267,6 +384,23 @@ void test_locked_build_verifies_and_isolates_inputs(TestState &state) {
   EXPECT(state, !repeated_diagnostics.has_errors());
   EXPECT(state, read_file(log) == arguments + arguments);
 
+  // The locked archive path uses the archiver inside the already pinned
+  // toolchain tree and asks LLVM ar for deterministic member metadata.
+  draft::NativeBuildOptions archive_options = options;
+  archive_options.artifact_kind = draft::NativeArtifactKind::StaticLibrary;
+  archive_options.output_path = (temporary / "library.a").string();
+  draft::DiagnosticSink archive_diagnostics;
+  const draft::NativeBuildResult archive = draft::build_native_artifact(
+      draft::make_aarch64_macos_profile(),
+      compiled,
+      archive_options,
+      archive_diagnostics);
+  EXPECT(state, archive.ok);
+  EXPECT(state, !archive_diagnostics.has_errors());
+  EXPECT(state, std::filesystem::exists(temporary / "library.a"));
+  EXPECT(state, read_file(log).find("\n-- archive --\nrcsD\n") !=
+      std::string::npos);
+
   // A changed SDK is rejected before a second compiler process starts.
   std::ofstream(sdk / "usr" / "lib" / "libSystem.tbd", std::ios::binary)
       << "mutated SDK bytes\n";
@@ -292,6 +426,7 @@ void test_locked_build_verifies_and_isolates_inputs(TestState &state) {
 int main() {
   TestState state;
   test_package_assembly_reaches_link(state);
+  test_all_native_artifact_kinds(state);
   test_locked_build_verifies_and_isolates_inputs(state);
   if (state.failures != 0) {
     std::cerr << state.failures << " toolchain expectation(s) failed\n";

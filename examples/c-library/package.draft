@@ -1,0 +1,39 @@
+package c_library
+
+// This package has no Draft `main`: it is a native library fixture. Its public
+// C surface exercises records, enums, raw unions, and callback pointers through
+// the exact same Darwin ABI classifier used by call lowering.
+Pair :: @repr(C) struct {
+    left: i32,
+    right: i32,
+}
+
+Choice :: @repr(C) enum {
+    neither = -1,
+    left = 1,
+    right = 2,
+}
+
+Number :: @repr(C) raw union {
+    integer: i64,
+    decimal: f64,
+}
+
+export pair_identity :: c "draft_pair_identity" proc(value: Pair) -> Pair {
+    return value
+}
+
+export choice_identity :: c "draft_choice_identity" proc(value: Choice) -> Choice {
+    return value
+}
+
+export number_identity :: c "draft_number_identity" proc(value: Number) -> Number {
+    return value
+}
+
+export apply :: c "draft_apply" proc(
+    callback: c proc(value: i32) -> i32,
+    value: i32,
+) -> i32 {
+    return callback(value)
+}

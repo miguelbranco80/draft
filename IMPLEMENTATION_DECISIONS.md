@@ -94,10 +94,11 @@ through `foreign` and `export` C-ABI declarations.
 Status: bootstrap build contract; versioned by the resolution and content-tree
 formats.
 
-The first locked executable seam accepts exactly two external inputs: one LLVM
+The first locked compiler-owned artifact seam accepts exactly two external inputs: one LLVM
 toolchain tree named `llvm-aarch64-macos` and one SDK tree named `macos-sdk`.
-The LLVM tree exposes executable `bin/clang` and `bin/ld64.lld`; Clang is the
-manifest entry point and the linker location is fixed by this adapter version.
+The LLVM tree exposes executable `bin/clang`, `bin/ld64.lld`, and `bin/llvm-ar`;
+Clang is the manifest entry point and the linker/archiver locations are fixed by
+this adapter version.
 Both complete trees are hashed as sorted relative path records including file
 kind, permission bits, exact regular-file bytes, and exact internal symlink
 spelling. Physical root paths are excluded. Absolute or escaping symlinks,
@@ -110,6 +111,25 @@ floor, and no Mach-O UUID. The child environment contains fixed `LANG` and
 deployment, or package search variables. Other manifest external-input roles
 fail closed until their artifact-to-command mapping exists. Ordinary
 development builds retain the separate explicit host-toolchain escape hatch.
+
+## Native artifact ownership and visibility
+
+Status: first AArch64 macOS artifact contract.
+
+The root LLVM module owns runtime support for every final native artifact, but
+only executable compilation adds the hosted C `main`. This lets an exported C
+wrapper use `runtime.default_context` from an object, archive, or dylib without
+requiring a fake Draft entry procedure. Ordinary Draft procedures and globals
+have hidden Mach-O visibility; only explicit C exports retain default visibility.
+
+Object output performs a relocatable link over all package and package-assembly
+objects. Static output uses deterministic LLVM-ar mode in locked builds. Dynamic
+output fixes an `@rpath/<filename>` install name. Assembly output is a directory
+bundle with one compiler-produced source per package and exact copied external
+assembly inputs, avoiding local-label collisions that concatenation could create.
+Generated C headers cover root-package exports and transitively required C
+records, raw unions, enums, fixed-array fields, and callback types. Layout
+assertions make size, alignment, and field-offset disagreement a C compile error.
 
 ## Initial hosted runtime context layout
 

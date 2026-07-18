@@ -15,6 +15,9 @@ namespace draft {
 
 struct LlvmIrOptions {
   PackageIdentity package;
+  // One module in every final artifact owns the compiler runtime definitions.
+  // Executables additionally own the hosted C `main`; libraries do not.
+  bool emit_runtime_support = false;
   bool emit_program_entry = false;
 };
 

@@ -158,8 +158,8 @@ build carries that verified manifest snapshot through compilation, re-hashes
 both physical roots, invokes the pinned Clang and Mach-O linker by absolute
 path, supplies the SDK explicitly, disables Clang configuration discovery, and
 uses a minimal child environment with no ambient tool, header, library, or SDK
-search path. Other external artifact kinds are rejected until their exact
-link mappings are implemented.
+search path. Foreign link artifacts are still rejected until their exact logical
+provider mappings are implemented.
 
 Configure, build, and test the current compiler with:
 
@@ -182,6 +182,14 @@ examples/hello` uses the pinned native toolchain; `--allow-host-toolchain` is an
 explicit development-only escape hatch. All commands use the same
 dependency-ordered source, semantic, HIR, and MIR pipeline.
 
+`draftc build` defaults to an executable. `--kind object`, `--kind
+static-library`, `--kind dynamic-library`, and `--kind assembly` select a
+relocatable object, archive, dylib, or collision-free directory of assembly
+sources. `draftc emit-c-header examples/c-library -o library.h` emits the C API
+for explicit root-package exports. The `examples/c-library` fixture builds as a
+no-`main` dylib and its checked-in C client exercises aggregate and callback ABI
+compatibility.
+
 `build/draftc resolve path/to/package --codex-executable /absolute/path/to/codex
 --codex-model <model>` invokes Codex only for missing or stale sites. Executable
 bytes, the explicit model, fixed non-interactive adapter contract, prompt format,
@@ -202,7 +210,7 @@ build/draftc build path/to/package --locked \
   --sdk-root /absolute/path/to/MacOSX.sdk
 ```
 
-The first toolchain layout requires executable `bin/clang` and
-`bin/ld64.lld`. Relocating an unchanged tree preserves its identity; changing
+The first toolchain layout requires executable `bin/clang`, `bin/ld64.lld`, and
+`bin/llvm-ar`. Relocating an unchanged tree preserves its identity; changing
 any byte, path, permission, or symlink spelling makes the build fail before a
 compiler process starts.

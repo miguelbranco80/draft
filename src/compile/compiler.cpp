@@ -634,9 +634,11 @@ CompileWorkspaceResult compile_workspace(
     if (options.emit_llvm) {
       LlvmIrOptions llvm_options;
       llvm_options.package = workspace_package.identity;
-      llvm_options.emit_program_entry =
+      llvm_options.emit_runtime_support =
           package_index ==
           static_cast<std::size_t>(result.graph.root_package.value);
+      llvm_options.emit_program_entry =
+          options.emit_program_entry && llvm_options.emit_runtime_support;
       package.llvm = emit_llvm_ir(
           options.target,
           sources,

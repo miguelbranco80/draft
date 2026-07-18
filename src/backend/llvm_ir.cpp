@@ -195,6 +195,10 @@ private:
     return semantic_.types.type(id);
   }
 
+  [[nodiscard]] bool owns_runtime_support() const {
+    return options_.emit_runtime_support || options_.emit_program_entry;
+  }
+
   [[nodiscard]] bool integer_kind(TypeKind kind) const {
     return kind == TypeKind::Bool || kind == TypeKind::BooleanStorage ||
         kind == TypeKind::SignedInteger || kind == TypeKind::UnsignedInteger ||
@@ -531,7 +535,7 @@ private:
             << "declare i32 @llvm.bswap.i32(i32)\n"
             << "declare i64 @llvm.bswap.i64(i64)\n"
             << "declare i128 @llvm.bswap.i128(i128)\n\n";
-    if (!options_.emit_program_entry) {
+    if (!owns_runtime_support()) {
       output_ << "declare hidden void @__draft.assert(ptr, i1, { ptr, i64 }, "
                  "{ ptr, i64 }, { ptr, i64 }, i64, i64)\n"
               << "declare hidden void @__draft.bounds(i64, i64, ptr, i64, i64)\n"
@@ -1248,7 +1252,7 @@ private:
   }
 
   [[nodiscard]] bool root_runtime_defines(SymbolId symbol_id) const {
-    if (!options_.emit_program_entry) return false;
+    if (!owns_runtime_support()) return false;
     const std::optional<std::string> native = native_symbol_name(symbol_id);
     return native.has_value() &&
         (*native == "@\"__draft.runtime.default_context\"" ||
@@ -1459,6 +1463,16 @@ private:
     return false;
   }
 
+  [[nodiscard]] bool is_c_export(SymbolId symbol) const {
+    for (const NativeBinding &binding : semantic_.native_bindings) {
+      if (binding.kind == NativeBindingKind::CExport &&
+          binding.symbol == symbol) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   void emit_globals() {
     const Scope &package_scope =
         semantic_.symbols.scope(semantic_.package_scope);
@@ -1468,7 +1482,7 @@ private:
           !symbol.type.is_valid()) {
         continue;
       }
-      output_ << symbol_name(symbol_id) << " = ";
+      output_ << symbol_name(symbol_id) << " = hidden ";
       if (symbol.flags.is_thread_local) output_ << "thread_local ";
       output_ << "global ";
       const ConstantValue *initializer = global_initializers_.find(symbol_id);
@@ -1509,7 +1523,7 @@ private:
                 << symbol_name(imported.proxy)
                 << function_signature(symbol.type, false) << "\n";
       } else if (symbol.kind == SymbolKind::Variable) {
-        output_ << symbol_name(imported.proxy) << " = external global "
+        output_ << symbol_name(imported.proxy) << " = external hidden global "
                 << llvm_type(symbol.type) << "\n";
       }
     }
@@ -3256,7 +3270,9 @@ private:
   void emit_procedure(std::size_t procedure_index, const MirProcedure &procedure) {
     if (!procedure.valid) return;
     auxiliary_index_ = 0;
-    output_ << "define " << llvm_function_result(procedure.type) << ' '
+    output_ << "define ";
+    if (!is_c_export(procedure.symbol)) output_ << "hidden ";
+    output_ << llvm_function_result(procedure.type) << ' '
             << symbol_name(procedure.symbol)
             << function_signature(procedure.type, true) << " {\n";
     std::vector<std::string> operands(procedure.values.size());

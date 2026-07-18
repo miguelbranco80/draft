@@ -11,6 +11,7 @@
 #include "compile/compiler.h"
 #include "compile/resolver.h"
 #include "elaborator/codex_cli.h"
+#include "interop/c_header.h"
 #include "source/diagnostic.h"
 #include "source/source.h"
 #include "syntax/lexer.h"
@@ -22,6 +23,7 @@
 #include "workspace/workspace.h"
 
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <optional>
 #include <string>
@@ -224,6 +226,7 @@ int compile_package(const std::string &directory, bool emit_llvm) {
 int build_package(
     const std::string &directory,
     const std::optional<std::string> &requested_output,
+    draft::NativeArtifactKind artifact_kind,
     bool allow_host_toolchain,
     const std::optional<draft::LockedNativeInputRoots> &locked_inputs) {
   draft::SourceManager sources;
@@ -244,6 +247,8 @@ int build_package(
   configure_core_distribution(compile_options.workspace);
   compile_options.lower_mir = true;
   compile_options.emit_llvm = true;
+  compile_options.emit_program_entry =
+      artifact_kind == draft::NativeArtifactKind::Executable;
   const draft::CompileWorkspaceResult compiled =
       draft::compile_workspace_with_resolution(
           sources,
@@ -253,7 +258,25 @@ int build_package(
   if (compiled.ok) {
     const std::filesystem::path build_directory =
         absolute_directory / ".draft" / "build";
-    std::filesystem::path output = build_directory / absolute_directory.filename();
+    const std::string package_name = absolute_directory.filename().string();
+    std::filesystem::path output;
+    switch (artifact_kind) {
+    case draft::NativeArtifactKind::Executable:
+      output = build_directory / package_name;
+      break;
+    case draft::NativeArtifactKind::Object:
+      output = build_directory / (package_name + ".o");
+      break;
+    case draft::NativeArtifactKind::StaticLibrary:
+      output = build_directory / ("lib" + package_name + ".a");
+      break;
+    case draft::NativeArtifactKind::DynamicLibrary:
+      output = build_directory / ("lib" + package_name + ".dylib");
+      break;
+    case draft::NativeArtifactKind::Assembly:
+      output = build_directory / (package_name + "-assembly");
+      break;
+    }
     if (requested_output.has_value()) {
       output = std::filesystem::absolute(*requested_output, path_error);
       if (path_error) {
@@ -266,16 +289,113 @@ int build_package(
     draft::NativeBuildOptions native_options;
     native_options.build_directory = build_directory.string();
     native_options.output_path = output.string();
+    native_options.artifact_kind = artifact_kind;
     native_options.allow_unpinned_toolchain = allow_host_toolchain;
     if (locked_inputs.has_value()) {
       native_options.locked = true;
       native_options.locked_inputs = *locked_inputs;
     }
     if (!diagnostics.has_errors()) {
-      const draft::NativeBuildResult built = draft::build_native_executable(
+      const draft::NativeBuildResult built = draft::build_native_artifact(
           target, compiled, native_options, diagnostics);
       if (built.ok) {
         std::cout << "built " << built.output_path << '\n';
+      }
+    }
+  }
+  if (!diagnostics.diagnostics().empty()) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+  }
+  return diagnostics.has_errors() ? 1 : 0;
+}
+
+int emit_c_header_package(
+    const std::string &directory,
+    const std::optional<std::string> &requested_output) {
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  std::error_code path_error;
+  const std::filesystem::path absolute_directory =
+      std::filesystem::absolute(directory, path_error);
+  if (path_error) {
+    std::cerr << "error: cannot make package path absolute: "
+              << path_error.message() << '\n';
+    return 1;
+  }
+
+  draft::CompileWorkspaceOptions options;
+  options.target = draft::make_aarch64_macos_profile();
+  options.workspace.workspace_directory =
+      absolute_directory.parent_path().string();
+  configure_core_distribution(options.workspace);
+  options.emit_program_entry = false;
+  const draft::CompileWorkspaceResult compiled =
+      draft::compile_workspace_with_resolution(
+          sources,
+          absolute_directory.string(),
+          std::move(options),
+          diagnostics);
+  if (compiled.ok) {
+    const std::size_t root =
+        static_cast<std::size_t>(compiled.graph.root_package.value);
+    if (root >= compiled.packages.size() ||
+        !compiled.packages[root].has_value()) {
+      diagnostics.error(
+          draft::SourceRange::invalid(),
+          "C header emission cannot find the compiled root package");
+    } else {
+      const draft::CHeaderResult header = draft::emit_c_header(
+          compiled.packages[root]->semantics.package, {}, diagnostics);
+      if (header.ok) {
+        std::filesystem::path output = absolute_directory / ".draft" / "build" /
+            (absolute_directory.filename().string() + ".h");
+        if (requested_output.has_value()) {
+          output = std::filesystem::absolute(*requested_output, path_error);
+          if (path_error) {
+            diagnostics.error(
+                draft::SourceRange::invalid(),
+                "cannot make C header output path absolute: " +
+                    path_error.message());
+          }
+        }
+        if (!diagnostics.has_errors()) {
+          std::filesystem::create_directories(output.parent_path(), path_error);
+          if (path_error) {
+            diagnostics.error(
+                draft::SourceRange::invalid(),
+                "cannot create C header output directory: " +
+                    path_error.message());
+          } else {
+            const std::filesystem::path temporary = output.string() + ".tmp";
+            std::ofstream stream(temporary, std::ios::binary | std::ios::trunc);
+            if (!stream) {
+              diagnostics.error(
+                  draft::SourceRange::invalid(),
+                  "cannot open temporary C header output");
+            } else {
+              stream.write(
+                  header.text.data(),
+                  static_cast<std::streamsize>(header.text.size()));
+              stream.close();
+              if (!stream) {
+                diagnostics.error(
+                    draft::SourceRange::invalid(),
+                    "cannot write temporary C header output");
+              } else {
+                std::filesystem::rename(temporary, output, path_error);
+                if (path_error) {
+                  diagnostics.error(
+                      draft::SourceRange::invalid(),
+                      "cannot commit C header output: " +
+                          path_error.message());
+                } else {
+                  std::cout << "emitted " << output.string() << " ("
+                            << header.export_count << " exports)\n";
+                }
+              }
+            }
+          }
+        }
       }
     }
   }
@@ -404,7 +524,10 @@ void print_usage() {
             << "  draftc syntax <file.draft>\n"
             << "  draftc check <package-directory>\n"
             << "  draftc emit-llvm <package-directory>\n"
-            << "  draftc build <package-directory> [-o <output>] [--allow-host-toolchain]\n"
+            << "  draftc emit-c-header <package-directory> [-o <output.h>]\n"
+            << "  draftc build <package-directory> [-o <output>]\n"
+            << "      [--kind executable|object|static-library|dynamic-library|assembly]\n"
+            << "      [--allow-host-toolchain]\n"
             << "  draftc build <package-directory> --locked\n"
             << "      --toolchain-root <directory> --sdk-root <directory> [-o <output>]\n"
             << "  draftc resolve <package-directory> [--revalidate]\n"
@@ -428,6 +551,16 @@ int main(int argc, char **argv) {
   }
   if (argc == 3 && std::string_view(argv[1]) == "emit-llvm") {
     return compile_package(argv[2], true);
+  }
+  if (argc >= 3 && std::string_view(argv[1]) == "emit-c-header") {
+    std::optional<std::string> output;
+    if (argc == 5 && std::string_view(argv[3]) == "-o") {
+      output = argv[4];
+    } else if (argc != 3) {
+      print_usage();
+      return 2;
+    }
+    return emit_c_header_package(argv[2], output);
   }
   if (argc >= 3 && std::string_view(argv[1]) == "resolve") {
     bool revalidate = false;
@@ -486,6 +619,9 @@ int main(int argc, char **argv) {
   }
   if (argc >= 3 && std::string_view(argv[1]) == "build") {
     std::optional<std::string> output;
+    draft::NativeArtifactKind artifact_kind =
+        draft::NativeArtifactKind::Executable;
+    bool artifact_kind_set = false;
     bool allow_host_toolchain = false;
     bool locked = false;
     std::optional<std::string> toolchain_root;
@@ -494,6 +630,24 @@ int main(int argc, char **argv) {
       const std::string_view argument(argv[index]);
       if (argument == "--allow-host-toolchain") {
         allow_host_toolchain = true;
+      } else if (argument == "--kind" && !artifact_kind_set &&
+                 index + 1 < argc) {
+        const std::string_view spelling(argv[++index]);
+        artifact_kind_set = true;
+        if (spelling == "executable") {
+          artifact_kind = draft::NativeArtifactKind::Executable;
+        } else if (spelling == "object") {
+          artifact_kind = draft::NativeArtifactKind::Object;
+        } else if (spelling == "static-library") {
+          artifact_kind = draft::NativeArtifactKind::StaticLibrary;
+        } else if (spelling == "dynamic-library") {
+          artifact_kind = draft::NativeArtifactKind::DynamicLibrary;
+        } else if (spelling == "assembly") {
+          artifact_kind = draft::NativeArtifactKind::Assembly;
+        } else {
+          print_usage();
+          return 2;
+        }
       } else if (argument == "--locked" && !locked) {
         locked = true;
       } else if (argument == "--toolchain-root" &&
@@ -527,7 +681,7 @@ int main(int argc, char **argv) {
       }
     }
     return build_package(
-        argv[2], output, allow_host_toolchain, locked_inputs);
+        argv[2], output, artifact_kind, allow_host_toolchain, locked_inputs);
   }
   if (argc == 2 && std::string_view(argv[1]) == "target") {
     return print_target();

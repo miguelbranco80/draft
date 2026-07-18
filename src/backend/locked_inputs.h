@@ -25,6 +25,7 @@ struct LockedNativeInputRoots {
 struct VerifiedLockedNativeInputs {
   std::filesystem::path clang;
   std::filesystem::path linker;
+  std::filesystem::path archiver;
   std::filesystem::path toolchain_root;
   std::filesystem::path sdk_root;
 };
@@ -32,7 +33,7 @@ struct VerifiedLockedNativeInputs {
 // Produces the complete canonical external-input set understood by the first
 // native adapter. Both roots must be absolute real directories; symlinked
 // parent components are canonicalized before hashing. The LLVM tree must
-// contain executable bin/clang and bin/ld64.lld entries.
+// contain executable bin/clang, bin/ld64.lld, and bin/llvm-ar entries.
 [[nodiscard]] bool pin_locked_native_inputs(
     const LockedNativeInputRoots &roots,
     std::vector<ExternalInputPin> &pins,

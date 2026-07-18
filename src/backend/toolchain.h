@@ -8,13 +8,26 @@
 #include "target/profile.h"
 
 #include <string>
+#include <string_view>
 
 namespace draft {
 
+enum class NativeArtifactKind {
+  Executable,
+  Object,
+  StaticLibrary,
+  DynamicLibrary,
+  Assembly,
+};
+
+[[nodiscard]] std::string_view native_artifact_kind_name(NativeArtifactKind kind);
+
 struct NativeBuildOptions {
   std::string clang_path = "clang";
+  std::string archiver_path = "ar";
   std::string build_directory;
   std::string output_path;
+  NativeArtifactKind artifact_kind = NativeArtifactKind::Executable;
   // Development-only escape hatch. Release/locked builds must leave this false
   // so an ambient Apple Clang or another LLVM revision cannot alter artifacts.
   bool allow_unpinned_toolchain = false;
@@ -32,11 +45,21 @@ struct NativeBuildResult {
   std::string output_path;
 };
 
-// Writes one LLVM module per compiled package, emits one object per module, and
-// links them into an AArch64 macOS executable. Arguments are passed directly to
-// exec rather than through a shell. The normal path accepts only LLVM/Clang
-// 22.1.x, matching the target contract in IMPLEMENTATION_PLAN.md. Locked mode
-// additionally verifies exact trees and supplies an explicit SDK and linker.
+// Writes one LLVM module per compiled package and emits the requested native
+// artifact. Object mode performs a relocatable link over every package object;
+// archive and dynamic-library modes retain every package and package-assembly
+// object; assembly mode produces a directory with one collision-free source per
+// module/input. Arguments are passed directly to exec rather than through a
+// shell. Locked mode additionally verifies exact trees and uses only the
+// selected linker, SDK, and archiver.
+[[nodiscard]] NativeBuildResult build_native_artifact(
+    const TargetProfile &target,
+    const CompileWorkspaceResult &compiled,
+    const NativeBuildOptions &options,
+    DiagnosticSink &diagnostics);
+
+// Compatibility spelling for callers that specifically request the default
+// executable kind.
 [[nodiscard]] NativeBuildResult build_native_executable(
     const TargetProfile &target,
     const CompileWorkspaceResult &compiled,

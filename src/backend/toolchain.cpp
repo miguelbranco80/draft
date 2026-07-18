@@ -199,7 +199,18 @@ void append_locked_arguments(
 
 } // namespace
 
-NativeBuildResult build_native_executable(
+std::string_view native_artifact_kind_name(NativeArtifactKind kind) {
+  switch (kind) {
+  case NativeArtifactKind::Executable: return "executable";
+  case NativeArtifactKind::Object: return "object";
+  case NativeArtifactKind::StaticLibrary: return "static-library";
+  case NativeArtifactKind::DynamicLibrary: return "dynamic-library";
+  case NativeArtifactKind::Assembly: return "assembly";
+  }
+  return "unknown";
+}
+
+NativeBuildResult build_native_artifact(
     const TargetProfile &target,
     const CompileWorkspaceResult &compiled,
     const NativeBuildOptions &options,
@@ -225,6 +236,7 @@ NativeBuildResult build_native_executable(
 
   VerifiedLockedNativeInputs locked_inputs;
   std::string clang_path = options.clang_path;
+  std::string archiver_path = options.archiver_path;
   if (options.locked) {
     if (!std::filesystem::path(options.build_directory).is_absolute() ||
         !std::filesystem::path(options.output_path).is_absolute()) {
@@ -255,6 +267,7 @@ NativeBuildResult build_native_executable(
       return result;
     }
     clang_path = locked_inputs.clang.string();
+    archiver_path = locked_inputs.archiver.string();
   }
 
   std::vector<std::string> version_arguments{clang_path};
@@ -289,6 +302,17 @@ NativeBuildResult build_native_executable(
     return result;
   }
   const std::filesystem::path build_directory(options.build_directory);
+  const std::filesystem::path output_path(options.output_path);
+  if (options.artifact_kind == NativeArtifactKind::Assembly) {
+    std::filesystem::create_directories(output_path, directory_error);
+    if (directory_error) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "cannot create assembly output directory: " +
+              directory_error.message());
+      return result;
+    }
+  }
   std::vector<std::string> objects;
   for (std::size_t index = 0; index < compiled.packages.size(); ++index) {
     if (!compiled.packages[index].has_value() ||
@@ -299,8 +323,8 @@ NativeBuildResult build_native_executable(
     }
     const std::filesystem::path module =
         build_directory / ("package-" + std::to_string(index) + ".ll");
-    const std::filesystem::path object =
-        build_directory / ("package-" + std::to_string(index) + ".o");
+    const std::string package_stem = "package-" + std::to_string(index);
+    const std::filesystem::path object = build_directory / (package_stem + ".o");
     std::string write_error;
     if (!write_atomic(module, compiled.packages[index]->llvm.text, write_error)) {
       diagnostics.error(SourceRange::invalid(), write_error);
@@ -318,11 +342,16 @@ NativeBuildResult build_native_executable(
             "-mmacosx-version-min=" + target.minimum_os_version,
             "-x",
             "ir",
-            "-c",
-            module.string(),
-            "-o",
-            object.string(),
         });
+    const bool assembly_output =
+        options.artifact_kind == NativeArtifactKind::Assembly;
+    const std::filesystem::path compiled_output = assembly_output
+        ? output_path / (package_stem + ".s")
+        : object;
+    compile_arguments.push_back(assembly_output ? "-S" : "-c");
+    compile_arguments.push_back(module.string());
+    compile_arguments.push_back("-o");
+    compile_arguments.push_back(compiled_output.string());
     const ProcessResult compile =
         run_process(compile_arguments, options.locked);
     if (!compile.started || compile.exit_code != 0) {
@@ -330,7 +359,7 @@ NativeBuildResult build_native_executable(
           SourceRange::invalid(), phase_failure("LLVM object emission", compile));
       return result;
     }
-    objects.push_back(object.string());
+    if (!assembly_output) objects.push_back(object.string());
 
     // Package assembly is an ordinary selected source input, not inline Draft
     // assembly.  Write the captured bytes rather than rereading the workspace,
@@ -354,13 +383,15 @@ NativeBuildResult build_native_executable(
       const std::string stem = "package-" + std::to_string(index) +
           "-assembly-" + std::to_string(assembly_index);
       const std::filesystem::path source =
-          build_directory / (stem + rule->extension);
+          (assembly_output ? output_path : build_directory) /
+          (stem + rule->extension);
       const std::filesystem::path assembly_object =
           build_directory / (stem + ".o");
       if (!write_atomic(source, input.contents, write_error)) {
         diagnostics.error(SourceRange::invalid(), write_error);
         return result;
       }
+      if (assembly_output) continue;
       std::vector<std::string> assemble_arguments{clang_path};
       if (options.locked) {
         append_locked_arguments(locked_inputs, false, assemble_arguments);
@@ -392,7 +423,12 @@ NativeBuildResult build_native_executable(
     }
   }
 
-  std::filesystem::path output_path(options.output_path);
+  if (options.artifact_kind == NativeArtifactKind::Assembly) {
+    result.ok = true;
+    result.output_path = output_path.string();
+    return result;
+  }
+
   if (output_path.has_parent_path()) {
     std::filesystem::create_directories(output_path.parent_path(), directory_error);
     if (directory_error) {
@@ -402,6 +438,27 @@ NativeBuildResult build_native_executable(
       return result;
     }
   }
+
+  if (options.artifact_kind == NativeArtifactKind::StaticLibrary) {
+    std::vector<std::string> archive_arguments{
+        archiver_path,
+        options.locked ? "rcsD" : "-rcs",
+        output_path.string(),
+    };
+    archive_arguments.insert(
+        archive_arguments.end(), objects.begin(), objects.end());
+    const ProcessResult archive = run_process(archive_arguments, options.locked);
+    if (!archive.started || archive.exit_code != 0) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          phase_failure("deterministic static archive emission", archive));
+      return result;
+    }
+    result.ok = true;
+    result.output_path = output_path.string();
+    return result;
+  }
+
   std::vector<std::string> link_arguments = {
       clang_path,
   };
@@ -412,18 +469,41 @@ NativeBuildResult build_native_executable(
   link_arguments.push_back(target.llvm_triple);
   link_arguments.push_back(
       "-mmacosx-version-min=" + target.minimum_os_version);
+  if (options.artifact_kind == NativeArtifactKind::Object) {
+    link_arguments.push_back("-nostdlib");
+    link_arguments.push_back("-Wl,-r");
+  } else if (options.artifact_kind == NativeArtifactKind::DynamicLibrary) {
+    link_arguments.push_back("-dynamiclib");
+    link_arguments.push_back(
+        "-Wl,-install_name,@rpath/" + output_path.filename().string());
+  }
   link_arguments.insert(link_arguments.end(), objects.begin(), objects.end());
   link_arguments.push_back("-o");
   link_arguments.push_back(output_path.string());
   const ProcessResult link = run_process(link_arguments, options.locked);
   if (!link.started || link.exit_code != 0) {
     diagnostics.error(
-        SourceRange::invalid(), phase_failure("Mach-O link", link));
+        SourceRange::invalid(),
+        phase_failure(
+            std::string(native_artifact_kind_name(options.artifact_kind)) +
+                " Mach-O link",
+            link));
     return result;
   }
   result.ok = true;
   result.output_path = output_path.string();
   return result;
+}
+
+NativeBuildResult build_native_executable(
+    const TargetProfile &target,
+    const CompileWorkspaceResult &compiled,
+    const NativeBuildOptions &options,
+    DiagnosticSink &diagnostics) {
+  NativeBuildOptions executable_options = options;
+  executable_options.artifact_kind = NativeArtifactKind::Executable;
+  return build_native_artifact(
+      target, compiled, executable_options, diagnostics);
 }
 
 } // namespace draft

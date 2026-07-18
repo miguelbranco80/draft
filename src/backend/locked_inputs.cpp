@@ -18,6 +18,7 @@ constexpr std::string_view kToolchainName = "llvm-aarch64-macos";
 constexpr std::string_view kSdkName = "macos-sdk";
 constexpr std::string_view kClangEntry = "bin/clang";
 constexpr std::string_view kLinkerEntry = "bin/ld64.lld";
+constexpr std::string_view kArchiverEntry = "bin/llvm-ar";
 
 [[nodiscard]] bool inspect_root_directory(
     const std::filesystem::path &root,
@@ -134,8 +135,10 @@ bool pin_locked_native_inputs(
 
   const std::filesystem::path clang = canonical.toolchain_root / kClangEntry;
   const std::filesystem::path linker = canonical.toolchain_root / kLinkerEntry;
+  const std::filesystem::path archiver = canonical.toolchain_root / kArchiverEntry;
   if (!inspect_executable(clang, "Clang driver", diagnostics) ||
-      !inspect_executable(linker, "Mach-O linker", diagnostics)) {
+      !inspect_executable(linker, "Mach-O linker", diagnostics) ||
+      !inspect_executable(archiver, "LLVM archiver", diagnostics)) {
     return false;
   }
 
@@ -196,6 +199,7 @@ bool verify_locked_native_inputs(
   VerifiedLockedNativeInputs result;
   result.clang = canonical.toolchain_root / kClangEntry;
   result.linker = canonical.toolchain_root / kLinkerEntry;
+  result.archiver = canonical.toolchain_root / kArchiverEntry;
   result.toolchain_root = canonical.toolchain_root;
   result.sdk_root = canonical.sdk_root;
   verified = std::move(result);

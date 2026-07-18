@@ -340,10 +340,10 @@ main :: proc() -> int {
   EXPECT(state, module.text.find(
       "target triple = \"arm64-apple-macosx14.0.0\"") != std::string::npos);
   EXPECT(state, module.text.find(
-      "define i64 @\"draft.workspace.native.add\"(ptr %context, i64 %arg0, i64 %arg1)") !=
+      "define hidden i64 @\"draft.workspace.native.add\"(ptr %context, i64 %arg0, i64 %arg1)") !=
       std::string::npos);
   EXPECT(state, module.text.find(
-      "@\"draft.workspace.native.global_5Fanswer\" = global i64 42") !=
+      "@\"draft.workspace.native.global_5Fanswer\" = hidden global i64 42") !=
       std::string::npos);
   EXPECT(state, module.text.find(
       "load i64, ptr @\"draft.workspace.native.global_5Fanswer\"") !=
@@ -351,7 +351,7 @@ main :: proc() -> int {
   EXPECT(state, module.text.find(
       "store i64 %v") != std::string::npos);
   EXPECT(state, module.text.find(
-      "@\"draft.workspace.native.inferred_5Fglobal\" = global i64 21") !=
+      "@\"draft.workspace.native.inferred_5Fglobal\" = hidden global i64 21") !=
       std::string::npos);
   EXPECT(state, module.text.find("thread_local global i32 -7") !=
       std::string::npos);

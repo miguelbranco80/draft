@@ -41,6 +41,7 @@ add_library(
   src/elaborator/resolved_program.cpp
   src/elaborator/resolution_store.cpp
   src/interop/aarch64_abi.cpp
+  src/interop/c_header.cpp
   src/interop/native.cpp
   src/mir/lower.cpp
   src/mir/mir.cpp
@@ -229,6 +230,10 @@ if(BUILD_TESTING)
   add_executable(draft_aarch64_abi_tests tests/aarch64_abi_test.cpp)
   target_link_libraries(draft_aarch64_abi_tests PRIVATE draft_compiler)
   add_test(NAME draft_aarch64_abi_tests COMMAND draft_aarch64_abi_tests)
+
+  add_executable(draft_c_header_tests tests/c_header_test.cpp)
+  target_link_libraries(draft_c_header_tests PRIVATE draft_compiler)
+  add_test(NAME draft_c_header_tests COMMAND draft_c_header_tests)
 
   add_executable(draft_toolchain_tests tests/toolchain_test.cpp)
   target_link_libraries(draft_toolchain_tests PRIVATE draft_compiler)

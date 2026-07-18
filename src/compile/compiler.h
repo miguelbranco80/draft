@@ -41,10 +41,13 @@ struct CompileWorkspaceOptions {
   // Versioned identity of the compiler semantics and manifest algorithm. It is
   // a resolved-program input and must change when an implementation change can
   // alter accepted meaning or emitted behavior for the same other inputs.
-  std::string compiler_content_identity = "draft-bootstrap-cpp-v10";
+  std::string compiler_content_identity = "draft-bootstrap-cpp-v11";
   CompileWorkspaceStage stage = CompileWorkspaceStage::Complete;
   bool lower_mir = false;
   bool emit_llvm = false;
+  // Library and object artifacts lower a complete root without synthesizing a
+  // hosted `main`. The root still owns runtime support in either mode.
+  bool emit_program_entry = true;
 };
 
 // Exact package assembly bytes are copied out of SourceManager when a package
