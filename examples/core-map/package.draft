@@ -1,0 +1,19 @@
+package core_map
+
+import core/map
+
+main :: proc() {
+    counts: map.Map[string, u64]
+    map.init(&counts, map.string_keys)
+    defer map.destroy(&counts)
+
+    map.set(&counts, "blocks", 3)
+    map.set(&counts, "edges", 7)
+    map.set(&counts, "blocks", 4)
+    (blocks, found) := map.get(&counts, "blocks")
+    assert(found && blocks == 4)
+    assert(counts.length == 2)
+    assert(map.remove(&counts, "edges"))
+    (_, missing) := map.get(&counts, "edges")
+    assert(!missing && counts.length == 1)
+}

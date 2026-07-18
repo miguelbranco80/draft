@@ -174,3 +174,12 @@ not publish a type declaration for it. This makes transitive values fully
 usable—for example, the `runtime.Allocator` returned by `core/heap` still has
 its `procedure` and `user` members—and lets a subsequent interface export carry
 the same member information onward.
+
+Generic aggregate construction applies that rule recursively. When a public
+template contains a specialization from a transitive dependency, the canonical
+interface packet is sufficient to create the concrete nested nominal even if
+the consumer did not directly import the original template declaration. The
+importer installs provenance before following members so recursive types
+converge on the in-progress TypeId. Recursive instantiation snapshots aggregate
+rows before appending new ones; sanitizer coverage enforces this append-only
+table discipline.

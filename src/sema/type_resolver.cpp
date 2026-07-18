@@ -548,6 +548,83 @@ private:
     }
     if (!source.is_valid()) return source;
     const Type value = semantic_.types.type(source);
+
+    // Nominal applications keep their identity at the template boundary. A
+    // member such as `Dynamic[T]` inside `Map[T, V]` must become the canonical
+    // `Dynamic[u64]` application when Map is instantiated; substituting the
+    // aggregate's already-laid-out members would leave Dynamic's own T behind.
+    if (value.kind == TypeKind::Struct || value.kind == TypeKind::Enum ||
+        value.kind == TypeKind::TaggedUnion ||
+        value.kind == TypeKind::RawUnion) {
+      std::optional<SymbolId> template_source;
+      std::vector<ParametricArgument> arguments;
+      std::optional<ImportedType> imported_application;
+      for (const ParametricTypeInstanceRecord &instance :
+           semantic_.parametric_type_instances) {
+        if (semantic_.symbols.symbol(instance.instance).type != source) continue;
+        template_source = instance.source;
+        arguments = instance.arguments;
+        break;
+      }
+      if (arguments.empty()) {
+        for (const ImportedType &imported : semantic_.imported_types) {
+          if (imported.type != source || imported.arguments.empty()) continue;
+          imported_application = imported;
+          arguments = imported.arguments;
+          break;
+        }
+      }
+      if (!arguments.empty()) {
+        bool changed = false;
+        for (ParametricArgument &argument : arguments) {
+          if (!argument.is_type) continue;
+          const TypeId replacement = substitute_type(
+              argument.type,
+              substitutions,
+              value_substitutions,
+              use_range);
+          changed = changed || replacement != argument.type;
+          argument.type = replacement;
+        }
+        if (!changed) return source;
+
+        if (!template_source.has_value() && imported_application.has_value()) {
+          for (const ImportedSymbol &imported : semantic_.imported_symbols) {
+            if (imported.root_identity !=
+                    imported_application->root_identity ||
+                imported.root_relative_path !=
+                    imported_application->root_relative_path ||
+                imported.public_name != imported_application->public_name) {
+              continue;
+            }
+            const Symbol &candidate = semantic_.symbols.symbol(imported.proxy);
+            if (candidate.kind == SymbolKind::Type &&
+                candidate.flags.parametric) {
+              template_source = imported.proxy;
+              break;
+            }
+          }
+        }
+        if (!template_source.has_value()) {
+          if (imported_application.has_value()) {
+            return instantiate_transitive_nominal(
+                source,
+                *imported_application,
+                std::move(arguments),
+                substitutions,
+                value_substitutions,
+                use_range);
+          }
+          diagnostics_.error(
+              use_range,
+              "cannot recover the template declaration for nominal substitution");
+          return semantic_.types.builtins().invalid;
+        }
+        return instantiate_parametric_type(
+            *template_source, std::move(arguments), use_range);
+      }
+    }
+
     switch (value.kind) {
     case TypeKind::Pointer:
       return semantic_.types.pointer(substitute_type(
@@ -620,6 +697,137 @@ private:
     default:
       return source;
     }
+  }
+
+  // A dependency can expose `array.Dynamic[T]` only as a member of its own
+  // public `Map[T, V]` without re-exporting array.Dynamic's declaration. The
+  // interface still carries Dynamic's stable origin, symbolic arguments,
+  // complete layout, and member packet. That is sufficient to specialize the
+  // imported application directly while preserving its original nominal
+  // identity; requiring an unrelated direct import would make interfaces
+  // semantically incomplete.
+  [[nodiscard]] TypeId instantiate_transitive_nominal(
+      TypeId pattern,
+      const ImportedType &origin,
+      std::vector<ParametricArgument> arguments,
+      const std::vector<ResolverTypeSubstitution> &substitutions,
+      const std::vector<ResolverValueSubstitution> &value_substitutions,
+      SourceRange use_range) {
+    const Type pattern_type = semantic_.types.type(pattern);
+    for (const ImportedType &existing : semantic_.imported_types) {
+      if (existing.root_identity == origin.root_identity &&
+          existing.root_relative_path == origin.root_relative_path &&
+          existing.public_name == origin.public_name &&
+          existing.arguments == arguments && existing.type.is_valid() &&
+          semantic_.types.type(existing.type).kind == pattern_type.kind) {
+        return existing.type;
+      }
+    }
+
+    std::string instance_name = origin.public_name + "$transitive_instance";
+    for (const ParametricArgument &argument : arguments) {
+      instance_name += argument.is_type
+          ? "$t" + std::to_string(argument.type.value)
+          : "$v" + argument.value.integer.to_decimal();
+    }
+    const TypeId concrete = semantic_.types.begin_nominal(
+        pattern_type.kind, instance_name, use_range);
+    semantic_.types.type_mut(concrete).c_representation =
+        pattern_type.c_representation;
+    semantic_.types.type_mut(concrete).requested_alignment =
+        pattern_type.requested_alignment;
+
+    Symbol owner;
+    owner.name = "$transitive_nominal$" + std::to_string(concrete.value);
+    owner.kind = SymbolKind::Type;
+    owner.visibility = Visibility::Private;
+    owner.scope = semantic_.package_scope;
+    owner.type = concrete;
+    owner.name_range = use_range;
+    const SymbolId owner_id =
+        semantic_.symbols.declare(std::move(owner), diagnostics_);
+    if (!owner_id.is_valid()) return semantic_.types.builtins().invalid;
+    const ScopeId member_scope = semantic_.symbols.add_scope(
+        ScopeKind::Type, semantic_.package_scope, use_range);
+    semantic_.owned_scopes.push_back({owner_id, member_scope});
+
+    // Install provenance before following member types. A recursive member
+    // such as `^Node[T]` then finds this in-progress TypeId instead of starting
+    // a second specialization of the same nominal application.
+    semantic_.imported_types.push_back({
+        concrete,
+        origin.root_identity,
+        origin.root_relative_path,
+        origin.public_name,
+        arguments,
+    });
+
+    std::vector<SymbolId> template_members;
+    for (const OwnedSemanticScope &owned : semantic_.owned_scopes) {
+      if (owned.owner == owner_id ||
+          semantic_.symbols.scope(owned.scope).kind != ScopeKind::Type ||
+          semantic_.symbols.symbol(owned.owner).type != pattern) {
+        continue;
+      }
+      template_members = semantic_.symbols.scope(owned.scope).symbols;
+      break;
+    }
+
+    MemberData data;
+    for (SymbolId template_member : template_members) {
+      Symbol concrete_member = semantic_.symbols.symbol(template_member);
+      concrete_member.scope = member_scope;
+      concrete_member.type = substitute_type(
+          concrete_member.type,
+          substitutions,
+          value_substitutions,
+          use_range);
+      const SymbolId member_id =
+          semantic_.symbols.declare(std::move(concrete_member), diagnostics_);
+      if (!member_id.is_valid()) continue;
+      data.symbols.push_back(member_id);
+      data.types.push_back(semantic_.symbols.symbol(member_id).type);
+      data.offsets.push_back(0);
+      if (pattern_type.kind == TypeKind::Enum) {
+        std::optional<BigInteger> enum_value;
+        for (const EnumMemberValue &value : semantic_.enum_member_values) {
+          if (value.member != template_member) continue;
+          enum_value = value.value;
+          break;
+        }
+        if (enum_value.has_value()) {
+          data.enum_values.push_back(*enum_value);
+          semantic_.enum_member_values.push_back(
+              {member_id, std::move(*enum_value)});
+        }
+      }
+    }
+
+    TypeId element = substitute_type(
+        pattern_type.element,
+        substitutions,
+        value_substitutions,
+        use_range);
+    semantic_.types.type_mut(concrete).element = element;
+    TypeLayout layout;
+    if (pattern_type.kind == TypeKind::Struct) {
+      layout = struct_layout(data);
+    } else if (pattern_type.kind == TypeKind::RawUnion) {
+      layout = raw_union_layout(data);
+    } else if (pattern_type.kind == TypeKind::Enum) {
+      layout = semantic_.types.type(element).layout;
+    } else {
+      layout = tagged_union_layout(element, data);
+    }
+    layout = apply_requested_alignment(
+        layout, pattern_type.requested_alignment, use_range);
+    semantic_.types.complete_nominal(
+        concrete, layout, data.types, data.offsets);
+    for (std::size_t index = 0; index < data.symbols.size(); ++index) {
+      semantic_.aggregate_members.push_back(
+          {owner_id, data.symbols[index], data.offsets[index]});
+    }
+    return concrete;
   }
 
   [[nodiscard]] std::optional<SymbolId> type_symbol_in_span(
@@ -740,6 +948,23 @@ private:
       }
     }
 
+    // A concrete specialization may already have arrived in the dependency's
+    // interface (for example Key_Ops[string] as another procedure's result).
+    // Reuse that consumer-local TypeId instead of creating a second nominal
+    // type for the same public template identity and arguments.
+    for (const ImportedSymbol &origin : semantic_.imported_symbols) {
+      if (origin.proxy != source) continue;
+      for (const ImportedType &imported : semantic_.imported_types) {
+        if (imported.root_identity == origin.root_identity &&
+            imported.root_relative_path == origin.root_relative_path &&
+            imported.public_name == origin.public_name &&
+            imported.arguments == arguments) {
+          return imported.type;
+        }
+      }
+      break;
+    }
+
     const Type template_type = semantic_.types.type(template_symbol.type);
     if (template_type.kind != TypeKind::Struct &&
         template_type.kind != TypeKind::Enum &&
@@ -779,8 +1004,14 @@ private:
     semantic_.owned_scopes.push_back({instance_id, member_scope});
 
     MemberData data;
+    // Substituting one member may instantiate another nominal application and
+    // append aggregate rows. Snapshot this template's stable IDs before that
+    // recursive work so vector growth cannot invalidate the active row.
+    std::vector<AggregateMember> template_members;
     for (const AggregateMember &member : semantic_.aggregate_members) {
-      if (member.owner != source) continue;
+      if (member.owner == source) template_members.push_back(member);
+    }
+    for (const AggregateMember &member : template_members) {
       Symbol concrete_member = semantic_.symbols.symbol(member.member);
       const SymbolId template_member = member.member;
       concrete_member.scope = member_scope;

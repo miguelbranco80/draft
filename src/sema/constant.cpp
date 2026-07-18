@@ -3686,8 +3686,16 @@ private:
 
     case NodeKind::CompositeExpression: {
       if (node.children.empty()) return pending();
-      const std::optional<TypeId> composite_type =
+      std::optional<TypeId> composite_type =
           type_value(tree, node.children.front(), scope);
+      // Parametric applications have already been resolved in an explicitly
+      // typed global declaration, but this evaluator's small type-expression
+      // reader does not recreate applications. The declared expected type is
+      // authoritative and is checked again by global-initializer conversion.
+      if (!composite_type.has_value() && expected.is_valid() &&
+          semantic_.types.type(expected).kind != TypeKind::Invalid) {
+        composite_type = expected;
+      }
       if (!composite_type.has_value()) {
         return fail(
             tree.node(node.children.front()).range,

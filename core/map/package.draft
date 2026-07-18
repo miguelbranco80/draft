@@ -1,0 +1,286 @@
+package map
+
+import core/array
+import core/runtime
+
+// Key_Ops makes hashing policy explicit and keeps Map independent from a
+// compiler-defined notion of hashability. Both callbacks are ordinary Draft
+// procedures: they inherit Context, appear in effect summaries, and can be
+// replaced by application-specific operations without a language extension.
+pub Key_Ops[K: type] :: struct {
+    hash: proc(key: K) -> u64,
+    equal: proc(left, right: K) -> bool,
+}
+
+// Map uses open addressing with linear probing. states has one byte per slot:
+// 0 is empty, 1 is occupied, and 2 is a tombstone. keys, values, hashes, and
+// states always have equal lengths and that length is either zero or a power of
+// two. Keeping the storage in ordinary Dynamic arrays makes all ownership and
+// allocator behavior visible to the language and to denial analysis.
+pub Map[K: type, V: type] :: struct {
+    keys: array.Dynamic[K],
+    values: array.Dynamic[V],
+    hashes: array.Dynamic[u64],
+    states: array.Dynamic[u8],
+    length: usize,
+    tombstones: usize,
+    key_ops: Key_Ops[K],
+    allocator: runtime.Allocator,
+}
+
+pub init[K: type, V: type] :: proc(map: ^Map[K, V], key_ops: Key_Ops[K]) {
+    init_with_allocator(map, key_ops, context.allocator)
+}
+
+pub init_with_allocator[K: type, V: type] :: proc(
+    map: ^Map[K, V],
+    key_ops: Key_Ops[K],
+    allocator: runtime.Allocator,
+) {
+    assert(map^.keys.data == nil && map^.values.data == nil &&
+        map^.hashes.data == nil && map^.states.data == nil,
+        "map must be empty before initialization")
+    assert(key_ops.hash != nil && key_ops.equal != nil,
+        "map key operations are incomplete")
+    assert(allocator.procedure != nil, "map allocator is nil")
+    array.init_with_allocator(&map^.keys, allocator)
+    array.init_with_allocator(&map^.values, allocator)
+    array.init_with_allocator(&map^.hashes, allocator)
+    array.init_with_allocator(&map^.states, allocator)
+    map^.key_ops = key_ops
+    map^.allocator = allocator
+}
+
+pub destroy[K: type, V: type] :: proc(map: ^Map[K, V]) {
+    array.destroy(&map^.keys)
+    array.destroy(&map^.values)
+    array.destroy(&map^.hashes)
+    array.destroy(&map^.states)
+    map^.length = 0
+    map^.tombstones = 0
+    empty_ops: Key_Ops[K]
+    map^.key_ops = empty_ops
+    empty_allocator: runtime.Allocator
+    map^.allocator = empty_allocator
+}
+
+// find_slot returns either the matching occupied slot or the first slot where
+// an insertion may occur. A remembered tombstone is preferred over a later
+// empty slot so removal does not cause unbounded sparse probe chains.
+find_slot[K: type, V: type] :: proc(
+    map: ^Map[K, V],
+    key: K,
+    hash: u64,
+) -> (usize, bool) {
+    capacity := map^.states.length
+    assert(capacity != 0, "map lookup requires allocated slots")
+    first_tombstone := capacity
+    index := cast[usize](hash) & (capacity - 1)
+    for probes: usize = 0; probes < capacity; probes += 1 {
+        state := map^.states.data[index]
+        if state == 0 {
+            if first_tombstone != capacity {
+                return (first_tombstone, false)
+            }
+            return (index, false)
+        }
+        if state == 2 {
+            if first_tombstone == capacity {
+                first_tombstone = index
+            }
+        } else if map^.hashes.data[index] == hash &&
+            map^.key_ops.equal(map^.keys.data[index], key) {
+            return (index, true)
+        }
+        index = (index + 1) & (capacity - 1)
+    }
+    assert(first_tombstone != capacity, "map has no insertion slot")
+    return (first_tombstone, false)
+}
+
+insert_without_growth[K: type, V: type] :: proc(
+    map: ^Map[K, V],
+    key: K,
+    value: V,
+    hash: u64,
+) {
+    (index, found) := find_slot(map, key, hash)
+    if found {
+        map^.values.data[index] = value
+        return
+    }
+    if map^.states.data[index] == 2 {
+        map^.tombstones -= 1
+    }
+    map^.keys.data[index] = key
+    map^.values.data[index] = value
+    map^.hashes.data[index] = hash
+    map^.states.data[index] = 1
+    map^.length += 1
+}
+
+// rebuild installs fresh arrays before reinserting old entries. The old owning
+// handles are kept in locals and destroyed only after every live entry moved;
+// no hidden move, destructor, or allocation behavior is involved.
+rebuild[K: type, V: type] :: proc(map: ^Map[K, V], capacity: usize) {
+    assert(capacity >= 8 && (capacity & (capacity - 1)) == 0,
+        "map capacity must be a power of two")
+
+    old_keys := map^.keys
+    old_values := map^.values
+    old_hashes := map^.hashes
+    old_states := map^.states
+
+    empty_keys: array.Dynamic[K]
+    empty_values: array.Dynamic[V]
+    empty_hashes: array.Dynamic[u64]
+    empty_states: array.Dynamic[u8]
+    map^.keys = empty_keys
+    map^.values = empty_values
+    map^.hashes = empty_hashes
+    map^.states = empty_states
+    map^.length = 0
+    map^.tombstones = 0
+
+    array.init_with_allocator(&map^.keys, map^.allocator)
+    array.init_with_allocator(&map^.values, map^.allocator)
+    array.init_with_allocator(&map^.hashes, map^.allocator)
+    array.init_with_allocator(&map^.states, map^.allocator)
+    for index: usize = 0; index < capacity; index += 1 {
+        key: K
+        value: V
+        array.append(&map^.keys, key)
+        array.append(&map^.values, value)
+        array.append(&map^.hashes, 0)
+        array.append(&map^.states, 0)
+    }
+
+    for index: usize = 0; index < old_states.length; index += 1 {
+        if old_states.data[index] == 1 {
+            insert_without_growth(
+                map,
+                old_keys.data[index],
+                old_values.data[index],
+                old_hashes.data[index],
+            )
+        }
+    }
+    array.destroy(&old_keys)
+    array.destroy(&old_values)
+    array.destroy(&old_hashes)
+    array.destroy(&old_states)
+}
+
+ensure_insertion_space[K: type, V: type] :: proc(map: ^Map[K, V]) {
+    capacity := map^.states.length
+    if capacity == 0 {
+        rebuild(map, 8)
+        return
+    }
+    if (map^.length + map^.tombstones + 1) * 4 < capacity * 3 {
+        return
+    }
+    // Tombstones can trigger a same-size cleanup before the live load factor
+    // requires growth. This bounds unsuccessful probe chains after churn.
+    next_capacity := capacity
+    if (map^.length + 1) * 4 >= capacity * 3 {
+        next_capacity = capacity * 2
+    }
+    rebuild(map, next_capacity)
+}
+
+pub set[K: type, V: type] :: proc(map: ^Map[K, V], key: K, value: V) {
+    assert(map^.key_ops.hash != nil && map^.key_ops.equal != nil,
+        "map is not initialized")
+    ensure_insertion_space(map)
+    hash := map^.key_ops.hash(key)
+    insert_without_growth(map, key, value, hash)
+}
+
+pub get[K: type, V: type] :: proc(map: ^Map[K, V], key: K) -> (V, bool) {
+    if map^.states.length != 0 {
+        hash := map^.key_ops.hash(key)
+        (index, found) := find_slot(map, key, hash)
+        if found {
+            return (map^.values.data[index], true)
+        }
+    }
+    value: V
+    return (value, false)
+}
+
+pub remove[K: type, V: type] :: proc(map: ^Map[K, V], key: K) -> bool {
+    if map^.states.length == 0 {
+        return false
+    }
+    hash := map^.key_ops.hash(key)
+    (index, found) := find_slot(map, key, hash)
+    if !found {
+        return false
+    }
+    empty_key: K
+    empty_value: V
+    map^.keys.data[index] = empty_key
+    map^.values.data[index] = empty_value
+    map^.hashes.data[index] = 0
+    map^.states.data[index] = 2
+    map^.length -= 1
+    map^.tombstones += 1
+    return true
+}
+
+// The integer mixer is a short reversible avalanche over u64. It is not a
+// cryptographic hash; hash-table collision resistance remains the caller's
+// policy when keys can be adversarial.
+hash_u64 :: proc(key: u64) -> u64 {
+    value := key
+    value ^= value >> 30
+    value *= 0xbf58476d1ce4e5b9
+    value ^= value >> 27
+    value *= 0x94d049bb133111eb
+    value ^= value >> 31
+    return value
+}
+
+equal_u64 :: proc(left, right: u64) -> bool {
+    return left == right
+}
+
+pub u64_keys: Key_Ops[u64] = Key_Ops[u64]{
+    hash = hash_u64,
+    equal = equal_u64,
+}
+
+pub u64_key_ops :: proc() -> Key_Ops[u64] {
+    return u64_keys
+}
+
+hash_string :: proc(key: string) -> u64 {
+    hash: u64 = 0xcbf29ce484222325
+    for index: usize = 0; index < len(key); index += 1 {
+        hash ^= cast[u64](key[index])
+        hash *= 0x100000001b3
+    }
+    return hash
+}
+
+equal_string :: proc(left, right: string) -> bool {
+    if len(left) != len(right) {
+        return false
+    }
+    for index: usize = 0; index < len(left); index += 1 {
+        if left[index] != right[index] {
+            return false
+        }
+    }
+    return true
+}
+
+pub string_keys: Key_Ops[string] = Key_Ops[string]{
+    hash = hash_string,
+    equal = equal_string,
+}
+
+pub string_key_ops :: proc() -> Key_Ops[string] {
+    return string_keys
+}
