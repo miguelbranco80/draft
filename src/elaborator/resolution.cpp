@@ -53,6 +53,43 @@ void append_json_string(std::string_view value, std::string &output) {
   return std::nullopt;
 }
 
+[[nodiscard]] std::optional<ExternalInputKind> parse_external_kind(
+    std::string_view value) {
+  if (value == "toolchain") return ExternalInputKind::Toolchain;
+  if (value == "sdk") return ExternalInputKind::Sdk;
+  if (value == "foreign-artifact") return ExternalInputKind::ForeignArtifact;
+  if (value == "object") return ExternalInputKind::Object;
+  if (value == "archive") return ExternalInputKind::Archive;
+  if (value == "shared-library") return ExternalInputKind::SharedLibrary;
+  if (value == "runtime-asset") return ExternalInputKind::RuntimeAsset;
+  if (value == "provider-summary") return ExternalInputKind::ProviderSummary;
+  return std::nullopt;
+}
+
+// Manifest paths are semantic paths inside a content tree. Host separators,
+// absolute spellings, empty components, and traversal would make the same row
+// select different bytes on different machines and are therefore rejected.
+[[nodiscard]] bool valid_relative_entry(std::string_view value) {
+  if (value.empty()) return true;
+  if (value.front() == '/' || value.back() == '/' ||
+      value.find('\\') != std::string_view::npos) {
+    return false;
+  }
+  std::size_t begin = 0;
+  while (begin < value.size()) {
+    const std::size_t slash = value.find('/', begin);
+    const std::size_t end = slash == std::string_view::npos
+        ? value.size()
+        : slash;
+    const std::string_view component = value.substr(begin, end - begin);
+    if (component.empty() || component == "." || component == "..") {
+      return false;
+    }
+    begin = end + 1;
+  }
+  return true;
+}
+
 class ManifestParser {
 public:
   ManifestParser(std::string_view input, DiagnosticSink &diagnostics)
@@ -65,16 +102,34 @@ public:
         !key("target") || !string(parsed.target_identity) || !comma() ||
         !key("resolved_program") ||
         !digest(parsed.resolved_program_digest) || !comma() ||
+        !key("external_inputs") ||
+        !external_inputs(parsed.external_inputs) || !comma() ||
         !key("sites") || !pins(parsed.pins) || !punctuation('}')) {
       return false;
     }
     whitespace();
     if (position_ != input_.size()) return fail("trailing bytes after manifest");
-    if (parsed.format != "draft-resolution-v1") {
+    if (parsed.format != "draft-resolution-v2") {
       return fail("unsupported resolution manifest format");
     }
     if (parsed.target_identity.empty()) {
       return fail("resolution manifest target identity must not be empty");
+    }
+    std::sort(
+        parsed.external_inputs.begin(), parsed.external_inputs.end(),
+        [](const ExternalInputPin &left, const ExternalInputPin &right) {
+          if (left.kind != right.kind) {
+            return static_cast<std::uint32_t>(left.kind) <
+                static_cast<std::uint32_t>(right.kind);
+          }
+          return left.name < right.name;
+        });
+    for (std::size_t index = 1; index < parsed.external_inputs.size(); ++index) {
+      const ExternalInputPin &previous = parsed.external_inputs[index - 1];
+      const ExternalInputPin &current = parsed.external_inputs[index];
+      if (previous.kind == current.kind && previous.name == current.name) {
+        return fail("resolution manifest contains a duplicate external input");
+      }
     }
     std::sort(
         parsed.pins.begin(), parsed.pins.end(),
@@ -232,6 +287,49 @@ private:
     return true;
   }
 
+  [[nodiscard]] bool external_input(ExternalInputPin &input) {
+    std::string kind;
+    if (!punctuation('{') || !key("kind") || !string(kind) || !comma() ||
+        !key("name") || !string(input.name) || !comma() ||
+        !key("content") || !digest(input.content_digest) || !comma() ||
+        !key("entry") || !string(input.entry_point) || !punctuation('}')) {
+      return false;
+    }
+    const std::optional<ExternalInputKind> parsed_kind =
+        parse_external_kind(kind);
+    if (!parsed_kind.has_value()) {
+      return fail("resolution manifest has an invalid external input kind");
+    }
+    input.kind = *parsed_kind;
+    if (input.name.empty()) {
+      return fail("resolution manifest external input name must not be empty");
+    }
+    if (!valid_relative_entry(input.entry_point)) {
+      return fail("resolution manifest external entry path is not canonical");
+    }
+    return true;
+  }
+
+  [[nodiscard]] bool external_inputs(std::vector<ExternalInputPin> &result) {
+    if (!punctuation('[')) return false;
+    whitespace();
+    if (position_ < input_.size() && input_[position_] == ']') {
+      ++position_;
+      return true;
+    }
+    while (true) {
+      ExternalInputPin value;
+      if (!external_input(value)) return false;
+      result.push_back(std::move(value));
+      whitespace();
+      if (position_ < input_.size() && input_[position_] == ']') {
+        ++position_;
+        return true;
+      }
+      if (!comma()) return false;
+    }
+  }
+
   [[nodiscard]] bool pins(std::vector<ResolutionPin> &result) {
     if (!punctuation('[')) return false;
     whitespace();
@@ -260,6 +358,20 @@ private:
 
 } // namespace
 
+std::string_view external_input_kind_name(ExternalInputKind kind) {
+  switch (kind) {
+  case ExternalInputKind::Toolchain: return "toolchain";
+  case ExternalInputKind::Sdk: return "sdk";
+  case ExternalInputKind::ForeignArtifact: return "foreign-artifact";
+  case ExternalInputKind::Object: return "object";
+  case ExternalInputKind::Archive: return "archive";
+  case ExternalInputKind::SharedLibrary: return "shared-library";
+  case ExternalInputKind::RuntimeAsset: return "runtime-asset";
+  case ExternalInputKind::ProviderSummary: return "provider-summary";
+  }
+  return "invalid";
+}
+
 std::string serialize_resolution_manifest(const ResolutionManifest &manifest) {
   std::vector<ResolutionPin> pins = manifest.pins;
   std::sort(
@@ -267,13 +379,38 @@ std::string serialize_resolution_manifest(const ResolutionManifest &manifest) {
       [](const ResolutionPin &left, const ResolutionPin &right) {
         return left.site_identity < right.site_identity;
       });
+  std::vector<ExternalInputPin> external_inputs = manifest.external_inputs;
+  std::sort(
+      external_inputs.begin(), external_inputs.end(),
+      [](const ExternalInputPin &left, const ExternalInputPin &right) {
+        if (left.kind != right.kind) {
+          return static_cast<std::uint32_t>(left.kind) <
+              static_cast<std::uint32_t>(right.kind);
+        }
+        return left.name < right.name;
+      });
   std::string output = "{\n  \"format\": ";
   append_json_string(manifest.format, output);
   output += ",\n  \"target\": ";
   append_json_string(manifest.target_identity, output);
   output += ",\n  \"resolved_program\": ";
   append_json_string(manifest.resolved_program_digest.hex(), output);
-  output += ",\n  \"sites\": [";
+  output += ",\n  \"external_inputs\": [";
+  for (std::size_t index = 0; index < external_inputs.size(); ++index) {
+    const ExternalInputPin &input = external_inputs[index];
+    output += index == 0 ? "\n" : ",\n";
+    output += "    {\"kind\": ";
+    append_json_string(external_input_kind_name(input.kind), output);
+    output += ", \"name\": ";
+    append_json_string(input.name, output);
+    output += ", \"content\": ";
+    append_json_string(input.content_digest.hex(), output);
+    output += ", \"entry\": ";
+    append_json_string(input.entry_point, output);
+    output += '}';
+  }
+  if (!external_inputs.empty()) output += '\n';
+  output += "  ],\n  \"sites\": [";
   for (std::size_t index = 0; index < pins.size(); ++index) {
     const ResolutionPin &pin = pins[index];
     output += index == 0 ? "\n" : ",\n";

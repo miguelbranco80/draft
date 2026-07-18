@@ -90,7 +90,7 @@ Sha256Digest hash_resolved_program(
     const ResolutionManifest &manifest,
     std::string_view compiler_content_identity) {
   Sha256 hash;
-  hash_field(hash, "draft.resolved-program.v1");
+  hash_field(hash, "draft.resolved-program.v2");
   hash_field(hash, compiler_content_identity);
   hash_target(hash, target);
 
@@ -128,6 +128,27 @@ Sha256Digest hash_resolved_program(
     hash_field(hash, imported.identity.root_identity);
     hash_field(hash, imported.identity.root_relative_path);
     hash_field(hash, import.path);
+  }
+
+  // Physical roots are supplied again by the build invocation and verified
+  // against these content identities. Only semantic role, logical name, exact
+  // tree digest, and internal entry path belong to portable program identity.
+  std::vector<ExternalInputPin> external_inputs = manifest.external_inputs;
+  std::sort(
+      external_inputs.begin(), external_inputs.end(),
+      [](const ExternalInputPin &left, const ExternalInputPin &right) {
+        if (left.kind != right.kind) {
+          return static_cast<std::uint32_t>(left.kind) <
+              static_cast<std::uint32_t>(right.kind);
+        }
+        return left.name < right.name;
+      });
+  hash_u64(hash, static_cast<std::uint64_t>(external_inputs.size()));
+  for (const ExternalInputPin &input : external_inputs) {
+    hash_field(hash, external_input_kind_name(input.kind));
+    hash_field(hash, input.name);
+    hash.update(input.content_digest.bytes);
+    hash_field(hash, input.entry_point);
   }
 
   std::vector<ResolutionPin> pins = manifest.pins;

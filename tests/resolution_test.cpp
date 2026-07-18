@@ -47,10 +47,33 @@ draft::ResolutionPin make_pin(
   return pin;
 }
 
+draft::ExternalInputPin make_external(
+    draft::ExternalInputKind kind,
+    std::string name,
+    std::string_view contents,
+    std::string entry) {
+  draft::ExternalInputPin input;
+  input.kind = kind;
+  input.name = std::move(name);
+  input.content_digest = draft::sha256(contents);
+  input.entry_point = std::move(entry);
+  return input;
+}
+
 void test_canonical_round_trip(TestState &state) {
   draft::ResolutionManifest manifest;
   manifest.target_identity = "aarch64-apple-macos";
   manifest.resolved_program_digest = draft::sha256("resolved program");
+  manifest.external_inputs.push_back(make_external(
+      draft::ExternalInputKind::Sdk,
+      "macos-sdk",
+      "sdk tree",
+      ""));
+  manifest.external_inputs.push_back(make_external(
+      draft::ExternalInputKind::Toolchain,
+      "llvm-22.1",
+      "toolchain tree",
+      "bin/clang"));
 
   // Intentionally provide pins out of order. Ordering is part of the on-disk
   // contract, not a requirement imposed on every in-memory producer.
@@ -78,11 +101,20 @@ void test_canonical_round_trip(TestState &state) {
   EXPECT(state,
       draft::parse_resolution_manifest(encoded, parsed, diagnostics));
   EXPECT(state, !diagnostics.has_errors());
-  EXPECT(state, parsed.format == "draft-resolution-v1");
+  EXPECT(state, parsed.format == "draft-resolution-v2");
   EXPECT(state, parsed.target_identity == manifest.target_identity);
   EXPECT(state,
       parsed.resolved_program_digest == manifest.resolved_program_digest);
   EXPECT(state, parsed.pins.size() == 2);
+  EXPECT(state, parsed.external_inputs.size() == 2);
+  if (parsed.external_inputs.size() == 2) {
+    EXPECT(state, parsed.external_inputs[0].kind ==
+        draft::ExternalInputKind::Toolchain);
+    EXPECT(state, parsed.external_inputs[0].name == "llvm-22.1");
+    EXPECT(state, parsed.external_inputs[0].entry_point == "bin/clang");
+    EXPECT(state, parsed.external_inputs[1].kind ==
+        draft::ExternalInputKind::Sdk);
+  }
   if (parsed.pins.size() == 2) {
     EXPECT(state, parsed.pins[0].site_identity == site('a'));
     EXPECT(state,
@@ -114,6 +146,11 @@ void test_invalid_inputs(TestState &state) {
       "return;",
       "codex",
       "model"));
+  manifest.external_inputs.push_back(make_external(
+      draft::ExternalInputKind::Toolchain,
+      "llvm",
+      "toolchain",
+      "bin/clang"));
   std::string encoded = draft::serialize_resolution_manifest(manifest);
 
   // Digests are fixed-width values. Shortening one must be diagnosed rather
@@ -128,6 +165,19 @@ void test_invalid_inputs(TestState &state) {
   // would make pin selection ambiguous, even when their values happen to agree.
   manifest.pins.push_back(manifest.pins[0]);
   expect_rejected(state, draft::serialize_resolution_manifest(manifest));
+
+  manifest.pins.pop_back();
+  manifest.external_inputs.push_back(manifest.external_inputs.front());
+  expect_rejected(state, draft::serialize_resolution_manifest(manifest));
+  manifest.external_inputs.pop_back();
+
+  std::string escaping_entry = encoded;
+  const std::size_t entry = escaping_entry.find("bin/clang");
+  EXPECT(state, entry != std::string::npos);
+  if (entry != std::string::npos) {
+    escaping_entry.replace(entry, std::string_view("bin/clang").size(), "../clang");
+  }
+  expect_rejected(state, escaping_entry);
 
   // The manifest schema deliberately does not accept judgment evidence as a
   // source expansion. Evidence has its own format and validation lifecycle.

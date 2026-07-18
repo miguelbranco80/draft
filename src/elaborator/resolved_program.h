@@ -9,8 +9,8 @@
 // Physical paths, FileId values, syntax IDs, build-directory names, and host
 // enumeration order are excluded. The function performs no I/O: callers must
 // pass the already loaded resolved graph and source manager. External tools,
-// SDKs, libraries, and artifacts will join this hash when their manifest rows
-// are implemented. Relevant specification: 03-agent-synthesis.md section 10.
+// SDKs, libraries, and artifacts enter through their exact content-tree pins.
+// Relevant specification: 03-agent-synthesis.md section 10.
 
 #pragma once
 
@@ -25,9 +25,9 @@
 namespace draft {
 
 // Hashes fields with explicit lengths and collection counts under the versioned
-// `draft.resolved-program.v1` domain. graph package/file order is already
-// canonical; pins are sorted by site identity inside this operation so caller
-// vector order cannot affect the result.
+// `draft.resolved-program.v2` domain. Graph package/file order is already
+// canonical; external inputs and pins are sorted inside this operation so
+// caller vector order cannot affect the result.
 [[nodiscard]] Sha256Digest hash_resolved_program(
     const SourceManager &sources,
     const WorkspaceGraph &graph,
