@@ -1,0 +1,24 @@
+package app
+
+// left discovers lib/generic before right is loaded. The compiler must still
+// body-check both consumers before their shared dependency.
+import lib/left as left
+import lib/right as right
+import lib/generic as generic
+
+// Private_Value intentionally does not appear in this package's public
+// interface. Passing it to a dependency template exercises the separate
+// concrete-type transfer used by workspace monomorphization.
+Private_Value :: struct {
+    value: u64,
+}
+
+main :: proc() {
+    original := Private_Value{value = 42}
+    copy := generic.identity[Private_Value](original)
+    assert(copy.value == 42)
+    assert(generic.identity[u64](9) == 9)
+    assert(generic.byte_size[Private_Value]() == 8)
+    assert(left.value() == 11)
+    assert(right.value() == 22)
+}

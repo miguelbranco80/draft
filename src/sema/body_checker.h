@@ -16,6 +16,8 @@
 #include "workspace/package.h"
 
 #include <cstddef>
+#include <string>
+#include <vector>
 
 namespace draft {
 
@@ -23,6 +25,17 @@ struct BodyCheckResult {
   bool ok = false;
   HirProgram program;
   std::size_t checked_procedures = 0;
+};
+
+// Compiler orchestration creates these rows from imported generic calls found
+// in packages earlier in the acyclic consumer-to-dependency order. arguments
+// have already been translated into the defining package's TypeStore. The
+// requested instance_name is shared with every consumer proxy and therefore is
+// the exact package-local symbol spelling used by native emission.
+struct ProcedureInstantiationSeed {
+  std::string public_template_name;
+  std::string instance_name;
+  std::vector<ParametricArgument> arguments;
 };
 
 // Checks every package procedure definition in stable declaration order.
@@ -36,6 +49,7 @@ struct BodyCheckResult {
     SemanticPackage &package,
     const ConstantTable &constants,
     const TargetFacts &target,
-    DiagnosticSink &diagnostics);
+    DiagnosticSink &diagnostics,
+    const std::vector<ProcedureInstantiationSeed> &seeds = {});
 
 } // namespace draft

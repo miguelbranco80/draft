@@ -754,6 +754,13 @@ private:
     return std::nullopt;
   }
 
+  [[nodiscard]] bool is_imported_symbol(SymbolId symbol_id) const {
+    for (const ImportedSymbol &imported : semantic_.imported_symbols) {
+      if (imported.proxy == symbol_id) return true;
+    }
+    return false;
+  }
+
   [[nodiscard]] bool root_runtime_defines(SymbolId symbol_id) const {
     if (!options_.emit_program_entry) return false;
     const std::optional<std::string> native = native_symbol_name(symbol_id);
@@ -1005,6 +1012,10 @@ private:
       const Symbol &symbol = semantic_.symbols.symbol(imported.proxy);
       if (root_runtime_defines(imported.proxy)) continue;
       if (symbol.kind == SymbolKind::Procedure) {
+        // The imported public template is symbolic and can contain
+        // TypeParameter pseudo-types. Calls always reference one of the
+        // concrete imported instance proxies created by body checking.
+        if (symbol.flags.parametric) continue;
         output_ << "declare " << llvm_function_result(symbol.type) << ' '
                 << symbol_name(imported.proxy)
                 << function_signature(symbol.type, false) << "\n";
@@ -1023,6 +1034,7 @@ private:
       if (symbol.kind == SymbolKind::Procedure &&
           !symbol.flags.parametric &&
           !has_body(symbol_id) &&
+          !is_imported_symbol(symbol_id) &&
           !root_runtime_defines(symbol_id)) {
         output_ << "declare " << llvm_function_result(symbol.type) << ' '
                 << symbol_name(symbol_id)

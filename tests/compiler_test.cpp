@@ -274,6 +274,66 @@ void test_compiler_distributed_memory(TestState &state) {
       "call i32 @posix_memalign") != std::string::npos);
 }
 
+void test_cross_package_generic_procedures(TestState &state) {
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  draft::CompileWorkspaceOptions options;
+  options.target = draft::make_aarch64_macos_profile();
+  options.workspace.workspace_directory =
+      std::string(DRAFT_SOURCE_DIRECTORY) + "/examples/packages-generic";
+  options.lower_mir = true;
+  options.emit_llvm = true;
+  const draft::CompileWorkspaceResult result = draft::compile_workspace(
+      sources,
+      std::string(DRAFT_SOURCE_DIRECTORY) + "/examples/packages-generic/app",
+      std::move(options),
+      diagnostics);
+  if (diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+  }
+  EXPECT(state, result.ok);
+  EXPECT(state, !diagnostics.has_errors());
+  EXPECT(state, result.graph.packages.size() == 4);
+
+  const draft::CompiledPackage *app = nullptr;
+  const draft::CompiledPackage *left = nullptr;
+  const draft::CompiledPackage *right = nullptr;
+  const draft::CompiledPackage *generic = nullptr;
+  for (const std::optional<draft::CompiledPackage> &package : result.packages) {
+    if (!package.has_value()) continue;
+    if (package->identity.root_relative_path == "app") app = &*package;
+    if (package->identity.root_relative_path == "lib/left") left = &*package;
+    if (package->identity.root_relative_path == "lib/right") right = &*package;
+    if (package->identity.root_relative_path == "lib/generic") generic = &*package;
+  }
+  EXPECT(state, app != nullptr);
+  EXPECT(state, left != nullptr);
+  EXPECT(state, right != nullptr);
+  EXPECT(state, generic != nullptr);
+  if (app == nullptr || left == nullptr || right == nullptr || generic == nullptr) {
+    return;
+  }
+
+  // The app requests a private nominal, u64, and a byte-size specialization.
+  // Both sibling packages also request identity[u64] and identity[Shared_Value].
+  // The latter is local in left and imported in right, so both local display
+  // spellings must hash to one canonical nominal identity. All sibling requests
+  // must share owner symbols even though lib/generic was discovered before the
+  // second sibling in the physical workspace traversal.
+  EXPECT(state,
+      app->semantics.package.imported_procedure_instances.size() == 3);
+  EXPECT(state,
+      left->semantics.package.imported_procedure_instances.size() == 2);
+  EXPECT(state,
+      right->semantics.package.imported_procedure_instances.size() == 2);
+  EXPECT(state, generic->semantics.package.parametric_instances.size() == 4);
+  EXPECT(state, app->llvm.text.find("_24mono_24") != std::string::npos);
+  EXPECT(state, left->llvm.text.find("_24mono_24") != std::string::npos);
+  EXPECT(state, right->llvm.text.find("_24mono_24") != std::string::npos);
+  EXPECT(state, generic->llvm.text.find("define") != std::string::npos);
+  EXPECT(state, generic->llvm.text.find("_24mono_24") != std::string::npos);
+}
+
 void test_runtime_context_bridge_diagnostics(TestState &state) {
   std::error_code error;
   const std::filesystem::path root = std::filesystem::temp_directory_path(error) /
@@ -328,6 +388,7 @@ int main() {
   test_hosted_entry_contract(state);
   test_compiler_distributed_core(state);
   test_compiler_distributed_memory(state);
+  test_cross_package_generic_procedures(state);
   test_runtime_context_bridge_diagnostics(state);
   if (state.failures != 0) {
     std::cerr << state.failures << " compiler pipeline expectation(s) failed\n";

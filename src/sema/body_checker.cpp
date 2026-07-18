@@ -103,10 +103,11 @@ public:
       SemanticPackage &semantic,
       const ConstantTable &constants,
       const TargetFacts &target,
-      DiagnosticSink &diagnostics)
+      DiagnosticSink &diagnostics,
+      const std::vector<ProcedureInstantiationSeed> &seeds)
       : sources_(sources), loaded_(loaded), selections_(selections),
         semantic_(semantic), constants_(constants), target_(target),
-        diagnostics_(diagnostics) {}
+        diagnostics_(diagnostics), seeds_(seeds) {}
 
   [[nodiscard]] BodyCheckResult run() {
     BodyCheckResult result;
@@ -114,6 +115,10 @@ public:
     initialize_runtime_context();
     const std::vector<SymbolId> package_symbols =
         semantic_.symbols.scope(semantic_.package_scope).symbols;
+    // Capture the original declaration list before seeding. Instantiation adds
+    // private package symbols, but those bodies belong to the growing
+    // instances_ loop below and must not be checked a second time here.
+    instantiate_seeded_procedures();
     for (SymbolId id : package_symbols) {
       const Symbol symbol = semantic_.symbols.symbol(id);
       if (symbol.kind != SymbolKind::Procedure || !symbol.type.is_valid()) {
@@ -141,6 +146,72 @@ public:
   }
 
 private:
+  void instantiate_seeded_procedures() {
+    for (const ProcedureInstantiationSeed &seed : seeds_) {
+      const std::optional<SymbolId> source = semantic_.symbols.lookup_direct(
+          semantic_.package_scope, seed.public_template_name);
+      if (!source.has_value()) {
+        diagnostics_.error(
+            SourceRange::invalid(),
+            "generic instance request names no declaration '" +
+                seed.public_template_name + "'");
+        continue;
+      }
+      const Symbol source_symbol = semantic_.symbols.symbol(*source);
+      if (source_symbol.kind != SymbolKind::Procedure ||
+          !source_symbol.flags.parametric ||
+          source_symbol.visibility != Visibility::Public) {
+        diagnostics_.error(
+            source_symbol.name_range,
+            "generic instance request does not name a public parametric procedure");
+        continue;
+      }
+      const std::vector<ParametricParameterRecord> parameters =
+          parameters_for(*source);
+      if (parameters.size() != seed.arguments.size()) {
+        diagnostics_.error(
+            source_symbol.name_range,
+            "generic instance request has the wrong number of arguments");
+        continue;
+      }
+      std::vector<TypeSubstitution> type_substitutions;
+      std::vector<ValueSubstitution> value_substitutions;
+      bool valid = true;
+      for (std::size_t index = 0; index < parameters.size(); ++index) {
+        const ParametricParameterRecord &parameter = parameters[index];
+        const ParametricArgument &argument = seed.arguments[index];
+        if (parameter.constraint == TypeConstraintKind::CompileTimeValue) {
+          if (argument.is_type) {
+            valid = false;
+            break;
+          }
+          value_substitutions.push_back({parameter.parameter, argument.value});
+        } else {
+          if (!argument.is_type) {
+            valid = false;
+            break;
+          }
+          type_substitutions.push_back({
+              semantic_.symbols.symbol(parameter.parameter).type,
+              argument.type,
+          });
+        }
+      }
+      if (!valid) {
+        diagnostics_.error(
+            source_symbol.name_range,
+            "generic instance request argument kinds do not match the declaration");
+        continue;
+      }
+      (void)instantiate_procedure(
+          *source,
+          std::move(type_substitutions),
+          std::move(value_substitutions),
+          source_symbol.name_range,
+          seed.instance_name);
+    }
+  }
+
   // The built-in `context` value exists independently from an import spelling,
   // but importing core/runtime must make it exactly that package's public
   // Context type.  This preserves normal assignment and parameter compatibility
@@ -1502,11 +1573,122 @@ private:
     return owned_scope(owner, ScopeKind::Parametric);
   }
 
+  [[nodiscard]] std::optional<ImportedSymbol> imported_symbol_record(
+      SymbolId proxy) const {
+    for (const ImportedSymbol &imported : semantic_.imported_symbols) {
+      if (imported.proxy == proxy) return imported;
+    }
+    return std::nullopt;
+  }
+
+  [[nodiscard]] std::vector<ParametricArgument> ordered_arguments(
+      const std::vector<ParametricParameterRecord> &parameters,
+      const std::vector<TypeSubstitution> &type_substitutions,
+      const std::vector<ValueSubstitution> &value_substitutions) const {
+    std::vector<ParametricArgument> result;
+    result.reserve(parameters.size());
+    for (const ParametricParameterRecord &parameter : parameters) {
+      ParametricArgument argument;
+      if (parameter.constraint == TypeConstraintKind::CompileTimeValue) {
+        const std::size_t index = *value_substitution_index(
+            value_substitutions, parameter.parameter);
+        argument.is_type = false;
+        argument.value_type = semantic_.symbols.symbol(parameter.parameter).type;
+        argument.value = value_substitutions[index].value;
+      } else {
+        const TypeId parameter_type =
+            semantic_.symbols.symbol(parameter.parameter).type;
+        const std::size_t index = *substitution_index(
+            type_substitutions, parameter_type);
+        argument.is_type = true;
+        argument.type = type_substitutions[index].replacement;
+      }
+      result.push_back(std::move(argument));
+    }
+    return result;
+  }
+
+  // Imported templates have no source body in the consumer. We still create a
+  // fully concrete local proxy so call checking, HIR, effects, and MIR can use
+  // an ordinary SymbolId. Compiler orchestration later transfers the ordered
+  // arguments to the defining package and fills this proxy's linker identity.
+  [[nodiscard]] SymbolId instantiate_imported_procedure(
+      SymbolId source,
+      const ImportedSymbol &origin,
+      const std::vector<ParametricParameterRecord> &parameters,
+      const std::vector<TypeSubstitution> &type_substitutions,
+      const std::vector<ValueSubstitution> &value_substitutions,
+      SourceRange use_range) {
+    const std::vector<ParametricArgument> arguments = ordered_arguments(
+        parameters, type_substitutions, value_substitutions);
+    for (const ImportedProcedureInstance &instance :
+         semantic_.imported_procedure_instances) {
+      if (instance.source_proxy == source && instance.arguments == arguments) {
+        return instance.instance_proxy;
+      }
+    }
+
+    const Symbol source_symbol = semantic_.symbols.symbol(source);
+    Symbol instance_symbol;
+    instance_symbol.name = source_symbol.name + "$imported_instance";
+    for (const ParametricArgument &argument : arguments) {
+      if (argument.is_type) {
+        instance_symbol.name += "$t" + std::to_string(argument.type.value);
+      } else {
+        instance_symbol.name += "$v" + argument.value.integer.to_decimal();
+      }
+    }
+    instance_symbol.kind = SymbolKind::Procedure;
+    instance_symbol.visibility = Visibility::Private;
+    instance_symbol.flags = source_symbol.flags;
+    instance_symbol.flags.parametric = false;
+    instance_symbol.flags.exported = false;
+    instance_symbol.scope = semantic_.package_scope;
+    instance_symbol.type = substitute_type(
+        source_symbol.type,
+        type_substitutions,
+        value_substitutions,
+        use_range);
+    instance_symbol.syntax = source_symbol.syntax;
+    instance_symbol.name_range = source_symbol.name_range;
+    const SymbolId instance_id =
+        semantic_.symbols.declare(std::move(instance_symbol), diagnostics_);
+    if (!instance_id.is_valid()) return {};
+
+    ImportedSymbol concrete = origin;
+    concrete.proxy = instance_id;
+    // The exact generated name depends on canonical, cross-package type
+    // graphs, which BodyChecker intentionally does not own. An empty name is a
+    // fail-closed placeholder filled before any backend is allowed to run.
+    concrete.public_name.clear();
+    concrete.native_provider.clear();
+    concrete.native_linker_name_spelling.clear();
+    semantic_.imported_symbols.push_back(std::move(concrete));
+
+    const std::vector<ImportedEffect> existing_effects = semantic_.imported_effects;
+    for (const ImportedEffect &effect : existing_effects) {
+      if (effect.procedure_proxy != source) continue;
+      ImportedEffect concrete_effect = effect;
+      concrete_effect.procedure_proxy = instance_id;
+      semantic_.imported_effects.push_back(std::move(concrete_effect));
+    }
+    semantic_.imported_procedure_instances.push_back({
+        source,
+        instance_id,
+        origin.root_identity,
+        origin.root_relative_path,
+        origin.public_name,
+        arguments,
+    });
+    return instance_id;
+  }
+
   [[nodiscard]] SymbolId instantiate_procedure(
       SymbolId source,
       std::vector<TypeSubstitution> type_substitutions,
       std::vector<ValueSubstitution> value_substitutions,
-      SourceRange use_range) {
+      SourceRange use_range,
+      std::string_view preferred_name = {}) {
     const std::vector<ParametricParameterRecord> parameters =
         parameters_for(source);
     if (parameters.empty()) {
@@ -1551,6 +1733,17 @@ private:
       }
     }
 
+    if (const std::optional<ImportedSymbol> imported =
+            imported_symbol_record(source)) {
+      return instantiate_imported_procedure(
+          source,
+          *imported,
+          parameters,
+          type_substitutions,
+          value_substitutions,
+          use_range);
+    }
+
     for (const ProcedureInstance &instance : instances_) {
       if (instance.source != source ||
           instance.type_substitutions.size() != type_substitutions.size() ||
@@ -1584,20 +1777,24 @@ private:
 
     const Symbol source_symbol = semantic_.symbols.symbol(source);
     Symbol instance_symbol;
-    instance_symbol.name = source_symbol.name + "$instance";
-    for (const ParametricParameterRecord &parameter : parameters) {
-      if (parameter.constraint == TypeConstraintKind::CompileTimeValue) {
-        const std::size_t index = *value_substitution_index(
-            value_substitutions, parameter.parameter);
-        instance_symbol.name += "$v" +
-            value_substitutions[index].value.integer.to_decimal();
-      } else {
-        const TypeId parameter_type =
-            semantic_.symbols.symbol(parameter.parameter).type;
-        const std::size_t index = *substitution_index(
-            type_substitutions, parameter_type);
-        instance_symbol.name += "$t" +
-            std::to_string(type_substitutions[index].replacement.value);
+    if (!preferred_name.empty()) {
+      instance_symbol.name = std::string(preferred_name);
+    } else {
+      instance_symbol.name = source_symbol.name + "$instance";
+      for (const ParametricParameterRecord &parameter : parameters) {
+        if (parameter.constraint == TypeConstraintKind::CompileTimeValue) {
+          const std::size_t index = *value_substitution_index(
+              value_substitutions, parameter.parameter);
+          instance_symbol.name += "$v" +
+              value_substitutions[index].value.integer.to_decimal();
+        } else {
+          const TypeId parameter_type =
+              semantic_.symbols.symbol(parameter.parameter).type;
+          const std::size_t index = *substitution_index(
+              type_substitutions, parameter_type);
+          instance_symbol.name += "$t" +
+              std::to_string(type_substitutions[index].replacement.value);
+        }
       }
     }
     instance_symbol.kind = SymbolKind::Procedure;
@@ -3616,6 +3813,7 @@ private:
   const ConstantTable &constants_;
   const TargetFacts &target_;
   DiagnosticSink &diagnostics_;
+  const std::vector<ProcedureInstantiationSeed> &seeds_;
   HirProgram hir_;
   SymbolId current_procedure_;
   std::vector<ProcedureInstance> instances_;
@@ -3631,9 +3829,10 @@ BodyCheckResult check_package_bodies(
     SemanticPackage &package,
     const ConstantTable &constants,
     const TargetFacts &target,
-    DiagnosticSink &diagnostics) {
+    DiagnosticSink &diagnostics,
+    const std::vector<ProcedureInstantiationSeed> &seeds) {
   BodyChecker checker(
-      sources, loaded, selections, package, constants, target, diagnostics);
+      sources, loaded, selections, package, constants, target, diagnostics, seeds);
   BodyCheckResult result = checker.run();
   if (result.ok &&
       !check_definite_initialization(package, result.program, diagnostics)) {

@@ -4,12 +4,102 @@
 
 #include <cassert>
 #include <cstddef>
+#include <cstdint>
+#include <limits>
 #include <optional>
+#include <span>
 #include <string_view>
 #include <utility>
 
 namespace draft {
 namespace {
+
+void hash_u64(Sha256 &hash, std::uint64_t value) {
+  std::uint8_t bytes[8];
+  for (std::size_t index = 0; index < 8; ++index) {
+    const std::size_t shift = (7 - index) * 8;
+    bytes[index] = static_cast<std::uint8_t>((value >> shift) & 0xffU);
+  }
+  hash.update(std::span<const std::uint8_t>(bytes, 8));
+}
+
+void hash_field(Sha256 &hash, std::string_view value) {
+  hash_u64(hash, static_cast<std::uint64_t>(value.size()));
+  hash.update(value);
+}
+
+void hash_constant(Sha256 &hash, const ConstantValue &value) {
+  hash_u64(hash, static_cast<std::uint64_t>(value.kind));
+  hash_u64(hash, value.boolean ? 1 : 0);
+  hash_field(hash, value.integer.to_decimal());
+  hash_field(hash, value.floating.to_fraction());
+  hash_u64(hash, value.float_bit_width);
+  hash_u64(hash, value.float_bits);
+  hash_field(hash, value.text);
+  hash_u64(hash, value.symbol_index);
+  hash_field(hash, value.root_identity);
+  hash_field(hash, value.root_relative_path);
+  hash_u64(hash, value.variant_index);
+  hash_u64(hash, static_cast<std::uint64_t>(value.elements.size()));
+  for (const ConstantValue &element : value.elements) {
+    hash_constant(hash, element);
+  }
+}
+
+void hash_type_id(Sha256 &hash, InterfaceTypeId id) {
+  hash_u64(hash, id.is_valid() ? id.value : std::numeric_limits<std::uint32_t>::max());
+}
+
+void hash_nominal_argument(
+    Sha256 &hash, const InterfaceNominalArgument &argument) {
+  hash_u64(hash, argument.is_type ? 1 : 0);
+  hash_type_id(hash, argument.type);
+  hash_type_id(hash, argument.value_type);
+  hash_constant(hash, argument.value);
+}
+
+void hash_interface_type(Sha256 &hash, const InterfaceType &type) {
+  hash_u64(hash, static_cast<std::uint64_t>(type.kind));
+  const bool nominal = !type.nominal_root_identity.empty() ||
+      !type.nominal_root_relative_path.empty() ||
+      !type.nominal_public_name.empty();
+  // An imported nominal's local display name is qualified while its defining
+  // package stores the short source name. Both spellings denote the same type;
+  // the canonical nominal_* identity below is the only name that may affect a
+  // cross-package instance hash. Builtins and structural named scalars still
+  // use name to distinguish identities such as int and isize.
+  hash_field(hash, nominal ? std::string_view() : std::string_view(type.name));
+  hash_field(hash, type.nominal_root_identity);
+  hash_field(hash, type.nominal_root_relative_path);
+  hash_field(hash, type.nominal_public_name);
+  hash_u64(hash, type.layout.known ? 1 : 0);
+  hash_u64(hash, type.layout.size);
+  hash_u64(hash, type.layout.alignment);
+  hash_u64(hash, type.bit_width);
+  hash_type_id(hash, type.element);
+  hash_u64(hash, type.element_count);
+  hash_u64(hash, type.element_count_parameter);
+  hash_u64(hash, static_cast<std::uint64_t>(type.members.size()));
+  for (InterfaceTypeId member : type.members) hash_type_id(hash, member);
+  hash_u64(hash, static_cast<std::uint64_t>(type.member_offsets.size()));
+  for (std::uint64_t offset : type.member_offsets) hash_u64(hash, offset);
+  hash_u64(hash, type.c_calling_convention ? 1 : 0);
+  hash_u64(hash, type.c_representation ? 1 : 0);
+  hash_u64(hash, type.requested_alignment);
+  hash_u64(hash, static_cast<std::uint64_t>(type.nominal_members.size()));
+  for (const InterfaceMember &member : type.nominal_members) {
+    hash_field(hash, member.name);
+    hash_u64(hash, static_cast<std::uint64_t>(member.kind));
+    hash_type_id(hash, member.type);
+    hash_u64(hash, member.offset);
+    hash_u64(hash, member.has_enum_value ? 1 : 0);
+    hash_field(hash, member.enum_value.to_decimal());
+  }
+  hash_u64(hash, static_cast<std::uint64_t>(type.nominal_arguments.size()));
+  for (const InterfaceNominalArgument &argument : type.nominal_arguments) {
+    hash_nominal_argument(hash, argument);
+  }
+}
 
 // InterfaceBuilder translates source TypeIds lazily. Installing the mapping
 // before following children permits recursive pointer graphs through a nominal
@@ -133,6 +223,20 @@ public:
       }
     }
     return std::move(result_);
+  }
+
+  [[nodiscard]] InterfaceTypeGraph run_type(TypeId source) {
+    InterfaceTypeGraph graph;
+    graph.identity = identity_;
+    if (!source.is_valid() ||
+        static_cast<std::size_t>(source.value) >= package_.types.size()) {
+      diagnostics_.error(
+          SourceRange::invalid(), "cannot export an invalid concrete type");
+      return graph;
+    }
+    graph.root = translate_type(source);
+    graph.types = std::move(result_.types);
+    return graph;
   }
 
 private:
@@ -408,6 +512,14 @@ public:
   InterfaceImporter(SemanticPackage &consumer, DiagnosticSink &diagnostics)
       : consumer_(consumer), diagnostics_(diagnostics) {}
 
+  [[nodiscard]] TypeId import_graph(const InterfaceTypeGraph &graph) {
+    PackageInterface package;
+    package.identity = graph.identity;
+    package.types = graph.types;
+    InterfaceImportCache &cache = cache_for(package);
+    return import_type(package, cache, graph.root);
+  }
+
   void bind(const ImportBinding &binding, const PackageInterface &package) {
     InterfaceImportCache &cache = cache_for(package);
     const Symbol import_symbol = consumer_.symbols.symbol(binding.symbol);
@@ -505,6 +617,19 @@ private:
           nominal.public_name == source.nominal_public_name &&
           nominal.arguments == arguments) {
         return nominal.type;
+      }
+    }
+    // Concrete type packets are imported by short-lived InterfaceImporter
+    // objects. Consult the permanent semantic provenance table as well so two
+    // independent generic requests for the same foreign nominal type converge
+    // on one destination TypeId.
+    for (const ImportedType &imported : consumer_.imported_types) {
+      if (imported.root_identity == source.nominal_root_identity &&
+          imported.root_relative_path == source.nominal_root_relative_path &&
+          imported.public_name == source.nominal_public_name &&
+          imported.arguments == arguments && imported.type.is_valid() &&
+          consumer_.types.type(imported.type).kind == source.kind) {
+        return imported.type;
       }
     }
     return std::nullopt;
@@ -842,6 +967,40 @@ PackageInterface build_package_interface(
   InterfaceBuilder builder(
       identity, package, constants, &metadata, &effects, diagnostics);
   return builder.run();
+}
+
+InterfaceTypeGraph export_interface_type(
+    const PackageIdentity &identity,
+    const SemanticPackage &package,
+    TypeId type,
+    DiagnosticSink &diagnostics) {
+  const ConstantTable no_constants;
+  InterfaceBuilder builder(
+      identity, package, no_constants, nullptr, nullptr, diagnostics);
+  return builder.run_type(type);
+}
+
+TypeId import_interface_type(
+    const InterfaceTypeGraph &graph,
+    SemanticPackage &package,
+    DiagnosticSink &diagnostics) {
+  InterfaceImporter importer(package, diagnostics);
+  return importer.import_graph(graph);
+}
+
+Sha256Digest hash_interface_type_graph(const InterfaceTypeGraph &graph) {
+  Sha256 hash;
+  hash_field(hash, "draft.interface-type-graph.v1");
+  // The exporting package identity is transport context, not necessarily part
+  // of the type. Builtins and purely structural types must hash identically in
+  // every requester. Locally declared nominal rows already contain their exact
+  // package identity in nominal_root_* and therefore remain distinct.
+  hash_type_id(hash, graph.root);
+  hash_u64(hash, static_cast<std::uint64_t>(graph.types.size()));
+  for (const InterfaceType &type : graph.types) {
+    hash_interface_type(hash, type);
+  }
+  return hash.finalize();
 }
 
 void bind_package_interfaces(

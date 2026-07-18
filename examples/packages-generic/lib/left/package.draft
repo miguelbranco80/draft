@@ -1,0 +1,12 @@
+package left
+
+import lib/generic as generic
+
+pub Shared_Value :: struct {
+    value: u64,
+}
+
+pub value :: proc() -> u64 {
+    copy := generic.identity[Shared_Value](Shared_Value{value = 11})
+    return generic.identity[u64](copy.value)
+}

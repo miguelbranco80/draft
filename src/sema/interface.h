@@ -152,6 +152,23 @@ struct PackageInterface {
   std::vector<InterfaceDocumentation> documentation;
 };
 
+// A concrete type argument sometimes has to cross a package boundary even
+// though it is not part of either package's public API.  The important example
+// is `dependency.make[Private_App_Type]()`: the dependency must compile the
+// concrete body, and therefore needs the exact layout and nominal identity of
+// the app type.  This small packet reuses the canonical interface type graph
+// without pretending that the private type is a published declaration.
+//
+// The graph is self-contained. root selects one row in types; all row-to-row
+// references remain local InterfaceTypeId values. identity is the package from
+// which the graph was exported and is used to qualify locally declared nominal
+// rows. No SourceRange, SymbolId, or TypeId leaves its owning package.
+struct InterfaceTypeGraph {
+  PackageIdentity identity;
+  std::vector<InterfaceType> types;
+  InterfaceTypeId root;
+};
+
 // AvailablePackageImport binds one exact source import clause to the already
 // analyzed dependency interface selected by WorkspaceGraph. The pointer must
 // remain valid only for the analyze_package_semantics call that consumes it.
@@ -192,6 +209,29 @@ struct AvailablePackageImports {
     const AgentMetadataResult &metadata,
     const EffectSummaryResult &effects,
     DiagnosticSink &diagnostics);
+
+// Moves one concrete TypeId between package-local TypeStores through the same
+// representation used by public interfaces.  Export preserves private nominal
+// identity for monomorphization only; it does not add a declaration to a public
+// PackageInterface. Import interns structural types and reuses previously
+// imported nominal identities in the destination package.
+[[nodiscard]] InterfaceTypeGraph export_interface_type(
+    const PackageIdentity &identity,
+    const SemanticPackage &package,
+    TypeId type,
+    DiagnosticSink &diagnostics);
+
+[[nodiscard]] TypeId import_interface_type(
+    const InterfaceTypeGraph &graph,
+    SemanticPackage &package,
+    DiagnosticSink &diagnostics);
+
+// Canonical type-graph hashing is used only to make stable, collision-resistant
+// linker names for concrete generic procedure bodies. The full 256-bit digest
+// remains available to future manifests even though linker names currently use
+// a readable prefix of its hexadecimal form.
+[[nodiscard]] Sha256Digest hash_interface_type_graph(
+    const InterfaceTypeGraph &graph);
 
 // Reconstructs every available interface type in package.types, creates one
 // ImportedPackage scope per file-local alias, and fills imported_symbols with

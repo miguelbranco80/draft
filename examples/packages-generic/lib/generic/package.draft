@@ -1,0 +1,11 @@
+package generic
+
+// Public generic procedure bodies are compiled here, in their defining
+// package, after consumers have published every concrete type/value request.
+pub identity[T: type] :: proc(value: T) -> T {
+    return value
+}
+
+pub byte_size[T: type] :: proc() -> usize {
+    return size_of(T)
+}

@@ -157,6 +157,25 @@ struct ImportedSymbol {
   std::string native_linker_name_spelling;
 };
 
+// A use of a public parametric procedure creates a concrete consumer-local
+// proxy immediately so ordinary call checking can continue. The executable
+// body still belongs to the defining package. Compiler orchestration transfers
+// these ordered concrete arguments into that package before its body pass and
+// then fills the generated proxy's ImportedSymbol public_name with the stable
+// linker-level instance name.
+//
+// Argument TypeIds are local to the requesting package. They are deliberately
+// short-lived and must be exported through InterfaceTypeGraph before another
+// SemanticPackage consumes them.
+struct ImportedProcedureInstance {
+  SymbolId source_proxy;
+  SymbolId instance_proxy;
+  std::string root_identity;
+  std::string root_relative_path;
+  std::string public_template_name;
+  std::vector<ParametricArgument> arguments;
+};
+
 // ImportedEffect is one canonical dependency effect attached to a public
 // procedure proxy. Origin fields identify referenced dependency declarations
 // without importing their private SymbolIds into the consumer.
@@ -262,6 +281,7 @@ struct SemanticPackage {
   std::vector<ParametricTypeInstanceRecord> parametric_type_instances;
   std::vector<ImportBinding> imports;
   std::vector<ImportedSymbol> imported_symbols;
+  std::vector<ImportedProcedureInstance> imported_procedure_instances;
   std::vector<ImportedType> imported_types;
   std::vector<ImportedEffect> imported_effects;
   std::vector<DeclarationDenial> declaration_denials;

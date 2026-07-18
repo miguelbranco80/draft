@@ -1,0 +1,9 @@
+package right
+
+import lib/generic as generic
+import lib/left as left
+
+pub value :: proc() -> u64 {
+    copy := generic.identity[left.Shared_Value](left.Shared_Value{value = 22})
+    return generic.identity[u64](copy.value)
+}
