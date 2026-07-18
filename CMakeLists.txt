@@ -291,6 +291,23 @@ if(BUILD_TESTING)
       NAME draft_native_conformance_tests
       COMMAND draft_native_conformance_tests
     )
+
+    # This closes the C ABI loop with two independent compilers: Draft emits a
+    # dylib and header, then the host C compiler consumes both and the resulting
+    # client process checks aggregate, enum, union, and callback behavior.
+    add_executable(
+      draft_c_client_integration_tests
+      tests/c_client_integration_test.cpp
+    )
+    target_link_libraries(draft_c_client_integration_tests PRIVATE draft_compiler)
+    target_compile_definitions(
+      draft_c_client_integration_tests
+      PRIVATE DRAFT_SOURCE_DIRECTORY="${CMAKE_CURRENT_SOURCE_DIR}"
+    )
+    add_test(
+      NAME draft_c_client_integration_tests
+      COMMAND draft_c_client_integration_tests
+    )
   endif()
 
   add_executable(

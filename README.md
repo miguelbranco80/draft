@@ -153,8 +153,9 @@ locked builds can verify required active evidence without rerunning it.
 On Apple hosts, the test suite also compiles, links, launches, and requires a
 zero exit from 15 handwritten programs spanning the runtime/core facilities,
 multi-package generics, parsed and package assembly, C interop, atomics, and
-pthreads. This complements phase-local tests with a real AArch64 macOS ABI and
-linker conformance gate.
+pthreads. A separate end-to-end gate builds a Draft dylib and generated header,
+compiles a checked-in C11 client against them, and launches it. These complement
+phase-local tests with real AArch64 macOS ABI, linker, and loader conformance.
 
 Synthesis resolution now has a provider-neutral transaction and an explicit
 Codex CLI adapter. Declaration and aggregate-member sites form an early opaque
