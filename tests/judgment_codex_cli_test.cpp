@@ -81,7 +81,7 @@ struct TemporaryFixture {
         "test \"$(cat \"$work/requested-artifact-00000000.bin\")\" = object-bytes || exit 28\n"
         "prompt=$(cat)\n"
         "case \"$prompt\" in\n"
-        "  *REQUEST_FORMAT*draft-judgment-request-v4*SITE*judgment-site*TARGET_IDENTITY*draft-aarch64-macos-v5*BRANCH_KIND*if-condition-entered-false*BRANCH_SUBJECT*validated*LOOP_RANGES*LOOP_RANGE_KIND*captured-iteration-length*LOOP_RANGE_BINDING*index*LOOP_RANGE_UPPER*values*JUDGMENT_CLAIM*preserve-the-abi*ATTACHMENT_PATH*EVIDENCE.md*RESOLVED_PROGRAM_SHA256*COMPILER_IDENTITY*draft-bootstrap-cpp-v118*POLICY_IDENTITY*draft-judgment-policy-v1*VALIDATOR_IDENTITY*validator-0*REQUESTED_ARTIFACTS*ARTIFACT_KIND*object*ARTIFACT_FILE*requested-artifact-00000000.bin*ARTIFACT_SHA256*) ;;\n"
+        "  *REQUEST_FORMAT*draft-judgment-request-v4*SITE*judgment-site*TARGET_IDENTITY*draft-aarch64-macos-v5*BRANCH_KIND*if-condition-entered-false*BRANCH_SUBJECT*validated*LOOP_RANGES*LOOP_RANGE_KIND*captured-iteration-length*LOOP_RANGE_BINDING*index*LOOP_RANGE_UPPER*values*JUDGMENT_CLAIM*preserve-the-abi*ATTACHMENT_PATH*EVIDENCE.md*RESOLVED_PROGRAM_SHA256*COMPILER_IDENTITY*draft-bootstrap-cpp-v119*POLICY_IDENTITY*draft-judgment-policy-v1*VALIDATOR_IDENTITY*validator-0*REQUESTED_ARTIFACTS*ARTIFACT_KIND*object*ARTIFACT_FILE*requested-artifact-00000000.bin*ARTIFACT_SHA256*) ;;\n"
         "  *) exit 29 ;;\n"
         "esac\n"
         "case \"$model\" in\n"
@@ -145,7 +145,7 @@ draft::JudgmentRequest make_request() {
   loop_range.upper_type_text = "[]u8";
   request.obligation.loop_ranges.push_back(std::move(loop_range));
   request.resolved_program = draft::sha256("resolved program");
-  request.compiler_identity = "draft-bootstrap-cpp-v118";
+  request.compiler_identity = "draft-bootstrap-cpp-v119";
   request.policy_identity = "draft-judgment-policy-v1";
   request.validator_identity = "validator-0";
   request.claim = "preserve-the-abi";

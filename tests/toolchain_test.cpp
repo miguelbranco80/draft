@@ -458,7 +458,7 @@ void test_locked_build_verifies_and_isolates_inputs(TestState &state) {
   EXPECT(state,
       arguments.find("\n--no-default-config\n") != std::string::npos);
   EXPECT(state,
-      arguments.find("\n--no-xcselect\n") != std::string::npos);
+      arguments.find("\n--no-xcselect\n") == std::string::npos);
   const std::filesystem::path canonical_sdk =
       std::filesystem::canonical(sdk, error);
   const std::filesystem::path canonical_linker =

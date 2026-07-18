@@ -132,7 +132,7 @@ spelling. Physical root paths are excluded. Absolute or escaping symlinks,
 root symlinks, and special files are rejected.
 
 Locked invocation uses the verified absolute Clang and linker paths, explicit
-`-isysroot`, `--no-default-config`, `--no-xcselect`, the target deployment
+`-isysroot`, `--no-default-config`, the target deployment
 floor, and the linker's content-derived Mach-O UUID. Current macOS requires the
 UUID load command for executable launch; a real integration gate proves two
 complete links to the same explicit output identity are byte-for-byte equal.
@@ -141,6 +141,12 @@ it inherits no SDK, compiler, header, library, deployment, or package search
 variables. Other manifest external-input roles fail closed until their
 artifact-to-command mapping exists. Ordinary development builds retain the
 separate explicit host-toolchain escape hatch.
+
+The adapter deliberately does not pass Apple's private `--no-xcselect` driver
+option: upstream LLVM 22.1 rejects it. An absolute `-isysroot`, absolute
+`--ld-path`, empty `PATH`, and scrubbed SDK/deployment environment close the
+same discovery paths while remaining compatible with the pinned upstream
+driver.
 
 Runtime assets use a separate complete-set mapping from a nonempty logical name
 to one absolute real file or directory root. Resolution records a
@@ -898,7 +904,7 @@ upper source re-evaluates to the displayed value at the site. Other loop shapes
 produce no inferred range.
 
 `draft-agent-obligation-v19`, synthesis request v20 / prompt v18, judgment
-request/prompt v4, and compiler content v118 identities make these new facts a
+request/prompt v4, and compiler content v119 identities make these new facts a
 stale-pin and evidence input. Both Codex adapters use provider identity
 `openai-codex-cli-v22` and recheck the canonical upper-source digest before a
 child starts. Obligation construction also drops a range when the binding or

@@ -125,7 +125,6 @@ void append_locked_arguments(
     bool link,
     std::vector<std::string> &arguments) {
   arguments.push_back("--no-default-config");
-  arguments.push_back("--no-xcselect");
   arguments.push_back("-isysroot");
   arguments.push_back(inputs.sdk_root.string());
   if (link) {
@@ -529,7 +528,6 @@ NativeBuildResult build_native_artifact(
   std::vector<std::string> version_arguments{clang_path};
   if (options.locked) {
     version_arguments.push_back("--no-default-config");
-    version_arguments.push_back("--no-xcselect");
   }
   version_arguments.push_back("--version");
   const ProcessResult version =

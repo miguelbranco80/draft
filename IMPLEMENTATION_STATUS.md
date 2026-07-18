@@ -46,6 +46,19 @@ operation locations and real native line tables, but pinned-toolchain
 DWARF/disassembly qualification and explicit coverage/profile correlation
 remain.
 
+An isolated locked-build smoke now uses upstream Homebrew LLVM and LLD 22.1.8
+with the macOS 26.5 SDK. It pins both complete selected input trees, resolves the
+handwritten `examples/hello` source in an isolated workspace, builds and runs it
+offline twice at the same output identity, and obtains byte-identical complete
+Mach-O files (SHA-256
+`d4d3153dbcc8393018468ae693234ff431617b3dbc710e8bb5b884bfd67df38b`).
+This gate found and removed the Apple-driver-only `--no-xcselect` argument,
+which upstream Clang 22.1 rejects. The smoke uses a temporary qualification tree
+assembled from separately installed Homebrew LLVM/LLD packages; it is evidence
+for the locked adapter and upstream driver, not a substitute for the selected
+self-contained release distribution, the full native matrix, or live Codex
+qualification.
+
 The production audit now also proves byte-exact compile-time string indexing
 and every half-open string slice form. These operations preserve distinct
 string identity, enforce the same contextual-`usize` boundary as runtime
