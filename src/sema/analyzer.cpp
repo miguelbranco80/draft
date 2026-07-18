@@ -200,9 +200,14 @@ private:
     if (node_is_type_syntax(payload_kind)) {
       return SymbolKind::Type;
     }
-    // A bare name can denote either a type alias or a constant value. Preserve
-    // that ambiguity until the complete package declaration set is available.
-    if (payload_kind == NodeKind::NameExpression) {
+    // Names, qualified members, generic applications, and parenthesized forms
+    // can denote either type values or ordinary constant values. Preserve that
+    // ambiguity until imports and the complete declaration set are available.
+    if (payload_kind == NodeKind::NameExpression ||
+        payload_kind == NodeKind::MemberExpression ||
+        payload_kind == NodeKind::BracketExpression ||
+        payload_kind == NodeKind::GroupExpression ||
+        payload_kind == NodeKind::TupleExpression) {
       return SymbolKind::UnresolvedDeclaration;
     }
     return SymbolKind::Constant;

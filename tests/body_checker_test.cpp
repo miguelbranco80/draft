@@ -620,6 +620,8 @@ local_types[T: type, N: usize] :: proc(value: T, values: [N]T) -> T {
         outer: Alias,
         inner: U,
     }
+    Tuple_Alias :: (Alias, u32)
+    Box_Alias :: Local_Box[u32]
     read :: proc(pair: ^Pair, box: ^Local_Box[u32]) -> Alias {
         if box^.inner > 0 {
             return pair^.head
@@ -628,7 +630,7 @@ local_types[T: type, N: usize] :: proc(value: T, values: [N]T) -> T {
     }
 
     pair := Pair{head = value, tail = values}
-    box: Local_Box[u32]
+    box: Box_Alias
     box.outer = value
     box.inner = 1
     static_assert(Extra > N)
@@ -680,9 +682,9 @@ main :: proc() -> u64 {
   // The template and its concrete u64/2 specialization each own a separate
   // lexical declaration set. TypeIds and member scopes must never be shared
   // across those two semantic bodies.
-  EXPECT(state, local_types == 16);
+  EXPECT(state, local_types == 20);
   EXPECT(state, local_type_instances == 2);
-  EXPECT(state, type_statements == 16);
+  EXPECT(state, type_statements == 20);
 }
 
 void test_string_index_is_immutable(TestState &state) {

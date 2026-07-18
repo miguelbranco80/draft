@@ -1,5 +1,10 @@
 package generic
 
+// A public nominal template also exercises consumer-side type applications.
+pub Box[T: type] :: struct {
+    value: T,
+}
+
 // Public generic procedure bodies are compiled here, in their defining
 // package, after consumers have published every concrete type/value request.
 pub identity[T: type] :: proc(value: T) -> T {

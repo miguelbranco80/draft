@@ -72,6 +72,10 @@ Cache_Alignment :: 1 << 6
 
 Alias :: u32
 Duration :: distinct i64
+Grouped_Alias :: (u32)
+Tuple_Alias :: (u32, u64)
+Box_Alias :: Box[u32]
+Tuple_Constant :: (1, 2)
 
 Number_Box[T: number] :: struct {
     value: T,
@@ -174,6 +178,14 @@ take[T: type] :: proc(value: ^T) -> ^T {
 
   const draft::Symbol *alias = find_symbol(source.semantic, "Alias");
   const draft::Symbol *duration = find_symbol(source.semantic, "Duration");
+  const draft::Symbol *grouped_alias =
+      find_symbol(source.semantic, "Grouped_Alias");
+  const draft::Symbol *tuple_alias =
+      find_symbol(source.semantic, "Tuple_Alias");
+  const draft::Symbol *box_alias =
+      find_symbol(source.semantic, "Box_Alias");
+  const draft::Symbol *tuple_constant =
+      find_symbol(source.semantic, "Tuple_Constant");
   const draft::Symbol *header = find_symbol(source.semantic, "Header");
   const draft::Symbol *overlay = find_symbol(source.semantic, "Overlay");
   const draft::Symbol *c_header = find_symbol(source.semantic, "C_Header");
@@ -194,6 +206,10 @@ take[T: type] :: proc(value: ^T) -> ^T {
   const draft::Symbol *take = find_symbol(source.semantic, "take");
   EXPECT(state, alias != nullptr);
   EXPECT(state, duration != nullptr);
+  EXPECT(state, grouped_alias != nullptr);
+  EXPECT(state, tuple_alias != nullptr);
+  EXPECT(state, box_alias != nullptr);
+  EXPECT(state, tuple_constant != nullptr);
   EXPECT(state, header != nullptr);
   EXPECT(state, overlay != nullptr);
   EXPECT(state, c_header != nullptr);
@@ -210,7 +226,9 @@ take[T: type] :: proc(value: ^T) -> ^T {
   EXPECT(state, concrete_aligned != nullptr);
   EXPECT(state, concrete_buffer != nullptr);
   EXPECT(state, take != nullptr);
-  if (alias == nullptr || duration == nullptr || header == nullptr ||
+  if (alias == nullptr || duration == nullptr || grouped_alias == nullptr ||
+      tuple_alias == nullptr || box_alias == nullptr ||
+      tuple_constant == nullptr || header == nullptr ||
       overlay == nullptr || c_header == nullptr || c_overlay == nullptr ||
       aligned == nullptr || kind == nullptr || c_kind == nullptr || choice == nullptr ||
       signed_kind == nullptr || callback == nullptr || transform == nullptr ||
@@ -225,7 +243,24 @@ take[T: type] :: proc(value: ^T) -> ^T {
   if (u32.has_value()) {
     EXPECT(state, alias->kind == draft::SymbolKind::Type);
     EXPECT(state, alias->type == *u32);
+    EXPECT(state, grouped_alias->kind == draft::SymbolKind::Type);
+    EXPECT(state, grouped_alias->type == *u32);
   }
+  EXPECT(state, tuple_alias->kind == draft::SymbolKind::Type);
+  EXPECT(
+      state,
+      source.semantic.types.type(tuple_alias->type).kind ==
+          draft::TypeKind::Tuple);
+  EXPECT(
+      state,
+      source.semantic.types.type(tuple_alias->type).layout ==
+          draft::TypeLayout({true, 16, 8}));
+  EXPECT(state, box_alias->kind == draft::SymbolKind::Type);
+  EXPECT(
+      state,
+      source.semantic.types.type(box_alias->type).kind ==
+          draft::TypeKind::Struct);
+  EXPECT(state, tuple_constant->kind == draft::SymbolKind::Constant);
   EXPECT(state, source.semantic.types.type(duration->type).kind == draft::TypeKind::Distinct);
   EXPECT(state, source.semantic.types.type(duration->type).layout ==
                     draft::TypeLayout({true, 8, 8}));
@@ -326,7 +361,7 @@ take[T: type] :: proc(value: ^T) -> ^T {
       EXPECT(state, source.semantic.types.type(data.element).name == "u16");
     }
   }
-  EXPECT(state, source.semantic.parametric_type_instances.size() == 5);
+  EXPECT(state, source.semantic.parametric_type_instances.size() == 6);
   EXPECT(state, source.semantic.parametric_parameters.size() == 10);
   EXPECT(state, take->flags.parametric);
 }

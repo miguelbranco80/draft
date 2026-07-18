@@ -1756,6 +1756,13 @@ private:
     if (node.kind == NodeKind::GroupExpression && node.children.size() == 1) {
       return expression_denotes_type(tree, node.children.front(), scope);
     }
+    if (node.kind == NodeKind::TupleExpression) {
+      if (node.children.size() < 2) return false;
+      for (NodeId child : node.children) {
+        if (!expression_denotes_type(tree, child, scope)) return false;
+      }
+      return true;
+    }
     if (node.kind == NodeKind::MemberExpression) {
       const std::optional<SymbolId> member = imported_member(tree, node, scope);
       if (!member.has_value()) return false;

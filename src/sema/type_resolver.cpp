@@ -202,33 +202,15 @@ public:
           resolve_type(tree, type_node.children.back(), semantic_parent);
       result = semantic_.types.distinct(
           initial.name, underlying, initial.name_range);
-    } else if (type_node.kind == NodeKind::NameExpression) {
-      result = try_named_type(tree, type_node, semantic_parent).value_or(
+    } else if (type_node.kind == NodeKind::NameExpression ||
+               type_node.kind == NodeKind::MemberExpression ||
+               type_node.kind == NodeKind::BracketExpression ||
+               type_node.kind == NodeKind::GroupExpression ||
+               type_node.kind == NodeKind::TupleExpression) {
+      result = try_type_value(tree, type_id, semantic_parent).value_or(
           semantic_.types.builtins().invalid);
       if (result == semantic_.types.builtins().invalid) {
-        diagnostics_.error(type_node.range, "name does not denote a type");
-      }
-    } else if (type_node.kind == NodeKind::MemberExpression) {
-      result = try_imported_type(tree, type_node, semantic_parent).value_or(
-          semantic_.types.builtins().invalid);
-      if (result == semantic_.types.builtins().invalid) {
-        diagnostics_.error(type_node.range, "name does not denote an imported type");
-      }
-    } else if (type_node.kind == NodeKind::GroupExpression &&
-               type_node.children.size() == 1) {
-      const SyntaxNode &grouped = tree.node(type_node.children.front());
-      if (grouped.kind == NodeKind::NameExpression) {
-        result = try_named_type(tree, grouped, semantic_parent).value_or(
-            semantic_.types.builtins().invalid);
-      } else if (grouped.kind == NodeKind::MemberExpression) {
-        result = try_imported_type(tree, grouped, semantic_parent).value_or(
-            semantic_.types.builtins().invalid);
-      } else {
-        result = resolve_type(
-            tree, type_node.children.front(), semantic_parent);
-      }
-      if (result == semantic_.types.builtins().invalid) {
-        diagnostics_.error(type_node.range, "grouped expression does not denote a type");
+        diagnostics_.error(type_node.range, "expression does not denote a type");
       }
     } else {
       result = resolve_type(tree, type_id, semantic_parent);
@@ -1306,6 +1288,62 @@ private:
     return semantic_.types.builtins().invalid;
   }
 
+  // Tries the expression-grammar forms that can also denote type values. The
+  // probe is silent when the base name is an ordinary value, allowing `::`
+  // constants such as `Copy :: Existing_Constant` and `Item :: values[0]` to
+  // remain values. Once a parametric type base is identified, malformed
+  // arguments are real type diagnostics and resolve_type owns their reporting.
+  [[nodiscard]] std::optional<TypeId> try_type_value(
+      const SyntaxTree &tree, NodeId node_id, ScopeId scope) {
+    const SyntaxNode &node = tree.node(node_id);
+    if (node_is_type_syntax(node.kind)) {
+      return resolve_type(tree, node_id, scope);
+    }
+    if (node.kind == NodeKind::NameExpression) {
+      return try_named_type(tree, node, scope);
+    }
+    if (node.kind == NodeKind::MemberExpression) {
+      const std::optional<SymbolId> symbol = type_symbol_in_span(
+          tree, node.token_begin, node.token_end, scope);
+      if (!symbol.has_value()) return std::nullopt;
+      const Symbol &binding = semantic_.symbols.symbol(*symbol);
+      if ((binding.kind == SymbolKind::Type ||
+           binding.kind == SymbolKind::TypeParameter) &&
+          binding.type.is_valid()) {
+        return active_type(binding.type);
+      }
+      return std::nullopt;
+    }
+    if (node.kind == NodeKind::BracketExpression &&
+        !node.children.empty()) {
+      const SyntaxNode &base = tree.node(node.children.front());
+      const std::optional<SymbolId> symbol = type_symbol_in_span(
+          tree, base.token_begin, base.token_end, scope);
+      if (!symbol.has_value()) return std::nullopt;
+      const Symbol &binding = semantic_.symbols.symbol(*symbol);
+      if (binding.kind != SymbolKind::Type || !binding.flags.parametric) {
+        return std::nullopt;
+      }
+      return resolve_type(tree, node_id, scope);
+    }
+    if (node.kind == NodeKind::GroupExpression && node.children.size() == 1) {
+      return try_type_value(tree, node.children.front(), scope);
+    }
+    if (node.kind == NodeKind::TupleExpression) {
+      std::vector<TypeId> members;
+      members.reserve(node.children.size());
+      for (NodeId child : node.children) {
+        const std::optional<TypeId> member =
+            try_type_value(tree, child, scope);
+        if (!member.has_value()) return std::nullopt;
+        members.push_back(*member);
+      }
+      if (members.size() < 2) return std::nullopt;
+      return semantic_.types.tuple(members);
+    }
+    return std::nullopt;
+  }
+
   // Recursively lowers one already-parsed type syntax node into a canonical
   // TypeId. User errors return the canonical invalid type and analysis continues.
   [[nodiscard]] TypeId resolve_type(
@@ -2315,14 +2353,10 @@ private:
       }
     } else if (initial_symbol.kind == SymbolKind::UnresolvedDeclaration &&
                payload.has_value()) {
-      const SyntaxNode &value = tree.node(*payload);
-      if (value.kind == NodeKind::NameExpression) {
-        if (const std::optional<TypeId> type = try_named_type(tree, value, semantic_parent)) {
-          semantic_.symbols.symbol_mut(id).kind = SymbolKind::Type;
-          semantic_.symbols.symbol_mut(id).type = *type;
-        } else {
-          semantic_.symbols.symbol_mut(id).kind = SymbolKind::Constant;
-        }
+      if (const std::optional<TypeId> type =
+              try_type_value(tree, *payload, semantic_parent)) {
+        semantic_.symbols.symbol_mut(id).kind = SymbolKind::Type;
+        semantic_.symbols.symbol_mut(id).type = *type;
       } else {
         semantic_.symbols.symbol_mut(id).kind = SymbolKind::Constant;
       }
