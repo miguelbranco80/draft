@@ -66,6 +66,16 @@ CompileWorkspaceResult compile_workspace(
 
     CompiledPackage package;
     package.identity = workspace_package.identity;
+    // Freeze native assembly beside the semantic phase products. Native build
+    // invocation is deliberately separate from compilation and must consume
+    // this checked snapshot rather than mutable workspace paths.
+    for (const LoadedPackageFile &file : workspace_package.loaded.files) {
+      if (file.kind != PackageFileKind::AssemblySource) continue;
+      package.assembly_sources.push_back({
+          file.relative_name,
+          std::string(sources.text(file.source)),
+      });
+    }
     package.semantics = analyze_package_semantics(
         sources,
         workspace_package.loaded,

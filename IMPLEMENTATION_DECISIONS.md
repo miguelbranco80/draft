@@ -75,6 +75,16 @@ accepted regions as volatile assembly. More complex addressing, lane-qualified
 SIMD operations, and the remainder of the closed Draft 1 instruction vocabulary
 are still required before the agent-free implementation is declared complete.
 
+Package assembly follows the separate file contract in section 3. The compiler
+copies every selected file's exact bytes into the compiled package snapshot;
+the later native adapter never rereads the workspace. It writes those bytes to
+the isolated build directory, passes `-x assembler` for all three extensions,
+and appends each resulting object after its package LLVM object in canonical
+package and filename order. The explicit language selection is essential for
+`.S`: Draft's target profile specifies no preprocessing, independently of
+Clang's conventional filename behavior. Symbols cross this boundary only
+through `foreign` and `export` C-ABI declarations.
+
 ## Initial hosted runtime context layout
 
 Status: bootstrap runtime ABI; synchronized with `core/runtime` by tests.

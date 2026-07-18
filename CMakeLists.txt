@@ -195,4 +195,12 @@ if(BUILD_TESTING)
   add_executable(draft_aarch64_abi_tests tests/aarch64_abi_test.cpp)
   target_link_libraries(draft_aarch64_abi_tests PRIVATE draft_compiler)
   add_test(NAME draft_aarch64_abi_tests COMMAND draft_aarch64_abi_tests)
+
+  add_executable(draft_toolchain_tests tests/toolchain_test.cpp)
+  target_link_libraries(draft_toolchain_tests PRIVATE draft_compiler)
+  target_compile_definitions(
+    draft_toolchain_tests
+    PRIVATE DRAFT_SOURCE_DIRECTORY="${CMAKE_CURRENT_SOURCE_DIR}"
+  )
+  add_test(NAME draft_toolchain_tests COMMAND draft_toolchain_tests)
 endif()

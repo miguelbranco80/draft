@@ -30,11 +30,23 @@ struct CompileWorkspaceOptions {
   bool emit_llvm = false;
 };
 
+// Exact package assembly bytes are copied out of SourceManager when a package
+// is compiled.  Native building is a later adapter call and deliberately does
+// not reread the physical source path: the file could have changed between
+// semantic checking and object emission, and generated assembly may have no
+// physical path at all.  relative_name retains the selected target-qualified
+// extension and is suitable for diagnostics and manifests.
+struct CompiledAssemblySource {
+  std::string relative_name;
+  std::string contents;
+};
+
 // One row owns every representation of one package. Keeping phase products
 // together makes driver commands thin and gives later manifests a single place
 // to collect canonical inputs without rerunning semantic analysis.
 struct CompiledPackage {
   PackageIdentity identity;
+  std::vector<CompiledAssemblySource> assembly_sources;
   SemanticAnalysisResult semantics;
   BodyCheckResult bodies;
   AgentMetadataResult metadata;

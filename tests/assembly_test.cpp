@@ -242,12 +242,35 @@ bad_memory_width :: proc(pointer: ^u32) -> u64 {
                     std::string::npos);
 }
 
+void test_unresolved_assembly_synthesis(TestState &state) {
+  CheckedAssembly source(R"draft(
+package assembly
+
+unresolved :: proc() {
+    asm aarch64 {
+        clobber memory
+        ... "produce a target barrier"
+    }
+}
+)draft");
+
+  EXPECT(state, source.semantics.ok);
+  EXPECT(state, source.bodies.ok);
+  EXPECT(state, !source.assembly.ok);
+  const std::string rendered =
+      draft::render_diagnostics(source.sources, source.diagnostics);
+  EXPECT(state, rendered.find(
+      "unresolved assembly synthesis prevents native lowering") !=
+      std::string::npos);
+}
+
 } // namespace
 
 int main() {
   TestState state;
   test_valid_fixed_register_regions(state);
   test_invalid_effects_and_architecture(state);
+  test_unresolved_assembly_synthesis(state);
   if (state.failures != 0) {
     std::cerr << state.failures << " assembly expectation(s) failed\n";
     return EXIT_FAILURE;

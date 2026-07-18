@@ -99,6 +99,11 @@ assembly now has structural inputs, outputs, clobbers, and instruction rows; the
 initial fixed-register integer/barrier vocabulary validates register dataflow
 and declared effects before lowering to volatile inline assembly. The
 `examples/assembly` package exercises that path through a native executable.
+Selected package `.s`, `.S`, and `.asm` files are also captured as exact build
+inputs, assembled with preprocessing explicitly disabled, and linked in
+canonical package/filename order; `examples/external-assembly` exercises the
+separate C-ABI symbol boundary. An unresolved assembly synthesis site is kept
+as a typed obligation during checking and precisely rejects native lowering.
 Scalar/pointer `c proc` imports and exports are checked at a separate C ABI
 boundary and retain exact linker names; `examples/c-interop` exercises both.
 The hosted entry shim owns one runtime Context across the linked package graph,

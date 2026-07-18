@@ -145,6 +145,19 @@ struct ProcessResult {
   return message;
 }
 
+// Resolves a selected filename back to the already validated target rule. A
+// null result is a compiled-input/profile mismatch and is diagnosed before an
+// ambient tool can infer language behavior from the filename.
+[[nodiscard]] const AssemblyFileRule *assembly_rule(
+    const TargetProfile &target, std::string_view relative_name) {
+  const std::string extension =
+      std::filesystem::path(relative_name).extension().string();
+  for (const AssemblyFileRule &rule : target.assembly_files) {
+    if (rule.extension == extension) return &rule;
+  }
+  return nullptr;
+}
+
 } // namespace
 
 NativeBuildResult build_native_executable(
@@ -224,6 +237,58 @@ NativeBuildResult build_native_executable(
       return result;
     }
     objects.push_back(object.string());
+
+    // Package assembly is an ordinary selected source input, not inline Draft
+    // assembly.  Write the captured bytes rather than rereading the workspace,
+    // and force Clang's assembler language for every extension.  In particular
+    // this prevents Clang's ambient `.S` convention from invoking a C
+    // preprocessor when the Draft target profile says preprocessing is None.
+    for (std::size_t assembly_index = 0;
+         assembly_index < compiled.packages[index]->assembly_sources.size();
+         ++assembly_index) {
+      const CompiledAssemblySource &input =
+          compiled.packages[index]->assembly_sources[assembly_index];
+      const AssemblyFileRule *rule = assembly_rule(target, input.relative_name);
+      if (rule == nullptr ||
+          rule->preprocessing != AssemblyPreprocessing::None) {
+        diagnostics.error(
+            SourceRange::invalid(),
+            "package assembly input '" + input.relative_name +
+                "' has no exact non-preprocessed target rule");
+        return result;
+      }
+      const std::string stem = "package-" + std::to_string(index) +
+          "-assembly-" + std::to_string(assembly_index);
+      const std::filesystem::path source =
+          build_directory / (stem + rule->extension);
+      const std::filesystem::path assembly_object =
+          build_directory / (stem + ".o");
+      if (!write_atomic(source, input.contents, write_error)) {
+        diagnostics.error(SourceRange::invalid(), write_error);
+        return result;
+      }
+      const ProcessResult assemble = run_process({
+          options.clang_path,
+          "-target",
+          target.llvm_triple,
+          "-mmacosx-version-min=" + target.minimum_os_version,
+          "-x",
+          "assembler",
+          "-c",
+          source.string(),
+          "-o",
+          assembly_object.string(),
+      });
+      if (!assemble.started || assemble.exit_code != 0) {
+        diagnostics.error(
+            SourceRange::invalid(),
+            phase_failure(
+                "assembly object emission for '" + input.relative_name + "'",
+                assemble));
+        return result;
+      }
+      objects.push_back(assembly_object.string());
+    }
   }
 
   std::filesystem::path output_path(options.output_path);

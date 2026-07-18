@@ -648,6 +648,14 @@ private:
         }
       } else if (child.kind == NodeKind::AsmInstruction) {
         instructions.push_back(&child);
+      } else if (child.kind == NodeKind::SynthesisAssembly) {
+        // The provider-independent front end keeps a typed, anchored assembly
+        // obligation, but native emission must never silently drop it.  A
+        // resolver will replace this node with checked instruction rows before
+        // the same analyzer is run again.
+        diagnostics_.error(
+            child.range,
+            "unresolved assembly synthesis prevents native lowering");
       }
     }
     result.input_count = inputs.size();

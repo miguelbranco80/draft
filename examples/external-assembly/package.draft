@@ -1,0 +1,15 @@
+package external_assembly
+
+// Package assembly crosses the same explicit C ABI boundary as any other
+// native provider. The provider name is diagnostic identity; the quoted name
+// is the exact symbol emitted by native.s and requested from the linker.
+foreign package_assembly {
+    add_words :: c "draft_external_add" proc(left, right: u64) -> u64
+}
+
+main :: proc() -> int {
+    if add_words(20, 22) == 42 {
+        return 0
+    }
+    return 1
+}
