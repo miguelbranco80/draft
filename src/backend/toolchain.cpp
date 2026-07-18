@@ -681,11 +681,20 @@ NativeBuildResult build_native_artifact(
           "link that provider when the archive is consumed");
       return result;
     }
-    std::vector<std::string> archive_arguments{
-        archiver_path,
-        options.locked ? "rcsD" : "-rcs",
-        output_path.string(),
-    };
+    // Archive metadata is part of the emitted artifact, so deterministic mode
+    // is not merely a locked-release concern. Apple's host ar has no
+    // deterministic switch; its libtool replacement does. A locked build uses
+    // the separately verified LLVM ar and therefore has a different interface.
+    std::vector<std::string> archive_arguments{archiver_path};
+    if (options.locked) {
+      archive_arguments.push_back("rcsD");
+      archive_arguments.push_back(output_path.string());
+    } else {
+      archive_arguments.push_back("-static");
+      archive_arguments.push_back("-D");
+      archive_arguments.push_back("-o");
+      archive_arguments.push_back(output_path.string());
+    }
     archive_arguments.insert(
         archive_arguments.end(), objects.begin(), objects.end());
     const ProcessResult archive = run_process(archive_arguments, options.locked);

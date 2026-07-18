@@ -198,7 +198,11 @@ void test_all_native_artifact_kinds(TestState &state) {
               "printf '%s\\n' '-- ar --' \"$@\" >> '"
            << log.string()
            << "'\n"
-              ": > \"$2\"\n"
+              "previous=''\n"
+              "for argument in \"$@\"; do\n"
+              "  if [ \"$previous\" = \"-o\" ]; then : > \"$argument\"; fi\n"
+              "  previous=\"$argument\"\n"
+              "done\n"
               "exit 0\n";
   }
   EXPECT(state, chmod(fake_clang.c_str(), 0700) == 0);
@@ -242,7 +246,8 @@ void test_all_native_artifact_kinds(TestState &state) {
   EXPECT(state, arguments.find("\n-Wl,-r\n") != std::string::npos);
   EXPECT(state, arguments.find("\n-Wl,-no_uuid\n") == std::string::npos);
   EXPECT(state, arguments.find("\n-dynamiclib\n") != std::string::npos);
-  EXPECT(state, arguments.find("\n-- ar --\n-rcs\n") != std::string::npos);
+  EXPECT(state,
+      arguments.find("\n-- ar --\n-static\n-D\n-o\n") != std::string::npos);
   EXPECT(state, arguments.find("\n-S\n") != std::string::npos);
 
   std::filesystem::remove_all(temporary, error);
@@ -464,7 +469,8 @@ void test_locked_build_verifies_and_isolates_inputs(TestState &state) {
   EXPECT(state, read_file(log) == arguments + arguments);
 
   // The locked archive path uses the archiver inside the already pinned
-  // toolchain tree and asks LLVM ar for deterministic member metadata.
+  // toolchain tree. Every archive build, locked or not, requests deterministic
+  // member metadata because repeatability is an artifact invariant.
   draft::NativeBuildOptions archive_options = options;
   archive_options.artifact_kind = draft::NativeArtifactKind::StaticLibrary;
   archive_options.output_path = (temporary / "library.a").string();

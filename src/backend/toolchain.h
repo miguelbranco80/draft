@@ -26,7 +26,10 @@ enum class NativeArtifactKind {
 
 struct NativeBuildOptions {
   std::string clang_path = "clang";
-  std::string archiver_path = "ar";
+  // The supported host path is Apple's libtool, whose -D switch removes
+  // timestamps and ownership from archives. Locked builds ignore this path
+  // and use the verified LLVM ar from the pinned toolchain instead.
+  std::string archiver_path = "libtool";
   std::string build_directory;
   std::string output_path;
   NativeArtifactKind artifact_kind = NativeArtifactKind::Executable;

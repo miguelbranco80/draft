@@ -174,8 +174,10 @@ requiring a fake Draft entry procedure. Ordinary Draft procedures and globals
 have hidden Mach-O visibility; only explicit C exports retain default visibility.
 
 Object output performs a relocatable link over all package and package-assembly
-objects. Static output uses deterministic LLVM-ar mode in locked builds. Dynamic
-output fixes an `@rpath/<filename>` install name. Assembly output is a directory
+objects. Static output always uses deterministic archive metadata: Apple
+`libtool -static -D` for opted-in host builds and pinned `llvm-ar rcsD` for
+locked builds. Dynamic output fixes an `@rpath/<filename>` install name.
+Assembly output is a directory
 bundle with one compiler-produced source per package and exact copied external
 assembly inputs, avoiding local-label collisions that concatenation could create.
 Generated C headers cover root-package exports and transitively required C

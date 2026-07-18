@@ -1,5 +1,6 @@
 # Out-of-tree CMake builds and host-specific editor metadata are derived state.
 build/
+build-*/
 cmake-build-*/
 .DS_Store
 
