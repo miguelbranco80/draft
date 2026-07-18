@@ -39,6 +39,19 @@ struct ProcedureInstantiationSeed {
   std::vector<ParametricArgument> arguments;
 };
 
+// Validates package constant and global-initializer expressions with the same
+// operator and expected-type rules used by procedure bodies. Both branches of
+// short-circuit and conditional expressions are checked, but no expression is
+// executed and no HIR escapes this validation pass.
+[[nodiscard]] bool validate_package_initializer_expression_types(
+    const SourceManager &sources,
+    const LoadedPackage &loaded,
+    const ConditionalSelections &selections,
+    SemanticPackage &package,
+    ConstantTable &constants,
+    const TargetFacts &target,
+    DiagnosticSink &diagnostics);
+
 // Checks every package procedure definition in stable declaration order.
 // Foreign declarations and standalone procedure types have no body and are
 // skipped. Successfully evaluated lexical `::` values append to constants so

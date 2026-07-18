@@ -162,7 +162,94 @@ public:
     return result;
   }
 
+  [[nodiscard]] bool validate_package_initializer_expression_types() {
+    const std::size_t initial_errors = diagnostics_.error_count();
+    type_validation_only_ = true;
+    std::vector<SyntaxReference> checked;
+
+    // Several symbols can share one declaration syntax (a grouped binding or
+    // tuple pattern). Check its initializer once, in stable package-symbol
+    // order, so one source error produces one diagnostic.
+    const std::vector<SymbolId> package_symbols =
+        semantic_.symbols.scope(semantic_.package_scope).symbols;
+    for (SymbolId id : package_symbols) {
+      const Symbol symbol = semantic_.symbols.symbol(id);
+      if (symbol.kind != SymbolKind::Constant &&
+          symbol.kind != SymbolKind::UnresolvedDeclaration &&
+          symbol.kind != SymbolKind::Variable) {
+        continue;
+      }
+      if (!symbol.syntax.file.is_valid() || !symbol.syntax.node.is_valid()) {
+        continue;
+      }
+      if (std::find(checked.begin(), checked.end(), symbol.syntax) !=
+          checked.end()) {
+        continue;
+      }
+      checked.push_back(symbol.syntax);
+
+      const SyntaxTree *tree = find_tree(symbol.syntax.file);
+      const std::optional<ScopeId> scope = source_file_scope(symbol.syntax.file);
+      if (tree == nullptr || !scope.has_value()) continue;
+      const SyntaxNode &declaration = tree->node(symbol.syntax.node);
+      if (declaration.kind != NodeKind::Declaration ||
+          declaration.children.size() < 2) {
+        continue;
+      }
+      const NodeId initializer = declaration.children.back();
+      const NodeKind initializer_kind = tree->node(initializer).kind;
+      if (node_is_type_syntax(initializer_kind) ||
+          initializer_kind == NodeKind::BindingPattern ||
+          initializer_kind == NodeKind::TuplePattern ||
+          initializer_kind == NodeKind::ParametricParameterList ||
+          initializer_kind == NodeKind::UninitializedExpression) {
+        continue;
+      }
+      // The constant evaluator already validates every expression it actually
+      // executes. This preflight exists specifically for value-selection forms
+      // whose dead operand is deliberately not executed. Keeping the entry
+      // point narrow also avoids pretending that runtime HIR has values for
+      // compile-time-only objects such as `target`.
+      if (!contains_value_selection(*tree, initializer)) continue;
+
+      TypeId expected = symbol.type;
+      const SyntaxNode &pattern = tree->node(declaration.children.front());
+      if (pattern.kind == NodeKind::TuplePattern) {
+        std::vector<TypeId> members;
+        for (SymbolId candidate_id : package_symbols) {
+          const Symbol &candidate = semantic_.symbols.symbol(candidate_id);
+          if (candidate.syntax == symbol.syntax && candidate.type.is_valid()) {
+            members.push_back(candidate.type);
+          }
+        }
+        expected = members.size() >= 2
+            ? semantic_.types.tuple(members)
+            : TypeId{};
+      }
+      (void)check_expression(*tree, initializer, *scope, expected);
+    }
+    type_validation_only_ = false;
+    return diagnostics_.error_count() == initial_errors;
+  }
+
 private:
+  [[nodiscard]] bool contains_value_selection(
+      const SyntaxTree &tree, NodeId expression) const {
+    const SyntaxNode &node = tree.node(expression);
+    if (node.kind == NodeKind::ConditionalExpression) return true;
+    if (node.kind == NodeKind::BinaryExpression) {
+      const TokenKind operation = binary_operator(tree, node);
+      if (operation == TokenKind::LogicalAnd ||
+          operation == TokenKind::LogicalOr) {
+        return true;
+      }
+    }
+    for (NodeId child : node.children) {
+      if (contains_value_selection(tree, child)) return true;
+    }
+    return false;
+  }
+
   void instantiate_seeded_procedures() {
     for (const ProcedureInstantiationSeed &seed : seeds_) {
       const std::optional<SymbolId> source = semantic_.symbols.lookup_direct(
@@ -238,6 +325,13 @@ private:
       }
     }
     return nullptr;
+  }
+
+  [[nodiscard]] std::optional<ScopeId> source_file_scope(FileId file) const {
+    for (const FileSemanticScope &entry : semantic_.files) {
+      if (entry.file == file) return entry.scope;
+    }
+    return std::nullopt;
   }
 
   // Locates a scope already owned by a declaration during signature resolution.
@@ -2909,6 +3003,28 @@ private:
         diagnostics_.error(
             call.range, "static_assert requires a bool and optional string");
       }
+      if (type_validation_only_) {
+        // A dead conditional branch still has to contain a well-typed call,
+        // but its assertion is not executed. Check every supplied operand and
+        // leave the value-dependent assertion to ordinary evaluation when the
+        // branch is selected.
+        if (argument_count >= 1) {
+          expression.operands.push_back(check_expression(
+              tree,
+              call.children[1],
+              scope,
+              semantic_.types.builtins().bool_type));
+        }
+        if (argument_count >= 2) {
+          expression.operands.push_back(check_expression(
+              tree,
+              call.children[2],
+              scope,
+              semantic_.types.builtins().string_type));
+        }
+        expression.type = semantic_.types.builtins().void_type;
+        return hir_.add_expression(std::move(expression));
+      }
       const ConstantTable active_constants = active_constant_table();
       const std::vector<ConstantTypeBinding> active_types =
           active_constant_types();
@@ -3137,7 +3253,8 @@ private:
             !endian && !pointers) {
           diagnostics_.error(call.range, "cast source and target types are incompatible");
         }
-        if ((numeric || boolean_storage ||
+        if (!type_validation_only_ &&
+            (numeric || boolean_storage ||
              (enumeration && target_kind == TypeKind::Enum)) &&
             hir_.expression(argument).kind == HirExpressionKind::Constant) {
           const std::optional<ConstantValue> converted = convert_numeric_constant(
@@ -3252,6 +3369,12 @@ private:
           names_in_span(tree, node.token_begin, node.token_end);
       if (names.empty()) return invalid_expression(node.range);
       if (names.size() == 1 && names.front().text == "context") {
+        if (!current_procedure_.is_valid()) {
+          diagnostics_.error(
+              names.front().range,
+              "the built-in context value is available only in a procedure");
+          return invalid_expression(node.range);
+        }
         const Type &procedure = semantic_.types.type(
             semantic_.symbols.symbol(current_procedure_).type);
         if (procedure.c_calling_convention) {
@@ -3590,7 +3713,8 @@ private:
           is_untyped_integer(left) || is_untyped_float(left);
       const bool right_untyped_numeric =
           is_untyped_integer(right) || is_untyped_float(right);
-      if (result == semantic_.types.builtins().bool_type &&
+      if (!type_validation_only_ &&
+          result == semantic_.types.builtins().bool_type &&
           left_untyped_numeric && right_untyped_numeric) {
         // An all-untyped comparison has no concrete machine type to inherit.
         // Choosing int/f64 here would reject arbitrary-precision integers or
@@ -3718,7 +3842,8 @@ private:
             // Do not let a concrete-looking call inside that row manufacture a
             // native specialization; the concrete enclosing body is checked
             // again and creates every instance it can actually execute.
-            const bool symbolic = current_procedure_is_template_ ||
+            const bool symbolic = type_validation_only_ ||
+                current_procedure_is_template_ ||
                 (!current_instance_index_.has_value() &&
                  has_symbolic_type_substitution(type_substitutions));
             SymbolId callee_symbol = *inferred_template;
@@ -4020,7 +4145,7 @@ private:
             type_substitutions.push_back(
                 {semantic_.symbols.symbol(parameter.parameter).type, argument});
           }
-          if (current_procedure_is_template_ ||
+          if (type_validation_only_ || current_procedure_is_template_ ||
               (!current_instance_index_.has_value() &&
                (has_symbolic_type_substitution(type_substitutions) ||
                 has_symbolic_value_substitution(value_substitutions)))) {
@@ -4071,20 +4196,22 @@ private:
           : base.element;
       expression.type = apply_expected_type(element, expected, node.range);
       expression.operands = {base_id, index_id};
-      if (const std::optional<std::uint64_t> length =
+      if (!type_validation_only_) {
+        if (const std::optional<std::uint64_t> length =
               compile_time_length(base_id)) {
-        const std::optional<BigInteger> constant =
-            constant_integer_expression(index_id);
-        if (constant.has_value()) {
-          const std::optional<std::uint64_t> index = constant->to_u64();
-          if (index.has_value() && *index < *length) {
-            expression.bounds_proven = true;
-          } else if (index.has_value()) {
-            diagnostics_.error(
-                tree.node(node.children[1]).range,
-                "constant index " + std::to_string(*index) +
-                    " is out of bounds for length " +
-                    std::to_string(*length));
+          const std::optional<BigInteger> constant =
+              constant_integer_expression(index_id);
+          if (constant.has_value()) {
+            const std::optional<std::uint64_t> index = constant->to_u64();
+            if (index.has_value() && *index < *length) {
+              expression.bounds_proven = true;
+            } else if (index.has_value()) {
+              diagnostics_.error(
+                  tree.node(node.children[1]).range,
+                  "constant index " + std::to_string(*index) +
+                      " is out of bounds for length " +
+                      std::to_string(*length));
+            }
           }
         }
       }
@@ -4167,30 +4294,32 @@ private:
             node.range,
             "multi-pointer slicing requires the form 'pointer[:length]'");
       }
-      if (const std::optional<std::uint64_t> length =
+      if (!type_validation_only_) {
+        if (const std::optional<std::uint64_t> length =
               compile_time_length(base_id)) {
-        std::size_t operand_index = 1;
-        std::optional<std::uint64_t> low = 0;
-        std::optional<std::uint64_t> high = length;
-        if (expression.slice_has_low) {
-          const std::optional<BigInteger> value =
-              constant_integer_expression(expression.operands[operand_index++]);
-          low = value.has_value() ? value->to_u64() : std::nullopt;
-        }
-        if (expression.slice_has_high) {
-          const std::optional<BigInteger> value =
-              constant_integer_expression(expression.operands[operand_index]);
-          high = value.has_value() ? value->to_u64() : std::nullopt;
-        }
-        if (low.has_value() && high.has_value()) {
-          if (*low <= *high && *high <= *length) {
-            expression.bounds_proven = true;
-          } else {
-            diagnostics_.error(
-                node.range,
-                "constant slice bounds [" + std::to_string(*low) + ":" +
-                    std::to_string(*high) + "] are invalid for length " +
-                    std::to_string(*length));
+          std::size_t operand_index = 1;
+          std::optional<std::uint64_t> low = 0;
+          std::optional<std::uint64_t> high = length;
+          if (expression.slice_has_low) {
+            const std::optional<BigInteger> value =
+                constant_integer_expression(expression.operands[operand_index++]);
+            low = value.has_value() ? value->to_u64() : std::nullopt;
+          }
+          if (expression.slice_has_high) {
+            const std::optional<BigInteger> value =
+                constant_integer_expression(expression.operands[operand_index]);
+            high = value.has_value() ? value->to_u64() : std::nullopt;
+          }
+          if (low.has_value() && high.has_value()) {
+            if (*low <= *high && *high <= *length) {
+              expression.bounds_proven = true;
+            } else {
+              diagnostics_.error(
+                  node.range,
+                  "constant slice bounds [" + std::to_string(*low) + ":" +
+                      std::to_string(*high) + "] are invalid for length " +
+                      std::to_string(*length));
+            }
           }
         }
       }
@@ -5607,9 +5736,34 @@ private:
   std::vector<SyntaxReference> active_statement_denials_;
   std::vector<ProcedureInstance> instances_;
   std::optional<std::size_t> current_instance_index_;
+  // Used only by the package-initializer preflight. It reuses the complete
+  // expression type checker while suppressing operations whose diagnostics
+  // depend on actually evaluating a branch.
+  bool type_validation_only_ = false;
 };
 
 } // namespace
+
+bool validate_package_initializer_expression_types(
+    const SourceManager &sources,
+    const LoadedPackage &loaded,
+    const ConditionalSelections &selections,
+    SemanticPackage &package,
+    ConstantTable &constants,
+    const TargetFacts &target,
+    DiagnosticSink &diagnostics) {
+  const std::vector<ProcedureInstantiationSeed> no_seeds;
+  BodyChecker checker(
+      sources,
+      loaded,
+      selections,
+      package,
+      constants,
+      target,
+      diagnostics,
+      no_seeds);
+  return checker.validate_package_initializer_expression_types();
+}
 
 BodyCheckResult check_package_bodies(
     const SourceManager &sources,

@@ -831,15 +831,23 @@ Truth_Value :: cast[Truth](true)
 Negated_Truth :: !Truth_Value
 Combined_Truth :: Truth_Value && !Negated_Truth
 
+identity[T: type] :: proc(value: T) -> T {
+    return value
+}
+Generic_Selected :: identity[bool](false && true)
+
 callback :: proc() {
 }
 Good_Nil :: callback != nil
+Short_Circuit_Division :: false && ((1 / 0) == 0)
+Selected_Conditional :: 42 if true else (1 / 0)
 )draft");
   if (valid.diagnostics.has_errors()) {
     std::cerr << draft::render_diagnostics(valid.sources, valid.diagnostics);
   }
   EXPECT(state, valid.analysis.ok);
   EXPECT(state, !valid.diagnostics.has_errors());
+  EXPECT(state, valid.analysis.package.parametric_instances.empty());
 
   AnalyzedSource invalid(R"draft(
 package conditions
@@ -868,6 +876,8 @@ Bad_Endian_Not :: ~cast[u32be](cast[u32](1))
 Bad_Enum_Negate :: -cast[Mode](cast[int](1))
 Bad_Compound :: bad_compound()
 Bad_Nil :: nil == nil
+Bad_Dead_Logical :: false && 1
+Bad_Dead_Conditional :: 42 if true else "wrong"
 )draft");
   if (invalid.diagnostics.error_count() < 11) {
     std::cerr << draft::render_diagnostics(
@@ -885,6 +895,11 @@ Bad_Nil :: nil == nil
                     std::string::npos);
   EXPECT(state, rendered.find(
                     "compile-time nil comparison requires a pointer or procedure type") !=
+                    std::string::npos);
+  EXPECT(state, rendered.find(
+                    "logical operators require matching bool operands") !=
+                    std::string::npos);
+  EXPECT(state, rendered.find("numeric operands require one common type") !=
                     std::string::npos);
 }
 
@@ -1146,6 +1161,8 @@ keyed_array: [2]i64 = [2]i64{first = 1}
 empty_overlay: Overlay = Overlay{}
 multiple_overlay: Overlay = Overlay{signed = 1, unsigned = 2}
 positional_overlay: Overlay = Overlay{1}
+dead_logical_type: bool = false && 1
+dead_conditional_type: i64 = 42 if true else "wrong"
 )draft");
   EXPECT(state, !invalid.analysis.ok);
   const std::string rendered =
@@ -1163,6 +1180,10 @@ positional_overlay: Overlay = Overlay{1}
   EXPECT(state, rendered.find("must initialize exactly one field") !=
                     std::string::npos);
   EXPECT(state, rendered.find("raw union composite element must name a field") !=
+                    std::string::npos);
+  EXPECT(state, rendered.find("logical operators require matching bool operands") !=
+                    std::string::npos);
+  EXPECT(state, rendered.find("numeric operands require one common type") !=
                     std::string::npos);
 }
 

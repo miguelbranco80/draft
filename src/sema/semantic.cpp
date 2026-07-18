@@ -2,6 +2,7 @@
 
 #include "sema/semantic.h"
 
+#include "sema/body_checker.h"
 #include "sema/global_initializer.h"
 #include "sema/runtime_context.h"
 #include "sema/target_validation.h"
@@ -82,6 +83,14 @@ SemanticAnalysisResult analyze_package_semantics(
       target,
       result.constants,
       result.global_initializers,
+      diagnostics);
+  (void)validate_package_initializer_expression_types(
+      sources,
+      loaded,
+      result.selections,
+      result.package,
+      result.constants,
+      target,
       diagnostics);
   (void)validate_target_types(result.package.types, target, diagnostics);
   result.ok = diagnostics.error_count() == initial_error_count &&
