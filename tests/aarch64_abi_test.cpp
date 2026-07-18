@@ -75,6 +75,14 @@ HD4 :: @repr(C) struct { values: [4]f64, }
 HD5 :: @repr(C) struct { values: [5]f64, }
 HF2_Aligned :: @repr(C) @align(16) struct { first: f32, second: f32, }
 Float_Union :: @repr(C) raw union { first: f32, second: f32, }
+Unequal_Float_Union :: @repr(C) raw union {
+    scalar: f32,
+    pair: [2]f32,
+}
+Nested_Union_HF4 :: @repr(C) struct {
+    union_value: Unequal_Float_Union,
+    pair: [2]f32,
+}
 Mixed_Union :: @repr(C) raw union { first: f32, second: f64, }
 Default_Record :: struct { value: i64, }
 Bad_Member :: @repr(C) struct { value: []u8, }
@@ -122,6 +130,16 @@ C_Enum :: @repr(C) enum { off, on, }
                     draft::Aarch64CAbiClass::SmallAggregate);
   EXPECT(state, classify("Float_Union").classification ==
                     draft::Aarch64CAbiClass::HomogeneousFloatAggregate);
+  const draft::Aarch64CAbiType unequal_union =
+      classify("Unequal_Float_Union");
+  EXPECT(state, unequal_union.classification ==
+                    draft::Aarch64CAbiClass::HomogeneousFloatAggregate);
+  EXPECT(state, unequal_union.homogeneous_element_bits == 32);
+  EXPECT(state, unequal_union.homogeneous_element_count == 2);
+  const draft::Aarch64CAbiType nested_union = classify("Nested_Union_HF4");
+  EXPECT(state, nested_union.classification ==
+                    draft::Aarch64CAbiClass::HomogeneousFloatAggregate);
+  EXPECT(state, nested_union.homogeneous_element_count == 4);
   EXPECT(state, classify("Mixed_Union").classification ==
                     draft::Aarch64CAbiClass::SmallAggregate);
 

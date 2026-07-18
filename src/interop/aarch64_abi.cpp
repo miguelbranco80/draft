@@ -2,6 +2,7 @@
 
 #include "interop/aarch64_abi.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <optional>
 
@@ -101,10 +102,14 @@ struct HomogeneousFloatInfo {
       return std::nullopt;
     }
     if (type.kind == TypeKind::RawUnion) {
-      // Every union view must describe the same homogeneous register shape.
-      if (candidate->count != result->count) {
-        return std::nullopt;
-      }
+      // A union overlays its alternatives, so its homogeneous element count is
+      // the largest alternative rather than the sum used by a struct.  The
+      // alternatives need only share the same basic floating element type;
+      // they do not need to contain the same number of elements.  For example,
+      // Darwin arm64 passes `union { float scalar; float pair[2]; }` as two
+      // floating lanes.  Requiring equal counts here would silently send that
+      // source-compatible C union through integer registers instead.
+      result->count = std::max(result->count, candidate->count);
     } else {
       if (candidate->count > 4 - result->count) {
         return std::nullopt;
