@@ -103,7 +103,9 @@ exhaustiveness checks, including IEEE equality for signed zero and rejection of
 unmatchable NaN labels; non-integer scalar subjects lower through ordered
 equality branches after one subject evaluation. A defensive verifier checks
 every MIR table reference and block boundary before a native backend may consume
-it. The first backend emits
+it. Checked integer division, remainder, shifts, and numeric conversions use
+explicit MIR control flow so LLVM poison cannot replace Draft's specified trap
+or signed-minimum remainder behavior. The first backend emits
 deterministic opaque-pointer LLVM IR per package with hermetic source locations;
 generated operations retain both their authored synthesis site and generated
 coordinate. A version-gated toolchain adapter then emits AArch64 Mach-O objects

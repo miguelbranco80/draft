@@ -334,6 +334,34 @@ private:
     current_ = safe;
   }
 
+  // Selects between two already-evaluated scalar values without exposing a
+  // target-specific select instruction in MIR. The temporary also keeps both
+  // predecessor paths explicit for the verifier and for future backends.
+  // Callers must evaluate true_value and false_value before entering here;
+  // Draft expression evaluation order is therefore unchanged.
+  [[nodiscard]] MirValueId select_value(
+      MirValueId condition,
+      MirValueId true_value,
+      MirValueId false_value,
+      TypeId type,
+      SourceRange range) {
+    const MirLocalId result_local = add_temporary(type, range);
+    const MirValueId result_address = local_address(result_local, range);
+    const MirBlockId true_block = procedure_.add_block(range);
+    const MirBlockId false_block = procedure_.add_block(range);
+    const MirBlockId join_block = procedure_.add_block(range);
+    conditional_branch(condition, true_block, false_block, range);
+
+    current_ = true_block;
+    store(result_address, true_value, range);
+    branch(join_block, range);
+    current_ = false_block;
+    store(result_address, false_value, range);
+    branch(join_block, range);
+    current_ = join_block;
+    return load(result_address, type, range);
+  }
+
   [[nodiscard]] MirValueId convert(
       MirValueId source, TypeId target, SourceRange range) {
     MirInstruction instruction;
@@ -537,8 +565,7 @@ private:
           zero_value,
           semantic_.types.builtins().bool_type,
           range);
-      if (operation == HirOperation::Divide &&
-          signed_integer_type(procedure_.value(left).type)) {
+      if (signed_integer_type(procedure_.value(left).type)) {
         const std::uint32_t bits = integer_bit_width(procedure_.value(left).type);
         if (bits != 0) {
           const BigInteger minimum = BigInteger::from_u64(1)
@@ -568,22 +595,33 @@ private:
               right_is_negative_one,
               semantic_.types.builtins().bool_type,
               range);
-          const MirValueId false_value = constant(
-              ConstantValue::make_bool(false),
-              semantic_.types.builtins().bool_type,
-              range);
-          const MirValueId no_overflow = binary(
-              HirOperation::Equal,
-              overflow,
-              false_value,
-              semantic_.types.builtins().bool_type,
-              range);
-          safe = binary(
-              HirOperation::BitwiseAnd,
-              safe,
-              no_overflow,
-              semantic_.types.builtins().bool_type,
-              range);
+          if (operation == HirOperation::Divide) {
+            const MirValueId false_value = constant(
+                ConstantValue::make_bool(false),
+                semantic_.types.builtins().bool_type,
+                range);
+            const MirValueId no_overflow = binary(
+                HirOperation::Equal,
+                overflow,
+                false_value,
+                semantic_.types.builtins().bool_type,
+                range);
+            safe = binary(
+                HirOperation::BitwiseAnd,
+                safe,
+                no_overflow,
+                semantic_.types.builtins().bool_type,
+                range);
+          } else {
+            // LLVM defines signed minimum `srem -1` as poison even though
+            // Draft defines the mathematical remainder as zero. Feed `srem`
+            // a divisor of one on precisely that edge; every other operation
+            // retains the already-evaluated source divisor.
+            const MirValueId one_value = constant(
+                ConstantValue::make_integer(1), operand_type, range);
+            right = select_value(
+                overflow, one_value, right, operand_type, range);
+          }
         }
       }
       trap_unless(safe, range);

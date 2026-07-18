@@ -266,6 +266,8 @@ Forward_Zero_F32 :: round_contextual_tree()
 Infinity_F32 :: make_infinity()
 Nan_Differs :: make_nan() != make_nan()
 Negative_Zero_F32 :: make_negative_zero()
+Minimum_I64 :: cast[i64](-9223372036854775807 - 1)
+Minimum_Remainder :: Minimum_I64 % -1
 
 Header :: struct {
     tag: u8,
@@ -570,6 +572,12 @@ when Accent == '\u{e9}' {
     const draft::ConstantValue *negative_zero_f32_result = negative_zero_f32
         ? source.analysis.constants.find(*negative_zero_f32)
         : nullptr;
+    const std::optional<draft::SymbolId> minimum_remainder =
+        source.analysis.package.symbols.lookup(
+            source.analysis.package.package_scope, "Minimum_Remainder");
+    const draft::ConstantValue *minimum_remainder_result = minimum_remainder
+        ? source.analysis.constants.find(*minimum_remainder)
+        : nullptr;
     EXPECT(state, bits_value != nullptr);
     EXPECT(state, derived_value != nullptr);
     EXPECT(state, feature_value != nullptr);
@@ -607,6 +615,7 @@ when Accent == '\u{e9}' {
     EXPECT(state, infinity_f32_result != nullptr);
     EXPECT(state, nan_differs_result != nullptr);
     EXPECT(state, negative_zero_f32_result != nullptr);
+    EXPECT(state, minimum_remainder_result != nullptr);
     if (bits_value) EXPECT(state, bits_value->integer.to_decimal() == "64");
     if (derived_value) EXPECT(state, derived_value->integer.to_decimal() == "42");
     if (feature_value) EXPECT(state, feature_value->boolean);
@@ -717,6 +726,9 @@ when Accent == '\u{e9}' {
     if (negative_zero_f32_result) {
       EXPECT(state, negative_zero_f32_result->float_bit_width == 32);
       EXPECT(state, negative_zero_f32_result->float_bits == 0x80000000U);
+    }
+    if (minimum_remainder_result) {
+      EXPECT(state, minimum_remainder_result->integer.is_zero());
     }
   }
 }

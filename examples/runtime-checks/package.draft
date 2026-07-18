@@ -80,6 +80,10 @@ divide :: proc(left, right: i64) -> i64 {
     return left / right
 }
 
+remainder :: proc(left, right: i64) -> i64 {
+    return left % right
+}
+
 shift :: proc(value: u32, count: usize) -> u32 {
     return value << count
 }
@@ -329,6 +333,8 @@ main :: proc() {
     assert(read_text_outcome(global_text_outcome) == 5)
     assert(global_overlay.word == 0x1020304050607080)
     assert(divide(84, 2) == 42)
+    minimum: i64 = -9223372036854775807 - 1
+    assert(remainder(minimum, -1) == 0)
     assert(shift(1, 5) == 32)
     assert(compound_shift(1, 5) == 32)
     assert(scale(3.0) == 1.5)
