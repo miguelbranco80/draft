@@ -91,3 +91,22 @@ state. Dependency modules reference those hidden link-unit symbols. This gives
 all ordinary calls one coherent Context and prevents per-package runtime state
 from emerging as a bootstrap artifact. Changing this layout or helper contract
 requires a new runtime ABI and core distribution identity.
+
+`context` is a predeclared, addressable value in every ordinary Draft procedure.
+When `core/runtime` is imported, its type is exactly the public
+`runtime.Context`; otherwise the compiler uses a private ABI-identical nominal
+type. A lexical block that assigns a Context field or takes the address of one
+starts with a complete copy of the surrounding Context. Calls in that block use
+the copy, and leaving the block restores the surrounding pointer. A `c proc`
+has no implicit Context and may not name `context`.
+
+Two compiler-owned bridges cover that C boundary. `runtime.default_context`
+returns a copy of the executable root's process-default Context through the
+Darwin indirect aggregate-result convention. `runtime.call_with_context`
+statically checks a non-nil `^Context`, an ordinary Draft callback, and the
+callback's exact arguments, then lowers directly to that callback with the
+explicit hidden Context pointer. Named callbacks retain their ordinary effect
+summaries; indirect callbacks remain unknown edges. These are narrow versioned
+runtime exceptions, not permission to use Context in arbitrary C signatures.
+Per-thread attachment and a TLS-backed foreign-thread default are later runtime
+work; the current bridge deliberately exposes the process-default snapshot.

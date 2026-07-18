@@ -23,10 +23,49 @@ read_result :: proc(value: result.Result[i64, c.int]) -> i64 {
     }
 }
 
+observe_context :: proc() -> int {
+    return context.user_index
+}
+
+context_is_compatible :: proc(value: runtime.Context) -> bool {
+    return value.user_ptr == nil
+}
+
+add_context_index :: proc(value: int) -> int {
+    return context.user_index + value
+}
+
+read_context_from_c :: c proc(value: ^runtime.Context) -> int {
+    return runtime.call_with_context(value, observe_context)
+}
+
+exercise_context_scopes :: proc() -> int {
+    context.user_index = 41
+    assert(observe_context() == 41)
+    {
+        context.user_index = 42
+        assert(observe_context() == 42)
+    }
+    assert(observe_context() == 41)
+    return context.user_index
+}
+
 main :: proc() {
     empty := runtime.empty_context()
+    provided := runtime.default_context()
     assert(empty.user_ptr == nil)
     assert(empty.user_index == 0)
+    assert(context_is_compatible(provided))
+    assert(provided.assertion_failure_proc != nil)
+    provided.user_index = 40
+    assert(runtime.call_with_context(
+        &provided,
+        add_context_index,
+        2,
+    ) == 42)
+    assert(read_context_from_c(&provided) == 40)
+    assert(context_is_compatible(context))
+    assert(exercise_context_scopes() == 41)
     assert(read_option(.some(42)) == 42)
     assert(read_result(.success(42)) == 42)
 }

@@ -3,6 +3,8 @@
 #include "sema/effect.h"
 
 #include <algorithm>
+#include <optional>
+#include <string>
 #include <string_view>
 
 namespace draft {
@@ -58,6 +60,27 @@ public:
   }
 
 private:
+  // Returns the first source-visible field selected from the built-in context.
+  // A deeper access such as `context.allocator.procedure` is still governed by
+  // the top-level `context.allocator` denial boundary.
+  [[nodiscard]] std::optional<std::string_view> context_field(
+      HirExpressionId id) const {
+    if (!id.is_valid()) return std::nullopt;
+    const HirExpression &expression = hir_.expression(id);
+    if (expression.kind == HirExpressionKind::Context) return "*";
+    if (expression.kind != HirExpressionKind::Member ||
+        expression.operands.empty()) {
+      return std::nullopt;
+    }
+    const std::optional<std::string_view> base =
+        context_field(expression.operands.front());
+    if (!base.has_value()) return std::nullopt;
+    if (*base == "*" && expression.symbol.is_valid()) {
+      return package_.symbols.symbol(expression.symbol).name;
+    }
+    return base;
+  }
+
   [[nodiscard]] bool is_imported(SymbolId symbol) const {
     for (const ImportedSymbol &imported : package_.imported_symbols) {
       if (imported.proxy == symbol) return true;
@@ -72,6 +95,67 @@ private:
     return false;
   }
 
+  // Compose the effects of a procedure value used as a call target.  Normal
+  // calls keep their target in operand zero; runtime.call_with_context keeps
+  // its callback in operand one.  Both are still ordinary Draft procedure
+  // calls and must therefore use the same summary rules.  Treating every
+  // explicit-context call as indirect would make even a named, audited
+  // callback pierce every denial boundary.
+  void record_call_target(const HirExpression &callee) {
+    if (callee.kind != HirExpressionKind::Symbol || !callee.symbol.is_valid()) {
+      add_effect(
+          current_->direct_effects,
+          {EffectKind::UnknownCall, {}, "indirect procedure target", {}, {}, {}});
+      return;
+    }
+
+    if (has_local_body(callee.symbol)) {
+      add_call(current_->direct_calls, callee.symbol);
+      return;
+    }
+    if (is_imported(callee.symbol)) {
+      bool known_summary = false;
+      for (const ImportedSymbol &imported : package_.imported_symbols) {
+        if (imported.proxy == callee.symbol) {
+          known_summary = imported.has_effect_summary;
+          break;
+        }
+      }
+      if (known_summary) {
+        for (const ImportedEffect &effect : package_.imported_effects) {
+          if (effect.procedure_proxy != callee.symbol) continue;
+          add_effect(
+              current_->direct_effects,
+              {effect.kind,
+               {},
+               effect.detail,
+               effect.root_identity,
+               effect.root_relative_path,
+               effect.declaration});
+        }
+      } else {
+        add_effect(
+            current_->direct_effects,
+            {EffectKind::UnknownCall,
+             callee.symbol,
+             "imported callee has no audited summary",
+             {},
+             {},
+             {}});
+      }
+      return;
+    }
+
+    add_effect(
+        current_->direct_effects,
+        {EffectKind::UnknownCall,
+         callee.symbol,
+         "callee has no composed summary",
+         {},
+         {},
+         {}});
+  }
+
   void visit_expression(HirExpressionId id) {
     if (!id.is_valid()) return;
     const HirExpression &expression = hir_.expression(id);
@@ -82,6 +166,27 @@ private:
         add_effect(
             current_->direct_effects,
             {EffectKind::PackageGlobal, expression.symbol, {}, {}, {}, {}});
+      }
+    } else if (expression.kind == HirExpressionKind::Context) {
+      add_effect(
+          current_->direct_effects,
+          {EffectKind::ContextField, {}, "*", {}, {}, {}});
+    } else if (expression.kind == HirExpressionKind::Member) {
+      const std::optional<std::string_view> field = context_field(id);
+      if (field.has_value() && *field != "*") {
+        add_effect(
+            current_->direct_effects,
+            {EffectKind::ContextField, {}, std::string(*field), {}, {}, {}});
+        // The member chain itself is the complete context access. Visiting its
+        // Context base as a second expression would add a redundant wildcard
+        // effect and make a broad `deny context` report twice.
+        return;
+      }
+    } else if (expression.kind == HirExpressionKind::Intrinsic &&
+               expression.constant.kind == ConstantKind::String &&
+               expression.constant.text == "call_with_context") {
+      if (expression.operands.size() >= 2) {
+        record_call_target(hir_.expression(expression.operands[1]));
       }
     } else if (expression.kind == HirExpressionKind::Intrinsic &&
                expression.constant.kind == ConstantKind::String &&
@@ -106,55 +211,7 @@ private:
     }
 
     if (expression.kind == HirExpressionKind::Call && !expression.operands.empty()) {
-      const HirExpression &callee = hir_.expression(expression.operands.front());
-      if (callee.kind == HirExpressionKind::Symbol && callee.symbol.is_valid()) {
-        if (has_local_body(callee.symbol)) {
-          add_call(current_->direct_calls, callee.symbol);
-        } else if (is_imported(callee.symbol)) {
-          bool known_summary = false;
-          for (const ImportedSymbol &imported : package_.imported_symbols) {
-            if (imported.proxy == callee.symbol) {
-              known_summary = imported.has_effect_summary;
-              break;
-            }
-          }
-          if (known_summary) {
-            for (const ImportedEffect &effect : package_.imported_effects) {
-              if (effect.procedure_proxy != callee.symbol) continue;
-              add_effect(
-                  current_->direct_effects,
-                  {effect.kind,
-                   {},
-                   effect.detail,
-                   effect.root_identity,
-                   effect.root_relative_path,
-                   effect.declaration});
-            }
-          } else {
-            add_effect(
-                current_->direct_effects,
-                {EffectKind::UnknownCall,
-                 callee.symbol,
-                 "imported callee has no audited summary",
-                 {},
-                 {},
-                 {}});
-          }
-        } else {
-          add_effect(
-              current_->direct_effects,
-              {EffectKind::UnknownCall,
-               callee.symbol,
-               "callee has no composed summary",
-               {},
-               {},
-               {}});
-        }
-      } else {
-        add_effect(
-            current_->direct_effects,
-            {EffectKind::UnknownCall, {}, "indirect procedure target", {}, {}, {}});
-      }
+      record_call_target(hir_.expression(expression.operands.front()));
     }
     for (HirExpressionId operand : expression.operands) {
       visit_expression(operand);

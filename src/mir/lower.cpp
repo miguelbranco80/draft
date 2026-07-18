@@ -659,6 +659,11 @@ private:
   [[nodiscard]] MirValueId lower_address(HirExpressionId expression_id) {
     const HirExpression &expression = hir_.expression(expression_id);
     switch (expression.kind) {
+    case HirExpressionKind::Context:
+      if (context_.is_valid()) return context_;
+      diagnostics_.error(
+          expression.range, "a C-convention procedure has no active Draft context");
+      return {};
     case HirExpressionKind::Symbol: {
       const Symbol &symbol = semantic_.symbols.symbol(expression.symbol);
       if (symbol.kind == SymbolKind::Local || symbol.kind == SymbolKind::Parameter) {
@@ -1021,6 +1026,13 @@ private:
           expression.type,
           expression.range,
           expression.symbol);
+    case HirExpressionKind::Context:
+      if (!context_.is_valid()) {
+        diagnostics_.error(
+            expression.range, "a C-convention procedure has no active Draft context");
+        return {};
+      }
+      return load(context_, expression.type, expression.range);
     case HirExpressionKind::Symbol: {
       const Symbol &symbol = semantic_.symbols.symbol(expression.symbol);
       if (symbol.kind == SymbolKind::Procedure) {
@@ -1068,6 +1080,35 @@ private:
     case HirExpressionKind::Call:
       return emit_call(capture_call(expression));
     case HirExpressionKind::Intrinsic: {
+      if (expression.constant.text == "call_with_context") {
+        if (expression.operands.size() < 2) {
+          diagnostics_.error(
+              expression.range,
+              "call_with_context HIR is missing its Context or callback");
+          return {};
+        }
+        MirInstruction instruction;
+        instruction.kind = MirInstructionKind::Call;
+        instruction.range = expression.range;
+        instruction.type = expression.type;
+        // HIR keeps source order (Context, callback, arguments). MIR Call keeps
+        // physical order (callback, hidden Context, arguments), exactly like an
+        // ordinary call whose implicit Context has been made explicit.
+        instruction.operands.push_back(
+            lower_expression(expression.operands[1]));
+        instruction.operands.push_back(
+            lower_expression(expression.operands[0]));
+        for (std::size_t index = 2; index < expression.operands.size(); ++index) {
+          instruction.operands.push_back(
+              lower_expression(expression.operands[index]));
+        }
+        instruction.passes_context = true;
+        if (expression.type == semantic_.types.builtins().void_type) {
+          emit_void(std::move(instruction));
+          return {};
+        }
+        return emit_value(std::move(instruction));
+      }
       if (expression.constant.text == "len") {
         const HirExpression &argument = hir_.expression(expression.operands.front());
         return length(
@@ -1193,8 +1234,75 @@ private:
     }
   }
 
+  [[nodiscard]] bool rooted_in_context(HirExpressionId id) const {
+    if (!id.is_valid()) return false;
+    const HirExpression &expression = hir_.expression(id);
+    if (expression.kind == HirExpressionKind::Context) return true;
+    if ((expression.kind == HirExpressionKind::Member ||
+         expression.kind == HirExpressionKind::Denial) &&
+        !expression.operands.empty()) {
+      return rooted_in_context(expression.operands.front());
+    }
+    return false;
+  }
+
+  [[nodiscard]] bool takes_context_address(HirExpressionId id) const {
+    if (!id.is_valid()) return false;
+    const HirExpression &expression = hir_.expression(id);
+    if (expression.kind == HirExpressionKind::Address &&
+        !expression.operands.empty() &&
+        rooted_in_context(expression.operands.front())) {
+      return true;
+    }
+    for (HirExpressionId operand : expression.operands) {
+      if (takes_context_address(operand)) return true;
+    }
+    return false;
+  }
+
+  // A lexical context override is created before executing any statement in
+  // the scope.  Direct field stores obviously require one; taking a field's
+  // address also requires one because a later indirect call or dereference may
+  // write through that pointer. Nested source blocks make their own decision.
+  [[nodiscard]] bool statement_requires_context_copy(
+      const HirStatement &statement) const {
+    if (statement.kind == HirStatementKind::Assignment) {
+      const std::size_t left_count = statement.expressions.size() / 2;
+      for (std::size_t index = 0; index < left_count; ++index) {
+        if (rooted_in_context(statement.expressions[index])) return true;
+      }
+    }
+    for (HirExpressionId expression : statement.expressions) {
+      if (takes_context_address(expression)) return true;
+    }
+    for (HirStatementId header : statement.header_statements) {
+      if (statement_requires_context_copy(hir_.statement(header))) return true;
+    }
+    return false;
+  }
+
+  [[nodiscard]] bool block_requires_context_copy(const HirBlock &block) const {
+    for (HirStatementId statement : block.statements) {
+      if (statement_requires_context_copy(hir_.statement(statement))) return true;
+    }
+    return false;
+  }
+
   void lower_block(HirBlockId block_id) {
     const HirBlock &block = hir_.block(block_id);
+    const MirValueId surrounding_context = context_;
+    if (context_.is_valid() &&
+        semantic_.runtime_context_type.is_valid() &&
+        block_requires_context_copy(block)) {
+      const MirLocalId local = add_temporary(
+          semantic_.runtime_context_type, block.range);
+      const MirValueId address = local_address(local, block.range);
+      store(
+          address,
+          load(context_, semantic_.runtime_context_type, block.range),
+          block.range);
+      context_ = address;
+    }
     defer_scopes_.push_back({});
     for (HirStatementId statement : block.statements) {
       if (terminated()) break;
@@ -1204,6 +1312,7 @@ private:
       emit_defers_to(defer_scopes_.size() - 1);
     }
     defer_scopes_.pop_back();
+    context_ = surrounding_context;
   }
 
   void lower_local_declaration(const HirStatement &statement) {

@@ -103,7 +103,14 @@ Scalar/pointer `c proc` imports and exports are checked at a separate C ABI
 boundary and retain exact linker names; `examples/c-interop` exercises both.
 The hosted entry shim owns one runtime Context across the linked package graph,
 captures process arguments, enforces the exact `main` signature, and reports
-assertion and bounds failures before trapping. The compiler-distributed
+assertion and bounds failures before trapping. Ordinary procedures see that
+Context through the predeclared `context` value. A scope that writes a Context
+field (or takes a Context-field address) receives a lexical copy, and ordinary
+calls made in that scope receive the copy as their hidden argument. The narrow
+`runtime.default_context` and `runtime.call_with_context` bridges let
+context-free C callbacks acquire a compatible value and enter an ordinary Draft
+callback without exposing Context as a generally legal C aggregate. The
+compiler-distributed
 `core/runtime`, `core/c`, `core/option`, and `core/result` packages are ordinary
 inspectable Draft source; `examples/core-runtime` checks their import, generic,
 layout, and native paths.

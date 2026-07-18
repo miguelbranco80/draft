@@ -110,6 +110,7 @@ public:
   [[nodiscard]] BodyCheckResult run() {
     BodyCheckResult result;
     const std::size_t initial_errors = diagnostics_.error_count();
+    initialize_runtime_context();
     const std::vector<SymbolId> package_symbols =
         semantic_.symbols.scope(semantic_.package_scope).symbols;
     for (SymbolId id : package_symbols) {
@@ -139,6 +140,132 @@ public:
   }
 
 private:
+  // The built-in `context` value exists independently from an import spelling,
+  // but importing core/runtime must make it exactly that package's public
+  // Context type.  This preserves normal assignment and parameter compatibility
+  // for allocator/provider records while keeping the package name explicit.
+  [[nodiscard]] std::optional<TypeId> imported_runtime_context() const {
+    for (const ImportBinding &binding : semantic_.imports) {
+      if (binding.package_path != "core/runtime") continue;
+      for (const ImportedType &imported : semantic_.imported_types) {
+        if (imported.root_identity == binding.root_identity &&
+            imported.root_relative_path == binding.root_relative_path &&
+            imported.public_name == "Context" && imported.arguments.empty()) {
+          return imported.type;
+        }
+      }
+    }
+    return std::nullopt;
+  }
+
+  [[nodiscard]] std::optional<TypeId> local_runtime_context() const {
+    if (semantic_.short_name != "runtime") return std::nullopt;
+    const std::optional<SymbolId> symbol = semantic_.symbols.lookup_direct(
+        semantic_.package_scope, "Context");
+    if (!symbol.has_value()) return std::nullopt;
+    const Symbol &context_symbol = semantic_.symbols.symbol(*symbol);
+    if (context_symbol.kind != SymbolKind::Type ||
+        !context_symbol.type.is_valid()) {
+      return std::nullopt;
+    }
+    const Type &context = semantic_.types.type(context_symbol.type);
+    const std::vector<std::uint64_t> expected_offsets = {
+        0, 16, 32, 40, 56, 72, 80, 88};
+    if (context.kind != TypeKind::Struct || !context.c_representation ||
+        !context.layout.known || context.layout.size != 96 ||
+        context.layout.alignment != 8 ||
+        context.member_offsets != expected_offsets) {
+      return std::nullopt;
+    }
+    return context_symbol.type;
+  }
+
+  void initialize_runtime_context() {
+    if (const std::optional<TypeId> imported = imported_runtime_context()) {
+      semantic_.runtime_context_type = *imported;
+      return;
+    }
+    if (const std::optional<TypeId> local = local_runtime_context()) {
+      semantic_.runtime_context_type = *local;
+      return;
+    }
+
+    // Packages that do not name core/runtime still need a concrete type for
+    // the predeclared context value.  Its provider handles are structural
+    // two-pointer records because their source-level nominal names are not in
+    // scope.  The private nominal Context itself carries the versioned 96-byte
+    // AArch64 macOS layout shared with core/runtime and the entry shim.
+    const BuiltinTypes &builtins = semantic_.types.builtins();
+    const TypeId provider = semantic_.types.tuple(
+        {builtins.rawptr_type, builtins.rawptr_type});
+    const TypeId assertion = semantic_.types.procedure(
+        {builtins.string_type,
+         builtins.string_type,
+         builtins.string_type,
+         builtins.usize_type,
+         builtins.usize_type},
+        builtins.void_type,
+        false);
+    const TypeId context = semantic_.types.begin_nominal(
+        TypeKind::Struct, "<runtime-context>", SourceRange::invalid());
+    semantic_.types.type_mut(context).c_representation = true;
+    const std::vector<TypeId> members = {
+        provider,
+        provider,
+        assertion,
+        provider,
+        provider,
+        builtins.rawptr_type,
+        builtins.int_type,
+        builtins.rawptr_type,
+    };
+    const std::vector<std::uint64_t> offsets = {
+        0, 16, 32, 40, 56, 72, 80, 88};
+    semantic_.types.complete_nominal(
+        context, {true, 96, 8}, members, offsets);
+
+    Symbol owner;
+    owner.name = "<runtime-context>";
+    owner.kind = SymbolKind::Type;
+    owner.visibility = Visibility::Private;
+    owner.scope = semantic_.package_scope;
+    owner.type = context;
+    const SymbolId owner_id =
+        semantic_.symbols.declare(std::move(owner), diagnostics_);
+    if (!owner_id.is_valid()) {
+      semantic_.runtime_context_type = context;
+      return;
+    }
+    const ScopeId member_scope = semantic_.symbols.add_scope(
+        ScopeKind::Type, semantic_.package_scope, SourceRange::invalid());
+    semantic_.owned_scopes.push_back({owner_id, member_scope});
+    const std::vector<std::string> names = {
+        "allocator",
+        "temp_allocator",
+        "assertion_failure_proc",
+        "logger",
+        "random_generator",
+        "user_ptr",
+        "user_index",
+        "_internal",
+    };
+    for (std::size_t index = 0; index < names.size(); ++index) {
+      Symbol field;
+      field.name = names[index];
+      field.kind = SymbolKind::Field;
+      field.visibility = Visibility::Public;
+      field.scope = member_scope;
+      field.type = members[index];
+      const SymbolId field_id =
+          semantic_.symbols.declare(std::move(field), diagnostics_);
+      if (field_id.is_valid()) {
+        semantic_.aggregate_members.push_back(
+            {owner_id, field_id, offsets[index]});
+      }
+    }
+    semantic_.runtime_context_type = context;
+  }
+
   // Resolves a FileId to the immutable syntax tree used by all body references.
   [[nodiscard]] const SyntaxTree *find_tree(FileId file) const {
     for (const LoadedPackageFile &entry : loaded_.files) {
@@ -904,6 +1031,108 @@ private:
       }
     }
     return nullptr;
+  }
+
+  [[nodiscard]] bool is_runtime_intrinsic(
+      SymbolId proxy, std::string_view public_name) const {
+    for (const ImportedSymbol &imported : semantic_.imported_symbols) {
+      if (imported.proxy != proxy || imported.public_name != public_name ||
+          imported.root_relative_path != "runtime") {
+        continue;
+      }
+      for (const ImportBinding &binding : semantic_.imports) {
+        if (binding.symbol == imported.import_symbol &&
+            binding.package_path == "core/runtime") {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  [[nodiscard]] std::optional<HirExpressionId> check_runtime_intrinsic_call(
+      const SyntaxTree &tree,
+      const SyntaxNode &call,
+      ScopeId scope,
+      TypeId expected) {
+    if (call.children.empty()) return std::nullopt;
+    const SyntaxNode &callee = tree.node(call.children.front());
+    const std::optional<SymbolId> symbol =
+        imported_member(tree, callee, scope);
+    if (!symbol.has_value() ||
+        !is_runtime_intrinsic(*symbol, "call_with_context")) {
+      return std::nullopt;
+    }
+
+    HirExpression expression;
+    expression.kind = HirExpressionKind::Intrinsic;
+    expression.range = call.range;
+    expression.constant = ConstantValue::make_string("call_with_context");
+    if (call.children.size() < 3) {
+      diagnostics_.error(
+          call.range,
+          "runtime.call_with_context requires a Context pointer and callback");
+      expression.type = semantic_.types.builtins().invalid;
+      return hir_.add_expression(std::move(expression));
+    }
+
+    const TypeId context_pointer =
+        semantic_.types.pointer(semantic_.runtime_context_type);
+    const HirExpressionId context = check_expression(
+        tree, call.children[1], scope, context_pointer);
+    expression.operands.push_back(context);
+    const HirExpression &context_expression = hir_.expression(context);
+    if (context_expression.kind == HirExpressionKind::Constant &&
+        context_expression.constant.kind == ConstantKind::Nil) {
+      diagnostics_.error(
+          context_expression.range,
+          "runtime.call_with_context requires a non-nil Context pointer");
+    }
+
+    const HirExpressionId callback =
+        check_expression(tree, call.children[2], scope);
+    expression.operands.push_back(callback);
+    const TypeId callback_type = hir_.expression(callback).type;
+    if (is_invalid_type(callback_type) ||
+        semantic_.types.type(callback_type).kind != TypeKind::Procedure) {
+      diagnostics_.error(
+          tree.node(call.children[2]).range,
+          "runtime.call_with_context callback must be an ordinary procedure");
+      expression.type = semantic_.types.builtins().invalid;
+      return hir_.add_expression(std::move(expression));
+    }
+    const Type signature = semantic_.types.type(callback_type);
+    if (signature.c_calling_convention) {
+      diagnostics_.error(
+          tree.node(call.children[2]).range,
+          "runtime.call_with_context callback must use the Draft calling convention");
+    }
+    const std::size_t parameter_count = signature.members.empty()
+        ? 0
+        : signature.members.size() - 1;
+    const std::size_t argument_count = call.children.size() - 3;
+    if (argument_count != parameter_count) {
+      diagnostics_.error(
+          call.range,
+          "runtime.call_with_context callback argument count does not match");
+    }
+    const std::size_t checked = std::min(argument_count, parameter_count);
+    for (std::size_t index = 0; index < checked; ++index) {
+      expression.operands.push_back(check_expression(
+          tree,
+          call.children[index + 3],
+          scope,
+          signature.members[index]));
+    }
+    for (std::size_t index = checked; index < argument_count; ++index) {
+      expression.operands.push_back(check_expression(
+          tree, call.children[index + 3], scope));
+    }
+    const TypeId result = signature.members.empty()
+        ? semantic_.types.builtins().void_type
+        : signature.members.back();
+    expression.type = apply_expected_type(result, expected, call.range);
+    return hir_.add_expression(std::move(expression));
   }
 
   // Returns the declaration symbol owning a nominal type's Type scope.
@@ -1819,6 +2048,12 @@ private:
           return invalid_expression(node.range);
         }
         expression.type = expected;
+        // Nil is a real compile-time value, even though it has no standalone
+        // type.  Preserve that fact in HIR after contextual typing so later
+        // semantic checks can distinguish a known-null pointer from an
+        // arbitrary pointer expression.  In particular,
+        // runtime.call_with_context must reject nil before MIR lowering.
+        expression.constant = ConstantValue::make_nil();
       } else {
         diagnostics_.error(node.range, "literal is not yet valid in a runtime expression");
         return invalid_expression(node.range);
@@ -1832,6 +2067,23 @@ private:
       const std::vector<SourceName> names =
           names_in_span(tree, node.token_begin, node.token_end);
       if (names.empty()) return invalid_expression(node.range);
+      if (names.size() == 1 && names.front().text == "context") {
+        const Type &procedure = semantic_.types.type(
+            semantic_.symbols.symbol(current_procedure_).type);
+        if (procedure.c_calling_convention) {
+          diagnostics_.error(
+              names.front().range,
+              "the built-in context value is unavailable in a c proc");
+          return invalid_expression(node.range);
+        }
+        HirExpression expression;
+        expression.kind = HirExpressionKind::Context;
+        expression.range = node.range;
+        expression.type = apply_expected_type(
+            semantic_.runtime_context_type, expected, node.range);
+        expression.addressable = true;
+        return hir_.add_expression(std::move(expression));
+      }
       const std::optional<SymbolId> found =
           semantic_.symbols.lookup(scope, names.front().text);
       if (!found.has_value()) {
@@ -2141,6 +2393,10 @@ private:
       if (node.children.empty()) return invalid_expression(node.range);
       if (const std::optional<HirExpressionId> intrinsic =
               check_intrinsic_call(tree, node, scope, expected)) {
+        return *intrinsic;
+      }
+      if (const std::optional<HirExpressionId> intrinsic =
+              check_runtime_intrinsic_call(tree, node, scope, expected)) {
         return *intrinsic;
       }
       // A plain template name in callee position requests inference. Arguments

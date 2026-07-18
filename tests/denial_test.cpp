@@ -88,15 +88,22 @@ bad_index :: proc(values: [^]i64) {
         value := values[0]
     }
 }
+
+deny context.user_index {
+    bad_context :: proc() -> int {
+        return context.user_index
+    }
+}
 )draft");
   EXPECT(state, source.semantics.ok);
   EXPECT(state, source.bodies.ok);
   EXPECT(state, !source.denials_ok);
-  EXPECT(state, source.diagnostics.error_count() == 2);
+  EXPECT(state, source.diagnostics.error_count() == 3);
   const std::string rendered =
       draft::render_diagnostics(source.sources, source.diagnostics);
   EXPECT(state, rendered.find("denied assert") != std::string::npos);
   EXPECT(state, rendered.find("denied unchecked") != std::string::npos);
+  EXPECT(state, rendered.find("denied context field") != std::string::npos);
   EXPECT(state, rendered.find("denial is established here") != std::string::npos);
 }
 

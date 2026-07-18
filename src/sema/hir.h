@@ -48,6 +48,7 @@ enum class HirExpressionKind {
   Invalid,
   Constant,
   Symbol,
+  Context,
   Unary,
   Binary,
   Call,

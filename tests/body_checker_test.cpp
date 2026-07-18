@@ -778,6 +778,45 @@ mask :: proc(bits: uint) -> uint {
   EXPECT(state, !source.diagnostics.has_errors());
 }
 
+void test_builtin_context_value(TestState &state) {
+  CheckedSource valid(R"draft(
+package bodies
+
+read_user_index :: proc() -> int {
+    return context.user_index
+}
+
+set_user_index :: proc() -> int {
+    context.user_index = 42
+    return read_user_index()
+}
+)draft");
+  if (valid.diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(valid.sources, valid.diagnostics);
+  }
+  EXPECT(state, valid.bodies.ok);
+  EXPECT(state, valid.semantics.package.runtime_context_type.is_valid());
+  if (valid.semantics.package.runtime_context_type.is_valid()) {
+    const draft::Type &context = valid.semantics.package.types.type(
+        valid.semantics.package.runtime_context_type);
+    EXPECT(state, context.layout.size == 96);
+    EXPECT(state, context.member_offsets.size() == 8);
+  }
+
+  CheckedSource invalid(R"draft(
+package bodies
+
+bad :: c proc() -> int {
+    return context.user_index
+}
+)draft");
+  EXPECT(state, !invalid.bodies.ok);
+  const std::string rendered =
+      draft::render_diagnostics(invalid.sources, invalid.diagnostics);
+  EXPECT(state, rendered.find("context value is unavailable in a c proc") !=
+      std::string::npos);
+}
+
 } // namespace
 
 int main() {
@@ -794,6 +833,7 @@ int main() {
   test_checked_numeric_casts(state);
   test_storage_pointer_and_distinct_semantics(state);
   test_integer_shift_count_types(state);
+  test_builtin_context_value(state);
 
   if (state.failures != 0) {
     std::cerr << state.failures << " body checker expectation(s) failed\n";

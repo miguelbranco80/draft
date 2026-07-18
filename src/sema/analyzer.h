@@ -249,6 +249,10 @@ struct SemanticPackage {
   TypeStore types;
   SymbolTable symbols;
   ScopeId package_scope;
+  // Body checking selects the source-visible core/runtime.Context type when
+  // that package is imported, or installs an ABI-identical private type when
+  // it is not.  MIR uses this row for compiler-managed lexical context copies.
+  TypeId runtime_context_type;
   std::vector<FileSemanticScope> files;
   std::vector<OwnedSemanticScope> owned_scopes;
   std::vector<AggregateMember> aggregate_members;

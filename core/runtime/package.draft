@@ -70,9 +70,20 @@ pub Context :: @repr(C) struct {
     _internal: rawptr,
 }
 
-// This ordinary fallback makes the Context type useful before the context-free
-// foreign-thread bridge is connected.  The hosted entry shim installs its own
-// diagnostic assertion handler in the actual root Context.
+// The implementation is supplied by the compiler's hosted runtime object.  It
+// is a context-free C-ABI bridge so a foreign callback can acquire compatible
+// state before it enters an ordinary Draft procedure.
+foreign draft_runtime {
+    pub default_context :: c "__draft.runtime.default_context" proc() -> Context
+    // The surface declaration is a stable capability name. The compiler checks
+    // and specializes the callback's complete parameter/result signature at
+    // each call site, so no erased or variadic runtime ABI is involved.
+    pub call_with_context :: c "__draft.runtime.call_with_context" proc()
+}
+
+// A deliberately empty value remains useful for tests and for explicitly
+// disabled providers. The hosted root and default_context install the runtime's
+// diagnostic assertion handler instead.
 pub empty_context :: proc() -> Context {
     result: Context
     return result

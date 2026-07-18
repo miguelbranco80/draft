@@ -319,6 +319,45 @@ private:
     }
   }
 
+  // Apply the same denial logic to normal callees and to the callback selected
+  // by runtime.call_with_context.  A named callback has a normal composed
+  // effect summary; only a value whose declaration is not statically known is
+  // an unknown call edge.
+  void check_call_target(
+      const HirExpression &callee,
+      SourceRange range,
+      const std::vector<DeniedEntity> &active) {
+    if (callee.kind == HirExpressionKind::Symbol && callee.symbol.is_valid()) {
+      check_call(callee.symbol, range, active);
+      return;
+    }
+    check_effect(
+        {EffectKind::UnknownCall, {}, "indirect procedure target", {}, {}, {}},
+        range,
+        active);
+  }
+
+  // Denials name top-level Context fields. A nested member chain retains the
+  // first selector after `context`, matching both the source syntax and the
+  // effect summaries exported through package interfaces.
+  [[nodiscard]] std::optional<std::string> context_field(
+      HirExpressionId id) const {
+    if (!id.is_valid()) return std::nullopt;
+    const HirExpression &expression = hir_.expression(id);
+    if (expression.kind == HirExpressionKind::Context) return std::string("*");
+    if (expression.kind != HirExpressionKind::Member ||
+        expression.operands.empty()) {
+      return std::nullopt;
+    }
+    const std::optional<std::string> base =
+        context_field(expression.operands.front());
+    if (!base.has_value()) return std::nullopt;
+    if (*base == "*" && expression.symbol.is_valid()) {
+      return package_.symbols.symbol(expression.symbol).name;
+    }
+    return base;
+  }
+
   void visit_expression(
       HirExpressionId id, const std::vector<DeniedEntity> &active) {
     const HirExpression &expression = hir_.expression(id);
@@ -329,15 +368,8 @@ private:
       return;
     }
     if (expression.kind == HirExpressionKind::Call && !expression.operands.empty()) {
-      const HirExpression &callee = hir_.expression(expression.operands.front());
-      if (callee.kind == HirExpressionKind::Symbol && callee.symbol.is_valid()) {
-        check_call(callee.symbol, expression.range, active);
-      } else {
-        check_effect(
-            {EffectKind::UnknownCall, {}, "indirect procedure target", {}, {}, {}},
-            expression.range,
-            active);
-      }
+      check_call_target(
+          hir_.expression(expression.operands.front()), expression.range, active);
     } else if (expression.kind == HirExpressionKind::Symbol &&
                expression.symbol.is_valid()) {
       const Symbol &symbol = package_.symbols.symbol(expression.symbol);
@@ -353,6 +385,27 @@ private:
             {EffectKind::PackageGlobal, expression.symbol, {}, {}, {}, {}},
             expression.range,
             active);
+      }
+    } else if (expression.kind == HirExpressionKind::Context) {
+      check_effect(
+          {EffectKind::ContextField, {}, "*", {}, {}, {}},
+          expression.range,
+          active);
+    } else if (expression.kind == HirExpressionKind::Member) {
+      const std::optional<std::string> field = context_field(id);
+      if (field.has_value()) {
+        check_effect(
+            {EffectKind::ContextField, {}, *field, {}, {}, {}},
+            expression.range,
+            active);
+        return;
+      }
+    } else if (expression.kind == HirExpressionKind::Intrinsic &&
+               expression.constant.kind == ConstantKind::String &&
+               expression.constant.text == "call_with_context") {
+      if (expression.operands.size() >= 2) {
+        check_call_target(
+            hir_.expression(expression.operands[1]), expression.range, active);
       }
     } else if (expression.kind == HirExpressionKind::Intrinsic &&
                expression.constant.kind == ConstantKind::String &&

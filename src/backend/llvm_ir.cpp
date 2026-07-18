@@ -599,6 +599,22 @@ private:
             << "ok:\n"
             << "  ret void\n"
             << "}\n\n";
+    if (!semantic_.runtime_context_type.is_valid()) {
+      error(
+          SourceRange::invalid(),
+          "hosted runtime has no semantic Context type");
+      return;
+    }
+    const std::string context_type =
+        llvm_type(semantic_.runtime_context_type);
+    output_ << "define hidden void @\"__draft.runtime.default_context\"("
+               "ptr sret(" << context_type << ") align 8 %result) {\n"
+            << "entry:\n"
+            << "  %root = load " << context_type
+            << ", ptr @__draft.root_context, align 8\n"
+            << "  store " << context_type << " %root, ptr %result, align 8\n"
+            << "  ret void\n"
+            << "}\n\n";
   }
 
   [[nodiscard]] std::string package_symbol_name(
@@ -639,6 +655,13 @@ private:
       }
     }
     return std::nullopt;
+  }
+
+  [[nodiscard]] bool root_runtime_defines(SymbolId symbol_id) const {
+    if (!options_.emit_program_entry) return false;
+    const std::optional<std::string> native = native_symbol_name(symbol_id);
+    return native.has_value() &&
+        *native == "@\"__draft.runtime.default_context\"";
   }
 
   [[nodiscard]] std::string symbol_name(SymbolId symbol_id) const {
@@ -707,8 +730,7 @@ private:
   }
 
   [[nodiscard]] std::string c_parameter_type(TypeId type_id) const {
-    const Aarch64CAbiType abi = classify_aarch64_darwin_c_type(
-        semantic_.types, type_id);
+    const Aarch64CAbiType abi = c_abi_type(type_id);
     switch (abi.classification) {
     case Aarch64CAbiClass::Direct:
       return llvm_type(type_id);
@@ -742,8 +764,7 @@ private:
 
   [[nodiscard]] std::string c_result_type(TypeId type_id) const {
     if (type_id == semantic_.types.builtins().void_type) return "void";
-    const Aarch64CAbiType abi = classify_aarch64_darwin_c_type(
-        semantic_.types, type_id);
+    const Aarch64CAbiType abi = c_abi_type(type_id);
     switch (abi.classification) {
     case Aarch64CAbiClass::Direct:
       return llvm_type(type_id);
@@ -766,7 +787,19 @@ private:
   [[nodiscard]] Aarch64CAbiType function_result_abi(TypeId type_id) const {
     const TypeId result = function_result(type_id);
     if (result == semantic_.types.builtins().void_type) return {};
-    return classify_aarch64_darwin_c_type(semantic_.types, result);
+    return c_abi_type(result);
+  }
+
+  [[nodiscard]] Aarch64CAbiType c_abi_type(TypeId type_id) const {
+    if (type_id == semantic_.runtime_context_type) {
+      const Type &context = type(type_id);
+      Aarch64CAbiType abi;
+      abi.classification = Aarch64CAbiClass::Indirect;
+      abi.size = context.layout.size;
+      abi.alignment = context.layout.alignment;
+      return abi;
+    }
+    return classify_aarch64_darwin_c_type(semantic_.types, type_id);
   }
 
   [[nodiscard]] std::string llvm_function_result(TypeId type_id) const {
@@ -873,6 +906,7 @@ private:
   void emit_external_declarations() {
     for (const ImportedSymbol &imported : semantic_.imported_symbols) {
       const Symbol &symbol = semantic_.symbols.symbol(imported.proxy);
+      if (root_runtime_defines(imported.proxy)) continue;
       if (symbol.kind == SymbolKind::Procedure) {
         output_ << "declare " << llvm_function_result(symbol.type) << ' '
                 << symbol_name(imported.proxy)
@@ -891,7 +925,8 @@ private:
       // declaring the template would leak TypeParameter pseudo-types into LLVM.
       if (symbol.kind == SymbolKind::Procedure &&
           !symbol.flags.parametric &&
-          !has_body(symbol_id)) {
+          !has_body(symbol_id) &&
+          !root_runtime_defines(symbol_id)) {
         output_ << "declare " << llvm_function_result(symbol.type) << ' '
                 << symbol_name(symbol_id)
                 << function_signature(symbol.type, false) << "\n";
@@ -1938,7 +1973,7 @@ private:
         logical_result == semantic_.types.builtins().void_type;
     const Aarch64CAbiType result_abi = returns_void
         ? Aarch64CAbiType{}
-        : classify_aarch64_darwin_c_type(semantic_.types, logical_result);
+        : c_abi_type(logical_result);
     if (result_abi.classification == Aarch64CAbiClass::Indirect) {
       arguments.push_back(
           "ptr sret(" + llvm_type(logical_result) + ") align " +
@@ -1949,8 +1984,7 @@ private:
     for (std::size_t index = 0; index < parameter_count; ++index) {
       const TypeId logical_type = signature.members[index];
       const MirValueId value = instruction.operands[index + 1];
-      const Aarch64CAbiType abi = classify_aarch64_darwin_c_type(
-          semantic_.types, logical_type);
+      const Aarch64CAbiType abi = c_abi_type(logical_type);
       if (abi.classification == Aarch64CAbiClass::Direct) {
         std::string argument = llvm_type(logical_type);
         const std::string extension = c_integer_extension(logical_type);
@@ -2380,8 +2414,7 @@ private:
         const Type &signature = type(procedure.type);
         const TypeId logical_result = procedure.value(terminator.value).type;
         const Aarch64CAbiType abi = signature.c_calling_convention
-            ? classify_aarch64_darwin_c_type(
-                  semantic_.types, logical_result)
+            ? c_abi_type(logical_result)
             : Aarch64CAbiType{};
         if (signature.c_calling_convention &&
             abi.classification == Aarch64CAbiClass::Indirect) {
@@ -2496,8 +2529,8 @@ private:
       for (std::size_t argument = 0;
            argument < parameter_count && argument + 1 < instruction.operands.size();
            ++argument) {
-        const Aarch64CAbiType abi = classify_aarch64_darwin_c_type(
-            semantic_.types, signature.members[argument]);
+        const Aarch64CAbiType abi =
+            c_abi_type(signature.members[argument]);
         if (abi.classification == Aarch64CAbiClass::Direct ||
             abi.classification == Aarch64CAbiClass::Illegal) {
           continue;
@@ -2549,8 +2582,7 @@ private:
                       << ", ptr %l" << local_index << ", align "
                       << type(local.type).layout.alignment << '\n';
             } else {
-              const Aarch64CAbiType abi = classify_aarch64_darwin_c_type(
-                  semantic_.types, local.type);
+              const Aarch64CAbiType abi = c_abi_type(local.type);
               if (abi.classification == Aarch64CAbiClass::Direct) {
                 output_ << "  store " << llvm_type(local.type) << ' ' << argument
                         << ", ptr %l" << local_index << ", align "
