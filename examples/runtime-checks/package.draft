@@ -23,6 +23,8 @@ Overlay :: raw union {
 
 Distance :: distinct i64
 Truth :: distinct bool
+Handle :: distinct ^i64
+Callback_Handle :: distinct proc(value: i64) -> i64
 
 Pair[T: type, U: type] :: struct {
     first: T,
@@ -165,6 +167,23 @@ storage_roundtrip :: proc(flag: bool, bits: b32) -> bool {
 
 distinct_logical :: proc(left, right: Truth) -> Truth {
     return !left || (left && right)
+}
+
+nil_handle :: proc(value: Handle) -> bool {
+    return value == nil
+}
+
+switch_handle :: proc(value: Handle) -> i64 {
+    switch value {
+    case nil:
+        return 0
+    case:
+        return 1
+    }
+}
+
+nil_callback_handle :: proc(value: Callback_Handle) -> bool {
+    return value == nil
 }
 
 switch_integer :: proc(value: i64) -> i64 {
@@ -415,6 +434,17 @@ main :: proc() {
     falsehood := cast[Truth](false)
     assert(cast[bool](distinct_logical(falsehood, truth)))
     assert(!cast[bool](distinct_logical(truth, falsehood)))
+    pointee: i64 = 42
+    handle := cast[Handle](&pointee)
+    assert(!nil_handle(handle))
+    assert(switch_handle(handle) == 1)
+    empty_handle: Handle = nil
+    assert(nil_handle(empty_handle))
+    assert(switch_handle(empty_handle) == 0)
+    callback_handle := cast[Callback_Handle](increment_value)
+    assert(!nil_callback_handle(callback_handle))
+    empty_callback_handle: Callback_Handle = nil
+    assert(nil_callback_handle(empty_callback_handle))
     assert(endian_roundtrip(21) == 42)
     assert(switch_integer(42) == 1 && switch_integer(41) == 0)
     assert(switch_float(1.5) == 1 && switch_float(2.0) == 0)

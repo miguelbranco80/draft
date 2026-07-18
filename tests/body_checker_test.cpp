@@ -1297,6 +1297,8 @@ package bodies
 
 Counter :: distinct u32
 Truth :: distinct bool
+Handle :: distinct ^u64
+Callback_Handle :: distinct proc(value: u64) -> u64
 
 storage_truth :: proc(flag: bool, bits: b32) -> bool {
     encoded := cast[b32](flag)
@@ -1331,6 +1333,19 @@ increment :: proc(value: Counter) -> Counter {
 
 logical_truth :: proc(left, right: Truth) -> Truth {
     return !left || (left && right)
+}
+
+nil_handle :: proc(value: Handle) -> bool {
+    return value == nil
+}
+
+zero_handle :: proc() -> Handle {
+    value: Handle = nil
+    return value
+}
+
+nil_callback_handle :: proc(value: Callback_Handle) -> bool {
+    return value == nil
 }
 
 constant_storage :: proc() -> bool {

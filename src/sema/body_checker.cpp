@@ -3202,7 +3202,11 @@ private:
           diagnostics_.error(node.range, "nil requires an expected pointer type");
           return invalid_expression(node.range);
         }
-        const TypeKind expected_kind = semantic_.types.type(expected).kind;
+        // Distinct pointer and procedure types retain their underlying
+        // equality operation. `nil` is the contextual zero-address literal
+        // for that operand position, so inspect the runtime scalar category
+        // while preserving the distinct TypeId on the HIR constant itself.
+        const TypeKind expected_kind = runtime_scalar_type(expected).kind;
         if (expected_kind != TypeKind::Pointer &&
             expected_kind != TypeKind::MultiPointer &&
             expected_kind != TypeKind::RawPointer &&
