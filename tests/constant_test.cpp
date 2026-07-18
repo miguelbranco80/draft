@@ -799,6 +799,10 @@ package conditions
 
 Distance :: distinct i64
 Good :: cast[Distance](cast[i64](40)) + 2
+
+callback :: proc() {
+}
+Good_Nil :: callback != nil
 )draft");
   if (valid.diagnostics.has_errors()) {
     std::cerr << draft::render_diagnostics(valid.sources, valid.diagnostics);
@@ -832,13 +836,14 @@ Bad_Rune_Negate :: -'a'
 Bad_Endian_Not :: ~cast[u32be](cast[u32](1))
 Bad_Enum_Negate :: -cast[Mode](cast[int](1))
 Bad_Compound :: bad_compound()
+Bad_Nil :: nil == nil
 )draft");
-  if (invalid.diagnostics.error_count() < 10) {
+  if (invalid.diagnostics.error_count() < 11) {
     std::cerr << draft::render_diagnostics(
         invalid.sources, invalid.diagnostics);
   }
   EXPECT(state, !invalid.analysis.ok);
-  EXPECT(state, invalid.diagnostics.error_count() >= 10);
+  EXPECT(state, invalid.diagnostics.error_count() >= 11);
   const std::string rendered =
       draft::render_diagnostics(invalid.sources, invalid.diagnostics);
   EXPECT(state, rendered.find(
@@ -846,6 +851,9 @@ Bad_Compound :: bad_compound()
                     std::string::npos);
   EXPECT(state, rendered.find(
                     "compile-time unary operator is not defined for operand type") !=
+                    std::string::npos);
+  EXPECT(state, rendered.find(
+                    "compile-time nil comparison requires a pointer or procedure type") !=
                     std::string::npos);
 }
 

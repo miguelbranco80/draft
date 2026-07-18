@@ -596,6 +596,14 @@ private:
         kind == TypeKind::MultiPointer || kind == TypeKind::Procedure;
   }
 
+  [[nodiscard]] bool nil_context_type(TypeId type_id) const {
+    if (!type_id.is_valid()) return false;
+    const TypeKind kind = runtime_type(type_id).kind;
+    return kind == TypeKind::RawPointer || kind == TypeKind::CString ||
+        kind == TypeKind::Pointer || kind == TypeKind::MultiPointer ||
+        kind == TypeKind::Procedure;
+  }
+
   // `when` conditions and data constants do not subsequently pass through the
   // runtime body checker. Validate the same closed operator/type table here so
   // compile-time execution cannot acquire extra operators merely because two
@@ -1491,7 +1499,7 @@ private:
          left_hint == right_hint)) {
       numeric_context = left_hint.is_valid() ? left_hint : right_hint;
     }
-    const EvalResult left = evaluate_expression(
+    EvalResult left = evaluate_expression(
         tree, node.children[0], scope, required, numeric_context);
     if (left.status != EvalStatus::Ready) return left;
     if (operation == TokenKind::LogicalAnd || operation == TokenKind::LogicalOr) {
@@ -1523,7 +1531,7 @@ private:
         !right_hint.is_valid()) {
       right_context = left.type;
     }
-    const EvalResult right = evaluate_expression(
+    EvalResult right = evaluate_expression(
         tree,
         node.children[1],
         scope,
@@ -1533,6 +1541,23 @@ private:
             ? TypeId{}
             : right_context);
     if (right.status != EvalStatus::Ready) return right;
+    // Nil has no standalone type. Exactly one typed pointer/procedure operand
+    // can supply its context; two bare nil literals cannot invent one.
+    if (left.value.kind == ConstantKind::Nil && !left.type.is_valid() &&
+        nil_context_type(right.type)) {
+      left.type = right.type;
+    }
+    if (right.value.kind == ConstantKind::Nil && !right.type.is_valid() &&
+        nil_context_type(left.type)) {
+      right.type = left.type;
+    }
+    if ((left.value.kind == ConstantKind::Nil && !left.type.is_valid()) ||
+        (right.value.kind == ConstantKind::Nil && !right.type.is_valid())) {
+      return fail(
+          node.range,
+          "compile-time nil comparison requires a pointer or procedure type",
+          required);
+    }
     if (std::optional<EvalResult> invalid = invalid_binary_types(
             operation, left.type, right.type, node.range, required)) {
       return std::move(*invalid);
