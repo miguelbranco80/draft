@@ -457,6 +457,26 @@ digests detect a repeated non-progressing set, while an explicit owner stack
 guards the acyclic package invariant. Previously published type graphs are
 self-contained and remain attached to B's interface across the rebuild.
 
+## Procedure-dependent generic procedure arguments
+
+Status: local and cross-package concrete specialization implemented.
+
+An explicit generic procedure application may use a full compile-time call in
+its value packet, for example `inner[increment(N)]()`. During the non-lowered
+outer-template pass, the body checker validates the full expression's ordinary
+type and carries an explicit deferred substitution marker; it does not invent a
+compact integer expression or prematurely manufacture a callee instance. Every
+concrete outer specialization checks the original syntax again, evaluates it
+with the normal typed interpreter and its active type/value bindings, and then
+instantiates the exact callee. Cross-package orchestration therefore transfers
+only the final integer and never the caller's private helper or source recipe.
+
+Symbolic signatures may retain the callee's unresolved value parameter during
+the template-only pass. They exist only as type-checking evidence and are never
+lowered. The concrete pass substitutes exact counts and is authoritative for
+runtime-bearing HIR, including signatures whose array/SIMD shape depends on the
+procedure-produced argument.
+
 ## Hosted process views and core threads
 
 Status: AArch64 macOS hosted runtime contract.

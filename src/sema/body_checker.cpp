@@ -91,6 +91,13 @@ struct ValueSubstitution {
   // to an expression over caller value parameters rather than an integer.
   // Concrete instances leave this invalid and carry the exact value above.
   IntegerExpression symbolic_expression;
+  // Calls and other full compile-time expressions do not fit the compact
+  // IntegerExpression tree. A template body still type-checks their source,
+  // then carries this marker only in its non-lowered symbolic HIR. The same
+  // source is checked again inside every concrete outer instance, where the
+  // active parameter table lets the ordinary interpreter produce an exact
+  // value. No source coordinate or marker reaches a procedure instance seed.
+  bool deferred_expression = false;
 };
 
 // One source template can produce several concrete procedure bodies. Instances
@@ -285,7 +292,8 @@ private:
         const ParametricParameterRecord &parameter = parameters[index];
         const ParametricArgument &argument = seed.arguments[index];
         if (parameter.constraint == TypeConstraintKind::CompileTimeValue) {
-          if (argument.is_type || argument.value_expression.is_valid()) {
+          if (argument.is_type || argument.value_expression.is_valid() ||
+              argument.owner_evaluated_value) {
             valid = false;
             break;
           }
@@ -513,6 +521,7 @@ private:
     std::vector<IntegerExpressionReplacement> result;
     result.reserve(substitutions.size());
     for (const ValueSubstitution &substitution : substitutions) {
+      if (substitution.deferred_expression) continue;
       IntegerExpressionReplacement replacement;
       replacement.parameter = substitution.parameter.value;
       if (substitution.symbolic_expression.is_valid()) {
@@ -796,6 +805,7 @@ private:
     if (!current_instance_index_.has_value()) return result;
     for (const ValueSubstitution &substitution :
          instances_[*current_instance_index_].value_substitutions) {
+      if (substitution.value.kind != ConstantKind::Integer) continue;
       result.bindings.push_back({substitution.parameter, substitution.value});
     }
     return result;
@@ -2390,7 +2400,10 @@ private:
   [[nodiscard]] bool has_symbolic_value_substitution(
       const std::vector<ValueSubstitution> &substitutions) const {
     for (const ValueSubstitution &substitution : substitutions) {
-      if (substitution.symbolic_expression.is_valid()) return true;
+      if (substitution.symbolic_expression.is_valid() ||
+          substitution.deferred_expression) {
+        return true;
+      }
     }
     return false;
   }
@@ -2441,6 +2454,7 @@ private:
           value_substitution_index(substitutions, parameter);
       if (existing.has_value()) {
         return !substitutions[*existing].symbolic_expression.is_valid() &&
+            !substitutions[*existing].deferred_expression &&
             substitutions[*existing].value == value;
       }
       substitutions.push_back({parameter, value, {}});
@@ -2489,7 +2503,8 @@ private:
       const std::optional<std::size_t> existing =
           value_substitution_index(substitutions, parameter);
       if (existing.has_value()) {
-        return substitutions[*existing].symbolic_expression == supplied;
+        return !substitutions[*existing].deferred_expression &&
+            substitutions[*existing].symbolic_expression == supplied;
       }
       substitutions.push_back({parameter, {}, supplied});
       return true;
@@ -2806,7 +2821,9 @@ private:
             value_substitutions, parameter.parameter);
         argument.is_type = false;
         argument.value_type = semantic_.symbols.symbol(parameter.parameter).type;
-        if (value_substitutions[index].symbolic_expression.is_valid()) {
+        if (value_substitutions[index].deferred_expression) {
+          argument.owner_evaluated_value = true;
+        } else if (value_substitutions[index].symbolic_expression.is_valid()) {
           argument.value_expression =
               value_substitutions[index].symbolic_expression;
         } else {
@@ -2979,7 +2996,9 @@ private:
         const TypeId required_type =
             semantic_.symbols.symbol(parameter.parameter).type;
         const ValueSubstitution &substitution = value_substitutions[*found];
-        if (substitution.value.kind != ConstantKind::Integer ||
+        if (substitution.deferred_expression ||
+            substitution.symbolic_expression.is_valid() ||
+            substitution.value.kind != ConstantKind::Integer ||
             !semantic_.types.is_integer(required_type) ||
             !integer_representable(substitution.value.integer, required_type)) {
           diagnostics_.error(
@@ -4302,9 +4321,10 @@ private:
           for (std::size_t index = 0; index < parameters.size(); ++index) {
             const ParametricParameterRecord &parameter = parameters[index];
             if (parameter.constraint == TypeConstraintKind::CompileTimeValue) {
-              if (!current_instance_index_.has_value()) {
-                const TypeId required =
-                    semantic_.symbols.symbol(parameter.parameter).type;
+              const TypeId required =
+                  semantic_.symbols.symbol(parameter.parameter).type;
+              if (current_procedure_is_template_ ||
+                  !current_instance_index_.has_value()) {
                 const ConstantTable active_constants = active_constant_table();
                 const std::size_t errors_before = diagnostics_.error_count();
                 const std::optional<IntegerExpression> symbolic =
@@ -4356,10 +4376,31 @@ private:
                 if (diagnostics_.error_count() != errors_before) {
                   return invalid_expression(node.range);
                 }
+                if (current_procedure_is_template_ &&
+                    expression_references_parametric_parameter(
+                        tree, node.children[index + 1], scope)) {
+                  // The compact dependent-integer representation deliberately
+                  // excludes calls. Check the full expression as ordinary
+                  // typed source now; its concrete outer instance will run the
+                  // compile-time interpreter below with N/T bindings active.
+                  const HirExpressionId checked = check_expression(
+                      tree,
+                      node.children[index + 1],
+                      scope,
+                      required);
+                  if (is_invalid_type(hir_.expression(checked).type)) {
+                    return invalid_expression(node.range);
+                  }
+                  value_substitutions.push_back(
+                      {parameter.parameter, {}, {}, true});
+                  continue;
+                }
               }
               const ConstantTable active_constants = active_constant_table();
-              const std::optional<ConstantValue> value =
-                  evaluate_constant_expression(
+              const std::vector<ConstantTypeBinding> active_types =
+                  active_constant_types();
+              const std::optional<EvaluatedConstant> evaluated =
+                  evaluate_typed_constant_expression(
                       sources_,
                       loaded_,
                       semantic_,
@@ -4368,16 +4409,20 @@ private:
                       node.children[index + 1],
                       scope,
                       diagnostics_,
-                      &active_constants);
-              if (!value.has_value()) return invalid_expression(node.range);
-              if (value->kind != ConstantKind::Integer) {
+                      &active_constants,
+                      &active_types,
+                      required);
+              if (!evaluated.has_value()) {
+                return invalid_expression(node.range);
+              }
+              if (evaluated->value.kind != ConstantKind::Integer) {
                 diagnostics_.error(
                     tree.node(node.children[index + 1]).range,
                     "procedure value argument must be a compile-time integer");
                 return invalid_expression(node.range);
               }
               value_substitutions.push_back(
-                  {parameter.parameter, *value, {}});
+                  {parameter.parameter, evaluated->value, {}});
               continue;
             }
             const TypeId argument =

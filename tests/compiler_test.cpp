@@ -705,7 +705,9 @@ void test_cross_package_generic_procedures(TestState &state) {
   // template specializations in left. One concrete generic type recursively
   // requests Buffer[2] from lib/layout, then rebuilds generic against that
   // owner-produced graph. The concrete left bodies publish transitive
-  // identity[Private_Value] and plus_one[4] requests to generic.
+  // identity[Private_Value] and exact_count[increment_count(4)] requests to
+  // generic. The latter keeps left's private compile-time helper on its owner
+  // side while publishing only the concrete value 5.
   // Both sibling packages also request identity[u64] and identity[Shared_Value].
   // The latter is local in left and imported in right, so both local display
   // spellings must hash to one canonical nominal identity. All sibling requests

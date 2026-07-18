@@ -309,6 +309,31 @@ procedural_last[N: usize] :: proc(values: [plus_one(N)]i64) -> i64 {
     return values[N]
 }
 
+pick_count[N: usize] :: proc() -> usize {
+    return N
+}
+
+composed_count[N: usize] :: proc() -> usize {
+    return pick_count[plus_one(N)]()
+}
+
+zero_values[N: usize] :: proc() -> [N]i64 {
+    return [N]i64{}
+}
+
+composed_length[N: usize] :: proc() -> usize {
+    values := zero_values[plus_one(N)]()
+    return len(values)
+}
+
+layout_count[T: type] :: proc(extra: usize) -> usize {
+    return size_of(T) + extra
+}
+
+composed_type_count[T: type, N: usize] :: proc() -> usize {
+    return pick_count[layout_count[T](N)]()
+}
+
 main :: proc() -> i64 {
     value: u32 = 42
     explicit := identity[u32](&value)
@@ -323,7 +348,9 @@ main :: proc() -> i64 {
     inferred_last := last(values)
     procedural_last_value := procedural_last[2](values)
     return sum[i64](values[:]) + explicit_last + inferred_last +
-        procedural_last_value
+        procedural_last_value + cast[i64](composed_count[2]()) +
+        cast[i64](composed_length[2]()) +
+        cast[i64](composed_type_count[u32, 2]())
 }
 )draft");
 
@@ -333,8 +360,8 @@ main :: proc() -> i64 {
   EXPECT(state, source.semantics.ok);
   EXPECT(state, source.bodies.ok);
   EXPECT(state, !source.diagnostics.has_errors());
-  EXPECT(state, source.bodies.checked_procedures == 12);
-  EXPECT(state, source.bodies.program.procedures().size() == 12);
+  EXPECT(state, source.bodies.checked_procedures == 24);
+  EXPECT(state, source.bodies.program.procedures().size() == 24);
   std::size_t templates = 0;
   std::size_t concrete_instances = 0;
   for (const draft::HirProcedure &procedure :
@@ -357,8 +384,8 @@ main :: proc() -> i64 {
       }
     }
   }
-  EXPECT(state, templates == 5);
-  EXPECT(state, concrete_instances == 5);
+  EXPECT(state, templates == 11);
+  EXPECT(state, concrete_instances == 11);
 }
 
 void test_value_parametric_nominal_composition(TestState &state) {
@@ -1087,6 +1114,30 @@ main :: proc() {
 }
 
 void test_parametric_procedure_value_diagnostics(TestState &state) {
+  CheckedSource wrong_procedural_type(R"draft(
+package bodies
+
+pick[N: usize] :: proc() -> usize {
+    return N
+}
+wrong_type :: proc(value: usize) -> u64 {
+    return cast[u64](value)
+}
+outer[N: usize] :: proc() -> usize {
+    return pick[wrong_type(N)]()
+}
+main :: proc() -> usize {
+    return outer[1]()
+}
+)draft");
+  EXPECT(state, !wrong_procedural_type.bodies.ok);
+  const std::string wrong_procedural_type_rendered =
+      draft::render_diagnostics(
+          wrong_procedural_type.sources,
+          wrong_procedural_type.diagnostics);
+  EXPECT(state, wrong_procedural_type_rendered.find(
+                    "does not match expected type") != std::string::npos);
+
   CheckedSource too_wide(R"draft(
 package bodies
 

@@ -48,3 +48,7 @@ pub byte_size[T: type] :: proc() -> usize {
 pub plus_one[N: usize] :: proc() -> usize {
     return N + 1
 }
+
+pub exact_count[N: usize] :: proc() -> usize {
+    return N
+}

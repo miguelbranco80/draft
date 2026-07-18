@@ -13,8 +13,12 @@ pub through_generic[T: type] :: proc(input: T) -> T {
     return generic.identity[T](input)
 }
 
+increment_count :: proc(value: usize) -> usize {
+    return value + 1
+}
+
 pub composed_count[N: usize] :: proc() -> usize {
-    return generic.plus_one[N]()
+    return generic.exact_count[increment_count(N)]()
 }
 
 pub value :: proc() -> u64 {
