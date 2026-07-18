@@ -38,7 +38,8 @@ struct DeniedEntity {
   return kind == TokenKind::Identifier || kind == TokenKind::KeywordAsm ||
       kind == TokenKind::KeywordUnchecked || kind == TokenKind::KeywordC ||
       kind == TokenKind::KeywordType || kind == TokenKind::KeywordInteger ||
-      kind == TokenKind::KeywordFloat || kind == TokenKind::KeywordNumber;
+      kind == TokenKind::KeywordFloat || kind == TokenKind::KeywordNumber ||
+      kind == TokenKind::KeywordFlags || kind == TokenKind::KeywordMemory;
 }
 
 class DenialChecker {

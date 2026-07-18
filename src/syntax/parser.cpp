@@ -129,12 +129,15 @@ private:
 
   [[nodiscard]] bool is_contextual_name(TokenKind kind) const {
     // `c` is both the calling-convention modifier and the conventional ordinary
-    // alias in `import core/c as c`. Constraint spellings are compiler-defined
-    // names valid in their parameter position. Treating these as contextual
-    // names keeps the lexer useful while preserving the source examples.
+    // alias in `import core/c as c`. `memory` and `flags` are directives only
+    // after assembly `clobber`, while `core/memory` and ordinary declarations
+    // must still be nameable. Constraint spellings are compiler-defined names
+    // valid in their parameter position. Treating these as contextual names
+    // keeps the lexer useful while preserving the source examples.
     return kind == TokenKind::Identifier || kind == TokenKind::KeywordC ||
            kind == TokenKind::KeywordType || kind == TokenKind::KeywordInteger ||
-           kind == TokenKind::KeywordFloat || kind == TokenKind::KeywordNumber;
+           kind == TokenKind::KeywordFloat || kind == TokenKind::KeywordNumber ||
+           kind == TokenKind::KeywordFlags || kind == TokenKind::KeywordMemory;
   }
 
   [[nodiscard]] bool at_name() const {

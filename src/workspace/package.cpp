@@ -42,6 +42,16 @@ struct SelectedFile {
   return std::nullopt;
 }
 
+// Package clauses use the parser's contextual-name vocabulary. In particular,
+// `package memory` is required by the compiler-distributed `core/memory`
+// package even though `memory` also has meaning after assembly `clobber`.
+[[nodiscard]] bool token_is_package_name(TokenKind kind) {
+  return kind == TokenKind::Identifier || kind == TokenKind::KeywordC ||
+      kind == TokenKind::KeywordType || kind == TokenKind::KeywordInteger ||
+      kind == TokenKind::KeywordFloat || kind == TokenKind::KeywordNumber ||
+      kind == TokenKind::KeywordFlags || kind == TokenKind::KeywordMemory;
+}
+
 // Determines participation and returns the filename with a matching target
 // qualifier removed for test/benchmark classification. The physical selected
 // name remains unchanged in SelectedFile and diagnostics.
@@ -91,7 +101,7 @@ struct SelectedFile {
     return std::nullopt;
   }
   const Token &name = tree.token(package.token_begin + 1);
-  if (name.kind != TokenKind::Identifier) {
+  if (!token_is_package_name(name.kind)) {
     return std::nullopt;
   }
   return std::string(sources.text(name.range));

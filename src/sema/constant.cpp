@@ -92,7 +92,8 @@ struct LocalTargetResult {
 [[nodiscard]] bool token_is_contextual_name(TokenKind kind) {
   return kind == TokenKind::Identifier || kind == TokenKind::KeywordC ||
          kind == TokenKind::KeywordType || kind == TokenKind::KeywordInteger ||
-         kind == TokenKind::KeywordFloat || kind == TokenKind::KeywordNumber;
+         kind == TokenKind::KeywordFloat || kind == TokenKind::KeywordNumber ||
+         kind == TokenKind::KeywordFlags || kind == TokenKind::KeywordMemory;
 }
 
 [[nodiscard]] EvalResult ready(ConstantValue value, TypeId type = {}) {

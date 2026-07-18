@@ -115,10 +115,11 @@ calls made in that scope receive the copy as their hidden argument. The narrow
 `runtime.default_context` and `runtime.call_with_context` bridges let
 context-free C callbacks acquire a compatible value and enter an ordinary Draft
 callback without exposing Context as a generally legal C aggregate. The
-compiler-distributed
-`core/runtime`, `core/c`, `core/option`, and `core/result` packages are ordinary
+compiler-distributed `core/runtime`, `core/c`, `core/option`, `core/result`, and
+`core/memory` packages are ordinary
 inspectable Draft source; `examples/core-runtime` checks their import, generic,
-layout, and native paths.
+layout, and native paths, while `examples/core-memory` checks zeroed allocation,
+explicit alignment, resize preservation, and release through the Context ABI.
 
 Configure, build, and test the current compiler with:
 

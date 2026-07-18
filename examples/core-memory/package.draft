@@ -1,0 +1,45 @@
+package core_memory
+
+import core/memory
+import core/runtime
+
+Aligned_Value :: @align(64) struct {
+    word: u64,
+}
+
+main :: proc() {
+    provided := runtime.default_context()
+    assert(provided.allocator.procedure != nil)
+    assert(provided.temp_allocator.procedure != nil)
+
+    value := cast[^Aligned_Value](memory.allocate(
+        size_of(Aligned_Value),
+        align_of(Aligned_Value),
+    ))
+    assert(cast[uintptr](value) % 64 == 0)
+    assert(value^.word == 0)
+    value^.word = 42
+    assert(value^.word == 42)
+    memory.free(
+        cast[rawptr](value),
+        size_of(Aligned_Value),
+        align_of(Aligned_Value),
+    )
+
+    values := cast[[^]u64](memory.allocate(4 * size_of(u64), 64))
+    view := values[:4]
+    assert(view[0] == 0 && view[3] == 0)
+    view[3] = 99
+    assert(view[3] == 99)
+    resized_storage := memory.resize(
+        cast[rawptr](values),
+        4 * size_of(u64),
+        8 * size_of(u64),
+        64,
+    )
+    resized := cast[[^]u64](resized_storage)
+    resized_view := resized[:8]
+    assert(cast[uintptr](resized) % 64 == 0)
+    assert(resized_view[3] == 99 && resized_view[7] == 0)
+    memory.free(resized_storage, 8 * size_of(u64), 64)
+}

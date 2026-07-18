@@ -57,6 +57,8 @@ main :: proc() {
     assert(empty.user_index == 0)
     assert(context_is_compatible(provided))
     assert(provided.assertion_failure_proc != nil)
+    assert(provided.allocator.procedure != nil)
+    assert(provided.temp_allocator.procedure != nil)
     provided.user_index = 40
     assert(runtime.call_with_context(
         &provided,

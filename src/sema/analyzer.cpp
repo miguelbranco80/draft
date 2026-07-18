@@ -34,7 +34,8 @@ struct CollectionContext {
 [[nodiscard]] bool token_is_contextual_name(TokenKind kind) {
   return kind == TokenKind::Identifier || kind == TokenKind::KeywordC ||
          kind == TokenKind::KeywordType || kind == TokenKind::KeywordInteger ||
-         kind == TokenKind::KeywordFloat || kind == TokenKind::KeywordNumber;
+         kind == TokenKind::KeywordFloat || kind == TokenKind::KeywordNumber ||
+         kind == TokenKind::KeywordFlags || kind == TokenKind::KeywordMemory;
 }
 
 [[nodiscard]] bool node_is_type_syntax(NodeKind kind) {

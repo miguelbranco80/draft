@@ -120,3 +120,12 @@ summaries; indirect callbacks remain unknown edges. These are narrow versioned
 runtime exceptions, not permission to use Context in arbitrary C signatures.
 Per-thread attachment and a TLS-backed foreign-thread default are later runtime
 work; the current bridge deliberately exposes the process-default snapshot.
+
+The hosted default allocator implements the three `core/runtime` operations
+against the Darwin heap. Fresh storage is zeroed, alignments through 16 use the
+ordinary allocator, larger alignments use `posix_memalign`, and aligned resize
+allocates/copies/releases while preserving the old allocation on failure. The
+root Context currently uses this provider for both general and temporary
+allocation. A thread-owned resettable temporary arena remains part of the TLS
+runtime work; `core/memory` currently exposes the honest byte-level substrate
+and explicit allocator forms without pretending that arena policy exists.

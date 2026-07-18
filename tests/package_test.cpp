@@ -139,6 +139,32 @@ void test_mismatched_package_name(TestState &state) {
   EXPECT(state, rendered.find("does not match package name") != std::string::npos);
 }
 
+void test_contextual_core_package_name(TestState &state) {
+  TemporaryPackage temporary;
+  std::error_code error;
+  std::filesystem::remove_all(temporary.path, error);
+  error.clear();
+  std::filesystem::create_directories(temporary.path, error);
+  EXPECT(state, !error);
+  if (error) return;
+  write_file(
+      temporary.path / "package.draft",
+      "package memory\nValue :: 1\n");
+
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  draft::PackageLoadOptions options;
+  options.file_tag = "aarch64-macos";
+  const draft::PackageLoadResult result =
+      draft::load_package(sources, temporary.path.string(), options, diagnostics);
+
+  if (diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+  }
+  EXPECT(state, result.ok);
+  EXPECT(state, result.package.short_name == "memory");
+}
+
 } // namespace
 
 int main() {
@@ -146,6 +172,7 @@ int main() {
   test_default_selection(state);
   test_validation_file_selection(state);
   test_mismatched_package_name(state);
+  test_contextual_core_package_name(state);
 
   if (state.failures != 0) {
     std::cerr << state.failures << " package test expectation(s) failed\n";

@@ -149,6 +149,12 @@ void test_compiler_distributed_core(TestState &state) {
           "define hidden void @\"__draft.runtime.default_context\"") !=
           std::string::npos);
       EXPECT(state, root_package->llvm.text.find(
+          "define internal ptr @__draft.default_allocator") !=
+          std::string::npos);
+      EXPECT(state, root_package->llvm.text.find(
+          "%draft.runtime.Allocator { ptr @__draft.default_allocator, "
+          "ptr null }") != std::string::npos);
+      EXPECT(state, root_package->llvm.text.find(
           "call void @\"__draft.runtime.default_context\"") !=
           std::string::npos);
       EXPECT(state, root_package->llvm.text.find(
@@ -233,6 +239,41 @@ void test_compiler_distributed_core(TestState &state) {
       0, 16, 32, 40, 56, 72, 80, 88}));
 }
 
+void test_compiler_distributed_memory(TestState &state) {
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  draft::CompileWorkspaceOptions options;
+  options.target = draft::make_aarch64_macos_profile();
+  options.workspace.workspace_directory =
+      std::string(DRAFT_SOURCE_DIRECTORY) + "/examples";
+  options.workspace.core_directory =
+      std::string(DRAFT_SOURCE_DIRECTORY) + "/core";
+  options.workspace.core_content_identity = "draft-core-test-v1";
+  options.lower_mir = true;
+  options.emit_llvm = true;
+  const draft::CompileWorkspaceResult result = draft::compile_workspace(
+      sources,
+      std::string(DRAFT_SOURCE_DIRECTORY) + "/examples/core-memory",
+      std::move(options),
+      diagnostics);
+  if (diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+  }
+  EXPECT(state, result.ok);
+  EXPECT(state, result.graph.packages.size() == 3);
+  if (!result.ok || !result.graph.root_package.is_valid()) return;
+  const std::optional<draft::CompiledPackage> &root =
+      result.packages[result.graph.root_package.value];
+  EXPECT(state, root.has_value());
+  if (!root.has_value()) return;
+  EXPECT(state, root->llvm.text.find(
+      ".memory.allocate\"") != std::string::npos);
+  EXPECT(state, root->llvm.text.find(
+      "call ptr @realloc") != std::string::npos);
+  EXPECT(state, root->llvm.text.find(
+      "call i32 @posix_memalign") != std::string::npos);
+}
+
 void test_runtime_context_bridge_diagnostics(TestState &state) {
   std::error_code error;
   const std::filesystem::path root = std::filesystem::temp_directory_path(error) /
@@ -286,6 +327,7 @@ int main() {
   test_multi_package_native_pipeline(state);
   test_hosted_entry_contract(state);
   test_compiler_distributed_core(state);
+  test_compiler_distributed_memory(state);
   test_runtime_context_bridge_diagnostics(state);
   if (state.failures != 0) {
     std::cerr << state.failures << " compiler pipeline expectation(s) failed\n";

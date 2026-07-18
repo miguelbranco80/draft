@@ -1,0 +1,84 @@
+package memory
+
+import core/runtime
+
+// This package is the ordinary Draft substrate over the versioned allocator
+// ABI. Typed helpers, arenas, and owned buffers build on these byte operations;
+// they do not need another compiler or runtime calling convention.
+
+pub allocate :: proc(size, alignment: usize) -> rawptr {
+    return allocate_with_allocator(size, alignment, context.allocator)
+}
+
+pub allocate_with_allocator :: proc(
+    size, alignment: usize,
+    allocator: runtime.Allocator,
+) -> rawptr {
+    if size == 0 {
+        return nil
+    }
+    storage := allocator.procedure(
+        allocator.user,
+        .allocate,
+        nil,
+        0,
+        size,
+        alignment,
+    )
+    assert(storage != nil, "allocation failed")
+    return storage
+}
+
+pub resize :: proc(
+    storage: rawptr,
+    old_size, new_size, alignment: usize,
+) -> rawptr {
+    return resize_with_allocator(
+        storage,
+        old_size,
+        new_size,
+        alignment,
+        context.allocator,
+    )
+}
+
+pub resize_with_allocator :: proc(
+    storage: rawptr,
+    old_size, new_size, alignment: usize,
+    allocator: runtime.Allocator,
+) -> rawptr {
+    resized := allocator.procedure(
+        allocator.user,
+        .resize,
+        storage,
+        old_size,
+        new_size,
+        alignment,
+    )
+    if new_size != 0 {
+        assert(resized != nil, "resize failed")
+    }
+    return resized
+}
+
+pub free :: proc(storage: rawptr, size, alignment: usize) {
+    free_with_allocator(storage, size, alignment, context.allocator)
+}
+
+pub free_with_allocator :: proc(
+    storage: rawptr,
+    size, alignment: usize,
+    allocator: runtime.Allocator,
+) {
+    if storage == nil {
+        return
+    }
+    allocator.procedure(
+        allocator.user,
+        .free,
+        storage,
+        size,
+        0,
+        alignment,
+    )
+}
