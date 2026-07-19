@@ -89,11 +89,12 @@ letting scheduling change compiler results.
 
 The events reflect the implementation's real orchestration rather than the
 conceptual diagram alone. An ordinary handwritten `check` currently performs
-an interface-discovery compiler pass and a complete body-surface pass. A native
-`build` performs those two passes plus a final MIR/LLVM pass, then invokes the
-host toolchain. `--timings` keeps these passes separate so repeated workspace
-loading, parsing, declaration analysis, and body work remain visible while the
-compiler is optimized. `--timings=all` adds package/tool scopes, file
+an interface-discovery compiler pass and a complete semantic-closure pass. A
+native `build` continues the latter graph directly through MIR/LLVM, then
+invokes the host toolchain; it does not reload or recheck handwritten source
+for lowering. `--timings` keeps the remaining passes separate so repeated
+workspace loading, parsing, declaration analysis, and body work remain visible
+while the compiler graph is consolidated. `--timings=all` adds package/tool scopes, file
 discovery and I/O, lexing/parsing, import-graph resolution, and exclusive time;
 child process CPU is reported separately from parent wall time.
 

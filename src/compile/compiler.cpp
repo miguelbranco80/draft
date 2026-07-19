@@ -1,4 +1,22 @@
 // Provider-free workspace compiler orchestration.
+//
+// This module turns one closed workspace into dependency-ordered semantic
+// package rows, then optionally continues those same rows through validation
+// discovery, parsed assembly, Draft MIR, and LLVM text. Inputs are exact source
+// buffers owned by the caller's SourceManager plus explicit target,
+// configuration, attachment, and foreign-summary facts. The result owns the
+// workspace graph and every compiler representation but continues to borrow
+// source bytes through stable FileIds; callers therefore keep SourceManager
+// alive for the complete command.
+//
+// Package interfaces become available dependency-first, generic body requests
+// propagate consumer-first, and completed effects publish dependency-first.
+// CompileWorkspaceProgress records the monotonic state boundary so native
+// lowering can continue a checked graph without reloading source. No state is
+// process-global or persisted as a compiler cache. Resolution orchestration
+// consumes generated Draft only through ordinary source overrides and may not
+// manufacture semantic or backend nodes. Relevant rules are specification
+// sections 10 and 15 and the implementation architecture document.
 
 #include "compile/compiler.h"
 
@@ -988,6 +1006,7 @@ CompileWorkspaceResult compile_workspace(
   }
   CompileWorkspaceResult result;
   result.compiler_content_identity = options.compiler_content_identity;
+  result.target_identity = options.target.facts.identity;
   result.configuration = options.configuration;
   result.foreign_provider_audits = options.foreign_provider_audits;
   const std::size_t initial_errors = diagnostics.error_count();
@@ -1240,6 +1259,9 @@ CompileWorkspaceResult compile_workspace(
     }
     result.ok = every_ready_package_valid &&
         diagnostics.error_count() == initial_errors;
+    if (result.ok) {
+      result.progress = CompileWorkspaceProgress::InterfaceDiscovery;
+    }
     return result;
   }
 
@@ -1507,24 +1529,76 @@ CompileWorkspaceResult compile_workspace(
   }
   closure_timing.finish();
 
-  // Phase 4: provider-free target lowering. No package reaches a backend until
-  // every cross-package generic proxy has an exact defining symbol.
-  //
-  // Validation discovery belongs between semantic closure and lowering. A
-  // filename or spelling alone never becomes an executable call: every entry
-  // below has a checked body, exact core nominal parameter, and target layout.
-  const bool performs_target_lowering =
+  bool every_package_ready = true;
+  for (const std::optional<CompiledPackage> &package : result.packages) {
+    every_package_ready = every_package_ready && package.has_value();
+  }
+  result.ok = every_package_ready &&
+      diagnostics.error_count() == initial_errors;
+  if (!result.ok) return result;
+  result.progress = CompileWorkspaceProgress::SemanticClosure;
+  const bool needs_target_continuation =
       options.validation_kind != ValidationKind::None ||
       options.lower_mir || options.emit_llvm;
-  TimingScope lowering_timing =
-      options.timings != nullptr && performs_target_lowering
+  if (needs_target_continuation &&
+      !continue_compiled_workspace(
+          sources, options, result, diagnostics)) {
+    result.ok = false;
+  }
+  return result;
+}
+
+bool continue_compiled_workspace(
+    SourceManager &sources,
+    const CompileWorkspaceOptions &options,
+    CompileWorkspaceResult &compiled,
+    DiagnosticSink &diagnostics) {
+  const std::size_t initial_errors = diagnostics.error_count();
+  if (!compiled.ok ||
+      compiled.progress != CompileWorkspaceProgress::SemanticClosure) {
+    diagnostics.error(
+        SourceRange::invalid(),
+        "target lowering requires one successful semantic-closure graph");
+    return false;
+  }
+  if (options.stage != CompileWorkspaceStage::Complete) {
+    diagnostics.error(
+        SourceRange::invalid(),
+        "target lowering cannot continue an interface-discovery request");
+    return false;
+  }
+  if (compiled.target_identity != options.target.facts.identity ||
+      compiled.compiler_content_identity != options.compiler_content_identity ||
+      compiled.configuration.runtime_assertions !=
+          options.configuration.runtime_assertions) {
+    diagnostics.error(
+        SourceRange::invalid(),
+        "target lowering options do not match the checked semantic graph");
+    return false;
+  }
+
+  const std::vector<std::size_t> consumer_order =
+      consumer_first_order(compiled.graph);
+  if (consumer_order.size() != compiled.graph.packages.size()) {
+    diagnostics.error(
+        SourceRange::invalid(),
+        "checked workspace package graph became cyclic before lowering");
+    return false;
+  }
+
+  // Phase 4: provider-free target lowering. No package reaches a backend until
+  // every cross-package generic proxy has an exact defining symbol. Validation
+  // discovery belongs between semantic closure and lowering: every selected
+  // entry therefore has a checked body, exact core nominal parameter, and
+  // target layout before the compiler constructs a native harness.
+  TimingScope lowering_timing = options.timings != nullptr
       ? options.timings->scope("target lowering")
       : TimingScope{};
   if (options.validation_kind != ValidationKind::None) {
     for (std::size_t package_index = 0;
-         package_index < result.packages.size(); ++package_index) {
-      if (!result.packages[package_index].has_value()) continue;
-      CompiledPackage &package = *result.packages[package_index];
+         package_index < compiled.packages.size(); ++package_index) {
+      if (!compiled.packages[package_index].has_value()) continue;
+      CompiledPackage &package = *compiled.packages[package_index];
       if (!package.bodies.ok || !package.metadata.ok ||
           !package.obligations.ok || !package.native_interop.ok) {
         continue;
@@ -1533,24 +1607,25 @@ CompileWorkspaceResult compile_workspace(
           options.validation_kind,
           options.workspace.core_content_identity,
           package.identity,
-          result.graph.packages[package_index].loaded,
+          compiled.graph.packages[package_index].loaded,
           package.semantics.package,
           package.bodies.program,
           diagnostics);
-      result.validation_entries.insert(
-          result.validation_entries.end(),
+      compiled.validation_entries.insert(
+          compiled.validation_entries.end(),
           std::make_move_iterator(discovered.begin()),
           std::make_move_iterator(discovered.end()));
     }
-    sort_validation_entries(result.validation_entries);
+    sort_validation_entries(compiled.validation_entries);
   }
 
   for (auto position = consumer_order.rbegin();
        position != consumer_order.rend(); ++position) {
     const std::size_t package_index = *position;
-    if (!result.packages[package_index].has_value()) continue;
-    CompiledPackage &package = *result.packages[package_index];
-    WorkspacePackage &workspace_package = result.graph.packages[package_index];
+    if (!compiled.packages[package_index].has_value()) continue;
+    CompiledPackage &package = *compiled.packages[package_index];
+    WorkspacePackage &workspace_package =
+        compiled.graph.packages[package_index];
     if (!package.bodies.ok || !package.metadata.ok || !package.obligations.ok ||
         !package.native_interop.ok) {
       continue;
@@ -1585,12 +1660,12 @@ CompileWorkspaceResult compile_workspace(
       llvm_options.package = workspace_package.identity;
       llvm_options.emit_runtime_support =
           package_index ==
-          static_cast<std::size_t>(result.graph.root_package.value);
+          static_cast<std::size_t>(compiled.graph.root_package.value);
       llvm_options.emit_program_entry =
           options.emit_program_entry && llvm_options.emit_runtime_support;
       if (llvm_options.emit_runtime_support) {
         llvm_options.validation_kind = options.validation_kind;
-        llvm_options.validation_entries = result.validation_entries;
+        llvm_options.validation_entries = compiled.validation_entries;
       }
       package.llvm = emit_llvm_ir(
           options.target,
@@ -1611,13 +1686,11 @@ CompileWorkspaceResult compile_workspace(
   }
   lowering_timing.finish();
 
-  bool every_package_ready = true;
-  for (const std::optional<CompiledPackage> &package : result.packages) {
-    every_package_ready = every_package_ready && package.has_value();
+  compiled.ok = diagnostics.error_count() == initial_errors;
+  if (compiled.ok) {
+    compiled.progress = CompileWorkspaceProgress::TargetLowering;
   }
-  result.ok = every_package_ready &&
-      diagnostics.error_count() == initial_errors;
-  return result;
+  return compiled.ok;
 }
 
 bool validate_resolved_agent_boundaries(
@@ -1831,37 +1904,25 @@ CompileWorkspaceResult compile_workspace_with_resolution(
       body_surface.ok = false;
       return body_surface;
     }
-    if (!options.lower_mir && !options.emit_llvm) {
-      TimingScope identity_timing = options.timings != nullptr
-          ? options.timings->scope(
-                "resolved-program identity", TimingVisibility::Detail)
-          : TimingScope{};
-      bind_handwritten_program_identity(sources, options, body_surface);
-      return body_surface;
-    }
-    options.stage = CompileWorkspaceStage::Complete;
-    options.workspace.source_overrides.clear();
-    TimingScope codegen_timing = options.timings != nullptr
-        ? options.timings->scope("final handwritten codegen")
+    // body_surface already owns the complete declarations, types, HIR, effects,
+    // denials, and dependency graph. Native commands continue that exact state
+    // through MIR and LLVM instead of loading and checking the package a third
+    // time. This is command-local phase continuation, not a persistent cache.
+    TimingScope identity_timing = options.timings != nullptr
+        ? options.timings->scope(
+              "resolved-program identity", TimingVisibility::Detail)
         : TimingScope{};
-    CompileWorkspaceResult handwritten = compile_workspace(
-        sources, root_package_directory, std::move(options), diagnostics);
-    codegen_timing.finish();
-    // compile_workspace retained the exact compiler identity, so reconstruct
-    // the two option fields consumed by the moved value without a magic
-    // duplicate version string.
-    if (handwritten.ok) {
-      ResolutionManifest empty_manifest;
-      empty_manifest.target_identity = body_options.target.facts.identity;
-      handwritten.resolved_program_digest = hash_resolved_program(
-          sources,
-          handwritten.graph,
-          body_options.target,
-          empty_manifest,
-          handwritten.compiler_content_identity,
-          body_options.configuration);
+    bind_handwritten_program_identity(sources, options, body_surface);
+    identity_timing.finish();
+    const bool needs_target_continuation =
+        options.validation_kind != ValidationKind::None ||
+        options.lower_mir || options.emit_llvm;
+    if (needs_target_continuation &&
+        !continue_compiled_workspace(
+            sources, options, body_surface, diagnostics)) {
+      body_surface.ok = false;
     }
-    return handwritten;
+    return body_surface;
   }
 
   ResolutionManifest body_manifest = select_stage_manifest(

@@ -44,6 +44,71 @@ struct TestState {
   }
 }
 
+void test_target_lowering_continues_checked_graph(TestState &state) {
+  const std::string workspace =
+      std::string(DRAFT_SOURCE_DIRECTORY) + "/examples/packages";
+  const std::string root = workspace + "/app";
+
+  draft::CompileWorkspaceOptions check_options;
+  check_options.target = draft::make_aarch64_macos_profile();
+  check_options.workspace.workspace_directory = workspace;
+  draft::SourceManager continued_sources;
+  draft::DiagnosticSink continued_diagnostics;
+  draft::CompileWorkspaceResult continued = draft::compile_workspace(
+      continued_sources, root, check_options, continued_diagnostics);
+  EXPECT(state, continued.ok);
+  EXPECT(state,
+      continued.progress == draft::CompileWorkspaceProgress::SemanticClosure);
+
+  draft::CompileWorkspaceOptions lowering_options = check_options;
+  lowering_options.lower_mir = true;
+  lowering_options.emit_llvm = true;
+  const bool lowered = draft::continue_compiled_workspace(
+      continued_sources,
+      lowering_options,
+      continued,
+      continued_diagnostics);
+  EXPECT(state, lowered);
+  EXPECT(state, continued.ok);
+  EXPECT(state,
+      continued.progress == draft::CompileWorkspaceProgress::TargetLowering);
+  EXPECT(state, !continued_diagnostics.has_errors());
+
+  // A direct lowering request remains the behavioral oracle while orchestration
+  // migrates to explicit continuation. Both routes must emit byte-identical
+  // modules in canonical package order.
+  draft::SourceManager direct_sources;
+  draft::DiagnosticSink direct_diagnostics;
+  const draft::CompileWorkspaceResult direct = draft::compile_workspace(
+      direct_sources, root, lowering_options, direct_diagnostics);
+  EXPECT(state, direct.ok);
+  EXPECT(state,
+      direct.progress == draft::CompileWorkspaceProgress::TargetLowering);
+  EXPECT(state, continued.packages.size() == direct.packages.size());
+  if (continued.packages.size() == direct.packages.size()) {
+    for (std::size_t index = 0; index < direct.packages.size(); ++index) {
+      EXPECT(state,
+          continued.packages[index].has_value() ==
+              direct.packages[index].has_value());
+      if (continued.packages[index].has_value() &&
+          direct.packages[index].has_value()) {
+        EXPECT(state,
+            continued.packages[index]->llvm.text ==
+                direct.packages[index]->llvm.text);
+      }
+    }
+  }
+
+  draft::DiagnosticSink repeated_diagnostics;
+  EXPECT(state,
+      !draft::continue_compiled_workspace(
+          continued_sources,
+          lowering_options,
+          continued,
+          repeated_diagnostics));
+  EXPECT(state, repeated_diagnostics.error_count() == 1);
+}
+
 void test_multi_package_native_pipeline(TestState &state) {
   draft::SourceManager sources;
   draft::DiagnosticSink diagnostics;
@@ -1021,6 +1086,7 @@ void test_cross_package_higher_order_effect(TestState &state) {
 
 int main() {
   TestState state;
+  test_target_lowering_continues_checked_graph(state);
   test_multi_package_native_pipeline(state);
   test_hosted_entry_contract(state);
   test_file_local_imports_share_one_llvm_declaration(state);

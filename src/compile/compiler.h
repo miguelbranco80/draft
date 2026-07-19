@@ -1,4 +1,18 @@
 // Dependency-ordered orchestration of provider-free Draft compiler phases.
+//
+// The public records in this module are the command-lifetime ownership spine of
+// the bootstrap compiler. A CompileWorkspaceResult owns one closed package
+// graph and all declaration, type, HIR, effect, interop, MIR, and LLVM products
+// produced for it. Source bytes remain in the caller-owned SourceManager, whose
+// lifetime must enclose the result and every continuation or diagnostic render.
+//
+// Compilation is deterministic and provider-free. Dependencies publish before
+// consumers where semantic interfaces require it; state advances monotonically
+// from interface discovery to semantic closure to target lowering. The
+// continuation API mutates only an existing successful graph and creates no
+// persistent cache. Resolution may overlay checked generated Draft at the
+// source boundary, but lower layers never call a provider or update pins.
+// Relevant specification: sections 10 and 15.
 
 #pragma once
 
@@ -101,9 +115,28 @@ struct CompiledPackage {
   LlvmIrResult llvm;
 };
 
+// One result advances monotonically through these command-local states. Empty
+// is a failed or not-yet-started result. InterfaceDiscovery may intentionally
+// omit packages blocked by declaration/member synthesis. SemanticClosure owns
+// complete checked declarations, bodies, effects, denials, and native-interop
+// facts but no MIR. TargetLowering additionally owns every validation entry,
+// assembly program, MIR package, and requested LLVM module. The state is never
+// serialized or cached; it exists so later command stages can continue the
+// exact checked graph without guessing from empty output vectors.
+enum class CompileWorkspaceProgress {
+  Empty,
+  InterfaceDiscovery,
+  SemanticClosure,
+  TargetLowering,
+};
+
 struct CompileWorkspaceResult {
   bool ok = false;
+  CompileWorkspaceProgress progress = CompileWorkspaceProgress::Empty;
   std::string compiler_content_identity;
+  // The semantic target used for declarations, layouts, assembly validation,
+  // and lowering. A continuation must supply this exact identity.
+  std::string target_identity;
   CompileConfiguration configuration;
   WorkspaceGraph graph;
   // Indices exactly match graph.packages. In Complete, a missing row means the
@@ -135,6 +168,18 @@ struct CompileWorkspaceResult {
     SourceManager &sources,
     const std::string &root_package_directory,
     CompileWorkspaceOptions options,
+    DiagnosticSink &diagnostics);
+
+// Continues one successful Complete result from SemanticClosure through
+// validation discovery and requested target lowering. The function neither
+// reloads source nor rebuilds declarations or bodies: every FileId, type,
+// symbol, HIR node, and dependency edge remains owned by `compiled`. Calling it
+// on an interface-stage, failed, already-lowered, differently targeted, or
+// differently configured result is a diagnosed compiler-API error.
+[[nodiscard]] bool continue_compiled_workspace(
+    SourceManager &sources,
+    const CompileWorkspaceOptions &options,
+    CompileWorkspaceResult &compiled,
     DiagnosticSink &diagnostics);
 
 // Enforces the agent boundary between a successfully checked surface graph and
