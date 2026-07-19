@@ -1,0 +1,5 @@
+package lib
+
+pub base :: proc() -> i64 {
+    return 40
+}

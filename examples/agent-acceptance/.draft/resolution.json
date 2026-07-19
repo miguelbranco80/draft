@@ -1,0 +1,18 @@
+{
+  "format": "draft-resolution-v4",
+  "target": "draft-aarch64-macos-v5",
+  "resolved_program": "88aa126d8ca74448a3c8d5a0366da710ae62f74a4fc70ded66f653f47f4a38ff",
+  "external_inputs": [
+    {"kind": "toolchain", "name": "llvm-aarch64-macos", "content": "f239d9d4b0ba7f055d2ed7add49752960c8caf9198640b09ec50ee73a1714001", "entry": "bin/clang"},
+    {"kind": "sdk", "name": "macos-sdk", "content": "d722d107b4f143c64fb75fcb20fd7302f91fd809ea8fb49ab7c49a496279eada", "entry": ""}
+  ],
+  "evidence": [
+    {"kind": "test", "root": "workspace", "package": "app", "key": "03d78af391b4cfbac261826d09a8625e369ead9e9fc7e9e2080fe157b536b22f", "content": "26c485a6399248b334ff83ebcd9b5530858633ee96f4328c8825479abb46027f"},
+    {"kind": "judgment", "root": "workspace", "package": "app", "key": "e276922ac9516dacadb2444373948260076ab1d183fea345eed760ef83afcee6", "content": "33a1ea789d0f0a6692fc4cbbffff92f7b307688856ee41e185d8649310d7a8cd"}
+  ],
+  "sites": [
+    {"site": "site-5632f6e78736c25c3f001945c52131b4d82805f974e3b38918b3f82903033dfa", "kind": "declaration", "input": "607103d290eab474c8f468733a85cc64cd021747d477535517f3dd5b9a21dc27", "expansion": "f8e689242948fb0e525309b6192c53e0a2434b3036cda3592903b6a87300d8fe", "source_root": "workspace", "source_package": "app", "source_file": "package.draft", "surface_begin": 250, "surface_end": 361, "expansion_bytes": 33, "provider": "openai-codex-cli-v24", "model": "gpt-5.6-sol", "configuration": "codex-config-94cb1f5b079750d3d39d8880cec209fa2f3d528d1669b4c18b9f1d8f93b55b8e"},
+    {"site": "site-6e8a135c640300e0a3a0ba007c57d07c67c389c7208a83746ff8659678d278b3", "kind": "statement", "input": "887139ca36ce017df39824bbc6b9470535cb848ea9915604098d5f8f07d00f83", "expansion": "b83f9f3488a491dc42d325ec0d6f814f3155e53f056241b45612a5003bcc4f03", "source_root": "workspace", "source_package": "app", "source_file": "package.draft", "surface_begin": 537, "surface_end": 635, "expansion_bytes": 26, "provider": "openai-codex-cli-v24", "model": "gpt-5.6-sol", "configuration": "codex-config-94cb1f5b079750d3d39d8880cec209fa2f3d528d1669b4c18b9f1d8f93b55b8e"},
+    {"site": "site-88f43f2c9fb534d1576fddab9ee33f4129b197dc16195b8acc212198d944ba03", "kind": "expression", "input": "e837005ef7817c71e48ce5b06372db03a2496b217d1524404a86d4b1bb5a588d", "expansion": "69f869fa5f97e94f0f9f5602239d5e9d974dbe74ae1f535adf71252db6461af5", "source_root": "workspace", "source_package": "app", "source_file": "package.draft", "surface_begin": 329, "surface_end": 393, "expansion_bytes": 13, "provider": "openai-codex-cli-v24", "model": "gpt-5.6-sol", "configuration": "codex-config-94cb1f5b079750d3d39d8880cec209fa2f3d528d1669b4c18b9f1d8f93b55b8e"}
+  ]
+}

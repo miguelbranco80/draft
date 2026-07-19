@@ -1,0 +1,17 @@
+package app
+
+import lib
+
+// The declaration site is resolved before bodies that may name its result.
+// Its prompt is intentionally exact so the checked expansion demonstrates the
+// grammar boundary rather than asking the provider to design an API.
+... "Declare a package constant named generated_offset with type i64 and value 2. Output only the declaration."
+
+main :: proc() -> int {
+    expected: i64 = ... "Produce the i64 expression 42. Output only the expression."
+    actual := lib.base() + generated_offset
+
+    judge "The generated declaration, expression, and statement preserve actual == expected."
+    ... "Emit one runtime assertion statement checking actual == expected. Output only the statement."
+    return 0
+}

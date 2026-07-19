@@ -1,0 +1,8 @@
+package app
+
+import lib
+import core/testing
+
+test_generated_program :: proc(test: ^testing.Test) {
+    testing.expect(test, lib.base() + generated_offset == 42)
+}
