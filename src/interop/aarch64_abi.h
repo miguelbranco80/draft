@@ -1,4 +1,4 @@
-// AArch64 Darwin C ABI classification for semantic Draft types.
+// AArch64 C ABI classification for semantic Draft types.
 //
 // This module says how one already validated C source type crosses a native
 // call boundary. It intentionally does not emit LLVM syntax: the same compact
@@ -13,6 +13,8 @@
 #include <cstdint>
 
 namespace draft {
+
+struct TargetFacts;
 
 enum class Aarch64CAbiClass {
   Illegal,
@@ -39,11 +41,13 @@ struct Aarch64CAbiType {
   std::uint32_t result_integer_count = 0;
 };
 
-// Classifies a direct C parameter/result source type for the one initial target
-// profile. Arrays are legal recursively as aggregate members but not as direct
-// parameters or results. An Illegal result means semantic validation must reject
-// the containing native signature before LLVM emission.
-[[nodiscard]] Aarch64CAbiType classify_aarch64_darwin_c_type(
-    const TypeStore &types, TypeId type);
+// Classifies a direct C parameter/result source type for one supported AArch64
+// ABI.  Darwin arm64 and GNU AAPCS64 share the aggregate register classes used
+// here; target-specific scalar extension attributes and symbol spelling remain
+// in their emission layers.  Arrays are legal recursively as aggregate members
+// but not as direct parameters or results.  An Illegal result also covers a
+// non-AArch64 or unknown ABI, so semantic validation fails closed before LLVM.
+[[nodiscard]] Aarch64CAbiType classify_aarch64_c_type(
+    const TypeStore &types, TypeId type, const TargetFacts &target);
 
 } // namespace draft

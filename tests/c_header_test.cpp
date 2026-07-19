@@ -182,9 +182,14 @@ export echo_rune :: c "draft_echo_rune" proc(value: rune) -> rune {
       target.facts,
       diagnostics);
   const draft::NativeInteropResult native = draft::validate_native_interop(
-      semantics.package, bodies.program, diagnostics);
+      semantics.package, bodies.program, target.facts, diagnostics);
   const draft::CHeaderResult header = draft::emit_c_header(
-      semantics.package, {}, diagnostics);
+      semantics.package, target, {}, diagnostics);
+  const draft::CHeaderResult linux_header = draft::emit_c_header(
+      semantics.package,
+      draft::make_aarch64_linux_profile(),
+      {},
+      diagnostics);
   if (diagnostics.has_errors()) {
     std::cerr << draft::render_diagnostics(sources, diagnostics);
   }
@@ -193,6 +198,7 @@ export echo_rune :: c "draft_echo_rune" proc(value: rune) -> rune {
   EXPECT(state, bodies.ok);
   EXPECT(state, native.ok);
   EXPECT(state, header.ok);
+  EXPECT(state, linux_header.ok);
   EXPECT(state, header.export_count == 9);
   EXPECT(state, header.text.find(
       "typedef struct draft_c_library_Pair draft_c_library_Pair;") !=
@@ -240,6 +246,8 @@ export echo_rune :: c "draft_echo_rune" proc(value: rune) -> rune {
       "extern draft_c_library_Pair draft_map_pair(") != std::string::npos);
   EXPECT(state, header.text.find(
       "__asm__(\"_draft.inspect\")") != std::string::npos);
+  EXPECT(state, linux_header.text.find(
+      "__asm__(\"draft.inspect\")") != std::string::npos);
   EXPECT(state, header.text.find(
       "__int128 value;") != std::string::npos);
   EXPECT(state, header.text.find(

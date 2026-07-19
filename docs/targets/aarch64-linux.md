@@ -24,6 +24,14 @@ The pinned LLVM data layout is:
 e-m:e-p270:32:32-p271:32:32-p272:64:64-i8:8:32-i16:16:32-i64:64-i128:128-n32:64-S128-Fn32
 ```
 
+Fixed-arity C aggregates use the GNU AAPCS64 register classes: homogeneous
+floating aggregates occupy one to four matching floating lanes, other records
+of at most 16 bytes use one or two integer containers, and larger records are
+indirect. Unlike Darwin arm64, GNU AAPCS64 does not attach LLVM `signext` or
+`zeroext` contracts to sub-32-bit C scalar parameters and results. An unfixed
+`@repr(C)` enum retains the default 32-bit C width and widens to 64 bits only
+when its values require it.
+
 The enabled and known CPU feature vocabulary and legal baseline SIMD shapes
 match the current AArch64 macOS profile because they describe the same baseline
 machine architecture. The parsed-assembly contract has its own

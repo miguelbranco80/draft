@@ -40,7 +40,11 @@ struct CheckedSource {
   draft::SemanticAnalysisResult semantics;
   draft::BodyCheckResult bodies;
 
-  explicit CheckedSource(std::string text) {
+  explicit CheckedSource(
+      std::string text,
+      draft::TargetProfile selected_target =
+          draft::make_aarch64_macos_profile())
+      : target(std::move(selected_target)) {
     loaded.short_name = "native";
     draft::LoadedPackageFile file;
     file.kind = draft::PackageFileKind::DraftSource;
@@ -75,7 +79,10 @@ export increment :: c "draft_increment" proc(value: i32) -> i32 {
 )draft");
 
   const draft::NativeInteropResult native = draft::validate_native_interop(
-      source.semantics.package, source.bodies.program, source.diagnostics);
+      source.semantics.package,
+      source.bodies.program,
+      source.target.facts,
+      source.diagnostics);
   const draft::MirLoweringResult mir = draft::lower_package_to_mir(
       source.semantics.package, source.bodies.program, source.diagnostics);
   draft::LlvmIrOptions options;
@@ -102,6 +109,59 @@ export increment :: c "draft_increment" proc(value: i32) -> i32 {
       std::string::npos);
 }
 
+// GNU AAPCS64 deliberately omits Darwin's narrow-integer extension
+// attributes. Clang 22 emits the same source-width LLVM parameters and results
+// for signed and unsigned values; testing the complete declaration and wrapper
+// keeps call sites and definitions synchronized.
+void test_linux_narrow_integer_abi(TestState &state) {
+  CheckedSource source(R"draft(
+package native
+
+foreign linux {
+    narrow :: c "narrow" proc(signed: i8, unsigned: u16) -> i8
+}
+
+export wrap_narrow :: c "wrap_narrow" proc(
+    signed: i8,
+    unsigned: u16,
+) -> i8 {
+    return narrow(signed, unsigned)
+}
+)draft", draft::make_aarch64_linux_profile());
+
+  const draft::NativeInteropResult native = draft::validate_native_interop(
+      source.semantics.package,
+      source.bodies.program,
+      source.target.facts,
+      source.diagnostics);
+  const draft::MirLoweringResult mir = draft::lower_package_to_mir(
+      source.semantics.package, source.bodies.program, source.diagnostics);
+  draft::LlvmIrOptions options;
+  options.package = {"workspace", "native"};
+  const draft::LlvmIrResult llvm = draft::emit_llvm_ir(
+      source.target,
+      source.sources,
+      options,
+      source.semantics.package,
+      source.semantics.global_initializers,
+      mir.program,
+      source.diagnostics);
+  if (source.diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(
+        source.sources, source.diagnostics);
+  }
+  EXPECT(state, native.ok);
+  EXPECT(state, mir.ok);
+  EXPECT(state, llvm.ok);
+  EXPECT(state, llvm.text.find(
+      "declare i8 @\"narrow\"(i8, i16)") != std::string::npos);
+  EXPECT(state, llvm.text.find(
+      "define i8 @\"wrap_narrow\"(i8 %arg0, i16 %arg1)") !=
+          std::string::npos);
+  EXPECT(state, llvm.text.find("signext") == std::string::npos);
+  EXPECT(state, llvm.text.find("zeroext") == std::string::npos);
+}
+
 void test_invalid_c_boundaries(TestState &state) {
   CheckedSource source(R"draft(
 package native
@@ -114,7 +174,10 @@ foreign provider {
 }
 )draft");
   const draft::NativeInteropResult native = draft::validate_native_interop(
-      source.semantics.package, source.bodies.program, source.diagnostics);
+      source.semantics.package,
+      source.bodies.program,
+      source.target.facts,
+      source.diagnostics);
   EXPECT(state, !native.ok);
   const std::string rendered =
       draft::render_diagnostics(source.sources, source.diagnostics);
@@ -224,7 +287,10 @@ export wrap_large :: c "wrap_large" proc(value: C24) -> C24 {
 )draft");
 
   const draft::NativeInteropResult native = draft::validate_native_interop(
-      source.semantics.package, source.bodies.program, source.diagnostics);
+      source.semantics.package,
+      source.bodies.program,
+      source.target.facts,
+      source.diagnostics);
   const draft::MirLoweringResult mir = draft::lower_package_to_mir(
       source.semantics.package, source.bodies.program, source.diagnostics);
   draft::LlvmIrOptions options;
@@ -305,7 +371,10 @@ foreign provider {
 }
 )draft");
   const draft::NativeInteropResult native = draft::validate_native_interop(
-      source.semantics.package, source.bodies.program, source.diagnostics);
+      source.semantics.package,
+      source.bodies.program,
+      source.target.facts,
+      source.diagnostics);
   EXPECT(state, !native.ok);
   const std::string rendered =
       draft::render_diagnostics(source.sources, source.diagnostics);
@@ -324,7 +393,10 @@ bad_callback :: c proc(value: []u8) {
 callback_slot: Bad_Callback
 )draft");
   const draft::NativeInteropResult native = draft::validate_native_interop(
-      source.semantics.package, source.bodies.program, source.diagnostics);
+      source.semantics.package,
+      source.bodies.program,
+      source.target.facts,
+      source.diagnostics);
   EXPECT(state, !native.ok);
   const std::string rendered =
       draft::render_diagnostics(source.sources, source.diagnostics);
@@ -338,6 +410,7 @@ callback_slot: Bad_Callback
 int main() {
   TestState state;
   test_valid_import_and_export(state);
+  test_linux_narrow_integer_abi(state);
   test_invalid_c_boundaries(state);
   test_aggregate_c_abi_lowering(state);
   test_invalid_c_aggregate_member(state);

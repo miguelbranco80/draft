@@ -1393,7 +1393,10 @@ CompileWorkspaceResult compile_workspace(
         &options.target,
         options.foreign_provider_audits);
     package.native_interop = validate_native_interop(
-        package.semantics.package, package.bodies.program, diagnostics);
+        package.semantics.package,
+        package.bodies.program,
+        options.target.facts,
+        diagnostics);
     const bool denials_ok = check_package_denials(
         sources,
         workspace_package.loaded,

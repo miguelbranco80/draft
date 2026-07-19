@@ -3868,8 +3868,9 @@ private:
   }
 
   // Selects the compatible integer type used by an unfixed C enum on the
-  // initial Darwin arm64 target. Apple Clang keeps an enum at C `int` width
-  // even when every enumerator would fit in u8 or u16. At that width it uses
+  // current Darwin and GNU AArch64 targets. Their default ABI keeps an enum at
+  // C `int` width even when every enumerator would fit in u8 or u16. At that
+  // width it uses
   // unsigned int for a wholly nonnegative set and signed int when any member
   // is negative. Values outside 32 bits widen by the same signedness rule to
   // unsigned long or signed long, both 64 bits in this target ABI.
@@ -3877,13 +3878,14 @@ private:
   // Do not reuse inferred_enum_backing(): Draft's ordinary enum rule chooses
   // the smallest fixed-width representation, while @repr(C) explicitly asks
   // for the target C ABI's default. The target ABI identity is already part of
-  // every resolved program. A future second target must add its own complete
-  // profile and select its corresponding C-enum rule here.
+  // every resolved program. A future ABI must add its complete C-enum rule
+  // here rather than inheriting this shared AArch64 result accidentally.
   [[nodiscard]] TypeId inferred_c_enum_backing(
       const std::vector<BigInteger> &values) const {
     if (target_ != nullptr && !target_->abi.empty() &&
-        target_->abi != "darwin_arm64") {
-      // Applying Darwin's rule to a second ABI would silently manufacture the
+        target_->abi != "darwin_arm64" &&
+        target_->abi != "aapcs64_gnu") {
+      // Applying the current AArch64 rule to another ABI would manufacture the
       // wrong public type. Fail closed until that profile supplies a complete
       // rule alongside its ABI classifier and header lowering.
       return semantic_.types.builtins().invalid;

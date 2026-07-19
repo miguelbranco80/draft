@@ -1,6 +1,8 @@
-// AArch64 Darwin C ABI classification implementation.
+// Shared Darwin/GNU AArch64 C ABI aggregate classification implementation.
 
 #include "interop/aarch64_abi.h"
+
+#include "sema/constant.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -233,8 +235,18 @@ struct HomogeneousFloatInfo {
 
 } // namespace
 
-Aarch64CAbiType classify_aarch64_darwin_c_type(
-    const TypeStore &types, TypeId type_id) {
+Aarch64CAbiType classify_aarch64_c_type(
+    const TypeStore &types,
+    TypeId type_id,
+    const TargetFacts &target) {
+  // Both current targets use the fixed-arity AAPCS64 aggregate rules below.
+  // Do not let a future ABI spelling inherit them merely because its machine
+  // architecture is AArch64: adding a profile requires naming the complete ABI
+  // here and adding its independent oracle tests.
+  if (target.arch != "aarch64" ||
+      (target.abi != "darwin_arm64" && target.abi != "aapcs64_gnu")) {
+    return {};
+  }
   std::vector<TypeId> active_procedures;
   return classify_with_active_procedures(types, type_id, active_procedures);
 }

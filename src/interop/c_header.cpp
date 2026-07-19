@@ -102,9 +102,11 @@ class Emitter {
 public:
   Emitter(
       const SemanticPackage &semantic,
+      const TargetProfile &target,
       const CHeaderOptions &options,
       DiagnosticSink &diagnostics)
-      : semantic_(semantic), options_(options), diagnostics_(diagnostics) {}
+      : semantic_(semantic), target_(target), options_(options),
+        diagnostics_(diagnostics) {}
 
   [[nodiscard]] CHeaderResult run() {
     CHeaderResult result;
@@ -225,7 +227,8 @@ private:
       return;
     }
     if (!value.c_representation || contains_type(nominal_seen_, id) ||
-        classify_aarch64_darwin_c_type(semantic_.types, id).classification ==
+        classify_aarch64_c_type(semantic_.types, id, target_.facts)
+                .classification ==
             Aarch64CAbiClass::Illegal) {
       return;
     }
@@ -323,7 +326,8 @@ private:
     return (value.kind == TypeKind::Struct || value.kind == TypeKind::RawUnion ||
             value.kind == TypeKind::Enum) &&
         value.c_representation &&
-        classify_aarch64_darwin_c_type(semantic_.types, id).classification !=
+        classify_aarch64_c_type(semantic_.types, id, target_.facts)
+                .classification !=
             Aarch64CAbiClass::Illegal;
   }
 
@@ -601,9 +605,12 @@ private:
       output_ << "extern "
               << declaration(signature.members.back(), declarator);
       if (!direct_name) {
-        // Clang's Darwin asm label is the final Mach-O spelling, including the
-        // platform's leading underscore normally added to a C identifier.
-        output_ << " __asm__(\"_" << c_string_bytes(*exact) << "\")";
+        // An asm label names the final object symbol. Mach-O C identifiers gain
+        // one platform underscore; ELF identifiers do not. The quoted Draft
+        // linker name itself remains target-independent source text.
+        const std::string_view prefix =
+            target_.facts.object_format == "macho" ? "_" : "";
+        output_ << " __asm__(\"" << prefix << c_string_bytes(*exact) << "\")";
       }
       output_ << ";\n";
     }
@@ -617,6 +624,7 @@ private:
   }
 
   const SemanticPackage &semantic_;
+  const TargetProfile &target_;
   const CHeaderOptions &options_;
   DiagnosticSink &diagnostics_;
   std::vector<const NativeBinding *> exports_;
@@ -632,9 +640,10 @@ private:
 
 CHeaderResult emit_c_header(
     const SemanticPackage &semantic,
+    const TargetProfile &target,
     const CHeaderOptions &options,
     DiagnosticSink &diagnostics) {
-  return Emitter(semantic, options, diagnostics).run();
+  return Emitter(semantic, target, options, diagnostics).run();
 }
 
 } // namespace draft

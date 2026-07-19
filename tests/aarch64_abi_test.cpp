@@ -1,4 +1,4 @@
-// AArch64 Darwin C ABI classification tests.
+// Darwin and GNU AArch64 C ABI classification tests.
 
 #include "interop/aarch64_abi.h"
 #include "sema/semantic.h"
@@ -100,8 +100,10 @@ Recursive_Callback_Record :: @repr(C) struct {
   EXPECT(state, !source.diagnostics.has_errors());
 
   const auto classify = [&source](std::string_view name) {
-    return draft::classify_aarch64_darwin_c_type(
-        source.semantics.package.types, source.type(name));
+    return draft::classify_aarch64_c_type(
+        source.semantics.package.types,
+        source.type(name),
+        draft::make_aarch64_macos_profile().facts);
   };
   const draft::Aarch64CAbiType c1 = classify("C1");
   EXPECT(state, c1.classification == draft::Aarch64CAbiClass::SmallAggregate);
@@ -165,11 +167,41 @@ Recursive_Callback_Record :: @repr(C) struct {
                     draft::Aarch64CAbiClass::SmallAggregate);
 }
 
+void test_linux_aapcs64_classes(TestState &state) {
+  SemanticSource source(R"draft(
+package abi
+
+C3 :: @repr(C) struct { bytes: [3]u8, }
+C24 :: @repr(C) struct { words: [3]i64, }
+HF2 :: @repr(C) struct { first: f32, second: f32, }
+)draft");
+  const draft::TargetFacts target =
+      draft::make_aarch64_linux_profile().facts;
+  const auto classify = [&source, &target](std::string_view name) {
+    return draft::classify_aarch64_c_type(
+        source.semantics.package.types, source.type(name), target);
+  };
+  EXPECT(state, classify("C3").classification ==
+      draft::Aarch64CAbiClass::SmallAggregate);
+  EXPECT(state, classify("C3").result_integer_bits == 24);
+  EXPECT(state, classify("C24").classification ==
+      draft::Aarch64CAbiClass::Indirect);
+  EXPECT(state, classify("HF2").classification ==
+      draft::Aarch64CAbiClass::HomogeneousFloatAggregate);
+
+  draft::TargetFacts unknown = target;
+  unknown.abi = "unknown";
+  EXPECT(state, draft::classify_aarch64_c_type(
+      source.semantics.package.types, source.type("C3"), unknown)
+          .classification == draft::Aarch64CAbiClass::Illegal);
+}
+
 } // namespace
 
 int main() {
   TestState state;
   test_darwin_arm64_classes(state);
+  test_linux_aapcs64_classes(state);
   if (state.failures != 0) {
     std::cerr << state.failures << " ABI classifier expectation(s) failed\n";
     return EXIT_FAILURE;

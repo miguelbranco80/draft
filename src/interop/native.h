@@ -22,6 +22,7 @@ struct NativeInteropResult {
 [[nodiscard]] NativeInteropResult validate_native_interop(
     const SemanticPackage &semantic,
     const HirProgram &hir,
+    const TargetFacts &target,
     DiagnosticSink &diagnostics);
 
 } // namespace draft

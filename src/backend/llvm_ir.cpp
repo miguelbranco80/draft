@@ -1662,10 +1662,14 @@ private:
     return "<illegal-c-abi>";
   }
 
-  // Darwin arm64 requires C integer values narrower than 32 bits to carry an
-  // explicit extension contract. These LLVM attributes affect register bits
-  // and therefore belong on declarations, definitions, and every call site.
+  // Target scalar extension attributes affect register bits and therefore
+  // belong on declarations, definitions, and every call site.
   [[nodiscard]] std::string c_integer_extension(TypeId type_id) const {
+    // GNU AAPCS64 leaves sub-32-bit scalar values in their source-width LLVM
+    // form and does not attach signext/zeroext. Darwin arm64 requires the
+    // explicit extension contract. This difference changes register bits and
+    // must be applied to declarations, definitions, and every call site.
+    if (target_.facts.abi != "darwin_arm64") return {};
     const Type &value = type(type_id);
     // A fixed-backing C enum crosses the ABI exactly like its backing scalar.
     // Looking only at the nominal enum row loses both width and signedness
@@ -1721,7 +1725,8 @@ private:
       abi.alignment = context.layout.alignment;
       return abi;
     }
-    return classify_aarch64_darwin_c_type(semantic_.types, type_id);
+    return classify_aarch64_c_type(
+        semantic_.types, type_id, target_.facts);
   }
 
   [[nodiscard]] std::string llvm_function_result(TypeId type_id) const {

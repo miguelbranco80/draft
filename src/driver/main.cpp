@@ -658,7 +658,10 @@ int emit_c_header_package(
           "C header emission cannot find the compiled root package");
     } else {
       const draft::CHeaderResult header = draft::emit_c_header(
-          compiled.packages[root]->semantics.package, {}, diagnostics);
+          compiled.packages[root]->semantics.package,
+          draft::make_aarch64_macos_profile(),
+          {},
+          diagnostics);
       if (header.ok) {
         std::filesystem::path output = absolute_directory / ".draft" / "build" /
             (absolute_directory.filename().string() + ".h");

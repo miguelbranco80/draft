@@ -126,8 +126,9 @@ void test_c_client_consumes_draft_dylib(TestState &state) {
   const std::filesystem::path source_root(DRAFT_SOURCE_DIRECTORY);
   draft::SourceManager sources;
   draft::DiagnosticSink diagnostics;
+  const draft::TargetProfile target = draft::make_aarch64_macos_profile();
   draft::CompileWorkspaceOptions compile_options;
-  compile_options.target = draft::make_aarch64_macos_profile();
+  compile_options.target = target;
   compile_options.workspace.workspace_directory =
       (source_root / "examples").string();
   compile_options.workspace.core_directory = (source_root / "core").string();
@@ -163,7 +164,10 @@ void test_c_client_consumes_draft_dylib(TestState &state) {
   }
 
   const draft::CHeaderResult header = draft::emit_c_header(
-      compiled.packages[root]->semantics.package, {}, diagnostics);
+      compiled.packages[root]->semantics.package,
+      target,
+      {},
+      diagnostics);
   EXPECT(state, header.ok);
   const std::filesystem::path header_path = temporary / "draft-c-library.h";
   if (header.ok) {

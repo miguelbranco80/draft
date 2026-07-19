@@ -4,6 +4,7 @@
 
 #include "sema/analyzer.h"
 #include "source/diagnostic.h"
+#include "target/profile.h"
 
 #include <cstddef>
 #include <string>
@@ -28,6 +29,7 @@ struct CHeaderResult {
 // mismatched C compiler fail at header compilation rather than at runtime.
 [[nodiscard]] CHeaderResult emit_c_header(
     const SemanticPackage &semantic,
+    const TargetProfile &target,
     const CHeaderOptions &options,
     DiagnosticSink &diagnostics);
 

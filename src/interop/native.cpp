@@ -24,21 +24,22 @@ namespace {
       });
 }
 
-[[nodiscard]] bool valid_c_signature(const TypeStore &types, TypeId id) {
+[[nodiscard]] bool valid_c_signature(
+    const TypeStore &types, TypeId id, const TargetFacts &target) {
   const Type &procedure = types.type(id);
   if (procedure.kind != TypeKind::Procedure || !procedure.c_calling_convention ||
       procedure.members.empty()) {
     return false;
   }
   for (std::size_t index = 0; index + 1 < procedure.members.size(); ++index) {
-    if (classify_aarch64_darwin_c_type(types, procedure.members[index])
+    if (classify_aarch64_c_type(types, procedure.members[index], target)
             .classification == Aarch64CAbiClass::Illegal) {
       return false;
     }
   }
   const TypeId result = procedure.members.back();
   return result == types.builtins().void_type ||
-      classify_aarch64_darwin_c_type(types, result).classification !=
+      classify_aarch64_c_type(types, result, target).classification !=
           Aarch64CAbiClass::Illegal;
 }
 
@@ -128,6 +129,7 @@ void validate_c_procedure_type_graph(
     TypeId root,
     SourceRange diagnostic_range,
     bool exempt_root,
+    const TargetFacts &target,
     std::vector<TypeId> &diagnosed,
     DiagnosticSink &diagnostics) {
   std::vector<TypeId> visited;
@@ -137,7 +139,7 @@ void validate_c_procedure_type_graph(
     const Type &type = semantic.types.type(type_id);
     if (type.kind == TypeKind::Procedure && type.c_calling_convention) {
       const bool legal =
-          classify_aarch64_darwin_c_type(semantic.types, type_id)
+          classify_aarch64_c_type(semantic.types, type_id, target)
               .classification != Aarch64CAbiClass::Illegal;
       if (!legal) {
         if (!(is_root && exempt_root) && !contains_type(diagnosed, type_id)) {
@@ -165,6 +167,7 @@ void validate_c_procedure_type_graph(
 NativeInteropResult validate_native_interop(
     const SemanticPackage &semantic,
     const HirProgram &hir,
+    const TargetFacts &target,
     DiagnosticSink &diagnostics) {
   NativeInteropResult result;
   const std::size_t initial_errors = diagnostics.error_count();
@@ -179,7 +182,7 @@ NativeInteropResult validate_native_interop(
     }
     const std::optional<std::string> linker_name =
         decode_linker_name(binding.linker_name_spelling);
-    if (!valid_c_signature(semantic.types, symbol.type) &&
+    if (!valid_c_signature(semantic.types, symbol.type, target) &&
         !valid_default_context_bridge(
             semantic, binding, symbol, linker_name)) {
       diagnostics.error(
@@ -221,6 +224,7 @@ NativeInteropResult validate_native_interop(
         symbol.type,
         symbol.name_range,
         bridge,
+        target,
         diagnosed_c_procedures,
         diagnostics);
   }
