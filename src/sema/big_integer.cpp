@@ -43,7 +43,10 @@ constexpr std::uint64_t kLimbBase = std::uint64_t{1} << 32U;
   while (!right.is_zero()) {
     BigInteger quotient;
     BigInteger remainder;
-    const bool divided = left.divide(right, quotient, remainder);
+    // A nonzero divisor makes failure impossible. Keep the named result so an
+    // assertion build checks that contract; Release removes the assertion.
+    [[maybe_unused]] const bool divided =
+        left.divide(right, quotient, remainder);
     assert(divided);
     left = std::move(right);
     right = remainder.absolute();
@@ -523,7 +526,11 @@ std::string BigInteger::to_decimal() const {
   while (!remaining.is_zero()) {
     BigInteger quotient;
     BigInteger remainder;
-    const bool divided = remaining.divide(ten, quotient, remainder);
+    // Ten is nonzero, so division failure would be an internal arithmetic bug.
+    // The attribute preserves a clean warnings-as-errors Release build after
+    // NDEBUG removes the contract check.
+    [[maybe_unused]] const bool divided =
+        remaining.divide(ten, quotient, remainder);
     assert(divided);
     const std::optional<std::uint64_t> digit = remainder.to_u64();
     assert(digit.has_value() && *digit < 10);
@@ -621,9 +628,9 @@ void ExactRational::normalize() {
   BigInteger numerator_remainder;
   BigInteger denominator_quotient;
   BigInteger denominator_remainder;
-  const bool numerator_divided =
+  [[maybe_unused]] const bool numerator_divided =
       numerator_.divide(divisor, numerator_quotient, numerator_remainder);
-  const bool denominator_divided =
+  [[maybe_unused]] const bool denominator_divided =
       denominator_.divide(divisor, denominator_quotient, denominator_remainder);
   assert(numerator_divided && denominator_divided);
   assert(numerator_remainder.is_zero() && denominator_remainder.is_zero());

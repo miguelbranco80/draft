@@ -4812,12 +4812,24 @@ private:
           if (expression.slice_has_low) {
             const std::optional<BigInteger> value =
                 constant_integer_expression(expression.operands[operand_index++]);
-            low = value.has_value() ? value->to_u64() : std::nullopt;
+            // Spell the absent branch as reset rather than assigning a
+            // temporary nullopt. GCC 13 otherwise reports the engaged storage
+            // of std::optional<uint64_t> as maybe-uninitialized in optimized
+            // builds even though the optional operation is well-defined.
+            if (value.has_value()) {
+              low = value->to_u64();
+            } else {
+              low.reset();
+            }
           }
           if (expression.slice_has_high) {
             const std::optional<BigInteger> value =
                 constant_integer_expression(expression.operands[operand_index]);
-            high = value.has_value() ? value->to_u64() : std::nullopt;
+            if (value.has_value()) {
+              high = value->to_u64();
+            } else {
+              high.reset();
+            }
           }
           if (low.has_value() && high.has_value()) {
             if (*low <= *high && *high <= *length) {

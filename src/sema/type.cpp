@@ -18,7 +18,10 @@
 namespace draft {
 namespace {
 
-[[nodiscard]] bool is_power_of_two(std::uint32_t value) {
+// Layout construction guarantees power-of-two alignment before round_up. This
+// predicate exists to assert that internal contract and is intentionally absent
+// from Release call sites after NDEBUG removes the assertion.
+[[maybe_unused, nodiscard]] bool is_power_of_two(std::uint32_t value) {
   return value != 0 && (value & (value - 1)) == 0;
 }
 

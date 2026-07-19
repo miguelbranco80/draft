@@ -51,7 +51,10 @@ FileId SourceManager::add_source(
   source.expansion_maps = std::move(expansion_maps);
   source.line_starts.push_back(0);
 
-  std::uint32_t previous_end = 0;
+  // This accumulator exists only to make the ordered, non-overlapping source-
+  // map invariant executable in assertion builds. `[[maybe_unused]]` is
+  // required because NDEBUG removes every read while retaining the assignments.
+  [[maybe_unused]] std::uint32_t previous_end = 0;
   for (const SourceExpansionMap &map : source.expansion_maps) {
     assert(map.generated_begin >= previous_end);
     assert(map.generated_begin <= map.generated_end);

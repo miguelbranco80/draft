@@ -7,6 +7,7 @@
 // the native `.dylib` or `.so` format, emits its real target-selected header,
 // compiles the checked-in C client, and launches that client.
 
+#include "backend/llvm_object_emitter.h"
 #include "backend/toolchain.h"
 #include "compile/compiler.h"
 #include "interop/c_header.h"
@@ -72,6 +73,7 @@ struct TestState {
 // built by this test, while the matching rpath satisfies its Mach-O install name
 // or ELF SONAME when the child is launched from the private test directory.
 [[nodiscard]] bool compile_c_client(
+    const std::filesystem::path &compiler,
     const std::filesystem::path &source,
     const std::filesystem::path &include_directory,
     const std::filesystem::path &shared_library,
@@ -82,9 +84,9 @@ struct TestState {
   const pid_t child = ::fork();
   if (child < 0) return false;
   if (child == 0) {
-    ::execlp(
-        "clang",
-        "clang",
+    ::execl(
+        compiler.c_str(),
+        compiler.c_str(),
         "-std=c11",
         "-Wall",
         "-Wextra",
@@ -208,8 +210,14 @@ void test_c_client_consumes_draft_shared_library(TestState &state) {
   const std::filesystem::path client = temporary / "c-client";
   int compiler_status = 0;
   if (header.ok && built.ok) {
+    // Use the Clang beside the LLVM library selected at bootstrap configure
+    // time. The client remains an independently compiled C oracle, while its
+    // executable is no longer chosen from ambient PATH by accident.
+    const std::filesystem::path c_compiler =
+        draft::linked_llvm_tool_path("clang");
     EXPECT(state,
         compile_c_client(
+            c_compiler,
             source_root / "examples/c-library/client.c",
             temporary,
             shared_library,

@@ -453,7 +453,10 @@ if(BUILD_TESTING)
       draft_c_client_integration_tests
       tests/c_client_integration_test.cpp
     )
-    target_link_libraries(draft_c_client_integration_tests PRIVATE draft_compiler)
+    target_link_libraries(
+      draft_c_client_integration_tests
+      PRIVATE draft_compiler draft_llvm_backend
+    )
     target_compile_definitions(
       draft_c_client_integration_tests
       PRIVATE DRAFT_SOURCE_DIRECTORY="${CMAKE_CURRENT_SOURCE_DIR}"
