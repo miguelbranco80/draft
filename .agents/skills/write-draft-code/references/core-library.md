@@ -385,14 +385,16 @@ os.open_for_reading(path: cstring) -> (os.File, io.Error)
 os.create_for_writing(path: cstring) -> (os.File, io.Error)
 os.read(file, destination) -> (usize, io.Error)
 os.write(file, source) -> (usize, io.Error)
+os.write_all(file, source) -> io.Error
 os.close(&file) -> bool
 os.remove(path: cstring) -> bool
 ```
 
 `File` is a non-RAII descriptor handle; copies alias. Paths are `cstring`, not
 ordinary Draft strings. Read and write perform one system call and may be
-partial. EOF is `.end_of_input`. Native error detail is currently collapsed to
-`.unavailable` or `bool`.
+partial; `write_all` retries until the complete source is accepted or an error
+prevents progress. EOF is `.end_of_input`. Native error detail is currently
+collapsed to `.unavailable` or `bool`.
 
 There is no path type, environment lookup, directory traversal, metadata,
 seek, flush/fsync, rename, pipe, socket, subprocess, signal, permission API,

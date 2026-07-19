@@ -99,14 +99,16 @@ allocates nothing, and the signed path computes magnitude in `u64` so the
 minimum `i64` is handled without signed overflow. A too-small destination
 returns an empty slice and `false`.
 
-`core/console` writes immutable strings, booleans, and formatted integers to
-the standard process handles and returns `core/io.Error`. Draft strings expose
-no mutable backing pointer, while `core/os.write` accepts `[]u8`; the initial
-implementation therefore copies text through one fixed 256-byte stack buffer
-and completes partial OS writes explicitly. This keeps string immutability and
-the native boundary honest. Direct string-backed writes can replace the copy
-only if a future specified library or language operation exposes a read-only
-byte view; that is not backend permission to reinterpret string layout.
+`core/os.write_all` completes a borrowed byte-slice write by retrying partial
+native writes and rejects a successful zero-byte write on a non-empty suffix so
+callers cannot spin without progress. `core/console` uses that shared operation
+to write immutable strings, booleans, and formatted integers and returns
+`core/io.Error`. Draft strings expose no mutable backing pointer, while
+`core/os.write` accepts `[]u8`; console therefore copies text through one fixed
+256-byte stack buffer. This keeps string immutability and the native boundary
+honest. Direct string-backed writes can replace the copy only if a future
+specified library or language operation exposes a read-only byte view; that is
+not backend permission to reinterpret string layout.
 
 The virtual-memory seam uses target-qualified source with fixed signatures for
 `mmap`, `mprotect`, and `munmap`. Reserve creates inaccessible private anonymous

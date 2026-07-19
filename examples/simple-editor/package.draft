@@ -24,13 +24,13 @@
 package simple_editor
 
 import core/array
+import core/console
 import core/format
 import core/io
 import core/memory
 import core/os
 
 Input_Buffer_Size :: 256
-Output_Buffer_Size :: 256
 
 Help_Text :: `commands:
   NUMBER  select and print a one-based line
@@ -206,44 +206,11 @@ bytes_equal_text :: proc(bytes: []u8, text: string) -> bool {
     return true
 }
 
-// write_bytes writes an entire borrowed range to handle in source order. POSIX
-// writes may be partial, so success requires advancing until all bytes are
-// consumed. A zero-byte successful write is rejected to prevent an infinite
-// loop. The function owns neither the file handle nor source and emits no
-// diagnostics, allowing the caller to choose the correct stream and message.
-write_bytes :: proc(handle: os.File, source: []u8) -> bool {
-    written: usize
-    for written < len(source) {
-        (count, error) := os.write(handle, source[written:])
-        if error != .none || count == 0 {
-            return false
-        }
-        written += count
-    }
-    return true
-}
-
-// write_text copies immutable text through a fixed stack buffer because Draft
-// string cannot be cast to a mutable byte slice. It retains no input and uses
-// write_bytes for partial-write handling. Chunking keeps memory bounded for all
-// string lengths while preserving exact source bytes.
+// write_text adapts core/console's structured result to the editor's binary
+// success/failure control flow. core/console owns the immutable-string copy and
+// core/os owns partial-write completion; this application adds no I/O policy.
 write_text :: proc(handle: os.File, text: string) -> bool {
-    storage: [Output_Buffer_Size]u8
-    consumed: usize
-    for consumed < len(text) {
-        count := len(text) - consumed
-        if count > len(storage) {
-            count = len(storage)
-        }
-        for index: usize = 0; index < count; index += 1 {
-            storage[index] = text[consumed + index]
-        }
-        if !write_bytes(handle, storage[:count]) {
-            return false
-        }
-        consumed += count
-    }
-    return true
+    return console.write_to(handle, text) == .none
 }
 
 // report_error deliberately converts a standard-error write failure into no
@@ -270,18 +237,21 @@ write_line_number :: proc(handle: os.File, number: usize) -> bool {
     if !formatted {
         return false
     }
-    return write_bytes(handle, digits)
+    return os.write_all(handle, digits) == .none
 }
 
 // print_line emits one line followed by LF. It borrows the Document only for
 // this call and checks both writes, so a broken output stream terminates the
 // editor instead of being reported as a successful print command.
 print_line :: proc(document: ^Document, index: usize) -> bool {
-    if !write_bytes(os.standard_output, document_line(document, index)) {
+    if os.write_all(
+        os.standard_output,
+        document_line(document, index),
+    ) != .none {
         return false
     }
     newline := [1]u8{10}
-    return write_bytes(os.standard_output, newline[:])
+    return os.write_all(os.standard_output, newline[:]) == .none
 }
 
 // print_numbered_line emits a stable one-based address, a tab separator, and
@@ -473,8 +443,8 @@ save_document :: proc(document: ^Document, path: cstring) -> bool {
     newline := [1]u8{10}
     succeeded := true
     for index: usize = 0; index < document^.lines.length; index += 1 {
-        if !write_bytes(output, document_line(document, index)) ||
-            !write_bytes(output, newline[:]) {
+        if os.write_all(output, document_line(document, index)) != .none ||
+            os.write_all(output, newline[:]) != .none {
             succeeded = false
             break
         }

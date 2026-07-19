@@ -1,3 +1,15 @@
+// This package is the hosted operating-system boundary shared by the current
+// macOS and GNU/Linux targets. It exposes process-lifetime argument and
+// environment views, explicit descriptor handles, one-call byte reads/writes,
+// complete byte writes, pathname operations, and small process facts. Target
+// files and package assembly own platform constants and fixed C ABI adapters;
+// this common file owns portable Draft policy over those selected operations.
+//
+// File values alias native descriptors and never own cleanup implicitly.
+// Callers retain ownership of every byte slice and must close each successfully
+// opened handle exactly once through its chosen owner. Recoverable native
+// failures are collapsed into core/io.Error or bool by this initial surface.
+// Draft specification: sections 5-7 and the selected target profile.
 package os
 
 import core/c as c
@@ -120,6 +132,27 @@ pub write :: proc(handle: File, source: []u8) -> (usize, io.Error) {
         return (0, .unavailable)
     }
     return (cast[usize](count), .none)
+}
+
+// write_all synchronously writes the complete borrowed source range in order.
+// A native write may accept only a prefix, so the operation advances by the
+// reported count until no bytes remain. A successful zero-byte write on a
+// non-empty suffix is converted to unavailable: retrying it could spin forever
+// without an externally visible state change. Empty input succeeds without a
+// native call. The File is borrowed by value and is not closed or retained.
+pub write_all :: proc(handle: File, source: []u8) -> io.Error {
+    written: usize
+    for written < len(source) {
+        (count, error) := write(handle, source[written:])
+        if error != .none {
+            return error
+        }
+        if count == 0 {
+            return .unavailable
+        }
+        written += count
+    }
+    return .none
 }
 
 pub close :: proc(handle: ^File) -> bool {
