@@ -1,4 +1,4 @@
-// Content-tree pinning and verification for the first native tool boundary.
+// Target-profiled content-tree pinning and verification for native tools.
 
 #include "backend/locked_inputs.h"
 
@@ -16,10 +16,13 @@
 namespace draft {
 namespace {
 
-constexpr std::string_view kToolchainName = "llvm-aarch64-macos";
-constexpr std::string_view kSdkName = "macos-sdk";
+constexpr std::string_view kMacosToolchainName = "llvm-aarch64-macos";
+constexpr std::string_view kMacosSdkName = "macos-sdk";
+constexpr std::string_view kLinuxToolchainName = "llvm-aarch64-linux";
+constexpr std::string_view kLinuxSysrootName = "aarch64-linux-sysroot";
 constexpr std::string_view kClangEntry = "bin/clang";
 constexpr std::string_view kLinkerEntry = "bin/ld";
+constexpr std::string_view kElfLinkerEntry = "bin/ld.lld";
 constexpr std::string_view kClassicLinkerEntry = "bin/ld-classic";
 constexpr std::string_view kArchiverEntry = "bin/llvm-ar";
 constexpr std::string_view kDsymutilEntry = "bin/dsymutil";
@@ -133,6 +136,7 @@ constexpr std::string_view kLlvmSymbolizerEntry = "bin/llvm-symbolizer";
 } // namespace
 
 bool pin_locked_native_inputs(
+    const TargetProfile &target,
     const LockedNativeInputRoots &roots,
     std::vector<ExternalInputPin> &pins,
     DiagnosticSink &diagnostics) {
@@ -140,28 +144,53 @@ bool pin_locked_native_inputs(
   LockedNativeInputRoots canonical;
   if (!canonical_roots(roots, canonical, diagnostics)) return false;
 
+  const bool is_elf = target.facts.object_format == "elf";
+  if (!is_elf && target.facts.object_format != "macho") {
+    diagnostics.error(
+        SourceRange::invalid(),
+        "locked native inputs do not support target object format '" +
+            target.facts.object_format + "'");
+    return false;
+  }
+
   const std::filesystem::path clang = canonical.toolchain_root / kClangEntry;
-  const std::filesystem::path linker = canonical.toolchain_root / kLinkerEntry;
+  const std::filesystem::path linker = canonical.toolchain_root /
+      (is_elf ? kElfLinkerEntry : kLinkerEntry);
   const std::filesystem::path classic_linker =
       canonical.toolchain_root / kClassicLinkerEntry;
   const std::filesystem::path archiver = canonical.toolchain_root / kArchiverEntry;
   const std::filesystem::path dsymutil = canonical.toolchain_root / kDsymutilEntry;
   if (!inspect_executable(clang, "Clang driver", diagnostics) ||
-      !inspect_executable(linker, "Mach-O linker", diagnostics) ||
       !inspect_executable(
-          classic_linker, "classic Mach-O linker", diagnostics) ||
-      !inspect_executable(archiver, "LLVM archiver", diagnostics) ||
-      !inspect_executable(dsymutil, "LLVM dsymutil", diagnostics)) {
+          linker, is_elf ? "ELF lld linker" : "Mach-O linker", diagnostics) ||
+      !inspect_executable(archiver, "LLVM archiver", diagnostics)) {
     return false;
   }
-  // Apple's linker delegates relocatable links to its colocated classic
-  // implementation. It is an executable input even though Clang invokes only
-  // bin/ld directly, so validate and hash it as part of the same closed tree.
-  const std::array tool_entries{
-      clang, linker, classic_linker, archiver, dsymutil};
-  if (!validate_macho_dependency_closure(
-          canonical.toolchain_root, tool_entries, diagnostics)) {
-    return false;
+  if (is_elf) {
+    // The bootstrap currently cross-compiles Linux from the qualified macOS
+    // host, so these executables are Mach-O even though their output is ELF.
+    // The dependency checker proves that their non-platform dylibs remain in
+    // the pinned tree. A future Linux-hosted bootstrap needs an equivalent ELF
+    // host-tool closure before it can claim locked operation there.
+    const std::array tool_entries{clang, linker, archiver};
+    if (!validate_macho_dependency_closure(
+            canonical.toolchain_root, tool_entries, diagnostics)) {
+      return false;
+    }
+  } else {
+    if (!inspect_executable(
+            classic_linker, "classic Mach-O linker", diagnostics) ||
+        !inspect_executable(dsymutil, "LLVM dsymutil", diagnostics)) {
+      return false;
+    }
+    // Apple's linker delegates relocatable links to its colocated classic
+    // implementation, while dsymutil publishes the final debug companion.
+    const std::array tool_entries{
+        clang, linker, classic_linker, archiver, dsymutil};
+    if (!validate_macho_dependency_closure(
+            canonical.toolchain_root, tool_entries, diagnostics)) {
+      return false;
+    }
   }
 
   // Instrumentation is a distribution capability, not a baseline build
@@ -174,7 +203,7 @@ bool pin_locked_native_inputs(
   std::error_code runtime_error;
   const std::filesystem::file_status runtime_status =
       std::filesystem::symlink_status(address_runtime, runtime_error);
-  if (!runtime_error && std::filesystem::exists(runtime_status)) {
+  if (!is_elf && !runtime_error && std::filesystem::exists(runtime_status)) {
     const std::filesystem::path symbolizer =
         canonical.toolchain_root / kLlvmSymbolizerEntry;
     if (!inspect_executable(symbolizer, "LLVM symbolizer", diagnostics)) {
@@ -190,7 +219,7 @@ bool pin_locked_native_inputs(
             canonical.toolchain_root, runtime_entries, diagnostics)) {
       return false;
     }
-  } else if (runtime_error &&
+  } else if (!is_elf && runtime_error &&
              runtime_error != std::errc::no_such_file_or_directory) {
     diagnostics.error(
         SourceRange::invalid(),
@@ -201,7 +230,7 @@ bool pin_locked_native_inputs(
 
   ExternalInputPin toolchain;
   toolchain.kind = ExternalInputKind::Toolchain;
-  toolchain.name = kToolchainName;
+  toolchain.name = is_elf ? kLinuxToolchainName : kMacosToolchainName;
   toolchain.entry_point = kClangEntry;
   if (!hash_content_tree(
           canonical.toolchain_root, toolchain.content_digest, diagnostics)) {
@@ -210,7 +239,7 @@ bool pin_locked_native_inputs(
 
   ExternalInputPin sdk;
   sdk.kind = ExternalInputKind::Sdk;
-  sdk.name = kSdkName;
+  sdk.name = is_elf ? kLinuxSysrootName : kMacosSdkName;
   if (!hash_content_tree(canonical.sdk_root, sdk.content_digest, diagnostics)) {
     return false;
   }
@@ -224,12 +253,13 @@ bool pin_locked_native_inputs(
 }
 
 bool verify_locked_native_inputs(
+    const TargetProfile &target,
     const LockedNativeInputRoots &roots,
     std::span<const ExternalInputPin> manifest_pins,
     VerifiedLockedNativeInputs &verified,
     DiagnosticSink &diagnostics) {
   std::vector<ExternalInputPin> actual;
-  if (!pin_locked_native_inputs(roots, actual, diagnostics)) return false;
+  if (!pin_locked_native_inputs(target, roots, actual, diagnostics)) return false;
   LockedNativeInputRoots canonical;
   if (!canonical_roots(roots, canonical, diagnostics)) return false;
 
@@ -245,7 +275,7 @@ bool verify_locked_native_inputs(
     diagnostics.error(
         SourceRange::invalid(),
         "locked native build requires exactly one pinned LLVM toolchain and "
-        "one pinned macOS SDK");
+        "one pinned target system root");
     return false;
   }
   for (std::size_t index = 0; index < actual.size(); ++index) {
@@ -261,15 +291,20 @@ bool verify_locked_native_inputs(
 
   VerifiedLockedNativeInputs result;
   result.clang = canonical.toolchain_root / kClangEntry;
-  result.linker = canonical.toolchain_root / kLinkerEntry;
+  const bool is_elf = target.facts.object_format == "elf";
+  result.linker = canonical.toolchain_root /
+      (is_elf ? kElfLinkerEntry : kLinkerEntry);
   result.archiver = canonical.toolchain_root / kArchiverEntry;
-  result.dsymutil = canonical.toolchain_root / kDsymutilEntry;
+  if (!is_elf) {
+    result.dsymutil = canonical.toolchain_root / kDsymutilEntry;
+  }
   result.toolchain_root = canonical.toolchain_root;
   result.sdk_root = canonical.sdk_root;
   const std::filesystem::path address_runtime =
       canonical.toolchain_root / kAddressSanitizerRuntimeEntry;
   std::error_code runtime_error;
-  if (std::filesystem::is_regular_file(address_runtime, runtime_error) &&
+  if (!is_elf &&
+      std::filesystem::is_regular_file(address_runtime, runtime_error) &&
       !runtime_error) {
     result.address_sanitizer_runtime = address_runtime;
     result.llvm_symbolizer =

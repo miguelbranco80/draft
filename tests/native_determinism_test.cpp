@@ -78,6 +78,7 @@ struct NativeInputSelection {
   selection.roots.toolchain_root = toolchain;
   selection.roots.sdk_root = sdk;
   return draft::pin_locked_native_inputs(
+      draft::make_aarch64_macos_profile(),
       selection.roots, selection.pins, diagnostics);
 }
 

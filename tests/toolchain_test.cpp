@@ -13,6 +13,7 @@
 #include "source/source.h"
 #include "target/profile.h"
 
+#include <algorithm>
 #include <cstdlib>
 #include <cstdint>
 #include <filesystem>
@@ -92,9 +93,11 @@ draft::CompileWorkspaceResult compile_fixture(
     draft::SourceManager &sources,
     draft::DiagnosticSink &diagnostics,
     bool emit_program_entry = true,
-    std::string_view package = "external-assembly") {
+    std::string_view package = "external-assembly",
+    const draft::TargetProfile &target =
+        draft::make_aarch64_macos_profile()) {
   draft::CompileWorkspaceOptions options;
-  options.target = draft::make_aarch64_macos_profile();
+  options.target = target;
   options.workspace.workspace_directory =
       std::string(DRAFT_SOURCE_DIRECTORY) + "/examples";
   options.lower_mir = true;
@@ -305,6 +308,118 @@ void test_all_native_artifact_kinds(TestState &state) {
   std::filesystem::remove_all(temporary, error);
 }
 
+// The recording process makes the ELF driver contract observable without
+// requiring a Linux sysroot in every unit-test environment. Real LLVM object
+// acceptance and hosted execution are separate qualification gates.
+void test_aarch64_linux_toolchain_arguments(TestState &state) {
+  std::error_code error;
+  const std::filesystem::path temporary =
+      std::filesystem::temp_directory_path(error) /
+      "draft-aarch64-linux-toolchain-test";
+  EXPECT(state, !error);
+  std::filesystem::remove_all(temporary, error);
+  error.clear();
+  std::filesystem::create_directories(temporary, error);
+  EXPECT(state, !error);
+  if (error) return;
+
+  const draft::TargetProfile target = draft::make_aarch64_linux_profile();
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  const draft::CompileWorkspaceResult compiled = compile_fixture(
+      sources, diagnostics, true, "hello", target);
+  EXPECT(state, compiled.ok);
+  if (!compiled.ok) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+    std::filesystem::remove_all(temporary, error);
+    return;
+  }
+
+  const std::filesystem::path log = temporary / "arguments.log";
+  const std::filesystem::path fake_clang = temporary / "record-clang";
+  {
+    std::ofstream script(fake_clang, std::ios::binary);
+    script << "#!/bin/sh\n"
+              "if [ \"$1\" = \"--version\" ]; then\n"
+              "  echo 'clang version 22.1.0'\n"
+              "  exit 0\n"
+              "fi\n"
+              "printf '%s\\n' '-- clang --' \"$@\" >> '"
+           << log.string()
+           << "'\n"
+              "previous=''\n"
+              "for argument in \"$@\"; do\n"
+              "  if [ \"$previous\" = \"-o\" ]; then : > \"$argument\"; fi\n"
+              "  previous=\"$argument\"\n"
+              "done\n"
+              "exit 0\n";
+  }
+  const std::filesystem::path fake_archiver = temporary / "record-ar";
+  {
+    std::ofstream script(fake_archiver, std::ios::binary);
+    script << "#!/bin/sh\n"
+              "printf '%s\\n' '-- ar --' \"$@\" >> '"
+           << log.string()
+           << "'\n"
+              ": > \"$2\"\n"
+              "exit 0\n";
+  }
+  EXPECT(state, chmod(fake_clang.c_str(), 0700) == 0);
+  EXPECT(state, chmod(fake_archiver.c_str(), 0700) == 0);
+
+  const auto build = [&](draft::NativeArtifactKind kind,
+                         const std::filesystem::path &output) {
+    draft::NativeBuildOptions options;
+    options.clang_path = fake_clang.string();
+    options.archiver_path = fake_archiver.string();
+    options.build_directory = (temporary / "build").string();
+    options.output_path = output.string();
+    options.artifact_kind = kind;
+    return draft::build_native_artifact(
+        target, compiled, options, diagnostics);
+  };
+
+  EXPECT(state, build(
+      draft::NativeArtifactKind::Executable,
+      temporary / "program").ok);
+  EXPECT(state, build(
+      draft::NativeArtifactKind::Object,
+      temporary / "library.o").ok);
+  EXPECT(state, build(
+      draft::NativeArtifactKind::StaticLibrary,
+      temporary / "library.a").ok);
+  const draft::NativeBuildResult dynamic = build(
+      draft::NativeArtifactKind::DynamicLibrary,
+      temporary / "library.so");
+  EXPECT(state, dynamic.ok);
+  EXPECT(state, dynamic.debug_symbols_path.empty());
+  EXPECT(state, build(
+      draft::NativeArtifactKind::Assembly,
+      temporary / "assembly").ok);
+  EXPECT(state, !diagnostics.has_errors());
+
+  const std::string arguments = read_file(log);
+  EXPECT(state, arguments.find("\naarch64-unknown-linux-gnu\n") !=
+      std::string::npos);
+  EXPECT(state, arguments.find("-mmacosx-version-min") == std::string::npos);
+  EXPECT(state, arguments.find("\n-Wl,--build-id=sha1\n") !=
+      std::string::npos);
+  EXPECT(state, arguments.find("\n-fuse-ld=lld\n") != std::string::npos);
+  EXPECT(state, arguments.find("\n-no-pie\n") != std::string::npos);
+  EXPECT(state, arguments.find("\n-shared\n") != std::string::npos);
+  EXPECT(state, arguments.find("\n-Wl,-soname,library.so\n") !=
+      std::string::npos);
+  EXPECT(state, arguments.find("\n-lc\n") != std::string::npos);
+  EXPECT(state, arguments.find("\n-dynamiclib\n") == std::string::npos);
+  EXPECT(state, arguments.find("\n-Wl,-reproducible\n") ==
+      std::string::npos);
+  EXPECT(state, arguments.find("-- dsymutil --") == std::string::npos);
+  EXPECT(state, arguments.find("\n-- ar --\nrcsD\n") !=
+      std::string::npos);
+
+  std::filesystem::remove_all(temporary, error);
+}
+
 void test_package_assembly_reaches_link(TestState &state) {
   std::error_code error;
   const std::filesystem::path temporary =
@@ -333,7 +448,8 @@ void test_package_assembly_reaches_link(TestState &state) {
   const draft::CompiledPackage &package = *compiled.packages.front();
   EXPECT(state, package.assembly_sources.size() == 1);
   if (package.assembly_sources.size() == 1) {
-    EXPECT(state, package.assembly_sources.front().relative_name == "native.s");
+    EXPECT(state, package.assembly_sources.front().relative_name ==
+        "native@aarch64-macos.s");
     EXPECT(state, package.assembly_sources.front().contents.find(
         "_draft_external_add:") != std::string::npos);
   }
@@ -524,7 +640,11 @@ void test_locked_build_verifies_and_isolates_inputs(TestState &state) {
   std::vector<draft::ExternalInputPin> pins;
   draft::DiagnosticSink pin_diagnostics;
   EXPECT(state,
-      draft::pin_locked_native_inputs(roots, pins, pin_diagnostics));
+      draft::pin_locked_native_inputs(
+          draft::make_aarch64_macos_profile(),
+          roots,
+          pins,
+          pin_diagnostics));
   draft::RuntimeAssetInput asset_mapping;
   asset_mapping.name = "unicode-tables";
   asset_mapping.path = runtime_asset;
@@ -735,8 +855,114 @@ void test_locked_build_verifies_and_isolates_inputs(TestState &state) {
   std::vector<draft::ExternalInputPin> missing_helper_pins;
   EXPECT(state,
       !draft::pin_locked_native_inputs(
+          draft::make_aarch64_macos_profile(),
           roots, missing_helper_pins, missing_helper_diagnostics));
   EXPECT(state, missing_helper_diagnostics.has_errors());
+
+  std::filesystem::remove_all(temporary, error);
+}
+
+// Linux uses the same content-tree and clean-process guarantees but selects a
+// different closed set of entry paths and manifest names. This recording test
+// keeps that boundary independent of the slower real Ubuntu execution gate.
+void test_locked_aarch64_linux_inputs(TestState &state) {
+  std::error_code error;
+  const std::filesystem::path temporary =
+      std::filesystem::temp_directory_path(error) /
+      "draft-locked-aarch64-linux-test";
+  EXPECT(state, !error);
+  std::filesystem::remove_all(temporary, error);
+  error.clear();
+  const std::filesystem::path toolchain = temporary / "toolchain";
+  const std::filesystem::path sysroot = temporary / "sysroot";
+  std::filesystem::create_directories(toolchain / "bin", error);
+  EXPECT(state, !error);
+  std::filesystem::create_directories(sysroot / "usr" / "lib", error);
+  EXPECT(state, !error);
+  if (error) return;
+
+  for (const std::string_view name : {"clang", "ld.lld", "llvm-ar"}) {
+    const std::filesystem::path tool = toolchain / "bin" / name;
+    std::filesystem::copy_file(
+        DRAFT_RECORDING_NATIVE_TOOL,
+        tool,
+        std::filesystem::copy_options::overwrite_existing,
+        error);
+    EXPECT(state, !error);
+    error.clear();
+    EXPECT(state, chmod(tool.c_str(), 0700) == 0);
+  }
+  std::ofstream(sysroot / "usr" / "lib" / "libc.so", std::ios::binary)
+      << "fixed glibc sysroot fixture\n";
+
+  const draft::TargetProfile target = draft::make_aarch64_linux_profile();
+  draft::LockedNativeInputRoots roots;
+  roots.toolchain_root = toolchain;
+  roots.sdk_root = sysroot;
+  std::vector<draft::ExternalInputPin> pins;
+  draft::DiagnosticSink pin_diagnostics;
+  EXPECT(state, draft::pin_locked_native_inputs(
+      target, roots, pins, pin_diagnostics));
+  EXPECT(state, !pin_diagnostics.has_errors());
+  EXPECT(state, pins.size() == 2);
+  if (pins.size() == 2) {
+    const bool has_toolchain = std::any_of(
+        pins.begin(), pins.end(), [](const draft::ExternalInputPin &pin) {
+          return pin.name == "llvm-aarch64-linux";
+        });
+    const bool has_sysroot = std::any_of(
+        pins.begin(), pins.end(), [](const draft::ExternalInputPin &pin) {
+          return pin.name == "aarch64-linux-sysroot";
+        });
+    EXPECT(state, has_toolchain);
+    EXPECT(state, has_sysroot);
+  }
+
+  draft::SourceManager sources;
+  draft::DiagnosticSink compile_diagnostics;
+  draft::CompileWorkspaceResult compiled = compile_fixture(
+      sources, compile_diagnostics, true, "hello", target);
+  EXPECT(state, compiled.ok);
+  compiled.resolution_manifest.emplace();
+  compiled.resolution_manifest->target_identity = target.facts.identity;
+  compiled.resolution_manifest->external_inputs = pins;
+
+  draft::NativeBuildOptions options;
+  options.locked = true;
+  options.locked_inputs = roots;
+  options.build_directory = (temporary / "build").string();
+  options.output_path = (temporary / "program").string();
+  draft::DiagnosticSink build_diagnostics;
+  const draft::NativeBuildResult built = draft::build_native_executable(
+      target, compiled, options, build_diagnostics);
+  if (!built.ok) {
+    std::cerr << draft::render_diagnostics(sources, build_diagnostics);
+  }
+  EXPECT(state, built.ok);
+  EXPECT(state, built.debug_symbols_path.empty());
+
+  const std::string arguments = read_file(
+      temporary / "locked-arguments.log");
+  const std::filesystem::path canonical_sysroot =
+      std::filesystem::canonical(sysroot, error);
+  EXPECT(state, !error);
+  error.clear();
+  const std::filesystem::path canonical_toolchain =
+      std::filesystem::canonical(toolchain, error);
+  EXPECT(state, !error);
+  EXPECT(state, arguments.find(
+      "\n--sysroot=" + canonical_sysroot.string() + "\n") !=
+      std::string::npos);
+  EXPECT(state, arguments.find(
+      "\n--ld-path=" +
+          (canonical_toolchain / "bin" / "ld.lld").string() + "\n") !=
+      std::string::npos);
+  EXPECT(state, arguments.find("\naarch64-unknown-linux-gnu\n") !=
+      std::string::npos);
+  EXPECT(state, arguments.find("\n-Wl,--build-id=sha1\n") !=
+      std::string::npos);
+  EXPECT(state, arguments.find("-mmacosx-version-min") == std::string::npos);
+  EXPECT(state, arguments.find("-- dsymutil --") == std::string::npos);
 
   std::filesystem::remove_all(temporary, error);
 }
@@ -749,8 +975,10 @@ int main() {
   test_package_assembly_reaches_link(state);
   test_explicit_foreign_provider_mapping(state);
   test_all_native_artifact_kinds(state);
+  test_aarch64_linux_toolchain_arguments(state);
 #if defined(__APPLE__) && (defined(__aarch64__) || defined(__arm64__))
   test_locked_build_verifies_and_isolates_inputs(state);
+  test_locked_aarch64_linux_inputs(state);
 #endif
   if (state.failures != 0) {
     std::cerr << state.failures << " toolchain expectation(s) failed\n";

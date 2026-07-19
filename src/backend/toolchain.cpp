@@ -1,4 +1,4 @@
-// External LLVM tool invocation with an explicit version gate.
+// External LLVM tool invocation with explicit target and version gates.
 
 #include "backend/toolchain.h"
 
@@ -125,17 +125,36 @@ struct ProcessResult {
 }
 
 // Appends flags that make every locked Clang phase independent of driver
-// configuration files and host SDK discovery. The linker is an absolute member
-// of the already hashed toolchain tree.
+// configuration files and host SDK or sysroot discovery. The linker is an
+// absolute member of the already hashed toolchain tree.
 void append_locked_arguments(
+    const TargetProfile &target,
     const VerifiedLockedNativeInputs &inputs,
     bool link,
     std::vector<std::string> &arguments) {
   arguments.push_back("--no-default-config");
-  arguments.push_back("-isysroot");
-  arguments.push_back(inputs.sdk_root.string());
+  if (target.facts.object_format == "elf") {
+    arguments.push_back("--sysroot=" + inputs.sdk_root.string());
+  } else {
+    arguments.push_back("-isysroot");
+    arguments.push_back(inputs.sdk_root.string());
+  }
   if (link) {
     arguments.push_back("--ld-path=" + inputs.linker.string());
+  }
+}
+
+// Darwin's deployment floor is a Clang driver option. The Linux profile's
+// version string instead identifies its kernel/libc contract and must never be
+// passed as a made-up compiler flag. Keeping this branch beside every target
+// invocation prevents object and assembly paths from drifting apart.
+void append_target_arguments(
+    const TargetProfile &target,
+    std::vector<std::string> &arguments) {
+  arguments.push_back("-target");
+  arguments.push_back(target.llvm_triple);
+  if (target.facts.object_format == "macho") {
+    arguments.push_back("-mmacosx-version-min=" + target.minimum_os_version);
   }
 }
 
@@ -438,6 +457,7 @@ void add_provider(std::vector<std::string> &providers, std::string_view provider
 }
 
 [[nodiscard]] bool snapshot_locked_providers(
+    const TargetProfile &target,
     const std::filesystem::path &build_directory,
     const ResolutionManifest &manifest,
     std::vector<VerifiedForeignProviderInput> &providers,
@@ -461,7 +481,9 @@ void add_provider(std::vector<std::string> &providers, std::string_view provider
     }
     const std::string extension = provider.kind == ForeignArtifactKind::Object
         ? ".o"
-        : (provider.kind == ForeignArtifactKind::Archive ? ".a" : ".dylib");
+        : (provider.kind == ForeignArtifactKind::Archive
+               ? ".a"
+               : (target.facts.object_format == "elf" ? ".so" : ".dylib"));
     const std::filesystem::path snapshot =
         build_directory / ("foreign-" + std::to_string(index) + extension);
     std::string reason;
@@ -566,6 +588,14 @@ NativeBuildResult build_native_artifact(
         "compiler pass and runtime have content-pinned identities");
     return result;
   }
+  if (options.instrumentation != NativeInstrumentationProfile::None &&
+      target.facts.object_format != "macho") {
+    diagnostics.error(
+        SourceRange::invalid(),
+        "native instrumentation has no qualified runtime contract for target '" +
+            target.facts.identity + "'");
+    return result;
+  }
 
   std::vector<VerifiedRuntimeAssetInput> runtime_assets;
   if (!verify_runtime_asset_set(
@@ -583,6 +613,13 @@ NativeBuildResult build_native_artifact(
   std::string clang_path = options.clang_path;
   std::string archiver_path = options.archiver_path;
   std::string dsymutil_path = options.dsymutil_path;
+  if (!options.locked && target.facts.object_format == "elf" &&
+      archiver_path == "libtool") {
+    // The public option retains the macOS-compatible default. ELF archives
+    // use LLVM ar's deterministic mode; a development caller may still supply
+    // another compatible executable explicitly.
+    archiver_path = "llvm-ar";
+  }
   if (options.locked) {
     if (!std::filesystem::path(options.build_directory).is_absolute() ||
         !std::filesystem::path(options.output_path).is_absolute()) {
@@ -606,6 +643,7 @@ NativeBuildResult build_native_artifact(
       return result;
     }
     if (!verify_locked_native_inputs(
+            target,
             options.locked_inputs,
             compiled.resolution_manifest->external_inputs,
             locked_inputs,
@@ -614,7 +652,9 @@ NativeBuildResult build_native_artifact(
     }
     clang_path = locked_inputs.clang.string();
     archiver_path = locked_inputs.archiver.string();
-    dsymutil_path = locked_inputs.dsymutil.string();
+    if (!locked_inputs.dsymutil.empty()) {
+      dsymutil_path = locked_inputs.dsymutil.string();
+    }
   }
   if (options.instrumentation ==
           NativeInstrumentationProfile::AddressSanitizer &&
@@ -690,6 +730,7 @@ NativeBuildResult build_native_artifact(
   }
   if (options.locked && !foreign_providers.empty() &&
       !snapshot_locked_providers(
+          target,
           build_directory,
           *compiled.resolution_manifest,
           foreign_providers,
@@ -757,17 +798,12 @@ NativeBuildResult build_native_artifact(
     }
     std::vector<std::string> compile_arguments{clang_path};
     if (options.locked) {
-      append_locked_arguments(locked_inputs, false, compile_arguments);
+      append_locked_arguments(
+          target, locked_inputs, false, compile_arguments);
     }
-    compile_arguments.insert(
-        compile_arguments.end(),
-        {
-            "-target",
-            target.llvm_triple,
-            "-mmacosx-version-min=" + target.minimum_os_version,
-            "-x",
-            "ir",
-        });
+    append_target_arguments(target, compile_arguments);
+    compile_arguments.push_back("-x");
+    compile_arguments.push_back("ir");
     if (options.instrumentation ==
         NativeInstrumentationProfile::AddressSanitizer) {
       // These are compiler-owned profile options. AddressSanitizer inserts its
@@ -827,14 +863,13 @@ NativeBuildResult build_native_artifact(
       if (assembly_output) continue;
       std::vector<std::string> assemble_arguments{clang_path};
       if (options.locked) {
-        append_locked_arguments(locked_inputs, false, assemble_arguments);
+        append_locked_arguments(
+            target, locked_inputs, false, assemble_arguments);
       }
+      append_target_arguments(target, assemble_arguments);
       assemble_arguments.insert(
           assemble_arguments.end(),
           {
-              "-target",
-              target.llvm_triple,
-              "-mmacosx-version-min=" + target.minimum_os_version,
               "-x",
               "assembler",
               "-c",
@@ -924,7 +959,7 @@ NativeBuildResult build_native_artifact(
     // deterministic switch; its libtool replacement does. A locked build uses
     // the separately verified LLVM ar and therefore has a different interface.
     std::vector<std::string> archive_arguments{archiver_path};
-    if (options.locked) {
+    if (options.locked || target.facts.object_format == "elf") {
       archive_arguments.push_back("rcsD");
       archive_arguments.push_back(output_path.string());
     } else {
@@ -952,18 +987,15 @@ NativeBuildResult build_native_artifact(
       clang_path,
   };
   if (options.locked) {
-    append_locked_arguments(locked_inputs, true, link_arguments);
+    append_locked_arguments(target, locked_inputs, true, link_arguments);
   }
-  // Keep the Mach-O UUID load command. Current macOS loaders require it for an
-  // executable, and Apple's linker derives it deterministically from the link
-  // result. Reproducible mode additionally prevents debug-map bookkeeping such
-  // as input object timestamps from perturbing that result once source-line
-  // metadata is present. The native integration gate compares complete output
-  // bytes, including the content-derived UUID, across identical rebuilds.
-  link_arguments.push_back("-target");
-  link_arguments.push_back(target.llvm_triple);
-  link_arguments.push_back(
-      "-mmacosx-version-min=" + target.minimum_os_version);
+  append_target_arguments(target, link_arguments);
+  if (!options.locked && target.facts.object_format == "elf") {
+    // The development path still names the linker family explicitly. Clang
+    // may locate `ld.lld` through PATH only after the caller has opted into the
+    // host toolchain; it must not silently choose an unrelated GNU linker.
+    link_arguments.push_back("-fuse-ld=lld");
+  }
   if (options.artifact_kind == NativeArtifactKind::Object) {
     for (const VerifiedForeignProviderInput &provider : foreign_providers) {
       if (provider.kind == ForeignArtifactKind::SharedLibrary) {
@@ -975,19 +1007,38 @@ NativeBuildResult build_native_artifact(
       }
     }
     link_arguments.push_back("-nostdlib");
+    if (target.facts.object_format == "elf") {
+      // Clang defaults this GNU target to PIE, which is incompatible with
+      // lld's relocatable `-r` mode. A merged object has no load address.
+      link_arguments.push_back("-no-pie");
+    }
     link_arguments.push_back("-Wl,-r");
   } else if (options.artifact_kind == NativeArtifactKind::DynamicLibrary) {
-    link_arguments.push_back("-nostdlib");
-    link_arguments.push_back("-dynamiclib");
-    link_arguments.push_back(
-        "-Wl,-install_name,@rpath/" + output_path.filename().string());
+    if (target.facts.object_format == "elf") {
+      link_arguments.push_back("-shared");
+      link_arguments.push_back(
+          "-Wl,-soname," + output_path.filename().string());
+    } else {
+      link_arguments.push_back("-nostdlib");
+      link_arguments.push_back("-dynamiclib");
+      link_arguments.push_back(
+          "-Wl,-install_name,@rpath/" + output_path.filename().string());
+    }
   } else if (options.artifact_kind == NativeArtifactKind::Executable) {
-    link_arguments.push_back("-nostdlib");
+    if (target.facts.object_format == "macho") {
+      link_arguments.push_back("-nostdlib");
+    }
   }
-  // Every artifact reaching this point invokes the linker. Relocatable object
-  // output also owns a Mach-O debug map, so it needs the same timestamp-
-  // ignoring policy as a final executable or dynamic library.
-  link_arguments.push_back("-Wl,-reproducible");
+  if (target.facts.object_format == "macho") {
+    // Apple's linker derives its UUID from the link result. Reproducible mode
+    // also removes input timestamps from debug-map bookkeeping, including a
+    // relocatable object link.
+    link_arguments.push_back("-Wl,-reproducible");
+  } else if (options.artifact_kind != NativeArtifactKind::Object) {
+    // lld hashes the final ELF contents for this note, giving debuggers a
+    // useful identifier without introducing a time or random input.
+    link_arguments.push_back("-Wl,--build-id=sha1");
+  }
   link_arguments.insert(link_arguments.end(), objects.begin(), objects.end());
   if (options.artifact_kind == NativeArtifactKind::Object) {
     for (const VerifiedForeignProviderInput &provider : foreign_providers) {
@@ -1018,7 +1069,8 @@ NativeBuildResult build_native_artifact(
         SourceRange::invalid(),
         phase_failure(
             std::string(native_artifact_kind_name(options.artifact_kind)) +
-                " Mach-O link",
+                (target.facts.object_format == "elf" ? " ELF link"
+                                                      : " Mach-O link"),
             link));
     return result;
   }
@@ -1060,8 +1112,9 @@ NativeBuildResult build_native_artifact(
   // conventional sibling bundle. Run it before reporting build success so a
   // "built" native program always has the source information promised by the
   // backend contract.
-  if (options.artifact_kind == NativeArtifactKind::Executable ||
-      options.artifact_kind == NativeArtifactKind::DynamicLibrary) {
+  if ((options.artifact_kind == NativeArtifactKind::Executable ||
+       options.artifact_kind == NativeArtifactKind::DynamicLibrary) &&
+      target.facts.object_format == "macho") {
     const std::filesystem::path debug_symbols =
         output_path.string() + ".dSYM";
     std::error_code remove_error;

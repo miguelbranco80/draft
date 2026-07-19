@@ -123,6 +123,8 @@ int main(int argc, char **argv) {
   if (name == "clang") return run_clang(log, argc, argv);
   if (name == "llvm-ar") return run_archiver(log, argc, argv);
   if (name == "dsymutil") return run_dsymutil(log, argc, argv);
-  if (name == "ld" || name == "ld-classic") return EXIT_SUCCESS;
+  if (name == "ld" || name == "ld-classic" || name == "ld.lld") {
+    return EXIT_SUCCESS;
+  }
   return EXIT_FAILURE;
 }

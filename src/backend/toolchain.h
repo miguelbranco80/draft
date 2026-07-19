@@ -1,4 +1,4 @@
-// Pinned LLVM command adapter for IR-to-object emission and Mach-O linking.
+// Pinned LLVM command adapter for AArch64 IR, object, archive, and final links.
 
 #pragma once
 
@@ -37,12 +37,12 @@ enum class NativeInstrumentationProfile {
 struct NativeBuildOptions {
   std::string clang_path = "clang";
   // Final Mach-O executables and dylibs carry a debug map, while their linked
-  // DWARF lives in a sibling dSYM bundle. Locked builds ignore this path and
-  // use the verified dsymutil from the pinned LLVM tree.
+  // DWARF lives in a sibling dSYM bundle. Locked macOS builds ignore this path
+  // and use verified dsymutil. ELF retains DWARF in the primary artifact.
   std::string dsymutil_path = "dsymutil";
-  // The supported host path is Apple's libtool, whose -D switch removes
-  // timestamps and ownership from archives. Locked builds ignore this path
-  // and use the verified LLVM ar from the pinned toolchain instead.
+  // The macOS host default is Apple's libtool, whose -D switch removes
+  // timestamps and ownership. ELF and every locked build select deterministic
+  // LLVM ar instead.
   std::string archiver_path = "libtool";
   std::string build_directory;
   std::string output_path;
@@ -50,7 +50,7 @@ struct NativeBuildOptions {
   NativeInstrumentationProfile instrumentation =
       NativeInstrumentationProfile::None;
   // Development-only escape hatch. Release/locked builds must leave this false
-  // so an ambient Apple Clang or another LLVM revision cannot alter artifacts.
+  // so an ambient Clang or another LLVM revision cannot alter artifacts.
   bool allow_unpinned_toolchain = false;
   // Locked mode ignores clang_path, requires a verified resolution-manifest
   // snapshot on the compiled result, and invokes only these explicit roots.
@@ -73,11 +73,11 @@ struct NativeBuildResult {
   // to this digest without making a derived file part of program identity.
   std::string source_correlation_path;
   Sha256Digest source_correlation_digest;
-  // Executables and dynamic libraries have a conventional sibling dSYM. The
-  // digest covers the path-stable bundle after removing dsymutil's redundant
-  // relocation cache, which embeds the physical binary path. Other artifact
-  // kinds leave these fields empty/zero because their DWARF remains in object
-  // members or emitted assembly.
+  // Mach-O executables and dynamic libraries have a conventional sibling dSYM.
+  // The digest covers the path-stable bundle after removing dsymutil's
+  // path-bearing relocation cache. ELF and other artifact kinds leave these
+  // fields empty/zero because their DWARF remains in the primary artifact,
+  // object members, or emitted assembly.
   std::string debug_symbols_path;
   Sha256Digest debug_symbols_digest;
   // A dynamic instrumentation runtime is published next to an instrumented
@@ -100,8 +100,9 @@ struct NativeBuildResult {
 // object; assembly mode produces a directory with one collision-free source per
 // module/input. Arguments are passed directly to exec rather than through a
 // shell. Locked mode additionally verifies exact trees and uses only the
-// selected linker, SDK, and archiver. Runtime assets are verified as external
-// identity inputs and returned to the caller, but are never linker operands.
+// selected linker, system root, and archiver. Runtime assets are verified as
+// external identity inputs and returned to the caller, but are never linker
+// operands.
 [[nodiscard]] NativeBuildResult build_native_artifact(
     const TargetProfile &target,
     const CompileWorkspaceResult &compiled,

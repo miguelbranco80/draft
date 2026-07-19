@@ -949,6 +949,7 @@ int run_agent_command(
       resolve_options.external_inputs_configured = true;
       if (locked_inputs.has_value() &&
           !draft::pin_locked_native_inputs(
+              resolve_options.compile.target,
               *locked_inputs,
               resolve_options.external_inputs,
               diagnostics)) {

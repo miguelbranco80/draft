@@ -59,7 +59,7 @@ work rather than missing backend features.
 | [`packages`](packages/) | Folder packages, file-local imports and aliases, `pub` declarations, package constants, qualified names, and compile-time `when`. |
 | [`packages-generic`](packages-generic/) | Cross-package parametric types and procedures, inferred value parameters, layout computation, transitive instantiation, and private consumer types. |
 | [`assembly`](assembly/) | Typed parsed AArch64 assembly with integer, flags, memory, floating conversion, and SIMD register classes. |
-| [`external-assembly`](external-assembly/) | Package `.s` discovery and a C-ABI symbol implemented by a separate assembly file. |
+| [`external-assembly`](external-assembly/) | Target-qualified Mach-O/ELF `.s` discovery and one C-ABI symbol implemented by separate assembly files. |
 | [`c-interop`](c-interop/) | A small foreign libc import and a Draft procedure exported with a C linker name. |
 | [`c-library`](c-library/) | The full Draft-as-C-library fixture: generated headers, C-compatible records, enums, raw unions, callbacks, aggregates, TLS, and re-entry into ordinary Draft code. It is driven by the C client integration test rather than as a standalone executable. |
 | [`foreign-provider`](foreign-provider/) | A foreign block supplied by an explicitly configured external object provider. It requires the matching provider artifact when built. |
