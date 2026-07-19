@@ -6,8 +6,8 @@ operations. It combines features that are most useful when exercised together:
 - dependency-ordered declaration synthesis at package scope;
 - opaque-round member synthesis that rebuilds a public aggregate interface;
 - typed expression and statement synthesis inside `main`;
-- an imported package used by both the program and its test-only graph;
-- independent native test execution and evidence;
+- an imported package used by the program, test graph, and benchmark graph;
+- independent native test and benchmark execution and evidence;
 - an artifact-backed judgment whose claim depends on the imported body;
 - provider-free checking and native building from saved expansions; and
 - generated-source correlation in the native debug sidecar.
@@ -44,12 +44,14 @@ build/draftc check examples/agent-acceptance/app
 build/draftc build examples/agent-acceptance/app \
   -o /tmp/draft-agent-acceptance
 /tmp/draft-agent-acceptance
+build/draftc test examples/agent-acceptance/app
+build/draftc bench examples/agent-acceptance/app
 ```
 
-`build` loads the saved generated source, checks the complete program, and uses
-the host native toolchain. It neither contacts Codex nor requires test or
-judgment evidence. To recheck every saved expansion without provider access,
-run:
+All four consumer commands load the saved generated source without contacting
+Codex. `build` uses the host native toolchain and does not require test,
+benchmark, or judgment evidence. To recheck every saved expansion without
+provider access, run:
 
 ```sh
 build/draftc resolve examples/agent-acceptance/app --revalidate

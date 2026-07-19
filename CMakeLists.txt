@@ -575,5 +575,19 @@ if(BUILD_TESTING)
         "-DTARGET_SELECTOR=${DRAFT_NATIVE_TEST_TARGET}"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/driver_resolve_build_test.cmake"
     )
+
+    # A target-qualified copied manifest must remain consumable when a failing
+    # Codex sentinel shadows any real provider. This covers all four ordinary
+    # consumers and verifies that repeated commands create no compiler cache.
+    add_test(
+      NAME draft_provider_free_resolved_program_consumers
+      COMMAND
+        "${CMAKE_COMMAND}"
+        "-DDRAFTC=$<TARGET_FILE:draftc>"
+        "-DSOURCE_WORKSPACE=${CMAKE_CURRENT_SOURCE_DIR}/examples/agent-acceptance"
+        "-DTEST_ROOT=${CMAKE_CURRENT_BINARY_DIR}/provider-free-consumers-test"
+        "-DTARGET_SELECTOR=${DRAFT_NATIVE_TEST_TARGET}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/driver_provider_free_consumers_test.cmake"
+    )
   endif()
 endif()
