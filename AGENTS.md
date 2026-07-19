@@ -294,6 +294,24 @@ language feature.
 
 ## Change discipline for agents
 
+### Commits
+
+- Keep the work in a sequence of reasonably small, coherent commits. Each
+  commit should have one related purpose that can be explained without an
+  "and" joining unrelated changes.
+- Commit a completed, verified slice as soon as it is coherent. Do not leave
+  completed current work uncommitted at handoff.
+- Do not mix unrelated behavior, refactoring, generated artifacts,
+  repository-wide documentation reorganization, or agent-rule changes in one
+  commit. Documentation that specifies or explains the same semantic change may
+  remain with that implementation when separating it would make either commit
+  incomplete.
+- Before committing, inspect the staged diff, run the narrow relevant checks,
+  and use an imperative commit message that states the outcome. Each commit
+  should build and pass its relevant tests when practical.
+- Preserve commits and work authored by the user or another agent. Do not
+  rewrite, squash, or discard them unless the user explicitly requests it.
+
 Before editing:
 
 1. Read this file, the relevant specification sections, and the module header.
