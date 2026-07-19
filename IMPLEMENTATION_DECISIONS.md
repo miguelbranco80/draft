@@ -927,7 +927,7 @@ upper source re-evaluates to the displayed value at the site. Other loop shapes
 produce no inferred range.
 
 `draft-agent-obligation-v19`, synthesis request v21 / prompt v20, judgment
-request/prompt v4, and compiler content v126 identities make these facts and
+request/prompt v4, and compiler content v127 identities make these facts and
 the compiler-checked correction policy stale-pin and evidence inputs. The
 synthesis adapter uses provider identity `openai-codex-cli-v24`; the unchanged
 judgment adapter remains `openai-codex-cli-v22`. Both recheck the canonical
@@ -1054,7 +1054,7 @@ traps, and message construction used solely by an assertion cannot survive,
 and no condition is converted into an optimizer assumption.
 
 The versioned `draft.resolved-program.v4` hash records the assertion mode beside
-compiler content v126. `build`, `resolve`, and `judge` expose the same explicit
+compiler content v127. `build`, `resolve`, and `judge` expose the same explicit
 flag so an offline or locked manifest cannot be replayed under a different
 mode. Test and benchmark compilations deliberately override the release choice
 to assertions on and receive their own resolved validation digest; disabling
@@ -1086,12 +1086,12 @@ Focused overlay coverage proves that a stale pin remains rejected in the normal
 mode. A compiler integration regression constructs a declaration pin whose
 generated constant is consumed by a test-only file, authenticates the ordinary
 graph, and proves the derived validation graph compiles the test. Compiler
-content v126 invalidates earlier resolved-program and evidence identities rather
+content v127 invalidates earlier resolved-program and evidence identities rather
 than silently changing this trust boundary.
 
 ## Selected self-contained AArch64 distribution
 
-Status: qualified release input for compiler content v126.
+Status: qualified release input for compiler content v127.
 
 The selected 316 MiB toolchain contains only the five required programs and
 their recursive dynamic-library closure. LLVM/Clang components are 22.1.8;

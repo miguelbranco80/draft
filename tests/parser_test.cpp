@@ -547,6 +547,64 @@ run :: proc(input u32) {
   EXPECT(state, rendered.find("expected") != std::string::npos);
 }
 
+void test_excessive_nesting_is_a_diagnostic(TestState &state) {
+  // These cases deliberately exceed the implementation budget by a wide
+  // margin. They exercise independent recursive grammar paths so a future
+  // parser refactor cannot accidentally protect parenthesized expressions while
+  // leaving pointer types, blocks, or conditional declarations host-stack
+  // dependent. The exact numeric budget is an implementation detail; the
+  // observable contract is one bounded failure and a rooted partial tree.
+  constexpr std::size_t nesting = 4096;
+  std::string unary = "package deep_unary\nvalue := ";
+  unary.append(nesting, '+');
+  unary += "1\n";
+
+  std::string pointers = "package deep_type\nvalue: ";
+  pointers.append(nesting, '^');
+  pointers += "u8\n";
+
+  std::string statements = "package deep_statements\nrun :: proc() {\n";
+  for (std::size_t index = 0; index < nesting; ++index) {
+    statements += "if true {\n";
+  }
+  statements += "return\n";
+  for (std::size_t index = 0; index < nesting; ++index) {
+    statements += "}\n";
+  }
+  statements += "}\n";
+
+  std::string declarations = "package deep_declarations\n";
+  for (std::size_t index = 0; index < nesting; ++index) {
+    declarations += "when true {\n";
+  }
+  declarations += "value :: 1\n";
+  for (std::size_t index = 0; index < nesting; ++index) {
+    declarations += "}\n";
+  }
+
+  const std::string inputs[] = {
+      std::move(unary),
+      std::move(pointers),
+      std::move(statements),
+      std::move(declarations),
+  };
+  for (const std::string &input : inputs) {
+    ParsedSource source(input);
+    const std::string rendered =
+        draft::render_diagnostics(source.sources, source.diagnostics);
+    if (rendered.find("source nesting exceeds the parser limit") ==
+        std::string::npos) {
+      std::cerr << rendered << draft::dump_syntax_tree(source.tree);
+    }
+    EXPECT(state, source.diagnostics.error_count() == 1);
+    EXPECT(
+        state,
+        rendered.find("source nesting exceeds the parser limit") !=
+            std::string::npos);
+    EXPECT(state, source.tree.root().is_valid());
+  }
+}
+
 } // namespace
 
 int main() {
@@ -558,6 +616,7 @@ int main() {
   test_synthesis_and_assembly_surface(state);
   test_invalid_production_recovery(state);
   test_recovery_builds_a_tree(state);
+  test_excessive_nesting_is_a_diagnostic(state);
 
   if (state.failures != 0) {
     std::cerr << state.failures << " parser test expectation(s) failed\n";

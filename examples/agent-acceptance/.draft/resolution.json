@@ -1,14 +1,14 @@
 {
   "format": "draft-resolution-v4",
   "target": "draft-aarch64-macos-v5",
-  "resolved_program": "a0989adfeef4302bac8bb20e026221692cd41c5701974c750cd977d85f1d6583",
+  "resolved_program": "240fdf853ab5729a1abf84777113db653e40763128de99c304f333c2ce18da16",
   "external_inputs": [
     {"kind": "toolchain", "name": "llvm-aarch64-macos", "content": "52e6b1269c6845c0cc30674f44f4d3336b213d7f941cff38dc30345e71938587", "entry": "bin/clang"},
     {"kind": "sdk", "name": "macos-sdk", "content": "253fb9bad05f1a1abaacbf54cc642227a76def2c2dfd58839db0f8d5eafc5cb6", "entry": ""}
   ],
   "evidence": [
-    {"kind": "test", "root": "workspace", "package": "app", "key": "7b5864db6a1c47a559312484bb7d94088163357bf2589ee436a2af5f1b2265b9", "content": "4f419249afded5231b2e05a17e798615c2fa8cf6d1c0c18ae4d50ad4bf30293f"},
-    {"kind": "judgment", "root": "workspace", "package": "app", "key": "59fb36eb69e4965d03ba610ab046f175630a1b8b601be978f2a2507d65f5038c", "content": "7dc8e161709a09c209aa11d86d8fdb3f840dd872731ff86eabc2b78403c4bc97"}
+    {"kind": "test", "root": "workspace", "package": "app", "key": "16fc62e81a460599efc9853e1b43989ed88416e03d96f39f924c511fdea1f5e8", "content": "df487dcc0710b3bc61dce5acf9e0c618dda7dafe6ef53ef85030f334240502b4"},
+    {"kind": "judgment", "root": "workspace", "package": "app", "key": "fafda342b1d95cc5c101cfa1c9227b6df006fd235103096d54434bc37c843390", "content": "ff123b30eb2247da92068674dc2f9708858e78ba48c7d5747a2480c905b03278"}
   ],
   "sites": [
     {"site": "site-5632f6e78736c25c3f001945c52131b4d82805f974e3b38918b3f82903033dfa", "kind": "declaration", "input": "607103d290eab474c8f468733a85cc64cd021747d477535517f3dd5b9a21dc27", "expansion": "f8e689242948fb0e525309b6192c53e0a2434b3036cda3592903b6a87300d8fe", "source_root": "workspace", "source_package": "app", "source_file": "package.draft", "surface_begin": 250, "surface_end": 361, "expansion_bytes": 33, "provider": "openai-codex-cli-v24", "model": "gpt-5.6-sol", "configuration": "codex-config-94cb1f5b079750d3d39d8880cec209fa2f3d528d1669b4c18b9f1d8f93b55b8e"},

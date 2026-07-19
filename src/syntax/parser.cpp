@@ -77,6 +77,62 @@ public:
   }
 
 private:
+  // Recursive descent makes the grammar especially easy to audit, but the host
+  // stack must never become an input-dependent resource with no language-level
+  // bound. One shared budget covers recursive declarations, members, types,
+  // expressions, and statements. Sharing the budget matters: a malicious input
+  // can alternate those categories even when no single category is very deep.
+  //
+  // The guard is intentionally tiny and local. It does not try to recover a
+  // semantically meaningful suffix after the budget is exhausted. The parser
+  // records one Error node, suppresses secondary parser diagnostics, unwinds
+  // normally, and returns a rooted partial tree. Compilation already stops on
+  // parser errors, so continuing to manufacture thousands of recovery nodes
+  // would add work without helping the programmer.
+  static constexpr std::uint32_t kMaximumNestingDepth = 512;
+
+  class NestingGuard {
+  public:
+    explicit NestingGuard(Parser &parser)
+        : parser_(parser), entered_(parser_.enter_nested_production()) {}
+
+    NestingGuard(const NestingGuard &) = delete;
+    NestingGuard &operator=(const NestingGuard &) = delete;
+
+    ~NestingGuard() {
+      if (entered_) parser_.leave_nested_production();
+    }
+
+    [[nodiscard]] explicit operator bool() const { return entered_; }
+
+  private:
+    Parser &parser_;
+    bool entered_ = false;
+  };
+
+  [[nodiscard]] bool enter_nested_production() {
+    if (parsing_aborted_) return false;
+    if (nesting_depth_ >= kMaximumNestingDepth) {
+      diagnostics_.error(
+          current_range(),
+          "source nesting exceeds the parser limit of " +
+              std::to_string(kMaximumNestingDepth));
+      parsing_aborted_ = true;
+      return false;
+    }
+    ++nesting_depth_;
+    return true;
+  }
+
+  void leave_nested_production() {
+    assert(nesting_depth_ != 0);
+    --nesting_depth_;
+  }
+
+  [[nodiscard]] NodeId aborted_node() {
+    return tree_.add_node(NodeKind::Error, position_, position_);
+  }
+
   [[nodiscard]] const Token &current() const {
     return tree_.token(position_);
   }
@@ -116,6 +172,7 @@ private:
   }
 
   void error_here(std::string message) {
+    if (parsing_aborted_) return;
     diagnostics_.error(current_range(), std::move(message));
   }
 
@@ -239,7 +296,7 @@ private:
     const std::uint32_t start = position_;
     std::vector<NodeId> declarations;
     skip_semicolons();
-    while (!at_end() && !at(terminator)) {
+    while (!parsing_aborted_ && !at_end() && !at(terminator)) {
       const std::uint32_t before = position_;
       declarations.push_back(parse_declaration_item());
       if (position_ == before) {
@@ -254,6 +311,9 @@ private:
   }
 
   [[nodiscard]] NodeId parse_declaration_item() {
+    NestingGuard nesting(*this);
+    if (!nesting) return aborted_node();
+
     if (at(TokenKind::KeywordDocs)) return parse_documentation();
     if (at(TokenKind::KeywordJudge)) return parse_judgment();
     if (at(TokenKind::Ellipsis)) return parse_synthesis(SynthesisPosition::Declaration, true);
@@ -343,6 +403,9 @@ private:
   }
 
   [[nodiscard]] NodeId parse_when_declaration() {
+    NestingGuard nesting(*this);
+    if (!nesting) return aborted_node();
+
     const std::uint32_t start = position_;
     advance();
     std::vector<NodeId> children;
@@ -606,6 +669,9 @@ private:
   }
 
   [[nodiscard]] NodeId parse_type() {
+    NestingGuard nesting(*this);
+    if (!nesting) return aborted_node();
+
     const std::uint32_t start = position_;
     std::vector<NodeId> children;
 
@@ -708,11 +774,14 @@ private:
   }
 
   [[nodiscard]] NodeId parse_member_list(MemberMode mode) {
+    NestingGuard nesting(*this);
+    if (!nesting) return aborted_node();
+
     const std::uint32_t start = position_;
     std::vector<NodeId> members;
     (void)expect(TokenKind::LeftBrace, "expected '{' to begin type members");
     skip_semicolons();
-    while (!at_end() && !at(TokenKind::RightBrace)) {
+    while (!parsing_aborted_ && !at_end() && !at(TokenKind::RightBrace)) {
       const std::uint32_t before = position_;
       if (at(TokenKind::KeywordDocs)) {
         members.push_back(parse_documentation());
@@ -742,6 +811,9 @@ private:
   }
 
   [[nodiscard]] NodeId parse_when_member(MemberMode mode) {
+    NestingGuard nesting(*this);
+    if (!nesting) return aborted_node();
+
     const std::uint32_t start = position_;
     advance();
     std::vector<NodeId> children{parse_expression(1, false), parse_member_region(mode)};
@@ -826,6 +898,9 @@ private:
   }
 
   [[nodiscard]] NodeId parse_expression(int minimum_precedence = 1, bool allow_composite = true) {
+    NestingGuard nesting(*this);
+    if (!nesting) return aborted_node();
+
     const std::uint32_t start = position_;
     NodeId left = parse_unary_expression(allow_composite);
     bool consumed_comparison = false;
@@ -859,6 +934,9 @@ private:
   }
 
   [[nodiscard]] NodeId parse_unary_expression(bool allow_composite) {
+    NestingGuard nesting(*this);
+    if (!nesting) return aborted_node();
+
     const std::uint32_t start = position_;
     switch (current().kind) {
     case TokenKind::Plus:
@@ -1030,7 +1108,7 @@ private:
   [[nodiscard]] NodeId parse_composite_expression(std::uint32_t start, NodeId type_expression) {
     std::vector<NodeId> children{type_expression};
     (void)expect(TokenKind::LeftBrace, "expected '{' in composite literal");
-    while (!at_end() && !at(TokenKind::RightBrace)) {
+    while (!parsing_aborted_ && !at_end() && !at(TokenKind::RightBrace)) {
       const std::uint32_t element_start = position_;
       std::vector<NodeId> element_children;
       if (at_name() && lookahead(1).kind == TokenKind::Equal) {
@@ -1098,7 +1176,7 @@ private:
     (void)expect(TokenKind::LeftBrace, "expected '{' to begin block");
     std::vector<NodeId> statements;
     skip_semicolons();
-    while (!at_end() && !at(TokenKind::RightBrace)) {
+    while (!parsing_aborted_ && !at_end() && !at(TokenKind::RightBrace)) {
       const std::uint32_t before = position_;
       statements.push_back(parse_statement());
       if (position_ == before) {
@@ -1115,6 +1193,9 @@ private:
   }
 
   [[nodiscard]] NodeId parse_statement() {
+    NestingGuard nesting(*this);
+    if (!nesting) return aborted_node();
+
     if (at(TokenKind::LeftBrace)) return parse_block();
     if (at(TokenKind::KeywordIf)) return parse_if_statement();
     if (at(TokenKind::KeywordFor)) return parse_for_statement();
@@ -1210,6 +1291,9 @@ private:
   }
 
   [[nodiscard]] NodeId parse_if_statement() {
+    NestingGuard nesting(*this);
+    if (!nesting) return aborted_node();
+
     const std::uint32_t start = position_;
     advance();
     std::vector<NodeId> children{parse_expression(1, false), parse_block()};
@@ -1286,7 +1370,7 @@ private:
     std::vector<NodeId> children{parse_expression(1, false)};
     (void)expect(TokenKind::LeftBrace, "expected '{' after switch subject");
     skip_semicolons();
-    while (!at_end() && !at(TokenKind::RightBrace)) {
+    while (!parsing_aborted_ && !at_end() && !at(TokenKind::RightBrace)) {
       const std::uint32_t case_start = position_;
       std::vector<NodeId> case_children;
       (void)expect(TokenKind::KeywordCase, "expected 'case' in switch");
@@ -1299,7 +1383,8 @@ private:
       (void)expect(TokenKind::Colon, "expected ':' after switch case labels");
       std::vector<NodeId> statements;
       skip_semicolons();
-      while (!at_end() && !at(TokenKind::KeywordCase) && !at(TokenKind::RightBrace)) {
+      while (!parsing_aborted_ && !at_end() &&
+             !at(TokenKind::KeywordCase) && !at(TokenKind::RightBrace)) {
         statements.push_back(parse_statement());
         skip_semicolons();
       }
@@ -1314,6 +1399,9 @@ private:
   }
 
   [[nodiscard]] NodeId parse_when_statement() {
+    NestingGuard nesting(*this);
+    if (!nesting) return aborted_node();
+
     const std::uint32_t start = position_;
     advance();
     std::vector<NodeId> children{parse_expression(1, false), parse_block()};
@@ -1357,7 +1445,7 @@ private:
     }
     (void)expect(TokenKind::LeftBrace, "expected '{' before assembly instructions");
 
-    while (!at_end() && !at(TokenKind::RightBrace)) {
+    while (!parsing_aborted_ && !at_end() && !at(TokenKind::RightBrace)) {
       if (match(TokenKind::Semicolon)) continue;
       if (at(TokenKind::Ellipsis)) {
         children.push_back(parse_synthesis(SynthesisPosition::Assembly, false));
@@ -1416,7 +1504,7 @@ private:
       }
     }
     (void)expect(TokenKind::RightBrace, "expected '}' after assembly instructions");
-    if (statement_position && has_result) {
+    if (!parsing_aborted_ && statement_position && has_result) {
       diagnostics_.error(
           tree_.token(start).range,
           "value-producing asm expression cannot be used as an asm statement");
@@ -1428,6 +1516,8 @@ private:
   SyntaxTree tree_;
   DiagnosticSink &diagnostics_;
   std::uint32_t position_ = 0;
+  std::uint32_t nesting_depth_ = 0;
+  bool parsing_aborted_ = false;
 };
 
 } // namespace
