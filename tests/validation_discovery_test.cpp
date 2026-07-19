@@ -3,6 +3,7 @@
 #include "backend/toolchain.h"
 #include "compile/compiler.h"
 #include "elaborator/resolved_program.h"
+#include "elaborator/resolution_overlay.h"
 #include "elaborator/resolution_store.h"
 #include "source/diagnostic.h"
 #include "source/source.h"
@@ -16,6 +17,7 @@
 #include <fstream>
 #include <iostream>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -274,6 +276,170 @@ void test_checked_test_harness(TestState &state) {
   std::filesystem::remove_all(root, error);
 }
 
+void test_authenticated_synthesis_enters_validation_graph(TestState &state) {
+  std::error_code error;
+  const std::filesystem::path root =
+      std::filesystem::temp_directory_path(error) /
+      "draft-validation-synthesis-test";
+  EXPECT(state, !error);
+  std::filesystem::remove_all(root, error);
+  error.clear();
+  std::filesystem::create_directories(root / "app", error);
+  EXPECT(state, !error);
+  if (error) return;
+
+  EXPECT(state, write_file(
+      root / "app" / "package.draft",
+      "package app\n"
+      "... \"declare answer\"\n"
+      "main :: proc() -> int {\n"
+      "    return 0\n"
+      "}\n"));
+  EXPECT(state, write_file(
+      root / "app" / "generated_test.draft",
+      "package app\n"
+      "import core/testing\n"
+      "test_generated :: proc(test: ^testing.Test) {\n"
+      "    testing.expect(test, answer == 42)\n"
+      "}\n"));
+
+  // Construct the same declaration-stage transaction as the resolver. The
+  // manifest input includes the validation file as syntax context, while the
+  // expansion becomes ordinary package source before that file is type-checked.
+  draft::CompileWorkspaceOptions surface_options;
+  surface_options.target = draft::make_aarch64_macos_profile();
+  surface_options.workspace.workspace_directory = root.string();
+  surface_options.workspace.core_directory =
+      std::string(DRAFT_SOURCE_DIRECTORY) + "/core";
+  surface_options.workspace.core_content_identity =
+      "draft-core-validation-test-v1";
+  surface_options.stage =
+      draft::CompileWorkspaceStage::DiscoverInterfaceSynthesis;
+  draft::SourceManager surface_sources;
+  draft::DiagnosticSink surface_diagnostics;
+  const draft::CompileWorkspaceResult surface = draft::compile_workspace(
+      surface_sources,
+      (root / "app").string(),
+      surface_options,
+      surface_diagnostics);
+  if (!surface.ok || surface.packages.size() != 1 ||
+      !surface.packages[0].has_value() ||
+      surface.packages[0]->obligations.obligations.size() != 1) {
+    std::cerr << draft::render_diagnostics(
+        surface_sources, surface_diagnostics);
+    EXPECT(state, false);
+    std::filesystem::remove_all(root, error);
+    return;
+  }
+
+  const draft::AgentObligation &obligation =
+      surface.packages[0]->obligations.obligations[0];
+  draft::GeneratedExpansion expansion;
+  expansion.source = "answer :: cast[i64](42);";
+  expansion.digest = draft::sha256(expansion.source);
+  draft::ResolutionPin pin;
+  pin.site_identity = obligation.site_identity;
+  pin.kind = obligation.kind;
+  pin.input_digest = obligation.input_digest;
+  pin.expansion_digest = expansion.digest;
+  pin.provider_identity = "validation-test-provider";
+  pin.model_identity = "fixture-v1";
+  pin.configuration_identity = "fixture-config-v1";
+  for (const draft::LoadedPackageFile &file :
+       surface.graph.packages[0].loaded.files) {
+    if (file.source != obligation.syntax.file || !file.syntax.has_value()) {
+      continue;
+    }
+    const draft::SourceRange range =
+        file.syntax->node(obligation.syntax.node).range;
+    pin.source_map = {
+        obligation.root_identity,
+        obligation.root_relative_path,
+        file.relative_name,
+        range.begin.offset,
+        range.end.offset,
+        static_cast<std::uint64_t>(expansion.source.size()),
+    };
+  }
+  draft::ResolutionManifest manifest;
+  manifest.target_identity = surface_options.target.facts.identity;
+  manifest.pins.push_back(pin);
+  const draft::ResolutionSurfacePackage surface_package{
+      &surface.packages[0]->identity,
+      &surface.graph.packages[0].loaded,
+      &surface.packages[0]->obligations,
+  };
+  const draft::ResolutionOverlayResult overlay =
+      draft::build_resolution_overlays(
+          surface_sources,
+          std::span<const draft::ResolutionSurfacePackage>(
+              &surface_package, 1),
+          manifest,
+          surface_options.target.facts.identity,
+          root,
+          draft::ResolutionInputVerification::RequireCurrentInput,
+          std::span<const draft::GeneratedExpansion>(&expansion, 1),
+          surface_diagnostics);
+  EXPECT(state, overlay.ok);
+  if (!overlay.ok) {
+    std::cerr << draft::render_diagnostics(
+        surface_sources, surface_diagnostics);
+    std::filesystem::remove_all(root, error);
+    return;
+  }
+
+  draft::CompileWorkspaceOptions resolved_options = surface_options;
+  resolved_options.stage = draft::CompileWorkspaceStage::Complete;
+  resolved_options.workspace.source_overrides = overlay.sources;
+  draft::SourceManager resolved_sources;
+  draft::DiagnosticSink resolved_diagnostics;
+  const draft::CompileWorkspaceResult resolved = draft::compile_workspace(
+      resolved_sources,
+      (root / "app").string(),
+      resolved_options,
+      resolved_diagnostics);
+  EXPECT(state, resolved.ok);
+  if (!resolved.ok) {
+    std::cerr << draft::render_diagnostics(
+        resolved_sources, resolved_diagnostics);
+    std::filesystem::remove_all(root, error);
+    return;
+  }
+  manifest.resolved_program_digest = draft::hash_resolved_program(
+      resolved_sources,
+      resolved.graph,
+      resolved_options.target,
+      manifest,
+      resolved_options.compiler_content_identity,
+      resolved_options.configuration);
+  EXPECT(state, draft::commit_resolution(
+      root,
+      manifest,
+      std::span<const draft::GeneratedExpansion>(&expansion, 1),
+      resolved_diagnostics));
+
+  // Validation first authenticates the ordinary input digest above. Its
+  // command-only graph may then install that exact pin even though the derived
+  // obligation has validation-mode context, and the generated declaration is
+  // checked normally when the test body resolves `answer`.
+  draft::SourceManager validation_sources;
+  draft::DiagnosticSink validation_diagnostics;
+  const draft::CompileWorkspaceResult validation = compile_validation(
+      root,
+      draft::ValidationKind::Test,
+      validation_sources,
+      validation_diagnostics);
+  if (!validation.ok) {
+    std::cerr << draft::render_diagnostics(
+        validation_sources, validation_diagnostics);
+  }
+  EXPECT(state, validation.ok);
+  EXPECT(state, !validation_diagnostics.has_errors());
+  EXPECT(state, validation.validation_entries.size() == 1);
+
+  std::filesystem::remove_all(root, error);
+}
+
 void test_invalid_signature_is_rejected(TestState &state) {
   std::error_code error;
   const std::filesystem::path root =
@@ -354,6 +520,7 @@ void test_spoofed_core_nominal_is_rejected(TestState &state) {
 int main() {
   TestState state;
   test_checked_test_harness(state);
+  test_authenticated_synthesis_enters_validation_graph(state);
   test_invalid_signature_is_rejected(state);
   test_spoofed_core_nominal_is_rejected(state);
   return state.failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;

@@ -169,6 +169,7 @@ void test_pinned_expression_reenters_compiler(TestState &state) {
           manifest,
           target_identity(),
           workspace.root,
+          draft::ResolutionInputVerification::RequireCurrentInput,
           {},
           diagnostics);
   if (!overlay.ok) {
@@ -426,11 +427,31 @@ void test_stale_pin_produces_no_overlay(TestState &state) {
           manifest,
           target_identity(),
           workspace.root,
+          draft::ResolutionInputVerification::RequireCurrentInput,
           {},
           stale_diagnostics);
   EXPECT(state, !overlay.ok);
   EXPECT(state, overlay.sources.empty());
   EXPECT(state, stale_diagnostics.has_errors());
+
+  // A validation graph may reuse this pin only after its caller has separately
+  // authenticated the ordinary graph. The overlay still requires the same
+  // structural site, grammar category, source coordinates, and generated
+  // object; only the already-proved ordinary input comparison is omitted.
+  draft::DiagnosticSink authenticated_diagnostics;
+  const draft::ResolutionOverlayResult authenticated =
+      draft::build_resolution_overlays(
+          sources,
+          std::span<const draft::ResolutionSurfacePackage>(&input, 1),
+          manifest,
+          target_identity(),
+          workspace.root,
+          draft::ResolutionInputVerification::AuthenticatedManifest,
+          {},
+          authenticated_diagnostics);
+  EXPECT(state, authenticated.ok);
+  EXPECT(state, authenticated.applied_sites == 1);
+  EXPECT(state, !authenticated_diagnostics.has_errors());
 }
 
 } // namespace

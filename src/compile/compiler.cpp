@@ -1589,6 +1589,19 @@ CompileWorkspaceResult compile_workspace_with_resolution(
     if (!base.ok) return base;
   }
 
+  // The recursive ordinary compilation above has already matched every pin to
+  // the current typed synthesis input, including the current validation source
+  // context. The derived validation graph deliberately loads command-only
+  // declarations and uses a different context-enrichment mode, so its local
+  // obligation digest is not the manifest's ordinary-program digest. Reuse the
+  // authenticated pins here; site, kind, source-map, expansion hash, and final
+  // validation typing remain checked by the overlay and compiler.
+  const ResolutionInputVerification input_verification =
+      loaded_manifest.state == ResolutionManifestLoadState::Loaded &&
+          options.validation_kind != ValidationKind::None
+      ? ResolutionInputVerification::AuthenticatedManifest
+      : ResolutionInputVerification::RequireCurrentInput;
+
   std::vector<bool> matched_pins;
   std::vector<WorkspaceSourceOverride> interface_overrides;
   if (loaded_manifest.state == ResolutionManifestLoadState::Loaded) {
@@ -1640,6 +1653,7 @@ CompileWorkspaceResult compile_workspace_with_resolution(
               interface_manifest,
               options.target.facts.identity,
               options.workspace.workspace_directory,
+              input_verification,
               {},
               diagnostics);
       if (!interface_overlay.ok) {
@@ -1727,6 +1741,7 @@ CompileWorkspaceResult compile_workspace_with_resolution(
       body_manifest,
       options.target.facts.identity,
       options.workspace.workspace_directory,
+      input_verification,
       {},
       diagnostics);
   if (!body_overlay.ok) {

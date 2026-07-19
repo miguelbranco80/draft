@@ -49,17 +49,35 @@ struct ResolutionOverlayResult {
   std::vector<WorkspaceSourceOverride> sources;
 };
 
-// Requires one fresh matching pin for every surface synthesis obligation and no
-// unassociated manifest pin. target_identity is the selected TargetFacts
-// identity. Generated objects are loaded and hash-verified through the store;
+// Ordinary compilation must prove that every selected expansion still matches
+// its complete typed synthesis input. A validation-only graph is different:
+// compile_workspace_with_resolution first authenticates the ordinary graph,
+// including the current test and benchmark context, and then adds the selected
+// command-only sources. Recomputing the ordinary site's input in that derived
+// graph is neither necessary nor stable because validation compilation has a
+// different context-enrichment mode. AuthenticatedManifest permits that one
+// orchestrated reuse while retaining every structural and content check below.
+enum class ResolutionInputVerification {
+  RequireCurrentInput,
+  AuthenticatedManifest,
+};
+
+// Requires one structurally matching pin for every surface synthesis obligation
+// and no unassociated manifest pin. RequireCurrentInput additionally proves
+// freshness against the obligation digest. target_identity is the selected
+// TargetFacts identity. Generated objects are loaded and hash-verified through
+// the store;
 // an active resolver may supply not-yet-committed objects in staged_expansions.
-// Failures produce no partial override result and never modify the workspace.
+// AuthenticatedManifest may only be selected after the caller has successfully
+// checked this exact manifest against the ordinary graph. Failures produce no
+// partial override result and never modify the workspace.
 [[nodiscard]] ResolutionOverlayResult build_resolution_overlays(
     const SourceManager &surface_sources,
     std::span<const ResolutionSurfacePackage> packages,
     const ResolutionManifest &manifest,
     std::string_view target_identity,
     const std::filesystem::path &workspace_directory,
+    ResolutionInputVerification input_verification,
     std::span<const GeneratedExpansion> staged_expansions,
     DiagnosticSink &diagnostics);
 

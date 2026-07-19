@@ -130,6 +130,7 @@ ResolutionOverlayResult build_resolution_overlays(
     const ResolutionManifest &manifest,
     std::string_view target_identity,
     const std::filesystem::path &workspace_directory,
+    ResolutionInputVerification input_verification,
     std::span<const GeneratedExpansion> staged_expansions,
     DiagnosticSink &diagnostics) {
   ResolutionOverlayResult result;
@@ -171,7 +172,9 @@ ResolutionOverlayResult build_resolution_overlays(
         diagnostics.error(range, "resolution pin grammar category is stale");
         continue;
       }
-      if (pin->input_digest != obligation.input_digest) {
+      if (input_verification ==
+              ResolutionInputVerification::RequireCurrentInput &&
+          pin->input_digest != obligation.input_digest) {
         diagnostics.error(
             range,
             "resolution pin is stale because its synthesis input changed");

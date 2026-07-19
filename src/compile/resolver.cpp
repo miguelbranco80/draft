@@ -224,6 +224,7 @@ void publish_diagnostics(
           candidate_manifest,
           stage_compile_options.target.facts.identity,
           stage_compile_options.workspace.workspace_directory,
+          ResolutionInputVerification::RequireCurrentInput,
           std::span<const GeneratedExpansion>(&expansion, 1),
           diagnostics);
   if (!candidate_overlay.ok) return false;
@@ -475,6 +476,7 @@ struct ResolvedStage {
       stage.manifest,
       options.compile.target.facts.identity,
       options.compile.workspace.workspace_directory,
+      ResolutionInputVerification::RequireCurrentInput,
       expansions,
       diagnostics);
   if (!overlays.ok) return stage;

@@ -916,7 +916,7 @@ upper source re-evaluates to the displayed value at the site. Other loop shapes
 produce no inferred range.
 
 `draft-agent-obligation-v19`, synthesis request v21 / prompt v20, judgment
-request/prompt v4, and compiler content v124 identities make these facts and
+request/prompt v4, and compiler content v125 identities make these facts and
 the compiler-checked correction policy stale-pin and evidence inputs. The
 synthesis adapter uses provider identity `openai-codex-cli-v24`; the unchanged
 judgment adapter remains `openai-codex-cli-v22`. Both recheck the canonical
@@ -1042,9 +1042,37 @@ traps, and message construction used solely by an assertion cannot survive,
 and no condition is converted into an optimizer assumption.
 
 The versioned `draft.resolved-program.v4` hash records the assertion mode beside
-compiler content v124. `build`, `resolve`, and `judge` expose the same explicit
+compiler content v125. `build`, `resolve`, and `judge` expose the same explicit
 flag so an offline or locked manifest cannot be replayed under a different
 mode. Test and benchmark compilations deliberately override the release choice
 to assertions on and receive their own resolved validation digest; disabling
 release assertions must never weaken the validation program that authorizes a
 release.
+
+## Authenticated synthesis overlays in validation graphs
+
+Status: implemented with an ordinary-graph authentication prerequisite.
+
+An ordinary resolved compilation authenticates every synthesis pin against the
+current typed obligation, including the canonical test and benchmark context.
+A test or benchmark command then derives a separate graph that adds command-only
+files, imports, entry procedures, and harness lowering. Recomputing an ordinary
+site's synthesis digest inside that derived graph is not stable: validation mode
+deliberately uses different context enrichment even though the handwritten site
+and selected generated object are unchanged.
+
+`compile_workspace_with_resolution` therefore authenticates the complete
+ordinary graph first. Only after that succeeds may its validation-only child
+compilation omit the redundant input-digest comparison while applying the same
+manifest. The overlay still requires exact target, structural site identity,
+grammar category, source coordinates, generated-object digest, and complete pin
+coverage; the final validation graph then parses and type-checks the installed
+source normally. Ordinary builds, offline replay, and the resolver continue to
+require the current input digest directly.
+
+Focused overlay coverage proves that a stale pin remains rejected in the normal
+mode. A compiler integration regression constructs a declaration pin whose
+generated constant is consumed by a test-only file, authenticates the ordinary
+graph, and proves the derived validation graph compiles the test. Compiler
+content v125 invalidates earlier resolved-program and evidence identities rather
+than silently changing this trust boundary.
