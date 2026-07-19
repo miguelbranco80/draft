@@ -1,10 +1,11 @@
-// End-to-end C consumer test for a Draft dynamic library.
+// End-to-end native C consumer test for a Draft shared library.
 //
 // Header snapshots and LLVM ABI checks are useful because they report a small,
 // precise failure. They still cannot prove that the independent C compiler,
-// Mach-O linker, dynamic loader, and Draft-generated code all agree. This Apple
-// host test builds the checked-in c-library package as a dylib, emits its real
-// header, compiles the checked-in C client, and launches that client.
+// platform linker, dynamic loader, and Draft-generated code all agree. On each
+// implemented AArch64 host this test builds the checked-in c-library package in
+// the native `.dylib` or `.so` format, emits its real target-selected header,
+// compiles the checked-in C client, and launches that client.
 
 #include "backend/toolchain.h"
 #include "compile/compiler.h"
@@ -43,6 +44,20 @@ struct TestState {
 
 #define EXPECT(state, expression) (state).expect((expression), #expression, __LINE__)
 
+// Selects the Draft ABI and object format that the current process can consume.
+// The enclosing CMake condition admits only supported native AArch64 hosts, so
+// another platform is a configuration error rather than a reason to skip the
+// independent C ABI oracle.
+[[nodiscard]] draft::TargetProfile native_host_target() {
+#if defined(__APPLE__) && (defined(__aarch64__) || defined(__arm64__))
+  return draft::make_aarch64_macos_profile();
+#elif defined(__linux__) && defined(__aarch64__)
+  return draft::make_aarch64_linux_profile();
+#else
+#error "C client integration requires an implemented AArch64 host target"
+#endif
+}
+
 // Waits through signal interruptions and returns the raw wait status. The
 // caller distinguishes a launch failure from a launched program's exit code.
 [[nodiscard]] bool wait_for_child(pid_t child, int &status) {
@@ -52,13 +67,14 @@ struct TestState {
   return true;
 }
 
-// Compile the C client without a shell. The source and output paths are data,
-// never command text. The full dylib path selects exactly the artifact built by
-// this test, while the matching rpath satisfies its deterministic install name.
+// Compiles the C client without a shell. The source and output paths are data,
+// never command text. The full shared-library path selects exactly the artifact
+// built by this test, while the matching rpath satisfies its Mach-O install name
+// or ELF SONAME when the child is launched from the private test directory.
 [[nodiscard]] bool compile_c_client(
     const std::filesystem::path &source,
     const std::filesystem::path &include_directory,
-    const std::filesystem::path &dynamic_library,
+    const std::filesystem::path &shared_library,
     const std::filesystem::path &output,
     int &status) {
   const std::string include = "-I" + include_directory.string();
@@ -75,7 +91,7 @@ struct TestState {
         "-Werror",
         include.c_str(),
         source.c_str(),
-        dynamic_library.c_str(),
+        shared_library.c_str(),
         rpath.c_str(),
         "-o",
         output.c_str(),
@@ -110,7 +126,7 @@ struct TestState {
   return static_cast<bool>(output);
 }
 
-void test_c_client_consumes_draft_dylib(TestState &state) {
+void test_c_client_consumes_draft_shared_library(TestState &state) {
   std::error_code error;
   const std::filesystem::path temporary =
       std::filesystem::temp_directory_path(error) /
@@ -126,7 +142,7 @@ void test_c_client_consumes_draft_dylib(TestState &state) {
   const std::filesystem::path source_root(DRAFT_SOURCE_DIRECTORY);
   draft::SourceManager sources;
   draft::DiagnosticSink diagnostics;
-  const draft::TargetProfile target = draft::make_aarch64_macos_profile();
+  const draft::TargetProfile target = native_host_target();
   draft::CompileWorkspaceOptions compile_options;
   compile_options.target = target;
   compile_options.workspace.workspace_directory =
@@ -174,17 +190,17 @@ void test_c_client_consumes_draft_dylib(TestState &state) {
     EXPECT(state, write_file(header_path, header.text));
   }
 
-  const std::filesystem::path dylib = temporary / "libdraft_c_library.dylib";
+  const std::string library_extension =
+      target.facts.object_format == "elf" ? ".so" : ".dylib";
+  const std::filesystem::path shared_library =
+      temporary / ("libdraft_c_library" + library_extension);
   draft::NativeBuildOptions native_options;
   native_options.build_directory = (temporary / "build").string();
-  native_options.output_path = dylib.string();
+  native_options.output_path = shared_library.string();
   native_options.artifact_kind = draft::NativeArtifactKind::DynamicLibrary;
   native_options.allow_unpinned_toolchain = true;
   const draft::NativeBuildResult built = draft::build_native_artifact(
-      draft::make_aarch64_macos_profile(),
-      compiled,
-      native_options,
-      diagnostics);
+      target, compiled, native_options, diagnostics);
   if (diagnostics.has_errors()) {
     std::cerr << draft::render_diagnostics(sources, diagnostics);
   }
@@ -197,7 +213,7 @@ void test_c_client_consumes_draft_dylib(TestState &state) {
         compile_c_client(
             source_root / "examples/c-library/client.c",
             temporary,
-            dylib,
+            shared_library,
             client,
             compiler_status));
     EXPECT(state, WIFEXITED(compiler_status));
@@ -222,7 +238,7 @@ void test_c_client_consumes_draft_dylib(TestState &state) {
 
 int main() {
   TestState state;
-  test_c_client_consumes_draft_dylib(state);
+  test_c_client_consumes_draft_shared_library(state);
   if (state.failures != 0) {
     std::cerr << state.failures
               << " C client integration expectation(s) failed\n";

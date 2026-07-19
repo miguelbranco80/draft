@@ -1,10 +1,12 @@
-// Real AArch64 macOS execution matrix for handwritten Draft programs.
+// Real native AArch64 execution matrix for handwritten Draft programs.
 //
 // Semantic and LLVM snapshot tests localize compiler failures well, but they do
-// not prove that runtime Context setup, the Darwin ABI, package assembly,
-// atomics, pthread bridges, and system linking agree in a launched process.
-// This Apple-host-only gate compiles each representative package through the
-// public compiler/native APIs and requires its complete executable to exit 0.
+// not prove that runtime Context setup, the selected platform ABI, package
+// assembly, atomics, pthread bridges, and system linking agree in a launched
+// process. This gate runs only when the bootstrap host can execute one of the
+// implemented AArch64 targets directly: Apple Silicon selects Mach-O/macOS and
+// AArch64 Linux selects ELF/GNU Linux. Every package still passes through the
+// public compiler and native-adapter APIs before its executable is launched.
 
 #include "backend/toolchain.h"
 #include "compile/compiler.h"
@@ -61,11 +63,26 @@ struct NativeInputSelection {
   std::vector<draft::ExternalInputPin> pins;
 };
 
-// Normal CTest runs keep using the installed Apple toolchain. Release
+// Selects the Draft target whose executables the current CI host can launch
+// directly. CMake only builds this test on the two supported AArch64 hosts, so
+// reaching another branch would be a build-configuration error rather than a
+// runtime condition that should be hidden by skipping the test.
+[[nodiscard]] draft::TargetProfile native_host_target() {
+#if defined(__APPLE__) && (defined(__aarch64__) || defined(__arm64__))
+  return draft::make_aarch64_macos_profile();
+#elif defined(__linux__) && defined(__aarch64__)
+  return draft::make_aarch64_linux_profile();
+#else
+#error "native conformance requires an implemented AArch64 host target"
+#endif
+}
+
+// Normal CTest runs keep using the installed host toolchain. Release
 // qualification sets both variables and drives the identical matrix through
 // the production locked-input verifier. Pin once here; every native build still
 // independently re-verifies the roots immediately before invoking its tools.
 [[nodiscard]] bool select_native_inputs(
+    const draft::TargetProfile &target,
     NativeInputSelection &selection,
     draft::DiagnosticSink &diagnostics) {
   const char *toolchain = std::getenv("DRAFT_TEST_LOCKED_TOOLCHAIN_ROOT");
@@ -82,8 +99,7 @@ struct NativeInputSelection {
   selection.roots.toolchain_root = toolchain;
   selection.roots.sdk_root = sdk;
   return draft::pin_locked_native_inputs(
-      draft::make_aarch64_macos_profile(),
-      selection.roots, selection.pins, diagnostics);
+      target, selection.roots, selection.pins, diagnostics);
 }
 
 // Runs an already linked path directly. No shell, inherited command search, or
@@ -167,10 +183,11 @@ void test_native_examples(TestState &state) {
   EXPECT(state, "setup", !error);
   if (error) return;
 
+  const draft::TargetProfile target = native_host_target();
   NativeInputSelection native_inputs;
   draft::DiagnosticSink input_diagnostics;
   const bool inputs_ok =
-      select_native_inputs(native_inputs, input_diagnostics);
+      select_native_inputs(target, native_inputs, input_diagnostics);
   if (input_diagnostics.has_errors()) {
     for (const draft::Diagnostic &diagnostic :
          input_diagnostics.diagnostics()) {
@@ -185,7 +202,7 @@ void test_native_examples(TestState &state) {
     draft::SourceManager sources;
     draft::DiagnosticSink diagnostics;
     draft::CompileWorkspaceOptions compile_options;
-    compile_options.target = draft::make_aarch64_macos_profile();
+    compile_options.target = target;
     compile_options.workspace.workspace_directory =
         (source_root / test.workspace).string();
     compile_options.workspace.core_directory =
@@ -207,7 +224,7 @@ void test_native_examples(TestState &state) {
     if (native_inputs.locked) {
       compiled.resolution_manifest.emplace();
       compiled.resolution_manifest->target_identity =
-          draft::make_aarch64_macos_profile().facts.identity;
+          target.facts.identity;
       compiled.resolution_manifest->external_inputs = native_inputs.pins;
     }
 
@@ -222,18 +239,21 @@ void test_native_examples(TestState &state) {
       native_options.allow_unpinned_toolchain = true;
     }
     const draft::NativeBuildResult built = draft::build_native_executable(
-        draft::make_aarch64_macos_profile(),
-        compiled,
-        native_options,
-        diagnostics);
+        target, compiled, native_options, diagnostics);
     if (diagnostics.has_errors()) {
       std::cerr << draft::render_diagnostics(sources, diagnostics);
     }
     EXPECT(state, test.name, built.ok);
     if (!built.ok) continue;
-    EXPECT(state, test.name, !built.debug_symbols_path.empty());
-    EXPECT(state, test.name,
-        std::filesystem::exists(built.debug_symbols_path));
+    if (target.facts.object_format == "macho") {
+      EXPECT(state, test.name, !built.debug_symbols_path.empty());
+      EXPECT(state, test.name,
+          std::filesystem::exists(built.debug_symbols_path));
+    } else {
+      // ELF retains its DWARF in the executable. An empty result field is the
+      // explicit backend contract, not a missing Linux-shaped dSYM substitute.
+      EXPECT(state, test.name, built.debug_symbols_path.empty());
+    }
 
     std::filesystem::create_directories(case_directory, error);
     EXPECT(state, test.name, !error);
@@ -266,10 +286,10 @@ void test_native_examples(TestState &state) {
                 built.output_path, case_directory, selector, process_status));
         EXPECT(state, test.name, WIFSIGNALED(process_status));
         if (WIFSIGNALED(process_status)) {
-          // Apple arm64 lowers llvm.trap to BRK, which Darwin reports to a
-          // parent process as SIGTRAP. Requiring that exact target behavior
-          // distinguishes the compiler's deliberate trap edge from an
-          // accidental arithmetic or memory fault.
+          // LLVM lowers llvm.trap to AArch64 BRK for both selected targets, and
+          // each selected kernel reports that deliberate breakpoint as
+          // SIGTRAP. Requiring the exact signal distinguishes the compiler's
+          // trap edge from an accidental arithmetic or memory fault.
           EXPECT(state, test.name, WTERMSIG(process_status) == SIGTRAP);
         }
       }

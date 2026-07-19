@@ -139,6 +139,18 @@ target_compile_definitions(
 
 include(CTest)
 if(BUILD_TESTING)
+  # The complete native matrix must execute the artifacts it just built. Keep
+  # it enabled only when the host is one of Draft's implemented AArch64 target
+  # pairs: Apple Silicon runs Mach-O and AArch64 Linux runs ELF. Other hosts
+  # still build every target-independent compiler, ABI, and lowering test.
+  set(DRAFT_NATIVE_AARCH64_HOST OFF)
+  if(
+    (APPLE OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64)$"
+  )
+    set(DRAFT_NATIVE_AARCH64_HOST ON)
+  endif()
+
   add_executable(draft_sha256_tests tests/sha256_test.cpp)
   target_link_libraries(draft_sha256_tests PRIVATE draft_compiler)
   add_test(NAME draft_sha256_tests COMMAND draft_sha256_tests)
@@ -314,10 +326,10 @@ if(BUILD_TESTING)
   endif()
   add_test(NAME draft_toolchain_tests COMMAND draft_toolchain_tests)
 
-  # This is intentionally a host integration test rather than another fake
-  # toolchain test. The first target is macOS, so an Apple test host can prove
-  # that two complete links to the same named output are byte-for-byte equal.
-  if(APPLE)
+  # These are intentionally host integration tests rather than fake toolchain
+  # tests. Each supported AArch64 host selects its matching Draft target and
+  # proves that real links, launches, debug contracts, and C ABI calls work.
+  if(DRAFT_NATIVE_AARCH64_HOST)
     add_executable(
       draft_native_determinism_tests
       tests/native_determinism_test.cpp

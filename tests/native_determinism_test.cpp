@@ -1,12 +1,11 @@
-// Byte-for-byte determinism gate for the real macOS native toolchain path.
+// Byte-for-byte determinism gate for each native AArch64 toolchain path.
 //
 // Most toolchain tests use a recording process so failures describe our exact
-// argument contract without depending on a host installation. This test has a
-// different job: on the first supported host, compile complete Draft programs
-// and ask the actual Clang driver to produce every artifact kind twice.
-// Comparing complete output trees catches timestamps, UUID drift, archive
-// metadata, object-order drift, and other ambient state an argument-only test
-// cannot see.
+// argument contract without depending on a host installation. This test asks
+// the actual host Clang/linker path to produce every artifact kind twice for
+// the directly executable Draft target. Comparing complete output trees catches
+// timestamps, Mach-O UUID or ELF build-ID drift, archive metadata, object-order
+// drift, and other ambient state an argument-only test cannot see.
 
 #include "backend/toolchain.h"
 #include "compile/compiler.h"
@@ -61,7 +60,22 @@ struct NativeInputSelection {
   std::vector<draft::ExternalInputPin> pins;
 };
 
+// Returns the one implemented target that this process can execute natively.
+// CMake excludes this source on other host/architecture pairs; the preprocessor
+// guard keeps an accidental future inclusion from silently testing the wrong
+// artifact format or ABI.
+[[nodiscard]] draft::TargetProfile native_host_target() {
+#if defined(__APPLE__) && (defined(__aarch64__) || defined(__arm64__))
+  return draft::make_aarch64_macos_profile();
+#elif defined(__linux__) && defined(__aarch64__)
+  return draft::make_aarch64_linux_profile();
+#else
+#error "native determinism requires an implemented AArch64 host target"
+#endif
+}
+
 [[nodiscard]] bool select_native_inputs(
+    const draft::TargetProfile &target,
     NativeInputSelection &selection,
     draft::DiagnosticSink &diagnostics) {
   const char *toolchain = std::getenv("DRAFT_TEST_LOCKED_TOOLCHAIN_ROOT");
@@ -78,8 +92,7 @@ struct NativeInputSelection {
   selection.roots.toolchain_root = toolchain;
   selection.roots.sdk_root = sdk;
   return draft::pin_locked_native_inputs(
-      draft::make_aarch64_macos_profile(),
-      selection.roots, selection.pins, diagnostics);
+      target, selection.roots, selection.pins, diagnostics);
 }
 
 [[nodiscard]] ArtifactSnapshot snapshot_artifact(
@@ -108,9 +121,10 @@ struct NativeInputSelection {
     draft::SourceManager &sources,
     std::string_view package,
     bool emit_program_entry,
+    const draft::TargetProfile &target,
     draft::DiagnosticSink &diagnostics) {
   draft::CompileWorkspaceOptions options;
-  options.target = draft::make_aarch64_macos_profile();
+  options.target = target;
   options.workspace.workspace_directory =
       std::string(DRAFT_SOURCE_DIRECTORY) + "/examples";
   options.workspace.core_directory =
@@ -129,6 +143,7 @@ struct NativeInputSelection {
 
 void compare_repeated_artifact(
     TestState &state,
+    const draft::TargetProfile &target,
     const draft::CompileWorkspaceResult &compiled,
     const std::filesystem::path &temporary,
     std::string_view name,
@@ -148,10 +163,7 @@ void compare_repeated_artifact(
 
   draft::DiagnosticSink first_diagnostics;
   const draft::NativeBuildResult first = draft::build_native_artifact(
-      draft::make_aarch64_macos_profile(),
-      compiled,
-      options,
-      first_diagnostics);
+      target, compiled, options, first_diagnostics);
   if (!first.ok) {
     std::cerr << "first native build failed for artifact: " << name << '\n';
     for (const draft::Diagnostic &diagnostic : first_diagnostics.diagnostics()) {
@@ -161,9 +173,9 @@ void compare_repeated_artifact(
   EXPECT(state, first.ok);
   EXPECT(state, !first_diagnostics.has_errors());
   if (!first.ok) return;
-  const bool has_debug_companion =
-      kind == draft::NativeArtifactKind::Executable ||
-      kind == draft::NativeArtifactKind::DynamicLibrary;
+  const bool has_debug_companion = target.facts.object_format == "macho" &&
+      (kind == draft::NativeArtifactKind::Executable ||
+       kind == draft::NativeArtifactKind::DynamicLibrary);
   EXPECT(state, has_debug_companion == !first.debug_symbols_path.empty());
   if (has_debug_companion) {
     EXPECT(state, std::filesystem::exists(first.debug_symbols_path));
@@ -183,10 +195,7 @@ void compare_repeated_artifact(
 
   draft::DiagnosticSink second_diagnostics;
   const draft::NativeBuildResult second = draft::build_native_artifact(
-      draft::make_aarch64_macos_profile(),
-      compiled,
-      options,
-      second_diagnostics);
+      target, compiled, options, second_diagnostics);
   if (!second.ok) {
     std::cerr << "second native build failed for artifact: " << name << '\n';
     for (const draft::Diagnostic &diagnostic : second_diagnostics.diagnostics()) {
@@ -218,10 +227,11 @@ void test_repeated_native_link_is_byte_identical(TestState &state) {
   EXPECT(state, !error);
   if (error) return;
 
+  const draft::TargetProfile target = native_host_target();
   NativeInputSelection native_inputs;
   draft::DiagnosticSink input_diagnostics;
   const bool inputs_ok =
-      select_native_inputs(native_inputs, input_diagnostics);
+      select_native_inputs(target, native_inputs, input_diagnostics);
   if (input_diagnostics.has_errors()) {
     for (const draft::Diagnostic &diagnostic :
          input_diagnostics.diagnostics()) {
@@ -246,9 +256,9 @@ void test_repeated_native_link_is_byte_identical(TestState &state) {
   // depend only on source/package identity and canonical type arguments, never
   // process addresses or filesystem paths.
   draft::CompileWorkspaceResult executable = compile_fixture(
-      sources, "nested-procedures", true, compile_diagnostics);
+      sources, "nested-procedures", true, target, compile_diagnostics);
   draft::CompileWorkspaceResult library = compile_fixture(
-      sources, "c-library", false, compile_diagnostics);
+      sources, "c-library", false, target, compile_diagnostics);
   if (compile_diagnostics.has_errors()) {
     std::cerr << draft::render_diagnostics(sources, compile_diagnostics);
   }
@@ -261,7 +271,7 @@ void test_repeated_native_link_is_byte_identical(TestState &state) {
   if (native_inputs.locked) {
     executable.resolution_manifest.emplace();
     executable.resolution_manifest->target_identity =
-        draft::make_aarch64_macos_profile().facts.identity;
+        target.facts.identity;
     executable.resolution_manifest->external_inputs = native_inputs.pins;
     library.resolution_manifest = executable.resolution_manifest;
   }
@@ -284,6 +294,7 @@ void test_repeated_native_link_is_byte_identical(TestState &state) {
   for (const ArtifactCase &artifact : artifacts) {
     compare_repeated_artifact(
         state,
+        target,
         *artifact.compiled,
         temporary,
         artifact.name,

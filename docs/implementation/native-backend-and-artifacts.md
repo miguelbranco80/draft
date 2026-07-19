@@ -137,3 +137,23 @@ fields empty, while the primary artifact remains unstripped and carries
 correlation sidecar, and its deterministic GNU build ID. A future split-debug
 profile must be a separate explicit artifact contract rather than an ambient
 `objcopy` convention.
+
+## Native integration gates
+
+Status: required on AArch64 macOS and AArch64 Linux CI hosts.
+
+The native integration executables select the target matching the host pair:
+Apple Silicon exercises `draft-aarch64-macos-v5`, while AArch64 Linux exercises
+`draft-aarch64-linux-gnu-v1`. Both hosts compile complete example packages,
+build and run executables, provoke the target `BRK` trap path, repeat every
+artifact build to compare its complete output tree, and compile a C client
+against the generated header and shared library. Mach-O cases additionally
+require the `.dSYM` companion; ELF cases require its absence because their DWARF
+stays in the primary artifact.
+
+These development gates deliberately allow the ambient host toolchain. They
+prove that current source composes into working native artifacts on each host;
+they do not claim release reproducibility or supply-chain qualification. Locked
+qualification remains a separate operation using content-pinned toolchain and
+SDK/sysroot trees. Keeping those two purposes separate means ordinary pull
+request testing needs no vendored compiler archive and no fabricated hashes.

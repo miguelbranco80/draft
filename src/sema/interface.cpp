@@ -2,6 +2,7 @@
 
 #include "sema/interface.h"
 
+#include <algorithm>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>

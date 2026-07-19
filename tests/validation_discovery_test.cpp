@@ -1,4 +1,13 @@
 // Validation source selection, signature proof, ordering, and harness tests.
+//
+// Most cases in this file exercise target-independent validation semantics by
+// compiling for the repository's AArch64 target on the current operating
+// system. The checked-harness case additionally builds and executes the result
+// when the test process itself is running on AArch64. Keeping that execution
+// conditional lets x86-64 sanitizer jobs retain the semantic coverage without
+// pretending that they can execute a cross-compiled AArch64 artifact. The two
+// native AArch64 CI jobs are responsible for making the execution path required
+// on both supported operating systems.
 
 #include "backend/toolchain.h"
 #include "compile/compiler.h"
@@ -39,6 +48,33 @@ struct TestState {
 
 #define EXPECT(state, expression) (state).expect((expression), #expression, __LINE__)
 
+// Select the AArch64 target belonging to the host operating system. Validation
+// source selection includes the target identity, so a Linux test must compile
+// the `@aarch64-linux` fixture rather than silently reusing a Mach-O fixture.
+// This function deliberately does not inspect the host CPU: x86-64 Linux can
+// still type-check and lower an AArch64 Linux program, but it cannot execute it.
+[[nodiscard]] draft::TargetProfile validation_target() {
+#if defined(__APPLE__)
+  return draft::make_aarch64_macos_profile();
+#elif defined(__linux__)
+  return draft::make_aarch64_linux_profile();
+#else
+#error "validation discovery tests require a supported Apple or Linux host"
+#endif
+}
+
+// Return whether artifacts for validation_target() are native to this test
+// process. Only these hosts may enter the build-and-run portion of the test;
+// cross-host builds need an explicit sysroot and cannot prove execution.
+[[nodiscard]] constexpr bool can_execute_validation_target() {
+#if (defined(__APPLE__) && defined(__aarch64__)) || \
+    (defined(__linux__) && defined(__aarch64__))
+  return true;
+#else
+  return false;
+#endif
+}
+
 [[nodiscard]] bool write_file(
     const std::filesystem::path &path, std::string_view contents) {
   std::ofstream output(path, std::ios::binary);
@@ -53,7 +89,7 @@ struct TestState {
     draft::SourceManager &sources,
     draft::DiagnosticSink &diagnostics) {
   draft::CompileWorkspaceOptions options;
-  options.target = draft::make_aarch64_macos_profile();
+  options.target = validation_target();
   options.workspace.workspace_directory = root.string();
   options.workspace.core_directory =
       std::string(DRAFT_SOURCE_DIRECTORY) + "/core";
@@ -85,8 +121,11 @@ void test_checked_test_harness(TestState &state) {
       "}\n"));
   // The target-qualified suffix is part of validation selection. Procedure
   // order in this file is intentionally opposite the canonical name order.
+  const draft::TargetProfile target = validation_target();
+  const std::filesystem::path target_test_file =
+      root / "app" / ("suite_test@" + target.facts.file_tag + ".draft");
   EXPECT(state, write_file(
-      root / "app" / "suite_test@aarch64-macos.draft",
+      target_test_file,
       "package app\n"
       "import core/testing\n"
       "test_zeta :: proc(test: ^testing.Test) {\n"
@@ -102,7 +141,7 @@ void test_checked_test_harness(TestState &state) {
   draft::SourceManager ordinary_sources;
   draft::DiagnosticSink ordinary_diagnostics;
   draft::CompileWorkspaceOptions ordinary_options;
-  ordinary_options.target = draft::make_aarch64_macos_profile();
+  ordinary_options.target = target;
   ordinary_options.workspace.workspace_directory = root.string();
   ordinary_options.workspace.core_directory =
       std::string(DRAFT_SOURCE_DIRECTORY) + "/core";
@@ -110,7 +149,6 @@ void test_checked_test_harness(TestState &state) {
       "draft-core-validation-test-v1";
   const std::string compiler_identity =
       ordinary_options.compiler_content_identity;
-  const draft::TargetProfile target = ordinary_options.target;
   const draft::CompileWorkspaceResult ordinary = draft::compile_workspace(
       ordinary_sources,
       (root / "app").string(),
@@ -181,48 +219,53 @@ void test_checked_test_harness(TestState &state) {
     }
   }
 
-  draft::NativeBuildOptions native_options;
-  native_options.allow_unpinned_toolchain = true;
-  native_options.build_directory = (root / "native-build").string();
-  native_options.output_path = (root / "validation-tests").string();
-  draft::DiagnosticSink native_diagnostics;
-  const draft::NativeBuildResult built = draft::build_native_executable(
-      target, result, native_options, native_diagnostics);
-  if (native_diagnostics.has_errors()) {
-    std::cerr << draft::render_diagnostics(sources, native_diagnostics);
-  }
-  EXPECT(state, built.ok);
-  if (built.ok) {
-    draft::ValidationRunOptions run_options;
-    run_options.executable = built.output_path;
-    run_options.working_directory = (root / "app").string();
-    draft::DiagnosticSink run_diagnostics;
-    const draft::ValidationRunResult run =
-        draft::run_validation_executable(run_options, run_diagnostics);
-    EXPECT(state, run.started);
-    EXPECT(state, run.exited);
-    EXPECT(state, run.exit_code == 1);
-    EXPECT(state, run.report.size() == 32);
-    std::vector<draft::ValidationObservation> observations;
-    EXPECT(state, draft::decode_validation_report(
-        run.report,
-        result.validation_entries,
-        observations,
-        run_diagnostics));
-    EXPECT(state, observations.size() == 2);
-    if (observations.size() == 2) {
-      EXPECT(state, observations[0].checks == 1);
-      EXPECT(state, observations[0].failures == 1);
-      EXPECT(state, observations[1].checks == 1);
-      EXPECT(state, observations[1].failures == 0);
+  // The AArch64 jobs must prove the emitted binary and validation report. An
+  // x86-64 sanitizer job stops after lowering because executing this target
+  // would require emulation and would no longer be a native integration test.
+  if (can_execute_validation_target()) {
+    draft::NativeBuildOptions native_options;
+    native_options.allow_unpinned_toolchain = true;
+    native_options.build_directory = (root / "native-build").string();
+    native_options.output_path = (root / "validation-tests").string();
+    draft::DiagnosticSink native_diagnostics;
+    const draft::NativeBuildResult built = draft::build_native_executable(
+        target, result, native_options, native_diagnostics);
+    if (native_diagnostics.has_errors()) {
+      std::cerr << draft::render_diagnostics(sources, native_diagnostics);
     }
-    EXPECT(state, !run_diagnostics.has_errors());
+    EXPECT(state, built.ok);
+    if (built.ok) {
+      draft::ValidationRunOptions run_options;
+      run_options.executable = built.output_path;
+      run_options.working_directory = (root / "app").string();
+      draft::DiagnosticSink run_diagnostics;
+      const draft::ValidationRunResult run =
+          draft::run_validation_executable(run_options, run_diagnostics);
+      EXPECT(state, run.started);
+      EXPECT(state, run.exited);
+      EXPECT(state, run.exit_code == 1);
+      EXPECT(state, run.report.size() == 32);
+      std::vector<draft::ValidationObservation> observations;
+      EXPECT(state, draft::decode_validation_report(
+          run.report,
+          result.validation_entries,
+          observations,
+          run_diagnostics));
+      EXPECT(state, observations.size() == 2);
+      if (observations.size() == 2) {
+        EXPECT(state, observations[0].checks == 1);
+        EXPECT(state, observations[0].failures == 1);
+        EXPECT(state, observations[1].checks == 1);
+        EXPECT(state, observations[1].failures == 0);
+      }
+      EXPECT(state, !run_diagnostics.has_errors());
+    }
   }
 
   // Validation-only source participates in its resolved-program identity even
   // though an ordinary build would not select this file.
   EXPECT(state, write_file(
-      root / "app" / "suite_test@aarch64-macos.draft",
+      target_test_file,
       "package app\n"
       "import core/testing\n"
       "test_zeta :: proc(test: ^testing.Test) {\n"
@@ -246,32 +289,34 @@ void test_checked_test_harness(TestState &state) {
         *changed.resolved_program_digest);
   }
 
-  draft::ValidationCommandOptions command_options;
-  command_options.package_directory = root / "app";
-  command_options.target = target;
-  command_options.workspace.workspace_directory = root.string();
-  command_options.workspace.core_directory =
-      std::string(DRAFT_SOURCE_DIRECTORY) + "/core";
-  command_options.workspace.core_content_identity =
-      "draft-core-validation-test-v1";
-  command_options.kind = draft::ValidationKind::Test;
-  command_options.allow_unpinned_toolchain = true;
-  draft::SourceManager command_sources;
-  draft::DiagnosticSink command_diagnostics;
-  const draft::ValidationCommandResult command =
-      draft::execute_validation_command(
-          command_sources, std::move(command_options), command_diagnostics);
-  if (command_diagnostics.has_errors()) {
-    std::cerr << draft::render_diagnostics(
-        command_sources, command_diagnostics);
+  if (can_execute_validation_target()) {
+    draft::ValidationCommandOptions command_options;
+    command_options.package_directory = root / "app";
+    command_options.target = target;
+    command_options.workspace.workspace_directory = root.string();
+    command_options.workspace.core_directory =
+        std::string(DRAFT_SOURCE_DIRECTORY) + "/core";
+    command_options.workspace.core_content_identity =
+        "draft-core-validation-test-v1";
+    command_options.kind = draft::ValidationKind::Test;
+    command_options.allow_unpinned_toolchain = true;
+    draft::SourceManager command_sources;
+    draft::DiagnosticSink command_diagnostics;
+    const draft::ValidationCommandResult command =
+        draft::execute_validation_command(
+            command_sources, std::move(command_options), command_diagnostics);
+    if (command_diagnostics.has_errors()) {
+      std::cerr << draft::render_diagnostics(
+          command_sources, command_diagnostics);
+    }
+    EXPECT(state, command.completed);
+    EXPECT(state, command.passed);
+    EXPECT(state, command.selected_procedures == 2);
+    EXPECT(state, command.attempt == 1);
+    EXPECT(state, std::filesystem::exists(
+        root / "app" / ".draft" / "evidence" /
+        (command.evidence_digest.hex() + ".json")));
   }
-  EXPECT(state, command.completed);
-  EXPECT(state, command.passed);
-  EXPECT(state, command.selected_procedures == 2);
-  EXPECT(state, command.attempt == 1);
-  EXPECT(state, std::filesystem::exists(
-      root / "app" / ".draft" / "evidence" /
-      (command.evidence_digest.hex() + ".json")));
 
   std::filesystem::remove_all(root, error);
 }
@@ -307,7 +352,7 @@ void test_authenticated_synthesis_enters_validation_graph(TestState &state) {
   // manifest input includes the validation file as syntax context, while the
   // expansion becomes ordinary package source before that file is type-checked.
   draft::CompileWorkspaceOptions surface_options;
-  surface_options.target = draft::make_aarch64_macos_profile();
+  surface_options.target = validation_target();
   surface_options.workspace.workspace_directory = root.string();
   surface_options.workspace.core_directory =
       std::string(DRAFT_SOURCE_DIRECTORY) + "/core";
