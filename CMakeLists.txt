@@ -442,6 +442,29 @@ if(BUILD_TESTING)
   add_dependencies(draft_judgment_driver_tests draftc)
   add_test(NAME draft_judgment_driver_tests COMMAND draft_judgment_driver_tests)
 
+  # Target selection is a driver concern as well as a profile-library concern.
+  # These process-level tests prove that the selector reaches both profile
+  # reporting and a complete dependency-ordered semantic compilation.
+  add_test(
+    NAME draft_aarch64_linux_target_driver
+    COMMAND draftc target --target aarch64-linux
+  )
+  set_tests_properties(
+    draft_aarch64_linux_target_driver
+    PROPERTIES PASS_REGULAR_EXPRESSION
+      "identity draft-aarch64-linux-gnu-v1.*triple aarch64-unknown-linux-gnu"
+  )
+  add_test(
+    NAME draft_aarch64_linux_check_driver
+    COMMAND draftc check "${CMAKE_CURRENT_SOURCE_DIR}/examples/core-os"
+      --target aarch64-linux
+  )
+  set_tests_properties(
+    draft_aarch64_linux_check_driver
+    PROPERTIES PASS_REGULAR_EXPRESSION
+      "checked package graph rooted at core_os"
+  )
+
   if(TARGET draft_recording_native_tool)
     add_test(
       NAME draft_driver_canonicalizes_symlinked_parent

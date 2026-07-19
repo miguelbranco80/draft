@@ -121,6 +121,27 @@ void configure_core_distribution(draft::WorkspaceLoadOptions &options) {
   return true;
 }
 
+// Resolves one user-facing target selector at the process boundary.  All
+// package commands call this helper before constructing compiler options so a
+// command cannot accidentally compile semantics for one profile and emit or
+// validate native code for another.  Invalid selectors are usage errors, not
+// source diagnostics: no Draft source has been loaded when this decision is
+// made.
+[[nodiscard]] bool select_command_target(
+    std::string_view selector,
+    draft::TargetProfile &target) {
+  std::string reason;
+  if (!draft::select_builtin_target_profile(selector, target, reason)) {
+    std::cerr << "error: " << reason << '\n';
+    return false;
+  }
+  if (!draft::validate_target_profile(target, reason)) {
+    std::cerr << "error: invalid built-in target profile: " << reason << '\n';
+    return false;
+  }
+  return true;
+}
+
 [[nodiscard]] bool parse_foreign_provider(
     std::string_view spelling,
     draft::ForeignProviderInput &input,
@@ -297,8 +318,7 @@ int parse_file(const std::string &path) {
 // Prints the profile in a stable line-oriented form suitable for inspection and
 // simple snapshot tests. This is not the eventual canonical serialized build
 // input, whose format will be versioned independently.
-int print_target() {
-  const draft::TargetProfile profile = draft::make_aarch64_macos_profile();
+int print_target(const draft::TargetProfile &profile) {
   std::string reason;
   if (!draft::validate_target_profile(profile, reason)) {
     std::cerr << "error: invalid built-in target profile: " << reason << '\n';
@@ -346,7 +366,10 @@ int print_target() {
 // supplies explicit roots, the requested package's parent is the workspace
 // root. `check` stops after typed HIR/interfaces; `emit-llvm` additionally
 // lowers MIR and prints each package module without invoking LLVM or a linker.
-int compile_package(const std::string &directory, bool emit_llvm) {
+int compile_package(
+    const std::string &directory,
+    bool emit_llvm,
+    const draft::TargetProfile &target) {
   draft::SourceManager sources;
   draft::DiagnosticSink diagnostics;
   std::filesystem::path absolute_directory;
@@ -358,7 +381,7 @@ int compile_package(const std::string &directory, bool emit_llvm) {
   }
 
   draft::CompileWorkspaceOptions options;
-  options.target = draft::make_aarch64_macos_profile();
+  options.target = target;
   options.workspace.workspace_directory =
       absolute_directory.parent_path().string();
   configure_core_distribution(options.workspace);
@@ -408,6 +431,7 @@ int compile_package(const std::string &directory, bool emit_llvm) {
 
 int build_package(
     const std::string &directory,
+    const draft::TargetProfile &target,
     const std::optional<std::string> &requested_output,
     draft::NativeArtifactKind artifact_kind,
     draft::RuntimeAssertionMode runtime_assertions,
@@ -431,7 +455,6 @@ int build_package(
     return 1;
   }
   std::error_code path_error;
-  const draft::TargetProfile target = draft::make_aarch64_macos_profile();
   draft::CompileWorkspaceOptions compile_options;
   compile_options.target = target;
   compile_options.configuration.runtime_assertions = runtime_assertions;
@@ -512,7 +535,9 @@ int build_package(
       output = build_directory / ("lib" + package_name + ".a");
       break;
     case draft::NativeArtifactKind::DynamicLibrary:
-      output = build_directory / ("lib" + package_name + ".dylib");
+      output = build_directory /
+          ("lib" + package_name +
+           (target.facts.object_format == "elf" ? ".so" : ".dylib"));
       break;
     case draft::NativeArtifactKind::Assembly:
       output = build_directory / (package_name + "-assembly");
@@ -557,6 +582,7 @@ int build_package(
 
 int validate_package(
     const std::string &directory,
+    const draft::TargetProfile &target,
     draft::ValidationKind kind,
     const std::vector<draft::ValidationInstrumentationKind> &instrumentation,
     bool allow_host_toolchain,
@@ -576,7 +602,7 @@ int validate_package(
 
   draft::ValidationCommandOptions options;
   options.package_directory = absolute_directory;
-  options.target = draft::make_aarch64_macos_profile();
+  options.target = target;
   options.workspace.workspace_directory =
       absolute_directory.parent_path().string();
   configure_core_distribution(options.workspace);
@@ -624,6 +650,7 @@ int validate_package(
 
 int emit_c_header_package(
     const std::string &directory,
+    const draft::TargetProfile &target,
     const std::optional<std::string> &requested_output) {
   draft::SourceManager sources;
   draft::DiagnosticSink diagnostics;
@@ -637,7 +664,7 @@ int emit_c_header_package(
   std::error_code path_error;
 
   draft::CompileWorkspaceOptions options;
-  options.target = draft::make_aarch64_macos_profile();
+  options.target = target;
   options.workspace.workspace_directory =
       absolute_directory.parent_path().string();
   configure_core_distribution(options.workspace);
@@ -659,7 +686,7 @@ int emit_c_header_package(
     } else {
       const draft::CHeaderResult header = draft::emit_c_header(
           compiled.packages[root]->semantics.package,
-          draft::make_aarch64_macos_profile(),
+          target,
           {},
           diagnostics);
       if (header.ok) {
@@ -848,6 +875,7 @@ bool run_resolution_candidate_judgment(
 int run_agent_command(
     const std::string &directory,
     AgentCommandKind command,
+    const draft::TargetProfile &target,
     bool revalidate = false,
     bool allow_host_toolchain = false,
     const std::optional<draft::CodexCliProviderOptions> &codex = std::nullopt,
@@ -875,7 +903,7 @@ int run_agent_command(
   }
 
   draft::CompileWorkspaceOptions options;
-  options.target = draft::make_aarch64_macos_profile();
+  options.target = target;
   options.configuration.runtime_assertions = runtime_assertions;
   options.workspace.workspace_directory =
       absolute_directory.parent_path().string();
@@ -1034,7 +1062,6 @@ int run_agent_command(
     std::cerr << draft::render_diagnostics(sources, diagnostics);
     return 1;
   }
-  const draft::TargetProfile target = options.target;
   const draft::CompileWorkspaceResult compiled =
       draft::compile_workspace_with_resolution(
           sources,
@@ -1147,10 +1174,12 @@ void print_usage() {
   std::cerr << "usage:\n"
             << "  draftc lex <file.draft>\n"
             << "  draftc syntax <file.draft>\n"
-            << "  draftc check <package-directory>\n"
-            << "  draftc emit-llvm <package-directory>\n"
+            << "  draftc check <package-directory> [--target aarch64-macos|aarch64-linux]\n"
+            << "  draftc emit-llvm <package-directory> [--target aarch64-macos|aarch64-linux]\n"
             << "  draftc emit-c-header <package-directory> [-o <output.h>]\n"
+            << "      [--target aarch64-macos|aarch64-linux]\n"
             << "  draftc build <package-directory> [-o <output>]\n"
+            << "      [--target aarch64-macos|aarch64-linux]\n"
             << "      [--kind executable|object|static-library|dynamic-library|assembly]\n"
             << "      [--assertions=off]\n"
             << "      [--allow-host-toolchain]\n"
@@ -1165,18 +1194,21 @@ void print_usage() {
             << "      [--judge-validator <identity>]...\n"
             << "      [--judge-artifact <kind>:<sha256>]...\n"
             << "  draftc test <package-directory> [--allow-host-toolchain]\n"
+            << "      [--target aarch64-macos|aarch64-linux]\n"
             << "      [--instrument address|lifetime|undefined-operation|allocator-poisoning|race]...\n"
             << "      [--locked --toolchain-root <directory> --sdk-root <directory>]\n"
             << "      [--provider name=object|archive|shared-library:<path>]...\n"
             << "      [--provider-summary name:<path>]...\n"
             << "      [--runtime-asset name:<file-or-directory>]...\n"
             << "  draftc bench <package-directory> [--verify] [--allow-host-toolchain]\n"
+            << "      [--target aarch64-macos|aarch64-linux]\n"
             << "      [--instrument address|lifetime|undefined-operation|allocator-poisoning|race]...\n"
             << "      [--locked --toolchain-root <directory> --sdk-root <directory>]\n"
             << "      [--provider name=object|archive|shared-library:<path>]...\n"
             << "      [--provider-summary name:<path>]...\n"
             << "      [--runtime-asset name:<file-or-directory>]...\n"
             << "  draftc resolve <package-directory> [--revalidate] [--judge]\n"
+            << "      [--target aarch64-macos|aarch64-linux]\n"
             << "      [--instrument address|lifetime|undefined-operation|allocator-poisoning|race]...\n"
             << "      [--assertions=off]\n"
             << "      [--judge-select <selector>]...\n"
@@ -1190,6 +1222,7 @@ void print_usage() {
             << "      [--provider-summary name:<path>]...\n"
             << "      [--runtime-asset name:<file-or-directory>]...\n"
             << "  draftc judge <package-directory> [<selector>...] [--list]\n"
+            << "      [--target aarch64-macos|aarch64-linux]\n"
             << "      [--assertions=off]\n"
             << "      [--judge-validator <identity>:<model>]...\n"
             << "      [--judge-artifact <kind>:<path>]...\n"
@@ -1197,7 +1230,7 @@ void print_usage() {
             << "       --codex-executable <path> --codex-model <model>]\n"
             << "      [--provider name=object|archive|shared-library:<path>]...\n"
             << "      [--provider-summary name:<path>]...\n"
-            << "  draftc target\n";
+            << "  draftc target [--target aarch64-macos|aarch64-linux]\n";
 }
 
 } // namespace
@@ -1209,27 +1242,52 @@ int main(int argc, char **argv) {
   if (argc == 3 && std::string_view(argv[1]) == "syntax") {
     return parse_file(argv[2]);
   }
-  if (argc == 3 && std::string_view(argv[1]) == "check") {
-    return compile_package(argv[2], false);
-  }
-  if (argc == 3 && std::string_view(argv[1]) == "emit-llvm") {
-    return compile_package(argv[2], true);
+
+  // macOS remains the compatibility default, but every command that consumes
+  // a package accepts the same explicit selector.  Keeping one value in main
+  // makes it mechanically difficult for a branch to parse the option and then
+  // forget to pass the chosen profile into its operation.
+  draft::TargetProfile target = draft::make_aarch64_macos_profile();
+  if (argc >= 3 &&
+      (std::string_view(argv[1]) == "check" ||
+       std::string_view(argv[1]) == "emit-llvm")) {
+    bool target_set = false;
+    for (int index = 3; index < argc; ++index) {
+      const std::string_view argument(argv[index]);
+      if (argument == "--target" && !target_set && index + 1 < argc) {
+        target_set = true;
+        if (!select_command_target(argv[++index], target)) return 2;
+      } else {
+        print_usage();
+        return 2;
+      }
+    }
+    return compile_package(
+        argv[2], std::string_view(argv[1]) == "emit-llvm", target);
   }
   if (argc >= 3 && std::string_view(argv[1]) == "emit-c-header") {
     std::optional<std::string> output;
-    if (argc == 5 && std::string_view(argv[3]) == "-o") {
-      output = argv[4];
-    } else if (argc != 3) {
-      print_usage();
-      return 2;
+    bool target_set = false;
+    for (int index = 3; index < argc; ++index) {
+      const std::string_view argument(argv[index]);
+      if (argument == "-o" && !output.has_value() && index + 1 < argc) {
+        output = argv[++index];
+      } else if (argument == "--target" && !target_set && index + 1 < argc) {
+        target_set = true;
+        if (!select_command_target(argv[++index], target)) return 2;
+      } else {
+        print_usage();
+        return 2;
+      }
     }
-    return emit_c_header_package(argv[2], output);
+    return emit_c_header_package(argv[2], target, output);
   }
   if (argc >= 3 && std::string_view(argv[1]) == "resolve") {
     bool revalidate = false;
     bool judge_during_resolution = false;
     bool allow_host_toolchain = false;
     bool assertions_off = false;
+    bool target_set = false;
     std::optional<std::string> codex_distribution_root;
     std::optional<std::string> codex_executable;
     std::optional<std::string> codex_model;
@@ -1246,6 +1304,10 @@ int main(int argc, char **argv) {
       const std::string_view argument(argv[index]);
       if (argument == "--revalidate" && !revalidate) {
         revalidate = true;
+      } else if (argument == "--target" && !target_set &&
+                 index + 1 < argc) {
+        target_set = true;
+        if (!select_command_target(argv[++index], target)) return 2;
       } else if (argument == "--assertions=off" && !assertions_off) {
         assertions_off = true;
       } else if (argument == "--judge" &&
@@ -1387,6 +1449,7 @@ int main(int argc, char **argv) {
     return run_agent_command(
         argv[2],
         AgentCommandKind::Resolve,
+        target,
         revalidate,
         allow_host_toolchain,
         codex,
@@ -1410,6 +1473,7 @@ int main(int argc, char **argv) {
     std::optional<std::string> codex_model;
     bool list_judgments = false;
     bool assertions_off = false;
+    bool target_set = false;
     std::vector<std::string> judgment_selectors;
     std::vector<NamedCodexJudgmentValidator> judgment_validators;
     std::vector<JudgmentArtifactPath> judgment_artifact_paths;
@@ -1420,6 +1484,10 @@ int main(int argc, char **argv) {
       if (argument == "--codex-executable" &&
           !codex_executable.has_value() && index + 1 < argc) {
         codex_executable = argv[++index];
+      } else if (argument == "--target" && !target_set &&
+                 index + 1 < argc) {
+        target_set = true;
+        if (!select_command_target(argv[++index], target)) return 2;
       } else if (argument == "--assertions=off" && !assertions_off) {
         assertions_off = true;
       } else if (argument == "--codex-distribution-root" &&
@@ -1518,6 +1586,7 @@ int main(int argc, char **argv) {
     return run_agent_command(
         argv[2],
         AgentCommandKind::Judge,
+        target,
         false,
         false,
         codex,
@@ -1545,6 +1614,7 @@ int main(int argc, char **argv) {
     bool allow_host_toolchain = false;
     bool locked = false;
     bool verify = false;
+    bool target_set = false;
     std::optional<std::string> toolchain_root;
     std::optional<std::string> sdk_root;
     std::vector<draft::ForeignProviderInput> foreign_providers;
@@ -1555,6 +1625,10 @@ int main(int argc, char **argv) {
       const std::string_view argument(argv[index]);
       if (argument == "--allow-host-toolchain" && !allow_host_toolchain) {
         allow_host_toolchain = true;
+      } else if (argument == "--target" && !target_set &&
+                 index + 1 < argc) {
+        target_set = true;
+        if (!select_command_target(argv[++index], target)) return 2;
       } else if (argument == "--locked" && !locked) {
         locked = true;
       } else if (argument == "--verify" && !verify &&
@@ -1627,6 +1701,7 @@ int main(int argc, char **argv) {
     }
     return validate_package(
         argv[2],
+        target,
         validation_kind,
         instrumentation,
         allow_host_toolchain,
@@ -1646,6 +1721,7 @@ int main(int argc, char **argv) {
     bool require_benchmark_evidence = false;
     bool require_judgment_evidence = false;
     bool assertions_off = false;
+    bool target_set = false;
     draft::JudgmentVerificationPolicy judgment_policy;
     bool custom_judgment_validators = false;
     std::optional<std::string> toolchain_root;
@@ -1658,6 +1734,10 @@ int main(int argc, char **argv) {
       const std::string_view argument(argv[index]);
       if (argument == "--allow-host-toolchain") {
         allow_host_toolchain = true;
+      } else if (argument == "--target" && !target_set &&
+                 index + 1 < argc) {
+        target_set = true;
+        if (!select_command_target(argv[++index], target)) return 2;
       } else if (argument == "--assertions=off" && !assertions_off) {
         assertions_off = true;
       } else if (argument == "--require-test-evidence" &&
@@ -1783,6 +1863,7 @@ int main(int argc, char **argv) {
         judgment_policy.artifacts);
     return build_package(
         argv[2],
+        target,
         output,
         artifact_kind,
         assertions_off
@@ -1799,8 +1880,19 @@ int main(int argc, char **argv) {
         require_judgment_evidence,
         judgment_policy);
   }
-  if (argc == 2 && std::string_view(argv[1]) == "target") {
-    return print_target();
+  if (argc >= 2 && std::string_view(argv[1]) == "target") {
+    bool target_set = false;
+    for (int index = 2; index < argc; ++index) {
+      const std::string_view argument(argv[index]);
+      if (argument == "--target" && !target_set && index + 1 < argc) {
+        target_set = true;
+        if (!select_command_target(argv[++index], target)) return 2;
+      } else {
+        print_usage();
+        return 2;
+      }
+    }
+    return print_target(target);
   }
   print_usage();
   return 2;

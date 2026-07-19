@@ -7,9 +7,9 @@ or userspace ABI is interchangeable.
 
 ## Initial AArch64 Linux profile
 
-Status: implemented target-profile and target-qualified core-source boundary;
-native artifact and hosted-runtime qualification proceeds in subsequent Linux
-implementation slices.
+Status: implemented target profile, public driver selection, and
+target-qualified core-source boundary; native artifact and hosted-runtime
+qualification proceeds in subsequent Linux implementation slices.
 
 The profile identity is `draft-aarch64-linux-gnu-v1`. It targets
 `aarch64-unknown-linux-gnu`, the GNU AAPCS64 ABI, little-endian ELF, the generic
@@ -51,7 +51,10 @@ clock symbols used by the compiler runtime and first core packages.
 
 The v3 core source tree selects Linux file/open flags, anonymous-mapping bits,
 glibc pthread handle/storage types, `clock_gettime`, and ELF assembly symbol
-spelling with the profile's `aarch64-linux` file tag. ELF artifact spelling, the
+spelling with the profile's `aarch64-linux` file tag. Every package command now
+accepts `--target aarch64-linux` and carries this profile through compilation,
+C-header emission, validation, resolution, and judgment; macOS remains the
+compatibility default. ELF artifact spelling, the
 dynamic loader, deterministic link flags, debug information, and locked
 toolchain/sysroot shape remain backend work. Release documentation must not call
 the target qualified until those gates have run.

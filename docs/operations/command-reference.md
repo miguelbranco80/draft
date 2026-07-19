@@ -24,6 +24,14 @@ Locked builds may require matching evidence with
 `--require-judgment-evidence`; verification does not execute validation or
 contact a provider.
 
+Every command that consumes a package accepts `--target aarch64-macos` or
+`--target aarch64-linux`; `target` accepts the same option for inspection.
+The default remains `aarch64-macos` for compatibility.  The selected profile
+is one value carried through source selection, semantic layout and ABI
+checking, LLVM emission, native artifact construction, validation, resolution,
+and judgment.  In particular, selecting Linux is never an output-file-format
+switch applied after macOS semantics have already been checked.
+
 Configure, build, and test the current compiler with:
 
 ```sh
@@ -35,11 +43,14 @@ ctest --test-dir build --output-on-failure
 `build/draftc lex path/to/file.draft` prints the token stream, including which
 semicolons were inserted by the compiler. `build/draftc syntax
 path/to/file.draft` prints the parsed grammar tree. `build/draftc target` prints
-the selected profile's key ABI, LLVM, and assembly facts. `build/draftc check
+the default profile's key ABI, LLVM, and assembly facts; add `--target
+aarch64-linux` to inspect the GNU/ELF profile. `build/draftc check
 path/to/package-directory` runs package loading, compile-time selection, type and
 layout resolution, imported public-interface checking, and procedure-body HIR
 checking without an agent. `build/draftc check examples/packages/app` exercises
-the current multi-package path. `build/draftc emit-llvm examples/hello` prints
+the current multi-package path. `build/draftc check examples/core-os --target
+aarch64-linux` selects the Linux core variants while exercising that same
+pipeline. `build/draftc emit-llvm examples/hello` prints
 the package module without invoking external tools. `build/draftc build
 examples/hello` uses the pinned native toolchain; `--allow-host-toolchain` is an
 explicit development-only escape hatch. All commands use the same
