@@ -427,6 +427,39 @@ TypeId TypeStore::tuple(const std::vector<TypeId> &members) {
   return add(std::move(result));
 }
 
+void TypeStore::complete_pending_tuple_layouts() {
+  bool made_progress = true;
+  while (made_progress) {
+    made_progress = false;
+    for (Type &pending : types_) {
+      if (pending.kind != TypeKind::Tuple || pending.layout.known ||
+          pending.owner_evaluated_type_application) {
+        continue;
+      }
+      const TypeLayout layout = aggregate_layout(pending.members);
+      if (!layout.known) continue;
+
+      // Compute the semantic member byte offsets at the same moment as the
+      // total layout. Publishing one without the other would let LLVM choose
+      // field zero for a later nonzero-offset tuple operand.
+      std::vector<std::uint64_t> offsets;
+      offsets.reserve(pending.members.size());
+      std::uint64_t next_offset = 0;
+      for (TypeId member : pending.members) {
+        const TypeLayout member_layout = type(member).layout;
+        const std::optional<std::uint64_t> offset =
+            round_up(next_offset, member_layout.alignment);
+        assert(offset.has_value());
+        offsets.push_back(*offset);
+        next_offset = *offset + member_layout.size;
+      }
+      pending.layout = layout;
+      pending.member_offsets = std::move(offsets);
+      made_progress = true;
+    }
+  }
+}
+
 TypeId TypeStore::procedure(
     const std::vector<TypeId> &parameters, TypeId result_type, bool c_calling_convention) {
   std::vector<TypeId> signature = parameters;
@@ -488,6 +521,11 @@ void TypeStore::complete_nominal(
   nominal.layout = layout;
   nominal.members = std::move(members);
   nominal.member_offsets = std::move(member_offsets);
+  // A return tuple can be interned from a procedure signature before a struct
+  // declared in another selected package file is laid out. Body checking later
+  // reuses that exact TypeId, so repair the canonical row here rather than
+  // asking each consumer to rediscover layout.
+  complete_pending_tuple_layouts();
 }
 
 bool TypeStore::is_integer(TypeId id) const {

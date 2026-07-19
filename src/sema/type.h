@@ -8,7 +8,7 @@
 // generic count lives in SemanticPackage's side table. This table is Draft's
 // type identity authority and will later be reproduced by the self-hosted compiler.
 //
-// Layout values are byte counts for the selected AArch64 macOS profile. Unknown
+// Layout values are byte counts for the selected target profile. Unknown
 // layout is explicit and occurs while a nominal type is incomplete or when a
 // requested aggregate overflows the target addressable size. The semantic layer
 // must diagnose use that requires a still-unknown layout.
@@ -225,6 +225,11 @@ private:
   [[nodiscard]] TypeId add_scalar(
       std::string name, TypeKind kind, std::uint32_t bits, std::uint32_t alignment);
   [[nodiscard]] TypeLayout aggregate_layout(const std::vector<TypeId> &members) const;
+  // Procedure signatures may intern tuples while a nominal member is still a
+  // forward-declared shell. Completing that nominal must publish any newly
+  // computable tuple layout before body checking or MIR observes the tuple.
+  // A fixpoint handles tuples nested inside other pending tuples.
+  void complete_pending_tuple_layouts();
 
   struct BuiltinName {
     std::string name;

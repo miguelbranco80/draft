@@ -102,10 +102,18 @@ void test_nominal_identity(TestState &state) {
       draft::TypeKind::Struct, "Left", draft::SourceRange::invalid());
   const draft::TypeId right = types.begin_nominal(
       draft::TypeKind::Struct, "Right", draft::SourceRange::invalid());
+  const draft::TypeId pending_tuple = types.tuple(
+      {left, types.builtins().bool_type});
+  EXPECT(state, !types.type(pending_tuple).layout.known);
   EXPECT(state, left != right);
   EXPECT(state, !types.type(left).layout.known);
   types.complete_nominal(left, {true, 4, 4}, {*u32});
   types.complete_nominal(right, {true, 4, 4}, {*u32});
+  EXPECT(state,
+      types.type(pending_tuple).layout == draft::TypeLayout({true, 8, 4}));
+  EXPECT(state,
+      types.type(pending_tuple).member_offsets ==
+          std::vector<std::uint64_t>({0, 4}));
   EXPECT(state, types.type(left).layout == types.type(right).layout);
   EXPECT(state, left != right);
 
