@@ -214,6 +214,13 @@ phase structure and counters before comparing small durations, which vary with
 the host and warm filesystem caches. Timing is diagnostic only and never
 changes program identity or output.
 
+For resolved programs, distinguish `workspace loads` from `workspace source
+transitions`. A checked `...` expansion is reparsed into the existing
+command-local graph and reanalyzes only its package plus transitive import
+consumers; it is not another workspace load and creates no persistent cache.
+An additional compiler pass is expected only for a genuinely different source
+selection, such as the typed test or benchmark graph used as synthesis context.
+
 ## Draft tests and benchmarks
 
 Put executable positive behavior in `*_test.draft`:

@@ -731,23 +731,96 @@ private:
   return SourceRange::invalid();
 }
 
-// Tests persistent site membership across the two compilation passes. Kind is
-// explicit because synthesis and judgment identities inhabit different policy
-// domains even though both use the same `site-<digest>` spelling.
-[[nodiscard]] bool contains_site(
-    const CompileWorkspaceResult &compiled,
-    AgentConstructKind kind,
-    std::string_view site_identity) {
-  for (const std::optional<CompiledPackage> &package : compiled.packages) {
+// Only persistent site identity and construct kind cross the body-source
+// transition. Retaining this compact boundary avoids copying a complete
+// semantic graph merely to prove that checked generated source removed every
+// synthesis site and preserved the authored judgment set.
+[[nodiscard]] ResolvedAgentBoundary capture_agent_boundary(
+    const CompileWorkspaceResult &surface) {
+  ResolvedAgentBoundary result;
+  for (const std::optional<CompiledPackage> &package : surface.packages) {
     if (!package.has_value()) continue;
     for (const AgentObligation &obligation : package->obligations.obligations) {
-      if (obligation.kind == kind &&
-          obligation.site_identity == site_identity) {
-        return true;
+      if (obligation.kind == AgentConstructKind::Judgment) {
+        result.judgment_sites.push_back(obligation.site_identity);
       }
     }
   }
-  return false;
+  std::sort(result.judgment_sites.begin(), result.judgment_sites.end());
+  result.judgment_sites.erase(
+      std::unique(
+          result.judgment_sites.begin(), result.judgment_sites.end()),
+      result.judgment_sites.end());
+  return result;
+}
+
+[[nodiscard]] bool snapshot_contains_judgment(
+    const ResolvedAgentBoundary &surface,
+    std::string_view site_identity) {
+  return std::binary_search(
+      surface.judgment_sites.begin(),
+      surface.judgment_sites.end(),
+      site_identity);
+}
+
+[[nodiscard]] bool validate_resolved_agent_boundary_snapshot(
+    const ResolvedAgentBoundary &surface,
+    const CompileWorkspaceResult &resolved,
+    DiagnosticSink &diagnostics) {
+  const std::size_t initial_errors = diagnostics.error_count();
+  std::vector<std::string> resolved_judgments;
+  for (std::size_t index = 0; index < resolved.packages.size(); ++index) {
+    if (!resolved.packages[index].has_value()) continue;
+    for (const AgentObligation &obligation :
+         resolved.packages[index]->obligations.obligations) {
+      if (is_synthesis_obligation(obligation.kind)) {
+        diagnostics.error(
+            obligation_range(resolved.graph.packages[index], obligation),
+            "generated source may not contain a synthesis site");
+      } else if (obligation.kind == AgentConstructKind::Judgment) {
+        resolved_judgments.push_back(obligation.site_identity);
+        if (!snapshot_contains_judgment(surface, obligation.site_identity)) {
+          diagnostics.error(
+              obligation_range(resolved.graph.packages[index], obligation),
+              "generated source may not introduce a judgment");
+        }
+      }
+    }
+  }
+  std::sort(resolved_judgments.begin(), resolved_judgments.end());
+  resolved_judgments.erase(
+      std::unique(resolved_judgments.begin(), resolved_judgments.end()),
+      resolved_judgments.end());
+  for (const std::string &site : surface.judgment_sites) {
+    if (!std::binary_search(
+            resolved_judgments.begin(), resolved_judgments.end(), site)) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "resolved source displaced a surface judgment site");
+    }
+  }
+  return diagnostics.error_count() == initial_errors;
+}
+
+// Interface reanalysis can stop before consumers when generated source itself
+// contains a declaration/member synthesis site. Diagnose those ready producer
+// rows before semantic closure so the user sees the violated source boundary,
+// not the downstream scheduler symptom that a package remained suspended.
+[[nodiscard]] bool reject_generated_synthesis(
+    const CompileWorkspaceResult &resolved,
+    DiagnosticSink &diagnostics) {
+  const std::size_t initial_errors = diagnostics.error_count();
+  for (std::size_t index = 0; index < resolved.packages.size(); ++index) {
+    if (!resolved.packages[index].has_value()) continue;
+    for (const AgentObligation &obligation :
+         resolved.packages[index]->obligations.obligations) {
+      if (!is_synthesis_obligation(obligation.kind)) continue;
+      diagnostics.error(
+          obligation_range(resolved.graph.packages[index], obligation),
+          "generated source may not contain a synthesis site");
+    }
+  }
+  return diagnostics.error_count() == initial_errors;
 }
 
 [[nodiscard]] ImportedEffect import_interface_effect(
@@ -1008,6 +1081,221 @@ void bind_handwritten_program_identity(
       options.configuration);
 }
 
+// A source change can affect every package that imports the changed package,
+// directly or transitively, but never an unrelated dependency. The workspace
+// graph stores consumer -> dependency edges, so propagate dirtiness in the
+// reverse semantic direction until a fixed point. Package-index order is used
+// for every scan; scheduling therefore remains deterministic even when several
+// consumers become ready together.
+[[nodiscard]] std::vector<bool> affected_packages(
+    const WorkspaceGraph &graph,
+    const std::vector<PackageId> &changed_packages) {
+  std::vector<bool> affected(graph.packages.size(), false);
+  for (PackageId package : changed_packages) {
+    if (package.is_valid() &&
+        static_cast<std::size_t>(package.value) < affected.size()) {
+      affected[package.value] = true;
+    }
+  }
+  bool made_progress = true;
+  while (made_progress) {
+    made_progress = false;
+    for (const PackageImport &edge : graph.imports) {
+      const std::size_t consumer = edge.importing_package.value;
+      const std::size_t dependency = edge.imported_package.value;
+      if (consumer >= affected.size() || dependency >= affected.size() ||
+          affected[consumer] || !affected[dependency]) {
+        continue;
+      }
+      affected[consumer] = true;
+      made_progress = true;
+    }
+  }
+  return affected;
+}
+
+// Builds declaration semantics and preliminary interfaces for selected graph
+// rows. Dependencies must be selected whenever one of their interfaces is no
+// longer valid; affected_packages() establishes that closure for source
+// updates. Unselected rows remain authoritative and supply their existing
+// immutable interfaces to affected consumers. A selected consumer may remain
+// empty only in interface-discovery mode when a dependency is deliberately
+// blocked on an opaque synthesis set.
+void analyze_workspace_interfaces(
+    SourceManager &sources,
+    const CompileWorkspaceOptions &options,
+    const std::vector<std::size_t> &consumer_order,
+    const std::vector<bool> &selected,
+    CompileWorkspaceResult &result,
+    DiagnosticSink &diagnostics) {
+  std::vector<std::vector<AgentValidationContext>> retained_validation(
+      result.packages.size());
+  std::vector<bool> retained_validation_is_typed(
+      result.packages.size(), false);
+  for (std::size_t index = 0; index < result.packages.size(); ++index) {
+    if (!selected[index]) continue;
+    if (result.packages[index].has_value()) {
+      retained_validation[index] =
+          std::move(result.packages[index]->validation_context);
+      retained_validation_is_typed[index] =
+          result.packages[index]->validation_context_is_typed;
+    }
+    result.packages[index].reset();
+  }
+
+  TimingScope declaration_timing = options.timings != nullptr
+      ? options.timings->scope("declaration semantics")
+      : TimingScope{};
+  for (auto position = consumer_order.rbegin();
+       position != consumer_order.rend(); ++position) {
+    const std::size_t package_index = *position;
+    if (!selected[package_index]) continue;
+    WorkspacePackage &workspace_package = result.graph.packages[package_index];
+    AvailablePackageImports available;
+    available.consumer_identity = workspace_package.identity;
+    bool dependencies_ready = true;
+    for (const PackageImport &import : result.graph.imports) {
+      if (static_cast<std::size_t>(import.importing_package.value) !=
+          package_index) {
+        continue;
+      }
+      const std::size_t dependency_index =
+          static_cast<std::size_t>(import.imported_package.value);
+      if (dependency_index >= result.packages.size() ||
+          !result.packages[dependency_index].has_value()) {
+        if (options.stage == CompileWorkspaceStage::Complete) {
+          diagnostics.error(
+              SourceRange::invalid(),
+              "dependency did not produce a package interface before its consumer");
+        }
+        dependencies_ready = false;
+        continue;
+      }
+      if (options.stage == CompileWorkspaceStage::DiscoverInterfaceSynthesis &&
+          has_interface_synthesis(*result.packages[dependency_index])) {
+        dependencies_ready = false;
+        continue;
+      }
+      available.entries.push_back({
+          {import.file, import.syntax},
+          &result.packages[dependency_index]->interface,
+      });
+    }
+    if (!dependencies_ready) continue;
+
+    CompiledPackage package;
+    package.identity = workspace_package.identity;
+    package.validation_context = std::move(retained_validation[package_index]);
+    package.validation_context_is_typed =
+        retained_validation_is_typed[package_index];
+    TimingScope package_timing = time_package_phase(
+        options.timings, "package declarations: ", workspace_package.identity);
+    for (const LoadedPackageFile &file : workspace_package.loaded.files) {
+      if (file.kind != PackageFileKind::AssemblySource) continue;
+      package.assembly_sources.push_back({
+          file.relative_name,
+          std::string(sources.text(file.source)),
+      });
+    }
+    package.semantics = analyze_package_semantics(
+        sources,
+        workspace_package.loaded,
+        options.target.facts,
+        available,
+        compile_time_synthesis_mode(options.stage),
+        diagnostics);
+    if (options.timings != nullptr) {
+      options.timings->add_counter("package semantic analyses", 1);
+    }
+
+    // Imported procedure-dependent layouts form a package-owner fixed point.
+    // Publishing may enrich a dependency interface in place; this package is
+    // then rebuilt from its unchanged syntax until no request remains.
+    std::vector<Sha256Digest> attempted_type_request_sets;
+    while (package.semantics.ok &&
+           !package.semantics.package
+                .imported_type_instantiation_requests.empty()) {
+      const Sha256Digest request_digest =
+          hash_type_instantiation_requests(package, diagnostics);
+      if (std::find(
+              attempted_type_request_sets.begin(),
+              attempted_type_request_sets.end(),
+              request_digest) != attempted_type_request_sets.end()) {
+        break;
+      }
+      attempted_type_request_sets.push_back(request_digest);
+      if (!publish_type_instantiation_requests(
+              sources, result, package, options, diagnostics)) {
+        break;
+      }
+      package.semantics = analyze_package_semantics(
+          sources,
+          workspace_package.loaded,
+          options.target.facts,
+          available,
+          diagnostics);
+      if (options.timings != nullptr) {
+        options.timings->add_counter("package semantic analyses", 1);
+      }
+    }
+    if (package.semantics.ok &&
+        !package.semantics.package
+             .imported_type_instantiation_requests.empty()) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "generic type layout requests made no semantic progress");
+      package.semantics.ok = false;
+    }
+    if (!package.semantics.ok) continue;
+    if (!append_compile_time_body_synthesis_sites(
+            sources,
+            workspace_package.loaded,
+            options.target.facts,
+            package.semantics,
+            diagnostics)) {
+      continue;
+    }
+    package.metadata = collect_agent_metadata(
+        sources,
+        workspace_package.loaded,
+        package.semantics.package,
+        options.attachments,
+        diagnostics);
+    if (options.validation_kind == ValidationKind::None &&
+        package.validation_context.empty() && package.metadata.ok &&
+        has_agent_obligation_record(package.metadata)) {
+      package.validation_context = load_validation_context(
+          sources, workspace_package, options.workspace, diagnostics);
+      package.validation_context_is_typed = false;
+    }
+    package.interface =
+        options.stage == CompileWorkspaceStage::DiscoverInterfaceSynthesis &&
+            has_synthesis_record(package.metadata)
+        ? withheld_package_interface(
+              workspace_package.identity, package.semantics.package)
+        : build_package_interface(
+              workspace_package.identity,
+              package.semantics.package,
+              package.semantics.constants,
+              package.metadata,
+              diagnostics);
+    if (options.stage == CompileWorkspaceStage::DiscoverInterfaceSynthesis) {
+      package.obligations = build_agent_obligations(
+          workspace_package.identity,
+          sources,
+          workspace_package.loaded,
+          package.semantics.package,
+          package.semantics.constants,
+          package.metadata,
+          options.target,
+          diagnostics,
+          package.validation_context);
+    }
+    result.packages[package_index] = std::move(package);
+  }
+  declaration_timing.finish();
+}
+
 } // namespace
 
 CompileWorkspaceResult compile_workspace(
@@ -1096,163 +1384,17 @@ CompileWorkspaceResult compile_workspace(
     return result;
   }
 
-  // Phase 1: dependency-first declaration semantics and preliminary public
-  // interfaces. Bodies and effects are intentionally absent, but every type,
-  // constant, and parametric signature needed by a consumer is now available.
-  TimingScope declaration_timing = options.timings != nullptr
-      ? options.timings->scope("declaration semantics")
-      : TimingScope{};
-  for (auto position = consumer_order.rbegin();
-       position != consumer_order.rend(); ++position) {
-    const std::size_t package_index = *position;
-    WorkspacePackage &workspace_package = result.graph.packages[package_index];
-    AvailablePackageImports available;
-    available.consumer_identity = workspace_package.identity;
-    bool dependencies_ready = true;
-    for (const PackageImport &import : result.graph.imports) {
-      if (static_cast<std::size_t>(import.importing_package.value) != package_index) {
-        continue;
-      }
-      const std::size_t dependency_index =
-          static_cast<std::size_t>(import.imported_package.value);
-      if (dependency_index >= result.packages.size() ||
-          !result.packages[dependency_index].has_value()) {
-        if (options.stage == CompileWorkspaceStage::Complete) {
-          diagnostics.error(
-              SourceRange::invalid(),
-              "dependency did not produce a package interface before its consumer");
-        }
-        dependencies_ready = false;
-        continue;
-      }
-      if (options.stage == CompileWorkspaceStage::DiscoverInterfaceSynthesis &&
-          has_interface_synthesis(*result.packages[dependency_index])) {
-        dependencies_ready = false;
-        continue;
-      }
-      available.entries.push_back({
-          {import.file, import.syntax},
-          &result.packages[dependency_index]->interface,
-      });
-    }
-    if (!dependencies_ready) continue;
-
-    CompiledPackage package;
-    package.identity = workspace_package.identity;
-    TimingScope package_timing = time_package_phase(
-        options.timings, "package declarations: ", workspace_package.identity);
-    // Freeze native assembly beside the semantic phase products. Native build
-    // invocation is deliberately separate from compilation and must consume
-    // this checked snapshot rather than mutable workspace paths.
-    for (const LoadedPackageFile &file : workspace_package.loaded.files) {
-      if (file.kind != PackageFileKind::AssemblySource) continue;
-      package.assembly_sources.push_back({
-          file.relative_name,
-          std::string(sources.text(file.source)),
-      });
-    }
-    package.semantics = analyze_package_semantics(
-        sources,
-        workspace_package.loaded,
-        options.target.facts,
-        available,
-        compile_time_synthesis_mode(options.stage),
-        diagnostics);
-    if (options.timings != nullptr) {
-      options.timings->add_counter("package semantic analyses", 1);
-    }
-    // Imported procedure-dependent layouts are discovered only after the
-    // consumer supplies concrete arguments. Publish each owner result, then
-    // rebuild this package from its unchanged source and the enriched dependency
-    // interfaces. A successful rebuild contains no placeholder requests.
-    std::vector<Sha256Digest> attempted_type_request_sets;
-    while (package.semantics.ok &&
-           !package.semantics.package
-                .imported_type_instantiation_requests.empty()) {
-      const Sha256Digest request_digest =
-          hash_type_instantiation_requests(package, diagnostics);
-      if (std::find(
-              attempted_type_request_sets.begin(),
-              attempted_type_request_sets.end(),
-              request_digest) != attempted_type_request_sets.end()) {
-        break;
-      }
-      attempted_type_request_sets.push_back(request_digest);
-      if (!publish_type_instantiation_requests(
-              sources, result, package, options, diagnostics)) {
-        break;
-      }
-      package.semantics = analyze_package_semantics(
-          sources,
-          workspace_package.loaded,
-          options.target.facts,
-          available,
-          diagnostics);
-      if (options.timings != nullptr) {
-        options.timings->add_counter("package semantic analyses", 1);
-      }
-    }
-    if (package.semantics.ok &&
-        !package.semantics.package
-             .imported_type_instantiation_requests.empty()) {
-      diagnostics.error(
-          SourceRange::invalid(),
-          "generic type layout requests made no semantic progress");
-      package.semantics.ok = false;
-    }
-    if (!package.semantics.ok) continue;
-    if (!append_compile_time_body_synthesis_sites(
-            sources,
-            workspace_package.loaded,
-            options.target.facts,
-            package.semantics,
-            diagnostics)) {
-      continue;
-    }
-    // Public package/declaration documentation is an interface input just like
-    // public types and constants. Collect it before consumers bind dependency
-    // interfaces; waiting for the body pass would make those exact docs and
-    // attachment bytes permanently unavailable in the consumer semantic graph.
-    // Body-local judgments and synthesis sites are added by the later complete
-    // recollection after HIR checking.
-    package.metadata = collect_agent_metadata(
-        sources,
-        workspace_package.loaded,
-        package.semantics.package,
-        options.attachments,
-        diagnostics);
-    if (options.validation_kind == ValidationKind::None &&
-        package.metadata.ok &&
-        has_agent_obligation_record(package.metadata)) {
-      package.validation_context = load_validation_context(
-          sources, workspace_package, options.workspace, diagnostics);
-    }
-    package.interface =
-        options.stage == CompileWorkspaceStage::DiscoverInterfaceSynthesis &&
-            has_synthesis_record(package.metadata)
-        ? withheld_package_interface(
-              workspace_package.identity, package.semantics.package)
-        : build_package_interface(
-              workspace_package.identity,
-              package.semantics.package,
-              package.semantics.constants,
-              package.metadata,
-              diagnostics);
-    if (options.stage == CompileWorkspaceStage::DiscoverInterfaceSynthesis) {
-      package.obligations = build_agent_obligations(
-          workspace_package.identity,
-          sources,
-          workspace_package.loaded,
-          package.semantics.package,
-          package.semantics.constants,
-          package.metadata,
-          options.target,
-          diagnostics,
-          package.validation_context);
-    }
-    result.packages[package_index] = std::move(package);
-  }
-  declaration_timing.finish();
+  // Phase 1 publishes dependency interfaces. The initial load selects every
+  // row; later source transitions call the same operation with only the
+  // changed packages and their transitive consumers.
+  const std::vector<bool> all_packages(result.graph.packages.size(), true);
+  analyze_workspace_interfaces(
+      sources,
+      options,
+      consumer_order,
+      all_packages,
+      result,
+      diagnostics);
 
   // Declaration and member synthesis is an interface-stage operation. The
   // complete body pass cannot run yet because ordinary source is allowed to
@@ -1305,6 +1447,94 @@ CompileWorkspaceResult compile_workspace(
     result.ok = false;
   }
   return result;
+}
+
+bool apply_compiled_workspace_source_overrides(
+    SourceManager &sources,
+    const std::vector<WorkspaceSourceOverride> &overrides,
+    CompileWorkspaceOptions options,
+    CompileWorkspaceResult &result,
+    DiagnosticSink &diagnostics) {
+  const std::size_t initial_errors = diagnostics.error_count();
+  configure_package_selection(options);
+  if (!result.ok ||
+      (result.progress != CompileWorkspaceProgress::InterfaceDiscovery &&
+       result.progress != CompileWorkspaceProgress::SemanticClosure)) {
+    diagnostics.error(
+        SourceRange::invalid(),
+        "resolved source update requires a successful semantic graph");
+    return false;
+  }
+  if (result.target_identity != options.target.facts.identity ||
+      result.compiler_content_identity != options.compiler_content_identity ||
+      result.configuration.runtime_assertions !=
+          options.configuration.runtime_assertions ||
+      result.validation_kind != options.validation_kind) {
+    diagnostics.error(
+        SourceRange::invalid(),
+        "resolved source update options do not match the semantic graph");
+    return false;
+  }
+  if (overrides.empty()) return true;
+
+  TimingScope source_timing = options.timings != nullptr
+      ? options.timings->scope("in-memory resolved source transition")
+      : TimingScope{};
+  const WorkspaceSourceUpdateResult update = apply_workspace_source_overrides(
+      sources, overrides, result.graph, diagnostics);
+  source_timing.finish();
+  if (!update.ok) {
+    result.ok = false;
+    return false;
+  }
+  if (options.timings != nullptr) {
+    options.timings->add_counter("workspace source transitions", 1);
+  }
+
+  const std::vector<bool> selected = affected_packages(
+      result.graph, update.changed_packages);
+  const std::vector<std::size_t> consumer_order =
+      consumer_first_order(result.graph);
+  if (consumer_order.size() != result.graph.packages.size()) {
+    diagnostics.error(
+        SourceRange::invalid(),
+        "workspace package graph became cyclic during resolved source update");
+    result.ok = false;
+    return false;
+  }
+
+  // Every checked expansion first re-enters interface discovery. Even a body
+  // expansion is parsed as a complete source file and must prove that it did
+  // not create a new declaration/member synthesis prerequisite before body
+  // checking resumes. This is a state transition on the existing graph, not a
+  // second compilation of the workspace.
+  options.stage = CompileWorkspaceStage::DiscoverInterfaceSynthesis;
+  options.lower_mir = false;
+  options.emit_llvm = false;
+  analyze_workspace_interfaces(
+      sources,
+      options,
+      consumer_order,
+      selected,
+      result,
+      diagnostics);
+
+  bool every_ready_package_valid = true;
+  for (const std::optional<CompiledPackage> &package : result.packages) {
+    if (!package.has_value()) continue;
+    every_ready_package_valid = every_ready_package_valid &&
+        package->semantics.ok && package->metadata.ok &&
+        package->obligations.ok;
+  }
+  result.ok = every_ready_package_valid &&
+      diagnostics.error_count() == initial_errors;
+  if (result.ok) {
+    result.progress = CompileWorkspaceProgress::InterfaceDiscovery;
+    result.validation_entries.clear();
+    result.resolved_program_digest.reset();
+    result.resolution_manifest.reset();
+  }
+  return result.ok;
 }
 
 bool continue_compiled_workspace_semantics(
@@ -1485,7 +1715,9 @@ bool continue_compiled_workspace_semantics(
     if (package.validation_context.empty()) {
       package.validation_context = load_validation_context(
           sources, workspace_package, options.workspace, diagnostics);
+      package.validation_context_is_typed = false;
     }
+    if (package.validation_context_is_typed) continue;
     for (const AgentValidationContext &validation :
          package.validation_context) {
       needs_test_context = needs_test_context || validation.kind == "test";
@@ -1545,6 +1777,13 @@ bool continue_compiled_workspace_semantics(
         return false;
       }
     }
+  }
+  for (std::optional<CompiledPackage> &package : result.packages) {
+    if (!package.has_value() || package->validation_context.empty() ||
+        options.validation_kind != ValidationKind::None) {
+      continue;
+    }
+    package->validation_context_is_typed = true;
   }
   validation_context_timing.finish();
 
@@ -1777,45 +2016,25 @@ bool continue_compiled_workspace(
   return compiled.ok;
 }
 
+ResolvedAgentBoundary capture_resolved_agent_boundary(
+    const CompileWorkspaceResult &surface) {
+  return capture_agent_boundary(surface);
+}
+
+bool validate_resolved_agent_boundaries(
+    const ResolvedAgentBoundary &surface,
+    const CompileWorkspaceResult &resolved,
+    DiagnosticSink &diagnostics) {
+  return validate_resolved_agent_boundary_snapshot(
+      surface, resolved, diagnostics);
+}
+
 bool validate_resolved_agent_boundaries(
     const CompileWorkspaceResult &surface,
     const CompileWorkspaceResult &resolved,
     DiagnosticSink &diagnostics) {
-  const std::size_t initial_errors = diagnostics.error_count();
-  for (std::size_t index = 0; index < resolved.packages.size(); ++index) {
-    if (!resolved.packages[index].has_value()) continue;
-    for (const AgentObligation &obligation :
-         resolved.packages[index]->obligations.obligations) {
-      if (is_synthesis_obligation(obligation.kind)) {
-        diagnostics.error(
-            obligation_range(resolved.graph.packages[index], obligation),
-            "generated source may not contain a synthesis site");
-      } else if (obligation.kind == AgentConstructKind::Judgment &&
-                 !contains_site(
-                     surface,
-                     AgentConstructKind::Judgment,
-                     obligation.site_identity)) {
-        diagnostics.error(
-            obligation_range(resolved.graph.packages[index], obligation),
-            "generated source may not introduce a judgment");
-      }
-    }
-  }
-  for (const std::optional<CompiledPackage> &package : surface.packages) {
-    if (!package.has_value()) continue;
-    for (const AgentObligation &obligation : package->obligations.obligations) {
-      if (obligation.kind == AgentConstructKind::Judgment &&
-          !contains_site(
-              resolved,
-              AgentConstructKind::Judgment,
-              obligation.site_identity)) {
-        diagnostics.error(
-            SourceRange::invalid(),
-            "resolved source displaced a surface judgment site");
-      }
-    }
-  }
-  return diagnostics.error_count() == initial_errors;
+  return validate_resolved_agent_boundary_snapshot(
+      capture_agent_boundary(surface), resolved, diagnostics);
 }
 
 CompileWorkspaceResult compile_workspace_with_resolution(
@@ -1879,32 +2098,21 @@ CompileWorkspaceResult compile_workspace_with_resolution(
   // Reproduce dependency-ready interface rounds from pinned bytes. No body is
   // checked until every package interface is complete, and no round observes a
   // same-round expansion. Each nonempty round removes at least one site.
-  std::size_t interface_round = 0;
-  CompileWorkspaceResult interface_surface;
+  CompileWorkspaceOptions interface_options = options;
+  interface_options.stage =
+      CompileWorkspaceStage::DiscoverInterfaceSynthesis;
+  interface_options.lower_mir = false;
+  interface_options.emit_llvm = false;
+  CompileWorkspaceResult interface_surface = compile_workspace(
+      sources,
+      root_package_directory,
+      interface_options,
+      diagnostics);
+  if (!interface_surface.ok) return interface_surface;
   while (true) {
-    interface_round += 1;
     if (options.timings != nullptr) {
       options.timings->add_counter("interface discovery rounds", 1);
     }
-    CompileWorkspaceOptions interface_options = options;
-    interface_options.stage =
-        CompileWorkspaceStage::DiscoverInterfaceSynthesis;
-    interface_options.lower_mir = false;
-    interface_options.emit_llvm = false;
-    interface_options.workspace.source_overrides = interface_overrides;
-    const std::string round_name = options.timings != nullptr
-        ? "interface discovery round " + std::to_string(interface_round)
-        : std::string{};
-    TimingScope round_timing = options.timings != nullptr
-        ? options.timings->scope(round_name)
-        : TimingScope{};
-    interface_surface = compile_workspace(
-        sources,
-        root_package_directory,
-        std::move(interface_options),
-        diagnostics);
-    round_timing.finish();
-    if (!interface_surface.ok) return interface_surface;
 
     const std::size_t site_count = synthesis_site_count(interface_surface);
     if (loaded_manifest.state == ResolutionManifestLoadState::Missing) {
@@ -1942,6 +2150,16 @@ CompileWorkspaceResult compile_workspace_with_resolution(
               diagnostics);
       overlay_timing.finish();
       if (!interface_overlay.ok) {
+        interface_surface.ok = false;
+        return interface_surface;
+      }
+      if (site_count != 0 &&
+          !apply_compiled_workspace_source_overrides(
+              sources,
+              interface_overlay.sources,
+              interface_options,
+              interface_surface,
+              diagnostics)) {
         interface_surface.ok = false;
         return interface_surface;
       }
@@ -2063,19 +2281,39 @@ CompileWorkspaceResult compile_workspace_with_resolution(
     return body_surface;
   }
 
-  std::vector<WorkspaceSourceOverride> complete_overrides =
-      std::move(interface_overrides);
-  merge_resolution_overrides(
-      complete_overrides, body_overlay.sources);
-  options.stage = CompileWorkspaceStage::Complete;
-  options.workspace.source_overrides = std::move(complete_overrides);
-  TimingScope resolved_timing = options.timings != nullptr
-      ? options.timings->scope("final resolved compilation")
-      : TimingScope{};
-  CompileWorkspaceResult resolved = compile_workspace(
-      sources, root_package_directory, options, diagnostics);
-  resolved_timing.finish();
-  if (!resolved.ok) return resolved;
+  const ResolvedAgentBoundary surface_boundary =
+      capture_agent_boundary(body_surface);
+  if (!body_overlay.sources.empty()) {
+    CompileWorkspaceOptions update_options = options;
+    update_options.stage =
+        CompileWorkspaceStage::DiscoverInterfaceSynthesis;
+    update_options.lower_mir = false;
+    update_options.emit_llvm = false;
+    if (!apply_compiled_workspace_source_overrides(
+            sources,
+            body_overlay.sources,
+            update_options,
+            body_surface,
+            diagnostics) ||
+        !reject_generated_synthesis(body_surface, diagnostics)) {
+      body_surface.ok = false;
+      return body_surface;
+    }
+
+    // Body-category expansions cannot alter declarations, so the source
+    // transition retains already typed validation context while rebuilding the
+    // affected package declarations and consumers. Resume body/effect closure
+    // on those exact rows; no workspace or validation graph is loaded again.
+    if (!continue_compiled_workspace_semantics(
+            sources,
+            root_package_directory,
+            body_options,
+            body_surface,
+            diagnostics)) {
+      body_surface.ok = false;
+      return body_surface;
+    }
+  }
 
   // Generated source is allowed to contain ordinary docs but not another
   // provider operation. Every surface synthesis site was removed by the
@@ -2083,17 +2321,17 @@ CompileWorkspaceResult compile_workspace_with_resolution(
   // expansion. Judgment identities must be exactly the surface set; input
   // digests may legitimately change after generated declarations become
   // visible and are therefore not compared here.
-  (void)validate_resolved_agent_boundaries(
-      body_surface, resolved, diagnostics);
+  (void)validate_resolved_agent_boundary_snapshot(
+      surface_boundary, body_surface, diagnostics);
   if (diagnostics.error_count() == initial_errors) {
     const Sha256Digest program_digest = hash_resolved_program(
         sources,
-        resolved.graph,
+        body_surface.graph,
         options.target,
         loaded_manifest.manifest,
         options.compiler_content_identity,
         options.configuration);
-    resolved.resolved_program_digest = program_digest;
+    body_surface.resolved_program_digest = program_digest;
     if (options.validation_kind == ValidationKind::None &&
         program_digest != loaded_manifest.manifest.resolved_program_digest) {
       diagnostics.error(
@@ -2101,15 +2339,23 @@ CompileWorkspaceResult compile_workspace_with_resolution(
           "resolution manifest resolved-program identity is stale");
     }
   }
-  resolved.ok = diagnostics.error_count() == initial_errors;
-  if (resolved.ok) {
-    resolved.resolution_manifest = loaded_manifest.manifest;
-    if (!resolved.resolved_program_digest.has_value()) {
-      resolved.resolved_program_digest =
+  body_surface.ok = diagnostics.error_count() == initial_errors;
+  if (body_surface.ok) {
+    body_surface.resolution_manifest = loaded_manifest.manifest;
+    if (!body_surface.resolved_program_digest.has_value()) {
+      body_surface.resolved_program_digest =
           loaded_manifest.manifest.resolved_program_digest;
     }
+    const bool needs_target_continuation =
+        options.validation_kind != ValidationKind::None ||
+        options.lower_mir || options.emit_llvm;
+    if (needs_target_continuation &&
+        !continue_compiled_workspace(
+            sources, options, body_surface, diagnostics)) {
+      body_surface.ok = false;
+    }
   }
-  return resolved;
+  return body_surface;
 }
 
 } // namespace draft

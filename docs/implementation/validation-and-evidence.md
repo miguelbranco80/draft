@@ -21,6 +21,14 @@ at their final boundary, keeping their earlier pins stable. Invalid validation
 syntax or signatures fail resolution before body-provider execution; test-only
 imports and names still cannot leak into ordinary checking.
 
+The selected validation role is a genuinely different source graph, not a
+repeat pass over the ordinary graph: it adds target-qualified files and may add
+imports such as `core/testing`. The compiler builds each required role once,
+stores its enriched typed rows on the owning ordinary package, and retains that
+state across later body-source replacement. Consequently a body expansion does
+not reload or recompile validation context. This is command-local semantic
+state; it is neither serialized nor a persistent cache.
+
 ## Shared evidence attempt storage
 
 Status: implemented persistence foundation for native validation and judgments.

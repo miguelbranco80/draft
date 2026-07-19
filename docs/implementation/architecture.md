@@ -93,8 +93,12 @@ interface discovery installs declarations and types, then semantic continuation
 checks bodies, effects, denials, and completed interfaces on those same package
 rows. A native `build` continues that graph directly through MIR/LLVM, then
 invokes the host toolchain; it does not reload or recheck handwritten source.
-`--timings` exposes the remaining resolution rounds and continuations so
-repeated work stays visible while resolved-source orchestration is consolidated.
+`--timings` exposes resolution rounds as in-memory source transitions. A
+checked complete-file overlay is parsed into the existing workspace graph;
+package/root/import IDs remain stable, only the changed package and its
+transitive consumers rebuild declaration semantics, and unrelated dependency
+rows remain authoritative. The `compiler passes`, `workspace loads`, and
+`workspace source transitions` counters make those distinct operations visible.
 `--timings=all` adds package/tool scopes, file
 discovery and I/O, lexing/parsing, import-graph resolution, and exclusive time;
 child process CPU is reported separately from parent wall time.
@@ -158,6 +162,12 @@ compiler-checked program. It does not run tests, benchmarks, or judgments.
 With `--build`, the resolver returns its exact final semantic-closure graph and
 the driver continues that graph through MIR/LLVM and native emission after the
 source commit. No second front-end orchestration or manifest reload occurs.
+Interface and body expansions are complete source files, but installing one is
+not a workspace reload: the compiler reparses the replacement transactionally,
+rejects any package/import-topology change, and reanalyzes the affected graph
+closure. Speculative provider proposals use isolated copies of the same
+command-local graph operation, so checking a rejected proposal cannot mutate
+the authoritative stage and does not perform filesystem discovery again.
 `draft build` consumes saved expansions without contacting a provider
 or modifying the resolution manifest. It rechecks every program input but
 treats the host compiler, linker, and SDK as operational build configuration.

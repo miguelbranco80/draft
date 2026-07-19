@@ -1,6 +1,7 @@
 // Dependency-ordered full provider-free compiler pipeline tests.
 
 #include "compile/compiler.h"
+#include "base/timing.h"
 #include "source/diagnostic.h"
 #include "source/source.h"
 #include "target/profile.h"
@@ -42,6 +43,79 @@ struct TestState {
     ++count;
     cursor += needle.size();
   }
+}
+
+void test_source_update_reuses_unaffected_semantics(TestState &state) {
+  std::error_code error;
+  const std::filesystem::path root =
+      std::filesystem::temp_directory_path(error) /
+      "draft-bootstrap-compiler-source-update-test";
+  EXPECT(state, !error);
+  std::filesystem::remove_all(root, error);
+  error.clear();
+  std::filesystem::create_directories(root / "app", error);
+  std::filesystem::create_directories(root / "changed", error);
+  std::filesystem::create_directories(root / "stable", error);
+  EXPECT(state, !error);
+  if (error) return;
+
+  std::ofstream app(root / "app" / "package.draft", std::ios::binary);
+  app << "package app\n"
+         "import changed\n"
+         "import stable\n"
+         "main :: proc() {}\n";
+  app.close();
+  std::ofstream changed(root / "changed" / "package.draft", std::ios::binary);
+  changed << "package changed\npub Value :: 1\n";
+  changed.close();
+  std::ofstream stable(root / "stable" / "package.draft", std::ios::binary);
+  stable << "package stable\npub Value :: 10\n";
+  stable.close();
+  EXPECT(state, app.good() && changed.good() && stable.good());
+
+  draft::TimingRecorder timings(draft::TimingOutput::Summary);
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  draft::CompileWorkspaceOptions options;
+  options.target = draft::make_aarch64_macos_profile();
+  options.workspace.workspace_directory = root.string();
+  options.stage = draft::CompileWorkspaceStage::DiscoverInterfaceSynthesis;
+  options.timings = &timings;
+  draft::CompileWorkspaceResult compiled = draft::compile_workspace(
+      sources, (root / "app").string(), options, diagnostics);
+  EXPECT(state, compiled.ok);
+  EXPECT(state, compiled.graph.packages.size() == 3);
+
+  draft::WorkspaceSourceOverride source_override;
+  source_override.identity = {"workspace", "changed"};
+  source_override.source.relative_name = "package.draft";
+  source_override.source.contents = "package changed\npub Value :: 2\n";
+  EXPECT(state,
+      draft::apply_compiled_workspace_source_overrides(
+          sources,
+          {source_override},
+          options,
+          compiled,
+          diagnostics));
+  if (diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+  }
+  EXPECT(state, compiled.ok);
+  EXPECT(state,
+      compiled.progress == draft::CompileWorkspaceProgress::InterfaceDiscovery);
+
+  // Initial analysis visits app, changed, and stable. Replacing changed then
+  // revisits changed and its importing app, but not the independent stable
+  // dependency. The same recorder also proves that the workspace was loaded
+  // once and transitioned in memory once.
+  const std::string report = timings.render();
+  EXPECT(state,
+      report.find("package semantic analyses: 5") != std::string::npos);
+  EXPECT(state, report.find("workspace loads: 1") != std::string::npos);
+  EXPECT(state,
+      report.find("workspace source transitions: 1") != std::string::npos);
+
+  std::filesystem::remove_all(root, error);
 }
 
 void test_target_lowering_continues_checked_graph(TestState &state) {
@@ -1099,6 +1173,7 @@ void test_cross_package_higher_order_effect(TestState &state) {
 
 int main() {
   TestState state;
+  test_source_update_reuses_unaffected_semantics(state);
   test_target_lowering_continues_checked_graph(state);
   test_multi_package_native_pipeline(state);
   test_hosted_entry_contract(state);

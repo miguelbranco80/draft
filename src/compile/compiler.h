@@ -107,6 +107,11 @@ struct CompiledPackage {
   AgentMetadataResult metadata;
   AgentObligationResult obligations;
   std::vector<AgentValidationContext> validation_context;
+  // True only after every retained test/benchmark context row was resolved
+  // against a checked validation graph. Body-category source replacement
+  // cannot change declarations, so this command-local fact survives that
+  // transition and prevents a duplicate validation compilation.
+  bool validation_context_is_typed = false;
   EffectSummaryResult effects;
   PackageInterface interface;
   NativeInteropResult native_interop;
@@ -167,6 +172,14 @@ struct CompileWorkspaceResult {
   std::vector<ValidationEntry> validation_entries;
 };
 
+// Minimal authored agent-site state retained while complete body source is
+// replaced in the same semantic graph. Site identities are sorted and unique;
+// no syntax, semantic package, or backend product is copied merely to validate
+// the generated-source boundary after reanalysis.
+struct ResolvedAgentBoundary {
+  std::vector<std::string> judgment_sites;
+};
+
 // Loads a closed workspace graph and checks dependencies before their consumers.
 // emit_llvm implies MIR lowering. No provider, network, assembler, or linker is
 // invoked by this function.
@@ -174,6 +187,20 @@ struct CompileWorkspaceResult {
     SourceManager &sources,
     const std::string &root_package_directory,
     CompileWorkspaceOptions options,
+    DiagnosticSink &diagnostics);
+
+// Installs complete checked Draft files into one successful command-local
+// graph, then rebuilds declaration/interface rows only for changed packages
+// and their transitive import consumers. The workspace transition preserves
+// package and import topology; unaffected dependencies retain their parsed and
+// semantic state. Any previously completed body or lowering products become
+// non-authoritative and progress returns to InterfaceDiscovery. The operation
+// performs no filesystem load and creates no persistent compiler cache.
+[[nodiscard]] bool apply_compiled_workspace_source_overrides(
+    SourceManager &sources,
+    const std::vector<WorkspaceSourceOverride> &overrides,
+    CompileWorkspaceOptions options,
+    CompileWorkspaceResult &compiled,
     DiagnosticSink &diagnostics);
 
 // Advances a successful interface-discovery result through body checking,
@@ -200,6 +227,14 @@ struct CompileWorkspaceResult {
     SourceManager &sources,
     const CompileWorkspaceOptions &options,
     CompileWorkspaceResult &compiled,
+    DiagnosticSink &diagnostics);
+
+[[nodiscard]] ResolvedAgentBoundary capture_resolved_agent_boundary(
+    const CompileWorkspaceResult &surface);
+
+[[nodiscard]] bool validate_resolved_agent_boundaries(
+    const ResolvedAgentBoundary &surface,
+    const CompileWorkspaceResult &resolved,
     DiagnosticSink &diagnostics);
 
 // Enforces the agent boundary between a successfully checked surface graph and
