@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cerrno>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -163,7 +164,7 @@ struct ProcessResult {
 }
 
 // Runs and accounts for one external tool beneath a named timing event. The
-// process count is recorded only after fork succeeds. Keeping this wrapper at
+// process count is recorded only after spawn succeeds. Keeping this wrapper at
 // the process boundary ensures every Clang, linker, archiver, and dsymutil path
 // reports child CPU consistently, including nonzero exits.
 [[nodiscard]] ProcessResult run_timed_process(
@@ -224,6 +225,38 @@ void append_target_arguments(
     std::filesystem::remove(temporary, ignored);
     return false;
   }
+  return true;
+}
+
+// Reads a worker-private native product back into its task slot. Object bytes
+// may contain zeroes, so this operation is binary and uses the exact file size
+// rather than a text iterator. The private path is never a published artifact.
+[[nodiscard]] bool read_file_bytes(
+    const std::filesystem::path &path,
+    std::string &contents,
+    std::string &reason) {
+  contents.clear();
+  std::ifstream stream(path, std::ios::binary | std::ios::ate);
+  if (!stream) {
+    reason = "cannot open native task output '" + path.string() + "'";
+    return false;
+  }
+  const std::streampos end = stream.tellg();
+  if (end < 0) {
+    reason = "cannot measure native task output '" + path.string() + "'";
+    return false;
+  }
+  contents.resize(static_cast<std::size_t>(end));
+  stream.seekg(0, std::ios::beg);
+  if (!contents.empty()) {
+    stream.read(contents.data(), static_cast<std::streamsize>(contents.size()));
+  }
+  if (!stream) {
+    reason = "cannot read native task output '" + path.string() + "'";
+    contents.clear();
+    return false;
+  }
+  reason.clear();
   return true;
 }
 
@@ -456,6 +489,235 @@ void add_provider(std::vector<std::string> &providers, std::string_view provider
   return true;
 }
 
+// One worker writes only its matching result slot. Native bytes stay in memory
+// until every task has joined; source_bytes is present only when the former
+// public contract also exposes an LLVM oracle input or package assembly source.
+// Child CPU belongs to the one optional assembler/qualification process for
+// this task and is replayed into TimingRecorder later by the owning thread.
+struct NativeObjectTaskProduct {
+  std::string native_bytes;
+  std::string source_bytes;
+  std::string timing_name;
+  std::uint64_t elapsed_nanoseconds = 0;
+  std::uint64_t child_user_nanoseconds = 0;
+  std::uint64_t child_system_nanoseconds = 0;
+  bool publish_source = false;
+  bool child_started = false;
+};
+
+// The context borrows immutable build inputs for one synchronous WorkGraph
+// run. products has exactly the plan's task-ID domain; workers may mutate only
+// products[task]. No DiagnosticSink or TimingRecorder crosses the thread
+// boundary because both deliberately preserve deterministic insertion order.
+struct NativeObjectExecutionContext {
+  const TargetProfile *target = nullptr;
+  const NativeObjectPlan *plan = nullptr;
+  NativeObjectEmitter emitter = NativeObjectEmitter::InProcessLlvm;
+  NativeInstrumentationProfile instrumentation =
+      NativeInstrumentationProfile::None;
+  bool assembly_output = false;
+  std::string clang_path;
+  std::filesystem::path build_directory;
+  std::vector<NativeObjectTaskProduct> *products = nullptr;
+};
+
+[[nodiscard]] std::filesystem::path native_task_private_path(
+    const NativeObjectExecutionContext &context,
+    const NativeObjectTask &native_task,
+    WorkTaskId task,
+    std::string_view role,
+    std::string_view extension) {
+  return context.build_directory /
+      (native_task.output_stem + std::string(extension) + ".task-" +
+       std::to_string(task) + "-" + std::string(role));
+}
+
+// Removes successful worker-private files after their bytes have been captured.
+// Failure artifacts are deliberately retained in the isolated build directory
+// for diagnosis; neither case publishes them to the canonical linker list.
+void remove_successful_task_file(const std::filesystem::path &path) {
+  std::error_code ignored;
+  std::filesystem::remove(path, ignored);
+}
+
+void capture_child_usage(
+    const ProcessResult &process,
+    NativeObjectTaskProduct &product) {
+  product.child_started = process.started;
+  product.child_user_nanoseconds = process.user_nanoseconds;
+  product.child_system_nanoseconds = process.system_nanoseconds;
+}
+
+// Executes the semantic work for one closed native-object task. All filesystem
+// paths used here are worker-private. Canonical names, object ordering, and
+// diagnostics are selected only after the scheduler joins every started task.
+[[nodiscard]] bool execute_native_object_task_inner(
+    NativeObjectExecutionContext &context,
+    WorkTaskId task_id,
+    std::string &failure) {
+  assert(context.target != nullptr);
+  assert(context.plan != nullptr);
+  assert(context.products != nullptr);
+  assert(static_cast<std::size_t>(task_id) < context.plan->tasks.size());
+  const NativeObjectTask &task = context.plan->tasks[task_id];
+  NativeObjectTaskProduct &product = (*context.products)[task_id];
+
+  if (task.kind == NativeObjectTaskKind::LlvmModule) {
+    std::string native_module(task.input_bytes);
+    if (context.instrumentation ==
+        NativeInstrumentationProfile::AddressSanitizer) {
+      std::string instrumented;
+      std::string attribute_error;
+      if (!add_address_sanitizer_function_attributes(
+              native_module, instrumented, attribute_error)) {
+        failure = "cannot prepare address-instrumented LLVM module: " +
+            attribute_error;
+        return false;
+      }
+      native_module = std::move(instrumented);
+    }
+
+    if (context.emitter == NativeObjectEmitter::InProcessLlvm) {
+      product.timing_name =
+          "LLVM package emission: " + task.display_name;
+      LlvmObjectEmissionOptions emission_options;
+      emission_options.output_kind = context.assembly_output
+          ? LlvmNativeOutputKind::Assembly
+          : LlvmNativeOutputKind::Object;
+      emission_options.instrumentation = context.instrumentation ==
+              NativeInstrumentationProfile::AddressSanitizer
+          ? LlvmNativeInstrumentation::AddressSanitizer
+          : LlvmNativeInstrumentation::None;
+      LlvmObjectEmissionResult emitted = emit_llvm_object_in_process(
+          *context.target,
+          task.display_name,
+          native_module,
+          emission_options);
+      if (!emitted.ok) {
+        failure = std::move(emitted.failure);
+        return false;
+      }
+      product.native_bytes = std::move(emitted.bytes);
+      return true;
+    }
+
+    // The external oracle consumes a private copy and returns bytes through the
+    // same result slot as the in-process adapter. Its source snapshot is later
+    // published only after the complete ready set succeeds.
+    product.timing_name =
+        "Clang qualification compile: " + task.display_name;
+    product.publish_source = true;
+    product.source_bytes = native_module;
+    const std::filesystem::path private_source = native_task_private_path(
+        context, task, task_id, "input", task.source_extension);
+    const std::filesystem::path private_output = native_task_private_path(
+        context,
+        task,
+        task_id,
+        "output",
+        context.assembly_output ? ".s" : ".o");
+    std::string write_error;
+    if (!write_atomic(private_source, native_module, write_error)) {
+      failure = std::move(write_error);
+      return false;
+    }
+    std::vector<std::string> arguments{context.clang_path};
+    append_target_arguments(*context.target, arguments);
+    arguments.push_back("-x");
+    arguments.push_back("ir");
+    if (context.instrumentation ==
+        NativeInstrumentationProfile::AddressSanitizer) {
+      arguments.push_back("-fsanitize=address");
+      arguments.push_back("-fno-omit-frame-pointer");
+    }
+    arguments.push_back(context.assembly_output ? "-S" : "-c");
+    arguments.push_back(private_source.string());
+    arguments.push_back("-o");
+    arguments.push_back(private_output.string());
+    const ProcessResult process = run_process(arguments);
+    capture_child_usage(process, product);
+    if (!process.started || process.exit_code != 0) {
+      failure = phase_failure("Clang qualification emission", process);
+      return false;
+    }
+    if (!read_file_bytes(private_output, product.native_bytes, failure)) {
+      return false;
+    }
+    remove_successful_task_file(private_source);
+    remove_successful_task_file(private_output);
+    return true;
+  }
+
+  // Package assembly bytes were already captured and selected by the target
+  // profile. Assembly output is therefore a pure copy task. Native output uses
+  // the matching LLVM Clang only as an assembler, never as a Draft IR compiler.
+  product.publish_source = true;
+  product.source_bytes = std::string(task.input_bytes);
+  if (context.assembly_output) {
+    product.timing_name =
+        "package assembly publication: " + task.display_name;
+    product.native_bytes = product.source_bytes;
+    return true;
+  }
+
+  product.timing_name = "Clang package assembly: " + task.display_name;
+  const std::filesystem::path private_source = native_task_private_path(
+      context, task, task_id, "input", task.source_extension);
+  const std::filesystem::path private_output =
+      native_task_private_path(context, task, task_id, "output", ".o");
+  std::string write_error;
+  if (!write_atomic(private_source, task.input_bytes, write_error)) {
+    failure = std::move(write_error);
+    return false;
+  }
+  std::vector<std::string> arguments{context.clang_path};
+  append_target_arguments(*context.target, arguments);
+  arguments.insert(
+      arguments.end(),
+      {
+          "-x",
+          "assembler",
+          "-c",
+          private_source.string(),
+          "-o",
+          private_output.string(),
+      });
+  const ProcessResult process = run_process(arguments);
+  capture_child_usage(process, product);
+  if (!process.started || process.exit_code != 0) {
+    failure = phase_failure(
+        "assembly object emission for '" + task.display_name + "'", process);
+    return false;
+  }
+  if (!read_file_bytes(private_output, product.native_bytes, failure)) {
+    return false;
+  }
+  remove_successful_task_file(private_source);
+  remove_successful_task_file(private_output);
+  return true;
+}
+
+// WorkGraph's C-shaped operation boundary keeps the scheduler independent of
+// backend types. This wrapper measures exactly the worker operation, including
+// a child assembler wait, and stores the measurement in the same stable slot.
+[[nodiscard]] bool execute_native_object_task(
+    void *opaque_context,
+    WorkTaskId task,
+    std::string &failure) {
+  auto &context = *static_cast<NativeObjectExecutionContext *>(opaque_context);
+  const auto started = std::chrono::steady_clock::now();
+  const bool succeeded =
+      execute_native_object_task_inner(context, task, failure);
+  const auto finished = std::chrono::steady_clock::now();
+  const auto elapsed =
+      std::chrono::duration_cast<std::chrono::nanoseconds>(finished - started)
+          .count();
+  assert(elapsed >= 0 && "steady-clock task duration must be nonnegative");
+  (*context.products)[task].elapsed_nanoseconds =
+      static_cast<std::uint64_t>(elapsed);
+  return succeeded;
+}
+
 } // namespace
 
 std::string_view native_artifact_kind_name(NativeArtifactKind kind) {
@@ -598,139 +860,122 @@ NativeBuildResult build_native_artifact(
       : TimingScope{};
   const bool assembly_output =
       options.artifact_kind == NativeArtifactKind::Assembly;
-  for (const NativeObjectTask &task : object_plan.tasks) {
+  std::vector<NativeObjectTaskProduct> products(object_plan.tasks.size());
+  NativeObjectExecutionContext execution;
+  execution.target = &target;
+  execution.plan = &object_plan;
+  execution.emitter = options.object_emitter;
+  execution.instrumentation = options.instrumentation;
+  execution.assembly_output = assembly_output;
+  execution.clang_path = clang_path;
+  execution.build_directory = build_directory;
+  execution.products = &products;
+  WorkGraphRunOptions run_options;
+  run_options.worker_count = options.object_worker_count;
+  const WorkGraphRunResult scheduled = run_work_graph(
+      object_plan.graph,
+      run_options,
+      execute_native_object_task,
+      &execution);
+  result.object_workers_used = scheduled.workers_used;
+
+  // Workers never touch the timing recorder. Replaying their task-local
+  // measurements in ascending task ID gives detailed reports the same order as
+  // diagnostics, file publication, archive members, and linker arguments.
+  if (options.timings != nullptr) {
+    options.timings->add_counter(
+        "native object tasks", object_plan.tasks.size());
+    options.timings->add_counter(
+        "native object workers", scheduled.workers_used);
+    for (std::size_t task_index = 0;
+         task_index < object_plan.tasks.size();
+         ++task_index) {
+      const NativeObjectTaskProduct &product = products[task_index];
+      const std::string timing_name = product.timing_name.empty()
+          ? "native object task: " + object_plan.tasks[task_index].display_name
+          : product.timing_name;
+      if (product.child_started) {
+        options.timings->record_completed_process_event(
+            timing_name,
+            product.elapsed_nanoseconds,
+            product.child_user_nanoseconds,
+            product.child_system_nanoseconds,
+            TimingVisibility::Detail);
+      } else {
+        options.timings->record_completed_event(
+            timing_name,
+            product.elapsed_nanoseconds,
+            TimingVisibility::Detail);
+      }
+    }
+  }
+
+  if (!scheduled.ok) {
+    // WorkGraph waits for all already-started independent work, then stores
+    // terminal states by task ID. Select the first failure in that stable domain
+    // instead of whichever worker happened to report first.
+    for (std::size_t task_index = 0;
+         task_index < scheduled.tasks.size();
+         ++task_index) {
+      if (scheduled.tasks[task_index].state == WorkTaskState::Succeeded) {
+        continue;
+      }
+      diagnostics.error(
+          SourceRange::invalid(),
+          "native object task '" + object_plan.tasks[task_index].display_name +
+              "' failed: " + scheduled.tasks[task_index].failure);
+      return result;
+    }
+    diagnostics.error(
+        SourceRange::invalid(),
+        "native object work graph failed without a task diagnostic");
+    return result;
+  }
+
+  // Publication is deliberately sequential and uses the plan's canonical
+  // module-then-package-assembly order. Worker completion order therefore
+  // cannot affect directory contents, archive member order, or final linking.
+  for (std::size_t task_index = 0;
+       task_index < object_plan.tasks.size();
+       ++task_index) {
+    const NativeObjectTask &task = object_plan.tasks[task_index];
+    const NativeObjectTaskProduct &product = products[task_index];
     std::string write_error;
     if (task.kind == NativeObjectTaskKind::LlvmModule) {
-      const std::filesystem::path object =
-          build_directory / (task.output_stem + ".o");
-      std::string native_module(task.input_bytes);
-      if (options.instrumentation ==
-          NativeInstrumentationProfile::AddressSanitizer) {
-        std::string instrumented;
-        if (!add_address_sanitizer_function_attributes(
-                native_module, instrumented, write_error)) {
-          diagnostics.error(
-              SourceRange::invalid(),
-              "cannot prepare address-instrumented LLVM module: " +
-                  write_error);
-          return result;
-        }
-        native_module = std::move(instrumented);
-      }
-      const std::filesystem::path compiled_output = assembly_output
-          ? output_path / (task.output_stem + ".s")
-          : object;
-      if (options.object_emitter == NativeObjectEmitter::InProcessLlvm) {
-        LlvmObjectEmissionOptions emission_options;
-        emission_options.output_kind = assembly_output
-            ? LlvmNativeOutputKind::Assembly
-            : LlvmNativeOutputKind::Object;
-        emission_options.instrumentation = options.instrumentation ==
-                NativeInstrumentationProfile::AddressSanitizer
-            ? LlvmNativeInstrumentation::AddressSanitizer
-            : LlvmNativeInstrumentation::None;
-        const LlvmObjectEmissionResult emitted = emit_llvm_object_in_process(
-            target,
-            task.display_name,
-            native_module,
-            emission_options);
-        if (!emitted.ok) {
-          diagnostics.error(SourceRange::invalid(), emitted.failure);
-          return result;
-        }
-        if (!write_atomic(compiled_output, emitted.bytes, write_error)) {
-          diagnostics.error(SourceRange::invalid(), write_error);
-          return result;
-        }
-      } else {
-        // The oracle writes the exact native snapshot to an isolated build path
-        // and asks Clang to compile it. No ordinary command selects this branch;
-        // qualification compares its artifacts and behavior with the in-process
-        // implementation through the same later publication/linking code.
-        const std::filesystem::path module =
+      if (product.publish_source) {
+        const std::filesystem::path source =
             build_directory / (task.output_stem + task.source_extension);
-        if (!write_atomic(module, native_module, write_error)) {
+        if (!write_atomic(source, product.source_bytes, write_error)) {
           diagnostics.error(SourceRange::invalid(), write_error);
           return result;
         }
-        std::vector<std::string> compile_arguments{clang_path};
-        append_target_arguments(target, compile_arguments);
-        compile_arguments.push_back("-x");
-        compile_arguments.push_back("ir");
-        if (options.instrumentation ==
-            NativeInstrumentationProfile::AddressSanitizer) {
-          compile_arguments.push_back("-fsanitize=address");
-          compile_arguments.push_back("-fno-omit-frame-pointer");
-        }
-        compile_arguments.push_back(assembly_output ? "-S" : "-c");
-        compile_arguments.push_back(module.string());
-        compile_arguments.push_back("-o");
-        compile_arguments.push_back(compiled_output.string());
-        const std::string compile_timing_name = options.timings != nullptr &&
-                options.timings->output() == TimingOutput::All
-            ? "Clang qualification compile: " + task.display_name
-            : std::string{};
-        const ProcessResult compile = run_timed_process(
-            compile_arguments,
-            options.timings,
-            compile_timing_name,
-            TimingVisibility::Detail);
-        if (!compile.started || compile.exit_code != 0) {
-          diagnostics.error(
-              SourceRange::invalid(),
-              phase_failure("Clang qualification emission", compile));
-          return result;
-        }
       }
-      if (!assembly_output) objects.push_back(object.string());
+      const std::filesystem::path native_output = assembly_output
+          ? output_path / (task.output_stem + ".s")
+          : build_directory / (task.output_stem + ".o");
+      if (!write_atomic(native_output, product.native_bytes, write_error)) {
+        diagnostics.error(SourceRange::invalid(), write_error);
+        return result;
+      }
+      if (!assembly_output) objects.push_back(native_output.string());
       continue;
     }
 
-    // Package assembly is an ordinary selected source input, not inline Draft
-    // assembly. Write the captured bytes rather than rereading the workspace,
-    // and force Clang's assembler language for every extension. In particular,
-    // this prevents ambient `.S` preprocessing when the target says None.
     const std::filesystem::path source =
         (assembly_output ? output_path : build_directory) /
         (task.output_stem + task.source_extension);
-    const std::filesystem::path assembly_object =
-        build_directory / (task.output_stem + ".o");
-    if (!write_atomic(source, task.input_bytes, write_error)) {
+    if (!write_atomic(source, product.source_bytes, write_error)) {
       diagnostics.error(SourceRange::invalid(), write_error);
       return result;
     }
     if (assembly_output) continue;
-
-    std::vector<std::string> assemble_arguments{clang_path};
-    append_target_arguments(target, assemble_arguments);
-    assemble_arguments.insert(
-        assemble_arguments.end(),
-        {
-            "-x",
-            "assembler",
-            "-c",
-            source.string(),
-            "-o",
-            assembly_object.string(),
-        });
-    const std::string assemble_timing_name = options.timings != nullptr &&
-            options.timings->output() == TimingOutput::All
-        ? "Clang package assembly: " + task.display_name
-        : std::string{};
-    const ProcessResult assemble = run_timed_process(
-        assemble_arguments,
-        options.timings,
-        assemble_timing_name,
-        TimingVisibility::Detail);
-    if (!assemble.started || assemble.exit_code != 0) {
-      diagnostics.error(
-          SourceRange::invalid(),
-          phase_failure(
-              "assembly object emission for '" + task.display_name + "'",
-              assemble));
+    const std::filesystem::path object =
+        build_directory / (task.output_stem + ".o");
+    if (!write_atomic(object, product.native_bytes, write_error)) {
+      diagnostics.error(SourceRange::invalid(), write_error);
       return result;
     }
-    objects.push_back(assembly_object.string());
+    objects.push_back(object.string());
   }
   object_emission_timing.finish();
 

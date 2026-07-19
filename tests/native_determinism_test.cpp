@@ -1,24 +1,28 @@
-// Byte-for-byte determinism gate for each native AArch64 toolchain path.
+// Byte-for-byte determinism gate across native AArch64 worker schedules.
 //
 // Most toolchain tests use a recording process so failures describe our exact
 // argument contract without depending on a host installation. This test asks
-// the actual host Clang/linker path to produce every artifact kind twice for
-// the directly executable Draft target. Comparing complete output trees catches
-// timestamps, Mach-O UUID or ELF build-ID drift, archive metadata, object-order
-// drift, and other ambient state an argument-only test cannot see.
+// the embedded LLVM and actual host linker path to produce every artifact kind
+// first with one object worker and then with four. Comparing complete output
+// trees catches scheduling-dependent publication, timestamps, Mach-O UUID or
+// ELF build-ID drift, archive metadata, object-order drift, and other ambient
+// state an argument-only test cannot see.
 
 #include "backend/toolchain.h"
 #include "compile/compiler.h"
 #include "source/diagnostic.h"
 #include "source/source.h"
 #include "target/profile.h"
+#include "workspace/workspace.h"
 
 #include <algorithm>
 #include <array>
+#include <cstddef>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -53,6 +57,17 @@ struct TestState {
 
 using ArtifactSnapshot =
     std::vector<std::pair<std::string, std::string>>;
+
+[[nodiscard]] std::size_t native_task_count(
+    const draft::CompileWorkspaceResult &compiled) {
+  std::size_t count = 0;
+  for (const std::optional<draft::CompiledPackage> &package :
+       compiled.packages) {
+    if (!package.has_value()) continue;
+    count += 1 + package->assembly_sources.size();
+  }
+  return count;
+}
 
 // Returns the one implemented target that this process can execute natively.
 // CMake excludes this source on other host/architecture pairs; the preprocessor
@@ -98,8 +113,8 @@ using ArtifactSnapshot =
     draft::DiagnosticSink &diagnostics) {
   draft::CompileWorkspaceOptions options;
   options.target = target;
-  options.workspace.workspace_directory =
-      std::string(DRAFT_SOURCE_DIRECTORY) + "/examples";
+  options.workspace.workspace_directory = std::string(DRAFT_SOURCE_DIRECTORY) +
+      (package == "packages/app" ? "/examples/packages" : "/examples");
   options.workspace.core_directory =
       std::string(DRAFT_SOURCE_DIRECTORY) + "/core";
   options.workspace.core_content_identity = "draft-core-bootstrap-v3";
@@ -126,6 +141,7 @@ void compare_repeated_artifact(
   options.build_directory = (artifact_directory / "build").string();
   options.output_path = (artifact_directory / "output").string();
   options.artifact_kind = kind;
+  options.object_worker_count = 1;
 
   draft::DiagnosticSink first_diagnostics;
   const draft::NativeBuildResult first = draft::build_native_artifact(
@@ -139,6 +155,7 @@ void compare_repeated_artifact(
   EXPECT(state, first.ok);
   EXPECT(state, !first_diagnostics.has_errors());
   if (!first.ok) return;
+  EXPECT(state, first.object_workers_used == 1);
   const bool has_debug_companion = target.facts.object_format == "macho" &&
       (kind == draft::NativeArtifactKind::Executable ||
        kind == draft::NativeArtifactKind::DynamicLibrary);
@@ -159,6 +176,11 @@ void compare_repeated_artifact(
     EXPECT(state, !bytes.empty());
   }
 
+  // The same canonical task graph now runs with a wider ready set. The
+  // multi-package executable below proves real overlap; one-package library
+  // artifacts still prove that selecting a wider bound preserves behavior.
+  const std::size_t task_count = native_task_count(compiled);
+  options.object_worker_count = 4;
   draft::DiagnosticSink second_diagnostics;
   const draft::NativeBuildResult second = draft::build_native_artifact(
       target, compiled, options, second_diagnostics);
@@ -171,6 +193,8 @@ void compare_repeated_artifact(
   EXPECT(state, second.ok);
   EXPECT(state, !second_diagnostics.has_errors());
   if (!second.ok) return;
+  EXPECT(state,
+      second.object_workers_used == std::min<std::size_t>(4, task_count));
   EXPECT(state, second.debug_symbols_path == first.debug_symbols_path);
   EXPECT(state,
       second.debug_symbols_digest == first.debug_symbols_digest);
@@ -209,7 +233,7 @@ void test_repeated_native_link_is_byte_identical(TestState &state) {
   // depend only on source/package identity and canonical type arguments, never
   // process addresses or filesystem paths.
   draft::CompileWorkspaceResult executable = compile_fixture(
-      sources, "nested-procedures", true, target, compile_diagnostics);
+      sources, "packages/app", true, target, compile_diagnostics);
   draft::CompileWorkspaceResult library = compile_fixture(
       sources, "c-library", false, target, compile_diagnostics);
   if (compile_diagnostics.has_errors()) {
@@ -217,6 +241,7 @@ void test_repeated_native_link_is_byte_identical(TestState &state) {
   }
   EXPECT(state, executable.ok);
   EXPECT(state, library.ok);
+  EXPECT(state, native_task_count(executable) > 1);
   if (!executable.ok || !library.ok) {
     std::filesystem::remove_all(temporary, error);
     return;
@@ -244,6 +269,41 @@ void test_repeated_native_link_is_byte_identical(TestState &state) {
         temporary,
         artifact.name,
         artifact.kind);
+  }
+
+  // Corrupt two independent modules after planning facts have been produced.
+  // Both workers may fail in either order, but only task 0's reason is
+  // diagnosed and no canonical object or complete-looking correlation map may
+  // be published from the failed ready set.
+  if (executable.packages.size() >= 2 &&
+      executable.packages[0].has_value() &&
+      executable.packages[1].has_value()) {
+    draft::CompileWorkspaceResult broken = executable;
+    broken.packages[0]->llvm.text = "not an LLVM module for task zero\n";
+    broken.packages[1]->llvm.text = "not an LLVM module for task one\n";
+    const std::string first_identity =
+        draft::display_package_identity(broken.packages[0]->identity);
+    const std::filesystem::path failed_directory = temporary / "failed-ready-set";
+    draft::NativeBuildOptions failed_options;
+    failed_options.build_directory = (failed_directory / "build").string();
+    failed_options.output_path = (failed_directory / "program").string();
+    failed_options.object_worker_count = 4;
+    draft::DiagnosticSink failed_diagnostics;
+    const draft::NativeBuildResult failed = draft::build_native_artifact(
+        target, broken, failed_options, failed_diagnostics);
+    EXPECT(state, !failed.ok);
+    EXPECT(state, failed_diagnostics.diagnostics().size() == 1);
+    if (!failed_diagnostics.diagnostics().empty()) {
+      EXPECT(state, failed_diagnostics.diagnostics().front().message.find(
+          "native object task '" + first_identity + "' failed") !=
+          std::string::npos);
+    }
+    EXPECT(state, !std::filesystem::exists(
+        failed_directory / "build" / "package-0.o"));
+    EXPECT(state, !std::filesystem::exists(
+        failed_directory / "build" / "draft-source-correlation.json"));
+  } else {
+    EXPECT(state, false);
   }
 
   std::filesystem::remove_all(temporary, error);

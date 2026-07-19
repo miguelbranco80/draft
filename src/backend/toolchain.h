@@ -15,6 +15,7 @@
 #include "source/diagnostic.h"
 #include "target/profile.h"
 
+#include <cstddef>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -67,6 +68,10 @@ struct NativeBuildOptions {
   NativeInstrumentationProfile instrumentation =
       NativeInstrumentationProfile::None;
   NativeObjectEmitter object_emitter = NativeObjectEmitter::InProcessLlvm;
+  // Zero selects bounded hardware concurrency through WorkGraph. Embedding
+  // tests and qualification oracles may request one worker without changing
+  // task identity, object order, or any later publication step.
+  std::size_t object_worker_count = 0;
   std::vector<ForeignProviderInput> foreign_providers;
   // Runtime assets participate in resolved-program identity but are not passed
   // to Clang. A manifest-bearing build must supply its complete relocated set.
@@ -79,6 +84,10 @@ struct NativeBuildOptions {
 
 struct NativeBuildResult {
   bool ok = false;
+  // Number of workers selected for native object tasks. This operational
+  // evidence is zero when the build fails before scheduling and never enters
+  // program or artifact identity.
+  std::size_t object_workers_used = 0;
   // Exact LLVM distribution linked into draftc. This is constant build
   // evidence and no runtime `clang --version` process is launched to obtain it.
   std::string toolchain_version;
