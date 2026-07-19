@@ -673,25 +673,26 @@ void test_resolution_reuse_revalidation_and_failure(TestState &state) {
       "temperature-0-schema-v2";
   draft::SourceManager changed_provider_sources;
   draft::DiagnosticSink changed_provider_diagnostics;
-  const draft::ResolveWorkspaceResult regenerated = draft::resolve_workspace(
-      changed_provider_sources,
-      workspace.package.string(),
-      std::move(changed_provider),
-      changed_provider_diagnostics);
-  EXPECT(state, regenerated.ok);
-  EXPECT(state, regenerated.synthesized_sites == 0);
-  EXPECT(state, regenerated.reused_sites == 1);
+  const draft::ResolveWorkspaceResult changed_provenance =
+      draft::resolve_workspace(
+          changed_provider_sources,
+          workspace.package.string(),
+          std::move(changed_provider),
+          changed_provider_diagnostics);
+  EXPECT(state, changed_provenance.ok);
+  EXPECT(state, changed_provenance.synthesized_sites == 0);
+  EXPECT(state, changed_provenance.reused_sites == 1);
   EXPECT(state, provider.calls == 1);
   EXPECT(state,
-      regenerated.manifest.resolved_program_digest ==
+      changed_provenance.manifest.resolved_program_digest ==
           reuse.manifest.resolved_program_digest);
-  EXPECT(state, regenerated.manifest.pins.size() == 1);
-  if (regenerated.manifest.pins.size() == 1) {
+  EXPECT(state, changed_provenance.manifest.pins.size() == 1);
+  if (changed_provenance.manifest.pins.size() == 1) {
     EXPECT(state,
-        regenerated.manifest.pins[0].model_identity ==
+        changed_provenance.manifest.pins[0].model_identity ==
             "fixture-model-v1");
     EXPECT(state,
-        regenerated.manifest.pins[0].configuration_identity ==
+        changed_provenance.manifest.pins[0].configuration_identity ==
             "temperature-0-schema-v1");
   }
 
