@@ -84,6 +84,22 @@ ValidationRunResult run_validation_executable(
     return result;
   }
 
+  // Materialize argv/envp before fork. The child then performs only
+  // async-signal-safe descriptor setup, chdir, and exec operations.
+  std::vector<char *> arguments;
+  arguments.reserve(options.arguments.size() + 2);
+  arguments.push_back(const_cast<char *>(options.executable.c_str()));
+  for (const std::string &argument : options.arguments) {
+    arguments.push_back(const_cast<char *>(argument.c_str()));
+  }
+  arguments.push_back(nullptr);
+  std::vector<char *> environment;
+  environment.reserve(options.environment.size() + 1);
+  for (const std::string &entry : options.environment) {
+    environment.push_back(const_cast<char *>(entry.c_str()));
+  }
+  environment.push_back(nullptr);
+
   int failure_pipe[2] = {-1, -1};
   if (::pipe(failure_pipe) != 0) {
     diagnostics.error(
@@ -151,14 +167,12 @@ ValidationRunResult run_validation_executable(
           failure_pipe[1], ChildFailureStage::ChangeDirectory);
       ::_exit(127);
     }
-    std::vector<char *> arguments;
-    arguments.reserve(options.arguments.size() + 2);
-    arguments.push_back(const_cast<char *>(options.executable.c_str()));
-    for (const std::string &argument : options.arguments) {
-      arguments.push_back(const_cast<char *>(argument.c_str()));
+    if (options.environment.empty()) {
+      ::execv(options.executable.c_str(), arguments.data());
+    } else {
+      ::execve(
+          options.executable.c_str(), arguments.data(), environment.data());
     }
-    arguments.push_back(nullptr);
-    ::execv(options.executable.c_str(), arguments.data());
     write_child_failure(failure_pipe[1], ChildFailureStage::Execute);
     ::_exit(127);
   }

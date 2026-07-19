@@ -191,6 +191,53 @@ void append_locked_arguments(
   return message;
 }
 
+// Clang normally adds `sanitize_address` while translating C-family source.
+// Draft hands it already-formed LLVM IR, so the driver flag alone schedules
+// global instrumentation but does not opt function bodies into load/store
+// checks. Add the standard function attribute to each definition in the
+// isolated native-build snapshot. The canonical compiler IR remains unchanged;
+// this transformation belongs solely to the versioned validation profile.
+[[nodiscard]] bool add_address_sanitizer_function_attributes(
+    std::string_view module,
+    std::string &instrumented,
+    std::string &reason) {
+  instrumented.clear();
+  instrumented.reserve(module.size() + module.size() / 100U);
+  std::size_t cursor = 0;
+  while (cursor < module.size()) {
+    const std::size_t newline = module.find('\n', cursor);
+    const std::size_t end = newline == std::string_view::npos
+        ? module.size()
+        : newline;
+    const std::string_view line = module.substr(cursor, end - cursor);
+    if (line.starts_with("define ")) {
+      // Draft's emitter keeps each definition header on one line. Parameter
+      // types may themselves contain `{`, so the body opener is the last one.
+      const std::size_t body = line.rfind('{');
+      if (body == std::string_view::npos) {
+        reason = "LLVM function definition has no body opener";
+        return false;
+      }
+      // Debug attachments follow function attributes in LLVM grammar. Insert
+      // before the first attachment when present, otherwise before the body.
+      const std::size_t metadata = line.find(" !", 0);
+      const std::size_t insertion =
+          metadata != std::string_view::npos && metadata < body
+          ? metadata + 1
+          : body;
+      instrumented.append(line.substr(0, insertion));
+      instrumented += "sanitize_address ";
+      instrumented.append(line.substr(insertion));
+    } else {
+      instrumented.append(line);
+    }
+    if (newline != std::string_view::npos) instrumented.push_back('\n');
+    cursor = newline == std::string_view::npos ? module.size() : newline + 1;
+  }
+  reason.clear();
+  return true;
+}
+
 // dsymutil owns a conventional directory layout, but a successful process exit
 // is not by itself proof that a usable companion was published. Check the two
 // files consumed by macOS symbol tooling before hashing or returning the tree.
@@ -503,6 +550,22 @@ NativeBuildResult build_native_artifact(
         "locked native build cannot allow an unpinned host toolchain");
     return result;
   }
+  if (options.instrumentation != NativeInstrumentationProfile::None &&
+      options.artifact_kind != NativeArtifactKind::Executable) {
+    diagnostics.error(
+        SourceRange::invalid(),
+        "native instrumentation is currently supported only for validation "
+        "executables");
+    return result;
+  }
+  if (options.instrumentation != NativeInstrumentationProfile::None &&
+      !options.locked) {
+    diagnostics.error(
+        SourceRange::invalid(),
+        "native instrumentation requires a locked toolchain and SDK so its "
+        "compiler pass and runtime have content-pinned identities");
+    return result;
+  }
 
   std::vector<VerifiedRuntimeAssetInput> runtime_assets;
   if (!verify_runtime_asset_set(
@@ -553,6 +616,24 @@ NativeBuildResult build_native_artifact(
     archiver_path = locked_inputs.archiver.string();
     dsymutil_path = locked_inputs.dsymutil.string();
   }
+  if (options.instrumentation ==
+          NativeInstrumentationProfile::AddressSanitizer &&
+      !locked_inputs.address_sanitizer_runtime.has_value()) {
+    diagnostics.error(
+        SourceRange::invalid(),
+        "locked LLVM toolchain does not contain the required versioned "
+        "address-sanitizer runtime");
+    return result;
+  }
+  if (options.instrumentation ==
+          NativeInstrumentationProfile::AddressSanitizer &&
+      !locked_inputs.llvm_symbolizer.has_value()) {
+    diagnostics.error(
+        SourceRange::invalid(),
+        "locked LLVM toolchain does not contain the required versioned "
+        "LLVM symbolizer");
+    return result;
+  }
 
   std::vector<std::string> version_arguments{clang_path};
   if (options.locked) {
@@ -585,6 +666,28 @@ NativeBuildResult build_native_artifact(
     return result;
   }
   const std::filesystem::path build_directory(options.build_directory);
+  std::filesystem::path instrumentation_runtime_snapshot;
+  if (options.instrumentation ==
+      NativeInstrumentationProfile::AddressSanitizer) {
+    // Snapshot the already verified runtime before either the linker or the
+    // eventual validation process sees it. The snapshot lives in the isolated
+    // build directory, is the exact dylib passed to ld, and is later published
+    // beside the executable under its fixed relocatable install-name basename.
+    instrumentation_runtime_snapshot =
+        build_directory / locked_inputs.address_sanitizer_runtime->filename();
+    std::filesystem::copy_file(
+        *locked_inputs.address_sanitizer_runtime,
+        instrumentation_runtime_snapshot,
+        std::filesystem::copy_options::overwrite_existing,
+        directory_error);
+    if (directory_error) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "cannot snapshot locked address-sanitizer runtime: " +
+              directory_error.message());
+      return result;
+    }
+  }
   if (options.locked && !foreign_providers.empty() &&
       !snapshot_locked_providers(
           build_directory,
@@ -634,7 +737,21 @@ NativeBuildResult build_native_artifact(
     const std::string package_stem = "package-" + std::to_string(index);
     const std::filesystem::path object = build_directory / (package_stem + ".o");
     std::string write_error;
-    if (!write_atomic(module, compiled.packages[index]->llvm.text, write_error)) {
+    std::string native_module = compiled.packages[index]->llvm.text;
+    if (options.instrumentation ==
+        NativeInstrumentationProfile::AddressSanitizer) {
+      std::string instrumented;
+      if (!add_address_sanitizer_function_attributes(
+              native_module, instrumented, write_error)) {
+        diagnostics.error(
+            SourceRange::invalid(),
+            "cannot prepare address-instrumented LLVM module: " +
+                write_error);
+        return result;
+      }
+      native_module = std::move(instrumented);
+    }
+    if (!write_atomic(module, native_module, write_error)) {
       diagnostics.error(SourceRange::invalid(), write_error);
       return result;
     }
@@ -651,6 +768,14 @@ NativeBuildResult build_native_artifact(
             "-x",
             "ir",
         });
+    if (options.instrumentation ==
+        NativeInstrumentationProfile::AddressSanitizer) {
+      // These are compiler-owned profile options. AddressSanitizer inserts its
+      // checks while Clang lowers the emitted LLVM IR; frame pointers make an
+      // eventual diagnostic useful without changing Draft language semantics.
+      compile_arguments.push_back("-fsanitize=address");
+      compile_arguments.push_back("-fno-omit-frame-pointer");
+    }
     const bool assembly_output =
         options.artifact_kind == NativeArtifactKind::Assembly;
     const std::filesystem::path compiled_output = assembly_output
@@ -878,6 +1003,11 @@ NativeBuildResult build_native_artifact(
         link_arguments.push_back(provider.path.string());
       }
     }
+    if (options.instrumentation ==
+        NativeInstrumentationProfile::AddressSanitizer) {
+      link_arguments.push_back(instrumentation_runtime_snapshot.string());
+      link_arguments.push_back("-Wl,-rpath,@executable_path");
+    }
     link_arguments.push_back("-l" + target.system_link_library);
   }
   link_arguments.push_back("-o");
@@ -891,6 +1021,37 @@ NativeBuildResult build_native_artifact(
                 " Mach-O link",
             link));
     return result;
+  }
+
+  if (options.instrumentation ==
+      NativeInstrumentationProfile::AddressSanitizer) {
+    const std::filesystem::path published_runtime =
+        output_path.parent_path() /
+        instrumentation_runtime_snapshot.filename();
+    if (published_runtime != instrumentation_runtime_snapshot) {
+      directory_error.clear();
+      std::filesystem::copy_file(
+          instrumentation_runtime_snapshot,
+          published_runtime,
+          std::filesystem::copy_options::overwrite_existing,
+          directory_error);
+      if (directory_error) {
+        diagnostics.error(
+            SourceRange::invalid(),
+            "cannot publish address-sanitizer runtime beside executable: " +
+                directory_error.message());
+        return result;
+      }
+    }
+    if (!hash_content_tree(
+            published_runtime,
+            result.instrumentation_runtime_digest,
+            diagnostics)) {
+      return result;
+    }
+    result.instrumentation_runtime_path = published_runtime.string();
+    result.instrumentation_symbolizer_path =
+        locked_inputs.llvm_symbolizer->string();
   }
 
   // A Mach-O link keeps only a debug map in the executable or dylib. Package

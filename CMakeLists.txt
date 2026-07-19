@@ -455,16 +455,16 @@ if(BUILD_TESTING)
     )
   endif()
 
-  # The first target exposes the complete instrumentation request vocabulary
-  # but owns no versioned diagnostic runtime yet. A request must fail before a
-  # native toolchain is probed rather than silently running uninstrumented.
+  # Address instrumentation is real but intentionally available only through a
+  # locked distribution. The ordinary command must fail before probing a host
+  # toolchain rather than silently accepting an ambient sanitizer runtime.
   add_test(
-    NAME draft_validation_instrumentation_unavailable
+    NAME draft_validation_instrumentation_requires_locked
     COMMAND draftc test "${CMAKE_CURRENT_SOURCE_DIR}/examples/validation"
       --instrument address
   )
   set_tests_properties(
-    draft_validation_instrumentation_unavailable
+    draft_validation_instrumentation_requires_locked
     PROPERTIES WILL_FAIL TRUE
   )
 

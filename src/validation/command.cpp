@@ -75,7 +75,8 @@ namespace {
   }
   std::string identity = "target-cpu=" + target.llvm_cpu +
       ";target-features=" + target.llvm_feature_string +
-      ";host-machine=" + host.machine + ";host-release=" + host.release;
+      ";host-machine=" + host.machine + ";host-release=" + host.release +
+      ";process-environment=draft-validation-process-environment-v1";
 #if defined(__APPLE__)
   std::size_t model_size = 0;
   if (::sysctlbyname("hw.model", nullptr, &model_size, nullptr, 0) != 0 ||
@@ -178,6 +179,7 @@ void initialize_claim(
     const CompileWorkspaceResult &compiled,
     const TargetProfile &target,
     ValidationKind kind,
+    std::span<const ValidationInstrumentationKind> instrumentation,
     std::string selected_toolchain,
     std::string selected_environment) {
   evidence.resolved_program = *compiled.resolved_program_digest;
@@ -188,6 +190,8 @@ void initialize_claim(
   evidence.environment_identity = std::move(selected_environment);
   evidence.runner_identity = "draft-native-validation-runner-v2-fd3";
   evidence.policy_identity = policy_identity(kind);
+  evidence.instrumentation_identity =
+      validation_instrumentation_identity(instrumentation);
   evidence.artifact_identity =
       "aarch64-macos-executable-v1:" + target.llvm_triple;
   evidence.warmup_runs = warmup_runs(kind);
@@ -245,6 +249,9 @@ void initialize_claim(
       (options.package_directory / ".draft" / "build" /
        (options.package_directory.filename().string() + "-" + command)).string();
   native.artifact_kind = NativeArtifactKind::Executable;
+  if (!options.instrumentation.empty()) {
+    native.instrumentation = NativeInstrumentationProfile::AddressSanitizer;
+  }
   native.allow_unpinned_toolchain = options.allow_unpinned_toolchain;
   native.locked = options.locked;
   native.locked_inputs = options.locked_inputs;
@@ -276,6 +283,26 @@ void initialize_claim(
     ValidationRunOptions run_options;
     run_options.executable = built.output_path;
     run_options.working_directory = options.package_directory.string();
+    run_options.environment = {
+        "LANG=C",
+        "LC_ALL=C",
+        "PATH=",
+        "HOME=/",
+        "TMPDIR=/tmp",
+    };
+    if (!options.instrumentation.empty()) {
+      if (built.instrumentation_symbolizer_path.empty()) {
+        diagnostics.error(
+            SourceRange::invalid(),
+            "address-instrumented validation has no verified symbolizer");
+        observations_complete = false;
+        break;
+      }
+      run_options.environment.push_back(
+          "ASAN_OPTIONS=abort_on_error=1:symbolize=1");
+      run_options.environment.push_back(
+          "ASAN_SYMBOLIZER_PATH=" + built.instrumentation_symbolizer_path);
+    }
     const ValidationRunResult run =
         run_validation_executable(run_options, diagnostics);
     if (!run.started) {
@@ -328,6 +355,7 @@ void initialize_claim(
       compiled,
       options.target,
       options.kind,
+      options.instrumentation,
       *selected_toolchain,
       *selected_environment);
   evidence.observations = std::move(aggregate);
@@ -366,6 +394,13 @@ ValidationCommandResult execute_validation_command(
           diagnostics)) {
     return {};
   }
+  if (!options.instrumentation.empty() && !options.locked) {
+    diagnostics.error(
+        SourceRange::invalid(),
+        "validation instrumentation requires --locked with explicit "
+        "toolchain and SDK roots");
+    return {};
+  }
   CompileWorkspaceResult compiled = compile_validation(
       sources,
       options.package_directory,
@@ -395,6 +430,13 @@ ValidationCommandResult execute_precommit_validation(
           options.target,
           options.instrumentation,
           diagnostics)) {
+    return {};
+  }
+  if (!options.instrumentation.empty() && !options.locked) {
+    diagnostics.error(
+        SourceRange::invalid(),
+        "precommit validation instrumentation requires locked toolchain and "
+        "SDK roots");
     return {};
   }
   return execute_compiled_validation(
@@ -444,6 +486,7 @@ bool verify_active_validation_evidence(
       validation,
       requirement.target,
       requirement.kind,
+      requirement.instrumentation,
       *selected_toolchain,
       *selected_environment);
   const Sha256Digest key = hash_validation_evidence_key(claim);

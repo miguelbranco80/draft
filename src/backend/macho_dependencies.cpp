@@ -290,7 +290,7 @@ struct ClosureState {
     ClosureState &state,
     const std::filesystem::path &image_path,
     const std::filesystem::path &executable_path,
-    bool entry,
+    std::uint32_t expected_type,
     std::vector<std::filesystem::path> inherited_runpaths) {
   if (std::find(
           state.visited.begin(), state.visited.end(), image_path) !=
@@ -308,7 +308,6 @@ struct ClosureState {
             "' is invalid: " + reason);
     return false;
   }
-  const std::uint32_t expected_type = entry ? kMachOExecute : kMachODylib;
   if (image.file_type != expected_type) {
     state.diagnostics->error(
         SourceRange::invalid(),
@@ -400,7 +399,7 @@ struct ClosureState {
             state,
             candidates.front(),
             executable_path,
-            false,
+            kMachODylib,
             inherited_runpaths)) {
       return false;
     }
@@ -408,11 +407,10 @@ struct ClosureState {
   return true;
 }
 
-} // namespace
-
-bool validate_macho_dependency_closure(
+[[nodiscard]] bool validate_closure(
     const std::filesystem::path &root,
     std::span<const std::filesystem::path> entries,
+    std::uint32_t entry_type,
     DiagnosticSink &diagnostics) {
   const std::size_t initial_errors = diagnostics.error_count();
   std::error_code error;
@@ -440,11 +438,27 @@ bool validate_macho_dependency_closure(
       return false;
     }
     if (!validate_image(
-            state, canonical_entry, canonical_entry, true, {})) {
+            state, canonical_entry, canonical_entry, entry_type, {})) {
       return false;
     }
   }
   return diagnostics.error_count() == initial_errors;
+}
+
+} // namespace
+
+bool validate_macho_dependency_closure(
+    const std::filesystem::path &root,
+    std::span<const std::filesystem::path> entries,
+    DiagnosticSink &diagnostics) {
+  return validate_closure(root, entries, kMachOExecute, diagnostics);
+}
+
+bool validate_macho_dylib_dependency_closure(
+    const std::filesystem::path &root,
+    std::span<const std::filesystem::path> entries,
+    DiagnosticSink &diagnostics) {
+  return validate_closure(root, entries, kMachODylib, diagnostics);
 }
 
 } // namespace draft

@@ -129,6 +129,21 @@ void test_relocatable_closure(TestState &state) {
       accepted_diagnostics));
   EXPECT(state, !accepted_diagnostics.has_errors());
 
+  // A compiler runtime is itself a closure entry and therefore must be a
+  // dylib, not an executable that merely has an acceptable dependency list.
+  draft::DiagnosticSink dylib_entry_diagnostics;
+  EXPECT(state, draft::validate_macho_dylib_dependency_closure(
+      root,
+      std::span<const std::filesystem::path>(&helper, 1),
+      dylib_entry_diagnostics));
+  EXPECT(state, !dylib_entry_diagnostics.has_errors());
+  draft::DiagnosticSink wrong_entry_type_diagnostics;
+  EXPECT(state, !draft::validate_macho_dylib_dependency_closure(
+      root,
+      std::span<const std::filesystem::path>(&tool, 1),
+      wrong_entry_type_diagnostics));
+  EXPECT(state, wrong_entry_type_diagnostics.has_errors());
+
   EXPECT(state, write_macho(
       tool,
       kMachOExecute,

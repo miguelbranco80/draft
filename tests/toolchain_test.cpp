@@ -14,6 +14,7 @@
 #include "target/profile.h"
 
 #include <cstdlib>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -22,6 +23,7 @@
 #include <string_view>
 #include <system_error>
 #include <utility>
+#include <vector>
 
 #include <sys/stat.h>
 
@@ -412,6 +414,54 @@ void test_package_assembly_reaches_link(TestState &state) {
 }
 
 #if defined(__APPLE__) && (defined(__aarch64__) || defined(__arm64__))
+void append_u32(std::uint32_t value, std::vector<unsigned char> &bytes) {
+  bytes.push_back(static_cast<unsigned char>(value & 0xffU));
+  bytes.push_back(static_cast<unsigned char>((value >> 8U) & 0xffU));
+  bytes.push_back(static_cast<unsigned char>((value >> 16U) & 0xffU));
+  bytes.push_back(static_cast<unsigned char>((value >> 24U) & 0xffU));
+}
+
+// Produces just enough of a valid arm64 MH_DYLIB for the recording-toolchain
+// test. The production closure parser validates this file exactly as it does
+// the real Clang runtime; the recording linker only needs a stable byte input.
+[[nodiscard]] bool write_synthetic_address_runtime(
+    const std::filesystem::path &path) {
+  constexpr std::string_view install_name =
+      "@rpath/libclang_rt.asan_osx_dynamic.dylib";
+  constexpr std::uint32_t string_offset = 24;
+  const std::uint32_t command_size = static_cast<std::uint32_t>(
+      (string_offset + install_name.size() + 1U + 7U) & ~7U);
+
+  std::vector<unsigned char> command;
+  append_u32(0x0000000dU, command); // LC_ID_DYLIB.
+  append_u32(command_size, command);
+  append_u32(string_offset, command);
+  append_u32(0, command); // Timestamp.
+  append_u32(0, command); // Current version.
+  append_u32(0, command); // Compatibility version.
+  command.insert(command.end(), install_name.begin(), install_name.end());
+  command.push_back(0);
+  command.resize(command_size, 0);
+
+  std::vector<unsigned char> bytes;
+  append_u32(0xfeedfacfU, bytes); // Thin little-endian Mach-O 64.
+  append_u32(0x0100000cU, bytes); // CPU_TYPE_ARM64.
+  append_u32(0, bytes);          // CPU subtype.
+  append_u32(6, bytes);          // MH_DYLIB.
+  append_u32(1, bytes);          // One load command.
+  append_u32(command_size, bytes);
+  append_u32(0, bytes); // Flags.
+  append_u32(0, bytes); // Reserved.
+  bytes.insert(bytes.end(), command.begin(), command.end());
+
+  std::ofstream output(path, std::ios::binary);
+  output.write(
+      reinterpret_cast<const char *>(bytes.data()),
+      static_cast<std::streamsize>(bytes.size()));
+  output.close();
+  return output.good();
+}
+
 void test_locked_build_verifies_and_isolates_inputs(TestState &state) {
   std::error_code error;
   const std::filesystem::path temporary =
@@ -424,6 +474,10 @@ void test_locked_build_verifies_and_isolates_inputs(TestState &state) {
   const std::filesystem::path sdk = temporary / "sdk";
   std::filesystem::create_directories(toolchain / "bin", error);
   EXPECT(state, !error);
+  const std::filesystem::path sanitizer_directory =
+      toolchain / "lib" / "clang" / "22" / "lib" / "darwin";
+  std::filesystem::create_directories(sanitizer_directory, error);
+  EXPECT(state, !error);
   std::filesystem::create_directories(sdk / "usr" / "lib", error);
   EXPECT(state, !error);
   if (error) return;
@@ -435,11 +489,15 @@ void test_locked_build_verifies_and_isolates_inputs(TestState &state) {
       toolchain / "bin" / "ld-classic";
   const std::filesystem::path archiver = toolchain / "bin" / "llvm-ar";
   const std::filesystem::path dsymutil = toolchain / "bin" / "dsymutil";
+  const std::filesystem::path symbolizer =
+      toolchain / "bin" / "llvm-symbolizer";
+  const std::filesystem::path address_runtime =
+      sanitizer_directory / "libclang_rt.asan_osx_dynamic.dylib";
   // All five names use one CMake-built Mach-O recorder. Unlike shell scripts,
   // its complete dynamic dependency closure can be checked by the same locked
   // input policy used for a release LLVM distribution.
   for (const std::filesystem::path &tool :
-       {clang, linker, classic_linker, archiver, dsymutil}) {
+       {clang, linker, classic_linker, archiver, dsymutil, symbolizer}) {
     error.clear();
     std::filesystem::copy_file(
         DRAFT_RECORDING_NATIVE_TOOL,
@@ -448,6 +506,7 @@ void test_locked_build_verifies_and_isolates_inputs(TestState &state) {
         error);
     EXPECT(state, !error);
   }
+  EXPECT(state, write_synthetic_address_runtime(address_runtime));
   std::ofstream(sdk / "usr" / "lib" / "libSystem.tbd", std::ios::binary)
       << "pinned SDK bytes\n";
   const std::filesystem::path runtime_asset = temporary / "unicode-tables.bin";
@@ -457,6 +516,7 @@ void test_locked_build_verifies_and_isolates_inputs(TestState &state) {
   EXPECT(state, chmod(classic_linker.c_str(), 0700) == 0);
   EXPECT(state, chmod(archiver.c_str(), 0700) == 0);
   EXPECT(state, chmod(dsymutil.c_str(), 0700) == 0);
+  EXPECT(state, chmod(symbolizer.c_str(), 0700) == 0);
 
   draft::LockedNativeInputRoots roots;
   roots.toolchain_root = toolchain;
@@ -562,6 +622,50 @@ void test_locked_build_verifies_and_isolates_inputs(TestState &state) {
       read_file(temporary / "build" / "draft-source-correlation.json") ==
           locked_source_correlation);
   EXPECT(state, read_file(log) == arguments + arguments);
+
+  // The address profile is a fixed backend recipe, not arbitrary driver
+  // passthrough. It instruments only LLVM IR compilation, links the verified
+  // runtime snapshot, publishes that dylib beside the executable, and records
+  // the exact runpath needed by its relocatable install name.
+  draft::NativeBuildOptions instrumented_options = options;
+  instrumented_options.instrumentation =
+      draft::NativeInstrumentationProfile::AddressSanitizer;
+  instrumented_options.build_directory =
+      (temporary / "instrumented-build").string();
+  instrumented_options.output_path =
+      (temporary / "instrumented-program").string();
+  draft::DiagnosticSink instrumented_diagnostics;
+  const draft::NativeBuildResult instrumented =
+      draft::build_native_executable(
+          draft::make_aarch64_macos_profile(),
+          compiled,
+          instrumented_options,
+          instrumented_diagnostics);
+  EXPECT(state, instrumented.ok);
+  EXPECT(state, !instrumented_diagnostics.has_errors());
+  EXPECT(state,
+      instrumented.instrumentation_runtime_path ==
+          (temporary / "libclang_rt.asan_osx_dynamic.dylib").string());
+  EXPECT(state,
+      instrumented.instrumentation_symbolizer_path ==
+          std::filesystem::canonical(symbolizer).string());
+  EXPECT(state,
+      read_file(instrumented.instrumentation_runtime_path) ==
+          read_file(address_runtime));
+  const std::string instrumented_arguments = read_file(log);
+  EXPECT(state, instrumented_arguments.find("\n-fsanitize=address\n") !=
+      std::string::npos);
+  EXPECT(state, instrumented_arguments.find("\n-fno-omit-frame-pointer\n") !=
+      std::string::npos);
+  EXPECT(state, instrumented_arguments.find(
+      "\n-Wl,-rpath,@executable_path\n") != std::string::npos);
+  EXPECT(state, instrumented_arguments.find(
+      (temporary / "instrumented-build" /
+       "libclang_rt.asan_osx_dynamic.dylib").string()) !=
+      std::string::npos);
+  EXPECT(state, read_file(
+      temporary / "instrumented-build" / "package-0.ll").find(
+          "sanitize_address") != std::string::npos);
 
   // The locked archive path uses the archiver inside the already pinned
   // toolchain tree. Every archive build, locked or not, requests deterministic

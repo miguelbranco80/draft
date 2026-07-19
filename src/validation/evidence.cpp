@@ -111,6 +111,8 @@ public:
         !key("environment") || !string(parsed.environment_identity) || !comma() ||
         !key("runner") || !string(parsed.runner_identity) || !comma() ||
         !key("policy") || !string(parsed.policy_identity) || !comma() ||
+        !key("instrumentation") ||
+        !string(parsed.instrumentation_identity) || !comma() ||
         !key("artifact") || !string(parsed.artifact_identity) || !comma() ||
         !key("warmup_runs") || !unsigned_integer(parsed.warmup_runs) ||
         !comma() || !key("sample_runs") ||
@@ -128,7 +130,7 @@ public:
     if (position_ != input_.size()) return fail("trailing bytes after evidence");
     const std::optional<ValidationKind> parsed_kind =
         parse_validation_kind(kind);
-    if (parsed.format != "draft-validation-evidence-v1") {
+    if (parsed.format != "draft-validation-evidence-v2") {
       return fail("unsupported validation evidence format");
     }
     if (!parsed_kind.has_value()) return fail("invalid validation kind");
@@ -438,6 +440,7 @@ private:
         evidence.toolchain_identity.empty() ||
         evidence.environment_identity.empty() ||
         evidence.runner_identity.empty() || evidence.policy_identity.empty() ||
+        evidence.instrumentation_identity.empty() ||
         evidence.artifact_identity.empty()) {
       return fail("required identity or attempt field is empty");
     }
@@ -494,7 +497,7 @@ private:
 Sha256Digest hash_validation_evidence_key(
     const ValidationEvidence &evidence) {
   Sha256 hash;
-  hash_field(hash, "draft.validation-evidence-key.v1");
+  hash_field(hash, "draft.validation-evidence-key.v2");
   hash.update(evidence.resolved_program.bytes);
   hash_field(hash, validation_kind_name(evidence.kind));
   hash_field(hash, evidence.target_identity);
@@ -503,6 +506,7 @@ Sha256Digest hash_validation_evidence_key(
   hash_field(hash, evidence.environment_identity);
   hash_field(hash, evidence.runner_identity);
   hash_field(hash, evidence.policy_identity);
+  hash_field(hash, evidence.instrumentation_identity);
   hash_field(hash, evidence.artifact_identity);
   hash_u64(hash, evidence.warmup_runs);
   hash_u64(hash, evidence.sample_runs);
@@ -537,6 +541,8 @@ std::string serialize_validation_evidence(
   append_json_string(evidence.runner_identity, output);
   output += ",\n  \"policy\": ";
   append_json_string(evidence.policy_identity, output);
+  output += ",\n  \"instrumentation\": ";
+  append_json_string(evidence.instrumentation_identity, output);
   output += ",\n  \"artifact\": ";
   append_json_string(evidence.artifact_identity, output);
   output += ",\n  \"warmup_runs\": " + std::to_string(evidence.warmup_runs);

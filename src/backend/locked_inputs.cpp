@@ -23,6 +23,9 @@ constexpr std::string_view kLinkerEntry = "bin/ld";
 constexpr std::string_view kClassicLinkerEntry = "bin/ld-classic";
 constexpr std::string_view kArchiverEntry = "bin/llvm-ar";
 constexpr std::string_view kDsymutilEntry = "bin/dsymutil";
+constexpr std::string_view kAddressSanitizerRuntimeEntry =
+    "lib/clang/22/lib/darwin/libclang_rt.asan_osx_dynamic.dylib";
+constexpr std::string_view kLlvmSymbolizerEntry = "bin/llvm-symbolizer";
 
 [[nodiscard]] bool inspect_root_directory(
     const std::filesystem::path &root,
@@ -161,6 +164,41 @@ bool pin_locked_native_inputs(
     return false;
   }
 
+  // Instrumentation is a distribution capability, not a baseline build
+  // requirement. If the fixed runtime entry is present, validate its Mach-O
+  // type, relocatable install name, and complete dependency closure now. This
+  // ensures a later address-instrumented build cannot introduce Homebrew or
+  // another ambient loader input after the tree has been accepted and hashed.
+  const std::filesystem::path address_runtime =
+      canonical.toolchain_root / kAddressSanitizerRuntimeEntry;
+  std::error_code runtime_error;
+  const std::filesystem::file_status runtime_status =
+      std::filesystem::symlink_status(address_runtime, runtime_error);
+  if (!runtime_error && std::filesystem::exists(runtime_status)) {
+    const std::filesystem::path symbolizer =
+        canonical.toolchain_root / kLlvmSymbolizerEntry;
+    if (!inspect_executable(symbolizer, "LLVM symbolizer", diagnostics)) {
+      return false;
+    }
+    const std::array symbolizer_entries{symbolizer};
+    if (!validate_macho_dependency_closure(
+            canonical.toolchain_root, symbolizer_entries, diagnostics)) {
+      return false;
+    }
+    const std::array runtime_entries{address_runtime};
+    if (!validate_macho_dylib_dependency_closure(
+            canonical.toolchain_root, runtime_entries, diagnostics)) {
+      return false;
+    }
+  } else if (runtime_error &&
+             runtime_error != std::errc::no_such_file_or_directory) {
+    diagnostics.error(
+        SourceRange::invalid(),
+        "cannot inspect optional locked address-sanitizer runtime: " +
+            runtime_error.message());
+    return false;
+  }
+
   ExternalInputPin toolchain;
   toolchain.kind = ExternalInputKind::Toolchain;
   toolchain.name = kToolchainName;
@@ -228,6 +266,15 @@ bool verify_locked_native_inputs(
   result.dsymutil = canonical.toolchain_root / kDsymutilEntry;
   result.toolchain_root = canonical.toolchain_root;
   result.sdk_root = canonical.sdk_root;
+  const std::filesystem::path address_runtime =
+      canonical.toolchain_root / kAddressSanitizerRuntimeEntry;
+  std::error_code runtime_error;
+  if (std::filesystem::is_regular_file(address_runtime, runtime_error) &&
+      !runtime_error) {
+    result.address_sanitizer_runtime = address_runtime;
+    result.llvm_symbolizer =
+        canonical.toolchain_root / kLlvmSymbolizerEntry;
+  }
   verified = std::move(result);
   return true;
 }

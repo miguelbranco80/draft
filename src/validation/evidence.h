@@ -31,7 +31,7 @@ struct ValidationObservation {
 // are deliberately excluded from that key so a later failure revokes the exact
 // same claim rather than creating a different claim that can coexist with it.
 struct ValidationEvidence {
-  std::string format = "draft-validation-evidence-v1";
+  std::string format = "draft-validation-evidence-v2";
   Sha256Digest key;
   std::uint64_t attempt = 0;
   Sha256Digest resolved_program;
@@ -42,6 +42,7 @@ struct ValidationEvidence {
   std::string environment_identity;
   std::string runner_identity;
   std::string policy_identity;
+  std::string instrumentation_identity;
   std::string artifact_identity;
   std::uint64_t warmup_runs = 0;
   std::uint64_t sample_runs = 0;

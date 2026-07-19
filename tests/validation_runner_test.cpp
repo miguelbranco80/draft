@@ -81,6 +81,20 @@ void test_launch_failures(TestState &state, const std::string &executable) {
   EXPECT(state, directory_diagnostics.has_errors());
 }
 
+void test_complete_environment(TestState &state, const std::string &executable) {
+  draft::DiagnosticSink diagnostics;
+  draft::ValidationRunOptions options;
+  options.executable = executable;
+  options.arguments = {"--child-environment"};
+  options.environment = {"DRAFT_RUNNER_TEST=exact"};
+  const draft::ValidationRunResult result =
+      draft::run_validation_executable(options, diagnostics);
+  EXPECT(state, result.started);
+  EXPECT(state, result.exited);
+  EXPECT(state, result.exit_code == 0);
+  EXPECT(state, !diagnostics.has_errors());
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -92,6 +106,13 @@ int main(int argc, char **argv) {
   }
 #endif
   if (argc == 2 && std::string_view(argv[1]) == "--child-fail") return 7;
+  if (argc == 2 && std::string_view(argv[1]) == "--child-environment") {
+    const char *exact = std::getenv("DRAFT_RUNNER_TEST");
+    return exact != nullptr && std::string_view(exact) == "exact" &&
+            std::getenv("HOME") == nullptr
+        ? 0
+        : 1;
+  }
   if (argc == 2 && std::string_view(argv[1]) == "--child-signal") {
     std::raise(SIGTERM);
     return 1;
@@ -108,5 +129,6 @@ int main(int argc, char **argv) {
   TestState state;
   test_outcomes(state, absolute.lexically_normal().string());
   test_launch_failures(state, absolute.lexically_normal().string());
+  test_complete_environment(state, absolute.lexically_normal().string());
   return state.failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }

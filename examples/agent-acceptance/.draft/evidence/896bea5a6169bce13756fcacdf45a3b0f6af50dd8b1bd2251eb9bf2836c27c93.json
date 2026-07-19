@@ -1,0 +1,17 @@
+{
+  "format": "draft-judgment-evidence-v1",
+  "key": "b8f24a1c748fb38bdaea46e3d906898ec733c11a106781044f4ee9a06b4dbdbc",
+  "attempt": 1,
+  "resolved_program": "91161198b9ba0ea8c1281e50ca661fd7d98565df060a090f1c412767afb9befb",
+  "target": "draft-aarch64-macos-v5",
+  "compiler": "draft-bootstrap-cpp-v128",
+  "policy": "draft-judgment-policy-v2:e426924cdf6b98849229940ca4e69cff336f077f82d6b6031f780ceaa4dcedc7",
+  "claim": {"site": "site-7bcb7af2822e2cea5e30612b522f38591b769b949cd724c904c07b8db89c7bc6", "root": "workspace", "package": "app", "source": "package.draft", "anchor": "main", "occurrence": 0, "input": "bcd8b51aea70cb662aeb46ccd6ca6de72c913b82b6b22018058be1ec27a366a4", "record": "422059c2438cc79e1460a614fb69f2d806fadaf85c04d7605976b5a9cd426f6f"},
+  "artifacts": [
+    {"kind": "library-source", "digest": "117d920b2cba9a52b050d7149325f704b1990b149760136c93689a9ea74a3f54"}
+  ],
+  "validators": [
+    {"identity": "validator-0", "provider": "openai-codex-cli-v22", "model": "gpt-5.6-sol", "configuration": "codex-config-4deb886897bc062db9a0fe885c67ff6605710042d34bb54d21afa7550b744ee2", "verdict": "pass", "rationale": "The requested library source defines lib.base() to return 40, while generated_offset is the i64 constant 2 and expected is i64(42). Therefore actual evaluates to 40 + 2 = 42, so actual == expected is preserved."}
+  ],
+  "verdict": "pass"
+}

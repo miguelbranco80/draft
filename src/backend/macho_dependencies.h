@@ -26,4 +26,14 @@ namespace draft {
     std::span<const std::filesystem::path> entries,
     DiagnosticSink &diagnostics);
 
+// Applies the same closed dependency policy to one or more dylibs that are
+// distributed as compiler runtime inputs rather than executable tools. Each
+// entry must be a thin AArch64 MH_DYLIB with a relocatable ID. Keeping this
+// separate from the executable entry point prevents a runtime from passing
+// validation merely because its dependency list happens to be acceptable.
+[[nodiscard]] bool validate_macho_dylib_dependency_closure(
+    const std::filesystem::path &root,
+    std::span<const std::filesystem::path> entries,
+    DiagnosticSink &diagnostics);
+
 } // namespace draft

@@ -14,6 +14,10 @@ struct ValidationRunOptions {
   std::string executable;
   std::string working_directory;
   std::vector<std::string> arguments;
+  // Empty preserves the caller's environment for low-level runner users.
+  // Validation commands supply a complete NAME=value vector and therefore
+  // execute with no inherited variables.
+  std::vector<std::string> environment;
 };
 
 // A nonzero exit and a terminating signal are validation outcomes, not runner

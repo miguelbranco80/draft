@@ -54,6 +54,8 @@ void test_target_availability_is_explicit(TestState &state) {
   EXPECT(state, draft::validate_validation_instrumentation(
       target, {}, empty_diagnostics));
   EXPECT(state, !empty_diagnostics.has_errors());
+  EXPECT(state, draft::validation_instrumentation_identity({}) ==
+      "draft-validation-instrumentation-v1:none");
 
   const std::array requested{
       draft::ValidationInstrumentationKind::Address,
@@ -63,7 +65,7 @@ void test_target_availability_is_explicit(TestState &state) {
   draft::DiagnosticSink diagnostics;
   EXPECT(state, !draft::validate_validation_instrumentation(
       target, requested, diagnostics));
-  EXPECT(state, diagnostics.error_count() == 3);
+  EXPECT(state, diagnostics.error_count() == 2);
   std::string combined;
   for (const draft::Diagnostic &diagnostic : diagnostics.diagnostics()) {
     combined += diagnostic.message;
@@ -71,12 +73,39 @@ void test_target_availability_is_explicit(TestState &state) {
   }
   EXPECT(state, combined.find("'address' is requested more than once") !=
       std::string::npos);
-  EXPECT(state, combined.find("'address' is unavailable for target '") !=
+  EXPECT(state, combined.find("'address' is unavailable for target '") ==
       std::string::npos);
   EXPECT(state, combined.find("'race' is unavailable for target '") !=
       std::string::npos);
   EXPECT(state, combined.find("versioned compiler pass, runtime, and evidence") !=
       std::string::npos);
+
+  const std::array address{
+      draft::ValidationInstrumentationKind::Address};
+  draft::DiagnosticSink address_diagnostics;
+  EXPECT(state, draft::validate_validation_instrumentation(
+      target, address, address_diagnostics));
+  EXPECT(state, !address_diagnostics.has_errors());
+  EXPECT(state, draft::validation_instrumentation_identity(address).find(
+      "compile=-fsanitize=address,-fno-omit-frame-pointer") !=
+      std::string::npos);
+  EXPECT(state, draft::validation_instrumentation_identity(address).find(
+      "ir-function-attribute=sanitize_address") != std::string::npos);
+
+  // A future target cannot silently inherit this profile just because it also
+  // happens to invoke a Clang with an option named -fsanitize=address.
+  draft::TargetProfile unqualified_target = target;
+  unqualified_target.facts.identity = "draft-unqualified-target-v1";
+  draft::DiagnosticSink unqualified_diagnostics;
+  EXPECT(state, !draft::validate_validation_instrumentation(
+      unqualified_target, address, unqualified_diagnostics));
+  EXPECT(state, unqualified_diagnostics.error_count() == 1);
+  if (!unqualified_diagnostics.diagnostics().empty()) {
+    EXPECT(state,
+        unqualified_diagnostics.diagnostics().front().message.find(
+            "'address' is unavailable for target "
+            "'draft-unqualified-target-v1'") != std::string::npos);
+  }
 }
 
 } // namespace

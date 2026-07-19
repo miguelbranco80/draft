@@ -416,6 +416,7 @@ int build_package(
     const std::vector<draft::ForeignProviderInput> &foreign_providers,
     const std::vector<draft::ForeignProviderSummaryInput> &provider_summaries,
     const std::vector<draft::RuntimeAssetInput> &runtime_assets,
+    const std::vector<draft::ValidationInstrumentationKind> &instrumentation,
     bool require_test_evidence,
     bool require_benchmark_evidence,
     bool require_judgment_evidence,
@@ -465,6 +466,7 @@ int build_package(
           absolute_directory.parent_path().string();
       configure_core_distribution(requirement.workspace);
       requirement.kind = kind;
+      requirement.instrumentation = instrumentation;
       requirement.foreign_provider_audits =
           compiled.foreign_provider_audits;
       draft::Sha256Digest active;
@@ -851,6 +853,7 @@ int run_agent_command(
     const std::vector<draft::ForeignProviderInput> &foreign_providers = {},
     const std::vector<draft::ForeignProviderSummaryInput> &provider_summaries = {},
     const std::vector<draft::RuntimeAssetInput> &runtime_assets = {},
+    const std::vector<draft::ValidationInstrumentationKind> &instrumentation = {},
     const std::vector<NamedCodexJudgmentValidator> &judgment_validators = {},
     const std::vector<draft::JudgmentRequestArtifact> &judgment_artifacts = {},
     const std::vector<std::string> &judgment_selectors = {},
@@ -875,6 +878,14 @@ int run_agent_command(
       absolute_directory.parent_path().string();
   configure_core_distribution(options.workspace);
   if (command == AgentCommandKind::Resolve) {
+    // Validate the selected profile even when this particular package has no
+    // test or benchmark declarations. Otherwise an unsupported request could
+    // disappear merely because the resolver never needs to call its runner.
+    if (!draft::validate_validation_instrumentation(
+            options.target, instrumentation, diagnostics)) {
+      std::cerr << draft::render_diagnostics(sources, diagnostics);
+      return 1;
+    }
     draft::ResolveWorkspaceOptions resolve_options;
     resolve_options.compile = std::move(options);
     resolve_options.revalidate = revalidate;
@@ -973,6 +984,7 @@ int run_agent_command(
     validation_state.options.package_directory = absolute_directory;
     validation_state.options.target = resolve_options.compile.target;
     validation_state.options.allow_unpinned_toolchain = allow_host_toolchain;
+    validation_state.options.instrumentation = instrumentation;
     validation_state.options.foreign_providers = foreign_providers;
     validation_state.options.runtime_assets = runtime_assets;
     if (locked_inputs.has_value()) {
@@ -1145,6 +1157,7 @@ void print_usage() {
             << "  draftc build <package-directory> --locked\n"
             << "      --toolchain-root <directory> --sdk-root <directory> [-o <output>]\n"
             << "      [--require-test-evidence] [--require-benchmark-evidence]\n"
+            << "      [--instrument address|lifetime|undefined-operation|allocator-poisoning|race]...\n"
             << "      [--require-judgment-evidence]\n"
             << "      [--judge-validator <identity>]...\n"
             << "      [--judge-artifact <kind>:<sha256>]...\n"
@@ -1161,6 +1174,7 @@ void print_usage() {
             << "      [--provider-summary name:<path>]...\n"
             << "      [--runtime-asset name:<file-or-directory>]...\n"
             << "  draftc resolve <package-directory> [--revalidate] [--judge]\n"
+            << "      [--instrument address|lifetime|undefined-operation|allocator-poisoning|race]...\n"
             << "      [--assertions=off]\n"
             << "      [--judge-select <selector>]...\n"
             << "      [--judge-validator <identity>:<model>]...\n"
@@ -1221,6 +1235,7 @@ int main(int argc, char **argv) {
     std::vector<draft::ForeignProviderInput> foreign_providers;
     std::vector<draft::ForeignProviderSummaryInput> provider_summaries;
     std::vector<draft::RuntimeAssetInput> runtime_assets;
+    std::vector<draft::ValidationInstrumentationKind> instrumentation;
     std::vector<NamedCodexJudgmentValidator> judgment_validators;
     std::vector<JudgmentArtifactPath> judgment_artifact_paths;
     std::vector<std::string> judgment_selectors;
@@ -1302,6 +1317,16 @@ int main(int argc, char **argv) {
           return 2;
         }
         runtime_assets.push_back(std::move(asset));
+      } else if (argument == "--instrument" && index + 1 < argc) {
+        const std::string_view spelling(argv[++index]);
+        const std::optional<draft::ValidationInstrumentationKind> parsed =
+            draft::parse_validation_instrumentation(spelling);
+        if (!parsed.has_value()) {
+          std::cerr << "error: unknown validation instrumentation '"
+                    << spelling << "'\n";
+          return 2;
+        }
+        instrumentation.push_back(*parsed);
       } else {
         print_usage();
         return 2;
@@ -1314,6 +1339,7 @@ int main(int argc, char **argv) {
         toolchain_root.has_value() != sdk_root.has_value() ||
         (revalidate && has_codex_models) ||
         (revalidate && judge_during_resolution) ||
+        (!instrumentation.empty() && !toolchain_root.has_value()) ||
         (allow_host_toolchain && toolchain_root.has_value())) {
       print_usage();
       return 2;
@@ -1365,6 +1391,7 @@ int main(int argc, char **argv) {
         foreign_providers,
         provider_summaries,
         runtime_assets,
+        instrumentation,
         judgment_validators,
         judgment_artifacts,
         judgment_selectors,
@@ -1495,6 +1522,7 @@ int main(int argc, char **argv) {
         foreign_providers,
         provider_summaries,
         {},
+        {},
         judgment_validators,
         judgment_artifacts,
         judgment_selectors,
@@ -1622,6 +1650,7 @@ int main(int argc, char **argv) {
     std::vector<draft::ForeignProviderInput> foreign_providers;
     std::vector<draft::ForeignProviderSummaryInput> provider_summaries;
     std::vector<draft::RuntimeAssetInput> runtime_assets;
+    std::vector<draft::ValidationInstrumentationKind> instrumentation;
     for (int index = 3; index < argc; ++index) {
       const std::string_view argument(argv[index]);
       if (argument == "--allow-host-toolchain") {
@@ -1708,6 +1737,16 @@ int main(int argc, char **argv) {
           return 2;
         }
         runtime_assets.push_back(std::move(asset));
+      } else if (argument == "--instrument" && index + 1 < argc) {
+        const std::string_view spelling(argv[++index]);
+        const std::optional<draft::ValidationInstrumentationKind> parsed =
+            draft::parse_validation_instrumentation(spelling);
+        if (!parsed.has_value()) {
+          std::cerr << "error: unknown validation instrumentation '"
+                    << spelling << "'\n";
+          return 2;
+        }
+        instrumentation.push_back(*parsed);
       } else {
         print_usage();
         return 2;
@@ -1718,6 +1757,11 @@ int main(int argc, char **argv) {
         (locked && allow_host_toolchain) ||
         ((require_test_evidence || require_benchmark_evidence ||
           require_judgment_evidence) && !locked)) {
+      print_usage();
+      return 2;
+    }
+    if (!instrumentation.empty() &&
+        !(require_test_evidence || require_benchmark_evidence)) {
       print_usage();
       return 2;
     }
@@ -1746,6 +1790,7 @@ int main(int argc, char **argv) {
         foreign_providers,
         provider_summaries,
         runtime_assets,
+        instrumentation,
         require_test_evidence,
         require_benchmark_evidence,
         require_judgment_evidence,

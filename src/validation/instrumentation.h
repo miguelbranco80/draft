@@ -13,6 +13,7 @@
 
 #include <optional>
 #include <span>
+#include <string>
 #include <string_view>
 
 namespace draft {
@@ -35,12 +36,17 @@ parse_validation_instrumentation(std::string_view spelling);
 
 // Rejects duplicates and any requirement unavailable for the complete target
 // profile. An empty set succeeds and represents the existing uninstrumented
-// validation policy. The first target currently supports no diagnostic
-// instrument; that explicit answer is safer than forwarding ambient Clang
-// sanitizer flags whose passes and runtimes are not pinned.
+// validation policy. The first target supports only the complete versioned
+// address profile; every other vocabulary item remains fail-closed.
 [[nodiscard]] bool validate_validation_instrumentation(
     const TargetProfile &target,
     std::span<const ValidationInstrumentationKind> requirements,
     DiagnosticSink &diagnostics);
+
+// Returns the exact compiler-owned profile identity placed in validation
+// evidence. Callers first validate the request; unsupported combinations never
+// receive an identity and therefore cannot alias an uninstrumented claim.
+[[nodiscard]] std::string validation_instrumentation_identity(
+    std::span<const ValidationInstrumentationKind> requirements);
 
 } // namespace draft

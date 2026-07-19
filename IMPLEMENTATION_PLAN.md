@@ -199,7 +199,7 @@ does not retrofit agent awareness into the language core.
 - Crash-safe transactions, malformed-input tests, deterministic serialization,
   sanitizer-clean test suite, and compiler self-consistency checks.
 - Explicit diagnostics for unsupported targets, profiles, provider operations,
-  and unavailable validation instrumentation.
+  and unavailable validation-instrumentation profiles.
 
 After that release, extend the core libraries, validation and benchmark tooling,
 output kinds, and target profiles without changing the agent-free foundation.

@@ -26,6 +26,14 @@ enum class NativeArtifactKind {
 
 [[nodiscard]] std::string_view native_artifact_kind_name(NativeArtifactKind kind);
 
+// Native instrumentation is deliberately typed and narrow. The backend never
+// accepts caller-supplied Clang flags: each profile is a compiler-owned bundle
+// of passes, code-generation options, link inputs, and deployment behavior.
+enum class NativeInstrumentationProfile {
+  None,
+  AddressSanitizer,
+};
+
 struct NativeBuildOptions {
   std::string clang_path = "clang";
   // Final Mach-O executables and dylibs carry a debug map, while their linked
@@ -39,6 +47,8 @@ struct NativeBuildOptions {
   std::string build_directory;
   std::string output_path;
   NativeArtifactKind artifact_kind = NativeArtifactKind::Executable;
+  NativeInstrumentationProfile instrumentation =
+      NativeInstrumentationProfile::None;
   // Development-only escape hatch. Release/locked builds must leave this false
   // so an ambient Apple Clang or another LLVM revision cannot alter artifacts.
   bool allow_unpinned_toolchain = false;
@@ -70,6 +80,14 @@ struct NativeBuildResult {
   // members or emitted assembly.
   std::string debug_symbols_path;
   Sha256Digest debug_symbols_digest;
+  // A dynamic instrumentation runtime is published next to an instrumented
+  // executable so its relocatable @rpath install name resolves without an
+  // ambient DYLD_* setting. Empty/zero for an ordinary native artifact.
+  std::string instrumentation_runtime_path;
+  Sha256Digest instrumentation_runtime_digest;
+  // The symbolizer remains in the verified toolchain tree; the validation
+  // runner passes its absolute path through a clean process environment.
+  std::string instrumentation_symbolizer_path;
   // Canonical physical roots verified for the exact manifest rows. This lets
   // an embedding build system deploy them without the compiler inventing a
   // target-specific output layout. Empty on failure.

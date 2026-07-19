@@ -12,6 +12,7 @@
 #include "source/diagnostic.h"
 
 #include <filesystem>
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -29,6 +30,11 @@ struct VerifiedLockedNativeInputs {
   std::filesystem::path dsymutil;
   std::filesystem::path toolchain_root;
   std::filesystem::path sdk_root;
+  // The address-sanitizer runtime is an optional capability of a locked LLVM
+  // distribution. Ordinary builds do not require it, but an instrumented
+  // validation build may use only this already verified, content-pinned path.
+  std::optional<std::filesystem::path> address_sanitizer_runtime;
+  std::optional<std::filesystem::path> llvm_symbolizer;
 };
 
 // Produces the complete canonical external-input set understood by the first

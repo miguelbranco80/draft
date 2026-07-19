@@ -45,6 +45,8 @@ void append_u64_little(
   evidence.environment_identity = "cpu=generic;features=+neon";
   evidence.runner_identity = "runner-v1";
   evidence.policy_identity = "policy-v1";
+  evidence.instrumentation_identity =
+      "draft-validation-instrumentation-v1:none";
   evidence.artifact_identity = "executable-v1";
   evidence.sample_runs = 1;
   draft::ValidationEntry entry;
@@ -83,6 +85,11 @@ void test_round_trip_and_key(TestState &state) {
 
   draft::ValidationEvidence changed = evidence;
   changed.entries[0].procedure = "test_changed";
+  EXPECT(state, draft::hash_validation_evidence_key(changed) != evidence.key);
+
+  changed = evidence;
+  changed.instrumentation_identity =
+      "draft-validation-instrumentation-v1:address";
   EXPECT(state, draft::hash_validation_evidence_key(changed) != evidence.key);
 
   std::string corrupt = json;

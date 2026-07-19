@@ -199,12 +199,21 @@ locked builds can verify required active evidence without rerunning it.
 
 `draft test` and `draft bench` accept repeatable `--instrument` requests from
 the closed set `address`, `lifetime`, `undefined-operation`,
-`allocator-poisoning`, and `race`. The first AArch64 macOS target currently
-supports none of them: a request fails before semantic compilation or native
-tool probing with an exact target diagnostic. This is intentional. An
-instrument becomes available only when its compiler pass, option schema,
-runtime, and tool versions can all enter the evidence identity; an ordinary
-uninstrumented run is never accepted as instrumented evidence.
+`allocator-poisoning`, and `race`. The first AArch64 macOS target implements
+`address` through the locked LLVM 22.1 distribution. The profile adds LLVM's
+`sanitize_address` function attribute to its private IR snapshot, compiles with
+the fixed ASan/frame-pointer options, links and deploys the pinned dynamic
+runtime, and runs with the pinned symbolizer under a clean environment.
+`lifetime`, `undefined-operation`, `allocator-poisoning`, and `race` remain
+explicitly unavailable.
+
+Instrumentation requires `--locked`; ambient host sanitizer runtimes are never
+accepted. Evidence format/key v2 records the complete profile identity, while
+the toolchain content-tree identity pins the pass, runtime, and symbolizer
+bytes. `resolve --instrument address` selects instrumented precommit evidence,
+and a later locked build must repeat `--instrument address` with
+`--require-test-evidence` and/or `--require-benchmark-evidence`. Ordinary
+uninstrumented evidence has a different key and cannot satisfy that request.
 
 On Apple hosts, the test suite also compiles, links, launches, and requires a
 zero exit from 17 handwritten programs spanning the runtime/core facilities,
@@ -457,14 +466,17 @@ Pin native inputs during resolution, then reproduce them without a provider:
 
 ```sh
 build/draftc resolve path/to/package \
+  --instrument address \
   --toolchain-root /absolute/path/to/llvm \
   --sdk-root /absolute/path/to/MacOSX.sdk \
   --runtime-asset unicode-tables:/absolute/assets/unicode
 
 build/draftc build path/to/package --locked \
+  --instrument address \
   --toolchain-root /absolute/path/to/llvm \
   --sdk-root /absolute/path/to/MacOSX.sdk \
   --runtime-asset unicode-tables:/relocated/assets/unicode \
+  --require-test-evidence --require-benchmark-evidence \
   --require-judgment-evidence
 ```
 
@@ -477,7 +489,9 @@ later failing attempt rejects the build. As with test and benchmark evidence,
 the flag is rejected outside `--locked` mode.
 
 The first toolchain layout requires executable `bin/clang`, `bin/ld`,
-`bin/ld-classic`, `bin/llvm-ar`, and `bin/dsymutil`. Every entry must be a thin
+`bin/ld-classic`, `bin/llvm-ar`, and `bin/dsymutil`. Its address profile also
+requires `bin/llvm-symbolizer` and
+`lib/clang/22/lib/darwin/libclang_rt.asan_osx_dynamic.dylib`. Every entry must be a thin
 AArch64 Mach-O image. Before hashing, the compiler recursively verifies that
 each non-system dylib dependency, ID, and runpath stays inside the selected
 tree. Relocating an unchanged tree preserves its identity; changing any byte,

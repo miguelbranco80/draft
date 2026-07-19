@@ -927,7 +927,7 @@ upper source re-evaluates to the displayed value at the site. Other loop shapes
 produce no inferred range.
 
 `draft-agent-obligation-v19`, synthesis request v21 / prompt v20, judgment
-request/prompt v4, and compiler content v127 identities make these facts and
+request/prompt v4, and compiler content v128 identities make these facts and
 the compiler-checked correction policy stale-pin and evidence inputs. The
 synthesis adapter uses provider identity `openai-codex-cli-v24`; the unchanged
 judgment adapter remains `openai-codex-cli-v22`. Both recheck the canonical
@@ -1024,8 +1024,8 @@ that the manifest is published under the canonical real workspace.
 
 ## Validation instrumentation request boundary
 
-Status: closed vocabulary and fail-closed availability implemented; the first
-target supports no diagnostic instrument yet.
+Status: the closed vocabulary, first locked address profile, and fail-closed
+availability policy are implemented.
 
 Validation profiles request instrumentation through typed kinds rather than
 ambient Clang flags. Draft 1 names `address`, `lifetime`,
@@ -1033,13 +1033,30 @@ ambient Clang flags. Draft 1 names `address`, `lifetime`,
 errors. Standalone validation, resolution precommit validation, and locked
 evidence verification all use the same target-availability gate.
 
-`draft-aarch64-macos-v5` currently rejects every nonempty set before semantic
-compilation or native tool probing. Supporting a kind requires a versioned
-compiler pass, option schema, runtime, and tool identity, followed by a
-validation-evidence format/key revision. Language-level traps and the bootstrap
-compiler's own ASan/UBSan suite do not satisfy that contract. This preserves the
-specification rule that unavailable required instrumentation fails rather than
-being silently omitted.
+`draft-aarch64-macos-v5` supports exactly `address`. It is locked-only: the
+selected toolchain tree contains the arm64 Clang 22.1 ASan dylib with a
+relocatable install name plus `llvm-symbolizer`. Both entries and their Mach-O
+dependency closures are checked before the complete tree is hashed. The native
+adapter adds the standard `sanitize_address` attribute to every definition in
+its private LLVM snapshot, compiles with `-fsanitize=address` and
+`-fno-omit-frame-pointer`, links the runtime snapshot, adds only
+`@executable_path` as the runtime search path, and deploys the exact dylib beside
+the harness.
+
+Validation processes receive a complete clean environment. The address profile
+adds exact `ASAN_OPTIONS=abort_on_error=1:symbolize=1` and the absolute path of
+the verified symbolizer; that physical path is relocatable presentation state,
+while the evidence identity names `bin/llvm-symbolizer` and the toolchain digest
+pins its bytes. Evidence/key v2 has a separate instrumentation identity. Thus
+ordinary, differently instrumented, and address-instrumented attempts cannot
+alias. Resolution and locked build evidence requirements expose the same
+`--instrument` selection.
+
+A locked passing test/benchmark pair and a deliberate Draft heap
+use-after-free qualify both sides of the profile. The latter aborts with a
+symbolized logical Draft location and commits a revoked failed attempt. The
+other four vocabulary items remain unavailable with exact diagnostics; a
+required but unavailable instrument is never silently omitted.
 
 ## Runtime assertion build mode
 
@@ -1054,7 +1071,7 @@ traps, and message construction used solely by an assertion cannot survive,
 and no condition is converted into an optimizer assumption.
 
 The versioned `draft.resolved-program.v4` hash records the assertion mode beside
-compiler content v127. `build`, `resolve`, and `judge` expose the same explicit
+compiler content v128. `build`, `resolve`, and `judge` expose the same explicit
 flag so an offline or locked manifest cannot be replayed under a different
 mode. Test and benchmark compilations deliberately override the release choice
 to assertions on and receive their own resolved validation digest; disabling
@@ -1086,15 +1103,16 @@ Focused overlay coverage proves that a stale pin remains rejected in the normal
 mode. A compiler integration regression constructs a declaration pin whose
 generated constant is consumed by a test-only file, authenticates the ordinary
 graph, and proves the derived validation graph compiles the test. Compiler
-content v127 invalidates earlier resolved-program and evidence identities rather
+content v128 invalidates earlier resolved-program and evidence identities rather
 than silently changing this trust boundary.
 
 ## Selected self-contained AArch64 distribution
 
-Status: qualified release input for compiler content v127.
+Status: qualified release input for compiler content v128.
 
-The selected 316 MiB toolchain contains only the five required programs and
-their recursive dynamic-library closure. LLVM/Clang components are 22.1.8;
+The selected toolchain contains the five baseline programs, the address
+profile's `llvm-symbolizer` and arm64 ASan dylib, and their recursive
+dynamic-library closure. LLVM/Clang components are 22.1.8;
 Mach-O links use Apple ld project 1267 and ld-classic project 957.1. Upstream
 LLD remains unsuitable for the complete artifact contract because Mach-O `-r`
 is unimplemented in LLVM 22.1. The colocated Apple helper preserves the
