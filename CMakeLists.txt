@@ -508,8 +508,12 @@ if(BUILD_TESTING)
     # separate build mode or copied sanitizer distribution.
     add_test(
       NAME draft_validation_address_instrumentation
-      COMMAND draftc test "${CMAKE_CURRENT_SOURCE_DIR}/examples/validation"
-        --instrument address
+      COMMAND
+        "${CMAKE_COMMAND}"
+        "-DDRAFTC=$<TARGET_FILE:draftc>"
+        "-DSOURCE_PACKAGE=${CMAKE_CURRENT_SOURCE_DIR}/examples/validation"
+        "-DTEST_ROOT=${CMAKE_CURRENT_BINARY_DIR}/address-instrumentation-test"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/driver_address_instrumentation_test.cmake"
     )
   endif()
 
