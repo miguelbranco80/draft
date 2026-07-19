@@ -1,4 +1,4 @@
-// Initial AArch64 macOS target profile construction and consistency validation.
+// Complete AArch64 target construction and consistency validation.
 
 #include "target/profile.h"
 
@@ -53,6 +53,42 @@ namespace {
   return std::nullopt;
 }
 
+// Both current profiles implement the same baseline Armv8-A/Advanced SIMD
+// architecture.  These helpers return values instead of exposing mutable
+// process globals, so each TargetProfile remains a complete owned build input.
+[[nodiscard]] std::vector<TargetSimdShape> baseline_simd_shapes() {
+  return {
+      {"f16", 4}, {"f16", 8}, {"f32", 2}, {"f32", 4}, {"f64", 2},
+      {"i16", 4}, {"i16", 8}, {"i32", 2}, {"i32", 4}, {"i64", 2},
+      {"i8", 8}, {"i8", 16}, {"u16", 4}, {"u16", 8}, {"u32", 2},
+      {"u32", 4}, {"u64", 2}, {"u8", 8}, {"u8", 16},
+  };
+}
+
+[[nodiscard]] std::vector<std::string> baseline_assembly_instructions() {
+  return {
+      "adc", "adcs", "add", "adds", "and", "ands", "asr", "bic",
+      "cls", "clz", "cmn", "cmp", "csel", "cset", "csetm", "csinc",
+      "csinv", "csneg", "dmb", "dsb", "dup", "eon", "eor", "fabs",
+      "fadd", "fcmp", "fcsel", "fcvt", "fcvtzs", "fcvtzu", "fdiv",
+      "fmax", "fmaxnm", "fmin", "fminnm", "fmov", "fmul", "fneg",
+      "fsqrt", "fsub", "isb", "ldar", "ldp", "ldr", "ldrb", "ldrh",
+      "ldrsb", "ldrsh", "ldrsw", "ldur", "lsl", "lsr", "madd", "mov",
+      "msub", "mul", "mvn", "neg", "negs", "nop", "orn", "orr", "rbit",
+      "rev", "rev16", "rev32", "ror", "sbc", "sbcs", "scvtf", "sdiv",
+      "stlr", "stp", "str", "strb", "strh", "stur", "sub", "subs", "tst",
+      "ucvtf", "udiv",
+  };
+}
+
+[[nodiscard]] std::vector<AssemblyFileRule> assembly_file_rules() {
+  return {
+      {".S", AssemblyPreprocessing::None},
+      {".asm", AssemblyPreprocessing::None},
+      {".s", AssemblyPreprocessing::None},
+  };
+}
+
 } // namespace
 
 TargetProfile make_aarch64_macos_profile() {
@@ -77,12 +113,7 @@ TargetProfile make_aarch64_macos_profile() {
   // shapes with at least two lanes. f16 is a legal storage/vector shape even
   // though arithmetic requiring optional full-FP16 instructions remains gated
   // by the separate target feature vocabulary.
-  profile.facts.simd_shapes = {
-      {"f16", 4}, {"f16", 8}, {"f32", 2}, {"f32", 4}, {"f64", 2},
-      {"i16", 4}, {"i16", 8}, {"i32", 2}, {"i32", 4}, {"i64", 2},
-      {"i8", 8}, {"i8", 16}, {"u16", 4}, {"u16", 8}, {"u32", 2},
-      {"u32", 4}, {"u64", 2}, {"u8", 8}, {"u8", 16},
-  };
+  profile.facts.simd_shapes = baseline_simd_shapes();
 
   profile.minimum_os_version = "14.0";
   profile.llvm_triple = "arm64-apple-macosx14.0.0";
@@ -95,19 +126,7 @@ TargetProfile make_aarch64_macos_profile() {
   profile.tls_model = TargetTlsModel::GeneralDynamic;
   profile.parsed_assembly_architecture = "aarch64";
   profile.parsed_assembly_dialect = "draft-aarch64-apple-v2";
-  profile.parsed_assembly_instructions = {
-      "adc", "adcs", "add", "adds", "and", "ands", "asr", "bic",
-      "cls", "clz", "cmn", "cmp", "csel", "cset", "csetm", "csinc",
-      "csinv", "csneg", "dmb", "dsb", "dup", "eon", "eor", "fabs",
-      "fadd", "fcmp", "fcsel", "fcvt", "fcvtzs", "fcvtzu", "fdiv",
-      "fmax", "fmaxnm", "fmin", "fminnm", "fmov", "fmul", "fneg",
-      "fsqrt", "fsub", "isb", "ldar", "ldp", "ldr", "ldrb", "ldrh",
-      "ldrsb", "ldrsh", "ldrsw", "ldur", "lsl", "lsr", "madd", "mov",
-      "msub", "mul", "mvn", "neg", "negs", "nop", "orn", "orr", "rbit",
-      "rev", "rev16", "rev32", "ror", "sbc", "sbcs", "scvtf", "sdiv",
-      "stlr", "stp", "str", "strb", "strh", "stur", "sub", "subs", "tst",
-      "ucvtf", "udiv",
-  };
+  profile.parsed_assembly_instructions = baseline_assembly_instructions();
   profile.system_link_providers = {"darwin", "libc"};
   profile.system_link_library = "System";
   // This closed list covers the first core distribution and native examples.
@@ -142,12 +161,96 @@ TargetProfile make_aarch64_macos_profile() {
       {"darwin", "write", {}},
       {"libc", "labs", {}},
   };
-  profile.assembly_files = {
-      {".S", AssemblyPreprocessing::None},
-      {".asm", AssemblyPreprocessing::None},
-      {".s", AssemblyPreprocessing::None},
-  };
+  profile.assembly_files = assembly_file_rules();
   return profile;
+}
+
+TargetProfile make_aarch64_linux_profile() {
+  TargetProfile profile;
+  profile.facts.identity = "draft-aarch64-linux-gnu-v1";
+  profile.facts.arch = "aarch64";
+  profile.facts.os = "linux";
+  profile.facts.abi = "aapcs64_gnu";
+  profile.facts.byte_order = "little";
+  profile.facts.object_format = "elf";
+  profile.facts.file_tag = "aarch64-linux";
+  profile.facts.pointer_bits = 64;
+  profile.facts.page_size = 4096;
+  profile.facts.known_features = {
+      "aes", "crc", "dotprod", "fp16", "neon", "sha2"};
+  profile.facts.features = {"neon"};
+  profile.facts.simd_shapes = baseline_simd_shapes();
+
+  // The first Linux distribution contract is Ubuntu 24.04-class userspace:
+  // Linux 6.8, glibc 2.39, the GNU AArch64 ABI, and a 4 KiB base page.  The
+  // version string is descriptive profile identity; unlike Darwin's deployment
+  // floor it is not handed to Clang as a command-line option.
+  profile.minimum_os_version = "linux-6.8-glibc-2.39";
+  profile.llvm_triple = "aarch64-unknown-linux-gnu";
+  profile.llvm_data_layout =
+      "e-m:e-p270:32:32-p271:32:32-p272:64:64-i8:8:32-i16:16:32-i64:64-i128:128-n32:64-S128-Fn32";
+  profile.llvm_cpu = "generic";
+  profile.llvm_feature_string = "+neon";
+  profile.relocation_model = TargetRelocationModel::PositionIndependent;
+  profile.code_model = TargetCodeModel::Small;
+  profile.tls_model = TargetTlsModel::GeneralDynamic;
+  profile.parsed_assembly_architecture = "aarch64";
+  profile.parsed_assembly_dialect = "draft-aarch64-linux-v1";
+  profile.parsed_assembly_instructions = baseline_assembly_instructions();
+
+  // `linux` names the POSIX/Linux surface supplied by glibc; `libc` retains
+  // the portable C provider spelling.  Both resolve to -lc in the initial GNU
+  // profile, but remain separate semantic provider identities for denials.
+  profile.system_link_providers = {"libc", "linux"};
+  profile.system_link_library = "c";
+  profile.system_foreign_summaries = {
+      {"libc", "labs", {}},
+      {"linux", "_exit", {}},
+      {"linux", "clock_gettime", {}},
+      {"linux", "close", {}},
+      {"linux", "getpid", {}},
+      {"linux", "mmap", {}},
+      {"linux", "mprotect", {}},
+      {"linux", "munmap", {}},
+      {"linux", "nanosleep", {}},
+      {"linux", "pthread_cond_broadcast", {}},
+      {"linux", "pthread_cond_destroy", {}},
+      {"linux", "pthread_cond_init", {}},
+      {"linux", "pthread_cond_signal", {}},
+      {"linux", "pthread_cond_wait", {}},
+      {"linux", "pthread_create", {2}},
+      {"linux", "pthread_join", {}},
+      {"linux", "pthread_mutex_destroy", {}},
+      {"linux", "pthread_mutex_init", {}},
+      {"linux", "pthread_mutex_lock", {}},
+      {"linux", "pthread_mutex_trylock", {}},
+      {"linux", "pthread_mutex_unlock", {}},
+      {"linux", "pthread_self", {}},
+      {"linux", "read", {}},
+      {"linux", "sched_yield", {}},
+      {"linux", "unlink", {}},
+      {"linux", "write", {}},
+  };
+  profile.assembly_files = assembly_file_rules();
+  return profile;
+}
+
+bool select_builtin_target_profile(
+    std::string_view selector,
+    TargetProfile &profile,
+    std::string &reason) {
+  reason.clear();
+  if (selector.empty() || selector == "aarch64-macos") {
+    profile = make_aarch64_macos_profile();
+    return true;
+  }
+  if (selector == "aarch64-linux") {
+    profile = make_aarch64_linux_profile();
+    return true;
+  }
+  reason = "unknown target '" + std::string(selector) +
+      "'; expected aarch64-macos or aarch64-linux";
+  return false;
 }
 
 bool validate_target_profile(const TargetProfile &profile, std::string &reason) {
@@ -164,9 +267,18 @@ bool validate_target_profile(const TargetProfile &profile, std::string &reason) 
     reason = "target page size must be a nonzero power of two";
     return false;
   }
-  if (profile.facts.arch != "aarch64" || profile.facts.os != "macos" ||
-      profile.facts.object_format != "macho") {
-    reason = "initial profile must consistently name AArch64, macOS, and Mach-O";
+  if (profile.facts.arch != "aarch64") {
+    reason = "bootstrap target profile must name AArch64";
+    return false;
+  }
+  const bool macos = profile.facts.os == "macos" &&
+      profile.facts.abi == "darwin_arm64" &&
+      profile.facts.object_format == "macho";
+  const bool linux = profile.facts.os == "linux" &&
+      profile.facts.abi == "aapcs64_gnu" &&
+      profile.facts.object_format == "elf";
+  if (!macos && !linux) {
+    reason = "target OS, ABI, and object format are not a supported coherent set";
     return false;
   }
   if (profile.llvm_triple.empty() || profile.llvm_data_layout.empty() ||
@@ -214,11 +326,14 @@ bool validate_target_profile(const TargetProfile &profile, std::string &reason) 
     reason = "parsed assembly instruction vocabulary must be sorted and unique";
     return false;
   }
-  const std::vector<std::string> expected_system_providers = {"darwin", "libc"};
-  if (profile.system_link_library != "System" ||
+  const std::vector<std::string> expected_system_providers = macos
+      ? std::vector<std::string>{"darwin", "libc"}
+      : std::vector<std::string>{"libc", "linux"};
+  const std::string_view expected_system_library = macos ? "System" : "c";
+  if (profile.system_link_library != expected_system_library ||
       profile.system_link_providers != expected_system_providers ||
       !bytewise_sorted_unique(profile.system_link_providers)) {
-    reason = "initial target must map darwin and libc to the System library";
+    reason = "target system providers do not match its base system library";
     return false;
   }
   for (std::size_t index = 0;

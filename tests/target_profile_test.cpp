@@ -1,4 +1,4 @@
-// Internal consistency tests for the versioned AArch64 macOS target boundary.
+// Internal consistency tests for the versioned AArch64 target boundaries.
 
 #include "sema/target_validation.h"
 #include "target/profile.h"
@@ -57,6 +57,41 @@ void test_initial_profile(TestState &state) {
   EXPECT(state, draft::tls_model_name(profile.tls_model) == "general-dynamic");
 }
 
+void test_linux_profile(TestState &state) {
+  const draft::TargetProfile profile = draft::make_aarch64_linux_profile();
+  std::string reason;
+  EXPECT(state, draft::validate_target_profile(profile, reason));
+  EXPECT(state, reason.empty());
+  EXPECT(state, profile.facts.identity == "draft-aarch64-linux-gnu-v1");
+  EXPECT(state, profile.facts.os == "linux");
+  EXPECT(state, profile.facts.abi == "aapcs64_gnu");
+  EXPECT(state, profile.facts.object_format == "elf");
+  EXPECT(state, profile.facts.file_tag == "aarch64-linux");
+  EXPECT(state, profile.facts.page_size == 4096);
+  EXPECT(state, profile.llvm_triple == "aarch64-unknown-linux-gnu");
+  EXPECT(state, profile.llvm_data_layout.find("m:e") != std::string::npos);
+  EXPECT(state, profile.parsed_assembly_dialect ==
+      "draft-aarch64-linux-v1");
+  EXPECT(state, profile.parsed_assembly_instructions.size() == 82);
+  EXPECT(state, profile.system_link_library == "c");
+  EXPECT(state, profile.system_link_providers ==
+      std::vector<std::string>({"libc", "linux"}));
+  EXPECT(state, profile.system_foreign_summaries.size() == 26);
+  EXPECT(state, profile.system_foreign_summaries[14].linker_name ==
+      "pthread_create");
+  EXPECT(state,
+      profile.system_foreign_summaries[14].callback_parameters ==
+          std::vector<std::uint32_t>{2});
+
+  draft::TargetProfile selected;
+  EXPECT(state, draft::select_builtin_target_profile(
+      "aarch64-linux", selected, reason));
+  EXPECT(state, selected.facts.identity == profile.facts.identity);
+  EXPECT(state, !draft::select_builtin_target_profile(
+      "x86_64-linux", selected, reason));
+  EXPECT(state, reason.find("unknown target") != std::string::npos);
+}
+
 void test_invalid_profile_reports_reason(TestState &state) {
   draft::TargetProfile profile = draft::make_aarch64_macos_profile();
   profile.facts.page_size = 12000;
@@ -85,6 +120,11 @@ void test_invalid_profile_reports_reason(TestState &state) {
       profile.parsed_assembly_instructions[1]);
   EXPECT(state, !draft::validate_target_profile(profile, reason));
   EXPECT(state, reason.find("instruction vocabulary") != std::string::npos);
+
+  profile = draft::make_aarch64_linux_profile();
+  profile.facts.object_format = "macho";
+  EXPECT(state, !draft::validate_target_profile(profile, reason));
+  EXPECT(state, reason.find("coherent set") != std::string::npos);
 }
 
 void test_simd_semantic_boundary(TestState &state) {
@@ -114,6 +154,7 @@ void test_simd_semantic_boundary(TestState &state) {
 int main() {
   TestState state;
   test_initial_profile(state);
+  test_linux_profile(state);
   test_invalid_profile_reports_reason(state);
   test_simd_semantic_boundary(state);
 

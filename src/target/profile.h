@@ -1,4 +1,4 @@
-// Versioned target-profile facts for the initial AArch64 macOS implementation.
+// Versioned target-profile facts for the bootstrap AArch64 implementations.
 //
 // The profile is the single authority for facts that would otherwise leak host
 // assumptions into semantic analysis, ABI lowering, assembly parsing, object
@@ -6,8 +6,11 @@
 // the LLVM and linker adapters consume these stable strings and independently
 // verify compatibility with the pinned toolchain.
 //
-// Draft 1 supports exactly one profile. Additional targets add new complete
-// profile constructors rather than conditionals scattered through the compiler.
+// Each supported target has one complete constructor.  Shared architectural
+// facts are assembled here, while operating-system ABI, object, linker, and
+// runtime facts remain explicit in the individual constructor.  This is the
+// intended firewall against target conditionals scattered through semantic or
+// backend code.
 // Relevant specification: docs/specification/02-types-memory-runtime.md "Target profile" and
 // docs/specification/04-native-interop.md sections 11-12.
 
@@ -93,6 +96,18 @@ struct TargetProfile {
 // value return avoids global initialization and makes tests free to validate a
 // modified copy without mutating compiler process state.
 [[nodiscard]] TargetProfile make_aarch64_macos_profile();
+
+// Constructs the first GNU/Linux profile.  It intentionally selects one
+// concrete 4 KiB-page, glibc-based distribution contract rather than claiming
+// that one profile describes every valid AArch64 Linux kernel/libc pairing.
+[[nodiscard]] TargetProfile make_aarch64_linux_profile();
+
+// Resolves the stable command-line selector for a built-in profile.  The
+// default remains aarch64-macos for compatibility.  Returning a value rather
+// than a reference keeps profiles immutable-by-convention and lets tests alter
+// a copy without process-global state.
+[[nodiscard]] bool select_builtin_target_profile(
+    std::string_view selector, TargetProfile &profile, std::string &reason);
 
 // Checks internal profile consistency before any semantic or backend work. It
 // returns false and writes one direct reason rather than asserting on values
