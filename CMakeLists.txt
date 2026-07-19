@@ -417,6 +417,22 @@ if(BUILD_TESTING)
     )
 
     add_executable(
+      draft_native_backend_parity_tests
+      tests/native_backend_parity_test.cpp
+    )
+    target_link_libraries(
+      draft_native_backend_parity_tests PRIVATE draft_compiler
+    )
+    target_compile_definitions(
+      draft_native_backend_parity_tests
+      PRIVATE DRAFT_SOURCE_DIRECTORY="${CMAKE_CURRENT_SOURCE_DIR}"
+    )
+    add_test(
+      NAME draft_native_backend_parity_tests
+      COMMAND draft_native_backend_parity_tests
+    )
+
+    add_executable(
       draft_native_conformance_tests
       tests/native_conformance_test.cpp
     )
