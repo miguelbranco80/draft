@@ -445,7 +445,7 @@ pub owned_string_destroy :: proc(owned: ^Owned_String) {
     owned^.allocator = empty
 }
 
-// Virtual_Region is a move-by-convention Darwin mapping handle. reserve creates
+// Virtual_Region is a move-by-convention hosted mapping handle. reserve creates
 // inaccessible address space, protect/commit change whole-region access, and
 // release unmaps it. Keeping the region size beside the address makes every OS
 // call fixed-signature and avoids smuggling target page policy into the caller.
@@ -460,37 +460,6 @@ pub Virtual_Protection :: enum i32 {
 pub Virtual_Region :: struct {
     data: rawptr,
     size: usize,
-}
-
-foreign darwin {
-    native_mmap :: c "mmap" proc(
-        address: rawptr,
-        size: usize,
-        protection, flags, descriptor: i32,
-        offset: i64,
-    ) -> rawptr
-    native_mprotect :: c "mprotect" proc(
-        address: rawptr,
-        size: usize,
-        protection: i32,
-    ) -> i32
-    native_munmap :: c "munmap" proc(address: rawptr, size: usize) -> i32
-}
-
-// Reserves a whole inaccessible mapping. Failure returns a zero handle rather
-// than asserting because address-space exhaustion is ordinary OS state.
-pub virtual_reserve :: proc(size: usize) -> (Virtual_Region, bool) {
-    empty: Virtual_Region
-    if size == 0 {
-        return (empty, false)
-    }
-    // MAP_PRIVATE | MAP_ANON is 0x0002 | 0x1000 on the fixed Darwin target.
-    storage := native_mmap(nil, size, 0, 0x1002, -1, 0)
-    failed := cast[rawptr](~cast[uintptr](0))
-    if storage == failed {
-        return (empty, false)
-    }
-    return (Virtual_Region{data = storage, size = size}, true)
 }
 
 // Changes protection for the complete mapping; subrange policy can be added as
@@ -513,7 +482,7 @@ pub virtual_commit :: proc(region: ^Virtual_Region) -> bool {
     return virtual_protect(region, .read_write)
 }
 
-// Unmaps the complete region and clears the handle only after Darwin succeeds.
+// Unmaps the complete region and clears the handle only after the OS succeeds.
 pub virtual_release :: proc(region: ^Virtual_Region) -> bool {
     if region^.data == nil {
         return true

@@ -190,7 +190,7 @@ void test_native_examples(TestState &state) {
     compile_options.workspace.core_directory =
         (source_root / "core").string();
     compile_options.workspace.core_content_identity =
-        "draft-core-bootstrap-v2";
+        "draft-core-bootstrap-v3";
     compile_options.lower_mir = true;
     compile_options.emit_llvm = true;
     draft::CompileWorkspaceResult compiled = draft::compile_workspace(

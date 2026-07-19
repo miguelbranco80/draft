@@ -1,0 +1,23 @@
+package time
+
+import core/c as c
+
+Timespec :: @repr(C) struct {
+    seconds: i64,
+    nanoseconds: i64,
+}
+
+foreign linux {
+    clock_gettime :: c proc(clock: c.int, value: ^Timespec) -> c.int
+}
+
+// Linux CLOCK_MONOTONIC_RAW is 4. clock_gettime is expected to succeed for
+// this fixed clock in the selected glibc/kernel contract; an unavailable clock
+// is a runtime invariant failure rather than a fabricated timestamp.
+pub monotonic_now :: proc() -> Duration {
+    value: Timespec
+    status := clock_gettime(4, &value)
+    assert(status == 0, "CLOCK_MONOTONIC_RAW is unavailable")
+    total := value.seconds * cast[i64](second) + value.nanoseconds
+    return cast[Duration](total)
+}

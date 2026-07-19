@@ -7,8 +7,9 @@ or userspace ABI is interchangeable.
 
 ## Initial AArch64 Linux profile
 
-Status: implemented target-profile boundary; native artifact and core-runtime
-qualification proceeds in the subsequent Linux implementation slices.
+Status: implemented target-profile and target-qualified core-source boundary;
+native artifact and hosted-runtime qualification proceeds in subsequent Linux
+implementation slices.
 
 The profile identity is `draft-aarch64-linux-gnu-v1`. It targets
 `aarch64-unknown-linux-gnu`, the GNU AAPCS64 ABI, little-endian ELF, the generic
@@ -48,10 +49,12 @@ semantic provider identities for denial summaries. The initial target-owned
 summary covers only the fixed libc, POSIX thread, mapping, file, process, and
 clock symbols used by the compiler runtime and first core packages.
 
-ELF artifact spelling, the dynamic loader, deterministic link flags, debug
-information, locked toolchain/sysroot shape, pthread storage, and the Linux core
-source selection are implementation work layered on this profile. Release
-documentation must not call the target qualified until those gates have run.
+The v3 core source tree selects Linux file/open flags, anonymous-mapping bits,
+glibc pthread handle/storage types, `clock_gettime`, and ELF assembly symbol
+spelling with the profile's `aarch64-linux` file tag. ELF artifact spelling, the
+dynamic loader, deterministic link flags, debug information, and locked
+toolchain/sysroot shape remain backend work. Release documentation must not call
+the target qualified until those gates have run.
 
 ## Related contracts
 

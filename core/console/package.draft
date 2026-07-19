@@ -61,7 +61,7 @@ pub write_to :: proc(handle: os.File, text: string) -> io.Error {
 }
 
 // write_newline_to writes the single line-feed byte used by Draft's hosted
-// AArch64 macOS profile. It is separate from write_to because Draft strings do
+// POSIX profiles. It is separate from write_to because Draft strings do
 // not expose mutable storage, while this local fixed array is already a byte
 // slice suitable for os.write.
 write_newline_to :: proc(handle: os.File) -> io.Error {

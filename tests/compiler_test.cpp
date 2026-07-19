@@ -579,7 +579,8 @@ void test_compiler_distributed_os(TestState &state) {
         std::string::npos);
     EXPECT(state, os->assembly_sources.size() == 1);
     if (os->assembly_sources.size() == 1) {
-      EXPECT(state, os->assembly_sources.front().relative_name == "open.s");
+    EXPECT(state, os->assembly_sources.front().relative_name ==
+        "open@aarch64-macos.s");
       EXPECT(state, os->assembly_sources.front().contents.find(
           "_draft_os_open_fixed:") != std::string::npos);
     }
@@ -641,6 +642,59 @@ void test_compiler_distributed_thread(TestState &state) {
         std::string::npos);
     EXPECT(state, thread->llvm.text.find(
         "@\"__draft.runtime.default_context\"") != std::string::npos);
+  }
+}
+
+// The Linux core gate runs the same public OS/thread examples through semantic,
+// HIR, MIR, and LLVM construction. It checks the target-selected source seam
+// before the later ELF linker test: no Darwin provider or Mach-O assembly file
+// may survive merely because both hosts expose similarly named POSIX calls.
+void test_aarch64_linux_core_selection(TestState &state) {
+  for (const std::string_view example : {"core-os", "core-thread"}) {
+    draft::SourceManager sources;
+    draft::DiagnosticSink diagnostics;
+    draft::CompileWorkspaceOptions options;
+    options.target = draft::make_aarch64_linux_profile();
+    options.workspace.workspace_directory =
+        std::string(DRAFT_SOURCE_DIRECTORY) + "/examples";
+    options.workspace.core_directory =
+        std::string(DRAFT_SOURCE_DIRECTORY) + "/core";
+    options.workspace.core_content_identity = "draft-core-test-linux-v1";
+    options.lower_mir = true;
+    options.emit_llvm = true;
+    const draft::CompileWorkspaceResult result = draft::compile_workspace(
+        sources,
+        std::string(DRAFT_SOURCE_DIRECTORY) + "/examples/" +
+            std::string(example),
+        std::move(options),
+        diagnostics);
+    if (diagnostics.has_errors()) {
+      std::cerr << draft::render_diagnostics(sources, diagnostics);
+    }
+    EXPECT(state, result.ok);
+    EXPECT(state, !diagnostics.has_errors());
+    if (!result.ok) continue;
+
+    for (const std::optional<draft::CompiledPackage> &package : result.packages) {
+      if (!package.has_value()) continue;
+      EXPECT(state, package->llvm.text.find(
+          "target triple = \"aarch64-unknown-linux-gnu\"") !=
+          std::string::npos);
+      EXPECT(state, std::find(
+          package->native_interop.providers.begin(),
+          package->native_interop.providers.end(),
+          "darwin") == package->native_interop.providers.end());
+      if (package->identity.root_relative_path != "os") continue;
+      EXPECT(state, package->assembly_sources.size() == 1);
+      if (package->assembly_sources.size() == 1) {
+        EXPECT(state, package->assembly_sources.front().relative_name ==
+            "open@aarch64-linux.s");
+        EXPECT(state, package->assembly_sources.front().contents.find(
+            "draft_os_open_fixed:") != std::string::npos);
+        EXPECT(state, package->assembly_sources.front().contents.find(
+            "_draft_os_open_fixed:") == std::string::npos);
+      }
+    }
   }
 }
 
@@ -976,6 +1030,7 @@ int main() {
   test_compiler_distributed_map(state);
   test_compiler_distributed_os(state);
   test_compiler_distributed_thread(state);
+  test_aarch64_linux_core_selection(state);
   test_compiler_distributed_atomic(state);
   test_atomic_diagnostics(state);
   test_cross_package_generic_procedures(state);

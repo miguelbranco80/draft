@@ -1,0 +1,48 @@
+package thread
+
+import core/c as c
+
+// glibc AArch64 defines pthread_t as unsigned long. Keeping that scalar rather
+// than pretending it is a pointer matters to C ABI type identity even though
+// both occupy one 64-bit argument register.
+Pthread_Handle :: uintptr
+
+pub Thread :: @repr(C) struct {
+    handle: Pthread_Handle,
+}
+
+// glibc 2.39 AArch64 gives pthread_mutex_t and pthread_cond_t 48-byte storage
+// with eight-byte alignment. The leading i64 establishes the required
+// alignment; all bytes remain opaque and are touched only by pthread.
+pub Mutex :: @repr(C) struct {
+    alignment: i64,
+    opaque: [40]u8,
+}
+
+pub Condition :: @repr(C) struct {
+    alignment: i64,
+    opaque: [40]u8,
+}
+
+foreign linux {
+    pthread_create :: c proc(
+        thread: ^Pthread_Handle,
+        attributes: rawptr,
+        start: Start_Routine,
+        user: rawptr,
+    ) -> c.int
+    pthread_join :: c proc(thread: Pthread_Handle, result: ^rawptr) -> c.int
+    pthread_self :: c proc() -> Pthread_Handle
+    sched_yield :: c proc() -> c.int
+    pthread_mutex_init :: c proc(mutex: ^Mutex, attributes: rawptr) -> c.int
+    pthread_mutex_destroy :: c proc(mutex: ^Mutex) -> c.int
+    pthread_mutex_lock :: c proc(mutex: ^Mutex) -> c.int
+    pthread_mutex_trylock :: c proc(mutex: ^Mutex) -> c.int
+    pthread_mutex_unlock :: c proc(mutex: ^Mutex) -> c.int
+    pthread_cond_init :: c proc(condition: ^Condition, attributes: rawptr) -> c.int
+    pthread_cond_destroy :: c proc(condition: ^Condition) -> c.int
+    pthread_cond_wait :: c proc(condition: ^Condition, mutex: ^Mutex) -> c.int
+    pthread_cond_signal :: c proc(condition: ^Condition) -> c.int
+    pthread_cond_broadcast :: c proc(condition: ^Condition) -> c.int
+    nanosleep :: c proc(requested: ^Timespec, remaining: ^Timespec) -> c.int
+}

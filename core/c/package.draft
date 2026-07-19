@@ -1,7 +1,8 @@
 package c_abi
 
-// AArch64 Darwin C scalar aliases.  These are ordinary Draft aliases so C ABI
-// declarations stay explicit and source tools can inspect their exact widths.
+// LP64 AArch64 C scalar aliases shared by the current Darwin and GNU profiles.
+// These are ordinary Draft aliases so declarations remain explicit and source
+// tools can inspect their exact widths.
 pub char :: i8
 pub signed_char :: i8
 pub unsigned_char :: u8

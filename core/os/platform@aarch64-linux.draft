@@ -1,0 +1,32 @@
+package os
+
+import core/c as c
+
+// Linux UAPI open(2) flags for the initial little-endian AArch64 GNU profile.
+// Keeping them in target-selected Draft source makes their use inspectable and
+// prevents a shared POSIX-looking name from hiding incompatible numeric bits.
+pub open_append :: cast[c.int](0x0400)
+pub open_create :: cast[c.int](0x0040)
+pub open_truncate :: cast[c.int](0x0200)
+pub open_exclusive :: cast[c.int](0x0080)
+
+pub page_size :: proc() -> usize {
+    return 4096
+}
+
+foreign linux {
+    native_read :: c "read" proc(
+        descriptor: c.int,
+        destination: [^]u8,
+        count: c.size_t,
+    ) -> c.ssize_t
+    native_write :: c "write" proc(
+        descriptor: c.int,
+        source: [^]u8,
+        count: c.size_t,
+    ) -> c.ssize_t
+    native_close :: c "close" proc(descriptor: c.int) -> c.int
+    native_unlink :: c "unlink" proc(path: cstring) -> c.int
+    native_process_id :: c "getpid" proc() -> c.int
+    native_exit :: c "_exit" proc(status: c.int)
+}

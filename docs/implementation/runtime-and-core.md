@@ -1,12 +1,21 @@
 # Hosted runtime and core packages
 
-This document records the first hosted runtime, Context implementation, allocator/core facilities, process and thread support, and compiler-backed atomic surface. Portable language behavior remains in the specification; exact AArch64 macOS facts are linked from the target profile.
+This document records the hosted runtime, Context implementation,
+allocator/core facilities, process and thread support, and compiler-backed
+atomic surface. Portable language behavior remains in the specification;
+exact machine and OS facts live in the selected target profile.
 
 ## Initial hosted runtime context layout
 
 Status: bootstrap runtime ABI; synchronized with `core/runtime` by tests.
 
-The AArch64 macOS root Context is 96 bytes with 8-byte alignment. Its fields
+Core content identity `draft-core-bootstrap-v3` introduces target-qualified
+Darwin/Linux OS, memory, thread, time, and package-assembly sources. The earlier
+v2 identity remains the selected macOS qualification baseline; v3 requires new
+native qualification after the ELF backend is complete.
+
+Both current AArch64 profiles use a root Context of 96 bytes with 8-byte
+alignment. Its fields
 begin at offsets 0, 16, 32, 40, 56, 72, 80, and 88, in the source order declared
 by `core/runtime.Context`. Allocator, logger, and random-generator provider
 records each contain a procedure pointer and a provider-state pointer. The
@@ -29,7 +38,7 @@ has no implicit Context and may not name `context`.
 
 Two compiler-owned bridges cover that C boundary. `runtime.default_context`
 lazily initializes Draft TLS from the process-default Context and returns the
-calling thread's snapshot through the Darwin indirect aggregate-result
+calling thread's snapshot through the selected AArch64 indirect aggregate-result
 convention. `runtime.call_with_context` statically checks a non-nil `^Context`,
 an ordinary Draft callback, and the callback's exact arguments, initializes
 Draft TLS when entered from a foreign-created thread, then lowers directly to
@@ -40,9 +49,9 @@ arbitrary C signatures. The supplied pointer remains dynamic-call state and is
 not installed as the thread default.
 
 The hosted default allocator implements the three `core/runtime` operations
-against the Darwin heap. Fresh storage is zeroed, alignments through 16 use the
-ordinary allocator, larger alignments use `posix_memalign`, and aligned resize
-allocates/copies/releases while preserving the old allocation on failure. The
+against the selected libc heap. Fresh storage is zeroed, alignments through 16
+use the ordinary allocator, larger alignments use `posix_memalign`, and aligned
+resize allocates/copies/releases while preserving the old allocation on failure. The
 root and each lazy thread Context use this provider for general allocation. The
 temporary provider instead owns a pthread-key state containing a direct list of
 separately aligned allocations. Individual free is a no-op, resize allocates and
@@ -55,7 +64,8 @@ records.
 
 ## Initial core memory facilities
 
-Status: ordinary Draft library surface over the allocator and Darwin ABIs.
+Status: ordinary Draft library surface over the allocator and target-selected
+Darwin/GNU ABIs.
 
 `core/memory.Arena` is a direct linked list of backing blocks with an absolute
 address-aligned bump cursor. Its allocator performs allocate and preserving
@@ -90,36 +100,41 @@ the native boundary honest. Direct string-backed writes can replace the copy
 only if a future specified library or language operation exposes a read-only
 byte view; that is not backend permission to reinterpret string layout.
 
-The first virtual-memory seam is target-qualified Darwin source using fixed
-signatures for `mmap`, `mprotect`, and `munmap`. Reserve creates inaccessible
-private anonymous address space, commit/protect change whole-region permissions,
-and release clears the move-by-convention handle. The constants are part of the
-versioned AArch64 macOS core distribution rather than inferred from host headers.
+The virtual-memory seam uses target-qualified source with fixed signatures for
+`mmap`, `mprotect`, and `munmap`. Reserve creates inaccessible private anonymous
+address space, commit/protect change whole-region permissions, and release
+clears the move-by-convention handle. Darwin selects `MAP_ANON = 0x1000`; Linux
+selects `MAP_ANONYMOUS = 0x20`. These constants are versioned core/target facts,
+not values inferred from host headers.
 
 ## Hosted process views and core threads
 
-Status: AArch64 macOS hosted runtime contract.
+Status: target-selected AArch64 Darwin/GNU source contract; ELF runtime/link
+qualification follows in the native backend slice.
 
-The C entry receives Darwin's third `envp` argument. Before Draft `main`, the
+The hosted C entry receives the platform `envp` vector. Before Draft `main`, the
 runtime materializes argv and envp as stable `{pointer,length}` string records;
 `core/os` returns non-owning slices over those records. Normal return frees the
 record arrays after all Draft defers finish. Environment entries preserve their
 exact `name=value` bytes and ordering. The initial file API wraps already-open
-fixed descriptors; pathname opening waits for a pinned fixed-signature wrapper
-because Draft 1 deliberately rejects variadic C imports.
+fixed descriptors. Pathname opening uses a target-qualified fixed-signature
+assembly wrapper because Draft 1 deliberately rejects variadic C imports:
+Darwin spills the variadic mode to its stack slot, while GNU AAPCS64 can tail
+branch with the existing x0/w1/w2 argument registers.
 
 `core/thread` uses pthreads through fixed C signatures. Spawn state owns a copy
 of the active Context. The C trampoline installs that copy as the child TLS
 default before entering the ordinary Draft callback, replacing temp_allocator
 with a provider whose state belongs to that OS thread, so ordinary calls,
-defers, and `runtime.default_context` agree. Join clears the owning handle. Mutex
-and condition storage uses the target-profile Darwin LP64 layouts (64 and 48
-bytes, including their eight-byte signatures) and is accessed only through
-pthread operations.
+defers, and `runtime.default_context` agree. Join clears the owning handle.
+Mutex and condition storage is accessed only through pthread operations. Darwin
+uses 64-byte mutex and 48-byte condition storage, including their signatures.
+glibc 2.39 AArch64 uses 48 bytes with eight-byte alignment for both;
+`pthread_t` is `unsigned long` rather than Darwin's opaque pointer.
 
 ## Initial compiler-backed atomic interface
 
-Status: first AArch64 macOS core surface; C11 memory semantics are normative.
+Status: shared AArch64 core surface; C11 memory semantics are normative.
 
 `core/atomic.Value[T]` is an ordinary, naturally aligned nominal wrapper whose
 storage may be initialized non-atomically only before publication. After

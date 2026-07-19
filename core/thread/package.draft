@@ -8,29 +8,10 @@ import core/time
 pub Entry_Proc :: proc(user: rawptr)
 Start_Routine :: c proc(user: rawptr) -> rawptr
 
-// pthread_t is an opaque pointer on the fixed AArch64 Darwin target. Thread is
-// move-by-convention ownership metadata: after a successful join its handle is
-// cleared, and copying a live value would create two aliases to one join right.
-pub Thread :: @repr(C) struct {
-    handle: rawptr,
-}
-
 Start_State :: struct {
     thread_context: runtime.Context,
     entry: Entry_Proc,
     user: rawptr,
-}
-
-foreign darwin {
-    pthread_create :: c proc(
-        thread: ^rawptr,
-        attributes: rawptr,
-        start: Start_Routine,
-        user: rawptr,
-    ) -> c.int
-    pthread_join :: c proc(thread: rawptr, result: ^rawptr) -> c.int
-    pthread_self :: c proc() -> rawptr
-    sched_yield :: c proc() -> c.int
 }
 
 release_start_state :: proc(state: ^Start_State) {
@@ -84,12 +65,12 @@ pub spawn :: proc(entry: Entry_Proc, user: rawptr) -> (Thread, bool) {
 }
 
 pub join :: proc(thread: ^Thread) -> bool {
-    if thread^.handle == nil {
+    if thread^.handle == cast[Pthread_Handle](cast[uintptr](0)) {
         return true
     }
     status := pthread_join(thread^.handle, nil)
     if status == 0 {
-        thread^.handle = nil
+        thread^.handle = cast[Pthread_Handle](cast[uintptr](0))
         return true
     }
     return false
@@ -101,33 +82,6 @@ pub current_id :: proc() -> uintptr {
 
 pub yield :: proc() {
     sched_yield()
-}
-
-// These opaque layouts are part of the AArch64 macOS target profile. Darwin's
-// LP64 pthread mutex contains an eight-byte signature plus 56 opaque bytes; a
-// condition contains the same signature plus 40 bytes. Only pthread functions
-// may inspect or mutate this storage.
-pub Mutex :: @repr(C) struct {
-    signature: i64,
-    opaque: [56]u8,
-}
-
-pub Condition :: @repr(C) struct {
-    signature: i64,
-    opaque: [40]u8,
-}
-
-foreign darwin {
-    pthread_mutex_init :: c proc(mutex: ^Mutex, attributes: rawptr) -> c.int
-    pthread_mutex_destroy :: c proc(mutex: ^Mutex) -> c.int
-    pthread_mutex_lock :: c proc(mutex: ^Mutex) -> c.int
-    pthread_mutex_trylock :: c proc(mutex: ^Mutex) -> c.int
-    pthread_mutex_unlock :: c proc(mutex: ^Mutex) -> c.int
-    pthread_cond_init :: c proc(condition: ^Condition, attributes: rawptr) -> c.int
-    pthread_cond_destroy :: c proc(condition: ^Condition) -> c.int
-    pthread_cond_wait :: c proc(condition: ^Condition, mutex: ^Mutex) -> c.int
-    pthread_cond_signal :: c proc(condition: ^Condition) -> c.int
-    pthread_cond_broadcast :: c proc(condition: ^Condition) -> c.int
 }
 
 pub mutex_init :: proc(mutex: ^Mutex) -> bool {
@@ -174,10 +128,6 @@ pub condition_broadcast :: proc(condition: ^Condition) {
 Timespec :: @repr(C) struct {
     seconds: i64,
     nanoseconds: i64,
-}
-
-foreign darwin {
-    nanosleep :: c proc(requested: ^Timespec, remaining: ^Timespec) -> c.int
 }
 
 pub sleep :: proc(duration: time.Duration) -> bool {

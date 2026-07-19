@@ -38,52 +38,28 @@ pub standard_input: File = File{descriptor = 0}
 pub standard_output: File = File{descriptor = 1}
 pub standard_error: File = File{descriptor = 2}
 
-// These constants are the exact Darwin values owned by the first target
-// profile. They intentionally use the C integer types consumed by open(2), so
-// combining them does not depend on Draft's default integer width.
-//
 // Access modes occupy the low two bits and must not be combined with each
-// other. Creation flags may be combined with one access mode using `|`.
+// other on either supported POSIX target. Target-owned creation and status
+// flag values live in the selected platform source file.
 pub open_read_only :: cast[c.int](0)
 pub open_write_only :: cast[c.int](1)
 pub open_read_write :: cast[c.int](2)
-pub open_append :: cast[c.int](0x0008)
-pub open_create :: cast[c.int](0x0200)
-pub open_truncate :: cast[c.int](0x0400)
-pub open_exclusive :: cast[c.int](0x0800)
 
 // New files receive rw-rw-rw- before the process umask removes permissions.
 // The decimal spelling is octal 0666; naming the policy is clearer at call
 // sites than repeating a target-shaped numeric literal.
 pub default_creation_permissions :: cast[c.unsigned_int](438)
 
-// Darwin declares open(2) as variadic because the mode argument is consumed
-// only when O_CREAT is present. Draft 1 deliberately rejects variadic foreign
-// declarations, so open.s supplies this fixed three-argument C ABI wrapper and
-// always forwards a mode value. The kernel ignores that value without O_CREAT.
+// POSIX declares open(2) as variadic because the mode argument is consumed only
+// when O_CREAT is present. Draft 1 rejects variadic foreign declarations, so
+// each target assembly file supplies this fixed three-argument C ABI wrapper.
+// The kernel ignores the third value when O_CREAT is absent.
 foreign package_assembly {
     native_open :: c "draft_os_open_fixed" proc(
         path: cstring,
         flags: c.int,
         mode: c.unsigned_int,
     ) -> c.int
-}
-
-foreign darwin {
-    native_read :: c "read" proc(
-        descriptor: c.int,
-        destination: [^]u8,
-        count: c.size_t,
-    ) -> c.ssize_t
-    native_write :: c "write" proc(
-        descriptor: c.int,
-        source: [^]u8,
-        count: c.size_t,
-    ) -> c.ssize_t
-    native_close :: c "close" proc(descriptor: c.int) -> c.int
-    native_unlink :: c "unlink" proc(path: cstring) -> c.int
-    native_process_id :: c "getpid" proc() -> c.int
-    native_exit :: c "_exit" proc(status: c.int)
 }
 
 pub file_from_descriptor :: proc(descriptor: c.int) -> File {
@@ -166,16 +142,6 @@ pub remove :: proc(path: cstring) -> bool {
 
 pub process_id :: proc() -> u64 {
     return cast[u64](native_process_id())
-}
-
-pub page_size :: proc() -> usize {
-    // This is a target-profile fact, not a host query. Changing the selected
-    // target changes the profile identity and recompiles this branch.
-    when target.page_size == 16384 {
-        return 16384
-    } else {
-        return target.page_size
-    }
 }
 
 pub exit :: proc(status: int) {

@@ -1,0 +1,31 @@
+package memory
+
+foreign linux {
+    native_mmap :: c "mmap" proc(
+        address: rawptr,
+        size: usize,
+        protection, flags, descriptor: i32,
+        offset: i64,
+    ) -> rawptr
+    native_mprotect :: c "mprotect" proc(
+        address: rawptr,
+        size: usize,
+        protection: i32,
+    ) -> i32
+    native_munmap :: c "munmap" proc(address: rawptr, size: usize) -> i32
+}
+
+// Linux MAP_PRIVATE | MAP_ANONYMOUS is 0x0002 | 0x0020 on AArch64. mmap
+// reports failure with the all-ones pointer value on both supported profiles.
+pub virtual_reserve :: proc(size: usize) -> (Virtual_Region, bool) {
+    empty: Virtual_Region
+    if size == 0 {
+        return (empty, false)
+    }
+    storage := native_mmap(nil, size, 0, 0x0022, -1, 0)
+    failed := cast[rawptr](~cast[uintptr](0))
+    if storage == failed {
+        return (empty, false)
+    }
+    return (Virtual_Region{data = storage, size = size}, true)
+}

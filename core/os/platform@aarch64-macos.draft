@@ -1,0 +1,31 @@
+package os
+
+import core/c as c
+
+// Darwin open(2) flags from the selected macOS SDK. These are target facts,
+// not portable POSIX values: Linux uses different bits for every flag below.
+pub open_append :: cast[c.int](0x0008)
+pub open_create :: cast[c.int](0x0200)
+pub open_truncate :: cast[c.int](0x0400)
+pub open_exclusive :: cast[c.int](0x0800)
+
+pub page_size :: proc() -> usize {
+    return 16384
+}
+
+foreign darwin {
+    native_read :: c "read" proc(
+        descriptor: c.int,
+        destination: [^]u8,
+        count: c.size_t,
+    ) -> c.ssize_t
+    native_write :: c "write" proc(
+        descriptor: c.int,
+        source: [^]u8,
+        count: c.size_t,
+    ) -> c.ssize_t
+    native_close :: c "close" proc(descriptor: c.int) -> c.int
+    native_unlink :: c "unlink" proc(path: cstring) -> c.int
+    native_process_id :: c "getpid" proc() -> c.int
+    native_exit :: c "_exit" proc(status: c.int)
+}
