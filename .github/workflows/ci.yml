@@ -77,3 +77,53 @@ jobs:
       # alone.
       - name: Test
         run: ctest --test-dir build --output-on-failure --parallel ${{ matrix.parallel }}
+
+  sanitizers-x86-64:
+    name: Sanitizers / Linux x86-64
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      # Stop at the first report so the failing operation remains close to the
+      # useful stack. Leak detection is explicit rather than inherited from a
+      # runner image's ambient sanitizer configuration.
+      ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+      UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install bootstrap toolchain
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes build-essential cmake
+
+      # This job is intentionally a different architecture from the native
+      # matrix. Assert the hosted-runner contract instead of accidentally
+      # turning it into a duplicate ARM build after a label change.
+      - name: Record tool versions
+        run: |
+          test "$(uname -m)" = x86_64
+          cmake --version
+          g++ --version
+
+      - name: Configure
+        run: |
+          cmake -S . -B build \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_CXX_COMPILER=g++ \
+            -DDRAFT_WARNINGS_AS_ERRORS=ON \
+            -DDRAFT_ENABLE_SANITIZERS=ON
+
+      - name: Build
+        run: cmake --build build --parallel 4
+
+      # x86-64 cannot execute Draft's AArch64 artifacts. CMake omits only those
+      # three native-host integration executables; semantic, lowering, target,
+      # driver, validation, and backend contract tests still run instrumented.
+      - name: Test
+        run: ctest --test-dir build --output-on-failure --parallel 4
