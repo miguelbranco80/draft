@@ -56,12 +56,12 @@ struct ResolutionPin {
 };
 
 // ExternalInputKind names the semantic role an exact external filesystem tree
-// plays in a locked build. The content digest alone cannot distinguish using
-// identical bytes as a toolchain versus an SDK or link artifact; the role and
-// logical name are therefore part of program identity and the unique key.
+// plays in the resolved program. The content digest alone cannot distinguish
+// using identical bytes as an object, runtime asset, or provider summary; the
+// role and logical name are therefore part of program identity and the unique
+// key. Host compilers, linkers, and SDKs are operational build configuration,
+// not external program inputs, and consequently have no kinds here.
 enum class ExternalInputKind {
-  Toolchain,
-  Sdk,
   ForeignArtifact,
   Object,
   Archive,
@@ -74,10 +74,10 @@ enum class ExternalInputKind {
 // `draft.content-tree.v1` digest of the selected file or directory. entry_point
 // is a normalized relative path inside that tree when one executable or file is
 // invoked directly; it is empty when the root itself is the semantic input.
-// name is a manifest-local, user-facing identity such as `llvm-22.1` or
-// `macos-15.5-sdk` and must be unique together with kind.
+// name is a manifest-local, user-facing identity such as a foreign provider or
+// runtime asset name and must be unique together with kind.
 struct ExternalInputPin {
-  ExternalInputKind kind = ExternalInputKind::Toolchain;
+  ExternalInputKind kind = ExternalInputKind::ForeignArtifact;
   std::string name;
   Sha256Digest content_digest;
   std::string entry_point;

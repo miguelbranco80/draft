@@ -4,7 +4,7 @@
 // assumptions into semantic analysis, ABI lowering, assembly parsing, object
 // emission, or linking. It contains no LLVM objects and performs no tool lookup;
 // the LLVM and linker adapters consume these stable strings and independently
-// verify compatibility with the pinned toolchain.
+// verify compatibility with the selected host toolchain.
 //
 // Each supported target has one complete constructor.  Shared architectural
 // facts are assembled here, while operating-system ABI, object, linker, and

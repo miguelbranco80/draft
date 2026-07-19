@@ -575,12 +575,12 @@ draft::ResolveWorkspaceOptions resolve_options(
   return options;
 }
 
-draft::ExternalInputPin fake_toolchain_pin() {
+draft::ExternalInputPin fake_runtime_asset_pin() {
   draft::ExternalInputPin pin;
-  pin.kind = draft::ExternalInputKind::Toolchain;
-  pin.name = "fixture-toolchain";
-  pin.content_digest = draft::sha256("exact fixture toolchain tree");
-  pin.entry_point = "bin/clang";
+  pin.kind = draft::ExternalInputKind::RuntimeAsset;
+  pin.name = "fixture-runtime-data";
+  pin.content_digest = draft::sha256("exact fixture runtime data tree");
+  pin.entry_point = "tables.bin";
   return pin;
 }
 
@@ -594,7 +594,7 @@ void test_resolution_reuse_revalidation_and_failure(TestState &state) {
   draft::ResolveWorkspaceOptions first_options =
       resolve_options(workspace, provider);
   first_options.external_inputs_configured = true;
-  first_options.external_inputs.push_back(fake_toolchain_pin());
+  first_options.external_inputs.push_back(fake_runtime_asset_pin());
   const draft::ResolveWorkspaceResult first = draft::resolve_workspace(
       first_sources,
       workspace.package.string(),
@@ -646,7 +646,7 @@ void test_resolution_reuse_revalidation_and_failure(TestState &state) {
   if (reuse.manifest.external_inputs.size() == 1) {
     EXPECT(state,
         reuse.manifest.external_inputs.front().content_digest ==
-            fake_toolchain_pin().content_digest);
+            fake_runtime_asset_pin().content_digest);
   }
 
   // An explicitly selected provider configuration is part of resolution
@@ -797,7 +797,7 @@ void test_external_inputs_commit_without_synthesis(TestState &state) {
   draft::ResolveWorkspaceOptions options = resolve_options(workspace, provider);
   options.provider = {};
   options.external_inputs_configured = true;
-  options.external_inputs.push_back(fake_toolchain_pin());
+  options.external_inputs.push_back(fake_runtime_asset_pin());
 
   draft::SourceManager sources;
   draft::DiagnosticSink diagnostics;
@@ -911,7 +911,6 @@ void test_interface_sites_precede_dependent_bodies(TestState &state) {
   draft::NativeBuildOptions first_native;
   first_native.build_directory = (native_root / "first-build").string();
   first_native.output_path = (native_root / "first-program").string();
-  first_native.allow_unpinned_toolchain = true;
   const draft::NativeBuildResult first_built = draft::build_native_executable(
       draft::make_aarch64_macos_profile(),
       offline,

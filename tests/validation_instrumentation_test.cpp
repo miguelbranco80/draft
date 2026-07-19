@@ -77,7 +77,7 @@ void test_target_availability_is_explicit(TestState &state) {
       std::string::npos);
   EXPECT(state, combined.find("'race' is unavailable for target '") !=
       std::string::npos);
-  EXPECT(state, combined.find("versioned compiler pass, runtime, and evidence") !=
+  EXPECT(state, combined.find("qualified compiler pass, runtime, and evidence") !=
       std::string::npos);
 
   const std::array address{
@@ -91,6 +91,8 @@ void test_target_availability_is_explicit(TestState &state) {
       std::string::npos);
   EXPECT(state, draft::validation_instrumentation_identity(address).find(
       "ir-function-attribute=sanitize_address") != std::string::npos);
+  EXPECT(state, draft::validation_instrumentation_identity(address).find(
+      "link=-fsanitize=address") != std::string::npos);
 
   // A future target cannot silently inherit this profile just because it also
   // happens to invoke a Clang with an option named -fsanitize=address.

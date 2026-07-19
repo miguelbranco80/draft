@@ -1,4 +1,4 @@
-// Deterministic, non-following traversal for locked filesystem inputs.
+// Deterministic, non-following traversal for external program inputs.
 
 #include "base/content_tree.h"
 
@@ -45,7 +45,7 @@ void report_filesystem_error(
     const std::error_code &error) {
   diagnostics.error(
       SourceRange::invalid(),
-      "cannot hash locked build input: " + std::move(operation) + ": " +
+      "cannot hash external input: " + std::move(operation) + ": " +
           error.message());
 }
 
@@ -85,7 +85,7 @@ void hash_field(Sha256 &hash, std::string_view value) {
   if (expected_size > std::numeric_limits<std::uint64_t>::max()) {
     diagnostics.error(
         SourceRange::invalid(),
-        "cannot hash locked build input: regular file is too large");
+        "cannot hash external input: regular file is too large");
     return false;
   }
 
@@ -93,7 +93,7 @@ void hash_field(Sha256 &hash, std::string_view value) {
   if (!input) {
     diagnostics.error(
         SourceRange::invalid(),
-        "cannot hash locked build input: cannot open regular file");
+        "cannot hash external input: cannot open regular file");
     return false;
   }
 
@@ -109,7 +109,7 @@ void hash_field(Sha256 &hash, std::string_view value) {
         std::numeric_limits<std::uint64_t>::max() - byte_count) {
       diagnostics.error(
           SourceRange::invalid(),
-          "cannot hash locked build input: regular file is too large");
+          "cannot hash external input: regular file is too large");
       return false;
     }
     file_hash.update(std::span<const std::uint8_t>(
@@ -119,13 +119,13 @@ void hash_field(Sha256 &hash, std::string_view value) {
   if (!input.eof()) {
     diagnostics.error(
         SourceRange::invalid(),
-        "cannot hash locked build input: failed while reading regular file");
+        "cannot hash external input: failed while reading regular file");
     return false;
   }
   if (observed_size != static_cast<std::uint64_t>(expected_size)) {
     diagnostics.error(
         SourceRange::invalid(),
-        "cannot hash locked build input: regular file changed while hashing");
+        "cannot hash external input: regular file changed while hashing");
     return false;
   }
 
@@ -194,7 +194,7 @@ void hash_field(Sha256 &hash, std::string_view value) {
         name.find('\\') != std::string::npos) {
       diagnostics.error(
           SourceRange::invalid(),
-          "cannot hash locked build input: noncanonical directory entry name");
+          "cannot hash external input: noncanonical directory entry name");
       return false;
     }
     children.push_back({name, child_path});
@@ -269,7 +269,7 @@ void hash_field(Sha256 &hash, std::string_view value) {
     if (is_root) {
       diagnostics.error(
           SourceRange::invalid(),
-          "cannot hash locked build input: selected root must not be a symlink");
+          "cannot hash external input: selected root must not be a symlink");
       return false;
     }
     std::error_code link_error;
@@ -286,7 +286,7 @@ void hash_field(Sha256 &hash, std::string_view value) {
     if (!symlink_stays_inside(containing_directory, target)) {
       diagnostics.error(
           SourceRange::invalid(),
-          "cannot hash locked build input: symbolic link escapes selected root");
+          "cannot hash external input: symbolic link escapes selected root");
       return false;
     }
     entry.kind = EntryKind::Symlink;
@@ -297,7 +297,7 @@ void hash_field(Sha256 &hash, std::string_view value) {
 
   diagnostics.error(
       SourceRange::invalid(),
-      "cannot hash locked build input: special filesystem entries are not supported");
+      "cannot hash external input: special filesystem entries are not supported");
   return false;
 }
 
@@ -311,7 +311,7 @@ bool hash_content_tree(
   if (root.empty()) {
     diagnostics.error(
         SourceRange::invalid(),
-        "cannot hash locked build input: selected root path is empty");
+        "cannot hash external input: selected root path is empty");
     return false;
   }
   if (!collect_entry(root, "", true, entries, diagnostics)) return false;

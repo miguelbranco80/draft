@@ -9,7 +9,8 @@
 //
 // Interface rows are deliberately plain data in deterministic declaration and
 // type-discovery order. They are the semantic precursor to the canonical hashed
-// interface serialization used by locked builds and synthesis contexts. Source
+// interface serialization used by provider-free builds and synthesis
+// contexts. Source
 // ranges are excluded because physical checkout paths and local FileIds are not
 // semantic package identity.
 //

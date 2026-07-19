@@ -224,7 +224,6 @@ void test_checked_test_harness(TestState &state) {
   // would require emulation and would no longer be a native integration test.
   if (can_execute_validation_target()) {
     draft::NativeBuildOptions native_options;
-    native_options.allow_unpinned_toolchain = true;
     native_options.build_directory = (root / "native-build").string();
     native_options.output_path = (root / "validation-tests").string();
     draft::DiagnosticSink native_diagnostics;
@@ -299,7 +298,6 @@ void test_checked_test_harness(TestState &state) {
     command_options.workspace.core_content_identity =
         "draft-core-validation-test-v1";
     command_options.kind = draft::ValidationKind::Test;
-    command_options.allow_unpinned_toolchain = true;
     draft::SourceManager command_sources;
     draft::DiagnosticSink command_diagnostics;
     const draft::ValidationCommandResult command =

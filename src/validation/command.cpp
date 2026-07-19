@@ -26,35 +26,15 @@ namespace draft {
 namespace {
 
 [[nodiscard]] std::optional<std::string> toolchain_identity(
-    const CompileWorkspaceResult &compiled,
-    const NativeBuildResult *built,
-    bool locked,
+    const NativeBuildResult &built,
     DiagnosticSink &diagnostics) {
-  if (!locked) {
-    if (built == nullptr || built->toolchain_version.empty()) {
-      diagnostics.error(
-          SourceRange::invalid(),
-          "validation cannot identify the development toolchain");
-      return std::nullopt;
-    }
-    return "host-version:" + built->toolchain_version;
-  }
-  if (!compiled.resolution_manifest.has_value()) {
+  if (built.toolchain_version.empty()) {
     diagnostics.error(
         SourceRange::invalid(),
-        "locked validation has no verified resolution manifest");
+        "validation cannot identify the host toolchain");
     return std::nullopt;
   }
-  for (const ExternalInputPin &input :
-       compiled.resolution_manifest->external_inputs) {
-    if (input.kind != ExternalInputKind::Toolchain) continue;
-    return "content-tree:" + input.name + ':' + input.content_digest.hex() +
-        ':' + input.entry_point;
-  }
-  diagnostics.error(
-      SourceRange::invalid(),
-      "locked validation manifest has no toolchain input");
-  return std::nullopt;
+  return "host-version:" + built.toolchain_version;
 }
 
 [[nodiscard]] std::optional<std::string> environment_identity(
@@ -206,16 +186,15 @@ void initialize_claim(
     WorkspaceLoadOptions workspace,
     ValidationKind kind,
     std::vector<ForeignProviderAudit> audits,
-    bool emit_llvm,
     DiagnosticSink &diagnostics) {
   CompileWorkspaceOptions options;
   options.target = target;
   options.workspace = std::move(workspace);
   options.validation_kind = kind;
   options.foreign_provider_audits = std::move(audits);
-  options.lower_mir = emit_llvm;
-  options.emit_llvm = emit_llvm;
-  options.emit_program_entry = emit_llvm;
+  options.lower_mir = true;
+  options.emit_llvm = true;
+  options.emit_program_entry = true;
   return compile_workspace_with_resolution(
       sources, package_directory.string(), std::move(options), diagnostics);
 }
@@ -252,9 +231,6 @@ void initialize_claim(
   if (!options.instrumentation.empty()) {
     native.instrumentation = NativeInstrumentationProfile::AddressSanitizer;
   }
-  native.allow_unpinned_toolchain = options.allow_unpinned_toolchain;
-  native.locked = options.locked;
-  native.locked_inputs = options.locked_inputs;
   native.foreign_providers = options.foreign_providers;
   native.runtime_assets = options.runtime_assets;
   const NativeBuildResult built = build_native_executable(
@@ -264,7 +240,7 @@ void initialize_claim(
   const std::optional<std::string> selected_environment =
       environment_identity(options.target, diagnostics);
   const std::optional<std::string> selected_toolchain =
-      toolchain_identity(compiled, &built, options.locked, diagnostics);
+      toolchain_identity(built, diagnostics);
   if (!selected_environment.has_value() || !selected_toolchain.has_value()) {
     return result;
   }
@@ -291,17 +267,11 @@ void initialize_claim(
         "TMPDIR=/tmp",
     };
     if (!options.instrumentation.empty()) {
-      if (built.instrumentation_symbolizer_path.empty()) {
-        diagnostics.error(
-            SourceRange::invalid(),
-            "address-instrumented validation has no verified symbolizer");
-        observations_complete = false;
-        break;
-      }
+      // Detection does not require an external symbolizer. Keeping the same
+      // explicit process environment as ordinary validation means evidence is
+      // independent of whichever developer tools happen to be on PATH.
       run_options.environment.push_back(
-          "ASAN_OPTIONS=abort_on_error=1:symbolize=1");
-      run_options.environment.push_back(
-          "ASAN_SYMBOLIZER_PATH=" + built.instrumentation_symbolizer_path);
+          "ASAN_OPTIONS=abort_on_error=1:symbolize=0");
     }
     const ValidationRunResult run =
         run_validation_executable(run_options, diagnostics);
@@ -394,13 +364,6 @@ ValidationCommandResult execute_validation_command(
           diagnostics)) {
     return {};
   }
-  if (!options.instrumentation.empty() && !options.locked) {
-    diagnostics.error(
-        SourceRange::invalid(),
-        "validation instrumentation requires --locked with explicit "
-        "toolchain and SDK roots");
-    return {};
-  }
   CompileWorkspaceResult compiled = compile_validation(
       sources,
       options.package_directory,
@@ -408,7 +371,6 @@ ValidationCommandResult execute_validation_command(
       options.workspace,
       options.kind,
       options.foreign_provider_audits,
-      true,
       diagnostics);
   if (!compiled.ok) return {};
   return execute_compiled_validation(
@@ -432,135 +394,8 @@ ValidationCommandResult execute_precommit_validation(
           diagnostics)) {
     return {};
   }
-  if (!options.instrumentation.empty() && !options.locked) {
-    diagnostics.error(
-        SourceRange::invalid(),
-        "precommit validation instrumentation requires locked toolchain and "
-        "SDK roots");
-    return {};
-  }
   return execute_compiled_validation(
       compiled, std::move(options), diagnostics);
-}
-
-bool verify_active_validation_evidence(
-    SourceManager &sources,
-    ValidationEvidenceRequirement requirement,
-    Sha256Digest &active_digest,
-    DiagnosticSink &diagnostics) {
-  if (requirement.kind == ValidationKind::None ||
-      requirement.package_directory.empty()) {
-    diagnostics.error(
-        SourceRange::invalid(),
-        "validation evidence requirement needs a package and concrete kind");
-    return false;
-  }
-  if (!validate_validation_instrumentation(
-          requirement.target,
-          requirement.instrumentation,
-          diagnostics)) {
-    return false;
-  }
-  CompileWorkspaceResult validation = compile_validation(
-      sources,
-      requirement.package_directory,
-      requirement.target,
-      std::move(requirement.workspace),
-      requirement.kind,
-      std::move(requirement.foreign_provider_audits),
-      false,
-      diagnostics);
-  if (!validation.ok || !validation.resolved_program_digest.has_value()) {
-    return false;
-  }
-  const std::optional<std::string> selected_toolchain =
-      toolchain_identity(validation, nullptr, true, diagnostics);
-  const std::optional<std::string> selected_environment =
-      environment_identity(requirement.target, diagnostics);
-  if (!selected_toolchain.has_value() || !selected_environment.has_value()) {
-    return false;
-  }
-  ValidationEvidence claim;
-  initialize_claim(
-      claim,
-      validation,
-      requirement.target,
-      requirement.kind,
-      requirement.instrumentation,
-      *selected_toolchain,
-      *selected_environment);
-  const Sha256Digest key = hash_validation_evidence_key(claim);
-  ValidationEvidenceState state;
-  if (!load_validation_evidence_state(
-          requirement.package_directory, key, state, diagnostics)) {
-    return false;
-  }
-  if (state.status == ValidationEvidenceStateStatus::Missing) {
-    diagnostics.error(
-        SourceRange::invalid(),
-        "locked build requires missing " +
-            std::string(validation_kind_name(requirement.kind)) +
-            " evidence for key " + key.hex());
-    return false;
-  }
-  if (state.status == ValidationEvidenceStateStatus::Revoked) {
-    diagnostics.error(
-        SourceRange::invalid(),
-        "locked build requires revoked " +
-            std::string(validation_kind_name(requirement.kind)) +
-            " evidence for key " + key.hex());
-    return false;
-  }
-  if (!state.active_digest.has_value() ||
-      !state.active_evidence.has_value() ||
-      !state.active_evidence->passed) {
-    diagnostics.error(
-        SourceRange::invalid(),
-        "locked build found incomplete active validation evidence");
-    return false;
-  }
-  if (!validation.resolution_manifest.has_value()) {
-    diagnostics.error(
-        SourceRange::invalid(),
-        "locked validation evidence has no selecting resolution manifest");
-    return false;
-  }
-  const WorkspacePackage &root =
-      validation.graph.package(validation.graph.root_package);
-  const std::string_view required_kind = validation_kind_name(requirement.kind);
-  const ResolutionEvidencePin *selected = nullptr;
-  for (const ResolutionEvidencePin &candidate :
-       validation.resolution_manifest->evidence) {
-    if (candidate.kind != required_kind ||
-        candidate.root_identity != root.identity.root_identity ||
-        candidate.root_relative_path != root.identity.root_relative_path ||
-        candidate.key != key) {
-      continue;
-    }
-    if (selected != nullptr) {
-      diagnostics.error(
-          SourceRange::invalid(),
-          "resolution manifest selects duplicate validation evidence");
-      return false;
-    }
-    selected = &candidate;
-  }
-  if (selected == nullptr) {
-    diagnostics.error(
-        SourceRange::invalid(),
-        "locked build requires validation evidence not selected by the "
-        "resolution manifest");
-    return false;
-  }
-  if (selected->content_digest != *state.active_digest) {
-    diagnostics.error(
-        SourceRange::invalid(),
-        "active validation evidence differs from the attempt selected by the "
-        "resolution manifest; rerun resolution");
-    return false;
-  }
-  active_digest = *state.active_digest;
-  return true;
 }
 
 } // namespace draft

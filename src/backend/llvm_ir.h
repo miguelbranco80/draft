@@ -38,8 +38,8 @@ struct LlvmIrResult {
 };
 
 // The emitter produces opaque-pointer LLVM IR and never invokes a toolchain.
-// Object emission and linking are separate adapters that must verify the pinned
-// LLVM distribution. The textual form is intentionally testable without LLVM
+// Object emission and linking are separate host adapters that obey the selected
+// target profile. The textual form is intentionally testable without LLVM
 // headers or libraries on the bootstrap compiler's build machine.
 [[nodiscard]] LlvmIrResult emit_llvm_ir(
     const TargetProfile &target,

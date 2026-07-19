@@ -57,8 +57,6 @@ void append_json_string(std::string_view value, std::string &output) {
 
 [[nodiscard]] std::optional<ExternalInputKind> parse_external_kind(
     std::string_view value) {
-  if (value == "toolchain") return ExternalInputKind::Toolchain;
-  if (value == "sdk") return ExternalInputKind::Sdk;
   if (value == "foreign-artifact") return ExternalInputKind::ForeignArtifact;
   if (value == "object") return ExternalInputKind::Object;
   if (value == "archive") return ExternalInputKind::Archive;
@@ -550,8 +548,6 @@ private:
 
 std::string_view external_input_kind_name(ExternalInputKind kind) {
   switch (kind) {
-  case ExternalInputKind::Toolchain: return "toolchain";
-  case ExternalInputKind::Sdk: return "sdk";
   case ExternalInputKind::ForeignArtifact: return "foreign-artifact";
   case ExternalInputKind::Object: return "object";
   case ExternalInputKind::Archive: return "archive";

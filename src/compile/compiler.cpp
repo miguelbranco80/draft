@@ -1754,7 +1754,7 @@ CompileWorkspaceResult compile_workspace_with_resolution(
 
   // Every full-manifest pin must belong to exactly one selected stage. An
   // obsolete pin from another graph cannot be silently ignored by an otherwise
-  // successful offline or locked build.
+  // successful provider-free build.
   for (std::size_t index = 0; index < matched_pins.size(); ++index) {
     if (!matched_pins[index]) {
       diagnostics.error(

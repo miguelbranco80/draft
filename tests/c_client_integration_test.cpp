@@ -198,7 +198,6 @@ void test_c_client_consumes_draft_shared_library(TestState &state) {
   native_options.build_directory = (temporary / "build").string();
   native_options.output_path = shared_library.string();
   native_options.artifact_kind = draft::NativeArtifactKind::DynamicLibrary;
-  native_options.allow_unpinned_toolchain = true;
   const draft::NativeBuildResult built = draft::build_native_artifact(
       target, compiled, native_options, diagnostics);
   if (diagnostics.has_errors()) {

@@ -57,12 +57,6 @@ struct ConformanceCase {
   std::string_view package;
 };
 
-struct NativeInputSelection {
-  bool locked = false;
-  draft::LockedNativeInputRoots roots;
-  std::vector<draft::ExternalInputPin> pins;
-};
-
 // Selects the Draft target whose executables the current CI host can launch
 // directly. CMake only builds this test on the two supported AArch64 hosts, so
 // reaching another branch would be a build-configuration error rather than a
@@ -75,31 +69,6 @@ struct NativeInputSelection {
 #else
 #error "native conformance requires an implemented AArch64 host target"
 #endif
-}
-
-// Normal CTest runs keep using the installed host toolchain. Release
-// qualification sets both variables and drives the identical matrix through
-// the production locked-input verifier. Pin once here; every native build still
-// independently re-verifies the roots immediately before invoking its tools.
-[[nodiscard]] bool select_native_inputs(
-    const draft::TargetProfile &target,
-    NativeInputSelection &selection,
-    draft::DiagnosticSink &diagnostics) {
-  const char *toolchain = std::getenv("DRAFT_TEST_LOCKED_TOOLCHAIN_ROOT");
-  const char *sdk = std::getenv("DRAFT_TEST_LOCKED_SDK_ROOT");
-  if (toolchain == nullptr && sdk == nullptr) return true;
-  if (toolchain == nullptr || sdk == nullptr || toolchain[0] == '\0' ||
-      sdk[0] == '\0') {
-    diagnostics.error(
-        draft::SourceRange::invalid(),
-        "locked native conformance requires both toolchain and SDK roots");
-    return false;
-  }
-  selection.locked = true;
-  selection.roots.toolchain_root = toolchain;
-  selection.roots.sdk_root = sdk;
-  return draft::pin_locked_native_inputs(
-      target, selection.roots, selection.pins, diagnostics);
 }
 
 // Runs an already linked path directly. No shell, inherited command search, or
@@ -184,19 +153,6 @@ void test_native_examples(TestState &state) {
   if (error) return;
 
   const draft::TargetProfile target = native_host_target();
-  NativeInputSelection native_inputs;
-  draft::DiagnosticSink input_diagnostics;
-  const bool inputs_ok =
-      select_native_inputs(target, native_inputs, input_diagnostics);
-  if (input_diagnostics.has_errors()) {
-    for (const draft::Diagnostic &diagnostic :
-         input_diagnostics.diagnostics()) {
-      std::cerr << diagnostic.message << '\n';
-    }
-  }
-  EXPECT(state, "setup", inputs_ok);
-  if (!inputs_ok) return;
-
   const std::filesystem::path source_root(DRAFT_SOURCE_DIRECTORY);
   for (const ConformanceCase &test : cases) {
     draft::SourceManager sources;
@@ -221,23 +177,11 @@ void test_native_examples(TestState &state) {
     }
     EXPECT(state, test.name, compiled.ok);
     if (!compiled.ok) continue;
-    if (native_inputs.locked) {
-      compiled.resolution_manifest.emplace();
-      compiled.resolution_manifest->target_identity =
-          target.facts.identity;
-      compiled.resolution_manifest->external_inputs = native_inputs.pins;
-    }
 
     const std::filesystem::path case_directory = temporary / test.name;
     draft::NativeBuildOptions native_options;
     native_options.build_directory = (case_directory / "build").string();
     native_options.output_path = (case_directory / "program").string();
-    if (native_inputs.locked) {
-      native_options.locked = true;
-      native_options.locked_inputs = native_inputs.roots;
-    } else {
-      native_options.allow_unpinned_toolchain = true;
-    }
     const draft::NativeBuildResult built = draft::build_native_executable(
         target, compiled, native_options, diagnostics);
     if (diagnostics.has_errors()) {

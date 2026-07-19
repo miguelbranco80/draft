@@ -1,4 +1,4 @@
-// Locked-input content-tree identity and unsafe-entry rejection tests.
+// External-input content-tree identity and unsafe-entry rejection tests.
 
 #include "base/content_tree.h"
 

@@ -163,7 +163,7 @@ bool verify_runtime_asset_inputs(
   if (actual.size() != expected.size()) {
     diagnostics.error(
         SourceRange::invalid(),
-        "configured runtime assets do not match the complete locked "
+        "configured runtime assets do not match the complete resolved "
         "runtime-asset manifest set");
     return false;
   }

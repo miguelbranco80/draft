@@ -1,8 +1,13 @@
-// Pinned LLVM command adapter for AArch64 IR, object, archive, and final links.
+// Host LLVM command adapter for AArch64 IR, objects, archives, and final links.
+//
+// This module receives a checked Draft program and invokes the selected host
+// tools to materialize it. Tool paths are operational configuration: they do
+// not enter resolution manifests or synthesis identities. The adapter owns the
+// exact argument contract for each Draft target and keeps language semantics in
+// MIR/LLVM lowering rather than inferring them from the host environment.
 
 #pragma once
 
-#include "backend/locked_inputs.h"
 #include "backend/foreign_inputs.h"
 #include "backend/runtime_assets.h"
 #include "base/sha256.h"
@@ -37,27 +42,17 @@ enum class NativeInstrumentationProfile {
 struct NativeBuildOptions {
   std::string clang_path = "clang";
   // Final Mach-O executables and dylibs carry a debug map, while their linked
-  // DWARF lives in a sibling dSYM bundle. Locked macOS builds ignore this path
-  // and use verified dsymutil. ELF retains DWARF in the primary artifact.
+  // DWARF lives in a sibling dSYM bundle. ELF retains DWARF in the primary
+  // artifact.
   std::string dsymutil_path = "dsymutil";
   // The macOS host default is Apple's libtool, whose -D switch removes
-  // timestamps and ownership. ELF and every locked build select deterministic
-  // LLVM ar instead.
+  // timestamps and ownership. ELF selects deterministic LLVM ar instead.
   std::string archiver_path = "libtool";
   std::string build_directory;
   std::string output_path;
   NativeArtifactKind artifact_kind = NativeArtifactKind::Executable;
   NativeInstrumentationProfile instrumentation =
       NativeInstrumentationProfile::None;
-  // Development-only escape hatch. Release/locked builds must leave this false
-  // so an ambient Clang or another LLVM revision cannot alter artifacts.
-  bool allow_unpinned_toolchain = false;
-  // Locked mode ignores clang_path, requires a verified resolution-manifest
-  // snapshot on the compiled result, and invokes only these explicit roots.
-  // It also replaces the child environment and disables Clang configuration
-  // discovery so host search paths cannot affect the artifact.
-  bool locked = false;
-  LockedNativeInputRoots locked_inputs;
   std::vector<ForeignProviderInput> foreign_providers;
   // Runtime assets participate in resolved-program identity but are not passed
   // to Clang. A manifest-bearing build must supply its complete relocated set.
@@ -80,14 +75,6 @@ struct NativeBuildResult {
   // object members, or emitted assembly.
   std::string debug_symbols_path;
   Sha256Digest debug_symbols_digest;
-  // A dynamic instrumentation runtime is published next to an instrumented
-  // executable so its relocatable @rpath install name resolves without an
-  // ambient DYLD_* setting. Empty/zero for an ordinary native artifact.
-  std::string instrumentation_runtime_path;
-  Sha256Digest instrumentation_runtime_digest;
-  // The symbolizer remains in the verified toolchain tree; the validation
-  // runner passes its absolute path through a clean process environment.
-  std::string instrumentation_symbolizer_path;
   // Canonical physical roots verified for the exact manifest rows. This lets
   // an embedding build system deploy them without the compiler inventing a
   // target-specific output layout. Empty on failure.
@@ -99,10 +86,9 @@ struct NativeBuildResult {
 // archive and dynamic-library modes retain every package and package-assembly
 // object; assembly mode produces a directory with one collision-free source per
 // module/input. Arguments are passed directly to exec rather than through a
-// shell. Locked mode additionally verifies exact trees and uses only the
-// selected linker, system root, and archiver. Runtime assets are verified as
-// external identity inputs and returned to the caller, but are never linker
-// operands.
+// shell. Runtime assets are verified as external program inputs and returned to
+// the caller, but are never linker operands. The host toolchain version is
+// reported for diagnostics and validation evidence; it is not a semantic pin.
 [[nodiscard]] NativeBuildResult build_native_artifact(
     const TargetProfile &target,
     const CompileWorkspaceResult &compiled,

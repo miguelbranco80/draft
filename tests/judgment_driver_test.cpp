@@ -8,7 +8,6 @@
 #include "compile/compiler.h"
 #include "judgment/evidence_store.h"
 #include "judgment/selection.h"
-#include "judgment/verification.h"
 #include "source/diagnostic.h"
 #include "target/profile.h"
 
@@ -299,16 +298,6 @@ void test_passing_command_selects_evidence(TestState &state) {
   }
   EXPECT(state, !diagnostics.has_errors());
 
-  draft::SourceManager partial_sources;
-  draft::DiagnosticSink partial_diagnostics;
-  const draft::CompileWorkspaceResult partial = compile_resolved(
-      workspace, partial_sources, partial_diagnostics);
-  std::vector<draft::Sha256Digest> active;
-  EXPECT(state,
-      !draft::verify_active_judgment_evidence(
-          partial, workspace.root, active, partial_diagnostics));
-  EXPECT(state, partial_diagnostics.has_errors());
-
   // The default package command selects all sites. It preserves the existing
   // selected row until its fresh attempt is durable, adds the missing row, and
   // atomically publishes the complete two-site selection.
@@ -335,26 +324,10 @@ void test_passing_command_selects_evidence(TestState &state) {
   }
   EXPECT(state, !diagnostics.has_errors());
 
-  // Locked verification consumes only the compiled obligations, selected
-  // manifest rows, and typed local evidence store. It has no provider object.
-  draft::SourceManager sources;
-  draft::DiagnosticSink verification_diagnostics;
-  const draft::CompileWorkspaceResult compiled = compile_resolved(
-      workspace, sources, verification_diagnostics);
-  EXPECT(state, compiled.ok);
-  active.clear();
-  EXPECT(state,
-      draft::verify_active_judgment_evidence(
-          compiled,
-          workspace.root,
-          active,
-          verification_diagnostics));
-  EXPECT(state, active.size() == 2);
-  EXPECT(state, !verification_diagnostics.has_errors());
-
-  // A new failing attempt revokes one exact selected key. The manifest bytes
-  // remain unchanged, but an offline locked verifier must reject that stale
-  // selection without invoking the provider that produced either attempt.
+  // A new failing attempt revokes one exact selected key. Evidence history is
+  // useful to the judgment command and release tooling even though ordinary
+  // builds do not consume it as a prerequisite.
+  draft::DiagnosticSink revocation_diagnostics;
   if (!loaded.manifest.evidence.empty()) {
     draft::JudgmentEvidenceState evidence;
     EXPECT(state,
@@ -362,7 +335,7 @@ void test_passing_command_selects_evidence(TestState &state) {
             workspace.root,
             loaded.manifest.evidence.front().key,
             evidence,
-            verification_diagnostics));
+            revocation_diagnostics));
     if (evidence.active_evidence.has_value()) {
       draft::JudgmentEvidence failed = *evidence.active_evidence;
       failed.passed = false;
@@ -370,17 +343,20 @@ void test_passing_command_selects_evidence(TestState &state) {
       failed.validators.front().rationale = "fixture revocation";
       const draft::JudgmentEvidenceCommitResult revoked =
           draft::commit_judgment_evidence(
-              workspace.root, std::move(failed), verification_diagnostics);
+              workspace.root, std::move(failed), revocation_diagnostics);
       EXPECT(state, revoked.ok);
       EXPECT(state, !revoked.active);
     }
+    draft::JudgmentEvidenceState revoked_state;
+    EXPECT(state, draft::load_judgment_evidence_state(
+        workspace.root,
+        loaded.manifest.evidence.front().key,
+        revoked_state,
+        revocation_diagnostics));
+    EXPECT(state,
+        revoked_state.status == draft::JudgmentEvidenceStateStatus::Revoked);
   }
-  draft::DiagnosticSink revoked_diagnostics;
-  active.clear();
-  EXPECT(state,
-      !draft::verify_active_judgment_evidence(
-          compiled, workspace.root, active, revoked_diagnostics));
-  EXPECT(state, revoked_diagnostics.has_errors());
+  EXPECT(state, !revocation_diagnostics.has_errors());
 }
 
 void test_failing_command_leaves_manifest_missing(TestState &state) {
@@ -439,25 +415,7 @@ void test_public_multi_validator_artifact_policy(TestState &state) {
     }
   }
 
-  draft::SourceManager sources;
-  draft::DiagnosticSink verification_diagnostics;
-  const draft::CompileWorkspaceResult compiled = compile_resolved(
-      workspace, sources, verification_diagnostics);
-  draft::JudgmentVerificationPolicy policy;
-  policy.validator_identities = {"review-primary", "review-secondary"};
-  policy.artifacts = {{"object", artifact_digest}};
-  policy.identity = draft::judgment_policy_identity(
-      policy.validator_identities, policy.artifacts);
-  std::vector<draft::Sha256Digest> active;
-  EXPECT(state, draft::verify_active_judgment_evidence(
-      compiled,
-      workspace.root,
-      active,
-      verification_diagnostics,
-      policy));
-  EXPECT(state, active.size() == 2);
   EXPECT(state, !diagnostics.has_errors());
-  EXPECT(state, !verification_diagnostics.has_errors());
 
   // The same public policy flags also configure the precommit judgment runner
   // in `resolve`; the absence of a synthesis model is valid for this complete
@@ -505,20 +463,6 @@ void test_resolution_profile_commits_judgments_atomically(TestState &state) {
   EXPECT(state,
       loaded.state == draft::ResolutionManifestLoadState::Loaded);
   EXPECT(state, loaded.manifest.evidence.size() == 2);
-
-  draft::SourceManager sources;
-  draft::DiagnosticSink verification_diagnostics;
-  const draft::CompileWorkspaceResult compiled = compile_resolved(
-      workspace, sources, verification_diagnostics);
-  std::vector<draft::Sha256Digest> active;
-  EXPECT(state, compiled.ok);
-  EXPECT(state,
-      draft::verify_active_judgment_evidence(
-          compiled,
-          workspace.root,
-          active,
-          verification_diagnostics));
-  EXPECT(state, active.size() == 2);
 
   // Ordinary resolution keeps expensive judgment rows when the complete
   // resolved-program digest is unchanged.

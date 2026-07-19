@@ -85,15 +85,15 @@ void test_canonical_round_trip(TestState &state) {
   manifest.target_identity = "aarch64-apple-macos";
   manifest.resolved_program_digest = draft::sha256("resolved program");
   manifest.external_inputs.push_back(make_external(
-      draft::ExternalInputKind::Sdk,
-      "macos-sdk",
-      "sdk tree",
+      draft::ExternalInputKind::RuntimeAsset,
+      "language-data",
+      "runtime data tree",
       ""));
   manifest.external_inputs.push_back(make_external(
-      draft::ExternalInputKind::Toolchain,
-      "llvm-22.1",
-      "toolchain tree",
-      "bin/clang"));
+      draft::ExternalInputKind::Object,
+      "sqlite-provider",
+      "foreign object",
+      ""));
   manifest.evidence.push_back(make_evidence(
       "test", "app", "test-key", "passing-test-attempt"));
   manifest.evidence.push_back(make_evidence(
@@ -143,11 +143,11 @@ void test_canonical_round_trip(TestState &state) {
   }
   if (parsed.external_inputs.size() == 2) {
     EXPECT(state, parsed.external_inputs[0].kind ==
-        draft::ExternalInputKind::Toolchain);
-    EXPECT(state, parsed.external_inputs[0].name == "llvm-22.1");
-    EXPECT(state, parsed.external_inputs[0].entry_point == "bin/clang");
+        draft::ExternalInputKind::Object);
+    EXPECT(state, parsed.external_inputs[0].name == "sqlite-provider");
+    EXPECT(state, parsed.external_inputs[0].entry_point.empty());
     EXPECT(state, parsed.external_inputs[1].kind ==
-        draft::ExternalInputKind::Sdk);
+        draft::ExternalInputKind::RuntimeAsset);
   }
   if (parsed.pins.size() == 2) {
     EXPECT(state, parsed.pins[0].site_identity == site('a'));
@@ -185,10 +185,10 @@ void test_invalid_inputs(TestState &state) {
       "codex",
       "model"));
   manifest.external_inputs.push_back(make_external(
-      draft::ExternalInputKind::Toolchain,
-      "llvm",
-      "toolchain",
-      "bin/clang"));
+      draft::ExternalInputKind::RuntimeAsset,
+      "unicode-data",
+      "runtime data",
+      "tables.bin"));
   std::string encoded = draft::serialize_resolution_manifest(manifest);
 
   // Digests are fixed-width values. Shortening one must be diagnosed rather
@@ -229,10 +229,11 @@ void test_invalid_inputs(TestState &state) {
   manifest.pins[0].source_map.surface_end = 13;
 
   std::string escaping_entry = encoded;
-  const std::size_t entry = escaping_entry.find("bin/clang");
+  const std::size_t entry = escaping_entry.find("tables.bin");
   EXPECT(state, entry != std::string::npos);
   if (entry != std::string::npos) {
-    escaping_entry.replace(entry, std::string_view("bin/clang").size(), "../clang");
+    escaping_entry.replace(
+        entry, std::string_view("tables.bin").size(), "../tables.bin");
   }
   expect_rejected(state, escaping_entry);
 
@@ -279,10 +280,10 @@ void test_deterministic_malformed_byte_corpus(TestState &state) {
   manifest.target_identity = "aarch64-apple-macos";
   manifest.resolved_program_digest = draft::sha256("mutation-program");
   manifest.external_inputs.push_back(make_external(
-      draft::ExternalInputKind::Toolchain,
-      "llvm",
-      "toolchain",
-      "bin/clang"));
+      draft::ExternalInputKind::RuntimeAsset,
+      "unicode-data",
+      "runtime data",
+      "tables.bin"));
   manifest.evidence.push_back(make_evidence(
       "test", "app", "mutation-test", "passing-attempt"));
   manifest.pins.push_back(make_pin(
@@ -341,10 +342,10 @@ void test_deterministic_structural_mutation_corpus(TestState &state) {
   manifest.target_identity = "aarch64-apple-macos";
   manifest.resolved_program_digest = draft::sha256("structure-program");
   manifest.external_inputs.push_back(make_external(
-      draft::ExternalInputKind::Toolchain,
-      "llvm",
-      "toolchain",
-      "bin/clang"));
+      draft::ExternalInputKind::RuntimeAsset,
+      "unicode-data",
+      "runtime data",
+      "tables.bin"));
   manifest.evidence.push_back(make_evidence(
       "test", "app", "structure-test", "passing-attempt"));
   manifest.pins.push_back(make_pin(

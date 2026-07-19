@@ -1,11 +1,11 @@
-// Canonical filesystem-content identity for locked compiler inputs.
+// Canonical filesystem-content identity for resolved program inputs.
 //
 // A physical installation path is intentionally not part of the digest. The
 // digest describes the selected file or directory as a sorted sequence of
 // relative path records containing kind, permission bits, exact regular-file
 // bytes, and exact symlink spelling. This lets a toolchain or SDK be relocated
 // without changing program identity while still detecting every byte that can
-// affect a locked build.
+// affect a resolved program.
 //
 // Directory traversal never follows symlinks. Relative symlinks whose lexical
 // target remains inside the selected root are recorded; absolute or escaping

@@ -232,7 +232,7 @@ ResolutionOverlayResult build_resolution_overlays(
 
   // A manifest for a different selected graph must not be partially consumed.
   // Otherwise an obsolete or ambiguous site association could remain hidden in
-  // a nominally locked build.
+  // a nominally provider-free build.
   for (std::size_t index = 0; index < manifest.pins.size(); ++index) {
     if (!matched_pins[index]) {
       diagnostics.error(

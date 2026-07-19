@@ -18,7 +18,6 @@
 #include "judgment/codex_cli.h"
 #include "judgment/command.h"
 #include "judgment/selection.h"
-#include "judgment/verification.h"
 #include "source/diagnostic.h"
 #include "source/source.h"
 #include "syntax/lexer.h"
@@ -47,7 +46,6 @@ volatile std::sig_atomic_t cancellation_signal = 0;
 using draft::JudgmentArtifactPath;
 using draft::NamedCodexJudgmentValidator;
 using draft::configure_codex_judgment_policy;
-using draft::parse_judgment_artifact_identity;
 using draft::parse_judgment_artifact_path;
 using draft::parse_judgment_validator;
 using draft::read_judgment_artifacts;
@@ -96,26 +94,6 @@ void configure_core_distribution(draft::WorkspaceLoadOptions &options) {
     reason = error
         ? "cannot inspect package path: " + error.message()
         : "package path is not a directory";
-    return false;
-  }
-  return true;
-}
-
-[[nodiscard]] bool absolute_locked_roots(
-    const std::string &toolchain,
-    const std::string &sdk,
-    draft::LockedNativeInputRoots &roots,
-    std::string &reason) {
-  std::error_code error;
-  roots.toolchain_root =
-      std::filesystem::absolute(toolchain, error).lexically_normal();
-  if (error) {
-    reason = "cannot make toolchain root absolute: " + error.message();
-    return false;
-  }
-  roots.sdk_root = std::filesystem::absolute(sdk, error).lexically_normal();
-  if (error) {
-    reason = "cannot make SDK root absolute: " + error.message();
     return false;
   }
   return true;
@@ -435,16 +413,9 @@ int build_package(
     const std::optional<std::string> &requested_output,
     draft::NativeArtifactKind artifact_kind,
     draft::RuntimeAssertionMode runtime_assertions,
-    bool allow_host_toolchain,
-    const std::optional<draft::LockedNativeInputRoots> &locked_inputs,
     const std::vector<draft::ForeignProviderInput> &foreign_providers,
     const std::vector<draft::ForeignProviderSummaryInput> &provider_summaries,
-    const std::vector<draft::RuntimeAssetInput> &runtime_assets,
-    const std::vector<draft::ValidationInstrumentationKind> &instrumentation,
-    bool require_test_evidence,
-    bool require_benchmark_evidence,
-    bool require_judgment_evidence,
-    const draft::JudgmentVerificationPolicy &judgment_policy) {
+    const std::vector<draft::RuntimeAssetInput> &runtime_assets) {
   draft::SourceManager sources;
   draft::DiagnosticSink diagnostics;
   std::filesystem::path absolute_directory;
@@ -481,45 +452,6 @@ int build_package(
           std::move(compile_options),
           diagnostics);
   if (compiled.ok) {
-    auto verify_evidence = [&](draft::ValidationKind kind) {
-      draft::ValidationEvidenceRequirement requirement;
-      requirement.package_directory = absolute_directory;
-      requirement.target = target;
-      requirement.workspace.workspace_directory =
-          absolute_directory.parent_path().string();
-      configure_core_distribution(requirement.workspace);
-      requirement.kind = kind;
-      requirement.instrumentation = instrumentation;
-      requirement.foreign_provider_audits =
-          compiled.foreign_provider_audits;
-      draft::Sha256Digest active;
-      if (draft::verify_active_validation_evidence(
-              sources,
-              std::move(requirement),
-              active,
-              diagnostics)) {
-        std::cout << "verified " << draft::validation_kind_name(kind)
-                  << " evidence " << active.hex() << '\n';
-      }
-    };
-    if (require_test_evidence) {
-      verify_evidence(draft::ValidationKind::Test);
-    }
-    if (require_benchmark_evidence) {
-      verify_evidence(draft::ValidationKind::Benchmark);
-    }
-    if (require_judgment_evidence) {
-      std::vector<draft::Sha256Digest> active;
-      if (draft::verify_active_judgment_evidence(
-              compiled,
-              absolute_directory.parent_path(),
-              active,
-              diagnostics,
-              judgment_policy)) {
-        std::cout << "verified " << active.size()
-                  << " judgment evidence objects\n";
-      }
-    }
     const std::filesystem::path build_directory =
         absolute_directory / ".draft" / "build";
     const std::string package_name = absolute_directory.filename().string();
@@ -556,13 +488,8 @@ int build_package(
     native_options.build_directory = build_directory.string();
     native_options.output_path = output.string();
     native_options.artifact_kind = artifact_kind;
-    native_options.allow_unpinned_toolchain = allow_host_toolchain;
     native_options.foreign_providers = foreign_providers;
     native_options.runtime_assets = runtime_assets;
-    if (locked_inputs.has_value()) {
-      native_options.locked = true;
-      native_options.locked_inputs = *locked_inputs;
-    }
     if (!diagnostics.has_errors()) {
       const draft::NativeBuildResult built = draft::build_native_artifact(
           target, compiled, native_options, diagnostics);
@@ -585,8 +512,6 @@ int validate_package(
     const draft::TargetProfile &target,
     draft::ValidationKind kind,
     const std::vector<draft::ValidationInstrumentationKind> &instrumentation,
-    bool allow_host_toolchain,
-    const std::optional<draft::LockedNativeInputRoots> &locked_inputs,
     const std::vector<draft::ForeignProviderInput> &foreign_providers,
     const std::vector<draft::ForeignProviderSummaryInput> &provider_summaries,
     const std::vector<draft::RuntimeAssetInput> &runtime_assets) {
@@ -617,13 +542,8 @@ int validate_package(
   }
   options.kind = kind;
   options.instrumentation = instrumentation;
-  options.allow_unpinned_toolchain = allow_host_toolchain;
   options.foreign_providers = foreign_providers;
   options.runtime_assets = runtime_assets;
-  if (locked_inputs.has_value()) {
-    options.locked = true;
-    options.locked_inputs = *locked_inputs;
-  }
   const draft::ValidationCommandResult result =
       draft::execute_validation_command(
           sources, std::move(options), diagnostics);
@@ -877,10 +797,7 @@ int run_agent_command(
     AgentCommandKind command,
     const draft::TargetProfile &target,
     bool revalidate = false,
-    bool allow_host_toolchain = false,
     const std::optional<draft::CodexCliProviderOptions> &codex = std::nullopt,
-    const std::optional<draft::LockedNativeInputRoots> &locked_inputs =
-        std::nullopt,
     const std::vector<draft::ForeignProviderInput> &foreign_providers = {},
     const std::vector<draft::ForeignProviderSummaryInput> &provider_summaries = {},
     const std::vector<draft::RuntimeAssetInput> &runtime_assets = {},
@@ -921,9 +838,8 @@ int run_agent_command(
     resolve_options.compile = std::move(options);
     resolve_options.revalidate = revalidate;
     resolve_options.cancellation_requested = command_cancellation_requested;
-    const bool external_inputs_configured = locked_inputs.has_value() ||
-        !foreign_providers.empty() || !provider_summaries.empty() ||
-        !runtime_assets.empty();
+    const bool external_inputs_configured = !foreign_providers.empty() ||
+        !provider_summaries.empty() || !runtime_assets.empty();
     if (!external_inputs_configured) {
       // A preserved manifest summary remains a semantic compiler input. The
       // relocatable summary and matching artifact must be supplied again;
@@ -947,15 +863,6 @@ int run_agent_command(
     }
     if (external_inputs_configured) {
       resolve_options.external_inputs_configured = true;
-      if (locked_inputs.has_value() &&
-          !draft::pin_locked_native_inputs(
-              resolve_options.compile.target,
-              *locked_inputs,
-              resolve_options.external_inputs,
-              diagnostics)) {
-        std::cerr << draft::render_diagnostics(sources, diagnostics);
-        return 1;
-      }
       if (!draft::pin_runtime_asset_inputs(
               runtime_assets,
               resolve_options.external_inputs,
@@ -1015,14 +922,9 @@ int run_agent_command(
     ResolutionValidationRunnerState validation_state;
     validation_state.options.package_directory = absolute_directory;
     validation_state.options.target = resolve_options.compile.target;
-    validation_state.options.allow_unpinned_toolchain = allow_host_toolchain;
     validation_state.options.instrumentation = instrumentation;
     validation_state.options.foreign_providers = foreign_providers;
     validation_state.options.runtime_assets = runtime_assets;
-    if (locked_inputs.has_value()) {
-      validation_state.options.locked = true;
-      validation_state.options.locked_inputs = *locked_inputs;
-    }
     resolve_options.validation_runner.state = &validation_state;
     resolve_options.validation_runner.run =
         run_resolution_candidate_validation;
@@ -1183,28 +1085,18 @@ void print_usage() {
             << "      [--target aarch64-macos|aarch64-linux]\n"
             << "      [--kind executable|object|static-library|dynamic-library|assembly]\n"
             << "      [--assertions=off]\n"
-            << "      [--allow-host-toolchain]\n"
             << "      [--provider name=object|archive|shared-library:<path>]...\n"
             << "      [--provider-summary name:<path>]...\n"
             << "      [--runtime-asset name:<file-or-directory>]...\n"
-            << "  draftc build <package-directory> --locked\n"
-            << "      --toolchain-root <directory> --sdk-root <directory> [-o <output>]\n"
-            << "      [--require-test-evidence] [--require-benchmark-evidence]\n"
-            << "      [--instrument address|lifetime|undefined-operation|allocator-poisoning|race]...\n"
-            << "      [--require-judgment-evidence]\n"
-            << "      [--judge-validator <identity>]...\n"
-            << "      [--judge-artifact <kind>:<sha256>]...\n"
-            << "  draftc test <package-directory> [--allow-host-toolchain]\n"
+            << "  draftc test <package-directory>\n"
             << "      [--target aarch64-macos|aarch64-linux]\n"
             << "      [--instrument address|lifetime|undefined-operation|allocator-poisoning|race]...\n"
-            << "      [--locked --toolchain-root <directory> --sdk-root <directory>]\n"
             << "      [--provider name=object|archive|shared-library:<path>]...\n"
             << "      [--provider-summary name:<path>]...\n"
             << "      [--runtime-asset name:<file-or-directory>]...\n"
-            << "  draftc bench <package-directory> [--verify] [--allow-host-toolchain]\n"
+            << "  draftc bench <package-directory> [--verify]\n"
             << "      [--target aarch64-macos|aarch64-linux]\n"
             << "      [--instrument address|lifetime|undefined-operation|allocator-poisoning|race]...\n"
-            << "      [--locked --toolchain-root <directory> --sdk-root <directory>]\n"
             << "      [--provider name=object|archive|shared-library:<path>]...\n"
             << "      [--provider-summary name:<path>]...\n"
             << "      [--runtime-asset name:<file-or-directory>]...\n"
@@ -1217,8 +1109,6 @@ void print_usage() {
             << "      [--judge-artifact <kind>:<path>]...\n"
             << "      [--codex-distribution-root <directory>\n"
             << "       --codex-executable <path> --codex-model <model>]\n"
-            << "      [--allow-host-toolchain]\n"
-            << "      [--toolchain-root <directory> --sdk-root <directory>]\n"
             << "      [--provider name=object|archive|shared-library:<path>]...\n"
             << "      [--provider-summary name:<path>]...\n"
             << "      [--runtime-asset name:<file-or-directory>]...\n"
@@ -1286,14 +1176,11 @@ int main(int argc, char **argv) {
   if (argc >= 3 && std::string_view(argv[1]) == "resolve") {
     bool revalidate = false;
     bool judge_during_resolution = false;
-    bool allow_host_toolchain = false;
     bool assertions_off = false;
     bool target_set = false;
     std::optional<std::string> codex_distribution_root;
     std::optional<std::string> codex_executable;
     std::optional<std::string> codex_model;
-    std::optional<std::string> toolchain_root;
-    std::optional<std::string> sdk_root;
     std::vector<draft::ForeignProviderInput> foreign_providers;
     std::vector<draft::ForeignProviderSummaryInput> provider_summaries;
     std::vector<draft::RuntimeAssetInput> runtime_assets;
@@ -1317,9 +1204,6 @@ int main(int argc, char **argv) {
       } else if (argument == "--judge-select" && index + 1 < argc) {
         judge_during_resolution = true;
         judgment_selectors.emplace_back(argv[++index]);
-      } else if (argument == "--allow-host-toolchain" &&
-                 !allow_host_toolchain) {
-        allow_host_toolchain = true;
       } else if (argument == "--codex-executable" &&
                  !codex_executable.has_value() && index + 1 < argc) {
         codex_executable = argv[++index];
@@ -1352,12 +1236,6 @@ int main(int argc, char **argv) {
         }
         judge_during_resolution = true;
         judgment_artifact_paths.push_back(std::move(artifact));
-      } else if (argument == "--toolchain-root" &&
-                 !toolchain_root.has_value() && index + 1 < argc) {
-        toolchain_root = argv[++index];
-      } else if (argument == "--sdk-root" &&
-                 !sdk_root.has_value() && index + 1 < argc) {
-        sdk_root = argv[++index];
       } else if (argument == "--provider" && index + 1 < argc) {
         draft::ForeignProviderInput provider;
         std::string reason;
@@ -1402,11 +1280,8 @@ int main(int argc, char **argv) {
         codex_model.has_value() || !judgment_validators.empty();
     if (codex_executable.has_value() != codex_distribution_root.has_value() ||
         codex_executable.has_value() != has_codex_models ||
-        toolchain_root.has_value() != sdk_root.has_value() ||
         (revalidate && has_codex_models) ||
-        (revalidate && judge_during_resolution) ||
-        (!instrumentation.empty() && !toolchain_root.has_value()) ||
-        (allow_host_toolchain && toolchain_root.has_value())) {
+        (revalidate && judge_during_resolution)) {
       print_usage();
       return 2;
     }
@@ -1437,24 +1312,12 @@ int main(int argc, char **argv) {
       std::cerr << "error: " << artifact_reason << '\n';
       return 1;
     }
-    std::optional<draft::LockedNativeInputRoots> locked_inputs;
-    if (toolchain_root.has_value()) {
-      locked_inputs.emplace();
-      std::string reason;
-      if (!absolute_locked_roots(
-              *toolchain_root, *sdk_root, *locked_inputs, reason)) {
-        std::cerr << "error: " << reason << '\n';
-        return 1;
-      }
-    }
     return run_agent_command(
         argv[2],
         AgentCommandKind::Resolve,
         target,
         revalidate,
-        allow_host_toolchain,
         codex,
-        locked_inputs,
         foreign_providers,
         provider_summaries,
         runtime_assets,
@@ -1589,9 +1452,7 @@ int main(int argc, char **argv) {
         AgentCommandKind::Judge,
         target,
         false,
-        false,
         codex,
-        std::nullopt,
         foreign_providers,
         provider_summaries,
         {},
@@ -1612,38 +1473,23 @@ int main(int argc, char **argv) {
         std::string_view(argv[1]) == "test"
         ? draft::ValidationKind::Test
         : draft::ValidationKind::Benchmark;
-    bool allow_host_toolchain = false;
-    bool locked = false;
     bool verify = false;
     bool target_set = false;
-    std::optional<std::string> toolchain_root;
-    std::optional<std::string> sdk_root;
     std::vector<draft::ForeignProviderInput> foreign_providers;
     std::vector<draft::ForeignProviderSummaryInput> provider_summaries;
     std::vector<draft::RuntimeAssetInput> runtime_assets;
     std::vector<draft::ValidationInstrumentationKind> instrumentation;
     for (int index = 3; index < argc; ++index) {
       const std::string_view argument(argv[index]);
-      if (argument == "--allow-host-toolchain" && !allow_host_toolchain) {
-        allow_host_toolchain = true;
-      } else if (argument == "--target" && !target_set &&
+      if (argument == "--target" && !target_set &&
                  index + 1 < argc) {
         target_set = true;
         if (!select_command_target(argv[++index], target)) return 2;
-      } else if (argument == "--locked" && !locked) {
-        locked = true;
       } else if (argument == "--verify" && !verify &&
                  validation_kind == draft::ValidationKind::Benchmark) {
-        // Bench executes and records fresh evidence; --verify is the explicit
-        // release/CI spelling distinguished from locked build-time evidence
-        // reuse, which never enters this command path.
+        // Bench always executes and records fresh evidence. `--verify` is an
+        // explicit release/CI spelling retained for readable automation.
         verify = true;
-      } else if (argument == "--toolchain-root" &&
-                 !toolchain_root.has_value() && index + 1 < argc) {
-        toolchain_root = argv[++index];
-      } else if (argument == "--sdk-root" &&
-                 !sdk_root.has_value() && index + 1 < argc) {
-        sdk_root = argv[++index];
       } else if (argument == "--provider" && index + 1 < argc) {
         draft::ForeignProviderInput provider;
         std::string reason;
@@ -1684,29 +1530,11 @@ int main(int argc, char **argv) {
         return 2;
       }
     }
-    if (toolchain_root.has_value() != sdk_root.has_value() ||
-        locked != toolchain_root.has_value() ||
-        (locked && allow_host_toolchain)) {
-      print_usage();
-      return 2;
-    }
-    std::optional<draft::LockedNativeInputRoots> locked_inputs;
-    if (locked) {
-      locked_inputs.emplace();
-      std::string reason;
-      if (!absolute_locked_roots(
-              *toolchain_root, *sdk_root, *locked_inputs, reason)) {
-        std::cerr << "error: " << reason << '\n';
-        return 1;
-      }
-    }
     return validate_package(
         argv[2],
         target,
         validation_kind,
         instrumentation,
-        allow_host_toolchain,
-        locked_inputs,
         foreign_providers,
         provider_summaries,
         runtime_assets);
@@ -1716,57 +1544,19 @@ int main(int argc, char **argv) {
     draft::NativeArtifactKind artifact_kind =
         draft::NativeArtifactKind::Executable;
     bool artifact_kind_set = false;
-    bool allow_host_toolchain = false;
-    bool locked = false;
-    bool require_test_evidence = false;
-    bool require_benchmark_evidence = false;
-    bool require_judgment_evidence = false;
     bool assertions_off = false;
     bool target_set = false;
-    draft::JudgmentVerificationPolicy judgment_policy;
-    bool custom_judgment_validators = false;
-    std::optional<std::string> toolchain_root;
-    std::optional<std::string> sdk_root;
     std::vector<draft::ForeignProviderInput> foreign_providers;
     std::vector<draft::ForeignProviderSummaryInput> provider_summaries;
     std::vector<draft::RuntimeAssetInput> runtime_assets;
-    std::vector<draft::ValidationInstrumentationKind> instrumentation;
     for (int index = 3; index < argc; ++index) {
       const std::string_view argument(argv[index]);
-      if (argument == "--allow-host-toolchain") {
-        allow_host_toolchain = true;
-      } else if (argument == "--target" && !target_set &&
+      if (argument == "--target" && !target_set &&
                  index + 1 < argc) {
         target_set = true;
         if (!select_command_target(argv[++index], target)) return 2;
       } else if (argument == "--assertions=off" && !assertions_off) {
         assertions_off = true;
-      } else if (argument == "--require-test-evidence" &&
-                 !require_test_evidence) {
-        require_test_evidence = true;
-      } else if (argument == "--require-benchmark-evidence" &&
-                 !require_benchmark_evidence) {
-        require_benchmark_evidence = true;
-      } else if (argument == "--require-judgment-evidence" &&
-                 !require_judgment_evidence) {
-        require_judgment_evidence = true;
-      } else if (argument == "--judge-validator" && index + 1 < argc) {
-        if (!custom_judgment_validators) {
-          judgment_policy.validator_identities.clear();
-          custom_judgment_validators = true;
-        }
-        require_judgment_evidence = true;
-        judgment_policy.validator_identities.emplace_back(argv[++index]);
-      } else if (argument == "--judge-artifact" && index + 1 < argc) {
-        draft::JudgmentArtifactIdentity artifact;
-        std::string reason;
-        if (!parse_judgment_artifact_identity(
-                argv[++index], artifact, reason)) {
-          std::cerr << "error: " << reason << '\n';
-          return 2;
-        }
-        require_judgment_evidence = true;
-        judgment_policy.artifacts.push_back(std::move(artifact));
       } else if (argument == "--kind" && !artifact_kind_set &&
                  index + 1 < argc) {
         const std::string_view spelling(argv[++index]);
@@ -1785,14 +1575,6 @@ int main(int argc, char **argv) {
           print_usage();
           return 2;
         }
-      } else if (argument == "--locked" && !locked) {
-        locked = true;
-      } else if (argument == "--toolchain-root" &&
-                 !toolchain_root.has_value() && index + 1 < argc) {
-        toolchain_root = argv[++index];
-      } else if (argument == "--sdk-root" &&
-                 !sdk_root.has_value() && index + 1 < argc) {
-        sdk_root = argv[++index];
       } else if (argument == "-o" && index + 1 < argc) {
         ++index;
         output = argv[index];
@@ -1821,47 +1603,11 @@ int main(int argc, char **argv) {
           return 2;
         }
         runtime_assets.push_back(std::move(asset));
-      } else if (argument == "--instrument" && index + 1 < argc) {
-        const std::string_view spelling(argv[++index]);
-        const std::optional<draft::ValidationInstrumentationKind> parsed =
-            draft::parse_validation_instrumentation(spelling);
-        if (!parsed.has_value()) {
-          std::cerr << "error: unknown validation instrumentation '"
-                    << spelling << "'\n";
-          return 2;
-        }
-        instrumentation.push_back(*parsed);
       } else {
         print_usage();
         return 2;
       }
     }
-    if (toolchain_root.has_value() != sdk_root.has_value() ||
-        locked != toolchain_root.has_value() ||
-        (locked && allow_host_toolchain) ||
-        ((require_test_evidence || require_benchmark_evidence ||
-          require_judgment_evidence) && !locked)) {
-      print_usage();
-      return 2;
-    }
-    if (!instrumentation.empty() &&
-        !(require_test_evidence || require_benchmark_evidence)) {
-      print_usage();
-      return 2;
-    }
-    std::optional<draft::LockedNativeInputRoots> locked_inputs;
-    if (locked) {
-      locked_inputs.emplace();
-      std::string reason;
-      if (!absolute_locked_roots(
-              *toolchain_root, *sdk_root, *locked_inputs, reason)) {
-        std::cerr << "error: " << reason << '\n';
-        return 1;
-      }
-    }
-    judgment_policy.identity = draft::judgment_policy_identity(
-        judgment_policy.validator_identities,
-        judgment_policy.artifacts);
     return build_package(
         argv[2],
         target,
@@ -1870,16 +1616,9 @@ int main(int argc, char **argv) {
         assertions_off
             ? draft::RuntimeAssertionMode::Off
             : draft::RuntimeAssertionMode::On,
-        allow_host_toolchain,
-        locked_inputs,
         foreign_providers,
         provider_summaries,
-        runtime_assets,
-        instrumentation,
-        require_test_evidence,
-        require_benchmark_evidence,
-        require_judgment_evidence,
-        judgment_policy);
+        runtime_assets);
   }
   if (argc >= 2 && std::string_view(argv[1]) == "target") {
     bool target_set = false;

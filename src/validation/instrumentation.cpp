@@ -13,7 +13,7 @@ namespace {
 // Instrumentation support belongs to a complete target contract, not merely
 // to a tool name accepted by the selected Clang binary. If any target fact
 // changes, its identity changes and this profile stays unavailable until that
-// new target has independently pinned and qualified the pass and runtime.
+// new target has independently qualified the host pass and runtime behavior.
 constexpr std::string_view kAddressSanitizerTargetIdentity =
     "draft-aarch64-macos-v5";
 
@@ -73,9 +73,9 @@ bool validate_validation_instrumentation(
   }
 
   // AddressSanitizer is the first complete target profile: the native adapter
-  // owns its exact Clang options, requires a content-pinned dynamic runtime,
-  // and records the selection in evidence. The remaining vocabulary stays
-  // explicit and fail-closed until each item has an equally complete contract.
+  // owns the Clang options, and validation evidence records the selected host
+  // toolchain version. The remaining vocabulary stays explicit and fail-closed
+  // until each item has an equally complete contract.
   for (ValidationInstrumentationKind requirement : unique) {
     if (requirement == ValidationInstrumentationKind::Address &&
         target.facts.identity == kAddressSanitizerTargetIdentity) {
@@ -86,7 +86,7 @@ bool validate_validation_instrumentation(
         "validation instrumentation '" +
             std::string(validation_instrumentation_name(requirement)) +
             "' is unavailable for target '" + target.facts.identity +
-            "': no versioned compiler pass, runtime, and evidence contract is "
+            "': no qualified compiler pass, runtime, and evidence contract is "
             "configured");
   }
   return diagnostics.error_count() == initial_errors;
@@ -99,17 +99,14 @@ std::string validation_instrumentation_identity(
   }
   if (requirements.size() == 1 &&
       requirements.front() == ValidationInstrumentationKind::Address) {
-    // Toolchain identity separately contains the complete content-tree digest,
-    // which pins both the pass implementation and these runtime bytes. This
-    // field names all compiler-controlled options and deployment semantics.
+    // Toolchain identity separately records the selected host Clang version.
+    // This field names the compiler-controlled flags and execution policy.
     return "draft-validation-instrumentation-v1:address;"
         "ir-function-attribute=sanitize_address;"
         "compile=-fsanitize=address,-fno-omit-frame-pointer;"
-        "runtime=libclang_rt.asan_osx_dynamic.dylib;"
-        "runtime-id=@rpath/libclang_rt.asan_osx_dynamic.dylib;"
-        "runpath=@executable_path;"
-        "runtime-options=abort_on_error=1,symbolize=1;"
-        "symbolizer=bin/llvm-symbolizer;"
+        "link=-fsanitize=address;"
+        "runtime=host-clang-address-sanitizer;"
+        "runtime-options=abort_on_error=1,symbolize=0;"
         "process-environment=draft-validation-process-environment-v1";
   }
   return "draft-validation-instrumentation-v1:invalid";

@@ -8,8 +8,9 @@
 //
 // Physical paths, FileId values, syntax IDs, build-directory names, and host
 // enumeration order are excluded. The function performs no I/O: callers must
-// pass the already loaded resolved graph and source manager. External tools,
-// SDKs, libraries, and artifacts enter through their exact content-tree pins.
+// pass the already loaded resolved graph and source manager. Foreign libraries,
+// artifacts, and runtime assets enter through exact
+// content-tree pins. Host toolchains and SDKs are build configuration.
 // Relevant specification: docs/specification/03-agent-synthesis.md section 10.
 
 #pragma once

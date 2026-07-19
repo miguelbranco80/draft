@@ -6,7 +6,6 @@
 #include "judgment/cli_policy.h"
 #include "judgment/evidence_store.h"
 #include "judgment/selection.h"
-#include "judgment/verification.h"
 #include "source/diagnostic.h"
 #include "source/source.h"
 #include "target/profile.h"
@@ -129,16 +128,6 @@ void test_public_policy_input_helpers(TestState &state) {
         artifacts.front().digest == draft::sha256("artifact bytes"));
   }
 
-  draft::JudgmentArtifactIdentity artifact_identity;
-  EXPECT(state, draft::parse_judgment_artifact_identity(
-      "object:" + draft::sha256("artifact bytes").hex(),
-      artifact_identity,
-      reason));
-  EXPECT(state, artifact_identity.kind == "object");
-  EXPECT(state,
-      artifact_identity.content_digest == draft::sha256("artifact bytes"));
-  EXPECT(state, !draft::parse_judgment_artifact_identity(
-      "object:not-a-digest", artifact_identity, reason));
   std::filesystem::remove_all(root, error);
 }
 
@@ -319,37 +308,6 @@ void test_execution_revocation_and_reactivation(TestState &state) {
       EXPECT(state, loaded.active_evidence->passed);
     }
   }
-
-  // Offline verification consumes an explicit policy shape. It needs neither
-  // provider and proves validator order plus exact artifact content identity.
-  draft::ResolutionManifest policy_manifest;
-  policy_manifest.target_identity =
-      draft::make_aarch64_macos_profile().facts.identity;
-  policy_manifest.resolved_program_digest =
-      *compiled.resolved_program_digest;
-  policy_manifest.evidence = multiple_result.evidence;
-  compiled.resolution_manifest = std::move(policy_manifest);
-  draft::JudgmentVerificationPolicy verification_policy;
-  verification_policy.identity = draft::judgment_policy_identity(
-      validator_identities, artifact_identities);
-  verification_policy.validator_identities = validator_identities;
-  verification_policy.artifacts = artifact_identities;
-  std::vector<draft::Sha256Digest> active_evidence;
-  EXPECT(state, draft::verify_active_judgment_evidence(
-      compiled,
-      root,
-      active_evidence,
-      diagnostics,
-      verification_policy));
-  EXPECT(state, active_evidence.size() == 2);
-  draft::DiagnosticSink wrong_policy_diagnostics;
-  active_evidence.clear();
-  EXPECT(state, !draft::verify_active_judgment_evidence(
-      compiled,
-      root,
-      active_evidence,
-      wrong_policy_diagnostics));
-  EXPECT(state, wrong_policy_diagnostics.has_errors());
 
   if (sites.size() == 2) {
     provider.calls = 0;

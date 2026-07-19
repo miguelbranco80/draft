@@ -28,8 +28,6 @@ add_library(
   src/assembly/aarch64.cpp
   src/backend/foreign_inputs.cpp
   src/backend/foreign_summaries.cpp
-  src/backend/locked_inputs.cpp
-  src/backend/macho_dependencies.cpp
   src/backend/llvm_ir.cpp
   src/backend/runtime_assets.cpp
   src/backend/source_correlation.cpp
@@ -54,7 +52,6 @@ add_library(
   src/judgment/evidence.cpp
   src/judgment/evidence_store.cpp
   src/judgment/selection.cpp
-  src/judgment/verification.cpp
   src/mir/lower.cpp
   src/mir/mir.cpp
   src/mir/verify.cpp
@@ -158,13 +155,6 @@ if(BUILD_TESTING)
   add_executable(draft_content_tree_tests tests/content_tree_test.cpp)
   target_link_libraries(draft_content_tree_tests PRIVATE draft_compiler)
   add_test(NAME draft_content_tree_tests COMMAND draft_content_tree_tests)
-
-  add_executable(
-    draft_macho_dependency_tests
-    tests/macho_dependencies_test.cpp
-  )
-  target_link_libraries(draft_macho_dependency_tests PRIVATE draft_compiler)
-  add_test(NAME draft_macho_dependency_tests COMMAND draft_macho_dependency_tests)
 
   add_executable(draft_foreign_inputs_tests tests/foreign_inputs_test.cpp)
   target_link_libraries(draft_foreign_inputs_tests PRIVATE draft_compiler)
@@ -310,20 +300,6 @@ if(BUILD_TESTING)
     draft_toolchain_tests
     PRIVATE DRAFT_SOURCE_DIRECTORY="${CMAKE_CURRENT_SOURCE_DIR}"
   )
-  if(APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64)$")
-    # The locked adapter test needs executable Mach-O tools so dependency
-    # closure is exercised rather than bypassed with shell-script stand-ins.
-    add_executable(
-      draft_recording_native_tool
-      tests/recording_native_tool.cpp
-    )
-    target_compile_definitions(
-      draft_toolchain_tests
-      PRIVATE
-        DRAFT_RECORDING_NATIVE_TOOL="$<TARGET_FILE:draft_recording_native_tool>"
-    )
-    add_dependencies(draft_toolchain_tests draft_recording_native_tool)
-  endif()
   add_test(NAME draft_toolchain_tests COMMAND draft_toolchain_tests)
 
   # These are intentionally host integration tests rather than fake toolchain
@@ -477,43 +453,26 @@ if(BUILD_TESTING)
       "checked package graph rooted at core_os"
   )
 
-  if(TARGET draft_recording_native_tool)
+  add_test(
+    NAME draft_driver_canonicalizes_symlinked_parent
+    COMMAND
+      "${CMAKE_COMMAND}"
+      "-DDRAFTC=$<TARGET_FILE:draftc>"
+      "-DSOURCE_PACKAGE=${CMAKE_CURRENT_SOURCE_DIR}/examples/hello"
+      "-DTEST_ROOT=${CMAKE_CURRENT_BINARY_DIR}/driver-symlink-path-test"
+      -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/driver_symlink_path_test.cmake"
+  )
+
+  if(APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64)$")
+    # Address instrumentation is an ordinary host-toolchain validation mode.
+    # This native check proves the public command no longer depends on a
+    # separate build mode or copied sanitizer distribution.
     add_test(
-      NAME draft_driver_canonicalizes_symlinked_parent
-      COMMAND
-        "${CMAKE_COMMAND}"
-        "-DDRAFTC=$<TARGET_FILE:draftc>"
-        "-DRECORDING_TOOL=$<TARGET_FILE:draft_recording_native_tool>"
-        "-DSOURCE_PACKAGE=${CMAKE_CURRENT_SOURCE_DIR}/examples/hello"
-        "-DTEST_ROOT=${CMAKE_CURRENT_BINARY_DIR}/driver-symlink-path-test"
-        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/driver_symlink_path_test.cmake"
+      NAME draft_validation_address_instrumentation
+      COMMAND draftc test "${CMAKE_CURRENT_SOURCE_DIR}/examples/validation"
+        --instrument address
     )
   endif()
-
-  # Address instrumentation is real but intentionally available only through a
-  # locked distribution. The ordinary command must fail before probing a host
-  # toolchain rather than silently accepting an ambient sanitizer runtime.
-  add_test(
-    NAME draft_validation_instrumentation_requires_locked
-    COMMAND draftc test "${CMAKE_CURRENT_SOURCE_DIR}/examples/validation"
-      --instrument address
-  )
-  set_tests_properties(
-    draft_validation_instrumentation_requires_locked
-    PROPERTIES WILL_FAIL TRUE
-  )
-
-  # Evidence requirements are meaningful only for locked builds. This checks
-  # the public flag boundary without invoking a native toolchain.
-  add_test(
-    NAME draft_judgment_evidence_requires_locked
-    COMMAND draftc build "${CMAKE_CURRENT_SOURCE_DIR}/examples/validation"
-      --assertions=off --require-judgment-evidence
-  )
-  set_tests_properties(
-    draft_judgment_evidence_requires_locked
-    PROPERTIES WILL_FAIL TRUE
-  )
 
   # Provider-free agent commands must recognize real typed sites but fail
   # before writing anything when no provider adapter is configured.

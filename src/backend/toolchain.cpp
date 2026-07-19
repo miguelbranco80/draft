@@ -1,4 +1,4 @@
-// External LLVM tool invocation with explicit target and version gates.
+// External host LLVM invocation for Draft's concrete native target contracts.
 
 #include "backend/toolchain.h"
 
@@ -6,14 +6,12 @@
 #include "base/content_tree.h"
 
 #include <algorithm>
-#include <array>
 #include <cerrno>
 #include <cstddef>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
-#include <iterator>
 #include <string>
 #include <system_error>
 #include <utility>
@@ -37,8 +35,7 @@ struct ProcessResult {
 // is intentional for version probes and concise diagnostics; compilation output
 // is normally empty and is attached to the phase error when nonzero.
 [[nodiscard]] ProcessResult run_process(
-    const std::vector<std::string> &arguments,
-    bool clean_environment) {
+    const std::vector<std::string> &arguments) {
   ProcessResult result;
   if (arguments.empty()) {
     result.error = "empty process argument vector";
@@ -69,30 +66,7 @@ struct ProcessResult {
       raw_arguments.push_back(const_cast<char *>(argument.c_str()));
     }
     raw_arguments.push_back(nullptr);
-    if (clean_environment) {
-      // No package, SDK, library, compiler-config, locale, or deployment
-      // variables are inherited. PATH is deliberately empty: every selected
-      // Clang, linker, archiver, and debug-linker path is absolute in this mode.
-      // LLVM's dsymutil requires writable temporary-state discovery even when
-      // the link itself is hermetic. Fixed HOME/TMPDIR values keep that
-      // requirement independent of the invoking user. They are scratch
-      // locations only and do not enter the published DWARF or companion map.
-      std::array<std::string, 5> environment_storage{
-          "LANG=C",
-          "LC_ALL=C",
-          "PATH=",
-          "HOME=/",
-          "TMPDIR=/tmp",
-      };
-      std::array<char *, 6> environment{};
-      for (std::size_t index = 0; index < environment_storage.size(); ++index) {
-        environment[index] = environment_storage[index].data();
-      }
-      execve(
-          raw_arguments[0], raw_arguments.data(), environment.data());
-    } else {
-      execvp(raw_arguments[0], raw_arguments.data());
-    }
+    execvp(raw_arguments[0], raw_arguments.data());
     _exit(127);
   }
 
@@ -124,26 +98,6 @@ struct ProcessResult {
   return result;
 }
 
-// Appends flags that make every locked Clang phase independent of driver
-// configuration files and host SDK or sysroot discovery. The linker is an
-// absolute member of the already hashed toolchain tree.
-void append_locked_arguments(
-    const TargetProfile &target,
-    const VerifiedLockedNativeInputs &inputs,
-    bool link,
-    std::vector<std::string> &arguments) {
-  arguments.push_back("--no-default-config");
-  if (target.facts.object_format == "elf") {
-    arguments.push_back("--sysroot=" + inputs.sdk_root.string());
-  } else {
-    arguments.push_back("-isysroot");
-    arguments.push_back(inputs.sdk_root.string());
-  }
-  if (link) {
-    arguments.push_back("--ld-path=" + inputs.linker.string());
-  }
-}
-
 // Darwin's deployment floor is a Clang driver option. The Linux profile's
 // version string instead identifies its kernel/libc contract and must never be
 // passed as a made-up compiler flag. Keeping this branch beside every target
@@ -156,11 +110,6 @@ void append_target_arguments(
   if (target.facts.object_format == "macho") {
     arguments.push_back("-mmacosx-version-min=" + target.minimum_os_version);
   }
-}
-
-[[nodiscard]] bool is_pinned_llvm(std::string_view version) {
-  return version.find("clang version 22.1.") != std::string_view::npos ||
-      version.find("LLVM version 22.1.") != std::string_view::npos;
 }
 
 [[nodiscard]] bool write_atomic(
@@ -330,9 +279,8 @@ void add_provider(std::vector<std::string> &providers, std::string_view provider
     }
   }
 
-  if (options.locked || compiled.resolution_manifest.has_value()) {
-    if (!compiled.resolution_manifest.has_value() ||
-        !verify_foreign_provider_inputs(
+  if (compiled.resolution_manifest.has_value()) {
+    if (!verify_foreign_provider_inputs(
             options.foreign_providers,
             compiled.resolution_manifest->external_inputs,
             verified,
@@ -360,19 +308,12 @@ void add_provider(std::vector<std::string> &providers, std::string_view provider
       // Runtime assets have their own complete-set verifier. They are not
       // foreign symbol providers and therefore do not enter the link list.
       if (pin.kind == ExternalInputKind::RuntimeAsset) continue;
-      if (!options.locked &&
-          (pin.kind == ExternalInputKind::Toolchain ||
-           pin.kind == ExternalInputKind::Sdk)) {
-        continue;
-      }
-      if (pin.kind != ExternalInputKind::Toolchain &&
-          pin.kind != ExternalInputKind::Sdk &&
-          pin.kind != ExternalInputKind::Object &&
+      if (pin.kind != ExternalInputKind::Object &&
           pin.kind != ExternalInputKind::Archive &&
           pin.kind != ExternalInputKind::SharedLibrary) {
         diagnostics.error(
             SourceRange::invalid(),
-            "locked native adapter does not implement external input role '" +
+            "native adapter does not implement external input role '" +
                 std::string(external_input_kind_name(pin.kind)) + "'");
         return false;
       }
@@ -418,10 +359,10 @@ void add_provider(std::vector<std::string> &providers, std::string_view provider
   return true;
 }
 
-// A manifest makes runtime assets part of the resolved program even for an
-// ordinary non-locked build, so every manifest-bearing native invocation must
-// prove the complete mapping. Conversely, an asset passed without a manifest
-// would affect no program identity and is rejected instead of being ignored.
+// A manifest makes runtime assets part of the resolved program, so every
+// manifest-bearing native invocation must prove the complete mapping.
+// Conversely, an asset passed without a manifest would affect no program
+// identity and is rejected instead of being ignored.
 [[nodiscard]] bool verify_runtime_asset_set(
     const CompileWorkspaceResult &compiled,
     const NativeBuildOptions &options,
@@ -442,97 +383,6 @@ void add_provider(std::vector<std::string> &providers, std::string_view provider
     return false;
   }
   verified.clear();
-  return true;
-}
-
-[[nodiscard]] ExternalInputKind provider_external_kind(
-    ForeignArtifactKind kind) {
-  switch (kind) {
-  case ForeignArtifactKind::Object: return ExternalInputKind::Object;
-  case ForeignArtifactKind::Archive: return ExternalInputKind::Archive;
-  case ForeignArtifactKind::SharedLibrary:
-    return ExternalInputKind::SharedLibrary;
-  }
-  return ExternalInputKind::ForeignArtifact;
-}
-
-[[nodiscard]] bool snapshot_locked_providers(
-    const TargetProfile &target,
-    const std::filesystem::path &build_directory,
-    const ResolutionManifest &manifest,
-    std::vector<VerifiedForeignProviderInput> &providers,
-    DiagnosticSink &diagnostics) {
-  for (std::size_t index = 0; index < providers.size(); ++index) {
-    VerifiedForeignProviderInput &provider = providers[index];
-    std::ifstream input(provider.path, std::ios::binary);
-    if (!input) {
-      diagnostics.error(
-          SourceRange::invalid(),
-          "cannot snapshot foreign provider '" + provider.provider + "'");
-      return false;
-    }
-    std::string bytes{
-        std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
-    if (input.bad()) {
-      diagnostics.error(
-          SourceRange::invalid(),
-          "cannot read complete foreign provider '" + provider.provider + "'");
-      return false;
-    }
-    const std::string extension = provider.kind == ForeignArtifactKind::Object
-        ? ".o"
-        : (provider.kind == ForeignArtifactKind::Archive
-               ? ".a"
-               : (target.facts.object_format == "elf" ? ".so" : ".dylib"));
-    const std::filesystem::path snapshot =
-        build_directory / ("foreign-" + std::to_string(index) + extension);
-    std::string reason;
-    if (!write_atomic(snapshot, bytes, reason)) {
-      diagnostics.error(SourceRange::invalid(), reason);
-      return false;
-    }
-    std::error_code permission_error;
-    const std::filesystem::perms permissions =
-        std::filesystem::status(provider.path, permission_error).permissions();
-    if (permission_error) {
-      diagnostics.error(
-          SourceRange::invalid(),
-          "cannot inspect foreign provider permissions: " +
-              permission_error.message());
-      return false;
-    }
-    std::filesystem::permissions(
-        snapshot,
-        permissions,
-        std::filesystem::perm_options::replace,
-        permission_error);
-    if (permission_error) {
-      diagnostics.error(
-          SourceRange::invalid(),
-          "cannot preserve foreign provider permissions: " +
-              permission_error.message());
-      return false;
-    }
-    Sha256Digest digest;
-    if (!hash_content_tree(snapshot, digest, diagnostics)) return false;
-    const ExternalInputKind expected_kind = provider_external_kind(provider.kind);
-    const auto pin = std::find_if(
-        manifest.external_inputs.begin(),
-        manifest.external_inputs.end(),
-        [&](const ExternalInputPin &candidate) {
-          return candidate.kind == expected_kind &&
-              candidate.name == provider.provider;
-        });
-    if (pin == manifest.external_inputs.end() ||
-        pin->content_digest != digest) {
-      diagnostics.error(
-          SourceRange::invalid(),
-          "foreign provider changed while creating the locked build snapshot: '" +
-              provider.provider + "'");
-      return false;
-    }
-    provider.path = snapshot;
-  }
   return true;
 }
 
@@ -566,26 +416,12 @@ NativeBuildResult build_native_artifact(
     return result;
   }
 
-  if (options.locked && options.allow_unpinned_toolchain) {
-    diagnostics.error(
-        SourceRange::invalid(),
-        "locked native build cannot allow an unpinned host toolchain");
-    return result;
-  }
   if (options.instrumentation != NativeInstrumentationProfile::None &&
       options.artifact_kind != NativeArtifactKind::Executable) {
     diagnostics.error(
         SourceRange::invalid(),
         "native instrumentation is currently supported only for validation "
         "executables");
-    return result;
-  }
-  if (options.instrumentation != NativeInstrumentationProfile::None &&
-      !options.locked) {
-    diagnostics.error(
-        SourceRange::invalid(),
-        "native instrumentation requires a locked toolchain and SDK so its "
-        "compiler pass and runtime have content-pinned identities");
     return result;
   }
   if (options.instrumentation != NativeInstrumentationProfile::None &&
@@ -609,93 +445,24 @@ NativeBuildResult build_native_artifact(
     return result;
   }
 
-  VerifiedLockedNativeInputs locked_inputs;
   std::string clang_path = options.clang_path;
   std::string archiver_path = options.archiver_path;
   std::string dsymutil_path = options.dsymutil_path;
-  if (!options.locked && target.facts.object_format == "elf" &&
-      archiver_path == "libtool") {
+  if (target.facts.object_format == "elf" && archiver_path == "libtool") {
     // The public option retains the macOS-compatible default. ELF archives
-    // use LLVM ar's deterministic mode; a development caller may still supply
-    // another compatible executable explicitly.
+    // use LLVM ar's deterministic mode; a caller may still supply another
+    // compatible executable explicitly.
     archiver_path = "llvm-ar";
   }
-  if (options.locked) {
-    if (!std::filesystem::path(options.build_directory).is_absolute() ||
-        !std::filesystem::path(options.output_path).is_absolute()) {
-      diagnostics.error(
-          SourceRange::invalid(),
-          "locked native build and output paths must be absolute");
-      return result;
-    }
-    if (!compiled.resolution_manifest.has_value()) {
-      diagnostics.error(
-          SourceRange::invalid(),
-          "locked native build requires a verified resolution manifest; "
-          "run 'draftc resolve' with explicit toolchain and SDK roots");
-      return result;
-    }
-    if (compiled.resolution_manifest->target_identity !=
-        target.facts.identity) {
-      diagnostics.error(
-          SourceRange::invalid(),
-          "locked native build manifest target does not match selected target");
-      return result;
-    }
-    if (!verify_locked_native_inputs(
-            target,
-            options.locked_inputs,
-            compiled.resolution_manifest->external_inputs,
-            locked_inputs,
-            diagnostics)) {
-      return result;
-    }
-    clang_path = locked_inputs.clang.string();
-    archiver_path = locked_inputs.archiver.string();
-    if (!locked_inputs.dsymutil.empty()) {
-      dsymutil_path = locked_inputs.dsymutil.string();
-    }
-  }
-  if (options.instrumentation ==
-          NativeInstrumentationProfile::AddressSanitizer &&
-      !locked_inputs.address_sanitizer_runtime.has_value()) {
-    diagnostics.error(
-        SourceRange::invalid(),
-        "locked LLVM toolchain does not contain the required versioned "
-        "address-sanitizer runtime");
-    return result;
-  }
-  if (options.instrumentation ==
-          NativeInstrumentationProfile::AddressSanitizer &&
-      !locked_inputs.llvm_symbolizer.has_value()) {
-    diagnostics.error(
-        SourceRange::invalid(),
-        "locked LLVM toolchain does not contain the required versioned "
-        "LLVM symbolizer");
-    return result;
-  }
 
-  std::vector<std::string> version_arguments{clang_path};
-  if (options.locked) {
-    version_arguments.push_back("--no-default-config");
-  }
-  version_arguments.push_back("--version");
-  const ProcessResult version =
-      run_process(version_arguments, options.locked);
+  const std::vector<std::string> version_arguments{clang_path, "--version"};
+  const ProcessResult version = run_process(version_arguments);
   if (!version.started || version.exit_code != 0) {
     diagnostics.error(
         SourceRange::invalid(), phase_failure("LLVM toolchain version probe", version));
     return result;
   }
   result.toolchain_version = version.output;
-  if (!options.allow_unpinned_toolchain && !is_pinned_llvm(version.output)) {
-    diagnostics.error(
-        SourceRange::invalid(),
-        "toolchain is not the required LLVM/Clang 22.1.x distribution; "
-        "use an explicitly pinned toolchain (development builds may opt into "
-        "--allow-host-toolchain)");
-    return result;
-  }
 
   std::error_code directory_error;
   std::filesystem::create_directories(options.build_directory, directory_error);
@@ -706,37 +473,6 @@ NativeBuildResult build_native_artifact(
     return result;
   }
   const std::filesystem::path build_directory(options.build_directory);
-  std::filesystem::path instrumentation_runtime_snapshot;
-  if (options.instrumentation ==
-      NativeInstrumentationProfile::AddressSanitizer) {
-    // Snapshot the already verified runtime before either the linker or the
-    // eventual validation process sees it. The snapshot lives in the isolated
-    // build directory, is the exact dylib passed to ld, and is later published
-    // beside the executable under its fixed relocatable install-name basename.
-    instrumentation_runtime_snapshot =
-        build_directory / locked_inputs.address_sanitizer_runtime->filename();
-    std::filesystem::copy_file(
-        *locked_inputs.address_sanitizer_runtime,
-        instrumentation_runtime_snapshot,
-        std::filesystem::copy_options::overwrite_existing,
-        directory_error);
-    if (directory_error) {
-      diagnostics.error(
-          SourceRange::invalid(),
-          "cannot snapshot locked address-sanitizer runtime: " +
-              directory_error.message());
-      return result;
-    }
-  }
-  if (options.locked && !foreign_providers.empty() &&
-      !snapshot_locked_providers(
-          target,
-          build_directory,
-          *compiled.resolution_manifest,
-          foreign_providers,
-          diagnostics)) {
-    return result;
-  }
   const std::filesystem::path output_path(options.output_path);
   if (options.artifact_kind == NativeArtifactKind::Assembly) {
     std::filesystem::create_directories(output_path, directory_error);
@@ -797,10 +533,6 @@ NativeBuildResult build_native_artifact(
       return result;
     }
     std::vector<std::string> compile_arguments{clang_path};
-    if (options.locked) {
-      append_locked_arguments(
-          target, locked_inputs, false, compile_arguments);
-    }
     append_target_arguments(target, compile_arguments);
     compile_arguments.push_back("-x");
     compile_arguments.push_back("ir");
@@ -821,8 +553,7 @@ NativeBuildResult build_native_artifact(
     compile_arguments.push_back(module.string());
     compile_arguments.push_back("-o");
     compile_arguments.push_back(compiled_output.string());
-    const ProcessResult compile =
-        run_process(compile_arguments, options.locked);
+    const ProcessResult compile = run_process(compile_arguments);
     if (!compile.started || compile.exit_code != 0) {
       diagnostics.error(
           SourceRange::invalid(), phase_failure("LLVM object emission", compile));
@@ -862,10 +593,6 @@ NativeBuildResult build_native_artifact(
       }
       if (assembly_output) continue;
       std::vector<std::string> assemble_arguments{clang_path};
-      if (options.locked) {
-        append_locked_arguments(
-            target, locked_inputs, false, assemble_arguments);
-      }
       append_target_arguments(target, assemble_arguments);
       assemble_arguments.insert(
           assemble_arguments.end(),
@@ -877,8 +604,7 @@ NativeBuildResult build_native_artifact(
               "-o",
               assembly_object.string(),
           });
-      const ProcessResult assemble =
-          run_process(assemble_arguments, options.locked);
+      const ProcessResult assemble = run_process(assemble_arguments);
       if (!assemble.started || assemble.exit_code != 0) {
         diagnostics.error(
             SourceRange::invalid(),
@@ -955,11 +681,10 @@ NativeBuildResult build_native_artifact(
       return result;
     }
     // Archive metadata is part of the emitted artifact, so deterministic mode
-    // is not merely a locked-release concern. Apple's host ar has no
-    // deterministic switch; its libtool replacement does. A locked build uses
-    // the separately verified LLVM ar and therefore has a different interface.
+    // is required for every build. Apple's host ar has no deterministic
+    // switch; its libtool replacement does. ELF uses LLVM ar's `D` mode.
     std::vector<std::string> archive_arguments{archiver_path};
-    if (options.locked || target.facts.object_format == "elf") {
+    if (target.facts.object_format == "elf") {
       archive_arguments.push_back("rcsD");
       archive_arguments.push_back(output_path.string());
     } else {
@@ -970,7 +695,7 @@ NativeBuildResult build_native_artifact(
     }
     archive_arguments.insert(
         archive_arguments.end(), objects.begin(), objects.end());
-    const ProcessResult archive = run_process(archive_arguments, options.locked);
+    const ProcessResult archive = run_process(archive_arguments);
     if (!archive.started || archive.exit_code != 0) {
       diagnostics.error(
           SourceRange::invalid(),
@@ -986,14 +711,10 @@ NativeBuildResult build_native_artifact(
   std::vector<std::string> link_arguments = {
       clang_path,
   };
-  if (options.locked) {
-    append_locked_arguments(target, locked_inputs, true, link_arguments);
-  }
   append_target_arguments(target, link_arguments);
-  if (!options.locked && target.facts.object_format == "elf") {
-    // The development path still names the linker family explicitly. Clang
-    // may locate `ld.lld` through PATH only after the caller has opted into the
-    // host toolchain; it must not silently choose an unrelated GNU linker.
+  if (target.facts.object_format == "elf") {
+    // Name the linker family explicitly. Clang locates `ld.lld` through PATH,
+    // but it must not silently choose a different host linker implementation.
     link_arguments.push_back("-fuse-ld=lld");
   }
   if (options.artifact_kind == NativeArtifactKind::Object) {
@@ -1025,7 +746,11 @@ NativeBuildResult build_native_artifact(
           "-Wl,-install_name,@rpath/" + output_path.filename().string());
     }
   } else if (options.artifact_kind == NativeArtifactKind::Executable) {
-    if (target.facts.object_format == "macho") {
+    if (target.facts.object_format == "macho" &&
+        options.instrumentation == NativeInstrumentationProfile::None) {
+      // Ordinary Draft executables name their one system library explicitly.
+      // AddressSanitizer instead uses the host Clang driver's complete link
+      // recipe below so that driver can add its matching runtime.
       link_arguments.push_back("-nostdlib");
     }
   }
@@ -1056,14 +781,17 @@ NativeBuildResult build_native_artifact(
     }
     if (options.instrumentation ==
         NativeInstrumentationProfile::AddressSanitizer) {
-      link_arguments.push_back(instrumentation_runtime_snapshot.string());
-      link_arguments.push_back("-Wl,-rpath,@executable_path");
+      // Let the selected host Clang driver locate and link the sanitizer
+      // runtime that belongs to that installation. Validation evidence records
+      // the host toolchain version; the runtime is not a Draft program input.
+      link_arguments.push_back("-fsanitize=address");
+    } else {
+      link_arguments.push_back("-l" + target.system_link_library);
     }
-    link_arguments.push_back("-l" + target.system_link_library);
   }
   link_arguments.push_back("-o");
   link_arguments.push_back(output_path.string());
-  const ProcessResult link = run_process(link_arguments, options.locked);
+  const ProcessResult link = run_process(link_arguments);
   if (!link.started || link.exit_code != 0) {
     diagnostics.error(
         SourceRange::invalid(),
@@ -1073,37 +801,6 @@ NativeBuildResult build_native_artifact(
                                                       : " Mach-O link"),
             link));
     return result;
-  }
-
-  if (options.instrumentation ==
-      NativeInstrumentationProfile::AddressSanitizer) {
-    const std::filesystem::path published_runtime =
-        output_path.parent_path() /
-        instrumentation_runtime_snapshot.filename();
-    if (published_runtime != instrumentation_runtime_snapshot) {
-      directory_error.clear();
-      std::filesystem::copy_file(
-          instrumentation_runtime_snapshot,
-          published_runtime,
-          std::filesystem::copy_options::overwrite_existing,
-          directory_error);
-      if (directory_error) {
-        diagnostics.error(
-            SourceRange::invalid(),
-            "cannot publish address-sanitizer runtime beside executable: " +
-                directory_error.message());
-        return result;
-      }
-    }
-    if (!hash_content_tree(
-            published_runtime,
-            result.instrumentation_runtime_digest,
-            diagnostics)) {
-      return result;
-    }
-    result.instrumentation_runtime_path = published_runtime.string();
-    result.instrumentation_symbolizer_path =
-        locked_inputs.llvm_symbolizer->string();
   }
 
   // A Mach-O link keeps only a debug map in the executable or dylib. Package
@@ -1136,8 +833,7 @@ NativeBuildResult build_native_artifact(
         "-o",
         debug_symbols.string(),
     };
-    const ProcessResult debug_link =
-        run_process(dsymutil_arguments, options.locked);
+    const ProcessResult debug_link = run_process(dsymutil_arguments);
     if (!debug_link.started || debug_link.exit_code != 0) {
       diagnostics.error(
           SourceRange::invalid(),

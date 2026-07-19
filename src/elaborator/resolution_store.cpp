@@ -187,7 +187,7 @@ private:
 
 // Read operations also inspect each store directory itself. symlink_status on
 // only the final file would otherwise follow a symlinked .draft parent and let
-// a locked build consume a store outside the selected workspace.
+// a provider-free build consume a store outside the selected workspace.
 [[nodiscard]] bool inspect_store_directory(
     const std::filesystem::path &path,
     bool &exists,

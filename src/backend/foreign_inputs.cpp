@@ -166,7 +166,7 @@ bool verify_foreign_provider_inputs(
   if (actual.size() != expected.size()) {
     diagnostics.error(
         SourceRange::invalid(),
-        "configured foreign providers do not match the complete locked "
+        "configured foreign providers do not match the complete resolved "
         "object/archive/shared-library manifest set");
     return false;
   }

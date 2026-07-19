@@ -1,4 +1,4 @@
-// Complete native test/benchmark execution and locked evidence verification.
+// Complete native test/benchmark execution and evidence recording.
 
 #pragma once
 
@@ -28,9 +28,6 @@ struct ValidationCommandOptions {
   // When a target first supports one, its complete selection identity must
   // also enter ValidationEvidence before this boundary may accept it.
   std::vector<ValidationInstrumentationKind> instrumentation;
-  bool allow_unpinned_toolchain = false;
-  bool locked = false;
-  LockedNativeInputRoots locked_inputs;
   std::vector<ForeignProviderInput> foreign_providers;
   // The native harness does not read these files directly, but a manifest-
   // bearing run must verify every external runtime identity before execution.
@@ -65,26 +62,6 @@ struct ValidationCommandResult {
 [[nodiscard]] ValidationCommandResult execute_precommit_validation(
     const CompileWorkspaceResult &compiled,
     ValidationCommandOptions options,
-    DiagnosticSink &diagnostics);
-
-struct ValidationEvidenceRequirement {
-  std::filesystem::path package_directory;
-  TargetProfile target;
-  WorkspaceLoadOptions workspace;
-  ValidationKind kind = ValidationKind::None;
-  // Locked verification uses the same request vocabulary and availability
-  // gate. It never substitutes uninstrumented evidence for a requested kind.
-  std::vector<ValidationInstrumentationKind> instrumentation;
-  std::vector<ForeignProviderAudit> foreign_provider_audits;
-};
-
-// Recompiles only the selected typed definitions and checks exact active
-// evidence. It performs no native lowering, provider call, validation process,
-// or store mutation, making it safe for locked build verification.
-[[nodiscard]] bool verify_active_validation_evidence(
-    SourceManager &sources,
-    ValidationEvidenceRequirement requirement,
-    Sha256Digest &active_digest,
     DiagnosticSink &diagnostics);
 
 } // namespace draft

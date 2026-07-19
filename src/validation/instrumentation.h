@@ -3,8 +3,9 @@
 // Instrumentation is validation policy, not Draft language semantics. Keeping
 // requests in this small module prevents CLI strings or host compiler flags
 // from leaking into semantic checking. A target adapter may support a request
-// only after its compiler pass, runtime, options, and tool identities are all
-// explicit evidence inputs.
+// only after its compiler pass, runtime behavior, and options form a tested
+// host contract. Validation evidence records the selected host tool version;
+// instrumentation does not become part of resolved-program identity.
 
 #pragma once
 
@@ -36,8 +37,8 @@ parse_validation_instrumentation(std::string_view spelling);
 
 // Rejects duplicates and any requirement unavailable for the complete target
 // profile. An empty set succeeds and represents the existing uninstrumented
-// validation policy. The first target supports only the complete versioned
-// address profile; every other vocabulary item remains fail-closed.
+// validation policy. The first target supports only the address profile; every
+// other vocabulary item remains fail-closed.
 [[nodiscard]] bool validate_validation_instrumentation(
     const TargetProfile &target,
     std::span<const ValidationInstrumentationKind> requirements,

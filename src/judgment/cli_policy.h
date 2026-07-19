@@ -8,7 +8,6 @@
 
 #include "judgment/codex_cli.h"
 #include "judgment/command.h"
-#include "judgment/verification.h"
 
 #include <filesystem>
 #include <optional>
@@ -45,13 +44,6 @@ struct NamedCodexJudgmentValidator {
 [[nodiscard]] bool read_judgment_artifacts(
     const std::vector<JudgmentArtifactPath> &inputs,
     std::vector<JudgmentRequestArtifact> &artifacts,
-    std::string &reason);
-
-// Locked verification accepts a digest spelling instead of reopening the
-// provider-time artifact path.
-[[nodiscard]] bool parse_judgment_artifact_identity(
-    std::string_view spelling,
-    JudgmentArtifactIdentity &artifact,
     std::string &reason);
 
 // Installs either an explicit ordered validator set or the legacy single Codex

@@ -43,8 +43,8 @@ struct VerifiedForeignProviderInput {
     std::vector<ExternalInputPin> &pins,
     DiagnosticSink &diagnostics);
 
-// Validates and canonicalizes a development build's explicit paths without a
-// manifest comparison. Locked callers use verify_foreign_provider_inputs.
+// Validates and canonicalizes explicit paths when the handwritten program has
+// no resolution manifest. Manifest-bearing callers use the exact verifier.
 [[nodiscard]] bool inspect_foreign_provider_inputs(
     std::span<const ForeignProviderInput> inputs,
     std::vector<VerifiedForeignProviderInput> &verified,

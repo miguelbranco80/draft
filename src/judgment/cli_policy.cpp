@@ -94,27 +94,6 @@ bool read_judgment_artifacts(
   return true;
 }
 
-bool parse_judgment_artifact_identity(
-    std::string_view spelling,
-    JudgmentArtifactIdentity &artifact,
-    std::string &reason) {
-  const std::size_t colon = spelling.find(':');
-  if (colon == 0 || colon == std::string_view::npos ||
-      colon + 1 >= spelling.size()) {
-    reason = "judgment artifact identity must be kind:sha256";
-    return false;
-  }
-  const std::optional<Sha256Digest> digest =
-      Sha256Digest::from_hex(spelling.substr(colon + 1));
-  if (!digest.has_value()) {
-    reason = "judgment artifact identity digest must contain 64 hexadecimal digits";
-    return false;
-  }
-  artifact.kind = std::string(spelling.substr(0, colon));
-  artifact.content_digest = *digest;
-  return true;
-}
-
 bool configure_codex_judgment_policy(
     const std::optional<CodexCliProviderOptions> &default_codex,
     const std::vector<NamedCodexJudgmentValidator> &configured,
