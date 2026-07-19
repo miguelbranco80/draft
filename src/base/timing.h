@@ -6,13 +6,12 @@
 // event names and durations until the command prints one report; participating
 // modules only borrow its pointer through their existing option structs.
 //
-// The current compiler pipeline is sequential. Accordingly, the recorder uses
-// one explicit active-scope stack and requires scopes to end in last-in,
-// first-out order on the thread that created them. This makes parentage and
-// exclusive time exact without timestamps, paths, thread IDs, or global state.
-// If a later compiler parallelizes independent packages, it must first replace
-// this stack contract with explicit parent IDs or per-thread stacks. Timing may
-// never make compilation results depend on scheduling.
+// The recorder itself is single-threaded. Ordinary sequential phases use one
+// explicit active-scope stack and finish in last-in, first-out order. Parallel
+// workers instead measure their own operation, store the duration beside their
+// task result, and let the owning thread append completed sibling events after
+// joining. Appending those records in stable task-ID order makes report order
+// independent of scheduling without putting locks or thread IDs in this module.
 //
 // A clock callback can be supplied by tests. Production uses steady_clock, so
 // wall-clock adjustments cannot produce negative or discontinuous durations.
@@ -119,6 +118,27 @@ public:
       std::uint64_t user_nanoseconds,
       std::uint64_t system_nanoseconds);
 
+  // Appends an already completed event beneath the active scope. This is the
+  // boundary used after joining parallel work: elapsed_nanoseconds was measured
+  // by the worker, but the owning thread supplies events in semantic order.
+  // The method must not be called by a worker or while another thread touches
+  // this recorder. Hidden detail events remain allocation-free in Summary mode.
+  void record_completed_event(
+      std::string_view name,
+      std::uint64_t elapsed_nanoseconds,
+      TimingVisibility visibility);
+
+  // Appends one completed external-process event and accounts its child CPU.
+  // Keeping this spelling separate avoids a boolean whose meaning would be
+  // unclear at call sites. When a detail row is hidden in Summary mode, child
+  // usage is attached to the active parent exactly as for a no-op detail scope.
+  void record_completed_process_event(
+      std::string_view name,
+      std::uint64_t elapsed_nanoseconds,
+      std::uint64_t user_nanoseconds,
+      std::uint64_t system_nanoseconds,
+      TimingVisibility visibility);
+
   // Renders a snapshot without closing active scopes. All durations use one
   // clock reading, so parent and child rows are internally comparable even
   // when a caller requests a report during an error path.
@@ -144,6 +164,10 @@ private:
   };
 
   [[nodiscard]] std::uint64_t now_nanoseconds() const;
+  [[nodiscard]] std::size_t append_completed_event(
+      std::string_view name,
+      std::uint64_t elapsed_nanoseconds,
+      TimingVisibility visibility);
   void finish_event(std::size_t event_index);
 
   TimingOutput output_ = TimingOutput::Disabled;

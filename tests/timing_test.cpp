@@ -94,6 +94,43 @@ void test_all_reports_exclusive_and_child_cpu_time() {
   expect_contains(report, "system: 1.000 ms", "child system CPU");
 }
 
+void test_completed_parallel_events_keep_caller_order() {
+  std::uint64_t now = 0;
+  draft::TimingRecorder recorder(draft::TimingOutput::All, fake_now, &now);
+  {
+    draft::TimingScope native = recorder.scope("native objects");
+    now += 5'000'000;
+    // These durations overlap in wall time. They are deliberately appended in
+    // task order rather than completion order; their sum may exceed the parent
+    // wall duration, and exclusive time must clamp rather than underflow.
+    recorder.record_completed_event(
+        "task 0", 4'000'000, draft::TimingVisibility::Detail);
+    recorder.record_completed_process_event(
+        "task 1",
+        3'000'000,
+        2'000'000,
+        1'000'000,
+        draft::TimingVisibility::Detail);
+  }
+
+  const std::string report = recorder.render();
+  expect_contains(
+      report,
+      "native objects: 5.000 ms (self 0.000 ms)",
+      "parallel parent with overlapping children");
+  const std::size_t first = report.find("task 0: 4.000 ms");
+  const std::size_t second = report.find("task 1: 3.000 ms");
+  if (first == std::string::npos || second == std::string::npos ||
+      first >= second) {
+    std::cerr << "completed events did not preserve caller order\n"
+              << report;
+    std::exit(1);
+  }
+  expect_contains(report, "external processes: 1", "parallel process count");
+  expect_contains(report, "user: 2.000 ms", "parallel child user CPU");
+  expect_contains(report, "system: 1.000 ms", "parallel child system CPU");
+}
+
 void test_disabled_recorder_is_a_no_op() {
   std::uint64_t now = 0;
   draft::TimingRecorder recorder(
@@ -115,6 +152,7 @@ void test_disabled_recorder_is_a_no_op() {
 int main() {
   test_summary_filters_detail_but_keeps_accounting();
   test_all_reports_exclusive_and_child_cpu_time();
+  test_completed_parallel_events_keep_caller_order();
   test_disabled_recorder_is_a_no_op();
   return 0;
 }

@@ -140,6 +140,44 @@ void TimingRecorder::record_child_process(
   add_counter("external processes", 1);
 }
 
+void TimingRecorder::record_completed_event(
+    std::string_view name,
+    std::uint64_t elapsed_nanoseconds,
+    TimingVisibility visibility) {
+  if (!enabled() ||
+      (output_ == TimingOutput::Summary &&
+       visibility == TimingVisibility::Detail)) {
+    return;
+  }
+  (void)append_completed_event(name, elapsed_nanoseconds, visibility);
+}
+
+void TimingRecorder::record_completed_process_event(
+    std::string_view name,
+    std::uint64_t elapsed_nanoseconds,
+    std::uint64_t user_nanoseconds,
+    std::uint64_t system_nanoseconds,
+    TimingVisibility visibility) {
+  if (!enabled()) return;
+  if (output_ == TimingOutput::Summary &&
+      visibility == TimingVisibility::Detail) {
+    // A detail scope is also suppressed in Summary mode. Attach the accounting
+    // to its visible parent just as record_child_process would after scope()
+    // returned a no-op token.
+    record_child_process(user_nanoseconds, system_nanoseconds);
+    return;
+  }
+  const std::size_t event_index =
+      append_completed_event(name, elapsed_nanoseconds, visibility);
+  Event &event = events_[event_index];
+  event.child_user_nanoseconds = user_nanoseconds;
+  event.child_system_nanoseconds = system_nanoseconds;
+  child_user_nanoseconds_ += user_nanoseconds;
+  child_system_nanoseconds_ += system_nanoseconds;
+  child_process_count_ += 1;
+  add_counter("external processes", 1);
+}
+
 std::string TimingRecorder::render() const {
   if (!enabled()) return {};
 
@@ -215,6 +253,24 @@ std::string TimingRecorder::render() const {
 std::uint64_t TimingRecorder::now_nanoseconds() const {
   assert(now_ != nullptr && "timing recorder clock must be configured");
   return now_(clock_state_);
+}
+
+std::size_t TimingRecorder::append_completed_event(
+    std::string_view name,
+    std::uint64_t elapsed_nanoseconds,
+    TimingVisibility visibility) {
+  assert(enabled() && "completed event requires an enabled recorder");
+  assert(!active_events_.empty() &&
+         "completed event must belong to an active scope");
+  Event event;
+  event.name = std::string(name);
+  event.parent = active_events_.back();
+  event.visibility = visibility;
+  event.elapsed_nanoseconds = elapsed_nanoseconds;
+  event.finished = true;
+  const std::size_t index = events_.size();
+  events_.push_back(std::move(event));
+  return index;
 }
 
 void TimingRecorder::finish_event(std::size_t event_index) {
