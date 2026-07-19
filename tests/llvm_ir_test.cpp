@@ -180,6 +180,56 @@ generated :: proc() -> i64 {
   }
 }
 
+void test_multistep_call_lowering_keeps_debug_locations(TestState &state) {
+  const EmittedFixture emitted = emit_fixture(R"draft(package call_debug
+
+Pair :: @repr(C) struct {
+    left: i32,
+    right: i32,
+}
+
+foreign debug_provider {
+    pair_identity :: c "draft_debug_pair_identity" proc(value: Pair) -> Pair
+}
+
+ordinary :: proc(value: Pair) -> Pair {
+    return pair_identity(value)
+}
+)draft");
+  if (!emitted.ok) std::cerr << emitted.diagnostics;
+  EXPECT(state, emitted.ok);
+
+  // The aggregate C call expands into scratch storage around the physical
+  // call. The call is not necessarily the first LLVM instruction for its MIR
+  // row, but LLVM still requires a location because a function with debug
+  // metadata cannot contain an inlinable location-free call.
+  std::size_t call = emitted.text.find("call ");
+  while (call != std::string::npos) {
+    const std::size_t candidate_end = emitted.text.find('\n', call);
+    const std::string_view candidate(
+        emitted.text.data() + call,
+        (candidate_end == std::string::npos
+             ? emitted.text.size()
+             : candidate_end) - call);
+    if (candidate.find("draft_debug_pair_identity") !=
+        std::string_view::npos) {
+      break;
+    }
+    call = emitted.text.find("call ", call + 1);
+  }
+  EXPECT(state, call != std::string::npos);
+  if (call != std::string::npos) {
+    const std::size_t line_begin = emitted.text.rfind('\n', call);
+    const std::size_t line_end = emitted.text.find('\n', call);
+    const std::size_t begin =
+        line_begin == std::string::npos ? 0 : line_begin + 1;
+    const std::string_view call_line(
+        emitted.text.data() + begin,
+        (line_end == std::string::npos ? emitted.text.size() : line_end) - begin);
+    EXPECT(state, call_line.find(", !dbg !") != std::string_view::npos);
+  }
+}
+
 void test_agent_constructs_have_no_runtime_footprint(TestState &state) {
   // The comments occupy exactly the lines used by docs/judge in the second
   // fixture. Source coordinates therefore remain stable; exact module equality
@@ -789,6 +839,7 @@ int main() {
   TestState state;
   test_agent_constructs_have_no_runtime_footprint(state);
   test_generated_debug_locations_are_hermetic(state);
+  test_multistep_call_lowering_keeps_debug_locations(state);
   test_padded_tuple_extraction_uses_logical_indices(state);
   test_scalar_executable_module(
       state, draft::make_aarch64_macos_profile());

@@ -174,10 +174,14 @@ struct DebugScope {
 // The MIR printer emits one small begin/end comment pair around each operation
 // because many operation cases print directly to the shared module stream. This
 // final linear pass removes those internal comments and attaches the operation's
-// location to its first real LLVM instruction. Keeping that mechanical concern
-// here avoids threading punctuation through every load, store, call, and ABI
-// expansion case. A switch is the only multiline LLVM instruction we emit; its
-// metadata belongs after the closing bracket rather than after the first line.
+// location to every real LLVM instruction it emitted. One MIR operation may
+// expand into ABI scratch stores, loads, and a call; LLVM requires every
+// inlinable call inside a debug-described function to carry a location, and a
+// single first-instruction attachment would make it discard that function's
+// debug information. Keeping the mechanical pass here avoids threading
+// punctuation through every expansion case. A switch is the only multiline
+// LLVM instruction we emit; its one metadata attachment belongs after the
+// closing bracket rather than after the first line.
 [[nodiscard]] std::string attach_debug_locations(std::string_view module) {
   static constexpr std::string_view begin_prefix =
       "  ; draft.debug.begin !";
@@ -215,7 +219,6 @@ struct DebugScope {
       if (attach) {
         result += ", !dbg !";
         result += location;
-        location.clear();
         waiting_for_switch_end = false;
       }
       if (newline != std::string_view::npos) result.push_back('\n');
