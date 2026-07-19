@@ -1701,6 +1701,28 @@ dead_conditional_type: i64 = 42 if true else "wrong"
                     std::string::npos);
 }
 
+void test_constant_dependency_depth_is_bounded(TestState &state) {
+  std::string text = "package conditions\n\n";
+  constexpr std::size_t constant_count = 320;
+  for (std::size_t index = 0; index < constant_count; ++index) {
+    // The binary expression deliberately bypasses the type resolver's
+    // name-only declaration-disambiguation chain. This reaches the constant
+    // evaluator's independent dependency graph instead.
+    text += "Constant_" + std::to_string(index) + " :: Constant_" +
+        std::to_string(index + 1) + " + 0\n";
+  }
+  text += "Constant_" + std::to_string(constant_count) + " :: 42\n";
+  AnalyzedSource source(std::move(text));
+
+  EXPECT(state, !source.analysis.ok);
+  const std::string rendered =
+      draft::render_diagnostics(source.sources, source.diagnostics);
+  EXPECT(state,
+      rendered.find(
+          "compile-time constant dependency depth exceeds the implementation "
+          "limit of 256") != std::string::npos);
+}
+
 } // namespace
 
 int main() {
@@ -1714,6 +1736,7 @@ int main() {
   test_compile_time_string_views(state);
   test_operator_type_boundaries(state);
   test_global_initializers(state);
+  test_constant_dependency_depth_is_bounded(state);
 
   if (state.failures != 0) {
     std::cerr << state.failures << " constant evaluation expectation(s) failed\n";

@@ -652,6 +652,12 @@ private:
 
   static constexpr std::size_t kMaximumConstantBits = 1000000;
   static constexpr std::size_t kMaximumExecutionSteps = 1000000;
+  // A package-constant dependency chain does not necessarily execute a Draft
+  // procedure and therefore does not consume the procedure recursion budget
+  // below. Bound the evaluator's own mutually recursive binding/expression
+  // walk independently before an acyclic source graph can exhaust the host
+  // stack. Parser expression nesting is a third, separate resource.
+  static constexpr std::size_t kMaximumBindingDependencyDepth = 256;
   // Procedure execution is deliberately recursive because that keeps source
   // control flow obvious.  Stop well before the host C++ stack becomes the
   // accidental resource limit; a Draft program gets a normal diagnostic
@@ -4150,7 +4156,6 @@ private:
       state = BindingState::Pending;
       return pending();
     }
-    state = BindingState::Evaluating;
 
     const SyntaxTree *tree = find_tree(initial.syntax.file);
     if (tree == nullptr || !initial.syntax.node.is_valid()) {
@@ -4162,6 +4167,23 @@ private:
       state = BindingState::Pending;
       return pending();
     }
+    if (binding_dependency_depth_ >= kMaximumBindingDependencyDepth) {
+      // A type-context probe may enter this same dependency graph with
+      // `required == false`. Resource exhaustion is not an ordinary failed
+      // probe: suppressing it would leave only cascading "not evaluable"
+      // diagnostics and hide the implementation limit that stopped us.
+      return fail(
+          initial.name_range,
+          "compile-time constant dependency depth exceeds the implementation "
+          "limit of " +
+              std::to_string(kMaximumBindingDependencyDepth),
+          true);
+    }
+
+    // No early return follows this increment: the common result path below
+    // always restores the depth before publishing a binding state.
+    state = BindingState::Evaluating;
+    ++binding_dependency_depth_;
     const NodeId expression = declaration.children.back();
     // Package declarations need their file-local import scope. A lexical
     // constant instead evaluates where it was declared so earlier constants
@@ -4172,6 +4194,7 @@ private:
         : file_scope(tree->file());
     const EvalResult result = evaluate_expression(
         *tree, expression, evaluation_scope, required);
+    --binding_dependency_depth_;
     if (result.status == EvalStatus::Ready) {
       states_[id.value] = BindingState::Ready;
       values_[id.value] = result.value;
@@ -4892,6 +4915,7 @@ private:
   std::vector<SymbolId> active_procedures_;
   std::vector<SymbolId> compile_time_procedures_;
   std::size_t execution_steps_remaining_ = kMaximumExecutionSteps;
+  std::size_t binding_dependency_depth_ = 0;
   std::size_t procedure_call_depth_ = 0;
   bool execution_limit_reported_ = false;
 };

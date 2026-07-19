@@ -202,6 +202,47 @@ void test_ambiguous_dependency_prefixes(TestState &state) {
   EXPECT(state, rendered.find("ambiguous dependency import prefixes") != std::string::npos);
 }
 
+void test_import_depth_is_bounded(TestState &state) {
+  TemporaryWorkspace temporary;
+  constexpr std::size_t package_count = 320;
+  for (std::size_t index = 0; index < package_count; ++index) {
+    std::string source = "package package_" + std::to_string(index) + "\n";
+    if (index + 1 < package_count) {
+      source += "import package_" + std::to_string(index + 1) + "\n";
+    }
+    write_file(
+        temporary.path / "workspace" /
+            ("package_" + std::to_string(index)) / "package.draft",
+        source);
+  }
+  // options_for selects these roots even though the deep graph never imports
+  // them. Their required existence must not obscure the recursion diagnostic.
+  write_file(
+      temporary.path / "dependencies" / "vendor" / "placeholder" /
+          "package.draft",
+      "package placeholder\n");
+  write_file(
+      temporary.path / "distribution" / "core" / "placeholder" /
+          "package.draft",
+      "package placeholder\n");
+
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  const draft::WorkspaceLoadResult result = draft::load_workspace(
+      sources,
+      (temporary.path / "workspace" / "package_0").string(),
+      options_for(temporary),
+      diagnostics);
+
+  EXPECT(state, !result.ok);
+  const std::string rendered =
+      draft::render_diagnostics(sources, diagnostics);
+  EXPECT(state,
+      rendered.find(
+          "package import depth exceeds the implementation limit of 256") !=
+          std::string::npos);
+}
+
 } // namespace
 
 int main() {
@@ -209,6 +250,7 @@ int main() {
   test_recursive_graph(state);
   test_cycle_diagnostic(state);
   test_ambiguous_dependency_prefixes(state);
+  test_import_depth_is_bounded(state);
 
   if (state.failures != 0) {
     std::cerr << state.failures << " workspace test expectation(s) failed\n";

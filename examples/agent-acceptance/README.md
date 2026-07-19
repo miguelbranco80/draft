@@ -14,7 +14,7 @@ together than as isolated mocks:
 - generated-source correlation in the native debug sidecar.
 
 The committed `.draft` files are content-addressed acceptance inputs, not build
-caches. They contain the four checked generated Draft fragments, the v128
+caches. They contain the four checked generated Draft fragments, the v129
 resolution manifest, and its selected test and judgment evidence. `.draft/build`
 remains ignored and may be deleted at any time.
 

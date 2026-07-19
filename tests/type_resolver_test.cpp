@@ -721,6 +721,45 @@ Bad :: struct {
   EXPECT(state, rendered.find("array length") != std::string::npos);
 }
 
+void test_type_declaration_depth_is_bounded(TestState &state) {
+  std::string text = "package types\n\n";
+  constexpr std::size_t alias_count = 320;
+  for (std::size_t index = 0; index < alias_count; ++index) {
+    text += "Alias_" + std::to_string(index) + " :: Alias_" +
+        std::to_string(index + 1) + "\n";
+  }
+  text += "Alias_" + std::to_string(alias_count) + " :: u64\n";
+  SemanticSource source(std::move(text));
+
+  EXPECT(state, source.diagnostics.has_errors());
+  const std::string rendered =
+      draft::render_diagnostics(source.sources, source.diagnostics);
+  EXPECT(state,
+      rendered.find(
+          "declaration dependency depth exceeds the implementation "
+          "limit of 256") != std::string::npos);
+
+  // Name-valued declarations are intentionally ambiguous until this pass
+  // discovers whether the final binding denotes a type or a constant. Exercise
+  // the constant outcome as a separate chain so the shared guard cannot drift
+  // into an alias-only implementation.
+  std::string constants = "package types\n\n";
+  for (std::size_t index = 0; index < alias_count; ++index) {
+    constants += "Constant_" + std::to_string(index) + " :: Constant_" +
+        std::to_string(index + 1) + "\n";
+  }
+  constants +=
+      "Constant_" + std::to_string(alias_count) + " :: 42\n";
+  SemanticSource constant_source(std::move(constants));
+  EXPECT(state, constant_source.diagnostics.has_errors());
+  const std::string constant_rendered = draft::render_diagnostics(
+      constant_source.sources, constant_source.diagnostics);
+  EXPECT(state,
+      constant_rendered.find(
+          "declaration dependency depth exceeds the implementation "
+          "limit of 256") != std::string::npos);
+}
+
 } // namespace
 
 int main() {
@@ -737,6 +776,7 @@ int main() {
   test_tagged_union_discriminator_capacity(state);
   test_invalid_representation_attributes(state);
   test_cyclic_layout_constant(state);
+  test_type_declaration_depth_is_bounded(state);
 
   if (state.failures != 0) {
     std::cerr << state.failures << " type resolver expectation(s) failed\n";

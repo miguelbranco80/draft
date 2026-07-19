@@ -75,7 +75,8 @@ public:
       return result;
     }
 
-    graph_.root_package = load_package_recursive(0, *relative, SourceRange::invalid());
+    graph_.root_package = load_package_recursive(
+        0, *relative, SourceRange::invalid(), 0);
     for (const WorkspaceSourceOverride &source_override :
          options_.source_overrides) {
       bool package_loaded = false;
@@ -99,6 +100,13 @@ public:
   }
 
 private:
+  // Package imports form a semantic graph after every individual file has
+  // already passed the parser's syntax-nesting limit. An acyclic chain can
+  // therefore still be arbitrarily deep without this independent bound. Keep
+  // the recursive loader direct and readable, but make its host-stack use an
+  // explicit implementation resource with a stable diagnostic.
+  static constexpr std::uint32_t kMaximumPackageImportDepth = 256;
+
   // Canonicalizes a configured root once. Roots must already exist because a
   // missing selected root is a build-configuration error, not a package error.
   [[nodiscard]] std::optional<std::string> canonical_existing_directory(
@@ -376,7 +384,8 @@ private:
   [[nodiscard]] PackageId load_package_recursive(
       std::uint32_t root_index,
       const std::string &relative_path,
-      SourceRange import_range) {
+      SourceRange import_range,
+      std::uint32_t depth) {
     assert(root_index < graph_.roots.size());
     const PackageRoot &root = graph_.roots[root_index];
     const PackageIdentity identity{root.identity, relative_path};
@@ -389,6 +398,13 @@ private:
         return PackageId{};
       }
       return *existing;
+    }
+    if (depth >= kMaximumPackageImportDepth) {
+      diagnostics_.error(
+          import_range,
+          "package import depth exceeds the implementation limit of " +
+              std::to_string(kMaximumPackageImportDepth));
+      return PackageId{};
     }
 
     const std::filesystem::path candidate = relative_path == "."
@@ -456,7 +472,7 @@ private:
         continue;
       }
       const PackageId dependency = load_package_recursive(
-          resolved->first, resolved->second, import.range);
+          resolved->first, resolved->second, import.range, depth + 1);
       if (dependency.is_valid()) {
         graph_.imports.push_back({id, dependency, import.file, import.syntax, import.path});
       }

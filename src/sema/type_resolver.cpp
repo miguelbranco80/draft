@@ -278,6 +278,13 @@ public:
   }
 
 private:
+  // Forward aliases and ambiguous name-valued constants form a declaration
+  // graph, not parser nesting. Resolve them recursively so cycle handling and
+  // source-order independence stay simple, but cap an acyclic chain before it
+  // can consume an input-sized host stack. Structural type syntax has the
+  // parser's separate shared nesting budget.
+  static constexpr std::size_t kMaximumDeclarationResolutionDepth = 256;
+
   // Finds the immutable parsed tree owning a SyntaxReference. LoadedPackage
   // keeps files in canonical order, making this linear scan deterministic.
   [[nodiscard]] const SyntaxTree *find_tree(FileId file) const {
@@ -4099,7 +4106,6 @@ private:
       state = ResolutionState::Failed;
       return;
     }
-    state = ResolutionState::Resolving;
 
     const SyntaxTree *tree_pointer = find_tree(initial_symbol.syntax.file);
     if (tree_pointer == nullptr || !initial_symbol.syntax.node.is_valid()) {
@@ -4112,6 +4118,22 @@ private:
       state = ResolutionState::Resolved;
       return;
     }
+    if (declaration_resolution_depth_ >=
+        kMaximumDeclarationResolutionDepth) {
+      diagnostics_.error(
+          initial_symbol.name_range,
+          "declaration dependency depth exceeds the implementation "
+          "limit of " +
+              std::to_string(kMaximumDeclarationResolutionDepth));
+      state = ResolutionState::Failed;
+      return;
+    }
+
+    // Every path below reaches the common epilogue. Keeping the counter
+    // increment/decrement visible avoids a general-purpose recursion helper in
+    // the central type-resolution loop.
+    state = ResolutionState::Resolving;
+    ++declaration_resolution_depth_;
     const std::optional<NodeId> payload = declaration_payload(tree, declaration);
     active_declaration_owners_.push_back(id);
     const ScopeId source_scope = file_scope(tree.file());
@@ -4175,6 +4197,7 @@ private:
 
     const Symbol &resolved_symbol = semantic_.symbols.symbol(id);
     active_declaration_owners_.pop_back();
+    --declaration_resolution_depth_;
     state = is_error_type(resolved_symbol.type) &&
             (resolved_symbol.kind == SymbolKind::Type ||
              resolved_symbol.kind == SymbolKind::Procedure)
@@ -4188,6 +4211,7 @@ private:
   const ConditionalSelections &selections_;
   DiagnosticSink &diagnostics_;
   std::vector<ResolutionState> states_;
+  std::size_t declaration_resolution_depth_ = 0;
   std::vector<SymbolId> active_integer_constants_;
   std::vector<SymbolId> active_declaration_owners_;
   const ConstantTable *active_constants_ = nullptr;
