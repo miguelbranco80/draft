@@ -29,49 +29,6 @@
 
 namespace draft {
 
-// The resolver owns candidate construction and semantic validation, but it
-// deliberately does not own processes or native toolchains. An embedding
-// driver supplies this narrow callback to execute an already typed validation
-// graph before the manifest becomes visible. The callback may inspect only the
-// immutable compilation and report diagnostics; it cannot alter pins. A pass
-// returns the exact evidence object that the manifest will select.
-struct ResolutionValidationEvidence {
-  Sha256Digest key;
-  Sha256Digest content_digest;
-  bool recorded = false;
-};
-
-using ResolutionValidationRunFunction = bool (*)(
-    void *state,
-    const TargetProfile &target,
-    ValidationKind kind,
-    const CompileWorkspaceResult &compiled,
-    ResolutionValidationEvidence &evidence,
-    DiagnosticSink &diagnostics);
-
-struct ResolutionValidationRunner {
-  void *state = nullptr;
-  ResolutionValidationRunFunction run = nullptr;
-};
-
-// Judgment execution is also an embedding concern. It runs only after the
-// complete ordinary resolved graph and selected native validations pass. The
-// callback returns the complete judgment-row set to publish (including any
-// unchanged unselected rows it intentionally preserves); the resolver still
-// owns the one final manifest transaction.
-using ResolutionJudgmentRunFunction = bool (*)(
-    void *state,
-    const TargetProfile &target,
-    const CompileWorkspaceResult &compiled,
-    std::vector<ResolutionEvidencePin> &evidence,
-    std::size_t &selected_judgments,
-    DiagnosticSink &diagnostics);
-
-struct ResolutionJudgmentRunner {
-  void *state = nullptr;
-  ResolutionJudgmentRunFunction run = nullptr;
-};
-
 // Resolution cancellation is provider-neutral. The driver may source it from a
 // signal, while an embedding may use an atomic flag or task cancellation token.
 // The resolver polls only at transaction boundaries; provider adapters and
@@ -101,14 +58,6 @@ struct ResolveWorkspaceOptions {
   // vector replaces it; an explicitly empty vector therefore removes the lock.
   bool external_inputs_configured = false;
   std::vector<ExternalInputPin> external_inputs;
-  // When the candidate selects typed test or benchmark procedures, this runner
-  // is required and must accept them before the atomic pin-store commit. A
-  // package with no selected validation remains provider/toolchain independent.
-  ResolutionValidationRunner validation_runner;
-  // Optional resolution profile for qualitative judgments. The callback sees
-  // the final resolved program and may invoke a provider; ordinary resolution
-  // leaves this null and never contacts a judge.
-  ResolutionJudgmentRunner judgment_runner;
 };
 
 // Counts describe provider/reuse work performed by the attempt, including work
@@ -120,9 +69,6 @@ struct ResolveWorkspaceResult {
   bool committed = false;
   std::size_t reused_sites = 0;
   std::size_t synthesized_sites = 0;
-  std::size_t tested_procedures = 0;
-  std::size_t benchmarked_procedures = 0;
-  std::size_t judged_sites = 0;
   ResolutionManifest manifest;
 };
 

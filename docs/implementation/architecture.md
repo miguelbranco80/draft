@@ -37,8 +37,8 @@ The compiler has four main layers:
    canonical package interfaces and dependency summaries.
 3. **Elaborator** -- schedules semantically ready `...` sites, constructs their
    bounded context, accepts provider proposals, and sends each expansion back
-   through the ordinary parser and semantic core. It owns transactional pin and
-   evidence handling; it does not bypass language checks.
+   through the ordinary parser and semantic core. It owns transactional source
+   pin handling; independent validation commands own evidence.
 4. **Native back end** -- lowers the complete typed program through a small
    Draft MIR to LLVM IR, emits a Mach-O object, links the runtime and program,
    and produces an AArch64 macOS executable.
@@ -147,8 +147,9 @@ typed graphs, MIR, native objects, and other derived compiler state live only
 for one command or in explicitly requested output artifacts. The generated
 Draft objects above are committed program source, not cached compiler state.
 
-`draft resolve` stages changes and atomically commits only a coherent validated
-program. `draft build` consumes saved expansions without contacting a provider
+`draft resolve` stages changes and atomically commits only a coherent,
+compiler-checked program. It does not run tests, benchmarks, or judgments.
+`draft build` consumes saved expansions without contacting a provider
 or modifying the resolution manifest. It rechecks every program input but
 treats the host compiler, linker, and SDK as operational build configuration.
 

@@ -7,15 +7,16 @@ operations. It combines features that are most useful when exercised together:
 - opaque-round member synthesis that rebuilds a public aggregate interface;
 - typed expression and statement synthesis inside `main`;
 - an imported package used by both the program and its test-only graph;
-- native precommit test execution;
+- independent native test execution and evidence;
 - an artifact-backed judgment whose claim depends on the imported body;
 - provider-free checking and native building from saved expansions; and
 - generated-source correlation in the native debug sidecar.
 
 The committed `.draft` files are content-addressed acceptance inputs, not build
-caches. They contain four checked generated Draft fragments, a v4 resolution
-manifest, and its currently selected host-validation evidence. `.draft/build`
-is ignored and may be deleted at any time.
+caches. They contain four checked generated Draft fragments and a v5 resolution
+manifest. Validation and judgment evidence is stored independently and is not
+selected by that manifest. `.draft/build` is ignored and may be deleted at any
+time.
 
 ## Qualification flow
 
@@ -50,9 +51,9 @@ build/draftc build examples/agent-acceptance/app \
 ```
 
 `build` loads the saved generated source, checks the complete program, and uses
-the host native toolchain. It neither contacts Codex nor requires the selected
-test or judgment evidence. To recheck every saved expansion and record fresh
-host validation evidence without provider access, run:
+the host native toolchain. It neither contacts Codex nor requires test or
+judgment evidence. To recheck every saved expansion without provider access,
+run:
 
 ```sh
 build/draftc resolve examples/agent-acceptance/app --revalidate

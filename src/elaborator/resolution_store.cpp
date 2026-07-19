@@ -736,38 +736,4 @@ bool commit_resolution(
       workspace_directory, manifest, expansions, diagnostics, control);
 }
 
-bool commit_resolution_manifest_if_unchanged(
-    const std::filesystem::path &workspace_directory,
-    const std::optional<ResolutionManifest> &expected,
-    const ResolutionManifest &replacement,
-    DiagnosticSink &diagnostics) {
-  ResolutionLock lock(workspace_directory, diagnostics);
-  if (!lock.ok()) return false;
-
-  const ResolutionManifestLoadResult observed =
-      load_resolution_manifest(workspace_directory, diagnostics);
-  if (observed.state == ResolutionManifestLoadState::Invalid) return false;
-  const bool expected_missing = !expected.has_value();
-  const bool observed_missing =
-      observed.state == ResolutionManifestLoadState::Missing;
-  bool same = expected_missing && observed_missing;
-  if (expected.has_value() &&
-      observed.state == ResolutionManifestLoadState::Loaded) {
-    same = serialize_resolution_manifest(*expected) ==
-        serialize_resolution_manifest(observed.manifest);
-  }
-  if (!same) {
-    store_error(
-        diagnostics,
-        "resolution manifest changed since the program was compiled");
-    return false;
-  }
-  return commit_resolution_unlocked(
-      workspace_directory,
-      replacement,
-      std::span<const GeneratedExpansion>(),
-      diagnostics,
-      {});
-}
-
 } // namespace draft

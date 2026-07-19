@@ -229,7 +229,7 @@ void test_execution_revocation_and_reactivation(TestState &state) {
     EXPECT(state, first.evidence[0].key == second.evidence[0].key);
     EXPECT(state, first.evidence[1].key == second.evidence[1].key);
   }
-  for (const draft::ResolutionEvidencePin &pin : second.evidence) {
+  for (const draft::JudgmentEvidenceReference &pin : second.evidence) {
     draft::JudgmentEvidenceState loaded;
     EXPECT(state, draft::load_judgment_evidence_state(
         root, pin.key, loaded, diagnostics));
@@ -297,7 +297,7 @@ void test_execution_revocation_and_reactivation(TestState &state) {
         primary_validator.requests.front().artifacts.front().contents ==
             artifact.contents);
   }
-  for (const draft::ResolutionEvidencePin &pin : multiple_result.evidence) {
+  for (const draft::JudgmentEvidenceReference &pin : multiple_result.evidence) {
     draft::JudgmentEvidenceState loaded;
     EXPECT(state, draft::load_judgment_evidence_state(
         root, pin.key, loaded, diagnostics));

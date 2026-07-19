@@ -66,20 +66,6 @@ draft::ExternalInputPin make_external(
   return input;
 }
 
-draft::ResolutionEvidencePin make_evidence(
-    std::string kind,
-    std::string package,
-    std::string_view key,
-    std::string_view content) {
-  draft::ResolutionEvidencePin evidence;
-  evidence.kind = std::move(kind);
-  evidence.root_identity = "workspace";
-  evidence.root_relative_path = std::move(package);
-  evidence.key = draft::sha256(key);
-  evidence.content_digest = draft::sha256(content);
-  return evidence;
-}
-
 void test_canonical_round_trip(TestState &state) {
   draft::ResolutionManifest manifest;
   manifest.target_identity = "aarch64-apple-macos";
@@ -94,11 +80,6 @@ void test_canonical_round_trip(TestState &state) {
       "sqlite-provider",
       "foreign object",
       ""));
-  manifest.evidence.push_back(make_evidence(
-      "test", "app", "test-key", "passing-test-attempt"));
-  manifest.evidence.push_back(make_evidence(
-      "benchmark", "app", "bench-key", "passing-benchmark-attempt"));
-
   // Intentionally provide pins out of order. Ordering is part of the on-disk
   // contract, not a requirement imposed on every in-memory producer.
   manifest.pins.push_back(make_pin(
@@ -125,22 +106,12 @@ void test_canonical_round_trip(TestState &state) {
   EXPECT(state,
       draft::parse_resolution_manifest(encoded, parsed, diagnostics));
   EXPECT(state, !diagnostics.has_errors());
-  EXPECT(state, parsed.format == "draft-resolution-v4");
+  EXPECT(state, parsed.format == "draft-resolution-v5");
   EXPECT(state, parsed.target_identity == manifest.target_identity);
   EXPECT(state,
       parsed.resolved_program_digest == manifest.resolved_program_digest);
   EXPECT(state, parsed.pins.size() == 2);
   EXPECT(state, parsed.external_inputs.size() == 2);
-  EXPECT(state, parsed.evidence.size() == 2);
-  if (parsed.evidence.size() == 2) {
-    EXPECT(state, parsed.evidence[0].kind == "test");
-    EXPECT(state, parsed.evidence[1].kind == "benchmark");
-    EXPECT(state, parsed.evidence[0].root_identity == "workspace");
-    EXPECT(state, parsed.evidence[0].root_relative_path == "app");
-    EXPECT(state, parsed.evidence[0].key == draft::sha256("test-key"));
-    EXPECT(state, parsed.evidence[0].content_digest ==
-        draft::sha256("passing-test-attempt"));
-  }
   if (parsed.external_inputs.size() == 2) {
     EXPECT(state, parsed.external_inputs[0].kind ==
         draft::ExternalInputKind::Object);
@@ -209,19 +180,6 @@ void test_invalid_inputs(TestState &state) {
   expect_rejected(state, draft::serialize_resolution_manifest(manifest));
   manifest.external_inputs.pop_back();
 
-  manifest.evidence.push_back(make_evidence(
-      "test", "app", "test-key", "passing-test-attempt"));
-  manifest.evidence.push_back(manifest.evidence.front());
-  expect_rejected(state, draft::serialize_resolution_manifest(manifest));
-  manifest.evidence.pop_back();
-
-  manifest.evidence[0].kind = "unknown";
-  expect_rejected(state, draft::serialize_resolution_manifest(manifest));
-  manifest.evidence[0].kind = "test";
-  manifest.evidence[0].root_relative_path = "../app";
-  expect_rejected(state, draft::serialize_resolution_manifest(manifest));
-  manifest.evidence.clear();
-
   manifest.pins[0].source_map.surface_begin = 20;
   manifest.pins[0].source_map.surface_end = 10;
   expect_rejected(state, draft::serialize_resolution_manifest(manifest));
@@ -284,8 +242,6 @@ void test_deterministic_malformed_byte_corpus(TestState &state) {
       "unicode-data",
       "runtime data",
       "tables.bin"));
-  manifest.evidence.push_back(make_evidence(
-      "test", "app", "mutation-test", "passing-attempt"));
   manifest.pins.push_back(make_pin(
       site('c'),
       draft::AgentConstructKind::SynthesisExpression,
@@ -346,8 +302,6 @@ void test_deterministic_structural_mutation_corpus(TestState &state) {
       "unicode-data",
       "runtime data",
       "tables.bin"));
-  manifest.evidence.push_back(make_evidence(
-      "test", "app", "structure-test", "passing-attempt"));
   manifest.pins.push_back(make_pin(
       site('d'),
       draft::AgentConstructKind::SynthesisStatement,

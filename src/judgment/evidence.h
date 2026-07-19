@@ -81,6 +81,15 @@ struct JudgmentEvidence {
   bool passed = false;
 };
 
+// One command result points to the immutable evidence object just committed.
+// The active/revoked state and full claim identity remain in the judgment
+// evidence store; source resolution manifests deliberately do not select or
+// duplicate this row.
+struct JudgmentEvidenceReference {
+  Sha256Digest key;
+  Sha256Digest content_digest;
+};
+
 // Hashes only the immutable claim, environment, artifact, policy, and validator
 // identities. Validator order is policy order and therefore semantic. Artifact
 // rows are treated as a map keyed by kind and are sorted internally.

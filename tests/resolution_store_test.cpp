@@ -220,70 +220,6 @@ void test_validation_precedes_writes(TestState &state) {
   EXPECT(state, !std::filesystem::exists(missing.path / ".draft"));
 }
 
-void test_conditional_manifest_update(TestState &state) {
-  TemporaryWorkspace workspace("conditional-update");
-  draft::GeneratedExpansion expansion;
-  expansion.source = "conditionally selected expansion";
-  expansion.digest = draft::sha256(expansion.source);
-  const draft::ResolutionManifest first = manifest_for(expansion);
-  draft::DiagnosticSink diagnostics;
-  EXPECT(state,
-      draft::commit_resolution(
-          workspace.path,
-          first,
-          std::span<const draft::GeneratedExpansion>(&expansion, 1),
-          diagnostics));
-
-  draft::ResolutionManifest second = first;
-  second.evidence.push_back({
-      "judgment",
-      "workspace",
-      ".",
-      draft::sha256("judgment key"),
-      draft::sha256("judgment evidence"),
-  });
-  EXPECT(state,
-      draft::commit_resolution_manifest_if_unchanged(
-          workspace.path, first, second, diagnostics));
-  EXPECT(state, !diagnostics.has_errors());
-
-  // The old snapshot is no longer current. A second publisher that judged the
-  // first program view must fail without overwriting the selected evidence.
-  draft::ResolutionManifest stale_replacement = first;
-  stale_replacement.resolved_program_digest = draft::sha256("stale program");
-  draft::DiagnosticSink stale_diagnostics;
-  EXPECT(state,
-      !draft::commit_resolution_manifest_if_unchanged(
-          workspace.path,
-          first,
-          stale_replacement,
-          stale_diagnostics));
-  EXPECT(state, stale_diagnostics.has_errors());
-  const draft::ResolutionManifestLoadResult loaded =
-      draft::load_resolution_manifest(workspace.path, stale_diagnostics);
-  EXPECT(state,
-      loaded.state == draft::ResolutionManifestLoadState::Loaded);
-  EXPECT(state,
-      draft::serialize_resolution_manifest(loaded.manifest) ==
-          draft::serialize_resolution_manifest(second));
-
-  // Handwritten programs start without resolution.json. The null expectation
-  // is a real compare-and-replace precondition, not a request to ignore state.
-  TemporaryWorkspace handwritten("conditional-missing");
-  draft::ResolutionManifest handwritten_manifest;
-  handwritten_manifest.target_identity = "aarch64-apple-macos";
-  handwritten_manifest.resolved_program_digest =
-      draft::sha256("handwritten program");
-  draft::DiagnosticSink handwritten_diagnostics;
-  EXPECT(state,
-      draft::commit_resolution_manifest_if_unchanged(
-          handwritten.path,
-          std::nullopt,
-          handwritten_manifest,
-          handwritten_diagnostics));
-  EXPECT(state, !handwritten_diagnostics.has_errors());
-}
-
 void test_corrupt_object_is_rejected(TestState &state) {
   TemporaryWorkspace workspace("corrupt");
   draft::GeneratedExpansion expansion;
@@ -723,7 +659,6 @@ int main() {
   TestState state;
   test_commit_and_reload(state);
   test_validation_precedes_writes(state);
-  test_conditional_manifest_update(state);
   test_corrupt_object_is_rejected(state);
   test_interrupted_publish_recovery(state);
   test_injected_transaction_boundaries(state);

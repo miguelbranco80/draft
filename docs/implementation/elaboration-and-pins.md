@@ -116,7 +116,7 @@ Codex execution polls an embedding-owned cancellation callback alongside its
 fixed deadline. Cancellation never retries: the adapter kills and reaps the
 active child, emits one compiler diagnostic, and returns before its private
 request directory is destroyed. The resolver also polls the same source before
-each compilation, validation, provider, and final-commit boundary, so fresh-pin
+each compilation, provider, and final-commit boundary, so fresh-pin
 or pre-provider work cannot ignore cancellation. `draftc resolve` maps SIGINT to
 both callbacks; the reusable adapter installs no process-global signal handler
 itself.
@@ -154,10 +154,12 @@ complete type graphs above. A shadowed import is absent. Interface bytes and
 their digest are obligation inputs, so a dependency API or constant change
 stales the site even when its expected type and enclosing source do not change.
 
-A provider-free compile or resolution revalidation may consume a content-fresh
-pin without installing its original provider. When `draft resolve` explicitly
-selects a provider, however, provider, model, and complete adapter-configuration
-identities must match the pin; any changed selection regenerates the expansion.
+A provider-free compile, ordinary resolution, or revalidation may consume a
+content-fresh pin without installing its original provider. Provider, model,
+and adapter-configuration identities remain recorded as provenance, but they do
+not participate in freshness or resolved-program identity. Regeneration is an
+explicit source-changing request rather than a side effect of selecting a
+different model.
 
 The compiler already treats the saved fragment as source inserted at its exact
 `...` site while retaining the original surface buffer and a composed source
@@ -195,7 +197,8 @@ request directory. Its exact two-field JSON parser accepts member order as JSON
 semantics require, but rejects duplicates, unknown fields, malformed Unicode,
 unknown verdicts, empty rationales, and trailing bytes. A verdict remains only
 a provider response: the compiler-owned command constructs and durably records
-evidence, and only the later all-pass manifest operation may select it.
+evidence in the independent evidence store. Resolution manifests never select
+judgment evidence.
 
 ## Typed branch and loop-range facts in agent obligations
 

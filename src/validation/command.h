@@ -58,13 +58,4 @@ struct ValidationCommandResult {
     ValidationCommandOptions options,
     DiagnosticSink &diagnostics);
 
-// Executes an already compiled candidate and records its immutable attempt.
-// Resolution uses this before its manifest commit so failures revoke the exact
-// key even when pins stay unchanged. A passing attempt becomes selected only
-// if the later manifest commit records its returned key and content digest.
-[[nodiscard]] ValidationCommandResult execute_precommit_validation(
-    const CompileWorkspaceResult &compiled,
-    ValidationCommandOptions options,
-    DiagnosticSink &diagnostics);
-
 } // namespace draft

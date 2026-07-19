@@ -12,7 +12,6 @@
 #include "elaborator/resolution_overlay.h"
 #include "elaborator/resolution_store.h"
 
-#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -292,19 +291,9 @@ struct ResolvedStage {
       if (!is_synthesis(obligation.kind)) continue;
       if (resolution_cancelled(options, diagnostics)) return stage;
       const ResolutionPin *existing = find_pin(loaded, obligation.site_identity);
-      // Provider-free operation intentionally accepts a content-fresh pin: it
-      // is the offline path. Once a caller explicitly configures a provider,
-      // that selection is semantic input and must match the pin exactly.
-      const bool provider_matches = options.provider.synthesize == nullptr ||
-          (existing != nullptr &&
-           existing->provider_identity == options.provider.provider_identity &&
-           existing->model_identity == options.provider.model_identity &&
-           existing->configuration_identity ==
-               options.provider.configuration_identity);
       const bool fresh = existing != nullptr &&
           existing->kind == obligation.kind &&
-          existing->input_digest == obligation.input_digest &&
-          provider_matches;
+          existing->input_digest == obligation.input_digest;
 
       GeneratedExpansion expansion;
       ResolutionPin pin;
@@ -645,8 +634,7 @@ ResolveWorkspaceResult resolve_workspace(
   // With no sites and no prior manifest there is no transaction to perform.
   // An existing manifest still proceeds so obsolete pins become an empty map.
   if (manifest.pins.empty() && manifest.external_inputs.empty() &&
-      loaded.state == ResolutionManifestLoadState::Missing &&
-      options.judgment_runner.run == nullptr) {
+      loaded.state == ResolutionManifestLoadState::Missing) {
     result.ok = diagnostics.error_count() == initial_errors;
     return result;
   }
@@ -674,150 +662,6 @@ ResolveWorkspaceResult resolve_workspace(
       options.compile.compiler_content_identity,
       options.compile.configuration);
 
-  // Existing judgment evidence remains meaningful only when this exact
-  // transaction reconstructed the same resolved program. Native validation
-  // rows are regenerated below; judgment rows may be expensive provider work,
-  // so an unchanged program preserves them unless a selected judgment runner
-  // explicitly replaces some or all rows.
-  if (loaded.state == ResolutionManifestLoadState::Loaded &&
-      loaded.manifest.resolved_program_digest ==
-          manifest.resolved_program_digest) {
-    for (const ResolutionEvidencePin &pin : loaded.manifest.evidence) {
-      if (pin.kind == "judgment") manifest.evidence.push_back(pin);
-    }
-  }
-
-  // Validation-only files are deliberately absent from the ordinary surface
-  // graph above. Select and compile each first-release suite only after the
-  // complete candidate exists, using the same accepted in-memory overrides.
-  // Evidence is written before resolution.json so failed attempts still revoke
-  // their exact key; only passing evidence reaches the final manifest rename.
-  constexpr std::array validation_kinds{
-      ValidationKind::Test,
-      ValidationKind::Benchmark,
-  };
-  for (ValidationKind validation_kind : validation_kinds) {
-    if (resolution_cancelled(options, diagnostics)) return result;
-    CompileWorkspaceOptions validation_options = options.compile;
-    // Validation is never permitted to erase runtime assertions. A release
-    // configured with assertions off still proves its tests and benchmarks
-    // using an assertion-enabled validation program with its own exact digest.
-    validation_options.configuration.runtime_assertions =
-        RuntimeAssertionMode::On;
-    validation_options.validation_kind = validation_kind;
-    validation_options.lower_mir = true;
-    validation_options.emit_llvm = true;
-    validation_options.emit_program_entry = true;
-    CompileWorkspaceResult validation = compile_workspace(
-        sources,
-        root_package_directory,
-        std::move(validation_options),
-        diagnostics);
-    if (!validation.ok) return result;
-    validation.resolution_manifest = manifest;
-    validation.resolved_program_digest = hash_resolved_program(
-        sources,
-        validation.graph,
-        options.compile.target,
-        manifest,
-        options.compile.compiler_content_identity,
-        validation.configuration);
-    if (validation_kind == ValidationKind::Test) {
-      result.tested_procedures = validation.validation_entries.size();
-    } else {
-      result.benchmarked_procedures = validation.validation_entries.size();
-    }
-    if (validation.validation_entries.empty()) continue;
-    if (options.validation_runner.run == nullptr) {
-      diagnostics.error(
-          SourceRange::invalid(),
-          "resolution candidate contains " +
-              std::string(validation_kind_name(validation_kind)) +
-              " procedures but no precommit validation runner is configured");
-      return result;
-    }
-    const std::size_t before_validation = diagnostics.error_count();
-    ResolutionValidationEvidence evidence;
-    if (!options.validation_runner.run(
-            options.validation_runner.state,
-            options.compile.target,
-            validation_kind,
-            validation,
-            evidence,
-            diagnostics)) {
-      if (diagnostics.error_count() == before_validation) {
-        diagnostics.error(
-            SourceRange::invalid(),
-            "resolution candidate " +
-                std::string(validation_kind_name(validation_kind)) +
-                " validation failed without a diagnostic");
-      }
-      return result;
-    }
-    if (resolution_cancelled(options, diagnostics)) return result;
-    if (!evidence.recorded) {
-      diagnostics.error(
-          SourceRange::invalid(),
-          "precommit validation passed without persistent evidence");
-      return result;
-    }
-    const WorkspacePackage &root =
-        validation.graph.package(validation.graph.root_package);
-    manifest.evidence.push_back({
-        std::string(validation_kind_name(validation_kind)),
-        root.identity.root_identity,
-        root.identity.root_relative_path,
-        evidence.key,
-        evidence.content_digest,
-    });
-  }
-
-  if (options.judgment_runner.run != nullptr) {
-    if (resolution_cancelled(options, diagnostics)) return result;
-    resolved.resolution_manifest = manifest;
-    resolved.resolved_program_digest = manifest.resolved_program_digest;
-    std::vector<ResolutionEvidencePin> judgment_evidence;
-    const std::size_t before_judgment = diagnostics.error_count();
-    if (!options.judgment_runner.run(
-            options.judgment_runner.state,
-            options.compile.target,
-            resolved,
-            judgment_evidence,
-            result.judged_sites,
-            diagnostics)) {
-      if (diagnostics.error_count() == before_judgment) {
-        diagnostics.error(
-            SourceRange::invalid(),
-            "resolution candidate judgment failed without a diagnostic");
-      }
-      return result;
-    }
-    for (const ResolutionEvidencePin &pin : judgment_evidence) {
-      if (pin.kind != "judgment") {
-        diagnostics.error(
-            SourceRange::invalid(),
-            "resolution judgment runner returned non-judgment evidence");
-        return result;
-      }
-    }
-    std::vector<ResolutionEvidencePin> retained;
-    for (const ResolutionEvidencePin &pin : manifest.evidence) {
-      if (pin.kind != "judgment") retained.push_back(pin);
-    }
-    retained.insert(
-        retained.end(), judgment_evidence.begin(), judgment_evidence.end());
-    manifest.evidence = std::move(retained);
-  }
-
-  // A requested judgment profile over a handwritten program with no judgment
-  // sites is still a true no-op. Do not create resolution.json merely because
-  // the caller asked the empty selector set to run.
-  if (manifest.pins.empty() && manifest.external_inputs.empty() &&
-      manifest.evidence.empty() &&
-      loaded.state == ResolutionManifestLoadState::Missing) {
-    result.ok = diagnostics.error_count() == initial_errors;
-    return result;
-  }
   // This is the final cancellation boundary. Once commit_resolution starts it
   // performs one crash-safe object-before-manifest transaction and must not be
   // interrupted by a cooperative flag halfway through its atomic publication.

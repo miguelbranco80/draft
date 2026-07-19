@@ -1,11 +1,8 @@
 {
-  "format": "draft-resolution-v4",
+  "format": "draft-resolution-v5",
   "target": "draft-aarch64-macos-v5",
-  "resolved_program": "b615f34e71e32891116e797fba3e7418a473ccd77ab2ce128a2dbd386c875292",
+  "resolved_program": "6294b11aa159debb5d1e22bea2e38bfb8f507ddc41936a4b92e16182008debb6",
   "external_inputs": [  ],
-  "evidence": [
-    {"kind": "test", "root": "workspace", "package": "app", "key": "6027556a53d016c4e1b31378132ff0b7ccf6c148c59230ea8ccf7a956a506c45", "content": "33506d33c9705e53844ddee17d5b532142d311434c06247ed7b1f4c4e6dbe62a"}
-  ],
   "sites": [
     {"site": "site-3935380269c5cd0c2dd36c641ee7d34857b4ab4648bfcceff871e677c1cd76d9", "kind": "member", "input": "27af578008201c9908f8a0ec6172afe7a3ceab4042566e6716e7c0fe68bdc4b8", "expansion": "4e17ea297b4b9548eb049a561480a28246075a36b62b13dc4c00950caeb98dd8", "source_root": "workspace", "source_package": "app", "source_file": "package.draft", "surface_begin": 636, "surface_end": 730, "expansion_bytes": 11, "provider": "openai-codex-cli-v24", "model": "gpt-5.6-sol", "configuration": "codex-config-94cb1f5b079750d3d39d8880cec209fa2f3d528d1669b4c18b9f1d8f93b55b8e"},
     {"site": "site-5632f6e78736c25c3f001945c52131b4d82805f974e3b38918b3f82903033dfa", "kind": "declaration", "input": "27b385ddeda4619572969a41110d510f534bca73384e6931e71d176c9167aee4", "expansion": "f8e689242948fb0e525309b6192c53e0a2434b3036cda3592903b6a87300d8fe", "source_root": "workspace", "source_package": "app", "source_file": "package.draft", "surface_begin": 250, "surface_end": 361, "expansion_bytes": 33, "provider": "openai-codex-cli-v24", "model": "gpt-5.6-sol", "configuration": "codex-config-94cb1f5b079750d3d39d8880cec209fa2f3d528d1669b4c18b9f1d8f93b55b8e"},

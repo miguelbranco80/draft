@@ -345,9 +345,6 @@ JudgmentCommandResult execute_judgment_command(
           options.workspace_directory, evidence, diagnostics);
       if (!committed.ok) return result;
       result.evidence.push_back({
-          "judgment",
-          obligation.root_identity,
-          obligation.root_relative_path,
           committed.key,
           committed.evidence_digest,
       });

@@ -193,10 +193,8 @@ typed program facts, relevant generated source, attached context, and requested
 target artifacts. `draft judge codec/jpeg:decode` selects all judgments in that
 declaration; selecting a package evaluates its package and enclosed declaration
 judgments. The compiler exposes each judgment's stable manifest identity, and
-`draft judge <judgment-id>` or a validation profile can select one judgment. A
-resolution profile may also select judgments during `draft resolve`, after the
-working program is fully resolved. A failing selected judgment fails the
-command. Builds do not invoke a judge.
+`draft judge <judgment-id>` can select one judgment. A failing selected judgment
+fails the command. Resolution and builds do not invoke a judge.
 
 A validation profile may require a judge model or provider distinct from the
 synthesizer and may require multiple independent verdicts. Those identities,
@@ -355,11 +353,10 @@ draft build ./cmd/viewer
 
 `draft resolve` loads valid pins and synthesizes missing or stale sites in
 semantic dependency order. Each expansion is checked before it becomes an input
-to dependent sites. Once every required site has one expansion, selected tests,
-benchmarks, and judgments run against that coherent working program. Successful
-resolution commits staged expansions, pins, and new passing evidence
-atomically. Failure leaves those staged changes uncommitted; validation audit
-and revocation state follows the rule below.
+to dependent sites. Once every required site has one expansion, the resolver
+checks the complete coherent program and atomically commits staged generated
+source and pins. It does not run tests, benchmarks, or judgments. Those are
+separate commands that record evidence for the resolved program.
 
 `draft build` consumes valid pins and never updates them or contacts a model.
 Missing, stale, invalid, or ambiguously associated pins require `draft resolve`.
@@ -367,12 +364,13 @@ A complete handwritten program with no synthesis sites needs no resolution
 manifest. This provider boundary is unconditional rather than an optional build
 mode: only `draft resolve` may request generated source.
 
-A provider-free build or revalidation may consume a content-fresh pin without
-installing the provider that originally produced it. When `draft resolve`
-explicitly selects a provider, the selected provider, model, and complete
-adapter-configuration identities must match the pin; a changed explicit
-selection regenerates the expansion even when its typed obligation is otherwise
-fresh.
+A provider-free build, ordinary resolution, or revalidation may consume a
+content-fresh pin without installing the provider that originally produced it.
+Provider, model, and adapter-configuration identities are provenance describing
+how the accepted source was obtained. Changing them does not change the source,
+the synthesis obligation, pin freshness, or resolved-program identity. A user
+who wants the configured provider to reconsider otherwise-fresh source must
+request regeneration explicitly.
 
 An external program input is dependency source, a foreign-provider artifact or
 summary, or a runtime asset supplied outside the workspace and selected compiler
@@ -384,10 +382,10 @@ identity.
 
 `draft resolve --revalidate` stages existing generated source for stale sites,
 recomputes current obligations and input hashes in semantic dependency order,
-and runs ordinary checks plus selected non-agent tests and benchmarks. If they
-pass, it atomically re-pins the same expansion hashes under the new inputs. It
-never contacts an agent, cannot fill a missing pin, leaves judgment evidence
-stale, and leaves staged pin changes uncommitted on failure.
+and runs ordinary parse, type, denial, target, and complete-program checks. If
+they pass, it atomically re-pins the same expansion hashes under the new inputs.
+It never contacts an agent, cannot fill a missing pin, does not run validation
+or judgment commands, and leaves staged pin changes uncommitted on failure.
 
 `draft judge` consumes surface source and valid generated-source pins. It never
 synthesizes or updates generated code; a missing or stale synthesis pin requires
@@ -397,8 +395,7 @@ exact evidence key.
 Validation-attempt history is independent of the generated-pin transaction.
 Every selected test run, judgment invocation, and benchmark verification
 records its result. A failed run or aggregate deactivates passing evidence for
-that exact key, even when an enclosing resolution later fails, while retaining
-history and leaving other keys unchanged.
+that exact key while retaining history and leaving other keys unchanged.
 
 `draft build` fails when a required synthesis pin is missing, stale, invalid, or
 ambiguously associated with a synthesis site. Validation and judgment evidence
@@ -413,7 +410,7 @@ definitions; target, ABI,
 resolver configuration. Tests, judgments, and benchmarks supplied as context
 are covered like any other input. A changed hash makes the site's pin stale.
 Each pin also records the exact resolver or synthesizer provider, model, and
-configuration identity so a later policy can verify judge independence.
+configuration identity as non-semantic provenance.
 
 The manifest identifies the coherent resolved program from the selected target;
 the exact identities of all selected workspace and dependency source,
@@ -422,11 +419,13 @@ provider summaries, and runtime assets; the build graph; and every
 synthesis-site identity and selected expansion hash. Validation evidence binds
 that identity to the selected validation definitions, requested artifacts,
 tool version, and execution policy; it cannot be reused for a different
-resolved program. The manifest also records source maps and evidence hashes.
+resolved program. Evidence objects and their active/revoked state are stored
+separately from the resolution manifest.
 
-Generated source is the inspectable persistent representation. Parsed AST,
-typed IR, native objects, and debug data are discardable content-addressed
-caches derived from it.
+Generated source is the inspectable persistent representation. The compiler
+does not maintain a persistent AST, typed-IR, native-object, or incremental
+cache; those forms are ordinary in-process state or per-build outputs derived
+from source.
 
 Diagnostics, debugger locations, profiles, coverage, and disassembly map
 through generated source to the original synthesis site. Tools may show the

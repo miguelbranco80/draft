@@ -1,6 +1,8 @@
 # Validation, judgments, and evidence
 
-This document records validation-only synthesis context, append-only evidence storage, judgment selection/publication, instrumentation requests, and resolution-time judgment scheduling.
+This document records validation-only synthesis context, append-only evidence
+storage, judgment selection, instrumentation requests, and the strict separation
+between source resolution and later validation evidence.
 
 ## Validation-only synthesis context
 
@@ -43,29 +45,8 @@ provider sees bytes, strips process-local syntax handles, and supplies only the
 resolved program plus canonical typed obligation. Each returned verdict is
 persisted immediately. A semantic failure therefore revokes prior evidence even
 when the aggregate command fails, while an invocation or protocol failure does
-not fabricate a qualitative verdict. Only an all-pass completed aggregate may
-publish its returned rows into a resolution manifest.
-
-## Conditional judgment-manifest publication
-
-Status: public all-sites default and fine-grained selection implemented.
-
-`draftc judge` first compiles the complete provider-free resolved program, then
-evaluates every authored judgment in canonical package/obligation order. Each
-provider verdict reaches the crash-safe attempt history immediately, including
-failures that revoke an exact prior key. Only a completed all-pass aggregate is
-eligible for manifest selection. The default command replaces all judgment rows
-because it selects all sites; synthesis pins, external inputs, and native
-evidence rows are copied unchanged. Fine-grained selectors instead replace
-only their selected site keys.
-
-All resolution-manifest writers now hold an interprocess lock on the workspace
-directory. Judgment publication additionally compares the currently visible
-canonical manifest with the exact optional snapshot retained by compilation
-while holding that same lock. A missing snapshot requires a still-missing
-manifest. This prevents a slow provider response for program A from overwriting
-or attaching evidence to concurrently resolved program B, while retaining the
-existing staged-object/fsync/manifest-last crash protocol.
+not fabricate a qualitative verdict. The returned evidence references exist for
+reporting and release tooling; they are not copied into the resolution manifest.
 
 ## Evidence and build separation
 
@@ -79,8 +60,8 @@ only when all rows pass. Validator identities are unique policy slots; provider,
 model, and configuration remain separate nonempty audit identities. Artifact
 kinds are unique and their content is rehashed before any invocation.
 
-The public `judge` and resolution profile accept repeatable
-`identity:model` validator slots and exact `kind:path` artifact inputs. The
+The public `judge` command accepts repeatable `identity:model` validator slots
+and exact `kind:path` artifact inputs. The
 legacy `--codex-model` spelling selects one `validator-0` slot. A later
 failing attempt revokes the active evidence key immediately, preserving an
 honest history for qualification and inspection.
@@ -101,44 +82,12 @@ that exact identity, a package path/full identity, or a package plus declaration
 anchor; several selectors form a de-duplicated union. Every supplied selector
 must match at least one current site before provider configuration.
 
-Resolution v4 evidence rows intentionally avoid duplicating the site identity,
-so partial replacement maps an old row through its typed evidence history. The
-judgment store now retains the latest typed attempt even when it is a failure
-that revoked active state. This is enough to identify and remove only selected
-old rows. Missing or corrupt history fails closed. Each proposed replacement is
-then reloaded and required to be an active attempt for exactly one selected
-site before the stale-snapshot-safe manifest transaction begins. The default
-empty selector remains all-sites behavior.
-
-## Resolution-profile judgment scheduling
-
-Status: selected precommit judgment profiles implemented.
-
-`draftc resolve --judge` evaluates all current judgments only after interface
-and body synthesis have produced a complete checked program and after selected
-native Test and Benchmark procedures pass. Repeated `--judge-select` flags use
-the same stable exact-site, package, and declaration-anchor selection rules as
-the standalone command. Wholly handwritten programs follow this path too; the
-absence of synthesis pins is not an early return when a judgment runner was
-requested.
-
-The resolver owns ordering and publication but not provider execution. A narrow
-driver callback receives the immutable resolved compilation and returns the
-complete judgment-row set it wants selected. Every attempt is already durable
-at that boundary, including failed verdicts used for audit and revocation. The
-callback returns success only for a completed all-pass selection, and the
-resolver rejects any non-judgment row before merging the result beside freshly
-produced native validation evidence. Only the existing final
-object-before-manifest transaction makes those rows visible.
-
-An ordinary resolution run carries old judgment rows forward only when the old
-and new resolved-program digests are byte-identical. A selected profile may then
-replace its sites while preserving those unchanged unselected rows. If source,
-generated bytes, target, compiler, external inputs, or synthesis pins alter the
-program digest, no old judgment row enters the candidate; partial execution can
-publish only newly judged sites. This keeps qualitative evidence attached to
-the exact program it evaluated without requiring a provider on routine
-unchanged resolution.
+The judgment store retains the latest typed attempt even when it is a failure
+that revoked active state, together with the complete immutable attempt history.
+The default empty selector remains all-sites behavior. Because evidence keys
+contain the resolved-program digest and exact policy inputs, evidence for one
+program or policy cannot authorize another without coupling it to source
+selection.
 
 ## Validation instrumentation request boundary
 
@@ -148,8 +97,8 @@ fail-closed availability policy are implemented.
 Validation profiles request instrumentation through typed kinds rather than
 arbitrary Clang flags. Draft 1 names `address`, `lifetime`,
 `undefined-operation`, `allocator-poisoning`, and `race`. Duplicate
-requests are errors. Standalone validation and resolution precommit validation
-use the same target-availability gate.
+requests are errors. Standalone validation uses the target-availability gate;
+resolution does not accept instrumentation options or run validation.
 
 `draft-aarch64-macos-v5` supports exactly `address`. The native adapter adds
 the standard `sanitize_address` attribute to every definition in its private

@@ -219,13 +219,13 @@ surface source + pinned manifest + one generated expansion per required site
 
 `draft resolve` is the only command allowed to request new generated source. It
 loads valid pins, elaborates missing/stale sites in semantic dependency order,
-checks each expansion, runs selected validation over the coherent program, and
-commits successful staged pins atomically.
+checks each expansion and the coherent complete program, and commits successful
+staged pins atomically. It does not run tests, benchmarks, or judgments.
 
 `draft resolve --revalidate` never contacts an agent. It stages existing
-generated source under current obligations, runs ordinary checks and selected
-non-agent validation, and re-pins only on success. It cannot fill a missing
-pin, and it leaves judgment evidence stale.
+generated source under current obligations, runs ordinary compiler checks, and
+re-pins only on success. It cannot fill a missing pin and does not modify
+validation or judgment evidence.
 
 `draft build` consumes surface and valid generated-source pins. It never
 contacts a model, updates a pin, runs tests, evaluates judgments, or reruns
@@ -234,7 +234,10 @@ request to resolve. A complete handwritten program needs no manifest at all.
 
 Pins hash every synthesis input, including grammar/type obligation, prompt and
 attachments, surrounding declaration, visible facts, target/ABI/assembly,
-denials, supplied code/interfaces, and compiler/resolver configuration. The
+denials, supplied code/interfaces, and semantic compiler/resolver configuration.
+Provider, model, retry, and adapter identities are recorded only as provenance;
+changing them does not stale accepted source or change the resolved-program
+hash. The
 manifest also records exact source, dependency, foreign artifact, provider
 summary, and runtime-asset content identity. Invocation-local physical paths
 do not become semantic identity.

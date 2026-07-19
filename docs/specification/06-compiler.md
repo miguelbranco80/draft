@@ -107,10 +107,10 @@ requested-artifact hashes; target; and compiler, judge, model, and execution
 configuration. The same rule covers wholly handwritten code.
 
 Judgment evidence records the key, every constituent validator identity,
-verdict, and rationale, and the policy's aggregate verdict. Judgment execution
-and evidence are optional unless an explicit judgment or resolution-validation
-profile requests them. `draft build` neither contacts a judge nor requires
-evidence in order to compile an already resolved program.
+verdict, and rationale, and the policy's aggregate verdict. Only an explicit
+judgment command executes a judge or changes judgment evidence. Resolution and
+`draft build` neither contact a judge nor require evidence in order to compile
+an already resolved program.
 
 ### Staged declaration and interface elaboration
 
@@ -151,11 +151,12 @@ the interface and layout are complete.
 5. Complete package interfaces, layouts, constants, storage, calling conventions,
    and runtime-body checking. Unresolvable generated-interface cycles are errors.
 6. Form one coherent resolved program with one expansion at every required site.
-7. In resolution or explicit validation mode, build requested target artifacts
-   and run selected tests, benchmarks, and judgments against that program.
-8. Commit successful resolution under
-   [section 10](03-agent-synthesis.md#section-10). An explicit `draft judge` run
-   pins judgment evidence without changing generated source.
+7. Commit successful resolution under
+   [section 10](03-agent-synthesis.md#section-10), without running validation or
+   judgment commands.
+8. Explicit test, benchmark, and judgment commands may build requested target
+   artifacts and record evidence against the resolved program without changing
+   generated-source selection.
 9. Build modes verify required pins, then lower the resolved program
    to LLVM and native code without contacting a model or rerunning validation.
 ```

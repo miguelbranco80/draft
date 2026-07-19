@@ -78,12 +78,8 @@ SONAME, and executables add hosted entry glue.
 ## Resolve synthesis sites
 
 ```sh
-build/draftc resolve path/to/package [--revalidate] [--judge] \
+build/draftc resolve path/to/package [--revalidate] \
   [--target aarch64-macos|aarch64-linux] [--assertions=off] \
-  [--instrument address|lifetime|undefined-operation|allocator-poisoning|race]... \
-  [--judge-select selector]... \
-  [--judge-validator identity:model]... \
-  [--judge-artifact kind:/absolute/path]... \
   [--codex-distribution-root /absolute/codex-root \
    --codex-executable /absolute/codex --codex-model model] \
   [--provider name=object|archive|shared-library:/absolute/path]... \
@@ -95,13 +91,14 @@ build/draftc resolve path/to/package [--revalidate] [--judge] \
 `resolve` constructs typed obligations and calls the configured provider only
 for sites that cannot reuse a valid saved expansion. The provider returns Draft
 source, which is parsed and checked through the ordinary pipeline. The compiler
-commits generated objects and the manifest only after the complete candidate
-program and its selected precommit validation pass.
+commits generated objects and the manifest only after checking the complete
+candidate program. It does not run tests, benchmarks, or judgments.
 
 `--revalidate` rechecks all saved sites without a provider and writes a fresh
-manifest/evidence selection. It cannot be combined with provider models or a
-judgment profile. External provider, summary, and runtime-asset mappings become
-content-addressed resolved-program inputs.
+source-resolution manifest. It cannot be combined with a provider model.
+External provider, summary, and runtime-asset mappings become content-addressed
+resolved-program inputs. Validation and judgment evidence remain separate and
+are changed only by their own commands.
 
 ## Test and benchmark
 

@@ -410,25 +410,4 @@ ValidationCommandResult execute_validation_command(
       compiled, std::move(options), diagnostics);
 }
 
-ValidationCommandResult execute_precommit_validation(
-    const CompileWorkspaceResult &compiled,
-    ValidationCommandOptions options,
-    DiagnosticSink &diagnostics) {
-  if (options.kind == ValidationKind::None ||
-      options.package_directory.empty()) {
-    diagnostics.error(
-        SourceRange::invalid(),
-        "precommit validation requires a package and concrete kind");
-    return {};
-  }
-  if (!validate_validation_instrumentation(
-          options.target,
-          options.instrumentation,
-          diagnostics)) {
-    return {};
-  }
-  return execute_compiled_validation(
-      compiled, std::move(options), diagnostics);
-}
-
 } // namespace draft

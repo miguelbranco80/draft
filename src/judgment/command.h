@@ -51,10 +51,10 @@ struct JudgmentCommandResult {
   bool passed = false;
   std::size_t selected_judgments = 0;
   std::vector<std::string> selected_site_identities;
-  // Rows are safe to select in a resolution manifest only when completed and
-  // passed are both true. Failed commands retain their rows solely to make
-  // testing/auditing the durable attempts possible.
-  std::vector<ResolutionEvidencePin> evidence;
+  // Every completed site attempt is durable even when the aggregate fails.
+  // These references are returned for reporting and auditing; resolution
+  // manifests do not select judgment evidence.
+  std::vector<JudgmentEvidenceReference> evidence;
 };
 
 // Canonical identity for the public all-pass policy shape. Validator order is

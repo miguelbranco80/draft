@@ -39,7 +39,8 @@ struct SourceEdit {
 };
 
 // Documentation and judgment obligations do not replace source. Keeping this
-// classification local prevents evidence rows from entering the pin path.
+// classification local prevents non-synthesis agent metadata from entering the
+// generated-source pin path.
 [[nodiscard]] bool is_synthesis(AgentConstructKind kind) {
   return kind == AgentConstructKind::SynthesisDeclaration ||
       kind == AgentConstructKind::SynthesisMember ||

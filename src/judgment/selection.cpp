@@ -1,8 +1,7 @@
-// Direct selector and manifest-row logic for judgment commands.
+// Direct selector logic for judgment commands.
 
 #include "judgment/selection.h"
 
-#include "judgment/evidence_store.h"
 #include "workspace/workspace.h"
 
 #include <cstddef>
@@ -135,76 +134,6 @@ bool judgment_selection_contains(
     const JudgmentSelection &selection,
     std::string_view site_identity) {
   return selected(selection, site_identity);
-}
-
-bool replace_selected_judgment_evidence(
-    const std::filesystem::path &workspace_directory,
-    const std::vector<ResolutionEvidencePin> &current,
-    const JudgmentSelection &selection,
-    const std::vector<ResolutionEvidencePin> &replacement,
-    std::vector<ResolutionEvidencePin> &result,
-    DiagnosticSink &diagnostics) {
-  result.clear();
-  for (const ResolutionEvidencePin &pin : current) {
-    if (pin.kind != "judgment") {
-      result.push_back(pin);
-      continue;
-    }
-    JudgmentEvidenceState state;
-    if (!load_judgment_evidence_state(
-            workspace_directory, pin.key, state, diagnostics)) {
-      return false;
-    }
-    if (!state.latest_evidence.has_value()) {
-      selection_error(
-          diagnostics,
-          "cannot map manifest judgment row to its stable site identity");
-      return false;
-    }
-    if (!selected(selection, state.latest_evidence->claim.site_identity)) {
-      result.push_back(pin);
-    }
-  }
-
-  std::vector<std::string> replacement_sites;
-  for (const ResolutionEvidencePin &pin : replacement) {
-    if (pin.kind != "judgment") {
-      selection_error(
-          diagnostics, "judgment replacement contains non-judgment evidence");
-      return false;
-    }
-    JudgmentEvidenceState state;
-    if (!load_judgment_evidence_state(
-            workspace_directory, pin.key, state, diagnostics)) {
-      return false;
-    }
-    if (state.status != JudgmentEvidenceStateStatus::Active ||
-        !state.active_digest.has_value() ||
-        !state.active_evidence.has_value() ||
-        *state.active_digest != pin.content_digest ||
-        !selected(selection, state.active_evidence->claim.site_identity)) {
-      selection_error(
-          diagnostics,
-          "replacement judgment row is not an active selected site attempt");
-      return false;
-    }
-    for (const std::string &site : replacement_sites) {
-      if (site == state.active_evidence->claim.site_identity) {
-        selection_error(
-            diagnostics, "judgment replacement contains a duplicate site");
-        return false;
-      }
-    }
-    replacement_sites.push_back(state.active_evidence->claim.site_identity);
-    result.push_back(pin);
-  }
-  if (replacement_sites.size() != selection.sites.size()) {
-    selection_error(
-        diagnostics,
-        "judgment replacement does not cover every selected site");
-    return false;
-  }
-  return true;
 }
 
 } // namespace draft

@@ -38,9 +38,10 @@ the form `name@<target.file_tag>.<extension>` participates only for the exact
 [target profile](02-types-memory-runtime.md#target-profile) identified by
 `target.file_tag`; an unqualified filename participates for every supported
 profile. After removing the target qualifier, `*_test.draft` and
-`*_bench.draft` participate only in their commands or a selected validation
-profile. Compile-time `when` handles smaller target differences inside a Draft
-source file.
+`*_bench.draft` participate only in their explicit validation commands and as
+typed synthesis context; they are not part of ordinary builds or resolution
+success criteria. Compile-time `when` handles smaller target differences inside
+a Draft source file.
 
 The target profile fixes the assembler dialect, preprocessing rule, and tool
 contract for each assembly extension; `.S` has no host-dependent implicit

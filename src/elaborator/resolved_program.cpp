@@ -113,7 +113,7 @@ Sha256Digest hash_resolved_program(
     std::string_view compiler_content_identity,
     const CompileConfiguration &configuration) {
   Sha256 hash;
-  hash_field(hash, "draft.resolved-program.v4");
+  hash_field(hash, "draft.resolved-program.v5");
   hash_field(hash, compiler_content_identity);
   hash_field(
       hash,
@@ -177,9 +177,10 @@ Sha256Digest hash_resolved_program(
     hash_field(hash, input.entry_point);
   }
 
-  // Validation evidence already binds to this resolved-program identity. It is
-  // deliberately absent here to avoid a digest cycle; the v4 manifest selects
-  // exact evidence keys and immutable attempt hashes beside this field.
+  // Evidence binds to this resolved-program identity in independent stores and
+  // is deliberately absent here. Generation provenance is absent for the same
+  // semantic reason: changing the tool which would propose future source does
+  // not change the exact Draft bytes already accepted below.
   std::vector<ResolutionPin> pins = manifest.pins;
   std::sort(
       pins.begin(), pins.end(),
@@ -198,9 +199,6 @@ Sha256Digest hash_resolved_program(
     hash_u64(hash, pin.source_map.surface_begin);
     hash_u64(hash, pin.source_map.surface_end);
     hash_u64(hash, pin.source_map.expansion_bytes);
-    hash_field(hash, pin.provider_identity);
-    hash_field(hash, pin.model_identity);
-    hash_field(hash, pin.configuration_identity);
   }
   return hash.finalize();
 }

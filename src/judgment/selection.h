@@ -1,13 +1,11 @@
-// Stable judgment discovery, selector matching, and partial manifest updates.
+// Stable judgment discovery and selector matching.
 
 #pragma once
 
 #include "compile/compiler.h"
-#include "elaborator/resolution.h"
 #include "source/diagnostic.h"
 
 #include <cstdint>
-#include <filesystem>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -47,17 +45,5 @@ struct JudgmentSelection {
 [[nodiscard]] bool judgment_selection_contains(
     const JudgmentSelection &selection,
     std::string_view site_identity);
-
-// Replaces only rows belonging to selected site identities. Old rows are
-// mapped through their typed evidence histories because v4 manifest rows store
-// package/key/content rather than duplicating site identity. Corrupt or missing
-// history fails closed instead of risking removal of an unrelated row.
-[[nodiscard]] bool replace_selected_judgment_evidence(
-    const std::filesystem::path &workspace_directory,
-    const std::vector<ResolutionEvidencePin> &current,
-    const JudgmentSelection &selection,
-    const std::vector<ResolutionEvidencePin> &replacement,
-    std::vector<ResolutionEvidencePin> &result,
-    DiagnosticSink &diagnostics);
 
 } // namespace draft

@@ -728,129 +728,12 @@ enum class AgentCommandKind {
   Judge,
 };
 
-struct ResolutionValidationRunnerState {
-  draft::ValidationCommandOptions options;
-  draft::ValidationCommandResult result;
-};
-
-struct ResolutionJudgmentRunnerState {
-  draft::JudgmentCommandOptions options;
-  draft::JudgmentCommandResult result;
-  draft::TimingRecorder *timings = nullptr;
-};
-
-// Native execution remains outside the semantic resolver. This adapter accepts
-// its immutable typed candidate, runs the normal compiler-owned validation harness,
-// and records audit/revocation history before resolution commits. Only passing
-// evidence is returned for selection by the later manifest publication.
-bool run_resolution_candidate_validation(
-    void *opaque,
-    const draft::TargetProfile &target,
-    draft::ValidationKind kind,
-    const draft::CompileWorkspaceResult &compiled,
-    draft::ResolutionValidationEvidence &evidence,
-    draft::DiagnosticSink &diagnostics) {
-  auto *state = static_cast<ResolutionValidationRunnerState *>(opaque);
-  state->options.target = target;
-  state->options.kind = kind;
-  const std::size_t before = diagnostics.error_count();
-  state->result = draft::execute_precommit_validation(
-      compiled, state->options, diagnostics);
-  if (!state->result.completed) {
-    if (diagnostics.error_count() == before) {
-      diagnostics.error(
-          draft::SourceRange::invalid(),
-          "resolution candidate validation could not complete");
-    }
-    return false;
-  }
-  if (!state->result.passed) {
-    diagnostics.error(
-        draft::SourceRange::invalid(),
-        "resolution candidate " +
-            std::string(draft::validation_kind_name(kind)) +
-            " failed for " +
-            std::to_string(state->result.selected_procedures) +
-            " selected procedures");
-    return false;
-  }
-  evidence.key = state->result.evidence_key;
-  evidence.content_digest = state->result.evidence_digest;
-  evidence.recorded = true;
-  return true;
-}
-
-// A resolution profile judges the same in-memory candidate that the resolver
-// is about to publish. Evidence attempts become durable as they complete, but
-// this adapter returns rows only after the whole selected profile passes. The
-// resolver then folds those rows into its one final manifest transaction.
-bool run_resolution_candidate_judgment(
-    void *opaque,
-    const draft::TargetProfile &target,
-    const draft::CompileWorkspaceResult &compiled,
-    std::vector<draft::ResolutionEvidencePin> &evidence,
-    std::size_t &selected_judgments,
-    draft::DiagnosticSink &diagnostics) {
-  auto *state = static_cast<ResolutionJudgmentRunnerState *>(opaque);
-  draft::TimingScope timing = state->timings != nullptr
-      ? state->timings->scope("resolution judgment execution")
-      : draft::TimingScope{};
-  state->options.target = target;
-  const std::size_t before = diagnostics.error_count();
-  state->result = draft::execute_judgment_command(
-      compiled, state->options, diagnostics);
-  selected_judgments = state->result.selected_judgments;
-  if (!state->result.completed) {
-    if (diagnostics.error_count() == before) {
-      diagnostics.error(
-          draft::SourceRange::invalid(),
-          "resolution candidate judgment could not complete");
-    }
-    return false;
-  }
-  if (!state->result.passed) {
-    diagnostics.error(
-        draft::SourceRange::invalid(),
-        "resolution candidate judgment failed for " +
-            std::to_string(state->result.selected_judgments) +
-            " selected judgments");
-    return false;
-  }
-
-  draft::JudgmentSelection selection;
-  if (!draft::select_judgment_sites(
-          compiled, state->options.selectors, selection, diagnostics)) {
-    return false;
-  }
-  std::vector<draft::ResolutionEvidencePin> current;
-  // An empty selector list is the complete profile, so it intentionally starts
-  // from an empty set. A partial profile may preserve unselected judgment rows,
-  // but only rows the resolver carried forward after proving the resolved
-  // program digest unchanged are visible here.
-  if (!state->options.selectors.empty() &&
-      compiled.resolution_manifest.has_value()) {
-    for (const draft::ResolutionEvidencePin &pin :
-         compiled.resolution_manifest->evidence) {
-      if (pin.kind == "judgment") current.push_back(pin);
-    }
-  }
-  return draft::replace_selected_judgment_evidence(
-      state->options.workspace_directory,
-      current,
-      selection,
-      state->result.evidence,
-      evidence,
-      diagnostics);
-}
-
 // Resolve and judge first run the complete provider-independent front end, so
 // malformed source, attachment-policy violations, and typed obligation errors
 // are reported before any model call. Resolve may receive one explicit Codex
 // adapter options; a program with only fresh pins still performs no synthesis
-// provider call. Resolve may additionally run a selected judgment profile over
-// its complete candidate before the one manifest commit. Judge runs only after
-// the same provider-free compilation and selects its all-pass evidence with an
-// atomic manifest compare-and-replace.
+// provider call. Judge runs only after the same provider-free compilation and
+// records evidence in its independent store without mutating source selection.
 int run_agent_command(
     const std::string &directory,
     AgentCommandKind command,
@@ -860,12 +743,10 @@ int run_agent_command(
     const std::vector<draft::ForeignProviderInput> &foreign_providers = {},
     const std::vector<draft::ForeignProviderSummaryInput> &provider_summaries = {},
     const std::vector<draft::RuntimeAssetInput> &runtime_assets = {},
-    const std::vector<draft::ValidationInstrumentationKind> &instrumentation = {},
     const std::vector<NamedCodexJudgmentValidator> &judgment_validators = {},
     const std::vector<draft::JudgmentRequestArtifact> &judgment_artifacts = {},
     const std::vector<std::string> &judgment_selectors = {},
     bool list_judgments = false,
-    bool judge_during_resolution = false,
     draft::RuntimeAssertionMode runtime_assertions =
         draft::RuntimeAssertionMode::On,
     draft::TimingRecorder *timings = nullptr) {
@@ -887,14 +768,6 @@ int run_agent_command(
   configure_core_distribution(options.workspace);
   options.timings = timings;
   if (command == AgentCommandKind::Resolve) {
-    // Validate the selected profile even when this particular package has no
-    // test or benchmark declarations. Otherwise an unsupported request could
-    // disappear merely because the resolver never needs to call its runner.
-    if (!draft::validate_validation_instrumentation(
-            options.target, instrumentation, diagnostics)) {
-      std::cerr << draft::render_diagnostics(sources, diagnostics);
-      return 1;
-    }
     draft::ResolveWorkspaceOptions resolve_options;
     resolve_options.compile = std::move(options);
     resolve_options.revalidate = revalidate;
@@ -959,38 +832,6 @@ int run_agent_command(
         return 1;
       }
     }
-    std::vector<draft::CodexCliProviderState> judgment_codex_states;
-    ResolutionJudgmentRunnerState judgment_state;
-    judgment_state.timings = timings;
-    if (judge_during_resolution) {
-      judgment_state.options.workspace_directory =
-          absolute_directory.parent_path();
-      judgment_state.options.target = resolve_options.compile.target;
-      judgment_state.options.selectors = judgment_selectors;
-      if (!configure_codex_judgment_policy(
-              codex,
-              judgment_validators,
-              judgment_artifacts,
-              judgment_codex_states,
-              judgment_state.options,
-              diagnostics)) {
-        std::cerr << draft::render_diagnostics(sources, diagnostics);
-        return 1;
-      }
-      resolve_options.judgment_runner.state = &judgment_state;
-      resolve_options.judgment_runner.run =
-          run_resolution_candidate_judgment;
-    }
-    ResolutionValidationRunnerState validation_state;
-    validation_state.options.package_directory = absolute_directory;
-    validation_state.options.target = resolve_options.compile.target;
-    validation_state.options.instrumentation = instrumentation;
-    validation_state.options.foreign_providers = foreign_providers;
-    validation_state.options.runtime_assets = runtime_assets;
-    validation_state.options.timings = timings;
-    resolve_options.validation_runner.state = &validation_state;
-    resolve_options.validation_runner.run =
-        run_resolution_candidate_validation;
     draft::TimingScope resolve_timing = timings != nullptr
         ? timings->scope("resolution provider workflow")
         : draft::TimingScope{};
@@ -1001,19 +842,12 @@ int run_agent_command(
         diagnostics);
     if (resolved.ok) {
       if (!resolved.committed) {
-        if (judge_during_resolution) {
-          std::cout << "no synthesis or judgment sites require resolution\n";
-        } else {
-          std::cout << "no synthesis sites require resolution\n";
-        }
+        std::cout << "no synthesis sites require resolution\n";
       } else {
         std::cout << "resolved " << resolved.manifest.pins.size()
                   << " synthesis sites (" << resolved.synthesized_sites
                   << " synthesized, " << resolved.reused_sites
-                  << " reused); passed " << resolved.tested_procedures
-                  << " tests and " << resolved.benchmarked_procedures
-                  << " benchmarks and " << resolved.judged_sites
-                  << " judgments before commit\n";
+                  << " reused)\n";
       }
     }
     if (!diagnostics.diagnostics().empty()) {
@@ -1102,40 +936,12 @@ int run_agent_command(
   }
   if (!judged.passed) {
     std::cerr << "judge failed: " << judged.selected_judgments
-              << " selected judgments; resolution manifest unchanged\n";
-    return 1;
-  }
-
-  draft::ResolutionManifest replacement;
-  if (compiled.resolution_manifest.has_value()) {
-    replacement = *compiled.resolution_manifest;
-  } else {
-    replacement.target_identity = target.facts.identity;
-    replacement.resolved_program_digest = *compiled.resolved_program_digest;
-  }
-  std::vector<draft::ResolutionEvidencePin> updated_evidence;
-  if (!draft::replace_selected_judgment_evidence(
-          absolute_directory.parent_path(),
-          replacement.evidence,
-          selection,
-          judged.evidence,
-          updated_evidence,
-          diagnostics)) {
-    std::cerr << draft::render_diagnostics(sources, diagnostics);
-    return 1;
-  }
-  replacement.evidence = std::move(updated_evidence);
-  if (!draft::commit_resolution_manifest_if_unchanged(
-          absolute_directory.parent_path(),
-          compiled.resolution_manifest,
-          replacement,
-          diagnostics)) {
-    std::cerr << draft::render_diagnostics(sources, diagnostics);
+              << " selected judgments\n";
     return 1;
   }
   std::cout << "judge passed: " << judged.selected_judgments
-            << " selected judgments; selected " << judged.evidence.size()
-            << " evidence rows in resolution manifest\n";
+            << " selected judgments; recorded " << judged.evidence.size()
+            << " evidence objects\n";
   if (!diagnostics.diagnostics().empty()) {
     std::cerr << draft::render_diagnostics(sources, diagnostics);
   }
@@ -1175,13 +981,9 @@ void print_usage() {
             << "      [--provider-summary name:<path>]...\n"
             << "      [--runtime-asset name:<file-or-directory>]...\n"
             << "      [--timings|--timings=all]\n"
-            << "  draftc resolve <package-directory> [--revalidate] [--judge]\n"
+            << "  draftc resolve <package-directory> [--revalidate]\n"
             << "      [--target aarch64-macos|aarch64-linux]\n"
-            << "      [--instrument address|lifetime|undefined-operation|allocator-poisoning|race]...\n"
             << "      [--assertions=off]\n"
-            << "      [--judge-select <selector>]...\n"
-            << "      [--judge-validator <identity>:<model>]...\n"
-            << "      [--judge-artifact <kind>:<path>]...\n"
             << "      [--codex-distribution-root <directory>\n"
             << "       --codex-executable <path> --codex-model <model>]\n"
             << "      [--provider name=object|archive|shared-library:<path>]...\n"
@@ -1263,7 +1065,6 @@ int main(int argc, char **argv) {
   }
   if (argc >= 3 && std::string_view(argv[1]) == "resolve") {
     bool revalidate = false;
-    bool judge_during_resolution = false;
     bool assertions_off = false;
     bool target_set = false;
     std::optional<std::string> codex_distribution_root;
@@ -1272,10 +1073,6 @@ int main(int argc, char **argv) {
     std::vector<draft::ForeignProviderInput> foreign_providers;
     std::vector<draft::ForeignProviderSummaryInput> provider_summaries;
     std::vector<draft::RuntimeAssetInput> runtime_assets;
-    std::vector<draft::ValidationInstrumentationKind> instrumentation;
-    std::vector<NamedCodexJudgmentValidator> judgment_validators;
-    std::vector<JudgmentArtifactPath> judgment_artifact_paths;
-    std::vector<std::string> judgment_selectors;
     for (int index = 3; index < argc; ++index) {
       const std::string_view argument(argv[index]);
       if (argument == "--revalidate" && !revalidate) {
@@ -1286,12 +1083,6 @@ int main(int argc, char **argv) {
         if (!select_command_target(argv[++index], target)) return 2;
       } else if (argument == "--assertions=off" && !assertions_off) {
         assertions_off = true;
-      } else if (argument == "--judge" &&
-                 !judge_during_resolution) {
-        judge_during_resolution = true;
-      } else if (argument == "--judge-select" && index + 1 < argc) {
-        judge_during_resolution = true;
-        judgment_selectors.emplace_back(argv[++index]);
       } else if (argument == "--codex-executable" &&
                  !codex_executable.has_value() && index + 1 < argc) {
         codex_executable = argv[++index];
@@ -1301,29 +1092,6 @@ int main(int argc, char **argv) {
       } else if (argument == "--codex-model" &&
                  !codex_model.has_value() && index + 1 < argc) {
         codex_model = argv[++index];
-      } else if (argument == "--judge-validator" && index + 1 < argc) {
-        NamedCodexJudgmentValidator validator;
-        std::string reason;
-        if (!parse_judgment_validator(
-                argv[++index],
-                validator.identity,
-                validator.codex.model,
-                reason)) {
-          std::cerr << "error: " << reason << '\n';
-          return 2;
-        }
-        judge_during_resolution = true;
-        judgment_validators.push_back(std::move(validator));
-      } else if (argument == "--judge-artifact" && index + 1 < argc) {
-        JudgmentArtifactPath artifact;
-        std::string reason;
-        if (!parse_judgment_artifact_path(
-                argv[++index], artifact, reason)) {
-          std::cerr << "error: " << reason << '\n';
-          return 2;
-        }
-        judge_during_resolution = true;
-        judgment_artifact_paths.push_back(std::move(artifact));
       } else if (argument == "--provider" && index + 1 < argc) {
         draft::ForeignProviderInput provider;
         std::string reason;
@@ -1349,16 +1117,6 @@ int main(int argc, char **argv) {
           return 2;
         }
         runtime_assets.push_back(std::move(asset));
-      } else if (argument == "--instrument" && index + 1 < argc) {
-        const std::string_view spelling(argv[++index]);
-        const std::optional<draft::ValidationInstrumentationKind> parsed =
-            draft::parse_validation_instrumentation(spelling);
-        if (!parsed.has_value()) {
-          std::cerr << "error: unknown validation instrumentation '"
-                    << spelling << "'\n";
-          return 2;
-        }
-        instrumentation.push_back(*parsed);
       } else if (is_timing_argument(argument)) {
         continue;
       } else {
@@ -1366,12 +1124,9 @@ int main(int argc, char **argv) {
         return 2;
       }
     }
-    const bool has_codex_models =
-        codex_model.has_value() || !judgment_validators.empty();
     if (codex_executable.has_value() != codex_distribution_root.has_value() ||
-        codex_executable.has_value() != has_codex_models ||
-        (revalidate && has_codex_models) ||
-        (revalidate && judge_during_resolution)) {
+        codex_executable.has_value() != codex_model.has_value() ||
+        (revalidate && codex_model.has_value())) {
       print_usage();
       return 2;
     }
@@ -1386,21 +1141,6 @@ int main(int argc, char **argv) {
         codex->model = *codex_model;
         codex->cancellation_requested = command_cancellation_requested;
       }
-      for (NamedCodexJudgmentValidator &validator : judgment_validators) {
-        validator.codex.distribution_root = *codex_distribution_root;
-        validator.codex.executable = *codex_executable;
-        validator.codex.cancellation_requested =
-            command_cancellation_requested;
-      }
-    }
-    std::vector<draft::JudgmentRequestArtifact> judgment_artifacts;
-    std::string artifact_reason;
-    if (!read_judgment_artifacts(
-            judgment_artifact_paths,
-            judgment_artifacts,
-            artifact_reason)) {
-      std::cerr << "error: " << artifact_reason << '\n';
-      return 1;
     }
     return run_agent_command(
         argv[2],
@@ -1411,12 +1151,10 @@ int main(int argc, char **argv) {
         foreign_providers,
         provider_summaries,
         runtime_assets,
-        instrumentation,
-        judgment_validators,
-        judgment_artifacts,
-        judgment_selectors,
+        {},
+        {},
+        {},
         false,
-        judge_during_resolution,
         assertions_off
             ? draft::RuntimeAssertionMode::Off
             : draft::RuntimeAssertionMode::On,
@@ -1549,12 +1287,10 @@ int main(int argc, char **argv) {
         foreign_providers,
         provider_summaries,
         {},
-        {},
         judgment_validators,
         judgment_artifacts,
         judgment_selectors,
         list_judgments,
-        false,
         assertions_off
             ? draft::RuntimeAssertionMode::Off
             : draft::RuntimeAssertionMode::On,

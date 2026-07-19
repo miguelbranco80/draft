@@ -1,8 +1,10 @@
 // End-to-end public judgment-command coverage with a local Codex executable.
 //
 // The test crosses argument parsing, provider configuration, typed compilation,
-// judgment execution, durable evidence history, and conditional manifest
-// publication. No network service or release Codex installation is required.
+// judgment execution, and durable evidence history. Judgment evidence is
+// deliberately independent from source resolution: running this command must
+// never create or modify `.draft/resolution.json`. No network service or
+// release Codex installation is required.
 
 #include "elaborator/resolution_store.h"
 #include "compile/compiler.h"
@@ -11,11 +13,13 @@
 #include "source/diagnostic.h"
 #include "target/profile.h"
 
+#include <algorithm>
 #include <cerrno>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -201,48 +205,6 @@ void append_codex_arguments(
   });
 }
 
-[[nodiscard]] int run_multi_resolve(
-    const TemporaryWorkspace &workspace) {
-  return run_driver({
-      DRAFT_DRIVER_PATH,
-      "resolve",
-      workspace.package.string(),
-      "--codex-distribution-root",
-      workspace.distribution.string(),
-      "--codex-executable",
-      workspace.executable.string(),
-      "--judge-validator",
-      "review-primary:fixture-primary",
-      "--judge-validator",
-      "review-secondary:fixture-secondary",
-      "--judge-artifact",
-      "object:" + workspace.artifact.string(),
-  });
-}
-
-[[nodiscard]] int run_resolve(
-    const TemporaryWorkspace &workspace,
-    bool judge,
-    const std::vector<std::string> &selectors = {}) {
-  std::vector<std::string> arguments{
-      DRAFT_DRIVER_PATH,
-      "resolve",
-      workspace.package.string(),
-  };
-  if (judge) {
-    if (selectors.empty()) {
-      arguments.push_back("--judge");
-    } else {
-      for (const std::string &selector : selectors) {
-        arguments.push_back("--judge-select");
-        arguments.push_back(selector);
-      }
-    }
-    append_codex_arguments(workspace, arguments);
-  }
-  return run_driver(std::move(arguments));
-}
-
 [[nodiscard]] draft::CompileWorkspaceResult compile_resolved(
     const TemporaryWorkspace &workspace,
     draft::SourceManager &sources,
@@ -254,6 +216,41 @@ void append_codex_arguments(
   options.workspace.core_content_identity = DRAFT_CORE_CONTENT_IDENTITY;
   return draft::compile_workspace_with_resolution(
       sources, workspace.package.string(), std::move(options), diagnostics);
+}
+
+// The public evidence store intentionally has no "selected evidence" index:
+// evidence is append-only history keyed by the exact program, claim, target,
+// policy, artifacts, and validator implementations. This test enumerates the
+// store's state files only to discover those opaque keys after exercising the
+// public command. Production code already knows each key from the command
+// result and must not depend on filesystem enumeration order.
+[[nodiscard]] std::vector<draft::Sha256Digest> judgment_evidence_keys(
+    const TemporaryWorkspace &workspace) {
+  std::vector<draft::Sha256Digest> keys;
+  const std::filesystem::path directory =
+      workspace.root / ".draft" / "evidence";
+  std::error_code error;
+  if (!std::filesystem::is_directory(directory, error) || error) return keys;
+  for (const std::filesystem::directory_entry &entry :
+       std::filesystem::directory_iterator(directory, error)) {
+    if (error) return {};
+    if (!entry.is_regular_file(error) || error ||
+        entry.path().extension() != ".state") {
+      error.clear();
+      continue;
+    }
+    const std::optional<draft::Sha256Digest> key =
+        draft::Sha256Digest::from_hex(entry.path().stem().string());
+    if (!key.has_value()) return {};
+    keys.push_back(*key);
+  }
+  std::sort(
+      keys.begin(), keys.end(),
+      [](const draft::Sha256Digest &left,
+         const draft::Sha256Digest &right) {
+        return left.bytes < right.bytes;
+      });
+  return keys;
 }
 
 void test_passing_command_selects_evidence(TestState &state) {
@@ -276,42 +273,40 @@ void test_passing_command_selects_evidence(TestState &state) {
   EXPECT(state, sites.size() == 2);
   if (sites.size() != 2) return;
 
-  // Exact stable identity selects one site and publishes only its row. Listing
-  // and selection both operate before provider configuration.
+  // Exact stable identity selects one site. Listing and selection both operate
+  // before provider configuration, and neither command mutates resolution.
   EXPECT(state, run_judge(workspace, {sites.front().site_identity}) == 0);
   diagnostics = {};
   loaded = draft::load_resolution_manifest(workspace.root, diagnostics);
   EXPECT(state,
-      loaded.state == draft::ResolutionManifestLoadState::Loaded);
-  EXPECT(state, loaded.manifest.pins.empty());
-  EXPECT(state, loaded.manifest.evidence.size() == 1);
-  for (const draft::ResolutionEvidencePin &pin : loaded.manifest.evidence) {
-    EXPECT(state, pin.kind == "judgment");
+      loaded.state == draft::ResolutionManifestLoadState::Missing);
+  std::vector<draft::Sha256Digest> keys = judgment_evidence_keys(workspace);
+  EXPECT(state, keys.size() == 1);
+  for (const draft::Sha256Digest &key : keys) {
     draft::JudgmentEvidenceState evidence;
     EXPECT(state,
         draft::load_judgment_evidence_state(
-            workspace.root, pin.key, evidence, diagnostics));
+            workspace.root, key, evidence, diagnostics));
     EXPECT(state,
         evidence.status == draft::JudgmentEvidenceStateStatus::Active);
-    EXPECT(state, evidence.active_digest == pin.content_digest);
     EXPECT(state, evidence.active_evidence.has_value());
   }
   EXPECT(state, !diagnostics.has_errors());
 
-  // The default package command selects all sites. It preserves the existing
-  // selected row until its fresh attempt is durable, adds the missing row, and
-  // atomically publishes the complete two-site selection.
+  // The default package command selects all sites. It appends a second attempt
+  // for the existing exact key and creates the other site's independent key.
   EXPECT(state, run_judge(workspace) == 0);
   diagnostics = {};
   loaded = draft::load_resolution_manifest(workspace.root, diagnostics);
   EXPECT(state,
-      loaded.state == draft::ResolutionManifestLoadState::Loaded);
-  EXPECT(state, loaded.manifest.evidence.size() == 2);
-  for (const draft::ResolutionEvidencePin &pin : loaded.manifest.evidence) {
+      loaded.state == draft::ResolutionManifestLoadState::Missing);
+  keys = judgment_evidence_keys(workspace);
+  EXPECT(state, keys.size() == 2);
+  for (const draft::Sha256Digest &key : keys) {
     draft::JudgmentEvidenceState evidence;
     EXPECT(state,
         draft::load_judgment_evidence_state(
-            workspace.root, pin.key, evidence, diagnostics));
+            workspace.root, key, evidence, diagnostics));
     EXPECT(state, evidence.active_evidence.has_value());
     if (evidence.active_evidence.has_value() &&
         evidence.active_evidence->claim.site_identity ==
@@ -320,7 +315,7 @@ void test_passing_command_selects_evidence(TestState &state) {
     } else {
       EXPECT(state, evidence.attempts.size() == 1);
     }
-    EXPECT(state, evidence.active_digest == pin.content_digest);
+    EXPECT(state, evidence.active_digest.has_value());
   }
   EXPECT(state, !diagnostics.has_errors());
 
@@ -328,12 +323,12 @@ void test_passing_command_selects_evidence(TestState &state) {
   // useful to the judgment command and release tooling even though ordinary
   // builds do not consume it as a prerequisite.
   draft::DiagnosticSink revocation_diagnostics;
-  if (!loaded.manifest.evidence.empty()) {
+  if (!keys.empty()) {
     draft::JudgmentEvidenceState evidence;
     EXPECT(state,
         draft::load_judgment_evidence_state(
             workspace.root,
-            loaded.manifest.evidence.front().key,
+            keys.front(),
             evidence,
             revocation_diagnostics));
     if (evidence.active_evidence.has_value()) {
@@ -350,7 +345,7 @@ void test_passing_command_selects_evidence(TestState &state) {
     draft::JudgmentEvidenceState revoked_state;
     EXPECT(state, draft::load_judgment_evidence_state(
         workspace.root,
-        loaded.manifest.evidence.front().key,
+        keys.front(),
         revoked_state,
         revocation_diagnostics));
     EXPECT(state,
@@ -359,7 +354,7 @@ void test_passing_command_selects_evidence(TestState &state) {
   EXPECT(state, !revocation_diagnostics.has_errors());
 }
 
-void test_failing_command_leaves_manifest_missing(TestState &state) {
+void test_failing_command_records_independent_evidence(TestState &state) {
   TemporaryWorkspace workspace("fail", false);
   EXPECT(state, run_judge(workspace) == 1);
   draft::DiagnosticSink diagnostics;
@@ -367,6 +362,16 @@ void test_failing_command_leaves_manifest_missing(TestState &state) {
       draft::load_resolution_manifest(workspace.root, diagnostics);
   EXPECT(state,
       loaded.state == draft::ResolutionManifestLoadState::Missing);
+  const std::vector<draft::Sha256Digest> keys =
+      judgment_evidence_keys(workspace);
+  EXPECT(state, keys.size() == 2);
+  for (const draft::Sha256Digest &key : keys) {
+    draft::JudgmentEvidenceState evidence;
+    EXPECT(state, draft::load_judgment_evidence_state(
+        workspace.root, key, evidence, diagnostics));
+    EXPECT(state,
+        evidence.status == draft::JudgmentEvidenceStateStatus::Revoked);
+  }
   EXPECT(state, !diagnostics.has_errors());
 }
 
@@ -378,15 +383,17 @@ void test_public_multi_validator_artifact_policy(TestState &state) {
   const draft::ResolutionManifestLoadResult loaded =
       draft::load_resolution_manifest(workspace.root, diagnostics);
   EXPECT(state,
-      loaded.state == draft::ResolutionManifestLoadState::Loaded);
-  EXPECT(state, loaded.manifest.evidence.size() == 2);
+      loaded.state == draft::ResolutionManifestLoadState::Missing);
+  const std::vector<draft::Sha256Digest> keys =
+      judgment_evidence_keys(workspace);
+  EXPECT(state, keys.size() == 2);
 
   const draft::Sha256Digest artifact_digest =
       draft::sha256("public judgment artifact bytes");
-  for (const draft::ResolutionEvidencePin &pin : loaded.manifest.evidence) {
+  for (const draft::Sha256Digest &key : keys) {
     draft::JudgmentEvidenceState evidence;
     EXPECT(state, draft::load_judgment_evidence_state(
-        workspace.root, pin.key, evidence, diagnostics));
+        workspace.root, key, evidence, diagnostics));
     EXPECT(state, evidence.active_evidence.has_value());
     if (evidence.active_evidence.has_value()) {
       EXPECT(state, evidence.active_evidence->validators.size() == 2);
@@ -416,94 +423,6 @@ void test_public_multi_validator_artifact_policy(TestState &state) {
   }
 
   EXPECT(state, !diagnostics.has_errors());
-
-  // The same public policy flags also configure the precommit judgment runner
-  // in `resolve`; the absence of a synthesis model is valid for this complete
-  // handwritten program.
-  EXPECT(state, run_multi_resolve(workspace) == 0);
-  draft::DiagnosticSink after_resolve_diagnostics;
-  const draft::ResolutionManifestLoadResult after_resolve =
-      draft::load_resolution_manifest(
-          workspace.root, after_resolve_diagnostics);
-  EXPECT(state,
-      after_resolve.state == draft::ResolutionManifestLoadState::Loaded);
-  EXPECT(state, after_resolve.manifest.evidence.size() == 2);
-  EXPECT(state, !after_resolve_diagnostics.has_errors());
-}
-
-void test_resolution_profile_commits_judgments_atomically(TestState &state) {
-  TemporaryWorkspace workspace("resolve-pass", true);
-
-  draft::SourceManager discovery_sources;
-  draft::DiagnosticSink discovery_diagnostics;
-  const draft::CompileWorkspaceResult discovered = compile_resolved(
-      workspace, discovery_sources, discovery_diagnostics);
-  EXPECT(state, discovered.ok);
-  const std::vector<draft::JudgmentSiteDescription> sites =
-      draft::discover_judgment_sites(discovered);
-  EXPECT(state, sites.size() == 2);
-  if (sites.size() != 2) return;
-
-  // A selected resolution profile can publish a deliberately partial evidence
-  // set. A later complete profile replaces it with one row for every judgment,
-  // all in the resolver's single candidate-manifest transaction.
-  EXPECT(state,
-      run_resolve(workspace, true, {sites.front().site_identity}) == 0);
-  draft::DiagnosticSink diagnostics;
-  draft::ResolutionManifestLoadResult loaded =
-      draft::load_resolution_manifest(workspace.root, diagnostics);
-  EXPECT(state,
-      loaded.state == draft::ResolutionManifestLoadState::Loaded);
-  EXPECT(state, loaded.manifest.pins.empty());
-  EXPECT(state, loaded.manifest.evidence.size() == 1);
-
-  EXPECT(state, run_resolve(workspace, true) == 0);
-  diagnostics = {};
-  loaded = draft::load_resolution_manifest(workspace.root, diagnostics);
-  EXPECT(state,
-      loaded.state == draft::ResolutionManifestLoadState::Loaded);
-  EXPECT(state, loaded.manifest.evidence.size() == 2);
-
-  // Ordinary resolution keeps expensive judgment rows when the complete
-  // resolved-program digest is unchanged.
-  EXPECT(state, run_resolve(workspace, false) == 0);
-  diagnostics = {};
-  loaded = draft::load_resolution_manifest(workspace.root, diagnostics);
-  EXPECT(state, loaded.manifest.evidence.size() == 2);
-
-  // A source edit changes that digest. Provider-free resolution must drop the
-  // stale rows instead of carrying qualitative claims onto another program.
-  std::ofstream changed(
-      workspace.package / "package.draft",
-      std::ios::binary | std::ios::trunc);
-  changed << "package app\n\n"
-             "judge \"The package remains coherent.\"\n\n"
-             "main :: proc() {\n"
-             "    value := 43\n"
-             "    judge \"The typed local preserves the claim.\"\n"
-             "    _ = value\n"
-             "}\n";
-  changed.close();
-  EXPECT(state, static_cast<bool>(changed));
-  EXPECT(state, run_resolve(workspace, false) == 0);
-  diagnostics = {};
-  loaded = draft::load_resolution_manifest(workspace.root, diagnostics);
-  EXPECT(state,
-      loaded.state == draft::ResolutionManifestLoadState::Loaded);
-  EXPECT(state, loaded.manifest.evidence.empty());
-  EXPECT(state, !diagnostics.has_errors());
-}
-
-void test_failing_resolution_profile_leaves_manifest_missing(
-    TestState &state) {
-  TemporaryWorkspace workspace("resolve-fail", false);
-  EXPECT(state, run_resolve(workspace, true) == 1);
-  draft::DiagnosticSink diagnostics;
-  const draft::ResolutionManifestLoadResult loaded =
-      draft::load_resolution_manifest(workspace.root, diagnostics);
-  EXPECT(state,
-      loaded.state == draft::ResolutionManifestLoadState::Missing);
-  EXPECT(state, !diagnostics.has_errors());
 }
 
 } // namespace
@@ -511,10 +430,8 @@ void test_failing_resolution_profile_leaves_manifest_missing(
 int main() {
   TestState state;
   test_passing_command_selects_evidence(state);
-  test_failing_command_leaves_manifest_missing(state);
+  test_failing_command_records_independent_evidence(state);
   test_public_multi_validator_artifact_policy(state);
-  test_resolution_profile_commits_judgments_atomically(state);
-  test_failing_resolution_profile_leaves_manifest_missing(state);
   if (state.failures != 0) {
     std::cerr << state.failures
               << " judgment driver expectation(s) failed\n";
