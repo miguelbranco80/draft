@@ -154,6 +154,29 @@ namespace {
   return true;
 }
 
+// Returns whether an otherwise-fresh site was explicitly selected for new
+// provider work. The caller records matches separately so an exact selector
+// typo can fail the transaction instead of silently doing nothing.
+[[nodiscard]] bool regeneration_selects(
+    const ResolveWorkspaceOptions &options,
+    std::string_view site_identity) {
+  if (!options.regenerate) return false;
+  if (options.regeneration_site_identities.empty()) return true;
+  for (const std::string &selected : options.regeneration_site_identities) {
+    if (selected == site_identity) return true;
+  }
+  return false;
+}
+
+void record_regeneration_match(
+    std::string_view site_identity,
+    std::vector<std::string> &matches) {
+  for (const std::string &existing : matches) {
+    if (existing == site_identity) return;
+  }
+  matches.emplace_back(site_identity);
+}
+
 // Later-stage or candidate overrides contain complete files based on an
 // already overlaid source surface. A later row replaces an earlier row for the
 // same semantic package and filename; unrelated files retain deterministic
@@ -268,6 +291,7 @@ struct ResolvedStage {
     const ResolutionManifestLoadResult &loaded,
     const ResolveWorkspaceOptions &options,
     ResolveWorkspaceResult &result,
+    std::vector<std::string> &regeneration_matches,
     std::vector<GeneratedExpansion> &expansions,
     DiagnosticSink &diagnostics) {
   ResolvedStage stage;
@@ -291,9 +315,16 @@ struct ResolvedStage {
       if (!is_synthesis(obligation.kind)) continue;
       if (resolution_cancelled(options, diagnostics)) return stage;
       const ResolutionPin *existing = find_pin(loaded, obligation.site_identity);
+      const bool regenerate = regeneration_selects(
+          options, obligation.site_identity);
+      if (regenerate) {
+        record_regeneration_match(
+            obligation.site_identity, regeneration_matches);
+      }
       const bool fresh = existing != nullptr &&
           existing->kind == obligation.kind &&
-          existing->input_digest == obligation.input_digest;
+          existing->input_digest == obligation.input_digest &&
+          !regenerate;
 
       GeneratedExpansion expansion;
       ResolutionPin pin;
@@ -407,6 +438,7 @@ struct ResolvedStage {
             expansion_boundary_checked = true;
             accepted = true;
             ++result.synthesized_sites;
+            if (regenerate) ++result.regenerated_sites;
             break;
           }
           if (!attempt_diagnostics.has_errors()) {
@@ -511,6 +543,19 @@ ResolveWorkspaceResult resolve_workspace(
         "synthesis proposal attempt count must be between 1 and 8");
     return result;
   }
+  if (options.revalidate && options.regenerate) {
+    diagnostics.error(
+        SourceRange::invalid(),
+        "resolution cannot revalidate and regenerate in one command");
+    return result;
+  }
+  if (!options.regenerate &&
+      !options.regeneration_site_identities.empty()) {
+    diagnostics.error(
+        SourceRange::invalid(),
+        "regeneration selectors require regeneration mode");
+    return result;
+  }
   if (resolution_cancelled(options, diagnostics)) return result;
 
   const ResolutionManifestLoadResult loaded = load_resolution_manifest(
@@ -544,6 +589,7 @@ ResolveWorkspaceResult resolve_workspace(
   }
   manifest.external_inputs = std::move(external_input_check.external_inputs);
   std::vector<WorkspaceSourceOverride> interface_overrides;
+  std::vector<std::string> regeneration_matches;
 
   // Interface synthesis advances in dependency-ready rounds. Every package in
   // one round sees completed prerequisite package interfaces but none of its
@@ -573,6 +619,7 @@ ResolveWorkspaceResult resolve_workspace(
         loaded,
         options,
         result,
+        regeneration_matches,
         expansions,
         diagnostics);
     if (!interface_stage.ok) return result;
@@ -623,6 +670,7 @@ ResolveWorkspaceResult resolve_workspace(
       loaded,
       options,
       result,
+      regeneration_matches,
       expansions,
       diagnostics);
   if (!body_stage.ok ||
@@ -652,6 +700,23 @@ ResolveWorkspaceResult resolve_workspace(
   if (!resolved.ok || !validate_resolved_agent_boundaries(
           body_surface, resolved, diagnostics)) {
     return result;
+  }
+
+  // Exact selector validation happens after all dependency stages have exposed
+  // their body sites. A missing selector never publishes the candidate, even
+  // if unrelated stale sites required provider work earlier in the attempt.
+  for (const std::string &selected : options.regeneration_site_identities) {
+    bool matched = false;
+    for (const std::string &observed : regeneration_matches) {
+      matched = matched || selected == observed;
+    }
+    if (!matched) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "regeneration selector did not match a current synthesis site: '" +
+              selected + "'");
+      return result;
+    }
   }
 
   manifest.resolved_program_digest = hash_resolved_program(

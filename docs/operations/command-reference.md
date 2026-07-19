@@ -79,6 +79,7 @@ SONAME, and executables add hosted entry glue.
 
 ```sh
 build/draftc resolve path/to/package [--revalidate] \
+  [--regenerate [site-id]] \
   [--target aarch64-macos|aarch64-linux] [--assertions=off] \
   [--model model] \
   [--provider name=object|archive|shared-library:/absolute/path]... \
@@ -92,6 +93,12 @@ for sites that cannot reuse a valid saved expansion. The provider returns Draft
 source, which is parsed and checked through the ordinary pipeline. The compiler
 commits generated objects and the manifest only after checking the complete
 candidate program. It does not run tests, benchmarks, or judgments.
+
+`--regenerate` forces a provider proposal even for fresh pins. With no following
+value it selects every current synthesis site; with one exact `site-...`
+identity it selects only that site. The selector must match, unrelated fresh
+pins remain exact, and a failed attempt leaves the committed manifest unchanged.
+It cannot be combined with `--revalidate`.
 
 The Codex adapter discovers `codex` through the user's `PATH` and uses that
 installation's ordinary authentication and configuration. If `--model` is

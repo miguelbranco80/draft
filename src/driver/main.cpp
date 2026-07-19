@@ -739,6 +739,8 @@ int run_agent_command(
     AgentCommandKind command,
     const draft::TargetProfile &target,
     bool revalidate = false,
+    bool regenerate = false,
+    const std::vector<std::string> &regeneration_site_identities = {},
     const std::optional<draft::CodexCliProviderOptions> &codex = std::nullopt,
     const std::vector<draft::ForeignProviderInput> &foreign_providers = {},
     const std::vector<draft::ForeignProviderSummaryInput> &provider_summaries = {},
@@ -771,6 +773,9 @@ int run_agent_command(
     draft::ResolveWorkspaceOptions resolve_options;
     resolve_options.compile = std::move(options);
     resolve_options.revalidate = revalidate;
+    resolve_options.regenerate = regenerate;
+    resolve_options.regeneration_site_identities =
+        regeneration_site_identities;
     resolve_options.cancellation_requested = command_cancellation_requested;
     const bool external_inputs_configured = !foreign_providers.empty() ||
         !provider_summaries.empty() || !runtime_assets.empty();
@@ -847,7 +852,12 @@ int run_agent_command(
         std::cout << "resolved " << resolved.manifest.pins.size()
                   << " synthesis sites (" << resolved.synthesized_sites
                   << " synthesized, " << resolved.reused_sites
-                  << " reused)\n";
+                  << " reused";
+        if (resolved.regenerated_sites != 0) {
+          std::cout << ", " << resolved.regenerated_sites
+                    << " explicitly regenerated";
+        }
+        std::cout << ")\n";
       }
     }
     if (!diagnostics.diagnostics().empty()) {
@@ -982,6 +992,7 @@ void print_usage() {
             << "      [--runtime-asset name:<file-or-directory>]...\n"
             << "      [--timings|--timings=all]\n"
             << "  draftc resolve <package-directory> [--revalidate]\n"
+            << "      [--regenerate [site-id]]\n"
             << "      [--target aarch64-macos|aarch64-linux]\n"
             << "      [--assertions=off]\n"
             << "      [--model <model>]\n"
@@ -1063,9 +1074,11 @@ int main(int argc, char **argv) {
   }
   if (argc >= 3 && std::string_view(argv[1]) == "resolve") {
     bool revalidate = false;
+    bool regenerate = false;
     bool assertions_off = false;
     bool target_set = false;
     std::optional<std::string> codex_model;
+    std::vector<std::string> regeneration_site_identities;
     std::vector<draft::ForeignProviderInput> foreign_providers;
     std::vector<draft::ForeignProviderSummaryInput> provider_summaries;
     std::vector<draft::RuntimeAssetInput> runtime_assets;
@@ -1073,6 +1086,12 @@ int main(int argc, char **argv) {
       const std::string_view argument(argv[index]);
       if (argument == "--revalidate" && !revalidate) {
         revalidate = true;
+      } else if (argument == "--regenerate" && !regenerate) {
+        regenerate = true;
+        if (index + 1 < argc &&
+            !std::string_view(argv[index + 1]).starts_with('-')) {
+          regeneration_site_identities.emplace_back(argv[++index]);
+        }
       } else if (argument == "--target" && !target_set &&
                  index + 1 < argc) {
         target_set = true;
@@ -1114,7 +1133,8 @@ int main(int argc, char **argv) {
         return 2;
       }
     }
-    if (revalidate && codex_model.has_value()) {
+    if ((revalidate && codex_model.has_value()) ||
+        (revalidate && regenerate)) {
       print_usage();
       return 2;
     }
@@ -1131,6 +1151,8 @@ int main(int argc, char **argv) {
         AgentCommandKind::Resolve,
         target,
         revalidate,
+        regenerate,
+        regeneration_site_identities,
         codex,
         foreign_providers,
         provider_summaries,
@@ -1249,6 +1271,8 @@ int main(int argc, char **argv) {
         AgentCommandKind::Judge,
         target,
         false,
+        false,
+        {},
         codex,
         foreign_providers,
         provider_summaries,

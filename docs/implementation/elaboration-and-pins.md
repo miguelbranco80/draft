@@ -161,6 +161,14 @@ not participate in freshness or resolved-program identity. Regeneration is an
 explicit source-changing request rather than a side effect of selecting a
 different model.
 
+Explicit regeneration is a resolver scheduling override, not a freshness input.
+An empty regeneration selection forces every encountered synthesis obligation;
+an exact persistent site identity forces only that obligation. Matches are
+recorded across interface and body stages and checked after all dependent body
+sites become visible. An unmatched identity fails before commit. The selected
+proposal still crosses the generated-source grammar boundary and ordinary
+semantic checks, and every unselected site follows normal fresh/stale behavior.
+
 The compiler already treats the saved fragment as source inserted at its exact
 `...` site while retaining the original surface buffer and a composed source
 map. A future `draft expand` command or IDE virtual document can therefore show

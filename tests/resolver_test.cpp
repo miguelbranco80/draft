@@ -81,6 +81,22 @@ struct TemporaryWorkspace {
            << "}\n";
   }
 
+  // Two independent body sites make selective regeneration observable: one
+  // accepted fragment can change while the unrelated fresh pin remains exact.
+  void write_two_expression_source() const {
+    std::ofstream source(
+        package / "package.draft", std::ios::binary | std::ios::trunc);
+    source << "package app\n\n"
+           << "first :: proc() -> i64 {\n"
+           << "    return ... \"first expression\"\n"
+           << "}\n\n"
+           << "second :: proc() -> i64 {\n"
+           << "    return ... \"second expression\"\n"
+           << "}\n\n"
+           << "main :: proc() {\n"
+           << "}\n";
+  }
+
   // The body names both an entire declaration and one aggregate field supplied
   // by early synthesis. A one-pass body checker would reject these names before
   // the provider could make the program complete.
@@ -378,6 +394,7 @@ struct FakeProviderState {
   std::vector<std::uint64_t> occurrences;
   std::vector<std::string> expected_type_texts;
   std::vector<std::string> anchor_names;
+  std::vector<std::string> site_identities;
   std::vector<std::vector<std::string>> visible_binding_names;
   std::vector<draft::AgentValidationContext> last_validation_context;
   std::vector<std::vector<draft::SynthesisRejection>> rejection_histories;
@@ -403,6 +420,7 @@ bool synthesize(
   state->expected_type_texts.push_back(
       request.obligation.expected_type_text);
   state->anchor_names.push_back(request.obligation.anchor_name);
+  state->site_identities.push_back(request.obligation.site_identity);
   state->last_prompt = request.prompt;
   state->last_attachment = request.attachments.empty()
       ? std::string()
@@ -690,7 +708,94 @@ void test_resolution_reuse_revalidation_and_failure(TestState &state) {
       after_failure.state == draft::ResolutionManifestLoadState::Loaded);
   EXPECT(state,
       draft::serialize_resolution_manifest(after_failure.manifest) ==
-          committed_manifest);
+      committed_manifest);
+}
+
+void test_selective_regeneration_changes_only_selected_source(
+    TestState &state) {
+  TemporaryWorkspace workspace;
+  workspace.write_two_expression_source();
+  FakeProviderState provider;
+
+  draft::SourceManager first_sources;
+  draft::DiagnosticSink first_diagnostics;
+  const draft::ResolveWorkspaceResult first = draft::resolve_workspace(
+      first_sources,
+      workspace.package.string(),
+      resolve_options(workspace, provider),
+      first_diagnostics);
+  EXPECT(state, first.ok);
+  EXPECT(state, first.synthesized_sites == 2);
+  EXPECT(state, provider.calls == 2);
+  EXPECT(state, provider.site_identities.size() == 2);
+  if (!first.ok || provider.site_identities.size() != 2) return;
+
+  const std::string selected_site = provider.site_identities[0];
+  const std::string untouched_site = provider.site_identities[1];
+  draft::Sha256Digest untouched_expansion;
+  for (const draft::ResolutionPin &pin : first.manifest.pins) {
+    if (pin.site_identity == untouched_site) {
+      untouched_expansion = pin.expansion_digest;
+    }
+  }
+
+  provider.response = "41";
+  draft::ResolveWorkspaceOptions regenerate =
+      resolve_options(workspace, provider);
+  regenerate.regenerate = true;
+  regenerate.regeneration_site_identities.push_back(selected_site);
+  draft::SourceManager regenerated_sources;
+  draft::DiagnosticSink regenerated_diagnostics;
+  const draft::ResolveWorkspaceResult regenerated = draft::resolve_workspace(
+      regenerated_sources,
+      workspace.package.string(),
+      std::move(regenerate),
+      regenerated_diagnostics);
+  EXPECT(state, regenerated.ok);
+  EXPECT(state, regenerated.committed);
+  EXPECT(state, regenerated.synthesized_sites == 1);
+  EXPECT(state, regenerated.regenerated_sites == 1);
+  EXPECT(state, regenerated.reused_sites == 1);
+  EXPECT(state, provider.calls == 3);
+  EXPECT(state,
+      regenerated.manifest.resolved_program_digest !=
+          first.manifest.resolved_program_digest);
+  for (const draft::ResolutionPin &pin : regenerated.manifest.pins) {
+    if (pin.site_identity == selected_site) {
+      EXPECT(state, pin.expansion_digest == draft::sha256("41"));
+    } else if (pin.site_identity == untouched_site) {
+      EXPECT(state, pin.expansion_digest == untouched_expansion);
+    }
+  }
+
+  // A selector typo is a failed source transaction, not an all-fresh no-op.
+  // It must not call the provider or disturb the last committed manifest.
+  draft::ResolveWorkspaceOptions unmatched =
+      resolve_options(workspace, provider);
+  unmatched.regenerate = true;
+  unmatched.regeneration_site_identities.push_back("site-does-not-exist");
+  draft::SourceManager unmatched_sources;
+  draft::DiagnosticSink unmatched_diagnostics;
+  const draft::ResolveWorkspaceResult unmatched_result =
+      draft::resolve_workspace(
+          unmatched_sources,
+          workspace.package.string(),
+          std::move(unmatched),
+          unmatched_diagnostics);
+  EXPECT(state, !unmatched_result.ok);
+  EXPECT(state, !unmatched_result.committed);
+  EXPECT(state, provider.calls == 3);
+  EXPECT(state,
+      draft::render_diagnostics(unmatched_sources, unmatched_diagnostics).find(
+          "selector did not match") != std::string::npos);
+  draft::DiagnosticSink persisted_diagnostics;
+  const draft::ResolutionManifestLoadResult persisted =
+      draft::load_resolution_manifest(workspace.root, persisted_diagnostics);
+  EXPECT(state,
+      persisted.state == draft::ResolutionManifestLoadState::Loaded);
+  EXPECT(state,
+      persisted.manifest.resolved_program_digest ==
+          regenerated.manifest.resolved_program_digest);
 }
 
 void test_compiler_rejection_retries_with_feedback(TestState &state) {
@@ -1816,6 +1921,7 @@ void test_invalid_proposal_budget_stops_before_provider(TestState &state) {
 int main() {
   TestState state;
   test_resolution_reuse_revalidation_and_failure(state);
+  test_selective_regeneration_changes_only_selected_source(state);
   test_compiler_rejection_retries_with_feedback(state);
   test_external_inputs_commit_without_synthesis(state);
   test_interface_sites_precede_dependent_bodies(state);

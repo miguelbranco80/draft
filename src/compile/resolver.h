@@ -31,13 +31,13 @@ namespace draft {
 
 // Resolution cancellation is provider-neutral. The driver may source it from a
 // signal, while an embedding may use an atomic flag or task cancellation token.
-// The resolver polls only at transaction boundaries; provider adapters and
-// validation runners remain responsible for interrupting their own child work.
+// The resolver polls only at transaction boundaries; provider adapters remain
+// responsible for interrupting their own child work.
 using ResolutionCancellationRequested = bool (*)(void *state);
 
 // Options own the provider adapter values but borrow provider.state. Caller
-// lowering flags do not control resolution; the resolver performs semantic
-// candidate checks and requests native validation graphs explicitly.
+// lowering flags do not control resolution; the resolver performs complete
+// semantic candidate checks before committing source.
 struct ResolveWorkspaceOptions {
   CompileWorkspaceOptions compile;
   SynthesisProvider provider;
@@ -52,6 +52,13 @@ struct ResolveWorkspaceOptions {
   // existing expansion object, which is checked under its current obligation
   // and re-pinned only if the entire working program succeeds.
   bool revalidate = false;
+  // Regeneration deliberately asks the provider to reconsider accepted source
+  // even when its semantic obligation is still fresh. An empty selector vector
+  // selects every synthesis site; otherwise each entry is one exact persistent
+  // `site-...` identity and must match a current site. Ordinary stale or missing
+  // sites elsewhere are still resolved normally.
+  bool regenerate = false;
+  std::vector<std::string> regeneration_site_identities;
   // External inputs are configured as one complete set, never patched by
   // individual rows. When false, an existing manifest's set is preserved so a
   // routine synthesis refresh cannot silently unlock a build. When true, this
@@ -69,6 +76,7 @@ struct ResolveWorkspaceResult {
   bool committed = false;
   std::size_t reused_sites = 0;
   std::size_t synthesized_sites = 0;
+  std::size_t regenerated_sites = 0;
   ResolutionManifest manifest;
 };
 

@@ -224,6 +224,9 @@ staged pins atomically. It does not run tests, benchmarks, or judgments.
 The bootstrap adapter discovers `codex` through `PATH`; `--model` is optional
 and omission uses the Codex-configured default. Do not add executable paths,
 credentials, or Codex installation hashes to Draft source identity.
+Use `draftc resolve <package> --regenerate` to reconsider every fresh expansion,
+or append one exact `site-...` identity to reconsider only that site. This is
+the deliberate source-changing operation; changing `--model` alone is not.
 
 `draft resolve --revalidate` never contacts an agent. It stages existing
 generated source under current obligations, runs ordinary compiler checks, and

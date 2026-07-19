@@ -518,4 +518,18 @@ if(BUILD_TESTING)
     PROPERTIES
       WILL_FAIL TRUE
   )
+
+  # Public optional-argument parsing reaches the resolver's exact-site
+  # selection rule without starting Codex for any unrelated fresh pin.
+  add_test(
+    NAME draft_regeneration_rejects_unknown_site
+    COMMAND draftc resolve
+      "${CMAKE_CURRENT_SOURCE_DIR}/examples/agent-acceptance/app"
+      --regenerate site-does-not-exist
+  )
+  set_tests_properties(
+    draft_regeneration_rejects_unknown_site
+    PROPERTIES
+      WILL_FAIL TRUE
+  )
 endif()

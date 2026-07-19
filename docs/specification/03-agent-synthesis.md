@@ -344,7 +344,8 @@ tooling.
 
 ```text
 draft resolve
-draft resolve codec/jpeg:decode
+draft resolve --regenerate
+draft resolve --regenerate site-0123456789abcdef
 draft resolve --revalidate
 draft judge
 draft judge codec/jpeg:decode
@@ -371,6 +372,15 @@ how the accepted source was obtained. Changing them does not change the source,
 the synthesis obligation, pin freshness, or resolved-program identity. A user
 who wants the configured provider to reconsider otherwise-fresh source must
 request regeneration explicitly.
+
+`draft resolve --regenerate` requests a new checked proposal for every current
+synthesis site. Supplying one exact persistent `site-...` identity regenerates
+only that site; unrelated fresh sites retain their exact selected expansion.
+Missing or stale unselected sites still follow ordinary resolution rules. Every
+selector must match, and any rejected proposal or unmatched selector leaves the
+previous manifest authoritative. Regeneration may accept the same source bytes;
+the resolved program changes only when the selected expansion bytes change.
+Regeneration and provider-free `--revalidate` are mutually exclusive.
 
 An external program input is dependency source, a foreign-provider artifact or
 summary, or a runtime asset supplied outside the workspace and selected compiler
