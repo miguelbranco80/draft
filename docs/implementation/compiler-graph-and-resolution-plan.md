@@ -63,9 +63,11 @@ cache.
   deterministic. Building its sorted identity and reverse-adjacency views costs
   O((packages + imports) log(packages + imports)); source invalidation walks the
   completed reverse rows in O(packages + imports). This dependency-ordered
-  front-end traversal remains sequential. Parallel execution is used only for
-  the closed independent native-object ready set after target lowering and is
-  not a source of different results.
+  semantic traversal remains sequential. Parallel execution is used for the
+  immutable provider-call ready set during resolution and the closed independent
+  native-object ready set after target lowering. In both cases workers write
+  task-indexed slots and the owning thread publishes in stable order, so
+  scheduling cannot change compiler results.
 - The graph reuses loaded files, tokens, syntax, declarations, interned types,
   checked expansions, and dependency facts instead of reloading the workspace
   for each conceptual phase.
@@ -166,10 +168,10 @@ cache.
    ordinary graph construction plus separately selected typed test- and
    benchmark-context graphs, rather than repeated compiler/workspace passes for
    interface and body stages. Typed validation state survives the body-source
-   transition. Parallel front-end scheduling was therefore not added: its
+   transition. Parallel package-semantic traversal was therefore not added: its
    coordination and timing-recorder complexity are not justified by the
-   measured remaining front-end work. The sorted sequential ready set is the
-   qualified implementation.
+   measured remaining work. The sorted sequential package ready set is the
+   qualified implementation; provider waiting is a separate task-local boundary.
 8. A final complexity audit replaced whole-edge rescans and shifting sorted
    vectors with one explicit adjacency index and PackageId-ordered min-heap
    (`83cd919`), then retained that index across graph continuations
@@ -201,6 +203,12 @@ cache.
     Linux qualification also made assertion-only invariants warning-clean under
     NDEBUG and bound the independent C-client oracle to that selected LLVM's
     Clang (`fd137b1`).
+14. The complete Draft coding skill is embedded in the compiler and materialized
+    once only for a provider-using command (`225477d`). Synthesis now freezes each
+    semantic ready set, runs independent provider calls in bounded work-graph
+    waves, checks responses sequentially, and repeats only rejected sites in
+    correction waves. The Codex runtime uses multithread-safe `posix_spawnp` and
+    one request directory per call.
 
 The qualifying timing counters were `compiler passes: 1`, `workspace loads: 1`
 for the handwritten hello build. The resolved agent-acceptance build, whose
@@ -229,8 +237,11 @@ and tests as applicable.
   selected source graph and produces the same native program as a later
   provider-free `build` of the committed source. Interface/body rounds never
   reconstruct the same workspace graph.
-- The sorted sequential front-end scheduler produces stable manifests,
+- The sorted sequential package-semantic scheduler produces stable manifests,
   generated-source selections, and diagnostics.
+- A synthesis ready wave may invoke only independent opaque-set sites in
+  parallel. Proposal checking remains single-threaded, lowest-site provider
+  failures are stable, and only rejected sites enter a correction wave.
 - The native ready set may run concurrently only after complete lowering.
   Lowest-ID failures, task-indexed result slots, and ordered publication keep
   native diagnostics and artifacts equal to the one-worker oracle.
@@ -244,8 +255,12 @@ and tests as applicable.
 ## Automated evidence
 
 - `draft_resolver_tests` covers provenance-independent freshness and identity,
-  selective regeneration, bounded rejected proposals, provider-free reuse,
-  cancellation, validation-context graphs, and failure without commit.
+  selective regeneration, bounded rejected proposals, overlapping initial and
+  correction waves, accepted-site removal, concurrent interface opacity,
+  canonically ordered parallel failures, provider-free reuse, cancellation,
+  validation-context graphs, and failure without commit.
+- `draft_codex_cli_tests` exercises concurrent real process launches, isolated
+  request directories, and the one shared embedded-skill materialization.
 - `draft_resolution_tests`, `draft_resolution_store_tests`, and
   `draft_resolution_overlay_tests` cover missing, corrupt, stale, duplicate,
   mismatched, interrupted, and transaction-injected persistent inputs.

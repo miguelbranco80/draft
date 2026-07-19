@@ -13,8 +13,9 @@ for example, `draftc build examples/hello-world -o hello_world --timings=all`.
 The compact form writes a hierarchical wall-clock report and deterministic
 work counters to stderr after ordinary command output. It separates
 resolution-manifest work, interface discovery and in-memory source transitions,
-body-semantic continuation, MIR/LLVM code generation, native
-object/link/debug-symbol work, and validation work when those phases run.
+body-semantic continuation, provider-synthesis ready waves, MIR/LLVM code
+generation, native object/link/debug-symbol work, and validation work when those
+phases run.
 Native commands additionally report the user and system CPU accounted to the
 remaining Clang assembler/linker operations, other host tools, and validation
 executables. In-process LLVM work contributes ordinary parent wall/CPU time.
@@ -131,6 +132,11 @@ for sites that cannot reuse a valid saved expansion. The provider returns Draft
 source, which is parsed and checked through the ordinary pipeline. The compiler
 commits generated objects and the manifest only after checking the complete
 candidate program. It does not run tests, benchmarks, or judgments.
+Independent sites in one semantic ready set are called concurrently, up to four
+Codex processes. Proposal checking remains sequential in canonical package and
+obligation order after each wave joins; only rejected sites enter the next
+correction wave. Timings report `provider synthesis` wall time plus ready-wave
+and call counters.
 
 `--build` continues the final checked graph through MIR, LLVM, and the native
 adapter after a successful resolution commit. It accepts the same `-o` and

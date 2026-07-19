@@ -19,6 +19,7 @@
 #include "elaborator/obligation.h"
 #include "source/diagnostic.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -97,6 +98,10 @@ using PrepareSynthesisProviderFunction = bool (*)(
 // and therefore no invocation is required. prepare may be null for providers
 // with no command-owned setup. Identity strings are validated only before an
 // actual call, and prepare is never called for a provider-free resolution.
+// maximum_parallel_calls must be in the inclusive range 1..64. It is a bound,
+// not a scheduling request: the resolver may call fewer functions when the
+// semantic ready set is smaller. Providers declaring a value above one must make
+// synthesize safe for concurrent calls over the same state after prepare returns.
 struct SynthesisProvider {
   std::string provider_identity;
   std::string model_identity;
@@ -104,6 +109,7 @@ struct SynthesisProvider {
   void *state = nullptr;
   PrepareSynthesisProviderFunction prepare = nullptr;
   SynthesizeFunction synthesize = nullptr;
+  std::size_t maximum_parallel_calls = 1;
 };
 
 } // namespace draft

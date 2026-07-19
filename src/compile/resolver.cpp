@@ -1,4 +1,4 @@
-// Direct sequential resolver implementation over typed surface obligations.
+// Deterministic resolver implementation over typed surface obligations.
 //
 // The authoritative CompileWorkspaceResult advances through interface rounds,
 // body closure, and target lowering without reloading its workspace. Pins and
@@ -6,11 +6,13 @@
 // deterministic package/obligation order; its private proposal check copies
 // the current graph so opaque siblings cannot observe each other, then uses the
 // same in-memory source-transition operation as the authoritative stage.
-// Parallel providers may be added only as a scheduling optimization after
-// dependency-ready sets are explicit.
+// Independent provider calls run in bounded ready waves, then proposal checks
+// and publication return to the resolver thread in stable site order.
 
 #include "compile/resolver.h"
 
+#include "base/timing.h"
+#include "base/work_graph.h"
 #include "elaborator/generated_source.h"
 #include "elaborator/resolved_program.h"
 #include "elaborator/resolution_overlay.h"
@@ -142,6 +144,13 @@ namespace {
     diagnostics.error(
         SourceRange::invalid(),
         "synthesis provider identities must not be empty");
+    return false;
+  }
+  if (provider.maximum_parallel_calls == 0 ||
+      provider.maximum_parallel_calls > 64) {
+    diagnostics.error(
+        SourceRange::invalid(),
+        "synthesis provider parallel-call bound must be between 1 and 64");
     return false;
   }
   return true;
@@ -312,6 +321,89 @@ void publish_diagnostics(
   return candidate_ok && compiled.ok && !diagnostics.has_errors();
 }
 
+// One site row owns all mutable resolution state for one obligation in stable
+// package/obligation order. Pointers borrow the immutable stage surface for the
+// duration of resolve_stage. Provider workers read only request and write no row;
+// the resolver thread installs responses, rejection histories, pins, and source
+// bytes after each wave joins. This separation is the concurrency invariant.
+struct StageSite {
+  std::size_t package_index = 0;
+  const AgentObligation *obligation = nullptr;
+  SourceRange surface_range;
+  bool regenerate = false;
+  bool requires_provider = false;
+  bool accepted = false;
+  bool expansion_boundary_checked = false;
+  ResolutionPin pin;
+  GeneratedExpansion expansion;
+  SynthesisRequest request;
+};
+
+// One call slot is indexed by WorkTaskId within one provider wave. diagnostics
+// and response are written by exactly one worker, then read only after join.
+// site_index maps the transient task ID back to the persistent stage order.
+struct ProviderWaveCall {
+  std::size_t site_index = 0;
+  // Set immediately before entering the provider callback. A queued task that
+  // observes cancellation remains false, which lets timing distinguish work
+  // submitted to the scheduler from a provider callback actually entered.
+  bool invoked = false;
+  bool ok = false;
+  SynthesisResponse response;
+  DiagnosticSink diagnostics;
+};
+
+// The scheduler erases operation types to a plain context pointer. This direct
+// context records the two disjoint tables needed by invoke_provider_task: an
+// immutable site table and task-indexed mutable result slots.
+struct ProviderWaveContext {
+  const SynthesisProvider *provider = nullptr;
+  const std::vector<StageSite> *sites = nullptr;
+  std::vector<ProviderWaveCall> *calls = nullptr;
+  void *cancellation_state = nullptr;
+  ResolutionCancellationRequested cancellation_requested = nullptr;
+};
+
+// Invokes one stateless proposal request. The callback may internally retry its
+// own process transport, but it cannot check or publish Draft source here. A
+// missing provider diagnostic is converted into a task-local compiler error so
+// the main thread can always publish one stable lowest-site failure.
+[[nodiscard]] bool invoke_provider_task(
+    void *opaque,
+    WorkTaskId task,
+    std::string &failure) {
+  auto *context = static_cast<ProviderWaveContext *>(opaque);
+  ProviderWaveCall &call = (*context->calls)[task];
+  const StageSite &site = (*context->sites)[call.site_index];
+  if (context->cancellation_requested != nullptr &&
+      context->cancellation_requested(context->cancellation_state)) {
+    call.diagnostics.error(site.surface_range, "resolution cancelled");
+    failure = "resolution cancelled before synthesis provider call for site " +
+        site.obligation->site_identity;
+    return false;
+  }
+  call.invoked = true;
+  const bool callback_ok = context->provider->synthesize(
+      context->provider->state,
+      site.request,
+      call.response,
+      call.diagnostics);
+  if (!callback_ok && !call.diagnostics.has_errors()) {
+    call.diagnostics.error(
+        site.surface_range,
+        "synthesis provider failed without a diagnostic");
+  }
+  // A provider cannot report an error and simultaneously declare success. The
+  // diagnostic remains authoritative at this boundary; treating the response
+  // as usable would hide the error when task-local sinks are joined.
+  call.ok = callback_ok && !call.diagnostics.has_errors();
+  if (!call.ok) {
+    failure = "synthesis provider failed for site " +
+        site.obligation->site_identity;
+  }
+  return call.ok;
+}
+
 // One elaboration stage owns exactly the synthesis sites visible in its input
 // compilation. Interface discovery contains declaration/member sites; the body
 // compilation after those edits contains statement/expression/assembly sites.
@@ -342,10 +434,12 @@ struct ResolvedStage {
   ResolvedStage stage;
   stage.manifest.target_identity = options.compile.target.facts.identity;
   std::vector<ResolutionSurfacePackage> surface_packages;
+  std::vector<StageSite> sites;
 
-  // Process sites in deterministic package and obligation order. Fresh pins
-  // reuse verified store bytes; stale or missing pins call the provider unless
-  // this is the provider-free revalidation mode.
+  // Collect the complete semantic ready set before invoking any provider.
+  // Fresh pins load verified store bytes immediately. Stale/missing rows retain
+  // owned requests whose obligations were all computed against the same opaque
+  // surface, so no completion timing can change a sibling request.
   for (std::size_t package_index = 0;
        package_index < surface.packages.size(); ++package_index) {
     if (!surface.packages[package_index].has_value()) continue;
@@ -371,11 +465,13 @@ struct ResolvedStage {
           existing->input_digest == obligation.input_digest &&
           !regenerate;
 
-      GeneratedExpansion expansion;
-      ResolutionPin pin;
-      pin.site_identity = obligation.site_identity;
-      pin.kind = obligation.kind;
-      pin.input_digest = obligation.input_digest;
+      StageSite site;
+      site.package_index = package_index;
+      site.obligation = &obligation;
+      site.regenerate = regenerate;
+      site.pin.site_identity = obligation.site_identity;
+      site.pin.kind = obligation.kind;
+      site.pin.input_digest = obligation.input_digest;
       const SourceRange surface_range = obligation_range(
           surface.graph.packages[package_index].loaded, obligation);
       if (!surface_range.is_valid()) {
@@ -384,26 +480,27 @@ struct ResolvedStage {
             "synthesis obligation has no source range for its persistent map");
         return stage;
       }
-      pin.source_map.root_identity = obligation.root_identity;
-      pin.source_map.root_relative_path = obligation.root_relative_path;
-      pin.source_map.source_relative_path = obligation.source_relative_path;
-      pin.source_map.surface_begin = surface_range.begin.offset;
-      pin.source_map.surface_end = surface_range.end.offset;
-      bool expansion_boundary_checked = false;
+      site.surface_range = surface_range;
+      site.pin.source_map.root_identity = obligation.root_identity;
+      site.pin.source_map.root_relative_path = obligation.root_relative_path;
+      site.pin.source_map.source_relative_path = obligation.source_relative_path;
+      site.pin.source_map.surface_begin = surface_range.begin.offset;
+      site.pin.source_map.surface_end = surface_range.end.offset;
       if (fresh || (options.revalidate && existing != nullptr &&
                     existing->kind == obligation.kind)) {
         if (!load_generated_expansion(
                 options.compile.workspace.workspace_directory,
                 existing->expansion_digest,
-                expansion.source,
+                site.expansion.source,
                 diagnostics)) {
           return stage;
         }
-        expansion.digest = existing->expansion_digest;
-        pin.expansion_digest = existing->expansion_digest;
-        pin.provider_identity = existing->provider_identity;
-        pin.model_identity = existing->model_identity;
-        pin.configuration_identity = existing->configuration_identity;
+        site.expansion.digest = existing->expansion_digest;
+        site.pin.expansion_digest = existing->expansion_digest;
+        site.pin.provider_identity = existing->provider_identity;
+        site.pin.model_identity = existing->model_identity;
+        site.pin.configuration_identity = existing->configuration_identity;
+        site.accepted = true;
         ++result.reused_sites;
       } else {
         if (options.revalidate) {
@@ -413,10 +510,6 @@ struct ResolvedStage {
           return stage;
         }
         if (!provider_is_configured(options.provider, diagnostics)) return stage;
-        if (!prepare_provider(
-                options.provider, provider_prepared, diagnostics)) {
-          return stage;
-        }
         const AgentRecord *record = find_record(package, obligation.syntax);
         if (record == nullptr) {
           diagnostics.error(
@@ -424,121 +517,190 @@ struct ResolvedStage {
               "synthesis obligation has no provider metadata record");
           return stage;
         }
-        SynthesisRequest request;
-        if (!build_request(obligation, *record, request, diagnostics)) return stage;
-        bool accepted = false;
-        for (std::uint32_t attempt = 1;
-             attempt <= options.maximum_proposal_attempts; ++attempt) {
-          if (resolution_cancelled(options, diagnostics)) return stage;
-          SynthesisResponse response;
-          const std::size_t before_provider = diagnostics.error_count();
-          if (!options.provider.synthesize(
-                  options.provider.state,
-                  request,
-                  response,
-                  diagnostics)) {
-            if (diagnostics.error_count() == before_provider) {
-              diagnostics.error(
-                  SourceRange::invalid(),
-                  "synthesis provider failed without a diagnostic");
-            }
-            return stage;
-          }
-
-          GeneratedExpansion candidate_expansion;
-          candidate_expansion.source = std::move(response.source);
-          candidate_expansion.digest = sha256(candidate_expansion.source);
-          ResolutionPin candidate_pin = pin;
-          candidate_pin.expansion_digest = candidate_expansion.digest;
-          candidate_pin.provider_identity =
-              options.provider.provider_identity;
-          candidate_pin.model_identity = options.provider.model_identity;
-          candidate_pin.configuration_identity =
-              options.provider.configuration_identity;
-          candidate_pin.source_map.expansion_bytes =
-              static_cast<std::uint64_t>(candidate_expansion.source.size());
-
-          // Lexical boundary checks and the ordinary stage compile share one
-          // private sink. On rejection its generated-source rendering becomes
-          // correction data for the next stateless provider invocation.
-          DiagnosticSink attempt_diagnostics;
-          const std::string display_name =
-              "<generated/" + obligation.site_identity + ">";
-          bool proposal_ok = validate_generated_source_boundary(
-              sources,
-              display_name,
-              candidate_expansion.source,
-              attempt_diagnostics);
-          if (proposal_ok) {
-            proposal_ok = proposal_compiles(
-                sources,
-                root_package_directory,
-                stage_compile_options,
-                surface,
-                package.identity,
-                surface.graph.packages[package_index].loaded,
-                obligation,
-                candidate_pin,
-                candidate_expansion,
-                attempt_diagnostics);
-          }
-          if (proposal_ok) {
-            expansion = std::move(candidate_expansion);
-            pin = std::move(candidate_pin);
-            expansion_boundary_checked = true;
-            accepted = true;
-            ++result.synthesized_sites;
-            if (regenerate) ++result.regenerated_sites;
-            break;
-          }
-          if (!attempt_diagnostics.has_errors()) {
-            attempt_diagnostics.error(
-                surface_range,
-                "compiler rejected a synthesis proposal without an error");
-          }
-          const std::string rendered =
-              render_diagnostics(sources, attempt_diagnostics);
-          request.prior_rejections.push_back({
-              attempt,
-              std::move(candidate_expansion.source),
-              rendered,
-          });
-          if (attempt == options.maximum_proposal_attempts) {
-            publish_diagnostics(attempt_diagnostics, diagnostics);
-            diagnostics.note(
-                surface_range,
-                "synthesis site exhausted " + std::to_string(attempt) +
-                    " compiler-checked proposal attempt(s)");
-            return stage;
-          }
-        }
-        if (!accepted) {
-          diagnostics.error(
-              surface_range,
-              "synthesis proposal loop ended without an accepted expansion");
+        site.requires_provider = true;
+        if (!build_request(
+                obligation, *record, site.request, diagnostics)) {
           return stage;
         }
       }
-      pin.source_map.expansion_bytes =
-          static_cast<std::uint64_t>(expansion.source.size());
+      sites.push_back(std::move(site));
+    }
+  }
 
-      // This check runs for reused bytes as well as new proposals. It prevents
-      // an older or externally supplied store from smuggling provider work into
-      // the next stage before the complete resolved-program check can run.
+  // Each attempt is one bounded ready wave. Only sites rejected by the ordinary
+  // compiler enter the next wave, carrying their own exact correction history.
+  // Accepted siblings never become visible to those requests or private checks.
+  for (std::uint32_t attempt = 1;
+       attempt <= options.maximum_proposal_attempts; ++attempt) {
+    std::vector<std::size_t> pending_sites;
+    for (std::size_t site_index = 0; site_index < sites.size(); ++site_index) {
+      if (sites[site_index].requires_provider && !sites[site_index].accepted) {
+        pending_sites.push_back(site_index);
+      }
+    }
+    if (pending_sites.empty()) break;
+    if (resolution_cancelled(options, diagnostics)) return stage;
+    if (!prepare_provider(
+            options.provider, provider_prepared, diagnostics)) {
+      return stage;
+    }
+
+    WorkGraph graph;
+    graph.tasks.resize(pending_sites.size());
+    std::vector<ProviderWaveCall> calls(pending_sites.size());
+    for (std::size_t task_index = 0; task_index < calls.size(); ++task_index) {
+      calls[task_index].site_index = pending_sites[task_index];
+    }
+    ProviderWaveContext context{
+        &options.provider,
+        &sites,
+        &calls,
+        options.cancellation_state,
+        options.cancellation_requested,
+    };
+    if (options.compile.timings != nullptr) {
+      options.compile.timings->add_counter("synthesis provider ready waves", 1);
+    }
+    TimingScope provider_timing = options.compile.timings != nullptr
+        ? options.compile.timings->scope("provider synthesis")
+        : TimingScope{};
+    const WorkGraphRunResult wave = run_work_graph(
+        graph,
+        WorkGraphRunOptions{options.provider.maximum_parallel_calls},
+        invoke_provider_task,
+        &context);
+    provider_timing.finish();
+    if (options.compile.timings != nullptr) {
+      std::uint64_t invoked_calls = 0;
+      for (const ProviderWaveCall &call : calls) {
+        if (call.invoked) ++invoked_calls;
+      }
+      options.compile.timings->add_counter(
+          "synthesis provider calls", invoked_calls);
+    }
+
+    // Stable task order is stable package/obligation order. Check each response
+    // only after all provider tasks have joined. Thus compiler state and the
+    // single-threaded timing/source managers are never shared with workers.
+    for (std::size_t task_index = 0; task_index < calls.size(); ++task_index) {
+      ProviderWaveCall &call = calls[task_index];
+      StageSite &site = sites[call.site_index];
+      // Successful provider warnings/notes were visible in the former direct
+      // sequential path. Replay every task-local diagnostic here, before the
+      // stable failure decision, to preserve that behavior deterministically.
+      publish_diagnostics(call.diagnostics, diagnostics);
+      if (task_index >= wave.tasks.size() ||
+          wave.tasks[task_index].state != WorkTaskState::Succeeded ||
+          !call.ok) {
+        if (!call.diagnostics.has_errors()) {
+          diagnostics.error(
+              site.surface_range,
+              "synthesis provider task failed without a diagnostic");
+        }
+        return stage;
+      }
+
+      GeneratedExpansion candidate_expansion;
+      candidate_expansion.source = std::move(call.response.source);
+      candidate_expansion.digest = sha256(candidate_expansion.source);
+      ResolutionPin candidate_pin = site.pin;
+      candidate_pin.expansion_digest = candidate_expansion.digest;
+      candidate_pin.provider_identity = options.provider.provider_identity;
+      candidate_pin.model_identity = options.provider.model_identity;
+      candidate_pin.configuration_identity =
+          options.provider.configuration_identity;
+      candidate_pin.source_map.expansion_bytes =
+          static_cast<std::uint64_t>(candidate_expansion.source.size());
+
+      // Lexical boundary checks and the ordinary stage compile share one
+      // private sink. On rejection its generated-source rendering becomes
+      // correction data for only this site's next stateless provider call.
+      DiagnosticSink attempt_diagnostics;
       const std::string display_name =
-          "<generated/" + obligation.site_identity + ">";
-      if (!expansion_boundary_checked && !validate_generated_source_boundary(
+          "<generated/" + site.obligation->site_identity + ">";
+      bool proposal_ok = validate_generated_source_boundary(
+          sources,
+          display_name,
+          candidate_expansion.source,
+          attempt_diagnostics);
+      if (proposal_ok) {
+        const CompiledPackage &package =
+            *surface.packages[site.package_index];
+        proposal_ok = proposal_compiles(
+            sources,
+            root_package_directory,
+            stage_compile_options,
+            surface,
+            package.identity,
+            surface.graph.packages[site.package_index].loaded,
+            *site.obligation,
+            candidate_pin,
+            candidate_expansion,
+            attempt_diagnostics);
+      }
+      if (proposal_ok) {
+        site.expansion = std::move(candidate_expansion);
+        site.pin = std::move(candidate_pin);
+        site.expansion_boundary_checked = true;
+        site.accepted = true;
+        ++result.synthesized_sites;
+        if (site.regenerate) ++result.regenerated_sites;
+        continue;
+      }
+      if (!attempt_diagnostics.has_errors()) {
+        attempt_diagnostics.error(
+            site.surface_range,
+            "compiler rejected a synthesis proposal without an error");
+      }
+      const std::string rendered =
+          render_diagnostics(sources, attempt_diagnostics);
+      site.request.prior_rejections.push_back({
+          attempt,
+          std::move(candidate_expansion.source),
+          rendered,
+      });
+      if (attempt == options.maximum_proposal_attempts) {
+        publish_diagnostics(attempt_diagnostics, diagnostics);
+        diagnostics.note(
+            site.surface_range,
+            "synthesis site exhausted " + std::to_string(attempt) +
+                " compiler-checked proposal attempt(s)");
+        return stage;
+      }
+    }
+  }
+
+  // Publish verified rows in their original semantic order. Reused bytes still
+  // receive a current lexical boundary check; provider bytes already passed it
+  // as part of their private ordinary-compiler acceptance.
+  for (StageSite &site : sites) {
+    if (!site.accepted) {
+      diagnostics.error(
+          site.surface_range,
+          "synthesis proposal waves ended without an accepted expansion");
+      return stage;
+    }
+    site.pin.source_map.expansion_bytes =
+        static_cast<std::uint64_t>(site.expansion.source.size());
+
+    // This check runs for reused bytes as well as new proposals. It prevents an
+    // older or externally supplied store from smuggling provider work into the
+    // next stage before the complete resolved-program check can run.
+    const std::string display_name =
+        "<generated/" + site.obligation->site_identity + ">";
+    if (!site.expansion_boundary_checked &&
+        !validate_generated_source_boundary(
               sources,
               display_name,
-              expansion.source,
+              site.expansion.source,
               diagnostics)) {
-        return stage;
-      }
-      if (!add_expansion(expansions, std::move(expansion), diagnostics)) {
-        return stage;
-      }
-      stage.manifest.pins.push_back(std::move(pin));
+      return stage;
     }
+    if (!add_expansion(
+            expansions, std::move(site.expansion), diagnostics)) {
+      return stage;
+    }
+    stage.manifest.pins.push_back(std::move(site.pin));
   }
 
   const ResolutionOverlayResult overlays = build_resolution_overlays(

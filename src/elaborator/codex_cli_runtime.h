@@ -15,6 +15,7 @@
 #include "elaborator/obligation.h"
 #include "source/diagnostic.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <memory>

@@ -31,6 +31,18 @@ user or store, while exhaustion publishes only the final rejection and leaves
 the prior manifest untouched. This compiler-level budget is independent of the
 Codex adapter's process retry budget for timeouts and process failures.
 
+The resolver freezes each semantic ready set before provider work. Independent
+requests in that set run through the base work graph with a provider-declared
+worker bound; the Codex adapter currently permits four concurrent calls. Each
+worker reads one immutable request and writes one private response/diagnostic
+slot. After the entire wave joins, the resolver checks proposals sequentially in
+canonical package/obligation order. Rejected sites form the next correction
+wave, while accepted sites leave that wave. This overlaps provider latency
+without sharing SourceManager, semantic state, or timing state with workers, and
+without making sibling expansions visible inside an opaque completeness set.
+Provider failures are also published in that stable canonical order, independent
+of completion timing.
+
 Usable visible names remain compact name/type/value rows. Separately, the
 compiler starts from exact prompt identifier mentions and the enclosing checked
 HIR, then follows resolved procedure references to a fixed point capped at 256
@@ -116,10 +128,12 @@ Codex execution polls an embedding-owned cancellation callback alongside its
 fixed deadline. Cancellation never retries: the adapter kills and reaps the
 active child, emits one compiler diagnostic, and returns before its private
 request directory is destroyed. The resolver also polls the same source before
-each compilation, provider, and final-commit boundary, so fresh-pin
-or pre-provider work cannot ignore cancellation. `draftc resolve` maps SIGINT to
-both callbacks; the reusable adapter installs no process-global signal handler
-itself.
+each compilation and final-commit boundary, and immediately before every queued
+provider task invokes its callback. Fresh-pin work and calls still waiting in a
+bounded wave therefore cannot ignore cancellation; an adapter remains
+responsible for interrupting a call already in progress. `draftc resolve` maps
+SIGINT to both callbacks; the reusable adapter installs no process-global signal
+handler itself.
 
 Every lexically enclosing `deny` region contributes its exact canonical selector
 spellings in outer-to-inner order. These facts are readable policy instructions
@@ -208,14 +222,16 @@ source. It does not change resolution or build semantics, and the durable
 manifest plus content-addressed fragments remain authoritative. An IDE may
 construct the same virtual view without writing it.
 
-The first Codex adapter permits two attempts, each with a five-minute deadline.
-That policy is part of adapter configuration identity. A timed-out child is
-killed and reaped before another attempt starts, and only a successful complete
-response can reach the compiler-owned resolution transaction. The adapter finds
-`codex` through the user's `PATH`; installation bytes, credentials, and physical
-paths are ambient user tooling and are neither hashed nor serialized. An
-embedding may supply another executable command for deterministic tests without
-exposing that plumbing in the language CLI.
+The first Codex adapter permits two process attempts per call, each with a
+five-minute deadline, and at most four independent calls per ready wave. That
+policy is part of adapter configuration identity. A timed-out child is killed
+and reaped before another process attempt starts, and only a successful complete
+response can reach the compiler-owned resolution transaction. Processes start
+through `posix_spawnp`, which is safe while other provider workers are active.
+The adapter finds `codex` through the user's `PATH`; installation bytes,
+credentials, and physical paths are ambient user tooling and are neither hashed
+nor serialized. An embedding may supply another executable command for
+deterministic tests without exposing that plumbing in the language CLI.
 
 `draftc` embeds the repository's complete `write-draft-code` skill as immutable
 bytes. The first stale or explicitly regenerated site lazily materializes those
@@ -300,10 +316,10 @@ explicit snapshot terms are provider vocabulary; neither promises that mutable
 upper source re-evaluates to the displayed value at the site. Other loop shapes
 produce no inferred range.
 
-`draft-agent-obligation-v19`, synthesis request v21 / prompt v20, judgment
+`draft-agent-obligation-v19`, synthesis request v21 / prompt v22, judgment
 request/prompt v4, and compiler content v130 identities make these facts and
 the compiler-checked correction policy stale-pin and evidence inputs. The
-synthesis adapter uses provider identity `openai-codex-cli-v25`; the judgment
+synthesis adapter uses provider identity `openai-codex-cli-v28`; the judgment
 adapter uses `openai-codex-cli-v23`. Both recheck the canonical
 upper-source digest before a child starts. Obligation construction also drops a
 range when the binding or any resolved upper-expression input is hidden by an

@@ -229,6 +229,11 @@ discovers `codex` through `PATH`; `--model` is optional and omission uses the
 Codex-configured default. Skill, model, retry, and adapter identities are
 generation provenance, not accepted-source freshness. Do not add executable
 paths, credentials, or Codex installation hashes to Draft source identity.
+Within one semantic ready set, independent provider requests run in bounded
+parallel waves. The compiler joins the wave, checks proposals sequentially in
+canonical package/obligation order, and sends only rejected sites through a
+correction wave. Never assume another same-wave expansion is visible merely
+because its provider call finished first.
 Use `draftc resolve <package> --regenerate` to reconsider every fresh expansion,
 or append one exact `site-...` identity to reconsider only that site. This is
 the deliberate source-changing operation; changing `--model` alone is not.

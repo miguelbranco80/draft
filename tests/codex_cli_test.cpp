@@ -1,7 +1,7 @@
 // Codex CLI adapter tests use a tiny executable fixture instead of a network
 // provider. The fixture observes the real argv, stdin, JSON Schema, isolated
 // current-directory input, and output-file contract. This keeps the boundary
-// test deterministic while still exercising fork/exec and exact JSON parsing.
+// test deterministic while still exercising posix_spawn and exact JSON parsing.
 
 #include "elaborator/codex_cli.h"
 
@@ -9,6 +9,7 @@
 #include "elaborator/provider.h"
 #include "source/diagnostic.h"
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
@@ -92,7 +93,8 @@ struct TemporaryFixture {
         "test -f \"$work/draft-skill/SKILL.md\" || exit 36\n"
         "grep -q DRAFT_SYNTHESIS_PROVIDER_MODE \"$work/draft-skill/SKILL.md\" || exit 37\n"
         "test -f \"$work/attachment-00000000.bin\" || exit 26\n"
-        "test \"$(cat \"$work/attachment-00000000.bin\")\" = attachment-bytes || exit 27\n"
+        "attachment=$(cat \"$work/attachment-00000000.bin\")\n"
+        "case \"$attachment\" in attachment-bytes|parallel-first|parallel-second) ;; *) exit 27 ;; esac\n"
         "test -f \"$work/documentation-00000000-attachment-00000000.bin\" || exit 29\n"
         "test \"$(cat \"$work/documentation-00000000-attachment-00000000.bin\")\" = design-bytes || exit 30\n"
         "test -f \"$work/judgment-00000000-attachment-00000000.bin\" || exit 31\n"
@@ -108,7 +110,23 @@ struct TemporaryFixture {
         "  *DRAFT_SYNTHESIS_PROVIDER_MODE*draft-skill/SKILL.md*REQUEST_FORMAT*draft-synthesis-request-v21*ROOT_IDENTITY*workspace*SOURCE_RELATIVE_PATH*package.draft*ANCHOR_NAME*visible_name*EXPECTED_TYPE_TEXT*i64*TARGET_IDENTITY*draft-aarch64-macos-v5*ENCLOSING_DECLARATION_NAME*visible_name*ENCLOSING_DECLARATION_SOURCE*visible_name*ENCLOSING_SEMANTIC_SKELETON*fixture-skeleton*BRANCH_REFINEMENTS*BRANCH_KIND*loop-condition-entered*BRANCH_SUBJECT*ready*BRANCH_SUBJECT_TYPE_TEXT*bool*LOOP_RANGES*LOOP_RANGE_KIND*header-entry-value*LOOP_RANGE_BINDING*index*LOOP_RANGE_BINDING_TYPE_TEXT*i64*LOOP_RANGE_LOWER_INCLUSIVE*0*LOOP_RANGE_UPPER*limit*LOOP_RANGE_UPPER_TYPE_TEXT*i64*ACTIVE_DENIALS*DENIAL_SELECTOR*assert*PERMITTED_CONTEXT_FIELDS*CONTEXT_FIELD_NAME*allocator*CONTEXT_FIELD_TYPE_TEXT*runtime.Allocator*PARAMETRIC_PARAMETERS*PARAMETER_NAME*T*PARAMETER_CONSTRAINT*integer*PARAMETER_TYPE_TEXT*T*TYPE_CONTEXTS*TYPE_REFERENCE_SHA256*TYPE_DEFINITION*MEMBER_NAME*IMPORTED_PACKAGES*IMPORT_ALIAS*lib*IMPORT_DEFINITION*DECLARATION_NAME*make*IMPORT_DOCUMENTATION*IMPORT_DOC_ANCHOR*make*IMPORT_DOC_TEXT*imported-design*IMPORT_DOC_ATTACHMENT_PATH*IMPORTED.md*GUIDING_JUDGMENTS*JUDGMENT_ANCHOR*visible_name*JUDGMENT_CLAIM*preserve-invariant*JUDGMENT_ATTACHMENT_PATH*EVIDENCE.md*DOCUMENTATION*DOC_ANCHOR*visible_name*DOC_TEXT*design-context*DOC_ATTACHMENT_PATH*DESIGN.md*VALIDATION_CONTEXT*VALIDATION_KIND*test*VALIDATION_SOURCE_PATH*behavior_test.draft*VALIDATION_SOURCE*test_fixture*VALIDATION_TYPING_COMPLETE*true*VALIDATION_PROCEDURE_NAME*test_fixture*VALIDATION_PROCEDURE_TYPE_TEXT*proc*VALIDATION_STATE_SIZE*24*VALIDATION_REFERENCE_NAME*visible_name*VALIDATION_REFERENCE_TYPE_TEXT*u32*VALIDATION_REFERENCE_HAS_CONSTANT*true*VALIDATION_REFERENCE_CONSTANT*fixture-constant*AUTHOR_PROMPT*make-answer*BINDING_NAME*visible_name*BINDING_TYPE_TEXT*u32*BINDING_HAS_CONSTANT*true*BINDING_CONSTANT*fixture-constant*RELEVANT_DECLARATIONS*DECLARATION_SOURCE_PATH*package.draft*DECLARATION_NAME*visible_name*DECLARATION_TYPE_TEXT*u32*DECLARATION_HAS_CONSTANT*true*DECLARATION_CONSTANT*fixture-constant*DECLARATION_SOURCE*visible_name*FRAGMENT_CONTRACT*EXPECTED_TYPE_TEXT*COMPILER_REJECTIONS*) ;;\n"
         "  *) exit 28 ;;\n"
         "esac\n"
-        "printf '%s' '{\"source\":\"40 + 2\\n\"}' > \"$output\"\n";
+        "result='{\"source\":\"40 + 2\\n\"}'\n"
+        "fixture=$(dirname \"$0\")\n"
+        "case \"$attachment\" in\n"
+        "  parallel-first) marker=first; peer=second; result='{\"source\":\"11\"}' ;;\n"
+        "  parallel-second) marker=second; peer=first; result='{\"source\":\"31\"}' ;;\n"
+        "  *) marker=; peer= ;;\n"
+        "esac\n"
+        "if test -n \"$marker\"; then\n"
+        "  : > \"$fixture/$marker.ready\"\n"
+        "  count=0\n"
+        "  while ! test -f \"$fixture/$peer.ready\"; do\n"
+        "    count=$((count + 1))\n"
+        "    test \"$count\" -lt 500 || exit 38\n"
+        "    sleep 0.01\n"
+        "  done\n"
+        "fi\n"
+        "printf '%s' \"$result\" > \"$output\"\n";
     script.close();
     if (!script) std::exit(EXIT_FAILURE);
 #if defined(__APPLE__) || defined(__unix__)
@@ -323,7 +341,8 @@ void test_adapter_contract_and_identity(TestState &state) {
       draft::configure_codex_cli_provider(options, provider_state, diagnostics);
   EXPECT(state, provider.synthesize != nullptr);
   EXPECT(state, provider.prepare != nullptr);
-  EXPECT(state, provider.provider_identity == "openai-codex-cli-v26");
+  EXPECT(state, provider.provider_identity == "openai-codex-cli-v28");
+  EXPECT(state, provider.maximum_parallel_calls == 4);
   EXPECT(state, provider.model_identity == "fixture-model");
   EXPECT(state, provider.configuration_identity ==
       provider_state.configuration_identity);
@@ -355,6 +374,46 @@ void test_adapter_contract_and_identity(TestState &state) {
   EXPECT(state, synthesized);
   EXPECT(state, response.source == "40 + 2\n");
   EXPECT(state, !diagnostics.has_errors());
+
+  // One prepared state may serve independent request directories concurrently.
+  // This exercises the real posix_spawn boundary and shared immutable skill
+  // link rather than proving concurrency only with the in-process resolver fake.
+  // Distinct attachment/response pairs detect request-directory cross-talk; the
+  // child fixture releases neither response until both processes are present.
+  std::array<draft::SynthesisResponse, 2> parallel_responses;
+  std::array<draft::DiagnosticSink, 2> parallel_diagnostics;
+  std::array<bool, 2> parallel_ok{false, false};
+  std::array<draft::SynthesisRequest, 2> parallel_requests{request, request};
+  parallel_requests[0].attachments[0].contents = "parallel-first";
+  parallel_requests[1].attachments[0].contents = "parallel-second";
+  for (draft::SynthesisRequest &parallel_request : parallel_requests) {
+    parallel_request.attachments[0].size =
+        parallel_request.attachments[0].contents.size();
+    parallel_request.attachments[0].digest =
+        draft::sha256(parallel_request.attachments[0].contents);
+  }
+  std::thread first_call([&]() {
+    parallel_ok[0] = provider.synthesize(
+        provider.state,
+        parallel_requests[0],
+        parallel_responses[0],
+        parallel_diagnostics[0]);
+  });
+  std::thread second_call([&]() {
+    parallel_ok[1] = provider.synthesize(
+        provider.state,
+        parallel_requests[1],
+        parallel_responses[1],
+        parallel_diagnostics[1]);
+  });
+  first_call.join();
+  second_call.join();
+  for (std::size_t index = 0; index < parallel_ok.size(); ++index) {
+    EXPECT(state, parallel_ok[index]);
+    const std::string expected = index == 0 ? "11" : "31";
+    EXPECT(state, parallel_responses[index].source == expected);
+    EXPECT(state, !parallel_diagnostics[index].has_errors());
+  }
 
   // A stateless correction call carries the exact rejected bytes and rendered
   // compiler diagnostics in explicit length-prefixed fields. The fixture

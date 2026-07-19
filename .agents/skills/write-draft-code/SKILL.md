@@ -22,9 +22,13 @@ checkout. Use this narrower workflow instead of the editing workflow below:
    bindings, target facts, denials, validation context, fragment contract, and
    compiler rejections as the complete semantic environment. They override an
    under-specified or conflicting author prompt.
-3. Do not inspect a repository, edit files, run commands, infer unavailable
-   core APIs, or request external context. An API is available only when its
-   declaration appears in supplied context.
+3. Use read-only file inspection only to load compiler-supplied files reachable
+   through the private request tree, including the `draft-skill` link. Do not
+   inspect a repository or unrelated path, edit files, run builds or programs,
+   use the network, or request external context. Repository links in the
+   embedded references are provenance only in this mode; do not follow them.
+   The embedded guidance plus typed request is the complete working authority.
+   An API is available only when its declaration appears in supplied context.
 4. Return only the requested ordinary Draft fragment in the response schema.
    Never return Markdown, a `judge` construct, another unresolved `...`, or a
    declaration/block wrapper forbidden by the fragment contract.

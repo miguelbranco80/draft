@@ -214,6 +214,11 @@ phase structure and counters before comparing small durations, which vary with
 the host and warm filesystem caches. Timing is diagnostic only and never
 changes program identity or output.
 
+Provider-using resolution reports `provider synthesis` for each ready wave and
+counts both `synthesis provider ready waves` and actual provider calls. Calls in
+one wave may overlap, so compare the enclosing wall time with the call count;
+do not add per-worker timing writes to the single-threaded recorder.
+
 For resolved programs, distinguish `workspace loads` from `workspace source
 transitions`. A checked `...` expansion is reparsed into the existing
 command-local graph and reanalyzes only its package plus transitive import

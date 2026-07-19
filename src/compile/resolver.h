@@ -11,9 +11,12 @@
 // Declaration/member sites form an early opaque interface stage; statement,
 // expression, and assembly sites run only after those interfaces are installed
 // and bodies can be checked. Both stages share one atomic transaction and never
-// expose one same-stage proposal while computing another obligation. Relevant
-// specification: docs/specification/03-agent-synthesis.md sections 9-10 and docs/specification/06-compiler.md
-// section 15.
+// expose one same-stage proposal while computing another obligation. Provider
+// calls over one frozen ready set may overlap, but compiler checking, correction
+// construction, and publication remain in canonical package/obligation order on
+// the resolver thread. Relevant specification:
+// docs/specification/03-agent-synthesis.md sections 9-10 and
+// docs/specification/06-compiler.md section 15.
 
 #pragma once
 
@@ -33,8 +36,10 @@ namespace draft {
 
 // Resolution cancellation is provider-neutral. The driver may source it from a
 // signal, while an embedding may use an atomic flag or task cancellation token.
-// The resolver polls only at transaction boundaries; provider adapters remain
-// responsible for interrupting their own child work.
+// The resolver polls at transaction boundaries and immediately before a worker
+// invokes a ready provider task, so the callback must be safe for concurrent
+// reads and must return promptly. Provider adapters remain responsible for
+// interrupting their own already-running child work.
 using ResolutionCancellationRequested = bool (*)(void *state);
 
 // Options own the provider adapter values but borrow provider.state. MIR and

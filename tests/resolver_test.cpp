@@ -13,16 +13,21 @@
 #include "target/profile.h"
 
 #include <algorithm>
-#include <cstdlib>
+#include <atomic>
 #include <cerrno>
+#include <chrono>
+#include <condition_variable>
+#include <cstdlib>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <thread>
 #include <vector>
 
 #if defined(__APPLE__)
@@ -389,6 +394,7 @@ struct FakeProviderState {
   // the first call, then uses the compiler-owned correction transcript to
   // return a valid expression. It proves retries occur above the provider.
   bool correct_after_rejection = false;
+  bool report_error_and_succeed = false;
   bool staged_responses = false;
   bool opaque_interface_responses = false;
   std::vector<draft::AgentConstructKind> kinds;
@@ -415,6 +421,11 @@ bool prepare_fake_provider(
 
 [[nodiscard]] bool boolean_cancellation_requested(void *opaque) {
   return *static_cast<bool *>(opaque);
+}
+
+[[nodiscard]] bool atomic_boolean_cancellation_requested(void *opaque) {
+  return static_cast<std::atomic_bool *>(opaque)->load(
+      std::memory_order_relaxed);
 }
 
 // The fake intentionally performs no language validation. This proves the
@@ -446,7 +457,12 @@ bool synthesize(
     visible_names.push_back(binding.name);
   }
   state->visible_binding_names.push_back(std::move(visible_names));
-  if (state->correct_after_rejection) {
+  if (state->report_error_and_succeed) {
+    diagnostics.error(
+        draft::SourceRange::invalid(),
+        "provider reported an error with a successful return");
+    response.source = "42";
+  } else if (state->correct_after_rejection) {
     response.source = request.prior_rejections.empty()
         ? "\"not an i64\""
         : "42";
@@ -499,6 +515,165 @@ bool synthesize(
   } else {
     response.source = state->response;
   }
+  return true;
+}
+
+// This provider is intentionally safe for concurrent calls and exposes its
+// overlap through atomics only. Two-site body and interface waves rendezvous;
+// the mixed correction test deliberately permits its one remaining site to
+// proceed alone. A sequential scheduler times out the rendezvous and makes the
+// focused test fail instead of deadlocking indefinitely.
+struct ParallelProviderState {
+  bool fail = false;
+  bool one_site_accepts_first = false;
+  bool interface_mode = false;
+  std::atomic_size_t first_attempt_calls = 0;
+  std::atomic_size_t correction_attempt_calls = 0;
+  std::atomic_size_t first_attempt_active = 0;
+  std::atomic_size_t correction_attempt_active = 0;
+  std::atomic_size_t first_attempt_maximum = 0;
+  std::atomic_size_t correction_attempt_maximum = 0;
+  std::mutex ready_mutex;
+  std::condition_variable ready_changed;
+};
+
+// Records the largest simultaneous-callback count. Relaxed ordering is enough:
+// the value is test telemetry only, no provider data depends on it, and joining
+// the resolver's worker threads happens before the main test reads the result.
+void observe_maximum(std::atomic_size_t &maximum, std::size_t value) {
+  std::size_t observed = maximum.load(std::memory_order_relaxed);
+  while (observed < value && !maximum.compare_exchange_weak(
+             observed,
+             value,
+             std::memory_order_relaxed,
+             std::memory_order_relaxed)) {
+  }
+}
+
+// Waits without consuming a CPU until the expected wave has entered the fake.
+// calls is atomic because increments occur before taking ready_mutex; the mutex
+// and notification prevent a missed wakeup, while the five-second deadline
+// converts a sequential or broken scheduler into a deterministic test failure.
+[[nodiscard]] bool wait_for_ready_calls(
+    ParallelProviderState &state,
+    std::atomic_size_t &calls,
+    std::size_t expected_calls) {
+  std::unique_lock lock(state.ready_mutex);
+  state.ready_changed.notify_all();
+  return state.ready_changed.wait_for(
+      lock,
+      std::chrono::seconds(5),
+      [&calls, expected_calls]() {
+        return calls.load(std::memory_order_relaxed) >= expected_calls;
+      });
+}
+
+bool synthesize_in_parallel(
+    void *opaque,
+    const draft::SynthesisRequest &request,
+    draft::SynthesisResponse &response,
+    draft::DiagnosticSink &diagnostics) {
+  auto *state = static_cast<ParallelProviderState *>(opaque);
+  const bool correction = !request.prior_rejections.empty();
+  if (request.prior_rejections.size() > 1) {
+    diagnostics.error(
+        draft::SourceRange::invalid(),
+        "parallel provider fixture received too many correction rows");
+    return false;
+  }
+  std::atomic_size_t &calls = correction
+      ? state->correction_attempt_calls
+      : state->first_attempt_calls;
+  std::atomic_size_t &active = correction
+      ? state->correction_attempt_active
+      : state->first_attempt_active;
+  std::atomic_size_t &maximum = correction
+      ? state->correction_attempt_maximum
+      : state->first_attempt_maximum;
+  calls.fetch_add(1, std::memory_order_relaxed);
+  const std::size_t active_now =
+      active.fetch_add(1, std::memory_order_relaxed) + 1;
+  observe_maximum(maximum, active_now);
+  const std::size_t expected_calls =
+      state->one_site_accepts_first && correction ? 1 : 2;
+  if (!wait_for_ready_calls(*state, calls, expected_calls)) {
+    active.fetch_sub(1, std::memory_order_relaxed);
+    diagnostics.error(
+        draft::SourceRange::invalid(),
+        "parallel provider fixture did not observe its complete ready wave");
+    return false;
+  }
+
+  if (state->fail) {
+    // Finish the second site first. The resolver must nevertheless publish the
+    // lower package/obligation-order site's diagnostic after joining the wave.
+    if (request.prompt == "first expression") {
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+      diagnostics.error(
+          draft::SourceRange::invalid(), "first provider failure");
+    } else {
+      diagnostics.error(
+          draft::SourceRange::invalid(), "second provider failure");
+    }
+    active.fetch_sub(1, std::memory_order_relaxed);
+    return false;
+  }
+
+  if (state->interface_mode) {
+    // Both requests were frozen before either generated declaration existed.
+    // Observing a sibling name here would violate opaque completeness even if
+    // final overlay publication remained deterministic.
+    for (const draft::AgentVisibleBinding &binding :
+         request.obligation.visible_bindings) {
+      if (binding.name == "first" || binding.name == "second") {
+        active.fetch_sub(1, std::memory_order_relaxed);
+        diagnostics.error(
+            draft::SourceRange::invalid(),
+            "concurrent interface request observed a sibling expansion");
+        return false;
+      }
+    }
+    if (request.prompt == "declare first") {
+      response.source = "first :: 20;";
+    } else if (request.prompt == "declare second") {
+      response.source = "second :: 22;";
+    } else {
+      active.fetch_sub(1, std::memory_order_relaxed);
+      diagnostics.error(
+          draft::SourceRange::invalid(),
+          "concurrent interface fixture received an unexpected prompt");
+      return false;
+    }
+  } else if (correction ||
+             (state->one_site_accepts_first &&
+              request.prompt == "first expression")) {
+    response.source = "42";
+  } else {
+    response.source = "\"not an i64\"";
+  }
+  active.fetch_sub(1, std::memory_order_relaxed);
+  return true;
+}
+
+// The first call completes normally but requests command cancellation. With a
+// one-worker provider bound, the resolver must observe that flag in the next
+// queued task before calling this function again.
+struct CancellingProviderState {
+  std::atomic_size_t calls = 0;
+  std::atomic_bool *cancelled = nullptr;
+};
+
+bool synthesize_then_cancel(
+    void *opaque,
+    const draft::SynthesisRequest &request,
+    draft::SynthesisResponse &response,
+    draft::DiagnosticSink &diagnostics) {
+  (void)request;
+  (void)diagnostics;
+  auto *state = static_cast<CancellingProviderState *>(opaque);
+  state->calls.fetch_add(1, std::memory_order_relaxed);
+  response.source = "42";
+  state->cancelled->store(true, std::memory_order_relaxed);
   return true;
 }
 
@@ -556,6 +731,20 @@ draft::ResolveWorkspaceOptions resolve_options(
   options.provider.configuration_identity = "temperature-0-schema-v1";
   options.provider.state = &provider_state;
   options.provider.synthesize = synthesize;
+  return options;
+}
+
+draft::ResolveWorkspaceOptions parallel_resolve_options(
+    const TemporaryWorkspace &workspace,
+    ParallelProviderState &provider_state) {
+  draft::ResolveWorkspaceOptions options;
+  options.compile = compile_options(workspace);
+  options.provider.provider_identity = "parallel-fake-provider-v1";
+  options.provider.model_identity = "fixture-model-v1";
+  options.provider.configuration_identity = "parallel-fixture-v1";
+  options.provider.state = &provider_state;
+  options.provider.synthesize = synthesize_in_parallel;
+  options.provider.maximum_parallel_calls = 2;
   return options;
 }
 
@@ -909,6 +1098,29 @@ void test_compiler_rejection_retries_with_feedback(TestState &state) {
     EXPECT(state, accepted_source == "42");
     EXPECT(state, !load_diagnostics.has_errors());
   }
+}
+
+void test_provider_error_cannot_hide_behind_success(TestState &state) {
+  TemporaryWorkspace workspace;
+  workspace.write_source("provider contradiction");
+  FakeProviderState provider;
+  provider.report_error_and_succeed = true;
+
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  const draft::ResolveWorkspaceResult resolved = draft::resolve_workspace(
+      sources,
+      workspace.package.string(),
+      resolve_options(workspace, provider),
+      diagnostics);
+  EXPECT(state, !resolved.ok);
+  EXPECT(state, !resolved.committed);
+  EXPECT(state, resolved.synthesized_sites == 0);
+  EXPECT(state, provider.calls == 1);
+  EXPECT(state,
+      draft::render_diagnostics(sources, diagnostics).find(
+          "provider reported an error with a successful return") !=
+          std::string::npos);
 }
 
 void test_external_inputs_commit_without_synthesis(TestState &state) {
@@ -1951,6 +2163,165 @@ void test_cancelled_resolution_does_not_start_transaction(TestState &state) {
   EXPECT(state, manifest.state == draft::ResolutionManifestLoadState::Missing);
 }
 
+void test_cancellation_stops_queued_provider_calls(TestState &state) {
+  TemporaryWorkspace workspace;
+  workspace.write_two_expression_source();
+  std::atomic_bool cancelled = false;
+  CancellingProviderState provider;
+  provider.cancelled = &cancelled;
+  draft::TimingRecorder timings(draft::TimingOutput::All);
+  draft::ResolveWorkspaceOptions options;
+  options.compile = compile_options(workspace);
+  options.compile.timings = &timings;
+  options.provider.provider_identity = "cancelling-fake-provider-v1";
+  options.provider.model_identity = "fixture-model-v1";
+  options.provider.configuration_identity = "cancelling-fixture-v1";
+  options.provider.state = &provider;
+  options.provider.synthesize = synthesize_then_cancel;
+  options.provider.maximum_parallel_calls = 1;
+  options.cancellation_state = &cancelled;
+  options.cancellation_requested = atomic_boolean_cancellation_requested;
+
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  const draft::ResolveWorkspaceResult resolved = draft::resolve_workspace(
+      sources,
+      workspace.package.string(),
+      std::move(options),
+      diagnostics);
+  EXPECT(state, !resolved.ok);
+  EXPECT(state, !resolved.committed);
+  EXPECT(state, provider.calls.load(std::memory_order_relaxed) == 1);
+  EXPECT(state,
+      draft::render_diagnostics(sources, diagnostics).find(
+          "resolution cancelled") != std::string::npos);
+  const std::string timing_report = timings.render();
+  EXPECT(state,
+      timing_report.find("synthesis provider ready waves: 1") !=
+          std::string::npos);
+  EXPECT(state,
+      timing_report.find("synthesis provider calls: 1") != std::string::npos);
+}
+
+void test_ready_provider_calls_and_corrections_overlap(TestState &state) {
+  TemporaryWorkspace workspace;
+  workspace.write_two_expression_source();
+  ParallelProviderState provider;
+  draft::TimingRecorder timings(draft::TimingOutput::All);
+  draft::ResolveWorkspaceOptions options =
+      parallel_resolve_options(workspace, provider);
+  options.compile.timings = &timings;
+
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  const draft::ResolveWorkspaceResult resolved = draft::resolve_workspace(
+      sources,
+      workspace.package.string(),
+      std::move(options),
+      diagnostics);
+  if (!resolved.ok) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+  }
+  EXPECT(state, resolved.ok);
+  EXPECT(state, resolved.committed);
+  EXPECT(state, resolved.synthesized_sites == 2);
+  EXPECT(state,
+      provider.first_attempt_calls.load(std::memory_order_relaxed) == 2);
+  EXPECT(state,
+      provider.correction_attempt_calls.load(std::memory_order_relaxed) == 2);
+  EXPECT(state,
+      provider.first_attempt_maximum.load(std::memory_order_relaxed) == 2);
+  EXPECT(state,
+      provider.correction_attempt_maximum.load(std::memory_order_relaxed) == 2);
+  const std::string timing_report = timings.render();
+  EXPECT(state,
+      timing_report.find("synthesis provider ready waves: 2") !=
+          std::string::npos);
+  EXPECT(state,
+      timing_report.find("synthesis provider calls: 4") != std::string::npos);
+}
+
+void test_accepted_site_leaves_correction_wave(TestState &state) {
+  TemporaryWorkspace workspace;
+  workspace.write_two_expression_source();
+  ParallelProviderState provider;
+  provider.one_site_accepts_first = true;
+
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  const draft::ResolveWorkspaceResult resolved = draft::resolve_workspace(
+      sources,
+      workspace.package.string(),
+      parallel_resolve_options(workspace, provider),
+      diagnostics);
+  if (!resolved.ok) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+  }
+  EXPECT(state, resolved.ok);
+  EXPECT(state, resolved.synthesized_sites == 2);
+  EXPECT(state,
+      provider.first_attempt_calls.load(std::memory_order_relaxed) == 2);
+  EXPECT(state,
+      provider.first_attempt_maximum.load(std::memory_order_relaxed) == 2);
+  EXPECT(state,
+      provider.correction_attempt_calls.load(std::memory_order_relaxed) == 1);
+  EXPECT(state,
+      provider.correction_attempt_maximum.load(std::memory_order_relaxed) == 1);
+}
+
+void test_concurrent_interface_set_remains_opaque(TestState &state) {
+  TemporaryWorkspace workspace;
+  workspace.write_opaque_interface_set_source();
+  ParallelProviderState provider;
+  provider.interface_mode = true;
+
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  const draft::ResolveWorkspaceResult resolved = draft::resolve_workspace(
+      sources,
+      workspace.package.string(),
+      parallel_resolve_options(workspace, provider),
+      diagnostics);
+  if (!resolved.ok) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+  }
+  EXPECT(state, resolved.ok);
+  EXPECT(state, resolved.committed);
+  EXPECT(state, resolved.synthesized_sites == 2);
+  EXPECT(state,
+      provider.first_attempt_calls.load(std::memory_order_relaxed) == 2);
+  EXPECT(state,
+      provider.first_attempt_maximum.load(std::memory_order_relaxed) == 2);
+  EXPECT(state,
+      provider.correction_attempt_calls.load(std::memory_order_relaxed) == 0);
+}
+
+void test_parallel_provider_failure_uses_canonical_order(TestState &state) {
+  TemporaryWorkspace workspace;
+  workspace.write_two_expression_source();
+  ParallelProviderState provider;
+  provider.fail = true;
+
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  const draft::ResolveWorkspaceResult resolved = draft::resolve_workspace(
+      sources,
+      workspace.package.string(),
+      parallel_resolve_options(workspace, provider),
+      diagnostics);
+  EXPECT(state, !resolved.ok);
+  EXPECT(state, !resolved.committed);
+  EXPECT(state,
+      provider.first_attempt_calls.load(std::memory_order_relaxed) == 2);
+  EXPECT(state,
+      provider.first_attempt_maximum.load(std::memory_order_relaxed) == 2);
+  const std::string rendered = draft::render_diagnostics(sources, diagnostics);
+  EXPECT(state,
+      rendered.find("first provider failure") != std::string::npos);
+  EXPECT(state,
+      rendered.find("second provider failure") == std::string::npos);
+}
+
 void test_invalid_proposal_budget_stops_before_provider(TestState &state) {
   TemporaryWorkspace workspace;
   workspace.write_source("must not reach provider with invalid budget");
@@ -1979,6 +2350,34 @@ void test_invalid_proposal_budget_stops_before_provider(TestState &state) {
   EXPECT(state, provider.calls == 0);
 }
 
+void test_invalid_provider_parallel_bound_stops_before_call(TestState &state) {
+  TemporaryWorkspace workspace;
+  workspace.write_source("must not reach provider with invalid worker bound");
+  FakeProviderState provider;
+
+  for (const std::size_t invalid_bound : {0U, 65U}) {
+    draft::ResolveWorkspaceOptions options =
+        resolve_options(workspace, provider);
+    options.provider.maximum_parallel_calls = invalid_bound;
+    draft::SourceManager sources;
+    draft::DiagnosticSink diagnostics;
+    const draft::ResolveWorkspaceResult resolved = draft::resolve_workspace(
+        sources,
+        workspace.package.string(),
+        std::move(options),
+        diagnostics);
+    EXPECT(state, !resolved.ok);
+    EXPECT(state, !resolved.committed);
+    EXPECT(state, diagnostics.error_count() == 1);
+    if (!diagnostics.diagnostics().empty()) {
+      EXPECT(state,
+          diagnostics.diagnostics().front().message.find("between 1 and 64") !=
+              std::string::npos);
+    }
+  }
+  EXPECT(state, provider.calls == 0);
+}
+
 } // namespace
 
 int main() {
@@ -1986,6 +2385,7 @@ int main() {
   test_resolution_reuse_revalidation_and_failure(state);
   test_selective_regeneration_changes_only_selected_source(state);
   test_compiler_rejection_retries_with_feedback(state);
+  test_provider_error_cannot_hide_behind_success(state);
   test_external_inputs_commit_without_synthesis(state);
   test_interface_sites_precede_dependent_bodies(state);
   test_dependency_interface_rounds(state);
@@ -2003,7 +2403,13 @@ int main() {
   test_invalid_validation_context_stops_before_provider(state);
   test_validation_context_stales_synthesis(state);
   test_cancelled_resolution_does_not_start_transaction(state);
+  test_cancellation_stops_queued_provider_calls(state);
+  test_ready_provider_calls_and_corrections_overlap(state);
+  test_accepted_site_leaves_correction_wave(state);
+  test_concurrent_interface_set_remains_opaque(state);
+  test_parallel_provider_failure_uses_canonical_order(state);
   test_invalid_proposal_budget_stops_before_provider(state);
+  test_invalid_provider_parallel_bound_stops_before_call(state);
   if (state.failures != 0) {
     std::cerr << state.failures << " resolver expectation(s) failed\n";
     return EXIT_FAILURE;
