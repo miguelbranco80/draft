@@ -65,6 +65,14 @@ assembly—passes, and repeated builds of all five artifact kinds are byte-for-
 byte identical. Exact layout, identities, and assembly procedure are recorded
 in `TOOLCHAIN_DISTRIBUTION.md`.
 
+The bootstrap host-language matrix also passes independently of the native
+input distribution. Apple Clang 21 and upstream Homebrew Clang 22.1.8 both
+compile the complete C++20 tree with the repository warning set promoted to
+errors. Under each host compiler, all 52 tests pass in an ordinary build and in
+a separate AddressSanitizer/UndefinedBehaviorSanitizer build. The two complete
+suites run sequentially because their black-box fixtures intentionally use
+stable temporary directory names.
+
 An isolated locked-build smoke now uses upstream Homebrew LLVM and LLD 22.1.8
 with the macOS 26.5 SDK. It pins both complete selected input trees, resolves the
 handwritten `examples/hello` source in an isolated workspace, builds and runs it
@@ -213,7 +221,7 @@ not a private caller helper, reaches the callee's owner.
 
 | Plan requirement | Current evidence | Assessment | Remaining proof or work |
 | --- | --- | --- | --- |
-| Small, direct C++20 bootstrap with warnings, sanitizers, and tests | `AGENTS.md`, root `CMakeLists.txt`, the compiler/test targets, and passing ordinary plus AddressSanitizer/UndefinedBehaviorSanitizer 52-test runs | Implemented foundation | Repeat the release matrix with both supported host compilers available to release engineering. |
+| Small, direct C++20 bootstrap with warnings, sanitizers, and tests | `AGENTS.md`, root `CMakeLists.txt`, the compiler/test targets, and passing ordinary plus AddressSanitizer/UndefinedBehaviorSanitizer 52-test runs under both Apple Clang 21 and upstream Clang 22.1.8 with warnings as errors | Implemented first-release host matrix | Repeat the matrix for each release candidate and newly supported host compiler. |
 | One explicit AArch64 macOS target profile | `src/target/profile.*`, `draft_target_profile_tests`, the locked `examples/agent-acceptance` executable, and the complete native matrix built with the selected LLVM 22.1.8, Apple ld/ld-classic, and minimal SDK content trees | Implemented and qualification-tested for the first target | Publish the selected trees by content identity and repeat the matrix for release candidates. |
 | Complete lexer, parser, semicolon insertion, and folder packages | `src/source`, `src/syntax`, `src/workspace`, parser/package/workspace tests, including deterministic binary-XOR/postfix-dereference disambiguation, one clean fixture that reaches every concrete syntax-node production, 44 isolated malformed-production recovery fixtures spanning declarations, types, members, expressions, control flow, and assembly, a shared parser nesting budget exercised by 4096-deep expression, type, statement, and declaration inputs, and an independent 256-level acyclic package-import bound | Implemented Draft 1 surface | Keep the exhaustive node walk and malformed matrix synchronized with any grammar revision; semantic operator/type combinations remain separate conformance gates. |
 | Symbols, scopes, types, constants, layouts, parametrics, and `when` | `src/sema` and semantic/type/constant/interface tests; declaration-modifier boundary tests; 256-declaration forward alias/ambiguous-constant and 256-binding compile-time constant dependency limits; aliases inherit closed generic-constraint membership while `distinct` wrappers retain numeric, logical, and comparison operators without joining closed generic constraints; target-owned SIMD shape validation; enum zero-value and explicit tagged-union discriminator-capacity validation; canonical typed dependent integer expressions retain arithmetic over multiple value parameters through local specialization, explicit procedure applications, unique checked inversion of one-to-one value patterns, nested nominal composition, structural alias composition, package-interface ordinals, full procedure-dependent nominal/structural value arguments, and transitive owner-evaluated layout requests across three packages | Broadly implemented | Keep dependent-layout, operator, ABI, and semantic-graph conformance matrices synchronized with language changes. |
