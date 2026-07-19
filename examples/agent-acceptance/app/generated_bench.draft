@@ -1,19 +1,33 @@
+// Provider-free benchmark contract for the agent-acceptance program.
+//
+// This validation-only file consumes declarations produced by package and
+// aggregate-member synthesis and records one native timing sample through
+// core/benchmark. It owns no storage or operating-system resource: the harness
+// owns the borrowed Benchmark record, and the measured callback retains
+// nothing. The generated value must remain 42; its generous one-second budget
+// tests benchmark wiring rather than making a performance claim about this
+// tiny operation. Dependencies are intentionally limited
+// to the example library and the ordinary benchmark/time core packages.
+// Relevant language contracts are specification sections 10 and 14.
+
 package app
 
 import lib
 import core/benchmark
 import core/time
 
-// The benchmark deliberately uses declarations supplied by three synthesis
-// stages. Running it from a copied, committed resolution store proves that the
-// benchmark command consumes checked generated source without reopening the
-// provider boundary. The one-second limit is a wiring assertion, not a useful
-// performance claim about this tiny operation.
+// Exercises the generated declarations once. The operation owns and retains
+// nothing, has no recoverable failure path, and uses a runtime assertion because
+// a wrong generated value is a broken fixture invariant rather than input.
 measure_generated_program :: proc() {
     record := Generated_Record{value = lib.base() + generated_offset}
     assert(record.value == 42)
 }
 
+// Measures one invocation using the harness-owned record. benchmark_state must
+// be non-nil and live for the call; neither this procedure nor the callback
+// retains it. core/benchmark records the deterministic one-sample policy and
+// reports a budget failure through the record rather than a Draft result.
 bench_generated_program :: proc(benchmark_state: ^benchmark.Benchmark) {
     benchmark.require_max_time(benchmark_state, time.second)
     benchmark.measure(benchmark_state, measure_generated_program)
