@@ -1,0 +1,76 @@
+// In-process LLVM object and assembly emission for one lowered Draft package.
+//
+// This module is the only bootstrap layer that links LLVM's native target
+// library. It accepts the compiler's inspectable textual LLVM module plus a
+// complete Draft target profile, parses and verifies the module in a fresh
+// LLVM context, checks LLVM's target-machine data layout against the profile,
+// and returns emitted bytes in memory. It performs no filesystem I/O, process
+// launch, package scheduling, linking, or diagnostic publication.
+//
+// Every invocation owns an isolated LLVM context, module, target machine, and
+// output buffer. Calls may therefore execute concurrently as long as the linked
+// LLVM distribution reports thread support. LLVM's AArch64 registry is process
+// global and initialized exactly once; it contains immutable target metadata
+// after initialization. The adapter uses LLVM's C API to keep version-sensitive
+// C++ implementation types out of Draft headers and the rest of the compiler.
+//
+// LLVM may choose instruction encodings, register allocation, and object-file
+// details only within the ABI, layout, feature, relocation, and code-model facts
+// fixed by TargetProfile. A disagreement is a compiler/toolchain error, never a
+// reason to reinterpret Draft source.
+// Relevant specification: docs/specification/04-native-interop.md sections
+// 11-12 and docs/specification/06-compiler.md "Native lowering and summaries".
+
+#pragma once
+
+#include "target/profile.h"
+
+#include <string>
+#include <string_view>
+
+namespace draft {
+
+enum class LlvmNativeOutputKind {
+  Object,
+  Assembly,
+};
+
+enum class LlvmNativeInstrumentation {
+  None,
+  AddressSanitizer,
+};
+
+// Options contain only choices already authorized by a compiler command. They
+// are not ambient LLVM flags. Object emission uses LLVM's no-optimization code
+// generation level to match Draft's current unoptimized bootstrap contract;
+// language-level release assertions remain a separate MIR configuration.
+struct LlvmObjectEmissionOptions {
+  LlvmNativeOutputKind output_kind = LlvmNativeOutputKind::Object;
+  LlvmNativeInstrumentation instrumentation =
+      LlvmNativeInstrumentation::None;
+};
+
+// bytes contains exactly one object file or one textual assembly file on
+// success. failure is empty on success and owns a stable adapter-prefixed reason
+// on failure. No LLVM reference or pointer escapes this value.
+struct LlvmObjectEmissionResult {
+  bool ok = false;
+  std::string bytes;
+  std::string failure;
+};
+
+// Returns the LLVM distribution version linked into draftc. This is build
+// evidence, not a runtime probe, semantic target fact, resolved-program input,
+// or cache key.
+[[nodiscard]] std::string_view linked_llvm_version();
+
+// Emits one already-lowered module synchronously. module_name is a logical
+// diagnostic label only and must not contain a physical checkout path. The
+// input bytes and target are borrowed for the call and never retained.
+[[nodiscard]] LlvmObjectEmissionResult emit_llvm_object_in_process(
+    const TargetProfile &target,
+    std::string_view module_name,
+    std::string_view llvm_ir,
+    LlvmObjectEmissionOptions options);
+
+} // namespace draft

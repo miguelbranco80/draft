@@ -86,11 +86,23 @@ Repository engineering rules remain in [AGENTS.md](AGENTS.md).
 
 ## Build the bootstrap compiler
 
+The C++ bootstrap links LLVM 22 through its C API. On Apple Silicon, install
+Homebrew `llvm@22`; on Ubuntu, install the matching `llvm-22-dev` distribution.
+Draft programs do not acquire a package dependency from this bootstrap build
+component: LLVM is part of the compiler implementation and distribution.
+
 ```sh
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DDRAFT_ENABLE_SANITIZERS=ON
+cmake -S . -B build \
+  -DCMAKE_BUILD_TYPE=Debug \
+  -DLLVM_DIR=/opt/homebrew/opt/llvm@22/lib/cmake/llvm \
+  -DDRAFT_ENABLE_SANITIZERS=ON
 cmake --build build --parallel
 ctest --test-dir build --output-on-failure
 ```
+
+Use `/usr/lib/llvm-22/lib/cmake/llvm` for the standard Ubuntu LLVM 22 layout.
+`LLVM_DIR` may instead name an exact downloaded or locally built LLVM 22 CMake
+package; no ambient `llvm-config` lookup decides the linked backend version.
 
 The bootstrap is a direct C++20 implementation targeting AArch64 macOS and
 AArch64 GNU/Linux. Both targets build and execute on their native ARM64 hosts;

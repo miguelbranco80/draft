@@ -29,10 +29,12 @@ jobs:
           - name: macOS ARM64
             runner: macos-15
             bootstrap_cxx: clang++
+            llvm_dir: /opt/homebrew/opt/llvm@22/lib/cmake/llvm
             parallel: 3
           - name: Linux ARM64
             runner: ubuntu-24.04-arm
             bootstrap_cxx: g++
+            llvm_dir: /usr/lib/llvm-22/lib/cmake/llvm
             parallel: 4
 
     steps:
@@ -41,16 +43,24 @@ jobs:
         with:
           persist-credentials: false
 
-      # GCC builds the bootstrap compiler on Linux. Clang, lld, and the LLVM
-      # utilities remain installed because Draft invokes them to turn its LLVM
-      # IR into the ELF artifacts that the integration tests execute.
+      # LLVM 22 is a pinned bootstrap component on both hosts. Draft links its C
+      # API for object emission; Clang/lld and the utilities remain available as
+      # the qualification oracle, platform linker driver, and archiver.
+      - name: Install macOS LLVM development libraries
+        if: runner.os == 'macOS'
+        run: brew install llvm@22
+
       - name: Install Linux native toolchain
         if: runner.os == 'Linux'
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
           sudo apt-get update
-          sudo apt-get install --yes build-essential cmake clang lld llvm
+          sudo apt-get install --yes build-essential cmake clang lld llvm wget
+          wget --quiet https://apt.llvm.org/llvm.sh --output-document /tmp/llvm.sh
+          chmod +x /tmp/llvm.sh
+          sudo /tmp/llvm.sh 22
+          sudo apt-get install --yes llvm-22-dev
 
       # Log both compilers when they differ. A runner-image update is then
       # visible in a failed job without making ambient versions semantic pins.
@@ -59,12 +69,14 @@ jobs:
           cmake --version
           ${{ matrix.bootstrap_cxx }} --version
           clang --version
+          "${{ matrix.llvm_dir }}/../../../bin/llvm-config" --version
 
       - name: Configure
         run: |
           cmake -S . -B build \
             -DCMAKE_BUILD_TYPE=Debug \
             -DCMAKE_CXX_COMPILER=${{ matrix.bootstrap_cxx }} \
+            -DLLVM_DIR=${{ matrix.llvm_dir }} \
             -DDRAFT_WARNINGS_AS_ERRORS=ON \
             -DDRAFT_ENABLE_SANITIZERS=OFF
 
@@ -100,7 +112,11 @@ jobs:
           DEBIAN_FRONTEND: noninteractive
         run: |
           sudo apt-get update
-          sudo apt-get install --yes build-essential cmake
+          sudo apt-get install --yes build-essential cmake wget
+          wget --quiet https://apt.llvm.org/llvm.sh --output-document /tmp/llvm.sh
+          chmod +x /tmp/llvm.sh
+          sudo /tmp/llvm.sh 22
+          sudo apt-get install --yes llvm-22-dev
 
       # This job is intentionally a different architecture from the native
       # matrix. Assert the hosted-runner contract instead of accidentally
@@ -110,12 +126,14 @@ jobs:
           test "$(uname -m)" = x86_64
           cmake --version
           g++ --version
+          /usr/lib/llvm-22/bin/llvm-config --version
 
       - name: Configure
         run: |
           cmake -S . -B build \
             -DCMAKE_BUILD_TYPE=Debug \
             -DCMAKE_CXX_COMPILER=g++ \
+            -DLLVM_DIR=/usr/lib/llvm-22/lib/cmake/llvm \
             -DDRAFT_WARNINGS_AS_ERRORS=ON \
             -DDRAFT_ENABLE_SANITIZERS=ON
 

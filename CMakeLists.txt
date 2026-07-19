@@ -4,7 +4,9 @@ project(
   Draft
   VERSION 0.1.0
   DESCRIPTION "Bootstrap compiler for the Draft systems language"
-  LANGUAGES CXX
+  # LLVM's exported CMake package performs C feature checks even though Draft
+  # calls its C API from the C++ bootstrap and compiles no repository C source.
+  LANGUAGES C CXX
 )
 
 # The bootstrap compiler deliberately uses a small, uniform C++20 dialect. We
@@ -19,11 +21,60 @@ option(DRAFT_ENABLE_SANITIZERS "Enable address and undefined-behavior sanitizers
 
 find_package(Threads REQUIRED)
 
+# Draft embeds one pinned LLVM major through its C API. The explicit common
+# installation hints keep a normal Apple Silicon Homebrew or Ubuntu LLVM 22
+# installation zero-configuration while LLVM_DIR remains the authoritative
+# override for custom and distributed toolchains.
+find_package(
+  LLVM REQUIRED CONFIG
+  HINTS
+    "/opt/homebrew/opt/llvm/lib/cmake/llvm"
+    "/usr/lib/llvm-22/lib/cmake/llvm"
+)
+if(NOT LLVM_PACKAGE_VERSION MATCHES "^22\\.")
+  message(FATAL_ERROR
+    "Draft requires LLVM 22.x; found ${LLVM_PACKAGE_VERSION} at ${LLVM_DIR}"
+  )
+endif()
+message(STATUS "Using LLVM ${LLVM_PACKAGE_VERSION} from ${LLVM_DIR}")
+separate_arguments(LLVM_DEFINITIONS_LIST NATIVE_COMMAND "${LLVM_DEFINITIONS}")
+llvm_map_components_to_libnames(
+  DRAFT_LLVM_LIBRARIES
+  core
+  irreader
+  passes
+  target
+  AArch64
+)
+
 # An interface target keeps the host-language policy identical for the compiler,
 # driver, and tests. Sanitizer link flags must reach final executables; placing
 # them only on the static compiler archive would instrument objects without
 # linking the sanitizer runtime.
 add_library(draft_build_options INTERFACE)
+
+# Keep LLVM headers, definitions, and link components behind one adapter target.
+# The compiler proper includes only llvm_object_emitter.h and therefore cannot
+# accidentally make an LLVM C++ representation part of semantic or MIR code.
+add_library(
+  draft_llvm_backend
+  src/backend/llvm_object_emitter.cpp
+)
+target_include_directories(
+  draft_llvm_backend
+  PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src"
+  SYSTEM PRIVATE ${LLVM_INCLUDE_DIRS}
+)
+target_compile_options(draft_llvm_backend PRIVATE ${LLVM_DEFINITIONS_LIST})
+target_compile_definitions(
+  draft_llvm_backend
+  PRIVATE DRAFT_LLVM_VERSION="${LLVM_PACKAGE_VERSION}"
+)
+target_link_libraries(
+  draft_llvm_backend
+  PUBLIC draft_build_options
+  PRIVATE ${DRAFT_LLVM_LIBRARIES}
+)
 
 add_library(
   draft_compiler
@@ -102,7 +153,11 @@ add_library(
 )
 
 target_include_directories(draft_compiler PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
-target_link_libraries(draft_compiler PUBLIC draft_build_options Threads::Threads)
+target_link_libraries(
+  draft_compiler
+  PUBLIC draft_build_options Threads::Threads
+  PRIVATE draft_llvm_backend
+)
 
 if(MSVC)
   target_compile_options(draft_build_options INTERFACE /W4 /permissive- /GR- /EHs-c-)
@@ -291,6 +346,16 @@ if(BUILD_TESTING)
   add_executable(draft_llvm_ir_tests tests/llvm_ir_test.cpp)
   target_link_libraries(draft_llvm_ir_tests PRIVATE draft_compiler)
   add_test(NAME draft_llvm_ir_tests COMMAND draft_llvm_ir_tests)
+
+  add_executable(
+    draft_llvm_object_emitter_tests
+    tests/llvm_object_emitter_test.cpp
+  )
+  target_link_libraries(draft_llvm_object_emitter_tests PRIVATE draft_compiler)
+  add_test(
+    NAME draft_llvm_object_emitter_tests
+    COMMAND draft_llvm_object_emitter_tests
+  )
 
   add_executable(
     draft_native_object_tasks_tests
