@@ -103,8 +103,10 @@ SONAME, and executables add hosted entry glue.
 ## Resolve synthesis sites
 
 ```sh
-build/draftc resolve path/to/package [--revalidate] \
+build/draftc resolve path/to/package [--revalidate] [--build] \
   [--regenerate [site-id]] \
+  [-o output] \
+  [--kind executable|object|static-library|dynamic-library|assembly] \
   [--target aarch64-macos|aarch64-linux] [--assertions=off] \
   [--model model] \
   [--provider name=object|archive|shared-library:/absolute/path]... \
@@ -118,6 +120,14 @@ for sites that cannot reuse a valid saved expansion. The provider returns Draft
 source, which is parsed and checked through the ordinary pipeline. The compiler
 commits generated objects and the manifest only after checking the complete
 candidate program. It does not run tests, benchmarks, or judgments.
+
+`--build` continues the final checked graph through MIR, LLVM, and the native
+adapter after a successful resolution commit. It accepts the same `-o` and
+`--kind` artifact choices as `build`; those options are rejected without
+`--build`. The compiler does not rerun its front end between resolving and
+emitting the artifact. A later ordinary build of the committed source produces
+the same native program. If native emission fails, the already checked source
+transaction remains committed.
 
 `--regenerate` forces a provider proposal even for fresh pins. With no following
 value it selects every current synthesis site; with one exact `site-...`

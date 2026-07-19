@@ -347,6 +347,7 @@ draft resolve
 draft resolve --regenerate
 draft resolve --regenerate site-0123456789abcdef
 draft resolve --revalidate
+draft resolve --build
 draft expand ./cmd/viewer --out /tmp/viewer-expanded
 draft judge
 draft judge codec/jpeg:decode
@@ -359,6 +360,13 @@ to dependent sites. Once every required site has one expansion, the resolver
 checks the complete coherent program and atomically commits staged generated
 source and pins. It does not run tests, benchmarks, or judgments. Those are
 separate commands that record evidence for the resolved program.
+
+`draft resolve --build` performs that same source transaction and, after a
+successful commit, continues the final checked semantic graph through MIR,
+native emission, and linking in the same process. It does not reconstruct the
+front end after resolution. The native artifact is identical to a later
+provider-free `draft build` of the committed source. A native-tool failure does
+not roll back source that was already coherently resolved and committed.
 
 `draft build` consumes valid pins and never updates them or contacts a model.
 Missing, stale, invalid, or ambiguously associated pins require `draft resolve`.

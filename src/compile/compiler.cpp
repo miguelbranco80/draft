@@ -1008,6 +1008,7 @@ CompileWorkspaceResult compile_workspace(
   result.compiler_content_identity = options.compiler_content_identity;
   result.target_identity = options.target.facts.identity;
   result.configuration = options.configuration;
+  result.validation_kind = options.validation_kind;
   result.foreign_provider_audits = options.foreign_provider_audits;
   const std::size_t initial_errors = diagnostics.error_count();
   if (options.compiler_content_identity.empty()) {
@@ -1555,10 +1556,11 @@ bool continue_compiled_workspace(
     DiagnosticSink &diagnostics) {
   const std::size_t initial_errors = diagnostics.error_count();
   if (!compiled.ok ||
-      compiled.progress != CompileWorkspaceProgress::SemanticClosure) {
+      (compiled.progress != CompileWorkspaceProgress::SemanticClosure &&
+       compiled.progress != CompileWorkspaceProgress::ValidationDiscovery)) {
     diagnostics.error(
         SourceRange::invalid(),
-        "target lowering requires one successful semantic-closure graph");
+        "target lowering requires one successful checked compiler graph");
     return false;
   }
   if (options.stage != CompileWorkspaceStage::Complete) {
@@ -1570,7 +1572,8 @@ bool continue_compiled_workspace(
   if (compiled.target_identity != options.target.facts.identity ||
       compiled.compiler_content_identity != options.compiler_content_identity ||
       compiled.configuration.runtime_assertions !=
-          options.configuration.runtime_assertions) {
+          options.configuration.runtime_assertions ||
+      compiled.validation_kind != options.validation_kind) {
     diagnostics.error(
         SourceRange::invalid(),
         "target lowering options do not match the checked semantic graph");
@@ -1594,7 +1597,8 @@ bool continue_compiled_workspace(
   TimingScope lowering_timing = options.timings != nullptr
       ? options.timings->scope("target lowering")
       : TimingScope{};
-  if (options.validation_kind != ValidationKind::None) {
+  if (compiled.progress == CompileWorkspaceProgress::SemanticClosure &&
+      options.validation_kind != ValidationKind::None) {
     for (std::size_t package_index = 0;
          package_index < compiled.packages.size(); ++package_index) {
       if (!compiled.packages[package_index].has_value()) continue;
@@ -1688,7 +1692,11 @@ bool continue_compiled_workspace(
 
   compiled.ok = diagnostics.error_count() == initial_errors;
   if (compiled.ok) {
-    compiled.progress = CompileWorkspaceProgress::TargetLowering;
+    if (options.lower_mir || options.emit_llvm) {
+      compiled.progress = CompileWorkspaceProgress::TargetLowering;
+    } else if (options.validation_kind != ValidationKind::None) {
+      compiled.progress = CompileWorkspaceProgress::ValidationDiscovery;
+    }
   }
   return compiled.ok;
 }

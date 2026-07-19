@@ -154,6 +154,9 @@ artifact is neither an input nor persistent compiler state.
 
 `draft resolve` stages changes and atomically commits only a coherent,
 compiler-checked program. It does not run tests, benchmarks, or judgments.
+With `--build`, the resolver returns its exact final semantic-closure graph and
+the driver continues that graph through MIR/LLVM and native emission after the
+source commit. No second front-end orchestration or manifest reload occurs.
 `draft build` consumes saved expansions without contacting a provider
 or modifying the resolution manifest. It rechecks every program input but
 treats the host compiler, linker, and SDK as operational build configuration.

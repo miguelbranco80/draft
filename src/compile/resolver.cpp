@@ -681,8 +681,28 @@ ResolveWorkspaceResult resolve_workspace(
 
   // With no sites and no prior manifest there is no transaction to perform.
   // An existing manifest still proceeds so obsolete pins become an empty map.
+  // The checked handwritten graph is nevertheless returned, and a native
+  // request continues it through lowering without another front-end pass.
   if (manifest.pins.empty() && manifest.external_inputs.empty() &&
       loaded.state == ResolutionManifestLoadState::Missing) {
+    ResolutionManifest empty_manifest;
+    empty_manifest.target_identity = options.compile.target.facts.identity;
+    body_surface.resolved_program_digest = hash_resolved_program(
+        sources,
+        body_surface.graph,
+        options.compile.target,
+        empty_manifest,
+        options.compile.compiler_content_identity,
+        options.compile.configuration);
+    const bool needs_target_continuation =
+        options.compile.validation_kind != ValidationKind::None ||
+        options.compile.lower_mir || options.compile.emit_llvm;
+    if (needs_target_continuation &&
+        !continue_compiled_workspace(
+            sources, options.compile, body_surface, diagnostics)) {
+      return result;
+    }
+    result.compiled_program = std::move(body_surface);
     result.ok = diagnostics.error_count() == initial_errors;
     return result;
   }
@@ -691,8 +711,6 @@ ResolveWorkspaceResult resolve_workspace(
       std::move(interface_overrides);
   merge_overrides(complete_overrides, std::move(body_stage.overrides));
   options.compile.stage = CompileWorkspaceStage::Complete;
-  options.compile.lower_mir = false;
-  options.compile.emit_llvm = false;
   options.compile.workspace.source_overrides = std::move(complete_overrides);
   if (resolution_cancelled(options, diagnostics)) return result;
   CompileWorkspaceResult resolved = compile_workspace(
@@ -726,6 +744,11 @@ ResolveWorkspaceResult resolve_workspace(
       manifest,
       options.compile.compiler_content_identity,
       options.compile.configuration);
+  resolved.resolved_program_digest = manifest.resolved_program_digest;
+  // The manifest copy is bound before the store commit and native emission.
+  // Both consumers therefore use the exact candidate checked above, never a
+  // path that could be replaced by another process after this point.
+  resolved.resolution_manifest = manifest;
 
   // This is the final cancellation boundary. Once commit_resolution starts it
   // performs one crash-safe object-before-manifest transaction and must not be
@@ -739,6 +762,7 @@ ResolveWorkspaceResult resolve_workspace(
     return result;
   }
   result.manifest = std::move(manifest);
+  result.compiled_program = std::move(resolved);
   result.committed = true;
   result.ok = diagnostics.error_count() == initial_errors;
   return result;

@@ -99,6 +99,7 @@ build/draftc lex path/to/file.draft
 build/draftc syntax path/to/file.draft
 build/draftc check path/to/package
 build/draftc expand path/to/package --out /tmp/expanded-source
+build/draftc resolve path/to/package --build -o /tmp/program
 build/draftc test path/to/package
 build/draftc build path/to/package -o /tmp/program
 /tmp/program
@@ -114,6 +115,11 @@ For a resolved package, `expand --out` writes a provider-free complete-source
 view with one `.draft-map` sidecar per selected source. The destination must be
 absent. Treat this as derived inspection output; the files to commit are
 `.draft/resolution.json` and its referenced `.draft/generated` objects.
+
+Use `resolve --build` when source must be resolved and emitted in one command.
+It commits only a completely checked source transaction, then continues that
+same semantic graph into the native backend; it does not make tests or judgments
+implicit. Plain `build` remains provider-free.
 
 Before completion, inspect the diff, re-read changed Draft code linearly, audit
 comments and ownership, verify deterministic ordering, run the relevant wider

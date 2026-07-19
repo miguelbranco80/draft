@@ -558,4 +558,22 @@ if(BUILD_TESTING)
     PROPERTIES
       WILL_FAIL TRUE
   )
+
+  if(DRAFT_NATIVE_AARCH64_HOST)
+    if(APPLE)
+      set(DRAFT_NATIVE_TEST_TARGET aarch64-macos)
+    else()
+      set(DRAFT_NATIVE_TEST_TARGET aarch64-linux)
+    endif()
+    add_test(
+      NAME draft_resolve_build_reuses_final_graph
+      COMMAND
+        "${CMAKE_COMMAND}"
+        "-DDRAFTC=$<TARGET_FILE:draftc>"
+        "-DSOURCE_WORKSPACE=${CMAKE_CURRENT_SOURCE_DIR}/examples/agent-acceptance"
+        "-DTEST_ROOT=${CMAKE_CURRENT_BINARY_DIR}/resolve-build-driver-test"
+        "-DTARGET_SELECTOR=${DRAFT_NATIVE_TEST_TARGET}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/driver_resolve_build_test.cmake"
+    )
+  endif()
 endif()

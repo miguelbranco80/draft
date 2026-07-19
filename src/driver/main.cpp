@@ -165,6 +165,25 @@ void configure_core_distribution(draft::WorkspaceLoadOptions &options) {
   return true;
 }
 
+// Converts the closed public artifact vocabulary once for both `build` and
+// `resolve --build`. Keeping the parser shared prevents the continuation path
+// from acquiring subtly different output semantics from an ordinary build.
+[[nodiscard]] std::optional<draft::NativeArtifactKind>
+parse_native_artifact_kind(std::string_view spelling) {
+  if (spelling == "executable") {
+    return draft::NativeArtifactKind::Executable;
+  }
+  if (spelling == "object") return draft::NativeArtifactKind::Object;
+  if (spelling == "static-library") {
+    return draft::NativeArtifactKind::StaticLibrary;
+  }
+  if (spelling == "dynamic-library") {
+    return draft::NativeArtifactKind::DynamicLibrary;
+  }
+  if (spelling == "assembly") return draft::NativeArtifactKind::Assembly;
+  return std::nullopt;
+}
+
 [[nodiscard]] bool parse_foreign_provider(
     std::string_view spelling,
     draft::ForeignProviderInput &input,
@@ -552,6 +571,80 @@ int expand_package(
   return materialized && !diagnostics.has_errors() ? 0 : 1;
 }
 
+// Emits one native artifact from an already lowered graph. Both ordinary build
+// and resolve-build use this exact function; only the owner of `compiled`
+// differs. The helper selects process-facing output paths and invokes the native
+// adapter, but never reloads Draft source or a resolution manifest.
+[[nodiscard]] bool emit_native_package(
+    const std::filesystem::path &absolute_directory,
+    const draft::TargetProfile &target,
+    const std::optional<std::string> &requested_output,
+    draft::NativeArtifactKind artifact_kind,
+    const std::vector<draft::ForeignProviderInput> &foreign_providers,
+    const std::vector<draft::RuntimeAssetInput> &runtime_assets,
+    draft::TimingRecorder *timings,
+    const draft::CompileWorkspaceResult &compiled,
+    draft::DiagnosticSink &diagnostics) {
+  if (!compiled.ok ||
+      compiled.progress != draft::CompileWorkspaceProgress::TargetLowering) {
+    diagnostics.error(
+        draft::SourceRange::invalid(),
+        "native emission requires the final lowered compiler graph");
+    return false;
+  }
+
+  const std::filesystem::path build_directory =
+      absolute_directory / ".draft" / "build";
+  const std::string package_name = absolute_directory.filename().string();
+  std::filesystem::path output;
+  switch (artifact_kind) {
+  case draft::NativeArtifactKind::Executable:
+    output = build_directory / package_name;
+    break;
+  case draft::NativeArtifactKind::Object:
+    output = build_directory / (package_name + ".o");
+    break;
+  case draft::NativeArtifactKind::StaticLibrary:
+    output = build_directory / ("lib" + package_name + ".a");
+    break;
+  case draft::NativeArtifactKind::DynamicLibrary:
+    output = build_directory /
+        ("lib" + package_name +
+         (target.facts.object_format == "elf" ? ".so" : ".dylib"));
+    break;
+  case draft::NativeArtifactKind::Assembly:
+    output = build_directory / (package_name + "-assembly");
+    break;
+  }
+  if (requested_output.has_value()) {
+    std::error_code path_error;
+    output = std::filesystem::absolute(*requested_output, path_error);
+    if (path_error) {
+      diagnostics.error(
+          draft::SourceRange::invalid(),
+          "cannot make native output path absolute: " +
+              path_error.message());
+      return false;
+    }
+  }
+
+  draft::NativeBuildOptions native_options;
+  native_options.build_directory = build_directory.string();
+  native_options.output_path = output.string();
+  native_options.artifact_kind = artifact_kind;
+  native_options.foreign_providers = foreign_providers;
+  native_options.runtime_assets = runtime_assets;
+  native_options.timings = timings;
+  const draft::NativeBuildResult built = draft::build_native_artifact(
+      target, compiled, native_options, diagnostics);
+  if (!built.ok) return false;
+  std::cout << "built " << built.output_path << '\n';
+  if (!built.debug_symbols_path.empty()) {
+    std::cout << "debug symbols " << built.debug_symbols_path << '\n';
+  }
+  return true;
+}
+
 int build_package(
     const std::string &directory,
     const draft::TargetProfile &target,
@@ -571,7 +664,6 @@ int build_package(
     std::cerr << "error: " << package_path_error << '\n';
     return 1;
   }
-  std::error_code path_error;
   draft::CompileWorkspaceOptions compile_options;
   compile_options.target = target;
   compile_options.configuration.runtime_assertions = runtime_assertions;
@@ -598,61 +690,20 @@ int build_package(
           absolute_directory.string(),
           std::move(compile_options),
           diagnostics);
-  if (compiled.ok) {
-    const std::filesystem::path build_directory =
-        absolute_directory / ".draft" / "build";
-    const std::string package_name = absolute_directory.filename().string();
-    std::filesystem::path output;
-    switch (artifact_kind) {
-    case draft::NativeArtifactKind::Executable:
-      output = build_directory / package_name;
-      break;
-    case draft::NativeArtifactKind::Object:
-      output = build_directory / (package_name + ".o");
-      break;
-    case draft::NativeArtifactKind::StaticLibrary:
-      output = build_directory / ("lib" + package_name + ".a");
-      break;
-    case draft::NativeArtifactKind::DynamicLibrary:
-      output = build_directory /
-          ("lib" + package_name +
-           (target.facts.object_format == "elf" ? ".so" : ".dylib"));
-      break;
-    case draft::NativeArtifactKind::Assembly:
-      output = build_directory / (package_name + "-assembly");
-      break;
-    }
-    if (requested_output.has_value()) {
-      output = std::filesystem::absolute(*requested_output, path_error);
-      if (path_error) {
-        diagnostics.error(
-            draft::SourceRange::invalid(),
-            "cannot make native output path absolute: " +
-                path_error.message());
-      }
-    }
-    draft::NativeBuildOptions native_options;
-    native_options.build_directory = build_directory.string();
-    native_options.output_path = output.string();
-    native_options.artifact_kind = artifact_kind;
-    native_options.foreign_providers = foreign_providers;
-    native_options.runtime_assets = runtime_assets;
-    native_options.timings = timings;
-    if (!diagnostics.has_errors()) {
-      const draft::NativeBuildResult built = draft::build_native_artifact(
-          target, compiled, native_options, diagnostics);
-      if (built.ok) {
-        std::cout << "built " << built.output_path << '\n';
-        if (!built.debug_symbols_path.empty()) {
-          std::cout << "debug symbols " << built.debug_symbols_path << '\n';
-        }
-      }
-    }
-  }
+  const bool built = compiled.ok && emit_native_package(
+      absolute_directory,
+      target,
+      requested_output,
+      artifact_kind,
+      foreign_providers,
+      runtime_assets,
+      timings,
+      compiled,
+      diagnostics);
   if (!diagnostics.diagnostics().empty()) {
     std::cerr << draft::render_diagnostics(sources, diagnostics);
   }
-  return diagnostics.has_errors() ? 1 : 0;
+  return built && !diagnostics.has_errors() ? 0 : 1;
 }
 
 int validate_package(
@@ -828,6 +879,15 @@ enum class AgentCommandKind {
   Judge,
 };
 
+// Optional native continuation requested by `resolve --build`. The resolver
+// receives matching lowering flags and returns the final graph; this record
+// carries only process-facing artifact choices for the later native adapter.
+struct ResolveBuildRequest {
+  std::optional<std::string> output;
+  draft::NativeArtifactKind artifact_kind =
+      draft::NativeArtifactKind::Executable;
+};
+
 // Resolve and judge first run the complete provider-independent front end, so
 // malformed source, attachment-policy violations, and typed obligation errors
 // are reported before any model call. Resolve may receive one explicit Codex
@@ -851,7 +911,8 @@ int run_agent_command(
     bool list_judgments = false,
     draft::RuntimeAssertionMode runtime_assertions =
         draft::RuntimeAssertionMode::On,
-    draft::TimingRecorder *timings = nullptr) {
+    draft::TimingRecorder *timings = nullptr,
+    const std::optional<ResolveBuildRequest> &resolve_build = std::nullopt) {
   draft::SourceManager sources;
   draft::DiagnosticSink diagnostics;
   std::filesystem::path absolute_directory;
@@ -870,6 +931,13 @@ int run_agent_command(
   configure_core_distribution(options.workspace);
   options.timings = timings;
   if (command == AgentCommandKind::Resolve) {
+    if (resolve_build.has_value()) {
+      options.lower_mir = true;
+      options.emit_llvm = true;
+      options.emit_program_entry =
+          resolve_build->artifact_kind ==
+          draft::NativeArtifactKind::Executable;
+    }
     draft::ResolveWorkspaceOptions resolve_options;
     resolve_options.compile = std::move(options);
     resolve_options.revalidate = revalidate;
@@ -945,6 +1013,8 @@ int run_agent_command(
         absolute_directory.string(),
         std::move(resolve_options),
         diagnostics);
+    resolve_timing.finish();
+    bool native_ok = true;
     if (resolved.ok) {
       if (!resolved.committed) {
         std::cout << "no synthesis sites require resolution\n";
@@ -959,11 +1029,30 @@ int run_agent_command(
         }
         std::cout << ")\n";
       }
+      if (resolve_build.has_value()) {
+        if (!resolved.compiled_program.has_value()) {
+          diagnostics.error(
+              draft::SourceRange::invalid(),
+              "resolution completed without returning its checked graph");
+          native_ok = false;
+        } else {
+          native_ok = emit_native_package(
+              absolute_directory,
+              target,
+              resolve_build->output,
+              resolve_build->artifact_kind,
+              foreign_providers,
+              runtime_assets,
+              timings,
+              *resolved.compiled_program,
+              diagnostics);
+        }
+      }
     }
     if (!diagnostics.diagnostics().empty()) {
       std::cerr << draft::render_diagnostics(sources, diagnostics);
     }
-    return resolved.ok && !diagnostics.has_errors() ? 0 : 1;
+    return resolved.ok && native_ok && !diagnostics.has_errors() ? 0 : 1;
   }
 
   if (!load_foreign_provider_audits(
@@ -1098,8 +1187,10 @@ void print_usage() {
             << "      [--provider-summary name:<path>]...\n"
             << "      [--runtime-asset name:<file-or-directory>]...\n"
             << "      [--timings|--timings=all]\n"
-            << "  draftc resolve <package-directory> [--revalidate]\n"
+            << "  draftc resolve <package-directory> [--revalidate] [--build]\n"
             << "      [--regenerate [site-id]]\n"
+            << "      [-o <output>]\n"
+            << "      [--kind executable|object|static-library|dynamic-library|assembly]\n"
             << "      [--target aarch64-macos|aarch64-linux]\n"
             << "      [--assertions=off]\n"
             << "      [--model <model>]\n"
@@ -1248,9 +1339,14 @@ int main(int argc, char **argv) {
   if (argc >= 3 && std::string_view(argv[1]) == "resolve") {
     bool revalidate = false;
     bool regenerate = false;
+    bool build_after_resolution = false;
     bool assertions_off = false;
     bool target_set = false;
+    bool artifact_kind_set = false;
     std::optional<std::string> codex_model;
+    std::optional<std::string> output;
+    draft::NativeArtifactKind artifact_kind =
+        draft::NativeArtifactKind::Executable;
     std::vector<std::string> regeneration_site_identities;
     std::vector<draft::ForeignProviderInput> foreign_providers;
     std::vector<draft::ForeignProviderSummaryInput> provider_summaries;
@@ -1259,6 +1355,8 @@ int main(int argc, char **argv) {
       const std::string_view argument(argv[index]);
       if (argument == "--revalidate" && !revalidate) {
         revalidate = true;
+      } else if (argument == "--build" && !build_after_resolution) {
+        build_after_resolution = true;
       } else if (argument == "--regenerate" && !regenerate) {
         regenerate = true;
         if (index + 1 < argc &&
@@ -1271,6 +1369,19 @@ int main(int argc, char **argv) {
         if (!select_command_target(argv[++index], target)) return 2;
       } else if (argument == "--assertions=off" && !assertions_off) {
         assertions_off = true;
+      } else if (argument == "-o" && !output.has_value() &&
+                 index + 1 < argc) {
+        output = argv[++index];
+      } else if (argument == "--kind" && !artifact_kind_set &&
+                 index + 1 < argc) {
+        const std::optional<draft::NativeArtifactKind> parsed =
+            parse_native_artifact_kind(argv[++index]);
+        if (!parsed.has_value()) {
+          print_usage();
+          return 2;
+        }
+        artifact_kind = *parsed;
+        artifact_kind_set = true;
       } else if (argument == "--model" &&
                  !codex_model.has_value() && index + 1 < argc) {
         codex_model = argv[++index];
@@ -1307,7 +1418,9 @@ int main(int argc, char **argv) {
       }
     }
     if ((revalidate && codex_model.has_value()) ||
-        (revalidate && regenerate)) {
+        (revalidate && regenerate) ||
+        (!build_after_resolution &&
+         (output.has_value() || artifact_kind_set))) {
       print_usage();
       return 2;
     }
@@ -1318,6 +1431,12 @@ int main(int argc, char **argv) {
       codex.emplace();
       if (codex_model.has_value()) codex->model = *codex_model;
       codex->cancellation_requested = command_cancellation_requested;
+    }
+    std::optional<ResolveBuildRequest> resolve_build;
+    if (build_after_resolution) {
+      resolve_build.emplace();
+      resolve_build->output = output;
+      resolve_build->artifact_kind = artifact_kind;
     }
     return run_agent_command(
         argv[2],
@@ -1337,7 +1456,8 @@ int main(int argc, char **argv) {
         assertions_off
             ? draft::RuntimeAssertionMode::Off
             : draft::RuntimeAssertionMode::On,
-        timings);
+        timings,
+        resolve_build);
   }
   if (argc >= 3 && std::string_view(argv[1]) == "judge") {
     std::optional<std::string> codex_model;
@@ -1555,25 +1675,17 @@ int main(int argc, char **argv) {
         assertions_off = true;
       } else if (argument == "--kind" && !artifact_kind_set &&
                  index + 1 < argc) {
-        const std::string_view spelling(argv[++index]);
-        artifact_kind_set = true;
-        if (spelling == "executable") {
-          artifact_kind = draft::NativeArtifactKind::Executable;
-        } else if (spelling == "object") {
-          artifact_kind = draft::NativeArtifactKind::Object;
-        } else if (spelling == "static-library") {
-          artifact_kind = draft::NativeArtifactKind::StaticLibrary;
-        } else if (spelling == "dynamic-library") {
-          artifact_kind = draft::NativeArtifactKind::DynamicLibrary;
-        } else if (spelling == "assembly") {
-          artifact_kind = draft::NativeArtifactKind::Assembly;
-        } else {
+        const std::optional<draft::NativeArtifactKind> parsed =
+            parse_native_artifact_kind(argv[++index]);
+        if (!parsed.has_value()) {
           print_usage();
           return 2;
         }
-      } else if (argument == "-o" && index + 1 < argc) {
-        ++index;
-        output = argv[index];
+        artifact_kind = *parsed;
+        artifact_kind_set = true;
+      } else if (argument == "-o" && !output.has_value() &&
+                 index + 1 < argc) {
+        output = argv[++index];
       } else if (argument == "--provider" && index + 1 < argc) {
         draft::ForeignProviderInput provider;
         std::string reason;

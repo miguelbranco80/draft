@@ -119,14 +119,16 @@ struct CompiledPackage {
 // is a failed or not-yet-started result. InterfaceDiscovery may intentionally
 // omit packages blocked by declaration/member synthesis. SemanticClosure owns
 // complete checked declarations, bodies, effects, denials, and native-interop
-// facts but no MIR. TargetLowering additionally owns every validation entry,
-// assembly program, MIR package, and requested LLVM module. The state is never
+// facts but no MIR. ValidationDiscovery additionally owns the canonical test or
+// benchmark entry set but still has no target IR. TargetLowering owns every
+// requested assembly program, MIR package, and LLVM module. The state is never
 // serialized or cached; it exists so later command stages can continue the
 // exact checked graph without guessing from empty output vectors.
 enum class CompileWorkspaceProgress {
   Empty,
   InterfaceDiscovery,
   SemanticClosure,
+  ValidationDiscovery,
   TargetLowering,
 };
 
@@ -138,6 +140,10 @@ struct CompileWorkspaceResult {
   // and lowering. A continuation must supply this exact identity.
   std::string target_identity;
   CompileConfiguration configuration;
+  // Validation source selection changes the checked package graph. A lowering
+  // continuation must retain the same selection and may not reinterpret an
+  // ordinary graph as a test or benchmark harness.
+  ValidationKind validation_kind = ValidationKind::None;
   WorkspaceGraph graph;
   // Indices exactly match graph.packages. In Complete, a missing row means the
   // package failed before publishing an interface. Interface discovery may
@@ -171,11 +177,12 @@ struct CompileWorkspaceResult {
     DiagnosticSink &diagnostics);
 
 // Continues one successful Complete result from SemanticClosure through
-// validation discovery and requested target lowering. The function neither
-// reloads source nor rebuilds declarations or bodies: every FileId, type,
-// symbol, HIR node, and dependency edge remains owned by `compiled`. Calling it
-// on an interface-stage, failed, already-lowered, differently targeted, or
-// differently configured result is a diagnosed compiler-API error.
+// validation discovery and requested target lowering, or from an already
+// discovered validation graph through its later MIR/LLVM request. The function
+// neither reloads source nor rebuilds declarations or bodies: every FileId,
+// type, symbol, HIR node, and dependency edge remains owned by `compiled`.
+// Calling it on an interface-stage, failed, already-lowered, differently
+// targeted, or differently configured result is a diagnosed compiler-API error.
 [[nodiscard]] bool continue_compiled_workspace(
     SourceManager &sources,
     const CompileWorkspaceOptions &options,

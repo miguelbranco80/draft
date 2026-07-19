@@ -137,6 +137,8 @@ build/draftc check path/to/package --target aarch64-macos
 build/draftc check path/to/package --target aarch64-linux
 build/draftc expand path/to/package --out /tmp/expanded-source \
   --target aarch64-macos
+build/draftc resolve path/to/package --build -o /tmp/program \
+  --target aarch64-macos
 ```
 
 Use `lex` for token/semicolon questions, `syntax` for grammar/recovery, and
@@ -161,6 +163,11 @@ plus generated-to-surface `.draft-map` sidecars. Its destination must not
 already exist. It is useful when reviewing `...` expansions or feeding simple
 editor tooling, but remains derived output: commit the resolution manifest and
 referenced content-addressed generated Draft objects instead.
+
+`resolve --build` is the explicit source-changing plus native-emission workflow.
+Resolution commits only after the complete program checks; native lowering then
+continues the returned graph without another front-end construction. It does
+not implicitly execute tests, benchmarks, or judgments.
 
 ## Native validation
 

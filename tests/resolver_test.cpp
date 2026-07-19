@@ -564,6 +564,8 @@ void test_resolution_reuse_revalidation_and_failure(TestState &state) {
   draft::DiagnosticSink first_diagnostics;
   draft::ResolveWorkspaceOptions first_options =
       resolve_options(workspace, provider);
+  first_options.compile.lower_mir = true;
+  first_options.compile.emit_llvm = true;
   first_options.external_inputs_configured = true;
   first_options.external_inputs.push_back(fake_runtime_asset_pin());
   const draft::ResolveWorkspaceResult first = draft::resolve_workspace(
@@ -578,6 +580,24 @@ void test_resolution_reuse_revalidation_and_failure(TestState &state) {
   EXPECT(state, first.committed);
   EXPECT(state, first.synthesized_sites == 1);
   EXPECT(state, first.manifest.external_inputs.size() == 1);
+  EXPECT(state, first.compiled_program.has_value());
+  if (first.compiled_program.has_value()) {
+    EXPECT(state,
+        first.compiled_program->progress ==
+            draft::CompileWorkspaceProgress::TargetLowering);
+    EXPECT(state,
+        first.compiled_program->resolved_program_digest ==
+            std::optional<draft::Sha256Digest>(
+                first.manifest.resolved_program_digest));
+    EXPECT(state, first.compiled_program->resolution_manifest.has_value());
+    const std::size_t root_index = static_cast<std::size_t>(
+        first.compiled_program->graph.root_package.value);
+    EXPECT(state, root_index < first.compiled_program->packages.size());
+    if (root_index < first.compiled_program->packages.size() &&
+        first.compiled_program->packages[root_index].has_value()) {
+      EXPECT(state, first.compiled_program->packages[root_index]->llvm.ok);
+    }
+  }
   EXPECT(state, provider.calls == 1);
   EXPECT(state, provider.last_prompt == "first prompt");
   EXPECT(state, provider.last_attachment == "exact attachment bytes\n");

@@ -24,6 +24,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -78,12 +79,20 @@ struct ResolveWorkspaceResult {
   std::size_t synthesized_sites = 0;
   std::size_t regenerated_sites = 0;
   ResolutionManifest manifest;
+  // The final coherent program graph checked immediately before commit. When
+  // the caller requested MIR/LLVM, those products continue this same graph and
+  // are available here for `resolve --build`; the driver must not invoke the
+  // front end again. A no-site handwritten resolution also returns its checked
+  // graph even though committed remains false.
+  std::optional<CompileWorkspaceResult> compiled_program;
 };
 
-// Resolves one selected package graph without printing or lowering native code.
-// The SourceManager owns both surface and resolved source for diagnostic
-// rendering until the result is consumed. On every failure before the final
-// store commit, .draft/resolution.json remains unchanged.
+// Resolves one selected package graph without printing or invoking the native
+// toolchain. CompileWorkspaceOptions may request MIR/LLVM continuation for a
+// later same-command native build. The SourceManager owns both surface and
+// resolved source for diagnostic rendering and for compiled_program until the
+// result is consumed. On every failure before the final store commit,
+// .draft/resolution.json remains unchanged.
 [[nodiscard]] ResolveWorkspaceResult resolve_workspace(
     SourceManager &sources,
     const std::string &root_package_directory,
