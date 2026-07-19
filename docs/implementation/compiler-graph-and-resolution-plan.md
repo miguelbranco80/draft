@@ -218,9 +218,9 @@ and tests as applicable.
 - `draft_resolver_tests` covers provenance-independent freshness and identity,
   selective regeneration, bounded rejected proposals, provider-free reuse,
   cancellation, validation-context graphs, and failure without commit.
-- `draft_resolution_store_tests` and `draft_resolution_overlay_tests` cover
-  missing, corrupt, stale, duplicate, mismatched, interrupted, and
-  transaction-injected persistent inputs.
+- `draft_resolution_tests`, `draft_resolution_store_tests`, and
+  `draft_resolution_overlay_tests` cover missing, corrupt, stale, duplicate,
+  mismatched, interrupted, and transaction-injected persistent inputs.
 - `draft_compiler_tests` covers selective in-memory invalidation and exact
   semantic/lowering continuation; `draft_driver_timings` checks the public
   phase and graph-work counters.
