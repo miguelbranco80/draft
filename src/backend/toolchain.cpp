@@ -1,4 +1,4 @@
-// External host LLVM invocation for Draft's concrete native target contracts.
+// Native artifact publication for Draft's concrete target contracts.
 
 #include "backend/toolchain.h"
 
@@ -17,6 +17,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <spawn.h>
 #include <string>
 #include <system_error>
 #include <utility>
@@ -26,6 +27,8 @@
 #include <sys/resource.h>
 #include <sys/wait.h>
 #include <unistd.h>
+
+extern char **environ;
 
 namespace draft {
 namespace {
@@ -49,9 +52,14 @@ struct ProcessResult {
       static_cast<std::uint64_t>(value.tv_usec) * 1'000ULL;
 }
 
-// Runs a process without a shell. Capturing both stdout and stderr into one pipe
-// is intentional for version probes and concise diagnostics; compilation output
-// is normally empty and is attached to the phase error when nonzero.
+// Runs a process without a shell. posix_spawnp is required rather than a manual
+// fork/exec sequence because native object workers may invoke independent
+// assemblers concurrently. After fork in a multithreaded process, allocating a
+// vector or taking a C++ runtime lock in the child can deadlock against a lock
+// held by a suspended sibling thread. posix_spawnp provides the same PATH lookup
+// and inherited environment through an implementation-safe launch boundary.
+// Capturing stdout and stderr together keeps successful tool calls quiet and
+// attaches concise output to a phase diagnostic on failure.
 [[nodiscard]] ProcessResult run_process(
     const std::vector<std::string> &arguments) {
   ProcessResult result;
@@ -64,32 +72,67 @@ struct ProcessResult {
     result.error = std::string("pipe failed: ") + std::strerror(errno);
     return result;
   }
-  const pid_t child = fork();
-  if (child < 0) {
-    result.error = std::string("fork failed: ") + std::strerror(errno);
+  posix_spawn_file_actions_t actions;
+  const int actions_error = posix_spawn_file_actions_init(&actions);
+  if (actions_error != 0) {
+    result.error = std::string("posix_spawn file actions failed: ") +
+        std::strerror(actions_error);
     (void)close(pipe_descriptors[0]);
     (void)close(pipe_descriptors[1]);
     return result;
   }
-  if (child == 0) {
+
+  // File-action construction is ordinary parent-thread code, so every error
+  // can be handled before a child exists. The spawned tool sees one write end
+  // as both standard streams and does not inherit the unused read end.
+  int file_action_error =
+      posix_spawn_file_actions_addclose(&actions, pipe_descriptors[0]);
+  if (file_action_error == 0) {
+    file_action_error = posix_spawn_file_actions_adddup2(
+        &actions, pipe_descriptors[1], STDOUT_FILENO);
+  }
+  if (file_action_error == 0) {
+    file_action_error = posix_spawn_file_actions_adddup2(
+        &actions, pipe_descriptors[1], STDERR_FILENO);
+  }
+  if (file_action_error == 0) {
+    file_action_error =
+        posix_spawn_file_actions_addclose(&actions, pipe_descriptors[1]);
+  }
+  if (file_action_error != 0) {
+    result.error = std::string("posix_spawn file action failed: ") +
+        std::strerror(file_action_error);
+    (void)posix_spawn_file_actions_destroy(&actions);
     (void)close(pipe_descriptors[0]);
-    if (dup2(pipe_descriptors[1], STDOUT_FILENO) < 0 ||
-        dup2(pipe_descriptors[1], STDERR_FILENO) < 0) {
-      _exit(126);
-    }
     (void)close(pipe_descriptors[1]);
-    std::vector<char *> raw_arguments;
-    raw_arguments.reserve(arguments.size() + 1);
-    for (const std::string &argument : arguments) {
-      raw_arguments.push_back(const_cast<char *>(argument.c_str()));
-    }
-    raw_arguments.push_back(nullptr);
-    execvp(raw_arguments[0], raw_arguments.data());
-    _exit(127);
+    return result;
+  }
+
+  std::vector<char *> raw_arguments;
+  raw_arguments.reserve(arguments.size() + 1);
+  for (const std::string &argument : arguments) {
+    raw_arguments.push_back(const_cast<char *>(argument.c_str()));
+  }
+  raw_arguments.push_back(nullptr);
+
+  pid_t child = -1;
+  const int spawn_error = posix_spawnp(
+      &child,
+      raw_arguments.front(),
+      &actions,
+      nullptr,
+      raw_arguments.data(),
+      environ);
+  (void)posix_spawn_file_actions_destroy(&actions);
+  (void)close(pipe_descriptors[1]);
+  if (spawn_error != 0) {
+    result.error = std::string("posix_spawnp failed: ") +
+        std::strerror(spawn_error);
+    (void)close(pipe_descriptors[0]);
+    return result;
   }
 
   result.started = true;
-  (void)close(pipe_descriptors[1]);
   char buffer[4096];
   while (true) {
     const ssize_t count = read(pipe_descriptors[0], buffer, sizeof(buffer));
