@@ -4,7 +4,8 @@ This release decision complements the exact layout, assembly recipe, content ide
 
 ## Selected self-contained AArch64 distribution
 
-Status: qualified release input for compiler content v129.
+Status: qualified release input for compiler content v129 and
+`draft-core-bootstrap-v2`.
 
 The selected toolchain contains the five baseline programs, the address
 profile's `llvm-symbolizer` and arm64 ASan dylib, and their recursive
@@ -21,3 +22,10 @@ the complete native and determinism matrices, proves that no larger developer
 SDK is currently an implicit input. The assembly recipe, exact content-tree
 identities, dependency policy, and distribution boundary are recorded in
 [the AArch64 macOS toolchain document](aarch64-macos-toolchain.md).
+
+On 2026-07-19, the selected roots were independently pinned again to toolchain
+identity `6f3dc859b8aee177db86879b7e7503e8bfbf8b5013ee0b745ab9db3502e0ad1f`
+and SDK identity
+`253fb9bad05f1a1abaacbf54cc642227a76def2c2dfd58839db0f8d5eafc5cb6`.
+The locked 21-program native conformance gate and the repeated five-artifact
+determinism gate both passed with core identity `draft-core-bootstrap-v2`.

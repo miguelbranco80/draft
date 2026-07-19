@@ -88,18 +88,22 @@ relative symlink spellings; the physical parent directory is not included.
 
 Qualification runs both native integration programs with
 `DRAFT_TEST_LOCKED_TOOLCHAIN_ROOT` and `DRAFT_TEST_LOCKED_SDK_ROOT` set. The
-conformance program builds and executes the complete 17-program matrix,
+conformance program builds and executes the complete 21-program matrix,
 including inline and package assembly. The determinism program builds every
 artifact kind twice and compares complete output trees byte for byte. Ordinary
 CTest runs keep their installed-toolchain host gate, so both paths remain
 covered.
 
-The recorded selected-root qualification above is the
-`draft-core-bootstrap-v1` baseline. The current `draft-core-bootstrap-v2`
-matrix has 21 programs after adding the language-tour, console, file-I/O, and
-denial examples. Those programs pass the installed-toolchain and sanitizer
-gates, but this section remains at 17 until the 21-program test is rerun with
-both locked-root environment variables against the selected distribution.
+The original selected-root qualification established the 17-program
+`draft-core-bootstrap-v1` baseline. On 2026-07-19, compiler content
+`draft-bootstrap-cpp-v129` reran both locked integration programs with
+`draft-core-bootstrap-v2` against the exact selected identities above. The
+expanded conformance gate built, linked, produced debug companions for, and
+executed all 21 programs, including the language-tour, console, file-I/O, and
+denial additions. The determinism gate rebuilt executable, relocatable object,
+static-library, dynamic-library, and assembly-bundle artifacts twice and found
+their complete output trees byte-identical. Both gates passed; v2 is therefore
+the current selected-root core qualification baseline.
 
 Address-profile qualification additionally resolves and executes the
 `examples/validation` test and benchmark under the locked profile, verifies
