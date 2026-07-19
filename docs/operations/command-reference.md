@@ -7,13 +7,16 @@ All package commands accept `--target aarch64-macos|aarch64-linux` where shown.
 macOS remains the compatibility default. Package paths are canonicalized before
 the workspace and resolution-store boundaries are established.
 
-All package commands also accept `--timings` or `--timings=all`. The compact
-form writes a hierarchical wall-clock report and deterministic work counters
-to stderr after ordinary command output. It separates resolution-manifest
-work, every interface-discovery round, body-surface compilation, final MIR/LLVM
-code generation, native object/link/debug-symbol work, and validation work when
-those phases run. Native commands additionally report the user and system CPU
-accounted to Clang, the linker, other host tools, and validation executables.
+All package commands also accept `--timings` or `--timings=all`. Put the option
+anywhere after the package directory, alongside the command's other options;
+for example, `draftc build examples/hello-world -o hello_world --timings=all`.
+The compact form writes a hierarchical wall-clock report and deterministic
+work counters to stderr after ordinary command output. It separates
+resolution-manifest work, every interface-discovery round, body-surface
+compilation, final MIR/LLVM code generation, native object/link/debug-symbol
+work, and validation work when those phases run. Native commands additionally
+report the user and system CPU accounted to Clang, the linker, other host tools,
+and validation executables.
 
 `--timings=all` adds package/tool-level events, source discovery and I/O,
 lexing/parsing, import-graph resolution, and each visible event's exclusive
@@ -29,10 +32,12 @@ the option useful for locating failure-path costs.
 ```sh
 build/draftc lex path/to/file.draft
 build/draftc syntax path/to/file.draft
-build/draftc check path/to/package [--target aarch64-macos|aarch64-linux] [--timings]
-build/draftc emit-llvm path/to/package [--target aarch64-macos|aarch64-linux]
+build/draftc check path/to/package \
+  [--target aarch64-macos|aarch64-linux] [--timings|--timings=all]
+build/draftc emit-llvm path/to/package \
+  [--target aarch64-macos|aarch64-linux] [--timings|--timings=all]
 build/draftc emit-c-header path/to/package [-o output.h] \
-  [--target aarch64-macos|aarch64-linux]
+  [--target aarch64-macos|aarch64-linux] [--timings|--timings=all]
 build/draftc target [--target aarch64-macos|aarch64-linux]
 ```
 
@@ -49,7 +54,8 @@ build/draftc build path/to/package [-o output] \
   [--assertions=off] \
   [--provider name=object|archive|shared-library:/absolute/path]... \
   [--provider-summary name:/absolute/path]... \
-  [--runtime-asset name:/absolute/file-or-directory]... [--timings|--timings=all]
+  [--runtime-asset name:/absolute/file-or-directory]... \
+  [--timings|--timings=all]
 ```
 
 `build` is always provider-free. It compiles handwritten programs directly and
@@ -82,7 +88,8 @@ build/draftc resolve path/to/package [--revalidate] [--judge] \
    --codex-executable /absolute/codex --codex-model model] \
   [--provider name=object|archive|shared-library:/absolute/path]... \
   [--provider-summary name:/absolute/path]... \
-  [--runtime-asset name:/absolute/file-or-directory]...
+  [--runtime-asset name:/absolute/file-or-directory]... \
+  [--timings|--timings=all]
 ```
 
 `resolve` constructs typed obligations and calls the configured provider only
@@ -103,13 +110,15 @@ build/draftc test path/to/package \
   [--target aarch64-macos|aarch64-linux] [--instrument address|...] \
   [--provider name=object|archive|shared-library:/absolute/path]... \
   [--provider-summary name:/absolute/path]... \
-  [--runtime-asset name:/absolute/file-or-directory]...
+  [--runtime-asset name:/absolute/file-or-directory]... \
+  [--timings|--timings=all]
 
 build/draftc bench path/to/package [--verify] \
   [--target aarch64-macos|aarch64-linux] [--instrument address|...] \
   [--provider name=object|archive|shared-library:/absolute/path]... \
   [--provider-summary name:/absolute/path]... \
-  [--runtime-asset name:/absolute/file-or-directory]...
+  [--runtime-asset name:/absolute/file-or-directory]... \
+  [--timings|--timings=all]
 ```
 
 These commands compile an isolated native validation harness, execute it, and
@@ -133,7 +142,8 @@ build/draftc judge path/to/package [selector...] [--list] \
   [--codex-distribution-root /absolute/codex-root \
    --codex-executable /absolute/codex --codex-model model] \
   [--provider name=object|archive|shared-library:/absolute/path]... \
-  [--provider-summary name:/absolute/path]...
+  [--provider-summary name:/absolute/path]... \
+  [--timings|--timings=all]
 ```
 
 `--list` prints stable judgment site identities without configuring a provider.

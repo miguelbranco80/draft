@@ -4,11 +4,31 @@
 # real driver against one stable package and verifies only structural facts:
 # timing is written to stderr, summary mode exposes real compiler passes but
 # hides package/self detail, all mode exposes both, and duplicate selection is
-# rejected as a usage error. It does not compare durations because host load is
+# rejected as a usage error. It also keeps each supported package command's
+# usage block self-contained, so a reader does not have to infer option scope
+# from a detached footer. It does not compare durations because host load is
 # intentionally outside the deterministic compiler contract.
 
 if(NOT DEFINED DRAFTC OR NOT DEFINED SOURCE_PACKAGE)
   message(FATAL_ERROR "DRAFTC and SOURCE_PACKAGE are required")
+endif()
+
+execute_process(
+  COMMAND "${DRAFTC}"
+  RESULT_VARIABLE usage_result
+  OUTPUT_VARIABLE usage_stdout
+  ERROR_VARIABLE usage_stderr
+)
+if(NOT usage_result EQUAL 2)
+  message(FATAL_ERROR "usage command returned ${usage_result}, expected 2")
+endif()
+string(REGEX MATCHALL "\\[--timings\\|--timings=all\\]"
+  timing_usage_options "${usage_stderr}")
+list(LENGTH timing_usage_options timing_usage_count)
+if(NOT timing_usage_count EQUAL 8 OR
+   usage_stderr MATCHES "package commands accept --timings")
+  message(FATAL_ERROR
+    "timing options are not shown directly on all eight package commands\n${usage_stderr}")
 endif()
 
 execute_process(
