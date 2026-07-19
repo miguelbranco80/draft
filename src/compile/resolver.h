@@ -2,10 +2,11 @@
 //
 // This is the orchestration counterpart to compiler.cpp's read-only offline
 // path. It compiles surface obligations, reuses fresh pins, invokes a configured
-// provider for missing/stale sites, recompiles the proposed resolved source,
-// enforces agent boundaries, computes the coherent program identity, and then
-// commits through the resolution store. No provider proposal is trusted before
-// the ordinary compiler accepts the complete program.
+// provider for missing/stale sites, applies proposed source through isolated
+// in-memory graph transitions, enforces agent boundaries, computes the coherent
+// program identity, and then commits through the resolution store. No provider
+// proposal is trusted before the ordinary compiler accepts the complete
+// program.
 //
 // Declaration/member sites form an early opaque interface stage; statement,
 // expression, and assembly sites run only after those interfaces are installed

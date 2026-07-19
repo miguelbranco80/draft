@@ -47,22 +47,25 @@ cache.
 
 ### One compiler graph
 
-- Replace repeated interface, body-surface, and final compilations with one
-  semantic dependency graph per distinct source selection, owned for the
+- Each distinct source selection has one semantic dependency graph owned for the
   duration of a command. Ordinary source, a test selection, and a benchmark
   selection are different graphs because they contain different files and may
   have different imports; no one of those graphs is rebuilt merely to advance
   a compiler phase.
-- Represent declaration availability, type and layout completion, synthesis
-  obligations, body checking, MIR readiness, and requested validation as
-  explicit graph state.
-- Schedule a deterministic sorted ready set. The implemented scheduler is
-  sequential. Parallel execution remains a possible measured optimization, not
+- Explicit progress states represent interface discovery, semantic closure,
+  validation discovery, and target lowering; package rows own the declarations,
+  types, obligations, checked bodies, MIR, and LLVM products available at each
+  state.
+- A command-local adjacency index records imports by consumer and consumers by
+  dependency. A sequential Kahn traversal uses a PackageId-ordered min-heap, so
+  dependency scheduling is deterministic and O((packages + imports) log
+  packages). Source invalidation walks the reverse adjacency rows in O(packages
+  + imports). Parallel execution remains a possible measured optimization, not
   part of the architecture contract or a source of different results.
-- Reuse loaded files, tokens, syntax, declarations, interned types, checked
-  expansions, and dependency facts instead of reloading the workspace for each
-  conceptual phase.
-- Keep handwritten and generated declarations in the same semantic graph once
+- The graph reuses loaded files, tokens, syntax, declarations, interned types,
+  checked expansions, and dependency facts instead of reloading the workspace
+  for each conceptual phase.
+- Handwritten and generated declarations share the same semantic graph once
   generated source has passed its grammar boundary and ordinary checks. A
   complete-file expansion is reparsed transactionally, may not change package
   or import topology, and rebuilds only its package plus transitive consumers.
@@ -70,61 +73,65 @@ cache.
 
 ### Resolution and build workflow
 
-- Keep `draftc resolve` as the only operation authorized to request or change
+- `draftc resolve` is the only operation authorized to request or change
   generated source. This is the visible side-effect and review boundary.
-- Add `draftc resolve --build` so a successful resolution can continue through
+- `draftc resolve --build` lets a successful resolution continue through
   MIR, native emission, and linking in the same process without rebuilding the
   graph. Plain `resolve` still stops after committing checked source.
-- Add explicit `--regenerate`, with an optional site selector, to ask the
-  provider to reconsider source that is otherwise fresh.
-- Make resolution prove that the completed program parses, types, satisfies
-  denials, and is ready for the requested target. Do not automatically run
+- Explicit `--regenerate`, with an optional site selector, asks the provider to
+  reconsider source that is otherwise fresh.
+- Resolution proves that the completed program parses, types, satisfies
+  denials, and is ready for the requested target. It does not automatically run
   tests, benchmarks, or judgments as a condition of saving generated source.
-- Keep `test`, `bench`, and `judge` as separate explicit commands. Their
+- `test`, `bench`, and `judge` remain separate explicit commands. Their
   evidence is associated with the exact resolved program but is not required
   to compile it.
 
 ### Pin freshness and provenance
 
-- Define freshness only by facts that determine whether an expansion still
+- Freshness includes only facts that determine whether an expansion still
   fits its synthesis obligation: grammar category, expected type, visible
   declarations and bindings, prompt, `docs` and attachments, target and ABI,
   active denials, and relevant compiler semantics.
-- Record provider, model, reasoning effort, retry policy, Codex adapter version,
-  and other generation settings as provenance only.
-- Exclude that provenance from pin freshness and resolved-program identity.
+- Pins record provider and model in named provenance fields. Their configuration
+  identity covers other configured generation policy. For the Codex adapter it
+  hashes the explicit/default model choice, timeout, adapter retry budget,
+  prompt and output-schema contracts, and fixed adapter version/process policy.
+  Draft exposes no reasoning-effort option today; if one is added, it belongs
+  in this provenance identity rather than freshness.
+- That provenance is excluded from pin freshness and resolved-program identity.
   Changing the default Codex model must not invalidate accepted source.
-- Preserve the exact expansion bytes and their content hash as semantic program
+- The exact expansion bytes and their content hash remain semantic program
   inputs. A deliberate regeneration changes the program only if it accepts
   different Draft source.
-- Separate generation policy from genuine compiler configuration. A setting
-  that changes Draft typing or target meaning remains a semantic input even
-  when a provider happens to receive it too.
+- Generation policy remains separate from genuine compiler configuration. A
+  setting that changes Draft typing or target meaning remains a semantic input
+  even when a provider happens to receive it too.
 
 ### Persistent state and inspection
 
-- Document that `.draft/resolution.json` and every referenced
+- `.draft/resolution.json` and every referenced
   `.draft/generated/*.draft` object are normally committed.
-- Keep `.draft` transaction staging and native intermediates temporary or
+- `.draft` transaction staging and native intermediates remain temporary or
   ignored. Do not create a `.draft/cache` hierarchy or another persistent
   compiler cache under a different name.
-- Keep validation and judgment evidence separate from the generated-source
+- Validation and judgment evidence remain separate from the generated-source
   selection. Evidence may be retained for auditing or release qualification,
   but ordinary builds neither require nor update it.
-- Add `draftc expand <package> --out <directory>` to materialize complete source
+- `draftc expand <package> --out <directory>` materializes complete source
   files with every `...` replaced, while preserving generated-to-surface source
   maps.
 
 ### CLI and input simplification
 
-- Remove low-level Codex distribution-root and executable-path flags from the
+- Low-level Codex distribution-root and executable-path flags are absent from the
   normal language workflow. Provider discovery and credentials belong to the
   adapter or user configuration, not Draft program identity.
-- Keep any explicit model selection as generation policy and provenance, not as
-  a condition for reusing checked source.
-- Treat vendored Draft packages as ordinary source in the workspace. Draft does
+- Explicit model selection is generation policy and provenance, not a condition
+  for reusing checked source.
+- Vendored Draft packages are ordinary source in the workspace. Draft does
   not need a package lockfile or dependency-download mechanism.
-- Retain exact content identities only where the selected bytes genuinely are
+- Exact content identities remain only where the selected bytes genuinely are
   program inputs, notably generated source, native objects and libraries,
   foreign-provider summaries, and runtime assets.
 
@@ -151,19 +158,27 @@ cache.
    another workspace load (`1ba75f3`).
 7. Timing remeasurement showed native Clang/tool invocation dominates a small
    handwritten build. The larger agent acceptance graph now performs one
-   ordinary graph construction plus one separately selected typed test-context
-   graph, rather than five repeated compiler/workspace passes. Typed validation
-   state survives the body-source transition. Parallel front-end scheduling was
-   therefore not added: its coordination and timing-recorder complexity are not
-   justified by the measured remaining front-end work. The sorted sequential
-   ready set is the qualified implementation.
+   ordinary graph construction plus separately selected typed test- and
+   benchmark-context graphs, rather than repeated compiler/workspace passes for
+   interface and body stages. Typed validation state survives the body-source
+   transition. Parallel front-end scheduling was therefore not added: its
+   coordination and timing-recorder complexity are not justified by the
+   measured remaining front-end work. The sorted sequential ready set is the
+   qualified implementation.
+8. A final complexity audit replaced whole-edge rescans and shifting sorted
+   vectors with one explicit adjacency index and PackageId-ordered min-heap
+   (`83cd919`).
+   The provider-free process acceptance now shadows Codex with a failing
+   sentinel and runs `check`, native `build`, `test`, and `bench` from the same
+   committed generated source. It also rejects any `.draft/cache` creation
+   (`39f9a4d`).
 
 The qualifying timing counters were `compiler passes: 1`, `workspace loads: 1`
 for the handwritten hello build. The resolved agent-acceptance build, whose
-synthesis context includes test source and `core/testing`, reported two passes,
-two loads, and two in-memory source transitions: one ordinary program graph,
-one distinct validation-selection graph, and no repeated construction for its
-interface or body overlays.
+synthesis context includes both validation roles, reported three passes, three
+loads, and two in-memory source transitions: one ordinary program graph, one
+test-selection graph, one benchmark-selection graph, and no repeated
+construction for their interface or body overlays.
 
 The changes were kept in coherent commits. Public slices updated their owning
 specification, implementation document, command reference, Draft coding skill,
@@ -189,6 +204,29 @@ and tests as applicable.
   generated-source selections, diagnostics, and native outputs. Any future
   parallel scheduler must prove byte identity against this oracle before use.
 - A clean checkout containing authored source plus the committed durable
-  `.draft` files builds without provider credentials or network access.
+  `.draft` files builds for the manifest's selected target without provider
+  credentials or network access. Existing generated source may be revalidated
+  provider-free to select another supported target.
 - Repeated commands leave no persistent compiler cache; all cross-invocation
   semantic state is reconstructible from authored and generated source.
+
+## Automated evidence
+
+- `draft_resolver_tests` covers provenance-independent freshness and identity,
+  selective regeneration, bounded rejected proposals, provider-free reuse,
+  cancellation, validation-context graphs, and failure without commit.
+- `draft_resolution_store_tests` and `draft_resolution_overlay_tests` cover
+  missing, corrupt, stale, duplicate, mismatched, interrupted, and
+  transaction-injected persistent inputs.
+- `draft_compiler_tests` covers selective in-memory invalidation and exact
+  semantic/lowering continuation; `draft_driver_timings` checks the public
+  phase and graph-work counters.
+- `draft_resolve_build_reuses_final_graph` compares the assembly tree emitted by
+  same-process `resolve --build` with a later offline build byte for byte.
+- `draft_provider_free_resolved_program_consumers` places a failing `codex`
+  sentinel first on `PATH`, target-qualifies a copied committed manifest using
+  existing source, and runs `check`, `build`, `test`, and `bench`. It also checks
+  that repeated commands create no `.draft/cache` directory.
+- `draft_native_determinism_tests` retains the native byte-identity oracle for
+  repeated links. The complete CTest suite composes these focused contracts with
+  parser, semantic, target, ABI, evidence, driver, and native integration tests.

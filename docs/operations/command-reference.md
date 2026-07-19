@@ -12,16 +12,16 @@ anywhere after the package directory, alongside the command's other options;
 for example, `draftc build examples/hello-world -o hello_world --timings=all`.
 The compact form writes a hierarchical wall-clock report and deterministic
 work counters to stderr after ordinary command output. It separates
-resolution-manifest work, every interface-discovery round, body-semantic
-continuation, MIR/LLVM code generation, native object/link/debug-symbol
-work, and validation work when those phases run. Native commands additionally
-report the user and system CPU accounted to Clang, the linker, other host tools,
-and validation executables.
+resolution-manifest work, interface discovery and in-memory source transitions,
+body-semantic continuation, MIR/LLVM code generation, native
+object/link/debug-symbol work, and validation work when those phases run.
+Native commands additionally report the user and system CPU accounted to Clang,
+the linker, other host tools, and validation executables.
 
 `--timings=all` adds package/tool-level events, source discovery and I/O,
 lexing/parsing, import-graph resolution, and each visible event's exclusive
-`self` duration. Reports are diagnostic observations only: the flag
-does not enter compiler configuration, resolved-program identity, manifests,
+`self` duration. Reports are diagnostic observations only: the flag does not
+enter compiler configuration, resolved-program identity, manifests,
 or emitted artifacts. Durations naturally vary with the host, while counters
 and phase names describe the work the command actually performed. Failed
 commands still print the completed portion of an enabled report, which makes
