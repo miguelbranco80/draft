@@ -180,8 +180,19 @@ Interface discovery and semantic closure are monotonic states of that result,
 not separate workspace compilations. Once declaration/member synthesis is
 absent, the compiler checks bodies and publishes effects on the existing loaded
 files, syntax trees, declarations, interned types, and dependency interfaces.
-Handwritten commands therefore load and analyze declarations once before later
-MIR/LLVM continuation.
+Installing a checked complete-file expansion reparses it transactionally in
+that workspace graph, preserves package/import IDs, and rebuilds only its
+package plus transitive consumers. Unrelated dependency declarations and types
+remain live. Body-category replacement also retains already typed validation
+context because it cannot change declarations. Handwritten commands therefore
+load and analyze declarations once before later MIR/LLVM continuation.
+
+Provider proposals need isolation because sibling sites in one opaque set may
+not observe each other. The resolver copies the current command-local semantic
+state for each private proposal check, applies only that proposal through the
+same in-memory transition, and discards the candidate afterward. Accepted
+siblings are then installed together in the authoritative graph. This copy is
+not a persistent cache and performs no repeated filesystem discovery.
 
 The compiler treats the saved fragment as source inserted at its exact `...`
 site while retaining the original surface buffer and a composed source map.

@@ -3,6 +3,7 @@
 #include "compile/resolver.h"
 
 #include "backend/toolchain.h"
+#include "base/timing.h"
 #include "compile/compiler.h"
 #include "elaborator/provider.h"
 #include "elaborator/resolution.h"
@@ -606,6 +607,8 @@ void test_resolution_reuse_revalidation_and_failure(TestState &state) {
   draft::SourceManager offline_sources;
   draft::DiagnosticSink offline_diagnostics;
   draft::CompileWorkspaceOptions offline_options = compile_options(workspace);
+  draft::TimingRecorder offline_timings(draft::TimingOutput::Summary);
+  offline_options.timings = &offline_timings;
   offline_options.lower_mir = true;
   offline_options.emit_llvm = true;
   const draft::CompileWorkspaceResult offline =
@@ -616,6 +619,11 @@ void test_resolution_reuse_revalidation_and_failure(TestState &state) {
           offline_diagnostics);
   EXPECT(state, offline.ok);
   EXPECT(state, !offline_diagnostics.has_errors());
+  const std::string offline_report = offline_timings.render();
+  EXPECT(state,
+      offline_report.find("compiler passes: 1") != std::string::npos);
+  EXPECT(state,
+      offline_report.find("workspace loads: 1") != std::string::npos);
   EXPECT(state, offline.resolution_manifest.has_value());
   if (offline.resolution_manifest.has_value()) {
     EXPECT(state,

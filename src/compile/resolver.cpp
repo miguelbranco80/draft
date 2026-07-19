@@ -1,9 +1,13 @@
 // Direct sequential resolver implementation over typed surface obligations.
 //
-// State is represented as three plain vectors: surface package borrows, the new
-// pin map, and unique expansion objects. A site is processed in deterministic
-// package/obligation order. Parallel providers may be added only as a scheduling
-// optimization after dependency-ready sets are explicit.
+// The authoritative CompileWorkspaceResult advances through interface rounds,
+// body closure, and target lowering without reloading its workspace. Pins and
+// unique expansion objects remain plain vectors. A site is processed in
+// deterministic package/obligation order; its private proposal check copies
+// the current graph so opaque siblings cannot observe each other, then uses the
+// same in-memory source-transition operation as the authoritative stage.
+// Parallel providers may be added only as a scheduling optimization after
+// dependency-ready sets are explicit.
 
 #include "compile/resolver.h"
 
@@ -221,6 +225,7 @@ void publish_diagnostics(
     SourceManager &sources,
     const std::string &root_package_directory,
     const CompileWorkspaceOptions &stage_compile_options,
+    const CompileWorkspaceResult &surface,
     const PackageIdentity &identity,
     const LoadedPackage &loaded,
     const AgentObligation &obligation,
@@ -251,21 +256,37 @@ void publish_diagnostics(
           diagnostics);
   if (!candidate_overlay.ok) return false;
 
+  // A proposal is speculative, but it does not need a second workspace load.
+  // Copy the command-local semantic state as the isolation boundary, install
+  // exactly this site's complete-file replacement, and resume the same graph
+  // operations the authoritative stage will use after every sibling proposal
+  // in the opaque set has been accepted.
+  CompileWorkspaceResult compiled = surface;
   CompileWorkspaceOptions candidate_options = stage_compile_options;
-  merge_overrides(
-      candidate_options.workspace.source_overrides,
-      std::move(candidate_overlay.sources));
-  const CompileWorkspaceResult compiled = compile_workspace(
+  candidate_options.lower_mir = false;
+  candidate_options.emit_llvm = false;
+  bool candidate_ok = apply_compiled_workspace_source_overrides(
       sources,
-      root_package_directory,
-      std::move(candidate_options),
+      candidate_overlay.sources,
+      candidate_options,
+      compiled,
       diagnostics);
-  if (!compiled.ok && !diagnostics.has_errors()) {
+  if (candidate_ok &&
+      stage_compile_options.stage == CompileWorkspaceStage::Complete) {
+    candidate_options.stage = CompileWorkspaceStage::Complete;
+    candidate_ok = continue_compiled_workspace_semantics(
+        sources,
+        root_package_directory,
+        candidate_options,
+        compiled,
+        diagnostics);
+  }
+  if ((!candidate_ok || !compiled.ok) && !diagnostics.has_errors()) {
     diagnostics.error(
         SourceRange::invalid(),
         "compiler rejected a synthesis proposal without a diagnostic");
   }
-  return compiled.ok && !diagnostics.has_errors();
+  return candidate_ok && compiled.ok && !diagnostics.has_errors();
 }
 
 // One elaboration stage owns exactly the synthesis sites visible in its input
@@ -425,6 +446,7 @@ struct ResolvedStage {
                 sources,
                 root_package_directory,
                 stage_compile_options,
+                surface,
                 package.identity,
                 surface.graph.packages[package_index].loaded,
                 obligation,
@@ -596,22 +618,19 @@ ResolveWorkspaceResult resolve_workspace(
   // own round's proposals. Merging a nonempty round removes at least one
   // provider site, and generated-source validation forbids adding another, so
   // the finite source graph guarantees termination without an iteration cap.
-  CompileWorkspaceResult interface_surface;
+  CompileWorkspaceOptions interface_options = options.compile;
+  interface_options.stage =
+      CompileWorkspaceStage::DiscoverInterfaceSynthesis;
+  interface_options.lower_mir = false;
+  interface_options.emit_llvm = false;
+  CompileWorkspaceResult interface_surface = compile_workspace(
+      sources,
+      root_package_directory,
+      interface_options,
+      diagnostics);
+  if (!interface_surface.ok) return result;
   while (true) {
     if (resolution_cancelled(options, diagnostics)) return result;
-    CompileWorkspaceOptions interface_options = options.compile;
-    interface_options.stage =
-        CompileWorkspaceStage::DiscoverInterfaceSynthesis;
-    interface_options.lower_mir = false;
-    interface_options.emit_llvm = false;
-    interface_options.workspace.source_overrides = interface_overrides;
-    interface_surface = compile_workspace(
-        sources,
-        root_package_directory,
-        interface_options,
-        diagnostics);
-    if (!interface_surface.ok) return result;
-
     ResolvedStage interface_stage = resolve_stage(
         sources,
         root_package_directory,
@@ -627,6 +646,15 @@ ResolveWorkspaceResult resolve_workspace(
     const bool made_progress = !interface_stage.manifest.pins.empty();
     if (!append_stage_pins(
             manifest, std::move(interface_stage.manifest), diagnostics)) {
+      return result;
+    }
+    if (made_progress &&
+        !apply_compiled_workspace_source_overrides(
+            sources,
+            interface_stage.overrides,
+            interface_options,
+            interface_surface,
+            diagnostics)) {
       return result;
     }
     merge_overrides(
@@ -713,16 +741,32 @@ ResolveWorkspaceResult resolve_workspace(
     return result;
   }
 
-  std::vector<WorkspaceSourceOverride> complete_overrides =
-      std::move(interface_overrides);
-  merge_overrides(complete_overrides, std::move(body_stage.overrides));
-  options.compile.stage = CompileWorkspaceStage::Complete;
-  options.compile.workspace.source_overrides = std::move(complete_overrides);
+  const ResolvedAgentBoundary surface_boundary =
+      capture_resolved_agent_boundary(body_surface);
   if (resolution_cancelled(options, diagnostics)) return result;
-  CompileWorkspaceResult resolved = compile_workspace(
-      sources, root_package_directory, options.compile, diagnostics);
-  if (!resolved.ok || !validate_resolved_agent_boundaries(
-          body_surface, resolved, diagnostics)) {
+  if (!body_stage.overrides.empty()) {
+    CompileWorkspaceOptions update_options = options.compile;
+    update_options.stage =
+        CompileWorkspaceStage::DiscoverInterfaceSynthesis;
+    update_options.lower_mir = false;
+    update_options.emit_llvm = false;
+    if (!apply_compiled_workspace_source_overrides(
+            sources,
+            body_stage.overrides,
+            update_options,
+            body_surface,
+            diagnostics) ||
+        !continue_compiled_workspace_semantics(
+            sources,
+            root_package_directory,
+            body_options,
+            body_surface,
+            diagnostics)) {
+      return result;
+    }
+  }
+  if (!validate_resolved_agent_boundaries(
+          surface_boundary, body_surface, diagnostics)) {
     return result;
   }
 
@@ -745,16 +789,25 @@ ResolveWorkspaceResult resolve_workspace(
 
   manifest.resolved_program_digest = hash_resolved_program(
       sources,
-      resolved.graph,
+      body_surface.graph,
       options.compile.target,
       manifest,
       options.compile.compiler_content_identity,
       options.compile.configuration);
-  resolved.resolved_program_digest = manifest.resolved_program_digest;
+  body_surface.resolved_program_digest = manifest.resolved_program_digest;
   // The manifest copy is bound before the store commit and native emission.
   // Both consumers therefore use the exact candidate checked above, never a
   // path that could be replaced by another process after this point.
-  resolved.resolution_manifest = manifest;
+  body_surface.resolution_manifest = manifest;
+
+  const bool needs_target_continuation =
+      options.compile.validation_kind != ValidationKind::None ||
+      options.compile.lower_mir || options.compile.emit_llvm;
+  if (needs_target_continuation &&
+      !continue_compiled_workspace(
+          sources, options.compile, body_surface, diagnostics)) {
+    return result;
+  }
 
   // This is the final cancellation boundary. Once commit_resolution starts it
   // performs one crash-safe object-before-manifest transaction and must not be
@@ -768,7 +821,7 @@ ResolveWorkspaceResult resolve_workspace(
     return result;
   }
   result.manifest = std::move(manifest);
-  result.compiled_program = std::move(resolved);
+  result.compiled_program = std::move(body_surface);
   result.committed = true;
   result.ok = diagnostics.error_count() == initial_errors;
   return result;
