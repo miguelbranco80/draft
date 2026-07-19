@@ -61,8 +61,9 @@ model, and configuration remain separate nonempty audit identities. Artifact
 kinds are unique and their content is rehashed before any invocation.
 
 The public `judge` command accepts repeatable `identity:model` validator slots
-and exact `kind:path` artifact inputs. The
-legacy `--codex-model` spelling selects one `validator-0` slot. A later
+and exact `kind:path` artifact inputs. The optional `--model` spelling selects
+one ordinary `validator-0` slot; omitting both forms uses the Codex-configured
+default model. A later
 failing attempt revokes the active evidence key immediately, preserving an
 honest history for qualification and inspection.
 

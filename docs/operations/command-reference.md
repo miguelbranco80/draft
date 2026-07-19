@@ -80,8 +80,7 @@ SONAME, and executables add hosted entry glue.
 ```sh
 build/draftc resolve path/to/package [--revalidate] \
   [--target aarch64-macos|aarch64-linux] [--assertions=off] \
-  [--codex-distribution-root /absolute/codex-root \
-   --codex-executable /absolute/codex --codex-model model] \
+  [--model model] \
   [--provider name=object|archive|shared-library:/absolute/path]... \
   [--provider-summary name:/absolute/path]... \
   [--runtime-asset name:/absolute/file-or-directory]... \
@@ -93,6 +92,11 @@ for sites that cannot reuse a valid saved expansion. The provider returns Draft
 source, which is parsed and checked through the ordinary pipeline. The compiler
 commits generated objects and the manifest only after checking the complete
 candidate program. It does not run tests, benchmarks, or judgments.
+
+The Codex adapter discovers `codex` through the user's `PATH` and uses that
+installation's ordinary authentication and configuration. If `--model` is
+omitted, the adapter also uses the Codex-configured default model. Executable
+paths, distribution hashing, and credentials are not Draft program inputs.
 
 `--revalidate` rechecks all saved sites without a provider and writes a fresh
 source-resolution manifest. It cannot be combined with a provider model.
@@ -136,8 +140,7 @@ build/draftc judge path/to/package [selector...] [--list] \
   [--target aarch64-macos|aarch64-linux] [--assertions=off] \
   [--judge-validator identity:model]... \
   [--judge-artifact kind:/absolute/path]... \
-  [--codex-distribution-root /absolute/codex-root \
-   --codex-executable /absolute/codex --codex-model model] \
+  [--model model] \
   [--provider name=object|archive|shared-library:/absolute/path]... \
   [--provider-summary name:/absolute/path]... \
   [--timings|--timings=all]
@@ -147,8 +150,10 @@ build/draftc judge path/to/package [selector...] [--list] \
 A selector may be an exact `site-...` identity, a package identity/path, or
 `package:anchor`; several selectors form a de-duplicated union. Each configured
 validator receives the same typed claim and exact requested artifact bytes. A
-completed all-pass run atomically updates the selected judgment rows; failures
-remain in append-only evidence history but do not publish a passing selection.
+completed run records one independent evidence attempt per selected judgment;
+failures remain in append-only evidence history and revoke only their exact
+active keys. `--model` selects the ordinary single-validator model and cannot be
+combined with explicit `--judge-validator` rows.
 
 Judgment evidence is inspection and qualification data. Ordinary `build` does
 not run a provider and does not require a judgment result.

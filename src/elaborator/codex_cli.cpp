@@ -9,7 +9,6 @@
 
 #include "elaborator/codex_cli.h"
 
-#include "base/content_tree.h"
 #include "base/sha256.h"
 #include "sema/symbol.h"
 
@@ -979,39 +978,11 @@ private:
       state.cancellation_requested(state.cancellation_state);
 }
 
-[[nodiscard]] bool hash_codex_distribution(
-    const std::filesystem::path &root,
-    Sha256Digest &digest,
-    DiagnosticSink &diagnostics) {
-  DiagnosticSink tree_diagnostics;
-  if (hash_content_tree(root, digest, tree_diagnostics)) return true;
-  const std::string detail = tree_diagnostics.diagnostics().empty()
-      ? std::string("unknown content-tree error")
-      : tree_diagnostics.diagnostics().back().message;
-  provider_error(
-      diagnostics, "cannot hash Codex distribution: " + detail);
-  return false;
-}
-
-[[nodiscard]] bool verify_codex_distribution(
-    const CodexCliProviderState &state,
-    DiagnosticSink &diagnostics) {
-  Sha256Digest observed;
-  if (!hash_codex_distribution(
-          state.distribution_root, observed, diagnostics)) {
-    return false;
-  }
-  if (observed != state.distribution_digest) {
-    provider_error(
-        diagnostics,
-        "Codex distribution changed after provider configuration");
-    return false;
-  }
-  return true;
-}
-
 // Starts exactly one documented non-interactive Codex process. All arguments
-// are separate execv entries and the prompt is an already-opened regular file.
+// are separate execvp entries and the prompt is an already-opened regular file.
+// execvp intentionally delegates a bare `codex` command to the user's PATH;
+// an embedding may instead configure an absolute command for deterministic
+// testing without making that path part of Draft program identity.
 [[nodiscard]] bool run_codex_once(
     const CodexCliProviderState &state,
     const std::filesystem::path &directory,
@@ -1051,17 +1022,22 @@ private:
         "--ignore-user-config",
         "--ignore-rules",
         "--color", "never",
-        "--model", state.model,
+    };
+    if (!state.model.empty()) {
+      arguments.push_back("--model");
+      arguments.push_back(state.model);
+    }
+    arguments.insert(arguments.end(), {
         "--cd", directory.string(),
         "--output-schema", schema.string(),
         "--output-last-message", output.string(),
         "-",
-    };
+    });
     std::vector<char *> raw;
     raw.reserve(arguments.size() + 1);
     for (std::string &argument : arguments) raw.push_back(argument.data());
     raw.push_back(nullptr);
-    ::execv(state.executable.c_str(), raw.data());
+    ::execvp(state.executable.c_str(), raw.data());
     ::_exit(127);
   }
 
@@ -1269,11 +1245,11 @@ bool configure_codex_cli_runtime(
     CodexCliProviderState &state,
     DiagnosticSink &diagnostics) {
   state = {};
-  if (options.model.empty() || prompt_contract_identity.empty() ||
+  if (options.executable.empty() || prompt_contract_identity.empty() ||
       output_schema.empty()) {
     provider_error(
         diagnostics,
-        "Codex provider model, prompt, and schema identities must not be empty");
+        "Codex executable, prompt, and schema identities must not be empty");
     return false;
   }
   if (options.timeout_milliseconds == 0 || options.maximum_attempts == 0 ||
@@ -1283,57 +1259,10 @@ bool configure_codex_cli_runtime(
         "Codex timeout must be positive and attempts must be between 1 and 8");
     return false;
   }
-  std::error_code error;
-  const std::filesystem::file_status root_status =
-      std::filesystem::symlink_status(options.distribution_root, error);
-  if (error || std::filesystem::is_symlink(root_status) ||
-      !std::filesystem::is_directory(root_status)) {
-    provider_error(
-        diagnostics,
-        "Codex distribution root is invalid: '" +
-            options.distribution_root.string() + "'");
-    return false;
-  }
-  const std::filesystem::path distribution_root =
-      std::filesystem::canonical(options.distribution_root, error);
-  if (error) {
-    provider_error(
-        diagnostics,
-        "Codex distribution root cannot be canonicalized: '" +
-            options.distribution_root.string() + "'");
-    return false;
-  }
-  const std::filesystem::path executable =
-      std::filesystem::canonical(options.executable, error);
-  if (error || !std::filesystem::is_regular_file(executable, error) || error) {
-    provider_error(
-        diagnostics,
-        "Codex executable path is invalid: '" + options.executable.string() + "'");
-    return false;
-  }
-  const std::filesystem::path relative_executable =
-      executable.lexically_relative(distribution_root);
-  bool executable_is_inside = !relative_executable.empty() &&
-      !relative_executable.is_absolute();
-  for (const std::filesystem::path &component : relative_executable) {
-    if (component == "..") executable_is_inside = false;
-  }
-  if (!executable_is_inside) {
-    provider_error(
-        diagnostics, "Codex executable is outside its distribution root");
-    return false;
-  }
-  Sha256Digest distribution_digest;
-  if (!hash_codex_distribution(
-          distribution_root, distribution_digest, diagnostics)) {
-    return false;
-  }
-
   Sha256 configuration;
-  configuration.update("draft.codex-cli-runtime.v1");
-  configuration.update(distribution_digest.bytes);
-  configuration.update(sha256(relative_executable.generic_string()).bytes);
-  configuration.update(options.model);
+  configuration.update("draft.codex-cli-runtime.v2");
+  configuration.update(options.model.empty() ? "model=default" : "model=explicit:");
+  if (!options.model.empty()) configuration.update(options.model);
   configuration.update(";timeout-ms=");
   configuration.update(std::to_string(options.timeout_milliseconds));
   configuration.update(";attempts=");
@@ -1345,12 +1274,12 @@ bool configure_codex_cli_runtime(
   configuration.update(
       "exec;ephemeral;sandbox=read-only;skip-git;ignore-user-config;"
       "ignore-rules;color=never;stdin;output-schema;output-last-message");
-  state.distribution_root = distribution_root;
-  state.executable = executable;
-  state.executable_relative_path = relative_executable.generic_string();
-  state.distribution_digest = distribution_digest;
+  state.executable = options.executable;
   state.output_schema_digest = sha256(output_schema);
   state.model = options.model;
+  state.model_identity = options.model.empty()
+      ? "codex-configured-default"
+      : options.model;
   state.timeout_milliseconds = options.timeout_milliseconds;
   state.maximum_attempts = options.maximum_attempts;
   state.cancellation_state = options.cancellation_state;
@@ -1373,7 +1302,6 @@ bool invoke_codex_cli_runtime(
         "Codex output schema does not match configured runtime identity");
     return false;
   }
-  if (!verify_codex_distribution(state, diagnostics)) return false;
   TemporaryDirectory temporary;
   if (!temporary.create(diagnostics)) return false;
   std::vector<std::string> names;
@@ -1438,7 +1366,7 @@ bool invoke_codex_cli_runtime(
           diagnostics)) {
     return false;
   }
-  return verify_codex_distribution(state, diagnostics);
+  return true;
 }
 
 SynthesisProvider configure_codex_cli_provider(
@@ -1455,8 +1383,8 @@ SynthesisProvider configure_codex_cli_provider(
   }
 
   SynthesisProvider provider;
-  provider.provider_identity = "openai-codex-cli-v24";
-  provider.model_identity = state.model;
+  provider.provider_identity = "openai-codex-cli-v25";
+  provider.model_identity = state.model_identity;
   provider.configuration_identity = state.configuration_identity;
   provider.state = &state;
   provider.synthesize = synthesize_with_codex;

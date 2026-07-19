@@ -172,21 +172,20 @@ expansions; it has no relationship to host compiler or SDK identity.
 The first Codex adapter permits two attempts, each with a five-minute deadline.
 That policy is part of adapter configuration identity. A timed-out child is
 killed and reaped before another attempt starts, and only a successful complete
-response can reach the compiler-owned resolution transaction. Configuration
-also binds the exact non-followed content tree of an explicit Codex distribution
-root and the launcher's root-relative canonical target. The tree is rehashed
-before and after every child invocation; mutation rejects the response even
-when the selected launcher file itself did not change.
+response can reach the compiler-owned resolution transaction. The adapter finds
+`codex` through the user's `PATH`; installation bytes, credentials, and physical
+paths are ambient user tooling and are neither hashed nor serialized. An
+embedding may supply another executable command for deterministic tests without
+exposing that plumbing in the language CLI.
 
 ## Shared Codex runtime for synthesis and judgment
 
 Status: first synthesis and judging adapters implemented.
 
 Both adapters use one complete `AgentObligation` renderer and one hardened
-Codex child-process runtime. The shared boundary owns the explicit immutable
-distribution identity, compiler-generated private filenames, output schema
-identity, fixed argv, read-only isolated directory, retry deadline,
-cancellation, child reaping, bounded output, and pre/post distribution checks.
+Codex child-process runtime. The shared boundary owns compiler-generated private
+filenames, output schema identity, fixed argv, read-only isolated directory,
+retry deadline, cancellation, child reaping, and bounded output.
 Synthesis and judgment retain separate prompt contracts, output schemas,
 response parsers, configured state, and provider-neutral function tables.
 
@@ -248,10 +247,10 @@ upper source re-evaluates to the displayed value at the site. Other loop shapes
 produce no inferred range.
 
 `draft-agent-obligation-v19`, synthesis request v21 / prompt v20, judgment
-request/prompt v4, and compiler content v129 identities make these facts and
+request/prompt v4, and compiler content v130 identities make these facts and
 the compiler-checked correction policy stale-pin and evidence inputs. The
-synthesis adapter uses provider identity `openai-codex-cli-v24`; the unchanged
-judgment adapter remains `openai-codex-cli-v22`. Both recheck the canonical
+synthesis adapter uses provider identity `openai-codex-cli-v25`; the judgment
+adapter uses `openai-codex-cli-v23`. Both recheck the canonical
 upper-source digest before a child starts. Obligation construction also drops a
 range when the binding or any resolved upper-expression input is hidden by an
 active denial.

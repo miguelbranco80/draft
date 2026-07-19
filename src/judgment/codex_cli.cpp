@@ -380,8 +380,8 @@ JudgmentProvider configure_codex_cli_judgment_provider(
   }
 
   JudgmentProvider provider;
-  provider.provider_identity = "openai-codex-cli-v22";
-  provider.model_identity = state.model;
+  provider.provider_identity = "openai-codex-cli-v23";
+  provider.model_identity = state.model_identity;
   provider.configuration_identity = state.configuration_identity;
   provider.state = &state;
   provider.judge = judge_with_codex;

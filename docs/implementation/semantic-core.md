@@ -230,7 +230,7 @@ traps, and message construction used solely by an assertion cannot survive,
 and no condition is converted into an optimizer assumption.
 
 The versioned `draft.resolved-program.v5` hash records the assertion mode beside
-compiler content v129. `build`, `resolve`, and `judge` expose the same explicit
+compiler content v130. `build`, `resolve`, and `judge` expose the same explicit
 flag so a provider-free manifest cannot be replayed under a different
 mode. Test and benchmark compilations deliberately override the release choice
 to assertions on and receive their own resolved validation digest; disabling

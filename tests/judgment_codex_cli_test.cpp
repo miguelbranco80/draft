@@ -74,6 +74,7 @@ struct TemporaryFixture {
         "    *) exit 23 ;;\n"
         "  esac\n"
         "done\n"
+        "if test -z \"$model\"; then model=fixture-model; fi\n"
         "test -f \"$schema\" || exit 24\n"
         "test -f \"$work/attachment-00000000.bin\" || exit 25\n"
         "test \"$(cat \"$work/attachment-00000000.bin\")\" = claim-evidence || exit 26\n"
@@ -171,7 +172,6 @@ draft::JudgmentProvider configure(
     draft::CodexCliProviderState &provider_state,
     draft::DiagnosticSink &diagnostics) {
   draft::CodexCliProviderOptions options;
-  options.distribution_root = fixture.root;
   options.executable = fixture.executable;
   options.model = std::move(model);
   return draft::configure_codex_cli_judgment_provider(
@@ -185,7 +185,7 @@ void test_adapter_contract(TestState &state) {
   const draft::JudgmentProvider provider = configure(
       fixture, "fixture-model", provider_state, diagnostics);
   EXPECT(state, provider.judge != nullptr);
-  EXPECT(state, provider.provider_identity == "openai-codex-cli-v22");
+  EXPECT(state, provider.provider_identity == "openai-codex-cli-v23");
   EXPECT(state, provider.model_identity == "fixture-model");
   EXPECT(state,
       provider.configuration_identity == provider_state.configuration_identity);

@@ -13,8 +13,8 @@
 
 namespace draft {
 
-// Validates and hashes the exact Codex runtime plus the judgment-specific
-// prompt/schema contract, initializes state, and returns a synchronous judge.
+// Validates the Codex process policy and judgment-specific prompt/schema
+// contract, initializes state, and returns a synchronous judge.
 [[nodiscard]] JudgmentProvider configure_codex_cli_judgment_provider(
     const CodexCliProviderOptions &options,
     CodexCliProviderState &state,

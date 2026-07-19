@@ -491,25 +491,30 @@ if(BUILD_TESTING)
     )
   endif()
 
-  # Provider-free agent commands must recognize real typed sites but fail
-  # before writing anything when no provider adapter is configured.
+  # Agent commands discover Codex through PATH. These fixtures contain real
+  # typed sites and must fail without committing source/evidence when the test
+  # environment has no usable Codex process.
   add_test(
-    NAME draft_resolve_requires_provider
-    COMMAND draftc resolve "${CMAKE_CURRENT_SOURCE_DIR}/examples/agent-pending"
-      --assertions=off
+    NAME draft_resolve_reports_unavailable_codex
+    COMMAND "${CMAKE_COMMAND}" -E env
+      "PATH=${CMAKE_CURRENT_BINARY_DIR}/no-codex-path"
+      $<TARGET_FILE:draftc> resolve
+      "${CMAKE_CURRENT_SOURCE_DIR}/examples/agent-pending" --assertions=off
   )
   set_tests_properties(
-    draft_resolve_requires_provider
+    draft_resolve_reports_unavailable_codex
     PROPERTIES
       WILL_FAIL TRUE
   )
   add_test(
-    NAME draft_judge_requires_provider
-    COMMAND draftc judge "${CMAKE_CURRENT_SOURCE_DIR}/examples/agent-pending"
-      --assertions=off
+    NAME draft_judge_reports_unavailable_codex
+    COMMAND "${CMAKE_COMMAND}" -E env
+      "PATH=${CMAKE_CURRENT_BINARY_DIR}/no-codex-path"
+      $<TARGET_FILE:draftc> judge
+      "${CMAKE_CURRENT_SOURCE_DIR}/examples/agent-pending" --assertions=off
   )
   set_tests_properties(
-    draft_judge_requires_provider
+    draft_judge_reports_unavailable_codex
     PROPERTIES
       WILL_FAIL TRUE
   )

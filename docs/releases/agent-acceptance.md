@@ -20,13 +20,11 @@ time.
 
 ## Qualification flow
 
-Resolve with an explicit Codex distribution:
+Resolve with the `codex` installation available through `PATH`. Omit `--model`
+to use its configured default:
 
 ```sh
-build/draftc resolve examples/agent-acceptance/app \
-  --codex-distribution-root /absolute/codex-distribution \
-  --codex-executable /absolute/codex-distribution/codex \
-  --codex-model model-name
+build/draftc resolve examples/agent-acceptance/app --model model-name
 ```
 
 The ordinary judgment intentionally cannot prove the imported function's
@@ -36,9 +34,7 @@ claim artifact:
 ```sh
 build/draftc judge examples/agent-acceptance/app \
   --judge-artifact library-source:examples/agent-acceptance/lib/package.draft \
-  --codex-distribution-root /absolute/codex-distribution \
-  --codex-executable /absolute/codex-distribution/codex \
-  --codex-model model-name
+  --model model-name
 ```
 
 Finally, reproduce the program without either provider:

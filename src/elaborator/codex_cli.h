@@ -7,12 +7,13 @@
 // Codex runs with a read-only sandbox, no persisted rollout, no project/user
 // rules, and no workspace as its current directory.
 //
-// Executable and model selection are explicit resolution inputs. Configuration
-// identity hashes the exact executable bytes plus every fixed adapter flag and
-// prompt/schema version; a different installation or adapter policy stales the
-// pin. Authentication remains the Codex CLI's process-local concern and is not
-// serialized. Relevant official interface: Codex CLI non-interactive mode and
-// command reference; Draft semantics: docs/specification/03-agent-synthesis.md sections 9-10.
+// The executable is discovered through ordinary user configuration and model
+// selection is optional generation policy. Provider, model, and fixed adapter
+// policy are recorded as provenance but never decide pin freshness or resolved-
+// program identity. Authentication remains the Codex CLI's process-local
+// concern and is not serialized. Relevant official interface: Codex CLI non-
+// interactive mode and command reference; Draft semantics:
+// docs/specification/03-agent-synthesis.md sections 9-10.
 
 #pragma once
 
@@ -22,7 +23,7 @@
 
 namespace draft {
 
-// Validates and hashes the exact adapter configuration, initializes state, and
+// Validates the adapter configuration, initializes state, and
 // returns a synchronous provider function table. Failure leaves state cleared
 // and returns a provider with a null callback.
 [[nodiscard]] SynthesisProvider configure_codex_cli_provider(

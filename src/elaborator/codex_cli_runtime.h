@@ -2,9 +2,11 @@
 //
 // Synthesis and judgment have different output schemas and provider semantics,
 // but they must not drift in either the typed context they receive or the child
-// process boundary. This module owns the common immutable distribution identity,
-// isolated request directory, fixed argv, timeout/retry/cancellation policy, and
-// complete AgentObligation rendering.
+// process boundary. This module owns the executable invocation, isolated request
+// directory, fixed argv, timeout/retry/cancellation policy, and complete
+// AgentObligation rendering. The installed Codex distribution is ambient user
+// tooling, not a Draft program input and not something this adapter vendors or
+// hashes.
 
 #pragma once
 
@@ -24,8 +26,11 @@ namespace draft {
 using CodexCancellationRequested = bool (*)(void *state);
 
 struct CodexCliProviderOptions {
-  std::filesystem::path distribution_root;
-  std::filesystem::path executable;
+  // The public driver uses the ordinary `codex` PATH lookup. Embeddings and
+  // deterministic tests may supply a different command without exposing an
+  // executable-path flag in the Draft language workflow.
+  std::filesystem::path executable = "codex";
+  // Empty selects the Codex user's configured default and omits `--model`.
   std::string model;
   std::uint32_t timeout_milliseconds = 5U * 60U * 1000U;
   std::uint32_t maximum_attempts = 2;
@@ -35,14 +40,14 @@ struct CodexCliProviderOptions {
 
 // One configured state is specific to one prompt/schema contract. Synthesis and
 // judgment therefore use separate state objects even when they select the same
-// distribution and model; their configuration identities intentionally differ.
+// model; their configuration identities intentionally differ.
 struct CodexCliProviderState {
-  std::filesystem::path distribution_root;
   std::filesystem::path executable;
-  std::string executable_relative_path;
-  Sha256Digest distribution_digest;
   Sha256Digest output_schema_digest;
   std::string model;
+  // Nonempty audit spelling used when model is empty and Codex chooses its
+  // configured default. This is provenance only.
+  std::string model_identity;
   std::string configuration_identity;
   std::uint32_t timeout_milliseconds = 0;
   std::uint32_t maximum_attempts = 0;
@@ -79,8 +84,9 @@ struct CodexAgentRequestFile {
     std::string &prompt,
     DiagnosticSink &diagnostics);
 
-// Validates and hashes the exact distribution/launcher/model/process policy plus
-// caller-owned prompt and output-schema identities. Failure clears state.
+// Validates and hashes the model/process policy plus caller-owned prompt and
+// output-schema identities. Executable discovery and installation bytes are
+// deliberately excluded because they are ambient user configuration.
 [[nodiscard]] bool configure_codex_cli_runtime(
     const CodexCliProviderOptions &options,
     std::string_view prompt_contract_identity,
@@ -90,8 +96,7 @@ struct CodexAgentRequestFile {
 
 // Writes one complete request, verifies the schema against the configured
 // identity, executes the fixed retry policy, returns exact schema-validated
-// final-message bytes, and rechecks distribution identity after the child
-// exits. It does not interpret the provider-specific JSON object.
+// final-message bytes. It does not interpret the provider-specific JSON object.
 [[nodiscard]] bool invoke_codex_cli_runtime(
     const CodexCliProviderState &state,
     std::string_view output_schema,

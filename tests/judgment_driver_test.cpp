@@ -52,7 +52,7 @@ struct TestState {
 struct TemporaryWorkspace {
   std::filesystem::path root;
   std::filesystem::path package;
-  std::filesystem::path distribution;
+  std::filesystem::path codex_directory;
   std::filesystem::path executable;
   std::filesystem::path artifact;
 
@@ -64,10 +64,10 @@ struct TemporaryWorkspace {
     std::filesystem::remove_all(root, error);
     error.clear();
     package = root / "app";
-    distribution = root / "codex-distribution";
+    codex_directory = root / "codex-bin";
     std::filesystem::create_directories(package, error);
     if (error) std::exit(EXIT_FAILURE);
-    std::filesystem::create_directories(distribution, error);
+    std::filesystem::create_directories(codex_directory, error);
     if (error) std::exit(EXIT_FAILURE);
 
     std::ofstream source(package / "package.draft", std::ios::binary);
@@ -88,7 +88,7 @@ struct TemporaryWorkspace {
     artifact_stream.close();
     if (!artifact_stream) std::exit(EXIT_FAILURE);
 
-    executable = distribution / "fixture-codex";
+    executable = codex_directory / "codex";
     std::ofstream script(executable, std::ios::binary | std::ios::trunc);
     script <<
         "#!/bin/sh\n"
@@ -125,7 +125,9 @@ struct TemporaryWorkspace {
   }
 };
 
-[[nodiscard]] int run_driver(std::vector<std::string> arguments) {
+[[nodiscard]] int run_driver(
+    std::vector<std::string> arguments,
+    const std::filesystem::path &codex_directory = {}) {
 #if defined(__APPLE__) || defined(__unix__)
   std::vector<char *> raw;
   raw.reserve(arguments.size() + 1);
@@ -135,6 +137,15 @@ struct TemporaryWorkspace {
   const pid_t child = ::fork();
   if (child < 0) return -1;
   if (child == 0) {
+    if (!codex_directory.empty()) {
+      std::string path = codex_directory.string();
+      if (const char *existing = std::getenv("PATH");
+          existing != nullptr && *existing != '\0') {
+        path += ':';
+        path += existing;
+      }
+      if (::setenv("PATH", path.c_str(), 1) != 0) ::_exit(126);
+    }
     ::execv(raw.front(), raw.data());
     ::_exit(127);
   }
@@ -151,17 +162,11 @@ struct TemporaryWorkspace {
 #endif
 }
 
-void append_codex_arguments(
-    const TemporaryWorkspace &workspace,
-    std::vector<std::string> &arguments) {
+void append_codex_arguments(std::vector<std::string> &arguments) {
   arguments.insert(
       arguments.end(),
       {
-          "--codex-distribution-root",
-          workspace.distribution.string(),
-          "--codex-executable",
-          workspace.executable.string(),
-          "--codex-model",
+          "--model",
           "fixture-model",
       });
 }
@@ -181,9 +186,9 @@ void append_codex_arguments(
   if (list) {
     arguments.push_back("--list");
   } else {
-    append_codex_arguments(workspace, arguments);
+    append_codex_arguments(arguments);
   }
-  return run_driver(std::move(arguments));
+  return run_driver(std::move(arguments), workspace.codex_directory);
 }
 
 [[nodiscard]] int run_multi_judge(
@@ -192,17 +197,13 @@ void append_codex_arguments(
       DRAFT_DRIVER_PATH,
       "judge",
       workspace.package.string(),
-      "--codex-distribution-root",
-      workspace.distribution.string(),
-      "--codex-executable",
-      workspace.executable.string(),
       "--judge-validator",
       "review-primary:fixture-primary",
       "--judge-validator",
       "review-secondary:fixture-secondary",
       "--judge-artifact",
       "object:" + workspace.artifact.string(),
-  });
+  }, workspace.codex_directory);
 }
 
 [[nodiscard]] draft::CompileWorkspaceResult compile_resolved(

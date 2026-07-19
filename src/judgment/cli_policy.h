@@ -46,9 +46,10 @@ struct NamedCodexJudgmentValidator {
     std::vector<JudgmentRequestArtifact> &artifacts,
     std::string &reason);
 
-// Installs either an explicit ordered validator set or the legacy single Codex
-// validator. State objects are sized before provider tables borrow them, so no
-// later vector growth can invalidate an opaque provider pointer.
+// Installs either an explicit ordered validator set or the ordinary single
+// Codex validator (which may use the user's default model). State objects are
+// sized before provider tables borrow them, so no later vector growth can
+// invalidate an opaque provider pointer.
 [[nodiscard]] bool configure_codex_judgment_policy(
     const std::optional<CodexCliProviderOptions> &default_codex,
     const std::vector<NamedCodexJudgmentValidator> &configured,

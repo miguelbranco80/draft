@@ -984,8 +984,7 @@ void print_usage() {
             << "  draftc resolve <package-directory> [--revalidate]\n"
             << "      [--target aarch64-macos|aarch64-linux]\n"
             << "      [--assertions=off]\n"
-            << "      [--codex-distribution-root <directory>\n"
-            << "       --codex-executable <path> --codex-model <model>]\n"
+            << "      [--model <model>]\n"
             << "      [--provider name=object|archive|shared-library:<path>]...\n"
             << "      [--provider-summary name:<path>]...\n"
             << "      [--runtime-asset name:<file-or-directory>]...\n"
@@ -995,8 +994,7 @@ void print_usage() {
             << "      [--assertions=off]\n"
             << "      [--judge-validator <identity>:<model>]...\n"
             << "      [--judge-artifact <kind>:<path>]...\n"
-            << "      [--codex-distribution-root <directory>\n"
-            << "       --codex-executable <path> --codex-model <model>]\n"
+            << "      [--model <model>]\n"
             << "      [--provider name=object|archive|shared-library:<path>]...\n"
             << "      [--provider-summary name:<path>]...\n"
             << "      [--timings|--timings=all]\n"
@@ -1067,8 +1065,6 @@ int main(int argc, char **argv) {
     bool revalidate = false;
     bool assertions_off = false;
     bool target_set = false;
-    std::optional<std::string> codex_distribution_root;
-    std::optional<std::string> codex_executable;
     std::optional<std::string> codex_model;
     std::vector<draft::ForeignProviderInput> foreign_providers;
     std::vector<draft::ForeignProviderSummaryInput> provider_summaries;
@@ -1083,13 +1079,7 @@ int main(int argc, char **argv) {
         if (!select_command_target(argv[++index], target)) return 2;
       } else if (argument == "--assertions=off" && !assertions_off) {
         assertions_off = true;
-      } else if (argument == "--codex-executable" &&
-                 !codex_executable.has_value() && index + 1 < argc) {
-        codex_executable = argv[++index];
-      } else if (argument == "--codex-distribution-root" &&
-                 !codex_distribution_root.has_value() && index + 1 < argc) {
-        codex_distribution_root = argv[++index];
-      } else if (argument == "--codex-model" &&
+      } else if (argument == "--model" &&
                  !codex_model.has_value() && index + 1 < argc) {
         codex_model = argv[++index];
       } else if (argument == "--provider" && index + 1 < argc) {
@@ -1124,23 +1114,17 @@ int main(int argc, char **argv) {
         return 2;
       }
     }
-    if (codex_executable.has_value() != codex_distribution_root.has_value() ||
-        codex_executable.has_value() != codex_model.has_value() ||
-        (revalidate && codex_model.has_value())) {
+    if (revalidate && codex_model.has_value()) {
       print_usage();
       return 2;
     }
     cancellation_signal = 0;
     (void)std::signal(SIGINT, request_cancellation);
     std::optional<draft::CodexCliProviderOptions> codex;
-    if (codex_executable.has_value()) {
-      if (codex_model.has_value()) {
-        codex.emplace();
-        codex->distribution_root = *codex_distribution_root;
-        codex->executable = *codex_executable;
-        codex->model = *codex_model;
-        codex->cancellation_requested = command_cancellation_requested;
-      }
+    if (!revalidate) {
+      codex.emplace();
+      if (codex_model.has_value()) codex->model = *codex_model;
+      codex->cancellation_requested = command_cancellation_requested;
     }
     return run_agent_command(
         argv[2],
@@ -1161,8 +1145,6 @@ int main(int argc, char **argv) {
         timings);
   }
   if (argc >= 3 && std::string_view(argv[1]) == "judge") {
-    std::optional<std::string> codex_distribution_root;
-    std::optional<std::string> codex_executable;
     std::optional<std::string> codex_model;
     bool list_judgments = false;
     bool assertions_off = false;
@@ -1174,19 +1156,13 @@ int main(int argc, char **argv) {
     std::vector<draft::ForeignProviderSummaryInput> provider_summaries;
     for (int index = 3; index < argc; ++index) {
       const std::string_view argument(argv[index]);
-      if (argument == "--codex-executable" &&
-          !codex_executable.has_value() && index + 1 < argc) {
-        codex_executable = argv[++index];
-      } else if (argument == "--target" && !target_set &&
+      if (argument == "--target" && !target_set &&
                  index + 1 < argc) {
         target_set = true;
         if (!select_command_target(argv[++index], target)) return 2;
       } else if (argument == "--assertions=off" && !assertions_off) {
         assertions_off = true;
-      } else if (argument == "--codex-distribution-root" &&
-                 !codex_distribution_root.has_value() && index + 1 < argc) {
-        codex_distribution_root = argv[++index];
-      } else if (argument == "--codex-model" &&
+      } else if (argument == "--model" &&
                  !codex_model.has_value() && index + 1 < argc) {
         codex_model = argv[++index];
       } else if (argument == "--judge-validator" && index + 1 < argc) {
@@ -1240,34 +1216,24 @@ int main(int argc, char **argv) {
         return 2;
       }
     }
-    const bool has_codex_models =
-        codex_model.has_value() || !judgment_validators.empty();
-    if (codex_executable.has_value() !=
-            codex_distribution_root.has_value() ||
-        codex_executable.has_value() != has_codex_models ||
-        (codex_model.has_value() && !judgment_validators.empty()) ||
+    if ((codex_model.has_value() && !judgment_validators.empty()) ||
         (list_judgments &&
-         (has_codex_models || !judgment_artifact_paths.empty()))) {
+         (codex_model.has_value() || !judgment_validators.empty() ||
+          !judgment_artifact_paths.empty()))) {
       print_usage();
       return 2;
     }
     cancellation_signal = 0;
     (void)std::signal(SIGINT, request_cancellation);
     std::optional<draft::CodexCliProviderOptions> codex;
-    if (codex_executable.has_value()) {
-      if (codex_model.has_value()) {
-        codex.emplace();
-        codex->distribution_root = *codex_distribution_root;
-        codex->executable = *codex_executable;
-        codex->model = *codex_model;
-        codex->cancellation_requested = command_cancellation_requested;
-      }
-      for (NamedCodexJudgmentValidator &validator : judgment_validators) {
-        validator.codex.distribution_root = *codex_distribution_root;
-        validator.codex.executable = *codex_executable;
-        validator.codex.cancellation_requested =
-            command_cancellation_requested;
-      }
+    if (!list_judgments && judgment_validators.empty()) {
+      codex.emplace();
+      if (codex_model.has_value()) codex->model = *codex_model;
+      codex->cancellation_requested = command_cancellation_requested;
+    }
+    for (NamedCodexJudgmentValidator &validator : judgment_validators) {
+      validator.codex.cancellation_requested =
+          command_cancellation_requested;
     }
     std::vector<draft::JudgmentRequestArtifact> judgment_artifacts;
     std::string artifact_reason;

@@ -221,6 +221,9 @@ surface source + pinned manifest + one generated expansion per required site
 loads valid pins, elaborates missing/stale sites in semantic dependency order,
 checks each expansion and the coherent complete program, and commits successful
 staged pins atomically. It does not run tests, benchmarks, or judgments.
+The bootstrap adapter discovers `codex` through `PATH`; `--model` is optional
+and omission uses the Codex-configured default. Do not add executable paths,
+credentials, or Codex installation hashes to Draft source identity.
 
 `draft resolve --revalidate` never contacts an agent. It stages existing
 generated source under current obligations, runs ordinary compiler checks, and

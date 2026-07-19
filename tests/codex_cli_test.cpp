@@ -84,6 +84,7 @@ struct TemporaryFixture {
         "    *) exit 23 ;;\n"
         "  esac\n"
         "done\n"
+        "if test -z \"$model\"; then model=fixture-model; fi\n"
         "if test \"$model\" = slow-model; then while :; do :; done; fi\n"
         "test \"$model\" = fixture-model || exit 24\n"
         "test -f \"$schema\" || exit 25\n"
@@ -313,13 +314,12 @@ void test_adapter_contract_and_identity(TestState &state) {
   draft::DiagnosticSink diagnostics;
   draft::CodexCliProviderState provider_state;
   draft::CodexCliProviderOptions options;
-  options.distribution_root = fixture.root;
   options.executable = fixture.executable;
   options.model = "fixture-model";
   const draft::SynthesisProvider provider =
       draft::configure_codex_cli_provider(options, provider_state, diagnostics);
   EXPECT(state, provider.synthesize != nullptr);
-  EXPECT(state, provider.provider_identity == "openai-codex-cli-v24");
+  EXPECT(state, provider.provider_identity == "openai-codex-cli-v25");
   EXPECT(state, provider.model_identity == "fixture-model");
   EXPECT(state, provider.configuration_identity ==
       provider_state.configuration_identity);
@@ -409,41 +409,8 @@ void test_adapter_contract_and_identity(TestState &state) {
           invalid_validation_diagnostics));
   EXPECT(state, invalid_validation_diagnostics.error_count() == 1);
 
-  // The launcher is not the distribution. Adding one sibling resource leaves
-  // its bytes untouched but must invalidate the already configured provider
-  // before another process can start.
-  {
-    std::ofstream support(
-        fixture.root / "support.dat", std::ios::binary | std::ios::trunc);
-    support << "distribution support bytes\n";
-  }
-  draft::DiagnosticSink stale_distribution_diagnostics;
-  draft::SynthesisResponse stale_distribution_response;
-  EXPECT(state,
-      !provider.synthesize(
-          provider.state,
-          request,
-          stale_distribution_response,
-          stale_distribution_diagnostics));
-  EXPECT(state, stale_distribution_diagnostics.error_count() == 1);
-  if (!stale_distribution_diagnostics.diagnostics().empty()) {
-    EXPECT(state,
-        stale_distribution_diagnostics.diagnostics().front().message.find(
-            "distribution changed") != std::string::npos);
-  }
-  draft::DiagnosticSink distribution_diagnostics;
-  draft::CodexCliProviderState distribution_state;
-  const draft::SynthesisProvider changed_distribution =
-      draft::configure_codex_cli_provider(
-          options, distribution_state, distribution_diagnostics);
-  EXPECT(state, changed_distribution.synthesize != nullptr);
-  EXPECT(state,
-      changed_distribution.configuration_identity !=
-          provider.configuration_identity);
-  EXPECT(state, !distribution_diagnostics.has_errors());
-
-  // Model identity participates in pin freshness even when the executable is
-  // unchanged. Configuration is computed before any provider process starts.
+  // Model selection is inspectable generation provenance. It changes the
+  // provider's audit identity but not the resolver's content-freshness rule.
   draft::DiagnosticSink changed_diagnostics;
   draft::CodexCliProviderState changed_state;
   options.model = "another-model";
@@ -455,11 +422,32 @@ void test_adapter_contract_and_identity(TestState &state) {
       provider.configuration_identity);
   EXPECT(state, !changed_diagnostics.has_errors());
 
+  // An omitted model delegates to Codex user configuration and omits the
+  // `--model` pair entirely. The fixture treats that absence as its default,
+  // proving this path through the real child-process argument parser.
+  draft::CodexCliProviderOptions default_options;
+  default_options.executable = fixture.executable;
+  draft::DiagnosticSink default_diagnostics;
+  draft::CodexCliProviderState default_state;
+  const draft::SynthesisProvider default_provider =
+      draft::configure_codex_cli_provider(
+          default_options, default_state, default_diagnostics);
+  EXPECT(state, default_provider.synthesize != nullptr);
+  EXPECT(state,
+      default_provider.model_identity == "codex-configured-default");
+  draft::SynthesisResponse default_response;
+  EXPECT(state, default_provider.synthesize(
+      default_provider.state,
+      request,
+      default_response,
+      default_diagnostics));
+  EXPECT(state, default_response.source == "40 + 2\n");
+  EXPECT(state, !default_diagnostics.has_errors());
+
   // A provider process cannot hold resolution indefinitely. Each failed
   // attempt is killed and reaped, then the fixed retry budget ends with one
   // compiler-owned diagnostic rather than leaking partial adapter errors.
   draft::CodexCliProviderOptions slow_options;
-  slow_options.distribution_root = fixture.root;
   slow_options.executable = fixture.executable;
   slow_options.model = "slow-model";
   slow_options.timeout_milliseconds = 25;
@@ -493,7 +481,6 @@ void test_adapter_contract_and_identity(TestState &state) {
   // child without spending the remaining retry budget.
   std::atomic_bool cancelled = false;
   draft::CodexCliProviderOptions cancelled_options;
-  cancelled_options.distribution_root = fixture.root;
   cancelled_options.executable = fixture.executable;
   cancelled_options.model = "slow-model";
   cancelled_options.timeout_milliseconds = 5000;
