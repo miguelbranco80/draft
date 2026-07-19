@@ -324,9 +324,11 @@ ctest --test-dir build --output-on-failure \
 ```
 
 On a native AArch64 macOS/Linux host, artifact closure also includes
-`draft_native_determinism_tests`, `draft_native_conformance_tests`, and
-`draft_c_client_integration_tests`. CMake deliberately omits unsupported native
-tests rather than reporting false skips.
+`draft_native_determinism_tests`, `draft_native_backend_parity_tests`,
+`draft_native_conformance_tests`, and `draft_c_client_integration_tests`. The
+first compares one-worker and four-worker output; the second exercises every
+artifact kind through embedded LLVM and the external Clang oracle. CMake
+deliberately omits unsupported native tests rather than reporting false skips.
 
 There is currently no repository formatter or lint command. Do not invent one.
 Compilation with the strict warning set, tests, and sanitizers are the
@@ -342,6 +344,7 @@ UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 \
 cmake -S . -B build-sanitized \
   -DCMAKE_BUILD_TYPE=Debug \
   -DCMAKE_CXX_COMPILER=g++ \
+  -DLLVM_DIR=/usr/lib/llvm-22/lib/cmake/llvm \
   -DDRAFT_WARNINGS_AS_ERRORS=ON \
   -DDRAFT_ENABLE_SANITIZERS=ON
 cmake --build build-sanitized --parallel

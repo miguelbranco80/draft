@@ -56,7 +56,7 @@ jobs:
           DEBIAN_FRONTEND: noninteractive
         run: |
           sudo apt-get update
-          sudo apt-get install --yes build-essential cmake clang lld llvm wget
+          sudo apt-get install --yes build-essential cmake software-properties-common wget
           wget --quiet https://apt.llvm.org/llvm.sh --output-document /tmp/llvm.sh
           chmod +x /tmp/llvm.sh
           sudo /tmp/llvm.sh 22
@@ -68,7 +68,7 @@ jobs:
         run: |
           cmake --version
           ${{ matrix.bootstrap_cxx }} --version
-          clang --version
+          "${{ matrix.llvm_dir }}/../../../bin/clang" --version
           "${{ matrix.llvm_dir }}/../../../bin/llvm-config" --version
 
       - name: Configure
@@ -83,10 +83,10 @@ jobs:
       - name: Build
         run: cmake --build build --parallel ${{ matrix.parallel }}
 
-      # CMake includes the executable, deterministic-artifact, and C-client
-      # integration tests only on a supported native AArch64 host. Therefore a
-      # green matrix row proves execution for that OS rather than cross-lowering
-      # alone.
+      # CMake includes executable conformance, one-worker/four-worker artifact
+      # determinism, embedded-LLVM/Clang parity, and C-client integration only
+      # on a supported native AArch64 host. A green matrix row therefore proves
+      # execution for that OS rather than cross-lowering alone.
       - name: Test
         run: ctest --test-dir build --output-on-failure --parallel ${{ matrix.parallel }}
 
@@ -112,7 +112,7 @@ jobs:
           DEBIAN_FRONTEND: noninteractive
         run: |
           sudo apt-get update
-          sudo apt-get install --yes build-essential cmake wget
+          sudo apt-get install --yes build-essential cmake software-properties-common wget
           wget --quiet https://apt.llvm.org/llvm.sh --output-document /tmp/llvm.sh
           chmod +x /tmp/llvm.sh
           sudo /tmp/llvm.sh 22

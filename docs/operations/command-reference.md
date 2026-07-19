@@ -98,6 +98,13 @@ target's libc development files. These installations are compiler operational
 prerequisites, not resolution-manifest inputs. Ordinary builds do not execute a
 toolchain-version probe.
 
+All completely lowered package modules and package-assembly inputs form one
+bounded native ready set. Workers emit only task-local bytes; after they join,
+the compiler reports the lowest task-ID failure or publishes files and linker
+inputs in canonical task order. `--timings=all` lists these task measurements in
+that same order and reports `native object tasks` and `native object workers`
+counters. Worker scheduling never changes diagnostics or artifact identity.
+
 Assembly output is a directory containing one `.s` file per package module and
 one exact copied source per package assembly input. Object output performs a
 relocatable link over the complete package graph. Static archives use

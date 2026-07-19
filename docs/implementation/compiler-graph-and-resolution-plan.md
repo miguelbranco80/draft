@@ -62,9 +62,10 @@ cache.
   traversal uses a PackageId-ordered min-heap, so dependency scheduling is
   deterministic. Building its sorted identity and reverse-adjacency views costs
   O((packages + imports) log(packages + imports)); source invalidation walks the
-  completed reverse rows in O(packages + imports). Parallel execution remains a
-  possible measured optimization, not part of the architecture contract or a
-  source of different results.
+  completed reverse rows in O(packages + imports). This dependency-ordered
+  front-end traversal remains sequential. Parallel execution is used only for
+  the closed independent native-object ready set after target lowering and is
+  not a source of different results.
 - The graph reuses loaded files, tokens, syntax, declarations, interned types,
   checked expansions, and dependency facts instead of reloading the workspace
   for each conceptual phase.
@@ -159,7 +160,7 @@ cache.
    packages and transitive consumers (`5daa62e`); provider-free resolution and
    speculative/authoritative resolver stages use that operation without
    another workspace load (`1ba75f3`).
-7. Timing remeasurement showed native Clang/tool invocation dominates a small
+7. Timing remeasurement showed native object/tool work dominates a small
    handwritten build. The larger agent acceptance graph now performs one
    ordinary graph construction plus separately selected typed test- and
    benchmark-context graphs, rather than repeated compiler/workspace passes for
@@ -176,6 +177,29 @@ cache.
    sentinel and runs `check`, native `build`, `test`, and `bench` from the same
    committed generated source. It also rejects any `.draft/cache` creation
    (`39f9a4d`).
+9. A target-independent work graph established stable integer task IDs, sorted
+   dependencies, cycle validation, bounded workers, task-indexed outcomes, and
+   transitive failure propagation (`030fd77`). Native lowering then freezes its
+   canonical module/assembly task plan before any object operation (`cd4aef8`).
+10. A narrow LLVM 22 C-API adapter added isolated per-call contexts, exact target
+    and layout validation, deterministic object/assembly buffers, and concurrent
+    call qualification (`bf2e512`). Embedded shared LLVM became the ordinary
+    path; the former Clang IR subprocess remains only a qualification oracle,
+    and runtime `clang --version` probing was removed (`5d42229`).
+11. The command-owned timing recorder gained stable post-join task events
+    (`c06b510`), subprocess launch moved to multithread-safe `posix_spawnp`
+    (`5405283`), and native tasks began bounded parallel execution followed by
+    lowest-ID diagnostics and ordered publication (`435f781`). One-worker and
+    four-worker builds are byte-identical for every artifact kind.
+12. A real native parity gate now exercises embedded LLVM and external Clang on
+    the same graphs for all artifact kinds and launches both executables
+    (`36041e3`). Qualification also repaired debug-location propagation across
+    multi-instruction ABI expansions so LLVM retains valid DWARF (`b3aa10f`).
+13. Validation evidence now names the LLVM distribution linked into the
+    bootstrap rather than a removed ambient version probe (`59b1ff5`). Optimized
+    Linux qualification also made assertion-only invariants warning-clean under
+    NDEBUG and bound the independent C-client oracle to that selected LLVM's
+    Clang (`fd137b1`).
 
 The qualifying timing counters were `compiler passes: 1`, `workspace loads: 1`
 for the handwritten hello build. The resolved agent-acceptance build, whose
@@ -204,9 +228,11 @@ and tests as applicable.
   selected source graph and produces the same native program as a later
   provider-free `build` of the committed source. Interface/body rounds never
   reconstruct the same workspace graph.
-- The sorted sequential scheduler produces stable manifests,
-  generated-source selections, diagnostics, and native outputs. Any future
-  parallel scheduler must prove byte identity against this oracle before use.
+- The sorted sequential front-end scheduler produces stable manifests,
+  generated-source selections, and diagnostics.
+- The native ready set may run concurrently only after complete lowering.
+  Lowest-ID failures, task-indexed result slots, and ordered publication keep
+  native diagnostics and artifacts equal to the one-worker oracle.
 - A clean checkout containing authored source plus the committed durable
   `.draft` files builds for the manifest's selected target without provider
   credentials or network access. Existing generated source may be revalidated
@@ -233,6 +259,13 @@ and tests as applicable.
   sentinel first on `PATH`, target-qualifies a copied committed manifest using
   existing source, and runs `check`, `build`, `test`, and `bench`. It also checks
   that repeated commands create no `.draft/cache` directory.
-- `draft_native_determinism_tests` retains the native byte-identity oracle for
-  repeated links. The complete CTest suite composes these focused contracts with
+- `draft_work_graph_tests` covers true concurrent overlap, dependency order,
+  stable slots, cycles, and failure propagation. `draft_native_object_tasks_tests`
+  covers the canonical closed task plan.
+- `draft_llvm_object_emitter_tests` covers target rejection, object format,
+  repeated bytes, isolated concurrent emission, and AddressSanitizer pass output.
+- `draft_native_determinism_tests` compares one-worker and four-worker artifact
+  trees and stable parallel failures. `draft_native_backend_parity_tests`
+  exercises every artifact kind through both embedded LLVM and the retained
+  Clang oracle. The complete CTest suite composes these focused contracts with
   parser, semantic, target, ABI, evidence, driver, and native integration tests.

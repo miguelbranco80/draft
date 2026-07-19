@@ -27,6 +27,40 @@ qualification oracle. Ordinary commands never select it and never run
 `dsymutil` default to tools from that same selected LLVM installation. Platform
 SDKs, startup objects, and system libraries remain operational host inputs.
 
+## Deterministic native work graph
+
+Status: bounded parallel emission and ordered publication implemented.
+
+Once semantic closure and MIR/LLVM lowering have completed, the backend freezes
+one task for each package module and selected package-assembly input. Task IDs
+follow canonical package order, with a package's LLVM module before its assembly
+inputs. The graph is intentionally edgeless: every module already represents
+imports as external symbols, and final linking—not object emission—combines the
+packages.
+
+The shared work scheduler uses at most the requested worker bound, or the
+host-reported hardware concurrency capped to the task count. Each LLVM task
+owns a fresh context, module, target machine, and in-memory output buffer. Each
+assembler or Clang-oracle task uses task-private input/output paths and launches
+through `posix_spawnp`, avoiding unsafe post-`fork` C++ work in a multithreaded
+process. Workers mutate only their matching result slots and never touch the
+diagnostic sink or timing recorder.
+
+After every started task joins, the command thread replays timing records,
+selects the lowest-ID failure, and publishes successful products in task-ID
+order. A failed ready set publishes no canonical package object or complete
+source-correlation sidecar. Successful publication fixes assembly filenames,
+object/link argument order, and archive member order independently of worker
+completion order. One-worker and four-worker qualification builds compare every
+artifact tree byte for byte.
+
+The external Clang oracle is also exercised against the same real compiled
+graphs for executable, relocatable object, static library, dynamic library, and
+assembly output. Both routes must produce the expected native container and
+source-correlation identity, and both executable results are launched. LLVM and
+Clang output bytes need not be identical when the target contract permits
+incidental encoding differences.
+
 ## Relocatable aggregate constants
 
 Status: bootstrap backend representation; language layout is unchanged.
@@ -99,8 +133,8 @@ Generated rows additionally carry the persistent synthesis-site identity.
 Filenames are logical basenames under the separately recorded package identity;
 physical checkout paths never enter the native artifact or sidecar.
 
-The native adapter writes the canonical JSON only after every package has a
-valid LLVM module and returns its SHA-256 digest beside the native output. A
+The native adapter writes the canonical JSON only after every package object
+task succeeds and returns its SHA-256 digest beside the native output. A
 normal resolved build binds the map to the resolved-program digest. The lower
 level backend API can deliberately compile a checked graph before resolution;
 that form binds the map to a digest of the exact, package-framed LLVM module set
@@ -118,7 +152,7 @@ Status: implemented for executable and dynamic-library artifacts.
 
 Mach-O final links retain a debug map rather than copying package-object DWARF
 into the executable or dylib. A successful native build therefore runs the
-host `dsymutil` before it reports success and publishes the conventional
+matching LLVM `dsymutil` before it reports success and publishes the conventional
 sibling `<artifact>.dSYM`.
 
 The invocation ignores object and Swift-module timestamps, uses one worker, and
@@ -169,6 +203,11 @@ artifact build to compare its complete output tree, and compile a C client
 against the generated header and shared library. Mach-O cases additionally
 require the `.dSYM` companion; ELF cases require its absence because their DWARF
 stays in the primary artifact.
+
+The native matrix also runs the embedded-LLVM/external-Clang parity gate for all
+five artifact kinds and the one-worker/four-worker determinism gate. Those tests
+make the retained oracle executable, prove actual multi-package overlap, and
+keep stable publication a required behavior rather than a comment-only design.
 
 These gates use the declared host toolchain and prove that current source
 composes into working native artifacts on each host. Reproducibility is tested

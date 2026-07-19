@@ -83,17 +83,19 @@ foundation on which ordinary parsing, checking, or code generation depends.
 The process driver may attach one command-owned timing recorder to the existing
 phase option structs. Compiler, validation, and native adapters contribute
 nested events and deterministic work counters; none may consult recorded time
-or make it part of semantic identity. The recorder is deliberately sequential
-and uses an explicit nesting stack, matching the current dependency-ordered
-pipeline. A future parallel pipeline must replace that assumption without
-letting scheduling change compiler results.
+or make it part of semantic identity. Sequential phases use an explicit nesting
+stack. Parallel native workers measure into task-owned result slots; after the
+join, the command thread appends those completed events in stable task-ID order.
+The recorder itself therefore remains single-threaded, and scheduler completion
+order cannot change timing row order or compiler results.
 
 The events reflect the implementation's real orchestration rather than the
 conceptual diagram alone. An ordinary handwritten `check` constructs one graph:
 interface discovery installs declarations and types, then semantic continuation
 checks bodies, effects, denials, and completed interfaces on those same package
-rows. A native `build` continues that graph directly through MIR/LLVM, then
-invokes the host toolchain; it does not reload or recheck handwritten source.
+rows. A native `build` continues that graph directly through MIR/LLVM, emits
+independent package objects through embedded LLVM, then invokes only the
+remaining platform tools; it does not reload or recheck handwritten source.
 `--timings` exposes resolution rounds as in-memory source transitions. A
 checked complete-file overlay is parsed into the existing workspace graph;
 package/root/import IDs remain stable, only the changed package and its
@@ -107,6 +109,15 @@ O(packages + imports), without a persistent cache. The `compiler passes`,
 distinct operations visible. `--timings=all` adds package/tool scopes, file
 discovery and I/O, lexing/parsing, import-graph resolution, and exclusive time;
 child process CPU is reported separately from parent wall time.
+
+After every selected package has reached target lowering, the backend derives a
+closed native work graph in canonical package/module/assembly order. Package
+modules have already expressed imported symbols as external declarations, so
+their object tasks are independent and form one bounded ready set. Each worker
+owns an isolated LLVM context or private assembler paths and writes one result
+slot. The main thread joins the set, selects diagnostics by lowest stable task
+ID, and only then publishes files and linker inputs in task-ID order. Thus
+parallel scheduling changes elapsed time, never artifacts or diagnostics.
 
 ### Internal representations
 

@@ -347,6 +347,13 @@ selected glibc development contract; DWARF remains in ELF and no fake dSYM is
 emitted. These are compiler build/host requirements, not Draft package
 dependencies or resolution-manifest inputs.
 
+After complete lowering, package modules and package-assembly inputs are
+independent native work-graph tasks. Workers own isolated LLVM contexts or
+private assembler paths and return task-indexed bytes. Diagnostics and artifact
+publication occur only after the join, in stable task-ID order. Native changes
+must preserve the one-worker/four-worker determinism gate and the real embedded
+LLVM/external-Clang parity gate for all artifact kinds.
+
 Assembly output is a directory bundle, not concatenated text. Native builds
 also emit source-correlation metadata. Deterministic output must not contain
 physical checkout paths, nondeterministic archive metadata, or filesystem
