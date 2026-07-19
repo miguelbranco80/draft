@@ -933,14 +933,6 @@ int run_agent_command(
   options.timings = timings;
   if (command == AgentCommandKind::Resolve) {
     std::optional<draft::CompileWorkspaceOptions> build_options;
-    if (resolve_build.has_value()) {
-      build_options = options;
-      build_options->lower_mir = true;
-      build_options->emit_llvm = true;
-      build_options->emit_program_entry =
-          resolve_build->artifact_kind ==
-          draft::NativeArtifactKind::Executable;
-    }
     draft::ResolveWorkspaceOptions resolve_options;
     resolve_options.compile = std::move(options);
     resolve_options.revalidate = revalidate;
@@ -996,6 +988,18 @@ int run_agent_command(
         std::cerr << draft::render_diagnostics(sources, diagnostics);
         return 1;
       }
+    }
+    // Copy after external provider summaries have populated the semantic audit
+    // set. The post-commit continuation must receive the same target,
+    // configuration, and foreign facts as the graph produced by resolution;
+    // only its backend and entry-point requests differ.
+    if (resolve_build.has_value()) {
+      build_options = resolve_options.compile;
+      build_options->lower_mir = true;
+      build_options->emit_llvm = true;
+      build_options->emit_program_entry =
+          resolve_build->artifact_kind ==
+          draft::NativeArtifactKind::Executable;
     }
     // State is a separate stack object because the function table deliberately
     // borrows it. Its lifetime encloses the entire synchronous resolver call.
