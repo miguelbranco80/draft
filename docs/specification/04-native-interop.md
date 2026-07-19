@@ -180,9 +180,9 @@ grants provider-wide trust.
 
 The summary names the provider and exact artifact content digest in its own
 bytes. Resolution also pins the summary file as a separate external input.
-Offline and locked builds re-hash the relocated artifact and summary, require
-the complete manifest summary set, and retain the consumed digest through
-semantic compilation. A missing, stale, mismatched, unused, compiler-owned, or
+Provider-free builds re-hash the relocated artifact and summary, require the
+complete manifest summary set, and retain the consumed digest through semantic
+compilation. A missing, stale, mismatched, unused, compiler-owned, or
 target-owned mapping fails before native linking.
 
 Draft 1 foreign blocks declare fixed-arity procedure symbols only. Variadic C calls

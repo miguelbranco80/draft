@@ -151,9 +151,9 @@ resolved program.
 Performance budgets are ordinary `Benchmark` API calls. Library procedures may
 register time, cycle, allocation, and code-size limits when the target runner
 supports those measurements. Resolution fails when the resolved program fails
-a registered budget on the configured benchmark profile. A locked compilation
-reuses pinned evidence; `draft bench --verify` reruns budgets for CI or release
-validation.
+a registered budget on the configured benchmark profile. `draft bench
+--verify` reruns budgets for CI or release validation; ordinary builds neither
+require nor rerun prior evidence.
 
 A validation profile may require target-supported diagnostic instrumentation,
 including address and lifetime checks, undefined-operation checks, allocator
@@ -169,4 +169,4 @@ counts, aggregation and tolerance rules, resolved-program identity, and observed
 distribution. Evidence is reusable only when the configured
 environment-matching policy accepts the current runner. Tests execute in
 canonical package and declaration order with harness-provided isolation.
-Locked builds never rerun tests, judgments, or benchmarks.
+`draft build` never reruns tests, judgments, or benchmarks.

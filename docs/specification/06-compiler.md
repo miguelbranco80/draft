@@ -107,10 +107,10 @@ requested-artifact hashes; target; and compiler, judge, model, and execution
 configuration. The same rule covers wholly handwritten code.
 
 Judgment evidence records the key, every constituent validator identity,
-verdict, and rationale, and the policy's aggregate verdict. A locked validation
-policy may require matching pinned judgment evidence and fails if it is missing
-or stale; otherwise judgment execution and evidence are optional. A locked
-build verifies evidence without contacting a judge.
+verdict, and rationale, and the policy's aggregate verdict. Judgment execution
+and evidence are optional unless an explicit judgment or resolution-validation
+profile requests them. `draft build` neither contacts a judge nor requires
+evidence in order to compile an already resolved program.
 
 ### Staged declaration and interface elaboration
 

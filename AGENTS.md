@@ -287,7 +287,7 @@ language feature.
 - Constant evaluation tests cover boundaries, traps, signedness, rounding,
   infinities, NaNs, and subnormals.
 - Synthesis tests use deterministic fake providers before exercising Codex.
-- Locked-build tests run with provider access disabled.
+- Provider-free build tests run with provider access disabled.
 - Add regression tests before or with bug fixes.
 - Prefer small tests that isolate one rule, plus a smaller number of complete
   end-to-end programs that exercise stage composition.
@@ -326,7 +326,7 @@ map and follow this routing:
 - Machine layout, ABI, object-format, platform-runtime, and parsed-assembly
   facts belong in the relevant versioned `docs/targets/` profile.
 - Compiler phase boundaries, representations, algorithms, ownership,
-  elaboration, lowering, runtime/core implementation, locked inputs, and
+  elaboration, lowering, runtime/core implementation, external inputs, and
   evidence mechanics belong in the matching `docs/implementation/` subsystem
   document. Record a narrower temporary capability in
   `docs/implementation/implementation-limits.md` as well as at the relevant

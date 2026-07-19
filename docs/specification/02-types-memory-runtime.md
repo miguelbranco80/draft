@@ -601,8 +601,9 @@ allocator, a thread-owned temporary allocator, a diagnostic assertion handler,
 the target runtime's default logger and random generator, zero user fields, and
 runtime-owned internal state. Temporary allocations remain valid until an
 explicit reset/scope operation or thread exit; no call boundary resets them.
-The selected runtime defines the concrete providers, and its content identity
-is a locked build input.
+The selected target runtime defines the concrete providers. Compiler-distributed
+runtime source participates in the resolved program like other selected source;
+the host linker and SDK used to emit an artifact do not become language inputs.
 
 The compiler and runtime agree on the `Context` layout from `core/runtime`, but
 no source package name is injected implicitly. Source code that names the type

@@ -11,7 +11,7 @@ in [specification history](docs/history/specification-source.md).
 ## 1. Purpose
 
 Draft is an Odin-inspired systems language in which agent synthesis is a typed,
-scoped, reproducible compiler operation.
+scoped compiler operation that produces inspectable Draft source.
 
 It targets native executables, static and dynamic libraries, embedded systems,
 kernels, codecs, databases, games, and other software where layout, allocation,
@@ -45,7 +45,7 @@ handwritten code.
   operands during MIR lowering while retaining ordinary parsing and checking.
 - `...` as a typed synthesis construct in complete surface programs.
 - Optional agent judgments as pinned validation evidence, never runtime semantics.
-- Deterministic locked builds from pinned, inspectable expansions.
+- Provider-free builds from pinned, inspectable expansions.
 - Semantic compiler context for agents rather than indiscriminate source dumps.
 
 ## Specification map
@@ -55,7 +55,7 @@ handwritten code.
 - [Types, memory, and runtime (§§5–7)](docs/specification/02-types-memory-runtime.md) — native
   types, layout, storage, context, concurrency, entry, and core libraries.
 - [Design context and agent synthesis (§§8–10)](docs/specification/03-agent-synthesis.md) — durable
-  documentation, judgments, `...`, resolution, and deterministic builds.
+  documentation, judgments, `...`, resolution, and provider-free builds.
 - [Native interop (§§11–12)](docs/specification/04-native-interop.md) — parsed assembly, C ABI,
   foreign imports, exports, and linking.
 - [AArch64 parsed assembly profile](docs/targets/aarch64-macos-assembly.md) — the exact
@@ -93,9 +93,9 @@ ctest --test-dir build --output-on-failure
 ```
 
 The bootstrap is a direct C++20 implementation targeting AArch64 macOS and
-AArch64 GNU/Linux. The compiler host and first release baseline remain macOS;
-the Linux profile is qualified as a locked cross target with native arm64 Linux
-execution.
+AArch64 GNU/Linux. Both targets build and execute on their native ARM64 hosts;
+the CI matrix also runs the target-independent bootstrap suite under Linux
+x86-64 address and undefined-behavior sanitizers.
 It implements the complete ordinary-language pipeline independently of Codex;
 provider-backed synthesis and judgment live behind compiler-owned typed,
 content-addressed boundaries. Detailed capability and evidence claims belong to

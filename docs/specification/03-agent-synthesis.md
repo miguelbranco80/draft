@@ -196,7 +196,7 @@ judgments. The compiler exposes each judgment's stable manifest identity, and
 `draft judge <judgment-id>` or a validation profile can select one judgment. A
 resolution profile may also select judgments during `draft resolve`, after the
 working program is fully resolved. A failing selected judgment fails the
-command. Ordinary and locked builds do not invoke a judge.
+command. Builds do not invoke a judge.
 
 A validation profile may require a judge model or provider distinct from the
 synthesizer and may require multiple independent verdicts. Those identities,
@@ -325,7 +325,7 @@ Active denials apply exactly as they do to handwritten source.
 
 <a id="section-10"></a>
 
-## 10. Resolution and deterministic builds
+## 10. Resolution and provider-free builds
 
 A resolved program consists of surface source, a pinned resolution manifest,
 and exactly one content-addressed generated expansion for every required
@@ -350,7 +350,7 @@ draft resolve codec/jpeg:decode
 draft resolve --revalidate
 draft judge
 draft judge codec/jpeg:decode
-draft build --locked ./cmd/viewer
+draft build ./cmd/viewer
 ```
 
 `draft resolve` loads valid pins and synthesizes missing or stale sites in
@@ -361,11 +361,11 @@ resolution commits staged expansions, pins, and new passing evidence
 atomically. Failure leaves those staged changes uncommitted; validation audit
 and revocation state follows the rule below.
 
-`draft build` consumes valid pins and never updates them or contacts a model;
-missing or stale pins require `draft resolve`. `--locked` additionally refuses
-unpinned external build inputs and any operation that would modify the
-resolution manifest. A locked build reads pinned generated source and never
-contacts a model.
+`draft build` consumes valid pins and never updates them or contacts a model.
+Missing, stale, invalid, or ambiguously associated pins require `draft resolve`.
+A complete handwritten program with no synthesis sites needs no resolution
+manifest. This provider boundary is unconditional rather than an optional build
+mode: only `draft resolve` may request generated source.
 
 A provider-free build or revalidation may consume a content-fresh pin without
 installing the provider that originally produced it. When `draft resolve`
@@ -374,12 +374,13 @@ adapter-configuration identities must match the pin; a changed explicit
 selection regenerates the expansion even when its typed obligation is otherwise
 fresh.
 
-An external build input is a dependency root, foreign-provider artifact or
-summary, object, archive, shared library, assembler or linker tool, or target
-SDK/runtime asset outside the workspace and selected compiler distribution. A
-locked build requires an exact content identity for each such input in the
-manifest and disables ambient package, library, SDK, tool, and environment
-search.
+An external program input is dependency source, a foreign-provider artifact or
+summary, or a runtime asset supplied outside the workspace and selected compiler
+distribution. When such content participates in resolution or semantic
+checking, the manifest records its exact content identity while the physical
+path remains invocation-local. The native compiler, linker, SDK, and sysroot are
+host build configuration: they do not enter synthesis pins or resolved-program
+identity.
 
 `draft resolve --revalidate` stages existing generated source for stale sites,
 recomputes current obligations and input hashes in semantic dependency order,
@@ -399,9 +400,10 @@ records its result. A failed run or aggregate deactivates passing evidence for
 that exact key, even when an enclosing resolution later fails, while retaining
 history and leaving other keys unchanged.
 
-A locked build fails when a required synthesis pin is missing, stale, invalid,
-or ambiguously associated with a synthesis site, or when validation evidence
-required by the active policy is missing, stale, or mismatched.
+`draft build` fails when a required synthesis pin is missing, stale, invalid, or
+ambiguously associated with a synthesis site. Validation and judgment evidence
+remain auditable records produced by their commands; compiling a resolved
+program does not require or rerun them.
 
 Each site has an input hash covering everything supplied to synthesis: its
 prompt and attachments; grammar and type obligation; enclosing declaration;
@@ -415,12 +417,12 @@ configuration identity so a later policy can verify judge independence.
 
 The manifest identifies the coherent resolved program from the selected target;
 the exact identities of all selected workspace and dependency source,
-compiler-distributed core and runtime inputs, and external artifacts, tools,
-SDKs, and provider summaries, whether or not locked; the build graph; and every
+compiler-distributed core and runtime inputs, explicit foreign artifacts,
+provider summaries, and runtime assets; the build graph; and every
 synthesis-site identity and selected expansion hash. Validation evidence binds
 that identity to the selected validation definitions, requested artifacts,
-tools, and execution policy; it cannot be reused for a different resolved
-program. The manifest also records source maps and evidence hashes.
+tool version, and execution policy; it cannot be reused for a different
+resolved program. The manifest also records source maps and evidence hashes.
 
 Generated source is the inspectable persistent representation. Parsed AST,
 typed IR, native objects, and debug data are discardable content-addressed
