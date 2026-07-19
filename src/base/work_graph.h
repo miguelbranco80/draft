@@ -22,6 +22,9 @@
 
 namespace draft {
 
+// WorkTaskId is a stable zero-based index for one WorkGraph invocation. It may
+// be copied into phase-owned side tables but is never serialized or compared
+// across commands.
 using WorkTaskId = std::uint32_t;
 
 // One row describes the tasks that must succeed before this task may run.
@@ -40,6 +43,9 @@ struct WorkGraph {
   std::vector<WorkTask> tasks;
 };
 
+// WorkTaskState records the visible lifecycle of one slot. Pending and Running
+// are internal transient states; every returned task is Succeeded, Failed, or
+// SkippedDependency. Enum order has no semantic or scheduling meaning.
 enum class WorkTaskState {
   Pending,
   Running,

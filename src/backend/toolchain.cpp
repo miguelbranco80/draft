@@ -1,4 +1,23 @@
 // Native artifact publication for Draft's concrete target contracts.
+//
+// This backend layer accepts a completely lowered CompileWorkspaceResult plus
+// one explicit TargetProfile and produces an object, archive, shared library,
+// executable, or assembly directory. It owns command-local build paths,
+// worker-private tool inputs, subprocess lifetimes, canonical publication,
+// source-correlation output, and Mach-O debug companions. It does not decide
+// Draft semantics, layout, ABI, or target selection; those facts must already
+// be explicit in the compiler result and target profile.
+//
+// Native object work may run concurrently, but workers own disjoint result
+// slots and never touch diagnostics or the timing recorder. The command thread
+// joins all work before selecting the lowest stable task-ID failure and before
+// publishing linker inputs in canonical order. Remaining platform tools are
+// launched without a shell and are operational configuration, never semantic
+// identity. This file may depend on lowered compiler products, target facts,
+// backend adapters, and base utilities; semantic phases must not depend on it.
+//
+// Relevant specification: docs/specification/04-native-interop.md sections
+// 11-12 and docs/specification/06-compiler.md, "Native lowering and summaries".
 
 #include "backend/toolchain.h"
 
@@ -34,6 +53,11 @@ extern char **environ;
 namespace draft {
 namespace {
 
+// ProcessResult owns the complete observable result of one synchronous child.
+// started distinguishes a launch failure from any child exit status. exit_code
+// uses ordinary exit values or 128 + signal; captured output combines stdout
+// and stderr in byte order from one pipe. CPU fields are nonnegative kernel
+// usage measurements and never influence compilation or artifact identity.
 struct ProcessResult {
   bool started = false;
   int exit_code = -1;
@@ -197,6 +221,10 @@ void append_target_arguments(
   }
 }
 
+// Writes one complete compiler-owned file through a sibling temporary and
+// renames it into place. The caller owns the parent directory. On failure the
+// final path is not replaced, reason is diagnostic-ready, and a failed rename
+// removes the temporary; the function never changes semantic identity.
 [[nodiscard]] bool write_atomic(
     const std::filesystem::path &path,
     std::string_view contents,
@@ -984,10 +1012,11 @@ NativeBuildResult build_native_artifact(
         direct_module_identity.finalize().hex();
   }
 
-  // Write the map only after every package proved that it has a valid LLVM
-  // module. A failed partial build may leave ordinary compiler temporaries in
-  // the isolated directory, but it must not publish a complete-looking source
-  // correlation artifact for an incomplete graph.
+  // Write the map only after every native object task succeeds and canonical
+  // object publication completes. A failed partial build may leave worker-
+  // private diagnostic files in the isolated directory, but it must not
+  // publish a complete-looking source correlation artifact for an incomplete
+  // graph.
   std::string correlation_error;
   if (!validate_source_correlation_map(
           source_correlation,
@@ -1076,8 +1105,9 @@ NativeBuildResult build_native_artifact(
   };
   append_target_arguments(target, link_arguments);
   if (target.facts.object_format == "elf") {
-    // Name the linker family explicitly. Clang locates `ld.lld` through PATH,
-    // but it must not silently choose a different host linker implementation.
+    // Name the linker family explicitly. The selected Clang installation can
+    // find its matching `ld.lld` beside its own tools; it must not silently
+    // choose a different host linker implementation.
     link_arguments.push_back("-fuse-ld=lld");
   }
   if (options.artifact_kind == NativeArtifactKind::Object) {

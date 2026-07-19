@@ -7,6 +7,14 @@
 // synthesis identities. The adapter owns the exact argument/publication
 // contract for each Draft target and keeps language semantics in MIR/LLVM
 // lowering rather than inferring them from the host environment.
+//
+// Build options and results are command-owned values. The implementation owns
+// temporary files and subprocess lifetimes only during a synchronous call; no
+// LLVM handle, borrowed source view, or worker survives the return. This layer
+// depends on lowered compiler products, target facts, backend input adapters,
+// diagnostics, and base hashing/timing. No semantic layer may depend on it.
+// Relevant specification: docs/specification/04-native-interop.md sections
+// 11-12 and docs/specification/06-compiler.md, "Native lowering and summaries".
 
 #pragma once
 
@@ -24,6 +32,9 @@
 
 namespace draft {
 
+// NativeArtifactKind selects the publication contract, not a language type.
+// Each value has one fixed output shape described by build_native_artifact;
+// enum order is incidental and must not enter manifests or hashes.
 enum class NativeArtifactKind {
   Executable,
   Object,
@@ -51,6 +62,10 @@ enum class NativeObjectEmitter {
   ExternalClangOracle,
 };
 
+// NativeBuildOptions is complete operational configuration for one synchronous
+// build. String paths and external-input vectors are owned by the caller's
+// value; timings is the sole non-owning pointer and must outlive the call. None
+// of these fields is serialized as Draft semantic identity.
 struct NativeBuildOptions {
   // Clang remains the platform linker driver and package-assembly tool. The
   // qualification emitter also uses this exact executable when selected. An
@@ -84,6 +99,11 @@ struct NativeBuildOptions {
   TimingRecorder *timings = nullptr;
 };
 
+// NativeBuildResult describes only products published by this invocation. ok
+// is false until the requested artifact is complete; callers must not consume
+// output paths from a failed result. Digests cover the documented canonical
+// side products, while operational evidence such as worker count and LLVM
+// version remains outside program identity.
 struct NativeBuildResult {
   bool ok = false;
   // Number of workers selected for native object tasks. This operational

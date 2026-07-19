@@ -31,6 +31,9 @@
 
 namespace draft {
 
+// Identifies which already selected input route produces one object product.
+// The value affects execution and output naming inside one command but is not a
+// persistent semantic identity or content-hash field.
 enum class NativeObjectTaskKind {
   LlvmModule,
   PackageAssembly,

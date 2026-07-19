@@ -30,11 +30,17 @@
 
 namespace draft {
 
+// Selects which target-machine buffer the adapter returns. This changes only
+// artifact representation; both paths consume the same verified module and
+// target facts. Enum order is incidental and is never serialized.
 enum class LlvmNativeOutputKind {
   Object,
   Assembly,
 };
 
+// Selects a compiler-owned LLVM transformation bundle before emission. It is
+// deliberately closed: callers cannot smuggle arbitrary pass pipelines across
+// the semantic/backend boundary.
 enum class LlvmNativeInstrumentation {
   None,
   AddressSanitizer,
