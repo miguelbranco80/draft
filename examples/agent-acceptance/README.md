@@ -5,6 +5,7 @@ operations. It deliberately combines features that are easier to validate
 together than as isolated mocks:
 
 - dependency-ordered declaration synthesis at package scope;
+- opaque-round member synthesis that rebuilds a public aggregate interface;
 - typed expression and statement synthesis inside `main`;
 - an imported package used by both the program and its test-only graph;
 - native pre-commit test execution;
@@ -13,7 +14,7 @@ together than as isolated mocks:
 - generated-source correlation in the native debug sidecar.
 
 The committed `.draft` files are content-addressed acceptance inputs, not build
-caches. They contain the three checked generated Draft fragments, the v128
+caches. They contain the four checked generated Draft fragments, the v128
 resolution manifest, and its selected test and judgment evidence. `.draft/build`
 remains ignored and may be deleted at any time.
 

@@ -7,11 +7,19 @@ import lib
 // grammar boundary rather than asking the provider to design an API.
 ... "Declare a package constant named generated_offset with type i64 and value 2. Output only the declaration."
 
+// Member synthesis runs only after prior package-declaration obligations are
+// complete. Consuming the generated field in both the executable and the test
+// proves that the opaque member round rebuilt the public aggregate interface.
+pub Generated_Record :: struct {
+    ... "Declare one struct member named value with type i64. Output only the member declaration."
+}
+
 main :: proc() -> int {
     expected: i64 = ... "Produce the i64 expression 42. Output only the expression."
-    actual := lib.base() + generated_offset
+    record := Generated_Record{value = lib.base() + generated_offset}
+    actual := record.value
 
-    judge "The generated declaration, expression, and statement preserve actual == expected."
+    judge "The generated declaration, member, expression, and statement preserve actual == expected."
     ... "Emit one runtime assertion statement checking actual == expected. Output only the statement."
     return 0
 }

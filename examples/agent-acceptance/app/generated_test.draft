@@ -4,5 +4,6 @@ import lib
 import core/testing
 
 test_generated_program :: proc(test: ^testing.Test) {
-    testing.expect(test, lib.base() + generated_offset == 42)
+    record := Generated_Record{value = lib.base() + generated_offset}
+    testing.expect(test, record.value == 42)
 }
