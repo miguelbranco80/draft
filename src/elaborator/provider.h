@@ -83,15 +83,26 @@ using SynthesizeFunction = bool (*)(
     SynthesisResponse &response,
     DiagnosticSink &diagnostics);
 
+// Optional command preparation runs on the resolver thread before the first
+// provider call and at most once per resolve command. It exists for immutable
+// shared resources such as the embedded Draft coding skill. Preparation may
+// mutate provider-owned command state; synthesize calls may only borrow the
+// resulting stable resources.
+using PrepareSynthesisProviderFunction = bool (*)(
+    void *state,
+    DiagnosticSink &diagnostics);
+
 // state is borrowed and must outlive a resolver call. A null synthesize function
 // means no provider is configured; it is valid when every selected pin is fresh
-// and therefore no invocation is required. Identity strings are validated only
-// before an actual call.
+// and therefore no invocation is required. prepare may be null for providers
+// with no command-owned setup. Identity strings are validated only before an
+// actual call, and prepare is never called for a provider-free resolution.
 struct SynthesisProvider {
   std::string provider_identity;
   std::string model_identity;
   std::string configuration_identity;
   void *state = nullptr;
+  PrepareSynthesisProviderFunction prepare = nullptr;
   SynthesizeFunction synthesize = nullptr;
 };
 

@@ -11,11 +11,13 @@
 #pragma once
 
 #include "base/sha256.h"
+#include "elaborator/draft_skill.h"
 #include "elaborator/obligation.h"
 #include "source/diagnostic.h"
 
 #include <cstdint>
 #include <filesystem>
+#include <memory>
 #include <span>
 #include <string>
 #include <string_view>
@@ -53,6 +55,10 @@ struct CodexCliProviderState {
   std::uint32_t maximum_attempts = 0;
   void *cancellation_state = nullptr;
   CodexCancellationRequested cancellation_requested = nullptr;
+  // Synthesis configures this owner; judgment leaves it null. Preparation
+  // materializes it once, after which concurrent invocations borrow its stable
+  // directory through request-local read-only links.
+  std::unique_ptr<MaterializedDraftSkill> synthesis_skill;
 };
 
 struct CodexCliInputFile {

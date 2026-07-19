@@ -22,6 +22,7 @@
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -44,7 +45,8 @@ namespace {
 constexpr std::uintmax_t kMaximumCodexOutputBytes = 64U * 1024U * 1024U;
 constexpr std::uintmax_t kMaximumCodexLogBytes = 4U * 1024U * 1024U;
 constexpr std::string_view kPromptContractIdentity =
-    "draft-codex-synthesis-prompt-v20";
+    "draft-codex-synthesis-prompt-v21";
+constexpr std::string_view kDraftSkillRequestName = "draft-skill";
 constexpr std::string_view kOutputSchema =
     "{\n"
     "  \"type\": \"object\",\n"
@@ -1161,7 +1163,9 @@ private:
     return false;
   }
   constexpr std::string_view instruction =
-      "You are the Draft language synthesis provider. Produce exactly one "
+      "DRAFT_SYNTHESIS_PROVIDER_MODE. First read draft-skill/SKILL.md and "
+      "follow its synthesis-provider workflow and referenced Draft language "
+      "guidance. You are the Draft language synthesis provider. Produce exactly one "
       "ordinary Draft source fragment for the supplied grammar category. "
       "Return only a JSON object with one string field named source. The "
       "source must contain no judge construct and no unresolved ... synthesis "
@@ -1211,6 +1215,21 @@ private:
     return false;
   }
   return true;
+}
+
+// Materializes the build-embedded language guide on the resolver thread. The
+// callback is command-scoped and idempotent, so all later Codex invocations can
+// borrow one immutable directory without racing filesystem construction.
+[[nodiscard]] bool prepare_codex_synthesis_provider(
+    void *opaque,
+    DiagnosticSink &diagnostics) {
+  auto *state = static_cast<CodexCliProviderState *>(opaque);
+  if (state == nullptr || state->synthesis_skill == nullptr) {
+    provider_error(
+        diagnostics, "Codex synthesis skill owner is not configured");
+    return false;
+  }
+  return state->synthesis_skill->materialize(diagnostics);
 }
 
 } // namespace
@@ -1304,11 +1323,36 @@ bool invoke_codex_cli_runtime(
   }
   TemporaryDirectory temporary;
   if (!temporary.create(diagnostics)) return false;
+
+  // Every invocation gets an independent request directory, while synthesis
+  // calls share only the compiler-owned immutable skill bytes. The link target
+  // is never source-authored and both directories are private compiler
+  // temporaries. Codex's read-only sandbox prevents writes through the link.
+  if (state.synthesis_skill != nullptr) {
+    if (state.synthesis_skill->root().empty()) {
+      provider_error(
+          diagnostics,
+          "Codex synthesis provider was invoked before preparation");
+      return false;
+    }
+    std::error_code link_error;
+    std::filesystem::create_directory_symlink(
+        state.synthesis_skill->root(),
+        temporary.path() / kDraftSkillRequestName,
+        link_error);
+    if (link_error) {
+      provider_error(
+          diagnostics,
+          "cannot expose the embedded Draft skill to Codex: " +
+              link_error.message());
+      return false;
+    }
+  }
   std::vector<std::string> names;
   for (const CodexCliInputFile &file : files) {
     const bool reserved = file.name == "schema.json" ||
         file.name == "prompt.txt" || file.name == "response.json" ||
-        file.name == "codex.log";
+        file.name == "codex.log" || file.name == kDraftSkillRequestName;
     if (file.name.empty() || file.name == "." || file.name == ".." ||
         reserved ||
         file.name.find('/') != std::string::npos ||
@@ -1382,11 +1426,21 @@ SynthesisProvider configure_codex_cli_provider(
     return {};
   }
 
+  state.synthesis_skill = std::make_unique<MaterializedDraftSkill>();
+  Sha256 synthesis_configuration;
+  synthesis_configuration.update("draft.codex-synthesis-provider.v1;");
+  synthesis_configuration.update(state.configuration_identity);
+  synthesis_configuration.update(";embedded-skill-sha256=");
+  synthesis_configuration.update(embedded_draft_skill_digest().bytes);
+  state.configuration_identity =
+      "codex-config-" + synthesis_configuration.finalize().hex();
+
   SynthesisProvider provider;
-  provider.provider_identity = "openai-codex-cli-v25";
+  provider.provider_identity = "openai-codex-cli-v26";
   provider.model_identity = state.model_identity;
   provider.configuration_identity = state.configuration_identity;
   provider.state = &state;
+  provider.prepare = prepare_codex_synthesis_provider;
   provider.synthesize = synthesize_with_codex;
   return provider;
 }

@@ -221,9 +221,14 @@ surface source + pinned manifest + one generated expansion per required site
 loads valid pins, elaborates missing/stale sites in semantic dependency order,
 checks each expansion and the coherent complete program, and commits successful
 staged pins atomically. It does not run tests, benchmarks, or judgments.
-The bootstrap adapter discovers `codex` through `PATH`; `--model` is optional
-and omission uses the Codex-configured default. Do not add executable paths,
-credentials, or Codex installation hashes to Draft source identity.
+The bootstrap adapter embeds this complete skill in `draftc`. A provider-using
+resolve materializes its exact files once, exposes that immutable guide inside
+each isolated Codex request directory, and removes it when the command ends.
+Fresh provider-free builds and resolves never materialize it. The adapter
+discovers `codex` through `PATH`; `--model` is optional and omission uses the
+Codex-configured default. Skill, model, retry, and adapter identities are
+generation provenance, not accepted-source freshness. Do not add executable
+paths, credentials, or Codex installation hashes to Draft source identity.
 Use `draftc resolve <package> --regenerate` to reconsider every fresh expansion,
 or append one exact `site-...` identity to reconsider only that site. This is
 the deliberate source-changing operation; changing `--model` alone is not.

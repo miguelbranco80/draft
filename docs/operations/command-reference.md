@@ -150,6 +150,11 @@ The Codex adapter discovers `codex` through the user's `PATH` and uses that
 installation's ordinary authentication and configuration. If `--model` is
 omitted, the adapter also uses the Codex-configured default model. Executable
 paths, distribution hashing, and credentials are not Draft program inputs.
+The compiler binary contains the complete Draft coding skill used by synthesis;
+users do not install or locate a separate skill directory. It is materialized
+once only when the command actually needs Codex, then shared read-only through
+the otherwise separate request directory for each site. Its digest is recorded
+as generation provenance and does not invalidate accepted source.
 
 `--revalidate` rechecks all saved sites without a provider and writes a fresh
 source-resolution manifest. It cannot be combined with a provider model.

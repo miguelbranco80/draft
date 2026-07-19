@@ -60,8 +60,9 @@ struct TemporaryFixture {
     executable = root / "fixture-codex";
 
     // The script rejects any drift in the documented adapter command. It also
-    // verifies that the canonical prompt and exact attachment reached Codex's
-    // private request directory, then emits one schema-shaped final message.
+    // verifies that the embedded skill, canonical prompt, and exact attachment
+    // reached Codex's private request directory, then emits one schema-shaped
+    // final message.
     std::ofstream script(executable, std::ios::binary | std::ios::trunc);
     script <<
         "#!/bin/sh\n"
@@ -88,6 +89,8 @@ struct TemporaryFixture {
         "if test \"$model\" = slow-model; then while :; do :; done; fi\n"
         "test \"$model\" = fixture-model || exit 24\n"
         "test -f \"$schema\" || exit 25\n"
+        "test -f \"$work/draft-skill/SKILL.md\" || exit 36\n"
+        "grep -q DRAFT_SYNTHESIS_PROVIDER_MODE \"$work/draft-skill/SKILL.md\" || exit 37\n"
         "test -f \"$work/attachment-00000000.bin\" || exit 26\n"
         "test \"$(cat \"$work/attachment-00000000.bin\")\" = attachment-bytes || exit 27\n"
         "test -f \"$work/documentation-00000000-attachment-00000000.bin\" || exit 29\n"
@@ -102,7 +105,7 @@ struct TemporaryFixture {
         "  *REJECTED_SOURCE*) exit 35 ;;\n"
         "esac\n"
         "case \"$prompt\" in\n"
-        "  *REQUEST_FORMAT*draft-synthesis-request-v21*ROOT_IDENTITY*workspace*SOURCE_RELATIVE_PATH*package.draft*ANCHOR_NAME*visible_name*EXPECTED_TYPE_TEXT*i64*TARGET_IDENTITY*draft-aarch64-macos-v5*ENCLOSING_DECLARATION_NAME*visible_name*ENCLOSING_DECLARATION_SOURCE*visible_name*ENCLOSING_SEMANTIC_SKELETON*fixture-skeleton*BRANCH_REFINEMENTS*BRANCH_KIND*loop-condition-entered*BRANCH_SUBJECT*ready*BRANCH_SUBJECT_TYPE_TEXT*bool*LOOP_RANGES*LOOP_RANGE_KIND*header-entry-value*LOOP_RANGE_BINDING*index*LOOP_RANGE_BINDING_TYPE_TEXT*i64*LOOP_RANGE_LOWER_INCLUSIVE*0*LOOP_RANGE_UPPER*limit*LOOP_RANGE_UPPER_TYPE_TEXT*i64*ACTIVE_DENIALS*DENIAL_SELECTOR*assert*PERMITTED_CONTEXT_FIELDS*CONTEXT_FIELD_NAME*allocator*CONTEXT_FIELD_TYPE_TEXT*runtime.Allocator*PARAMETRIC_PARAMETERS*PARAMETER_NAME*T*PARAMETER_CONSTRAINT*integer*PARAMETER_TYPE_TEXT*T*TYPE_CONTEXTS*TYPE_REFERENCE_SHA256*TYPE_DEFINITION*MEMBER_NAME*IMPORTED_PACKAGES*IMPORT_ALIAS*lib*IMPORT_DEFINITION*DECLARATION_NAME*make*IMPORT_DOCUMENTATION*IMPORT_DOC_ANCHOR*make*IMPORT_DOC_TEXT*imported-design*IMPORT_DOC_ATTACHMENT_PATH*IMPORTED.md*GUIDING_JUDGMENTS*JUDGMENT_ANCHOR*visible_name*JUDGMENT_CLAIM*preserve-invariant*JUDGMENT_ATTACHMENT_PATH*EVIDENCE.md*DOCUMENTATION*DOC_ANCHOR*visible_name*DOC_TEXT*design-context*DOC_ATTACHMENT_PATH*DESIGN.md*VALIDATION_CONTEXT*VALIDATION_KIND*test*VALIDATION_SOURCE_PATH*behavior_test.draft*VALIDATION_SOURCE*test_fixture*VALIDATION_TYPING_COMPLETE*true*VALIDATION_PROCEDURE_NAME*test_fixture*VALIDATION_PROCEDURE_TYPE_TEXT*proc*VALIDATION_STATE_SIZE*24*VALIDATION_REFERENCE_NAME*visible_name*VALIDATION_REFERENCE_TYPE_TEXT*u32*VALIDATION_REFERENCE_HAS_CONSTANT*true*VALIDATION_REFERENCE_CONSTANT*fixture-constant*AUTHOR_PROMPT*make-answer*BINDING_NAME*visible_name*BINDING_TYPE_TEXT*u32*BINDING_HAS_CONSTANT*true*BINDING_CONSTANT*fixture-constant*RELEVANT_DECLARATIONS*DECLARATION_SOURCE_PATH*package.draft*DECLARATION_NAME*visible_name*DECLARATION_TYPE_TEXT*u32*DECLARATION_HAS_CONSTANT*true*DECLARATION_CONSTANT*fixture-constant*DECLARATION_SOURCE*visible_name*FRAGMENT_CONTRACT*EXPECTED_TYPE_TEXT*COMPILER_REJECTIONS*) ;;\n"
+        "  *DRAFT_SYNTHESIS_PROVIDER_MODE*draft-skill/SKILL.md*REQUEST_FORMAT*draft-synthesis-request-v21*ROOT_IDENTITY*workspace*SOURCE_RELATIVE_PATH*package.draft*ANCHOR_NAME*visible_name*EXPECTED_TYPE_TEXT*i64*TARGET_IDENTITY*draft-aarch64-macos-v5*ENCLOSING_DECLARATION_NAME*visible_name*ENCLOSING_DECLARATION_SOURCE*visible_name*ENCLOSING_SEMANTIC_SKELETON*fixture-skeleton*BRANCH_REFINEMENTS*BRANCH_KIND*loop-condition-entered*BRANCH_SUBJECT*ready*BRANCH_SUBJECT_TYPE_TEXT*bool*LOOP_RANGES*LOOP_RANGE_KIND*header-entry-value*LOOP_RANGE_BINDING*index*LOOP_RANGE_BINDING_TYPE_TEXT*i64*LOOP_RANGE_LOWER_INCLUSIVE*0*LOOP_RANGE_UPPER*limit*LOOP_RANGE_UPPER_TYPE_TEXT*i64*ACTIVE_DENIALS*DENIAL_SELECTOR*assert*PERMITTED_CONTEXT_FIELDS*CONTEXT_FIELD_NAME*allocator*CONTEXT_FIELD_TYPE_TEXT*runtime.Allocator*PARAMETRIC_PARAMETERS*PARAMETER_NAME*T*PARAMETER_CONSTRAINT*integer*PARAMETER_TYPE_TEXT*T*TYPE_CONTEXTS*TYPE_REFERENCE_SHA256*TYPE_DEFINITION*MEMBER_NAME*IMPORTED_PACKAGES*IMPORT_ALIAS*lib*IMPORT_DEFINITION*DECLARATION_NAME*make*IMPORT_DOCUMENTATION*IMPORT_DOC_ANCHOR*make*IMPORT_DOC_TEXT*imported-design*IMPORT_DOC_ATTACHMENT_PATH*IMPORTED.md*GUIDING_JUDGMENTS*JUDGMENT_ANCHOR*visible_name*JUDGMENT_CLAIM*preserve-invariant*JUDGMENT_ATTACHMENT_PATH*EVIDENCE.md*DOCUMENTATION*DOC_ANCHOR*visible_name*DOC_TEXT*design-context*DOC_ATTACHMENT_PATH*DESIGN.md*VALIDATION_CONTEXT*VALIDATION_KIND*test*VALIDATION_SOURCE_PATH*behavior_test.draft*VALIDATION_SOURCE*test_fixture*VALIDATION_TYPING_COMPLETE*true*VALIDATION_PROCEDURE_NAME*test_fixture*VALIDATION_PROCEDURE_TYPE_TEXT*proc*VALIDATION_STATE_SIZE*24*VALIDATION_REFERENCE_NAME*visible_name*VALIDATION_REFERENCE_TYPE_TEXT*u32*VALIDATION_REFERENCE_HAS_CONSTANT*true*VALIDATION_REFERENCE_CONSTANT*fixture-constant*AUTHOR_PROMPT*make-answer*BINDING_NAME*visible_name*BINDING_TYPE_TEXT*u32*BINDING_HAS_CONSTANT*true*BINDING_CONSTANT*fixture-constant*RELEVANT_DECLARATIONS*DECLARATION_SOURCE_PATH*package.draft*DECLARATION_NAME*visible_name*DECLARATION_TYPE_TEXT*u32*DECLARATION_HAS_CONSTANT*true*DECLARATION_CONSTANT*fixture-constant*DECLARATION_SOURCE*visible_name*FRAGMENT_CONTRACT*EXPECTED_TYPE_TEXT*COMPILER_REJECTIONS*) ;;\n"
         "  *) exit 28 ;;\n"
         "esac\n"
         "printf '%s' '{\"source\":\"40 + 2\\n\"}' > \"$output\"\n";
@@ -319,11 +322,31 @@ void test_adapter_contract_and_identity(TestState &state) {
   const draft::SynthesisProvider provider =
       draft::configure_codex_cli_provider(options, provider_state, diagnostics);
   EXPECT(state, provider.synthesize != nullptr);
-  EXPECT(state, provider.provider_identity == "openai-codex-cli-v25");
+  EXPECT(state, provider.prepare != nullptr);
+  EXPECT(state, provider.provider_identity == "openai-codex-cli-v26");
   EXPECT(state, provider.model_identity == "fixture-model");
   EXPECT(state, provider.configuration_identity ==
       provider_state.configuration_identity);
   EXPECT(state, !diagnostics.has_errors());
+  EXPECT(state, provider_state.synthesis_skill != nullptr);
+  if (provider_state.synthesis_skill != nullptr) {
+    EXPECT(state, provider_state.synthesis_skill->root().empty());
+  }
+
+  // Provider preparation is lazy and command-scoped. Repeating it reuses the
+  // same materialization rather than copying 100 KiB of skill files per site.
+  EXPECT(state, provider.prepare(provider.state, diagnostics));
+  std::filesystem::path materialized_skill;
+  if (provider_state.synthesis_skill != nullptr) {
+    materialized_skill = provider_state.synthesis_skill->root();
+    EXPECT(state, !materialized_skill.empty());
+    EXPECT(state, std::filesystem::is_regular_file(
+        materialized_skill / "SKILL.md"));
+  }
+  EXPECT(state, provider.prepare(provider.state, diagnostics));
+  if (provider_state.synthesis_skill != nullptr) {
+    EXPECT(state, provider_state.synthesis_skill->root() == materialized_skill);
+  }
 
   draft::SynthesisRequest request = make_request();
   draft::SynthesisResponse response;
@@ -433,9 +456,12 @@ void test_adapter_contract_and_identity(TestState &state) {
       draft::configure_codex_cli_provider(
           default_options, default_state, default_diagnostics);
   EXPECT(state, default_provider.synthesize != nullptr);
+  EXPECT(state, default_provider.prepare != nullptr);
   EXPECT(state,
       default_provider.model_identity == "codex-configured-default");
   draft::SynthesisResponse default_response;
+  EXPECT(state,
+      default_provider.prepare(default_provider.state, default_diagnostics));
   EXPECT(state, default_provider.synthesize(
       default_provider.state,
       request,
@@ -459,6 +485,7 @@ void test_adapter_contract_and_identity(TestState &state) {
           slow_options, slow_state, slow_diagnostics);
   EXPECT(state, slow.synthesize != nullptr);
   EXPECT(state, !slow_diagnostics.has_errors());
+  EXPECT(state, slow.prepare(slow.state, slow_diagnostics));
   draft::SynthesisResponse slow_response;
   EXPECT(state,
       !slow.synthesize(
@@ -493,6 +520,8 @@ void test_adapter_contract_and_identity(TestState &state) {
       draft::configure_codex_cli_provider(
           cancelled_options, cancelled_state, cancelled_diagnostics);
   EXPECT(state, cancellable.synthesize != nullptr);
+  EXPECT(state,
+      cancellable.prepare(cancellable.state, cancelled_diagnostics));
   std::thread canceller([&cancelled]() {
     std::this_thread::sleep_for(std::chrono::milliseconds(30));
     cancelled.store(true);

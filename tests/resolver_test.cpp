@@ -381,6 +381,7 @@ struct TemporaryWorkspace {
 
 struct FakeProviderState {
   std::size_t calls = 0;
+  std::size_t preparation_calls = 0;
   std::string response = "42";
   std::string last_prompt;
   std::string last_attachment;
@@ -400,6 +401,17 @@ struct FakeProviderState {
   std::vector<draft::AgentValidationContext> last_validation_context;
   std::vector<std::vector<draft::SynthesisRejection>> rejection_histories;
 };
+
+// Preparation is observable but performs no setup. A multi-stage resolver test
+// uses it to prove the callback belongs to the command, not to a site or stage.
+bool prepare_fake_provider(
+    void *opaque,
+    draft::DiagnosticSink &diagnostics) {
+  (void)diagnostics;
+  auto *state = static_cast<FakeProviderState *>(opaque);
+  ++state->preparation_calls;
+  return true;
+}
 
 [[nodiscard]] bool boolean_cancellation_requested(void *opaque) {
   return *static_cast<bool *>(opaque);
@@ -953,10 +965,12 @@ void test_interface_sites_precede_dependent_bodies(TestState &state) {
 
   draft::SourceManager sources;
   draft::DiagnosticSink diagnostics;
+  draft::ResolveWorkspaceOptions options = resolve_options(workspace, provider);
+  options.provider.prepare = prepare_fake_provider;
   const draft::ResolveWorkspaceResult resolved = draft::resolve_workspace(
       sources,
       workspace.package.string(),
-      resolve_options(workspace, provider),
+      std::move(options),
       diagnostics);
   if (!resolved.ok) {
     std::cerr << draft::render_diagnostics(sources, diagnostics);
@@ -965,6 +979,7 @@ void test_interface_sites_precede_dependent_bodies(TestState &state) {
   EXPECT(state, resolved.committed);
   EXPECT(state, resolved.synthesized_sites == 4);
   EXPECT(state, provider.calls == 4);
+  EXPECT(state, provider.preparation_calls == 1);
   EXPECT(state, provider.kinds.size() == 4);
   if (provider.kinds.size() == 4) {
     EXPECT(state, provider.kinds[0] ==

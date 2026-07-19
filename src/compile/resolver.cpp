@@ -147,6 +147,29 @@ namespace {
   return true;
 }
 
+// Performs provider-owned command setup exactly once and only when resolution
+// reaches a site that actually needs generation. Fresh pins therefore remain a
+// genuinely provider-free path. The prepared flag belongs to the whole resolve
+// command, not one semantic stage, so interface rounds and the body stage share
+// one immutable resource set.
+[[nodiscard]] bool prepare_provider(
+    const SynthesisProvider &provider,
+    bool &prepared,
+    DiagnosticSink &diagnostics) {
+  if (prepared) return true;
+  if (provider.prepare != nullptr &&
+      !provider.prepare(provider.state, diagnostics)) {
+    if (!diagnostics.has_errors()) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "synthesis provider preparation failed without a diagnostic");
+    }
+    return false;
+  }
+  prepared = true;
+  return true;
+}
+
 [[nodiscard]] bool resolution_cancelled(
     const ResolveWorkspaceOptions &options,
     DiagnosticSink &diagnostics) {
@@ -312,6 +335,7 @@ struct ResolvedStage {
     const ResolutionManifestLoadResult &loaded,
     const ResolveWorkspaceOptions &options,
     ResolveWorkspaceResult &result,
+    bool &provider_prepared,
     std::vector<std::string> &regeneration_matches,
     std::vector<GeneratedExpansion> &expansions,
     DiagnosticSink &diagnostics) {
@@ -389,6 +413,10 @@ struct ResolvedStage {
           return stage;
         }
         if (!provider_is_configured(options.provider, diagnostics)) return stage;
+        if (!prepare_provider(
+                options.provider, provider_prepared, diagnostics)) {
+          return stage;
+        }
         const AgentRecord *record = find_record(package, obligation.syntax);
         if (record == nullptr) {
           diagnostics.error(
@@ -612,6 +640,7 @@ ResolveWorkspaceResult resolve_workspace(
   manifest.external_inputs = std::move(external_input_check.external_inputs);
   std::vector<WorkspaceSourceOverride> interface_overrides;
   std::vector<std::string> regeneration_matches;
+  bool provider_prepared = false;
 
   // Interface synthesis advances in dependency-ready rounds. Every package in
   // one round sees completed prerequisite package interfaces but none of its
@@ -639,6 +668,7 @@ ResolveWorkspaceResult resolve_workspace(
         loaded,
         options,
         result,
+        provider_prepared,
         regeneration_matches,
         expansions,
         diagnostics);
@@ -704,6 +734,7 @@ ResolveWorkspaceResult resolve_workspace(
       loaded,
       options,
       result,
+      provider_prepared,
       regeneration_matches,
       expansions,
       diagnostics);

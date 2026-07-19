@@ -21,6 +21,35 @@ option(DRAFT_ENABLE_SANITIZERS "Enable address and undefined-behavior sanitizers
 
 find_package(Threads REQUIRED)
 
+# The checked-in Draft coding skill is also the Codex synthesis adapter's exact
+# language guide. Generate an immutable byte table from an explicit file list so
+# installed draftc binaries do not depend on a repository checkout at runtime.
+set(DRAFT_SKILL_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/.agents/skills/write-draft-code")
+set(DRAFT_SKILL_BUNDLE "${CMAKE_CURRENT_BINARY_DIR}/generated/draft_skill_bundle.cpp")
+set(
+  DRAFT_SKILL_INPUTS
+  "${DRAFT_SKILL_ROOT}/SKILL.md"
+  "${DRAFT_SKILL_ROOT}/agents/openai.yaml"
+  "${DRAFT_SKILL_ROOT}/references/agent-features.md"
+  "${DRAFT_SKILL_ROOT}/references/core-library.md"
+  "${DRAFT_SKILL_ROOT}/references/interop-and-targets.md"
+  "${DRAFT_SKILL_ROOT}/references/language.md"
+  "${DRAFT_SKILL_ROOT}/references/memory-and-ownership.md"
+  "${DRAFT_SKILL_ROOT}/references/workflow-and-testing.md"
+)
+add_custom_command(
+  OUTPUT "${DRAFT_SKILL_BUNDLE}"
+  COMMAND
+    "${CMAKE_COMMAND}"
+    "-DDRAFT_SKILL_ROOT=${DRAFT_SKILL_ROOT}"
+    "-DDRAFT_SKILL_OUTPUT=${DRAFT_SKILL_BUNDLE}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_draft_skill.cmake"
+  DEPENDS
+    ${DRAFT_SKILL_INPUTS}
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_draft_skill.cmake"
+  VERBATIM
+)
+
 # Draft embeds one pinned LLVM major through its C API. The explicit common
 # installation hints keep a normal Apple Silicon Homebrew or Ubuntu LLVM 22
 # installation zero-configuration while LLVM_DIR remains the authoritative
@@ -93,6 +122,8 @@ add_library(
   src/compile/expanded_source.cpp
   src/compile/resolver.cpp
   src/elaborator/codex_cli.cpp
+  src/elaborator/draft_skill.cpp
+  "${DRAFT_SKILL_BUNDLE}"
   src/elaborator/generated_source.cpp
   src/elaborator/obligation.cpp
   src/elaborator/resolution.cpp

@@ -9,6 +9,30 @@ Write production-quality Draft against this checkout's actual language and
 core library. Treat the specification as semantic authority, `core/` as the
 library API, and compiling examples/tests as the executable usage record.
 
+## Synthesis-provider mode
+
+When the request begins with `DRAFT_SYNTHESIS_PROVIDER_MODE`, this skill is
+running from the compiler's embedded, read-only copy rather than a repository
+checkout. Use this narrower workflow instead of the editing workflow below:
+
+1. Read [language.md](references/language.md), then only the task-specific
+   references needed for the requested fragment. For `...`, always read
+   [agent-features.md](references/agent-features.md).
+2. Treat the compiler-supplied obligation, imported interfaces, visible
+   bindings, target facts, denials, validation context, fragment contract, and
+   compiler rejections as the complete semantic environment. They override an
+   under-specified or conflicting author prompt.
+3. Do not inspect a repository, edit files, run commands, infer unavailable
+   core APIs, or request external context. An API is available only when its
+   declaration appears in supplied context.
+4. Return only the requested ordinary Draft fragment in the response schema.
+   Never return Markdown, a `judge` construct, another unresolved `...`, or a
+   declaration/block wrapper forbidden by the fragment contract.
+
+The ordinary compiler parses and type-checks the result. A later correction
+request contains the exact rejected source and authoritative diagnostics; fix
+that proposal without assuming any sibling synthesis result is visible.
+
 ## Establish the contract
 
 1. Read the repository `AGENTS.md` before editing.

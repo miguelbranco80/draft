@@ -100,7 +100,8 @@ cache.
 - Pins record provider and model in named provenance fields. Their configuration
   identity covers other configured generation policy. For the Codex adapter it
   hashes the explicit/default model choice, timeout, adapter retry budget,
-  prompt and output-schema contracts, and fixed adapter version/process policy.
+  prompt and output-schema contracts, embedded Draft coding-skill digest, and
+  fixed adapter version/process policy.
   Draft exposes no reasoning-effort option today; if one is added, it belongs
   in this provenance identity rather than freshness.
 - That provenance is excluded from pin freshness and resolved-program identity.
