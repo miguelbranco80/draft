@@ -54,8 +54,10 @@ glibc pthread handle/storage types, `clock_gettime`, and ELF assembly symbol
 spelling with the profile's `aarch64-linux` file tag. Every package command now
 accepts `--target aarch64-linux` and carries this profile through compilation,
 C-header emission, validation, resolution, and judgment; macOS remains the
-compatibility default. ELF artifact spelling, the
-dynamic loader, deterministic link flags, debug information, and locked
+compatibility default. The root LLVM runtime now emits glibc's 32-bit
+`pthread_once_t` and `pthread_key_t` layouts, and LLVM 22.1 accepts the result
+as an AArch64 ELF object with DWARF. ELF artifact spelling, the dynamic loader,
+deterministic link flags, debug information, and locked
 toolchain/sysroot shape remain backend work. Release documentation must not call
 the target qualified until those gates have run.
 

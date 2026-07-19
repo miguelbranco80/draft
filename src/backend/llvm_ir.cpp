@@ -1,4 +1,4 @@
-// LLVM IR text emission for the first AArch64 macOS backend.
+// Target-profiled LLVM IR text emission for the bootstrap AArch64 backends.
 //
 // This is a deliberately small printer over Draft MIR. LLVM performs target
 // instruction selection and object emission, but it does not decide Draft
@@ -840,6 +840,21 @@ private:
       return;
     }
 
+    // pthread_once_t and pthread_key_t are libc ABI types, not architectural
+    // AArch64 types.  Darwin uses a 16-byte signed once record and a 64-bit
+    // key; the selected glibc contract uses a 32-bit once word initialized to
+    // zero and a 32-bit key.  These strings remain local to the runtime emitter
+    // so the distinction cannot leak into Draft's semantic type system.
+    const bool is_linux_gnu = target_.facts.abi == "aapcs64_gnu";
+    const std::string pthread_once_type =
+        is_linux_gnu ? "{ i32 }" : "{ i64, [8 x i8] }";
+    const std::string pthread_once_initializer = is_linux_gnu
+        ? "%draft.runtime.PthreadOnce zeroinitializer, align 4"
+        : "%draft.runtime.PthreadOnce { i64 816954554, "
+          "[8 x i8] zeroinitializer }, align 8";
+    const std::string pthread_key_type = is_linux_gnu ? "i32" : "i64";
+    const std::string pthread_key_alignment = is_linux_gnu ? "4" : "8";
+
     // These layout-only handle records are the physical ABI shared with the
     // compiler-distributed core/runtime Context declaration.  Each provider is
     // a procedure pointer paired with provider-owned state.  Keeping the full
@@ -850,7 +865,7 @@ private:
             << "%draft.runtime.RandomGenerator = type { ptr, ptr }\n"
             << "%draft.runtime.TempNode = type { ptr, ptr }\n"
             << "%draft.runtime.TempState = type { ptr }\n"
-            << "%draft.runtime.PthreadOnce = type { i64, [8 x i8] }\n"
+            << "%draft.runtime.PthreadOnce = type " << pthread_once_type << "\n"
             << "%draft.runtime.Context = type { "
                "%draft.runtime.Allocator, %draft.runtime.Allocator, ptr, "
                "%draft.runtime.Logger, %draft.runtime.RandomGenerator, "
@@ -862,13 +877,10 @@ private:
             << "@__draft.process_args_count = internal global i64 0, align 8\n"
             << "@__draft.process_environment_data = internal global ptr null, align 8\n"
             << "@__draft.process_environment_count = internal global i64 0, align 8\n"
-            // Darwin LP64 pthread_once_t is a signature word plus eight opaque
-            // bytes. PTHREAD_ONCE_INIT's fixed signature is part of the first
-            // AArch64 macOS runtime profile, just like mutex/condition layouts.
             << "@__draft.temp_key_once = internal global "
-               "%draft.runtime.PthreadOnce { i64 816954554, "
-               "[8 x i8] zeroinitializer }, align 8\n"
-            << "@__draft.temp_key = internal global i64 0, align 8\n"
+            << pthread_once_initializer << "\n"
+            << "@__draft.temp_key = internal global " << pthread_key_type
+            << " 0, align " << pthread_key_alignment << "\n"
             << "@__draft.temp_key_ready = internal global i1 false, align 1\n"
             << "@__draft.root_context = internal global %draft.runtime.Context "
                "{ %draft.runtime.Allocator { ptr @__draft.default_allocator, "
@@ -902,8 +914,9 @@ private:
             << "declare i32 @posix_memalign(ptr, i64, i64)\n"
             << "declare i32 @pthread_once(ptr, ptr)\n"
             << "declare i32 @pthread_key_create(ptr, ptr)\n"
-            << "declare ptr @pthread_getspecific(i64)\n"
-            << "declare i32 @pthread_setspecific(i64, ptr)\n"
+            << "declare ptr @pthread_getspecific(" << pthread_key_type << ")\n"
+            << "declare i32 @pthread_setspecific(" << pthread_key_type
+            << ", ptr)\n"
             << "declare void @arc4random_buf(ptr, i64)\n"
             << "declare i64 @strlen(ptr)\n"
             << "declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)\n"
@@ -958,9 +971,10 @@ private:
                "i32 2, ptr @.draft.runtime.newline, i64 1)\n"
             << "  ret void\n"
             << "}\n\n"
-            // arc4random_buf is supplied by the pinned macOS runtime. It has
-            // no failure result; the Draft provider therefore returns true
-            // after filling the requested byte range, including an empty one.
+            // arc4random_buf is supplied by both selected hosted libc
+            // contracts. It has no failure result; the Draft provider returns
+            // true after filling the requested byte range, including an empty
+            // one.
             << "define internal i1 @__draft.default_random("
                "ptr %context, ptr %user, ptr %output, i64 %count) {\n"
             << "entry:\n"
@@ -1102,8 +1116,10 @@ private:
             << "  %available = and i1 %once.ok, %key.ready\n"
             << "  br i1 %available, label %lookup, label %failed\n"
             << "lookup:\n"
-            << "  %key = load i64, ptr @__draft.temp_key, align 8\n"
-            << "  %existing = call ptr @pthread_getspecific(i64 %key)\n"
+            << "  %key = load " << pthread_key_type
+            << ", ptr @__draft.temp_key, align " << pthread_key_alignment << "\n"
+            << "  %existing = call ptr @pthread_getspecific("
+            << pthread_key_type << " %key)\n"
             << "  %has.existing = icmp ne ptr %existing, null\n"
             << "  br i1 %has.existing, label %ready, label %create\n"
             << "create:\n"
@@ -1112,7 +1128,7 @@ private:
             << "  br i1 %fresh.exists, label %install, label %failed\n"
             << "install:\n"
             << "  %install.status = call i32 @pthread_setspecific("
-               "i64 %key, ptr %fresh)\n"
+            << pthread_key_type << " %key, ptr %fresh)\n"
             << "  %installed = icmp eq i32 %install.status, 0\n"
             << "  br i1 %installed, label %ready, label %release.fresh\n"
             << "release.fresh:\n"
@@ -1216,8 +1232,10 @@ private:
             << "  %available = and i1 %once.ok, %key.ready\n"
             << "  br i1 %available, label %lookup, label %finish\n"
             << "lookup:\n"
-            << "  %key = load i64, ptr @__draft.temp_key, align 8\n"
-            << "  %state = call ptr @pthread_getspecific(i64 %key)\n"
+            << "  %key = load " << pthread_key_type
+            << ", ptr @__draft.temp_key, align " << pthread_key_alignment << "\n"
+            << "  %state = call ptr @pthread_getspecific("
+            << pthread_key_type << " %key)\n"
             << "  call void @__draft.reset_temp_state(ptr %state)\n"
             << "  br label %finish\n"
             << "finish:\n"
@@ -1234,13 +1252,15 @@ private:
             << "  %available = and i1 %once.ok, %key.ready\n"
             << "  br i1 %available, label %lookup, label %finish\n"
             << "lookup:\n"
-            << "  %key = load i64, ptr @__draft.temp_key, align 8\n"
-            << "  %state = call ptr @pthread_getspecific(i64 %key)\n"
+            << "  %key = load " << pthread_key_type
+            << ", ptr @__draft.temp_key, align " << pthread_key_alignment << "\n"
+            << "  %state = call ptr @pthread_getspecific("
+            << pthread_key_type << " %key)\n"
             << "  %state.exists = icmp ne ptr %state, null\n"
             << "  br i1 %state.exists, label %clear, label %finish\n"
             << "clear:\n"
             << "  %clear.status = call i32 @pthread_setspecific("
-               "i64 %key, ptr null)\n"
+            << pthread_key_type << " %key, ptr null)\n"
             << "  %cleared = icmp eq i32 %clear.status, 0\n"
             << "  br i1 %cleared, label %destroy, label %finish\n"
             << "destroy:\n"

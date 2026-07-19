@@ -62,6 +62,14 @@ and explicit reset without hiding a call-boundary reset. The runtime also
 installs a stderr logger and `arc4random_buf` random provider rather than empty
 records.
 
+The LLVM runtime bridge uses the selected libc's physical pthread typedefs.
+Darwin's `pthread_once_t` is a 16-byte signature record initialized with its
+fixed `PTHREAD_ONCE_INIT` value and `pthread_key_t` is 64 bits. Under the
+selected glibc contract, `pthread_once_t` is one zero-initialized 32-bit word
+and `pthread_key_t` is 32 bits. Their declarations, globals, loads, and calls
+all use the matching type and alignment; these target facts never enter
+Draft's source-visible type system.
+
 ## Initial core memory facilities
 
 Status: ordinary Draft library surface over the allocator and target-selected

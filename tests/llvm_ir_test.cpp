@@ -210,7 +210,9 @@ pub increment :: proc(value: i64) -> i64 {
   EXPECT(state, baseline.text == with_agents.text);
 }
 
-void test_scalar_executable_module(TestState &state) {
+void test_scalar_executable_module(
+    TestState &state,
+    const draft::TargetProfile &target) {
   draft::SourceManager sources;
   draft::DiagnosticSink diagnostics;
   draft::LoadedPackage loaded;
@@ -534,7 +536,6 @@ main :: proc() -> int {
 )draft");
   file.syntax.emplace(draft::parse_source_file(sources, file.source, diagnostics));
   loaded.files.push_back(std::move(file));
-  const draft::TargetProfile target = draft::make_aarch64_macos_profile();
   draft::SemanticAnalysisResult semantics = draft::analyze_package_semantics(
       sources, loaded, target.facts, diagnostics);
   draft::BodyCheckResult bodies = draft::check_package_bodies(
@@ -569,7 +570,8 @@ main :: proc() -> int {
   EXPECT(state, module.ok);
   EXPECT(state, !diagnostics.has_errors());
   EXPECT(state, module.text.find(
-      "target triple = \"arm64-apple-macosx14.0.0\"") != std::string::npos);
+      "target triple = \"" + target.llvm_triple + "\"") !=
+      std::string::npos);
   EXPECT(state, module.text.find(
       "define hidden i64 @\"draft.workspace.native.add\"(ptr %context, i64 %arg0, i64 %arg1)") !=
       std::string::npos);
@@ -672,10 +674,26 @@ main :: proc() -> int {
   EXPECT(state, module.text.find(
       "define internal ptr @__draft.ensure_thread_context") !=
       std::string::npos);
-  EXPECT(state, module.text.find(
-      "@__draft.temp_key_once = internal global "
-      "%draft.runtime.PthreadOnce { i64 816954554") !=
-      std::string::npos);
+  if (target.facts.abi == "aapcs64_gnu") {
+    EXPECT(state, module.text.find(
+        "%draft.runtime.PthreadOnce = type { i32 }") != std::string::npos);
+    EXPECT(state, module.text.find(
+        "@__draft.temp_key_once = internal global "
+        "%draft.runtime.PthreadOnce zeroinitializer, align 4") !=
+        std::string::npos);
+    EXPECT(state, module.text.find(
+        "declare ptr @pthread_getspecific(i32)") != std::string::npos);
+    EXPECT(state, module.text.find(
+        "load i32, ptr @__draft.temp_key, align 4") != std::string::npos);
+    EXPECT(state, module.text.find("i64 816954554") == std::string::npos);
+  } else {
+    EXPECT(state, module.text.find(
+        "@__draft.temp_key_once = internal global "
+        "%draft.runtime.PthreadOnce { i64 816954554") !=
+        std::string::npos);
+    EXPECT(state, module.text.find(
+        "declare ptr @pthread_getspecific(i64)") != std::string::npos);
+  }
   EXPECT(state, module.text.find(
       "define internal ptr @__draft.temp_allocator") != std::string::npos);
   EXPECT(state, module.text.find(
@@ -721,7 +739,10 @@ int main() {
   TestState state;
   test_agent_constructs_have_no_runtime_footprint(state);
   test_generated_debug_locations_are_hermetic(state);
-  test_scalar_executable_module(state);
+  test_scalar_executable_module(
+      state, draft::make_aarch64_macos_profile());
+  test_scalar_executable_module(
+      state, draft::make_aarch64_linux_profile());
   if (state.failures != 0) {
     std::cerr << state.failures << " LLVM IR expectation(s) failed\n";
     return EXIT_FAILURE;
