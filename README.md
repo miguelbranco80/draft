@@ -77,6 +77,7 @@ particular:
 - [Bootstrap compiler architecture](docs/implementation/architecture.md)
 - [Elaboration, semantic context, and pins](docs/implementation/elaboration-and-pins.md)
 - [AArch64 macOS target profile](docs/targets/aarch64-macos.md)
+- [AArch64 Linux target and qualification](docs/targets/aarch64-linux.md)
 - [Compiler command reference](docs/operations/command-reference.md)
 - [First-compiler qualification](docs/releases/first-compiler-qualification.md)
 - [Historical first implementation plan](docs/history/first-implementation-plan.md)
@@ -91,7 +92,10 @@ cmake --build build --parallel
 ctest --test-dir build --output-on-failure
 ```
 
-The bootstrap is a direct C++20 implementation targeting AArch64 macOS first.
+The bootstrap is a direct C++20 implementation targeting AArch64 macOS and
+AArch64 GNU/Linux. The compiler host and first release baseline remain macOS;
+the Linux profile is qualified as a locked cross target with native arm64 Linux
+execution.
 It implements the complete ordinary-language pipeline independently of Codex;
 provider-backed synthesis and judgment live behind compiler-owned typed,
 content-addressed boundaries. Detailed capability and evidence claims belong to

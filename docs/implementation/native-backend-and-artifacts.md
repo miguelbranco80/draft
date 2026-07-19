@@ -23,18 +23,22 @@ literals cannot carry the initializer-specific packed type.
 
 ## Native artifact ownership and visibility
 
-Status: first AArch64 macOS artifact contract.
+Status: AArch64 Mach-O and ELF artifact contracts implemented.
 
 The root LLVM module owns runtime support for every final native artifact, but
 only executable compilation adds the hosted C `main`. This lets an exported C
 wrapper use `runtime.default_context` from an object, archive, or dylib without
 requiring a fake Draft entry procedure. Ordinary Draft procedures and globals
-have hidden Mach-O visibility; only explicit C exports retain default visibility.
+have hidden native visibility; only explicit C exports retain default visibility.
 
 Object output performs a relocatable link over all package and package-assembly
 objects. Static output always uses deterministic archive metadata: Apple
 `libtool -static -D` for opted-in host builds and pinned `llvm-ar rcsD` for
-locked builds. Dynamic output fixes an `@rpath/<filename>` install name.
+locked or ELF builds. Mach-O dynamic output fixes an `@rpath/<filename>`
+install name; ELF dynamic output fixes a filename SONAME. ELF executables use
+the selected sysroot's startup objects, loader, glibc, and GCC runtime through
+the pinned Clang driver and lld. Relocatable ELF output disables Clang's PIE
+default before `-r`; final links retain a deterministic SHA-1 GNU build ID.
 Assembly output is a directory
 bundle with one compiler-produced source per package and exact copied external
 assembly inputs, avoiding local-label collisions that concatenation could create.
@@ -42,8 +46,8 @@ Generated C headers cover root-package exports and transitively required C
 records, raw unions, enums, fixed-array fields, and callback types. Layout
 assertions make size, alignment, and field-offset disagreement a C compile error.
 
-An `@repr(C)` enum without an explicit backing follows Apple Clang's default
-enum rule for this target instead of Draft's smallest-fitting rule. Its backing
+An `@repr(C)` enum without an explicit backing follows the selected AArch64 C
+compiler's default enum rule instead of Draft's smallest-fitting rule. Its backing
 is at least 32 bits: a wholly nonnegative member set uses `u32`, a set containing
 a negative member uses `i32`, and either widens with the same signedness to 64
 bits when required. Values that do not fit `u64` or `i64` are rejected. The
@@ -120,3 +124,16 @@ executable expression and statement site identities in both
 and layout-only pins are not required to fabricate machine operations. This is
 a real host-toolchain/dSYM gate, and the selected locked release distribution
 has now repeated it. The gate remains part of release qualification.
+
+## Native ELF debug information
+
+Status: implemented for AArch64 Linux executable and shared-library artifacts.
+
+ELF final links retain package-object DWARF directly in the executable or
+shared library. They therefore do not run `dsymutil` or publish an empty
+platform-shaped companion. The native result leaves its separate debug-symbol
+fields empty, while the primary artifact remains unstripped and carries
+`.debug_info`, `.debug_line`, logical Draft source coordinates, the source
+correlation sidecar, and its deterministic GNU build ID. A future split-debug
+profile must be a separate explicit artifact contract rather than an ambient
+`objcopy` convention.

@@ -46,6 +46,7 @@ specification.
 
 - [Compiler command reference](operations/command-reference.md)
 - [First-compiler qualification](releases/first-compiler-qualification.md)
+- [AArch64 Linux initial qualification](releases/aarch64-linux-qualification.md)
 - [Agent acceptance fixture](releases/agent-acceptance.md)
 - [AArch64 macOS toolchain distribution](releases/aarch64-macos-toolchain.md)
 - [Selected AArch64 distribution decision](releases/selected-aarch64-distribution.md)

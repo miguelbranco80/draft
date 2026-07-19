@@ -7,30 +7,32 @@ This document records the bootstrap security and reproducibility contract for na
 Status: bootstrap build contract; versioned by the resolution and content-tree
 formats.
 
-The first locked compiler-owned artifact seam accepts exactly two external
-inputs: one native toolchain tree named `llvm-aarch64-macos` and one SDK tree
-named `macos-sdk`. The toolchain exposes executable `bin/clang`, `bin/ld`,
-`bin/ld-classic`, `bin/llvm-ar`, and `bin/dsymutil`; Clang is the manifest entry
-point and the linker/helper/archiver/debug-linker locations are fixed by this
-adapter version. Apple ld delegates relocatable object links to its colocated
-classic helper, so both linker programs are required even though Clang invokes
-only `bin/ld` directly.
+The locked compiler-owned artifact seam accepts exactly two external inputs for
+the selected target. AArch64 macOS uses `llvm-aarch64-macos` plus `macos-sdk`
+and requires executable `bin/clang`, `bin/ld`, `bin/ld-classic`,
+`bin/llvm-ar`, and `bin/dsymutil`. AArch64 Linux uses
+`llvm-aarch64-linux` plus `aarch64-linux-sysroot` and requires `bin/clang`,
+`bin/ld.lld`, and `bin/llvm-ar`. Clang is the manifest entry point in both
+profiles; every other entry is fixed by the adapter rather than discovered by
+name. Apple ld's classic helper and dSYM linker have no ELF analogue.
 Both complete trees are hashed as sorted relative path records including file
 kind, permission bits, exact regular-file bytes, and exact internal symlink
 spelling. Physical root paths are excluded. Absolute or escaping symlinks,
 root symlinks, and special files are rejected.
 
-Hashing alone cannot close a toolchain whose executable retains an ambient
-Homebrew or developer-directory dylib path. Before the tree is hashed, a direct
+Hashing alone cannot close a macOS-hosted toolchain whose executable retains an
+ambient Homebrew or developer-directory dylib path. Before the tree is hashed, a direct
 load-command parser requires every tool and recursively loaded dylib to be a
 thin AArch64 Mach-O image. Non-system loads must resolve exactly once through a
 relocatable runpath to a regular file inside the selected root. Dylib IDs and
 runpaths obey the same rule. Only explicit `/usr/lib/...` and
 `/System/Library/...` dependencies may leave the tree.
 
-Locked invocation uses the verified absolute Clang and linker paths, explicit
-`-isysroot`, `--no-default-config`, the target deployment
-floor, and the linker's content-derived Mach-O UUID. Current macOS requires the
+Locked invocation uses the verified absolute Clang and linker paths,
+`--no-default-config`, and an explicit system root. macOS uses `-isysroot`, its
+target deployment floor, and the linker's content-derived Mach-O UUID. Linux
+uses `--sysroot`, an absolute `ld.lld`, deterministic `llvm-ar`, and a
+content-derived GNU build ID. Current macOS requires the
 UUID load command for executable launch; a real integration gate proves two
 complete links to the same explicit output identity are byte-for-byte equal.
 The child environment contains fixed `LANG`, `LC_ALL`, `HOME`, and `TMPDIR`
@@ -44,7 +46,10 @@ The adapter deliberately does not pass Apple's private `--no-xcselect` driver
 option: upstream LLVM 22.1 rejects it. An absolute `-isysroot`, absolute
 `--ld-path`, empty `PATH`, and scrubbed SDK/deployment environment close the
 same discovery paths while remaining compatible with the pinned upstream
-driver.
+driver. The initial Linux tool distribution is a macOS-hosted cross toolchain,
+so the same Mach-O load-command closure protects its Clang, lld, and archiver.
+A Linux-hosted bootstrap remains unqualified until an equivalent ELF
+host-tool dependency-closure check is implemented.
 
 Runtime assets use a separate complete-set mapping from a nonempty logical name
 to one absolute real file or directory root. Resolution records a

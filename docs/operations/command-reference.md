@@ -55,15 +55,16 @@ the package module without invoking external tools. `build/draftc build
 examples/hello` uses the pinned native toolchain; `--allow-host-toolchain` is an
 explicit development-only escape hatch. All commands use the same
 dependency-ordered source, semantic, HIR, and MIR pipeline.
-Successful executable and dynamic-library CLI builds print both the primary
-artifact and its `.dSYM` path; every native build also writes
+Successful macOS executable and dynamic-library CLI builds print both the
+primary artifact and its `.dSYM` path. Linux keeps DWARF in the primary ELF
+artifact and prints no synthetic debug-companion path. Every native build writes
 `draft-source-correlation.json` in the isolated build directory.
 
 
 `draftc build` defaults to an executable. `--kind object`, `--kind
 static-library`, `--kind dynamic-library`, and `--kind assembly` select a
-relocatable object, archive, dylib, or collision-free directory of assembly
-sources. `draftc emit-c-header examples/c-library -o library.h` emits the C API
+relocatable object, archive, target `.dylib`/`.so`, or collision-free directory
+of assembly sources. `draftc emit-c-header examples/c-library -o library.h` emits the C API
 for explicit root-package exports. The `examples/c-library` fixture builds as a
 no-`main` dylib and its checked-in C client exercises aggregate and callback ABI
 compatibility.
@@ -213,7 +214,7 @@ Codex or any other provider. A missing row, stale context, changed compiler, or
 later failing attempt rejects the build. As with test and benchmark evidence,
 the flag is rejected outside `--locked` mode.
 
-The first toolchain layout requires executable `bin/clang`, `bin/ld`,
+The AArch64 macOS toolchain layout requires executable `bin/clang`, `bin/ld`,
 `bin/ld-classic`, `bin/llvm-ar`, and `bin/dsymutil`. Its address profile also
 requires `bin/llvm-symbolizer` and
 `lib/clang/22/lib/darwin/libclang_rt.asan_osx_dynamic.dylib`. Every entry must be a thin
@@ -225,3 +226,12 @@ process starts. [The AArch64 macOS toolchain document](../releases/aarch64-macos
 the selected LLVM 22.1.8 and Apple linker distribution. Runtime-asset roots use
 the same file-kind, permission, byte, and safe-symlink identity and are also
 rechecked before a compiler process starts.
+
+The AArch64 Linux locked layout instead requires `bin/clang`, `bin/ld.lld`,
+and `bin/llvm-ar`, and the system-root row is named
+`aarch64-linux-sysroot`. The initial qualified form is a macOS-hosted cross
+toolchain: its Mach-O tool dependencies are closed inside the pinned tree,
+while every target startup object, loader, libc, and GCC runtime input comes
+from the separately pinned Ubuntu arm64 sysroot. The
+[Linux qualification report](../releases/aarch64-linux-qualification.md)
+records the exact input identities and executed gates.

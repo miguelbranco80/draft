@@ -21,3 +21,20 @@ visited or active state before applying the acyclic-depth bound. Structural
 walks over HIR, MIR, interface types, effects, and constants either follow the
 already bounded syntax/type shape or install a visited/cycle row before
 following children.
+
+## Native host and instrumentation limits
+
+Status: explicit post-AArch64-Linux qualification boundary.
+
+The bootstrap compiler executable and both locked tool distributions are
+currently qualified on an AArch64 macOS host. It can produce and natively
+validate programs for AArch64 macOS and AArch64 GNU/Linux, but running the
+compiler on Linux is not yet a locked configuration. That host port needs an
+ELF dependency-closure verifier for Clang, lld, and llvm-ar before their
+process-loader dependencies can be claimed as content-pinned inputs.
+
+AddressSanitizer is qualified only for the macOS target. Linux and every other
+instrumentation request remain fail-closed until the compiler pass, runtime,
+deployment, clean-process environment, and evidence identity are specified and
+tested together. Linux ELF debug information is embedded in the primary
+artifact; split debug packages are not implemented.
