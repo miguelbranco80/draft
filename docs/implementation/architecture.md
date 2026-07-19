@@ -134,14 +134,18 @@ content-addressed semantic context; a response contains only proposed Draft
 syntax and provider metadata. The compiler owns retries, checking, program
 identity, and commits.
 
-Proposed on-disk shape:
+Persistent on-disk shape:
 
 ```text
 .draft/resolution.json
 .draft/generated/<content-hash>.draft
 .draft/evidence/<content-hash>.json
-.draft/cache/...
 ```
+
+The bootstrap deliberately has no persistent compiler cache. Parsed syntax,
+typed graphs, MIR, native objects, and other derived compiler state live only
+for one command or in explicitly requested output artifacts. The generated
+Draft objects above are committed program source, not cached compiler state.
 
 `draft resolve` stages changes and atomically commits only a coherent validated
 program. `draft build` consumes saved expansions without contacting a provider

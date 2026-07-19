@@ -21,8 +21,9 @@ authored Draft source
 ```
 
 The manifest and referenced generated source are project inputs and are
-normally committed to version control. Native objects, caches, transaction
-staging, and other derived state are not.
+normally committed to version control. Native objects, transaction staging,
+and other derived state are not. Draft will not maintain a persistent compiler
+cache.
 
 ## Decisions retained
 
@@ -30,8 +31,13 @@ staging, and other derived state are not.
   semantic checker and can never manufacture checked HIR, MIR, or machine code.
 - `draftc build` is provider-free and deterministic. It does not contact Codex,
   update generated source, run judgments, or require validation evidence.
-- There is no `--locked` build mode. Provider-free checked builds are the normal
-  behavior, so a second mode and its package-manager terminology add nothing.
+- The former `--locked` native build mode was removed in commit `42e6097`.
+  Provider-free checked builds are the normal behavior; do not reintroduce a
+  second mode or its package-manager terminology.
+- Do not add a persistent AST, HIR, MIR, object, or incremental compiler cache.
+  Reusing data owned by one command's semantic graph is ordinary in-process
+  compiler state, not cross-invocation caching. `.draft/generated` is committed
+  source, not a cache.
 - `docs` remains durable semantic context for synthesis with no runtime effect.
 - `judge` remains an explicit review operation rather than part of ordinary
   compilation.
@@ -93,8 +99,9 @@ staging, and other derived state are not.
 
 - Document that `.draft/resolution.json` and every referenced
   `.draft/generated/*.draft` object are normally committed.
-- Ignore `.draft` transaction staging, caches, native intermediates, and other
-  reproducible build output.
+- Keep `.draft` transaction staging and native intermediates temporary or
+  ignored. Do not create a `.draft/cache` hierarchy or another persistent
+  compiler cache under a different name.
 - Keep validation and judgment evidence separate from the generated-source
   selection. Evidence may be retained for auditing or release qualification,
   but ordinary builds neither require nor update it.
@@ -129,8 +136,9 @@ staging, and other derived state are not.
    existing implementation as a focused behavioral oracle during migration.
 6. Move checking and lowering onto the graph, remove redundant workspace
    passes, and implement `resolve --build` by continuing the same graph.
-7. Re-measure with `--timings`; optimize only demonstrated costs, then add
-   deterministic parallel ready-set execution if it is still valuable.
+7. Re-measure with `--timings`; optimize only demonstrated costs without adding
+   a persistent cache, then add deterministic parallel ready-set execution if
+   it is still valuable.
 
 Keep these steps as small coherent commits. A step that changes public behavior
 must update its owning specification, implementation document, command
@@ -154,3 +162,5 @@ reference, Draft coding skill, and tests in the same slice.
   generated-source selections, diagnostics, and native outputs.
 - A clean checkout containing authored source plus the committed durable
   `.draft` files builds without provider credentials or network access.
+- Repeated commands leave no persistent compiler cache; all cross-invocation
+  semantic state is reconstructible from authored and generated source.

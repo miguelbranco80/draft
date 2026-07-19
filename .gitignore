@@ -5,7 +5,6 @@ cmake-build-*/
 .DS_Store
 
 # Resolution manifests, generated Draft source, and evidence are intentional
-# project inputs. Only disposable elaborator/compiler caches are ignored.
-.draft/cache/
+# project inputs. Only disposable elaborator/compiler intermediates are ignored.
 .draft/build/
 .draft/tmp/
