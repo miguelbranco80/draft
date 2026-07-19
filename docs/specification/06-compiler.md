@@ -156,7 +156,7 @@ the interface and layout are complete.
 8. Commit successful resolution under
    [section 10](03-agent-synthesis.md#section-10). An explicit `draft judge` run
    pins judgment evidence without changing generated source.
-9. Build modes verify required pins and evidence, then lower the resolved program
+9. Build modes verify required pins, then lower the resolved program
    to LLVM and native code without contacting a model or rerunning validation.
 ```
 
