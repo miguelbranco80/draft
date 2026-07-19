@@ -2175,9 +2175,9 @@ CompileWorkspaceResult compile_workspace_with_resolution(
     break;
   }
 
-  // With early interfaces installed, continue their exact declarations, types,
-  // parsed source, and dependency edges into bodies. This used to reload and
-  // rebuild the workspace as a separate body-surface compiler pass.
+  // With early interfaces installed, advance their exact declarations, types,
+  // parsed source, and dependency edges into bodies. The resulting surface
+  // state is the authored judgment/synthesis boundary for body overlays.
   CompileWorkspaceOptions body_options = options;
   body_options.stage = CompileWorkspaceStage::Complete;
   body_options.lower_mir = false;
@@ -2207,10 +2207,9 @@ CompileWorkspaceResult compile_workspace_with_resolution(
       body_surface.ok = false;
       return body_surface;
     }
-    // body_surface already owns the complete declarations, types, HIR, effects,
-    // denials, and dependency graph. Native commands continue that exact state
-    // through MIR and LLVM instead of loading and checking the package a third
-    // time. This is command-local phase continuation, not a persistent cache.
+    // body_surface owns the complete declarations, types, HIR, effects,
+    // denials, and dependency graph. Native commands continue that exact
+    // command-local state through MIR and LLVM; no persistent cache is involved.
     TimingScope identity_timing = options.timings != nullptr
         ? options.timings->scope(
               "resolved-program identity", TimingVisibility::Detail)
