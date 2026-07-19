@@ -567,9 +567,11 @@ void test_resolution_reuse_revalidation_and_failure(TestState &state) {
       resolve_options(workspace, provider);
   first_options.compile.lower_mir = true;
   first_options.compile.emit_llvm = true;
+  const draft::CompileWorkspaceOptions first_build_options =
+      first_options.compile;
   first_options.external_inputs_configured = true;
   first_options.external_inputs.push_back(fake_runtime_asset_pin());
-  const draft::ResolveWorkspaceResult first = draft::resolve_workspace(
+  draft::ResolveWorkspaceResult first = draft::resolve_workspace(
       first_sources,
       workspace.package.string(),
       std::move(first_options),
@@ -585,12 +587,25 @@ void test_resolution_reuse_revalidation_and_failure(TestState &state) {
   if (first.compiled_program.has_value()) {
     EXPECT(state,
         first.compiled_program->progress ==
-            draft::CompileWorkspaceProgress::TargetLowering);
+            draft::CompileWorkspaceProgress::SemanticClosure);
     EXPECT(state,
         first.compiled_program->resolved_program_digest ==
             std::optional<draft::Sha256Digest>(
                 first.manifest.resolved_program_digest));
     EXPECT(state, first.compiled_program->resolution_manifest.has_value());
+
+    // Resolution commits before a build continuation. Advancing the returned
+    // graph here proves the caller can lower the exact committed declarations,
+    // types, and bodies without asking the resolver to rebuild its front end.
+    EXPECT(state,
+        draft::continue_compiled_workspace(
+            first_sources,
+            first_build_options,
+            *first.compiled_program,
+            first_diagnostics));
+    EXPECT(state,
+        first.compiled_program->progress ==
+            draft::CompileWorkspaceProgress::TargetLowering);
     const std::size_t root_index = static_cast<std::size_t>(
         first.compiled_program->graph.root_package.value);
     EXPECT(state, root_index < first.compiled_program->packages.size());

@@ -225,7 +225,9 @@ and tests as applicable.
   semantic/lowering continuation; `draft_driver_timings` checks the public
   phase and graph-work counters.
 - `draft_resolve_build_reuses_final_graph` compares the assembly tree emitted by
-  same-process `resolve --build` with a later offline build byte for byte.
+  same-process `resolve --build` with a later offline build byte for byte, then
+  proves an intentionally failing backend continuation leaves the successful
+  source transaction committed and provider-free checkable.
 - `draft_provider_free_resolved_program_consumers` places a failing `codex`
   sentinel first on `PATH`, target-qualifies a copied committed manifest using
   existing source, and runs `check`, `build`, `test`, and `bench`. It also checks

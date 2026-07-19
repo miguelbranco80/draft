@@ -169,12 +169,14 @@ sites become visible. An unmatched identity fails before commit. The selected
 proposal still crosses the generated-source grammar boundary and ordinary
 semantic checks, and every unselected site follows normal fresh/stale behavior.
 
-The resolver returns the final checked `CompileWorkspaceResult` that immediately
-precedes its source transaction. `resolve --build` requests target lowering on
-that result and hands it directly to the native adapter after commit. Plain
-resolve stops at semantic closure. This graph ownership boundary ensures the
-combined command does not reload the manifest or reconstruct declarations,
-types, HIR, or dependency edges merely to emit the artifact.
+The resolver commits its source transaction and returns the final checked
+`CompileWorkspaceResult` at semantic closure. `resolve --build` then continues
+that same result through target lowering and hands it directly to the native
+adapter. Plain resolve stops after the commit. This ordering makes generated
+source durable even when MIR, LLVM, assembly, linking, or debug-symbol work
+fails, while the graph ownership boundary ensures the combined command does not
+reload the manifest or reconstruct declarations, types, HIR, or dependency
+edges merely to emit the artifact.
 
 Interface discovery and semantic closure are monotonic states of that result,
 not separate workspace compilations. Once declaration/member synthesis is

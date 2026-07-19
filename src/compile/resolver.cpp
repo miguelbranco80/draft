@@ -728,14 +728,12 @@ ResolveWorkspaceResult resolve_workspace(
         empty_manifest,
         options.compile.compiler_content_identity,
         options.compile.configuration);
-    const bool needs_target_continuation =
-        options.compile.validation_kind != ValidationKind::None ||
-        options.compile.lower_mir || options.compile.emit_llvm;
-    if (needs_target_continuation &&
-        !continue_compiled_workspace(
-            sources, options.compile, body_surface, diagnostics)) {
-      return result;
-    }
+    // A handwritten program has no source transaction to publish, but the
+    // resolver still returns the checked semantic graph at the same boundary
+    // as a committed generated program. A caller performing `resolve --build`
+    // advances this result only after resolution has succeeded; keeping target
+    // lowering outside the resolver makes backend failure independent of
+    // generated-source selection in both cases.
     result.compiled_program = std::move(body_surface);
     result.ok = diagnostics.error_count() == initial_errors;
     return result;
@@ -800,15 +798,6 @@ ResolveWorkspaceResult resolve_workspace(
   // path that could be replaced by another process after this point.
   body_surface.resolution_manifest = manifest;
 
-  const bool needs_target_continuation =
-      options.compile.validation_kind != ValidationKind::None ||
-      options.compile.lower_mir || options.compile.emit_llvm;
-  if (needs_target_continuation &&
-      !continue_compiled_workspace(
-          sources, options.compile, body_surface, diagnostics)) {
-    return result;
-  }
-
   // This is the final cancellation boundary. Once commit_resolution starts it
   // performs one crash-safe object-before-manifest transaction and must not be
   // interrupted by a cooperative flag halfway through its atomic publication.
@@ -821,6 +810,10 @@ ResolveWorkspaceResult resolve_workspace(
     return result;
   }
   result.manifest = std::move(manifest);
+  // Target lowering deliberately remains a caller-owned continuation after
+  // this commit. A MIR, LLVM, assembler, linker, or debug-symbol failure must
+  // not discard generated Draft source that already passed the complete
+  // grammar, semantic, denial, and resolved-program checks above.
   result.compiled_program = std::move(body_surface);
   result.committed = true;
   result.ok = diagnostics.error_count() == initial_errors;

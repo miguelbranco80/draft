@@ -879,9 +879,10 @@ enum class AgentCommandKind {
   Judge,
 };
 
-// Optional native continuation requested by `resolve --build`. The resolver
-// receives matching lowering flags and returns the final graph; this record
-// carries only process-facing artifact choices for the later native adapter.
+// Optional native continuation requested by `resolve --build`. Resolution
+// first commits checked source and returns its semantic graph. This record owns
+// the process-facing artifact choice used to continue that exact graph through
+// MIR/LLVM and the native adapter only after the transaction succeeds.
 struct ResolveBuildRequest {
   std::optional<std::string> output;
   draft::NativeArtifactKind artifact_kind =
@@ -931,10 +932,12 @@ int run_agent_command(
   configure_core_distribution(options.workspace);
   options.timings = timings;
   if (command == AgentCommandKind::Resolve) {
+    std::optional<draft::CompileWorkspaceOptions> build_options;
     if (resolve_build.has_value()) {
-      options.lower_mir = true;
-      options.emit_llvm = true;
-      options.emit_program_entry =
+      build_options = options;
+      build_options->lower_mir = true;
+      build_options->emit_llvm = true;
+      build_options->emit_program_entry =
           resolve_build->artifact_kind ==
           draft::NativeArtifactKind::Executable;
     }
@@ -1008,7 +1011,7 @@ int run_agent_command(
     draft::TimingScope resolve_timing = timings != nullptr
         ? timings->scope("resolution provider workflow")
         : draft::TimingScope{};
-    const draft::ResolveWorkspaceResult resolved = draft::resolve_workspace(
+    draft::ResolveWorkspaceResult resolved = draft::resolve_workspace(
         sources,
         absolute_directory.string(),
         std::move(resolve_options),
@@ -1036,16 +1039,27 @@ int run_agent_command(
               "resolution completed without returning its checked graph");
           native_ok = false;
         } else {
-          native_ok = emit_native_package(
-              absolute_directory,
-              target,
-              resolve_build->output,
-              resolve_build->artifact_kind,
-              foreign_providers,
-              runtime_assets,
-              timings,
+          // Resolution has already published the generated-source transaction.
+          // Backend failure below therefore affects only the requested
+          // artifact. The mutable result retains all declaration, type, and HIR
+          // state needed by target lowering; no manifest or source is reloaded.
+          native_ok = draft::continue_compiled_workspace(
+              sources,
+              *build_options,
               *resolved.compiled_program,
               diagnostics);
+          if (native_ok) {
+            native_ok = emit_native_package(
+                absolute_directory,
+                target,
+                resolve_build->output,
+                resolve_build->artifact_kind,
+                foreign_providers,
+                runtime_assets,
+                timings,
+                *resolved.compiled_program,
+                diagnostics);
+          }
         }
       }
     }

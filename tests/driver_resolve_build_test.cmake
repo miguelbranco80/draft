@@ -1,11 +1,13 @@
-# Native equivalence contract for `resolve --build` graph continuation.
+# Transaction and native-equivalence contract for `resolve --build`.
 #
 # Resolution is source-changing even when it revalidates identical pins, so the
 # checked-in acceptance fixture is first copied into the build tree. The first
 # command revalidates and continues its returned semantic graph into assembly;
 # the second performs a later provider-free build of the committed source. Both
 # requested output trees must contain byte-identical files. TEST_ROOT owns all
-# mutations and is removed on success.
+# mutations and is removed on success. A final invalid-assembly case proves the
+# source transaction remains committed when the post-commit backend continuation
+# fails.
 
 if(NOT DEFINED DRAFTC OR NOT DEFINED SOURCE_WORKSPACE OR
    NOT DEFINED TEST_ROOT OR NOT DEFINED TARGET_SELECTOR)
@@ -68,5 +70,58 @@ foreach(relative IN LISTS resolve_files)
     endif()
   endif()
 endforeach()
+
+# Backend failure occurs after resolution has accepted and committed ordinary
+# source. Add an assembly contract that survives semantic closure but fails the
+# AArch64 assembly validator because x1 is neither an output nor a clobber. The
+# revalidated manifest must change despite the command's nonzero build result,
+# and a later provider-free check must consume that committed source normally.
+set(manifest "${TEST_ROOT}/${workspace_name}/.draft/resolution.json")
+file(SHA256 "${manifest}" manifest_before_backend_failure)
+file(WRITE "${package}/invalid_assembly.draft"
+  "package app\n\n"
+  "invalid_register_contract :: proc(value: u64) -> u64 {\n"
+  "    return asm aarch64 -> u64 {\n"
+  "        in x0 = value\n"
+  "        out x0\n"
+  "        add x1, x0, #1\n"
+  "    }\n"
+  "}\n")
+
+execute_process(
+  COMMAND "${DRAFTC}" resolve "${package}" --revalidate --build
+    --target "${TARGET_SELECTOR}" --kind assembly
+    -o "${TEST_ROOT}/invalid-assembly-output"
+  RESULT_VARIABLE failed_build_status
+  OUTPUT_VARIABLE failed_build_stdout
+  ERROR_VARIABLE failed_build_stderr
+)
+if(failed_build_status EQUAL 0)
+  message(FATAL_ERROR "invalid assembly unexpectedly produced an artifact")
+endif()
+if(NOT failed_build_stderr MATCHES
+   "must be declared as an output or clobber")
+  message(FATAL_ERROR
+    "resolve --build failed for the wrong reason\n"
+    "stdout:\n${failed_build_stdout}\nstderr:\n${failed_build_stderr}")
+endif()
+file(SHA256 "${manifest}" manifest_after_backend_failure)
+if(manifest_before_backend_failure STREQUAL manifest_after_backend_failure)
+  message(FATAL_ERROR
+    "backend failure discarded the successful source transaction")
+endif()
+
+execute_process(
+  COMMAND "${DRAFTC}" check "${package}" --target "${TARGET_SELECTOR}"
+  RESULT_VARIABLE committed_check_status
+  OUTPUT_VARIABLE committed_check_stdout
+  ERROR_VARIABLE committed_check_stderr
+)
+if(NOT committed_check_status EQUAL 0 OR
+   NOT committed_check_stdout MATCHES "checked package graph rooted at app")
+  message(FATAL_ERROR
+    "provider-free check could not consume the committed failed-build source\n"
+    "stdout:\n${committed_check_stdout}\nstderr:\n${committed_check_stderr}")
+endif()
 
 file(REMOVE_RECURSE "${TEST_ROOT}")

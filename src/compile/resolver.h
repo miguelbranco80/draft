@@ -37,9 +37,11 @@ namespace draft {
 // responsible for interrupting their own child work.
 using ResolutionCancellationRequested = bool (*)(void *state);
 
-// Options own the provider adapter values but borrow provider.state. Caller
-// lowering flags do not control resolution; the resolver performs complete
-// semantic candidate checks before committing source.
+// Options own the provider adapter values but borrow provider.state. MIR and
+// LLVM flags do not control resolution: the resolver stops at semantic closure
+// and commits complete checked source before a caller may continue the returned
+// graph into a backend. This separation keeps backend failure from changing
+// generated-source selection.
 struct ResolveWorkspaceOptions {
   CompileWorkspaceOptions compile;
   SynthesisProvider provider;
@@ -80,20 +82,21 @@ struct ResolveWorkspaceResult {
   std::size_t synthesized_sites = 0;
   std::size_t regenerated_sites = 0;
   ResolutionManifest manifest;
-  // The final coherent program graph checked immediately before commit. When
-  // the caller requested MIR/LLVM, those products continue this same graph and
-  // are available here for `resolve --build`; the driver must not invoke the
-  // front end again. A no-site handwritten resolution also returns its checked
-  // graph even though committed remains false.
+  // The final coherent program graph checked immediately before commit. It is
+  // returned at SemanticClosure so `resolve --build` can continue this exact
+  // graph through MIR/LLVM after the source transaction succeeds; the driver
+  // must not invoke the front end again. A no-site handwritten resolution also
+  // returns its checked graph even though committed remains false.
   std::optional<CompileWorkspaceResult> compiled_program;
 };
 
-// Resolves one selected package graph without printing or invoking the native
-// toolchain. CompileWorkspaceOptions may request MIR/LLVM continuation for a
-// later same-command native build. The SourceManager owns both surface and
+// Resolves one selected package graph without target lowering, printing, or
+// invoking the native toolchain. The SourceManager owns both surface and
 // resolved source for diagnostic rendering and for compiled_program until the
 // result is consumed. On every failure before the final store commit,
-// .draft/resolution.json remains unchanged.
+// .draft/resolution.json remains unchanged. After success, a caller may pass
+// compiled_program to continue_compiled_workspace without reconstructing the
+// front end.
 [[nodiscard]] ResolveWorkspaceResult resolve_workspace(
     SourceManager &sources,
     const std::string &root_package_directory,
