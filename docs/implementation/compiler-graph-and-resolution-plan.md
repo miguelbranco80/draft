@@ -60,10 +60,11 @@ cache.
   dependency. It is built once with each source-selection graph and retained
   through source transitions, semantic closure, and lowering. A sequential Kahn
   traversal uses a PackageId-ordered min-heap, so dependency scheduling is
-  deterministic and O((packages + imports) log packages). Source invalidation
-  walks the reverse adjacency rows in O(packages + imports). Parallel execution
-  remains a possible measured optimization, not part of the architecture
-  contract or a source of different results.
+  deterministic. Building its sorted identity and reverse-adjacency views costs
+  O((packages + imports) log(packages + imports)); source invalidation walks the
+  completed reverse rows in O(packages + imports). Parallel execution remains a
+  possible measured optimization, not part of the architecture contract or a
+  source of different results.
 - The graph reuses loaded files, tokens, syntax, declarations, interned types,
   checked expansions, and dependency facts instead of reloading the workspace
   for each conceptual phase.

@@ -54,6 +54,7 @@ void test_source_update_reuses_unaffected_semantics(TestState &state) {
   std::filesystem::remove_all(root, error);
   error.clear();
   std::filesystem::create_directories(root / "app", error);
+  std::filesystem::create_directories(root / "middle", error);
   std::filesystem::create_directories(root / "changed", error);
   std::filesystem::create_directories(root / "stable", error);
   EXPECT(state, !error);
@@ -61,17 +62,23 @@ void test_source_update_reuses_unaffected_semantics(TestState &state) {
 
   std::ofstream app(root / "app" / "package.draft", std::ios::binary);
   app << "package app\n"
-         "import changed\n"
+         "import middle\n"
          "import stable\n"
          "main :: proc() {}\n";
   app.close();
+  std::ofstream middle(root / "middle" / "package.draft", std::ios::binary);
+  middle << "package middle\n"
+            "import changed\n"
+            "pub Value :: changed.Value\n";
+  middle.close();
   std::ofstream changed(root / "changed" / "package.draft", std::ios::binary);
   changed << "package changed\npub Value :: 1\n";
   changed.close();
   std::ofstream stable(root / "stable" / "package.draft", std::ios::binary);
   stable << "package stable\npub Value :: 10\n";
   stable.close();
-  EXPECT(state, app.good() && changed.good() && stable.good());
+  EXPECT(state,
+      app.good() && middle.good() && changed.good() && stable.good());
 
   draft::TimingRecorder timings(draft::TimingOutput::Summary);
   draft::SourceManager sources;
@@ -84,7 +91,7 @@ void test_source_update_reuses_unaffected_semantics(TestState &state) {
   draft::CompileWorkspaceResult compiled = draft::compile_workspace(
       sources, (root / "app").string(), options, diagnostics);
   EXPECT(state, compiled.ok);
-  EXPECT(state, compiled.graph.packages.size() == 3);
+  EXPECT(state, compiled.graph.packages.size() == 4);
 
   draft::WorkspaceSourceOverride source_override;
   source_override.identity = {"workspace", "changed"};
@@ -104,13 +111,13 @@ void test_source_update_reuses_unaffected_semantics(TestState &state) {
   EXPECT(state,
       compiled.progress == draft::CompileWorkspaceProgress::InterfaceDiscovery);
 
-  // Initial analysis visits app, changed, and stable. Replacing changed then
-  // revisits changed and its importing app, but not the independent stable
-  // dependency. The same recorder also proves that the workspace was loaded
-  // once and transitioned in memory once.
+  // Initial analysis visits all four packages. Replacing changed then revisits
+  // changed, its direct middle consumer, and the transitive app consumer, but
+  // not the independent stable dependency. The same recorder also proves that
+  // the workspace was loaded once and transitioned in memory once.
   const std::string report = timings.render();
   EXPECT(state,
-      report.find("package semantic analyses: 5") != std::string::npos);
+      report.find("package semantic analyses: 7") != std::string::npos);
   EXPECT(state, report.find("workspace loads: 1") != std::string::npos);
   EXPECT(state,
       report.find("workspace source transitions: 1") != std::string::npos);

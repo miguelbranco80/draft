@@ -100,8 +100,8 @@ transitive consumers rebuild declaration semantics, and unrelated dependency
 rows remain authoritative. One command-local adjacency index is built with the
 graph, retained across every continuation, and supports import lookup, reverse
 source invalidation, and a PackageId-ordered Kahn min-heap; ordering costs
-O((packages + imports) log packages) and invalidation costs O(packages +
-imports), without a persistent cache. The `compiler passes`,
+O((packages + imports) log(packages + imports)) and invalidation costs
+O(packages + imports), without a persistent cache. The `compiler passes`,
 `workspace loads`, and `workspace source transitions` counters make those
 distinct operations visible. `--timings=all` adds package/tool scopes, file
 discovery and I/O, lexing/parsing, import-graph resolution, and exclusive time;

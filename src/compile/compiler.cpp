@@ -76,12 +76,14 @@ void configure_package_selection(CompileWorkspaceOptions &options) {
   options.workspace.package_options.timings = options.timings;
 }
 
-// Builds every package-topology view in one linear edge pass, followed by a
-// deterministic Kahn traversal. A min-heap keeps the smallest ready PackageId
-// visible without shifting a vector on every pop. The complete operation is
-// O((packages + imports) log packages); later interface lookups and source
-// invalidation use the adjacency rows rather than rescanning all imports for
-// every package.
+// Builds every package-topology view in one linear edge pass, canonicalizes the
+// identity and reverse-adjacency rows, then performs a deterministic Kahn
+// traversal. A min-heap keeps the smallest ready PackageId visible without
+// shifting a vector on every pop. Because duplicate syntax imports remain in
+// the reverse rows until their comparison sorts complete, the conservative
+// bound is O((packages + imports) log(packages + imports)); later interface
+// lookups and source invalidation use the finished adjacency rows rather than
+// rescanning all imports for every package.
 [[nodiscard]] WorkspaceDependencyIndex build_dependency_index(
     const WorkspaceGraph &graph) {
   WorkspaceDependencyIndex result;
