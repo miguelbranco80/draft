@@ -70,7 +70,7 @@ work rather than missing backend features.
 | Example | What it covers |
 | --- | --- |
 | [`agent-acceptance`](agent-acceptance/) | End-to-end declaration, member, expression, and statement synthesis; `judge`; committed content-addressed expansions; tests and benchmarks that consume generated declarations; evidence; generated-source correlation; and provider-free rebuilding. See the [acceptance guide](../docs/releases/agent-acceptance.md). |
-| [`agent-pending`](agent-pending/) | An intentionally unresolved synthesis and judgment package used to demonstrate `resolve` and `judge` command behavior. It is not an ordinary provider-free build. |
+| [`agent-pending`](agent-pending/) | The smallest intentionally unresolved synthesis and judgment workspace, with a self-contained [live-run guide](agent-pending/README.md). It demonstrates the first Codex-backed `resolve`, generated-source inspection, and the subsequent provider-free build. |
 | [`validation`](validation/) | Discovery and execution of `*_test.draft` and `*_bench.draft` procedures through `core/testing` and `core/benchmark`. |
 
 ## Feature map

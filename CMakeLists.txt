@@ -657,7 +657,7 @@ if(BUILD_TESTING)
     COMMAND "${CMAKE_COMMAND}" -E env
       "PATH=${CMAKE_CURRENT_BINARY_DIR}/no-codex-path"
       $<TARGET_FILE:draftc> resolve
-      "${CMAKE_CURRENT_SOURCE_DIR}/examples/agent-pending" --assertions=off
+      "${CMAKE_CURRENT_SOURCE_DIR}/examples/agent-pending/app" --assertions=off
   )
   set_tests_properties(
     draft_resolve_reports_unavailable_codex
@@ -669,7 +669,7 @@ if(BUILD_TESTING)
     COMMAND "${CMAKE_COMMAND}" -E env
       "PATH=${CMAKE_CURRENT_BINARY_DIR}/no-codex-path"
       $<TARGET_FILE:draftc> judge
-      "${CMAKE_CURRENT_SOURCE_DIR}/examples/agent-pending" --assertions=off
+      "${CMAKE_CURRENT_SOURCE_DIR}/examples/agent-pending/app" --assertions=off
   )
   set_tests_properties(
     draft_judge_reports_unavailable_codex

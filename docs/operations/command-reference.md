@@ -6,6 +6,11 @@ use the default `build/draftc` CMake output.
 All package commands accept `--target aarch64-macos|aarch64-linux` where shown.
 macOS remains the compatibility default. Package paths are canonicalized before
 the workspace and resolution-store boundaries are established.
+The current CLI treats the canonical parent of the requested package directory
+as the workspace root. Resolution manifests and generated source therefore live
+in `<package-parent>/.draft/`; place a root package in a child such as `app/`
+when the surrounding directory is meant to be the project workspace. Native
+scratch output remains derived under the selected package's `.draft/build/`.
 
 All package commands also accept `--timings` or `--timings=all`. Put the option
 anywhere after the package directory, alongside the command's other options;

@@ -7,9 +7,10 @@ import lib
 // grammar boundary rather than asking the provider to design an API.
 ... "Declare a package constant named generated_offset with type i64 and value 2. Output only the declaration."
 
-// Member synthesis runs only after prior package-declaration obligations are
-// complete. Consuming the generated field in both the executable and the test
-// proves that the opaque member round rebuilt the public aggregate interface.
+// This member site is independent of generated_offset, so both requests may
+// share one opaque interface ready wave. Consuming the generated field in both
+// the executable and the test proves that the completed interface was rebuilt
+// before dependent bodies were checked.
 pub Generated_Record :: struct {
     ... "Declare one struct member named value with type i64. Output only the member declaration."
 }

@@ -1,0 +1,13 @@
+// This intentionally unresolved package is the smallest live synthesis and
+// judgment example. Its only generated value is checked by ordinary Draft
+// typing and by a runtime assertion; it owns no resources and depends only on
+// predeclared language operations. See specification sections 8-10.
+package app
+
+main :: proc() -> int {
+    answer: i64 = ... "Produce exactly the i64 expression 42. Output only the expression."
+    assert(answer == 42)
+
+    judge "The checked generated expression assigned to answer equals 42."
+    return 0
+}

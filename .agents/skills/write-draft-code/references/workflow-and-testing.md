@@ -49,6 +49,13 @@ One directory is one package, compilation unit, namespace, visibility boundary,
 and synthesis-context boundary. Every selected `.draft` file declares the same
 short package name.
 
+The current CLI uses the canonical parent of the requested root package as the
+workspace root. Put an application package in a child such as `project/app/`
+when resolution state should belong to `project/.draft/`; passing
+`project/app/` then keeps the manifest and generated source inside that project.
+This distinction is invisible for handwritten packages until a command needs
+persistent resolution inputs.
+
 Recognized direct children are:
 
 ```text

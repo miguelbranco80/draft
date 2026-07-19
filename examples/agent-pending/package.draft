@@ -1,6 +1,0 @@
-package agent_pending
-
-main :: proc() {
-    judge "The generated statement preserves the package invariant."
-    ... "Generate the required statement."
-}
