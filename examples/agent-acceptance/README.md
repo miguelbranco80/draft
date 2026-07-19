@@ -13,7 +13,7 @@ together than as isolated mocks:
 - generated-source correlation in the native debug sidecar.
 
 The committed `.draft` files are content-addressed acceptance inputs, not build
-caches. They contain the three checked generated Draft fragments, the v125
+caches. They contain the three checked generated Draft fragments, the v126
 resolution manifest, and its selected test and judgment evidence. `.draft/build`
 remains ignored and may be deleted at any time.
 
@@ -57,7 +57,7 @@ build/draftc build examples/agent-acceptance/app --locked \
 ```
 
 The checked snapshot was qualified on AArch64 macOS with the Codex executable
-bundled in the ChatGPT application, model `gpt-5.6-sol`, an assembled LLVM/LLD
-22.1.8 root, and the macOS 26.5 command-line-tools SDK. That assembled root is a
-qualification input, not yet the project's final self-contained release
-distribution.
+bundled in the ChatGPT application, model `gpt-5.6-sol`, the selected
+self-contained LLVM 22.1.8 plus Apple ld/ld-classic toolchain, and the minimal
+content-pinned `libSystem.tbd` SDK. The toolchain and SDK layouts and identities
+are recorded in the repository's `TOOLCHAIN_DISTRIBUTION.md`.
