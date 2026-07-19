@@ -27,6 +27,7 @@ from another standard library is not evidence that Draft provides it.
 - [`core/testing`](#coretesting)
 - [`core/thread`](#corethread)
 - [`core/time`](#coretime)
+- [`core/utf8`](#coreutf8)
 - [Missing facilities](#missing-facilities)
 
 ## How to use core
@@ -498,6 +499,38 @@ This is monotonic duration measurement, not wall-clock/calendar time. There is
 no wall clock, date, timer, timeout, deadline, conversion, formatting, or
 checked-overflow layer. Sleeping is in `core/thread`.
 
+## `core/utf8`
+
+Allocation-free strict UTF-8 operations:
+
+```draft
+utf8.Decode_Error // .none, .end_of_input, .invalid_encoding
+utf8.replacement_rune
+
+utf8.decode_next(text: string, offset) -> (rune, usize, Decode_Error)
+utf8.decode_next_bytes(bytes: []u8, offset) -> (rune, usize, Decode_Error)
+utf8.decode_previous(text: string, offset) -> (rune, usize, Decode_Error)
+utf8.decode_previous_bytes(bytes: []u8, offset) -> (rune, usize, Decode_Error)
+utf8.valid(text) -> bool
+utf8.valid_bytes(bytes) -> bool
+utf8.rune_count(text) -> (usize, bool)
+utf8.rune_count_bytes(bytes) -> (usize, bool)
+utf8.rune_size(value) -> usize
+utf8.encode(destination, value) -> (usize, bool)
+```
+
+Offsets and widths are byte counts. Forward offsets and reverse exclusive
+boundaries must be within the input. A clean end returns `replacement_rune`,
+zero, and `.end_of_input`. Malformed input returns `replacement_rune`, one, and
+`.invalid_encoding`, so a caller that chooses replacement can always progress.
+Validation and counting stop at the first malformed byte; the count excludes
+that byte. `encode` writes only when the complete canonical sequence fits and
+otherwise leaves the destination unchanged.
+
+The package borrows all storage and performs no allocation or mutation of
+input. It does not provide iteration syntax, normalization, Unicode properties,
+grapheme segmentation, case mapping, locale handling, or display width.
+
 ## Missing facilities
 
 The current core does not yet supply several facilities a larger application
@@ -506,7 +539,7 @@ may need:
 - path manipulation, directories, metadata, random-access files, or rename;
 - terminal modes, cursor control, key decoding, or window-size queries;
 - sockets, subprocesses, signals, dynamic libraries, or event loops;
-- Unicode decoding/normalization/grapheme algorithms;
+- Unicode normalization, properties, case mapping, and grapheme algorithms;
 - general formatting/parsing and string builders;
 - ownership-aware algorithms, iterators, smart pointers, or automatic cleanup;
 - broad math, compression, crypto, image, or GUI packages.

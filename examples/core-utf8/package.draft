@@ -1,0 +1,39 @@
+// This executable demonstrates explicit UTF-8 interpretation over Draft's
+// immutable byte strings. It validates and counts one mixed-width string,
+// walks its scalars with a byte offset, and encodes one rune into caller-owned
+// stack storage. The example owns no allocation or external resource and uses
+// core/console only for its final checked status line.
+//
+// Draft specification: sections 4, 5, and 7.
+package core_utf8
+
+import core/console
+import core/utf8
+
+Text :: "Draft: λ 😀"
+
+// main keeps byte traversal visible: UTF-8 decoding returns a scalar plus the
+// exact source width, so advancing cannot accidentally assume fixed-width
+// characters. Every error is checked even though Text is a source literal.
+main :: proc() {
+    assert(utf8.valid(Text))
+    (count, counted) := utf8.rune_count(Text)
+    assert(counted && count == 10)
+
+    decoded: usize
+    offset: usize
+    for offset < len(Text) {
+        (_, width, error) := utf8.decode_next(Text, offset)
+        assert(error == .none)
+        decoded += 1
+        offset += width
+    }
+    assert(decoded == count && offset == len(Text))
+
+    encoded: [4]u8
+    (width, encoded_ok) := utf8.encode(encoded[:], 'λ')
+    assert(encoded_ok && width == 2)
+    assert(encoded[0] == 0xce && encoded[1] == 0xbb)
+
+    assert(console.println("explicit UTF-8 decoding: ok") == .none)
+}

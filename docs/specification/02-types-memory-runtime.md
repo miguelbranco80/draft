@@ -770,6 +770,7 @@ The initial core set includes:
 | `core/map` | `map.Map[K, V]` and explicit hash-map operations. |
 | `core/format` | Allocation-free conversion of values into caller-owned byte buffers. |
 | `core/console` | Checked human-facing text and scalar output over standard process handles. |
+| `core/utf8` | Allocation-free strict UTF-8 validation, decoding, encoding, and scalar counting. |
 | `core/io` | Stream and input/output interfaces and utilities. |
 | `core/os` | Process, argument, environment, file, and operating-system facilities. |
 | `core/atomic` | Compiler-backed atomic values and memory-order operations. |
@@ -788,6 +789,14 @@ provides base-ten `u64` and `i64` conversion into caller-owned byte slices.
 Console operations write immutable text, booleans, and those integers to the
 standard process handles and return `core/io.Error`. More formatting policy can
 grow in these packages without changing the language or backend.
+
+`core/utf8` explicitly interprets a `string` or `[]u8` as UTF-8 without changing
+the built-in types: strings remain arbitrary immutable bytes, indexing still
+returns one byte, and `rune` remains one Unicode scalar. The package validates,
+decodes in either direction, counts scalars, and encodes into caller-owned
+storage. Decoding uses strict shortest-form UTF-8 and reports malformed input;
+normalization, grapheme segmentation, display width, and locale policy are
+separate future library concerns.
 
 `core/time` defines `Duration` as a distinct signed integer type and constants
 such as `time.nanosecond: Duration`; the distinct-operator rules make

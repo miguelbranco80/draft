@@ -1,0 +1,338 @@
+// The utf8 package provides allocation-free conversion between Draft's byte
+// strings/slices and Unicode scalar values. It belongs to the ordinary core
+// library: the language keeps string as an immutable arbitrary-byte view and
+// rune as one valid Unicode scalar, while this package defines the optional
+// interpretation of bytes as UTF-8.
+//
+// All procedures borrow caller storage and retain nothing. Decoding is strict:
+// overlong encodings, surrogate encodings, out-of-range scalars, stray
+// continuation bytes, invalid continuations, and truncated sequences report
+// invalid_encoding. An invalid decode consumes one byte and returns U+FFFD so
+// a caller can report the error or continue without risking a stalled loop.
+// Encoding never allocates and writes only after proving the destination has
+// enough space for the complete scalar.
+//
+// This package intentionally does not implement normalization, Unicode
+// properties, grapheme segmentation, display width, locale policy, or an
+// owning text type. Draft specification: sections 4 (UTF-8 source and rune
+// literals), 5 (string, slices, and rune), and 7 (ordinary core packages).
+package utf8
+
+// replacement_rune is the Unicode replacement character returned alongside an
+// invalid_encoding result. It is a valid scalar and therefore needs no sentinel
+// exception in ordinary Draft rune operations.
+pub replacement_rune :: '\u{fffd}'
+
+// Decode_Error describes whether one directional decode produced a scalar.
+// none means value and width are valid. end_of_input means the requested offset
+// was the empty boundary and width is zero. invalid_encoding means value is
+// replacement_rune and width is one, even for a truncated multi-byte prefix;
+// that fixed recovery width guarantees progress through arbitrary bytes.
+pub Decode_Error :: enum u8 {
+    none,
+    end_of_input,
+    invalid_encoding,
+}
+
+// is_continuation recognizes the closed 10xxxxxx byte class used after a UTF-8
+// leading byte. It does not establish that the surrounding sequence is valid.
+is_continuation :: proc(byte: u8) -> bool {
+    return byte >= 0x80 && byte <= 0xbf
+}
+
+// decode_prefix applies the complete shortest-form UTF-8 validity table to at
+// most four bytes copied by a public wrapper. available is in 0..4; bytes after
+// it are zero-filled fixed-array tail and must never affect the result. The
+// first continuation range carries the special E0/ED/F0/F4 restrictions that
+// exclude overlong encodings, UTF-16 surrogates, and values above U+10FFFF.
+decode_prefix :: proc(
+    prefix: [4]u8,
+    available: usize,
+) -> (rune, usize, Decode_Error) {
+    assert(available <= len(prefix), "UTF-8 prefix length exceeds storage")
+    if available == 0 {
+        return (replacement_rune, 0, .end_of_input)
+    }
+
+    first := prefix[0]
+    if first <= 0x7f {
+        return (cast[rune](first), 1, .none)
+    }
+
+    width: usize
+    second_minimum: u8
+    second_maximum: u8
+    if first >= 0xc2 && first <= 0xdf {
+        width = 2
+        second_minimum = 0x80
+        second_maximum = 0xbf
+    } else if first == 0xe0 {
+        width = 3
+        second_minimum = 0xa0
+        second_maximum = 0xbf
+    } else if (first >= 0xe1 && first <= 0xec) ||
+        (first >= 0xee && first <= 0xef) {
+        width = 3
+        second_minimum = 0x80
+        second_maximum = 0xbf
+    } else if first == 0xed {
+        width = 3
+        second_minimum = 0x80
+        second_maximum = 0x9f
+    } else if first == 0xf0 {
+        width = 4
+        second_minimum = 0x90
+        second_maximum = 0xbf
+    } else if first >= 0xf1 && first <= 0xf3 {
+        width = 4
+        second_minimum = 0x80
+        second_maximum = 0xbf
+    } else if first == 0xf4 {
+        width = 4
+        second_minimum = 0x80
+        second_maximum = 0x8f
+    } else {
+        return (replacement_rune, 1, .invalid_encoding)
+    }
+
+    if available < width {
+        return (replacement_rune, 1, .invalid_encoding)
+    }
+    second := prefix[1]
+    if second < second_minimum || second > second_maximum {
+        return (replacement_rune, 1, .invalid_encoding)
+    }
+    for index: usize = 2; index < width; index += 1 {
+        if !is_continuation(prefix[index]) {
+            return (replacement_rune, 1, .invalid_encoding)
+        }
+    }
+
+    codepoint: u32
+    if width == 2 {
+        codepoint =
+            (cast[u32](first & 0x1f) << 6) |
+            cast[u32](second & 0x3f)
+    } else if width == 3 {
+        codepoint =
+            (cast[u32](first & 0x0f) << 12) |
+            (cast[u32](second & 0x3f) << 6) |
+            cast[u32](prefix[2] & 0x3f)
+    } else {
+        codepoint =
+            (cast[u32](first & 0x07) << 18) |
+            (cast[u32](second & 0x3f) << 12) |
+            (cast[u32](prefix[2] & 0x3f) << 6) |
+            cast[u32](prefix[3] & 0x3f)
+    }
+    return (cast[rune](codepoint), width, .none)
+}
+
+// decode_next decodes the scalar beginning at byte offset in text. offset may
+// equal len(text), producing end_of_input, but a larger offset violates the
+// caller's indexing contract. The returned width is measured in source bytes.
+// The immutable string is borrowed and may contain arbitrary invalid bytes.
+pub decode_next :: proc(
+    text: string,
+    offset: usize,
+) -> (rune, usize, Decode_Error) {
+    assert(offset <= len(text), "UTF-8 string offset is out of bounds")
+    prefix: [4]u8
+    available := len(text) - offset
+    if available > len(prefix) {
+        available = len(prefix)
+    }
+    for index: usize = 0; index < available; index += 1 {
+        prefix[index] = text[offset + index]
+    }
+    return decode_prefix(prefix, available)
+}
+
+// decode_next_bytes is the mutable-byte-view counterpart to decode_next. It
+// does not mutate input; the separate name is required because Draft 1 has no
+// declaration overloading or implicit string/slice conversion.
+pub decode_next_bytes :: proc(
+    bytes: []u8,
+    offset: usize,
+) -> (rune, usize, Decode_Error) {
+    assert(offset <= len(bytes), "UTF-8 byte offset is out of bounds")
+    prefix: [4]u8
+    available := len(bytes) - offset
+    if available > len(prefix) {
+        available = len(prefix)
+    }
+    for index: usize = 0; index < available; index += 1 {
+        prefix[index] = bytes[offset + index]
+    }
+    return decode_prefix(prefix, available)
+}
+
+// decode_previous decodes the scalar ending immediately before offset. offset
+// is an exclusive byte boundary in 0..len(text); zero produces end_of_input.
+// The procedure examines at most four candidate starts and accepts only a
+// strict forward decode whose end equals offset. If offset lies inside a scalar
+// or follows malformed bytes, recovery consumes the immediately preceding byte.
+pub decode_previous :: proc(
+    text: string,
+    offset: usize,
+) -> (rune, usize, Decode_Error) {
+    assert(offset <= len(text), "UTF-8 string offset is out of bounds")
+    if offset == 0 {
+        return (replacement_rune, 0, .end_of_input)
+    }
+
+    lower: usize
+    if offset > 4 {
+        lower = offset - 4
+    }
+    candidate := offset - 1
+    for {
+        (value, width, error) := decode_next(text, candidate)
+        if error == .none && candidate + width == offset {
+            return (value, width, .none)
+        }
+        if candidate == lower {
+            break
+        }
+        candidate -= 1
+    }
+    return (replacement_rune, 1, .invalid_encoding)
+}
+
+// decode_previous_bytes provides the same exclusive-boundary contract for a
+// mutable byte view. It retains no slice or pointer after returning.
+pub decode_previous_bytes :: proc(
+    bytes: []u8,
+    offset: usize,
+) -> (rune, usize, Decode_Error) {
+    assert(offset <= len(bytes), "UTF-8 byte offset is out of bounds")
+    if offset == 0 {
+        return (replacement_rune, 0, .end_of_input)
+    }
+
+    lower: usize
+    if offset > 4 {
+        lower = offset - 4
+    }
+    candidate := offset - 1
+    for {
+        (value, width, error) := decode_next_bytes(bytes, candidate)
+        if error == .none && candidate + width == offset {
+            return (value, width, .none)
+        }
+        if candidate == lower {
+            break
+        }
+        candidate -= 1
+    }
+    return (replacement_rune, 1, .invalid_encoding)
+}
+
+// valid reports whether every byte in text belongs to one strict UTF-8 scalar
+// sequence. Empty text is valid. Validation stops at the first malformed byte;
+// it performs no normalization and treats embedded NUL as ordinary U+0000.
+pub valid :: proc(text: string) -> bool {
+    offset: usize
+    for offset < len(text) {
+        (_, width, error) := decode_next(text, offset)
+        if error != .none {
+            return false
+        }
+        offset += width
+    }
+    return true
+}
+
+// valid_bytes is the byte-slice counterpart to valid and never modifies the
+// caller's storage.
+pub valid_bytes :: proc(bytes: []u8) -> bool {
+    offset: usize
+    for offset < len(bytes) {
+        (_, width, error) := decode_next_bytes(bytes, offset)
+        if error != .none {
+            return false
+        }
+        offset += width
+    }
+    return true
+}
+
+// rune_count returns the number of decoded Unicode scalars and true when text
+// is entirely valid UTF-8. On failure it returns the count of valid scalars
+// before the first malformed byte and false; replacement recovery is not
+// included because callers must choose that policy explicitly.
+pub rune_count :: proc(text: string) -> (usize, bool) {
+    count: usize
+    offset: usize
+    for offset < len(text) {
+        (_, width, error) := decode_next(text, offset)
+        if error != .none {
+            return (count, false)
+        }
+        count += 1
+        offset += width
+    }
+    return (count, true)
+}
+
+// rune_count_bytes applies rune_count's stop-at-first-error policy to a
+// borrowed mutable byte view.
+pub rune_count_bytes :: proc(bytes: []u8) -> (usize, bool) {
+    count: usize
+    offset: usize
+    for offset < len(bytes) {
+        (_, width, error) := decode_next_bytes(bytes, offset)
+        if error != .none {
+            return (count, false)
+        }
+        count += 1
+        offset += width
+    }
+    return (count, true)
+}
+
+// rune_size returns the canonical UTF-8 width of one Draft rune. The language
+// guarantees that rune contains a Unicode scalar rather than a surrogate or an
+// out-of-range integer, so every input has exactly one width in 1..4.
+pub rune_size :: proc(value: rune) -> usize {
+    codepoint := cast[u32](value)
+    if codepoint <= 0x7f {
+        return 1
+    }
+    if codepoint <= 0x7ff {
+        return 2
+    }
+    if codepoint <= 0xffff {
+        return 3
+    }
+    return 4
+}
+
+// encode writes value's canonical UTF-8 sequence at destination[0:]. It
+// returns the number of initialized bytes and true on success. If destination
+// is too short, it returns zero and false without modifying any byte. The
+// caller retains ownership and may reuse the untouched tail after success.
+pub encode :: proc(destination: []u8, value: rune) -> (usize, bool) {
+    width := rune_size(value)
+    if len(destination) < width {
+        return (0, false)
+    }
+
+    codepoint := cast[u32](value)
+    if width == 1 {
+        destination[0] = cast[u8](codepoint)
+    } else if width == 2 {
+        destination[0] = 0xc0 | cast[u8]((codepoint >> 6) & 0x1f)
+        destination[1] = 0x80 | cast[u8](codepoint & 0x3f)
+    } else if width == 3 {
+        destination[0] = 0xe0 | cast[u8]((codepoint >> 12) & 0x0f)
+        destination[1] = 0x80 | cast[u8]((codepoint >> 6) & 0x3f)
+        destination[2] = 0x80 | cast[u8](codepoint & 0x3f)
+    } else {
+        destination[0] = 0xf0 | cast[u8]((codepoint >> 18) & 0x07)
+        destination[1] = 0x80 | cast[u8]((codepoint >> 12) & 0x3f)
+        destination[2] = 0x80 | cast[u8]((codepoint >> 6) & 0x3f)
+        destination[3] = 0x80 | cast[u8](codepoint & 0x3f)
+    }
+    return (width, true)
+}

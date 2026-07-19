@@ -44,6 +44,7 @@ work rather than missing backend features.
 | [`core-memory`](core-memory/) | Typed allocation, alignment, resizing, temporary allocation, arenas, owned buffers and strings, and virtual memory. |
 | [`core-array`](core-array/) | Owning growable arrays plus small uses of the heap, I/O interface, testing, benchmarking, and duration APIs. |
 | [`core-map`](core-map/) | Explicit string-key map initialization, insertion, replacement, lookup, removal, and destruction. |
+| [`core-utf8`](core-utf8/) | Allocation-free strict UTF-8 validation, forward/reverse scalar decoding, counting, and encoding into caller-owned storage. |
 | [`core-os`](core-os/) | Arguments, environment, process facts, file descriptors, path conversion, and raw byte file I/O. |
 | [`core-thread`](core-thread/) | Thread creation and joining, mutexes, condition variables, per-thread context setup, temporary storage, and language TLS. |
 | [`core-atomic`](core-atomic/) | Atomic integer, pointer, and memory-order operations on one thread. |
@@ -80,6 +81,7 @@ work rather than missing backend features.
 | Compile-time evaluation, target facts, layout, `when`, and parametrics | `language-tour`, `packages`, `packages-generic`, `nested-procedures` |
 | Globals, TLS, context, allocation, collections, atomics, and threads | `core-runtime`, `core-memory`, `core-array`, `core-map`, `core-atomic`, `core-thread`, `runtime-checks` |
 | Console, formatting, files, arguments, environment, and a complete line-oriented application | `console`, `file-io`, `core-os`, `simple-editor` |
+| Explicit UTF-8 validation, scalar traversal, and encoding over byte strings | `core-utf8` |
 | Parsed and external assembly, SIMD, C imports, C exports, and foreign providers | `assembly`, `external-assembly`, `c-interop`, `c-library`, `foreign-provider` |
 | `docs`, `judge`, synthesis, deterministic resolution, and provider-free builds | `language-tour`, `agent-acceptance`, `agent-pending` |
 | Denials, assertions, traps, tests, and benchmarks | `denials`, `runtime-traps`, `validation` |

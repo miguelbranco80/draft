@@ -206,7 +206,8 @@ storage. Array assignment copies the entire inline array; slice assignment
 copies only the view.
 
 `string` is immutable bytes, not an owning Unicode string. Indexing returns one
-byte. Decode UTF-8 explicitly when scalar boundaries matter.
+byte. Use `core/utf8` to validate, decode, count, or encode Unicode scalars when
+scalar boundaries matter; its offsets and widths remain byte counts.
 
 Use `nil` only for pointer-like and procedure-pointer values. Draft has no
 implicit pointer or integer truthiness; write `pointer != nil`.

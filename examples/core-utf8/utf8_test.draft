@@ -1,0 +1,171 @@
+// These tests qualify the core/utf8 scalar boundary over both immutable Draft
+// strings and mutable byte slices. They cover every UTF-8 width boundary,
+// forward and reverse decoding, caller-owned encoding, and the malformed
+// classes excluded by the strict shortest-form validity table. No test relies
+// on locale, host text services, allocation, or normalization.
+//
+// Draft specification: sections 4, 5, 6, and 7.
+package core_utf8
+
+import core/testing
+import core/utf8
+
+// expect_encoding checks one scalar's canonical bytes without retaining a
+// destination view. expected_length is the active prefix of the fixed expected
+// array; unused tail bytes do not participate.
+expect_encoding :: proc(
+    test: ^testing.Test,
+    value: rune,
+    expected: [4]u8,
+    expected_length: usize,
+) {
+    storage: [4]u8
+    (written, encoded) := utf8.encode(storage[:], value)
+    testing.expect_message(test, encoded && written == expected_length,
+        "scalar must encode with its canonical width")
+    if !encoded || written != expected_length {
+        return
+    }
+    for index: usize = 0; index < expected_length; index += 1 {
+        testing.expect_message(test, storage[index] == expected[index],
+            "encoded byte must match the canonical UTF-8 sequence")
+    }
+}
+
+// test_utf8_width_boundaries verifies the shortest representation on both
+// sides of every one/two/three/four-byte transition, including the edges around
+// the surrogate interval and the maximum Unicode scalar.
+test_utf8_width_boundaries :: proc(test: ^testing.Test) {
+    expect_encoding(test, '\u{0}', [4]u8{0x00}, 1)
+    expect_encoding(test, '\u{7f}', [4]u8{0x7f}, 1)
+    expect_encoding(test, '\u{80}', [4]u8{0xc2, 0x80}, 2)
+    expect_encoding(test, '\u{7ff}', [4]u8{0xdf, 0xbf}, 2)
+    expect_encoding(test, '\u{800}', [4]u8{0xe0, 0xa0, 0x80}, 3)
+    expect_encoding(test, '\u{d7ff}', [4]u8{0xed, 0x9f, 0xbf}, 3)
+    expect_encoding(test, '\u{e000}', [4]u8{0xee, 0x80, 0x80}, 3)
+    expect_encoding(test, '\u{ffff}', [4]u8{0xef, 0xbf, 0xbf}, 3)
+    expect_encoding(test, '\u{10000}', [4]u8{0xf0, 0x90, 0x80, 0x80}, 4)
+    expect_encoding(test, '\u{10ffff}', [4]u8{0xf4, 0x8f, 0xbf, 0xbf}, 4)
+
+    short: [3]u8 = [3]u8{0xaa, 0xbb, 0xcc}
+    (written, encoded) := utf8.encode(short[:], '\u{10000}')
+    testing.expect_message(test, !encoded && written == 0,
+        "an undersized destination must reject the complete scalar")
+    testing.expect_message(test,
+        short[0] == 0xaa && short[1] == 0xbb && short[2] == 0xcc,
+        "failed encoding must leave destination bytes unchanged")
+}
+
+// test_utf8_directional_decoding walks a string containing all UTF-8 widths in
+// both directions. Reverse offsets are exclusive byte boundaries; the returned
+// widths therefore reconstruct the same boundaries as forward decoding.
+test_utf8_directional_decoding :: proc(test: ^testing.Test) {
+    text := "A¢€😀"
+    expected := [4]rune{'A', '¢', '€', '😀'}
+    expected_widths := [4]usize{1, 2, 3, 4}
+
+    offset: usize
+    for index: usize = 0; index < len(expected); index += 1 {
+        (value, width, error) := utf8.decode_next(text, offset)
+        testing.expect_message(test, error == .none,
+            "valid forward decoding must not report an error")
+        testing.expect_message(test,
+            value == expected[index] && width == expected_widths[index],
+            "forward decoding must return the expected scalar and byte width")
+        offset += width
+    }
+    testing.expect_message(test, offset == len(text),
+        "forward widths must consume the complete byte string")
+    (_, end_width, end_error) := utf8.decode_next(text, offset)
+    testing.expect_message(test,
+        end_error == .end_of_input && end_width == 0,
+        "decoding at the final boundary must report clean input end")
+
+    reverse_offset := len(text)
+    index := len(expected)
+    for index != 0 {
+        index -= 1
+        (value, width, error) :=
+            utf8.decode_previous(text, reverse_offset)
+        testing.expect_message(test, error == .none,
+            "valid reverse decoding must not report an error")
+        testing.expect_message(test,
+            value == expected[index] && width == expected_widths[index],
+            "reverse decoding must return the expected scalar and byte width")
+        reverse_offset -= width
+    }
+    testing.expect_message(test, reverse_offset == 0,
+        "reverse widths must reach the first byte boundary")
+    (_, begin_width, begin_error) :=
+        utf8.decode_previous(text, reverse_offset)
+    testing.expect_message(test,
+        begin_error == .end_of_input && begin_width == 0,
+        "reverse decoding at zero must report clean input end")
+
+    (count, counted) := utf8.rune_count(text)
+    testing.expect_message(test, counted && count == len(expected),
+        "rune_count must agree with explicit forward decoding")
+}
+
+// expect_invalid_bytes checks one malformed byte class through the mutable
+// slice API. Invalid forward decoding returns replacement_rune and consumes one
+// byte; validation and counting must stop at that same first byte.
+expect_invalid_bytes :: proc(test: ^testing.Test, bytes: []u8) {
+    testing.expect_message(test, !utf8.valid_bytes(bytes),
+        "malformed bytes must fail strict UTF-8 validation")
+    (value, width, error) := utf8.decode_next_bytes(bytes, 0)
+    testing.expect_message(test,
+        error == .invalid_encoding && width == 1 &&
+        value == utf8.replacement_rune,
+        "malformed decoding must return U+FFFD and one-byte progress")
+    (count, counted) := utf8.rune_count_bytes(bytes)
+    testing.expect_message(test, !counted && count == 0,
+        "counting must stop before the first malformed scalar")
+}
+
+// test_utf8_invalid_sequences covers every structural exclusion: stray and
+// impossible leaders, overlong encodings, bad/truncated continuations,
+// surrogate encodings, and values beyond Unicode's maximum scalar.
+test_utf8_invalid_sequences :: proc(test: ^testing.Test) {
+    stray := [1]u8{0x80}
+    overlong_two := [2]u8{0xc0, 0xaf}
+    bad_continuation := [3]u8{0xe2, 0x28, 0xa1}
+    truncated := [2]u8{0xe2, 0x82}
+    surrogate := [3]u8{0xed, 0xa0, 0x80}
+    too_high := [4]u8{0xf4, 0x90, 0x80, 0x80}
+    impossible_five := [4]u8{0xf8, 0x88, 0x80, 0x80}
+    expect_invalid_bytes(test, stray[:])
+    expect_invalid_bytes(test, overlong_two[:])
+    expect_invalid_bytes(test, bad_continuation[:])
+    expect_invalid_bytes(test, truncated[:])
+    expect_invalid_bytes(test, surrogate[:])
+    expect_invalid_bytes(test, too_high[:])
+    expect_invalid_bytes(test, impossible_five[:])
+
+    testing.expect_message(test, !utf8.valid("\xc0\xaf"),
+        "string byte escapes may form invalid UTF-8 and must be validated")
+    (value, width, error) := utf8.decode_previous_bytes(stray[:], 1)
+    testing.expect_message(test,
+        error == .invalid_encoding && width == 1 &&
+        value == utf8.replacement_rune,
+        "reverse malformed decoding must make one-byte progress")
+}
+
+// test_utf8_mutable_bytes verifies a complete valid sequence through the slice
+// entry points, including embedded NUL. The procedures borrow but never mutate
+// the caller's bytes.
+test_utf8_mutable_bytes :: proc(test: ^testing.Test) {
+    bytes := [7]u8{0x00, 0x41, 0xc2, 0xa2, 0xe2, 0x82, 0xac}
+    testing.expect_message(test, utf8.valid_bytes(bytes[:]),
+        "NUL, ASCII, two-byte, and three-byte scalars must validate")
+    (count, counted) := utf8.rune_count_bytes(bytes[:])
+    testing.expect_message(test, counted && count == 4,
+        "byte-slice rune count must include embedded NUL")
+    (value, width, error) := utf8.decode_next_bytes(bytes[:], 4)
+    testing.expect_message(test,
+        error == .none && width == 3 && value == '€',
+        "byte-slice decoding must return the final Euro scalar")
+    testing.expect_message(test,
+        bytes[0] == 0x00 && bytes[6] == 0xac,
+        "decoding must not mutate borrowed input bytes")
+}

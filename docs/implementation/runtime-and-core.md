@@ -110,6 +110,28 @@ honest. Direct string-backed writes can replace the copy only if a future
 specified library or language operation exposes a read-only byte view; that is
 not backend permission to reinterpret string layout.
 
+## UTF-8 byte/scalar conversion
+
+Status: ordinary allocation-free Draft library code; no compiler or backend
+intrinsic.
+
+`core/utf8` preserves the language's deliberate separation between byte strings
+and Unicode scalar values. Its string and byte-slice entry points copy at most
+four candidate bytes into fixed stack storage, apply the complete shortest-form
+UTF-8 table, and return `(rune, byte_width, Decode_Error)`. Successful callers
+advance by the returned width. Malformed input returns U+FFFD with a one-byte
+recovery width, which makes an explicit replacement loop progress without
+hiding the error; an exact end boundary instead reports `end_of_input` with
+zero width.
+
+Reverse decoding examines at most four possible starts and accepts only a
+strict forward decode ending at the supplied exclusive boundary. Validation
+and scalar counting stop at the first malformed byte. Encoding first proves
+that caller-owned output storage can hold the complete canonical sequence, so
+a failed write changes no bytes. The package performs no allocation,
+normalization, grapheme segmentation, display-width calculation, or locale
+handling.
+
 The virtual-memory seam uses target-qualified source with fixed signatures for
 `mmap`, `mprotect`, and `munmap`. Reserve creates inaccessible private anonymous
 address space, commit/protect change whole-region permissions, and release
