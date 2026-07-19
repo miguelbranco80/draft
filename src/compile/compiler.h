@@ -229,21 +229,16 @@ struct ResolvedAgentBoundary {
     CompileWorkspaceResult &compiled,
     DiagnosticSink &diagnostics);
 
+// Captures and later enforces the authored agent boundary while the same graph
+// is mutated to resolved source. All synthesis must disappear; no expansion
+// may contain synthesis or introduce/displace a judgment. Judgment input
+// digests are deliberately not compared because generated declarations may
+// change their visible semantic context.
 [[nodiscard]] ResolvedAgentBoundary capture_resolved_agent_boundary(
     const CompileWorkspaceResult &surface);
 
 [[nodiscard]] bool validate_resolved_agent_boundaries(
     const ResolvedAgentBoundary &surface,
-    const CompileWorkspaceResult &resolved,
-    DiagnosticSink &diagnostics);
-
-// Enforces the agent boundary between a successfully checked surface graph and
-// a successfully checked resolved graph. All surface synthesis must disappear;
-// no expansion may contain another synthesis or introduce/displace a judgment.
-// Input digests of retained judgments are not compared because generated
-// declarations may legitimately change their visible semantic context.
-[[nodiscard]] bool validate_resolved_agent_boundaries(
-    const CompileWorkspaceResult &surface,
     const CompileWorkspaceResult &resolved,
     DiagnosticSink &diagnostics);
 

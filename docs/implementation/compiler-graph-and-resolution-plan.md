@@ -1,9 +1,8 @@
 # Compiler graph and resolution simplification plan
 
-Status: proposed implementation direction. This document records intended work;
-it does not describe current behavior and is not normative. Until an item is
-implemented, the language specification and command reference remain
-authoritative.
+Status: implemented on 2026-07-19. This is a non-normative architecture and
+completion record; the language specification and command reference remain
+authoritative for behavior.
 
 ## Purpose
 
@@ -44,23 +43,30 @@ cache.
 - Content-addressed generated fragments remain canonical. Complete expanded
   files are a projection for people and tools, not a second source of truth.
 
-## Planned changes
+## Implemented architecture
 
 ### One compiler graph
 
 - Replace repeated interface, body-surface, and final compilations with one
-  semantic dependency graph owned for the duration of a command.
+  semantic dependency graph per distinct source selection, owned for the
+  duration of a command. Ordinary source, a test selection, and a benchmark
+  selection are different graphs because they contain different files and may
+  have different imports; no one of those graphs is rebuilt merely to advance
+  a compiler phase.
 - Represent declaration availability, type and layout completion, synthesis
   obligations, body checking, MIR readiness, and requested validation as
   explicit graph state.
-- Schedule a deterministic sorted ready set. Implement and qualify the
-  sequential scheduler first; parallel execution may later process independent
-  ready nodes without changing results.
+- Schedule a deterministic sorted ready set. The implemented scheduler is
+  sequential. Parallel execution remains a possible measured optimization, not
+  part of the architecture contract or a source of different results.
 - Reuse loaded files, tokens, syntax, declarations, interned types, checked
   expansions, and dependency facts instead of reloading the workspace for each
   conceptual phase.
 - Keep handwritten and generated declarations in the same semantic graph once
-  generated source has passed its grammar boundary and ordinary checks.
+  generated source has passed its grammar boundary and ordinary checks. A
+  complete-file expansion is reparsed transactionally, may not change package
+  or import topology, and rebuilds only its package plus transitive consumers.
+  Unrelated dependency declarations and types remain live.
 
 ### Resolution and build workflow
 
@@ -122,27 +128,46 @@ cache.
   program inputs, notably generated source, native objects and libraries,
   foreign-provider summaries, and runtime assets.
 
-## Implementation progression
+## Completion record
 
-1. Update the synthesis specification and command contract to establish the
-   new provenance, validation, and CLI rules before changing their code.
-2. Version the resolution manifest and exclude generation provenance from
-   freshness and resolved-program hashing; migrate fixtures and add focused
-   regression tests.
-3. Separate resolution commits from test, benchmark, and judgment evidence,
-   then simplify the provider-facing CLI.
-4. Add version-control guidance and the complete-source `expand` projection.
-5. Introduce the sequential semantic dependency graph while retaining the
-   existing implementation as a focused behavioral oracle during migration.
-6. Move checking and lowering onto the graph, remove redundant workspace
-   passes, and implement `resolve --build` by continuing the same graph.
-7. Re-measure with `--timings`; optimize only demonstrated costs without adding
-   a persistent cache, then add deterministic parallel ready-set execution if
-   it is still valuable.
+1. Synthesis semantics, provider-free build behavior, provenance, and evidence
+   separation were updated first (`e73c659`, with the preceding specification
+   slice in the same series).
+2. Resolution manifest v5 excludes generation provenance from freshness and
+   resolved-program identity; focused fixtures prove model changes do not stale
+   accepted source.
+3. Provider discovery was reduced to ordinary `PATH`/Codex configuration
+   (`32fb133`), and explicit regeneration was added (`623ca42`).
+4. Version-control guidance and transactional complete-source `expand` output
+   landed in `afac184`; validation tests no longer write state into source
+   fixtures (`1552891`).
+5. Checked graphs gained explicit semantic and target-lowering continuations
+   (`0cab695`, `b627d50`), and `resolve --build` continues the returned graph
+   into native emission (`c8f8e07`).
+6. Checked source replacement became a transactional in-memory workspace
+   operation (`52e85c6`). Declaration analysis now rebuilds only affected
+   packages and transitive consumers (`5daa62e`); provider-free resolution and
+   speculative/authoritative resolver stages use that operation without
+   another workspace load (`1ba75f3`).
+7. Timing remeasurement showed native Clang/tool invocation dominates a small
+   handwritten build. The larger agent acceptance graph now performs one
+   ordinary graph construction plus one separately selected typed test-context
+   graph, rather than five repeated compiler/workspace passes. Typed validation
+   state survives the body-source transition. Parallel front-end scheduling was
+   therefore not added: its coordination and timing-recorder complexity are not
+   justified by the measured remaining front-end work. The sorted sequential
+   ready set is the qualified implementation.
 
-Keep these steps as small coherent commits. A step that changes public behavior
-must update its owning specification, implementation document, command
-reference, Draft coding skill, and tests in the same slice.
+The qualifying timing counters were `compiler passes: 1`, `workspace loads: 1`
+for the handwritten hello build. The resolved agent-acceptance build, whose
+synthesis context includes test source and `core/testing`, reported two passes,
+two loads, and two in-memory source transitions: one ordinary program graph,
+one distinct validation-selection graph, and no repeated construction for its
+interface or body overlays.
+
+The changes were kept in coherent commits. Public slices updated their owning
+specification, implementation document, command reference, Draft coding skill,
+and tests as applicable.
 
 ## Acceptance checks
 
@@ -156,10 +181,13 @@ reference, Draft coding skill, and tests in the same slice.
   with an exact diagnostic and never triggers a provider during `build`.
 - Failed or interrupted resolution leaves the previously committed manifest
   authoritative.
-- `resolve --build` performs one front-end graph construction and produces the
-  same native program as a later provider-free `build` of the committed source.
-- Sequential and parallel scheduling produce byte-identical manifests,
-  generated-source selections, diagnostics, and native outputs.
+- `resolve --build` performs one front-end construction for each distinct
+  selected source graph and produces the same native program as a later
+  provider-free `build` of the committed source. Interface/body rounds never
+  reconstruct the same workspace graph.
+- The sorted sequential scheduler produces stable manifests,
+  generated-source selections, diagnostics, and native outputs. Any future
+  parallel scheduler must prove byte identity against this oracle before use.
 - A clean checkout containing authored source plus the committed durable
   `.draft` files builds without provider credentials or network access.
 - Repeated commands leave no persistent compiler cache; all cross-invocation

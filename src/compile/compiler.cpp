@@ -2029,14 +2029,6 @@ bool validate_resolved_agent_boundaries(
       surface, resolved, diagnostics);
 }
 
-bool validate_resolved_agent_boundaries(
-    const CompileWorkspaceResult &surface,
-    const CompileWorkspaceResult &resolved,
-    DiagnosticSink &diagnostics) {
-  return validate_resolved_agent_boundary_snapshot(
-      capture_agent_boundary(surface), resolved, diagnostics);
-}
-
 CompileWorkspaceResult compile_workspace_with_resolution(
     SourceManager &sources,
     const std::string &root_package_directory,
