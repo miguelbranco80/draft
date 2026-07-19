@@ -17,6 +17,8 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 option(DRAFT_WARNINGS_AS_ERRORS "Treat bootstrap compiler warnings as errors" ON)
 option(DRAFT_ENABLE_SANITIZERS "Enable address and undefined-behavior sanitizers" OFF)
 
+find_package(Threads REQUIRED)
+
 # An interface target keeps the host-language policy identical for the compiler,
 # driver, and tests. Sanitizer link flags must reach final executables; placing
 # them only on the static compiler archive would instrument objects without
@@ -35,6 +37,7 @@ add_library(
   src/base/content_tree.cpp
   src/base/sha256.cpp
   src/base/timing.cpp
+  src/base/work_graph.cpp
   src/compile/compiler.cpp
   src/compile/expanded_source.cpp
   src/compile/resolver.cpp
@@ -98,7 +101,7 @@ add_library(
 )
 
 target_include_directories(draft_compiler PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
-target_link_libraries(draft_compiler PUBLIC draft_build_options)
+target_link_libraries(draft_compiler PUBLIC draft_build_options Threads::Threads)
 
 if(MSVC)
   target_compile_options(draft_build_options INTERFACE /W4 /permissive- /GR- /EHs-c-)
@@ -157,6 +160,10 @@ if(BUILD_TESTING)
   add_executable(draft_timing_tests tests/timing_test.cpp)
   target_link_libraries(draft_timing_tests PRIVATE draft_compiler)
   add_test(NAME draft_timing_tests COMMAND draft_timing_tests)
+
+  add_executable(draft_work_graph_tests tests/work_graph_test.cpp)
+  target_link_libraries(draft_work_graph_tests PRIVATE draft_compiler)
+  add_test(NAME draft_work_graph_tests COMMAND draft_work_graph_tests)
 
   add_executable(draft_content_tree_tests tests/content_tree_test.cpp)
   target_link_libraries(draft_content_tree_tests PRIVATE draft_compiler)
