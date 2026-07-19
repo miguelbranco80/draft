@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+# Tests need only repository contents. In particular, pull requests receive no
+# credential capable of publishing artifacts or modifying repository state.
+permissions:
+  contents: read
+
+# A newer push supersedes an older run for the same branch. Release
+# qualification remains a separate explicit operation and is never cancelled by
+# this development workflow.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native-aarch64:
+    name: Native / ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS ARM64
+            runner: macos-15
+            bootstrap_cxx: clang++
+            parallel: 3
+          - name: Linux ARM64
+            runner: ubuntu-24.04-arm
+            bootstrap_cxx: g++
+            parallel: 4
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # GCC builds the bootstrap compiler on Linux. Clang, lld, and the LLVM
+      # utilities remain installed because Draft invokes them to turn its LLVM
+      # IR into the ELF artifacts that the integration tests execute.
+      - name: Install Linux native toolchain
+        if: runner.os == 'Linux'
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes build-essential cmake clang lld llvm
+
+      # Log both compilers when they differ. A runner-image update is then
+      # visible in a failed job without making ambient versions semantic pins.
+      - name: Record tool versions
+        run: |
+          cmake --version
+          ${{ matrix.bootstrap_cxx }} --version
+          clang --version
+
+      - name: Configure
+        run: |
+          cmake -S . -B build \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_CXX_COMPILER=${{ matrix.bootstrap_cxx }} \
+            -DDRAFT_WARNINGS_AS_ERRORS=ON \
+            -DDRAFT_ENABLE_SANITIZERS=OFF
+
+      - name: Build
+        run: cmake --build build --parallel ${{ matrix.parallel }}
+
+      # CMake includes the executable, deterministic-artifact, and C-client
+      # integration tests only on a supported native AArch64 host. Therefore a
+      # green matrix row proves execution for that OS rather than cross-lowering
+      # alone.
+      - name: Test
+        run: ctest --test-dir build --output-on-failure --parallel ${{ matrix.parallel }}

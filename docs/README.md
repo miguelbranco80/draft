@@ -45,6 +45,7 @@ specification.
 ## Operations and releases
 
 - [Compiler command reference](operations/command-reference.md)
+- [Continuous integration](operations/continuous-integration.md)
 - [First-compiler qualification](releases/first-compiler-qualification.md)
 - [AArch64 Linux initial qualification](releases/aarch64-linux-qualification.md)
 - [Agent acceptance fixture](releases/agent-acceptance.md)
