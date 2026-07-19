@@ -24,6 +24,7 @@ build/draftc build examples/language-tour -o /tmp/draft-language-tour
 | [`language-tour`](language-tour/) | A readable ordinary-language tour: constants, `when`, arrays and slices, structs, enums, tagged `Result` and `Option`, tuples, distinct types, parametric types and procedures, pointers, `for`, `switch`, `defer`, assertions, `docs`, and console output. |
 | [`console`](console/) | `core/console`, allocation-free `core/format`, standard output, process arguments, booleans, and the exact minimum `i64` and maximum `u64` spellings. |
 | [`file-io`](file-io/) | Owned C path storage, explicit file handles, immutable-text writes, byte reads, `defer` cleanup, and a complete create/read/remove round trip. |
+| [`simple-editor`](simple-editor/) | A useful but deliberately disposable ed-like application: line storage, byte input, numbered navigation, insertion, deletion, dirty-buffer protection, file load/save, command parsing, and focused Draft tests. |
 | [`denials`](denials/) | A runnable positive `deny` example whose transitive call graph is compiler-checked to avoid console access, assertions, assembly, unchecked access, and context access. Negative denial cases live in `tests/denial_test.cpp`. |
 | [`hello`](hello/) | The smallest provider-free compiler and native-backend smoke program: a fixed array, slice, loop, procedure call, and assertion. |
 
@@ -78,7 +79,7 @@ work rather than missing backend features.
 | Declarations, expressions, literals, arrays, slices, control flow, tuples, pointers, aggregates, enums, tagged unions, and distinct types | `language-tour`, `runtime-checks` |
 | Compile-time evaluation, target facts, layout, `when`, and parametrics | `language-tour`, `packages`, `packages-generic`, `nested-procedures` |
 | Globals, TLS, context, allocation, collections, atomics, and threads | `core-runtime`, `core-memory`, `core-array`, `core-map`, `core-atomic`, `core-thread`, `runtime-checks` |
-| Console, formatting, files, arguments, and environment | `console`, `file-io`, `core-os` |
+| Console, formatting, files, arguments, environment, and a complete line-oriented application | `console`, `file-io`, `core-os`, `simple-editor` |
 | Parsed and external assembly, SIMD, C imports, C exports, and foreign providers | `assembly`, `external-assembly`, `c-interop`, `c-library`, `foreign-provider` |
 | `docs`, `judge`, synthesis, deterministic resolution, and provider-free builds | `language-tour`, `agent-acceptance`, `agent-pending` |
 | Denials, assertions, traps, tests, and benchmarks | `denials`, `runtime-traps`, `validation` |

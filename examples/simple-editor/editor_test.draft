@@ -1,0 +1,167 @@
+// These focused tests exercise the representation and command parser of the
+// simple-editor example without requiring a terminal or filesystem. They share
+// the simple_editor package so they can validate private operations directly;
+// the separate native smoke session covers real file and standard-stream I/O.
+// Each test owns and destroys its Document explicitly, matching application
+// ownership rather than relying on test-process cleanup.
+//
+// Draft specification: sections 5.2-5.3 (arrays and slices), 6.4 (explicit
+// ownership), and 7.3 (test discovery and execution).
+package simple_editor
+
+import core/memory
+import core/os
+import core/testing
+
+Editor_Test_Path :: "draft-simple-editor-round-trip.txt"
+
+// remove_test_file converts cleanup failure into best-effort test-fixture
+// cleanup. File creation always truncates this fixed runner-local path, so a
+// failed removal cannot make a later test observe stale document contents.
+// The helper exists so an os.remove result is never discarded implicitly.
+remove_test_file :: proc(path: cstring) {
+    removed := os.remove(path)
+    if !removed {
+        return
+    }
+}
+
+// test_document_line_edits verifies the append-only byte pool independently of
+// active line ordering. Inserting between existing records and then deleting
+// the first record must expose beta and gamma in order even though alpha's bytes
+// remain allocated. The empty-line case also checks that a zero-length record
+// has a valid borrowed slice without dereferencing nil or one-past storage.
+test_document_line_edits :: proc(test: ^testing.Test) {
+    document: Document
+    document_init(&document)
+    defer document_destroy(&document)
+
+    alpha := [5]u8{97, 108, 112, 104, 97}
+    beta := [4]u8{98, 101, 116, 97}
+    gamma := [5]u8{103, 97, 109, 109, 97}
+    document_insert_line(&document, 0, alpha[:])
+    document_insert_line(&document, 1, gamma[:])
+    document_insert_line(&document, 1, beta[:])
+
+    testing.expect_message(test, document.lines.length == 3,
+        "three inserted line records must be active")
+    testing.expect_message(test,
+        bytes_equal_text(document_line(&document, 0), "alpha"),
+        "the first line must remain alpha")
+    testing.expect_message(test,
+        bytes_equal_text(document_line(&document, 1), "beta"),
+        "middle insertion must place beta before gamma")
+    testing.expect_message(test,
+        bytes_equal_text(document_line(&document, 2), "gamma"),
+        "gamma must shift to the third line")
+
+    bytes_before_delete := document.bytes.length
+    document_delete_line(&document, 0)
+    testing.expect_message(test, document.lines.length == 2,
+        "deleting one record must reduce active line count")
+    testing.expect_message(test, document.bytes.length == bytes_before_delete,
+        "deletion must leave the append-only byte pool unchanged")
+    testing.expect_message(test,
+        bytes_equal_text(document_line(&document, 0), "beta"),
+        "beta must become the first active line")
+
+    empty_storage: [1]u8
+    document_insert_line(&document, 1, empty_storage[:0])
+    testing.expect_message(test, len(document_line(&document, 1)) == 0,
+        "an inserted empty line must produce an empty borrowed view")
+    testing.expect_message(test,
+        bytes_equal_text(document_line(&document, 2), "gamma"),
+        "empty insertion must shift gamma without changing its bytes")
+}
+
+// test_command_parsing checks the editor protocol's exact byte rules. Decimal
+// parsing accepts zero syntactically so the command loop can diagnose the
+// one-based semantic error, while non-digits and usize overflow are rejected.
+// Trimming is limited to ASCII space and tab at the edges.
+test_command_parsing :: proc(test: ^testing.Test) {
+    forty_two := [2]u8{52, 50}
+    (value, valid) := parse_line_number(forty_two[:])
+    testing.expect_message(test, valid && value == 42,
+        "two decimal digits must parse in source order")
+
+    zero := [1]u8{48}
+    (zero_value, zero_valid) := parse_line_number(zero[:])
+    testing.expect_message(test, zero_valid && zero_value == 0,
+        "zero is syntactically decimal and rejected by address validation")
+
+    mixed := [2]u8{52, 120}
+    (_, mixed_valid) := parse_line_number(mixed[:])
+    testing.expect_message(test, !mixed_valid,
+        "a non-digit must reject the complete numeric command")
+
+    // This is one decimal digit beyond the maximum 64-bit unsigned value. All
+    // current Draft native targets use 64-bit usize, so overflow must be found
+    // before multiplication wraps.
+    overflow := [21]u8{
+        49, 56, 52, 52, 54, 55, 52, 52, 48, 55, 51,
+        55, 48, 57, 53, 53, 49, 54, 49, 54, 48,
+    }
+    (_, overflow_valid) := parse_line_number(overflow[:])
+    testing.expect_message(test, !overflow_valid,
+        "a line number larger than usize must be rejected")
+
+    padded := [5]u8{32, 9, 112, 32, 9}
+    trimmed := trim_command(padded[:])
+    testing.expect_message(test, bytes_equal_text(trimmed, "p"),
+        "space and tab must be trimmed from both command edges")
+
+    whitespace := [2]u8{32, 9}
+    testing.expect_message(test, len(trim_command(whitespace[:])) == 0,
+        "an all-whitespace command must become the empty next-line command")
+}
+
+// test_document_file_round_trip exercises the non-interactive file boundary
+// with ordinary editor data. It owns two Documents and one zero-terminated path
+// copy, writes the first, loads the second, and checks line order and bytes. The
+// fixed path is safe because the native test runner executes this package in an
+// isolated working directory; cleanup remains explicit for direct invocations.
+test_document_file_round_trip :: proc(test: ^testing.Test) {
+    path: memory.Owned_String
+    memory.owned_string_copy(&path, Editor_Test_Path)
+    defer memory.owned_string_destroy(&path)
+    native_path := memory.owned_string_cstring(&path)
+    remove_test_file(native_path)
+    defer remove_test_file(native_path)
+
+    source: Document
+    document_init(&source)
+    defer document_destroy(&source)
+    first := [5]u8{102, 105, 114, 115, 116}
+    second := [6]u8{115, 101, 99, 111, 110, 100}
+    document_insert_line(&source, 0, first[:])
+    document_insert_line(&source, 1, second[:])
+
+    saved := save_document(&source, native_path)
+    testing.expect_message(test, saved,
+        "the source document must be written completely")
+    if !saved {
+        return
+    }
+
+    loaded: Document
+    document_init(&loaded)
+    defer document_destroy(&loaded)
+    load_result := load_document(&loaded, native_path)
+    testing.expect_message(test, load_result == .loaded,
+        "the saved path must reopen as a complete document")
+    if load_result != .loaded {
+        return
+    }
+
+    testing.expect_message(test, loaded.lines.length == 2,
+        "the round trip must preserve the active line count")
+    if loaded.lines.length != 2 {
+        return
+    }
+    testing.expect_message(test,
+        bytes_equal_text(document_line(&loaded, 0), "first"),
+        "the first saved line must retain its exact bytes")
+    testing.expect_message(test,
+        bytes_equal_text(document_line(&loaded, 1), "second"),
+        "the second saved line must retain its exact bytes")
+}

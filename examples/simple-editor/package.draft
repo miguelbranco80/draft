@@ -1,0 +1,780 @@
+// This executable is a deliberately small, line-oriented text editor. It is
+// an application example for the current Draft compiler, not the foundation
+// of a future full-screen editor. The program exercises explicit ownership,
+// growable arrays, slices, process arguments, byte-oriented file I/O, decimal
+// formatting, command parsing, and native execution without introducing raw
+// terminal control or a portability layer of its own.
+//
+// The editor reads one pathname from the command line and accepts commands on
+// standard input. Document lines are records into an append-only byte pool.
+// The pool makes line text stable across insertions and deletions while keeping
+// ownership in two ordinary contiguous arrays. Deleted bytes are reclaimed
+// only when the process exits; that simple tradeoff is appropriate for this
+// compiler exercise and is stated here rather than hidden behind a premature
+// text-buffer abstraction.
+//
+// Input and output use core/os directly. A save truncates the destination and
+// emits one LF byte after every stored line, so it does not preserve a missing
+// final newline. The example also does not provide atomic replacement,
+// permissions preservation, undo, search, raw-mode keys, or screen painting.
+// Those omissions are application limits, not missing Draft language features.
+//
+// Draft specification: sections 5.2-5.3 (arrays and slices), 6.4 (explicit
+// allocation and ownership), and 7.1 (ordinary core packages).
+package simple_editor
+
+import core/array
+import core/format
+import core/io
+import core/memory
+import core/os
+
+Input_Buffer_Size :: 256
+Output_Buffer_Size :: 256
+
+Help_Text :: `commands:
+  NUMBER  select and print a one-based line
+  p       print the current line
+  l       list every line with numbers
+  n       select and print the next line (empty command also does this)
+  i       insert lines before current; a single . ends input
+  a       append lines after current; a single . ends input
+  d       delete the current line
+  w       write the file
+  q       quit if there are no unsaved changes
+  q!      discard unsaved changes and quit
+  h       show this help
+During i or a, enter .. to insert one literal dot line.
+`
+
+// Line identifies one immutable byte range in Document.bytes. start and
+// length use the byte pool's zero-based index domain; start + length must never
+// exceed bytes.length. A Line owns no storage and remains structurally valid
+// when either Dynamic allocation moves because it stores an offset, not a
+// pointer. Equality is structural and has no independent semantic meaning.
+Line :: struct {
+    start: usize,
+    length: usize,
+}
+
+// Document owns all editable text for one process run. bytes is append-only so
+// every Line offset remains valid until document_destroy. lines owns the active
+// line order and may shift its small records during insertion and deletion.
+// Both arrays use the active Context allocator installed by document_init;
+// copying Document would duplicate ownership metadata and is therefore
+// forbidden by convention. cursor state and dirty state live in the editor
+// loop because they describe a session rather than stored document contents.
+Document :: struct {
+    bytes: array.Dynamic[u8],
+    lines: array.Dynamic[Line],
+}
+
+// Input buffers canonical byte input from standard input. next is the first
+// unread index, count is the number of initialized bytes in buffer, and ended
+// records a prior end-of-input result. The value owns no external resource and
+// may be zero-initialized. A returned line never aliases buffer: read_line
+// copies it into caller-owned Dynamic storage before another read occurs.
+Input :: struct {
+    buffer: [Input_Buffer_Size]u8,
+    next: usize,
+    count: usize,
+    ended: bool,
+}
+
+// Read_Line_Result separates a complete logical line from clean stream end and
+// an I/O failure. A final unterminated sequence of bytes is returned as line;
+// end_of_input is returned on the following call. Newline bytes are separators
+// and are not included in caller storage.
+Read_Line_Result :: enum u8 {
+    line,
+    end_of_input,
+    failed,
+}
+
+// Load_Result distinguishes an unavailable pathname, which starts a useful
+// empty editing session, from a failure after opening the file. The latter is
+// fatal because silently presenting a partially read document could cause a
+// later save to destroy data the user never saw.
+Load_Result :: enum u8 {
+    loaded,
+    unavailable,
+    failed,
+}
+
+// Insert_Input_Result tells the command loop whether dot terminated insertion
+// normally or the input stream ended or failed. A non-completed result may
+// follow successful inserted lines; the caller keeps those changes dirty and
+// exits with failure rather than pretending the operation completed.
+Insert_Input_Result :: enum u8 {
+    completed,
+    end_of_input,
+    failed,
+}
+
+// document_init installs one allocator in each owning array. The Document must
+// be zero-initialized and remain at a stable address until document_destroy.
+// No storage is allocated until the first inserted byte or line.
+document_init :: proc(document: ^Document) {
+    array.init(&document^.bytes)
+    array.init(&document^.lines)
+}
+
+// document_destroy releases both independent allocations and invalidates every
+// slice previously returned by document_line. It must run exactly once after a
+// successful document_init and performs no file I/O.
+document_destroy :: proc(document: ^Document) {
+    array.destroy(&document^.lines)
+    array.destroy(&document^.bytes)
+}
+
+// document_insert_line copies source into the append-only byte pool and inserts
+// a corresponding record at the zero-based line position. source must not
+// alias Document.bytes: appending may relocate that array before the copy is
+// complete. insert_at may equal lines.length to append. Allocation failures
+// follow core/array's process-level allocation invariant; invalid indices are
+// programmer errors rather than user-controlled source errors.
+document_insert_line :: proc(
+    document: ^Document,
+    insert_at: usize,
+    source: []u8,
+) {
+    assert(insert_at <= document^.lines.length,
+        "document insertion index is out of bounds")
+    assert(document^.bytes.length <= ~cast[usize](0) - len(source),
+        "document byte length overflows")
+
+    line := Line{
+        start = document^.bytes.length,
+        length = len(source),
+    }
+    for byte in source {
+        array.append(&document^.bytes, byte)
+    }
+
+    // Grow by one record before shifting. Moving records from back to front
+    // ensures every source record is read before its destination is replaced.
+    empty: Line
+    array.append(&document^.lines, empty)
+    cursor := document^.lines.length - 1
+    for cursor > insert_at {
+        document^.lines.data[cursor] = document^.lines.data[cursor - 1]
+        cursor -= 1
+    }
+    document^.lines.data[insert_at] = line
+}
+
+// document_delete_line removes one active record and shifts later records
+// toward the front. Its bytes intentionally remain in the append-only pool so
+// offsets in all surviving records stay valid. index must name an active line.
+document_delete_line :: proc(document: ^Document, index: usize) {
+    assert(index < document^.lines.length,
+        "document deletion index is out of bounds")
+    array.remove(&document^.lines, index)
+}
+
+// document_line returns a mutable byte view borrowed from the Document even
+// though editor operations treat text as immutable. The view remains valid
+// only until document_destroy or the next insertion, because insertion may
+// relocate bytes. The stored bounds assertion documents the central pool
+// invariant and catches an internal representation error near its use.
+document_line :: proc(document: ^Document, index: usize) -> []u8 {
+    assert(index < document^.lines.length,
+        "document line index is out of bounds")
+    line := document^.lines.data[index]
+    assert(line.start <= document^.bytes.length &&
+        line.length <= document^.bytes.length - line.start,
+        "document line range is outside the byte pool")
+    if line.length == 0 {
+        return document^.bytes.data[:0]
+    }
+    first := cast[[^]u8](&document^.bytes.data[line.start])
+    return first[:line.length]
+}
+
+// bytes_equal_text compares a borrowed mutable byte view with immutable Draft
+// text without fabricating an ownership conversion. It performs an exact byte
+// comparison: no Unicode decoding, case folding, or newline normalization.
+bytes_equal_text :: proc(bytes: []u8, text: string) -> bool {
+    if len(bytes) != len(text) {
+        return false
+    }
+    for byte, index in bytes {
+        if byte != text[index] {
+            return false
+        }
+    }
+    return true
+}
+
+// write_bytes writes an entire borrowed range to handle in source order. POSIX
+// writes may be partial, so success requires advancing until all bytes are
+// consumed. A zero-byte successful write is rejected to prevent an infinite
+// loop. The function owns neither the file handle nor source and emits no
+// diagnostics, allowing the caller to choose the correct stream and message.
+write_bytes :: proc(handle: os.File, source: []u8) -> bool {
+    written: usize
+    for written < len(source) {
+        (count, error) := os.write(handle, source[written:])
+        if error != .none || count == 0 {
+            return false
+        }
+        written += count
+    }
+    return true
+}
+
+// write_text copies immutable text through a fixed stack buffer because Draft
+// string cannot be cast to a mutable byte slice. It retains no input and uses
+// write_bytes for partial-write handling. Chunking keeps memory bounded for all
+// string lengths while preserving exact source bytes.
+write_text :: proc(handle: os.File, text: string) -> bool {
+    storage: [Output_Buffer_Size]u8
+    consumed: usize
+    for consumed < len(text) {
+        count := len(text) - consumed
+        if count > len(storage) {
+            count = len(storage)
+        }
+        for index: usize = 0; index < count; index += 1 {
+            storage[index] = text[consumed + index]
+        }
+        if !write_bytes(handle, storage[:count]) {
+            return false
+        }
+        consumed += count
+    }
+    return true
+}
+
+// report_error deliberately converts a standard-error write failure into no
+// further action. It is used only after the editor has already selected a
+// failing exit path, where stderr is the final reporting boundary and there is
+// no second reliable channel to report that the first channel is unavailable.
+// Keeping this conversion named prevents callers from silently discarding an
+// ordinary write result.
+report_error :: proc(text: string) {
+    reported := write_text(os.standard_error, text)
+    if !reported {
+        return
+    }
+}
+
+// write_line_number formats a one-based line number without allocation and
+// writes it to handle. The 20-byte buffer covers every u64 decimal value; the
+// false formatting branch remains explicit so this application never ignores
+// a lower-layer result even when its local size proof makes failure impossible.
+write_line_number :: proc(handle: os.File, number: usize) -> bool {
+    storage: [20]u8
+    (digits, formatted) :=
+        format.unsigned_decimal(storage[:], cast[u64](number))
+    if !formatted {
+        return false
+    }
+    return write_bytes(handle, digits)
+}
+
+// print_line emits one line followed by LF. It borrows the Document only for
+// this call and checks both writes, so a broken output stream terminates the
+// editor instead of being reported as a successful print command.
+print_line :: proc(document: ^Document, index: usize) -> bool {
+    if !write_bytes(os.standard_output, document_line(document, index)) {
+        return false
+    }
+    newline := [1]u8{10}
+    return write_bytes(os.standard_output, newline[:])
+}
+
+// print_numbered_line emits a stable one-based address, a tab separator, and
+// one document line. The index must be active. Numbering policy belongs here,
+// not in Document, because stored line identity is its zero-based array slot.
+print_numbered_line :: proc(document: ^Document, index: usize) -> bool {
+    if !write_line_number(os.standard_output, index + 1) {
+        return false
+    }
+    if !write_text(os.standard_output, "\t") {
+        return false
+    }
+    return print_line(document, index)
+}
+
+// list_document prints every active line in current order with a one-based
+// number. Traversal is an ordinary deterministic array walk; deleted byte-pool
+// contents are intentionally invisible.
+list_document :: proc(document: ^Document) -> bool {
+    for index: usize = 0; index < document^.lines.length; index += 1 {
+        if !print_numbered_line(document, index) {
+            return false
+        }
+    }
+    return true
+}
+
+// read_line clears destination and fills it with one logical line from standard
+// input. input preserves unread bytes between calls; destination owns the
+// returned bytes until its next clear or destruction. LF is consumed but not
+// returned. Empty lines are successful lines. Errors are propagated without
+// inventing data, and an unexpected successful zero-byte read is treated as a
+// failure to preserve loop progress.
+read_line :: proc(
+    input: ^Input,
+    destination: ^array.Dynamic[u8],
+) -> Read_Line_Result {
+    array.clear(destination)
+
+    for {
+        if input^.next == input^.count {
+            if input^.ended {
+                if destination^.length != 0 {
+                    return .line
+                }
+                return .end_of_input
+            }
+
+            (count, error) := os.read(os.standard_input, input^.buffer[:])
+            if error == .end_of_input {
+                input^.ended = true
+                if destination^.length != 0 {
+                    return .line
+                }
+                return .end_of_input
+            }
+            if error != .none || count == 0 {
+                return .failed
+            }
+            input^.next = 0
+            input^.count = count
+        }
+
+        byte := input^.buffer[input^.next]
+        input^.next += 1
+        if byte == 10 {
+            return .line
+        }
+        array.append(destination, byte)
+    }
+    return .failed
+}
+
+// trim_command returns a sub-slice with leading and trailing ASCII spaces and
+// tabs removed. It never changes the command buffer, retains no view, and does
+// not apply Unicode whitespace rules to this deliberately byte-oriented
+// protocol.
+trim_command :: proc(command: []u8) -> []u8 {
+    first: usize
+    for first < len(command) &&
+        (command[first] == cast[u8](' ') ||
+         command[first] == cast[u8]('\t')) {
+        first += 1
+    }
+
+    last := len(command)
+    for last > first &&
+        (command[last - 1] == cast[u8](' ') ||
+         command[last - 1] == cast[u8]('\t')) {
+        last -= 1
+    }
+    return command[first:last]
+}
+
+// parse_line_number recognizes a non-empty sequence of ASCII decimal digits.
+// The result is the mathematical value in usize; zero is syntactically valid
+// here and is rejected later by the one-based command rule. Overflow and any
+// non-digit make the whole command invalid instead of selecting another line.
+parse_line_number :: proc(command: []u8) -> (usize, bool) {
+    if len(command) == 0 {
+        return (0, false)
+    }
+
+    value: usize
+    for byte in command {
+        if byte < cast[u8]('0') || byte > cast[u8]('9') {
+            return (0, false)
+        }
+        digit := cast[usize](byte - cast[u8]('0'))
+        if value > (~cast[usize](0) - digit) / 10 {
+            return (0, false)
+        }
+        value = value * 10 + digit
+    }
+    return (value, true)
+}
+
+// load_document reads one opened file into Document in source order. LF bytes
+// terminate lines and are not stored; every other byte, including CR and NUL,
+// is preserved. A final unterminated line is retained. The function closes its
+// file and destroys scratch storage on every path. If reading or closing fails,
+// partially loaded lines remain owned by Document only so main can destroy the
+// whole value before returning failure.
+load_document :: proc(
+    document: ^Document,
+    path: cstring,
+) -> Load_Result {
+    (input, open_error) := os.open_for_reading(path)
+    if open_error != .none {
+        return .unavailable
+    }
+
+    current_line: array.Dynamic[u8]
+    array.init(&current_line)
+    storage: [Input_Buffer_Size]u8
+    failed := false
+
+    for {
+        (count, error) := os.read(input, storage[:])
+        if error == .end_of_input {
+            if current_line.length != 0 {
+                document_insert_line(
+                    document,
+                    document^.lines.length,
+                    array.view(&current_line),
+                )
+            }
+            break
+        }
+        if error != .none || count == 0 {
+            failed = true
+            break
+        }
+
+        for index: usize = 0; index < count; index += 1 {
+            byte := storage[index]
+            if byte == 10 {
+                document_insert_line(
+                    document,
+                    document^.lines.length,
+                    array.view(&current_line),
+                )
+                array.clear(&current_line)
+            } else {
+                array.append(&current_line, byte)
+            }
+        }
+    }
+
+    closed := os.close(&input)
+    array.destroy(&current_line)
+    if failed || !closed {
+        return .failed
+    }
+    return .loaded
+}
+
+// save_document replaces path with the active document lines. It writes each
+// line and one LF in order, handles partial writes, and attempts to close the
+// descriptor even after a write failure. Success means creation, every byte,
+// and close all completed. The current core/os surface has no rename or file
+// metadata API, so this simple example makes no atomic-save claim.
+save_document :: proc(document: ^Document, path: cstring) -> bool {
+    (output, create_error) := os.create_for_writing(path)
+    if create_error != .none {
+        return false
+    }
+
+    newline := [1]u8{10}
+    succeeded := true
+    for index: usize = 0; index < document^.lines.length; index += 1 {
+        if !write_bytes(output, document_line(document, index)) ||
+            !write_bytes(output, newline[:]) {
+            succeeded = false
+            break
+        }
+    }
+
+    closed := os.close(&output)
+    return succeeded && closed
+}
+
+// read_inserted_lines consumes insertion text until a line containing only dot.
+// Two dots insert one literal dot, which keeps every one-line text representable
+// despite the terminator convention. Each successful input line is copied into
+// Document before destination is reused. inserted reports the number of active
+// records added even when input ends or fails afterward.
+read_inserted_lines :: proc(
+    input: ^Input,
+    destination: ^array.Dynamic[u8],
+    document: ^Document,
+    insert_at: usize,
+) -> (usize, Insert_Input_Result) {
+    inserted: usize
+    for {
+        if !write_text(os.standard_output, "> ") {
+            return (inserted, .failed)
+        }
+        result := read_line(input, destination)
+        switch result {
+        case .end_of_input:
+            return (inserted, .end_of_input)
+        case .failed:
+            return (inserted, .failed)
+        case .line:
+        }
+
+        text := array.view(destination)
+        if bytes_equal_text(text, ".") {
+            return (inserted, .completed)
+        }
+        if bytes_equal_text(text, "..") {
+            dot := [1]u8{46}
+            document_insert_line(document, insert_at + inserted, dot[:])
+        } else {
+            document_insert_line(document, insert_at + inserted, text)
+        }
+        inserted += 1
+    }
+    return (inserted, .failed)
+}
+
+// print_help describes only the implemented command language. Empty command is
+// intentionally an alias for n, matching the useful line-editor habit of
+// walking through a file by pressing Return.
+print_help :: proc() -> bool {
+    return write_text(os.standard_output, Help_Text)
+}
+
+// run_editor owns the interactive session state but not Document, path, or the
+// standard descriptors. cursor is a zero-based active line index whenever the
+// document is non-empty; zero is the conventional inert value when empty.
+// dirty becomes true after any edit and false only after a complete save.
+//
+// The command loop is deliberately one direct sequence of semantic branches.
+// This makes state changes and failure exits visible while the command set is
+// small. It returns zero on an explicit safe/discarding quit, and one on input
+// or output failure or end-of-input with unsaved changes.
+run_editor :: proc(document: ^Document, path: cstring) -> int {
+    input: Input
+    command_storage: array.Dynamic[u8]
+    array.init(&command_storage)
+
+    cursor: usize
+    dirty := false
+    if !write_text(os.standard_output,
+        "simple Draft line editor; h for help\n") {
+        array.destroy(&command_storage)
+        return 1
+    }
+
+    for {
+        if !write_text(os.standard_output, ": ") {
+            array.destroy(&command_storage)
+            return 1
+        }
+
+        read_result := read_line(&input, &command_storage)
+        if read_result == .failed {
+            report_error("input error\n")
+            array.destroy(&command_storage)
+            return 1
+        }
+        if read_result == .end_of_input {
+            if dirty {
+                report_error("input ended with unsaved changes\n")
+                array.destroy(&command_storage)
+                return 1
+            }
+            array.destroy(&command_storage)
+            return 0
+        }
+
+        command := trim_command(array.view(&command_storage))
+
+        // Numeric commands update cursor only after the complete one-based
+        // address has been validated against the current document.
+        (line_number, is_number) := parse_line_number(command)
+        if is_number {
+            if line_number == 0 || line_number > document^.lines.length {
+                if !write_text(os.standard_error, "no such line\n") {
+                    array.destroy(&command_storage)
+                    return 1
+                }
+            } else {
+                cursor = line_number - 1
+                if !print_line(document, cursor) {
+                    array.destroy(&command_storage)
+                    return 1
+                }
+            }
+            continue
+        }
+
+        if bytes_equal_text(command, "h") {
+            if !print_help() {
+                array.destroy(&command_storage)
+                return 1
+            }
+            continue
+        }
+
+        if bytes_equal_text(command, "l") {
+            if !list_document(document) {
+                array.destroy(&command_storage)
+                return 1
+            }
+            continue
+        }
+
+        if bytes_equal_text(command, "p") {
+            if document^.lines.length == 0 {
+                if !write_text(os.standard_error, "buffer is empty\n") {
+                    array.destroy(&command_storage)
+                    return 1
+                }
+            } else if !print_line(document, cursor) {
+                array.destroy(&command_storage)
+                return 1
+            }
+            continue
+        }
+
+        if len(command) == 0 || bytes_equal_text(command, "n") {
+            if document^.lines.length == 0 ||
+                cursor + 1 >= document^.lines.length {
+                if !write_text(os.standard_error, "no next line\n") {
+                    array.destroy(&command_storage)
+                    return 1
+                }
+            } else {
+                cursor += 1
+                if !print_line(document, cursor) {
+                    array.destroy(&command_storage)
+                    return 1
+                }
+            }
+            continue
+        }
+
+        if bytes_equal_text(command, "i") ||
+            bytes_equal_text(command, "a") {
+            insert_at: usize
+            if document^.lines.length != 0 {
+                insert_at = cursor
+                if bytes_equal_text(command, "a") {
+                    insert_at += 1
+                }
+            }
+
+            (inserted, insert_result) := read_inserted_lines(
+                &input,
+                &command_storage,
+                document,
+                insert_at,
+            )
+            if inserted != 0 {
+                cursor = insert_at + inserted - 1
+                dirty = true
+            }
+            if insert_result != .completed {
+                if insert_result == .failed {
+                    report_error("input or output error\n")
+                } else if dirty {
+                    report_error("input ended with unsaved changes\n")
+                }
+                array.destroy(&command_storage)
+                return 1
+            }
+            continue
+        }
+
+        if bytes_equal_text(command, "d") {
+            if document^.lines.length == 0 {
+                if !write_text(os.standard_error, "buffer is empty\n") {
+                    array.destroy(&command_storage)
+                    return 1
+                }
+            } else {
+                document_delete_line(document, cursor)
+                if cursor == document^.lines.length && cursor != 0 {
+                    cursor -= 1
+                }
+                dirty = true
+            }
+            continue
+        }
+
+        if bytes_equal_text(command, "w") {
+            if !save_document(document, path) {
+                if !write_text(os.standard_error, "could not write file\n") {
+                    array.destroy(&command_storage)
+                    return 1
+                }
+            } else {
+                dirty = false
+                if !write_line_number(
+                    os.standard_output,
+                    document^.lines.length,
+                ) || !write_text(os.standard_output, " lines written\n") {
+                    array.destroy(&command_storage)
+                    return 1
+                }
+            }
+            continue
+        }
+
+        if bytes_equal_text(command, "q") {
+            if dirty {
+                if !write_text(os.standard_error,
+                    "unsaved changes; use w or q!\n") {
+                    array.destroy(&command_storage)
+                    return 1
+                }
+                continue
+            }
+            array.destroy(&command_storage)
+            return 0
+        }
+
+        if bytes_equal_text(command, "q!") {
+            array.destroy(&command_storage)
+            return 0
+        }
+
+        if !write_text(os.standard_error, "unknown command; use h\n") {
+            array.destroy(&command_storage)
+            return 1
+        }
+    }
+    return 1
+}
+
+// main owns the process-lifetime pathname copy and Document. Exactly one path
+// argument is required. An unavailable path starts empty so w can create a new
+// file; a read or close failure after opening is fatal. Cleanup is explicit at
+// each phase boundary to keep ownership visible in this application example.
+main :: proc() -> int {
+    arguments := os.args()
+    if len(arguments) != 2 {
+        report_error("usage: simple-editor <path>\n")
+        return 2
+    }
+
+    path: memory.Owned_String
+    memory.owned_string_copy(&path, arguments[1])
+
+    document: Document
+    document_init(&document)
+    load_result := load_document(
+        &document,
+        memory.owned_string_cstring(&path),
+    )
+    if load_result == .failed {
+        report_error("could not read file\n")
+        document_destroy(&document)
+        memory.owned_string_destroy(&path)
+        return 1
+    }
+    if load_result == .unavailable {
+        if !write_text(os.standard_error,
+            "could not read file; editing an empty buffer\n") {
+            document_destroy(&document)
+            memory.owned_string_destroy(&path)
+            return 1
+        }
+    }
+
+    status := run_editor(
+        &document,
+        memory.owned_string_cstring(&path),
+    )
+    document_destroy(&document)
+    memory.owned_string_destroy(&path)
+    return status
+}
