@@ -31,6 +31,7 @@ add_library(
   src/backend/foreign_inputs.cpp
   src/backend/foreign_summaries.cpp
   src/backend/llvm_ir.cpp
+  src/backend/native_object_tasks.cpp
   src/backend/runtime_assets.cpp
   src/backend/source_correlation.cpp
   src/backend/toolchain.cpp
@@ -290,6 +291,16 @@ if(BUILD_TESTING)
   add_executable(draft_llvm_ir_tests tests/llvm_ir_test.cpp)
   target_link_libraries(draft_llvm_ir_tests PRIVATE draft_compiler)
   add_test(NAME draft_llvm_ir_tests COMMAND draft_llvm_ir_tests)
+
+  add_executable(
+    draft_native_object_tasks_tests
+    tests/native_object_tasks_test.cpp
+  )
+  target_link_libraries(draft_native_object_tasks_tests PRIVATE draft_compiler)
+  add_test(
+    NAME draft_native_object_tasks_tests
+    COMMAND draft_native_object_tasks_tests
+  )
 
   add_executable(draft_compiler_tests tests/compiler_test.cpp)
   target_link_libraries(draft_compiler_tests PRIVATE draft_compiler)

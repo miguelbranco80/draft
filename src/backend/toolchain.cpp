@@ -2,6 +2,7 @@
 
 #include "backend/toolchain.h"
 
+#include "backend/native_object_tasks.h"
 #include "backend/source_correlation.h"
 #include "base/content_tree.h"
 #include "base/timing.h"
@@ -265,19 +266,6 @@ void append_target_arguments(
   return true;
 }
 
-// Resolves a selected filename back to the already validated target rule. A
-// null result is a compiled-input/profile mismatch and is diagnosed before an
-// ambient tool can infer language behavior from the filename.
-[[nodiscard]] const AssemblyFileRule *assembly_rule(
-    const TargetProfile &target, std::string_view relative_name) {
-  const std::string extension =
-      std::filesystem::path(relative_name).extension().string();
-  for (const AssemblyFileRule &rule : target.assembly_files) {
-    if (rule.extension == extension) return &rule;
-  }
-  return nullptr;
-}
-
 void add_provider(std::vector<std::string> &providers, std::string_view provider) {
   if (std::find(providers.begin(), providers.end(), provider) == providers.end()) {
     providers.emplace_back(provider);
@@ -530,6 +518,17 @@ NativeBuildResult build_native_artifact(
       return result;
     }
   }
+  // Freeze every package module and package-assembly input into stable work
+  // slots before invoking a tool. This validation boundary ensures later
+  // execution can change scheduling without changing task identity, output
+  // names, diagnostic order, or linker order.
+  NativeObjectPlan object_plan;
+  std::string plan_error;
+  if (!prepare_native_object_plan(target, compiled, object_plan, plan_error)) {
+    diagnostics.error(SourceRange::invalid(), plan_error);
+    return result;
+  }
+
   std::vector<std::string> objects;
   SourceCorrelationMap source_correlation;
   source_correlation.target_identity = target.facts.identity;
@@ -539,148 +538,134 @@ NativeBuildResult build_native_artifact(
         compiled.resolved_program_digest->hex();
   }
   Sha256 direct_module_identity;
-  TimingScope object_emission_timing = options.timings != nullptr
-      ? options.timings->scope("LLVM and assembly object emission")
-      : TimingScope{};
-  for (std::size_t index = 0; index < compiled.packages.size(); ++index) {
-    if (!compiled.packages[index].has_value() ||
-        !compiled.packages[index]->llvm.ok) {
-      diagnostics.error(
-          SourceRange::invalid(), "compiled package has no valid LLVM module");
-      return result;
-    }
+  for (const std::optional<CompiledPackage> &package : compiled.packages) {
+    // prepare_native_object_plan proved every row is present and lowered. This
+    // separate canonical traversal publishes package-level correlation and
+    // identity independent of how object tasks are eventually scheduled.
     source_correlation.entries.insert(
         source_correlation.entries.end(),
-        compiled.packages[index]->llvm.source_correlations.begin(),
-        compiled.packages[index]->llvm.source_correlations.end());
+        package->llvm.source_correlations.begin(),
+        package->llvm.source_correlations.end());
     // Hash each complete module separately before combining its fixed-width
     // digest. This preserves package boundaries without another ad-hoc framing
     // format and gives direct backend users an exact correlation identity.
-    direct_module_identity.update(
-        sha256(compiled.packages[index]->llvm.text).bytes);
-    const std::filesystem::path module =
-        build_directory / ("package-" + std::to_string(index) + ".ll");
-    const std::string package_stem = "package-" + std::to_string(index);
-    const std::filesystem::path object = build_directory / (package_stem + ".o");
-    std::string write_error;
-    std::string native_module = compiled.packages[index]->llvm.text;
-    if (options.instrumentation ==
-        NativeInstrumentationProfile::AddressSanitizer) {
-      std::string instrumented;
-      if (!add_address_sanitizer_function_attributes(
-              native_module, instrumented, write_error)) {
-        diagnostics.error(
-            SourceRange::invalid(),
-            "cannot prepare address-instrumented LLVM module: " +
-                write_error);
-        return result;
-      }
-      native_module = std::move(instrumented);
-    }
-    if (!write_atomic(module, native_module, write_error)) {
-      diagnostics.error(SourceRange::invalid(), write_error);
-      return result;
-    }
-    std::vector<std::string> compile_arguments{clang_path};
-    append_target_arguments(target, compile_arguments);
-    compile_arguments.push_back("-x");
-    compile_arguments.push_back("ir");
-    if (options.instrumentation ==
-        NativeInstrumentationProfile::AddressSanitizer) {
-      // These are compiler-owned profile options. AddressSanitizer inserts its
-      // checks while Clang lowers the emitted LLVM IR; frame pointers make an
-      // eventual diagnostic useful without changing Draft language semantics.
-      compile_arguments.push_back("-fsanitize=address");
-      compile_arguments.push_back("-fno-omit-frame-pointer");
-    }
-    const bool assembly_output =
-        options.artifact_kind == NativeArtifactKind::Assembly;
-    const std::filesystem::path compiled_output = assembly_output
-        ? output_path / (package_stem + ".s")
-        : object;
-    compile_arguments.push_back(assembly_output ? "-S" : "-c");
-    compile_arguments.push_back(module.string());
-    compile_arguments.push_back("-o");
-    compile_arguments.push_back(compiled_output.string());
-    const std::string compile_timing_name = options.timings != nullptr &&
-            options.timings->output() == TimingOutput::All
-        ? "Clang IR compile: " +
-            display_package_identity(compiled.packages[index]->identity)
-        : std::string{};
-    const ProcessResult compile = run_timed_process(
-        compile_arguments,
-        options.timings,
-        compile_timing_name,
-        TimingVisibility::Detail);
-    if (!compile.started || compile.exit_code != 0) {
-      diagnostics.error(
-          SourceRange::invalid(), phase_failure("LLVM object emission", compile));
-      return result;
-    }
-    if (!assembly_output) objects.push_back(object.string());
+    direct_module_identity.update(sha256(package->llvm.text).bytes);
+  }
 
-    // Package assembly is an ordinary selected source input, not inline Draft
-    // assembly.  Write the captured bytes rather than rereading the workspace,
-    // and force Clang's assembler language for every extension.  In particular
-    // this prevents Clang's ambient `.S` convention from invoking a C
-    // preprocessor when the Draft target profile says preprocessing is None.
-    for (std::size_t assembly_index = 0;
-         assembly_index < compiled.packages[index]->assembly_sources.size();
-         ++assembly_index) {
-      const CompiledAssemblySource &input =
-          compiled.packages[index]->assembly_sources[assembly_index];
-      const AssemblyFileRule *rule = assembly_rule(target, input.relative_name);
-      if (rule == nullptr ||
-          rule->preprocessing != AssemblyPreprocessing::None) {
-        diagnostics.error(
-            SourceRange::invalid(),
-            "package assembly input '" + input.relative_name +
-                "' has no exact non-preprocessed target rule");
-        return result;
+  TimingScope object_emission_timing = options.timings != nullptr
+      ? options.timings->scope("LLVM and assembly object emission")
+      : TimingScope{};
+  const bool assembly_output =
+      options.artifact_kind == NativeArtifactKind::Assembly;
+  for (const NativeObjectTask &task : object_plan.tasks) {
+    std::string write_error;
+    if (task.kind == NativeObjectTaskKind::LlvmModule) {
+      const std::filesystem::path module =
+          build_directory / (task.output_stem + task.source_extension);
+      const std::filesystem::path object =
+          build_directory / (task.output_stem + ".o");
+      std::string native_module(task.input_bytes);
+      if (options.instrumentation ==
+          NativeInstrumentationProfile::AddressSanitizer) {
+        std::string instrumented;
+        if (!add_address_sanitizer_function_attributes(
+                native_module, instrumented, write_error)) {
+          diagnostics.error(
+              SourceRange::invalid(),
+              "cannot prepare address-instrumented LLVM module: " +
+                  write_error);
+          return result;
+        }
+        native_module = std::move(instrumented);
       }
-      const std::string stem = "package-" + std::to_string(index) +
-          "-assembly-" + std::to_string(assembly_index);
-      const std::filesystem::path source =
-          (assembly_output ? output_path : build_directory) /
-          (stem + rule->extension);
-      const std::filesystem::path assembly_object =
-          build_directory / (stem + ".o");
-      if (!write_atomic(source, input.contents, write_error)) {
+      if (!write_atomic(module, native_module, write_error)) {
         diagnostics.error(SourceRange::invalid(), write_error);
         return result;
       }
-      if (assembly_output) continue;
-      std::vector<std::string> assemble_arguments{clang_path};
-      append_target_arguments(target, assemble_arguments);
-      assemble_arguments.insert(
-          assemble_arguments.end(),
-          {
-              "-x",
-              "assembler",
-              "-c",
-              source.string(),
-              "-o",
-              assembly_object.string(),
-          });
-      const std::string assemble_timing_name = options.timings != nullptr &&
+
+      std::vector<std::string> compile_arguments{clang_path};
+      append_target_arguments(target, compile_arguments);
+      compile_arguments.push_back("-x");
+      compile_arguments.push_back("ir");
+      if (options.instrumentation ==
+          NativeInstrumentationProfile::AddressSanitizer) {
+        // These are compiler-owned profile options. AddressSanitizer inserts
+        // its checks while Clang lowers the emitted LLVM IR; frame pointers
+        // make an eventual diagnostic useful without changing Draft semantics.
+        compile_arguments.push_back("-fsanitize=address");
+        compile_arguments.push_back("-fno-omit-frame-pointer");
+      }
+      const std::filesystem::path compiled_output = assembly_output
+          ? output_path / (task.output_stem + ".s")
+          : object;
+      compile_arguments.push_back(assembly_output ? "-S" : "-c");
+      compile_arguments.push_back(module.string());
+      compile_arguments.push_back("-o");
+      compile_arguments.push_back(compiled_output.string());
+      const std::string compile_timing_name = options.timings != nullptr &&
               options.timings->output() == TimingOutput::All
-          ? "Clang package assembly: " + input.relative_name
+          ? "Clang IR compile: " + task.display_name
           : std::string{};
-      const ProcessResult assemble = run_timed_process(
-          assemble_arguments,
+      const ProcessResult compile = run_timed_process(
+          compile_arguments,
           options.timings,
-          assemble_timing_name,
+          compile_timing_name,
           TimingVisibility::Detail);
-      if (!assemble.started || assemble.exit_code != 0) {
+      if (!compile.started || compile.exit_code != 0) {
         diagnostics.error(
             SourceRange::invalid(),
-            phase_failure(
-                "assembly object emission for '" + input.relative_name + "'",
-                assemble));
+            phase_failure("LLVM object emission", compile));
         return result;
       }
-      objects.push_back(assembly_object.string());
+      if (!assembly_output) objects.push_back(object.string());
+      continue;
     }
+
+    // Package assembly is an ordinary selected source input, not inline Draft
+    // assembly. Write the captured bytes rather than rereading the workspace,
+    // and force Clang's assembler language for every extension. In particular,
+    // this prevents ambient `.S` preprocessing when the target says None.
+    const std::filesystem::path source =
+        (assembly_output ? output_path : build_directory) /
+        (task.output_stem + task.source_extension);
+    const std::filesystem::path assembly_object =
+        build_directory / (task.output_stem + ".o");
+    if (!write_atomic(source, task.input_bytes, write_error)) {
+      diagnostics.error(SourceRange::invalid(), write_error);
+      return result;
+    }
+    if (assembly_output) continue;
+
+    std::vector<std::string> assemble_arguments{clang_path};
+    append_target_arguments(target, assemble_arguments);
+    assemble_arguments.insert(
+        assemble_arguments.end(),
+        {
+            "-x",
+            "assembler",
+            "-c",
+            source.string(),
+            "-o",
+            assembly_object.string(),
+        });
+    const std::string assemble_timing_name = options.timings != nullptr &&
+            options.timings->output() == TimingOutput::All
+        ? "Clang package assembly: " + task.display_name
+        : std::string{};
+    const ProcessResult assemble = run_timed_process(
+        assemble_arguments,
+        options.timings,
+        assemble_timing_name,
+        TimingVisibility::Detail);
+    if (!assemble.started || assemble.exit_code != 0) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          phase_failure(
+              "assembly object emission for '" + task.display_name + "'",
+              assemble));
+      return result;
+    }
+    objects.push_back(assembly_object.string());
   }
   object_emission_timing.finish();
 
