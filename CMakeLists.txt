@@ -36,6 +36,7 @@ add_library(
   src/base/sha256.cpp
   src/base/timing.cpp
   src/compile/compiler.cpp
+  src/compile/expanded_source.cpp
   src/compile/resolver.cpp
   src/elaborator/codex_cli.cpp
   src/elaborator/generated_source.cpp
@@ -232,6 +233,14 @@ if(BUILD_TESTING)
     PRIVATE DRAFT_SOURCE_DIRECTORY="${CMAKE_CURRENT_SOURCE_DIR}"
   )
   add_test(NAME draft_resolver_tests COMMAND draft_resolver_tests)
+
+  add_executable(draft_expanded_source_tests tests/expanded_source_test.cpp)
+  target_link_libraries(draft_expanded_source_tests PRIVATE draft_compiler)
+  target_compile_definitions(
+    draft_expanded_source_tests
+    PRIVATE DRAFT_SOURCE_DIRECTORY="${CMAKE_CURRENT_SOURCE_DIR}"
+  )
+  add_test(NAME draft_expanded_source_tests COMMAND draft_expanded_source_tests)
 
   add_executable(draft_codex_cli_tests tests/codex_cli_test.cpp)
   target_link_libraries(draft_codex_cli_tests PRIVATE draft_compiler)
@@ -478,6 +487,19 @@ if(BUILD_TESTING)
       "-DSOURCE_PACKAGE=${CMAKE_CURRENT_SOURCE_DIR}/examples/hello"
       "-DTEST_ROOT=${CMAKE_CURRENT_BINARY_DIR}/driver-symlink-path-test"
       -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/driver_symlink_path_test.cmake"
+  )
+
+  # Complete-source projection is a public, provider-free inspection command.
+  # Run it through the real driver while keeping its requested output entirely
+  # inside the disposable build tree.
+  add_test(
+    NAME draft_driver_expand
+    COMMAND
+      "${CMAKE_COMMAND}"
+      "-DDRAFTC=$<TARGET_FILE:draftc>"
+      "-DSOURCE_PACKAGE=${CMAKE_CURRENT_SOURCE_DIR}/examples/agent-acceptance/app"
+      "-DTEST_ROOT=${CMAKE_CURRENT_BINARY_DIR}/expanded-source-driver-test"
+      -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/driver_expand_test.cmake"
   )
 
   if(APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64)$")

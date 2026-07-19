@@ -9,8 +9,10 @@
 
 #include "backend/toolchain.h"
 #include "backend/foreign_summaries.h"
+#include "backend/runtime_assets.h"
 #include "base/timing.h"
 #include "compile/compiler.h"
+#include "compile/expanded_source.h"
 #include "compile/resolver.h"
 #include "elaborator/codex_cli.h"
 #include "elaborator/resolution_store.h"
@@ -450,6 +452,104 @@ int compile_package(
     std::cerr << draft::render_diagnostics(sources, diagnostics);
   }
   return diagnostics.has_errors() ? 1 : 0;
+}
+
+// Materializes the exact final SourceManager buffers selected by one complete
+// provider-free compilation. The command authenticates the same external
+// program inputs as a native build before publishing the projection, but it
+// never invokes a linker, provider, validation command, or resolution-store
+// mutation. The output directory must be absent so old files cannot survive a
+// later graph and masquerade as part of the current expanded program.
+int expand_package(
+    const std::string &directory,
+    const std::filesystem::path &output_directory,
+    const draft::TargetProfile &target,
+    draft::RuntimeAssertionMode runtime_assertions,
+    const std::vector<draft::ForeignProviderInput> &foreign_providers,
+    const std::vector<draft::ForeignProviderSummaryInput> &provider_summaries,
+    const std::vector<draft::RuntimeAssetInput> &runtime_assets,
+    draft::TimingRecorder *timings) {
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  std::filesystem::path absolute_directory;
+  std::string path_error;
+  if (!canonical_package_directory(
+          directory, absolute_directory, path_error)) {
+    std::cerr << "error: " << path_error << '\n';
+    return 1;
+  }
+
+  draft::CompileWorkspaceOptions options;
+  options.target = target;
+  options.configuration.runtime_assertions = runtime_assertions;
+  options.workspace.workspace_directory =
+      absolute_directory.parent_path().string();
+  configure_core_distribution(options.workspace);
+  options.timings = timings;
+  if (!load_foreign_provider_audits(
+          options.workspace.workspace_directory,
+          provider_summaries,
+          foreign_providers,
+          options.foreign_provider_audits,
+          diagnostics)) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+    return 1;
+  }
+
+  const draft::CompileWorkspaceResult compiled =
+      draft::compile_workspace_with_resolution(
+          sources,
+          absolute_directory.string(),
+          std::move(options),
+          diagnostics);
+  bool authenticated_inputs = compiled.ok;
+  if (compiled.ok && compiled.resolution_manifest.has_value()) {
+    // Source projection does not consume native artifacts or runtime assets,
+    // but their content hashes are part of this manifest's resolved-program
+    // identity. Re-authenticate the complete sets before labeling the output
+    // with that identity instead of trusting unrelated current filesystem
+    // bytes that happen to share the same logical names.
+    std::vector<draft::VerifiedForeignProviderInput> verified_providers;
+    std::vector<draft::VerifiedRuntimeAssetInput> verified_assets;
+    authenticated_inputs = draft::verify_foreign_provider_inputs(
+        foreign_providers,
+        compiled.resolution_manifest->external_inputs,
+        verified_providers,
+        diagnostics);
+    if (authenticated_inputs) {
+      authenticated_inputs = draft::verify_runtime_asset_inputs(
+          runtime_assets,
+          compiled.resolution_manifest->external_inputs,
+          verified_assets,
+          diagnostics);
+    }
+  } else if (compiled.ok &&
+             (!foreign_providers.empty() || !provider_summaries.empty() ||
+              !runtime_assets.empty())) {
+    diagnostics.error(
+        draft::SourceRange::invalid(),
+        "expanded source cannot attach external inputs to a handwritten "
+        "program without a resolution manifest");
+    authenticated_inputs = false;
+  }
+
+  bool materialized = false;
+  if (authenticated_inputs && !diagnostics.has_errors()) {
+    const draft::ExpandedSourceProjectionResult projected =
+        draft::materialize_expanded_source(
+            sources, compiled, output_directory, diagnostics);
+    if (projected.ok) {
+      materialized = true;
+      std::cout << "expanded " << projected.source_files
+                << " source files with " << projected.mapped_expansions
+                << " generated mappings to "
+                << projected.output_directory.string() << '\n';
+    }
+  }
+  if (!diagnostics.diagnostics().empty()) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+  }
+  return materialized && !diagnostics.has_errors() ? 0 : 1;
 }
 
 int build_package(
@@ -969,6 +1069,13 @@ void print_usage() {
             << "  draftc emit-c-header <package-directory> [-o <output.h>]\n"
             << "      [--target aarch64-macos|aarch64-linux]\n"
             << "      [--timings|--timings=all]\n"
+            << "  draftc expand <package-directory> --out <directory>\n"
+            << "      [--target aarch64-macos|aarch64-linux]\n"
+            << "      [--assertions=off]\n"
+            << "      [--provider name=object|archive|shared-library:<path>]...\n"
+            << "      [--provider-summary name:<path>]...\n"
+            << "      [--runtime-asset name:<file-or-directory>]...\n"
+            << "      [--timings|--timings=all]\n"
             << "  draftc build <package-directory> [-o <output>]\n"
             << "      [--target aarch64-macos|aarch64-linux]\n"
             << "      [--kind executable|object|static-library|dynamic-library|assembly]\n"
@@ -1071,6 +1178,72 @@ int main(int argc, char **argv) {
       }
     }
     return emit_c_header_package(argv[2], target, output, timings);
+  }
+  if (argc >= 3 && std::string_view(argv[1]) == "expand") {
+    std::optional<std::filesystem::path> output_directory;
+    bool assertions_off = false;
+    bool target_set = false;
+    std::vector<draft::ForeignProviderInput> foreign_providers;
+    std::vector<draft::ForeignProviderSummaryInput> provider_summaries;
+    std::vector<draft::RuntimeAssetInput> runtime_assets;
+    for (int index = 3; index < argc; ++index) {
+      const std::string_view argument(argv[index]);
+      if (argument == "--out" && !output_directory.has_value() &&
+          index + 1 < argc) {
+        output_directory = argv[++index];
+      } else if (argument == "--target" && !target_set &&
+                 index + 1 < argc) {
+        target_set = true;
+        if (!select_command_target(argv[++index], target)) return 2;
+      } else if (argument == "--assertions=off" && !assertions_off) {
+        assertions_off = true;
+      } else if (argument == "--provider" && index + 1 < argc) {
+        draft::ForeignProviderInput provider;
+        std::string reason;
+        if (!parse_foreign_provider(argv[++index], provider, reason)) {
+          std::cerr << "error: " << reason << '\n';
+          return 2;
+        }
+        foreign_providers.push_back(std::move(provider));
+      } else if (argument == "--provider-summary" && index + 1 < argc) {
+        draft::ForeignProviderSummaryInput summary;
+        std::string reason;
+        if (!parse_foreign_provider_summary(
+                argv[++index], summary, reason)) {
+          std::cerr << "error: " << reason << '\n';
+          return 2;
+        }
+        provider_summaries.push_back(std::move(summary));
+      } else if (argument == "--runtime-asset" && index + 1 < argc) {
+        draft::RuntimeAssetInput asset;
+        std::string reason;
+        if (!parse_runtime_asset(argv[++index], asset, reason)) {
+          std::cerr << "error: " << reason << '\n';
+          return 2;
+        }
+        runtime_assets.push_back(std::move(asset));
+      } else if (is_timing_argument(argument)) {
+        continue;
+      } else {
+        print_usage();
+        return 2;
+      }
+    }
+    if (!output_directory.has_value()) {
+      print_usage();
+      return 2;
+    }
+    return expand_package(
+        argv[2],
+        *output_directory,
+        target,
+        assertions_off
+            ? draft::RuntimeAssertionMode::Off
+            : draft::RuntimeAssertionMode::On,
+        foreign_providers,
+        provider_summaries,
+        runtime_assets,
+        timings);
   }
   if (argc >= 3 && std::string_view(argv[1]) == "resolve") {
     bool revalidate = false;

@@ -135,6 +135,8 @@ build/draftc lex path/to/file.draft
 build/draftc syntax path/to/file.draft
 build/draftc check path/to/package --target aarch64-macos
 build/draftc check path/to/package --target aarch64-linux
+build/draftc expand path/to/package --out /tmp/expanded-source \
+  --target aarch64-macos
 ```
 
 Use `lex` for token/semicolon questions, `syntax` for grammar/recovery, and
@@ -153,6 +155,12 @@ build/draftc emit-c-header path/to/package -o /tmp/package.h \
 
 Pass an explicit target for target-sensitive work. A default-macOS check alone
 does not establish portability.
+
+`expand` performs a normal provider-free check and writes final selected source
+plus generated-to-surface `.draft-map` sidecars. Its destination must not
+already exist. It is useful when reviewing `...` expansions or feeding simple
+editor tooling, but remains derived output: commit the resolution manifest and
+referenced content-addressed generated Draft objects instead.
 
 ## Native validation
 

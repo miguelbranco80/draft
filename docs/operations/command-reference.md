@@ -45,6 +45,31 @@ build/draftc target [--target aarch64-macos|aarch64-linux]
 contains saved `...` expansions, it loads and revalidates them. It never starts
 a provider. `emit-llvm` additionally lowers MIR and prints each package module.
 
+## Expand checked source
+
+```sh
+build/draftc expand path/to/package --out new-directory \
+  [--target aarch64-macos|aarch64-linux] [--assertions=off] \
+  [--provider name=object|archive|shared-library:/absolute/path]... \
+  [--provider-summary name:/absolute/path]... \
+  [--runtime-asset name:/absolute/file-or-directory]... \
+  [--timings|--timings=all]
+```
+
+`expand` compiles and authenticates the resolved program without a provider,
+then writes every selected Draft and assembly source file under a new output
+tree. Generated fragments are already substituted in the copied Draft bytes.
+`draft-expanded-source.map` records safe output-root names and semantic package
+root identities; every source has a `.draft-map` sidecar recording any
+generated-to-surface intervals. The output directory must not exist, preventing
+stale files from a previous graph from surviving in the new projection.
+
+This tree is an explicitly requested inspection artifact, not a cache or a
+second source of truth. Continue to commit `.draft/resolution.json` and every
+referenced `.draft/generated/<hash>.draft` object. Do not commit native
+intermediates, transaction staging, or an expanded tree unless the project has
+a separate reason to version that derived view.
+
 ## Build native artifacts
 
 ```sh
@@ -110,6 +135,12 @@ source-resolution manifest. It cannot be combined with a provider model.
 External provider, summary, and runtime-asset mappings become content-addressed
 resolved-program inputs. Validation and judgment evidence remain separate and
 are changed only by their own commands.
+
+The resolution manifest and all generated objects it references are normal
+project source and should ordinarily be committed together. A clean checkout
+can therefore `check`, `expand`, `test`, or `build` without Codex credentials.
+The compiler creates no persistent AST, HIR, MIR, native-object, or incremental
+cache; `.draft/generated` is source, not cached compiler state.
 
 ## Test and benchmark
 

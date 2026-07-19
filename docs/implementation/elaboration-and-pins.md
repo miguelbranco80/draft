@@ -169,13 +169,17 @@ sites become visible. An unmatched identity fails before commit. The selected
 proposal still crosses the generated-source grammar boundary and ordinary
 semantic checks, and every unselected site follows normal fresh/stale behavior.
 
-The compiler already treats the saved fragment as source inserted at its exact
-`...` site while retaining the original surface buffer and a composed source
-map. A future `draft expand` command or IDE virtual document can therefore show
-the whole program with every site replaced by generated Draft text without
-changing resolution or build semantics. Diagnostics can continue to distinguish
-authored coordinates from generated coordinates. This view needs only the saved
-expansions; it has no relationship to host compiler or SDK identity.
+The compiler treats the saved fragment as source inserted at its exact `...`
+site while retaining the original surface buffer and a composed source map.
+`draftc expand <package> --out <directory>` exposes that final checked view as
+ordinary files plus deterministic `.draft-map` sidecars. Indexed output-root
+directories avoid treating semantic root identities as trusted host paths; a
+top-level map retains each root's actual kind, import prefix, and identity.
+The command refuses an existing destination and publishes a complete staging
+tree with one rename, so stale or partial files cannot be mistaken for current
+source. It does not change resolution or build semantics, and the durable
+manifest plus content-addressed fragments remain authoritative. An IDE may
+construct the same virtual view without writing it.
 
 The first Codex adapter permits two attempts, each with a five-minute deadline.
 That policy is part of adapter configuration identity. A timed-out child is

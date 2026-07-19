@@ -25,10 +25,10 @@ endif()
 string(REGEX MATCHALL "\\[--timings\\|--timings=all\\]"
   timing_usage_options "${usage_stderr}")
 list(LENGTH timing_usage_options timing_usage_count)
-if(NOT timing_usage_count EQUAL 8 OR
+if(NOT timing_usage_count EQUAL 9 OR
    usage_stderr MATCHES "package commands accept --timings")
   message(FATAL_ERROR
-    "timing options are not shown directly on all eight package commands\n${usage_stderr}")
+    "timing options are not shown directly on all nine package commands\n${usage_stderr}")
 endif()
 
 execute_process(

@@ -146,6 +146,10 @@ The bootstrap deliberately has no persistent compiler cache. Parsed syntax,
 typed graphs, MIR, native objects, and other derived compiler state live only
 for one command or in explicitly requested output artifacts. The generated
 Draft objects above are committed program source, not cached compiler state.
+`draftc expand --out <directory>` is an explicit read-only projection of those
+objects after complete provider-free checking. It writes final source bytes and
+generated-to-surface maps transactionally to a new directory; that requested
+artifact is neither an input nor persistent compiler state.
 
 `draft resolve` stages changes and atomically commits only a coherent,
 compiler-checked program. It does not run tests, benchmarks, or judgments.

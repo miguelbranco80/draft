@@ -347,6 +347,7 @@ draft resolve
 draft resolve --regenerate
 draft resolve --regenerate site-0123456789abcdef
 draft resolve --revalidate
+draft expand ./cmd/viewer --out /tmp/viewer-expanded
 draft judge
 draft judge codec/jpeg:decode
 draft build ./cmd/viewer
@@ -364,6 +365,14 @@ Missing, stale, invalid, or ambiguously associated pins require `draft resolve`.
 A complete handwritten program with no synthesis sites needs no resolution
 manifest. This provider boundary is unconditional rather than an optional build
 mode: only `draft resolve` may request generated source.
+
+`draft expand <package> --out <directory>` performs the same provider-free
+checks, then writes a complete source projection in which every selected `...`
+site has been replaced by its checked generated Draft bytes. The requested
+directory must not already exist. The projection includes deterministic root
+metadata and a source-map sidecar for every selected Draft or assembly input;
+it does not replace the manifest and content-addressed fragments as the durable
+program representation, and it never changes them.
 
 A provider-free build, ordinary resolution, or revalidation may consume a
 content-fresh pin without installing the provider that originally produced it.

@@ -98,6 +98,7 @@ the current step, then broaden:
 build/draftc lex path/to/file.draft
 build/draftc syntax path/to/file.draft
 build/draftc check path/to/package
+build/draftc expand path/to/package --out /tmp/expanded-source
 build/draftc test path/to/package
 build/draftc build path/to/package -o /tmp/program
 /tmp/program
@@ -108,6 +109,11 @@ macOS is the compatibility default. Run both target checks for portable code.
 Only native AArch64 hosts can execute current Draft artifacts. See
 [workflow-and-testing.md](references/workflow-and-testing.md) for negative
 compiler tests, CMake/CTest, sanitizer, example, and documentation routing.
+
+For a resolved package, `expand --out` writes a provider-free complete-source
+view with one `.draft-map` sidecar per selected source. The destination must be
+absent. Treat this as derived inspection output; the files to commit are
+`.draft/resolution.json` and its referenced `.draft/generated` objects.
 
 Before completion, inspect the diff, re-read changed Draft code linearly, audit
 comments and ownership, verify deterministic ordering, run the relevant wider
