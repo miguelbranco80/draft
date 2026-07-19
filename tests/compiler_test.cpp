@@ -52,11 +52,24 @@ void test_target_lowering_continues_checked_graph(TestState &state) {
   draft::CompileWorkspaceOptions check_options;
   check_options.target = draft::make_aarch64_macos_profile();
   check_options.workspace.workspace_directory = workspace;
+  draft::CompileWorkspaceOptions interface_options = check_options;
+  interface_options.stage =
+      draft::CompileWorkspaceStage::DiscoverInterfaceSynthesis;
   draft::SourceManager continued_sources;
   draft::DiagnosticSink continued_diagnostics;
   draft::CompileWorkspaceResult continued = draft::compile_workspace(
-      continued_sources, root, check_options, continued_diagnostics);
+      continued_sources, root, interface_options, continued_diagnostics);
   EXPECT(state, continued.ok);
+  EXPECT(state,
+      continued.progress ==
+          draft::CompileWorkspaceProgress::InterfaceDiscovery);
+  EXPECT(state,
+      draft::continue_compiled_workspace_semantics(
+          continued_sources,
+          root,
+          check_options,
+          continued,
+          continued_diagnostics));
   EXPECT(state,
       continued.progress == draft::CompileWorkspaceProgress::SemanticClosure);
 

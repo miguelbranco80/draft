@@ -57,6 +57,23 @@ namespace {
       TimingVisibility::Detail);
 }
 
+// Converts semantic command selection into the exact package-loader facts used
+// by both initial graph construction and later interface-to-body continuation.
+// Continuations receive the driver's semantic options, not the private copy
+// normalized inside an earlier compile_workspace call, so this operation must
+// be idempotent and shared rather than relying on incidental mutation.
+void configure_package_selection(CompileWorkspaceOptions &options) {
+  if (options.validation_kind == ValidationKind::Test) {
+    options.workspace.package_options.include_tests = true;
+    options.workspace.package_options.include_benchmarks = false;
+  } else if (options.validation_kind == ValidationKind::Benchmark) {
+    options.workspace.package_options.include_tests = false;
+    options.workspace.package_options.include_benchmarks = true;
+  }
+  options.workspace.package_options.file_tag = options.target.facts.file_tag;
+  options.workspace.package_options.timings = options.timings;
+}
+
 // WorkspacePackage storage follows discovery order, which is deterministic but
 // is not a topological order when two sibling packages share a dependency. This
 // small Kahn traversal treats imports as consumer -> dependency edges. The
@@ -1038,15 +1055,7 @@ CompileWorkspaceResult compile_workspace(
         SourceRange::invalid(), "invalid target profile: " + profile_error);
     return result;
   }
-  if (options.validation_kind == ValidationKind::Test) {
-    options.workspace.package_options.include_tests = true;
-    options.workspace.package_options.include_benchmarks = false;
-  } else if (options.validation_kind == ValidationKind::Benchmark) {
-    options.workspace.package_options.include_tests = false;
-    options.workspace.package_options.include_benchmarks = true;
-  }
-  options.workspace.package_options.file_tag = options.target.facts.file_tag;
-  options.workspace.package_options.timings = options.timings;
+  configure_package_selection(options);
   TimingScope workspace_timing = options.timings != nullptr
       ? options.timings->scope("workspace loading")
       : TimingScope{};
@@ -1266,6 +1275,81 @@ CompileWorkspaceResult compile_workspace(
     return result;
   }
 
+  bool every_package_ready = true;
+  for (const std::optional<CompiledPackage> &package : result.packages) {
+    every_package_ready = every_package_ready && package.has_value();
+    if (package.has_value()) {
+      every_package_ready = every_package_ready && package->semantics.ok &&
+          package->metadata.ok;
+    }
+  }
+  result.ok = every_package_ready &&
+      diagnostics.error_count() == initial_errors;
+  if (!result.ok) return result;
+  result.progress = CompileWorkspaceProgress::InterfaceDiscovery;
+  if (!continue_compiled_workspace_semantics(
+          sources,
+          root_package_directory,
+          options,
+          result,
+          diagnostics)) {
+    result.ok = false;
+    return result;
+  }
+  const bool needs_target_continuation =
+      options.validation_kind != ValidationKind::None ||
+      options.lower_mir || options.emit_llvm;
+  if (needs_target_continuation &&
+      !continue_compiled_workspace(
+          sources, options, result, diagnostics)) {
+    result.ok = false;
+  }
+  return result;
+}
+
+bool continue_compiled_workspace_semantics(
+    SourceManager &sources,
+    const std::string &root_package_directory,
+    CompileWorkspaceOptions options,
+    CompileWorkspaceResult &result,
+    DiagnosticSink &diagnostics) {
+  const std::size_t initial_errors = diagnostics.error_count();
+  configure_package_selection(options);
+  if (!result.ok ||
+      result.progress != CompileWorkspaceProgress::InterfaceDiscovery) {
+    diagnostics.error(
+        SourceRange::invalid(),
+        "semantic closure requires one successful interface graph");
+    return false;
+  }
+  if (options.stage != CompileWorkspaceStage::Complete ||
+      result.target_identity != options.target.facts.identity ||
+      result.compiler_content_identity != options.compiler_content_identity ||
+      result.configuration.runtime_assertions !=
+          options.configuration.runtime_assertions ||
+      result.validation_kind != options.validation_kind) {
+    diagnostics.error(
+        SourceRange::invalid(),
+        "semantic-closure options do not match the interface graph");
+    return false;
+  }
+  for (const std::optional<CompiledPackage> &package : result.packages) {
+    if (!package.has_value()) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "semantic closure has a package blocked on interface synthesis");
+      return false;
+    }
+  }
+  const std::vector<std::size_t> consumer_order =
+      consumer_first_order(result.graph);
+  if (consumer_order.size() != result.graph.packages.size()) {
+    diagnostics.error(
+        SourceRange::invalid(),
+        "interface workspace package graph became cyclic before body checking");
+    return false;
+  }
+
   // Phase 2: body-check from consumers toward dependencies. A checked caller
   // can request a public generic body from a package that has semantic tables
   // but has not yet entered its body pass. The type graph transfer below is the
@@ -1428,7 +1512,10 @@ CompileWorkspaceResult compile_workspace(
         root_package_directory,
         std::move(validation_options),
         diagnostics);
-    if (!validation.ok) return result;
+    if (!validation.ok) {
+      result.ok = false;
+      return false;
+    }
 
     for (std::size_t package_index = 0;
          package_index < result.packages.size(); ++package_index) {
@@ -1454,7 +1541,8 @@ CompileWorkspaceResult compile_workspace(
               validation.validation_entries,
               package.validation_context,
               diagnostics)) {
-        return result;
+        result.ok = false;
+        return false;
       }
     }
   }
@@ -1530,23 +1618,11 @@ CompileWorkspaceResult compile_workspace(
   }
   closure_timing.finish();
 
-  bool every_package_ready = true;
-  for (const std::optional<CompiledPackage> &package : result.packages) {
-    every_package_ready = every_package_ready && package.has_value();
+  result.ok = diagnostics.error_count() == initial_errors;
+  if (result.ok) {
+    result.progress = CompileWorkspaceProgress::SemanticClosure;
   }
-  result.ok = every_package_ready &&
-      diagnostics.error_count() == initial_errors;
-  if (!result.ok) return result;
-  result.progress = CompileWorkspaceProgress::SemanticClosure;
-  const bool needs_target_continuation =
-      options.validation_kind != ValidationKind::None ||
-      options.lower_mir || options.emit_llvm;
-  if (needs_target_continuation &&
-      !continue_compiled_workspace(
-          sources, options, result, diagnostics)) {
-    result.ok = false;
-  }
-  return result;
+  return result.ok;
 }
 
 bool continue_compiled_workspace(
@@ -1804,6 +1880,7 @@ CompileWorkspaceResult compile_workspace_with_resolution(
   // checked until every package interface is complete, and no round observes a
   // same-round expansion. Each nonempty round removes at least one site.
   std::size_t interface_round = 0;
+  CompileWorkspaceResult interface_surface;
   while (true) {
     interface_round += 1;
     if (options.timings != nullptr) {
@@ -1821,7 +1898,7 @@ CompileWorkspaceResult compile_workspace_with_resolution(
     TimingScope round_timing = options.timings != nullptr
         ? options.timings->scope(round_name)
         : TimingScope{};
-    CompileWorkspaceResult interface_surface = compile_workspace(
+    interface_surface = compile_workspace(
         sources,
         root_package_directory,
         std::move(interface_options),
@@ -1888,19 +1965,27 @@ CompileWorkspaceResult compile_workspace_with_resolution(
     break;
   }
 
-  // With early interfaces installed, the ordinary full front end can derive
-  // expected types and visible locals for body, expression, and assembly sites.
+  // With early interfaces installed, continue their exact declarations, types,
+  // parsed source, and dependency edges into bodies. This used to reload and
+  // rebuild the workspace as a separate body-surface compiler pass.
   CompileWorkspaceOptions body_options = options;
   body_options.stage = CompileWorkspaceStage::Complete;
   body_options.lower_mir = false;
   body_options.emit_llvm = false;
   body_options.workspace.source_overrides = interface_overrides;
   TimingScope body_surface_timing = options.timings != nullptr
-      ? options.timings->scope("body surface compilation")
+      ? options.timings->scope("body semantic continuation")
       : TimingScope{};
-  CompileWorkspaceResult body_surface = compile_workspace(
-      sources, root_package_directory, body_options, diagnostics);
+  if (!continue_compiled_workspace_semantics(
+          sources,
+          root_package_directory,
+          body_options,
+          interface_surface,
+          diagnostics)) {
+    interface_surface.ok = false;
+  }
   body_surface_timing.finish();
+  CompileWorkspaceResult body_surface = std::move(interface_surface);
   if (!body_surface.ok) return body_surface;
 
   if (loaded_manifest.state == ResolutionManifestLoadState::Missing) {

@@ -176,6 +176,19 @@ struct CompileWorkspaceResult {
     CompileWorkspaceOptions options,
     DiagnosticSink &diagnostics);
 
+// Advances a successful interface-discovery result through body checking,
+// validation-context enrichment, effects, denials, and completed package
+// interfaces without reloading or reanalyzing declarations. Every package must
+// be ready: callers resolve declaration/member synthesis before crossing this
+// boundary. root_package_directory is used only when synthesis context requests
+// separately selected test or benchmark source.
+[[nodiscard]] bool continue_compiled_workspace_semantics(
+    SourceManager &sources,
+    const std::string &root_package_directory,
+    CompileWorkspaceOptions options,
+    CompileWorkspaceResult &compiled,
+    DiagnosticSink &diagnostics);
+
 // Continues one successful Complete result from SemanticClosure through
 // validation discovery and requested target lowering, or from an already
 // discovered validation graph through its later MIR/LLVM request. The function

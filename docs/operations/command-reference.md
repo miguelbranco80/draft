@@ -12,8 +12,8 @@ anywhere after the package directory, alongside the command's other options;
 for example, `draftc build examples/hello-world -o hello_world --timings=all`.
 The compact form writes a hierarchical wall-clock report and deterministic
 work counters to stderr after ordinary command output. It separates
-resolution-manifest work, every interface-discovery round, body-surface
-compilation, final MIR/LLVM code generation, native object/link/debug-symbol
+resolution-manifest work, every interface-discovery round, body-semantic
+continuation, MIR/LLVM code generation, native object/link/debug-symbol
 work, and validation work when those phases run. Native commands additionally
 report the user and system CPU accounted to Clang, the linker, other host tools,
 and validation executables.

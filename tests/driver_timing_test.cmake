@@ -46,7 +46,7 @@ if(NOT summary_stdout MATCHES "checked package graph rooted at hello")
 endif()
 if(NOT summary_stderr MATCHES "timings \\(wall clock\\):" OR
    NOT summary_stderr MATCHES "interface discovery round 1" OR
-   NOT summary_stderr MATCHES "compiler passes: 2")
+   NOT summary_stderr MATCHES "compiler passes: 1")
   message(FATAL_ERROR "summary report lacks required phase/counter rows\n${summary_stderr}")
 endif()
 if(summary_stderr MATCHES "package declarations:" OR

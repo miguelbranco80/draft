@@ -176,6 +176,13 @@ resolve stops at semantic closure. This graph ownership boundary ensures the
 combined command does not reload the manifest or reconstruct declarations,
 types, HIR, or dependency edges merely to emit the artifact.
 
+Interface discovery and semantic closure are monotonic states of that result,
+not separate workspace compilations. Once declaration/member synthesis is
+absent, the compiler checks bodies and publishes effects on the existing loaded
+files, syntax trees, declarations, interned types, and dependency interfaces.
+Handwritten commands therefore load and analyze declarations once before later
+MIR/LLVM continuation.
+
 The compiler treats the saved fragment as source inserted at its exact `...`
 site while retaining the original surface buffer and a composed source map.
 `draftc expand <package> --out <directory>` exposes that final checked view as

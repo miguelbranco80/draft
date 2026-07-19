@@ -596,6 +596,7 @@ ResolveWorkspaceResult resolve_workspace(
   // own round's proposals. Merging a nonempty round removes at least one
   // provider site, and generated-source validation forbids adding another, so
   // the finite source graph guarantees termination without an iteration cap.
+  CompileWorkspaceResult interface_surface;
   while (true) {
     if (resolution_cancelled(options, diagnostics)) return result;
     CompileWorkspaceOptions interface_options = options.compile;
@@ -604,7 +605,7 @@ ResolveWorkspaceResult resolve_workspace(
     interface_options.lower_mir = false;
     interface_options.emit_llvm = false;
     interface_options.workspace.source_overrides = interface_overrides;
-    CompileWorkspaceResult interface_surface = compile_workspace(
+    interface_surface = compile_workspace(
         sources,
         root_package_directory,
         interface_options,
@@ -646,20 +647,25 @@ ResolveWorkspaceResult resolve_workspace(
     break;
   }
 
-  // Stage 2 type-checks bodies only after all interface edits are installed.
-  // Its obligations therefore include exact expected expression types and
-  // visible locals together with the generated interface dependencies.
+  // Stage 2 continues the final interface graph into bodies after all interface
+  // edits are installed. Its obligations therefore include exact expected
+  // expression types and visible locals together with the generated interface
+  // dependencies, without reloading or reanalyzing declarations.
   if (resolution_cancelled(options, diagnostics)) return result;
   CompileWorkspaceOptions body_options = options.compile;
   body_options.stage = CompileWorkspaceStage::Complete;
   body_options.lower_mir = false;
   body_options.emit_llvm = false;
   body_options.workspace.source_overrides = interface_overrides;
-  CompileWorkspaceResult body_surface = compile_workspace(
-      sources,
-      root_package_directory,
-      body_options,
-      diagnostics);
+  if (!continue_compiled_workspace_semantics(
+          sources,
+          root_package_directory,
+          body_options,
+          interface_surface,
+          diagnostics)) {
+    return result;
+  }
+  CompileWorkspaceResult body_surface = std::move(interface_surface);
   if (!body_surface.ok) return result;
 
   ResolvedStage body_stage = resolve_stage(
