@@ -2,6 +2,7 @@
 
 #include "backend/toolchain.h"
 
+#include "backend/llvm_object_emitter.h"
 #include "backend/native_object_tasks.h"
 #include "backend/source_correlation.h"
 #include "base/content_tree.h"
@@ -199,12 +200,11 @@ void append_target_arguments(
   return message;
 }
 
-// Clang normally adds `sanitize_address` while translating C-family source.
-// Draft hands it already-formed LLVM IR, so the driver flag alone schedules
-// global instrumentation but does not opt function bodies into load/store
-// checks. Add the standard function attribute to each definition in the
-// isolated native-build snapshot. The canonical compiler IR remains unchanged;
-// this transformation belongs solely to the versioned validation profile.
+// Draft hands already-formed LLVM IR to either the in-process ASan pass or the
+// external qualification driver. Add the standard function attribute that opts
+// every definition into load/store checks and retain every frame pointer needed
+// by the profile's diagnostic contract. The canonical compiler IR remains
+// unchanged; this textual snapshot belongs only to native validation.
 [[nodiscard]] bool add_address_sanitizer_function_attributes(
     std::string_view module,
     std::string &instrumented,
@@ -234,7 +234,7 @@ void append_target_arguments(
           ? metadata + 1
           : body;
       instrumented.append(line.substr(0, insertion));
-      instrumented += "sanitize_address ";
+      instrumented += "sanitize_address \"frame-pointer\"=\"all\" ";
       instrumented.append(line.substr(insertion));
     } else {
       instrumented.append(line);
@@ -475,28 +475,26 @@ NativeBuildResult build_native_artifact(
     return result;
   }
 
-  std::string clang_path = options.clang_path;
+  std::string clang_path = options.clang_path.empty()
+      ? linked_llvm_tool_path("clang")
+      : options.clang_path;
   std::string archiver_path = options.archiver_path;
-  std::string dsymutil_path = options.dsymutil_path;
+  std::string dsymutil_path = options.dsymutil_path.empty()
+      ? linked_llvm_tool_path("dsymutil")
+      : options.dsymutil_path;
   if (target.facts.object_format == "elf" && archiver_path == "libtool") {
     // The public option retains the macOS-compatible default. ELF archives
-    // use LLVM ar's deterministic mode; a caller may still supply another
-    // compatible executable explicitly.
-    archiver_path = "llvm-ar";
+    // use LLVM ar's deterministic mode from the same installation as the
+    // linked library; a caller may still supply another compatible executable
+    // explicitly.
+    archiver_path = linked_llvm_tool_path("llvm-ar");
   }
 
-  const std::vector<std::string> version_arguments{clang_path, "--version"};
-  const ProcessResult version = run_timed_process(
-      version_arguments,
-      options.timings,
-      "LLVM toolchain version probe",
-      TimingVisibility::Detail);
-  if (!version.started || version.exit_code != 0) {
-    diagnostics.error(
-        SourceRange::invalid(), phase_failure("LLVM toolchain version probe", version));
-    return result;
-  }
-  result.toolchain_version = version.output;
+  // LLVM is selected and linked while building draftc. Recording the compiled
+  // version is exact and costs no child process; it is evidence about the
+  // implementation binary, not a semantic input or an ambient availability
+  // check. Remaining tools diagnose their own launch failure when first used.
+  result.toolchain_version = std::string(linked_llvm_version());
 
   std::error_code directory_error;
   std::filesystem::create_directories(options.build_directory, directory_error);
@@ -560,8 +558,6 @@ NativeBuildResult build_native_artifact(
   for (const NativeObjectTask &task : object_plan.tasks) {
     std::string write_error;
     if (task.kind == NativeObjectTaskKind::LlvmModule) {
-      const std::filesystem::path module =
-          build_directory / (task.output_stem + task.source_extension);
       const std::filesystem::path object =
           build_directory / (task.output_stem + ".o");
       std::string native_module(task.input_bytes);
@@ -578,44 +574,70 @@ NativeBuildResult build_native_artifact(
         }
         native_module = std::move(instrumented);
       }
-      if (!write_atomic(module, native_module, write_error)) {
-        diagnostics.error(SourceRange::invalid(), write_error);
-        return result;
-      }
-
-      std::vector<std::string> compile_arguments{clang_path};
-      append_target_arguments(target, compile_arguments);
-      compile_arguments.push_back("-x");
-      compile_arguments.push_back("ir");
-      if (options.instrumentation ==
-          NativeInstrumentationProfile::AddressSanitizer) {
-        // These are compiler-owned profile options. AddressSanitizer inserts
-        // its checks while Clang lowers the emitted LLVM IR; frame pointers
-        // make an eventual diagnostic useful without changing Draft semantics.
-        compile_arguments.push_back("-fsanitize=address");
-        compile_arguments.push_back("-fno-omit-frame-pointer");
-      }
       const std::filesystem::path compiled_output = assembly_output
           ? output_path / (task.output_stem + ".s")
           : object;
-      compile_arguments.push_back(assembly_output ? "-S" : "-c");
-      compile_arguments.push_back(module.string());
-      compile_arguments.push_back("-o");
-      compile_arguments.push_back(compiled_output.string());
-      const std::string compile_timing_name = options.timings != nullptr &&
-              options.timings->output() == TimingOutput::All
-          ? "Clang IR compile: " + task.display_name
-          : std::string{};
-      const ProcessResult compile = run_timed_process(
-          compile_arguments,
-          options.timings,
-          compile_timing_name,
-          TimingVisibility::Detail);
-      if (!compile.started || compile.exit_code != 0) {
-        diagnostics.error(
-            SourceRange::invalid(),
-            phase_failure("LLVM object emission", compile));
-        return result;
+      if (options.object_emitter == NativeObjectEmitter::InProcessLlvm) {
+        LlvmObjectEmissionOptions emission_options;
+        emission_options.output_kind = assembly_output
+            ? LlvmNativeOutputKind::Assembly
+            : LlvmNativeOutputKind::Object;
+        emission_options.instrumentation = options.instrumentation ==
+                NativeInstrumentationProfile::AddressSanitizer
+            ? LlvmNativeInstrumentation::AddressSanitizer
+            : LlvmNativeInstrumentation::None;
+        const LlvmObjectEmissionResult emitted = emit_llvm_object_in_process(
+            target,
+            task.display_name,
+            native_module,
+            emission_options);
+        if (!emitted.ok) {
+          diagnostics.error(SourceRange::invalid(), emitted.failure);
+          return result;
+        }
+        if (!write_atomic(compiled_output, emitted.bytes, write_error)) {
+          diagnostics.error(SourceRange::invalid(), write_error);
+          return result;
+        }
+      } else {
+        // The oracle writes the exact native snapshot to an isolated build path
+        // and asks Clang to compile it. No ordinary command selects this branch;
+        // qualification compares its artifacts and behavior with the in-process
+        // implementation through the same later publication/linking code.
+        const std::filesystem::path module =
+            build_directory / (task.output_stem + task.source_extension);
+        if (!write_atomic(module, native_module, write_error)) {
+          diagnostics.error(SourceRange::invalid(), write_error);
+          return result;
+        }
+        std::vector<std::string> compile_arguments{clang_path};
+        append_target_arguments(target, compile_arguments);
+        compile_arguments.push_back("-x");
+        compile_arguments.push_back("ir");
+        if (options.instrumentation ==
+            NativeInstrumentationProfile::AddressSanitizer) {
+          compile_arguments.push_back("-fsanitize=address");
+          compile_arguments.push_back("-fno-omit-frame-pointer");
+        }
+        compile_arguments.push_back(assembly_output ? "-S" : "-c");
+        compile_arguments.push_back(module.string());
+        compile_arguments.push_back("-o");
+        compile_arguments.push_back(compiled_output.string());
+        const std::string compile_timing_name = options.timings != nullptr &&
+                options.timings->output() == TimingOutput::All
+            ? "Clang qualification compile: " + task.display_name
+            : std::string{};
+        const ProcessResult compile = run_timed_process(
+            compile_arguments,
+            options.timings,
+            compile_timing_name,
+            TimingVisibility::Detail);
+        if (!compile.started || compile.exit_code != 0) {
+          diagnostics.error(
+              SourceRange::invalid(),
+              phase_failure("Clang qualification emission", compile));
+          return result;
+        }
       }
       if (!assembly_output) objects.push_back(object.string());
       continue;
@@ -802,8 +824,8 @@ NativeBuildResult build_native_artifact(
     if (target.facts.object_format == "macho" &&
         options.instrumentation == NativeInstrumentationProfile::None) {
       // Ordinary Draft executables name their one system library explicitly.
-      // AddressSanitizer instead uses the host Clang driver's complete link
-      // recipe below so that driver can add its matching runtime.
+      // AddressSanitizer instead uses the selected LLVM Clang driver's complete
+      // link recipe below so that driver can add its matching runtime.
       link_arguments.push_back("-nostdlib");
     }
   }
@@ -834,9 +856,10 @@ NativeBuildResult build_native_artifact(
     }
     if (options.instrumentation ==
         NativeInstrumentationProfile::AddressSanitizer) {
-      // Let the selected host Clang driver locate and link the sanitizer
-      // runtime that belongs to that installation. Validation evidence records
-      // the host toolchain version; the runtime is not a Draft program input.
+      // Let the selected LLVM Clang driver locate and link the sanitizer runtime
+      // that belongs to the linked LLVM installation. Validation evidence
+      // records the linked toolchain version; the runtime is not a Draft
+      // program input.
       link_arguments.push_back("-fsanitize=address");
     } else {
       link_arguments.push_back("-l" + target.system_link_library);

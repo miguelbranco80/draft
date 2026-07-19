@@ -20,10 +20,11 @@ surface packages with `...` -> checked expansions ---^
 
 The compiler must build complete programs with no Codex configuration, provider
 credentials, network access, synthesis pins, or judgment evidence. The first
-compiler is written in a deliberately small C++20 subset and uses a selected
-host LLVM toolchain. Its most valuable outputs are the executable language
-behavior, conformance tests, target profile, manifest formats, and canonical
-semantic representations that the later self-hosted compiler can reproduce.
+compiler is written in a deliberately small C++20 subset and links a selected
+LLVM 22 distribution through a narrow C-API adapter. Its most valuable outputs
+are the executable language behavior, conformance tests, target profile,
+manifest formats, and canonical semantic representations that the later
+self-hosted compiler can reproduce.
 
 ## Architecture
 
@@ -40,8 +41,8 @@ The compiler has four main layers:
    through the ordinary parser and semantic core. It owns transactional source
    pin handling; independent validation commands own evidence.
 4. **Native back end** -- lowers the complete typed program through a small
-   Draft MIR to LLVM IR, emits a Mach-O object, links the runtime and program,
-   and produces an AArch64 macOS executable.
+   Draft MIR to LLVM IR, verifies the selected target contract at the in-process
+   LLVM boundary, emits native objects, and performs the final platform link.
 
 The semantic and native pipeline is complete without the elaborator. The
 elaborator closes typed holes in an otherwise ordinary program; it is not the

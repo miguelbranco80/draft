@@ -28,11 +28,13 @@ resolved input stale.
 
 ## What is not pinned
 
-Clang, lld, Apple ld, `llvm-ar`, `libtool`, `dsymutil`, platform SDKs, system
-headers, and system libraries are host build configuration. They are neither
-Draft source nor elaborator output and do not appear in resolution manifests.
-The native adapter selects them through ordinary command lookup or explicit API
-paths and records the Clang version in validation evidence for auditability.
+The linked LLVM 22 library, matching Clang/lld/`llvm-ar`/`dsymutil` tools,
+Apple ld, `libtool`, platform SDKs, system headers, and system libraries are
+compiler build/host configuration. They are neither Draft source nor elaborator
+output and do not appear in resolution manifests. CMake selects the LLVM library
+and default tool directory together; embedding APIs may supply explicit paths.
+Validation evidence records the linked LLVM version for auditability without a
+runtime version-probe process.
 
 This separation gives `build` one clear promise: it never contacts a synthesis
 or judgment provider and never changes the resolved program. It does not promise

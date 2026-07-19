@@ -87,10 +87,11 @@ void test_target_availability_is_explicit(TestState &state) {
       target, address, address_diagnostics));
   EXPECT(state, !address_diagnostics.has_errors());
   EXPECT(state, draft::validation_instrumentation_identity(address).find(
-      "compile=-fsanitize=address,-fno-omit-frame-pointer") !=
+      "object-emission=llvm-asan-pass-in-process") !=
       std::string::npos);
   EXPECT(state, draft::validation_instrumentation_identity(address).find(
-      "ir-function-attribute=sanitize_address") != std::string::npos);
+      "ir-function-attributes=sanitize_address,frame-pointer-all") !=
+      std::string::npos);
   EXPECT(state, draft::validation_instrumentation_identity(address).find(
       "link=-fsanitize=address") != std::string::npos);
 

@@ -38,14 +38,11 @@ if(NOT LLVM_PACKAGE_VERSION MATCHES "^22\\.")
 endif()
 message(STATUS "Using LLVM ${LLVM_PACKAGE_VERSION} from ${LLVM_DIR}")
 separate_arguments(LLVM_DEFINITIONS_LIST NATIVE_COMMAND "${LLVM_DEFINITIONS}")
-llvm_map_components_to_libnames(
-  DRAFT_LLVM_LIBRARIES
-  core
-  irreader
-  passes
-  target
-  AArch64
-)
+if(NOT TARGET LLVM)
+  message(FATAL_ERROR
+    "LLVM 22 distribution does not export the required shared LLVM target"
+  )
+endif()
 
 # An interface target keeps the host-language policy identical for the compiler,
 # driver, and tests. Sanitizer link flags must reach final executables; placing
@@ -68,12 +65,14 @@ target_include_directories(
 target_compile_options(draft_llvm_backend PRIVATE ${LLVM_DEFINITIONS_LIST})
 target_compile_definitions(
   draft_llvm_backend
-  PRIVATE DRAFT_LLVM_VERSION="${LLVM_PACKAGE_VERSION}"
+  PRIVATE
+    DRAFT_LLVM_VERSION="${LLVM_PACKAGE_VERSION}"
+    DRAFT_LLVM_TOOLS_DIRECTORY="${LLVM_TOOLS_BINARY_DIR}"
 )
 target_link_libraries(
   draft_llvm_backend
   PUBLIC draft_build_options
-  PRIVATE ${DRAFT_LLVM_LIBRARIES}
+  PRIVATE LLVM
 )
 
 add_library(

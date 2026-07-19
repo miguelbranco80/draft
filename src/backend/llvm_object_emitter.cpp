@@ -22,6 +22,9 @@
 #ifndef DRAFT_LLVM_VERSION
 #error "DRAFT_LLVM_VERSION must name the LLVM distribution linked into draftc"
 #endif
+#ifndef DRAFT_LLVM_TOOLS_DIRECTORY
+#error "DRAFT_LLVM_TOOLS_DIRECTORY must name the linked LLVM tool directory"
+#endif
 
 namespace draft {
 namespace {
@@ -162,6 +165,13 @@ void initialize_aarch64_llvm() {
 
 std::string_view linked_llvm_version() {
   return DRAFT_LLVM_VERSION;
+}
+
+std::string linked_llvm_tool_path(std::string_view tool) {
+  std::string path = DRAFT_LLVM_TOOLS_DIRECTORY;
+  if (!path.empty() && path.back() != '/') path.push_back('/');
+  path.append(tool);
+  return path;
 }
 
 LlvmObjectEmissionResult emit_llvm_object_in_process(

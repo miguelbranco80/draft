@@ -99,13 +99,15 @@ std::string validation_instrumentation_identity(
   }
   if (requirements.size() == 1 &&
       requirements.front() == ValidationInstrumentationKind::Address) {
-    // Toolchain identity separately records the selected host Clang version.
-    // This field names the compiler-controlled flags and execution policy.
+    // Toolchain identity separately records the linked LLVM version. This
+    // field names the compiler-controlled pass, attributes, link contract, and
+    // execution policy. Naming in-process emission here prevents evidence made
+    // by the former external-Clang implementation from satisfying this one.
     return "draft-validation-instrumentation-v1:address;"
-        "ir-function-attribute=sanitize_address;"
-        "compile=-fsanitize=address,-fno-omit-frame-pointer;"
+        "ir-function-attributes=sanitize_address,frame-pointer-all;"
+        "object-emission=llvm-asan-pass-in-process;"
         "link=-fsanitize=address;"
-        "runtime=host-clang-address-sanitizer;"
+        "runtime=linked-llvm-clang-address-sanitizer;"
         "runtime-options=abort_on_error=1,symbolize=0;"
         "process-environment=draft-validation-process-environment-v1";
   }

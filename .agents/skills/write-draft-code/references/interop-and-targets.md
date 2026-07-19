@@ -339,10 +339,13 @@ The source-level `foreign` and `export` declarations do not change between
 static and dynamic linking. Artifact kind selects how resolved symbols are
 packaged.
 
-macOS native emission requires the Apple toolchain/SDK, `libtool`, and
-`dsymutil`; applicable executable/shared outputs publish a verified `.dSYM`.
-Linux uses Clang/LLVM tools, `ld.lld`, `llvm-ar`, and the selected glibc
-development contract; DWARF remains in ELF and no fake dSYM is emitted.
+The bootstrap emits package objects through its linked LLVM 22 C-API adapter.
+macOS additionally requires the Apple linker/SDK, `libtool`, and the matching
+LLVM `dsymutil`; applicable executable/shared outputs publish a verified
+`.dSYM`. Linux uses the matching Clang/LLVM tools, `ld.lld`, `llvm-ar`, and the
+selected glibc development contract; DWARF remains in ELF and no fake dSYM is
+emitted. These are compiler build/host requirements, not Draft package
+dependencies or resolution-manifest inputs.
 
 Assembly output is a directory bundle, not concatenated text. Native builds
 also emit source-correlation metadata. Deterministic output must not contain

@@ -15,8 +15,9 @@ work counters to stderr after ordinary command output. It separates
 resolution-manifest work, interface discovery and in-memory source transitions,
 body-semantic continuation, MIR/LLVM code generation, native
 object/link/debug-symbol work, and validation work when those phases run.
-Native commands additionally report the user and system CPU accounted to Clang,
-the linker, other host tools, and validation executables.
+Native commands additionally report the user and system CPU accounted to the
+remaining Clang assembler/linker operations, other host tools, and validation
+executables. In-process LLVM work contributes ordinary parent wall/CPU time.
 
 `--timings=all` adds package/tool-level events, source discovery and I/O,
 lexing/parsing, import-graph resolution, and each visible event's exclusive
@@ -89,10 +90,13 @@ generated expansions, foreign artifacts, summaries, and runtime assets, but it
 does not contact Codex, execute judgments, require validation evidence, or
 modify the resolution manifest.
 
-The native adapter uses the host toolchain. On macOS it expects Clang, the Apple
-linker and SDK, `libtool`, and `dsymutil`; on Linux it expects Clang, `ld.lld`,
-`llvm-ar`, and the target's libc development files. These installations are
-operational prerequisites, not resolution-manifest inputs.
+The native adapter emits package objects through the LLVM 22 library linked into
+`draftc`. Clang, `dsymutil`, and LLVM utilities default to the matching tools
+directory selected while building the compiler. On macOS it additionally uses
+the Apple linker/SDK and `libtool`; on Linux it uses `ld.lld`, `llvm-ar`, and the
+target's libc development files. These installations are compiler operational
+prerequisites, not resolution-manifest inputs. Ordinary builds do not execute a
+toolchain-version probe.
 
 Assembly output is a directory containing one `.s` file per package module and
 one exact copied source per package assembly input. Object output performs a
@@ -177,9 +181,9 @@ process-isolated samples. `--verify` is a readable CI/release spelling; the
 benchmark still executes and records fresh evidence.
 
 The macOS target currently supports `--instrument address`. The compiler owns
-the AddressSanitizer IR attribute and flags and lets host Clang link its matching
-runtime. Other instrumentation kinds and the Linux Draft sanitizer profile fail
-closed with an explicit diagnostic.
+the AddressSanitizer IR attributes and in-process LLVM pass, then lets the
+matching LLVM Clang driver link its runtime. Other instrumentation kinds and the
+Linux Draft sanitizer profile fail closed with an explicit diagnostic.
 
 ## Judge
 

@@ -39,12 +39,25 @@ enum class NativeInstrumentationProfile {
   AddressSanitizer,
 };
 
+// Ordinary native builds emit package modules through the LLVM library linked
+// into draftc. ExternalClangOracle preserves the former subprocess path only so
+// qualification tests can compile the exact same IR with an independent driver;
+// it is not a user build mode or a second semantic backend.
+enum class NativeObjectEmitter {
+  InProcessLlvm,
+  ExternalClangOracle,
+};
+
 struct NativeBuildOptions {
-  std::string clang_path = "clang";
+  // Clang remains the platform linker driver and package-assembly tool. The
+  // qualification emitter also uses this exact executable when selected. An
+  // empty path selects clang from the linked LLVM distribution.
+  std::string clang_path;
   // Final Mach-O executables and dylibs carry a debug map, while their linked
   // DWARF lives in a sibling dSYM bundle. ELF retains DWARF in the primary
   // artifact.
-  std::string dsymutil_path = "dsymutil";
+  // Empty selects dsymutil from the linked LLVM distribution.
+  std::string dsymutil_path;
   // The macOS host default is Apple's libtool, whose -D switch removes
   // timestamps and ownership. ELF selects deterministic LLVM ar instead.
   std::string archiver_path = "libtool";
@@ -53,6 +66,7 @@ struct NativeBuildOptions {
   NativeArtifactKind artifact_kind = NativeArtifactKind::Executable;
   NativeInstrumentationProfile instrumentation =
       NativeInstrumentationProfile::None;
+  NativeObjectEmitter object_emitter = NativeObjectEmitter::InProcessLlvm;
   std::vector<ForeignProviderInput> foreign_providers;
   // Runtime assets participate in resolved-program identity but are not passed
   // to Clang. A manifest-bearing build must supply its complete relocated set.
@@ -65,6 +79,8 @@ struct NativeBuildOptions {
 
 struct NativeBuildResult {
   bool ok = false;
+  // Exact LLVM distribution linked into draftc. This is constant build
+  // evidence and no runtime `clang --version` process is launched to obtain it.
   std::string toolchain_version;
   std::string output_path;
   // Every native build emits a canonical operation-to-source sidecar in its
@@ -85,14 +101,14 @@ struct NativeBuildResult {
   std::vector<VerifiedRuntimeAssetInput> runtime_assets;
 };
 
-// Writes one LLVM module per compiled package and emits the requested native
+// Emits each package module in-process and materializes the requested native
 // artifact. Object mode performs a relocatable link over every package object;
 // archive and dynamic-library modes retain every package and package-assembly
 // object; assembly mode produces a directory with one collision-free source per
-// module/input. Arguments are passed directly to exec rather than through a
-// shell. Runtime assets are verified as external program inputs and returned to
-// the caller, but are never linker operands. The host toolchain version is
-// reported for diagnostics and validation evidence; it is not a semantic pin.
+// module/input. Remaining host-tool arguments are passed directly to exec rather
+// than through a shell. Runtime assets are verified as external program inputs
+// and returned to the caller, but are never linker operands. The linked LLVM
+// version is reported for diagnostics/evidence and is not a semantic pin.
 [[nodiscard]] NativeBuildResult build_native_artifact(
     const TargetProfile &target,
     const CompileWorkspaceResult &compiled,

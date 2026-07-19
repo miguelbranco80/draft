@@ -110,16 +110,17 @@ requests are errors. Standalone validation uses the target-availability gate;
 resolution does not accept instrumentation options or run validation.
 
 `draft-aarch64-macos-v5` supports exactly `address`. The native adapter adds
-the standard `sanitize_address` attribute to every definition in its private
-LLVM snapshot, compiles with `-fsanitize=address` and
-`-fno-omit-frame-pointer`, and lets the selected host Clang driver link its
-matching sanitizer runtime. The runtime and symbolizer are host tooling, not
-resolution-manifest inputs.
+the standard `sanitize_address` and retained-frame-pointer attributes to every
+definition in its private LLVM snapshot, runs LLVM 22's in-process `asan` pass,
+and lets the matching LLVM Clang driver link the sanitizer runtime from the same
+distribution. This exact-version pairing matters because Apple and upstream
+compiler-rt use versioned ASan initialization symbols. The runtime and
+symbolizer are compiler/host tooling, not resolution-manifest inputs.
 
 Validation executes address-instrumented programs with
 `ASAN_OPTIONS=abort_on_error=1:symbolize=0` in the same explicit process
-environment as ordinary validation. Evidence records the host Clang version and
-a separate instrumentation identity, so ordinary and address-instrumented
+environment as ordinary validation. Evidence records the linked LLVM version
+and a separate instrumentation identity, so ordinary and address-instrumented
 attempts cannot alias. The other four vocabulary items remain unavailable with
 exact diagnostics; a requested but unavailable instrument is never silently
 omitted.

@@ -286,11 +286,15 @@ Configure a warning-clean debug build:
 ```sh
 cmake -S . -B build \
   -DCMAKE_BUILD_TYPE=Debug \
+  -DLLVM_DIR=/opt/homebrew/opt/llvm@22/lib/cmake/llvm \
   -DDRAFT_WARNINGS_AS_ERRORS=ON \
   -DDRAFT_ENABLE_SANITIZERS=OFF
 cmake --build build --parallel
 ctest --test-dir build --output-on-failure
 ```
+
+Use `/usr/lib/llvm-22/lib/cmake/llvm` on the qualified Ubuntu layout. LLVM 22 is
+a bootstrap compiler component; it is not a Draft source-package dependency.
 
 List registered tests without executing:
 

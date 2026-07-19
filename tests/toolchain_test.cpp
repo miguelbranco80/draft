@@ -269,6 +269,11 @@ void test_all_native_artifact_kinds(TestState &state) {
     options.build_directory = (temporary / "build").string();
     options.output_path = output.string();
     options.artifact_kind = kind;
+    // Exercise the retained qualification oracle for every artifact shape. The
+    // default in-process path has focused byte-format tests and the native host
+    // suite; this fake driver makes the independent Clang argument contract
+    // observable without conflating it with ordinary build behavior.
+    options.object_emitter = draft::NativeObjectEmitter::ExternalClangOracle;
     return draft::build_native_artifact(
         target, compiled, options, diagnostics);
   };

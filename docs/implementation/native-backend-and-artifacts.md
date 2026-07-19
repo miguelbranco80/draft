@@ -2,6 +2,31 @@
 
 This document records the bootstrap compiler's target-independent MIR to LLVM representation choices and the concrete artifact/debug contracts layered above target ABI semantics.
 
+## In-process LLVM boundary
+
+Status: LLVM 22 C-API object and assembly emission implemented and qualified.
+
+The bootstrap links the shared LLVM 22 distribution selected at CMake time.
+Each package module is parsed and verified in a fresh `LLVMContext`, checked
+against the selected Draft target triple and fixed data-layout string, and
+emitted through a task-owned target machine into an in-memory object or assembly
+buffer. A disagreement between LLVM's computed layout and the versioned Draft
+profile is a compiler/toolchain error; LLVM never supplies missing language or
+ABI facts.
+
+The adapter exposes no LLVM reference outside its module. Its process-global
+AArch64 registry is initialized once, while contexts, modules, target machines,
+pass options, messages, and output buffers have one explicit call lifetime. The
+linked distribution must report thread support so isolated package calls can be
+scheduled concurrently without sharing an LLVM context.
+
+The former external Clang IR compilation path remains only as a low-level
+qualification oracle. Ordinary commands never select it and never run
+`clang --version`. Native evidence records the LLVM version compiled into
+`draftc`; the linker driver, package assembler, sanitizer runtime, `llvm-ar`, and
+`dsymutil` default to tools from that same selected LLVM installation. Platform
+SDKs, startup objects, and system libraries remain operational host inputs.
+
 ## Relocatable aggregate constants
 
 Status: bootstrap backend representation; language layout is unchanged.
@@ -37,7 +62,7 @@ objects. Static output always uses deterministic archive metadata: Apple
 output fixes an `@rpath/<filename>`
 install name; ELF dynamic output fixes a filename SONAME. ELF executables use
 the host system's startup objects, loader, glibc, and GCC runtime through the
-host Clang driver and lld. Relocatable ELF output disables Clang's PIE
+selected LLVM Clang driver and lld. Relocatable ELF output disables Clang's PIE
 default before `-r`; final links retain a deterministic SHA-1 GNU build ID.
 Assembly output is a directory
 bundle with one compiler-produced source per package and exact copied external
