@@ -3109,6 +3109,23 @@ private:
       const std::uint64_t stride = type(aggregate.element).layout.size;
       return stride == 0 ? 0 : static_cast<std::size_t>(offset / stride);
     }
+
+    // LLVM lays out an ordinary tuple body itself, so its extractvalue index is
+    // exactly the semantic member index. The semantic byte offsets still
+    // include the padding LLVM inserts between differently aligned members;
+    // treating that padding as an explicit field would shift every later
+    // extract. Named Draft structs are different: llvm_type names a packed
+    // body whose padding is represented by explicit byte-array fields, and the
+    // physical index below must count those fields.
+    if (aggregate.kind == TypeKind::Tuple) {
+      for (std::size_t index = 0;
+           index < aggregate.member_offsets.size();
+           ++index) {
+        if (aggregate.member_offsets[index] == offset) return index;
+      }
+      return 0;
+    }
+
     std::size_t physical_index = 0;
     std::uint64_t cursor = 0;
     for (std::size_t index = 0; index < aggregate.member_offsets.size(); ++index) {

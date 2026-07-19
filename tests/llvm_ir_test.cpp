@@ -210,6 +210,56 @@ pub increment :: proc(value: i64) -> i64 {
   EXPECT(state, baseline.text == with_agents.text);
 }
 
+// Verifies that tuple extraction uses the tuple's logical member numbers even
+// when semantic layout places alignment padding before a member. LLVM owns the
+// implicit padding of tuple types; only named packed structs contain explicit
+// padding fields in our emitted representation. A leading discard makes this
+// regression especially visible because the remaining locals select members
+// one and two rather than member zero.
+void test_padded_tuple_extraction_uses_logical_indices(TestState &state) {
+  const EmittedFixture emitted = emit_fixture(R"draft(package tuple_extract
+
+make_result :: proc() -> (rune, usize, u8) {
+    return ('A', 7, 2)
+}
+
+main :: proc() -> int {
+    (_, width, error) := make_result()
+    if width == 7 && error == 2 {
+        return 0
+    }
+    return 1
+}
+)draft");
+  if (!emitted.ok) std::cerr << emitted.diagnostics;
+  EXPECT(state, emitted.ok);
+
+  // Inspect the two extraction lines themselves. Debug metadata separates an
+  // extract from its later store, so adjacency would make this test depend on
+  // an unrelated source-correlation detail.
+  const std::string tuple_extract = "extractvalue { i32, i64, i8 }";
+  const std::size_t width_position = emitted.text.find(tuple_extract);
+  const std::size_t width_end = emitted.text.find('\n', width_position);
+  const std::size_t error_position = emitted.text.find(
+      tuple_extract,
+      width_end == std::string::npos ? width_end : width_end + 1);
+  const std::size_t error_end = emitted.text.find('\n', error_position);
+  EXPECT(state, width_position != std::string::npos);
+  EXPECT(state, width_end != std::string::npos);
+  EXPECT(state, error_position != std::string::npos);
+  EXPECT(state, error_end != std::string::npos);
+  if (width_position != std::string::npos && width_end != std::string::npos) {
+    EXPECT(state, emitted.text.substr(
+        width_position, width_end - width_position).find(", 1,") !=
+        std::string::npos);
+  }
+  if (error_position != std::string::npos && error_end != std::string::npos) {
+    EXPECT(state, emitted.text.substr(
+        error_position, error_end - error_position).find(", 2,") !=
+        std::string::npos);
+  }
+}
+
 void test_scalar_executable_module(
     TestState &state,
     const draft::TargetProfile &target) {
@@ -739,6 +789,7 @@ int main() {
   TestState state;
   test_agent_constructs_have_no_runtime_footprint(state);
   test_generated_debug_locations_are_hermetic(state);
+  test_padded_tuple_extraction_uses_logical_indices(state);
   test_scalar_executable_module(
       state, draft::make_aarch64_macos_profile());
   test_scalar_executable_module(
