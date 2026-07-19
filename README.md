@@ -476,9 +476,13 @@ Codex or any other provider. A missing row, stale context, changed compiler, or
 later failing attempt rejects the build. As with test and benchmark evidence,
 the flag is rejected outside `--locked` mode.
 
-The first toolchain layout requires executable `bin/clang`, `bin/ld64.lld`,
-`bin/llvm-ar`, and `bin/dsymutil`. Relocating an unchanged tree preserves its
-identity; changing any byte, path, permission, or symlink spelling makes the
-build fail before a compiler process starts. Runtime-asset roots use the same
-file-kind, permission, byte, and safe-symlink identity and are also rechecked
-before a compiler process starts.
+The first toolchain layout requires executable `bin/clang`, `bin/ld`,
+`bin/ld-classic`, `bin/llvm-ar`, and `bin/dsymutil`. Every entry must be a thin
+AArch64 Mach-O image. Before hashing, the compiler recursively verifies that
+each non-system dylib dependency, ID, and runpath stays inside the selected
+tree. Relocating an unchanged tree preserves its identity; changing any byte,
+path, permission, or symlink spelling makes the build fail before a compiler
+process starts. [TOOLCHAIN_DISTRIBUTION.md](TOOLCHAIN_DISTRIBUTION.md) records
+the selected LLVM 22.1.8 and Apple linker distribution. Runtime-asset roots use
+the same file-kind, permission, byte, and safe-symlink identity and are also
+rechecked before a compiler process starts.

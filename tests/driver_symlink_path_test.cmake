@@ -5,7 +5,8 @@
 # before deriving that root. An ordinary build-tree symlink reproduces the same
 # boundary as macOS `/tmp` without relying on host-specific global paths.
 
-if(NOT DEFINED DRAFTC OR NOT DEFINED SOURCE_PACKAGE OR NOT DEFINED TEST_ROOT)
+if(NOT DEFINED DRAFTC OR NOT DEFINED RECORDING_TOOL OR
+   NOT DEFINED SOURCE_PACKAGE OR NOT DEFINED TEST_ROOT)
   message(FATAL_ERROR "driver symlink-path test is missing an input")
 endif()
 
@@ -14,8 +15,11 @@ file(MAKE_DIRECTORY "${TEST_ROOT}/real/workspace/hello")
 file(COPY "${SOURCE_PACKAGE}/" DESTINATION "${TEST_ROOT}/real/workspace/hello")
 file(MAKE_DIRECTORY "${TEST_ROOT}/toolchain/bin")
 file(MAKE_DIRECTORY "${TEST_ROOT}/sdk/usr/lib")
-foreach(tool IN ITEMS clang ld64.lld llvm-ar dsymutil)
-  file(WRITE "${TEST_ROOT}/toolchain/bin/${tool}" "#!/bin/sh\nexit 0\n")
+foreach(tool IN ITEMS clang ld ld-classic llvm-ar dsymutil)
+  file(COPY_FILE
+    "${RECORDING_TOOL}"
+    "${TEST_ROOT}/toolchain/bin/${tool}"
+  )
   file(CHMOD "${TEST_ROOT}/toolchain/bin/${tool}"
     PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE)
 endforeach()

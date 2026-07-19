@@ -22,6 +22,7 @@
 #include <string_view>
 #include <system_error>
 #include <utility>
+#include <vector>
 
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -53,6 +54,36 @@ struct ConformanceCase {
   std::string_view workspace;
   std::string_view package;
 };
+
+struct NativeInputSelection {
+  bool locked = false;
+  draft::LockedNativeInputRoots roots;
+  std::vector<draft::ExternalInputPin> pins;
+};
+
+// Normal CTest runs keep using the installed Apple toolchain. Release
+// qualification sets both variables and drives the identical matrix through
+// the production locked-input verifier. Pin once here; every native build still
+// independently re-verifies the roots immediately before invoking its tools.
+[[nodiscard]] bool select_native_inputs(
+    NativeInputSelection &selection,
+    draft::DiagnosticSink &diagnostics) {
+  const char *toolchain = std::getenv("DRAFT_TEST_LOCKED_TOOLCHAIN_ROOT");
+  const char *sdk = std::getenv("DRAFT_TEST_LOCKED_SDK_ROOT");
+  if (toolchain == nullptr && sdk == nullptr) return true;
+  if (toolchain == nullptr || sdk == nullptr || toolchain[0] == '\0' ||
+      sdk[0] == '\0') {
+    diagnostics.error(
+        draft::SourceRange::invalid(),
+        "locked native conformance requires both toolchain and SDK roots");
+    return false;
+  }
+  selection.locked = true;
+  selection.roots.toolchain_root = toolchain;
+  selection.roots.sdk_root = sdk;
+  return draft::pin_locked_native_inputs(
+      selection.roots, selection.pins, diagnostics);
+}
 
 // Runs an already linked path directly. No shell, inherited command search, or
 // source-authored byte can become command syntax. The child uses an isolated
@@ -130,6 +161,19 @@ void test_native_examples(TestState &state) {
   EXPECT(state, "setup", !error);
   if (error) return;
 
+  NativeInputSelection native_inputs;
+  draft::DiagnosticSink input_diagnostics;
+  const bool inputs_ok =
+      select_native_inputs(native_inputs, input_diagnostics);
+  if (input_diagnostics.has_errors()) {
+    for (const draft::Diagnostic &diagnostic :
+         input_diagnostics.diagnostics()) {
+      std::cerr << diagnostic.message << '\n';
+    }
+  }
+  EXPECT(state, "setup", inputs_ok);
+  if (!inputs_ok) return;
+
   const std::filesystem::path source_root(DRAFT_SOURCE_DIRECTORY);
   for (const ConformanceCase &test : cases) {
     draft::SourceManager sources;
@@ -144,7 +188,7 @@ void test_native_examples(TestState &state) {
         "draft-core-bootstrap-v1";
     compile_options.lower_mir = true;
     compile_options.emit_llvm = true;
-    const draft::CompileWorkspaceResult compiled = draft::compile_workspace(
+    draft::CompileWorkspaceResult compiled = draft::compile_workspace(
         sources,
         (source_root / test.package).string(),
         std::move(compile_options),
@@ -154,12 +198,23 @@ void test_native_examples(TestState &state) {
     }
     EXPECT(state, test.name, compiled.ok);
     if (!compiled.ok) continue;
+    if (native_inputs.locked) {
+      compiled.resolution_manifest.emplace();
+      compiled.resolution_manifest->target_identity =
+          draft::make_aarch64_macos_profile().facts.identity;
+      compiled.resolution_manifest->external_inputs = native_inputs.pins;
+    }
 
     const std::filesystem::path case_directory = temporary / test.name;
     draft::NativeBuildOptions native_options;
     native_options.build_directory = (case_directory / "build").string();
     native_options.output_path = (case_directory / "program").string();
-    native_options.allow_unpinned_toolchain = true;
+    if (native_inputs.locked) {
+      native_options.locked = true;
+      native_options.locked_inputs = native_inputs.roots;
+    } else {
+      native_options.allow_unpinned_toolchain = true;
+    }
     const draft::NativeBuildResult built = draft::build_native_executable(
         draft::make_aarch64_macos_profile(),
         compiled,

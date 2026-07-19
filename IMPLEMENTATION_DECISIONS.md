@@ -121,15 +121,26 @@ literals cannot carry the initializer-specific packed type.
 Status: bootstrap build contract; versioned by the resolution and content-tree
 formats.
 
-The first locked compiler-owned artifact seam accepts exactly two external inputs: one LLVM
-toolchain tree named `llvm-aarch64-macos` and one SDK tree named `macos-sdk`.
-The LLVM tree exposes executable `bin/clang`, `bin/ld64.lld`, `bin/llvm-ar`,
-and `bin/dsymutil`; Clang is the manifest entry point and the
-linker/archiver/debug-linker locations are fixed by this adapter version.
+The first locked compiler-owned artifact seam accepts exactly two external
+inputs: one native toolchain tree named `llvm-aarch64-macos` and one SDK tree
+named `macos-sdk`. The toolchain exposes executable `bin/clang`, `bin/ld`,
+`bin/ld-classic`, `bin/llvm-ar`, and `bin/dsymutil`; Clang is the manifest entry
+point and the linker/helper/archiver/debug-linker locations are fixed by this
+adapter version. Apple ld delegates relocatable object links to its colocated
+classic helper, so both linker programs are required even though Clang invokes
+only `bin/ld` directly.
 Both complete trees are hashed as sorted relative path records including file
 kind, permission bits, exact regular-file bytes, and exact internal symlink
 spelling. Physical root paths are excluded. Absolute or escaping symlinks,
 root symlinks, and special files are rejected.
+
+Hashing alone cannot close a toolchain whose executable retains an ambient
+Homebrew or developer-directory dylib path. Before the tree is hashed, a direct
+load-command parser requires every tool and recursively loaded dylib to be a
+thin AArch64 Mach-O image. Non-system loads must resolve exactly once through a
+relocatable runpath to a regular file inside the selected root. Dylib IDs and
+runpaths obey the same rule. Only explicit `/usr/lib/...` and
+`/System/Library/...` dependencies may leave the tree.
 
 Locked invocation uses the verified absolute Clang and linker paths, explicit
 `-isysroot`, `--no-default-config`, the target deployment
@@ -916,7 +927,7 @@ upper source re-evaluates to the displayed value at the site. Other loop shapes
 produce no inferred range.
 
 `draft-agent-obligation-v19`, synthesis request v21 / prompt v20, judgment
-request/prompt v4, and compiler content v125 identities make these facts and
+request/prompt v4, and compiler content v126 identities make these facts and
 the compiler-checked correction policy stale-pin and evidence inputs. The
 synthesis adapter uses provider identity `openai-codex-cli-v24`; the unchanged
 judgment adapter remains `openai-codex-cli-v22`. Both recheck the canonical
@@ -966,8 +977,9 @@ Mach-O final links retain a debug map rather than copying package-object DWARF
 into the executable or dylib. A successful native build therefore runs
 `dsymutil` before it reports success and publishes the conventional sibling
 `<artifact>.dSYM`. Locked roots must contain executable `bin/dsymutil` beside
-`clang`, `ld64.lld`, and `llvm-ar`; the complete toolchain tree is already one
-manifest input, so this adds no ambient tool lookup or separate unbound pin.
+`clang`, Apple `ld`/`ld-classic`, and `llvm-ar`; the complete toolchain tree is
+already one manifest input, so this adds no ambient tool lookup or separate
+unbound pin.
 
 The invocation ignores object and Swift-module timestamps, uses one worker, and
 verifies its linked output. Locked children retain the empty search path and
@@ -1042,7 +1054,7 @@ traps, and message construction used solely by an assertion cannot survive,
 and no condition is converted into an optimizer assumption.
 
 The versioned `draft.resolved-program.v4` hash records the assertion mode beside
-compiler content v125. `build`, `resolve`, and `judge` expose the same explicit
+compiler content v126. `build`, `resolve`, and `judge` expose the same explicit
 flag so an offline or locked manifest cannot be replayed under a different
 mode. Test and benchmark compilations deliberately override the release choice
 to assertions on and receive their own resolved validation digest; disabling
@@ -1074,5 +1086,24 @@ Focused overlay coverage proves that a stale pin remains rejected in the normal
 mode. A compiler integration regression constructs a declaration pin whose
 generated constant is consumed by a test-only file, authenticates the ordinary
 graph, and proves the derived validation graph compiles the test. Compiler
-content v125 invalidates earlier resolved-program and evidence identities rather
+content v126 invalidates earlier resolved-program and evidence identities rather
 than silently changing this trust boundary.
+
+## Selected self-contained AArch64 distribution
+
+Status: qualified release input for compiler content v126.
+
+The selected 316 MiB toolchain contains only the five required programs and
+their recursive dynamic-library closure. LLVM/Clang components are 22.1.8;
+Mach-O links use Apple ld project 1267 and ld-classic project 957.1. Upstream
+LLD remains unsuitable for the complete artifact contract because Mach-O `-r`
+is unimplemented in LLVM 22.1. The colocated Apple helper preserves the
+specified one-object aggregate output without host discovery.
+
+The selected SDK is a 328 KiB link-only tree containing the exact
+`usr/lib/libSystem.tbd` stub. Locked builds do not preprocess C or consume SDK
+headers. Its use by executables, dylibs, and relocatable objects, together with
+the complete native and determinism matrices, proves that no larger developer
+SDK is currently an implicit input. The assembly recipe, exact content-tree
+identities, dependency policy, and distribution boundary are recorded in
+`TOOLCHAIN_DISTRIBUTION.md`.

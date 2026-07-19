@@ -29,6 +29,7 @@ add_library(
   src/backend/foreign_inputs.cpp
   src/backend/foreign_summaries.cpp
   src/backend/locked_inputs.cpp
+  src/backend/macho_dependencies.cpp
   src/backend/llvm_ir.cpp
   src/backend/runtime_assets.cpp
   src/backend/source_correlation.cpp
@@ -145,6 +146,13 @@ if(BUILD_TESTING)
   add_executable(draft_content_tree_tests tests/content_tree_test.cpp)
   target_link_libraries(draft_content_tree_tests PRIVATE draft_compiler)
   add_test(NAME draft_content_tree_tests COMMAND draft_content_tree_tests)
+
+  add_executable(
+    draft_macho_dependency_tests
+    tests/macho_dependencies_test.cpp
+  )
+  target_link_libraries(draft_macho_dependency_tests PRIVATE draft_compiler)
+  add_test(NAME draft_macho_dependency_tests COMMAND draft_macho_dependency_tests)
 
   add_executable(draft_foreign_inputs_tests tests/foreign_inputs_test.cpp)
   target_link_libraries(draft_foreign_inputs_tests PRIVATE draft_compiler)
@@ -290,6 +298,20 @@ if(BUILD_TESTING)
     draft_toolchain_tests
     PRIVATE DRAFT_SOURCE_DIRECTORY="${CMAKE_CURRENT_SOURCE_DIR}"
   )
+  if(APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64)$")
+    # The locked adapter test needs executable Mach-O tools so dependency
+    # closure is exercised rather than bypassed with shell-script stand-ins.
+    add_executable(
+      draft_recording_native_tool
+      tests/recording_native_tool.cpp
+    )
+    target_compile_definitions(
+      draft_toolchain_tests
+      PRIVATE
+        DRAFT_RECORDING_NATIVE_TOOL="$<TARGET_FILE:draft_recording_native_tool>"
+    )
+    add_dependencies(draft_toolchain_tests draft_recording_native_tool)
+  endif()
   add_test(NAME draft_toolchain_tests COMMAND draft_toolchain_tests)
 
   # This is intentionally a host integration test rather than another fake
@@ -420,15 +442,18 @@ if(BUILD_TESTING)
   add_dependencies(draft_judgment_driver_tests draftc)
   add_test(NAME draft_judgment_driver_tests COMMAND draft_judgment_driver_tests)
 
-  add_test(
-    NAME draft_driver_canonicalizes_symlinked_parent
-    COMMAND
-      "${CMAKE_COMMAND}"
-      "-DDRAFTC=$<TARGET_FILE:draftc>"
-      "-DSOURCE_PACKAGE=${CMAKE_CURRENT_SOURCE_DIR}/examples/hello"
-      "-DTEST_ROOT=${CMAKE_CURRENT_BINARY_DIR}/driver-symlink-path-test"
-      -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/driver_symlink_path_test.cmake"
-  )
+  if(TARGET draft_recording_native_tool)
+    add_test(
+      NAME draft_driver_canonicalizes_symlinked_parent
+      COMMAND
+        "${CMAKE_COMMAND}"
+        "-DDRAFTC=$<TARGET_FILE:draftc>"
+        "-DRECORDING_TOOL=$<TARGET_FILE:draft_recording_native_tool>"
+        "-DSOURCE_PACKAGE=${CMAKE_CURRENT_SOURCE_DIR}/examples/hello"
+        "-DTEST_ROOT=${CMAKE_CURRENT_BINARY_DIR}/driver-symlink-path-test"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/driver_symlink_path_test.cmake"
+    )
+  endif()
 
   # The first target exposes the complete instrumentation request vocabulary
   # but owns no versioned diagnostic runtime yet. A request must fail before a

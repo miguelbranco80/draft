@@ -411,6 +411,7 @@ void test_package_assembly_reaches_link(TestState &state) {
   std::filesystem::remove_all(temporary, error);
 }
 
+#if defined(__APPLE__) && (defined(__aarch64__) || defined(__arm64__))
 void test_locked_build_verifies_and_isolates_inputs(TestState &state) {
   std::error_code error;
   const std::filesystem::path temporary =
@@ -429,54 +430,31 @@ void test_locked_build_verifies_and_isolates_inputs(TestState &state) {
 
   const std::filesystem::path log = temporary / "locked-arguments.log";
   const std::filesystem::path clang = toolchain / "bin" / "clang";
-  {
-    std::ofstream script(clang, std::ios::binary);
-    script << "#!/bin/sh\n"
-              "is_version=''\n"
-              "for argument in \"$@\"; do\n"
-              "  if [ \"$argument\" = \"--version\" ]; then is_version=1; fi\n"
-              "done\n"
-              "if [ -n \"$is_version\" ]; then\n"
-              "  echo 'clang version 22.1.0'\n"
-              "  exit 0\n"
-              "fi\n"
-              "printf '%s\\n' '-- command --' \"$@\" >> '"
-           << log.string()
-           << "'\n"
-              "printf 'ENV:%s|%s|%s|%s\\n' \"$PATH\" \"${SDKROOT-unset}\" "
-              "\"${CPATH-unset}\" \"${LIBRARY_PATH-unset}\" >> '"
-           << log.string()
-           << "'\n"
-              "previous=''\n"
-              "for argument in \"$@\"; do\n"
-              "  if [ \"$previous\" = \"-o\" ]; then : > \"$argument\"; fi\n"
-              "  previous=\"$argument\"\n"
-              "done\n"
-              "exit 0\n";
-  }
-  const std::filesystem::path linker = toolchain / "bin" / "ld64.lld";
-  {
-    std::ofstream script(linker, std::ios::binary);
-    script << "#!/bin/sh\nexit 0\n";
-  }
+  const std::filesystem::path linker = toolchain / "bin" / "ld";
+  const std::filesystem::path classic_linker =
+      toolchain / "bin" / "ld-classic";
   const std::filesystem::path archiver = toolchain / "bin" / "llvm-ar";
-  {
-    std::ofstream script(archiver, std::ios::binary);
-    script << "#!/bin/sh\n"
-              "printf '%s\\n' '-- archive --' \"$@\" >> '"
-           << log.string()
-           << "'\n"
-              ": > \"$2\"\n"
-              "exit 0\n";
-  }
   const std::filesystem::path dsymutil = toolchain / "bin" / "dsymutil";
-  write_recording_dsymutil(dsymutil, log);
+  // All five names use one CMake-built Mach-O recorder. Unlike shell scripts,
+  // its complete dynamic dependency closure can be checked by the same locked
+  // input policy used for a release LLVM distribution.
+  for (const std::filesystem::path &tool :
+       {clang, linker, classic_linker, archiver, dsymutil}) {
+    error.clear();
+    std::filesystem::copy_file(
+        DRAFT_RECORDING_NATIVE_TOOL,
+        tool,
+        std::filesystem::copy_options::overwrite_existing,
+        error);
+    EXPECT(state, !error);
+  }
   std::ofstream(sdk / "usr" / "lib" / "libSystem.tbd", std::ios::binary)
       << "pinned SDK bytes\n";
   const std::filesystem::path runtime_asset = temporary / "unicode-tables.bin";
   std::ofstream(runtime_asset, std::ios::binary) << "runtime table bytes\n";
   EXPECT(state, chmod(clang.c_str(), 0700) == 0);
   EXPECT(state, chmod(linker.c_str(), 0700) == 0);
+  EXPECT(state, chmod(classic_linker.c_str(), 0700) == 0);
   EXPECT(state, chmod(archiver.c_str(), 0700) == 0);
   EXPECT(state, chmod(dsymutil.c_str(), 0700) == 0);
 
@@ -642,8 +620,23 @@ void test_locked_build_verifies_and_isolates_inputs(TestState &state) {
   EXPECT(state, stale_diagnostics.has_errors());
   EXPECT(state, read_file(log) == log_before_failure);
 
+  // Apple ld delegates relocatable output to this sibling. Omitting it would
+  // leave final links apparently usable while object output failed at runtime,
+  // so the helper is a mandatory verified entry rather than an implicit host
+  // dependency.
+  error.clear();
+  EXPECT(state, std::filesystem::remove(classic_linker, error));
+  EXPECT(state, !error);
+  draft::DiagnosticSink missing_helper_diagnostics;
+  std::vector<draft::ExternalInputPin> missing_helper_pins;
+  EXPECT(state,
+      !draft::pin_locked_native_inputs(
+          roots, missing_helper_pins, missing_helper_diagnostics));
+  EXPECT(state, missing_helper_diagnostics.has_errors());
+
   std::filesystem::remove_all(temporary, error);
 }
+#endif
 
 } // namespace
 
@@ -652,7 +645,9 @@ int main() {
   test_package_assembly_reaches_link(state);
   test_explicit_foreign_provider_mapping(state);
   test_all_native_artifact_kinds(state);
+#if defined(__APPLE__) && (defined(__aarch64__) || defined(__arm64__))
   test_locked_build_verifies_and_isolates_inputs(state);
+#endif
   if (state.failures != 0) {
     std::cerr << state.failures << " toolchain expectation(s) failed\n";
     return EXIT_FAILURE;

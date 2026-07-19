@@ -2,9 +2,11 @@
 
 #include "backend/locked_inputs.h"
 
+#include "backend/macho_dependencies.h"
 #include "base/content_tree.h"
 
 #include <algorithm>
+#include <array>
 #include <filesystem>
 #include <string>
 #include <system_error>
@@ -17,7 +19,8 @@ namespace {
 constexpr std::string_view kToolchainName = "llvm-aarch64-macos";
 constexpr std::string_view kSdkName = "macos-sdk";
 constexpr std::string_view kClangEntry = "bin/clang";
-constexpr std::string_view kLinkerEntry = "bin/ld64.lld";
+constexpr std::string_view kLinkerEntry = "bin/ld";
+constexpr std::string_view kClassicLinkerEntry = "bin/ld-classic";
 constexpr std::string_view kArchiverEntry = "bin/llvm-ar";
 constexpr std::string_view kDsymutilEntry = "bin/dsymutil";
 
@@ -136,12 +139,25 @@ bool pin_locked_native_inputs(
 
   const std::filesystem::path clang = canonical.toolchain_root / kClangEntry;
   const std::filesystem::path linker = canonical.toolchain_root / kLinkerEntry;
+  const std::filesystem::path classic_linker =
+      canonical.toolchain_root / kClassicLinkerEntry;
   const std::filesystem::path archiver = canonical.toolchain_root / kArchiverEntry;
   const std::filesystem::path dsymutil = canonical.toolchain_root / kDsymutilEntry;
   if (!inspect_executable(clang, "Clang driver", diagnostics) ||
       !inspect_executable(linker, "Mach-O linker", diagnostics) ||
+      !inspect_executable(
+          classic_linker, "classic Mach-O linker", diagnostics) ||
       !inspect_executable(archiver, "LLVM archiver", diagnostics) ||
       !inspect_executable(dsymutil, "LLVM dsymutil", diagnostics)) {
+    return false;
+  }
+  // Apple's linker delegates relocatable links to its colocated classic
+  // implementation. It is an executable input even though Clang invokes only
+  // bin/ld directly, so validate and hash it as part of the same closed tree.
+  const std::array tool_entries{
+      clang, linker, classic_linker, archiver, dsymutil};
+  if (!validate_macho_dependency_closure(
+          canonical.toolchain_root, tool_entries, diagnostics)) {
     return false;
   }
 

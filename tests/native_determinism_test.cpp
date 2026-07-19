@@ -55,6 +55,32 @@ struct TestState {
 using ArtifactSnapshot =
     std::vector<std::pair<std::string, std::string>>;
 
+struct NativeInputSelection {
+  bool locked = false;
+  draft::LockedNativeInputRoots roots;
+  std::vector<draft::ExternalInputPin> pins;
+};
+
+[[nodiscard]] bool select_native_inputs(
+    NativeInputSelection &selection,
+    draft::DiagnosticSink &diagnostics) {
+  const char *toolchain = std::getenv("DRAFT_TEST_LOCKED_TOOLCHAIN_ROOT");
+  const char *sdk = std::getenv("DRAFT_TEST_LOCKED_SDK_ROOT");
+  if (toolchain == nullptr && sdk == nullptr) return true;
+  if (toolchain == nullptr || sdk == nullptr || toolchain[0] == '\0' ||
+      sdk[0] == '\0') {
+    diagnostics.error(
+        draft::SourceRange::invalid(),
+        "locked native determinism requires both toolchain and SDK roots");
+    return false;
+  }
+  selection.locked = true;
+  selection.roots.toolchain_root = toolchain;
+  selection.roots.sdk_root = sdk;
+  return draft::pin_locked_native_inputs(
+      selection.roots, selection.pins, diagnostics);
+}
+
 [[nodiscard]] ArtifactSnapshot snapshot_artifact(
     const std::filesystem::path &path,
     draft::NativeArtifactKind kind,
@@ -105,16 +131,19 @@ void compare_repeated_artifact(
     const draft::CompileWorkspaceResult &compiled,
     const std::filesystem::path &temporary,
     std::string_view name,
-    draft::NativeArtifactKind kind) {
+    draft::NativeArtifactKind kind,
+    const NativeInputSelection &native_inputs) {
   const std::filesystem::path artifact_directory = temporary / name;
   draft::NativeBuildOptions options;
   options.build_directory = (artifact_directory / "build").string();
   options.output_path = (artifact_directory / "output").string();
   options.artifact_kind = kind;
-  // Release builds use verified LLVM/SDK roots. This host integration gate is
-  // deliberately about emitted bytes and may use the installed Apple tools;
-  // the locked-input contract has separate exact-argument/unit coverage.
-  options.allow_unpinned_toolchain = true;
+  if (native_inputs.locked) {
+    options.locked = true;
+    options.locked_inputs = native_inputs.roots;
+  } else {
+    options.allow_unpinned_toolchain = true;
+  }
 
   draft::DiagnosticSink first_diagnostics;
   const draft::NativeBuildResult first = draft::build_native_artifact(
@@ -188,6 +217,19 @@ void test_repeated_native_link_is_byte_identical(TestState &state) {
   EXPECT(state, !error);
   if (error) return;
 
+  NativeInputSelection native_inputs;
+  draft::DiagnosticSink input_diagnostics;
+  const bool inputs_ok =
+      select_native_inputs(native_inputs, input_diagnostics);
+  if (input_diagnostics.has_errors()) {
+    for (const draft::Diagnostic &diagnostic :
+         input_diagnostics.diagnostics()) {
+      std::cerr << diagnostic.message << '\n';
+    }
+  }
+  EXPECT(state, inputs_ok);
+  if (!inputs_ok) return;
+
   // A process-specific directory permits parallel CTest invocations while the
   // fixed output name inside it is the explicit identity used by both links.
   std::filesystem::remove_all(temporary, error);
@@ -202,9 +244,9 @@ void test_repeated_native_link_is_byte_identical(TestState &state) {
   // generic specializations. Rebuilding it proves that lexical linkage names
   // depend only on source/package identity and canonical type arguments, never
   // process addresses or filesystem paths.
-  const draft::CompileWorkspaceResult executable = compile_fixture(
+  draft::CompileWorkspaceResult executable = compile_fixture(
       sources, "nested-procedures", true, compile_diagnostics);
-  const draft::CompileWorkspaceResult library = compile_fixture(
+  draft::CompileWorkspaceResult library = compile_fixture(
       sources, "c-library", false, compile_diagnostics);
   if (compile_diagnostics.has_errors()) {
     std::cerr << draft::render_diagnostics(sources, compile_diagnostics);
@@ -214,6 +256,13 @@ void test_repeated_native_link_is_byte_identical(TestState &state) {
   if (!executable.ok || !library.ok) {
     std::filesystem::remove_all(temporary, error);
     return;
+  }
+  if (native_inputs.locked) {
+    executable.resolution_manifest.emplace();
+    executable.resolution_manifest->target_identity =
+        draft::make_aarch64_macos_profile().facts.identity;
+    executable.resolution_manifest->external_inputs = native_inputs.pins;
+    library.resolution_manifest = executable.resolution_manifest;
   }
 
   struct ArtifactCase {
@@ -237,7 +286,8 @@ void test_repeated_native_link_is_byte_identical(TestState &state) {
         *artifact.compiled,
         temporary,
         artifact.name,
-        artifact.kind);
+        artifact.kind,
+        native_inputs);
   }
 
   std::filesystem::remove_all(temporary, error);
