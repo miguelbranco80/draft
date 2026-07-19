@@ -22,6 +22,22 @@ learning a private framework.
   it as an implementation decision, and surface it for review. Do not silently
   invent semantics in a low-level helper.
 
+## Repository Draft coding skill
+
+- For any task that authors, reviews, debugs, or tests `.draft` source, changes
+  a public `core/` API, or decides whether the current language/library supports
+  an operation, load and follow
+  [`.agents/skills/write-draft-code/SKILL.md`](.agents/skills/write-draft-code/SKILL.md).
+- The skill is an applied coding guide, not semantic authority. The
+  specification and current core source win if a skill reference is stale;
+  repair that reference in the same coherent change.
+- Keep the skill's main file concise and route detail through its focused
+  `references/` files. Do not copy the complete specification into the skill.
+- After materially changing the skill, run the skill creator's structural
+  validator and forward-test realistic Draft tasks with fresh agents. A
+  syntactically valid skill that causes agents to invent APIs or mishandle
+  ownership is not complete.
+
 ## Governing style
 
 ### Write the direct version
@@ -352,6 +368,25 @@ map and follow this routing:
   to describe current behavior except to repair an archival or migration error;
   update the current specification, target, implementation, operations, or
   release document instead.
+
+Keep the repository Draft coding skill synchronized with those owning
+documents and source APIs:
+
+- Syntax, typing, evaluation, runtime meaning, and broadly applicable coding
+  patterns update `references/language.md`; ownership or lifetime changes also
+  update `references/memory-and-ownership.md`.
+- Public `core/` additions, removals, signatures, errors, ownership, target
+  availability, and conspicuous new gaps update `references/core-library.md`
+  and the ownership guide when relevant.
+- Target, C ABI, native linking, assembly, or artifact changes update
+  `references/interop-and-targets.md`.
+- `docs`, `judge`, `...`, resolution, denials, tests, benchmarks, or validation
+  semantics update `references/agent-features.md`.
+- CLI, package layout, test practice, examples, documentation routing, or
+  completion workflow changes update `references/workflow-and-testing.md`.
+- Change `SKILL.md` itself when routing, universal workflow, or trigger scope
+  changes. Regenerate `agents/openai.yaml` when its user-facing metadata no
+  longer describes the skill.
 
 When adding, moving, or renaming a document, update `docs/README.md` and every
 affected link in the same commit. If a code change genuinely changes no public,

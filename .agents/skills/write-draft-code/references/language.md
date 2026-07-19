@@ -1,0 +1,463 @@
+# Draft language coding reference
+
+Use this as a compact map of the implemented Draft 1 surface. Read the linked
+normative section before relying on an edge case. Prefer copying a pattern from
+`examples/language-tour` or another compiling example over inventing syntax.
+The primary authorities are the
+[`core language specification`](../../../../docs/specification/01-core-language.md)
+and [`types, memory, and runtime specification`](../../../../docs/specification/02-types-memory-runtime.md).
+
+## Contents
+
+- [Packages and declarations](#packages-and-declarations)
+- [Procedures and bindings](#procedures-and-bindings)
+- [Literals and source rules](#literals-and-source-rules)
+- [Runtime types and views](#runtime-types-and-views)
+- [Aggregates and layout](#aggregates-and-layout)
+- [Expressions and conversions](#expressions-and-conversions)
+- [Control flow and cleanup](#control-flow-and-cleanup)
+- [Constants, targets, and compile-time selection](#constants-targets-and-compile-time-selection)
+- [Parametric declarations](#parametric-declarations)
+- [Assertions and unchecked access](#assertions-and-unchecked-access)
+- [Program entry](#program-entry)
+- [Features Draft deliberately lacks](#features-draft-deliberately-lacks)
+
+## Packages and declarations
+
+Read specification sections 3–4 in `docs/specification/01-core-language.md`.
+
+One directory is one package. Every selected `.draft` file in that directory
+must declare the same short package name. Imports are explicit and file-local;
+another file must repeat an import it uses. Imports do not re-export names, and
+the package graph must be acyclic.
+
+```draft
+package image
+
+docs "Image storage and transformation policy."
+
+import core/result
+import codec/bits as bits
+```
+
+Use `pub` for Draft package visibility. It does not export a C linker symbol.
+Files are discovered automatically; there is no source-list build file.
+
+Declarations use three principal forms:
+
+```draft
+count: usize                 // mutable, explicitly typed, zero initialized
+limit := 128                 // mutable, inferred runtime type
+Buffer_Size :: 4096          // immutable compile-time value
+```
+
+`name: T = value` combines an explicit runtime type and initializer. A local
+`name: T = ---` deliberately omits zero initialization; reading unwritten bytes
+is undefined behavior. `---` is not a general value and is invalid for globals.
+
+Use `_` to discard a binding without suppressing evaluation. Parenthesized
+patterns destructure one tuple. A comma without parentheses declares or assigns
+parallel values instead:
+
+```draft
+(_, value) := read_pair()
+left, right: u32
+left, right = right, left
+```
+
+The number of tuple pattern elements must match the tuple. Parallel assignment
+evaluates lvalue addresses/indices left to right, evaluates all right-hand
+values left to right, and only then performs stores left to right. It does not
+implicitly destructure one tuple result.
+
+Package declarations are visible throughout the package and private unless
+`pub`. A conventional `package.draft` is organizational, not semantically
+special.
+
+## Procedures and bindings
+
+`proc` is the only callable abstraction. Absence of `->` means no result.
+Group parameter names only when they share one type:
+
+```draft
+distance :: proc(left, right: Point) -> u64 {
+    return squared_distance(left, right)
+}
+```
+
+Parameters are immutable. Create an explicit local copy to mutate a value.
+Arguments and operands evaluate left to right. Draft 1 has no declaration
+overloading or default procedure arguments.
+
+Nested procedures are static procedures, not closures. They may use package
+declarations, imports, predeclared names, context, and enclosing compile-time or
+parametric names. They may not capture an outer invocation's runtime parameters,
+locals, or iteration bindings; pass those explicitly.
+
+```draft
+outer :: proc(input: []u8) -> usize {
+    count_nonzero :: proc(bytes: []u8) -> usize {
+        count: usize
+        for byte in bytes {
+            if byte != 0 {
+                count += 1
+            }
+        }
+        return count
+    }
+    return count_nonzero(input)
+}
+```
+
+An ordinary procedure pointer is `proc(...) -> T` and carries the hidden Draft
+context in its physical ABI. A `c proc(...) -> T` is a distinct C procedure
+pointer with no Draft context. Neither is a closure.
+
+## Literals and source rules
+
+Source is UTF-8, but identifiers are ASCII letters/digits/underscore with a
+non-digit first character. `_` alone is the discard pattern.
+
+Integer literals support decimal, `0b`, `0o`, `0x`, and digit separators.
+Decimal floats require digits on both sides of `.`; exponent-only forms such as
+`1e6` are also valid. Strings and runes accept the documented escapes; raw
+backtick strings preserve UTF-8 bytes and may span lines. A rune contains
+exactly one Unicode scalar.
+
+```draft
+mask :: 0xff00_ff00
+ratio :: 1.25e-3
+newline :: '\n'
+text :: `exact
+multiline bytes`
+```
+
+The lexer inserts semicolons at newline/EOF after an identifier, literal,
+`break`, `continue`, `return`, `)`, `]`, `}`, postfix `^`, or `---`. It does not
+insert inside `(` or `[`, after a comma, after an operator that needs an
+operand, or before an immediately attached `file`/`folder` clause of `docs`,
+`judge`, or `...`. Keep `} else {` together. Break a long expression after an
+operator or comma, not after a complete operand. An explicit `;` is required
+between clauses of a three-clause `for` and otherwise has the same statement-
+ending effect.
+
+The `^` token is both postfix dereference and binary XOR under the provisional
+newline-sensitive lexical rule. Prefer an unambiguous same-line spelling such
+as `pointer^ + 1`; parenthesize an unusual XOR operand such as
+`left ^ (-right)`.
+
+Composite literals are:
+
+```draft
+bytes := [4]u8{1, 2, 3, 4}
+point := Point{x = 10, y = 20}
+overlay := C_Value{bits = 42}       // exactly one raw-union field
+pair := (left, right)
+mode: Mode = .read
+result: result.Result[u64, Error] = .ok(42)
+```
+
+Omitted fixed-array elements and struct fields receive zero values. In an
+`if`, `for`, or `switch` header, parenthesize a composite literal so its `{`
+cannot be confused with the statement body.
+
+Enum and tagged-union cases use contextual `.case` or `.case(payload)` syntax.
+Write `error == .none`, not `error == io.Error.none`; the latter is not Draft
+member syntax. Add a type annotation when no surrounding expected type can
+determine which enum or union owns the case.
+
+## Runtime types and views
+
+Read specification section 5 in `docs/specification/02-types-memory-runtime.md`.
+
+The scalar vocabulary includes:
+
+- `bool`; storage booleans `b8`, `b16`, `b32`, `b64`.
+- Signed `i8` through `i128`; unsigned `u8` through `u128`.
+- Natural `int`, `uint`; pointer-sized `isize`, `usize`, `uintptr`.
+- IEEE `f16`, `f32`, `f64`; distinct Unicode scalar `rune`.
+- Native/endian storage spellings such as `u32le`, `u32be`, `f64le`.
+- `byte` as an alias of `u8`.
+
+Concrete numeric types never convert implicitly. Untyped constants convert
+only when representable in an expected type.
+
+Pointer and view types are:
+
+```text
+^T          nullable pointer to one T
+[^]T        unchecked pointer to sequential T values
+rawptr      untyped data address
+cstring     zero-terminated C byte pointer
+[]T         non-owning mutable slice {data, len}
+string      non-owning immutable byte slice
+[N]T        inline fixed array; N is part of the type
+#simd[N]T   target-approved fixed vector
+```
+
+Use `&value` for an address and postfix `pointer^` for dereference. Use
+`ptr_offset(pointer, count)` and `ptr_sub(left, right)` for pointer movement;
+ordinary integer operators do not perform pointer arithmetic. `[^]T` indexing
+is inherently unchecked. Construct a bounded slice with `pointer[:length]`.
+
+Array, slice, and string indexing and half-open slicing are bounds checked by
+default. A slice or string never owns or extends the lifetime of its backing
+storage. Array assignment copies the entire inline array; slice assignment
+copies only the view.
+
+`string` is immutable bytes, not an owning Unicode string. Indexing returns one
+byte. Decode UTF-8 explicitly when scalar boundaries matter.
+
+Use `nil` only for pointer-like and procedure-pointer values. Draft has no
+implicit pointer or integer truthiness; write `pointer != nil`.
+
+## Aggregates and layout
+
+Draft supports tuples, structs, enums, aliases, distinct types, tagged unions,
+and raw unions. Empty arrays and empty aggregates are invalid in Draft 1.
+
+```draft
+Index :: usize
+Duration :: distinct i64
+
+Mode :: enum u8 {
+    read,
+    write,
+}
+
+Outcome :: union {
+    failed: Error,
+    complete: usize,
+}
+
+C_Value :: @repr(C) raw union {
+    bits: u64,
+    pointer: rawptr,
+}
+
+Cache_Line :: @align(64) struct {
+    bytes: [64]u8,
+}
+```
+
+Tuples and structs are products; tagged unions are sums with one active
+alternative; raw unions overlay fields without an active tag. Access tuple
+members as `.0`, `.1`, and so on. Switch over a tagged union to obtain a typed
+payload binding.
+
+An alias has the target's identity. A `distinct` type has the target's layout
+and operators but a separate identity; cross its boundary with an explicit
+cast. Enums require a zero-valued member for a valid zero value. The first
+implicit enum member is zero; values then increment.
+
+`@repr(C)` is available on structs, raw unions, and enums under the selected C
+ABI. `@align(N)` may raise struct/raw-union alignment. Do not guess C layout:
+read the target profile and add ABI tests against Clang.
+
+`core/option.Option[T]` and `core/result.Result[T, E]` are ordinary tagged
+unions, not magic. A zero `Result` selects its first `.err` alternative.
+
+## Expressions and conversions
+
+Postfix call/index/member/dereference bind most tightly; then prefix; then
+multiplicative/shift/bitwise-AND; additive/bitwise-OR/XOR; comparison; `&&`;
+`||`; and the conditional expression. Comparisons do not chain.
+
+Assignment is a statement. Compound assignment evaluates its lvalue once.
+`&&` and `||` short-circuit. The conditional expression evaluates only its
+selected value:
+
+```draft
+larger := left if left > right else right
+```
+
+Use `cast[T](value)` for explicit conversion. Important rules include:
+
+- Integer-to-integer conversion uses target-width modular bits.
+- Integer/float conversion to a float rounds to nearest with ties to even.
+- Float-to-integer truncates and traps for NaN/out-of-range.
+- Conversion into `rune` traps for a non-Unicode scalar.
+- Conversion into an enum traps unless a declared member has the value.
+- Compatible data pointer/raw-pointer/`uintptr` casts preserve address bits.
+- `bool` and boolean-storage casts map false/true to zero/one and accept any
+  nonzero storage value as true.
+- Native and matching endian storage scalars convert explicitly by value.
+- Procedure pointers do not cast.
+
+Concrete integer arithmetic wraps; divide/remainder by zero, signed minimum
+divided by `-1`, and invalid shifts trap. Floating arithmetic follows declared
+IEEE precision without fast-math. A required constant that would trap is a
+compile error.
+
+Equality is not defined for aggregates, slices, or strings; use explicit
+library/application comparison. Draft has no operator overloading.
+
+The currently implemented predeclared intrinsic vocabulary is `len`,
+`size_of`, `align_of`, `cast`, `ptr_offset`, `ptr_sub`, `assert`, and
+`static_assert`. `context` and `target` are predeclared values. Do not invent an
+introspection spelling; inspect the compiler/specification before using a less
+common query.
+
+## Control flow and cleanup
+
+Draft supports bare lexical blocks, runtime `if`, conditional expressions, four
+`for` forms, `switch`, `break`, `continue`, `return`, `defer`, compile-time
+`when`, `unchecked`, and `deny`.
+
+```draft
+for {
+    service_one()
+}
+
+for offset < len(input) {
+    offset += consume(input[offset:])
+}
+
+for index: usize = 0; index < len(output); index += 1 {
+    output[index] = 0
+}
+
+for value, index in input {
+    output[index] = transform(value)
+}
+```
+
+Iteration values are copies. Mutate an element through an index or pointer.
+The iterable expression is evaluated once.
+
+`switch` evaluates its subject once, never falls through, and supports
+comma-separated labels plus an empty default `case:`. Enum and tagged-union
+switches must be exhaustive or have a default.
+
+```draft
+switch outcome {
+case .ok(value):
+    consume(value)
+case .err(error):
+    report(error)
+}
+```
+
+`defer` accepts a call statement only. It evaluates and saves the callee,
+arguments, and ordinary context immediately, then runs saved calls LIFO on any
+normal scope exit: fallthrough, `break`, `continue`, or `return`. A runtime trap
+does not run defers. In `return expression`, the result is saved before defers
+run.
+
+## Constants, targets, and compile-time selection
+
+`::` values may include numbers, booleans, strings, enums, aggregates, tagged
+unions, procedures, and types. Constants have no mutable storage or stable
+address. Untyped integers are arbitrary precision and untyped decimal floats
+are exact rationals until conversion.
+
+Compile-time procedures return values, not syntax. They may use control flow,
+parametric code, type/layout queries, and target facts, but not runtime globals,
+context, foreign calls, or assembly.
+
+Use `when` to select already parsed declarations, members, or statements:
+
+```draft
+when target.os == .linux {
+    Page_Size :: 4096
+} else {
+    Page_Size :: target.page_size
+}
+```
+
+Every branch is parsed; only the selected branch is name/type checked and
+contributes contents. `when` introduces no lexical scope and cannot construct
+syntax. The target exposes `identity`, `arch`, `os`, `abi`, `byte_order`,
+`object_format`, `file_tag`, `pointer_bits`, `page_size`, and compile-time
+`has_feature`.
+
+## Parametric declarations
+
+Put compile-time type/value parameters in brackets after the declaration name:
+
+```draft
+Buffer[T: type, N: usize] :: struct {
+    values: [N]T,
+}
+
+sum[T: number] :: proc(values: []T) -> T {
+    result: T
+    for value in values {
+        result += value
+    }
+    return result
+}
+```
+
+The closed type constraints are `type`, `integer`, `float`, and `number`.
+Constraint membership is semantic, not representation-based: enums, endian
+scalars, `rune`, boolean storage, and distinct wrappers do not automatically
+satisfy `integer`/`number`.
+
+Applications use brackets: `Buffer[u8, 256]`, `sum[u64](values)`. Procedure
+arguments can infer type and simple one-to-one integer value parameters; use
+explicit arguments when inference is not uniquely specified. There is no
+template metaprogramming or syntax reflection. Pass behavior outside the closed
+constraints explicitly through procedure values or records containing them.
+
+Use parameter-dependent `static_assert` for relationships such as capacity or
+layout requirements. It constrains concrete instantiations but does not grant
+operations absent from the declared constraint.
+
+Draft guarantees dependent integer-value inference only for a single
+one-to-one occurrence through a narrow reversible expression (direct use,
+unary sign/complement, a suitable cast, add/subtract/XOR by a known constant).
+Repeated occurrences, multiplication, division, remainder, shifts, AND, and OR
+require an explicit value argument.
+
+## Assertions and unchecked access
+
+`assert(condition, optional_message)` is a runtime intrinsic using the active
+context. A build may disable it, in which case neither argument evaluates.
+Never depend on assertion side effects. It is invalid in a `c proc`.
+
+`static_assert(condition, optional_message)` requires compile-time values, is
+never disabled, and remains valid in `c proc`.
+
+`unchecked { statements }` suppresses dynamic bounded-access checks in its
+region. It does not make invalid memory, races, casts, arithmetic, or lifetimes
+safe. Multi-pointer indexing is always unchecked. Prefer checked slices and
+prove a performance need before using it. An active `deny unchecked` restores
+checks where possible and rejects inherently unchecked reachable work.
+
+Read `references/agent-features.md` before using `deny` or other agent-facing
+constructs.
+
+## Program entry
+
+A hosted executable root has exactly one explicit package-level,
+non-parametric ordinary `main`:
+
+```draft
+main :: proc() {
+    run()
+}
+// or
+main :: proc() -> int {
+    return run()
+}
+```
+
+Arguments and environment come from `core/os`, not `main` parameters. There are
+no hidden package initializers or destructors. Initialize application state
+explicitly inside `main`; normal return runs ordinary defers. Libraries require
+no `main`.
+
+## Features Draft deliberately lacks
+
+Do not synthesize syntax for familiar features that are absent. Draft 1 has no
+methods, closures, inheritance, interfaces/traits, exceptions, implicit
+destructors, automatic ownership/moves, operator overloading, declaration
+overloading, default arguments, variadic foreign procedures, macro expander,
+AST construction API, textual preprocessor, hidden package initialization,
+strict-aliasing assumption, implicit numeric conversions, implicit truthiness,
+aggregate equality, general compile-time declaration generation, or raw-string
+inline assembly.
+
+Future GPU procedures, additional layout forms, and raw-string assembly in
+`docs/specification/07-future-ideas.md` are non-normative and unimplemented.

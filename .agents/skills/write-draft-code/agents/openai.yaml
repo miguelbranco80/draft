@@ -1,0 +1,4 @@
+interface:
+  display_name: "Write Draft Code"
+  short_description: "Build correct Draft programs and core packages"
+  default_prompt: "Use $write-draft-code to implement and validate a Draft package against the current language and core APIs in this repository."
