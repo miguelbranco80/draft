@@ -31,4 +31,21 @@ if(NOT test_stdout MATCHES "test passed")
     "address instrumentation lost its success report: ${test_stdout}")
 endif()
 
+# Evidence names the linked LLVM distribution, not whichever unrelated Clang
+# happens to be first on PATH. The host kernel/architecture remains represented
+# separately by the environment identity.
+file(GLOB evidence_files
+  "${TEST_ROOT}/${package_name}/.draft/evidence/*.json")
+if(NOT evidence_files)
+  message(FATAL_ERROR "address instrumentation did not publish evidence")
+endif()
+foreach(evidence_file IN LISTS evidence_files)
+  file(READ "${evidence_file}" evidence)
+  if(NOT evidence MATCHES
+      "\"toolchain\": \"linked-llvm-version:22\\.")
+    message(FATAL_ERROR
+      "address evidence does not identify linked LLVM 22: ${evidence}")
+  endif()
+endforeach()
+
 file(REMOVE_RECURSE "${TEST_ROOT}")

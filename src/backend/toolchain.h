@@ -1,10 +1,12 @@
-// Host LLVM command adapter for AArch64 IR, objects, archives, and final links.
+// Native artifact adapter for AArch64 objects, archives, and final links.
 //
-// This module receives a checked Draft program and invokes the selected host
-// tools to materialize it. Tool paths are operational configuration: they do
-// not enter resolution manifests or synthesis identities. The adapter owns the
-// exact argument contract for each Draft target and keeps language semantics in
-// MIR/LLVM lowering rather than inferring them from the host environment.
+// This module receives a completely lowered Draft program, schedules its
+// independent package objects through embedded LLVM, and invokes the remaining
+// selected platform tools to materialize the requested artifact. Tool paths are
+// operational configuration: they do not enter resolution manifests or
+// synthesis identities. The adapter owns the exact argument/publication
+// contract for each Draft target and keeps language semantics in MIR/LLVM
+// lowering rather than inferring them from the host environment.
 
 #pragma once
 

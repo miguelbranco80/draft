@@ -32,10 +32,14 @@ namespace {
   if (built.toolchain_version.empty()) {
     diagnostics.error(
         SourceRange::invalid(),
-        "validation cannot identify the host toolchain");
+        "validation cannot identify the linked LLVM toolchain");
     return std::nullopt;
   }
-  return "host-version:" + built.toolchain_version;
+  // Host kernel/architecture facts have their own environment identity below.
+  // This field names the exact LLVM distribution used for object emission and
+  // matching sanitizer/link tools; retaining the old `host-version` prefix
+  // would misdescribe a compile-time constant as an ambient runtime probe.
+  return "linked-llvm-version:" + built.toolchain_version;
 }
 
 [[nodiscard]] std::optional<std::string> environment_identity(
