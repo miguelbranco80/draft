@@ -9,6 +9,7 @@
 #include "workspace/workspace.h"
 
 #include "base/timing.h"
+#include "syntax/parser.h"
 #include "syntax/token.h"
 
 #include <algorithm>
@@ -50,6 +51,99 @@ struct ParsedImport {
   SourceRange range;
   std::string path;
 };
+
+// Import extraction is shared by initial recursive loading and later
+// transactional source replacement. It observes only direct import clauses;
+// aliases remain semantic declarations and are rebuilt from the new syntax.
+[[nodiscard]] std::vector<ParsedImport> imports_in(
+    const SourceManager &sources,
+    const LoadedPackage &package) {
+  std::vector<ParsedImport> imports;
+  for (const LoadedPackageFile &file : package.files) {
+    if (!file.syntax.has_value() || !file.syntax->root().is_valid()) continue;
+    const SyntaxTree &tree = *file.syntax;
+    const SyntaxNode &root = tree.node(tree.root());
+    for (NodeId child_id : root.children) {
+      const SyntaxNode &node = tree.node(child_id);
+      if (node.kind != NodeKind::ImportClause || node.children.empty()) {
+        continue;
+      }
+      const SyntaxNode &path_node = tree.node(node.children.front());
+      std::string path;
+      for (std::uint32_t token_index = path_node.token_begin;
+           token_index < path_node.token_end;
+           ++token_index) {
+        const Token &token = tree.token(token_index);
+        if (token.kind == TokenKind::Slash) {
+          path.push_back('/');
+        } else {
+          path += sources.text(token.range);
+        }
+      }
+      if (!path.empty()) {
+        imports.push_back({file.source, child_id, node.range, std::move(path)});
+      }
+    }
+  }
+  return imports;
+}
+
+// Package clauses use the parser's contextual-name vocabulary. This duplicates
+// no semantic policy: it is the same lexical set accepted by the one-package
+// loader and exists here only to protect an already established package ID.
+[[nodiscard]] bool token_is_package_name(TokenKind kind) {
+  return kind == TokenKind::Identifier || kind == TokenKind::KeywordC ||
+      kind == TokenKind::KeywordType || kind == TokenKind::KeywordInteger ||
+      kind == TokenKind::KeywordFloat || kind == TokenKind::KeywordNumber ||
+      kind == TokenKind::KeywordFlags || kind == TokenKind::KeywordMemory;
+}
+
+[[nodiscard]] std::optional<std::string> package_name_from_tree(
+    const SourceManager &sources,
+    const SyntaxTree &tree) {
+  if (!tree.root().is_valid()) return std::nullopt;
+  const SyntaxNode &root = tree.node(tree.root());
+  if (root.children.empty()) return std::nullopt;
+  const SyntaxNode &package = tree.node(root.children.front());
+  if (package.kind != NodeKind::PackageClause ||
+      package.token_end <= package.token_begin + 1) {
+    return std::nullopt;
+  }
+  const Token &name = tree.token(package.token_begin + 1);
+  if (!token_is_package_name(name.kind)) return std::nullopt;
+  return std::string(sources.text(name.range));
+}
+
+[[nodiscard]] SourceRange package_name_range(const SyntaxTree &tree) {
+  if (!tree.root().is_valid()) return SourceRange::invalid();
+  const SyntaxNode &root = tree.node(tree.root());
+  if (root.children.empty()) return SourceRange::invalid();
+  const SyntaxNode &package = tree.node(root.children.front());
+  if (package.token_end <= package.token_begin + 1) return package.range;
+  return tree.token(package.token_begin + 1).range;
+}
+
+[[nodiscard]] std::optional<std::size_t> package_index_for(
+    const WorkspaceGraph &graph,
+    const PackageIdentity &identity) {
+  for (std::size_t index = 0; index < graph.packages.size(); ++index) {
+    if (graph.packages[index].identity == identity) return index;
+  }
+  return std::nullopt;
+}
+
+[[nodiscard]] std::optional<std::size_t> draft_file_index_for(
+    const LoadedPackage &package,
+    std::string_view relative_name) {
+  for (std::size_t index = 0; index < package.files.size(); ++index) {
+    const LoadedPackageFile &file = package.files[index];
+    if (file.relative_name == relative_name &&
+        file.kind == PackageFileKind::DraftSource) {
+      return index;
+    }
+  }
+  return std::nullopt;
+}
 
 // GraphLoader owns only temporary traversal state. The result graph itself owns
 // all lasting package rows. A single loader call is deterministic and contains
@@ -344,42 +438,6 @@ private:
     return std::pair<std::uint32_t, std::string>{root_index, std::move(relative)};
   }
 
-  // Extracts import paths directly from parsed syntax. The semantic collector
-  // separately creates aliases because aliases are file-local symbols, whereas
-  // graph construction needs only the package path and source occurrence.
-  [[nodiscard]] std::vector<ParsedImport> imports_in(const LoadedPackage &package) const {
-    std::vector<ParsedImport> imports;
-    for (const LoadedPackageFile &file : package.files) {
-      if (!file.syntax.has_value() || !file.syntax->root().is_valid()) {
-        continue;
-      }
-      const SyntaxTree &tree = *file.syntax;
-      const SyntaxNode &root = tree.node(tree.root());
-      for (NodeId child_id : root.children) {
-        const SyntaxNode &node = tree.node(child_id);
-        if (node.kind != NodeKind::ImportClause || node.children.empty()) {
-          continue;
-        }
-        const SyntaxNode &path_node = tree.node(node.children.front());
-        std::string path;
-        for (std::uint32_t token_index = path_node.token_begin;
-             token_index < path_node.token_end;
-             ++token_index) {
-          const Token &token = tree.token(token_index);
-          if (token.kind == TokenKind::Slash) {
-            path.push_back('/');
-          } else {
-            path += sources_.text(token.range);
-          }
-        }
-        if (!path.empty()) {
-          imports.push_back({file.source, child_id, node.range, std::move(path)});
-        }
-      }
-    }
-    return imports;
-  }
-
   [[nodiscard]] std::optional<PackageId> find_visit(
       const PackageIdentity &identity,
       VisitState *state) const {
@@ -489,7 +547,8 @@ private:
         options_.package_options.timings,
         "import graph resolution: ",
         checked_identity);
-    const std::vector<ParsedImport> imports = imports_in(graph_.packages[id.value].loaded);
+    const std::vector<ParsedImport> imports = imports_in(
+        sources_, graph_.packages[id.value].loaded);
     for (const ParsedImport &import : imports) {
       const std::optional<std::pair<std::uint32_t, std::string>> resolved =
           resolve_import_root(import.path, import.range);
@@ -544,6 +603,177 @@ WorkspaceLoadResult load_workspace(
     DiagnosticSink &diagnostics) {
   GraphLoader loader(sources, options, diagnostics);
   return loader.run(root_package_directory);
+}
+
+WorkspaceSourceUpdateResult apply_workspace_source_overrides(
+    SourceManager &sources,
+    const std::vector<WorkspaceSourceOverride> &overrides,
+    WorkspaceGraph &graph,
+    DiagnosticSink &diagnostics) {
+  WorkspaceSourceUpdateResult result;
+  const std::size_t initial_errors = diagnostics.error_count();
+
+  // Parse into a complete candidate graph. SourceManager is append-only, so a
+  // rejected candidate can leave its diagnostic buffers behind without
+  // changing any FileId already stored by the authoritative graph. Copying the
+  // graph here is deliberate: callers either observe the entire checked source
+  // transition or the exact graph they supplied, never a partially replaced
+  // package after a later override fails.
+  WorkspaceGraph candidate = graph;
+  for (std::size_t override_index = 0;
+       override_index < overrides.size();
+       ++override_index) {
+    const WorkspaceSourceOverride &source_override = overrides[override_index];
+    bool duplicate = false;
+    for (std::size_t earlier = 0; earlier < override_index; ++earlier) {
+      if (overrides[earlier].identity == source_override.identity &&
+          overrides[earlier].source.relative_name ==
+              source_override.source.relative_name) {
+        duplicate = true;
+        break;
+      }
+    }
+    if (duplicate) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "resolved source contains duplicate overrides for '" +
+              display_package_identity(source_override.identity) + "/" +
+              source_override.source.relative_name + "'");
+      continue;
+    }
+
+    const std::optional<std::size_t> package_index = package_index_for(
+        candidate, source_override.identity);
+    if (!package_index.has_value()) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "resolved source override names an unreachable package '" +
+              display_package_identity(source_override.identity) + "'");
+      continue;
+    }
+    WorkspacePackage &package = candidate.packages[*package_index];
+    const std::optional<std::size_t> file_index = draft_file_index_for(
+        package.loaded, source_override.source.relative_name);
+    if (!file_index.has_value()) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "resolved source override does not match a selected Draft file '" +
+              source_override.source.relative_name + "' in package '" +
+              display_package_identity(source_override.identity) + "'");
+      continue;
+    }
+
+    LoadedPackageFile &file = package.loaded.files[*file_index];
+    const std::string display_path =
+        (std::filesystem::path(package.loaded.physical_directory) /
+         file.relative_name).string() + " [resolved]";
+    const FileId source = sources.add_source(
+        display_path,
+        source_override.source.contents,
+        source_override.source.expansion_maps);
+    SyntaxTree syntax = parse_source_file(sources, source, diagnostics);
+    const std::optional<std::string> package_name = package_name_from_tree(
+        sources, syntax);
+    if (!package_name.has_value()) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "resolved source file '" + file.relative_name +
+              "' has no valid package declaration");
+    } else if (*package_name != package.loaded.short_name) {
+      diagnostics.error(
+          package_name_range(syntax),
+          "resolved source package name '" + *package_name +
+              "' does not match package name '" + package.loaded.short_name +
+              "'");
+    }
+    file.source = source;
+    file.syntax = std::move(syntax);
+    result.changed_packages.push_back(PackageId{
+        static_cast<std::uint32_t>(*package_index)});
+  }
+
+  // The source boundary deliberately does not resolve a fresh package graph.
+  // Instead, compare every package's complete import sequence against the
+  // authoritative syntax and transfer only the new source/node locations onto
+  // the existing resolved edges. Requiring the same ordered paths prevents an
+  // expansion from changing reachability while retaining all PackageId and
+  // root IDs used by semantic state built earlier in this command.
+  for (std::size_t package_index = 0;
+       package_index < graph.packages.size();
+       ++package_index) {
+    const std::vector<ParsedImport> previous = imports_in(
+        sources, graph.packages[package_index].loaded);
+    const std::vector<ParsedImport> replacement = imports_in(
+        sources, candidate.packages[package_index].loaded);
+    bool same_imports = previous.size() == replacement.size();
+    if (same_imports) {
+      for (std::size_t index = 0; index < previous.size(); ++index) {
+        if (previous[index].path != replacement[index].path) {
+          same_imports = false;
+          break;
+        }
+      }
+    }
+    if (!same_imports) {
+      SourceRange range = SourceRange::invalid();
+      for (std::size_t index = 0;
+           index < std::min(previous.size(), replacement.size());
+           ++index) {
+        if (previous[index].path != replacement[index].path) {
+          range = replacement[index].range;
+          break;
+        }
+      }
+      if (!range.is_valid() && replacement.size() > previous.size()) {
+        range = replacement[previous.size()].range;
+      }
+      diagnostics.error(
+          range,
+          "resolved source changed package imports for '" +
+              display_package_identity(graph.packages[package_index].identity) +
+              "'");
+      continue;
+    }
+
+    for (std::size_t import_index = 0;
+         import_index < previous.size();
+         ++import_index) {
+      bool found_edge = false;
+      for (PackageImport &edge : candidate.imports) {
+        if (static_cast<std::size_t>(edge.importing_package.value) !=
+                package_index ||
+            edge.file != previous[import_index].file ||
+            edge.syntax != previous[import_index].syntax ||
+            edge.path != previous[import_index].path) {
+          continue;
+        }
+        edge.file = replacement[import_index].file;
+        edge.syntax = replacement[import_index].syntax;
+        found_edge = true;
+        break;
+      }
+      if (!found_edge) {
+        diagnostics.error(
+            previous[import_index].range,
+            "workspace import edge is missing during resolved source update");
+      }
+    }
+  }
+
+  std::sort(
+      result.changed_packages.begin(),
+      result.changed_packages.end(),
+      [](PackageId left, PackageId right) { return left.value < right.value; });
+  result.changed_packages.erase(
+      std::unique(
+          result.changed_packages.begin(),
+          result.changed_packages.end()),
+      result.changed_packages.end());
+
+  if (diagnostics.error_count() != initial_errors) return result;
+  graph = std::move(candidate);
+  result.ok = true;
+  return result;
 }
 
 std::string display_package_identity(const PackageIdentity &identity) {

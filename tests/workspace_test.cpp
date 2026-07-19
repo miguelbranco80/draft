@@ -140,6 +140,80 @@ void test_recursive_graph(TestState &state) {
   EXPECT(state, draft::display_package_identity(app.identity) == "workspace:app");
 }
 
+// Checked generated source must enter the already loaded graph through an
+// ordinary parse while retaining the graph identities semantic analysis uses.
+// This test covers both the successful source transition and its transactional
+// failure rule: an import-changing replacement must not leak into the caller's
+// graph even though SourceManager has appended a diagnostic buffer for it.
+void test_in_memory_source_update(TestState &state) {
+  TemporaryWorkspace temporary;
+  populate_graph(temporary);
+
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  draft::WorkspaceLoadResult loaded = draft::load_workspace(
+      sources,
+      (temporary.path / "workspace" / "app").string(),
+      options_for(temporary),
+      diagnostics);
+  EXPECT(state, loaded.ok);
+  if (!loaded.ok) return;
+
+  const draft::PackageId root = loaded.graph.root_package;
+  const draft::FileId original_file =
+      loaded.graph.package(root).loaded.files.front().source;
+  const std::size_t original_package_count = loaded.graph.packages.size();
+  const std::size_t original_import_count = loaded.graph.imports.size();
+  const draft::PackageId original_dependency =
+      loaded.graph.imports.front().imported_package;
+
+  draft::WorkspaceSourceOverride replacement;
+  replacement.identity = loaded.graph.package(root).identity;
+  replacement.source.relative_name = "package.draft";
+  replacement.source.contents =
+      "package app\n"
+      "import lib/math as math\n"
+      "import vendor/text as text\n"
+      "import core/io\n"
+      "main :: proc() { value := 7; }\n";
+  const draft::WorkspaceSourceUpdateResult updated =
+      draft::apply_workspace_source_overrides(
+          sources, {replacement}, loaded.graph, diagnostics);
+  if (diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+  }
+  EXPECT(state, updated.ok);
+  EXPECT(state, updated.changed_packages.size() == 1);
+  EXPECT(state, updated.changed_packages.front() == root);
+  EXPECT(state, loaded.graph.root_package == root);
+  EXPECT(state, loaded.graph.packages.size() == original_package_count);
+  EXPECT(state, loaded.graph.imports.size() == original_import_count);
+  EXPECT(state, loaded.graph.imports.front().imported_package == original_dependency);
+  const draft::FileId replaced_file =
+      loaded.graph.package(root).loaded.files.front().source;
+  EXPECT(state, replaced_file != original_file);
+  EXPECT(state, sources.text(replaced_file) == replacement.source.contents);
+
+  const std::size_t errors_before_rejection = diagnostics.error_count();
+  draft::WorkspaceSourceOverride invalid = replacement;
+  invalid.source.contents =
+      "package app\n"
+      "import lib/math as math\n"
+      "import newly/introduced\n"
+      "main :: proc() {}\n";
+  const draft::WorkspaceSourceUpdateResult rejected =
+      draft::apply_workspace_source_overrides(
+          sources, {invalid}, loaded.graph, diagnostics);
+  EXPECT(state, !rejected.ok);
+  EXPECT(state, diagnostics.error_count() == errors_before_rejection + 1);
+  EXPECT(state, loaded.graph.package(root).loaded.files.front().source == replaced_file);
+  EXPECT(state, sources.text(replaced_file) == replacement.source.contents);
+  const std::string rendered = draft::render_diagnostics(sources, diagnostics);
+  EXPECT(state,
+      rendered.find("resolved source changed package imports") !=
+          std::string::npos);
+}
+
 void test_cycle_diagnostic(TestState &state) {
   TemporaryWorkspace temporary;
   write_file(
@@ -248,6 +322,7 @@ void test_import_depth_is_bounded(TestState &state) {
 int main() {
   TestState state;
   test_recursive_graph(state);
+  test_in_memory_source_update(state);
   test_cycle_diagnostic(state);
   test_ambiguous_dependency_prefixes(state);
   test_import_depth_is_bounded(state);

@@ -143,6 +143,15 @@ struct WorkspaceLoadResult {
   WorkspaceGraph graph;
 };
 
+// Describes a successful in-memory source transition. Package IDs are returned
+// in ascending graph-index order and identify the exact packages whose parsed
+// Draft file changed. Generated source cannot add imports, so the package and
+// root vectors retain their existing IDs and topology.
+struct WorkspaceSourceUpdateResult {
+  bool ok = false;
+  std::vector<PackageId> changed_packages;
+};
+
 // Loads the package at root_package_directory and every transitive import. All
 // paths are interpreted only through options. Configuration, filesystem,
 // parsing, and graph errors become diagnostics; the function does not throw.
@@ -152,6 +161,19 @@ struct WorkspaceLoadResult {
     SourceManager &sources,
     const std::string &root_package_directory,
     const WorkspaceLoadOptions &options,
+    DiagnosticSink &diagnostics);
+
+// Parses complete checked source overrides into an existing graph without
+// performing filesystem discovery or reloading unaffected files. Every row
+// must name one selected Draft file exactly once. Package declarations and the
+// complete ordered import multiset must remain unchanged; this is the grammar
+// boundary that lets elaboration preserve stable package/import IDs. Graph
+// mutation is transactional, though newly parsed SourceManager buffers remain
+// harmless command-local storage after a failed attempt.
+[[nodiscard]] WorkspaceSourceUpdateResult apply_workspace_source_overrides(
+    SourceManager &sources,
+    const std::vector<WorkspaceSourceOverride> &overrides,
+    WorkspaceGraph &graph,
     DiagnosticSink &diagnostics);
 
 [[nodiscard]] std::string display_package_identity(const PackageIdentity &identity);
