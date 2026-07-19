@@ -7,8 +7,8 @@ or userspace ABI is interchangeable.
 
 ## Initial AArch64 Linux profile
 
-Status: implemented and initial locked cross-target qualification passed;
-Linux-hosted bootstrap tools and Linux sanitizer profiles remain future work.
+Status: implemented and required in native AArch64 Linux CI; Draft-level Linux
+sanitizer profiles remain future work.
 
 The profile identity is `draft-aarch64-linux-gnu-v1`. It targets
 `aarch64-unknown-linux-gnu`, the GNU AAPCS64 ABI, little-endian ELF, the generic
@@ -18,7 +18,7 @@ hosted distribution contract is Linux 6.8 with glibc 2.39, corresponding to an
 Ubuntu 24.04-class AArch64 sysroot. Changing the libc contract or base page size
 requires a new profile identity.
 
-The pinned LLVM data layout is:
+The fixed LLVM data layout is:
 
 ```text
 e-m:e-p270:32:32-p271:32:32-p272:64:64-i8:8:32-i16:16:32-i64:64-i128:128-n32:64-S128-Fn32
@@ -56,25 +56,23 @@ C-header emission, validation, resolution, and judgment; macOS remains the
 compatibility default. The root LLVM runtime now emits glibc's 32-bit
 `pthread_once_t` and `pthread_key_t` layouts. The native adapter emits ELF
 relocatable objects, deterministic archives, `.so` files with SONAMEs, and PIE
-executables using the pinned glibc sysroot and `ld.lld`. Final ELF artifacts
+executables using the host glibc development files and `ld.lld`. Final ELF artifacts
 retain DWARF and a content-derived GNU build ID; they correctly omit a Mach-O
 dSYM companion.
 
-The first locked qualification cross-compiled with LLVM/LLD 22.1.8 and an
-Ubuntu 24.04 arm64 sysroot containing glibc 2.39, Linux 6.8 UAPI headers, and
-the GCC 13 runtime. Native AArch64 execution passed the ordinary language tour,
-console output, argv/environment/process/file operations, target-qualified ELF
-package assembly, pthread spawn/join/mutex/condition/TLS/Context attachment,
-and a generated-header C client calling a Draft shared library across aggregate,
-enum, HFA, callback, and foreign-thread boundaries. Two locked language-tour
-links were byte-identical. Exact evidence and commands are recorded in the
-[Linux qualification report](../releases/aarch64-linux-qualification.md).
-
-This qualifies programs targeting AArch64 Linux from the current macOS-hosted
-bootstrap. Running the compiler itself on Linux remains a separate host-porting
-task: locked mode needs an ELF dependency-closure verifier for the host Clang,
-lld, and archiver. AddressSanitizer and the other validation instrumentation
-profiles also remain fail-closed for this target.
+The initial cross-target qualification used LLVM/LLD 22.1.8 and an Ubuntu
+24.04 arm64 sysroot containing glibc 2.39, Linux 6.8 UAPI headers, and the GCC
+13 runtime. That run is preserved in the
+[qualification archive](../history/releases/aarch64-linux-qualification.md).
+Current native AArch64 Linux CI passes the language tour, console output,
+argv/environment/process/file operations, target-qualified ELF package
+assembly, pthread spawn/join/mutex/condition/TLS/Context attachment, and a
+generated-header C client calling a Draft shared library across aggregate,
+enum, HFA, callback, and foreign-thread boundaries. Repeated artifact builds
+are byte-identical. AddressSanitizer and the other Draft validation
+instrumentation profiles remain fail-closed for this target; the separate
+x86-64 CI sanitizer job instruments the C++ bootstrap implementation rather
+than generated Draft programs.
 
 ## Related contracts
 

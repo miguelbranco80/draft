@@ -9,7 +9,7 @@ Status: bootstrap target contract; versioned as `draft-aarch64-macos-v5`.
 The first profile targets `arm64-apple-macosx14.0.0`, uses the generic AArch64
 CPU with baseline NEON, 64-bit little-endian pointers, 16 KiB pages, Mach-O,
 position-independent small-model code, general-dynamic TLS, and a macOS 14.0
-deployment floor. Its pinned LLVM data-layout string is:
+deployment floor. Its fixed LLVM data-layout string is:
 
 ```text
 e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32
@@ -66,5 +66,6 @@ The general Draft rules remain in the
 bootstrap implementation records how it realizes the hosted
 [Context, process, thread, and atomic surface](../implementation/runtime-and-core.md)
 and [native artifact behavior](../implementation/native-backend-and-artifacts.md).
-The concrete selected binaries and SDK are release inputs documented in the
-[AArch64 macOS toolchain distribution](../releases/aarch64-macos-toolchain.md).
+The host Clang, Apple linker, SDK, `libtool`, and `dsymutil` are operational
+prerequisites documented in the
+[command reference](../operations/command-reference.md), not language inputs.

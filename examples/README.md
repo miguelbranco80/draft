@@ -13,8 +13,7 @@ can be checked or built with:
 
 ```sh
 build/draftc check examples/language-tour
-build/draftc build examples/language-tour \
-  --allow-host-toolchain -o /tmp/draft-language-tour
+build/draftc build examples/language-tour -o /tmp/draft-language-tour
 /tmp/draft-language-tour
 ```
 
@@ -68,7 +67,7 @@ work rather than missing backend features.
 
 | Example | What it covers |
 | --- | --- |
-| [`agent-acceptance`](agent-acceptance/) | End-to-end declaration, member, expression, and statement synthesis; `judge`; committed content-addressed expansions; tests; evidence; generated-source correlation; and locked provider-free rebuilding. See the [acceptance guide](../docs/releases/agent-acceptance.md). |
+| [`agent-acceptance`](agent-acceptance/) | End-to-end declaration, member, expression, and statement synthesis; `judge`; committed content-addressed expansions; tests; evidence; generated-source correlation; and provider-free rebuilding. See the [acceptance guide](../docs/releases/agent-acceptance.md). |
 | [`agent-pending`](agent-pending/) | An intentionally unresolved synthesis and judgment package used to demonstrate `resolve` and `judge` command behavior. It is not an ordinary provider-free build. |
 | [`validation`](validation/) | Discovery and execution of `*_test.draft` and `*_bench.draft` procedures through `core/testing` and `core/benchmark`. |
 
@@ -81,7 +80,7 @@ work rather than missing backend features.
 | Globals, TLS, context, allocation, collections, atomics, and threads | `core-runtime`, `core-memory`, `core-array`, `core-map`, `core-atomic`, `core-thread`, `runtime-checks` |
 | Console, formatting, files, arguments, and environment | `console`, `file-io`, `core-os` |
 | Parsed and external assembly, SIMD, C imports, C exports, and foreign providers | `assembly`, `external-assembly`, `c-interop`, `c-library`, `foreign-provider` |
-| `docs`, `judge`, synthesis, deterministic resolution, and locked builds | `language-tour`, `agent-acceptance`, `agent-pending` |
+| `docs`, `judge`, synthesis, deterministic resolution, and provider-free builds | `language-tour`, `agent-acceptance`, `agent-pending` |
 | Denials, assertions, traps, tests, and benchmarks | `denials`, `runtime-traps`, `validation` |
 
 This map covers positive surface-language capabilities. Parser recovery,

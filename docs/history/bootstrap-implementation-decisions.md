@@ -1144,4 +1144,4 @@ headers. Its use by executables, dylibs, and relocatable objects, together with
 the complete native and determinism matrices, proves that no larger developer
 SDK is currently an implicit input. The assembly recipe, exact content-tree
 identities, dependency policy, and distribution boundary are recorded in
-[the AArch64 macOS toolchain document](../releases/aarch64-macos-toolchain.md).
+[the AArch64 macOS toolchain document](releases/aarch64-macos-toolchain.md).

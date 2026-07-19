@@ -79,7 +79,7 @@ particular:
 - [AArch64 macOS target profile](docs/targets/aarch64-macos.md)
 - [AArch64 Linux target and qualification](docs/targets/aarch64-linux.md)
 - [Compiler command reference](docs/operations/command-reference.md)
-- [First-compiler qualification](docs/releases/first-compiler-qualification.md)
+- [Native host qualification](docs/releases/native-host-qualification.md)
 - [Historical first implementation plan](docs/history/first-implementation-plan.md)
 
 Repository engineering rules remain in [AGENTS.md](AGENTS.md).

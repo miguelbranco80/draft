@@ -1,34 +1,31 @@
 # Agent acceptance fixture
 
 This workspace is the small end-to-end acceptance case for compiler-owned agent
-operations. It deliberately combines features that are easier to validate
-together than as isolated mocks:
+operations. It combines features that are most useful when exercised together:
 
 - dependency-ordered declaration synthesis at package scope;
 - opaque-round member synthesis that rebuilds a public aggregate interface;
 - typed expression and statement synthesis inside `main`;
 - an imported package used by both the program and its test-only graph;
-- native pre-commit test execution;
+- native precommit test execution;
 - an artifact-backed judgment whose claim depends on the imported body;
-- provider-free offline checking and locked native rebuilding; and
+- provider-free checking and native building from saved expansions; and
 - generated-source correlation in the native debug sidecar.
 
 The committed `.draft` files are content-addressed acceptance inputs, not build
-caches. They contain the four checked generated Draft fragments, the v129
-resolution manifest, and its selected test and judgment evidence. `.draft/build`
-remains ignored and may be deleted at any time.
+caches. They contain four checked generated Draft fragments, a v4 resolution
+manifest, and its currently selected host-validation evidence. `.draft/build`
+is ignored and may be deleted at any time.
 
 ## Qualification flow
 
-Resolve with an explicit Codex distribution and exact native inputs:
+Resolve with an explicit Codex distribution:
 
 ```sh
 build/draftc resolve examples/agent-acceptance/app \
   --codex-distribution-root /absolute/codex-distribution \
   --codex-executable /absolute/codex-distribution/codex \
-  --codex-model model-name \
-  --toolchain-root /absolute/llvm-root \
-  --sdk-root /absolute/MacOSX.sdk
+  --codex-model model-name
 ```
 
 The ordinary judgment intentionally cannot prove the imported function's
@@ -43,23 +40,24 @@ build/draftc judge examples/agent-acceptance/app \
   --codex-model model-name
 ```
 
-Finally, reproduce without either provider. The digest is the SHA-256 of
-`lib/package.draft` and is also recorded in the selected judgment evidence:
+Finally, reproduce the program without either provider:
 
 ```sh
-build/draftc build examples/agent-acceptance/app --locked \
-  --toolchain-root /absolute/llvm-root \
-  --sdk-root /absolute/MacOSX.sdk \
-  --require-test-evidence \
-  --require-judgment-evidence \
-  --judge-artifact \
-    library-source:117d920b2cba9a52b050d7149325f704b1990b149760136c93689a9ea74a3f54 \
+build/draftc check examples/agent-acceptance/app
+build/draftc build examples/agent-acceptance/app \
   -o /tmp/draft-agent-acceptance
+/tmp/draft-agent-acceptance
 ```
 
-The checked snapshot was qualified on AArch64 macOS with the Codex executable
-bundled in the ChatGPT application, model `gpt-5.6-sol`, the selected
-self-contained LLVM 22.1.8 plus Apple ld/ld-classic toolchain, and the minimal
-content-pinned `libSystem.tbd` SDK. The toolchain and SDK layouts and identities
-are recorded in the repository's
-[AArch64 macOS toolchain document](aarch64-macos-toolchain.md).
+`build` loads the saved generated source, checks the complete program, and uses
+the host native toolchain. It neither contacts Codex nor requires the selected
+test or judgment evidence. To recheck every saved expansion and record fresh
+host validation evidence without provider access, run:
+
+```sh
+build/draftc resolve examples/agent-acceptance/app --revalidate
+```
+
+The original Codex/model qualification and the former native-distribution
+experiment remain available in the
+[historical first-compiler qualification](../history/releases/first-compiler-qualification.md).

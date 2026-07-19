@@ -231,7 +231,7 @@ and no condition is converted into an optimizer assumption.
 
 The versioned `draft.resolved-program.v4` hash records the assertion mode beside
 compiler content v129. `build`, `resolve`, and `judge` expose the same explicit
-flag so an offline or locked manifest cannot be replayed under a different
+flag so a provider-free manifest cannot be replayed under a different
 mode. Test and benchmark compilations deliberately override the release choice
 to assertions on and receive their own resolved validation digest; disabling
 release assertions must never weaken the validation program that authorizes a

@@ -1,6 +1,6 @@
 # Validation, judgments, and evidence
 
-This document records validation-only synthesis context, append-only evidence storage, judgment selection/publication, locked verification, instrumentation requests, and resolution-time judgment scheduling.
+This document records validation-only synthesis context, append-only evidence storage, judgment selection/publication, instrumentation requests, and resolution-time judgment scheduling.
 
 ## Validation-only synthesis context
 
@@ -33,8 +33,8 @@ validator verdicts and rationales are native counter reports.
 
 The state header is `draft-evidence-state-v1`. Changing the prior
 validation-specific header also advances the compiler content identity: an old
-evidence state is rejected instead of being silently reinterpreted by a locked
-build. Evidence-object keys remain domain-separated by their typed formats, so
+evidence state is rejected instead of being silently reinterpreted by a newer
+compiler. Evidence-object keys remain domain-separated by their typed formats, so
 both kinds safely occupy the same `.draft/evidence` object namespace.
 
 The provider-neutral judgment command evaluates sites in deterministic compiled
@@ -67,37 +67,28 @@ manifest. This prevents a slow provider response for program A from overwriting
 or attaching evidence to concurrently resolved program B, while retaining the
 existing staged-object/fsync/manifest-last crash protocol.
 
-## Offline locked judgment evidence gate
+## Evidence and build separation
 
-Status: provider-neutral multi-validator/artifact verification, public
-validator/artifact configuration, and partial selection implemented.
+Status: provider-neutral multi-validator/artifact evidence and partial selection
+are implemented; ordinary builds do not consume evidence as a prerequisite.
 
-`draftc build --locked --require-judgment-evidence` never configures a judging
-provider. It starts from the already compiled resolved graph and requires one
-manifest judgment row for every current judgment obligation. Each row's store
-key must be active, passing, and still point at the exact immutable attempt
-selected by the manifest. The typed object must match the full stable claim and
-input digests, resolved program, target, compiler, package, and active policy.
+The provider-neutral judgment command accepts an ordered nonempty validator list
+and an exact map of requested artifact bytes. It invokes every validator for
+every selected site, then commits one evidence object whose aggregate passes
+only when all rows pass. Validator identities are unique policy slots; provider,
+model, and configuration remain separate nonempty audit identities. Artifact
+kinds are unique and their content is rehashed before any invocation.
 
-The provider-neutral command accepts an ordered nonempty validator list and an
-exact map of requested artifact bytes. It invokes every validator for every
-selected site even after an ordinary failing verdict, then commits one evidence
-object whose aggregate passes only when all validator rows pass. Validator
-identities are unique policy slots; provider, model, and configuration remain
-separate exact nonempty audit identities. Artifact kinds are unique and their
-content is rehashed before any invocation.
-
-Offline verification receives the expected policy identity, validator order,
-and artifact content identities. It needs no provider installation or
-credentials, and rejects a selected object when any row, order, kind, or digest
-differs. The public `judge` and resolution profile accept repeatable
+The public `judge` and resolution profile accept repeatable
 `identity:model` validator slots and exact `kind:path` artifact inputs. The
-legacy `--codex-model` spelling selects the explicit first profile: one
-`validator-0`, aggregate all-pass, with no requested artifacts. Locked build
-verification receives the matching ordered identities and `kind:sha256` rows;
-it never reopens provider artifact files. A later failing attempt revokes the
-key immediately, so an unchanged manifest that names the older pass fails
-offline verification until judgment succeeds and republishes selection.
+legacy `--codex-model` spelling selects one `validator-0` slot. A later
+failing attempt revokes the active evidence key immediately, preserving an
+honest history for qualification and inspection.
+
+`draftc build` does not require, re-run, or verify test, benchmark, or judgment
+evidence. Its job is to compile the resolved program without a provider. Release
+policy may inspect evidence or run validation as a separate operation, but that
+policy does not alter the program accepted by the language compiler.
 
 ## Judgment discovery and partial selection
 
@@ -151,36 +142,26 @@ unchanged resolution.
 
 ## Validation instrumentation request boundary
 
-Status: the closed vocabulary, first locked address profile, and fail-closed
-availability policy are implemented.
+Status: the closed vocabulary, first host AddressSanitizer profile, and
+fail-closed availability policy are implemented.
 
 Validation profiles request instrumentation through typed kinds rather than
-ambient Clang flags. Draft 1 names `address`, `lifetime`,
-`undefined-operation`, `allocator-poisoning`, and `race`. Duplicate requests are
-errors. Standalone validation, resolution precommit validation, and locked
-evidence verification all use the same target-availability gate.
+arbitrary Clang flags. Draft 1 names `address`, `lifetime`,
+`undefined-operation`, `allocator-poisoning`, and `race`. Duplicate
+requests are errors. Standalone validation and resolution precommit validation
+use the same target-availability gate.
 
-`draft-aarch64-macos-v5` supports exactly `address`. It is locked-only: the
-selected toolchain tree contains the arm64 Clang 22.1 ASan dylib with a
-relocatable install name plus `llvm-symbolizer`. Both entries and their Mach-O
-dependency closures are checked before the complete tree is hashed. The native
-adapter adds the standard `sanitize_address` attribute to every definition in
-its private LLVM snapshot, compiles with `-fsanitize=address` and
-`-fno-omit-frame-pointer`, links the runtime snapshot, adds only
-`@executable_path` as the runtime search path, and deploys the exact dylib beside
-the harness.
+`draft-aarch64-macos-v5` supports exactly `address`. The native adapter adds
+the standard `sanitize_address` attribute to every definition in its private
+LLVM snapshot, compiles with `-fsanitize=address` and
+`-fno-omit-frame-pointer`, and lets the selected host Clang driver link its
+matching sanitizer runtime. The runtime and symbolizer are host tooling, not
+resolution-manifest inputs.
 
-Validation processes receive a complete clean environment. The address profile
-adds exact `ASAN_OPTIONS=abort_on_error=1:symbolize=1` and the absolute path of
-the verified symbolizer; that physical path is relocatable presentation state,
-while the evidence identity names `bin/llvm-symbolizer` and the toolchain digest
-pins its bytes. Evidence/key v2 has a separate instrumentation identity. Thus
-ordinary, differently instrumented, and address-instrumented attempts cannot
-alias. Resolution and locked build evidence requirements expose the same
-`--instrument` selection.
-
-A locked passing test/benchmark pair and a deliberate Draft heap
-use-after-free qualify both sides of the profile. The latter aborts with a
-symbolized logical Draft location and commits a revoked failed attempt. The
-other four vocabulary items remain unavailable with exact diagnostics; a
-required but unavailable instrument is never silently omitted.
+Validation executes address-instrumented programs with
+`ASAN_OPTIONS=abort_on_error=1:symbolize=0` in the same explicit process
+environment as ordinary validation. Evidence records the host Clang version and
+a separate instrumentation identity, so ordinary and address-instrumented
+attempts cannot alias. The other four vocabulary items remain unavailable with
+exact diagnostics; a requested but unavailable instrument is never silently
+omitted.

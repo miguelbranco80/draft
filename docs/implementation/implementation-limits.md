@@ -24,17 +24,17 @@ following children.
 
 ## Native host and instrumentation limits
 
-Status: explicit post-AArch64-Linux qualification boundary.
+Status: explicit two-target bootstrap boundary.
 
-The bootstrap compiler executable and both locked tool distributions are
-currently qualified on an AArch64 macOS host. It can produce and natively
-validate programs for AArch64 macOS and AArch64 GNU/Linux, but running the
-compiler on Linux is not yet a locked configuration. That host port needs an
-ELF dependency-closure verifier for Clang, lld, and llvm-ar before their
-process-loader dependencies can be claimed as content-pinned inputs.
+The bootstrap compiler runs and executes its complete native integration suite
+on both AArch64 macOS and AArch64 GNU/Linux. The host `clang`, `ld.lld`,
+`llvm-ar`, Apple linker, `libtool`, and `dsymutil` installations are ordinary
+tooling prerequisites rather than Draft program inputs. Draft currently emits
+only AArch64 machine code; x86-64 hosts can build and sanitize the bootstrap
+compiler, but cannot execute Draft's native integration programs.
 
 AddressSanitizer is qualified only for the macOS target. Linux and every other
 instrumentation request remain fail-closed until the compiler pass, runtime,
-deployment, clean-process environment, and evidence identity are specified and
+deployment, execution environment, and evidence identity are specified and
 tested together. Linux ELF debug information is embedded in the primary
 artifact; split debug packages are not implemented.

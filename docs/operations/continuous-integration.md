@@ -23,21 +23,19 @@ not cross-compile and emulate the native AArch64 integration executables. The
 two ARM jobs own artifact execution; the x86-64 job adds host-implementation
 memory and undefined-behavior coverage without confusing those responsibilities.
 
-## Development CI and locked qualification
+## Host toolchains and resolved inputs
 
-Pull-request CI deliberately uses the toolchains already shipped by the GitHub
-runner images. It passes the backend's explicit development opt-in for those
-ambient tools; it does not invent a resolution manifest, vendor a second copy of
-LLVM, or maintain hashes for runner-owned files. This gate answers whether the
-current source compiles and works with the declared host environment.
+Pull-request and release CI use the toolchains shipped by the declared GitHub
+runner images. Clang, lld, Apple ld, SDKs, LLVM utilities, and sanitizer
+runtimes are host build configuration. They are not synthesized source and do
+not appear in Draft resolution manifests.
 
-Locked release qualification answers a different question: whether exact
-content-pinned compiler, SDK/sysroot, runtime, and external-input trees reproduce
-the qualified artifact contract. Those roots and their content-tree SHA-256
-identities remain documented in the release qualification records and never
-become prerequisites for an ordinary pull request. A CI failure cannot be
-silenced by changing locked identities, and a green ambient build is not
-presented as locked release evidence.
+Foreign objects, archives, shared libraries, provider summaries, and runtime
+assets remain exact resolved-program inputs when a program selects them. Their
+content-tree verification is covered by target-independent tests. Native
+artifact reproducibility is checked directly: each AArch64 host repeats all
+artifact kinds under the same target profile and compares the complete output
+trees.
 
 ## Local equivalent
 

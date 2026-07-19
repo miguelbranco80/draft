@@ -439,7 +439,7 @@ AArch64 Mach-O image. Before hashing, the compiler recursively verifies that
 each non-system dylib dependency, ID, and runpath stays inside the selected
 tree. Relocating an unchanged tree preserves its identity; changing any byte,
 path, permission, or symlink spelling makes the build fail before a compiler
-process starts. [AArch64 macOS toolchain release](../releases/aarch64-macos-toolchain.md) records
+process starts. [AArch64 macOS toolchain release](releases/aarch64-macos-toolchain.md) records
 the selected LLVM 22.1.8 and Apple linker distribution. Runtime-asset roots use
 the same file-kind, permission, byte, and safe-symlink identity and are also
 rechecked before a compiler process starts.

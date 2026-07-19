@@ -33,11 +33,11 @@ have hidden native visibility; only explicit C exports retain default visibility
 
 Object output performs a relocatable link over all package and package-assembly
 objects. Static output always uses deterministic archive metadata: Apple
-`libtool -static -D` for opted-in host builds and pinned `llvm-ar rcsD` for
-locked or ELF builds. Mach-O dynamic output fixes an `@rpath/<filename>`
+`libtool -static -D` for Mach-O and `llvm-ar rcsD` for ELF. Mach-O dynamic
+output fixes an `@rpath/<filename>`
 install name; ELF dynamic output fixes a filename SONAME. ELF executables use
-the selected sysroot's startup objects, loader, glibc, and GCC runtime through
-the pinned Clang driver and lld. Relocatable ELF output disables Clang's PIE
+the host system's startup objects, loader, glibc, and GCC runtime through the
+host Clang driver and lld. Relocatable ELF output disables Clang's PIE
 default before `-r`; final links retain a deterministic SHA-1 GNU build ID.
 Assembly output is a directory
 bundle with one compiler-produced source per package and exact copied external
@@ -92,17 +92,12 @@ that an unrequested instrument ran.
 Status: implemented for executable and dynamic-library artifacts.
 
 Mach-O final links retain a debug map rather than copying package-object DWARF
-into the executable or dylib. A successful native build therefore runs
-`dsymutil` before it reports success and publishes the conventional sibling
-`<artifact>.dSYM`. Locked roots must contain executable `bin/dsymutil` beside
-`clang`, Apple `ld`/`ld-classic`, and `llvm-ar`; the complete toolchain tree is
-already one manifest input, so this adds no ambient tool lookup or separate
-unbound pin.
+into the executable or dylib. A successful native build therefore runs the
+host `dsymutil` before it reports success and publishes the conventional
+sibling `<artifact>.dSYM`.
 
 The invocation ignores object and Swift-module timestamps, uses one worker, and
-verifies its linked output. Locked children retain the empty search path and
-fixed locale, with fixed `HOME=/` and `TMPDIR=/tmp` solely for LLVM scratch-state
-discovery. The returned native result carries both the bundle path and its
+verifies its linked output. The returned native result carries both the bundle path and its
 canonical content-tree digest. Object, archive, and assembly artifacts keep
 their debug data in their object members or `.loc` directives and therefore do
 not receive a misleading final-link companion.
@@ -122,8 +117,7 @@ are replayed without a provider, it links and runs the program and requires the
 executable expression and statement site identities in both
 `draft-source-correlation-v1` and the linked DWARF payload. Declaration-only
 and layout-only pins are not required to fabricate machine operations. This is
-a real host-toolchain/dSYM gate, and the selected locked release distribution
-has now repeated it. The gate remains part of release qualification.
+a real host-toolchain/dSYM gate and remains part of release qualification.
 
 ## Native ELF debug information
 
@@ -151,9 +145,9 @@ against the generated header and shared library. Mach-O cases additionally
 require the `.dSYM` companion; ELF cases require its absence because their DWARF
 stays in the primary artifact.
 
-These development gates deliberately allow the ambient host toolchain. They
-prove that current source composes into working native artifacts on each host;
-they do not claim release reproducibility or supply-chain qualification. Locked
-qualification remains a separate operation using content-pinned toolchain and
-SDK/sysroot trees. Keeping those two purposes separate means ordinary pull
-request testing needs no vendored compiler archive and no fabricated hashes.
+These gates use the declared host toolchain and prove that current source
+composes into working native artifacts on each host. Reproducibility is tested
+at the produced artifact boundary: repeated builds use the same explicit target
+profile and compare complete output trees. Compiler and SDK installations are
+not Draft program inputs, so pull-request and release testing need no vendored
+toolchain archive or fabricated host-file hashes.

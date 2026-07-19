@@ -34,7 +34,7 @@ generalize those facts to every future Draft target.
 - [Elaboration, semantic context, and pins](implementation/elaboration-and-pins.md)
 - [Native backend and artifacts](implementation/native-backend-and-artifacts.md)
 - [Hosted runtime and core packages](implementation/runtime-and-core.md)
-- [Locked builds and external inputs](implementation/locked-builds.md)
+- [Resolved external program inputs](implementation/external-inputs.md)
 - [Validation, judgments, and evidence](implementation/validation-and-evidence.md)
 - [Implementation limits](implementation/implementation-limits.md)
 
@@ -46,11 +46,9 @@ specification.
 
 - [Compiler command reference](operations/command-reference.md)
 - [Continuous integration](operations/continuous-integration.md)
-- [First-compiler qualification](releases/first-compiler-qualification.md)
-- [AArch64 Linux initial qualification](releases/aarch64-linux-qualification.md)
+- [Current release notes](releases/README.md)
+- [Native host qualification](releases/native-host-qualification.md)
 - [Agent acceptance fixture](releases/agent-acceptance.md)
-- [AArch64 macOS toolchain distribution](releases/aarch64-macos-toolchain.md)
-- [Selected AArch64 distribution decision](releases/selected-aarch64-distribution.md)
 
 Qualification documents state what exact tests, binaries, models, and inputs
 have been exercised. They are evidence, not additional language semantics.
@@ -64,6 +62,8 @@ have been exercised. They are evidence, not additional language semantics.
 - [Bootstrap README implementation snapshot](history/bootstrap-readme-snapshot.md)
 - [Specification source history](history/specification-source.md)
 - [Documentation migration ledger](history/documentation-migration-ledger.md)
+- [Former native-input design](history/native-input-experiment.md)
+- [Historical release qualifications](history/releases/README.md)
 
 The archives intentionally retain the original wording and version identities.
 Current subsystem documents are organized extractions; the archives make the

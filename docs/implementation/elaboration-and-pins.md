@@ -159,6 +159,14 @@ pin without installing its original provider. When `draft resolve` explicitly
 selects a provider, however, provider, model, and complete adapter-configuration
 identities must match the pin; any changed selection regenerates the expansion.
 
+The compiler already treats the saved fragment as source inserted at its exact
+`...` site while retaining the original surface buffer and a composed source
+map. A future `draft expand` command or IDE virtual document can therefore show
+the whole program with every site replaced by generated Draft text without
+changing resolution or build semantics. Diagnostics can continue to distinguish
+authored coordinates from generated coordinates. This view needs only the saved
+expansions; it has no relationship to host compiler or SDK identity.
+
 The first Codex adapter permits two attempts, each with a five-minute deadline.
 That policy is part of adapter configuration identity. A timed-out child is
 killed and reaped before another attempt starts, and only a successful complete

@@ -20,8 +20,8 @@ surface packages with `...` -> checked expansions ---^
 
 The compiler must build complete programs with no Codex configuration, provider
 credentials, network access, synthesis pins, or judgment evidence. The first
-compiler is written in a deliberately small C++20 subset and uses one exactly
-pinned LLVM 22.1.x release. Its most valuable outputs are the executable language
+compiler is written in a deliberately small C++20 subset and uses a selected
+host LLVM toolchain. Its most valuable outputs are the executable language
 behavior, conformance tests, target profile, manifest formats, and canonical
 semantic representations that the later self-hosted compiler can reproduce.
 
@@ -124,8 +124,9 @@ Proposed on-disk shape:
 ```
 
 `draft resolve` stages changes and atomically commits only a coherent validated
-program. `draft build` consumes pins without contacting a provider, and
-`draft build --locked` rejects every unpinned or stale input.
+program. `draft build` consumes saved expansions without contacting a provider
+or modifying the resolution manifest. It rechecks every program input but
+treats the host compiler, linker, and SDK as operational build configuration.
 
 ### Agent constructs before provider execution
 
