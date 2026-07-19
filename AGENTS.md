@@ -312,6 +312,52 @@ language feature.
 - Preserve commits and work authored by the user or another agent. Do not
   rewrite, squash, or discard them unless the user explicitly requests it.
 
+### Documentation updates
+
+Documentation is part of the change, not a later cleanup task. Update the
+current document that owns a changed contract in the same coherent commit as
+the code when practical. Use [docs/README.md](docs/README.md) as the complete
+map and follow this routing:
+
+- Language syntax, typing, evaluation, memory, runtime meaning, agent
+  constructs, interoperation, denials, or validation semantics belong in the
+  relevant `docs/specification/` section. An implementation shortcut or current
+  limitation must not be written as normative language behavior.
+- Machine layout, ABI, object-format, platform-runtime, and parsed-assembly
+  facts belong in the relevant versioned `docs/targets/` profile.
+- Compiler phase boundaries, representations, algorithms, ownership,
+  elaboration, lowering, runtime/core implementation, locked inputs, and
+  evidence mechanics belong in the matching `docs/implementation/` subsystem
+  document. Record a narrower temporary capability in
+  `docs/implementation/implementation-limits.md` as well as at the relevant
+  subsystem seam when readers need both contexts.
+- Public commands, flags, output kinds, provider mappings, and operator
+  workflows belong in `docs/operations/command-reference.md`.
+- Exact completed qualification, exercised toolchains/models, acceptance
+  fixtures, and release-selection facts belong in `docs/releases/`. Update
+  these only after the claimed checks have actually run; they are evidence, not
+  plans.
+- Unresolved semantic choices belong in
+  `docs/decisions/language-questions.md`. Once resolved, put the authoritative
+  result in the specification and the concrete mechanism in implementation or
+  target documentation rather than leaving the decision only in a discussion
+  note.
+- Runnable feature coverage belongs in `examples/README.md` and in the example
+  itself. Update the feature map when an example is added, removed, renamed, or
+  materially broadened.
+- `README.md` remains the short public entry point. Update it when the language
+  overview, supported target, getting-started path, or documentation map changes,
+  but do not turn it into an implementation-status journal.
+- `docs/history/` preserves chronology and provenance. Do not edit an archive
+  to describe current behavior except to repair an archival or migration error;
+  update the current specification, target, implementation, operations, or
+  release document instead.
+
+When adding, moving, or renaming a document, update `docs/README.md` and every
+affected link in the same commit. If a code change genuinely changes no public,
+target, implementation, operational, qualification, or example contract, say
+so in the completion summary rather than making a token documentation edit.
+
 Before editing:
 
 1. Read this file, the relevant specification sections, and the module header.
@@ -333,7 +379,9 @@ Before declaring completion:
 3. Re-read the changed code linearly and remove unnecessary indirection.
 4. Audit every nearby comment for continued truth.
 5. Confirm deterministic ordering and explicit error handling.
-6. Summarize the changed behavior, tests, and any remaining limitation.
+6. Confirm the owning current documents and documentation maps remain accurate.
+7. Summarize the changed behavior, tests, documentation, and any remaining
+   limitation.
 
 ## Definition of straightforward
 
