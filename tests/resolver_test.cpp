@@ -653,6 +653,7 @@ void test_resolution_reuse_revalidation_and_failure(TestState &state) {
   // typed obligation remains unchanged.
   draft::ResolveWorkspaceOptions changed_provider =
       resolve_options(workspace, provider);
+  changed_provider.provider.model_identity = "fixture-model-v2";
   changed_provider.provider.configuration_identity =
       "temperature-0-schema-v2";
   draft::SourceManager changed_provider_sources;
@@ -671,6 +672,9 @@ void test_resolution_reuse_revalidation_and_failure(TestState &state) {
           reuse.manifest.resolved_program_digest);
   EXPECT(state, regenerated.manifest.pins.size() == 1);
   if (regenerated.manifest.pins.size() == 1) {
+    EXPECT(state,
+        regenerated.manifest.pins[0].model_identity ==
+            "fixture-model-v1");
     EXPECT(state,
         regenerated.manifest.pins[0].configuration_identity ==
             "temperature-0-schema-v1");
