@@ -8,6 +8,7 @@
 
 #include "workspace/workspace.h"
 
+#include "base/timing.h"
 #include "syntax/token.h"
 
 #include <algorithm>
@@ -21,6 +22,16 @@
 
 namespace draft {
 namespace {
+
+[[nodiscard]] TimingScope time_package_graph_operation(
+    TimingRecorder *timings,
+    std::string_view operation,
+    const PackageIdentity &identity) {
+  if (timings == nullptr || timings->output() != TimingOutput::All) return {};
+  return timings->scope(
+      std::string(operation) + display_package_identity(identity),
+      TimingVisibility::Detail);
+}
 
 enum class VisitState {
   Loading,
@@ -54,6 +65,10 @@ public:
   [[nodiscard]] WorkspaceLoadResult run(const std::string &root_package_directory) {
     WorkspaceLoadResult result;
     const std::size_t initial_errors = diagnostics_.error_count();
+    TimingScope roots_timing = options_.package_options.timings != nullptr
+        ? options_.package_options.timings->scope(
+              "workspace root selection", TimingVisibility::Detail)
+        : TimingScope{};
     if (!initialize_roots()) {
       result.graph = std::move(graph_);
       return result;
@@ -74,6 +89,7 @@ public:
       result.graph = std::move(graph_);
       return result;
     }
+    roots_timing.finish();
 
     graph_.root_package = load_package_recursive(
         0, *relative, SourceRange::invalid(), 0);
@@ -446,8 +462,13 @@ private:
         package_options.source_overrides.push_back(source_override.source);
       }
     }
+    TimingScope package_timing = time_package_graph_operation(
+        options_.package_options.timings,
+        "package source loading: ",
+        checked_identity);
     PackageLoadResult loaded = draft::load_package(
         sources_, *canonical, package_options, diagnostics_);
+    package_timing.finish();
     if (!loaded.ok) {
       return PackageId{};
     }
@@ -464,6 +485,10 @@ private:
     // Do not retain references into graph_.packages across recursion: appending
     // a dependency may reallocate the vector. The current package's syntax owns
     // its nodes independently, and ParsedImport copies the source facts needed.
+    TimingScope imports_timing = time_package_graph_operation(
+        options_.package_options.timings,
+        "import graph resolution: ",
+        checked_identity);
     const std::vector<ParsedImport> imports = imports_in(graph_.packages[id.value].loaded);
     for (const ParsedImport &import : imports) {
       const std::optional<std::pair<std::uint32_t, std::string>> resolved =
@@ -477,6 +502,7 @@ private:
         graph_.imports.push_back({id, dependency, import.file, import.syntax, import.path});
       }
     }
+    imports_timing.finish();
 
     for (PackageVisit &visit : visits_) {
       if (visit.package == id) {

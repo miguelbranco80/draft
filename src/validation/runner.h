@@ -29,6 +29,10 @@ struct ValidationRunResult {
   bool exited = false;
   int exit_code = 0;
   int signal = 0;
+  // Kernel-accounted CPU for this child. These remain zero on a host adapter
+  // that cannot expose resource usage; they never affect validation evidence.
+  std::uint64_t user_nanoseconds = 0;
+  std::uint64_t system_nanoseconds = 0;
   std::vector<std::uint8_t> report;
 };
 

@@ -27,6 +27,8 @@
 
 namespace draft {
 
+class TimingRecorder;
+
 // Interface synthesis must be discovered before bodies that may name generated
 // declarations or aggregate members. Complete performs every provider-free
 // phase. DiscoverInterfaceSynthesis stops after dependency interfaces, type
@@ -63,6 +65,10 @@ struct CompileWorkspaceOptions {
   // Already content-verified artifact-bound summaries. Paths are consumed by
   // the driver/backend verifier and never enter semantic package state.
   std::vector<ForeignProviderAudit> foreign_provider_audits;
+  // Optional command-owned diagnostic recorder. Timing never participates in
+  // semantic configuration, resolved-program identity, or emitted artifacts.
+  // The caller must keep it alive through this synchronous compilation.
+  TimingRecorder *timings = nullptr;
 };
 
 // Exact package assembly bytes are copied out of SourceManager when a package

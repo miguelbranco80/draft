@@ -9,6 +9,7 @@
 
 #include "backend/toolchain.h"
 #include "backend/foreign_summaries.h"
+#include "base/timing.h"
 #include "compile/compiler.h"
 #include "compile/resolver.h"
 #include "elaborator/codex_cli.h"
@@ -49,6 +50,48 @@ using draft::configure_codex_judgment_policy;
 using draft::parse_judgment_artifact_path;
 using draft::parse_judgment_validator;
 using draft::read_judgment_artifacts;
+
+// The driver owns report I/O while the base recorder owns only diagnostic
+// data. Destruction runs on every ordinary return from main, so an enabled
+// command reports the work completed before a usage or compilation error as
+// well as successful work. The recorder root remains open until render() and
+// therefore measures complete command handling after option pre-scan.
+struct CommandTimingReport {
+  explicit CommandTimingReport(draft::TimingOutput output) : recorder(output) {}
+
+  ~CommandTimingReport() {
+    if (recorder.enabled()) std::cerr << recorder.render();
+  }
+
+  draft::TimingRecorder recorder;
+};
+
+[[nodiscard]] bool is_timing_argument(std::string_view argument) {
+  return argument == "--timings" || argument == "--timings=all";
+}
+
+// Timing is a common package-command option, but command-specific parsing is
+// intentionally kept local below. This pre-scan selects the recorder before
+// any meaningful work and rejects duplicate/conflicting requests once. Each
+// command parser then only consumes the already-validated spelling.
+[[nodiscard]] bool select_timing_output(
+    int argc,
+    char **argv,
+    draft::TimingOutput &output) {
+  output = draft::TimingOutput::Disabled;
+  for (int index = 3; index < argc; ++index) {
+    const std::string_view argument(argv[index]);
+    if (!is_timing_argument(argument)) continue;
+    if (output != draft::TimingOutput::Disabled) {
+      std::cerr << "error: --timings may be specified only once\n";
+      return false;
+    }
+    output = argument == "--timings=all"
+        ? draft::TimingOutput::All
+        : draft::TimingOutput::Summary;
+  }
+  return true;
+}
 
 void request_cancellation(int signal) {
   (void)signal;
@@ -347,7 +390,8 @@ int print_target(const draft::TargetProfile &profile) {
 int compile_package(
     const std::string &directory,
     bool emit_llvm,
-    const draft::TargetProfile &target) {
+    const draft::TargetProfile &target,
+    draft::TimingRecorder *timings) {
   draft::SourceManager sources;
   draft::DiagnosticSink diagnostics;
   std::filesystem::path absolute_directory;
@@ -365,6 +409,7 @@ int compile_package(
   configure_core_distribution(options.workspace);
   options.lower_mir = emit_llvm;
   options.emit_llvm = emit_llvm;
+  options.timings = timings;
   draft::CompileWorkspaceResult compiled =
       draft::compile_workspace_with_resolution(
           sources,
@@ -415,7 +460,8 @@ int build_package(
     draft::RuntimeAssertionMode runtime_assertions,
     const std::vector<draft::ForeignProviderInput> &foreign_providers,
     const std::vector<draft::ForeignProviderSummaryInput> &provider_summaries,
-    const std::vector<draft::RuntimeAssetInput> &runtime_assets) {
+    const std::vector<draft::RuntimeAssetInput> &runtime_assets,
+    draft::TimingRecorder *timings) {
   draft::SourceManager sources;
   draft::DiagnosticSink diagnostics;
   std::filesystem::path absolute_directory;
@@ -445,6 +491,7 @@ int build_package(
   compile_options.emit_llvm = true;
   compile_options.emit_program_entry =
       artifact_kind == draft::NativeArtifactKind::Executable;
+  compile_options.timings = timings;
   const draft::CompileWorkspaceResult compiled =
       draft::compile_workspace_with_resolution(
           sources,
@@ -490,6 +537,7 @@ int build_package(
     native_options.artifact_kind = artifact_kind;
     native_options.foreign_providers = foreign_providers;
     native_options.runtime_assets = runtime_assets;
+    native_options.timings = timings;
     if (!diagnostics.has_errors()) {
       const draft::NativeBuildResult built = draft::build_native_artifact(
           target, compiled, native_options, diagnostics);
@@ -514,7 +562,8 @@ int validate_package(
     const std::vector<draft::ValidationInstrumentationKind> &instrumentation,
     const std::vector<draft::ForeignProviderInput> &foreign_providers,
     const std::vector<draft::ForeignProviderSummaryInput> &provider_summaries,
-    const std::vector<draft::RuntimeAssetInput> &runtime_assets) {
+    const std::vector<draft::RuntimeAssetInput> &runtime_assets,
+    draft::TimingRecorder *timings) {
   draft::SourceManager sources;
   draft::DiagnosticSink diagnostics;
   std::filesystem::path absolute_directory;
@@ -544,6 +593,7 @@ int validate_package(
   options.instrumentation = instrumentation;
   options.foreign_providers = foreign_providers;
   options.runtime_assets = runtime_assets;
+  options.timings = timings;
   const draft::ValidationCommandResult result =
       draft::execute_validation_command(
           sources, std::move(options), diagnostics);
@@ -571,7 +621,8 @@ int validate_package(
 int emit_c_header_package(
     const std::string &directory,
     const draft::TargetProfile &target,
-    const std::optional<std::string> &requested_output) {
+    const std::optional<std::string> &requested_output,
+    draft::TimingRecorder *timings) {
   draft::SourceManager sources;
   draft::DiagnosticSink diagnostics;
   std::filesystem::path absolute_directory;
@@ -589,6 +640,7 @@ int emit_c_header_package(
       absolute_directory.parent_path().string();
   configure_core_distribution(options.workspace);
   options.emit_program_entry = false;
+  options.timings = timings;
   const draft::CompileWorkspaceResult compiled =
       draft::compile_workspace_with_resolution(
           sources,
@@ -604,6 +656,9 @@ int emit_c_header_package(
           draft::SourceRange::invalid(),
           "C header emission cannot find the compiled root package");
     } else {
+      draft::TimingScope header_timing = timings != nullptr
+          ? timings->scope("C header emission")
+          : draft::TimingScope{};
       const draft::CHeaderResult header = draft::emit_c_header(
           compiled.packages[root]->semantics.package,
           target,
@@ -681,6 +736,7 @@ struct ResolutionValidationRunnerState {
 struct ResolutionJudgmentRunnerState {
   draft::JudgmentCommandOptions options;
   draft::JudgmentCommandResult result;
+  draft::TimingRecorder *timings = nullptr;
 };
 
 // Native execution remains outside the semantic resolver. This adapter accepts
@@ -736,6 +792,9 @@ bool run_resolution_candidate_judgment(
     std::size_t &selected_judgments,
     draft::DiagnosticSink &diagnostics) {
   auto *state = static_cast<ResolutionJudgmentRunnerState *>(opaque);
+  draft::TimingScope timing = state->timings != nullptr
+      ? state->timings->scope("resolution judgment execution")
+      : draft::TimingScope{};
   state->options.target = target;
   const std::size_t before = diagnostics.error_count();
   state->result = draft::execute_judgment_command(
@@ -808,7 +867,8 @@ int run_agent_command(
     bool list_judgments = false,
     bool judge_during_resolution = false,
     draft::RuntimeAssertionMode runtime_assertions =
-        draft::RuntimeAssertionMode::On) {
+        draft::RuntimeAssertionMode::On,
+    draft::TimingRecorder *timings = nullptr) {
   draft::SourceManager sources;
   draft::DiagnosticSink diagnostics;
   std::filesystem::path absolute_directory;
@@ -825,6 +885,7 @@ int run_agent_command(
   options.workspace.workspace_directory =
       absolute_directory.parent_path().string();
   configure_core_distribution(options.workspace);
+  options.timings = timings;
   if (command == AgentCommandKind::Resolve) {
     // Validate the selected profile even when this particular package has no
     // test or benchmark declarations. Otherwise an unsupported request could
@@ -900,6 +961,7 @@ int run_agent_command(
     }
     std::vector<draft::CodexCliProviderState> judgment_codex_states;
     ResolutionJudgmentRunnerState judgment_state;
+    judgment_state.timings = timings;
     if (judge_during_resolution) {
       judgment_state.options.workspace_directory =
           absolute_directory.parent_path();
@@ -925,9 +987,13 @@ int run_agent_command(
     validation_state.options.instrumentation = instrumentation;
     validation_state.options.foreign_providers = foreign_providers;
     validation_state.options.runtime_assets = runtime_assets;
+    validation_state.options.timings = timings;
     resolve_options.validation_runner.state = &validation_state;
     resolve_options.validation_runner.run =
         run_resolution_candidate_validation;
+    draft::TimingScope resolve_timing = timings != nullptr
+        ? timings->scope("resolution provider workflow")
+        : draft::TimingScope{};
     const draft::ResolveWorkspaceResult resolved = draft::resolve_workspace(
         sources,
         absolute_directory.string(),
@@ -1022,9 +1088,12 @@ int run_agent_command(
     std::cerr << draft::render_diagnostics(sources, diagnostics);
     return 1;
   }
-  const draft::JudgmentCommandResult judged =
-      draft::execute_judgment_command(
-          compiled, std::move(judgment_options), diagnostics);
+  draft::TimingScope judgment_timing = timings != nullptr
+      ? timings->scope("judgment execution")
+      : draft::TimingScope{};
+  const draft::JudgmentCommandResult judged = draft::execute_judgment_command(
+      compiled, std::move(judgment_options), diagnostics);
+  judgment_timing.finish();
   if (!judged.completed) {
     if (!diagnostics.diagnostics().empty()) {
       std::cerr << draft::render_diagnostics(sources, diagnostics);
@@ -1121,7 +1190,9 @@ void print_usage() {
             << "       --codex-executable <path> --codex-model <model>]\n"
             << "      [--provider name=object|archive|shared-library:<path>]...\n"
             << "      [--provider-summary name:<path>]...\n"
-            << "  draftc target [--target aarch64-macos|aarch64-linux]\n";
+            << "  draftc target [--target aarch64-macos|aarch64-linux]\n"
+            << "\n"
+            << "  package commands accept --timings or --timings=all\n";
 }
 
 } // namespace
@@ -1133,6 +1204,13 @@ int main(int argc, char **argv) {
   if (argc == 3 && std::string_view(argv[1]) == "syntax") {
     return parse_file(argv[2]);
   }
+
+  draft::TimingOutput timing_output = draft::TimingOutput::Disabled;
+  if (!select_timing_output(argc, argv, timing_output)) return 2;
+  CommandTimingReport timing_report(timing_output);
+  draft::TimingRecorder *timings = timing_report.recorder.enabled()
+      ? &timing_report.recorder
+      : nullptr;
 
   // macOS remains the compatibility default, but every command that consumes
   // a package accepts the same explicit selector.  Keeping one value in main
@@ -1148,13 +1226,15 @@ int main(int argc, char **argv) {
       if (argument == "--target" && !target_set && index + 1 < argc) {
         target_set = true;
         if (!select_command_target(argv[++index], target)) return 2;
+      } else if (is_timing_argument(argument)) {
+        continue;
       } else {
         print_usage();
         return 2;
       }
     }
     return compile_package(
-        argv[2], std::string_view(argv[1]) == "emit-llvm", target);
+        argv[2], std::string_view(argv[1]) == "emit-llvm", target, timings);
   }
   if (argc >= 3 && std::string_view(argv[1]) == "emit-c-header") {
     std::optional<std::string> output;
@@ -1166,12 +1246,14 @@ int main(int argc, char **argv) {
       } else if (argument == "--target" && !target_set && index + 1 < argc) {
         target_set = true;
         if (!select_command_target(argv[++index], target)) return 2;
+      } else if (is_timing_argument(argument)) {
+        continue;
       } else {
         print_usage();
         return 2;
       }
     }
-    return emit_c_header_package(argv[2], target, output);
+    return emit_c_header_package(argv[2], target, output, timings);
   }
   if (argc >= 3 && std::string_view(argv[1]) == "resolve") {
     bool revalidate = false;
@@ -1271,6 +1353,8 @@ int main(int argc, char **argv) {
           return 2;
         }
         instrumentation.push_back(*parsed);
+      } else if (is_timing_argument(argument)) {
+        continue;
       } else {
         print_usage();
         return 2;
@@ -1329,7 +1413,8 @@ int main(int argc, char **argv) {
         judge_during_resolution,
         assertions_off
             ? draft::RuntimeAssertionMode::Off
-            : draft::RuntimeAssertionMode::On);
+            : draft::RuntimeAssertionMode::On,
+        timings);
   }
   if (argc >= 3 && std::string_view(argv[1]) == "judge") {
     std::optional<std::string> codex_distribution_root;
@@ -1402,6 +1487,8 @@ int main(int argc, char **argv) {
           return 2;
         }
         provider_summaries.push_back(std::move(summary));
+      } else if (is_timing_argument(argument)) {
+        continue;
       } else if (!argument.starts_with('-')) {
         judgment_selectors.emplace_back(argument);
       } else {
@@ -1464,7 +1551,8 @@ int main(int argc, char **argv) {
         false,
         assertions_off
             ? draft::RuntimeAssertionMode::Off
-            : draft::RuntimeAssertionMode::On);
+            : draft::RuntimeAssertionMode::On,
+        timings);
   }
   if (argc >= 3 &&
       (std::string_view(argv[1]) == "test" ||
@@ -1525,6 +1613,8 @@ int main(int argc, char **argv) {
           return 2;
         }
         instrumentation.push_back(*parsed);
+      } else if (is_timing_argument(argument)) {
+        continue;
       } else {
         print_usage();
         return 2;
@@ -1537,7 +1627,8 @@ int main(int argc, char **argv) {
         instrumentation,
         foreign_providers,
         provider_summaries,
-        runtime_assets);
+        runtime_assets,
+        timings);
   }
   if (argc >= 3 && std::string_view(argv[1]) == "build") {
     std::optional<std::string> output;
@@ -1603,6 +1694,8 @@ int main(int argc, char **argv) {
           return 2;
         }
         runtime_assets.push_back(std::move(asset));
+      } else if (is_timing_argument(argument)) {
+        continue;
       } else {
         print_usage();
         return 2;
@@ -1618,7 +1711,8 @@ int main(int argc, char **argv) {
             : draft::RuntimeAssertionMode::On,
         foreign_providers,
         provider_summaries,
-        runtime_assets);
+        runtime_assets,
+        timings);
   }
   if (argc >= 2 && std::string_view(argv[1]) == "target") {
     bool target_set = false;

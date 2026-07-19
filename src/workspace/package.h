@@ -25,6 +25,8 @@
 
 namespace draft {
 
+class TimingRecorder;
+
 enum class PackageFileKind {
   DraftSource,
   AssemblySource,
@@ -45,16 +47,21 @@ struct PackageSourceOverride {
   std::vector<SourceExpansionMap> expansion_maps;
 };
 
-// PackageLoadOptions contains only selection facts defined by the target and
-// command. file_tag is the exact target.file_tag; tests and benchmarks are
-// independently selected because validation commands may include either set.
-// source_overrides is normally empty and is populated by the resolved-program
-// orchestrator only after it has verified pins and generated-source hashes.
+// PackageLoadOptions contains selection facts defined by the target and
+// command plus one optional non-semantic observer. file_tag is the exact
+// target.file_tag; tests and benchmarks are independently selected because
+// validation commands may include either set. source_overrides is normally
+// empty and is populated by the resolved-program orchestrator only after it has
+// verified pins and generated-source hashes. timings changes none of those
+// choices and is never inspected by identity construction.
 struct PackageLoadOptions {
   std::string file_tag;
   bool include_tests = false;
   bool include_benchmarks = false;
   std::vector<PackageSourceOverride> source_overrides;
+  // Optional observer for file discovery, I/O, and parsing. It is not a
+  // package-selection fact and never participates in source identity.
+  TimingRecorder *timings = nullptr;
 };
 
 // LoadedPackageFile owns no source bytes; FileId points into the caller-owned

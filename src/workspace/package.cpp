@@ -9,6 +9,7 @@
 
 #include "workspace/package.h"
 
+#include "base/timing.h"
 #include "syntax/parser.h"
 
 #include <algorithm>
@@ -21,6 +22,19 @@
 
 namespace draft {
 namespace {
+
+// File detail is intentionally dormant outside --timings=all. The filename is
+// package-relative and safe to display, but formatting it on every ordinary
+// compile would make the diagnostic facility impose work while disabled.
+[[nodiscard]] TimingScope time_file_operation(
+    TimingRecorder *timings,
+    std::string_view operation,
+    std::string_view relative_name) {
+  if (timings == nullptr || timings->output() != TimingOutput::All) return {};
+  return timings->scope(
+      std::string(operation) + std::string(relative_name),
+      TimingVisibility::Detail);
+}
 
 struct SelectedFile {
   std::string name;
@@ -159,6 +173,10 @@ PackageLoadResult load_package(
 
   std::error_code error;
   const std::filesystem::path directory_path(directory);
+  TimingScope discovery_timing = options.timings != nullptr
+      ? options.timings->scope(
+            "package file discovery", TimingVisibility::Detail)
+      : TimingScope{};
   std::filesystem::directory_iterator iterator(directory_path, error);
   if (error) {
     diagnostics.error(
@@ -206,6 +224,7 @@ PackageLoadResult load_package(
   std::sort(selected.begin(), selected.end(), [](const SelectedFile &left, const SelectedFile &right) {
     return left.name < right.name;
   });
+  discovery_timing.finish();
 
   bool saw_draft_source = false;
   std::vector<std::string> used_overrides;
@@ -222,6 +241,12 @@ PackageLoadResult load_package(
       continue;
     }
     LoadFileResult load;
+    TimingScope source_timing = time_file_operation(
+        options.timings,
+        source_override != nullptr
+            ? "resolved source install: "
+            : "source file I/O: ",
+        selected_file.name);
     if (source_override != nullptr) {
       load.ok = true;
       load.file = sources.add_source(
@@ -232,6 +257,7 @@ PackageLoadResult load_package(
     } else {
       load = sources.load_file(physical.string());
     }
+    source_timing.finish();
     if (!load.ok) {
       diagnostics.error(SourceRange::invalid(), std::move(load.error));
       continue;
@@ -243,6 +269,8 @@ PackageLoadResult load_package(
     file.source = load.file;
     if (selected_file.kind == PackageFileKind::DraftSource) {
       saw_draft_source = true;
+      TimingScope parse_timing = time_file_operation(
+          options.timings, "lex and parse: ", selected_file.name);
       file.syntax.emplace(parse_source_file(sources, load.file, diagnostics));
       const std::optional<std::string> name = package_name_from_tree(sources, *file.syntax);
       if (name.has_value()) {

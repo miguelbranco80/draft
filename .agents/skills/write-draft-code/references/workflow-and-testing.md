@@ -14,6 +14,7 @@ the example map is [`examples/README.md`](../../../../examples/README.md).
 - [Write a runnable package](#write-a-runnable-package)
 - [Front-end validation](#front-end-validation)
 - [Native validation](#native-validation)
+- [Measure compiler work](#measure-compiler-work)
 - [Draft tests and benchmarks](#draft-tests-and-benchmarks)
 - [Compiler regression tests](#compiler-regression-tests)
 - [Build the bootstrap and run CTest](#build-the-bootstrap-and-run-ctest)
@@ -180,6 +181,23 @@ build/draftc build path/to/package --kind assembly -o /tmp/package-assembly
 Use `.so` on Linux. Validate generated headers with an independent C compiler
 when external ABI is the purpose. A successful Draft build alone does not prove
 that a C consumer sees the intended layout and symbols.
+
+## Measure compiler work
+
+Use the driver timing report before changing compiler architecture for speed:
+
+```sh
+build/draftc check path/to/package --timings
+build/draftc build path/to/package -o /tmp/program --timings=all
+```
+
+`--timings` reports major wall-clock phases and work counters to stderr.
+`--timings=all` adds package/tool scopes, file I/O, lexing/parsing,
+import-graph resolution, and exclusive `self` time; native and validation
+commands also distinguish child-process CPU from wall time. Compare
+phase structure and counters before comparing small durations, which vary with
+the host and warm filesystem caches. Timing is diagnostic only and never
+changes program identity or output.
 
 ## Draft tests and benchmarks
 

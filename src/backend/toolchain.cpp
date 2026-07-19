@@ -4,10 +4,13 @@
 
 #include "backend/source_correlation.h"
 #include "base/content_tree.h"
+#include "base/timing.h"
 
 #include <algorithm>
+#include <cassert>
 #include <cerrno>
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -18,6 +21,7 @@
 #include <vector>
 
 #include <sys/types.h>
+#include <sys/resource.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -27,9 +31,21 @@ namespace {
 struct ProcessResult {
   bool started = false;
   int exit_code = -1;
+  std::uint64_t user_nanoseconds = 0;
+  std::uint64_t system_nanoseconds = 0;
   std::string output;
   std::string error;
 };
+
+// Converts wait4's platform timeval into a unit shared with TimingRecorder.
+// Child usage reported by the kernel is nonnegative; keep the assertion close
+// to the signed-to-unsigned conversion rather than letting malformed values
+// turn into enormous timing rows.
+[[nodiscard]] std::uint64_t timeval_nanoseconds(const timeval &value) {
+  assert(value.tv_sec >= 0 && value.tv_usec >= 0);
+  return static_cast<std::uint64_t>(value.tv_sec) * 1'000'000'000ULL +
+      static_cast<std::uint64_t>(value.tv_usec) * 1'000ULL;
+}
 
 // Runs a process without a shell. Capturing both stdout and stderr into one pipe
 // is intentional for version probes and concise diagnostics; compilation output
@@ -84,16 +100,39 @@ struct ProcessResult {
   }
   (void)close(pipe_descriptors[0]);
   int status = 0;
-  while (waitpid(child, &status, 0) < 0) {
+  rusage usage{};
+  while (wait4(child, &status, 0, &usage) < 0) {
     if (errno != EINTR) {
-      result.error = std::string("waitpid failed: ") + std::strerror(errno);
+      result.error = std::string("wait4 failed: ") + std::strerror(errno);
       return result;
     }
   }
+  result.user_nanoseconds = timeval_nanoseconds(usage.ru_utime);
+  result.system_nanoseconds = timeval_nanoseconds(usage.ru_stime);
   if (WIFEXITED(status)) {
     result.exit_code = WEXITSTATUS(status);
   } else if (WIFSIGNALED(status)) {
     result.exit_code = 128 + WTERMSIG(status);
+  }
+  return result;
+}
+
+// Runs and accounts for one external tool beneath a named timing event. The
+// process count is recorded only after fork succeeds. Keeping this wrapper at
+// the process boundary ensures every Clang, linker, archiver, and dsymutil path
+// reports child CPU consistently, including nonzero exits.
+[[nodiscard]] ProcessResult run_timed_process(
+    const std::vector<std::string> &arguments,
+    TimingRecorder *timings,
+    std::string_view phase,
+    TimingVisibility visibility = TimingVisibility::Summary) {
+  TimingScope timing = timings != nullptr
+      ? timings->scope(phase, visibility)
+      : TimingScope{};
+  ProcessResult result = run_process(arguments);
+  if (timings != nullptr && result.started) {
+    timings->record_child_process(
+        result.user_nanoseconds, result.system_nanoseconds);
   }
   return result;
 }
@@ -404,6 +443,9 @@ NativeBuildResult build_native_artifact(
     const CompileWorkspaceResult &compiled,
     const NativeBuildOptions &options,
     DiagnosticSink &diagnostics) {
+  TimingScope artifact_timing = options.timings != nullptr
+      ? options.timings->scope("native artifact")
+      : TimingScope{};
   NativeBuildResult result;
   if (!compiled.ok) {
     diagnostics.error(
@@ -456,7 +498,11 @@ NativeBuildResult build_native_artifact(
   }
 
   const std::vector<std::string> version_arguments{clang_path, "--version"};
-  const ProcessResult version = run_process(version_arguments);
+  const ProcessResult version = run_timed_process(
+      version_arguments,
+      options.timings,
+      "LLVM toolchain version probe",
+      TimingVisibility::Detail);
   if (!version.started || version.exit_code != 0) {
     diagnostics.error(
         SourceRange::invalid(), phase_failure("LLVM toolchain version probe", version));
@@ -493,6 +539,9 @@ NativeBuildResult build_native_artifact(
         compiled.resolved_program_digest->hex();
   }
   Sha256 direct_module_identity;
+  TimingScope object_emission_timing = options.timings != nullptr
+      ? options.timings->scope("LLVM and assembly object emission")
+      : TimingScope{};
   for (std::size_t index = 0; index < compiled.packages.size(); ++index) {
     if (!compiled.packages[index].has_value() ||
         !compiled.packages[index]->llvm.ok) {
@@ -553,7 +602,16 @@ NativeBuildResult build_native_artifact(
     compile_arguments.push_back(module.string());
     compile_arguments.push_back("-o");
     compile_arguments.push_back(compiled_output.string());
-    const ProcessResult compile = run_process(compile_arguments);
+    const std::string compile_timing_name = options.timings != nullptr &&
+            options.timings->output() == TimingOutput::All
+        ? "Clang IR compile: " +
+            display_package_identity(compiled.packages[index]->identity)
+        : std::string{};
+    const ProcessResult compile = run_timed_process(
+        compile_arguments,
+        options.timings,
+        compile_timing_name,
+        TimingVisibility::Detail);
     if (!compile.started || compile.exit_code != 0) {
       diagnostics.error(
           SourceRange::invalid(), phase_failure("LLVM object emission", compile));
@@ -604,7 +662,15 @@ NativeBuildResult build_native_artifact(
               "-o",
               assembly_object.string(),
           });
-      const ProcessResult assemble = run_process(assemble_arguments);
+      const std::string assemble_timing_name = options.timings != nullptr &&
+              options.timings->output() == TimingOutput::All
+          ? "Clang package assembly: " + input.relative_name
+          : std::string{};
+      const ProcessResult assemble = run_timed_process(
+          assemble_arguments,
+          options.timings,
+          assemble_timing_name,
+          TimingVisibility::Detail);
       if (!assemble.started || assemble.exit_code != 0) {
         diagnostics.error(
             SourceRange::invalid(),
@@ -616,6 +682,7 @@ NativeBuildResult build_native_artifact(
       objects.push_back(assembly_object.string());
     }
   }
+  object_emission_timing.finish();
 
   if (source_correlation.program_identity.empty()) {
     source_correlation.program_identity = "llvm-modules-sha256:" +
@@ -695,7 +762,8 @@ NativeBuildResult build_native_artifact(
     }
     archive_arguments.insert(
         archive_arguments.end(), objects.begin(), objects.end());
-    const ProcessResult archive = run_process(archive_arguments);
+    const ProcessResult archive = run_timed_process(
+        archive_arguments, options.timings, "native archive emission");
     if (!archive.started || archive.exit_code != 0) {
       diagnostics.error(
           SourceRange::invalid(),
@@ -791,7 +859,8 @@ NativeBuildResult build_native_artifact(
   }
   link_arguments.push_back("-o");
   link_arguments.push_back(output_path.string());
-  const ProcessResult link = run_process(link_arguments);
+  const ProcessResult link = run_timed_process(
+      link_arguments, options.timings, "native link");
   if (!link.started || link.exit_code != 0) {
     diagnostics.error(
         SourceRange::invalid(),
@@ -833,7 +902,8 @@ NativeBuildResult build_native_artifact(
         "-o",
         debug_symbols.string(),
     };
-    const ProcessResult debug_link = run_process(dsymutil_arguments);
+    const ProcessResult debug_link = run_timed_process(
+        dsymutil_arguments, options.timings, "Mach-O debug-symbol emission");
     if (!debug_link.started || debug_link.exit_code != 0) {
       diagnostics.error(
           SourceRange::invalid(),

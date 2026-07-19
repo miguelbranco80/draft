@@ -34,6 +34,7 @@ add_library(
   src/backend/toolchain.cpp
   src/base/content_tree.cpp
   src/base/sha256.cpp
+  src/base/timing.cpp
   src/compile/compiler.cpp
   src/compile/resolver.cpp
   src/elaborator/codex_cli.cpp
@@ -151,6 +152,10 @@ if(BUILD_TESTING)
   add_executable(draft_sha256_tests tests/sha256_test.cpp)
   target_link_libraries(draft_sha256_tests PRIVATE draft_compiler)
   add_test(NAME draft_sha256_tests COMMAND draft_sha256_tests)
+
+  add_executable(draft_timing_tests tests/timing_test.cpp)
+  target_link_libraries(draft_timing_tests PRIVATE draft_compiler)
+  add_test(NAME draft_timing_tests COMMAND draft_timing_tests)
 
   add_executable(draft_content_tree_tests tests/content_tree_test.cpp)
   target_link_libraries(draft_content_tree_tests PRIVATE draft_compiler)
@@ -451,6 +456,18 @@ if(BUILD_TESTING)
     draft_aarch64_linux_check_driver
     PROPERTIES PASS_REGULAR_EXPRESSION
       "checked package graph rooted at core_os"
+  )
+
+  # Timing is a process-facing diagnostic contract. Exercise both report
+  # densities through the real driver so option parsing, stderr routing, phase
+  # propagation, filtering, and deterministic work counters stay connected.
+  add_test(
+    NAME draft_driver_timings
+    COMMAND
+      "${CMAKE_COMMAND}"
+      "-DDRAFTC=$<TARGET_FILE:draftc>"
+      "-DSOURCE_PACKAGE=${CMAKE_CURRENT_SOURCE_DIR}/examples/hello"
+      -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/driver_timing_test.cmake"
   )
 
   add_test(

@@ -77,6 +77,26 @@ foundation on which ordinary parsing, checking, or code generation depends.
  Pin store <-> elaborator       Target profile + runtime -> lowering/linking
 ```
 
+### Timing observation boundary
+
+The process driver may attach one command-owned timing recorder to the existing
+phase option structs. Compiler, validation, and native adapters contribute
+nested events and deterministic work counters; none may consult recorded time
+or make it part of semantic identity. The recorder is deliberately sequential
+and uses an explicit nesting stack, matching the current dependency-ordered
+pipeline. A future parallel pipeline must replace that assumption without
+letting scheduling change compiler results.
+
+The events reflect the implementation's real orchestration rather than the
+conceptual diagram alone. An ordinary handwritten `check` currently performs
+an interface-discovery compiler pass and a complete body-surface pass. A native
+`build` performs those two passes plus a final MIR/LLVM pass, then invokes the
+host toolchain. `--timings` keeps these passes separate so repeated workspace
+loading, parsing, declaration analysis, and body work remain visible while the
+compiler is optimized. `--timings=all` adds package/tool scopes, file
+discovery and I/O, lexing/parsing, import-graph resolution, and exclusive time;
+child process CPU is reported separately from parent wall time.
+
 ### Internal representations
 
 - **Surface AST:** lossless enough for diagnostics, structural site identity,

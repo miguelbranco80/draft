@@ -7,12 +7,29 @@ All package commands accept `--target aarch64-macos|aarch64-linux` where shown.
 macOS remains the compatibility default. Package paths are canonicalized before
 the workspace and resolution-store boundaries are established.
 
+All package commands also accept `--timings` or `--timings=all`. The compact
+form writes a hierarchical wall-clock report and deterministic work counters
+to stderr after ordinary command output. It separates resolution-manifest
+work, every interface-discovery round, body-surface compilation, final MIR/LLVM
+code generation, native object/link/debug-symbol work, and validation work when
+those phases run. Native commands additionally report the user and system CPU
+accounted to Clang, the linker, other host tools, and validation executables.
+
+`--timings=all` adds package/tool-level events, source discovery and I/O,
+lexing/parsing, import-graph resolution, and each visible event's exclusive
+`self` duration. Reports are diagnostic observations only: the flag
+does not enter compiler configuration, resolved-program identity, manifests,
+or emitted artifacts. Durations naturally vary with the host, while counters
+and phase names describe the work the command actually performed. Failed
+commands still print the completed portion of an enabled report, which makes
+the option useful for locating failure-path costs.
+
 ## Inspect and compile
 
 ```sh
 build/draftc lex path/to/file.draft
 build/draftc syntax path/to/file.draft
-build/draftc check path/to/package [--target aarch64-macos|aarch64-linux]
+build/draftc check path/to/package [--target aarch64-macos|aarch64-linux] [--timings]
 build/draftc emit-llvm path/to/package [--target aarch64-macos|aarch64-linux]
 build/draftc emit-c-header path/to/package [-o output.h] \
   [--target aarch64-macos|aarch64-linux]
@@ -32,7 +49,7 @@ build/draftc build path/to/package [-o output] \
   [--assertions=off] \
   [--provider name=object|archive|shared-library:/absolute/path]... \
   [--provider-summary name:/absolute/path]... \
-  [--runtime-asset name:/absolute/file-or-directory]...
+  [--runtime-asset name:/absolute/file-or-directory]... [--timings|--timings=all]
 ```
 
 `build` is always provider-free. It compiles handwritten programs directly and

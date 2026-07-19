@@ -26,6 +26,7 @@ ValidationRunResult run_validation_executable(
 #else
 
 #include <fcntl.h>
+#include <sys/resource.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -43,6 +44,15 @@ struct ChildFailure {
   int stage = 0;
   int error = 0;
 };
+
+[[nodiscard]] std::uint64_t timeval_nanoseconds(const timeval &value) {
+  // wait4 resource usage is defined as a nonnegative duration. Keeping the
+  // conversion explicit avoids leaking signed platform fields into the timing
+  // recorder's monotonic unsigned unit.
+  if (value.tv_sec < 0 || value.tv_usec < 0) return 0;
+  return static_cast<std::uint64_t>(value.tv_sec) * 1'000'000'000ULL +
+      static_cast<std::uint64_t>(value.tv_usec) * 1'000ULL;
+}
 
 void write_child_failure(int descriptor, ChildFailureStage stage) {
   const ChildFailure failure{static_cast<int>(stage), errno};
@@ -225,8 +235,9 @@ ValidationRunResult run_validation_executable(
 
   int status = 0;
   pid_t waited = -1;
+  rusage usage{};
   do {
-    waited = ::waitpid(child, &status, 0);
+    waited = ::wait4(child, &status, 0, &usage);
   } while (waited < 0 && errno == EINTR);
   if (waited < 0) {
     diagnostics.error(
@@ -235,6 +246,8 @@ ValidationRunResult run_validation_executable(
             std::string(std::strerror(errno)));
     return result;
   }
+  result.user_nanoseconds = timeval_nanoseconds(usage.ru_utime);
+  result.system_nanoseconds = timeval_nanoseconds(usage.ru_stime);
   if (report_read_failed) {
     diagnostics.error(
         SourceRange::invalid(),

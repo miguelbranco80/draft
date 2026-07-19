@@ -3,6 +3,7 @@
 #include "validation/command.h"
 
 #include "compile/compiler.h"
+#include "base/timing.h"
 #include "validation/evidence.h"
 #include "validation/evidence_store.h"
 #include "validation/runner.h"
@@ -186,6 +187,7 @@ void initialize_claim(
     WorkspaceLoadOptions workspace,
     ValidationKind kind,
     std::vector<ForeignProviderAudit> audits,
+    TimingRecorder *timings,
     DiagnosticSink &diagnostics) {
   CompileWorkspaceOptions options;
   options.target = target;
@@ -195,6 +197,7 @@ void initialize_claim(
   options.lower_mir = true;
   options.emit_llvm = true;
   options.emit_program_entry = true;
+  options.timings = timings;
   return compile_workspace_with_resolution(
       sources, package_directory.string(), std::move(options), diagnostics);
 }
@@ -203,6 +206,9 @@ void initialize_claim(
     const CompileWorkspaceResult &compiled,
     ValidationCommandOptions options,
     DiagnosticSink &diagnostics) {
+  TimingScope validation_timing = options.timings != nullptr
+      ? options.timings->scope("validation execution and evidence")
+      : TimingScope{};
   ValidationCommandResult result;
   result.selected_procedures = compiled.validation_entries.size();
   if (!compiled.ok || !compiled.resolved_program_digest.has_value()) {
@@ -233,6 +239,7 @@ void initialize_claim(
   }
   native.foreign_providers = options.foreign_providers;
   native.runtime_assets = options.runtime_assets;
+  native.timings = options.timings;
   const NativeBuildResult built = build_native_executable(
       options.target, compiled, native, diagnostics);
   if (!built.ok) return result;
@@ -255,6 +262,9 @@ void initialize_claim(
   int aggregate_signal = 0;
   bool started_any = false;
   const std::uint64_t total_runs = warmups + samples;
+  TimingScope runs_timing = options.timings != nullptr
+      ? options.timings->scope("validation artifact execution")
+      : TimingScope{};
   for (std::uint64_t run_index = 0; run_index < total_runs; ++run_index) {
     ValidationRunOptions run_options;
     run_options.executable = built.output_path;
@@ -273,8 +283,20 @@ void initialize_claim(
       run_options.environment.push_back(
           "ASAN_OPTIONS=abort_on_error=1:symbolize=0");
     }
-    const ValidationRunResult run =
-        run_validation_executable(run_options, diagnostics);
+    const std::string run_timing_name = options.timings != nullptr &&
+            options.timings->output() == TimingOutput::All
+        ? "validation process " + std::to_string(run_index + 1)
+        : std::string{};
+    TimingScope run_timing = options.timings != nullptr
+        ? options.timings->scope(
+              run_timing_name, TimingVisibility::Detail)
+        : TimingScope{};
+    const ValidationRunResult run = run_validation_executable(
+        run_options, diagnostics);
+    if (options.timings != nullptr && run.started) {
+      options.timings->record_child_process(
+          run.user_nanoseconds, run.system_nanoseconds);
+    }
     if (!run.started) {
       observations_complete = false;
       break;
@@ -306,6 +328,7 @@ void initialize_claim(
       aggregate = std::move(one_run);
     }
   }
+  runs_timing.finish();
   // exec failure is infrastructure, not a semantic attempt. Once any process
   // started, a signal or malformed report must still revoke this exact key.
   if (!started_any) return result;
@@ -333,9 +356,11 @@ void initialize_claim(
   evidence.passed = passed;
   evidence.exit_code = aggregate_exit_code;
   evidence.signal = aggregate_signal;
-  const ValidationEvidenceCommitResult committed =
-      commit_validation_evidence(
-          options.package_directory, std::move(evidence), diagnostics);
+  TimingScope evidence_timing = options.timings != nullptr
+      ? options.timings->scope("validation evidence commit")
+      : TimingScope{};
+  const ValidationEvidenceCommitResult committed = commit_validation_evidence(
+      options.package_directory, std::move(evidence), diagnostics);
   if (!committed.ok) return result;
 
   result.completed = true;
@@ -351,6 +376,9 @@ ValidationCommandResult execute_validation_command(
     SourceManager &sources,
     ValidationCommandOptions options,
     DiagnosticSink &diagnostics) {
+  TimingScope command_timing = options.timings != nullptr
+      ? options.timings->scope("validation command")
+      : TimingScope{};
   if (options.kind == ValidationKind::None ||
       options.package_directory.empty()) {
     diagnostics.error(
@@ -364,6 +392,9 @@ ValidationCommandResult execute_validation_command(
           diagnostics)) {
     return {};
   }
+  TimingScope compilation_timing = options.timings != nullptr
+      ? options.timings->scope("validation compilation")
+      : TimingScope{};
   CompileWorkspaceResult compiled = compile_validation(
       sources,
       options.package_directory,
@@ -371,7 +402,9 @@ ValidationCommandResult execute_validation_command(
       options.workspace,
       options.kind,
       options.foreign_provider_audits,
+      options.timings,
       diagnostics);
+  compilation_timing.finish();
   if (!compiled.ok) return {};
   return execute_compiled_validation(
       compiled, std::move(options), diagnostics);

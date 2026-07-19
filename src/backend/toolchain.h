@@ -57,6 +57,10 @@ struct NativeBuildOptions {
   // Runtime assets participate in resolved-program identity but are not passed
   // to Clang. A manifest-bearing build must supply its complete relocated set.
   std::vector<RuntimeAssetInput> runtime_assets;
+  // Non-owning command diagnostic sink shared with semantic compilation.
+  // Native timing includes parent wait time and, where the host exposes it,
+  // separately reports user/system CPU consumed by child tools.
+  TimingRecorder *timings = nullptr;
 };
 
 struct NativeBuildResult {

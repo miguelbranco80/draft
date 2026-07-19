@@ -3,6 +3,7 @@
 #include "compile/compiler.h"
 
 #include "base/sha256.h"
+#include "base/timing.h"
 #include "elaborator/generated_source.h"
 #include "elaborator/resolution_overlay.h"
 #include "elaborator/resolution_store.h"
@@ -23,6 +24,20 @@
 
 namespace draft {
 namespace {
+
+// Package detail names are useful in --timings=all but should create no string
+// or clock overhead during ordinary compilation or the compact report. Keeping
+// this policy in one helper prevents every package loop from accidentally
+// formatting identities before it knows that detailed output is enabled.
+[[nodiscard]] TimingScope time_package_phase(
+    TimingRecorder *timings,
+    std::string_view phase,
+    const PackageIdentity &identity) {
+  if (timings == nullptr || timings->output() != TimingOutput::All) return {};
+  return timings->scope(
+      std::string(phase) + display_package_identity(identity),
+      TimingVisibility::Detail);
+}
 
 // WorkspacePackage storage follows discovery order, which is deterministic but
 // is not a topological order when two sibling packages share a dependency. This
@@ -965,6 +980,12 @@ CompileWorkspaceResult compile_workspace(
     const std::string &root_package_directory,
     CompileWorkspaceOptions options,
     DiagnosticSink &diagnostics) {
+  TimingScope pipeline_timing = options.timings != nullptr
+      ? options.timings->scope("compiler pipeline")
+      : TimingScope{};
+  if (options.timings != nullptr) {
+    options.timings->add_counter("compiler passes", 1);
+  }
   CompileWorkspaceResult result;
   result.compiler_content_identity = options.compiler_content_identity;
   result.configuration = options.configuration;
@@ -1005,17 +1026,40 @@ CompileWorkspaceResult compile_workspace(
     options.workspace.package_options.include_benchmarks = true;
   }
   options.workspace.package_options.file_tag = options.target.facts.file_tag;
+  options.workspace.package_options.timings = options.timings;
+  TimingScope workspace_timing = options.timings != nullptr
+      ? options.timings->scope("workspace loading")
+      : TimingScope{};
   WorkspaceLoadResult loaded = load_workspace(
-      sources,
-      root_package_directory,
-      options.workspace,
-      diagnostics);
+      sources, root_package_directory, options.workspace, diagnostics);
+  workspace_timing.finish();
   result.graph = std::move(loaded.graph);
   result.packages.resize(result.graph.packages.size());
   if (!loaded.ok) return result;
+  if (options.timings != nullptr) {
+    options.timings->add_counter("workspace loads", 1);
+    options.timings->add_counter(
+        "packages processed",
+        static_cast<std::uint64_t>(result.graph.packages.size()));
+    std::uint64_t file_count = 0;
+    std::uint64_t source_bytes = 0;
+    for (const WorkspacePackage &package : result.graph.packages) {
+      for (const LoadedPackageFile &file : package.loaded.files) {
+        file_count += 1;
+        source_bytes += static_cast<std::uint64_t>(sources.text(file.source).size());
+      }
+    }
+    options.timings->add_counter("source files processed", file_count);
+    options.timings->add_counter("source bytes processed", source_bytes);
+  }
 
+  TimingScope ordering_timing = options.timings != nullptr
+      ? options.timings->scope(
+            "dependency ordering", TimingVisibility::Detail)
+      : TimingScope{};
   const std::vector<std::size_t> consumer_order =
       consumer_first_order(result.graph);
+  ordering_timing.finish();
   if (consumer_order.size() != result.graph.packages.size()) {
     diagnostics.error(
         SourceRange::invalid(),
@@ -1026,6 +1070,9 @@ CompileWorkspaceResult compile_workspace(
   // Phase 1: dependency-first declaration semantics and preliminary public
   // interfaces. Bodies and effects are intentionally absent, but every type,
   // constant, and parametric signature needed by a consumer is now available.
+  TimingScope declaration_timing = options.timings != nullptr
+      ? options.timings->scope("declaration semantics")
+      : TimingScope{};
   for (auto position = consumer_order.rbegin();
        position != consumer_order.rend(); ++position) {
     const std::size_t package_index = *position;
@@ -1063,6 +1110,8 @@ CompileWorkspaceResult compile_workspace(
 
     CompiledPackage package;
     package.identity = workspace_package.identity;
+    TimingScope package_timing = time_package_phase(
+        options.timings, "package declarations: ", workspace_package.identity);
     // Freeze native assembly beside the semantic phase products. Native build
     // invocation is deliberately separate from compilation and must consume
     // this checked snapshot rather than mutable workspace paths.
@@ -1080,6 +1129,9 @@ CompileWorkspaceResult compile_workspace(
         available,
         compile_time_synthesis_mode(options.stage),
         diagnostics);
+    if (options.timings != nullptr) {
+      options.timings->add_counter("package semantic analyses", 1);
+    }
     // Imported procedure-dependent layouts are discovered only after the
     // consumer supplies concrete arguments. Publish each owner result, then
     // rebuild this package from its unchanged source and the enriched dependency
@@ -1107,6 +1159,9 @@ CompileWorkspaceResult compile_workspace(
           options.target.facts,
           available,
           diagnostics);
+      if (options.timings != nullptr) {
+        options.timings->add_counter("package semantic analyses", 1);
+      }
     }
     if (package.semantics.ok &&
         !package.semantics.package
@@ -1168,6 +1223,7 @@ CompileWorkspaceResult compile_workspace(
     }
     result.packages[package_index] = std::move(package);
   }
+  declaration_timing.finish();
 
   // Declaration and member synthesis is an interface-stage operation. The
   // complete body pass cannot run yet because ordinary source is allowed to
@@ -1193,10 +1249,15 @@ CompileWorkspaceResult compile_workspace(
   // only place a concrete argument crosses TypeStore ownership.
   std::vector<std::vector<ProcedureInstantiationSeed>> seeds(
       result.graph.packages.size());
+  TimingScope body_timing = options.timings != nullptr
+      ? options.timings->scope("body semantics")
+      : TimingScope{};
   for (std::size_t package_index : consumer_order) {
     if (!result.packages[package_index].has_value()) continue;
     CompiledPackage &package = *result.packages[package_index];
     WorkspacePackage &workspace_package = result.graph.packages[package_index];
+    TimingScope package_timing = time_package_phase(
+        options.timings, "package bodies: ", package.identity);
     package.bodies = check_package_bodies(
         sources,
         workspace_package.loaded,
@@ -1206,6 +1267,12 @@ CompileWorkspaceResult compile_workspace(
         options.target.facts,
         diagnostics,
         seeds[package_index]);
+    if (options.timings != nullptr) {
+      options.timings->add_counter("package body checks", 1);
+      options.timings->add_counter(
+          "procedure bodies checked",
+          static_cast<std::uint64_t>(package.bodies.checked_procedures));
+    }
     if (!package.bodies.ok) continue;
 
     for (const ImportedProcedureInstance &request :
@@ -1277,6 +1344,7 @@ CompileWorkspaceResult compile_workspace(
       }
     }
   }
+  body_timing.finish();
 
   // Validation files are compiled in a parallel graph only after interface
   // synthesis has resolved every declaration they may name. Runtime body holes
@@ -1284,6 +1352,10 @@ CompileWorkspaceResult compile_workspace(
   // body synthesizer while still keeping test-only imports out of the ordinary
   // graph above. Its non-None validation kind is also the recursion guard: a
   // validation compile never asks for another validation-context compile.
+  TimingScope validation_context_timing = options.timings != nullptr
+      ? options.timings->scope(
+            "validation context", TimingVisibility::Detail)
+      : TimingScope{};
   bool needs_test_context = false;
   bool needs_benchmark_context = false;
   for (std::size_t package_index = 0;
@@ -1363,10 +1435,14 @@ CompileWorkspaceResult compile_workspace(
       }
     }
   }
+  validation_context_timing.finish();
 
   // Phase 3: dependencies now have every requested concrete body. Publish
   // audited effects and complete interfaces dependency-first, then compose
   // consumer denials against those final summaries.
+  TimingScope closure_timing = options.timings != nullptr
+      ? options.timings->scope("semantic closure")
+      : TimingScope{};
   for (auto position = consumer_order.rbegin();
        position != consumer_order.rend(); ++position) {
     const std::size_t package_index = *position;
@@ -1374,6 +1450,8 @@ CompileWorkspaceResult compile_workspace(
     CompiledPackage &package = *result.packages[package_index];
     WorkspacePackage &workspace_package = result.graph.packages[package_index];
     if (!package.bodies.ok) continue;
+    TimingScope package_timing = time_package_phase(
+        options.timings, "package closure: ", package.identity);
 
     refresh_imported_effects(package.semantics.package, result, diagnostics);
     package.obligations = build_agent_obligations(
@@ -1427,6 +1505,7 @@ CompileWorkspaceResult compile_workspace(
       continue;
     }
   }
+  closure_timing.finish();
 
   // Phase 4: provider-free target lowering. No package reaches a backend until
   // every cross-package generic proxy has an exact defining symbol.
@@ -1434,6 +1513,13 @@ CompileWorkspaceResult compile_workspace(
   // Validation discovery belongs between semantic closure and lowering. A
   // filename or spelling alone never becomes an executable call: every entry
   // below has a checked body, exact core nominal parameter, and target layout.
+  const bool performs_target_lowering =
+      options.validation_kind != ValidationKind::None ||
+      options.lower_mir || options.emit_llvm;
+  TimingScope lowering_timing =
+      options.timings != nullptr && performs_target_lowering
+      ? options.timings->scope("target lowering")
+      : TimingScope{};
   if (options.validation_kind != ValidationKind::None) {
     for (std::size_t package_index = 0;
          package_index < result.packages.size(); ++package_index) {
@@ -1469,6 +1555,10 @@ CompileWorkspaceResult compile_workspace(
         !package.native_interop.ok) {
       continue;
     }
+    TimingScope package_timing = options.lower_mir || options.emit_llvm
+        ? time_package_phase(
+              options.timings, "package lowering: ", package.identity)
+        : TimingScope{};
 
     if (options.lower_mir || options.emit_llvm) {
       package.assembly = analyze_aarch64_assembly(
@@ -1485,6 +1575,9 @@ CompileWorkspaceResult compile_workspace(
           package.assembly,
           options.configuration.runtime_assertions,
           diagnostics);
+      if (options.timings != nullptr) {
+        options.timings->add_counter("MIR packages lowered", 1);
+      }
       if (!package.mir.ok) continue;
     }
     if (options.emit_llvm) {
@@ -1507,9 +1600,16 @@ CompileWorkspaceResult compile_workspace(
           package.semantics.global_initializers,
           package.mir.program,
           diagnostics);
+      if (options.timings != nullptr) {
+        options.timings->add_counter("LLVM modules emitted", 1);
+        options.timings->add_counter(
+            "LLVM IR bytes",
+            static_cast<std::uint64_t>(package.llvm.text.size()));
+      }
       if (!package.llvm.ok) continue;
     }
   }
+  lowering_timing.finish();
 
   bool every_package_ready = true;
   for (const std::optional<CompiledPackage> &package : result.packages) {
@@ -1566,10 +1666,18 @@ CompileWorkspaceResult compile_workspace_with_resolution(
     const std::string &root_package_directory,
     CompileWorkspaceOptions options,
     DiagnosticSink &diagnostics) {
+  TimingScope orchestration_timing = options.timings != nullptr
+      ? options.timings->scope("resolution orchestration")
+      : TimingScope{};
   const std::size_t initial_errors = diagnostics.error_count();
 
-  const ResolutionManifestLoadResult loaded_manifest =
-      load_resolution_manifest(options.workspace.workspace_directory, diagnostics);
+  TimingScope manifest_timing = options.timings != nullptr
+      ? options.timings->scope(
+            "resolution manifest loading", TimingVisibility::Detail)
+      : TimingScope{};
+  const ResolutionManifestLoadResult loaded_manifest = load_resolution_manifest(
+      options.workspace.workspace_directory, diagnostics);
+  manifest_timing.finish();
   if (loaded_manifest.state == ResolutionManifestLoadState::Invalid) {
     return {};
   }
@@ -1614,18 +1722,30 @@ CompileWorkspaceResult compile_workspace_with_resolution(
   // Reproduce dependency-ready interface rounds from pinned bytes. No body is
   // checked until every package interface is complete, and no round observes a
   // same-round expansion. Each nonempty round removes at least one site.
+  std::size_t interface_round = 0;
   while (true) {
+    interface_round += 1;
+    if (options.timings != nullptr) {
+      options.timings->add_counter("interface discovery rounds", 1);
+    }
     CompileWorkspaceOptions interface_options = options;
     interface_options.stage =
         CompileWorkspaceStage::DiscoverInterfaceSynthesis;
     interface_options.lower_mir = false;
     interface_options.emit_llvm = false;
     interface_options.workspace.source_overrides = interface_overrides;
+    const std::string round_name = options.timings != nullptr
+        ? "interface discovery round " + std::to_string(interface_round)
+        : std::string{};
+    TimingScope round_timing = options.timings != nullptr
+        ? options.timings->scope(round_name)
+        : TimingScope{};
     CompileWorkspaceResult interface_surface = compile_workspace(
         sources,
         root_package_directory,
         std::move(interface_options),
         diagnostics);
+    round_timing.finish();
     if (!interface_surface.ok) return interface_surface;
 
     const std::size_t site_count = synthesis_site_count(interface_surface);
@@ -1649,8 +1769,11 @@ CompileWorkspaceResult compile_workspace_with_resolution(
         interface_surface.ok = false;
         return interface_surface;
       }
-      const ResolutionOverlayResult interface_overlay =
-          build_resolution_overlays(
+      TimingScope overlay_timing = options.timings != nullptr
+          ? options.timings->scope(
+                "interface resolution overlay", TimingVisibility::Detail)
+          : TimingScope{};
+      const ResolutionOverlayResult interface_overlay = build_resolution_overlays(
               sources,
               resolution_packages(interface_surface),
               interface_manifest,
@@ -1659,6 +1782,7 @@ CompileWorkspaceResult compile_workspace_with_resolution(
               input_verification,
               {},
               diagnostics);
+      overlay_timing.finish();
       if (!interface_overlay.ok) {
         interface_surface.ok = false;
         return interface_surface;
@@ -1690,8 +1814,12 @@ CompileWorkspaceResult compile_workspace_with_resolution(
   body_options.lower_mir = false;
   body_options.emit_llvm = false;
   body_options.workspace.source_overrides = interface_overrides;
+  TimingScope body_surface_timing = options.timings != nullptr
+      ? options.timings->scope("body surface compilation")
+      : TimingScope{};
   CompileWorkspaceResult body_surface = compile_workspace(
       sources, root_package_directory, body_options, diagnostics);
+  body_surface_timing.finish();
   if (!body_surface.ok) return body_surface;
 
   if (loaded_manifest.state == ResolutionManifestLoadState::Missing) {
@@ -1704,13 +1832,21 @@ CompileWorkspaceResult compile_workspace_with_resolution(
       return body_surface;
     }
     if (!options.lower_mir && !options.emit_llvm) {
+      TimingScope identity_timing = options.timings != nullptr
+          ? options.timings->scope(
+                "resolved-program identity", TimingVisibility::Detail)
+          : TimingScope{};
       bind_handwritten_program_identity(sources, options, body_surface);
       return body_surface;
     }
     options.stage = CompileWorkspaceStage::Complete;
     options.workspace.source_overrides.clear();
+    TimingScope codegen_timing = options.timings != nullptr
+        ? options.timings->scope("final handwritten codegen")
+        : TimingScope{};
     CompileWorkspaceResult handwritten = compile_workspace(
         sources, root_package_directory, std::move(options), diagnostics);
+    codegen_timing.finish();
     // compile_workspace retained the exact compiler identity, so reconstruct
     // the two option fields consumed by the moved value without a magic
     // duplicate version string.
@@ -1738,6 +1874,10 @@ CompileWorkspaceResult compile_workspace_with_resolution(
     body_surface.ok = false;
     return body_surface;
   }
+  TimingScope body_overlay_timing = options.timings != nullptr
+      ? options.timings->scope(
+            "body resolution overlay", TimingVisibility::Detail)
+      : TimingScope{};
   const ResolutionOverlayResult body_overlay = build_resolution_overlays(
       sources,
       resolution_packages(body_surface),
@@ -1747,6 +1887,7 @@ CompileWorkspaceResult compile_workspace_with_resolution(
       input_verification,
       {},
       diagnostics);
+  body_overlay_timing.finish();
   if (!body_overlay.ok) {
     body_surface.ok = false;
     return body_surface;
@@ -1774,8 +1915,12 @@ CompileWorkspaceResult compile_workspace_with_resolution(
       complete_overrides, body_overlay.sources);
   options.stage = CompileWorkspaceStage::Complete;
   options.workspace.source_overrides = std::move(complete_overrides);
+  TimingScope resolved_timing = options.timings != nullptr
+      ? options.timings->scope("final resolved compilation")
+      : TimingScope{};
   CompileWorkspaceResult resolved = compile_workspace(
       sources, root_package_directory, options, diagnostics);
+  resolved_timing.finish();
   if (!resolved.ok) return resolved;
 
   // Generated source is allowed to contain ordinary docs but not another

@@ -33,6 +33,9 @@ struct ValidationCommandOptions {
   // bearing run must verify every external runtime identity before execution.
   std::vector<RuntimeAssetInput> runtime_assets;
   std::vector<ForeignProviderAudit> foreign_provider_audits;
+  // Command-owned timing recorder shared across compilation, native harness
+  // construction, execution, and evidence commit. It is observation only.
+  TimingRecorder *timings = nullptr;
 };
 
 struct ValidationCommandResult {
