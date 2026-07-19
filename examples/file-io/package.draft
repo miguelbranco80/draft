@@ -1,0 +1,70 @@
+// This executable performs one complete file round trip through ordinary core
+// packages. It converts a Draft string pathname into owned zero-terminated
+// storage, writes immutable text through core/console, reads bytes through
+// core/os, validates them, and removes the file on every normal scope exit.
+//
+// File descriptors and owned strings have explicit cleanup. The example uses a
+// fixed relative path because the native conformance runner gives every program
+// an isolated working directory. The path is also removed before creation to
+// recover from an interrupted prior run in any other working directory.
+package file_io
+
+import core/console
+import core/memory
+import core/os
+
+Path :: "draft-file-io-example.txt"
+Contents :: `Draft file example: this deliberately exceeds one console text
+chunk so the example exercises repeated immutable-string copying and repeated
+OS writes without allocating a second whole-string buffer. The bytes remain
+ordinary UTF-8 source data; core/console performs no normalization, terminal
+detection, newline rewriting, or hidden buffering while writing this file.
+`
+
+// bytes_equal_text validates the exact bytes returned by read. The function
+// borrows both views and performs no allocation or normalization.
+bytes_equal_text :: proc(bytes: []u8, text: string) -> bool {
+    if len(bytes) != len(text) {
+        return false
+    }
+    for byte, index in bytes {
+        if byte != text[index] {
+            return false
+        }
+    }
+    return true
+}
+
+// main owns one pathname copy and, in sequence, one output and one input file
+// descriptor. Cleanup order is explicit: the deferred remove runs before the
+// deferred pathname destruction because defers execute last-in, first-out.
+main :: proc() {
+    path: memory.Owned_String
+    memory.owned_string_copy(&path, Path)
+    defer memory.owned_string_destroy(&path)
+    native_path := memory.owned_string_cstring(&path)
+
+    // Removal is idempotent at the example level: failure before creation is
+    // harmless, while the deferred call cleans up every normal return path.
+    os.remove(native_path)
+    defer os.remove(native_path)
+
+    (output, create_error) := os.create_for_writing(native_path)
+    assert(create_error == .none)
+    assert(console.write_to(output, Contents) == .none)
+    assert(os.close(&output))
+
+    (input, open_error) := os.open_for_reading(native_path)
+    assert(open_error == .none)
+    received: [512]u8
+    total: usize
+    for total < len(Contents) {
+        (count, read_error) := os.read(input, received[total:])
+        assert(read_error == .none)
+        total += count
+    }
+    assert(bytes_equal_text(received[:total], Contents))
+    assert(os.close(&input))
+
+    assert(console.println("multi-chunk file round trip: ok") == .none)
+}

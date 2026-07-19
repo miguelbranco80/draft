@@ -1,0 +1,46 @@
+// This executable demonstrates a successful compiler-enforced denial rather
+// than a failing diagnostic fixture. The checksum is declared under explicit
+// restrictions and then called inside a second denied statement region. Its
+// implementation uses only deterministic scalar arithmetic and checked slice
+// iteration, so the compiler can prove that the forbidden capabilities are not
+// reachable through the call graph.
+//
+// Negative denial cases belong in tests/denial_test.cpp, where exact source
+// ranges and diagnostic messages can be asserted without making this runnable
+// example intentionally fail.
+package denials
+
+docs "A runnable positive example of Draft's lexical capability denials."
+
+import core/console
+
+deny console, assert, asm, unchecked, context {
+    // checksum borrows a bounded slice and returns one deterministic scalar. It
+    // has no diagnostics or mutable external state; the surrounding denial is
+    // the compiler-checked contract for its complete transitive effect graph.
+    checksum :: proc(input: []u8) -> u64 {
+        hash: u64 = 0xcbf29ce484222325
+        for byte in input {
+            hash ^= cast[u64](byte)
+            hash *= 0x100000001b3
+        }
+        return hash
+    }
+}
+
+// main demonstrates that denied code composes normally with unrestricted code:
+// verification and human-facing output happen only after the restricted region
+// has produced its scalar result.
+main :: proc() {
+    input := [5]u8{68, 114, 97, 102, 116}
+    value: u64
+
+    // The statement region adds the same restrictions at the call site. The
+    // callee's inferred effect summary closes the transitive check.
+    deny console, assert, asm, unchecked, context {
+        value = checksum(input[:])
+    }
+
+    assert(value == 0xd600892f7fabe04c)
+    assert(console.println("denial-constrained checksum: ok") == .none)
+}

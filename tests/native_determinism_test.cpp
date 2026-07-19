@@ -114,7 +114,7 @@ struct NativeInputSelection {
       std::string(DRAFT_SOURCE_DIRECTORY) + "/examples";
   options.workspace.core_directory =
       std::string(DRAFT_SOURCE_DIRECTORY) + "/core";
-  options.workspace.core_content_identity = "draft-core-bootstrap-v1";
+  options.workspace.core_content_identity = "draft-core-bootstrap-v2";
   options.lower_mir = true;
   options.emit_llvm = true;
   options.emit_program_entry = emit_program_entry;

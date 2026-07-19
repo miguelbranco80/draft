@@ -1,0 +1,75 @@
+// This executable demonstrates the human-facing core/console API and the
+// allocation-free core/format layer beneath it. It verifies boundary integer
+// spellings in memory before sending representative text, integers, booleans,
+// and process information to standard output.
+//
+// Console operations return core/io errors. The example checks every result so
+// a broken pipe or unavailable descriptor fails visibly instead of being
+// mistaken for successful output.
+package console_example
+
+import core/console
+import core/format
+import core/os
+
+Minimum_I64 :: cast[i64](0x8000000000000000)
+Maximum_U64 :: cast[u64](0xffffffffffffffff)
+
+// bytes_equal_text compares one mutable byte view with an immutable string
+// without conflating their ownership or mutability. Neither input is retained.
+bytes_equal_text :: proc(bytes: []u8, text: string) -> bool {
+    if len(bytes) != len(text) {
+        return false
+    }
+    for byte, index in bytes {
+        if byte != text[index] {
+            return false
+        }
+    }
+    return true
+}
+
+// main first verifies formatting without I/O, including zero, insufficient
+// storage, and both integer-width boundaries. It then checks every console
+// result while emitting a short process-facing report.
+main :: proc() {
+    zero_storage: [1]u8
+    (zero_text, zero_ok) := format.unsigned_decimal(zero_storage[:], 0)
+    assert(zero_ok)
+    assert(bytes_equal_text(zero_text, "0"))
+
+    insufficient_storage: [1]u8
+    (_, insufficient_ok) :=
+        format.unsigned_decimal(insufficient_storage[:], 10)
+    assert(!insufficient_ok)
+
+    unsigned_storage: [20]u8
+    (unsigned_text, unsigned_ok) :=
+        format.unsigned_decimal(unsigned_storage[:], Maximum_U64)
+    assert(unsigned_ok)
+    assert(bytes_equal_text(unsigned_text, "18446744073709551615"))
+
+    signed_storage: [20]u8
+    (signed_text, signed_ok) :=
+        format.signed_decimal(signed_storage[:], Minimum_I64)
+    assert(signed_ok)
+    assert(bytes_equal_text(signed_text, "-9223372036854775808"))
+
+    positive_storage: [2]u8
+    (positive_text, positive_ok) :=
+        format.signed_decimal(positive_storage[:], 42)
+    assert(positive_ok)
+    assert(bytes_equal_text(positive_text, "42"))
+
+    arguments := os.args()
+    assert(console.println("Draft console example") == .none)
+    assert(console.print("minimum i64: ") == .none)
+    assert(console.print_i64(Minimum_I64) == .none)
+    assert(console.newline() == .none)
+    assert(console.print("maximum u64: ") == .none)
+    assert(console.print_u64(Maximum_U64) == .none)
+    assert(console.newline() == .none)
+    assert(console.print("has executable argument: ") == .none)
+    assert(console.print_bool(len(arguments) != 0) == .none)
+    assert(console.newline() == .none)
+}

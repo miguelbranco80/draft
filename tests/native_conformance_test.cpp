@@ -122,6 +122,11 @@ void test_native_examples(TestState &state) {
   constexpr std::array cases{
       ConformanceCase{"hello", "examples", "examples/hello"},
       ConformanceCase{
+          "language-tour", "examples", "examples/language-tour"},
+      ConformanceCase{"console", "examples", "examples/console"},
+      ConformanceCase{"file-io", "examples", "examples/file-io"},
+      ConformanceCase{"denials", "examples", "examples/denials"},
+      ConformanceCase{
           "runtime-checks", "examples", "examples/runtime-checks"},
       ConformanceCase{
           "runtime-traps", "examples", "examples/runtime-traps"},
@@ -185,7 +190,7 @@ void test_native_examples(TestState &state) {
     compile_options.workspace.core_directory =
         (source_root / "core").string();
     compile_options.workspace.core_content_identity =
-        "draft-core-bootstrap-v1";
+        "draft-core-bootstrap-v2";
     compile_options.lower_mir = true;
     compile_options.emit_llvm = true;
     draft::CompileWorkspaceResult compiled = draft::compile_workspace(

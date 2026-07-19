@@ -1,0 +1,193 @@
+// This executable is the readable, end-to-end tour of Draft's ordinary
+// application-language surface. It intentionally keeps one small data problem
+// in view while demonstrating compile-time declarations, nominal types,
+// parametrics, arrays and slices, tuples, tagged unions, pointers, control flow,
+// deferred calls, target selection, assertions, and console output.
+//
+// The example owns only stack values plus one package global. It uses no native
+// interoperation or synthesis, so every transformation remains visible as
+// ordinary Draft code. More specialized examples cover raw layout, assembly,
+// concurrency, C ABI boundaries, and agent constructs.
+package language_tour
+
+docs `A compact tour of the ordinary Draft 1 language.
+Keep the calculations small enough to verify by inspection.`
+
+import core/console
+import core/option
+import core/result
+
+Reading_Count :: 4
+
+when target.pointer_bits == 64 {
+    Word :: u64
+    Pointer_Bits :: 64
+} else {
+    Word :: u32
+    Pointer_Bits :: 32
+}
+
+// Reading_Kind is the semantic origin of one reading. Its explicit u8 backing
+// makes the representation visible, although this example does not cross an
+// ABI or serialization boundary with it.
+Reading_Kind :: enum u8 {
+    measured,
+    estimated,
+}
+
+// Reading is one copied value in the fixed input array. It owns no resources;
+// both fields are available from initialization onward.
+Reading :: struct {
+    value: u64,
+    kind: Reading_Kind,
+}
+
+// Summary is the complete successful reduction result. The zero value is a
+// valid summary of no processed readings, but summarize reports empty input as
+// an error so callers cannot mistake that value for measured data.
+Summary :: struct {
+    total: u64,
+    minimum: u64,
+    maximum: u64,
+}
+
+// Summary_Error names the only failure currently possible. Keeping it nominal
+// leaves the Result boundary stable if the example later gains another error.
+Summary_Error :: enum u8 {
+    empty,
+}
+
+// Box[T] demonstrates a parametric nominal record. Each concrete T determines
+// the field layout; the record retains no reference to the source expression.
+Box[T: type] :: struct {
+    value: T,
+}
+
+// Points has u64 layout and arithmetic but a separate semantic identity. Only
+// explicit casts cross between it and ordinary u64 values.
+Points :: distinct u64
+
+launch_count: u64 = 1
+
+// summarize converts a borrowed slice of readings into an explicit
+// success-or-error tagged union. Iteration values are copies; the source slice
+// remains unchanged and valid for the caller's lifetime.
+summarize :: proc(
+    readings: []Reading,
+) -> result.Result[Summary, Summary_Error] {
+    if len(readings) == 0 {
+        return .err(.empty)
+    }
+
+    summary := Summary{
+        minimum = readings[0].value,
+        maximum = readings[0].value,
+    }
+    for reading in readings {
+        summary.total += reading.value
+        if reading.value < summary.minimum {
+            summary.minimum = reading.value
+        }
+        if reading.value > summary.maximum {
+            summary.maximum = reading.value
+        }
+    }
+    return .ok(summary)
+}
+
+// bounds returns a tuple because the two values are one small transient result,
+// not a new domain record. The caller destructures it explicitly.
+bounds :: proc(summary: Summary) -> (u64, u64) {
+    return (summary.minimum, summary.maximum)
+}
+
+// select is a parametric procedure. Each used T creates a concrete checked
+// specialization, while the algorithm stays ordinary visible control flow.
+select[T: type] :: proc(left, right: T, take_left: bool) -> T {
+    return left if take_left else right
+}
+
+// increment mutates exactly one caller-owned u64 through a nullable pointer.
+// This example passes a live address; dereferencing nil would be invalid.
+increment :: proc(value: ^u64) {
+    value^ += 1
+}
+
+// mark_finished is the deferred state transition used by deferred_value. The
+// caller owns the boolean and keeps it alive through the call.
+mark_finished :: proc(finished: ^bool) {
+    finished^ = true
+}
+
+// deferred_value demonstrates that a return value is saved before deferred
+// calls run. finished is caller-owned storage and remains alive across the
+// procedure exit.
+deferred_value :: proc(finished: ^bool) -> u64 {
+    defer mark_finished(finished)
+    return 42
+}
+
+// print_summary renders a valid reduction result and checks every I/O outcome.
+// It owns only stack formatting state inside core/console and does not retain
+// summary or either destructured bound.
+print_summary :: proc(summary: Summary) {
+    (minimum, maximum) := bounds(summary)
+    points := cast[Points](summary.total)
+    points += 1
+
+    assert(console.print("total: ") == .none)
+    assert(console.print_u64(summary.total) == .none)
+    assert(console.newline() == .none)
+    assert(console.print("range: ") == .none)
+    assert(console.print_u64(minimum) == .none)
+    assert(console.print("..") == .none)
+    assert(console.print_u64(maximum) == .none)
+    assert(console.newline() == .none)
+    assert(cast[u64](points) == summary.total + 1)
+}
+
+// main composes the tour stages and turns every unexpected semantic or I/O
+// result into an assertion failure. It owns the fixed input array and leaves no
+// dynamic resource to clean up.
+main :: proc() {
+    static_assert(Reading_Count == 4)
+    static_assert(size_of(Word) * 8 == Pointer_Bits)
+    assert(console.println("Draft language tour") == .none)
+
+    readings := [Reading_Count]Reading{
+        Reading{value = 10, kind = .measured},
+        Reading{value = 20, kind = .estimated},
+        Reading{value = 30, kind = .measured},
+        Reading{value = 40, kind = .estimated},
+    }
+    outcome := summarize(readings[:])
+    switch outcome {
+    case .ok(summary):
+        print_summary(summary)
+    case .err(_):
+        assert(false, "non-empty input unexpectedly failed")
+    }
+
+    preferred := select[Reading](readings[0], readings[1], false)
+    wrapped := Box[Reading]{value = preferred}
+    assert(wrapped.value.value == 20)
+
+    nickname: option.Option[string] = .some("Ada")
+    switch nickname {
+    case .some(name):
+        assert(console.print("nickname: ") == .none)
+        assert(console.println(name) == .none)
+    case .none:
+        assert(console.println("nickname: none") == .none)
+    }
+
+    increment(&launch_count)
+    assert(launch_count == 2)
+    finished: bool
+    assert(deferred_value(&finished) == 42)
+    assert(finished)
+
+    assert(console.print("pointer bits: ") == .none)
+    assert(console.print_u64(Pointer_Bits) == .none)
+    assert(console.newline() == .none)
+}

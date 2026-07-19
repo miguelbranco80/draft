@@ -1,0 +1,134 @@
+// The console package is the small human-facing text output layer above
+// core/os. It copies immutable Draft strings into a bounded stack buffer, then
+// writes those bytes to an explicit OS handle. The copy is intentional in
+// Draft 1: string is an immutable view whose backing address is not exposed to
+// source code, while os.write accepts a mutable byte slice. This direct first
+// implementation preserves that immutability boundary without compiler magic.
+//
+// The package owns no persistent state. Public operations report core/io errors
+// and never trap on an operating-system write failure. Numeric formatting is
+// delegated to core/format, so neither formatting nor console output requires a
+// backend intrinsic. Draft specification: sections 5, 6, and 7.
+package console
+
+import core/format
+import core/io
+import core/os
+
+Text_Chunk_Size :: 256
+
+// write_bytes_to completes a byte-slice write even when the operating system
+// accepts only a prefix. The source remains owned by the caller and is borrowed
+// only for this call. A successful zero-byte write for non-empty input would
+// make no progress, so it is converted to unavailable rather than spinning.
+write_bytes_to :: proc(handle: os.File, source: []u8) -> io.Error {
+    offset: usize
+    for offset < len(source) {
+        (written, error) := os.write(handle, source[offset:])
+        if error != .none {
+            return error
+        }
+        if written == 0 {
+            return .unavailable
+        }
+        offset += written
+    }
+    return .none
+}
+
+// write_to writes one immutable string to handle. The temporary chunk belongs
+// to this stack frame and is reused only after the previous synchronous write
+// has returned. The function preserves byte content exactly; it performs no
+// Unicode normalization, newline conversion, buffering, or terminal detection.
+pub write_to :: proc(handle: os.File, text: string) -> io.Error {
+    offset: usize
+    chunk: [Text_Chunk_Size]u8
+    for offset < len(text) {
+        count := len(text) - offset
+        if count > len(chunk) {
+            count = len(chunk)
+        }
+        for index: usize = 0; index < count; index += 1 {
+            chunk[index] = text[offset + index]
+        }
+        error := write_bytes_to(handle, chunk[:count])
+        if error != .none {
+            return error
+        }
+        offset += count
+    }
+    return .none
+}
+
+// write_newline_to writes the single line-feed byte used by Draft's hosted
+// AArch64 macOS profile. It is separate from write_to because Draft strings do
+// not expose mutable storage, while this local fixed array is already a byte
+// slice suitable for os.write.
+write_newline_to :: proc(handle: os.File) -> io.Error {
+    newline := [1]u8{10}
+    return write_bytes_to(handle, newline[:])
+}
+
+// print writes text to standard output without appending a newline.
+pub print :: proc(text: string) -> io.Error {
+    return write_to(os.standard_output, text)
+}
+
+// println writes text followed by one line-feed to standard output. If writing
+// text fails, the newline is not attempted and the first error is returned.
+pub println :: proc(text: string) -> io.Error {
+    error := print(text)
+    if error != .none {
+        return error
+    }
+    return write_newline_to(os.standard_output)
+}
+
+// newline writes one line-feed to standard output.
+pub newline :: proc() -> io.Error {
+    return write_newline_to(os.standard_output)
+}
+
+// eprint writes text to standard error without appending a newline.
+pub eprint :: proc(text: string) -> io.Error {
+    return write_to(os.standard_error, text)
+}
+
+// eprintln writes text followed by one line-feed to standard error. It follows
+// the same first-error rule as println.
+pub eprintln :: proc(text: string) -> io.Error {
+    error := eprint(text)
+    if error != .none {
+        return error
+    }
+    return write_newline_to(os.standard_error)
+}
+
+// print_u64 formats one unsigned integer into fixed stack storage and writes it
+// to standard output. Twenty bytes are sufficient for every u64 base-ten value;
+// failure to format would therefore indicate a broken core-library invariant.
+pub print_u64 :: proc(value: u64) -> io.Error {
+    storage: [20]u8
+    (text, formatted) := format.unsigned_decimal(storage[:], value)
+    assert(formatted, "u64 console buffer is too small")
+    return write_bytes_to(os.standard_output, text)
+}
+
+// print_i64 is the signed counterpart to print_u64. Twenty bytes hold the sign
+// and all nineteen magnitude digits of the minimum i64 value.
+pub print_i64 :: proc(value: i64) -> io.Error {
+    storage: [20]u8
+    (text, formatted) := format.signed_decimal(storage[:], value)
+    assert(formatted, "i64 console buffer is too small")
+    return write_bytes_to(os.standard_output, text)
+}
+
+// print_bool uses the language spellings of boolean literals. The two static
+// strings are immutable program data and pass through the same text path as
+// caller-provided strings.
+pub print_bool :: proc(value: bool) -> io.Error {
+    if value {
+        return print("true")
+    }
+    return print("false")
+}

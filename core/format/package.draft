@@ -1,0 +1,90 @@
+// The format package contains allocation-free conversions from ordinary Draft
+// values to caller-owned byte buffers. It belongs to the core-library layer:
+// formatting is policy expressed in Draft code, not a primitive operation or a
+// backend intrinsic. The package owns no storage and performs no I/O. Every
+// returned slice borrows the destination passed by the caller and is valid for
+// exactly as long as that destination remains alive and unmodified.
+//
+// Draft specification: section 5 (slices and integer arithmetic) and section 7
+// (ordinary, explicitly imported core packages).
+package format
+
+// unsigned_decimal writes the shortest base-ten representation of value at the
+// beginning of destination. The returned slice aliases destination and contains
+// only the written bytes. A false result means the buffer was too small; in
+// that case the returned slice is empty and destination's contents are
+// unspecified. The procedure allocates nothing and produces the same bytes on
+// every target.
+pub unsigned_decimal :: proc(
+    destination: []u8,
+    value: u64,
+) -> ([]u8, bool) {
+    if len(destination) == 0 {
+        return (destination[:0], false)
+    }
+
+    // Produce digits from least significant to most significant at the end of
+    // the buffer. This naturally handles zero without a separate string table
+    // and lets buffer exhaustion be detected before any out-of-bounds access.
+    cursor := len(destination)
+    remaining := value
+    for {
+        if cursor == 0 {
+            return (destination[:0], false)
+        }
+        cursor -= 1
+        digit := remaining % 10
+        destination[cursor] = cast[u8]('0') + cast[u8](digit)
+        remaining /= 10
+        if remaining == 0 {
+            break
+        }
+    }
+
+    // Public formatting results begin at destination[0]. Moving the completed
+    // suffix forward keeps the returned view simple for I/O consumers and does
+    // not require another temporary allocation.
+    count := len(destination) - cursor
+    for index: usize = 0; index < count; index += 1 {
+        destination[index] = destination[cursor + index]
+    }
+    return (destination[:count], true)
+}
+
+// signed_decimal writes the shortest base-ten representation of value at the
+// beginning of destination. Its ownership and failure rules are identical to
+// unsigned_decimal. The magnitude calculation is deliberately unsigned: after
+// converting a negative i64 modulo 2^64, unsigned subtraction obtains its
+// magnitude even for the minimum i64, whose positive value is not representable
+// as an i64.
+pub signed_decimal :: proc(
+    destination: []u8,
+    value: i64,
+) -> ([]u8, bool) {
+    negative := value < 0
+    magnitude := cast[u64](value)
+    if negative {
+        magnitude = 0 - magnitude
+    }
+
+    (digits, formatted) := unsigned_decimal(destination, magnitude)
+    if !formatted {
+        return (destination[:0], false)
+    }
+    if !negative {
+        return (digits, true)
+    }
+    if len(digits) == len(destination) {
+        return (destination[:0], false)
+    }
+
+    // Move from the back so source bytes are read before their destination is
+    // overwritten. The loop's index is the number of bytes still to move.
+    index := len(digits)
+    for index != 0 {
+        destination[index] = destination[index - 1]
+        index -= 1
+    }
+    destination[0] = cast[u8]('-')
+    return (destination[:len(digits) + 1], true)
+}
