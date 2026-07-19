@@ -10,7 +10,7 @@
 // by the Draft lexer, while every actual `...` and `judge` construct begins with
 // one unambiguous token. Grammar-category validity remains the ordinary parser
 // and semantic compiler's responsibility. Relevant specification:
-// 03-agent-synthesis.md sections 9-10.
+// docs/specification/03-agent-synthesis.md sections 9-10.
 
 #pragma once
 

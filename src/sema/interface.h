@@ -13,7 +13,7 @@
 // ranges are excluded because physical checkout paths and local FileIds are not
 // semantic package identity.
 //
-// Relevant specification: 01-core-language.md section 3, package visibility and
+// Relevant specification: docs/specification/01-core-language.md section 3, package visibility and
 // canonical public interfaces.
 
 #pragma once

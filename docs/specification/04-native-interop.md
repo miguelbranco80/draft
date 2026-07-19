@@ -1,6 +1,6 @@
 # Draft: Native interop
 
-Part of the [Draft language specification](README.md).
+Part of the [Draft language specification](../../README.md).
 
 [← Design context and agent synthesis](03-agent-synthesis.md) ·
 [Next: Denials and validation →](05-denials-validation.md)
@@ -32,7 +32,7 @@ profile; unsupported architectures, instructions, operands, registers, or
 features are compile errors.
 
 The initial concrete grammar is recorded in
-[the AArch64 parsed assembly profile](AARCH64_ASSEMBLY_PROFILE.md). That profile
+[the AArch64 parsed assembly profile](../targets/aarch64-macos-assembly.md). That profile
 is part of the compiler input rather than ambient host-assembler behavior.
 
 Draft 1 assembly is straight-line and uses fixed registers, immediates, memory

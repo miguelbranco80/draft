@@ -12,7 +12,7 @@
 // runes are semantic values built later under an expected type. The token range
 // remains the authoritative original spelling.
 //
-// Relevant specification: 01-core-language.md, "Source text and literals".
+// Relevant specification: docs/specification/01-core-language.md, "Source text and literals".
 
 #include "syntax/lexer.h"
 

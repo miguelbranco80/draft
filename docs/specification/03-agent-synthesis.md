@@ -1,6 +1,6 @@
 # Draft: Design context and agent synthesis
 
-Part of the [Draft language specification](README.md).
+Part of the [Draft language specification](../../README.md).
 
 [← Types, memory, and runtime](02-types-memory-runtime.md) ·
 [Next: Native interop →](04-native-interop.md)
@@ -366,6 +366,13 @@ missing or stale pins require `draft resolve`. `--locked` additionally refuses
 unpinned external build inputs and any operation that would modify the
 resolution manifest. A locked build reads pinned generated source and never
 contacts a model.
+
+A provider-free build or revalidation may consume a content-fresh pin without
+installing the provider that originally produced it. When `draft resolve`
+explicitly selects a provider, the selected provider, model, and complete
+adapter-configuration identities must match the pin; a changed explicit
+selection regenerates the expansion even when its typed obligation is otherwise
+fresh.
 
 An external build input is a dependency root, foreign-provider artifact or
 summary, object, archive, shared library, assembler or linker tool, or target

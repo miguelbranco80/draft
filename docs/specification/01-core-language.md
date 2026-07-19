@@ -1,8 +1,8 @@
 # Draft: Core language
 
-Part of the [Draft language specification](README.md).
+Part of the [Draft language specification](../../README.md).
 
-[← Overview](README.md) · [Next: Types, memory, and runtime →](02-types-memory-runtime.md)
+[← Overview](../../README.md) · [Next: Types, memory, and runtime →](02-types-memory-runtime.md)
 
 <a id="section-3"></a>
 
@@ -178,6 +178,22 @@ parser treats immediately following `file` and `folder` clauses as
 continuations of an active `docs`, `judge`, or `...` construct and suppresses
 insertion before them; an explicit semicolon or the first other non-trivia token
 ends the attachment group. Consequently, `} else {` remains on one line.
+
+`c` is contextual rather than globally reserved. It introduces the C calling
+convention only in the procedure forms defined by section 12; elsewhere it may
+be an ordinary local import alias or the first component of a qualified name
+such as `c.int`. Those identifier uses receive ordinary semicolon behavior.
+
+Draft 1 syntax remains provisional around a newline following `^`, because the
+same token is postfix dereference and binary XOR. The bootstrap rule treats
+`^` at a semicolon-eligible newline or end of file as postfix. Elsewhere it is
+binary when the following token directly begins a primary operand, synthesis,
+assembly, denial expression, or unary-only `!`/`~` operand; it is postfix
+before a delimiter, postfix continuation, or another binary operator. Thus
+`pointer^ + 1` dereferences before addition, while an XOR against a prefix
+minus is written `left ^ (-right)`. This paragraph is an explicitly
+provisional lexical decision recorded with its rationale in
+[the language decision log](../decisions/language-questions.md).
 
 Integer literals are decimal or use `0b`, `0o`, or `0x`; underscores may
 separate digits. A decimal floating literal is digits, `.`, digits, and an
@@ -417,6 +433,14 @@ have a common result type:
 ```draft
 larger := a if a > b else b
 ```
+
+An outer expected type is propagated into both values. Without one, a direct
+`nil`, contextual enum alternative, or contextual tagged-union alternative
+may discover its type from the concrete opposite value, symmetrically on either
+side. If both values require context and there is no outer expected type, the
+expression is ambiguous. Parentheses and denial wrappers do not change this
+discovery rule. A nested conditional requests outer context exactly when both
+of its own value branches require context.
 
 `for` is the loop construct. It supports infinite, conditional, clause, and
 array-or-slice iteration forms:

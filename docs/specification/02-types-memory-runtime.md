@@ -1,6 +1,6 @@
 # Draft: Types, memory, and runtime
 
-Part of the [Draft language specification](README.md).
+Part of the [Draft language specification](../../README.md).
 
 [← Core language](01-core-language.md) ·
 [Next: Design context and agent synthesis →](03-agent-synthesis.md)
@@ -316,6 +316,24 @@ Procedure arguments may infer parametric arguments when inference has a unique
 solution, so `swap(&left, &right)` may infer `T`. Explicit arguments remain
 available when inference is impossible or undesirable.
 
+Nominal applications unify only when they have the same template identity and
+their ordered type and value arguments unify; identical layout or members do
+not make distinct nominal templates interchangeable. Substitutions learned
+from earlier procedure arguments are applied before later arguments are
+matched.
+
+For a dependent integer value, Draft 1 guarantees inference from a single
+occurrence of that parameter in a checked one-to-one pattern built from direct
+use; unary `+`, unary `-`, or bitwise complement; a same-width or widening
+integer cast; addition or subtraction by a known constant; the corresponding
+known-constant-minus-parameter form; or XOR by a known constant. Inversion uses
+each expression node's exact checked integer domain, including ordinary
+fixed-width two's-complement wrapping. The inferred candidate is substituted
+into the complete original expression and re-evaluated before acceptance. Repeated
+occurrences such as `N + N`, multiplication, division, remainder, shifts, AND,
+and OR require an explicit argument unless a later language revision defines a
+broader solver.
+
 Constraint names are compiler-defined and valid only in parametric parameter
 declarations. The initial vocabulary is closed:
 
@@ -598,11 +616,12 @@ automatically propagate it. Every context field is visible unless an enclosing
 `deny` region removes access to it.
 
 A procedure begins with its caller's context pointer. A runtime lexical scope
-that assigns a context field uses a compiler-managed local copy of the runtime
-`Context`, initialized from the surrounding value. Later field accesses and
-normal calls from that scope use the local pointer; leaving the scope discards
-the copy. A scope that never assigns context need not create a copy. Context
-assignment never mutates the caller's active record:
+that assigns a context field or takes the address of one uses a compiler-managed
+local copy of the runtime `Context`, initialized from the surrounding value.
+Later field accesses and normal calls from that scope use the local pointer;
+leaving the scope discards the copy. A scope that neither assigns nor takes a
+field address need not create a copy. Context assignment through the local
+record never mutates the caller's active record:
 
 ```draft
 context.user_index = 456
@@ -646,6 +665,16 @@ imported operations;
 without such a declaration, a foreign call adds no synchronization edge. An
 assembly memory clobber is only a compiler dependency; it does not make ordinary
 accesses atomic or cure a data race.
+
+Atomic order arguments are compile-time `core/atomic.Order` values. The
+compiler rejects release loads, acquire stores, releasing compare-exchange
+failure orders, and a failure order stronger than the corresponding success
+order. A relaxed fence is valid but creates no synchronization edge. The
+bootstrap AArch64 core surface currently requires these intrinsics to be direct
+package calls and rejects taking them as procedure values or explicitly
+specializing them; that is an implementation limitation recorded in the
+[runtime implementation](../implementation/runtime-and-core.md), not an
+additional C11 memory-semantic rule.
 
 A thread created by `core/thread` initializes Draft TLS before entry and
 begins with an independent copy of the spawning thread's active `Context`. The
@@ -738,6 +767,8 @@ The initial core set includes:
 | `core/heap` | Heap allocator backends and direct heap operations. |
 | `core/array` | `array.Dynamic[T]`, an owning growable contiguous array. |
 | `core/map` | `map.Map[K, V]` and explicit hash-map operations. |
+| `core/format` | Allocation-free conversion of values into caller-owned byte buffers. |
+| `core/console` | Checked human-facing text and scalar output over standard process handles. |
 | `core/io` | Stream and input/output interfaces and utilities. |
 | `core/os` | Process, argument, environment, file, and operating-system facilities. |
 | `core/atomic` | Compiler-backed atomic values and memory-order operations. |
@@ -749,6 +780,13 @@ The initial core set includes:
 
 This list can grow without expanding the language grammar or the set of
 predeclared names.
+
+`core/format` and `core/console` are ordinary Draft packages rather than
+compiler formatting or printing intrinsics. The initial formatting surface
+provides base-ten `u64` and `i64` conversion into caller-owned byte slices.
+Console operations write immutable text, booleans, and those integers to the
+standard process handles and return `core/io.Error`. More formatting policy can
+grow in these packages without changing the language or backend.
 
 `core/time` defines `Duration` as a distinct signed integer type and constants
 such as `time.nanosecond: Duration`; the distinct-operator rules make

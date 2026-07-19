@@ -19,9 +19,9 @@
 // those rows under the versioned target profile; this parser does not guess an
 // instruction or register grammar.
 //
-// Relevant specification: 01-core-language.md sections 3-4 and the surface
-// constructs in 03-agent-synthesis.md, 04-native-interop.md, and
-// 05-denials-validation.md.
+// Relevant specification: docs/specification/01-core-language.md sections 3-4 and the surface
+// constructs in docs/specification/03-agent-synthesis.md, docs/specification/04-native-interop.md, and
+// docs/specification/05-denials-validation.md.
 
 #include "syntax/parser.h"
 

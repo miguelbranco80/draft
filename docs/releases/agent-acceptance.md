@@ -61,4 +61,5 @@ The checked snapshot was qualified on AArch64 macOS with the Codex executable
 bundled in the ChatGPT application, model `gpt-5.6-sol`, the selected
 self-contained LLVM 22.1.8 plus Apple ld/ld-classic toolchain, and the minimal
 content-pinned `libSystem.tbd` SDK. The toolchain and SDK layouts and identities
-are recorded in the repository's `TOOLCHAIN_DISTRIBUTION.md`.
+are recorded in the repository's
+[AArch64 macOS toolchain document](aarch64-macos-toolchain.md).

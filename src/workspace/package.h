@@ -11,7 +11,7 @@
 // enumeration order must never influence diagnostics, syntax processing, or
 // later hashes. Physical directory paths remain I/O facts, not semantic IDs.
 //
-// Relevant specification: 01-core-language.md, section 3, "Folder packages".
+// Relevant specification: docs/specification/01-core-language.md, section 3, "Folder packages".
 
 #pragma once
 

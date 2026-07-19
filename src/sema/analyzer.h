@@ -13,8 +13,8 @@
 // collection rules. `deny` does not select a branch, so its contents are
 // collected immediately while the denial site is retained as policy metadata.
 //
-// Relevant specification: 01-core-language.md sections 3-4, 03-agent-synthesis.md,
-// 04-native-interop.md, and 05-denials-validation.md.
+// Relevant specification: docs/specification/01-core-language.md sections 3-4, docs/specification/03-agent-synthesis.md,
+// docs/specification/04-native-interop.md, and docs/specification/05-denials-validation.md.
 
 #pragma once
 

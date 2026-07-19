@@ -9,7 +9,7 @@
 // Both regular files and directory trees are valid assets. The shared content-
 // tree layer rejects a symlink root, escaping links, and special files, so an
 // asset cannot reach ambient host content after its manifest row is verified.
-// Relevant specification: 03-agent-synthesis.md, "Resolution and reproducible
+// Relevant specification: docs/specification/03-agent-synthesis.md, "Resolution and reproducible
 // builds".
 
 #pragma once

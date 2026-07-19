@@ -6,7 +6,7 @@
 // validation is intentionally repeated at this small boundary so non-lexer
 // callers cannot manufacture surrogate or out-of-range rune values.
 //
-// Relevant specification: 01-core-language.md, "Source text and literals".
+// Relevant specification: docs/specification/01-core-language.md, "Source text and literals".
 
 #include "syntax/literal.h"
 

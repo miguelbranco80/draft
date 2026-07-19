@@ -6,7 +6,7 @@
 // canonicalize paths. Preserving original bytes is necessary for exact hashes,
 // source maps, diagnostics, and generated expansion inspection.
 //
-// Relevant specification: 01-core-language.md, "Source text and literals".
+// Relevant specification: docs/specification/01-core-language.md, "Source text and literals".
 
 #include "source/source.h"
 

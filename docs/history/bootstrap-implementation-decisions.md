@@ -63,7 +63,7 @@ lane count or element spelling is a semantic target error, not an LLVM fallback.
 
 The parsed inline-assembly dialect identity is `draft-aarch64-apple-v2`; its
 closed register, operand, addressing, condition, and instruction grammar is
-enumerated in [AARCH64_ASSEMBLY_PROFILE.md](AARCH64_ASSEMBLY_PROFILE.md).
+enumerated in [the AArch64 assembly profile](../targets/aarch64-macos-assembly.md).
 Package `.s`, `.S`, and `.asm` inputs all contain exact non-preprocessed bytes;
 in particular, `.S` does not inherit the host C driver's preprocessing rule.
 Changing any of these facts creates a new target-profile identity rather than
@@ -1144,4 +1144,4 @@ headers. Its use by executables, dylibs, and relocatable objects, together with
 the complete native and determinism matrices, proves that no larger developer
 SDK is currently an implicit input. The assembly recipe, exact content-tree
 identities, dependency policy, and distribution boundary are recorded in
-`TOOLCHAIN_DISTRIBUTION.md`.
+[the AArch64 macOS toolchain document](../releases/aarch64-macos-toolchain.md).

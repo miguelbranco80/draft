@@ -7,7 +7,7 @@
 //
 // Inputs are the immutable semantic TypeStore and selected TargetFacts; output
 // is diagnostics only. The module owns no type state, performs no lowering, and
-// depends only on semantic/source data. See 02-types-memory-runtime.md,
+// depends only on semantic/source data. See docs/specification/02-types-memory-runtime.md,
 // "Target profile" and "Pointers, procedures, and views".
 
 #pragma once

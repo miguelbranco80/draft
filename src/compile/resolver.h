@@ -11,7 +11,7 @@
 // expression, and assembly sites run only after those interfaces are installed
 // and bodies can be checked. Both stages share one atomic transaction and never
 // expose one same-stage proposal while computing another obligation. Relevant
-// specification: 03-agent-synthesis.md sections 9-10 and 06-compiler.md
+// specification: docs/specification/03-agent-synthesis.md sections 9-10 and docs/specification/06-compiler.md
 // section 15.
 
 #pragma once

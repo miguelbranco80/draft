@@ -13,7 +13,7 @@
 // valid source, so a multibyte character occupies one displayed column. Invalid
 // UTF-8 is still addressable by byte and is diagnosed by the lexer.
 //
-// Relevant specification: 01-core-language.md, "Source text and literals".
+// Relevant specification: docs/specification/01-core-language.md, "Source text and literals".
 
 #pragma once
 

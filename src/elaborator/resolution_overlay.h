@@ -10,8 +10,8 @@
 // what makes generated code obey the same grammar, typing, denials, and lowering
 // rules as handwritten source. The resolver may call this operation once for
 // an interface stage and again for a body stage; each call still consumes exact
-// coordinates from its own semantic pass. See 03-agent-synthesis.md sections
-// 9-10 and 06-compiler.md section 15.
+// coordinates from its own semantic pass. See docs/specification/03-agent-synthesis.md sections
+// 9-10 and docs/specification/06-compiler.md section 15.
 
 #pragma once
 

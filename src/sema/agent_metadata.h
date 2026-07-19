@@ -12,7 +12,7 @@
 // enumeration order is never semantic. SourceManager continues to own syntax
 // source, while each metadata record owns decoded strings and digests.
 //
-// Relevant specification: 03-agent-synthesis.md sections 8-9.
+// Relevant specification: docs/specification/03-agent-synthesis.md sections 8-9.
 
 #pragma once
 

@@ -8,8 +8,8 @@
 //
 // Draft 1 supports exactly one profile. Additional targets add new complete
 // profile constructors rather than conditionals scattered through the compiler.
-// Relevant specification: 02-types-memory-runtime.md "Target profile" and
-// 04-native-interop.md sections 11-12.
+// Relevant specification: docs/specification/02-types-memory-runtime.md "Target profile" and
+// docs/specification/04-native-interop.md sections 11-12.
 
 #pragma once
 

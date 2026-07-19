@@ -13,7 +13,7 @@
 // an invalid ID so later passes cannot accidentally treat the duplicate as the
 // canonical binding.
 //
-// Relevant specification: 01-core-language.md sections 3-4 and file-local
+// Relevant specification: docs/specification/01-core-language.md sections 3-4 and file-local
 // import rules.
 
 #pragma once

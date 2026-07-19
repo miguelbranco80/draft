@@ -12,7 +12,7 @@
 // clarity over asymptotic sophistication; compile-time resource limits remain a
 // separate evaluator policy and can reject unreasonable source operations.
 //
-// Relevant specification: 01-core-language.md, "Expressions and evaluation"
+// Relevant specification: docs/specification/01-core-language.md, "Expressions and evaluation"
 // and "Constants and compile-time evaluation".
 
 #pragma once

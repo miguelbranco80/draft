@@ -13,7 +13,7 @@
 // requested aggregate overflows the target addressable size. The semantic layer
 // must diagnose use that requires a still-unknown layout.
 //
-// Relevant specification: 02-types-memory-runtime.md, sections 5-6.
+// Relevant specification: docs/specification/02-types-memory-runtime.md, sections 5-6.
 
 #pragma once
 

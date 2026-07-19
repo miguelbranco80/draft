@@ -1,6 +1,6 @@
 # Draft: Compiler architecture
 
-Part of the [Draft language specification](README.md).
+Part of the [Draft language specification](../../README.md).
 
 [← Denials and validation](05-denials-validation.md) · [Next: Future ideas →](07-future-ideas.md)
 
@@ -71,15 +71,32 @@ checker, and denial checker accept an expansion before it enters the working
 program. Tests, benchmarks, and selected judgments remain authoritative and run
 only after the required expansions form one coherent resolved program.
 
+### Shared body-site control facts
+
+Body synthesis and procedure-body judgments receive the compiler's typed
+control-flow and data-flow facts at their source position, including visible
+bindings, branch refinements, active denials, and available context fields.
+These are compile-time facts, not observations of runtime values.
+
+Branch facts describe the structured decisions that admitted control to the
+site, in outer-to-inner source order; they do not promise that a mutable source
+expression would evaluate the same way again. A conditional fact records its
+polarity. A switch-case fact records the matching authored labels, while a
+default fact records the complete explicit label set that failed to match.
+Loop facts are conservative: mutation or address escape invalidates affected
+bindings, and array/slice iteration relates the index to the captured length.
+Clause-loop ranges are supplied only for the canonical
+`index = 0; index < upper; index += 1` form when `upper` is independent of
+`index` and the body neither mutates nor exposes the index address. Nested
+procedures do not inherit outer runtime facts, and active denials redact facts
+whose values or declarations may not be supplied.
+
 ### Judgment context and evidence
 
 A selected judgment receives canonical source and the typed semantic graph for
 its anchored package, type, or procedure region; relevant generated source;
-attached context; and requested target artifacts. A procedure-body judgment
-also receives the compiler's typed control-flow and data-flow facts at its
-source position, including visible bindings, branch refinements, active
-denials, and available context fields. These are compile-time facts, not
-observations of runtime values. The compiler limits further context to the
+attached context; requested target artifacts; and, for a procedure-body site,
+the shared control facts above. The compiler limits further context to the
 anchored region and its semantic dependencies.
 
 Every surface `judge` receives a stable manifest identity from its package,

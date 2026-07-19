@@ -7,7 +7,7 @@
 // is established before either hashing or provider request construction.
 //
 // No provider is invoked here and no attachment path or byte enters runtime
-// lowering. Relevant specification: 03-agent-synthesis.md sections 8-10.
+// lowering. Relevant specification: docs/specification/03-agent-synthesis.md sections 8-10.
 
 #include "sema/agent_metadata.h"
 

@@ -9,7 +9,7 @@
 // The parser accepts the exact versioned schema while permitting insignificant
 // JSON whitespace. Unknown, missing, reordered, or duplicate fields are rejected
 // deliberately: compiler-owned canonical inputs should never be silently
-// reinterpreted. Relevant specification: 03-agent-synthesis.md section 10.
+// reinterpreted. Relevant specification: docs/specification/03-agent-synthesis.md section 10.
 
 #pragma once
 

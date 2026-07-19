@@ -12,7 +12,7 @@
 // prompt/schema version; a different installation or adapter policy stales the
 // pin. Authentication remains the Codex CLI's process-local concern and is not
 // serialized. Relevant official interface: Codex CLI non-interactive mode and
-// command reference; Draft semantics: 03-agent-synthesis.md sections 9-10.
+// command reference; Draft semantics: docs/specification/03-agent-synthesis.md sections 9-10.
 
 #pragma once
 

@@ -1,6 +1,6 @@
 # Draft: Future ideas
 
-Part of the [Draft language specification](README.md).
+Part of the [Draft language specification](../../README.md).
 
 [← Compiler architecture](06-compiler.md)
 

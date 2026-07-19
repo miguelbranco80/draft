@@ -10,7 +10,7 @@
 // the package identity plus selected package-relative filename. Types cross the
 // hash boundary through InterfaceTypeGraph, and visible bindings are sorted by
 // source name after lexical shadowing is applied. Relevant specification:
-// 03-agent-synthesis.md sections 8-10 and 06-compiler.md section 15.
+// docs/specification/03-agent-synthesis.md sections 8-10 and docs/specification/06-compiler.md section 15.
 
 #pragma once
 

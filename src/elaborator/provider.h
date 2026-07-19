@@ -9,8 +9,8 @@
 // SDK types, or callbacks hidden in a framework. A Codex CLI adapter and
 // deterministic test providers can implement the same one synchronous call.
 // Provider, model, and configuration identities are fixed on the adapter and
-// copied into every new pin. Relevant specification: 03-agent-synthesis.md
-// sections 9-10 and 06-compiler.md section 15.
+// copied into every new pin. Relevant specification: docs/specification/03-agent-synthesis.md
+// sections 9-10 and docs/specification/06-compiler.md section 15.
 
 #pragma once
 

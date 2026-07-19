@@ -16,8 +16,8 @@
 // semantic core is considered complete; unsupported values remain Pending and
 // are never silently folded with host behavior.
 //
-// Relevant specification: 01-core-language.md "Constants and compile-time
-// evaluation" and "when"; 02-types-memory-runtime.md "Target profile".
+// Relevant specification: docs/specification/01-core-language.md "Constants and compile-time
+// evaluation" and "when"; docs/specification/02-types-memory-runtime.md "Target profile".
 
 #pragma once
 

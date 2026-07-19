@@ -1,6 +1,6 @@
 # Draft: Denials and validation
 
-Part of the [Draft language specification](README.md).
+Part of the [Draft language specification](../../README.md).
 
 [← Native interop](04-native-interop.md) · [Next: Compiler architecture →](06-compiler.md)
 

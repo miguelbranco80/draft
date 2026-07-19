@@ -6,7 +6,7 @@
 // Decoders also validate standalone input defensively, return no partial value,
 // and have no dependency on semantic types or target layout.
 //
-// Relevant specification: 01-core-language.md, "Source text and literals".
+// Relevant specification: docs/specification/01-core-language.md, "Source text and literals".
 
 #pragma once
 

@@ -11,7 +11,7 @@
 // conservative EffectSummaryResult and emits source-located diagnostics at the
 // violating operation plus a note at the selector that established the policy.
 //
-// Relevant specification: 05-denials-validation.md section 13.
+// Relevant specification: docs/specification/05-denials-validation.md section 13.
 
 #pragma once
 

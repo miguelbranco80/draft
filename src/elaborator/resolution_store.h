@@ -10,7 +10,7 @@
 // This is deliberately a filesystem boundary, not a provider or semantic
 // boundary. It does not invoke Codex, parse Draft, decide whether a pin is
 // stale, or calculate the resolved-program identity. See
-// 03-agent-synthesis.md section 10.
+// docs/specification/03-agent-synthesis.md section 10.
 
 #pragma once
 

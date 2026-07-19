@@ -11,8 +11,8 @@
 // package-interface and link composition extends the same rows with imported
 // audited summaries and procedure-pointer flow slots. No LLVM fact is used.
 //
-// Relevant specification: 05-denials-validation.md section 13 and
-// 06-compiler.md, "Native lowering and summaries".
+// Relevant specification: docs/specification/05-denials-validation.md section 13 and
+// docs/specification/06-compiler.md, "Native lowering and summaries".
 
 #pragma once
 

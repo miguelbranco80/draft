@@ -8,7 +8,7 @@
 // This module intentionally depends on workspace source representations but not
 // semantic checking or provider execution. Its important invariant is that it
 // changes bytes only: the next compiler pass owns every meaning assigned to the
-// result. Relevant specification: 03-agent-synthesis.md sections 9-10.
+// result. Relevant specification: docs/specification/03-agent-synthesis.md sections 9-10.
 
 #include "elaborator/resolution_overlay.h"
 

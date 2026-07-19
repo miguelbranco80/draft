@@ -10,7 +10,7 @@
 // enumeration order are excluded. The function performs no I/O: callers must
 // pass the already loaded resolved graph and source manager. External tools,
 // SDKs, libraries, and artifacts enter through their exact content-tree pins.
-// Relevant specification: 03-agent-synthesis.md section 10.
+// Relevant specification: docs/specification/03-agent-synthesis.md section 10.
 
 #pragma once
 

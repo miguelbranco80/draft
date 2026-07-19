@@ -1,0 +1,144 @@
+# Hosted runtime and core packages
+
+This document records the first hosted runtime, Context implementation, allocator/core facilities, process and thread support, and compiler-backed atomic surface. Portable language behavior remains in the specification; exact AArch64 macOS facts are linked from the target profile.
+
+## Initial hosted runtime context layout
+
+Status: bootstrap runtime ABI; synchronized with `core/runtime` by tests.
+
+The AArch64 macOS root Context is 96 bytes with 8-byte alignment. Its fields
+begin at offsets 0, 16, 32, 40, 56, 72, 80, and 88, in the source order declared
+by `core/runtime.Context`. Allocator, logger, and random-generator provider
+records each contain a procedure pointer and a provider-state pointer. The
+assertion callback is an ordinary Draft procedure pointer, so its physical call
+prepends the active Context pointer.
+
+Only the executable root module defines runtime failure helpers and root process
+state. Dependency modules reference those hidden link-unit symbols. This gives
+all ordinary calls one coherent Context and prevents per-package runtime state
+from emerging as a bootstrap artifact. Changing this layout or helper contract
+requires a new runtime ABI and core distribution identity.
+
+`context` is a predeclared, addressable value in every ordinary Draft procedure.
+When `core/runtime` is imported, its type is exactly the public
+`runtime.Context`; otherwise the compiler uses a private ABI-identical nominal
+type. A lexical block that assigns a Context field or takes the address of one
+starts with a complete copy of the surrounding Context. Calls in that block use
+the copy, and leaving the block restores the surrounding pointer. A `c proc`
+has no implicit Context and may not name `context`.
+
+Two compiler-owned bridges cover that C boundary. `runtime.default_context`
+lazily initializes Draft TLS from the process-default Context and returns the
+calling thread's snapshot through the Darwin indirect aggregate-result
+convention. `runtime.call_with_context` statically checks a non-nil `^Context`,
+an ordinary Draft callback, and the callback's exact arguments, initializes
+Draft TLS when entered from a foreign-created thread, then lowers directly to
+that callback with the explicit hidden Context pointer. Named callbacks retain
+their ordinary effect summaries; indirect callbacks remain unknown edges.
+These are narrow versioned runtime exceptions, not permission to use Context in
+arbitrary C signatures. The supplied pointer remains dynamic-call state and is
+not installed as the thread default.
+
+The hosted default allocator implements the three `core/runtime` operations
+against the Darwin heap. Fresh storage is zeroed, alignments through 16 use the
+ordinary allocator, larger alignments use `posix_memalign`, and aligned resize
+allocates/copies/releases while preserving the old allocation on failure. The
+root and each lazy thread Context use this provider for general allocation. The
+temporary provider instead owns a pthread-key state containing a direct list of
+separately aligned allocations. Individual free is a no-op, resize allocates and
+preserves the live prefix, explicit reset releases the whole list, pthread key
+destruction releases it on thread return, and hosted main releases its state
+before process-view teardown. `core/memory` exposes temporary byte/typed helpers
+and explicit reset without hiding a call-boundary reset. The runtime also
+installs a stderr logger and `arc4random_buf` random provider rather than empty
+records.
+
+## Initial core memory facilities
+
+Status: ordinary Draft library surface over the allocator and Darwin ABIs.
+
+`core/memory.Arena` is a direct linked list of backing blocks with an absolute
+address-aligned bump cursor. Its allocator performs allocate and preserving
+resize, treats individual free as a logical no-op, and releases complete blocks
+on explicit reset/destroy. Block metadata and bytes use the caller-selected
+backing allocator, so no compiler ownership mechanism is hidden behind the
+handle.
+
+`memory.Buffer[T]` owns one fixed-length typed allocation. `Owned_String` owns a
+zero-terminated byte copy and exposes a mutable bounded byte view plus `cstring`;
+Draft's built-in `string` remains an immutable non-owning view and the library
+does not fabricate one through an undocumented cast. Both handles store their
+allocator and require explicit destruction.
+
+## Formatting and console output
+
+Status: ordinary Draft library surface over `core/os.write`; no compiler or
+backend intrinsic.
+
+`core/format` converts `u64` and `i64` values to shortest base-ten byte slices
+inside caller-owned storage. The result borrows that storage, formatting
+allocates nothing, and the signed path computes magnitude in `u64` so the
+minimum `i64` is handled without signed overflow. A too-small destination
+returns an empty slice and `false`.
+
+`core/console` writes immutable strings, booleans, and formatted integers to
+the standard process handles and returns `core/io.Error`. Draft strings expose
+no mutable backing pointer, while `core/os.write` accepts `[]u8`; the initial
+implementation therefore copies text through one fixed 256-byte stack buffer
+and completes partial OS writes explicitly. This keeps string immutability and
+the native boundary honest. Direct string-backed writes can replace the copy
+only if a future specified library or language operation exposes a read-only
+byte view; that is not backend permission to reinterpret string layout.
+
+The first virtual-memory seam is target-qualified Darwin source using fixed
+signatures for `mmap`, `mprotect`, and `munmap`. Reserve creates inaccessible
+private anonymous address space, commit/protect change whole-region permissions,
+and release clears the move-by-convention handle. The constants are part of the
+versioned AArch64 macOS core distribution rather than inferred from host headers.
+
+## Hosted process views and core threads
+
+Status: AArch64 macOS hosted runtime contract.
+
+The C entry receives Darwin's third `envp` argument. Before Draft `main`, the
+runtime materializes argv and envp as stable `{pointer,length}` string records;
+`core/os` returns non-owning slices over those records. Normal return frees the
+record arrays after all Draft defers finish. Environment entries preserve their
+exact `name=value` bytes and ordering. The initial file API wraps already-open
+fixed descriptors; pathname opening waits for a pinned fixed-signature wrapper
+because Draft 1 deliberately rejects variadic C imports.
+
+`core/thread` uses pthreads through fixed C signatures. Spawn state owns a copy
+of the active Context. The C trampoline installs that copy as the child TLS
+default before entering the ordinary Draft callback, replacing temp_allocator
+with a provider whose state belongs to that OS thread, so ordinary calls,
+defers, and `runtime.default_context` agree. Join clears the owning handle. Mutex
+and condition storage uses the target-profile Darwin LP64 layouts (64 and 48
+bytes, including their eight-byte signatures) and is accessed only through
+pthread operations.
+
+## Initial compiler-backed atomic interface
+
+Status: first AArch64 macOS core surface; C11 memory semantics are normative.
+
+`core/atomic.Value[T]` is an ordinary, naturally aligned nominal wrapper whose
+storage may be initialized non-atomically only before publication. After
+publication, all access uses the package operations. The first target accepts
+one-, two-, four-, and eight-byte integer objects plus pointer objects; read,
+write, exchange, integer read/modify/write, compare-exchange, and thread fences
+lower to dedicated target-independent MIR instructions. LLVM emission uses
+`load atomic`, `store atomic`, `atomicrmw`, `cmpxchg`, and `fence` rather than
+foreign calls or pthread locks.
+
+Every order argument is a compile-time `atomic.Order` value. Semantic checking
+rejects release loads, acquire stores, releasing failure orders, and a
+compare-exchange failure order stronger than its success order. A relaxed fence
+is valid under the adopted C11 rules but has no synchronization effect; MIR
+retains it and LLVM text emits an explicit no-op comment because LLVM has no
+`fence monotonic` instruction.
+
+The initial operations must be called directly through the imported package (an
+alias is fine). Taking one as a procedure value or explicitly specializing it
+is diagnosed because its order and storage facts belong in atomic HIR/MIR, not
+in the ordinary calling convention. The Draft source bodies are interface
+records and defensive traps only; no valid compiled call reaches them.

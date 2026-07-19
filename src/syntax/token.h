@@ -9,7 +9,7 @@
 // Newline is an internal staging token used while applying semicolon insertion.
 // It is never present in the vector returned by lex_source.
 //
-// Relevant specification: 01-core-language.md, "Source text and literals".
+// Relevant specification: docs/specification/01-core-language.md, "Source text and literals".
 
 #pragma once
 

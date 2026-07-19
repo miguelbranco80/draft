@@ -18,7 +18,7 @@
 // source, syntax, and the one-package loader. Semantic analysis later consumes
 // the closed graph and never performs ambient filesystem lookup.
 //
-// Relevant specification: 01-core-language.md section 3, "Folder packages".
+// Relevant specification: docs/specification/01-core-language.md section 3, "Folder packages".
 
 #pragma once
 

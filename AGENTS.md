@@ -15,7 +15,9 @@ learning a private framework.
 - Read the relevant specification section before implementing or reviewing a
   language feature. Cite the section in comments where the implementation rule
   is not obvious.
-- `IMPLEMENTATION_PLAN.md` describes sequencing and architecture, not semantics.
+- `docs/implementation/architecture.md` describes architecture, while
+  `docs/history/first-implementation-plan.md` preserves sequencing; neither is
+  authoritative for semantics.
 - When the specification is genuinely ambiguous, isolate the choice, document
   it as an implementation decision, and surface it for review. Do not silently
   invent semantics in a low-level helper.
