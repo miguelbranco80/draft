@@ -35,6 +35,7 @@
 #include "validation/discovery.h"
 #include "workspace/workspace.h"
 
+#include <cstddef>
 #include <optional>
 #include <string>
 #include <vector>
@@ -137,6 +138,30 @@ enum class CompileWorkspaceProgress {
   TargetLowering,
 };
 
+// Command-lifetime derived index over one immutable WorkspaceGraph topology.
+// Every outer adjacency vector is indexed by PackageId::value. Import-edge rows
+// retain indices into WorkspaceGraph::imports so duplicate syntax occurrences
+// remain visible to semantic import binding; reverse consumer rows are sorted
+// and unique because source invalidation visits each importing package once.
+// package_indices_by_identity is a sorted indirection for logarithmic semantic
+// identity lookup without changing discovery-order PackageIds. The consumer-
+// first topological order uses PackageId as its ready-set tie breaker and is
+// reversed for dependency-first interface/effect publication.
+//
+// The index is built once with its graph and remains valid because checked
+// complete-file source replacement is forbidden to change package/import
+// topology. It owns only vectors of integers, contains no source or semantic
+// objects, is copied with speculative resolver graphs, and is never serialized
+// or reused across commands. valid is false only when construction saw a
+// malformed edge; a cycle instead leaves consumer_first_order incomplete.
+struct WorkspaceDependencyIndex {
+  bool valid = true;
+  std::vector<std::vector<std::size_t>> import_edges_by_consumer;
+  std::vector<std::vector<std::size_t>> consumers_by_dependency;
+  std::vector<std::size_t> package_indices_by_identity;
+  std::vector<std::size_t> consumer_first_order;
+};
+
 struct CompileWorkspaceResult {
   bool ok = false;
   CompileWorkspaceProgress progress = CompileWorkspaceProgress::Empty;
@@ -150,6 +175,10 @@ struct CompileWorkspaceResult {
   // ordinary graph as a test or benchmark harness.
   ValidationKind validation_kind = ValidationKind::None;
   WorkspaceGraph graph;
+  // Derived once from graph and retained through every continuation. Keeping
+  // this index beside its owning topology avoids rebuilding or rescanning
+  // package edges merely because the graph advances to another compiler phase.
+  WorkspaceDependencyIndex dependencies;
   // Indices exactly match graph.packages. In Complete, a missing row means the
   // package failed before publishing an interface. Interface discovery may
   // also leave a consumer empty while a dependency has pending generated

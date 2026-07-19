@@ -76,41 +76,15 @@ void configure_package_selection(CompileWorkspaceOptions &options) {
   options.workspace.package_options.timings = options.timings;
 }
 
-// WorkspaceDependencySchedule is the command-local index over one immutable
-// workspace topology. Every outer vector is indexed by PackageId::value. The
-// edge lists contain indices into WorkspaceGraph::imports, whose storage and
-// order remain stable while resolved source replaces file contents in memory.
-// consumers_by_dependency removes duplicate package pairs because invalidation
-// visits a consumer once, while import_edges_by_consumer deliberately retains
-// duplicate import occurrences because each syntax edge contributes an import
-// binding during semantic analysis.
-//
-// consumer_first_order is a deterministic topological order over consumer ->
-// dependency edges. PackageId is the ready-set tie breaker, so neither hash
-// iteration nor scheduling can affect semantic publication order. valid is
-// false only for an internally malformed PackageId edge; a cycle instead leaves
-// the order shorter than the package table. This index is command-owned scratch
-// state, not a persistent compiler cache or part of semantic identity.
-struct WorkspaceDependencySchedule {
-  bool valid = true;
-  std::vector<std::vector<std::size_t>> import_edges_by_consumer;
-  std::vector<std::vector<std::size_t>> consumers_by_dependency;
-  // Package identities are semantic lookup keys but package storage remains in
-  // discovery order. This sorted indirection supplies O(log packages) owner
-  // lookup without changing PackageId values or depending on a hash table.
-  std::vector<std::size_t> package_indices_by_identity;
-  std::vector<std::size_t> consumer_first_order;
-};
-
 // Builds every package-topology view in one linear edge pass, followed by a
 // deterministic Kahn traversal. A min-heap keeps the smallest ready PackageId
 // visible without shifting a vector on every pop. The complete operation is
 // O((packages + imports) log packages); later interface lookups and source
 // invalidation use the adjacency rows rather than rescanning all imports for
 // every package.
-[[nodiscard]] WorkspaceDependencySchedule build_dependency_schedule(
+[[nodiscard]] WorkspaceDependencyIndex build_dependency_index(
     const WorkspaceGraph &graph) {
-  WorkspaceDependencySchedule result;
+  WorkspaceDependencyIndex result;
   const std::size_t package_count = graph.packages.size();
   result.import_edges_by_consumer.resize(package_count);
   result.consumers_by_dependency.resize(package_count);
@@ -204,17 +178,17 @@ void hash_field(Sha256 &hash, std::string_view value) {
   hash.update(value);
 }
 
-// Resolves one canonical package identity through the schedule's sorted
+// Resolves one canonical package identity through the index's sorted
 // indirection. The returned value is still the stable PackageId table index;
 // callers never observe or persist the sorted position itself.
 [[nodiscard]] std::optional<std::size_t> package_index_for(
     const WorkspaceGraph &graph,
-    const WorkspaceDependencySchedule &schedule,
+    const WorkspaceDependencyIndex &dependencies,
     std::string_view root_identity,
     std::string_view root_relative_path) {
   const auto position = std::lower_bound(
-      schedule.package_indices_by_identity.begin(),
-      schedule.package_indices_by_identity.end(),
+      dependencies.package_indices_by_identity.begin(),
+      dependencies.package_indices_by_identity.end(),
       std::pair(root_identity, root_relative_path),
       [&graph](
           std::size_t package_index,
@@ -225,7 +199,7 @@ void hash_field(Sha256 &hash, std::string_view value) {
         }
         return identity.root_relative_path < key.second;
       });
-  if (position == schedule.package_indices_by_identity.end()) {
+  if (position == dependencies.package_indices_by_identity.end()) {
     return std::nullopt;
   }
   const std::size_t package_index = *position;
@@ -449,7 +423,7 @@ void hash_field(Sha256 &hash, std::string_view value) {
 
 [[nodiscard]] bool collect_package_imports(
     const CompileWorkspaceResult &result,
-    const WorkspaceDependencySchedule &schedule,
+    const WorkspaceDependencyIndex &schedule,
     std::size_t package_index,
     AvailablePackageImports &available,
     DiagnosticSink &diagnostics) {
@@ -498,7 +472,7 @@ void append_instantiated_type(
 [[nodiscard]] bool rebuild_declaration_package(
     SourceManager &sources,
     CompileWorkspaceResult &result,
-    const WorkspaceDependencySchedule &schedule,
+    const WorkspaceDependencyIndex &schedule,
     std::size_t package_index,
     const CompileWorkspaceOptions &options,
     DiagnosticSink &diagnostics) {
@@ -597,7 +571,7 @@ public:
   TypeInstantiationPublisher(
       SourceManager &sources,
       CompileWorkspaceResult &result,
-      const WorkspaceDependencySchedule &schedule,
+      const WorkspaceDependencyIndex &schedule,
       const CompileWorkspaceOptions &options,
       DiagnosticSink &diagnostics)
       : sources_(sources),
@@ -786,7 +760,7 @@ private:
 
   SourceManager &sources_;
   CompileWorkspaceResult &result_;
-  const WorkspaceDependencySchedule &schedule_;
+  const WorkspaceDependencyIndex &schedule_;
   const CompileWorkspaceOptions &options_;
   DiagnosticSink &diagnostics_;
 };
@@ -794,7 +768,7 @@ private:
 [[nodiscard]] bool publish_type_instantiation_requests(
     SourceManager &sources,
     CompileWorkspaceResult &result,
-    const WorkspaceDependencySchedule &schedule,
+    const WorkspaceDependencyIndex &schedule,
     const CompiledPackage &requester,
     const CompileWorkspaceOptions &options,
     DiagnosticSink &diagnostics) {
@@ -979,7 +953,7 @@ private:
 void refresh_imported_effects(
     SemanticPackage &package,
     const CompileWorkspaceResult &result,
-    const WorkspaceDependencySchedule &schedule,
+    const WorkspaceDependencyIndex &schedule,
     DiagnosticSink &diagnostics) {
   package.imported_effects.clear();
   package.imported_returns.clear();
@@ -1193,7 +1167,7 @@ void bind_handwritten_program_identity(
 // PackageIds and each consumer row are sorted, so discovery remains
 // deterministic even when several consumers become affected together.
 [[nodiscard]] std::vector<bool> affected_packages(
-    const WorkspaceDependencySchedule &schedule,
+    const WorkspaceDependencyIndex &schedule,
     const std::vector<PackageId> &changed_packages) {
   std::vector<bool> affected(
       schedule.consumers_by_dependency.size(), false);
@@ -1229,7 +1203,7 @@ void bind_handwritten_program_identity(
 void analyze_workspace_interfaces(
     SourceManager &sources,
     const CompileWorkspaceOptions &options,
-    const WorkspaceDependencySchedule &schedule,
+    const WorkspaceDependencyIndex &schedule,
     const std::vector<bool> &selected,
     CompileWorkspaceResult &result,
     DiagnosticSink &diagnostics) {
@@ -1482,8 +1456,8 @@ CompileWorkspaceResult compile_workspace(
       ? options.timings->scope(
             "dependency ordering", TimingVisibility::Detail)
       : TimingScope{};
-  const WorkspaceDependencySchedule schedule =
-      build_dependency_schedule(result.graph);
+  result.dependencies = build_dependency_index(result.graph);
+  const WorkspaceDependencyIndex &schedule = result.dependencies;
   ordering_timing.finish();
   if (!schedule.valid ||
       schedule.consumer_first_order.size() != result.graph.packages.size()) {
@@ -1600,8 +1574,7 @@ bool apply_compiled_workspace_source_overrides(
     options.timings->add_counter("workspace source transitions", 1);
   }
 
-  const WorkspaceDependencySchedule schedule =
-      build_dependency_schedule(result.graph);
+  const WorkspaceDependencyIndex &schedule = result.dependencies;
   if (!schedule.valid ||
       schedule.consumer_first_order.size() != result.graph.packages.size()) {
     diagnostics.error(
@@ -1682,8 +1655,7 @@ bool continue_compiled_workspace_semantics(
       return false;
     }
   }
-  const WorkspaceDependencySchedule schedule =
-      build_dependency_schedule(result.graph);
+  const WorkspaceDependencyIndex &schedule = result.dependencies;
   if (!schedule.valid ||
       schedule.consumer_first_order.size() != result.graph.packages.size()) {
     diagnostics.error(
@@ -1864,8 +1836,8 @@ bool continue_compiled_workspace_semantics(
       result.ok = false;
       return false;
     }
-    const WorkspaceDependencySchedule validation_schedule =
-        build_dependency_schedule(validation.graph);
+    const WorkspaceDependencyIndex &validation_schedule =
+        validation.dependencies;
 
     for (std::size_t package_index = 0;
          package_index < result.packages.size(); ++package_index) {
@@ -2015,8 +1987,7 @@ bool continue_compiled_workspace(
     return false;
   }
 
-  const WorkspaceDependencySchedule schedule =
-      build_dependency_schedule(compiled.graph);
+  const WorkspaceDependencyIndex &schedule = compiled.dependencies;
   if (!schedule.valid ||
       schedule.consumer_first_order.size() != compiled.graph.packages.size()) {
     diagnostics.error(

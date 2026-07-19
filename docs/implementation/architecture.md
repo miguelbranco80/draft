@@ -97,10 +97,11 @@ invokes the host toolchain; it does not reload or recheck handwritten source.
 checked complete-file overlay is parsed into the existing workspace graph;
 package/root/import IDs remain stable, only the changed package and its
 transitive consumers rebuild declaration semantics, and unrelated dependency
-rows remain authoritative. One command-local adjacency index supports import
-lookup, reverse source invalidation, and a PackageId-ordered Kahn min-heap;
-ordering costs O((packages + imports) log packages) and invalidation costs
-O(packages + imports), without a persistent cache. The `compiler passes`,
+rows remain authoritative. One command-local adjacency index is built with the
+graph, retained across every continuation, and supports import lookup, reverse
+source invalidation, and a PackageId-ordered Kahn min-heap; ordering costs
+O((packages + imports) log packages) and invalidation costs O(packages +
+imports), without a persistent cache. The `compiler passes`,
 `workspace loads`, and `workspace source transitions` counters make those
 distinct operations visible. `--timings=all` adds package/tool scopes, file
 discovery and I/O, lexing/parsing, import-graph resolution, and exclusive time;
