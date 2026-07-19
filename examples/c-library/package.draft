@@ -4,7 +4,7 @@ import core/runtime
 
 // This package has no Draft `main`: it is a native library fixture. Its public
 // C surface exercises records, enums, raw unions, and callback pointers through
-// the exact same Darwin ABI classifier used by call lowering.
+// the exact same selected AArch64 C ABI classifier used by call lowering.
 Pair :: @repr(C) struct {
     left: i32,
     right: i32,
@@ -18,8 +18,8 @@ Choice :: @repr(C) enum {
 }
 
 // C's default enum backing never narrows below `int` width. A nonnegative set
-// uses the unsigned form, and a value beyond u32 widens to unsigned long on the
-// Darwin arm64 ABI. These two types keep that target rule visible in the real
+// uses the unsigned form, and a value beyond u32 widens to 64 bits on both
+// current AArch64 C ABIs. These types keep that target rule visible in the real
 // generated-header and C-client boundary below.
 Unsigned_Choice :: @repr(C) enum {
     none,
@@ -54,8 +54,8 @@ Number :: @repr(C) raw union {
     decimal: f64,
 }
 
-// These records deliberately select the remaining Darwin arm64 aggregate
-// classes. The C client below calls every one through a real dylib, so changes
+// These records deliberately select the remaining AArch64 aggregate classes.
+// The C client below calls every one through a real shared library, so changes
 // to packing, register classification, or sret handling cannot hide behind an
 // LLVM text snapshot.
 Odd_Bytes :: @repr(C) struct {
@@ -78,8 +78,8 @@ Half_Triple :: @repr(C) struct {
     values: [3]f16,
 }
 
-// Darwin's homogeneous-aggregate rule composes through C unions and nested
-// records. Union alternatives overlap, so their lane count is the maximum of
+// AAPCS64 homogeneous-aggregate classification composes through C unions and
+// nested records. Union alternatives overlap, so their lane count is the maximum of
 // the alternatives rather than their sum. Nested_Floats is therefore four
 // f32 lanes: two from overlay plus two from tail.
 Float_Overlay :: @repr(C) raw union {

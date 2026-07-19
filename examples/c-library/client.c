@@ -1,4 +1,4 @@
-// Native smoke-test client for the generated c-library header and dylib.
+// Native smoke-test client for the generated header and shared library.
 
 #include "draft-c-library.h"
 
@@ -63,7 +63,8 @@ int main(void) {
     odd = draft_odd_bytes_identity(odd);
     if (odd.bytes[0] != 17 || odd.bytes[1] != 33 || odd.bytes[2] != 65) return 5;
 
-    // Darwin passes this 16-byte, 16-aligned record as one 128-bit container.
+    // This 16-byte, 16-aligned record exercises the target's aligned small-
+    // aggregate container rule.
     draft_c_library_Aligned_Word aligned = {73};
     aligned = draft_aligned_word_identity(aligned);
     if (aligned.word != 73) return 6;
@@ -74,7 +75,7 @@ int main(void) {
     floats = draft_float_pair_identity(floats);
     if (floats.left != 1.25f || floats.right != -2.5f) return 7;
 
-    // `_Float16` has a native Darwin arm64 ABI. This six-byte aggregate must
+    // `_Float16` has a native AArch64 ABI. This six-byte aggregate must
     // use three FP lanes on both the Clang caller and Draft callee sides.
     draft_c_library_Half_Triple halves = {{(_Float16)0.5, (_Float16)-1.5,
                                             (_Float16)3.25}};

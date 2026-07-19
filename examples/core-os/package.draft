@@ -12,7 +12,11 @@ main :: proc() {
     assert(os.standard_output.descriptor == 1)
     assert(os.standard_error.descriptor == 2)
     assert(os.process_id() != 0)
-    assert(os.page_size() == 16384)
+    // Each implemented target publishes one fixed profile page size. Keep the
+    // complete example valid on both profiles while the target-profile tests
+    // independently pin the exact 4 KiB/16 KiB values.
+    page_size := os.page_size()
+    assert(page_size == 4096 || page_size == 16384)
     // The environment may legitimately be empty under a deliberately clean
     // launcher. If an entry exists, it is a valid string view.
     if len(variables) != 0 {
@@ -20,7 +24,7 @@ main :: proc() {
     }
 
     // Exercise the complete pathname seam through real target assembly and
-    // Darwin syscalls. The fixed path is removed before and after the test so
+    // hosted OS calls. The fixed path is removed before and after the test so
     // a previously interrupted run cannot affect the result.
     path: memory.Owned_String
     memory.owned_string_copy(&path, "/tmp/draft-core-os-round-trip")
