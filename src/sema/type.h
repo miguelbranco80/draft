@@ -64,6 +64,12 @@ enum class TypeKind {
   RawUnion,
   Distinct,
   TypeParameter,
+  // MetaType is the compile-time-only type of exact Draft type values. It has
+  // no layout and must be evaluated away before MIR. Keeping it in the
+  // canonical type table lets ordinary expression checking represent
+  // `type_of(value)`, type-valued constants, and equality without inventing a
+  // parallel expression type system.
+  MetaType,
 };
 
 // Endian scalar rows retain their byte order as semantic data. Keeping this
@@ -158,6 +164,14 @@ struct BuiltinTypes {
   TypeId cstring_type;
   TypeId rawptr_type;
   TypeId rune_type;
+  TypeId meta_type;
+  // These three compiler-defined enums are ordinary scalar compile-time
+  // results. Their source spellings and member ordinals are a stable Draft
+  // contract; they deliberately do not expose the host C++ enum values used by
+  // the bootstrap implementation.
+  TypeId type_kind_type;
+  TypeId type_byte_order_type;
+  TypeId calling_convention_type;
 };
 
 class TypeStore {
@@ -224,6 +238,8 @@ private:
   void add_builtin_alias(std::string name, TypeId id);
   [[nodiscard]] TypeId add_scalar(
       std::string name, TypeKind kind, std::uint32_t bits, std::uint32_t alignment);
+  [[nodiscard]] TypeId add_compiler_enum(
+      std::string name, TypeId backing, std::size_t member_count);
   [[nodiscard]] TypeLayout aggregate_layout(const std::vector<TypeId> &members) const;
   // Procedure signatures may intern tuples while a nominal member is still a
   // forward-declared shell. Completing that nominal must publish any newly

@@ -215,8 +215,57 @@ Cache_Line :: @align(64) struct {
 }
 ```
 
-Built-ins expose size, alignment, offsets, type identity, discriminator, and
-ABI lowering.
+### Compile-time type values and structural inspection
+
+Every Draft type has one exact compile-time value. Those values have the
+predeclared meta-type `type`, may be stored in constants, passed as ordinary
+compile-time arguments, compared with `==` and `!=`, and cross package
+interfaces. They have no runtime layout or runtime type descriptor and must be
+folded before MIR. `type_of(expression)` returns the expression's exact static
+type without evaluating the expression. An otherwise untyped integer or float
+operand defaults to `int` or `f64` at this boundary.
+
+`type_kind(T)` returns the compiler-defined `Type_Kind` enum. Its stable
+alternatives are `.void`, `.bool`, `.boolean_storage`, `.signed_integer`,
+`.unsigned_integer`, `.float`, `.rune`, `.endian_scalar`, `.raw_pointer`,
+`.c_string`, `.string`, `.pointer`, `.multi_pointer`, `.slice`, `.array`,
+`.tuple`, `.procedure`, `.simd`, `.struct`, `.enumeration`, `.tagged_union`,
+`.raw_union`, `.distinct`, and `.type`. Untyped values and unresolved type
+parameters are not concrete type values and cannot be queried.
+
+The remaining structural queries are compile-time intrinsics:
+
+- `type_name(T) -> string` returns a deterministic canonical spelling.
+- `type_bit_width(T) -> usize` applies to scalar types with a defined bit
+  width.
+- `type_byte_order(T) -> Type_Byte_Order` returns `.native`, `.little`, or
+  `.big` for scalar storage types.
+- `type_element(T) -> type` applies to pointers, multi-pointers, slices,
+  arrays, and SIMD vectors; `type_element_count(T) -> usize` applies to
+  concrete arrays and SIMD vectors.
+- `type_member_count(T) -> usize`, `type_member_name(T, index) -> string`, and
+  `type_member_type(T, index) -> type` inspect tuples, structs, enums, tagged
+  unions, and raw unions in source order. Tuple member names are their decimal
+  indices.
+- `type_member_offset(T, index) -> usize` returns the natural-layout byte
+  offset of a tuple, struct, tagged-union alternative, or raw-union member.
+  Enum alternatives have no member offset.
+- `type_member_value(T, index)` returns an enum alternative's backing-typed
+  integer value.
+- `type_underlying(T) -> type` applies to distinct types, enums, and endian
+  scalars. `type_discriminator(T) -> type` applies to tagged unions.
+- `type_parameter_count(T) -> usize`, `type_parameter_type(T, index) -> type`,
+  `type_result(T) -> type`, and
+  `type_calling_convention(T) -> Calling_Convention` inspect procedure types.
+  Calling conventions are `.draft` and `.c`.
+- `type_is_c_repr(T) -> bool` applies to structs, enums, and raw unions.
+  `type_requested_alignment(T) -> usize` applies to structs and raw unions and
+  returns zero when no `@align` was requested.
+
+An inapplicable query or an out-of-range index is a compile-time error at the
+query. These operations expose language structure and natural Draft layout;
+target ABI argument/return classification remains part of the selected target
+profile and is not a type-inspection query.
 
 Draft 1 supports only SIMD lane counts and element types named by the selected target
 profile. Unsupported combinations are compile errors.

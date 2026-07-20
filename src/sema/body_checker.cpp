@@ -7,6 +7,7 @@
 #include "sema/initialization.h"
 #include "sema/runtime_context.h"
 #include "sema/type_resolver.h"
+#include "sema/type_inspection.h"
 #include "sema/target_validation.h"
 #include "syntax/literal.h"
 #include "syntax/token.h"
@@ -3403,7 +3404,8 @@ private:
       if (name->text == "len" || name->text == "assert" ||
           name->text == "size_of" || name->text == "align_of" ||
           name->text == "static_assert" || name->text == "ptr_offset" ||
-          name->text == "ptr_sub") {
+          name->text == "ptr_sub" || name->text == "type_of" ||
+          is_type_inspection_query(name->text)) {
         intrinsic = name->text;
       }
     } else if (callee.kind == NodeKind::BracketExpression &&
@@ -3422,7 +3424,118 @@ private:
     expression.range = call.range;
     expression.constant = ConstantValue::make_string(*intrinsic);
     const std::size_t argument_count = call.children.size() - 1;
-    if (*intrinsic == "size_of" || *intrinsic == "align_of") {
+    if (*intrinsic == "type_of") {
+      if (argument_count != 1) {
+        diagnostics_.error(call.range, "type_of requires exactly one value argument");
+        expression.type = semantic_.types.builtins().invalid;
+      } else {
+        // Checking the operand establishes its static type but deliberately
+        // leaves the resulting HIR node unreferenced. `type_of(call())` must
+        // neither execute nor lower call(); it observes only the type assigned
+        // by ordinary expression checking.
+        const HirExpressionId operand = check_expression(
+            tree, call.children[1], scope);
+        TypeId observed = hir_.expression(operand).type;
+        observed = default_inferred_runtime_type(observed);
+        if (is_invalid_type(observed)) {
+          diagnostics_.error(
+              tree.node(call.children[1]).range,
+              "type_of requires an expression with a known static type");
+          expression.type = semantic_.types.builtins().invalid;
+        } else {
+          expression.kind = HirExpressionKind::Constant;
+          expression.constant = ConstantValue::make_type(observed.value);
+          expression.type = apply_expected_type(
+              semantic_.types.builtins().meta_type, expected, call.range);
+        }
+      }
+    } else if (is_type_inspection_query(*intrinsic)) {
+      const bool indexed = *intrinsic == "type_member_name" ||
+          *intrinsic == "type_member_type" ||
+          *intrinsic == "type_member_offset" ||
+          *intrinsic == "type_member_value" ||
+          *intrinsic == "type_parameter_type";
+      const std::size_t required_arguments = indexed ? 2 : 1;
+      if (argument_count != required_arguments) {
+        diagnostics_.error(
+            call.range,
+            *intrinsic + " requires " +
+                (indexed ? "a type and one compile-time index"
+                         : "exactly one type argument"));
+        expression.type = semantic_.types.builtins().invalid;
+      } else {
+        HirExpressionId type_value;
+        const SyntaxNode &type_argument = tree.node(call.children[1]);
+        if (node_is_type_syntax(type_argument.kind)) {
+          const TypeId resolved = type_value_expression(
+              tree, call.children[1], scope);
+          HirExpression literal;
+          literal.kind = HirExpressionKind::Constant;
+          literal.range = type_argument.range;
+          literal.type = semantic_.types.builtins().meta_type;
+          literal.constant = ConstantValue::make_type(resolved.value);
+          type_value = hir_.add_expression(std::move(literal));
+        } else {
+          type_value = check_expression(
+              tree,
+              call.children[1],
+              scope,
+              semantic_.types.builtins().meta_type);
+        }
+        // Checking the index appends another HIR expression and may grow the
+        // owning vector. Copy this small row before that append; retaining a
+        // reference here would make indexed reflection depend on vector
+        // capacity and could misdiagnose a valid type value.
+        const HirExpression checked_type = hir_.expression(type_value);
+        std::optional<std::uint64_t> index;
+        if (indexed) {
+          const HirExpressionId checked_index = check_expression(
+              tree,
+              call.children[2],
+              scope,
+              semantic_.types.builtins().usize_type);
+          const HirExpression &index_expression = hir_.expression(checked_index);
+          if (index_expression.kind == HirExpressionKind::Constant &&
+              index_expression.constant.kind == ConstantKind::Integer) {
+            index = index_expression.constant.integer.to_u64();
+          }
+          if (!index.has_value()) {
+            diagnostics_.error(
+                tree.node(call.children[2]).range,
+                *intrinsic + " index must be a compile-time usize");
+          }
+        }
+        if (checked_type.kind != HirExpressionKind::Constant ||
+            checked_type.constant.kind != ConstantKind::Type ||
+            checked_type.constant.type_index >= semantic_.types.size()) {
+          diagnostics_.error(
+              tree.node(call.children[1]).range,
+              *intrinsic + " requires a compile-time type value");
+          expression.type = semantic_.types.builtins().invalid;
+        } else if (!indexed || index.has_value()) {
+          const TypeInspectionAttempt inspected = inspect_type(
+              semantic_,
+              *intrinsic,
+              TypeId{checked_type.constant.type_index},
+              index);
+          if (!inspected.result.has_value()) {
+            diagnostics_.error(
+                call.range,
+                inspected.error.empty()
+                    ? *intrinsic + " could not inspect the supplied type"
+                    : inspected.error);
+            expression.type = semantic_.types.builtins().invalid;
+          } else {
+            expression.kind = HirExpressionKind::Constant;
+            expression.constant = inspected.result->value;
+            expression.type = apply_expected_type(
+                inspected.result->type, expected, call.range);
+          }
+        } else {
+          expression.type = semantic_.types.builtins().invalid;
+        }
+      }
+    } else if (*intrinsic == "size_of" || *intrinsic == "align_of") {
       if (argument_count != 1) {
         diagnostics_.error(
             call.range, *intrinsic + " requires exactly one type argument");
@@ -3827,6 +3940,32 @@ private:
       const std::vector<SourceName> names =
           names_in_span(tree, node.token_begin, node.token_end);
       if (names.empty()) return invalid_expression(node.range);
+      if (names.size() == 1) {
+        const std::optional<SymbolId> visible_symbol =
+            semantic_.symbols.lookup(scope, names.front().text);
+        std::optional<TypeId> type_value;
+        if (visible_symbol.has_value()) {
+          const Symbol &binding = semantic_.symbols.symbol(*visible_symbol);
+          if (binding.kind == SymbolKind::Type ||
+              binding.kind == SymbolKind::TypeParameter) {
+            type_value = substitute_active(binding.type, node.range);
+          }
+        } else {
+          // Builtin type spellings participate in expression syntax only when
+          // no lexical value shadows them. This matters for the conventional
+          // local name `byte`, which must remain a value in `for byte in ...`.
+          type_value = semantic_.types.find_builtin(names.front().text);
+        }
+        if (type_value.has_value()) {
+          HirExpression expression;
+          expression.kind = HirExpressionKind::Constant;
+          expression.range = node.range;
+          expression.type = apply_expected_type(
+              semantic_.types.builtins().meta_type, expected, node.range);
+          expression.constant = ConstantValue::make_type(type_value->value);
+          return hir_.add_expression(std::move(expression));
+        }
+      }
       if (names.size() == 1 && names.front().text == "context") {
         if (!current_procedure_.is_valid()) {
           diagnostics_.error(
@@ -4105,6 +4244,23 @@ private:
       }
       const TypeId left = hir_.expression(left_id).type;
       const TypeId right = hir_.expression(right_id).type;
+      if ((operation == TokenKind::EqualEqual ||
+           operation == TokenKind::BangEqual) &&
+          hir_.expression(left_id).kind == HirExpressionKind::Constant &&
+          hir_.expression(right_id).kind == HirExpressionKind::Constant &&
+          hir_.expression(left_id).constant.kind == ConstantKind::Type &&
+          hir_.expression(right_id).constant.kind == ConstantKind::Type) {
+        bool equal = hir_.expression(left_id).constant.type_index ==
+            hir_.expression(right_id).constant.type_index;
+        if (operation == TokenKind::BangEqual) equal = !equal;
+        HirExpression comparison;
+        comparison.kind = HirExpressionKind::Constant;
+        comparison.range = node.range;
+        comparison.type = apply_expected_type(
+            semantic_.types.builtins().bool_type, expected, node.range);
+        comparison.constant = ConstantValue::make_bool(equal);
+        return hir_.add_expression(std::move(comparison));
+      }
       TypeId result = semantic_.types.builtins().invalid;
       if (operation == TokenKind::LogicalAnd || operation == TokenKind::LogicalOr) {
         if (left == right && is_logical_bool(left)) {
@@ -4129,7 +4285,8 @@ private:
         const bool scalar_equality = left_runtime_kind == TypeKind::Bool ||
             left_runtime_kind == TypeKind::BooleanStorage ||
             left_runtime_kind == TypeKind::EndianScalar ||
-            left_runtime_kind == TypeKind::Enum || pointer_equality;
+            left_runtime_kind == TypeKind::Enum ||
+            left_runtime_kind == TypeKind::MetaType || pointer_equality;
         if ((is_numeric(left) && is_numeric(right) &&
              !is_invalid_type(common_numeric_type(left, right, node.range))) ||
             (left == right &&
@@ -4403,8 +4560,18 @@ private:
           return invalid_expression(node.range);
         }
         const Symbol symbol = semantic_.symbols.symbol(*imported);
-        if (symbol.kind == SymbolKind::Type || symbol.kind == SymbolKind::TypeParameter ||
-            symbol.kind == SymbolKind::Import) {
+        if (symbol.kind == SymbolKind::Type ||
+            symbol.kind == SymbolKind::TypeParameter) {
+          HirExpression expression;
+          expression.kind = HirExpressionKind::Constant;
+          expression.range = node.range;
+          expression.type = apply_expected_type(
+              semantic_.types.builtins().meta_type, expected, node.range);
+          expression.constant = ConstantValue::make_type(
+              substitute_active(symbol.type, node.range).value);
+          return hir_.add_expression(std::move(expression));
+        }
+        if (symbol.kind == SymbolKind::Import) {
           diagnostics_.error(node.range, "imported name does not denote a runtime value");
           return invalid_expression(node.range);
         }
@@ -4917,6 +5084,24 @@ private:
       const std::vector<SourceName> names =
           names_in_span(tree, node.token_begin, node.token_end);
       if (names.empty()) return invalid_expression(node.range);
+      if (expected_kind == TypeKind::Enum) {
+        if (const std::optional<std::uint64_t> compiler_value =
+                compiler_enum_member_value(
+                    semantic_, expected, names.front().text)) {
+          if (!node.children.empty()) {
+            diagnostics_.error(
+                node.range,
+                "compiler-defined enum alternatives cannot carry a payload");
+          }
+          HirExpression expression;
+          expression.kind = HirExpressionKind::Constant;
+          expression.range = node.range;
+          expression.type = expected;
+          expression.constant = ConstantValue::make_integer(
+              BigInteger::from_u64(*compiler_value));
+          return hir_.add_expression(std::move(expression));
+        }
+      }
       // The first name follows the leading dot. A payload expression may itself
       // contain names, so using the last name would resolve `.some(value)` as an
       // alternative named `value`.

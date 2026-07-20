@@ -30,6 +30,10 @@ enum class ConstantKind {
   Aggregate,
   EnumLabel,
   Procedure,
+  // Type carries one exact package-local TypeId index. Package interfaces
+  // translate the index through their canonical type graph before it crosses
+  // a package boundary; no process-local number is persistent identity.
+  Type,
   Target,
 };
 
@@ -54,6 +58,7 @@ struct ConstantValue {
   // source declaration independently of process-local table indices. Interface
   // construction clears symbol_index after filling the canonical fields.
   std::uint32_t symbol_index = std::numeric_limits<std::uint32_t>::max();
+  std::uint32_t type_index = std::numeric_limits<std::uint32_t>::max();
   std::string root_identity;
   std::string root_relative_path;
   // Aggregate elements use logical source order. Arrays, tuples, and structs
@@ -85,6 +90,7 @@ struct ConstantValue {
       std::string name,
       std::string root_identity = {},
       std::string root_relative_path = {});
+  [[nodiscard]] static ConstantValue make_type(std::uint32_t type_index);
   [[nodiscard]] static ConstantValue make_target();
 };
 

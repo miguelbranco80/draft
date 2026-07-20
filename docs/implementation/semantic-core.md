@@ -2,6 +2,33 @@
 
 This document records bootstrap representations and algorithms for lexical classification, type inference, compile-time evaluation, effect summaries, and expression checking. Observable Draft behavior remains authoritative in the language specification.
 
+## Compile-time type values and inspection
+
+Status: exact type values and the complete Draft 1 structural query vocabulary
+are implemented in body checking, constant evaluation, and package interfaces.
+
+`TypeStore` contains one layout-less `MetaType` row for the predeclared `type`
+type. `ConstantValue::Type` carries a TypeId index while a package is being
+checked. The body checker and constant interpreter both call the single direct
+query implementation in `sema/type_inspection`; query applicability is not
+reimplemented by LLVM lowering or core packages. `type_of` checks an operand's
+static type without retaining it as an evaluated operand, so an unused call,
+trap, or runtime read cannot become observable through inspection.
+
+At interface publication, every type-valued constant recursively rewrites its
+package-local TypeId into the same `InterfaceTypeId` graph used by public
+declaration types. Import performs the inverse rewrite into the consumer's
+TypeStore. Interface hashes include that canonical interface index. No
+package-local ID crosses the boundary, including type values nested in a
+compile-time aggregate or generic value packet.
+
+The compiler-defined `Type_Kind`, `Type_Byte_Order`, and `Calling_Convention`
+enums are canonical builtin TypeStore rows. Their source-facing alternatives
+are maintained beside the query implementation rather than manufactured as
+source symbols. A folded enum result may reach runtime as its ordinary integer
+representation; the `type` meta-value itself must be gone before MIR and is
+diagnosed defensively if it reaches the backend.
+
 ## Contextual `c`
 
 Status: implementation representation; no intended semantic change.

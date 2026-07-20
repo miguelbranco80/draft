@@ -356,6 +356,17 @@ Compile-time procedures return values, not syntax. They may use control flow,
 parametric code, type/layout queries, and target facts, but not runtime globals,
 context, foreign calls, or assembly.
 
+Exact type values have the compile-time-only type `type`; they can be constants,
+cross package interfaces, and compare with `==`/`!=`, but cannot reach runtime.
+`type_of(expression)` observes the checked static type without evaluating the
+expression. Structural inspection uses `type_kind`, `type_name`, scalar
+bit-width/byte-order queries, element and member queries, underlying and
+discriminator queries, procedure-signature queries, and C-representation or
+requested-alignment queries. Use the exact vocabulary and applicability table
+in the specification's “Compile-time type values and structural inspection”
+section rather than guessing a reflection API. These are structural language
+facts, not target ABI classification or runtime reflection.
+
 Use `when` to select already parsed declarations, members, or statements:
 
 ```draft

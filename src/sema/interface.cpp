@@ -38,6 +38,7 @@ void hash_constant(Sha256 &hash, const ConstantValue &value) {
   hash_u64(hash, value.float_bits);
   hash_field(hash, value.text);
   hash_u64(hash, value.symbol_index);
+  hash_u64(hash, value.type_index);
   hash_field(hash, value.root_identity);
   hash_field(hash, value.root_relative_path);
   hash_u64(hash, value.variant_index);
@@ -439,9 +440,23 @@ private:
         std::move(arguments)};
   }
 
-  [[nodiscard]] ConstantValue canonical_constant(ConstantValue value) const {
+  [[nodiscard]] ConstantValue canonical_constant(ConstantValue value) {
     for (ConstantValue &element : value.elements) {
       element = canonical_constant(std::move(element));
+    }
+    if (value.kind == ConstantKind::Type) {
+      if (value.type_index >= package_.types.size()) {
+        diagnostics_.error(
+            SourceRange::invalid(),
+            "public type constant contains an invalid type value");
+        value.type_index = std::numeric_limits<std::uint32_t>::max();
+        return value;
+      }
+      // ConstantValue is deliberately reused by package interfaces. At this
+      // boundary its type_index changes domains from the producer's TypeId to
+      // this interface's InterfaceTypeId; import performs the inverse rewrite.
+      value.type_index = translate_type(TypeId{value.type_index}).value;
+      return value;
     }
     if (value.kind != ConstantKind::Procedure) return value;
 
@@ -556,7 +571,7 @@ private:
       translated.type = translate_type(argument.type);
     } else {
       translated.value_type = translate_type(argument.value_type);
-      translated.value = argument.value;
+      translated.value = canonical_constant(argument.value);
       translated.owner_evaluated_value = argument.owner_evaluated_value;
       if (argument.value_expression.is_valid()) {
         const std::optional<IntegerExpression> expression =
@@ -795,6 +810,11 @@ public:
           import_type(package, cache, declaration.type);
       active_parameters_ = previous_parameters;
 
+      ConstantValue imported_constant = declaration.constant;
+      if (declaration.has_constant) {
+        imported_constant = import_constant(
+            package, cache, std::move(imported_constant));
+      }
       consumer_.imported_symbols.push_back({
           binding.symbol,
           proxy_id,
@@ -802,7 +822,7 @@ public:
           package.identity.root_relative_path,
           declaration.name,
           declaration.has_constant,
-          declaration.constant,
+          std::move(imported_constant),
           declaration.has_effect_summary,
           declaration.native_provider,
           declaration.native_linker_name_spelling,
@@ -874,6 +894,23 @@ public:
   }
 
 private:
+  // Rewrites every type-valued leaf from the interface table's ID domain into
+  // the consumer TypeStore. Aggregate constants recurse because a future
+  // compile-time record may legitimately contain exact type values even though
+  // no runtime aggregate may contain the layout-less `type` meta-type.
+  [[nodiscard]] ConstantValue import_constant(
+      const PackageInterface &package,
+      InterfaceImportCache &cache,
+      ConstantValue value) {
+    for (ConstantValue &element : value.elements) {
+      element = import_constant(package, cache, std::move(element));
+    }
+    if (value.kind != ConstantKind::Type) return value;
+    const InterfaceTypeId interface_type{value.type_index};
+    value.type_index = import_type(package, cache, interface_type).value;
+    return value;
+  }
+
   [[nodiscard]] std::optional<IntegerExpression> import_integer_expression(
       const IntegerExpression &expression) {
     if (!expression.is_valid()) return IntegerExpression{};
@@ -1078,7 +1115,8 @@ private:
         translated.type = import_type(package, cache, argument.type);
       } else {
         translated.value_type = import_type(package, cache, argument.value_type);
-        translated.value = argument.value;
+        translated.value = import_constant(
+            package, cache, argument.value);
         translated.owner_evaluated_value = argument.owner_evaluated_value;
         if (argument.value_expression.is_valid()) {
           const std::optional<IntegerExpression> expression =

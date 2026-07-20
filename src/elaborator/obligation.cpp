@@ -509,6 +509,7 @@ void collect_constant_procedures(
   case TypeKind::RawUnion:
   case TypeKind::Distinct:
   case TypeKind::TypeParameter:
+  case TypeKind::MetaType:
     return type.name.empty()
         ? std::string(type_kind_name(type.kind))
         : type.name;
@@ -602,6 +603,8 @@ void append_constant_context(
   append_context_field(
       "CONSTANT_SYMBOL_INDEX", std::to_string(value.symbol_index), output);
   append_context_field(
+      "CONSTANT_TYPE_INDEX", std::to_string(value.type_index), output);
+  append_context_field(
       "CONSTANT_ROOT_IDENTITY", value.root_identity, output);
   append_context_field(
       "CONSTANT_ROOT_RELATIVE_PATH", value.root_relative_path, output);
@@ -615,15 +618,38 @@ void append_constant_context(
   }
 }
 
-// Procedure constants contain a process-local SymbolId while semantic checking
-// is in progress. Canonical provider context uses the same package-qualified
-// identity rule as public interfaces and clears that local index recursively.
+// Procedure and type constants contain process-local table indices while
+// semantic checking is in progress. Canonical provider context replaces them
+// with package-qualified source identities and readable structural spellings,
+// then clears the local indices recursively. Package interfaces use their full
+// canonical type graph for transport; provider prompts need the spelling and
+// provenance rather than a second embedded graph serialization.
 [[nodiscard]] ConstantValue canonical_constant(
     const PackageIdentity &identity,
     const SemanticPackage &package,
     ConstantValue value) {
   for (ConstantValue &element : value.elements) {
     element = canonical_constant(identity, package, std::move(element));
+  }
+  if (value.kind == ConstantKind::Type) {
+    if (value.type_index < package.types.size()) {
+      const TypeId type{value.type_index};
+      value.text = type_text(package, type);
+      bool imported_identity = false;
+      for (const ImportedType &imported : package.imported_types) {
+        if (imported.type != type) continue;
+        value.root_identity = imported.root_identity;
+        value.root_relative_path = imported.root_relative_path;
+        imported_identity = true;
+        break;
+      }
+      if (!imported_identity) {
+        value.root_identity = identity.root_identity;
+        value.root_relative_path = identity.root_relative_path;
+      }
+    }
+    value.type_index = std::numeric_limits<std::uint32_t>::max();
+    return value;
   }
   if (value.kind != ConstantKind::Procedure) return value;
   if (value.root_identity.empty() &&

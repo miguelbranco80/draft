@@ -202,6 +202,8 @@ private:
       return package_.types.builtins().invalid;
     case ConstantKind::Procedure:
       return package_.types.builtins().invalid;
+    case ConstantKind::Type:
+      return package_.types.builtins().meta_type;
     case ConstantKind::Nil:
     case ConstantKind::EnumLabel:
     case ConstantKind::Target:

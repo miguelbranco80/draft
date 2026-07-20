@@ -211,6 +211,7 @@ pub add :: proc(a, b: i64) -> i64 {
 }
 
 pub Add_Procedure :: add
+pub Point_Type :: type_element(^Point)
 
 Hidden :: struct { value: u64, }
 )draft");
@@ -237,6 +238,12 @@ when math.Count == 7 {
     Selected :: i64
 } else {
     Selected :: Does_Not_Exist
+}
+
+when math.Point_Type == math.Point {
+    Type_Selected :: 1
+} else {
+    Type_Selected :: Does_Not_Exist
 }
 
 pub echo :: proc(point: math.Point) -> math.Point {
@@ -290,21 +297,36 @@ main :: proc() {
     std::cerr << draft::render_diagnostics(sources, diagnostics);
   }
   EXPECT(state, dependency_semantics.ok);
-  EXPECT(state, dependency_interface.declarations.size() == 5);
+  EXPECT(state, dependency_interface.declarations.size() == 6);
   EXPECT(state, consumer_semantics.ok);
   EXPECT(state, bodies.ok);
   EXPECT(state, bodies.checked_procedures == 3);
-  EXPECT(state, consumer_semantics.package.imported_symbols.size() == 5);
+  EXPECT(state, consumer_semantics.package.imported_symbols.size() == 6);
   EXPECT(state, consumer_semantics.package.imported_types.size() == 2);
   EXPECT(state, consumer_interface.declarations.size() == 1);
   EXPECT(state, !diagnostics.has_errors());
 
   const draft::InterfaceDeclaration *procedure_constant = nullptr;
+  const draft::InterfaceDeclaration *type_constant = nullptr;
   for (const draft::InterfaceDeclaration &declaration :
        dependency_interface.declarations) {
     if (declaration.name == "Add_Procedure") {
       procedure_constant = &declaration;
-      break;
+    } else if (declaration.name == "Point_Type") {
+      type_constant = &declaration;
+    }
+  }
+  EXPECT(state, type_constant != nullptr);
+  if (type_constant != nullptr) {
+    EXPECT(state, type_constant->has_constant);
+    EXPECT(state, type_constant->constant.kind == draft::ConstantKind::Type);
+    EXPECT(state,
+        type_constant->constant.type_index < dependency_interface.types.size());
+    if (type_constant->constant.type_index < dependency_interface.types.size()) {
+      const draft::InterfaceType &point =
+          dependency_interface.types[type_constant->constant.type_index];
+      EXPECT(state, point.kind == draft::TypeKind::Struct);
+      EXPECT(state, point.nominal_public_name == "Point");
     }
   }
   EXPECT(state, procedure_constant != nullptr);

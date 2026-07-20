@@ -599,6 +599,8 @@ private:
       return llvm_type(value.element);
     case TypeKind::TypeParameter:
       return "<type-parameter>";
+    case TypeKind::MetaType:
+      return "<compile-time-type>";
     }
     return "<invalid>";
   }
@@ -2771,6 +2773,9 @@ private:
     }
     case ConstantKind::Target:
       error(range, "target pseudo-value reached runtime emission");
+      return "zeroinitializer";
+    case ConstantKind::Type:
+      error(range, "compile-time type value reached runtime emission");
       return "zeroinitializer";
     }
     return "zeroinitializer";

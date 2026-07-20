@@ -3,6 +3,7 @@
 #include "sema/constant.h"
 
 #include "sema/ieee_float.h"
+#include "sema/type_inspection.h"
 #include "syntax/literal.h"
 
 #include "syntax/token.h"
@@ -754,7 +755,8 @@ private:
         kind == TypeKind::EndianScalar || kind == TypeKind::Enum ||
         kind == TypeKind::Rune || kind == TypeKind::RawPointer ||
         kind == TypeKind::CString || kind == TypeKind::Pointer ||
-        kind == TypeKind::MultiPointer || kind == TypeKind::Procedure;
+        kind == TypeKind::MultiPointer || kind == TypeKind::Procedure ||
+        kind == TypeKind::MetaType;
   }
 
   [[nodiscard]] bool nil_context_type(TypeId type_id) const {
@@ -886,6 +888,30 @@ private:
   [[nodiscard]] TypeId declared_value_type_hint(
       const SyntaxTree &tree, NodeId expression_id, ScopeId scope) {
     const SyntaxNode &expression = tree.node(expression_id);
+    if (is_type_syntax(expression.kind)) {
+      return type_value(tree, expression_id, scope).has_value()
+          ? semantic_.types.builtins().meta_type
+          : TypeId{};
+    }
+    if (expression.kind == NodeKind::LiteralExpression &&
+        expression.token_begin < expression.token_end) {
+      switch (tree.token(expression.token_begin).kind) {
+      case TokenKind::KeywordTrue:
+      case TokenKind::KeywordFalse:
+        return semantic_.types.builtins().bool_type;
+      case TokenKind::IntegerLiteral:
+        return semantic_.types.builtins().int_type;
+      case TokenKind::FloatLiteral:
+        return semantic_.types.find_builtin("f64").value_or(TypeId{});
+      case TokenKind::RuneLiteral:
+        return semantic_.types.builtins().rune_type;
+      case TokenKind::StringLiteral:
+      case TokenKind::RawStringLiteral:
+        return semantic_.types.builtins().string_type;
+      default:
+        return {};
+      }
+    }
     if (expression.kind == NodeKind::NameExpression) {
       const std::optional<std::string> name = final_name(tree, expression);
       if (!name.has_value()) return {};
@@ -894,8 +920,16 @@ private:
       }
       const std::optional<SymbolId> found =
           semantic_.symbols.lookup(scope, *name);
-      if (!found.has_value()) return {};
+      if (!found.has_value()) {
+        return semantic_.types.find_builtin(*name).has_value()
+            ? semantic_.types.builtins().meta_type
+            : TypeId{};
+      }
       const Symbol &symbol = semantic_.symbols.symbol(*found);
+      if (symbol.kind == SymbolKind::Type ||
+          symbol.kind == SymbolKind::TypeParameter) {
+        return semantic_.types.builtins().meta_type;
+      }
       TypeId type = substitute_local_type(symbol.type);
       if ((!type.is_valid() ||
            semantic_.types.type(type).kind == TypeKind::Invalid) &&
@@ -917,8 +951,12 @@ private:
     if (expression.kind == NodeKind::MemberExpression) {
       if (const std::optional<SymbolId> imported =
               imported_member(tree, expression, scope)) {
-        return substitute_local_type(
-            semantic_.symbols.symbol(*imported).type);
+        const Symbol &symbol = semantic_.symbols.symbol(*imported);
+        if (symbol.kind == SymbolKind::Type ||
+            symbol.kind == SymbolKind::TypeParameter) {
+          return semantic_.types.builtins().meta_type;
+        }
+        return substitute_local_type(symbol.type);
       }
       return {};
     }
@@ -943,6 +981,38 @@ private:
     }
 
     const SyntaxNode &callee = tree.node(expression.children.front());
+    if (callee.kind == NodeKind::NameExpression) {
+      const std::optional<std::string> intrinsic = final_name(tree, callee);
+      if (intrinsic.has_value()) {
+        if (*intrinsic == "type_of" || *intrinsic == "type_element" ||
+            *intrinsic == "type_member_type" ||
+            *intrinsic == "type_underlying" ||
+            *intrinsic == "type_discriminator" ||
+            *intrinsic == "type_parameter_type" ||
+            *intrinsic == "type_result") {
+          return semantic_.types.builtins().meta_type;
+        }
+        if (*intrinsic == "type_kind") {
+          return semantic_.types.builtins().type_kind_type;
+        }
+        if (*intrinsic == "type_byte_order") {
+          return semantic_.types.builtins().type_byte_order_type;
+        }
+        if (*intrinsic == "type_calling_convention") {
+          return semantic_.types.builtins().calling_convention_type;
+        }
+        if (*intrinsic == "type_name" ||
+            *intrinsic == "type_member_name") {
+          return semantic_.types.builtins().string_type;
+        }
+        if (*intrinsic == "type_is_c_repr") {
+          return semantic_.types.builtins().bool_type;
+        }
+        if (is_type_inspection_query(*intrinsic)) {
+          return semantic_.types.builtins().usize_type;
+        }
+      }
+    }
     if (callee.kind == NodeKind::BracketExpression &&
         callee.children.size() == 2) {
       const SyntaxNode &base = tree.node(callee.children.front());
@@ -1345,6 +1415,9 @@ private:
     if (value.kind == ConstantKind::String && type.kind == TypeKind::String) {
       return ready(std::move(value), type_id);
     }
+    if (value.kind == ConstantKind::Type && type.kind == TypeKind::MetaType) {
+      return ready(std::move(value), type_id);
+    }
     if (value.kind == ConstantKind::Nil &&
         (type.kind == TypeKind::RawPointer || type.kind == TypeKind::CString ||
          type.kind == TypeKind::Pointer || type.kind == TypeKind::MultiPointer ||
@@ -1469,6 +1542,7 @@ private:
           semantic_.types.builtins().invalid);
     case ConstantKind::String: return semantic_.types.builtins().string_type;
     case ConstantKind::Procedure: return {};
+    case ConstantKind::Type: return semantic_.types.builtins().meta_type;
     default: return {};
     }
   }
@@ -1745,6 +1819,9 @@ private:
     } else if (left.kind == ConstantKind::String &&
                right.kind == ConstantKind::String) {
       equal = left.text == right.text;
+    } else if (left.kind == ConstantKind::Type &&
+               right.kind == ConstantKind::Type) {
+      equal = left.type_index == right.type_index;
     } else if (left.kind == ConstantKind::EnumLabel &&
                right.kind == ConstantKind::EnumLabel) {
       equal = left.text == right.text;
@@ -1845,6 +1922,9 @@ private:
     }
 
     TypeId right_context = numeric_context;
+    if (needs_value_context(tree, node.children[1]) && left.type.is_valid()) {
+      right_context = left.type;
+    }
     if (!right_context.is_valid() && concrete_numeric(left.type) &&
         !right_hint.is_valid()) {
       right_context = left.type;
@@ -2130,6 +2210,114 @@ private:
       }
     }
     return source;
+  }
+
+  // Folds exact type values and structural inspection before ordinary
+  // procedure lookup. `type_of` deliberately asks only the static-type reader:
+  // evaluating its operand here would make a compile-time query execute calls
+  // or observe traps that the source program never requested.
+  [[nodiscard]] EvalResult evaluate_type_inspection_call(
+      const SyntaxTree &tree,
+      const SyntaxNode &call,
+      ScopeId scope,
+      bool required) {
+    if (call.children.empty()) return pending();
+    const SyntaxNode &callee = tree.node(call.children.front());
+    if (callee.kind != NodeKind::NameExpression) return pending();
+    const std::optional<std::string> name = final_name(tree, callee);
+    if (!name.has_value() ||
+        (*name != "type_of" && !is_type_inspection_query(*name))) {
+      return pending();
+    }
+
+    if (*name == "type_of") {
+      if (call.children.size() != 2) {
+        return fail(call.range, "type_of requires one expression", required);
+      }
+      TypeId operand = declared_value_type_hint(
+          tree, call.children[1], scope);
+      if (!operand.is_valid() ||
+          semantic_.types.type(operand).kind == TypeKind::Invalid) {
+        return fail(
+            tree.node(call.children[1]).range,
+            "type_of could not determine the expression type without evaluating it",
+            required);
+      }
+      if (semantic_.types.type(operand).kind == TypeKind::UntypedInteger) {
+        operand = semantic_.types.builtins().int_type;
+      } else if (semantic_.types.type(operand).kind == TypeKind::UntypedFloat) {
+        operand = semantic_.types.find_builtin("f64").value_or(
+            semantic_.types.builtins().invalid);
+      }
+      return ready(
+          ConstantValue::make_type(operand.value),
+          semantic_.types.builtins().meta_type);
+    }
+
+    const bool indexed = *name == "type_member_name" ||
+        *name == "type_member_type" || *name == "type_member_offset" ||
+        *name == "type_member_value" || *name == "type_parameter_type";
+    const std::size_t expected_children = indexed ? 3 : 2;
+    if (call.children.size() != expected_children) {
+      return fail(
+          call.range,
+          *name + (indexed
+              ? " requires one type and one compile-time index"
+              : " requires one type"),
+          required);
+    }
+
+    std::optional<TypeId> queried = type_value(
+        tree, call.children[1], scope);
+    if (!queried.has_value()) {
+      const EvalResult value = evaluate_expression(
+          tree,
+          call.children[1],
+          scope,
+          required,
+          semantic_.types.builtins().meta_type);
+      if (value.status != EvalStatus::Ready) return value;
+      if (value.value.kind != ConstantKind::Type ||
+          value.value.type_index >= semantic_.types.size()) {
+        return fail(
+            tree.node(call.children[1]).range,
+            *name + " requires a compile-time type value",
+            required);
+      }
+      queried = TypeId{value.value.type_index};
+    }
+
+    std::optional<std::uint64_t> index;
+    if (indexed) {
+      const EvalResult value = evaluate_expression(
+          tree,
+          call.children[2],
+          scope,
+          required,
+          semantic_.types.builtins().usize_type);
+      if (value.status != EvalStatus::Ready) return value;
+      if (value.value.kind != ConstantKind::Integer) {
+        return fail(
+            tree.node(call.children[2]).range,
+            *name + " index must be a compile-time integer",
+            required);
+      }
+      index = value.value.integer.to_u64();
+      if (!index.has_value()) {
+        return fail(
+            tree.node(call.children[2]).range,
+            *name + " index must be nonnegative and fit usize",
+            required);
+      }
+    }
+
+    TypeInspectionAttempt inspection = inspect_type(
+        semantic_, *name, *queried, index);
+    if (!inspection.result.has_value()) {
+      return fail(call.range, std::move(inspection.error), required);
+    }
+    return ready(
+        std::move(inspection.result->value), inspection.result->type);
   }
 
   [[nodiscard]] EvalResult evaluate_layout_call(
@@ -2992,6 +3180,9 @@ private:
       ScopeId scope,
       bool required,
       bool allow_void_result) {
+    const EvalResult type_inspection =
+        evaluate_type_inspection_call(tree, call, scope, required);
+    if (type_inspection.status != EvalStatus::Pending) return type_inspection;
     const EvalResult layout =
         evaluate_layout_call(tree, call, scope, required);
     if (layout.status != EvalStatus::Pending) return layout;
@@ -4213,6 +4404,8 @@ private:
         type = semantic_.types.builtins().untyped_float;
       } else if (!type.is_valid() && result.value.kind == ConstantKind::String) {
         type = semantic_.types.builtins().string_type;
+      } else if (!type.is_valid() && result.value.kind == ConstantKind::Type) {
+        type = semantic_.types.builtins().meta_type;
       }
       if (type.is_valid()) semantic_.symbols.symbol_mut(id).type = type;
       return result;
@@ -4312,8 +4505,23 @@ private:
         return ready(local->value, local->type);
       }
       const std::optional<SymbolId> symbol = semantic_.symbols.lookup(scope, *name);
-      if (!symbol.has_value()) return pending();
+      if (!symbol.has_value()) {
+        if (const std::optional<TypeId> builtin =
+                semantic_.types.find_builtin(*name)) {
+          return ready(
+              ConstantValue::make_type(builtin->value),
+              semantic_.types.builtins().meta_type);
+        }
+        return pending();
+      }
       const Symbol &binding = semantic_.symbols.symbol(*symbol);
+      if (binding.kind == SymbolKind::Type ||
+          binding.kind == SymbolKind::TypeParameter) {
+        const TypeId type = substitute_local_type(binding.type);
+        return ready(
+            ConstantValue::make_type(type.value),
+            semantic_.types.builtins().meta_type);
+      }
       if (binding.kind == SymbolKind::Procedure) {
         return ready(procedure_value(*symbol), binding.type);
       }
@@ -4331,6 +4539,16 @@ private:
     case NodeKind::ContextualAlternativeExpression: {
       const std::optional<std::string> name = first_name(tree, node);
       if (!name.has_value()) return pending();
+      if (expected.is_valid()) {
+        const std::optional<std::uint64_t> compiler_member =
+            compiler_enum_member_value(semantic_, expected, *name);
+        if (compiler_member.has_value() && node.children.empty()) {
+          return ready(
+              ConstantValue::make_integer(
+                  BigInteger::from_u64(*compiler_member)),
+              expected);
+        }
+      }
       TypeId payload_type;
       if (expected.is_valid() &&
           runtime_type(expected).kind == TypeKind::TaggedUnion) {
@@ -4356,6 +4574,13 @@ private:
       if (node.children.empty()) return pending();
       if (const std::optional<SymbolId> imported = imported_member(tree, node, scope)) {
         const Symbol &binding = semantic_.symbols.symbol(*imported);
+        if (binding.kind == SymbolKind::Type ||
+            binding.kind == SymbolKind::TypeParameter) {
+          const TypeId type = substitute_local_type(binding.type);
+          return ready(
+              ConstantValue::make_type(type.value),
+              semantic_.types.builtins().meta_type);
+        }
         if (binding.kind == SymbolKind::Procedure) {
           return ready(procedure_value(*imported), binding.type);
         }
@@ -5001,6 +5226,13 @@ ConstantValue ConstantValue::make_procedure(
   result.text = std::move(name);
   result.root_identity = std::move(root_identity);
   result.root_relative_path = std::move(root_relative_path);
+  return result;
+}
+
+ConstantValue ConstantValue::make_type(std::uint32_t type_index) {
+  ConstantValue result;
+  result.kind = ConstantKind::Type;
+  result.type_index = type_index;
   return result;
 }
 

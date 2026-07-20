@@ -353,6 +353,13 @@ until contextual conversion, then round once under the runtime IEEE rule.
 Constant values may include booleans, numbers, strings, enums, arrays, structs,
 tagged unions, procedure identities, and types.
 
+A type value has the compile-time-only type `type`. It may be named by a
+constant, compared for exact identity, inspected, and transmitted through a
+package interface, but it has no runtime representation. The compiler rejects
+any path that would store or pass a `type` value at runtime. Structural queries
+and their exact applicability are defined in
+[the type and memory specification](02-types-memory-runtime.md#compile-time-type-values-and-structural-inspection).
+
 An expression is eligible for compile-time evaluation when all inputs and
 transitive calls are compile-time values and no runtime-only dependency is
 reached. The compiler must evaluate an eligible expression when a constant is

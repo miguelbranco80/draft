@@ -2164,6 +2164,86 @@ bad_calls :: c proc() {
       std::string::npos);
 }
 
+void test_compile_time_type_inspection(TestState &state) {
+  CheckedSource valid(R"draft(
+package bodies
+
+Record :: @repr(C) @align(16) struct {
+    tag: u8,
+    value: u64,
+}
+
+Mode :: enum {
+    Off,
+    On,
+}
+
+Choice :: union {
+    none,
+    some: u32,
+}
+
+Meters :: distinct i64
+
+Callback :: proc(value: i32, flag: bool) -> u64
+C_Callback :: c proc(value: i32) -> u64
+
+runtime_value :: proc() -> int {
+    return context.user_index
+}
+
+inspect_types :: proc() {
+    // type_of checks the call's static result type but does not invoke it.
+    static_assert(type_of(runtime_value()) == int)
+    static_assert(type_of(1) == int)
+    static_assert(type_kind(i64) == .signed_integer)
+    static_assert(type_kind(type) == .type)
+    static_assert(type_bit_width(u128) == 128)
+    static_assert(type_byte_order(u32) == .native)
+    static_assert(type_byte_order(u32be) == .big)
+    static_assert(type_element(^u32) == u32)
+    static_assert(type_element_count([4]u8) == 4)
+    static_assert(type_member_count(Record) == 2)
+    static_assert(type_member_type(Record, 1) == u64)
+    static_assert(type_member_offset(Record, 1) == 8)
+    static_assert(type_member_value(Mode, 1) == 1)
+    static_assert(type_underlying(Meters) == i64)
+    static_assert(type_kind(type_discriminator(Choice)) == .unsigned_integer)
+    static_assert(type_parameter_count(Callback) == 2)
+    static_assert(type_parameter_type(Callback, 1) == bool)
+    static_assert(type_result(Callback) == u64)
+    static_assert(type_calling_convention(C_Callback) == .c)
+    static_assert(type_is_c_repr(Record))
+    static_assert(type_requested_alignment(Record) == 16)
+}
+)draft");
+  if (valid.diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(valid.sources, valid.diagnostics);
+  }
+  EXPECT(state, valid.semantics.ok);
+  EXPECT(state, valid.bodies.ok);
+  EXPECT(state, !valid.diagnostics.has_errors());
+
+  CheckedSource invalid(R"draft(
+package bodies
+
+bad_queries :: proc() {
+    static_assert(type_element(u32) == u32)
+    type_member_name(Type_Kind, 100)
+    static_assert(type_byte_order(^u32) == .native)
+}
+)draft");
+  EXPECT(state, !invalid.bodies.ok);
+  const std::string rendered =
+      draft::render_diagnostics(invalid.sources, invalid.diagnostics);
+  EXPECT(state, rendered.find("type_element requires a pointer") !=
+      std::string::npos);
+  EXPECT(state, rendered.find("type_member_name index is out of bounds") !=
+      std::string::npos);
+  EXPECT(state, rendered.find("type_byte_order requires a scalar storage type") !=
+      std::string::npos);
+}
+
 } // namespace
 
 int main() {
@@ -2195,6 +2275,7 @@ int main() {
   test_invalid_operator_type_matrix(state);
   test_numeric_context_boundaries(state);
   test_builtin_context_value(state);
+  test_compile_time_type_inspection(state);
 
   if (state.failures != 0) {
     std::cerr << state.failures << " body checker expectation(s) failed\n";

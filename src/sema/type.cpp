@@ -142,6 +142,21 @@ TypeStore::TypeStore(std::uint32_t pointer_bits) : pointer_bits_(pointer_bits) {
   string.layout = {true, static_cast<std::uint64_t>(pointer_bytes) * 2U, pointer_bytes};
   builtins_.string_type = add(std::move(string));
   add_builtin_alias("string", builtins_.string_type);
+
+  // Exact type values exist only while compiling. Their meta-type therefore
+  // has no runtime layout. The three reflection result enums do have ordinary
+  // u8 layout so a folded query may initialize a runtime binding without
+  // emitting a reflection table or a runtime query.
+  Type meta_type;
+  meta_type.kind = TypeKind::MetaType;
+  meta_type.name = "type";
+  builtins_.meta_type = add(std::move(meta_type));
+  add_builtin_alias("type", builtins_.meta_type);
+  builtins_.type_kind_type = add_compiler_enum("Type_Kind", builtins_.u8_type, 24);
+  builtins_.type_byte_order_type = add_compiler_enum(
+      "Type_Byte_Order", builtins_.u8_type, 3);
+  builtins_.calling_convention_type = add_compiler_enum(
+      "Calling_Convention", builtins_.u8_type, 2);
 }
 
 const BuiltinTypes &TypeStore::builtins() const {
@@ -193,6 +208,20 @@ TypeId TypeStore::add_scalar(
   scalar.layout = {true, bits / 8U, alignment};
   scalar.bit_width = bits;
   const TypeId id = add(std::move(scalar));
+  add_builtin_alias(std::move(name), id);
+  return id;
+}
+
+TypeId TypeStore::add_compiler_enum(
+    std::string name, TypeId backing, std::size_t member_count) {
+  Type result;
+  result.kind = TypeKind::Enum;
+  result.name = name;
+  result.layout = type(backing).layout;
+  result.element = backing;
+  result.members.assign(member_count, backing);
+  result.member_offsets.assign(member_count, 0);
+  const TypeId id = add(std::move(result));
   add_builtin_alias(std::move(name), id);
   return id;
 }
@@ -577,6 +606,7 @@ std::string_view type_kind_name(TypeKind kind) {
   case TypeKind::RawUnion: return "raw union";
   case TypeKind::Distinct: return "distinct";
   case TypeKind::TypeParameter: return "type parameter";
+  case TypeKind::MetaType: return "type";
   }
   return "unknown type";
 }
