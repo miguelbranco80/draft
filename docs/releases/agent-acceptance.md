@@ -12,13 +12,13 @@ operations. It combines features that are most useful when exercised together:
 - generated-source correlation in the native debug sidecar.
 
 The committed `.draft` files are content-addressed acceptance inputs, not build
-caches. They contain five checked generated-source objects and separate v6
+caches. They contain four checked generated-source objects and separate v6
 resolution manifests for AArch64 macOS and GNU/Linux. Each selected program has
-four sites; three expansions are shared across targets, while the accepted
-expression has one target-specific spelling. Validation and judgment evidence
-is stored independently in the workspace-level `.draft/evidence` store and is
-not selected by either manifest. `.draft/build` and `.draft/staging` are ignored
-and may be deleted at any time.
+four sites, and the checked expansions are shared across the two targets. The
+input digests remain target-specific where the typed obligation contains target
+facts. Validation and judgment evidence is stored independently in the
+workspace-level `.draft/evidence` store and is not selected by either manifest.
+`.draft/build` and `.draft/staging` are ignored and may be deleted at any time.
 
 ## Reproduce the committed program
 
@@ -92,10 +92,13 @@ experiment remain available in the
 On AArch64 macOS 26.5.2, `codex-cli 0.144.6` using its configured default model
 resolved this fixture from zero `.draft` state through provider identity
 `openai-codex-cli-v28`. Separate macOS and Linux commands each synthesized all
-four sites with zero reused pins. Both saved manifests then passed provider-free
-frontend checks, while the macOS program passed native build/execution, Draft
-test and verified benchmark execution, workspace evidence publication, and
-expanded-source inspection with linked LLVM 22.1.8.
+four sites with zero reused pins. After the PR1 language and coding-skill inputs
+changed, both target manifests were explicitly regenerated through the same
+provider boundary; all four regenerated expansions typechecked, and both
+targets accepted the same four source objects. Both saved manifests then passed
+provider-free frontend checks, while the macOS program passed native
+build/execution, Draft test and verified benchmark execution, workspace evidence
+publication, and expanded-source inspection with linked LLVM 22.1.8.
 
 The repository example matrix classified all 36 tracked Draft/assembly package
 directories. Both-target frontend qualification passed for every declared
