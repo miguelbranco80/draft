@@ -1,10 +1,14 @@
 # Out-of-tree CMake builds and host-specific editor metadata are derived state.
-build/
-build-*/
-cmake-build-*/
+/build/
+/build-*/
+/cmake-build-*/
 .DS_Store
+*.dSYM/
 
-# Resolution manifests, generated Draft source, and evidence are intentional
-# project inputs. Only disposable elaborator/compiler intermediates are ignored.
-.draft/build/
-.draft/tmp/
+# This repository contains several nested example workspaces. Resolution
+# manifests, generated Draft source, and evidence are intentional fixtures;
+# ignore only disposable state at every workspace depth.
+**/.draft/build/
+**/.draft/staging/
+**/.draft/tmp/
+**/.draft/evidence/*.tmp-*

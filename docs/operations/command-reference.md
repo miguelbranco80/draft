@@ -26,6 +26,24 @@ content identity, while manifests and derived build artifacts are isolated as:
 <workspace>/.draft/build/<target-file-tag>/packages/<root>/<artifact>
 ```
 
+Do not ignore the complete `.draft` directory in a Draft project that commits
+resolved programs. Generated source and target/root manifests are the inputs
+that make later `check`, `build`, `test`, and `bench` commands provider-free;
+evidence is durable validation history. A workspace at the repository root can
+ignore only disposable and interrupted-transaction state with:
+
+```gitignore
+/.draft/build/
+/.draft/staging/
+/.draft/tmp/
+/.draft/evidence/*.tmp-*
+```
+
+The Draft compiler repository has a different Git concern: it contains several
+nested example workspaces, so its own `.gitignore` uses recursive equivalents.
+These repository-maintenance rules are not a convention imposed on user
+projects, and `draftc` never reads `.gitignore` to decide package discovery.
+
 All package commands also accept `--timings` or `--timings=all`. Put the option
 anywhere after the package directory, alongside the command's other options;
 for example, `draftc build examples/hello --timings=all`.
