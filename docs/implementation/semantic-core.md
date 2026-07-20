@@ -40,6 +40,15 @@ resolver still invokes that producer and several publications sequentially
 inside one aggregate task. The active replacement moves those calls into the
 individual products named by the target-state architecture.
 
+Package-level conditional discovery still uses whole-package task-local
+attempts while those individual producers are being installed. An attempt that
+discovers another branch or integer dependency is discarded; the first
+no-progress attempt is retained directly as the authoritative selected package.
+Its type diagnostics are published beside its exact IDs, and final constant
+validation runs on that same package. There is no longer a second final type
+resolution pass which reconstructs an equivalent package solely to obtain
+authoritative diagnostics.
+
 ## Compile-time type values and inspection
 
 Status: exact type values and the complete Draft 1 structural query vocabulary

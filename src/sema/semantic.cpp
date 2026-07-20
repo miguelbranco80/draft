@@ -30,6 +30,18 @@ namespace {
   return nullptr;
 }
 
+// Publishes one terminal task-local diagnostic packet in its deterministic
+// insertion order. Discovery packets from earlier blocked attempts are never
+// passed here: only the attempt whose SemanticPackage payload is retained may
+// contribute diagnostics to the command.
+void publish_diagnostics(
+    const DiagnosticSink &source, DiagnosticSink &destination) {
+  for (const Diagnostic &diagnostic : source.diagnostics()) {
+    destination.report(
+        diagnostic.severity, diagnostic.range, diagnostic.message);
+  }
+}
+
 // Source syntax, rather than a private probe's SymbolId or TypeId, is the
 // equality key for interpreter progress. The vector is deliberately scanned in
 // insertion order: required layout sites are normally few, and preserving the
@@ -98,8 +110,8 @@ namespace {
 // Runs only after one complete declaration/signature/type pass. The full
 // interpreter can now execute calls and conditionals which the intentionally
 // small early layout evaluator cannot. Successful values are source-keyed and
-// consumed only by the next clean rebuild; no partially laid-out Type row is
-// mutated in place.
+// consumed only by the next task-local attempt; no partially laid-out Type row
+// from a blocked attempt is published.
 struct RequiredIntegerResolutionResult {
   std::size_t resolved = 0;
   std::size_t newly_blocked = 0;
@@ -273,6 +285,15 @@ SemanticAnalysisResult analyze_package_semantics(
   declarations.identity = imports.consumer_identity;
   bind_package_interfaces(declarations, imports, diagnostics);
 
+  // The terminal discovery attempt is the authoritative type payload. Earlier
+  // attempts may have observed an incomplete selected name set and are
+  // discarded whole. Keeping the package and its type diagnostics together is
+  // essential: publishing diagnostics from one attempt beside IDs from another
+  // would make source ranges look correct while semantic anchors were stale.
+  std::optional<SemanticPackage> terminal_package;
+  DiagnosticSink terminal_type_diagnostics;
+  bool materialization_failed = false;
+
   // Type and constant discovery still uses a private copy until those facts
   // become individual semantic products. Crucially, the copy begins from the
   // one authoritative declaration table: unconditional source is never
@@ -281,7 +302,7 @@ SemanticAnalysisResult analyze_package_semantics(
   // synthesis blocker, so finite syntax guarantees termination without an
   // arbitrary iteration limit.
   while (true) {
-    DiagnosticSink provisional_diagnostics;
+    DiagnosticSink provisional_type_diagnostics;
     SemanticPackage provisional = declarations;
     if (synthesis_mode == CompileTimeSynthesisMode::Discover) {
       resolve_package_types(
@@ -292,7 +313,7 @@ SemanticAnalysisResult analyze_package_semantics(
           resolved_integers,
           target,
           blocked_integer_synthesis,
-          provisional_diagnostics);
+          provisional_type_diagnostics);
     } else {
       resolve_package_types(
           sources,
@@ -301,8 +322,9 @@ SemanticAnalysisResult analyze_package_semantics(
           result.selections,
           resolved_integers,
           target,
-          provisional_diagnostics);
+          provisional_type_diagnostics);
     }
+    DiagnosticSink provisional_discovery_diagnostics;
     const std::size_t previous_selection_count =
         result.selections.entries.size();
     const CompileTimeRoundResult round = evaluate_compile_time_round(
@@ -313,7 +335,7 @@ SemanticAnalysisResult analyze_package_semantics(
         result.selections,
         synthesis_mode,
         false,
-        provisional_diagnostics);
+        provisional_discovery_diagnostics);
     const RequiredIntegerResolutionResult integer_round =
         resolve_required_integer_expressions(
             sources,
@@ -324,7 +346,7 @@ SemanticAnalysisResult analyze_package_semantics(
             resolved_integers,
             synthesis_mode,
             blocked_integer_synthesis,
-            provisional_diagnostics);
+            provisional_discovery_diagnostics);
     bool materialization_ok = true;
     for (std::size_t selection_index = previous_selection_count;
          selection_index < result.selections.entries.size();
@@ -343,37 +365,29 @@ SemanticAnalysisResult analyze_package_semantics(
           declarations,
           diagnostics) && materialization_ok;
     }
-    if (!materialization_ok) break;
+    if (!materialization_ok) {
+      materialization_failed = true;
+      break;
+    }
     if (round.new_selections == 0 && integer_round.resolved == 0 &&
         integer_round.newly_blocked == 0) {
+      terminal_package = std::move(provisional);
+      terminal_type_diagnostics = std::move(provisional_type_diagnostics);
       break;
     }
   }
 
-  // The complete selected name set is already the authoritative declaration
-  // generation. Resolve it once with real diagnostics; no final collection or
-  // import rebinding pass exists.
-  result.package = std::move(declarations);
-  if (synthesis_mode == CompileTimeSynthesisMode::Discover) {
-    resolve_package_types(
-        sources,
-        loaded,
-        result.package,
-        result.selections,
-        resolved_integers,
-        target,
-        blocked_integer_synthesis,
-        diagnostics);
-  } else {
-    resolve_package_types(
-        sources,
-        loaded,
-        result.package,
-        result.selections,
-        resolved_integers,
-        target,
-        diagnostics);
+  if (materialization_failed || !terminal_package.has_value()) {
+    // A failed append means no coherent selected name set exists. Preserve the
+    // authoritative declarations for diagnostic inspection, but do not invent
+    // a resolved type payload by replaying a pass after the structural error.
+    result.package = std::move(declarations);
+    result.ok = false;
+    return result;
   }
+  result.package = std::move(*terminal_package);
+  publish_diagnostics(terminal_type_diagnostics, diagnostics);
+
   // Declaration/member synthesis runs before bodies. Install the built-in
   // Context now so those early requests receive the same typed field set as
   // later statement/expression synthesis.

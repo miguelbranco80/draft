@@ -1,12 +1,13 @@
-// Append-only declaration selection plus provisional type/constant discovery.
+// Append-only declaration selection plus terminal type/constant discovery.
 //
 // Initial collection and interface binding run once. Package-level `when`
 // regions retain their lexical declaration context; each ready selection
 // appends only its chosen branch to the authoritative declaration generation.
 // Until type, constant, and layout facets become independent semantic products,
-// discovery evaluates those facts on private copies. One final authoritative
-// type/constant pass emits real diagnostics. No provisional copy may be returned
-// or paired with later HIR.
+// blocked discovery attempts evaluate those facts on private copies. The first
+// no-progress attempt becomes the authoritative semantic package and contributes
+// its type diagnostics; constant validation then runs against that exact package.
+// Type resolution is never replayed merely to recreate an equivalent final row.
 
 #pragma once
 
@@ -38,9 +39,10 @@ struct SemanticAnalysisResult {
 };
 
 // Collects declarations once, appends each newly selected package-level branch,
-// and probes type/constant readiness until no product changes. One final pass
-// resolves the authoritative selected package. A conditional that depends on
-// unavailable synthesis remains an explicit unresolved site.
+// and probes type/constant readiness until no product changes. The terminal
+// probe is retained as the authoritative selected package instead of being
+// discarded and reconstructed. A conditional that depends on unavailable
+// synthesis remains an explicit unresolved site.
 [[nodiscard]] SemanticAnalysisResult analyze_package_semantics(
     const SourceManager &sources,
     const LoadedPackage &loaded,
