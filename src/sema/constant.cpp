@@ -546,7 +546,7 @@ private:
       const SyntaxTree &tree, const SyntaxNode &node) const {
     for (std::uint32_t index = node.token_begin; index < node.token_end; ++index) {
       const Token &token = tree.token(index);
-      if (token_is_contextual_name(token.kind)) {
+      if (token_is_contextual_alternative_name(token.kind)) {
         return std::string(sources_.text(token.range));
       }
     }

@@ -543,6 +543,21 @@ private:
     return names;
   }
 
+  // A contextual alternative has a deliberately narrower keyword exception
+  // than an ordinary source name. Keep that exception out of names_in_span so
+  // `struct` and `distinct` cannot start behaving like declaration, package,
+  // or field names merely because Type_Kind exposes `.struct` and `.distinct`.
+  [[nodiscard]] std::vector<SourceName> alternative_names_in_span(
+      const SyntaxTree &tree, std::uint32_t begin, std::uint32_t end) const {
+    std::vector<SourceName> names;
+    for (std::uint32_t index = begin; index < end; ++index) {
+      if (token_is_contextual_alternative_name(tree.token(index).kind)) {
+        names.push_back(token_name(tree, index));
+      }
+    }
+    return names;
+  }
+
   // Adds an invalid expression after a diagnostic so parent nodes retain exact
   // operand ordering without inventing a usable type.
   [[nodiscard]] HirExpressionId invalid_expression(SourceRange range) {
@@ -2431,7 +2446,7 @@ private:
       bool multiple_labels) {
     const SyntaxNode &label = tree.node(label_id);
     const std::vector<SourceName> names =
-        names_in_span(tree, label.token_begin, label.token_end);
+        alternative_names_in_span(tree, label.token_begin, label.token_end);
     if (label.kind != NodeKind::ContextualAlternativeExpression || names.empty()) {
       diagnostics_.error(label.range, "tagged-union case requires a contextual alternative");
       return invalid_expression(label.range);
@@ -2644,7 +2659,7 @@ private:
     if (expression.kind != NodeKind::ContextualAlternativeExpression) {
       return std::nullopt;
     }
-    const std::vector<SourceName> names = names_in_span(
+    const std::vector<SourceName> names = alternative_names_in_span(
         tree, expression.token_begin, expression.token_end);
     if (names.empty()) return std::nullopt;
     return names.front().text;
@@ -5420,7 +5435,7 @@ private:
         return hir_.add_expression(std::move(expression));
       }
       const std::vector<SourceName> names =
-          names_in_span(tree, node.token_begin, node.token_end);
+          alternative_names_in_span(tree, node.token_begin, node.token_end);
       if (names.empty()) return invalid_expression(node.range);
       const std::optional<SymbolId> member = find_member(base.type, names.back().text);
       if (!member.has_value()) {

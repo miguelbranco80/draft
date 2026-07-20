@@ -563,6 +563,23 @@ multiple :: proc(left: ..type, right: ..type) {}
   EXPECT(state, rendered.find("expected type") != std::string::npos);
 }
 
+void test_keyword_contextual_alternatives(TestState &state) {
+  // `struct` and `distinct` remain reserved everywhere except the contextual
+  // alternative position. Type_Kind exposes exactly those spellings, so the
+  // parser must retain them for semantic enum checking instead of rejecting
+  // two otherwise unreachable compiler-defined alternatives.
+  ParsedSource source(R"draft(
+package alternatives
+
+struct_kind := .struct
+distinct_kind := .distinct
+)draft");
+  expect_clean(state, source);
+  EXPECT(state,
+      source.tree.count(draft::NodeKind::ContextualAlternativeExpression) ==
+          2);
+}
+
 void test_recovery_builds_a_tree(TestState &state) {
   ParsedSource source(R"draft(
 not_package broken
@@ -655,6 +672,7 @@ int main() {
   test_binary_xor_and_postfix_dereference(state);
   test_synthesis_and_assembly_surface(state);
   test_static_argument_pack_syntax(state);
+  test_keyword_contextual_alternatives(state);
   test_invalid_production_recovery(state);
   test_recovery_builds_a_tree(state);
   test_excessive_nesting_is_a_diagnostic(state);

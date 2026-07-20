@@ -2347,7 +2347,7 @@ Record :: @repr(C) @align(16) struct {
     value: u64,
 }
 
-Mode :: enum {
+Mode :: enum u8 {
     Off,
     On,
 }
@@ -2359,36 +2359,104 @@ Choice :: union {
 
 Meters :: distinct i64
 
+Overlay :: @repr(C) @align(8) raw union {
+    byte: u8,
+    word: u64,
+}
+
 Callback :: proc(value: i32, flag: bool) -> u64
 C_Callback :: c proc(value: i32) -> u64
+Pair :: (u8, bool)
+Vector :: #simd[4]u32
 
 runtime_value :: proc() -> int {
     return context.user_index
+}
+
+no_result :: proc() {
 }
 
 inspect_types :: proc() {
     // type_of checks the call's static result type but does not invoke it.
     static_assert(type_of(runtime_value()) == int)
     static_assert(type_of(1) == int)
+
+    // Exercise every stable Type_Kind alternative. This is intentionally
+    // exhaustive: the compiler-defined enum is source API, and reserved-word
+    // alternatives such as `.struct` and `.distinct` must remain usable.
+    static_assert(type_kind(type_of(no_result())) == .void)
+    static_assert(type_kind(bool) == .bool)
+    static_assert(type_kind(b8) == .boolean_storage)
     static_assert(type_kind(i64) == .signed_integer)
+    static_assert(type_kind(u64) == .unsigned_integer)
+    static_assert(type_kind(f64) == .float)
+    static_assert(type_kind(rune) == .rune)
+    static_assert(type_kind(u32be) == .endian_scalar)
+    static_assert(type_kind(rawptr) == .raw_pointer)
+    static_assert(type_kind(cstring) == .c_string)
+    static_assert(type_kind(string) == .string)
+    static_assert(type_kind(^u8) == .pointer)
+    static_assert(type_kind([^]u8) == .multi_pointer)
+    static_assert(type_kind([]u8) == .slice)
+    static_assert(type_kind([4]u8) == .array)
+    static_assert(type_kind(Pair) == .tuple)
+    static_assert(type_kind(Callback) == .procedure)
+    static_assert(type_kind(Vector) == .simd)
+    static_assert(type_kind(Record) == .struct)
+    static_assert(type_kind(Mode) == .enumeration)
+    static_assert(type_kind(Choice) == .tagged_union)
+    static_assert(type_kind(Overlay) == .raw_union)
+    static_assert(type_kind(Meters) == .distinct)
     static_assert(type_kind(type) == .type)
+
+    // Cover every applicability family, including each aggregate and element
+    // category, so a query cannot remain implemented only for the one shape
+    // used by its first test.
+    static_assert(len(type_name(^u32)) == 4)
     static_assert(type_bit_width(u128) == 128)
     static_assert(type_byte_order(u32) == .native)
     static_assert(type_byte_order(u32be) == .big)
     static_assert(type_element(^u32) == u32)
+    static_assert(type_element([^]u16) == u16)
+    static_assert(type_element([]u32) == u32)
+    static_assert(type_element([4]u64) == u64)
+    static_assert(type_element(Vector) == u32)
     static_assert(type_element_count([4]u8) == 4)
+    static_assert(type_element_count(Vector) == 4)
+    static_assert(type_member_count(Pair) == 2)
     static_assert(type_member_count(Record) == 2)
+    static_assert(type_member_count(Mode) == 2)
+    static_assert(type_member_count(Choice) == 2)
+    static_assert(type_member_count(Overlay) == 2)
+    static_assert(len(type_member_name(Pair, 1)) == 1)
+    static_assert(len(type_member_name(Record, 1)) == 5)
+    static_assert(len(type_member_name(Mode, 0)) == 3)
+    static_assert(len(type_member_name(Choice, 1)) == 4)
+    static_assert(len(type_member_name(Overlay, 0)) == 4)
+    static_assert(type_member_type(Pair, 1) == bool)
     static_assert(type_member_type(Record, 1) == u64)
+    static_assert(type_member_type(Mode, 1) == u8)
+    static_assert(type_member_type(Choice, 1) == u32)
+    static_assert(type_member_type(Overlay, 1) == u64)
+    static_assert(type_member_offset(Pair, 1) == 1)
     static_assert(type_member_offset(Record, 1) == 8)
+    static_assert(type_member_offset(Choice, 1) > 0)
+    static_assert(type_member_offset(Overlay, 1) == 0)
     static_assert(type_member_value(Mode, 1) == 1)
     static_assert(type_underlying(Meters) == i64)
+    static_assert(type_underlying(Mode) == u8)
+    static_assert(type_underlying(u32be) == u32)
     static_assert(type_kind(type_discriminator(Choice)) == .unsigned_integer)
     static_assert(type_parameter_count(Callback) == 2)
     static_assert(type_parameter_type(Callback, 1) == bool)
     static_assert(type_result(Callback) == u64)
+    static_assert(type_calling_convention(Callback) == .draft)
     static_assert(type_calling_convention(C_Callback) == .c)
     static_assert(type_is_c_repr(Record))
+    static_assert(type_is_c_repr(Mode) == false)
+    static_assert(type_is_c_repr(Overlay))
     static_assert(type_requested_alignment(Record) == 16)
+    static_assert(type_requested_alignment(Overlay) == 8)
 }
 )draft");
   if (valid.diagnostics.has_errors()) {

@@ -162,4 +162,13 @@ bool token_can_end_statement(TokenKind kind) {
   }
 }
 
+bool token_is_contextual_alternative_name(TokenKind kind) {
+  return kind == TokenKind::Identifier || kind == TokenKind::KeywordC ||
+      kind == TokenKind::KeywordType || kind == TokenKind::KeywordInteger ||
+      kind == TokenKind::KeywordFloat || kind == TokenKind::KeywordNumber ||
+      kind == TokenKind::KeywordFlags || kind == TokenKind::KeywordMemory ||
+      kind == TokenKind::KeywordStruct ||
+      kind == TokenKind::KeywordDistinct;
+}
+
 } // namespace draft

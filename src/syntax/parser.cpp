@@ -210,6 +210,22 @@ private:
     return false;
   }
 
+  // A contextual alternative normally uses the same identifier vocabulary as
+  // an ordinary name. Two stable members of the compiler-defined Type_Kind
+  // enum, however, are spelled with the reserved type-constructor keywords
+  // `struct` and `distinct`. Accept those tokens only after the leading `.`.
+  // Broadening is_contextual_name() would also admit the keywords as package,
+  // field, and declaration names, changing unrelated grammar to solve this one
+  // contextual spelling collision.
+  [[nodiscard]] bool expect_alternative_name(std::string message) {
+    if (token_is_contextual_alternative_name(current().kind)) {
+      advance();
+      return true;
+    }
+    error_here(std::move(message));
+    return false;
+  }
+
   void skip_semicolons() {
     while (match(TokenKind::Semicolon)) {
     }
@@ -1086,7 +1102,7 @@ private:
       return parse_deny_expression();
     }
     if (match(TokenKind::Dot)) {
-      (void)expect_name("expected alternative name after '.'");
+      (void)expect_alternative_name("expected alternative name after '.'");
       std::vector<NodeId> children;
       if (match(TokenKind::LeftParen)) {
         if (!at(TokenKind::RightParen)) {

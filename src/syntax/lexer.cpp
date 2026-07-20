@@ -695,6 +695,18 @@ void advance_attachment_state(AttachmentState &state, TokenKind kind) {
   return TokenKind::EndOfFile;
 }
 
+// Reserved type-constructor words normally cannot finish a source item. They
+// can finish one when used as the stable compiler-enum alternatives `.struct`
+// and `.distinct`, however. Keeping this two-token exception in the insertion
+// pass avoids declaring either keyword a general statement-ending token, which
+// would incorrectly split `struct\n{ ... }` and `distinct\nT` type syntax.
+[[nodiscard]] bool token_sequence_can_end_statement(
+    TokenKind before_previous, TokenKind previous) {
+  if (token_can_end_statement(previous)) return true;
+  return before_previous == TokenKind::Dot &&
+      token_is_contextual_alternative_name(previous);
+}
+
 // Converts raw newline tokens into inserted semicolons. Parentheses and brackets
 // suppress insertion unconditionally. Braces do not: a closing brace can end a
 // declaration or statement, and `} else {` must consequently remain on one line.
@@ -704,6 +716,7 @@ void advance_attachment_state(AttachmentState &state, TokenKind kind) {
 
   std::uint32_t paren_depth = 0;
   std::uint32_t bracket_depth = 0;
+  TokenKind before_previous = TokenKind::Invalid;
   TokenKind previous = TokenKind::Invalid;
   AttachmentState attachment = AttachmentState::None;
 
@@ -714,8 +727,10 @@ void advance_attachment_state(AttachmentState &state, TokenKind kind) {
       const bool continues_attachment =
           attachment != AttachmentState::None && is_attachment_keyword(next);
       if (paren_depth == 0 && bracket_depth == 0 &&
-          token_can_end_statement(previous) && !continues_attachment) {
+          token_sequence_can_end_statement(before_previous, previous) &&
+          !continues_attachment) {
         tokens.push_back({TokenKind::Semicolon, SourceRange::at(token.range.begin.file, token.range.begin.offset), true});
+        before_previous = previous;
         previous = TokenKind::Semicolon;
       }
       if (!continues_attachment) {
@@ -725,7 +740,8 @@ void advance_attachment_state(AttachmentState &state, TokenKind kind) {
     }
 
     if (token.kind == TokenKind::EndOfFile) {
-      if (paren_depth == 0 && bracket_depth == 0 && token_can_end_statement(previous)) {
+      if (paren_depth == 0 && bracket_depth == 0 &&
+          token_sequence_can_end_statement(before_previous, previous)) {
         tokens.push_back({TokenKind::Semicolon, SourceRange::at(token.range.begin.file, token.range.begin.offset), true});
       }
       tokens.push_back(token);
@@ -749,6 +765,7 @@ void advance_attachment_state(AttachmentState &state, TokenKind kind) {
     }
 
     tokens.push_back(token);
+    before_previous = previous;
     previous = token.kind;
     advance_attachment_state(attachment, token.kind);
   }

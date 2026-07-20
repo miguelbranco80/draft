@@ -140,5 +140,10 @@ struct Token {
 [[nodiscard]] std::string_view token_kind_name(TokenKind kind);
 [[nodiscard]] bool token_is_literal(TokenKind kind);
 [[nodiscard]] bool token_can_end_statement(TokenKind kind);
+// Contextual enum/union alternatives accept ordinary contextual names plus the
+// two reserved words used by compiler-defined Type_Kind members. This is
+// deliberately narrower than the vocabulary accepted for declarations and
+// member selection.
+[[nodiscard]] bool token_is_contextual_alternative_name(TokenKind kind);
 
 } // namespace draft

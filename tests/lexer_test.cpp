@@ -255,6 +255,31 @@ void test_caret_and_uninitialized_end_lines(TestState &state) {
   EXPECT(state, !source.diagnostics.has_errors());
 }
 
+void test_keyword_alternative_end_lines(TestState &state) {
+  const LexedSource alternatives = lex("first := .struct\nsecond := .distinct\n");
+  int inserted_semicolons = 0;
+  for (const draft::Token &token : alternatives.tokens) {
+    if (token.kind == draft::TokenKind::Semicolon && token.inserted) {
+      ++inserted_semicolons;
+    }
+  }
+  EXPECT(state, inserted_semicolons == 2);
+  EXPECT(state, !alternatives.diagnostics.has_errors());
+
+  // The same keyword tokens remain non-terminating in type-constructor
+  // positions. A newline before the associated type body/target is whitespace,
+  // not a declaration boundary.
+  const LexedSource constructors = lex("Record :: struct\n{}\nMeters :: distinct\ni64\n");
+  int constructor_semicolons = 0;
+  for (const draft::Token &token : constructors.tokens) {
+    if (token.kind == draft::TokenKind::Semicolon && token.inserted) {
+      ++constructor_semicolons;
+    }
+  }
+  EXPECT(state, constructor_semicolons == 2);
+  EXPECT(state, !constructors.diagnostics.has_errors());
+}
+
 } // namespace
 
 int main() {
@@ -270,6 +295,7 @@ int main() {
   test_malformed_literals(state);
   test_utf8_and_identifier_rules(state);
   test_caret_and_uninitialized_end_lines(state);
+  test_keyword_alternative_end_lines(state);
 
   if (state.failures != 0) {
     std::cerr << state.failures << " lexer test expectation(s) failed\n";
