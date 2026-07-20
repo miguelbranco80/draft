@@ -78,6 +78,204 @@ void test_procedure_demand_sets_are_canonical_and_exact(TestState &state) {
                                                        collision_diagnostics));
   EXPECT(state, collision_diagnostics.has_errors());
 }
+
+// Proves that local named constants have independent graph rows, exact dynamic
+// edges, deterministic owner tables, and published values including a distinct
+// result type.
+void test_named_constants_are_semantic_products(TestState &state) {
+  draft::test::TemporaryDirectory temporary_directory{
+      "draft-bootstrap-constant-product-test"};
+  const std::filesystem::path &root = temporary_directory.path();
+  std::error_code error;
+  std::filesystem::create_directories(root / "app", error);
+  EXPECT(state, !error);
+  if (error) return;
+
+  std::ofstream app(root / "app" / "package.draft", std::ios::binary);
+  app << "package app\n"
+         "Duration :: distinct i64\n"
+         "Second :: cast[Duration](1000 * 1000 * 1000)\n"
+         "Base :: 40\n"
+         "Derived :: Base + 2\n"
+         "main :: proc() {\n"
+         "    static_assert(Derived == 42)\n"
+         "}\n";
+  app.close();
+  EXPECT(state, app.good());
+
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  draft::CompileWorkspaceOptions options;
+  options.target = draft::make_aarch64_macos_profile();
+  options.workspace.workspace_directory = root.string();
+  draft::CompileWorkspaceResult compiled = draft::compile_workspace(
+      sources, (root / "app").string(), options, diagnostics);
+  if (diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+  }
+  EXPECT(state, compiled.ok);
+  EXPECT(state, compiled.packages.size() == 1);
+  if (!compiled.ok || compiled.packages.size() != 1 ||
+      !compiled.packages.front().has_value()) {
+    return;
+  }
+
+  const draft::CompiledPackage &package = *compiled.packages.front();
+  const draft::SemanticPackage &semantic = package.declarations.package;
+  const std::optional<draft::SymbolId> base =
+      semantic.symbols.lookup_direct(semantic.package_scope, "Base");
+  const std::optional<draft::SymbolId> derived =
+      semantic.symbols.lookup_direct(semantic.package_scope, "Derived");
+  const std::optional<draft::SymbolId> second =
+      semantic.symbols.lookup_direct(semantic.package_scope, "Second");
+  EXPECT(state, base.has_value());
+  EXPECT(state, derived.has_value());
+  EXPECT(state, second.has_value());
+  if (!base || !derived || !second) return;
+
+  const draft::PackageSemanticProducts &products =
+      compiled.semantic_products.packages.front();
+  EXPECT(state,
+      compiled.semantic_products.package_by_product.size() ==
+          compiled.semantic_graph.products.size());
+  EXPECT(state,
+      compiled.semantic_products.constant_by_product.size() ==
+          compiled.semantic_graph.products.size());
+  EXPECT(state, products.constants.size() == 3);
+  std::optional<draft::SemanticProductId> base_product;
+  std::optional<draft::SemanticProductId> derived_product;
+  for (draft::SemanticProductId product : products.constants) {
+    EXPECT(state,
+        compiled.semantic_graph.products[product.value].kind ==
+            draft::SemanticProductKind::ConstantValue);
+    EXPECT(state,
+        compiled.semantic_graph.products[product.value].state ==
+            draft::SemanticProductState::Complete);
+    const draft::SymbolId root_symbol =
+        compiled.semantic_products.constant_by_product[product.value];
+    if (root_symbol == *base) base_product = product;
+    if (root_symbol == *derived) derived_product = product;
+  }
+  EXPECT(state, base_product.has_value());
+  EXPECT(state, derived_product.has_value());
+  if (base_product && derived_product) {
+    const std::vector<draft::SemanticProductId> &dependencies =
+        compiled.semantic_graph.products[derived_product->value].dependencies;
+    EXPECT(state,
+        std::find(dependencies.begin(), dependencies.end(), *base_product) !=
+            dependencies.end());
+  }
+  const draft::ConstantValue *value = package.declarations.constants.find(
+      *derived);
+  EXPECT(state, value != nullptr);
+  if (value != nullptr) {
+    EXPECT(state, value->kind == draft::ConstantKind::Integer);
+    EXPECT(state, value->integer == draft::BigInteger::from_u64(42));
+  }
+  const draft::ConstantValue *duration_value =
+      package.declarations.constants.find(*second);
+  EXPECT(state, duration_value != nullptr);
+  if (duration_value != nullptr) {
+    EXPECT(state, duration_value->kind == draft::ConstantKind::Integer);
+    EXPECT(state,
+        duration_value->integer ==
+            draft::BigInteger::from_u64(1000ULL * 1000ULL * 1000ULL));
+  }
+
+  std::filesystem::remove_all(root, error);
+}
+
+// Imported constants are completed dependency-interface inputs, not duplicate
+// consumer products. They must nevertheless enter the consumer's local proxy
+// table so body checking and typed validation context observe the same value.
+void test_imported_constant_products_enter_consumer_table(TestState &state) {
+  draft::test::TemporaryDirectory temporary_directory{
+      "draft-bootstrap-imported-constant-product-test"};
+  const std::filesystem::path &root = temporary_directory.path();
+  std::error_code error;
+  std::filesystem::create_directories(root / "app", error);
+  std::filesystem::create_directories(root / "units", error);
+  EXPECT(state, !error);
+  if (error) return;
+
+  std::ofstream units(root / "units" / "package.draft", std::ios::binary);
+  units << "package units\n"
+           "pub Duration :: distinct i64\n"
+           "pub second :: cast[Duration](1000 * 1000 * 1000)\n";
+  units.close();
+  EXPECT(state, units.good());
+
+  std::ofstream app(root / "app" / "package.draft", std::ios::binary);
+  app << "package app\n"
+         "import units\n"
+         "main :: proc() {\n"
+         "    static_assert(units.second == cast[units.Duration](1000000000))\n"
+         "}\n";
+  app.close();
+  EXPECT(state, app.good());
+
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  draft::CompileWorkspaceOptions options;
+  options.target = draft::make_aarch64_macos_profile();
+  options.workspace.workspace_directory = root.string();
+  draft::CompileWorkspaceResult compiled = draft::compile_workspace(
+      sources, (root / "app").string(), options, diagnostics);
+  if (diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+  }
+  EXPECT(state, compiled.ok);
+  if (!compiled.ok) return;
+
+  const draft::CompiledPackage *app_package = nullptr;
+  const draft::CompiledPackage *units_package = nullptr;
+  for (const std::optional<draft::CompiledPackage> &package :
+       compiled.packages) {
+    if (!package.has_value()) continue;
+    if (package->identity.root_relative_path == "app") {
+      app_package = &*package;
+    } else if (package->identity.root_relative_path == "units") {
+      units_package = &*package;
+    }
+  }
+  EXPECT(state, app_package != nullptr);
+  EXPECT(state, units_package != nullptr);
+  if (app_package == nullptr || units_package == nullptr) return;
+
+  std::optional<draft::SymbolId> imported_second;
+  for (const draft::ImportedSymbol &imported :
+       app_package->declarations.package.imported_symbols) {
+    if (imported.root_relative_path == "units" &&
+        imported.public_name == "second") {
+      imported_second = imported.proxy;
+      break;
+    }
+  }
+  EXPECT(state, imported_second.has_value());
+  if (!imported_second.has_value()) return;
+  const draft::ConstantValue *value =
+      app_package->declarations.constants.find(*imported_second);
+  EXPECT(state, value != nullptr);
+  if (value != nullptr) {
+    EXPECT(state, value->kind == draft::ConstantKind::Integer);
+    EXPECT(state,
+        value->integer ==
+            draft::BigInteger::from_u64(1000ULL * 1000ULL * 1000ULL));
+  }
+
+  const auto declaration = std::find_if(
+      units_package->interface.declarations.begin(),
+      units_package->interface.declarations.end(),
+      [](const draft::InterfaceDeclaration &candidate) {
+        return candidate.name == "second";
+      });
+  EXPECT(state, declaration != units_package->interface.declarations.end());
+  if (declaration != units_package->interface.declarations.end()) {
+    EXPECT(state, declaration->has_constant);
+  }
+
+  std::filesystem::remove_all(root, error);
+}
 [[nodiscard]] std::size_t occurrence_count(std::string_view text,
                                            std::string_view needle) {
   std::size_t count = 0;
@@ -2067,6 +2265,8 @@ void test_cross_package_static_argument_pack_effects(TestState &state) {
 int main() {
   TestState state;
   test_procedure_demand_sets_are_canonical_and_exact(state);
+  test_named_constants_are_semantic_products(state);
+  test_imported_constant_products_enter_consumer_table(state);
   test_source_update_reuses_unaffected_semantics(state);
   test_interface_synthesis_is_an_explicit_graph_wait(state);
   test_body_source_update_reuses_closed_generic_dependency(state);

@@ -70,6 +70,20 @@ namespace {
       TimingVisibility::Detail);
 }
 
+// Merges task-local source-order SymbolIds without changing the order already
+// published by an earlier product. Constant tasks may reach the same helper
+// procedure through several expressions; one semantic body product is enough.
+void append_unique_symbols(
+    std::vector<SymbolId> &destination,
+    std::span<const SymbolId> additions) {
+  for (SymbolId symbol : additions) {
+    if (std::find(destination.begin(), destination.end(), symbol) ==
+        destination.end()) {
+      destination.push_back(symbol);
+    }
+  }
+}
+
 // Converts semantic command selection into the exact package-loader facts used
 // by both initial graph construction and later interface-to-body continuation.
 // Continuations receive the driver's semantic options, not the private copy
@@ -1286,7 +1300,9 @@ void invalidate_package_closure(
     std::span<const SemanticProductId> dependencies, PackageId owner,
     bool completed, DiagnosticSink &diagnostics) {
   if (result.semantic_products.package_by_product.size() !=
-      result.semantic_graph.products.size()) {
+          result.semantic_graph.products.size() ||
+      result.semantic_products.constant_by_product.size() !=
+          result.semantic_graph.products.size()) {
     diagnostics.error(
         SourceRange::invalid(),
         "semantic product owner table is inconsistent with its graph");
@@ -1306,6 +1322,7 @@ void invalidate_package_closure(
     return {};
   }
   result.semantic_products.package_by_product.push_back(owner);
+  result.semantic_products.constant_by_product.push_back({});
   return product;
 }
 
@@ -1400,6 +1417,8 @@ void invalidate_package_closure(
         result.semantic_products.packages[package_index];
     if (products.name_set.is_valid())
       superseded.push_back(products.name_set);
+    superseded.insert(
+        superseded.end(), products.constants.begin(), products.constants.end());
     if (products.opaque_synthesis_set.is_valid())
       superseded.push_back(products.opaque_synthesis_set);
     if (products.package_interface.is_valid()) {
@@ -1423,6 +1442,7 @@ void invalidate_package_closure(
       continue;
     PackageSemanticProducts &products =
         result.semantic_products.packages[package_index];
+    products.constants.clear();
     std::vector<SemanticProductId> dependencies;
     dependencies.push_back(result.semantic_products.target);
     dependencies.push_back(products.imports);
@@ -1458,6 +1478,82 @@ void invalidate_package_closure(
       return false;
   }
   return true;
+}
+
+// Completes the package-interface payload after every named constant product
+// has published. Interface-discovery commands reach this helper with aggregate
+// declaration semantics already complete; ordinary complete compilation first
+// consumes the staged discovery payload without reevaluating its constants.
+[[nodiscard]] bool finalize_workspace_package_interface(
+    SourceManager &sources,
+    const CompileWorkspaceOptions &options,
+    WorkspacePackage &workspace_package,
+    CompiledPackage &package,
+    DiagnosticSink &diagnostics) {
+  if (package.declaration_discovery.terminal) {
+    package.declarations = finish_package_semantics_from_products(
+        sources,
+        workspace_package.loaded,
+        options.target.facts,
+        CompileTimeSynthesisMode::Reject,
+        std::move(package.declaration_discovery),
+        diagnostics);
+    PackageDeclarationDiscovery empty_discovery;
+    package.declaration_discovery = std::move(empty_discovery);
+    if (!package.declarations.ok) return false;
+  }
+
+  SemanticPackage interface_context_package;
+  ConstantTable interface_context_constants;
+  if (!append_compile_time_body_synthesis_sites(
+          sources,
+          workspace_package.loaded,
+          options.target.facts,
+          package.declarations,
+          interface_context_package,
+          interface_context_constants,
+          diagnostics)) {
+    return false;
+  }
+  package.metadata = collect_agent_metadata(
+      sources,
+      workspace_package.loaded,
+      interface_context_package,
+      options.attachments,
+      diagnostics);
+  if (!package.metadata.ok) return false;
+  if (options.validation_kind == ValidationKind::None &&
+      package.validation_context.empty() &&
+      has_agent_obligation_record(package.metadata)) {
+    package.validation_context = load_validation_context(
+        sources, workspace_package, options.workspace, diagnostics);
+    package.validation_context_is_typed = false;
+  }
+  package.interface =
+      options.stage == CompileWorkspaceStage::DiscoverInterfaceSynthesis &&
+              has_synthesis_record(package.metadata)
+          ? withheld_package_interface(
+                workspace_package.identity, package.declarations.package)
+          : build_package_interface(
+                workspace_package.identity,
+                package.declarations.package,
+                package.declarations.constants,
+                package.metadata,
+                diagnostics);
+  if (options.stage == CompileWorkspaceStage::DiscoverInterfaceSynthesis) {
+    package.obligations = build_agent_obligations(
+        workspace_package.identity,
+        sources,
+        workspace_package.loaded,
+        interface_context_package,
+        interface_context_constants,
+        package.metadata,
+        options.target,
+        diagnostics,
+        package.validation_context);
+    if (!package.obligations.ok) return false;
+  }
+  return !diagnostics.has_errors();
 }
 
 // Computes the package payload currently published by the PackageNameSet task.
@@ -1510,9 +1606,25 @@ void invalidate_package_closure(
         std::string(sources.text(file.source)),
     });
   }
-  package.declarations = analyze_package_semantics(
-      sources, workspace_package.loaded, options.target.facts, available,
-      compile_time_synthesis_mode(options.stage), diagnostics);
+  const bool schedule_constant_products =
+      options.stage == CompileWorkspaceStage::Complete;
+  if (schedule_constant_products) {
+    package.declaration_discovery = discover_package_declarations(
+        sources,
+        workspace_package.loaded,
+        options.target.facts,
+        available,
+        CompileTimeSynthesisMode::Reject,
+        diagnostics);
+    package.declarations.package = package.declaration_discovery.package;
+    package.declarations.selections = package.declaration_discovery.selections;
+    package.declarations.ok = package.declaration_discovery.terminal &&
+        package.declaration_discovery.discovery_ok;
+  } else {
+    package.declarations = analyze_package_semantics(
+        sources, workspace_package.loaded, options.target.facts, available,
+        compile_time_synthesis_mode(options.stage), diagnostics);
+  }
   if (options.timings != nullptr) {
     options.timings->add_counter("package semantic analyses", 1);
   }
@@ -1537,9 +1649,29 @@ void invalidate_package_closure(
                                              options, diagnostics)) {
       break;
     }
-    package.declarations =
-        analyze_package_semantics(sources, workspace_package.loaded,
-                                  options.target.facts, available, diagnostics);
+    if (schedule_constant_products) {
+      package.declaration_discovery = discover_package_declarations(
+          sources,
+          workspace_package.loaded,
+          options.target.facts,
+          available,
+          CompileTimeSynthesisMode::Reject,
+          diagnostics);
+      SemanticAnalysisResult empty_semantics;
+      package.declarations = std::move(empty_semantics);
+      package.declarations.package = package.declaration_discovery.package;
+      package.declarations.selections =
+          package.declaration_discovery.selections;
+      package.declarations.ok = package.declaration_discovery.terminal &&
+          package.declaration_discovery.discovery_ok;
+    } else {
+      package.declarations = analyze_package_semantics(
+          sources,
+          workspace_package.loaded,
+          options.target.facts,
+          available,
+          diagnostics);
+    }
     if (options.timings != nullptr) {
       options.timings->add_counter("package semantic analyses", 1);
     }
@@ -1554,52 +1686,252 @@ void invalidate_package_closure(
   if (!package.declarations.ok)
     return std::nullopt;
 
-  SemanticPackage interface_context_package;
-  ConstantTable interface_context_constants;
-  if (!append_compile_time_body_synthesis_sites(
-          sources, workspace_package.loaded, options.target.facts,
-          package.declarations, interface_context_package,
-          interface_context_constants, diagnostics)) {
-    return std::nullopt;
-  }
-  package.metadata = collect_agent_metadata(sources, workspace_package.loaded,
-                                            interface_context_package,
-                                            options.attachments, diagnostics);
-  if (!package.metadata.ok)
-    return std::nullopt;
-  if (options.validation_kind == ValidationKind::None &&
-      package.validation_context.empty() &&
-      has_agent_obligation_record(package.metadata)) {
-    package.validation_context = load_validation_context(
-        sources, workspace_package, options.workspace, diagnostics);
-    package.validation_context_is_typed = false;
-  }
-  package.interface =
-      options.stage == CompileWorkspaceStage::DiscoverInterfaceSynthesis &&
-              has_synthesis_record(package.metadata)
-          ? withheld_package_interface(workspace_package.identity,
-                                       package.declarations.package)
-          : build_package_interface(
-                workspace_package.identity, package.declarations.package,
-                package.declarations.constants, package.metadata, diagnostics);
-  if (options.stage == CompileWorkspaceStage::DiscoverInterfaceSynthesis) {
-    package.obligations = build_agent_obligations(
-        workspace_package.identity, sources, workspace_package.loaded,
-        interface_context_package, interface_context_constants,
-        package.metadata, options.target, diagnostics,
-        package.validation_context);
-    if (!package.obligations.ok)
-      return std::nullopt;
-  }
-  if (diagnostics.has_errors())
-    return std::nullopt;
-  return package;
+  // Complete compilation now lets the workspace graph own every named
+  // ConstantValue. Interface discovery retains the aggregate evaluator until
+  // synthesis waits themselves move to product outcomes in the next slice.
+  if (schedule_constant_products) return package;
+  return finalize_workspace_package_interface(
+             sources, options, workspace_package, package, diagnostics)
+      ? std::optional<CompiledPackage>(std::move(package))
+      : std::nullopt;
 }
 
+// One private worker result for a frozen interface-scheduling wave. package is
+// present for name/interface tasks, while constant and constant_package travel
+// together for ConstantValue tasks so task-local TypeIds can be rewritten
+// before publication. No field aliases coordinator state; after the wave joins,
+// the coordinator alone moves accepted payloads into CompiledPackage rows.
 struct WorkspaceInterfaceTaskSlot {
   SemanticProductOutcome outcome;
   std::optional<CompiledPackage> package;
+  std::optional<ConstantProductAttempt> constant;
+  std::optional<SemanticPackage> constant_package;
+  std::size_t constant_shared_type_count = 0;
 };
+
+// Canonicalizes a structural TypeId created in one constant task. Every task
+// begins with the coordinator's exact TypeStore prefix; IDs below shared_count
+// are therefore already canonical. Rows after that prefix must be structural
+// constructors supported by constant evaluation and are interned recursively
+// into the coordinator store during ordered publication.
+[[nodiscard]] std::optional<TypeId> publish_constant_task_type(
+    const TypeStore &task,
+    TypeId source,
+    std::size_t shared_count,
+    TypeStore &canonical,
+    std::vector<TypeId> &published,
+    DiagnosticSink &diagnostics) {
+  if (!source.is_valid()) return TypeId{};
+  if (source.value < shared_count) return source;
+  if (source.value >= task.size()) {
+    diagnostics.error(
+        SourceRange::invalid(),
+        "constant product returned an out-of-range task-local type");
+    return std::nullopt;
+  }
+  if (published[source.value].is_valid()) return published[source.value];
+
+  const Type &type = task.type(source);
+  const auto publish_element = [&]() -> std::optional<TypeId> {
+    return publish_constant_task_type(
+        task,
+        type.element,
+        shared_count,
+        canonical,
+        published,
+        diagnostics);
+  };
+  TypeId result;
+  switch (type.kind) {
+  case TypeKind::Pointer: {
+    const std::optional<TypeId> element = publish_element();
+    if (!element.has_value()) return std::nullopt;
+    result = canonical.pointer(*element);
+    break;
+  }
+  case TypeKind::MultiPointer: {
+    const std::optional<TypeId> element = publish_element();
+    if (!element.has_value()) return std::nullopt;
+    result = canonical.multi_pointer(*element);
+    break;
+  }
+  case TypeKind::Slice: {
+    const std::optional<TypeId> element = publish_element();
+    if (!element.has_value()) return std::nullopt;
+    result = canonical.slice(*element);
+    break;
+  }
+  case TypeKind::Array: {
+    if (type.owner_evaluated_element_count ||
+        type.element_count_expression.is_valid()) {
+      diagnostics.error(
+          type.declaration,
+          "constant product returned a non-concrete array type");
+      return std::nullopt;
+    }
+    const std::optional<TypeId> element = publish_element();
+    if (!element.has_value()) return std::nullopt;
+    result = canonical.array(*element, type.element_count);
+    break;
+  }
+  case TypeKind::Simd: {
+    if (type.owner_evaluated_element_count ||
+        type.element_count_expression.is_valid()) {
+      diagnostics.error(
+          type.declaration,
+          "constant product returned a non-concrete SIMD type");
+      return std::nullopt;
+    }
+    const std::optional<TypeId> element = publish_element();
+    if (!element.has_value()) return std::nullopt;
+    result = canonical.simd(
+        *element, type.element_count, type.declaration);
+    break;
+  }
+  case TypeKind::Tuple: {
+    std::vector<TypeId> members;
+    members.reserve(type.members.size());
+    for (TypeId member : type.members) {
+      const std::optional<TypeId> published_member =
+          publish_constant_task_type(
+              task,
+              member,
+              shared_count,
+              canonical,
+              published,
+              diagnostics);
+      if (!published_member.has_value()) return std::nullopt;
+      members.push_back(*published_member);
+    }
+    result = canonical.tuple(members);
+    break;
+  }
+  case TypeKind::Procedure: {
+    if (type.members.empty()) {
+      diagnostics.error(
+          type.declaration,
+          "constant product returned a procedure type without a result");
+      return std::nullopt;
+    }
+    std::vector<TypeId> members;
+    members.reserve(type.members.size());
+    for (TypeId member : type.members) {
+      const std::optional<TypeId> published_member =
+          publish_constant_task_type(
+              task,
+              member,
+              shared_count,
+              canonical,
+              published,
+              diagnostics);
+      if (!published_member.has_value()) return std::nullopt;
+      members.push_back(*published_member);
+    }
+    const TypeId procedure_result = members.back();
+    members.pop_back();
+    result = canonical.procedure(
+        members, procedure_result, type.c_calling_convention);
+    break;
+  }
+  default:
+    diagnostics.error(
+        type.declaration,
+        "constant product attempted to publish a non-structural task-local type");
+    return std::nullopt;
+  }
+  published[source.value] = result;
+  return result;
+}
+
+// Rewrites every nested first-class type value in one constant payload. Other
+// payload identities are mathematical values, strings, source-order variants,
+// or stable SymbolIds from the shared semantic prefix and need no remapping.
+[[nodiscard]] bool publish_constant_task_value(
+    const TypeStore &task,
+    ConstantValue &value,
+    std::size_t shared_count,
+    TypeStore &canonical,
+    std::vector<TypeId> &published,
+    DiagnosticSink &diagnostics) {
+  if (value.kind == ConstantKind::Type) {
+    const std::optional<TypeId> type = publish_constant_task_type(
+        task,
+        TypeId{value.type_index},
+        shared_count,
+        canonical,
+        published,
+        diagnostics);
+    if (!type.has_value()) return false;
+    value.type_index = type->value;
+  }
+  for (ConstantValue &element : value.elements) {
+    if (!publish_constant_task_value(
+            task,
+            element,
+            shared_count,
+            canonical,
+            published,
+            diagnostics)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// Appends one ConstantValue row for every final package-scope constant. Symbol
+// order is the deterministic declaration identity order; dependencies between
+// constants are discovered by their evaluators and added as explicit blockers
+// rather than inferred from source order.
+[[nodiscard]] bool append_package_constant_products(
+    CompileWorkspaceResult &result,
+    SemanticProductId name_set,
+    PackageId owner,
+    const CompiledPackage &package,
+    DiagnosticSink &diagnostics) {
+  PackageSemanticProducts &products =
+      result.semantic_products.packages[owner.value];
+  products.constants.clear();
+  const SemanticPackage &semantic = package.declaration_discovery.package;
+  const std::size_t symbol_count = semantic.symbols.symbol_count();
+  for (std::size_t index = 0; index < symbol_count; ++index) {
+    const SymbolId symbol{static_cast<std::uint32_t>(index)};
+    const Symbol &declaration = semantic.symbols.symbol(symbol);
+    if (declaration.scope != semantic.package_scope ||
+        (declaration.kind != SymbolKind::Constant &&
+         declaration.kind != SymbolKind::UnresolvedDeclaration)) {
+      continue;
+    }
+    const std::array dependencies{name_set};
+    const SemanticProductId product = append_workspace_semantic_product(
+        result,
+        SemanticProductKind::ConstantValue,
+        dependencies,
+        owner,
+        false,
+        diagnostics);
+    if (!product.is_valid()) return false;
+    result.semantic_products.constant_by_product[product.value] = symbol;
+    products.constants.push_back(product);
+  }
+  return true;
+}
+
+// Finds the typed product row for one local constant blocker. Products are few
+// at this stage and remain in SymbolId order, so a direct scan preserves the
+// representation without adding a second package-local index.
+[[nodiscard]] std::optional<SemanticProductId> package_constant_product(
+    const CompileWorkspaceResult &result,
+    PackageId owner,
+    SymbolId symbol) {
+  const PackageSemanticProducts &products =
+      result.semantic_products.packages[owner.value];
+  for (SemanticProductId product : products.constants) {
+    if (result.semantic_products.constant_by_product[product.value] == symbol) {
+      return product;
+    }
+  }
+  return std::nullopt;
+}
 
 // Builds declaration semantics and preliminary interfaces through the dynamic
 // product graph. Workers are deliberately sequential until package tasks stop
@@ -1706,6 +2038,74 @@ struct WorkspaceInterfaceTaskSlot {
         }
         continue;
       }
+      if (kind == SemanticProductKind::ConstantValue) {
+        if (!result.packages[package_index].has_value()) {
+          slot.outcome.kind = SemanticProductOutcomeKind::Error;
+          slot.outcome.failure =
+              "constant product ran before its package name set";
+          slot.outcome.diagnostics.error(
+              SourceRange::invalid(), slot.outcome.failure);
+          continue;
+        }
+        CompiledPackage &package = *result.packages[package_index];
+        const SymbolId root =
+            result.semantic_products.constant_by_product[product.value];
+        slot.constant_package = package.declaration_discovery.package;
+        slot.constant_shared_type_count =
+            slot.constant_package->types.size();
+        slot.constant = evaluate_package_constant_product(
+            sources,
+            result.graph.packages[package_index].loaded,
+            *slot.constant_package,
+            options.target.facts,
+            root,
+            package.declaration_discovery.published_constants,
+            CompileTimeSynthesisMode::Reject,
+            slot.outcome.diagnostics);
+        if (slot.constant->status == ConstantProductStatus::Complete) {
+          continue;
+        }
+        if (slot.constant->status ==
+            ConstantProductStatus::WaitingForSynthesis) {
+          slot.outcome.kind =
+              SemanticProductOutcomeKind::WaitingForSynthesis;
+          continue;
+        }
+        if (slot.constant->status == ConstantProductStatus::Error) {
+          slot.outcome.kind = SemanticProductOutcomeKind::Error;
+          slot.outcome.failure = "constant product evaluation failed";
+          if (!slot.outcome.diagnostics.has_errors()) {
+            slot.outcome.diagnostics.error(
+                SourceRange::invalid(), slot.outcome.failure);
+          }
+          continue;
+        }
+        for (SymbolId dependency :
+             slot.constant->constant_dependencies) {
+          const std::optional<SemanticProductId> blocker =
+              package_constant_product(result, owner, dependency);
+          if (!blocker.has_value()) {
+            slot.outcome.kind = SemanticProductOutcomeKind::Error;
+            slot.outcome.failure =
+                "constant product names a dependency without a product";
+            slot.outcome.diagnostics.error(
+                SourceRange::invalid(), slot.outcome.failure);
+            break;
+          }
+          slot.outcome.dependencies.push_back(*blocker);
+        }
+        if (slot.outcome.kind == SemanticProductOutcomeKind::Error) continue;
+        if (!slot.constant->type_dependencies.empty()) {
+          slot.outcome.kind = SemanticProductOutcomeKind::Error;
+          slot.outcome.failure =
+              "constant product is blocked on an unpublished type facet";
+          slot.outcome.diagnostics.error(
+              SourceRange::invalid(), slot.outcome.failure);
+          continue;
+        }
+        slot.outcome.kind = SemanticProductOutcomeKind::Blocked;
+        continue;
+      }
       if (kind == SemanticProductKind::OpaqueSynthesisSet) {
         slot.outcome.kind = SemanticProductOutcomeKind::WaitingForSynthesis;
         continue;
@@ -1717,6 +2117,37 @@ struct WorkspaceInterfaceTaskSlot {
               "package interface ran before its name-set payload was published";
           slot.outcome.diagnostics.error(SourceRange::invalid(),
                                          slot.outcome.failure);
+          continue;
+        }
+        const PackageSemanticProducts &products =
+            result.semantic_products.packages[package_index];
+        for (SemanticProductId constant : products.constants) {
+          if (result.semantic_graph.products[constant.value].state !=
+              SemanticProductState::Complete) {
+            slot.outcome.dependencies.push_back(constant);
+          }
+        }
+        if (!slot.outcome.dependencies.empty()) {
+          slot.outcome.kind = SemanticProductOutcomeKind::Blocked;
+          continue;
+        }
+        if (result.packages[package_index]
+                ->declaration_discovery.terminal) {
+          slot.package = *result.packages[package_index];
+          if (!finalize_workspace_package_interface(
+                  sources,
+                  options,
+                  result.graph.packages[package_index],
+                  *slot.package,
+                  slot.outcome.diagnostics)) {
+            slot.package.reset();
+            slot.outcome.kind = SemanticProductOutcomeKind::Error;
+            slot.outcome.failure = "package interface finalization failed";
+            if (!slot.outcome.diagnostics.has_errors()) {
+              slot.outcome.diagnostics.error(
+                  SourceRange::invalid(), slot.outcome.failure);
+            }
+          }
         }
         continue;
       }
@@ -1767,6 +2198,78 @@ struct WorkspaceInterfaceTaskSlot {
       }
     }
 
+    if (options.stage == CompileWorkspaceStage::Complete) {
+      for (std::size_t task_index = 0; task_index < wave.products.size();
+           ++task_index) {
+        WorkspaceInterfaceTaskSlot &slot = slots[task_index];
+        if (!slot.package.has_value() ||
+            slot.outcome.kind != SemanticProductOutcomeKind::Complete) {
+          continue;
+        }
+        const SemanticProductId name_set = wave.products[task_index];
+        if (result.semantic_graph.products[name_set.value].kind !=
+            SemanticProductKind::PackageNameSet ||
+            !slot.package->declaration_discovery.terminal) {
+          continue;
+        }
+        const PackageId owner =
+            result.semantic_products.package_by_product[name_set.value];
+        if (!append_package_constant_products(
+                result,
+                name_set,
+                owner,
+                *slot.package,
+                slot.outcome.diagnostics)) {
+          slot.outcome.kind = SemanticProductOutcomeKind::Error;
+          slot.outcome.failure = "cannot append package constant products";
+        }
+      }
+    }
+
+    // Canonical structural type interning is coordinator-owned and follows
+    // stable product order. Workers may have created equivalent task-local
+    // rows; each result is rewritten against the canonical package TypeStore
+    // before graph publication can mark the ConstantValue complete.
+    for (std::size_t task_index = 0; task_index < wave.products.size();
+         ++task_index) {
+      WorkspaceInterfaceTaskSlot &slot = slots[task_index];
+      if (!slot.constant.has_value() ||
+          slot.constant->status != ConstantProductStatus::Complete ||
+          slot.outcome.kind != SemanticProductOutcomeKind::Complete ||
+          !slot.constant->result.has_value() ||
+          !slot.constant_package.has_value()) {
+        continue;
+      }
+      const SemanticProductId product = wave.products[task_index];
+      const PackageId owner =
+          result.semantic_products.package_by_product[product.value];
+      CompiledPackage &package = *result.packages[owner.value];
+      TypeStore &canonical = package.declaration_discovery.package.types;
+      std::vector<TypeId> published(slot.constant_package->types.size());
+      ConstantValue &value = slot.constant->result->value;
+      const bool value_ok = publish_constant_task_value(
+          slot.constant_package->types,
+          value,
+          slot.constant_shared_type_count,
+          canonical,
+          published,
+          slot.outcome.diagnostics);
+      const std::optional<TypeId> value_type = publish_constant_task_type(
+          slot.constant_package->types,
+          slot.constant->result->type,
+          slot.constant_shared_type_count,
+          canonical,
+          published,
+          slot.outcome.diagnostics);
+      if (!value_ok || !value_type.has_value()) {
+        slot.outcome.kind = SemanticProductOutcomeKind::Error;
+        slot.outcome.failure =
+            "constant product type publication failed";
+        continue;
+      }
+      slot.constant->result->type = *value_type;
+    }
+
     std::vector<SemanticProductOutcome> outcomes;
     outcomes.reserve(slots.size());
     for (WorkspaceInterfaceTaskSlot &slot : slots) {
@@ -1779,6 +2282,39 @@ struct WorkspaceInterfaceTaskSlot {
                         "cannot publish semantic product wave: " +
                             publication_error);
       return false;
+    }
+    for (std::size_t task_index = 0; task_index < wave.products.size();
+         ++task_index) {
+      const SemanticProductId product = wave.products[task_index];
+      if (result.semantic_graph.products[product.value].kind !=
+              SemanticProductKind::ConstantValue ||
+          result.semantic_graph.products[product.value].state !=
+              SemanticProductState::Complete ||
+          !slots[task_index].constant.has_value() ||
+          !slots[task_index].constant->result.has_value()) {
+        continue;
+      }
+      const PackageId owner =
+          result.semantic_products.package_by_product[product.value];
+      CompiledPackage &package = *result.packages[owner.value];
+      const SymbolId symbol =
+          result.semantic_products.constant_by_product[product.value];
+      EvaluatedConstant &constant = *slots[task_index].constant->result;
+      package.declaration_discovery.package.symbols.symbol_mut(symbol).type =
+          constant.type;
+      ConstantTable &published =
+          package.declaration_discovery.published_constants;
+      const auto position = std::lower_bound(
+          published.bindings.begin(),
+          published.bindings.end(),
+          symbol.value,
+          [](const ConstantBinding &binding, std::uint32_t value) {
+            return binding.symbol.value < value;
+          });
+      published.bindings.insert(position, {symbol, std::move(constant.value)});
+      append_unique_symbols(
+          package.declaration_discovery.compile_time_synthesis_procedures,
+          slots[task_index].constant->compile_time_procedures);
     }
     for (std::size_t task_index = 0; task_index < wave.products.size();
          ++task_index) {

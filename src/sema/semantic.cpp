@@ -42,6 +42,33 @@ void publish_diagnostics(
   }
 }
 
+// Installs ready dependency-interface constants under their consumer-local
+// proxy SymbolIds. Local declarations are graph-owned ConstantValue products;
+// imported constants are already immutable PackageInterface inputs and must
+// not acquire duplicate consumer products merely to enter the package's
+// constant lookup table. Interface binding has already translated nested type
+// values into this package's TypeStore, so publication is a sorted value copy,
+// not evaluation or recursive dependency work.
+void append_imported_constant_bindings(
+    const SemanticPackage &package, ConstantTable &constants) {
+  for (const ImportedSymbol &imported : package.imported_symbols) {
+    if (!imported.has_constant) continue;
+    const auto position = std::lower_bound(
+        constants.bindings.begin(),
+        constants.bindings.end(),
+        imported.proxy.value,
+        [](const ConstantBinding &binding, std::uint32_t value) {
+          return binding.symbol.value < value;
+        });
+    if (position != constants.bindings.end() &&
+        position->symbol == imported.proxy) {
+      continue;
+    }
+    constants.bindings.insert(
+        position, {imported.proxy, imported.constant});
+  }
+}
+
 // Source syntax, rather than a private probe's SymbolId or TypeId, is the
 // equality key for interpreter progress. The vector is deliberately scanned in
 // insertion order: required layout sites are normally few, and preserving the
@@ -424,6 +451,7 @@ PackageDeclarationDiscovery discover_package_declarations(
   CompileTimeRoundResult final_round;
   if (constants_are_products) {
     result.constants = std::move(discovery.published_constants);
+    append_imported_constant_bindings(result.package, result.constants);
     final_round = validate_compile_time_products(
         sources,
         loaded,

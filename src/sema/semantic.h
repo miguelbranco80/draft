@@ -51,8 +51,10 @@ struct PackageDeclarationDiscovery {
   bool discovery_ok = false;
   SemanticPackage package;
   ConditionalSelections selections;
-  // Filled monotonically by ConstantValue product publication after discovery.
-  // Direct semantic clients leave it empty and use finish_package_semantics.
+  // Filled monotonically with local ConstantValue product publication after
+  // discovery. Imported ready constants are upstream PackageInterface inputs;
+  // the product-aware finalizer installs them under consumer-local proxies.
+  // Direct semantic clients leave this empty and use finish_package_semantics.
   ConstantTable published_constants;
   std::vector<ResolvedIntegerExpression> resolved_integers;
   std::vector<SyntaxReference> blocked_integer_synthesis;
@@ -85,8 +87,9 @@ struct PackageDeclarationDiscovery {
     DiagnosticSink &diagnostics);
 
 // Finalizes a discovery payload whose named constants were already published
-// by individual semantic products. It validates conditions and storage against
-// those immutable values without invoking aggregate constant evaluation again.
+// by individual semantic products. It combines those immutable local values
+// with ready imported-interface constants, then validates conditions and
+// storage without invoking aggregate local constant evaluation again.
 [[nodiscard]] SemanticAnalysisResult finish_package_semantics_from_products(
     const SourceManager &sources,
     const LoadedPackage &loaded,

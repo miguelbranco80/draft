@@ -104,12 +104,19 @@ remaining platform tools; it does not reload or recheck handwritten source.
 checked complete-file overlay is parsed into the existing workspace graph;
 package/root/import IDs remain stable. Target selection, source generations,
 parsed files, per-package imports, package name sets, opaque interface
-synthesis sets, and package interfaces have stable command-local product IDs.
+synthesis sets, named constants in complete compilation, and package interfaces
+have stable command-local product IDs.
 The interface coordinator freezes dependency-ready waves and publishes
-task-local diagnostics and package payloads in product-ID order. An unresolved
-declaration/member set leaves an explicit synthesis product waiting and keeps
-the name/interface products of every dependent package blocked. An accepted
-overlay appends successor products and marks the affected former interface
+task-local diagnostics and package payloads in product-ID order. Each named
+constant consumes already published values or reports exact constant/type-facet
+blockers; task-local structural type values are interned by the coordinator.
+Ready imported constants remain dependency-interface inputs and are installed
+under consumer-local proxy IDs rather than duplicated as consumer products.
+The package interface waits for every constant product and validates storage
+against their immutable table without recursively reevaluating them. An
+unresolved declaration/member set leaves an explicit synthesis product waiting
+and keeps the name/interface products of every dependent package blocked. An
+accepted overlay appends successor products and marks the affected former interface
 slice superseded; unrelated products remain authoritative.
 
 A declaration/member expansion rebuilds the changed package and transitive

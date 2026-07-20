@@ -28,10 +28,14 @@ Status: temporary bootstrap architecture limit; not a Draft language limit.
 
 The command-local semantic product graph currently owns target/source/parsed
 inputs, package name and interface barriers, opaque interface synthesis waits,
-and their source-generation transitions. The declaration task collects and
-binds unconditional source once and append-only materializes selected package
-branches. Type, constant, member, and layout readiness still runs on private
-package copies, and cross-package generic layout still uses an owner retry.
+named constants during complete compilation, and their source-generation
+transitions. The declaration task collects and binds unconditional source once
+and append-only materializes selected package branches. Each final named
+constant has an explicit product and dependency edges; interface-synthesis
+discovery still uses aggregate constant rounds while condition, member, and
+layout producers are migrated. Type, conditional-selection, member, and layout
+readiness still runs on private package copies, and cross-package generic layout
+still uses an owner retry.
 Procedure bodies, effect closure, denials, and MIR are still package-wide
 phases. Those mechanisms are explicit remaining deletion work in the
 [semantic work graph implementation plan](semantic-work-graph-implementation-plan.md),

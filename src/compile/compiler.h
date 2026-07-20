@@ -7,8 +7,11 @@
 // lifetime must enclose the result and every continuation or diagnostic render.
 //
 // Compilation is deterministic and provider-free. A dynamic semantic product
-// graph orders target, source, parsed-file, package-name, synthesis, and package
-// interface facts; dependencies publish before consumers. An unchanged source
+// graph orders target, source, parsed-file, package-name, named-constant,
+// synthesis, and package-interface facts; dependencies publish before
+// consumers. Constant workers evaluate one root against immutable published
+// prerequisites; the coordinator interns task-local structural type values and
+// publishes constants in product-ID order. An unchanged source
 // graph advances from interface discovery to semantic closure to target
 // lowering. A checked source overlay appends a successor source generation and
 // new declaration products only for affected packages, then reuses or extends
@@ -134,6 +137,10 @@ struct PackageBodyWorkKey {
 struct CompiledPackage {
   PackageIdentity identity;
   std::vector<CompiledAssemblySource> assembly_sources;
+  // PackageNameSet publishes this terminal declaration/type payload before
+  // named constants are ready. ConstantValue tasks fill published_constants;
+  // PackageInterface consumes the record into declarations and clears it.
+  PackageDeclarationDiscovery declaration_discovery;
   // declarations is the immutable baseline for declaration_generation. Body
   // checking receives it by const reference and owns all later semantic rows in
   // bodies; no continuation may append into this value.
@@ -236,6 +243,10 @@ struct PackageSemanticProducts {
   std::vector<SemanticProductId> parsed_files;
   SemanticProductId imports;
   SemanticProductId name_set;
+  // One real ConstantValue product per final local Constant symbol, in stable
+  // SymbolId order. Dependencies discovered by evaluation are graph edges;
+  // this vector is only the typed package index used during publication.
+  std::vector<SemanticProductId> constants;
   // Present only when this generation's name-set task discovers one opaque
   // declaration/member synthesis set. name_set blocks on this waiting row and
   // package_interface therefore cannot publish to consumers.
@@ -256,6 +267,9 @@ struct WorkspaceSemanticProducts {
   SemanticProductId source_generation;
   std::vector<PackageSemanticProducts> packages;
   std::vector<PackageId> package_by_product;
+  // Parallel to SemanticProductGraph. Non-constant products contain an invalid
+  // SymbolId; ConstantValue rows name their package-local root declaration.
+  std::vector<SymbolId> constant_by_product;
 };
 
 struct CompileWorkspaceResult {

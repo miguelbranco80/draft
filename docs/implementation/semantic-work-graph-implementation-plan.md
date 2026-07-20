@@ -46,9 +46,15 @@ gate.
    package is now published directly, so the redundant final aggregate type
    replay is gone. The remaining work is to make those producers individual
    graph tasks and replace the private type/constant/layout readiness copies.
-   The constant evaluator can now produce one named constant with explicit
-   constant and type-facet blockers; wiring those attempts into the workspace
-   product graph is the next replacement gate.
+   Complete workspace compilation now schedules every final package-scope
+   constant as an individual product with explicit constant dependencies,
+   coordinator-owned structural-type interning, and an interface barrier that
+   consumes published local values without recomputation. Ready imported
+   constants remain upstream interface inputs and are copied to consumer-local
+   proxy bindings at finalization. The remaining declaration
+   work is to productize conditional discovery and type/member/layout facets,
+   extend the same path through interface-synthesis waits, and then delete the
+   private readiness attempts and aggregate compatibility composition.
 
 4. **Canonical generic type demand.** Give every concrete type application one
    canonical command-local key and owner task. Cross-package owner evaluation

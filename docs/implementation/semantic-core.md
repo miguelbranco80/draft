@@ -56,11 +56,17 @@ reference to another unpublished local constant is not evaluated recursively;
 the coordinator can add the corresponding `ConstantValue` edge. The attempt
 owns inferred root type, structural-type additions, synthesis discoveries, and
 diagnostics in its private package snapshot. Package scheduling has not yet
-replaced the remaining whole-table discovery call with these products. The
-semantic entry point now exposes the terminal declaration/type discovery
-payload separately from final storage and target validation. Its product-aware
-finalizer consumes a table of already published constants and rechecks required
-conditions without recursively recomputing any named constant.
+replaced the conditional-discovery rounds with individual products. Complete
+workspace compilation does schedule every final package-scope constant as a
+real `ConstantValue` product, however. The semantic entry point exposes the
+terminal declaration/type discovery payload separately from final storage and
+target validation; its product-aware finalizer consumes the published constant
+table and rechecks required conditions without recursively recomputing a named
+constant. Interface-synthesis discovery retains aggregate constant evaluation
+until synthesis waits and conditional expressions are product outcomes too.
+Ready constants imported through dependency interfaces are not duplicated as
+consumer products. The finalizer copies their already translated values under
+the consumer-local proxy IDs before body checking and validation context use.
 
 ## Compile-time type values and inspection
 
@@ -258,10 +264,12 @@ package. Initial collection and interface binding happen once. Each package
 `when` records the foreign/export/deny context needed to append its selected
 branch; when the condition becomes ready, only that branch is added to the same
 declaration table. Unconditional declarations and existing IDs are not
-recollected. Type, constant, member, and layout readiness still uses private
-copies until those facts move into individual semantic products; one final
-authoritative pass supplies signatures, constants, selected member regions,
-layouts, and preliminary interface facts.
+recollected. Type, conditional-selection, member, and layout readiness still
+uses private copies until those facts move into individual semantic products.
+Complete workspace compilation publishes final named constants individually
+before the package-interface barrier; direct semantic tests and
+interface-synthesis discovery retain the aggregate compatibility composition
+during migration.
 
 Body checking never appends to that retained value. It copies the declaration
 prefix and returns the enriched SemanticPackage, body constants, and HIR as one
