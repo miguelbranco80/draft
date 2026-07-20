@@ -269,6 +269,12 @@ struct HirProcedure {
   // denials, and synthesis see the symbolic body. Only concrete instance rows
   // are executable and proceed to MIR.
   bool parametric_template = false;
+  // A non-parametric procedure whose signature contains the layout-less `type`
+  // meta-value is callable only by constant evaluation. Its body is still
+  // checked and remains available to agent/effect analysis, but no physical
+  // calling convention exists for passing or returning those values, so the
+  // row must stop before MIR just like a symbolic template row.
+  bool compile_time_only = false;
 };
 
 class HirProgram {

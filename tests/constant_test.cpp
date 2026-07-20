@@ -1701,6 +1701,27 @@ dead_conditional_type: i64 = 42 if true else "wrong"
                     std::string::npos);
 }
 
+void test_global_type_value_storage_is_rejected(TestState &state) {
+  AnalyzedSource source(R"draft(
+package conditions
+
+inferred := u32
+explicit: type = u64
+aggregate := (u16, true)
+)draft");
+  EXPECT(state, !source.analysis.ok);
+  for (const draft::Diagnostic &diagnostic : source.diagnostics.diagnostics()) {
+    if (diagnostic.severity == draft::DiagnosticSeverity::Error) {
+      EXPECT(state, diagnostic.range.is_valid());
+    }
+  }
+  const std::string rendered =
+      draft::render_diagnostics(source.sources, source.diagnostics);
+  EXPECT(state, rendered.find(
+      "global storage cannot contain compile-time 'type' values") !=
+      std::string::npos);
+}
+
 void test_constant_dependency_depth_is_bounded(TestState &state) {
   std::string text = "package conditions\n\n";
   constexpr std::size_t constant_count = 320;
@@ -1849,6 +1870,7 @@ int main() {
   test_compile_time_string_views(state);
   test_operator_type_boundaries(state);
   test_global_initializers(state);
+  test_global_type_value_storage_is_rejected(state);
   test_constant_dependency_depth_is_bounded(state);
   test_type_values_and_structural_queries(state);
 

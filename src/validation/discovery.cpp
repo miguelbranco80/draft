@@ -46,7 +46,7 @@ namespace {
 [[nodiscard]] bool has_body(const HirProgram &hir, SymbolId procedure) {
   for (const HirProcedure &candidate : hir.procedures()) {
     if (candidate.symbol == procedure && candidate.valid &&
-        !candidate.parametric_template) {
+        !candidate.parametric_template && !candidate.compile_time_only) {
       return true;
     }
   }

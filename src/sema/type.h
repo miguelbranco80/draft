@@ -232,6 +232,13 @@ public:
   [[nodiscard]] bool is_integer(TypeId id) const;
   [[nodiscard]] bool is_float(TypeId id) const;
   [[nodiscard]] bool is_number(TypeId id) const;
+  // Reports whether a value of this type would contain Draft's layout-less
+  // compile-time `type` value, directly or through an aggregate, view, pointer,
+  // distinct wrapper, or procedure signature. Recursive nominal graphs are
+  // followed with cycle detection. TypeParameter also returns true because a
+  // symbolic template must be specialized before this question can become a
+  // runtime representation decision.
+  [[nodiscard]] bool contains_compile_time_type(TypeId id) const;
 
 private:
   [[nodiscard]] TypeId add(Type type);
@@ -241,6 +248,8 @@ private:
   [[nodiscard]] TypeId add_compiler_enum(
       std::string name, TypeId backing, std::size_t member_count);
   [[nodiscard]] TypeLayout aggregate_layout(const std::vector<TypeId> &members) const;
+  [[nodiscard]] bool contains_compile_time_type(
+      TypeId id, std::vector<TypeId> &active) const;
   // Procedure signatures may intern tuples while a nominal member is still a
   // forward-declared shell. Completing that nominal must publish any newly
   // computable tuple layout before body checking or MIR observes the tuple.

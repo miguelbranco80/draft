@@ -26,8 +26,14 @@ The compiler-defined `Type_Kind`, `Type_Byte_Order`, and `Calling_Convention`
 enums are canonical builtin TypeStore rows. Their source-facing alternatives
 are maintained beside the query implementation rather than manufactured as
 source symbols. A folded enum result may reach runtime as its ordinary integer
-representation; the `type` meta-value itself must be gone before MIR and is
-diagnosed defensively if it reaches the backend.
+representation. Before MIR, the body checker walks every executable HIR value
+and rejects automatic storage, arguments, results, aggregates, and procedure
+values whose type contains the `type` meta-value; global initializer checking
+enforces the same boundary for package storage. A procedure whose signature
+contains `type` remains available to constant evaluation and receives ordinary
+body checking, but is marked compile-time-only and omitted from MIR. LLVM keeps
+its final diagnostic only as an internal fail-closed check, not as the first
+user-facing enforcement point.
 
 ## Instance-dependent `when` and refinement
 

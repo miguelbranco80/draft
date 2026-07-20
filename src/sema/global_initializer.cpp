@@ -416,6 +416,10 @@ private:
         diagnostics_.error(
             symbol.name_range,
             "global variable requires a type or compile-time initializer");
+      } else if (package_.types.contains_compile_time_type(symbol.type)) {
+        diagnostics_.error(
+            symbol.name_range,
+            "global storage cannot contain compile-time 'type' values");
       }
       return;
     }
@@ -450,6 +454,17 @@ private:
             "global initializer requires an explicit type");
         return;
       }
+    }
+    // Type values and aggregates containing them remain legal constants, but a
+    // package variable always denotes native storage. Reject that boundary here
+    // after inferred types are known and before the initializer is installed in
+    // the backend-facing table. This is the global counterpart of the HIR
+    // runtime-value validation performed for automatic storage and calls.
+    if (package_.types.contains_compile_time_type(symbol.type)) {
+      diagnostics_.error(
+          syntax->node(*value_node).range,
+          "global storage cannot contain compile-time 'type' values");
+      return;
     }
     if (evaluated->value.kind == ConstantKind::Procedure &&
         evaluated->type.is_valid() && evaluated->type != symbol.type) {

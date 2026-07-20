@@ -513,6 +513,74 @@ TypeId TypeStore::procedure(
   return add(std::move(result));
 }
 
+bool TypeStore::contains_compile_time_type(TypeId id) const {
+  std::vector<TypeId> active;
+  return contains_compile_time_type(id, active);
+}
+
+bool TypeStore::contains_compile_time_type(
+    TypeId id, std::vector<TypeId> &active) const {
+  if (!id.is_valid()) return false;
+  if (std::find(active.begin(), active.end(), id) != active.end()) {
+    // A direct recursive aggregate is rejected while layout is computed; the
+    // cycles which remain here pass through pointer/view structure. Reaching an
+    // active row therefore proves only recursion, not the presence of `type`.
+    return false;
+  }
+
+  const Type &candidate = type(id);
+  if (candidate.kind == TypeKind::MetaType ||
+      candidate.kind == TypeKind::TypeParameter) {
+    return true;
+  }
+
+  active.push_back(id);
+  bool contains = false;
+  switch (candidate.kind) {
+  case TypeKind::Pointer:
+  case TypeKind::MultiPointer:
+  case TypeKind::Slice:
+  case TypeKind::Array:
+  case TypeKind::Simd:
+  case TypeKind::Distinct:
+    contains = candidate.element.is_valid() &&
+        contains_compile_time_type(candidate.element, active);
+    break;
+  case TypeKind::Tuple:
+  case TypeKind::Procedure:
+  case TypeKind::Struct:
+  case TypeKind::TaggedUnion:
+  case TypeKind::RawUnion:
+    for (TypeId member : candidate.members) {
+      if (contains_compile_time_type(member, active)) {
+        contains = true;
+        break;
+      }
+    }
+    break;
+  case TypeKind::Invalid:
+  case TypeKind::Void:
+  case TypeKind::UntypedInteger:
+  case TypeKind::UntypedFloat:
+  case TypeKind::Bool:
+  case TypeKind::BooleanStorage:
+  case TypeKind::SignedInteger:
+  case TypeKind::UnsignedInteger:
+  case TypeKind::Float:
+  case TypeKind::Rune:
+  case TypeKind::EndianScalar:
+  case TypeKind::RawPointer:
+  case TypeKind::CString:
+  case TypeKind::String:
+  case TypeKind::Enum:
+  case TypeKind::MetaType:
+  case TypeKind::TypeParameter:
+    break;
+  }
+  active.pop_back();
+  return contains;
+}
+
 TypeId TypeStore::distinct(std::string name, TypeId underlying, SourceRange declaration) {
   Type result;
   result.kind = TypeKind::Distinct;

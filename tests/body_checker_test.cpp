@@ -2486,6 +2486,83 @@ bad_queries :: proc() {
       std::string::npos);
 }
 
+void test_compile_time_type_runtime_boundary(TestState &state) {
+  CheckedSource valid(R"draft(
+package bodies
+
+choose_type :: proc(use_wide: bool) -> type {
+    if use_wide {
+        return u64
+    }
+    return u8
+}
+
+type_rank :: proc(candidate: type) -> usize {
+    return 8 if candidate == u64 else 1
+}
+
+Chosen :: choose_type(true)
+Chosen_Rank :: type_rank(Chosen)
+
+main :: proc() {
+    static_assert(Chosen == u64)
+    static_assert(Chosen_Rank == 8)
+}
+)draft");
+  if (valid.diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(valid.sources, valid.diagnostics);
+  }
+  EXPECT(state, valid.semantics.ok);
+  EXPECT(state, valid.bodies.ok);
+  EXPECT(state, !valid.diagnostics.has_errors());
+
+  std::size_t compile_time_only = 0;
+  for (const draft::HirProcedure &procedure :
+       valid.bodies.program.procedures()) {
+    const draft::Symbol &symbol =
+        valid.semantics.package.symbols.symbol(procedure.symbol);
+    if (symbol.name == "choose_type" || symbol.name == "type_rank") {
+      EXPECT(state, procedure.compile_time_only);
+      ++compile_time_only;
+    } else if (symbol.name == "main") {
+      EXPECT(state, !procedure.compile_time_only);
+    }
+  }
+  EXPECT(state, compile_time_only == 2);
+
+  CheckedSource invalid(R"draft(
+package bodies
+
+type_rank :: proc(candidate: type) -> usize {
+    return 1 if candidate == u8 else 2
+}
+
+main :: proc() {
+    inferred := u32
+    explicit: type
+    _ = u64
+    _ = type_rank(u8)
+    callback := type_rank
+    aggregate := (u16, true)
+}
+)draft");
+  EXPECT(state, !invalid.bodies.ok);
+  for (const draft::Diagnostic &diagnostic :
+       invalid.diagnostics.diagnostics()) {
+    if (diagnostic.severity == draft::DiagnosticSeverity::Error) {
+      EXPECT(state, diagnostic.range.is_valid());
+    }
+  }
+  const std::string rendered =
+      draft::render_diagnostics(invalid.sources, invalid.diagnostics);
+  EXPECT(state, rendered.find(
+      "runtime storage cannot contain compile-time 'type' values") !=
+      std::string::npos);
+  EXPECT(state, rendered.find(
+      "value containing compile-time 'type' cannot reach runtime") !=
+      std::string::npos);
+}
+
 void test_dependent_when_type_refinement(TestState &state) {
   CheckedSource valid(R"draft(
 package bodies
@@ -2614,6 +2691,7 @@ int main() {
   test_numeric_context_boundaries(state);
   test_builtin_context_value(state);
   test_compile_time_type_inspection(state);
+  test_compile_time_type_runtime_boundary(state);
   test_dependent_when_type_refinement(state);
 
   if (state.failures != 0) {

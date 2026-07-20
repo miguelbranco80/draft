@@ -7514,6 +7514,91 @@ private:
     return false;
   }
 
+  // Validates the final boundary between compile-time values and executable
+  // HIR. Exact type values are useful throughout name resolution, constant
+  // evaluation, and symbolic body checking, so rejecting them in the generic
+  // expression checker would also reject `static_assert`, `when`, and
+  // compile-time procedure bodies. At this point the enclosing procedure is
+  // known to require a physical runtime ABI, making every reachable HIR value
+  // an actual storage/pass/return path covered by specification section 4.
+  void validate_runtime_expression(
+      HirExpressionId expression_id,
+      bool direct_callee,
+      std::vector<bool> &validated) {
+    if (!expression_id.is_valid() ||
+        static_cast<std::size_t>(expression_id.value) >= validated.size()) {
+      return;
+    }
+    const HirExpression &expression = hir_.expression(expression_id);
+
+    // An ordinary procedure identity is represented by a runtime pointer even
+    // when the procedure's own signature is compile-time-only. In direct callee
+    // position it is not itself a passed `type` value; the call result and each
+    // argument below still expose every illegal runtime type path. The same
+    // procedure used as data is rejected because direct_callee is then false.
+    const bool procedure_callee = direct_callee && expression.type.is_valid() &&
+        semantic_.types.type(expression.type).kind == TypeKind::Procedure;
+    if (!procedure_callee) {
+      if (validated[expression_id.value]) return;
+      validated[expression_id.value] = true;
+      if (expression.type.is_valid() &&
+          semantic_.types.contains_compile_time_type(expression.type)) {
+        diagnostics_.error(
+            expression.range,
+            "value containing compile-time 'type' cannot reach runtime");
+      }
+    }
+
+    for (std::size_t index = 0; index < expression.operands.size(); ++index) {
+      validate_runtime_expression(
+          expression.operands[index],
+          expression.kind == HirExpressionKind::Call && index == 0,
+          validated);
+    }
+  }
+
+  void validate_runtime_statement(
+      HirStatementId statement_id, std::vector<bool> &validated) {
+    const HirStatement &statement = hir_.statement(statement_id);
+    bool invalid_local_storage = false;
+    if (statement.kind == HirStatementKind::LocalDeclaration) {
+      for (SymbolId binding : statement.bindings) {
+        const Symbol &symbol = semantic_.symbols.symbol(binding);
+        if (!symbol.type.is_valid() ||
+            !semantic_.types.contains_compile_time_type(symbol.type)) {
+          continue;
+        }
+        diagnostics_.error(
+            symbol.name_range,
+            "runtime storage cannot contain compile-time 'type' values");
+        invalid_local_storage = true;
+      }
+    }
+
+    // The invalid binding already diagnoses the same initializer value. Avoid
+    // emitting a second error at its expression while still visiting all other
+    // statement forms, including discard assignment and call arguments where
+    // no local Symbol exists to carry the forbidden type.
+    if (!invalid_local_storage) {
+      for (HirExpressionId expression : statement.expressions) {
+        validate_runtime_expression(expression, false, validated);
+      }
+    }
+    for (HirStatementId header : statement.header_statements) {
+      validate_runtime_statement(header, validated);
+    }
+    for (HirBlockId block : statement.blocks) {
+      validate_runtime_block(block, validated);
+    }
+  }
+
+  void validate_runtime_block(
+      HirBlockId block_id, std::vector<bool> &validated) {
+    for (HirStatementId statement : hir_.block(block_id).statements) {
+      validate_runtime_statement(statement, validated);
+    }
+  }
+
   // Concrete parametric instances retain their source declaration for denial
   // contracts and source identity. Nested instances use the same table, so one
   // shallow lookup reaches the lexical declaration that owns the syntax.
@@ -7595,12 +7680,19 @@ private:
         !block_definitely_returns(checked_body)) {
       diagnostics_.error(procedure.range, "not every path returns a value");
     }
+    const bool compile_time_only = !parametric_template &&
+        semantic_.types.contains_compile_time_type(procedure_symbol.type);
+    if (!parametric_template && !compile_time_only) {
+      std::vector<bool> validated(hir_.expression_count(), false);
+      validate_runtime_block(checked_body, validated);
+    }
     hir_.add_procedure(
         {id,
          procedure_symbol.type,
          checked_body,
          diagnostics_.error_count() == initial_errors,
-         parametric_template});
+         parametric_template,
+         compile_time_only});
     current_procedure_ = saved_procedure;
     current_procedure_is_template_ = saved_template;
     active_statement_denials_ = saved_denials;

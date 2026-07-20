@@ -440,6 +440,44 @@ main :: proc() {
   EXPECT(state, saw_populated);
 }
 
+void test_compile_time_type_procedures_erase_before_mir(TestState &state) {
+  LoweredSource source(R"draft(
+package mir
+
+choose_type :: proc(wide: bool) -> type {
+    return u64 if wide else u8
+}
+
+type_rank :: proc(candidate: type) -> usize {
+    return 8 if candidate == u64 else 1
+}
+
+Chosen :: choose_type(true)
+Rank :: type_rank(Chosen)
+
+main :: proc() -> int {
+    static_assert(Chosen == u64)
+    static_assert(Rank == 8)
+    return 0
+}
+)draft");
+  if (source.diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(
+        source.sources, source.diagnostics);
+  }
+  EXPECT(state, source.semantics.ok);
+  EXPECT(state, source.bodies.ok);
+  EXPECT(state, source.mir.ok);
+  EXPECT(state, !source.diagnostics.has_errors());
+  EXPECT(state, source.bodies.program.procedures().size() == 3);
+  EXPECT(state, source.mir.program.procedures().size() == 1);
+  if (source.mir.program.procedures().size() == 1) {
+    const draft::Symbol &symbol = source.semantics.package.symbols.symbol(
+        source.mir.program.procedures().front().symbol);
+    EXPECT(state, symbol.name == "main");
+  }
+}
+
 } // namespace
 
 int main() {
@@ -449,6 +487,7 @@ int main() {
   test_required_integer_traps_are_explicit(state);
   test_disabled_assertions_do_not_evaluate_operands(state);
   test_static_argument_packs_erase_before_mir(state);
+  test_compile_time_type_procedures_erase_before_mir(state);
 
   if (state.failures != 0) {
     std::cerr << state.failures << " MIR expectation(s) failed\n";
