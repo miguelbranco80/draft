@@ -14,6 +14,12 @@ query implementation in `sema/type_inspection`; query applicability is not
 reimplemented by LLVM lowering or core packages. `type_of` checks an operand's
 static type without retaining it as an evaluated operand, so an unused call,
 trap, or runtime read cannot become observable through inspection.
+Package-constant evaluation uses a non-executing declared-result reader to fold
+the type value, then sends every initializer containing `type_of` through the
+ordinary BodyChecker expression path. That preflight validates complete call
+arity, arguments, slicing, members, and nested intrinsics without lowering or
+executing the inspected expression; the result reader is not a second source
+type checker.
 
 At interface publication, every type-valued constant recursively rewrites its
 package-local TypeId into the same `InterfaceTypeId` graph used by public
@@ -358,7 +364,7 @@ traps, and message construction used solely by an assertion cannot survive,
 and no condition is converted into an optimizer assumption.
 
 The versioned `draft.resolved-program.v6` hash records the selected root and
-assertion mode beside compiler content v133. `build`, `resolve`, and `judge`
+assertion mode beside compiler content v134. `build`, `resolve`, and `judge`
 expose the same explicit flag so a provider-free manifest cannot be replayed
 under a different mode. Test and benchmark compilations deliberately override
 the release choice to assertions on and receive their own resolved validation

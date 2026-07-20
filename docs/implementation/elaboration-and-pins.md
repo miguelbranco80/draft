@@ -327,7 +327,7 @@ upper source re-evaluates to the displayed value at the site. Other loop shapes
 produce no inferred range.
 
 `draft-agent-obligation-v19`, synthesis request v21 / prompt v22, judgment
-request/prompt v4, and compiler content v133 identities make these facts and
+request/prompt v4, and compiler content v134 identities make these facts and
 the compiler-checked correction policy stale-pin and evidence inputs. The
 synthesis adapter uses provider identity `openai-codex-cli-v28`; the judgment
 adapter uses `openai-codex-cli-v23`. Both recheck the canonical
@@ -365,5 +365,6 @@ Focused overlay coverage proves that a stale pin remains rejected in the normal
 mode. A compiler integration regression constructs a declaration pin whose
 generated constant is consumed by a test-only file, authenticates the ordinary
 graph, and proves the derived validation graph compiles the test. Compiler
-content v129 invalidates earlier resolved-program and evidence identities rather
-than silently changing this trust boundary.
+content identity includes this trust boundary, so changing it invalidates prior
+resolved-program and evidence identities rather than silently accepting them
+under different authentication rules.
