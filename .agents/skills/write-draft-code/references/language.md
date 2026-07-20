@@ -117,7 +117,8 @@ pointer with no Draft context. Neither is a closure.
 ## Literals and source rules
 
 Source is UTF-8, but identifiers are ASCII letters/digits/underscore with a
-non-digit first character. `_` alone is the discard pattern.
+non-digit first character. `_` alone is the discard pattern. `file` and
+`folder` are reserved attachment keywords, not legal identifier names.
 
 Integer literals support decimal, `0b`, `0o`, `0x`, and digit separators.
 Decimal floats require digits on both sides of `.`; exponent-only forms such as
@@ -290,7 +291,10 @@ Use `cast[T](value)` for explicit conversion. Important rules include:
 - Integer/float conversion to a float rounds to nearest with ties to even.
 - Float-to-integer truncates and traps for NaN/out-of-range.
 - Conversion into `rune` traps for a non-Unicode scalar.
-- Conversion into an enum traps unless a declared member has the value.
+- Enums cast only to or from their exact backing integer type; conversion into
+  an enum traps unless a declared member has the value. Reach a different
+  integer type with an explicit second cast, for example
+  `cast[int](cast[u8](result))` for an `enum u8`.
 - Compatible data pointer/raw-pointer/`uintptr` casts preserve address bits.
 - `bool` and boolean-storage casts map false/true to zero/one and accept any
   nonzero storage value as true.

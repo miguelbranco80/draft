@@ -124,22 +124,22 @@ Acquire an owned resource into a named local and register its matching cleanup
 as soon as acquisition succeeds:
 
 ```draft
-(file, error) := os.open_for_reading(path)
+(handle, error) := os.open_for_reading(path)
 if error != .none {
     return .open_failed
 }
-defer os.close(&file)
+defer os.close(&handle)
 ```
 
 `defer` accepts a call statement. It evaluates and saves the callee and
 arguments immediately, then invokes calls in LIFO order on normal scope exit,
 `return`, `break`, and `continue`. A trap does not run deferred calls.
 
-Because `defer os.close(&file)` saves the pointer immediately, `file` must stay
-at that address. Do not copy a new owner over the variable or transfer it after
-registering cleanup. When cleanup can fail and the failure matters to program
-semantics, perform it explicitly on the success path instead of hiding the
-result in `defer`.
+Because `defer os.close(&handle)` saves the pointer immediately, `handle` must
+stay at that address. Do not copy a new owner over the variable or transfer it
+after registering cleanup. When cleanup can fail and the failure matters to
+program semantics, perform it explicitly on the success path instead of hiding
+the result in `defer`.
 
 There is no automatic cleanup at a closing brace. A bare block is still useful
 for making ownership and its deferred cleanup local and visible.

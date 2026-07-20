@@ -172,8 +172,9 @@ defined view.
 ### Source text and literals
 
 Source is UTF-8. Identifiers match `[A-Za-z_][A-Za-z0-9_]*`; `_` alone is the
-discard pattern. `true` and `false` are `bool` literals. Tokens use longest
-match.
+discard pattern. `true` and `false` are `bool` literals. `file` and `folder`
+are reserved attachment keywords and cannot be used as identifiers; their
+attachment role is described below. Tokens use longest match.
 
 The lexer inserts `;` at a newline or end of file after an identifier or
 literal, `break`, `continue`, `return`, `)`, `]`, `}`, postfix `^`, or `---`;

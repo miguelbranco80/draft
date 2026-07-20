@@ -150,7 +150,7 @@ variadic helpers. Do not assume these aliases describe a future Windows or
 All operations return `io.Error`:
 
 ```draft
-console.write_to(file, text)
+console.write_to(handle, text)
 console.print(text)
 console.println("count:", count, true)
 console.println()
@@ -391,12 +391,12 @@ os.file_from_descriptor(descriptor)
 os.open(path: cstring, flags, mode) -> (os.File, io.Error)
 os.open_for_reading(path: cstring) -> (os.File, io.Error)
 os.create_for_writing(path: cstring) -> (os.File, io.Error)
-os.read(file, destination) -> (usize, io.Error)
-os.write(file, source) -> (usize, io.Error)
-os.write_all(file, source) -> io.Error
-os.write_text(file, source: string) -> (usize, io.Error)
-os.write_text_all(file, source: string) -> io.Error
-os.close(&file) -> bool
+os.read(handle, destination) -> (usize, io.Error)
+os.write(handle, source) -> (usize, io.Error)
+os.write_all(handle, source) -> io.Error
+os.write_text(handle, source: string) -> (usize, io.Error)
+os.write_text_all(handle, source: string) -> io.Error
+os.close(&handle) -> bool
 os.remove(path: cstring) -> bool
 ```
 

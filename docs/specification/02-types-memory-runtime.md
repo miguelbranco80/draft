@@ -665,7 +665,7 @@ whose private runtime ABI is:
 
 ```text
 c proc(kind: u8, first, second, length: usize,
-       file: cstring, line, column: usize)
+       source_file: cstring, line, column: usize)
 ```
 
 Kind zero reports indexing (`first` is the index and `second` is zero); kind one
@@ -723,7 +723,7 @@ declarations:
 package runtime
 
 pub Assertion_Failure_Proc :: proc(
-    condition, message, file: string,
+    condition, message, source_file: string,
     line, column: usize,
 )
 
