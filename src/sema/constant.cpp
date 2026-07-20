@@ -153,7 +153,8 @@ public:
       const std::vector<ConstantTypeBinding> *local_types = nullptr,
       const std::vector<ConstantStaticPackBinding> *local_packs = nullptr,
       SymbolId product_root = {},
-      const ConstantTable *published_constants = nullptr)
+      const ConstantTable *published_constants = nullptr,
+      bool published_only = false)
       : sources_(sources), loaded_(loaded), semantic_(semantic), target_(target),
         synthesis_mode_(synthesis_mode), diagnose_unready_(diagnose_unready),
         diagnostics_(diagnostics),
@@ -161,7 +162,8 @@ public:
         local_packs_(local_packs),
         states_(semantic.symbols.symbol_count(), BindingState::Unvisited),
         values_(semantic.symbols.symbol_count()), product_root_(product_root),
-        published_constants_(published_constants) {}
+        published_constants_(published_constants),
+        published_only_(published_only) {}
 
   // Runs one graph-owned constant without recursively claiming another local
   // constant's result. Dependency rows are canonicalized before returning so
@@ -4802,7 +4804,23 @@ private:
       values_[id.value] = imported.constant;
       return ready(imported.constant, initial.type);
     }
-    if (product_root_.is_valid() && id != product_root_) {
+    if (published_only_ &&
+        (initial.kind == SymbolKind::Constant ||
+         initial.kind == SymbolKind::UnresolvedDeclaration)) {
+      if (published_constants_ != nullptr) {
+        if (const ConstantValue *published =
+                published_constants_->find(id)) {
+          state = BindingState::Ready;
+          values_[id.value] = *published;
+          return ready(*published, initial.type);
+        }
+      }
+      state = BindingState::Pending;
+      return pending();
+    }
+    if (product_root_.is_valid() && id != product_root_ &&
+        (initial.kind == SymbolKind::Constant ||
+         initial.kind == SymbolKind::UnresolvedDeclaration)) {
       if (published_constants_ != nullptr) {
         if (const ConstantValue *published =
                 published_constants_->find(id)) {
@@ -5664,6 +5682,7 @@ private:
   // evaluation leaves product_root invalid and retains recursive lazy binding.
   SymbolId product_root_;
   const ConstantTable *published_constants_ = nullptr;
+  bool published_only_ = false;
   std::vector<SymbolId> constant_dependencies_;
   std::vector<ConstantTypeFacetDependency> type_dependencies_;
   std::vector<LocalFrame> local_frames_;
@@ -5800,6 +5819,33 @@ CompileTimeRoundResult evaluate_compile_time_round(
       synthesis_mode,
       diagnose_unready,
       diagnostics);
+  return evaluator.run(selections);
+}
+
+CompileTimeRoundResult validate_compile_time_products(
+    const SourceManager &sources,
+    const LoadedPackage &loaded,
+    SemanticPackage &package,
+    const TargetFacts &target,
+    ConditionalSelections &selections,
+    const ConstantTable &published_constants,
+    CompileTimeSynthesisMode synthesis_mode,
+    bool diagnose_unready,
+    DiagnosticSink &diagnostics) {
+  ConstantEvaluator evaluator(
+      sources,
+      loaded,
+      package,
+      target,
+      synthesis_mode,
+      diagnose_unready,
+      diagnostics,
+      &published_constants,
+      nullptr,
+      nullptr,
+      {},
+      &published_constants,
+      true);
   return evaluator.run(selections);
 }
 

@@ -187,6 +187,21 @@ struct CompileTimeExpressionDiscoveryResult {
     bool diagnose_unready,
     DiagnosticSink &diagnostics);
 
+// Rechecks package `when` conditions and the complete named-constant set using
+// only already published ConstantValue products. Missing local constants stay
+// pending and receive the ordinary required-constant diagnostic; the validator
+// never recursively computes a second copy of a product result.
+[[nodiscard]] CompileTimeRoundResult validate_compile_time_products(
+    const SourceManager &sources,
+    const LoadedPackage &loaded,
+    SemanticPackage &package,
+    const TargetFacts &target,
+    ConditionalSelections &selections,
+    const ConstantTable &published_constants,
+    CompileTimeSynthesisMode synthesis_mode,
+    bool diagnose_unready,
+    DiagnosticSink &diagnostics);
+
 // Evaluates exactly root. References to other local package constants consume
 // published_constants or become explicit blockers; they are never evaluated
 // recursively by this task. Imported ready constants remain ordinary immutable

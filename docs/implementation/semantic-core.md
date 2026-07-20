@@ -56,7 +56,11 @@ reference to another unpublished local constant is not evaluated recursively;
 the coordinator can add the corresponding `ConstantValue` edge. The attempt
 owns inferred root type, structural-type additions, synthesis discoveries, and
 diagnostics in its private package snapshot. Package scheduling has not yet
-replaced the remaining whole-table discovery call with these products.
+replaced the remaining whole-table discovery call with these products. The
+semantic entry point now exposes the terminal declaration/type discovery
+payload separately from final storage and target validation. Its product-aware
+finalizer consumes a table of already published constants and rechecks required
+conditions without recursively recomputing any named constant.
 
 ## Compile-time type values and inspection
 

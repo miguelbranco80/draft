@@ -263,14 +263,14 @@ SemanticAnalysisResult analyze_package_semantics(
       diagnostics);
 }
 
-SemanticAnalysisResult analyze_package_semantics(
+PackageDeclarationDiscovery discover_package_declarations(
     const SourceManager &sources,
     const LoadedPackage &loaded,
     const TargetFacts &target,
     const AvailablePackageImports &imports,
     CompileTimeSynthesisMode synthesis_mode,
     DiagnosticSink &diagnostics) {
-  SemanticAnalysisResult result;
+  PackageDeclarationDiscovery result;
   const std::size_t initial_error_count = diagnostics.error_count();
   std::vector<ResolvedIntegerExpression> resolved_integers;
   std::vector<SyntaxReference> blocked_integer_synthesis;
@@ -373,6 +373,9 @@ SemanticAnalysisResult analyze_package_semantics(
         integer_round.newly_blocked == 0) {
       terminal_package = std::move(provisional);
       terminal_type_diagnostics = std::move(provisional_type_diagnostics);
+      result.unresolved_conditionals = round.unresolved_conditionals;
+      result.compile_time_synthesis_procedures =
+          round.compile_time_procedures;
       break;
     }
   }
@@ -382,7 +385,7 @@ SemanticAnalysisResult analyze_package_semantics(
     // authoritative declarations for diagnostic inspection, but do not invent
     // a resolved type payload by replaying a pass after the structural error.
     result.package = std::move(declarations);
-    result.ok = false;
+    result.discovery_ok = false;
     return result;
   }
   result.package = std::move(*terminal_package);
@@ -392,20 +395,57 @@ SemanticAnalysisResult analyze_package_semantics(
   // Context now so those early requests receive the same typed field set as
   // later statement/expression synthesis.
   ensure_runtime_context_type(result.package, diagnostics);
+  result.terminal = true;
+  result.discovery_ok =
+      diagnostics.error_count() == initial_error_count;
+  result.resolved_integers = std::move(resolved_integers);
+  result.blocked_integer_synthesis = std::move(blocked_integer_synthesis);
+  return result;
+}
+
+[[nodiscard]] static SemanticAnalysisResult finish_package_semantics_impl(
+    const SourceManager &sources,
+    const LoadedPackage &loaded,
+    const TargetFacts &target,
+    CompileTimeSynthesisMode synthesis_mode,
+    PackageDeclarationDiscovery discovery,
+    bool constants_are_products,
+    DiagnosticSink &diagnostics) {
+  SemanticAnalysisResult result;
+  result.package = std::move(discovery.package);
+  result.selections = std::move(discovery.selections);
+  if (!discovery.terminal) return result;
+
+  const std::size_t initial_error_count = diagnostics.error_count();
   const bool defer_unready_compile_time_dependencies =
       synthesis_mode == CompileTimeSynthesisMode::Discover &&
       (has_structural_synthesis_site(result.package) ||
-       !blocked_integer_synthesis.empty());
-  CompileTimeRoundResult final_round = evaluate_compile_time_round(
-      sources,
-      loaded,
-      result.package,
-      target,
-      result.selections,
-      synthesis_mode,
-      !defer_unready_compile_time_dependencies,
-      diagnostics);
-  result.constants = std::move(final_round.constants);
+       !discovery.blocked_integer_synthesis.empty());
+  CompileTimeRoundResult final_round;
+  if (constants_are_products) {
+    result.constants = std::move(discovery.published_constants);
+    final_round = validate_compile_time_products(
+        sources,
+        loaded,
+        result.package,
+        target,
+        result.selections,
+        result.constants,
+        synthesis_mode,
+        !defer_unready_compile_time_dependencies,
+        diagnostics);
+  } else {
+    final_round = evaluate_compile_time_round(
+        sources,
+        loaded,
+        result.package,
+        target,
+        result.selections,
+        synthesis_mode,
+        !defer_unready_compile_time_dependencies,
+        diagnostics);
+    result.constants = std::move(final_round.constants);
+  }
   if (synthesis_mode == CompileTimeSynthesisMode::Discover) {
     result.compile_time_synthesis_procedures =
         std::move(final_round.compile_time_procedures);
@@ -416,9 +456,9 @@ SemanticAnalysisResult analyze_package_semantics(
             result.package,
             target,
             result.constants,
-            resolved_integers,
+            discovery.resolved_integers,
             synthesis_mode,
-            blocked_integer_synthesis,
+            discovery.blocked_integer_synthesis,
             diagnostics);
     remember_compile_time_procedures(
         result.compile_time_synthesis_procedures,
@@ -441,10 +481,68 @@ SemanticAnalysisResult analyze_package_semantics(
       target,
       diagnostics);
   (void)validate_target_types(result.package.types, target, diagnostics);
-  result.ok = diagnostics.error_count() == initial_error_count &&
+  result.ok = discovery.discovery_ok &&
+      diagnostics.error_count() == initial_error_count &&
       (final_round.unresolved_conditionals == 0 ||
        defer_unready_compile_time_dependencies);
   return result;
+}
+
+SemanticAnalysisResult finish_package_semantics(
+    const SourceManager &sources,
+    const LoadedPackage &loaded,
+    const TargetFacts &target,
+    CompileTimeSynthesisMode synthesis_mode,
+    PackageDeclarationDiscovery discovery,
+    DiagnosticSink &diagnostics) {
+  return finish_package_semantics_impl(
+      sources,
+      loaded,
+      target,
+      synthesis_mode,
+      std::move(discovery),
+      false,
+      diagnostics);
+}
+
+SemanticAnalysisResult finish_package_semantics_from_products(
+    const SourceManager &sources,
+    const LoadedPackage &loaded,
+    const TargetFacts &target,
+    CompileTimeSynthesisMode synthesis_mode,
+    PackageDeclarationDiscovery discovery,
+    DiagnosticSink &diagnostics) {
+  return finish_package_semantics_impl(
+      sources,
+      loaded,
+      target,
+      synthesis_mode,
+      std::move(discovery),
+      true,
+      diagnostics);
+}
+
+SemanticAnalysisResult analyze_package_semantics(
+    const SourceManager &sources,
+    const LoadedPackage &loaded,
+    const TargetFacts &target,
+    const AvailablePackageImports &imports,
+    CompileTimeSynthesisMode synthesis_mode,
+    DiagnosticSink &diagnostics) {
+  PackageDeclarationDiscovery discovery = discover_package_declarations(
+      sources,
+      loaded,
+      target,
+      imports,
+      synthesis_mode,
+      diagnostics);
+  return finish_package_semantics(
+      sources,
+      loaded,
+      target,
+      synthesis_mode,
+      std::move(discovery),
+      diagnostics);
 }
 
 } // namespace draft
