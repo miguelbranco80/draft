@@ -104,7 +104,7 @@ struct InterfaceType {
   bool c_representation = false;
   std::uint32_t requested_alignment = 0;
   std::vector<InterfaceMember> nominal_members;
-  // A generic type application retains the template identity in the legacy
+  // A generic type application retains the template identity in the
   // nominal_* fields and its type/value arguments here. Nominal applications
   // preserve type identity; concrete structural aliases use the same packet
   // only to cache their canonical result. Arguments may still name the

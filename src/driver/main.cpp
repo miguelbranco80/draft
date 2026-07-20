@@ -1128,8 +1128,8 @@ int run_agent_command(
     if (!external_inputs_configured) {
       // A preserved manifest summary remains a semantic compiler input. The
       // relocatable summary and matching artifact must be supplied again;
-      // compiling without them while retaining the old manifest claim would
-      // silently turn audited edges back into unknown calls.
+      // compiling without them while retaining the previous manifest claim
+      // would silently turn audited edges back into unknown calls.
       const draft::ResolutionManifestLoadResult loaded =
           draft::load_resolution_manifest(
               resolve_options.compile.workspace.workspace_directory,

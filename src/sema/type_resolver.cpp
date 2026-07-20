@@ -2763,8 +2763,8 @@ private:
       } else {
         // The typed builder covers literals, names, arithmetic, and casts. It
         // lets this value-parameter boundary distinguish same-width concrete
-        // integer identities; the legacy evaluator remains the fallback for
-        // enum members and other early-layout recovery cases.
+        // integer identities. The layout-local evaluator handles enum members
+        // and the early-layout recovery cases that have no canonical tree yet.
         IntegerExpression built;
         const BuiltIntegerExpressionNode root = build_integer_expression_node(
             tree, argument_node, scope, built);
@@ -3341,8 +3341,8 @@ private:
       return resolved->value;
     }
     // Use the typed builder first. Besides sharing exact fixed-width semantics
-    // with dependent expressions, this recognizes explicit integer casts.
-    // The legacy cases below still cover enum-member values and recovery paths
+    // with dependent expressions, this recognizes explicit integer casts. The
+    // direct layout cases below handle enum-member values and recovery paths
     // that do not need a canonical expression tree.
     if (contains_integer_cast(tree, expression_id)) {
       IntegerExpression built;

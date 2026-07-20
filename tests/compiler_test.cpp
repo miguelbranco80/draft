@@ -167,9 +167,9 @@ void test_target_lowering_continues_checked_graph(TestState &state) {
       continued.progress == draft::CompileWorkspaceProgress::TargetLowering);
   EXPECT(state, !continued_diagnostics.has_errors());
 
-  // A direct lowering request remains the behavioral oracle while orchestration
-  // migrates to explicit continuation. Both routes must emit byte-identical
-  // modules in canonical package order.
+  // A direct lowering request is the behavioral oracle for the explicit
+  // continuation route. Both public routes must emit byte-identical modules in
+  // canonical package order.
   draft::SourceManager direct_sources;
   draft::DiagnosticSink direct_diagnostics;
   const draft::CompileWorkspaceResult direct = draft::compile_workspace(

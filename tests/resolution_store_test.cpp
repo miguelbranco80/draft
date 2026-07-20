@@ -373,7 +373,8 @@ void test_interrupted_publish_recovery(TestState &state) {
 
   // Model a process stop after the immutable object rename but before the
   // manifest rename. The abandoned staged manifest must remain invisible; the
-  // old manifest is still authoritative even though the new object is present.
+  // previous committed manifest remains authoritative even though the new
+  // object is present.
   const std::filesystem::path generated = workspace.path / ".draft" / "generated";
   std::ofstream(
       generated / (second.digest.hex() + ".draft"),
