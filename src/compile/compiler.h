@@ -63,7 +63,7 @@ struct CompileWorkspaceOptions {
   // Versioned identity of the compiler semantics and manifest algorithm. It is
   // a resolved-program input and must change when an implementation change can
   // alter accepted meaning or emitted behavior for the same other inputs.
-  std::string compiler_content_identity = "draft-bootstrap-cpp-v132";
+  std::string compiler_content_identity = "draft-bootstrap-cpp-v133";
   // Explicit build-time language choices are kept together and included in
   // resolved-program identity. They are not inferred from host environment or
   // optimization level.

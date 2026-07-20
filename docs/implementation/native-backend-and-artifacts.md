@@ -151,6 +151,12 @@ Generated rows additionally carry the persistent synthesis-site identity.
 Filenames are logical basenames under the separately recorded package identity;
 physical checkout paths never enter the native artifact or sidecar.
 
+The textual LLVM emitter gives every real instruction the canonical two-space
+instruction indentation consumed by the linear debug-location pass. This
+includes result-less Draft calls: a void call still receives the source
+location of its MIR row. LLVM therefore never has to discard an otherwise
+valid function's debug information because an inlinable call lacks `!dbg`.
+
 The native adapter writes the canonical JSON only after every package object
 task succeeds and returns its SHA-256 digest beside the native output. A
 normal resolved build binds the map to the resolved-program digest. The lower

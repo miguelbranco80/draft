@@ -210,6 +210,13 @@ foreign debug_provider {
     pair_identity :: c "draft_debug_pair_identity" proc(value: Pair) -> Pair
 }
 
+sink :: proc(value: i32) {
+}
+
+ordinary_draft :: proc(value: i32) {
+    sink(value)
+}
+
 ordinary :: proc(value: Pair) -> Pair {
     return pair_identity(value)
 }
@@ -244,6 +251,36 @@ ordinary :: proc(value: Pair) -> Pair {
     const std::string_view call_line(
         emitted.text.data() + begin,
         (line_end == std::string::npos ? emitted.text.size() : line_end) - begin);
+    EXPECT(state, call_line.find(", !dbg !") != std::string_view::npos);
+  }
+
+  // A void Draft call has no SSA result prefix. It must still retain ordinary
+  // LLVM instruction indentation so the same linear debug pass sees and tags
+  // it; otherwise LLVM strips debug information from the caller during parse.
+  std::size_t draft_call = emitted.text.find("call void ");
+  while (draft_call != std::string::npos) {
+    const std::size_t candidate_end = emitted.text.find('\n', draft_call);
+    const std::string_view candidate(
+        emitted.text.data() + draft_call,
+        (candidate_end == std::string::npos
+             ? emitted.text.size()
+             : candidate_end) - draft_call);
+    if (candidate.find("draft.workspace.agent_2Dnoop.sink") !=
+        std::string_view::npos) {
+      break;
+    }
+    draft_call = emitted.text.find("call void ", draft_call + 1);
+  }
+  EXPECT(state, draft_call != std::string::npos);
+  if (draft_call != std::string::npos) {
+    const std::size_t line_begin = emitted.text.rfind('\n', draft_call);
+    const std::size_t line_end = emitted.text.find('\n', draft_call);
+    const std::size_t begin =
+        line_begin == std::string::npos ? 0 : line_begin + 1;
+    const std::string_view call_line(
+        emitted.text.data() + begin,
+        (line_end == std::string::npos ? emitted.text.size() : line_end) - begin);
+    EXPECT(state, call_line.starts_with("  call void "));
     EXPECT(state, call_line.find(", !dbg !") != std::string_view::npos);
   }
 }

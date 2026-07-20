@@ -3574,7 +3574,17 @@ private:
       if (instruction.establishes_thread_context) {
         output_ << "  call void @\"__draft.runtime.attach_thread\"()\n";
       }
-      if (instruction.result.is_valid()) output_ << "  " << result << " = ";
+      if (instruction.result.is_valid()) {
+        output_ << "  " << result << " = ";
+      } else {
+        // Every real instruction begins with the canonical two-space LLVM
+        // indentation. attach_debug_locations uses that lexical boundary to
+        // distinguish instructions from labels and metadata. Omitting it for
+        // a void Draft call made the otherwise valid call invisible to the
+        // debug pass, after which LLVM discarded the enclosing function's
+        // debug information because an inlinable call had no !dbg location.
+        output_ << "  ";
+      }
       output_ << "call " << llvm_type(instruction.type) << ' '
               << value_operand(operands, instruction.operands[0], instruction.range)
               << '(';

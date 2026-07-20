@@ -358,9 +358,10 @@ traps, and message construction used solely by an assertion cannot survive,
 and no condition is converted into an optimizer assumption.
 
 The versioned `draft.resolved-program.v6` hash records the selected root and
-assertion mode beside compiler content v132. `build`, `resolve`, and `judge` expose the same explicit
-flag so a provider-free manifest cannot be replayed under a different
-mode. Test and benchmark compilations deliberately override the release choice
-to assertions on and receive their own resolved validation digest; disabling
+assertion mode beside compiler content v133. `build`, `resolve`, and `judge`
+expose the same explicit flag so a provider-free manifest cannot be replayed
+under a different mode. Test and benchmark compilations deliberately override
+the release choice to assertions on and receive their own resolved validation
+digest; disabling
 release assertions must never weaken the validation program that authorizes a
 release.
