@@ -105,11 +105,15 @@ struct TemporaryWorkspace {
 
   // The body names both an entire declaration and one aggregate field supplied
   // by early synthesis. A one-pass body checker would reject these names before
-  // the provider could make the program complete.
+  // the provider could make the program complete. The package judgment forces
+  // each intermediate round to build its review obligation too: incomplete
+  // generated declarations must wait for a complete typed context row rather
+  // than aborting the source transaction.
   void write_staged_source() const {
     std::ofstream source(
         package / "package.draft", std::ios::binary | std::ios::trunc);
     source << "package app\n\n"
+           << "judge \"The resolved package preserves generated values.\"\n\n"
            << "... \"declare answer\"\n\n"
            << "Packet :: struct {\n"
            << "    ... \"add value field\"\n"

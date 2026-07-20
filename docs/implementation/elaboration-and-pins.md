@@ -46,13 +46,23 @@ of completion timing.
 Usable visible names remain compact name/type/value rows. Separately, the
 compiler starts from exact prompt identifier mentions and the enclosing checked
 HIR, then follows resolved procedure references to a fixed point capped at 256
-source declarations. Each selected row carries its canonical comment-free
-declaration, source-relative file, readable type, canonical constant value when
-applicable, and digest. Keeping this closure separate from visible bindings is
-semantic: a nested helper reached through another definition may explain that
-definition without becoming a legal unqualified name at the synthesis site.
-Aggregate fields remain in canonical type graphs, imports remain compact
-package interfaces, and the current anchor remains in its dedicated enclosing-
+source declarations. A package-level judgment is the deliberate exception to
+that narrow root selection: because it reviews the package rather than its
+lexical source position, every source-backed declaration in the package scope
+is a root. The same denial filtering, de-duplication, closure, canonical sort,
+and size bound then apply. An incomplete declaration visible only during an
+opaque interface round is omitted until a later round gives it a complete type.
+This prevents the usual placement immediately after imports from hiding all
+later declarations from the judging provider without manufacturing premature
+typed context during resolution.
+
+Each selected row carries its canonical comment-free declaration, source-
+relative file, readable type, canonical constant value when applicable, and
+digest. Keeping this closure separate from visible bindings is semantic: a
+nested helper reached through another definition may explain that definition
+without becoming a legal unqualified name at the synthesis site. Aggregate
+fields remain in canonical type graphs, imports remain compact package
+interfaces, and the current anchor remains in its dedicated enclosing-
 declaration fields. No whole source file or process-local symbol identity is
 exposed. Exceeding the bound is a compile error rather than a silently partial
 request.

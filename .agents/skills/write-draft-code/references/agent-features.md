@@ -118,7 +118,10 @@ judge "The public parser rejects every malformed length before dereference."
 It may appear in a package declaration list, type member list, or procedure
 statement list. Package-level judgments come after the package/import header.
 Each judgment is independent; adjacent judgments do not form one attachment
-group.
+group. A package judgment reviews all source-backed declarations in the
+completed package, including declarations later in source. A type-member
+judgment reviews its enclosing type and the checked member/layout state at that
+position.
 
 Within a procedure, `judge` is anchored to the exact control-flow program
 point. It receives visible bindings, branch refinements, active denials,

@@ -301,12 +301,13 @@ void collect_constant_procedures(
 }
 
 // Selects the source definitions that add information beyond the compact
-// name/type interface. The enclosing checked procedure supplies exact direct
-// dependencies; procedure references are then followed to a transitive fixed
-// point. An authored prompt may explicitly ask about another visible helper,
-// so exact identifier mentions are additional roots. The fixed upper bound is
-// part of the bootstrap compiler contract and turns pathological context into
-// a clear compiler diagnostic instead of an unbounded provider request.
+// name/type interface. A package judgment reviews the package rather than its
+// source position, so every package-scope source declaration is a root. Other
+// sites start from the enclosing checked procedure's direct dependencies and
+// exact identifier mentions in their authored text. Procedure references are
+// then followed to a transitive fixed point. The fixed upper bound is part of
+// the bootstrap compiler contract and turns pathological context into a clear
+// compiler diagnostic instead of an unbounded provider request.
 [[nodiscard]] std::vector<SymbolId> relevant_source_definitions(
     const LoadedPackage &loaded,
     const SemanticPackage &package,
@@ -334,7 +335,14 @@ void collect_constant_procedures(
     if (denied) return std::nullopt;
     const Symbol &symbol = package.symbols.symbol(declaration);
     if (!source_definition_kind(symbol.kind) ||
-        !symbol.syntax.node.is_valid()) {
+        !symbol.syntax.node.is_valid() || !symbol.type.is_valid() ||
+        package.types.type(symbol.type).kind == TypeKind::Invalid) {
+      // Interface discovery may have installed generated declaration syntax
+      // while another opaque declaration/member set still prevents its type
+      // from becoming complete. Such a row is not truthful typed provider
+      // context yet. The next semantic round will select it after completion;
+      // an actually invalid authored program already has an authoritative
+      // semantic diagnostic and cannot reach provider execution.
       return std::nullopt;
     }
     if (!contains_symbol(result, declaration)) {
@@ -368,6 +376,22 @@ void collect_constant_procedures(
       add_procedure_reference(procedure);
     }
   };
+
+  if (record.kind == AgentConstructKind::Judgment &&
+      !record.anchor.is_valid()) {
+    // Specification section 8 defines a package-level judgment as a review of
+    // the package. Lexical visibility at the judgment's source offset would
+    // usually exclude every later declaration because package judgments sit
+    // after the import header and commonly precede the declarations they
+    // describe. Start from the complete package scope so the judging provider
+    // receives the source it is being asked to review. add_reference still
+    // applies active denials, source-kind filtering, de-duplication, constant
+    // procedure discovery, and the common deterministic size limit.
+    const Scope package_scope = package.symbols.scope(package.package_scope);
+    for (SymbolId symbol_id : package_scope.symbols) {
+      add_reference(symbol_id);
+    }
+  }
 
   for (SymbolId symbol_id : visible_symbols(loaded, package, record)) {
     const Symbol &symbol = package.symbols.symbol(symbol_id);

@@ -631,6 +631,207 @@ work :: proc() -> i64 {
   }
 }
 
+// A package claim is universal within its package, while a type-member claim
+// reaches only a later synthesis site in the same member list. This focused
+// early-interface test keeps that positional rule independent of Codex and of
+// any generated expansion. It also verifies that attachments on the package
+// claim remain available to the member request.
+void test_member_synthesis_receives_package_and_type_judgments(
+    TestState &state) {
+  TemporaryPackage temporary;
+  write_file(
+      temporary.path / "package.draft",
+      R"draft(package member_guidance
+
+judge "package-wide" file "CONTRACT.md"
+
+Packet :: struct {
+    prefix: u32,
+    judge "member-local"
+    ... "declare the remaining field"
+}
+)draft");
+  write_file(temporary.path / "CONTRACT.md", "shared member contract\n");
+
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  const draft::TargetProfile target = draft::make_aarch64_macos_profile();
+  draft::PackageLoadOptions load_options;
+  load_options.file_tag = target.facts.file_tag;
+  const draft::PackageLoadResult loaded = draft::load_package(
+      sources, temporary.path.string(), load_options, diagnostics);
+  draft::SemanticAnalysisResult semantics = draft::analyze_package_semantics(
+      sources, loaded.package, target.facts, diagnostics);
+  const draft::AgentMetadataResult metadata = draft::collect_agent_metadata(
+      sources,
+      loaded.package,
+      semantics.package,
+      {},
+      diagnostics);
+  const draft::AgentObligationResult obligations =
+      draft::build_agent_obligations(
+          {"workspace", "member_guidance"},
+          sources,
+          loaded.package,
+          semantics.package,
+          semantics.constants,
+          metadata,
+          target,
+          diagnostics);
+
+  if (diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+  }
+  EXPECT(state, loaded.ok);
+  EXPECT(state, semantics.ok);
+  EXPECT(state, metadata.ok);
+  EXPECT(state, obligations.ok);
+  EXPECT(state, !diagnostics.has_errors());
+
+  const draft::AgentObligation *member_synthesis = nullptr;
+  for (const draft::AgentObligation &obligation : obligations.obligations) {
+    if (obligation.kind == draft::AgentConstructKind::SynthesisMember) {
+      member_synthesis = &obligation;
+      break;
+    }
+  }
+  EXPECT(state, member_synthesis != nullptr);
+  if (member_synthesis == nullptr) return;
+
+  EXPECT(state, member_synthesis->anchor_name == "Packet");
+  EXPECT(state, member_synthesis->guiding_judgments.size() == 2);
+  if (member_synthesis->guiding_judgments.size() != 2) return;
+
+  const draft::AgentJudgmentContext &package_guidance =
+      member_synthesis->guiding_judgments[0];
+  const draft::AgentJudgmentContext &member_guidance =
+      member_synthesis->guiding_judgments[1];
+  EXPECT(state, package_guidance.anchor_name.empty());
+  EXPECT(state, package_guidance.claim == "package-wide");
+  EXPECT(state, package_guidance.file_contents.size() == 1);
+  if (package_guidance.file_contents.size() == 1) {
+    EXPECT(state,
+        package_guidance.file_contents.front() == "shared member contract\n");
+  }
+  EXPECT(state, member_guidance.anchor_name == "Packet");
+  EXPECT(state, member_guidance.claim == "member-local");
+  EXPECT(state, member_guidance.file_contents.empty());
+}
+
+// Package judgments are reviews of the completed package, not of the lexical
+// declarations visible before their source offset. Keep a claim before the
+// declarations here so the test catches any regression to ordinary
+// source-position lookup. The obligation must carry each complete top-level
+// definition, including procedure bodies, to a provider-independent request.
+void test_package_judgment_receives_complete_package_source(
+    TestState &state) {
+  TemporaryPackage temporary;
+  write_file(
+      temporary.path / "package.draft",
+      R"draft(package package_judgment_context
+
+judge "The package implements and checks Counter addition."
+
+Counter :: struct {
+    value: i64,
+}
+
+counter_add :: proc(counter: ^Counter, amount: i64) {
+    counter^.value += amount
+}
+
+main :: proc() -> int {
+    counter := Counter{value = 40}
+    counter_add(&counter, 2)
+    assert(counter.value == 42)
+    return 0
+}
+)draft");
+
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  const draft::TargetProfile target = draft::make_aarch64_macos_profile();
+  draft::PackageLoadOptions load_options;
+  load_options.file_tag = target.facts.file_tag;
+  const draft::PackageLoadResult loaded = draft::load_package(
+      sources, temporary.path.string(), load_options, diagnostics);
+  draft::SemanticAnalysisResult semantics = draft::analyze_package_semantics(
+      sources, loaded.package, target.facts, diagnostics);
+  const draft::BodyCheckResult bodies = draft::check_package_bodies(
+      sources,
+      loaded.package,
+      semantics.selections,
+      semantics.package,
+      semantics.constants,
+      target.facts,
+      diagnostics);
+  const draft::AgentMetadataResult metadata = draft::collect_agent_metadata(
+      sources,
+      loaded.package,
+      semantics.package,
+      {},
+      diagnostics);
+  const draft::AgentObligationResult obligations =
+      draft::build_agent_obligations(
+          {"workspace", "package_judgment_context"},
+          sources,
+          loaded.package,
+          semantics.package,
+          semantics.constants,
+          metadata,
+          target,
+          diagnostics,
+          {},
+          &bodies.program);
+
+  if (diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+  }
+  EXPECT(state, loaded.ok);
+  EXPECT(state, semantics.ok);
+  EXPECT(state, bodies.ok);
+  EXPECT(state, metadata.ok);
+  EXPECT(state, obligations.ok);
+  EXPECT(state, !diagnostics.has_errors());
+  EXPECT(state, obligations.obligations.size() == 1);
+  if (obligations.obligations.size() != 1) return;
+
+  const draft::AgentObligation &judgment = obligations.obligations.front();
+  EXPECT(state, judgment.kind == draft::AgentConstructKind::Judgment);
+  EXPECT(state, judgment.anchor_name.empty());
+  // The semantic package may also expose compiler-owned source-backed rows;
+  // the contract here is that every authored top-level declaration is present,
+  // not that those three declarations exhaust the internal package scope.
+  EXPECT(state, judgment.relevant_declarations.size() >= 3);
+
+  bool saw_counter = false;
+  bool saw_counter_add = false;
+  bool saw_main = false;
+  for (const draft::AgentDeclarationContext &declaration :
+       judgment.relevant_declarations) {
+    if (declaration.name == "Counter") {
+      EXPECT(state,
+          declaration.source.find("value: i64") != std::string::npos);
+      saw_counter = true;
+    }
+    if (declaration.name == "counter_add") {
+      EXPECT(state,
+          declaration.source.find("counter^.value += amount") !=
+              std::string::npos);
+      saw_counter_add = true;
+    }
+    if (declaration.name == "main") {
+      EXPECT(state,
+          declaration.source.find("assert(counter.value == 42)") !=
+              std::string::npos);
+      saw_main = true;
+    }
+  }
+  EXPECT(state, saw_counter);
+  EXPECT(state, saw_counter_add);
+  EXPECT(state, saw_main);
+}
+
 void test_body_sites_receive_typed_branch_refinements(TestState &state) {
   TemporaryPackage temporary;
   write_file(
@@ -1593,6 +1794,8 @@ int main() {
   test_agent_records(state);
   test_dangling_documentation_is_rejected(state);
   test_judgment_guidance_respects_branch_dominance(state);
+  test_member_synthesis_receives_package_and_type_judgments(state);
+  test_package_judgment_receives_complete_package_source(state);
   test_body_sites_receive_typed_branch_refinements(state);
   test_visible_import_interface_is_context(state);
   test_denied_imports_are_removed_from_usable_context(state);
