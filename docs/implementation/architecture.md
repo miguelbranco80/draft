@@ -6,6 +6,10 @@ implementation plan. Language semantics remain owned by the specification.
 This document describes the durable phase boundaries and representations. The
 original sequencing and acceptance criteria remain intact in
 [the historical first implementation plan](../history/first-implementation-plan.md).
+The desired endpoint for demand-driven semantic completion and deterministic
+parallel scheduling is specified separately in the
+[semantic work graph target state](semantic-work-graph.md); that document is a
+target architecture rather than a claim about the current bootstrap.
 
 ## Goal
 

@@ -30,6 +30,7 @@ generalize those facts to every future Draft target.
 ## Bootstrap implementation
 
 - [Architecture](implementation/architecture.md)
+- [Semantic work graph target state](implementation/semantic-work-graph.md)
 - [Compiler graph and resolution simplification plan](implementation/compiler-graph-and-resolution-plan.md)
 - [Front end and semantic core](implementation/semantic-core.md)
 - [Elaboration, semantic context, and pins](implementation/elaboration-and-pins.md)
