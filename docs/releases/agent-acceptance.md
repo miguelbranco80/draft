@@ -100,18 +100,18 @@ provider-free frontend checks, while the macOS program passed native
 build/execution, Draft test and verified benchmark execution, workspace evidence
 publication, and expanded-source inspection with linked LLVM 22.1.8.
 
-The completed raw string-data integration and its final static-type review use
-compiler content identity `draft-bootstrap-cpp-v134` and core distribution
-identity `draft-core-bootstrap-v4`. Provider-free `resolve --revalidate`
-commands for macOS and Linux each reused and rechecked all four saved
-expansions; no generated source object changed. Both final manifests then
-passed their native frontend checks. On macOS, the final program built and
-launched without an LLVM debug-information warning, and fresh attempt-one test
-and verified-benchmark evidence passed under linked LLVM 22.1.8. The committed
-evidence objects are
-`2c49da0714701369a1563839c6cae54677bbbbb530535954f8982bad32235a1c`
+The completed raw string-data integration and its final static-type and
+selected-condition review use compiler content identity
+`draft-bootstrap-cpp-v135` and core distribution identity
+`draft-core-bootstrap-v4`. Provider-free `resolve --revalidate` commands for
+macOS and Linux each reused and rechecked all four saved expansions; no
+generated source object changed. Both final manifests then passed their native
+frontend checks. On macOS, the final program built and launched without an LLVM
+debug-information warning, and fresh attempt-one test and verified-benchmark
+evidence passed under linked LLVM 22.1.8. The committed evidence objects are
+`910941c73c876b3874a457e4fdf91930d3bdb8975a06cc67112d26c66af4f343`
 for the test and
-`e6f482ee0884d375871e2a437c271b011eab4b0243846b448feb9cf08c0e75df`
+`f1d43240fbd2fde13b99d866c43679e9daeba6295ef1f77c84df9f48da10f1b7`
 for the benchmark.
 
 The repository example matrix classified all 36 tracked Draft/assembly package
