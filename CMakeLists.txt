@@ -122,6 +122,7 @@ add_library(
   src/compile/compiler.cpp
   src/compile/expanded_source.cpp
   src/compile/resolver.cpp
+  src/compile/semantic_work_graph.cpp
   src/elaborator/codex_cli.cpp
   src/elaborator/draft_skill.cpp
   "${DRAFT_SKILL_BUNDLE}"
@@ -253,6 +254,12 @@ if(BUILD_TESTING)
   add_executable(draft_work_graph_tests tests/work_graph_test.cpp)
   target_link_libraries(draft_work_graph_tests PRIVATE draft_compiler)
   add_test(NAME draft_work_graph_tests COMMAND draft_work_graph_tests)
+
+  add_executable(
+    draft_semantic_work_graph_tests tests/semantic_work_graph_test.cpp)
+  target_link_libraries(draft_semantic_work_graph_tests PRIVATE draft_compiler)
+  add_test(
+    NAME draft_semantic_work_graph_tests COMMAND draft_semantic_work_graph_tests)
 
   add_executable(draft_content_tree_tests tests/content_tree_test.cpp)
   target_link_libraries(draft_content_tree_tests PRIVATE draft_compiler)

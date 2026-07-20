@@ -15,11 +15,11 @@ gate.
 
 ## Implementation sequence
 
-1. **Dynamic product graph.** Add the command-local `SemanticProductId`, product
-   kind/state rows, dependency edges, frozen ready waves, task-local outcomes,
-   and deterministic publication operation. Begin with one worker as the oracle.
-   Keep the existing closed `WorkGraph` only for already frozen provider and
-   native batches.
+1. **Dynamic product graph — complete.** The command-local
+   `SemanticProductId`, product kind/state rows, dependency edges, frozen ready
+   waves, task-local outcomes, and deterministic publication operation now have
+   a sequential scheduling oracle. The existing closed `WorkGraph` remains only
+   for already frozen provider and native batches.
 
 2. **Command inputs and package barriers.** Represent the selected target,
    source generation, parsed files, package imports, package name completeness,
