@@ -99,6 +99,22 @@ valid only with zero length, and otherwise the caller must provide that many
 live, aligned elements. Slices and strings are small value views and do not own
 their backing storage.
 
+`raw_data(text: string) -> [^]u8` is the explicit escape from ordinary string
+immutability for native pointer-and-length interfaces. For a nonempty string,
+the result points at its first byte and exactly `len(text)` consecutive bytes
+may be read during the lifetime of the backing storage. An empty string exposes
+no dereferenceable byte and its returned address is not required to be non-nil.
+The operation does not allocate, copy, append a zero terminator, validate an
+encoding, or extend the backing lifetime. A string slice therefore exposes its
+already adjusted first byte rather than the original string's beginning.
+
+The result type is intentionally an ordinary multi-pointer: Draft has no
+const-qualified pointer family. `raw_data` does not prove that storage is
+writable. A write through the result is undefined behavior unless the program
+independently knows that the affected backing bytes are live and writable;
+string literals and other read-only image storage provide no such guarantee.
+Multi-pointer indexing retains its ordinary inherently unchecked semantics.
+
 Scalar integers, floats, pointers, procedure pointers, and legal SIMD vectors
 bind directly to target register classes. Other values use their declared
 aggregate layout.
@@ -878,8 +894,8 @@ before entering ordinary Draft code.
 
 Library declarations are never imported implicitly. Primitive types, `nil`,
 the built-in `context` and `target` names, and specified compiler intrinsics
-such as `len`, `size_of`, `align_of`, `cast`, `assert`, and `static_assert` are
-predeclared language names rather than library APIs.
+such as `len`, `size_of`, `align_of`, `cast`, `raw_data`, `assert`, and
+`static_assert` are predeclared language names rather than library APIs.
 
 Core packages ship with the compiler distribution but are imported explicitly,
 file-locally, and used through their package name or alias. Except for the ABI

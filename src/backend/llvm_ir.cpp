@@ -3595,6 +3595,17 @@ private:
       assign_alias(operands, instruction, result);
       break;
     }
+    case MirInstructionKind::RawData: {
+      // A checked raw_data operation always consumes Draft's physical
+      // {pointer,length} string view. The pointer is returned unchanged; no
+      // allocation, byte copy, termination, or encoding operation occurs.
+      const MirValueId text = instruction.operands.front();
+      output_ << "  " << result << " = extractvalue "
+              << typed_operand(procedure, operands, text, instruction.range)
+              << ", 0\n";
+      assign_alias(operands, instruction, result);
+      break;
+    }
     case MirInstructionKind::Assert: {
       const AssertionSite *site =
           assertion_site(procedure_index, instruction_index);

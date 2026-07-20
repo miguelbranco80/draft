@@ -92,6 +92,10 @@ enum class MirInstructionKind {
   PointerSubtract,
   Call,
   Length,
+  // Extracts the data pointer from Draft's immutable string view. Keeping the
+  // operation explicit prevents a source-level raw-data escape hatch from
+  // becoming an accidental aggregate-layout convention in later backends.
+  RawData,
   Assert,
   MemberAddress,
   ExtractMember,

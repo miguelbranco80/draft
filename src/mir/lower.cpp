@@ -1218,6 +1218,19 @@ private:
             argument.type,
             expression.range);
       }
+      if (expression.constant.text == "raw_data") {
+        // Semantic checking has established the exact string-to-[^]u8
+        // contract. MIR retains that operation instead of recasting the
+        // string as an ordinary aggregate and coupling every backend to the
+        // current physical member numbering.
+        MirInstruction instruction;
+        instruction.kind = MirInstructionKind::RawData;
+        instruction.range = expression.range;
+        instruction.type = expression.type;
+        instruction.operands.push_back(
+            lower_expression(expression.operands.front()));
+        return emit_value(std::move(instruction));
+      }
       if (expression.constant.text == "assert") {
         // Do not lower either operand when assertions are disabled. In
         // particular, lowering the condition and then discarding the Assert

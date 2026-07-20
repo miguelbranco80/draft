@@ -93,8 +93,12 @@ address never extends any of those lifetimes.
 - `rawptr` carries an address without a pointed-to type or ownership contract.
 
 Do not cast an immutable `string` into mutable bytes or a `cstring`. The source
-may not be writable or terminated. Copy it into `memory.Owned_String` when a C
-path or API needs a terminator.
+may not be writable or terminated. `raw_data(text)` is the explicit no-copy
+escape for a native read-only pointer-plus-length contract: it returns `[^]u8`,
+inherits the string's backing lifetime, and does not make the bytes writable.
+Writing through that pointer is undefined unless the backing storage is
+independently known to be writable. Prefer typed core operations; copy into
+`memory.Owned_String` when a C path or API needs a terminator.
 
 A pointer or view is invalid after its storage is freed, unmapped, reallocated,
 reset, destroyed, or leaves scope. Common invalidation points include:

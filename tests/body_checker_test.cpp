@@ -1898,6 +1898,72 @@ bad_pointer_pair :: proc(left: ^u32, right: ^u64) -> isize {
                     std::string::npos);
 }
 
+// raw_data is the one explicit escape from normal string immutability. These
+// checks pin its deliberately narrow type contract and ensure malformed uses
+// point at the offending call or value rather than failing later in MIR.
+void test_raw_string_data_intrinsic(TestState &state) {
+  CheckedSource safe(R"draft(
+package bodies
+
+literal_data :: proc() -> [^]u8 {
+    return raw_data("Draft")
+}
+
+sliced_data :: proc(text: string) -> [^]u8 {
+    return raw_data(text[1:])
+}
+
+main :: proc() {
+    empty: string = ""
+    empty_pointer: [^]u8 = raw_data(empty)
+    pointer := raw_data("bytes")
+    assert(pointer[0] == cast[u8]('b'))
+}
+)draft");
+  if (safe.diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(safe.sources, safe.diagnostics);
+  }
+  EXPECT(state, safe.bodies.ok);
+  EXPECT(state, !safe.diagnostics.has_errors());
+
+  CheckedSource invalid(R"draft(
+package bodies
+
+missing :: proc() {
+    raw_data()
+}
+
+extra :: proc() {
+    raw_data("one", "two")
+}
+
+wrong :: proc() {
+    raw_data(42)
+}
+)draft");
+  EXPECT(state, !invalid.bodies.ok);
+  EXPECT(state, invalid.diagnostics.error_count() == 3);
+
+  bool saw_missing = false;
+  bool saw_extra = false;
+  bool saw_wrong = false;
+  for (const draft::Diagnostic &diagnostic :
+       invalid.diagnostics.diagnostics()) {
+    const std::string_view spelling = invalid.sources.text(diagnostic.range);
+    if (diagnostic.message ==
+        "raw_data requires exactly one string argument") {
+      saw_missing = saw_missing || spelling == "raw_data()";
+      saw_extra = saw_extra || spelling == "raw_data(\"one\", \"two\")";
+    }
+    if (diagnostic.message == "raw_data requires a string argument") {
+      saw_wrong = saw_wrong || spelling == "42";
+    }
+  }
+  EXPECT(state, saw_missing);
+  EXPECT(state, saw_extra);
+  EXPECT(state, saw_wrong);
+}
+
 void test_integer_shift_count_types(TestState &state) {
   CheckedSource source(R"draft(
 package bodies
@@ -2784,6 +2850,7 @@ int main() {
   test_layout_intrinsics_and_static_assert(state);
   test_checked_numeric_casts(state);
   test_storage_pointer_and_distinct_semantics(state);
+  test_raw_string_data_intrinsic(state);
   test_integer_shift_count_types(state);
   test_conditional_context_from_either_branch(state);
   test_compound_assignment_operators(state);

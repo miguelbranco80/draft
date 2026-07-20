@@ -478,6 +478,49 @@ main :: proc() -> int {
   }
 }
 
+// String data extraction remains an explicit MIR operation. This prevents the
+// backend from inferring language meaning from the current two-word string
+// representation and proves both literals and derived string views reach the
+// same target-independent operation.
+void test_raw_string_data_lowering(TestState &state) {
+  LoweredSource source(R"draft(
+package mir
+
+literal :: proc() -> [^]u8 {
+    return raw_data("literal")
+}
+
+slice :: proc(text: string) -> [^]u8 {
+    return raw_data(text[2:])
+}
+)draft");
+  if (source.diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(
+        source.sources, source.diagnostics);
+  }
+  EXPECT(state, source.semantics.ok);
+  EXPECT(state, source.bodies.ok);
+  EXPECT(state, source.mir.ok);
+  EXPECT(state, !source.diagnostics.has_errors());
+
+  std::size_t extractions = 0;
+  for (const draft::MirProcedure &procedure :
+       source.mir.program.procedures()) {
+    for (const draft::MirInstruction &instruction : procedure.instructions) {
+      if (instruction.kind == draft::MirInstructionKind::RawData) {
+        ++extractions;
+        EXPECT(state, instruction.operands.size() == 1);
+        const draft::Type &result =
+            source.semantics.package.types.type(instruction.type);
+        EXPECT(state, result.kind == draft::TypeKind::MultiPointer);
+        EXPECT(state, result.element ==
+            source.semantics.package.types.builtins().u8_type);
+      }
+    }
+  }
+  EXPECT(state, extractions == 2);
+}
+
 } // namespace
 
 int main() {
@@ -488,6 +531,7 @@ int main() {
   test_disabled_assertions_do_not_evaluate_operands(state);
   test_static_argument_packs_erase_before_mir(state);
   test_compile_time_type_procedures_erase_before_mir(state);
+  test_raw_string_data_lowering(state);
 
   if (state.failures != 0) {
     std::cerr << state.failures << " MIR expectation(s) failed\n";

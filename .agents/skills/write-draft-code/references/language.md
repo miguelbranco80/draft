@@ -210,6 +210,13 @@ copies only the view.
 byte. Use `core/utf8` to validate, decode, count, or encode Unicode scalars when
 scalar boundaries matter; its offsets and widths remain byte counts.
 
+`raw_data(text)` returns a `[^]u8` pointing at a string's existing first byte.
+It performs no copy or termination and inherits the backing storage's lifetime.
+The pointer permits unchecked addressing but does not prove writability;
+writing through it is undefined unless the program independently knows those
+backing bytes are writable. Prefer a typed core operation over using this
+escape hatch directly.
+
 Use `nil` only for pointer-like and procedure-pointer values. Draft has no
 implicit pointer or integer truthiness; write `pointer != nil`.
 
@@ -294,11 +301,11 @@ compile error.
 Equality is not defined for aggregates, slices, or strings; use explicit
 library/application comparison. Draft has no operator overloading.
 
-The currently implemented predeclared intrinsic vocabulary is `len`,
-`size_of`, `align_of`, `cast`, `ptr_offset`, `ptr_sub`, `assert`, and
-`static_assert`. `context` and `target` are predeclared values. Do not invent an
-introspection spelling; inspect the compiler/specification before using a less
-common query.
+The currently implemented predeclared intrinsic vocabulary includes `len`,
+`size_of`, `align_of`, `cast`, `raw_data`, `ptr_offset`, `ptr_sub`, `assert`,
+`static_assert`, and the structural type-inspection queries. `context` and
+`target` are predeclared values. Do not invent an introspection spelling;
+inspect the compiler/specification before using a less common query.
 
 ## Control flow and cleanup
 

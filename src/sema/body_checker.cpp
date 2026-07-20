@@ -4046,7 +4046,8 @@ private:
       if (name->text == "len" || name->text == "assert" ||
           name->text == "size_of" || name->text == "align_of" ||
           name->text == "static_assert" || name->text == "ptr_offset" ||
-          name->text == "ptr_sub" || name->text == "type_of" ||
+          name->text == "ptr_sub" || name->text == "raw_data" ||
+          name->text == "type_of" ||
           is_type_inspection_query(name->text)) {
         intrinsic = name->text;
       }
@@ -4396,6 +4397,34 @@ private:
             expression.type = apply_expected_type(
                 semantic_.types.builtins().isize_type, expected, call.range);
           }
+        }
+      }
+    } else if (*intrinsic == "raw_data") {
+      if (argument_count != 1) {
+        diagnostics_.error(
+            call.range, "raw_data requires exactly one string argument");
+        expression.type = semantic_.types.builtins().invalid;
+      } else {
+        const HirExpressionId argument =
+            check_expression(tree, call.children[1], scope);
+        expression.operands.push_back(argument);
+        const TypeId argument_type = hir_.expression(argument).type;
+        if (!is_invalid_type(argument_type) &&
+            argument_type != semantic_.types.builtins().string_type) {
+          // raw_data is deliberately narrower than a generic representation
+          // escape hatch. Draft 1 exposes immutable string storage for native
+          // read-only consumers; slices and arrays already expose addresses
+          // through their ordinary element operations.
+          diagnostics_.error(
+              tree.node(call.children[1]).range,
+              "raw_data requires a string argument");
+          expression.type = semantic_.types.builtins().invalid;
+        } else {
+          expression.type = apply_expected_type(
+              semantic_.types.multi_pointer(
+                  semantic_.types.builtins().u8_type),
+              expected,
+              call.range);
         }
       }
     } else if (*intrinsic == "len") {

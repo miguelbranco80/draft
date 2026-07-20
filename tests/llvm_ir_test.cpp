@@ -180,6 +180,24 @@ generated :: proc() -> i64 {
   }
 }
 
+// The native backend extracts the pointer field from a checked string value;
+// it must not allocate storage, copy bytes, or call a runtime helper merely to
+// expose data that is already present in the string view.
+void test_raw_string_data_is_direct_pointer_extraction(TestState &state) {
+  const EmittedFixture fixture = emit_fixture(R"draft(
+package raw_data
+
+expose :: proc(text: string) -> [^]u8 {
+    return raw_data(text)
+}
+)draft");
+  if (!fixture.ok) std::cerr << fixture.diagnostics << fixture.text;
+  EXPECT(state, fixture.ok);
+  EXPECT(state, fixture.text.find(
+      "extractvalue { ptr, i64 }") != std::string::npos);
+  EXPECT(state, fixture.text.find("@raw_data") == std::string::npos);
+}
+
 void test_multistep_call_lowering_keeps_debug_locations(TestState &state) {
   const EmittedFixture emitted = emit_fixture(R"draft(package call_debug
 
@@ -873,6 +891,7 @@ int main() {
   TestState state;
   test_agent_constructs_have_no_runtime_footprint(state);
   test_generated_debug_locations_are_hermetic(state);
+  test_raw_string_data_is_direct_pointer_extraction(state);
   test_multistep_call_lowering_keeps_debug_locations(state);
   test_static_argument_pack_emits_fixed_signature(state);
   test_padded_tuple_extraction_uses_logical_indices(state);

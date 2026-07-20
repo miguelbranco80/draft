@@ -107,6 +107,14 @@ unions, and enums. Slices, strings, tuples, tagged unions, SIMD values,
 and default-layout aggregates are rejected by value; wrappers may pass them
 through pointers or explicit C representations.
 
+A read-only C pointer-plus-length interface can consume an ordinary Draft
+string without copying by passing `raw_data(text)` and `len(text)`. The
+multi-pointer does not carry C's `const` qualifier because Draft has no
+const-qualified pointer family; the foreign declaration and native API remain
+responsible for the nonmutation contract. This bridge does not make a string
+zero terminated. An API requiring a C string still requires explicit owned
+terminated storage such as `memory.Owned_String`.
+
 An `@repr(C)` aggregate is legal by value only when every member is recursively
 C-ABI-legal; a fixed array is legal as a member when its element type is.
 Pointers may point to opaque or non-C Draft types.

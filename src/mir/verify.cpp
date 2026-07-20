@@ -216,12 +216,29 @@ private:
     case MirInstructionKind::Unary:
     case MirInstructionKind::Convert:
     case MirInstructionKind::Length:
+    case MirInstructionKind::RawData:
     case MirInstructionKind::ExtractMember:
     case MirInstructionKind::MemberAddress:
     case MirInstructionKind::AtomicLoad:
       if (arity != 1) error(instruction.range, "unary instruction has wrong arity");
       if (instruction.kind == MirInstructionKind::AtomicLoad) {
         verify_atomic_shape(procedure, instruction);
+      }
+      if (instruction.kind == MirInstructionKind::RawData && arity == 1 &&
+          valid_value(procedure, instruction.operands.front())) {
+        const TypeId source =
+            procedure.value(instruction.operands.front()).type;
+        const bool source_is_string =
+            valid_type(source) && types_.type(source).kind == TypeKind::String;
+        const bool result_is_bytes = valid_type(instruction.type) &&
+            types_.type(instruction.type).kind == TypeKind::MultiPointer &&
+            types_.type(instruction.type).element ==
+                types_.builtins().u8_type;
+        if (!source_is_string || !result_is_bytes) {
+          error(
+              instruction.range,
+              "raw_data must extract [^]u8 from a string");
+        }
       }
       break;
     case MirInstructionKind::Store:

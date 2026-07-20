@@ -123,6 +123,7 @@ const char *mir_instruction_kind_name(MirInstructionKind kind) {
   case MirInstructionKind::PointerSubtract: return "pointer_subtract";
   case MirInstructionKind::Call: return "call";
   case MirInstructionKind::Length: return "length";
+  case MirInstructionKind::RawData: return "raw_data";
   case MirInstructionKind::Assert: return "assert";
   case MirInstructionKind::MemberAddress: return "member_address";
   case MirInstructionKind::ExtractMember: return "extract_member";

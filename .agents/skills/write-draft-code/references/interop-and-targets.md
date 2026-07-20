@@ -156,6 +156,13 @@ slice as pointer plus length. Define a purpose-built `@repr(C)` record for a
 stable external layout. Never add `@repr(C)` solely to silence a diagnostic
 without auditing every member and both target ABIs.
 
+For a native input that reads but does not retain bytes, pass
+`raw_data(text), len(text)`. This is zero-copy and not zero-termination. Draft's
+`[^]u8` has no const qualifier, so the declaration, documentation, and foreign
+implementation must agree not to mutate. If the native API retains the pointer,
+the string's backing storage must outlive that retention; `raw_data` does not
+extend it.
+
 ## Foreign imports and providers
 
 A foreign block declares fixed-arity procedure symbols from one semantic link
