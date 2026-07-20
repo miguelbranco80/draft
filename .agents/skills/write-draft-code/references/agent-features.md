@@ -246,6 +246,12 @@ parallel waves. The compiler joins the wave, checks proposals sequentially in
 canonical package/obligation order, and sends only rejected sites through a
 correction wave. Never assume another same-wave expansion is visible merely
 because its provider call finished first.
+Proposal checking applies the generated fragment as an in-memory source
+transition on a private copy of the current compiler graph. Body proposals
+retain dependency bodies whose declaration and generic-demand work keys are
+unchanged; they do not replay semantic checking over already-enriched tables.
+This is an implementation guarantee against duplicate body-derived state, not
+a persistent cache or a way for same-wave proposals to observe one another.
 Use `draftc resolve <workspace> --root <package> --regenerate` to reconsider every fresh expansion,
 or append one exact `site-...` identity to reconsider only that site. This is
 the deliberate source-changing operation; changing `--model` alone is not.

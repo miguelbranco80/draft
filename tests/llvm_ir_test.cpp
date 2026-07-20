@@ -71,14 +71,14 @@ struct EmittedFixture {
       target.facts,
       diagnostics);
   draft::MirLoweringResult mir = draft::lower_package_to_mir(
-      semantics.package, bodies.program, diagnostics);
+      bodies.package, bodies.program, diagnostics);
   draft::LlvmIrOptions options;
   options.package = {"workspace", "agent-noop"};
   draft::LlvmIrResult module = draft::emit_llvm_ir(
       target,
       sources,
       options,
-      semantics.package,
+      bodies.package,
       semantics.global_initializers,
       mir.program,
       diagnostics);
@@ -736,7 +736,7 @@ main :: proc() -> int {
       target.facts,
       diagnostics);
   draft::MirLoweringResult mir = draft::lower_package_to_mir(
-      semantics.package, bodies.program, diagnostics);
+      bodies.package, bodies.program, diagnostics);
   draft::LlvmIrOptions options;
   options.package = {"workspace", "native"};
   options.emit_program_entry = true;
@@ -744,7 +744,7 @@ main :: proc() -> int {
       target,
       sources,
       options,
-      semantics.package,
+      bodies.package,
       semantics.global_initializers,
       mir.program,
       diagnostics);

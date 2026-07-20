@@ -167,7 +167,7 @@ void test_c_client_consumes_draft_shared_library(TestState &state) {
   if (!compiled.packages[root].has_value()) return;
 
   const draft::CHeaderResult header = draft::emit_c_header(
-      compiled.packages[root]->semantics.package,
+      compiled.packages[root]->bodies.package,
       target,
       {},
       diagnostics);

@@ -98,17 +98,32 @@ independent package objects through embedded LLVM, then invokes only the
 remaining platform tools; it does not reload or recheck handwritten source.
 `--timings` exposes resolution rounds as in-memory source transitions. A
 checked complete-file overlay is parsed into the existing workspace graph;
-package/root/import IDs remain stable, only the changed package and its
-transitive consumers rebuild declaration semantics, and unrelated dependency
-rows remain authoritative. One command-local adjacency index is built with the
-graph, retained across every continuation, and supports import lookup, reverse
-source invalidation, and a PackageId-ordered Kahn min-heap; ordering costs
+package/root/import IDs remain stable. A declaration/member expansion rebuilds
+the changed package and transitive consumers because their interfaces may have
+changed. A statement/expression/assembly expansion rebuilds declarations only
+for its containing package—the grammar boundary proves that it cannot alter a
+package interface—while transitive consumers retain checked HIR and invalidate
+only effect/obligation closure. Unrelated dependency rows remain authoritative.
+One command-local adjacency index is built with the graph, retained across
+every continuation, and supports import lookup, reverse source invalidation,
+and a PackageId-ordered Kahn min-heap; ordering costs
 O((packages + imports) log(packages + imports)) and invalidation costs
 O(packages + imports), without a persistent cache. The `compiler passes`,
-`workspace loads`, and `workspace source transitions` counters make those
+`workspace loads`, `workspace source transitions`, `package body checks`,
+`package body extensions`, and `package body reuses` counters make those
 distinct operations visible. `--timings=all` adds package/tool scopes, file
 discovery and I/O, lexing/parsing, import-graph resolution, and exclusive time;
 child process CPU is reported separately from parent wall time.
+
+Each package row separates an immutable declaration generation from its
+body-owned semantic tables, constants, and HIR. HIR IDs are valid only with the
+body package returned beside them. The body work key is the declaration
+generation plus the exact canonical set of concrete generic procedures demanded
+by consumer packages. Equal keys reuse the complete body result; added demands
+append and check only new specializations; a removed or changed demand rebuilds
+from declarations so stale executable procedures cannot survive. Compile-time
+type preflight and early synthesis discovery run on private copies and never
+become a hidden first body pass over the authoritative package.
 
 After every selected package has reached target lowering, the backend derives a
 closed native work graph in canonical package/module/assembly order. Package
@@ -123,9 +138,12 @@ parallel scheduling changes elapsed time, never artifacts or diagnostics.
 
 - **Surface AST:** lossless enough for diagnostics, structural site identity,
   generated-source maps, and exact grammar-category replacement.
-- **Semantic graph / typed HIR:** declarations have stable IDs; types are
-  interned; names are resolved; package interfaces and synthesis context are
-  derived here.
+- **Declaration semantic generation:** package declarations, imports,
+  signatures, constants, layouts, and preliminary interfaces have stable IDs
+  and remain immutable after publication.
+- **Body semantic generation / typed HIR:** a declaration-prefix copy owns
+  lexical rows, concrete procedure instances, body sites, imported effect
+  closure, and HIR together. No HIR is paired with declaration-only tables.
 - **Procedure CFG:** explicit branches and scopes, used for return analysis,
   `defer`, branch facts, judgments, and denial summaries.
 - **Draft MIR:** a small non-optimizing IR with explicit loads, stores, checks,

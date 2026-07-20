@@ -34,14 +34,58 @@ struct TestState {
 
 #define EXPECT(state, expression) (state).expect((expression), #expression, __LINE__)
 
-[[nodiscard]] std::size_t occurrence_count(
-    std::string_view text,
-    std::string_view needle) {
+void test_procedure_demand_sets_are_canonical_and_exact(TestState &state) {
+  draft::ProcedureInstantiationDemand first;
+  first.public_template_name = "render";
+  first.instance_name = "render$mono$first";
+  first.digest = draft::sha256("first semantic packet");
+  draft::ProcedureInstantiationDemand second;
+  second.public_template_name = "render";
+  second.instance_name = "render$mono$second";
+  second.digest = draft::sha256("second semantic packet");
+
+  draft::DiagnosticSink diagnostics;
+  std::vector<draft::ProcedureInstantiationDemand> duplicated{second, first,
+                                                              first};
+  EXPECT(state, draft::canonicalize_procedure_demands(duplicated, diagnostics));
+  EXPECT(state, duplicated.size() == 2);
+  if (duplicated.size() == 2) {
+    EXPECT(state, duplicated[0].instance_name == first.instance_name);
+    EXPECT(state, duplicated[1].instance_name == second.instance_name);
+  }
+  EXPECT(state, !diagnostics.has_errors());
+
+  std::vector<draft::ProcedureInstantiationDemand> previous{first};
+  std::vector<draft::ProcedureInstantiationDemand> current{first, second};
+  std::vector<draft::ProcedureInstantiationDemand> added;
+  EXPECT(state, draft::added_procedure_demands(previous, current, added));
+  EXPECT(state, added.size() == 1);
+  if (added.size() == 1) {
+    EXPECT(state, added.front().digest == second.digest);
+  }
+  added.clear();
+  EXPECT(state, !draft::added_procedure_demands(current, previous, added));
+
+  // Native names contain a shortened digest for inspectability. The complete
+  // digest remains the semantic key, so two different packets with the same
+  // shortened spelling must fail instead of sharing whichever request happened
+  // to be visited first.
+  draft::ProcedureInstantiationDemand collision = first;
+  collision.digest = draft::sha256("different full semantic packet");
+  std::vector<draft::ProcedureInstantiationDemand> colliding{first, collision};
+  draft::DiagnosticSink collision_diagnostics;
+  EXPECT(state, !draft::canonicalize_procedure_demands(colliding,
+                                                       collision_diagnostics));
+  EXPECT(state, collision_diagnostics.has_errors());
+}
+[[nodiscard]] std::size_t occurrence_count(std::string_view text,
+                                           std::string_view needle) {
   std::size_t count = 0;
   std::size_t cursor = 0;
   while (true) {
     cursor = text.find(needle, cursor);
-    if (cursor == std::string_view::npos) return count;
+    if (cursor == std::string_view::npos)
+      return count;
     ++count;
     cursor += needle.size();
   }
@@ -57,7 +101,8 @@ void test_source_update_reuses_unaffected_semantics(TestState &state) {
   std::filesystem::create_directories(root / "changed", error);
   std::filesystem::create_directories(root / "stable", error);
   EXPECT(state, !error);
-  if (error) return;
+  if (error)
+    return;
 
   std::ofstream app(root / "app" / "package.draft", std::ios::binary);
   app << "package app\n"
@@ -76,8 +121,7 @@ void test_source_update_reuses_unaffected_semantics(TestState &state) {
   std::ofstream stable(root / "stable" / "package.draft", std::ios::binary);
   stable << "package stable\npub Value :: 10\n";
   stable.close();
-  EXPECT(state,
-      app.good() && middle.good() && changed.good() && stable.good());
+  EXPECT(state, app.good() && middle.good() && changed.good() && stable.good());
 
   draft::TimingRecorder timings(draft::TimingOutput::Summary);
   draft::SourceManager sources;
@@ -96,19 +140,16 @@ void test_source_update_reuses_unaffected_semantics(TestState &state) {
   source_override.identity = {"workspace", "changed"};
   source_override.source.relative_name = "package.draft";
   source_override.source.contents = "package changed\npub Value :: 2\n";
-  EXPECT(state,
-      draft::apply_compiled_workspace_source_overrides(
-          sources,
-          {source_override},
-          options,
-          compiled,
-          diagnostics));
+  EXPECT(state, draft::apply_compiled_workspace_source_overrides(
+                    sources, {source_override},
+                    draft::WorkspaceSemanticChange::Interface, options,
+                    compiled, diagnostics));
   if (diagnostics.has_errors()) {
     std::cerr << draft::render_diagnostics(sources, diagnostics);
   }
   EXPECT(state, compiled.ok);
-  EXPECT(state,
-      compiled.progress == draft::CompileWorkspaceProgress::InterfaceDiscovery);
+  EXPECT(state, compiled.progress ==
+                    draft::CompileWorkspaceProgress::InterfaceDiscovery);
 
   // Initial analysis visits all four packages. Replacing changed then revisits
   // changed, its direct middle consumer, and the transitive app consumer, but
@@ -116,12 +157,367 @@ void test_source_update_reuses_unaffected_semantics(TestState &state) {
   // the workspace was loaded once and transitioned in memory once.
   const std::string report = timings.render();
   EXPECT(state,
-      report.find("package semantic analyses: 7") != std::string::npos);
+         report.find("package semantic analyses: 7") != std::string::npos);
   EXPECT(state, report.find("workspace loads: 1") != std::string::npos);
   EXPECT(state,
-      report.find("workspace source transitions: 1") != std::string::npos);
+         report.find("workspace source transitions: 1") != std::string::npos);
 
   std::filesystem::remove_all(root, error);
+}
+
+void test_body_source_update_reuses_closed_generic_dependency(
+    TestState &state) {
+  draft::test::TemporaryDirectory temporary_directory{
+      "draft-bootstrap-body-work-reuse-test"};
+  const std::filesystem::path &root = temporary_directory.path();
+  std::error_code error;
+  std::filesystem::create_directories(root / "app", error);
+  std::filesystem::create_directories(root / "formatting", error);
+  EXPECT(state, !error);
+  if (error)
+    return;
+
+  std::ofstream app(root / "app" / "package.draft", std::ios::binary);
+  app << "package app\n"
+         "import formatting\n"
+         "main :: proc() {\n"
+         "    expected: i64 = ... \"produce 42\"\n"
+         "    formatting.consume(\"value\", expected)\n"
+         "}\n";
+  app.close();
+  std::ofstream formatting(root / "formatting" / "package.draft",
+                           std::ios::binary);
+  formatting
+      << "package formatting\n"
+         "pub consume :: proc(values: ..type) {\n"
+         "    for value in values {\n"
+         "        when type_of(value) == string {\n"
+         "        } else when type_kind(type_of(value)) == .signed_integer {\n"
+         "        } else {\n"
+         "            static_assert(false, \"unsupported value\")\n"
+         "        }\n"
+         "    }\n"
+         "}\n";
+  formatting.close();
+  EXPECT(state, app.good() && formatting.good());
+
+  draft::TimingRecorder timings(draft::TimingOutput::Summary);
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  draft::CompileWorkspaceOptions options;
+  options.target = draft::make_aarch64_macos_profile();
+  options.workspace.workspace_directory = root.string();
+  options.timings = &timings;
+  draft::CompileWorkspaceResult compiled = draft::compile_workspace(
+      sources, (root / "app").string(), options, diagnostics);
+  EXPECT(state, compiled.ok);
+  EXPECT(state,
+         compiled.progress == draft::CompileWorkspaceProgress::SemanticClosure);
+  if (!compiled.ok) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+    return;
+  }
+
+  const std::size_t app_index = compiled.graph.root_package.value;
+  std::optional<std::size_t> formatting_index;
+  for (std::size_t index = 0; index < compiled.packages.size(); ++index) {
+    if (compiled.packages[index].has_value() &&
+        compiled.packages[index]->identity.root_relative_path == "formatting") {
+      formatting_index = index;
+      break;
+    }
+  }
+  EXPECT(state, formatting_index.has_value());
+  if (!formatting_index.has_value())
+    return;
+
+  const draft::CompiledPackage &initial_formatting =
+      *compiled.packages[*formatting_index];
+  const std::uint64_t formatting_declaration_generation =
+      initial_formatting.declaration_generation;
+  const std::uint64_t formatting_body_generation =
+      initial_formatting.body_work_key.declaration_generation;
+  const std::size_t formatting_symbol_count =
+      initial_formatting.bodies.package.symbols.symbol_count();
+  EXPECT(state,
+         initial_formatting.declarations.package.parametric_instances.empty());
+  EXPECT(state,
+         initial_formatting.bodies.package.parametric_instances.size() == 1);
+
+  draft::WorkspaceSourceOverride source_override;
+  source_override.identity = {"workspace", "app"};
+  source_override.source.relative_name = "package.draft";
+  source_override.source.contents =
+      "package app\n"
+      "import formatting\n"
+      "main :: proc() {\n"
+      "    expected: i64 = 42\n"
+      "    formatting.consume(\"value\", expected)\n"
+      "}\n";
+  EXPECT(state,
+         draft::apply_compiled_workspace_source_overrides(
+             sources, {source_override}, draft::WorkspaceSemanticChange::Body,
+             options, compiled, diagnostics));
+  EXPECT(state,
+         draft::continue_compiled_workspace_semantics(
+             sources, (root / "app").string(), options, compiled, diagnostics));
+  if (diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+  }
+  EXPECT(state, compiled.ok);
+  EXPECT(state,
+         compiled.progress == draft::CompileWorkspaceProgress::SemanticClosure);
+
+  const draft::CompiledPackage &updated_app = *compiled.packages[app_index];
+  const draft::CompiledPackage &updated_formatting =
+      *compiled.packages[*formatting_index];
+  EXPECT(state, updated_app.declaration_generation == 2);
+  EXPECT(state, updated_formatting.declaration_generation ==
+                    formatting_declaration_generation);
+  EXPECT(state, updated_formatting.body_work_key.declaration_generation ==
+                    formatting_body_generation);
+  EXPECT(state, updated_formatting.bodies.package.symbols.symbol_count() ==
+                    formatting_symbol_count);
+  EXPECT(state,
+         updated_formatting.bodies.package.parametric_instances.size() == 1);
+
+  // Two packages are checked for the surface graph. The body replacement
+  // checks only app; formatting's equal declaration+demand work key is reused.
+  const std::string report = timings.render();
+  EXPECT(state, report.find("package body checks: 3") != std::string::npos);
+  EXPECT(state, report.find("package body reuses: 1") != std::string::npos);
+}
+
+void test_body_work_graph_extends_and_removes_generic_demand(TestState &state) {
+  draft::test::TemporaryDirectory temporary_directory{
+      "draft-bootstrap-body-demand-transition-test"};
+  const std::filesystem::path &root = temporary_directory.path();
+  std::error_code error;
+  std::filesystem::create_directories(root / "app", error);
+  std::filesystem::create_directories(root / "formatting", error);
+  EXPECT(state, !error);
+  if (error)
+    return;
+
+  std::ofstream app(root / "app" / "package.draft", std::ios::binary);
+  app << "package app\n"
+         "import formatting\n"
+         "main :: proc() {\n"
+         "    ... \"print one value\"\n"
+         "}\n";
+  app.close();
+  std::ofstream formatting(root / "formatting" / "package.draft",
+                           std::ios::binary);
+  formatting << "package formatting\n"
+                "pub consume :: proc(values: ..type) {\n"
+                "    for value in values {\n"
+                "        when type_kind(type_of(value)) == .signed_integer {\n"
+                "        } else {\n"
+                "            static_assert(false, \"unsupported value\")\n"
+                "        }\n"
+                "    }\n"
+                "}\n";
+  formatting.close();
+
+  draft::TimingRecorder timings(draft::TimingOutput::Summary);
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  draft::CompileWorkspaceOptions options;
+  options.target = draft::make_aarch64_macos_profile();
+  options.workspace.workspace_directory = root.string();
+  options.timings = &timings;
+  draft::CompileWorkspaceResult compiled = draft::compile_workspace(
+      sources, (root / "app").string(), options, diagnostics);
+  EXPECT(state, compiled.ok);
+  if (!compiled.ok) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+    return;
+  }
+
+  std::optional<std::size_t> formatting_index;
+  for (std::size_t index = 0; index < compiled.packages.size(); ++index) {
+    if (compiled.packages[index].has_value() &&
+        compiled.packages[index]->identity.root_relative_path == "formatting") {
+      formatting_index = index;
+      break;
+    }
+  }
+  EXPECT(state, formatting_index.has_value());
+  if (!formatting_index.has_value())
+    return;
+  EXPECT(state, compiled.packages[*formatting_index]
+                    ->bodies.package.parametric_instances.empty());
+  const std::size_t declaration_symbol_count =
+      compiled.packages[*formatting_index]
+          ->declarations.package.symbols.symbol_count();
+  const std::size_t initial_body_symbol_count =
+      compiled.packages[*formatting_index]
+          ->bodies.package.symbols.symbol_count();
+  const std::size_t initial_checked =
+      compiled.packages[*formatting_index]->bodies.checked_procedures;
+
+  draft::WorkspaceSourceOverride add_demand;
+  add_demand.identity = {"workspace", "app"};
+  add_demand.source.relative_name = "package.draft";
+  add_demand.source.contents = "package app\n"
+                               "import formatting\n"
+                               "main :: proc() {\n"
+                               "    formatting.consume(42)\n"
+                               "}\n";
+  EXPECT(state, draft::apply_compiled_workspace_source_overrides(
+                    sources, {add_demand}, draft::WorkspaceSemanticChange::Body,
+                    options, compiled, diagnostics));
+  EXPECT(state,
+         draft::continue_compiled_workspace_semantics(
+             sources, (root / "app").string(), options, compiled, diagnostics));
+  const draft::CompiledPackage &extended =
+      *compiled.packages[*formatting_index];
+  EXPECT(state, extended.body_work_key.procedure_demands.size() == 1);
+  EXPECT(state, extended.bodies.package.parametric_instances.size() == 1);
+  EXPECT(state, extended.bodies.checked_procedures == initial_checked + 1);
+  EXPECT(state, extended.declarations.package.symbols.symbol_count() ==
+                    declaration_symbol_count);
+
+  // Removing the only demand cannot leave the old executable specialization
+  // in the final package. The scheduler falls back to the immutable
+  // declaration baseline and reconstructs the exact empty-demand body result.
+  draft::WorkspaceSourceOverride remove_demand;
+  remove_demand.identity = {"workspace", "app"};
+  remove_demand.source.relative_name = "package.draft";
+  remove_demand.source.contents = "package app\n"
+                                  "import formatting\n"
+                                  "main :: proc() {\n"
+                                  "}\n";
+  EXPECT(state,
+         draft::apply_compiled_workspace_source_overrides(
+             sources, {remove_demand}, draft::WorkspaceSemanticChange::Body,
+             options, compiled, diagnostics));
+  EXPECT(state,
+         draft::continue_compiled_workspace_semantics(
+             sources, (root / "app").string(), options, compiled, diagnostics));
+  if (diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+  }
+  const draft::CompiledPackage &removed = *compiled.packages[*formatting_index];
+  EXPECT(state, compiled.ok);
+  EXPECT(state, removed.body_work_key.procedure_demands.empty());
+  EXPECT(state, removed.bodies.package.parametric_instances.empty());
+  EXPECT(state, removed.bodies.package.symbols.symbol_count() ==
+                    initial_body_symbol_count);
+
+  const std::string report = timings.render();
+  EXPECT(state, report.find("package body extensions: 1") != std::string::npos);
+  EXPECT(state, report.find("package body checks: 5") != std::string::npos);
+}
+
+void test_body_work_graph_promotes_matching_local_instance(TestState &state) {
+  draft::test::TemporaryDirectory temporary_directory{
+      "draft-bootstrap-body-instance-promotion-test"};
+  const std::filesystem::path &root = temporary_directory.path();
+  std::error_code error;
+  std::filesystem::create_directories(root / "app", error);
+  std::filesystem::create_directories(root / "formatting", error);
+  EXPECT(state, !error);
+  if (error)
+    return;
+
+  std::ofstream app(root / "app" / "package.draft", std::ios::binary);
+  app << "package app\n"
+         "import formatting\n"
+         "main :: proc() {\n"
+         "    ... \"use formatting\"\n"
+         "}\n";
+  app.close();
+  std::ofstream formatting(root / "formatting" / "package.draft",
+                           std::ios::binary);
+  formatting << "package formatting\n"
+                "pub consume :: proc(values: ..type) {\n"
+                "    for value in values {\n"
+                "        when type_kind(type_of(value)) == .signed_integer {\n"
+                "        } else {\n"
+                "            static_assert(false, \"unsupported value\")\n"
+                "        }\n"
+                "    }\n"
+                "}\n"
+                "self_check :: proc() {\n"
+                "    consume(42)\n"
+                "}\n";
+  formatting.close();
+
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  draft::CompileWorkspaceOptions options;
+  options.target = draft::make_aarch64_macos_profile();
+  options.workspace.workspace_directory = root.string();
+  draft::CompileWorkspaceResult compiled = draft::compile_workspace(
+      sources, (root / "app").string(), options, diagnostics);
+  EXPECT(state, compiled.ok);
+  if (!compiled.ok) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+    return;
+  }
+
+  std::optional<std::size_t> formatting_index;
+  for (std::size_t index = 0; index < compiled.packages.size(); ++index) {
+    if (compiled.packages[index].has_value() &&
+        compiled.packages[index]->identity.root_relative_path == "formatting") {
+      formatting_index = index;
+      break;
+    }
+  }
+  EXPECT(state, formatting_index.has_value());
+  if (!formatting_index.has_value())
+    return;
+  const draft::CompiledPackage &initial = *compiled.packages[*formatting_index];
+  EXPECT(state, initial.bodies.package.parametric_instances.size() == 1);
+  EXPECT(state, initial.interface.procedure_instances.empty());
+  const std::size_t initial_symbols =
+      initial.bodies.package.symbols.symbol_count();
+  const std::size_t initial_procedures =
+      initial.bodies.program.procedures().size();
+  const std::size_t initial_checked = initial.bodies.checked_procedures;
+  const draft::SymbolId initial_instance =
+      initial.bodies.package.parametric_instances.front().instance;
+  const std::string initial_lexical_name =
+      initial.bodies.package.symbols.symbol(initial_instance).name;
+
+  draft::WorkspaceSourceOverride add_external_demand;
+  add_external_demand.identity = {"workspace", "app"};
+  add_external_demand.source.relative_name = "package.draft";
+  add_external_demand.source.contents = "package app\n"
+                                        "import formatting\n"
+                                        "main :: proc() {\n"
+                                        "    formatting.consume(42)\n"
+                                        "}\n";
+  EXPECT(state, draft::apply_compiled_workspace_source_overrides(
+                    sources, {add_external_demand},
+                    draft::WorkspaceSemanticChange::Body, options, compiled,
+                    diagnostics));
+  EXPECT(state,
+         draft::continue_compiled_workspace_semantics(
+             sources, (root / "app").string(), options, compiled, diagnostics));
+  if (diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+  }
+  const draft::CompiledPackage &promoted =
+      *compiled.packages[*formatting_index];
+  EXPECT(state, promoted.bodies.package.parametric_instances.size() == 1);
+  EXPECT(state,
+         promoted.bodies.package.symbols.symbol_count() == initial_symbols);
+  EXPECT(state,
+         promoted.bodies.program.procedures().size() == initial_procedures);
+  EXPECT(state, promoted.bodies.checked_procedures == initial_checked);
+  EXPECT(state, promoted.interface.procedure_instances.size() == 1);
+  const draft::Symbol &promoted_symbol =
+      promoted.bodies.package.symbols.symbol(initial_instance);
+  EXPECT(state, promoted_symbol.name == initial_lexical_name);
+  EXPECT(state,
+         promoted_symbol.linkage_name.find("$mono$") != std::string::npos);
+  if (promoted.interface.procedure_instances.size() == 1) {
+    EXPECT(state,
+           promoted.interface.procedure_instances.front().instance_name.find(
+               "$mono$") != std::string::npos);
+  }
 }
 
 void test_target_lowering_continues_checked_graph(TestState &state) {
@@ -434,7 +830,7 @@ void test_compiler_distributed_core(TestState &state) {
           "call void @\"__draft.runtime.call_with_context\"") ==
           std::string::npos);
 
-      const draft::SemanticPackage &package = root_package->semantics.package;
+      const draft::SemanticPackage &package = root_package->bodies.package;
       const std::optional<draft::SymbolId> observe =
           package.symbols.lookup_direct(package.package_scope, "observe_context");
       const std::optional<draft::SymbolId> read_from_c =
@@ -495,12 +891,12 @@ void test_compiler_distributed_core(TestState &state) {
     EXPECT(state, runtime->native_interop.providers.front() == "draft_runtime");
   }
   const std::optional<draft::SymbolId> context =
-      runtime->semantics.package.symbols.lookup_direct(
-          runtime->semantics.package.package_scope, "Context");
+      runtime->bodies.package.symbols.lookup_direct(
+          runtime->bodies.package.package_scope, "Context");
   EXPECT(state, context.has_value());
   if (!context.has_value()) return;
-  const draft::Type &type = runtime->semantics.package.types.type(
-      runtime->semantics.package.symbols.symbol(*context).type);
+  const draft::Type &type = runtime->bodies.package.types.type(
+      runtime->bodies.package.symbols.symbol(*context).type);
   EXPECT(state, type.layout.known);
   EXPECT(state, type.layout.size == 96);
   EXPECT(state, type.layout.alignment == 8);
@@ -597,7 +993,7 @@ void test_compiler_distributed_memory(TestState &state) {
   EXPECT(state, root->llvm.text.find(
       ".memory.new_24mono_24") != std::string::npos);
   EXPECT(state,
-      root->semantics.package.imported_procedure_instances.size() >= 9);
+      root->bodies.package.imported_procedure_instances.size() >= 9);
   EXPECT(state, root->llvm.text.find(
       "call ptr @realloc") != std::string::npos);
   EXPECT(state, root->llvm.text.find(
@@ -614,7 +1010,7 @@ void test_compiler_distributed_memory(TestState &state) {
   EXPECT(state, memory != nullptr);
   if (memory != nullptr) {
     EXPECT(state,
-        memory->semantics.package.parametric_instances.size() >= 11);
+        memory->bodies.package.parametric_instances.size() >= 11);
     EXPECT(state, memory->llvm.text.find(
         "@\"__draft.runtime.reset_temporary_allocator\"") !=
         std::string::npos);
@@ -664,7 +1060,7 @@ void test_compiler_distributed_array_and_support(TestState &state) {
   EXPECT(state, root->llvm.text.find(".heap.allocator\"") !=
       std::string::npos);
   EXPECT(state,
-      root->semantics.package.imported_procedure_instances.size() == 5);
+      root->bodies.package.imported_procedure_instances.size() == 5);
 
   const draft::CompiledPackage *array = nullptr;
   for (const std::optional<draft::CompiledPackage> &package : result.packages) {
@@ -677,7 +1073,7 @@ void test_compiler_distributed_array_and_support(TestState &state) {
   EXPECT(state, array != nullptr);
   if (array != nullptr) {
     EXPECT(state, array->llvm.ok);
-    EXPECT(state, array->semantics.package.parametric_instances.size() >= 5);
+    EXPECT(state, array->bodies.package.parametric_instances.size() >= 5);
   }
 }
 
@@ -716,7 +1112,7 @@ void test_compiler_distributed_map(TestState &state) {
   EXPECT(state, root->llvm.text.find(".map.string_5Fkeys") !=
       std::string::npos);
   EXPECT(state,
-      root->semantics.package.imported_procedure_instances.size() == 5);
+      root->bodies.package.imported_procedure_instances.size() == 5);
 
   const draft::CompiledPackage *map = nullptr;
   for (const std::optional<draft::CompiledPackage> &package : result.packages) {
@@ -729,7 +1125,7 @@ void test_compiler_distributed_map(TestState &state) {
   if (map != nullptr) {
     EXPECT(state, map->llvm.ok);
     EXPECT(state, map->llvm.text.find("hash_5Fstring") != std::string::npos);
-    EXPECT(state, map->semantics.package.parametric_instances.size() >= 10);
+    EXPECT(state, map->bodies.package.parametric_instances.size() >= 10);
   }
 }
 
@@ -1072,20 +1468,20 @@ void test_cross_package_generic_procedures(TestState &state) {
   // must share owner symbols even though lib/generic was discovered before the
   // second sibling in the physical workspace traversal.
   EXPECT(state,
-      app->semantics.package.imported_procedure_instances.size() == 6);
+      app->bodies.package.imported_procedure_instances.size() == 6);
   EXPECT(state,
-      left->semantics.package.imported_procedure_instances.size() == 4);
+      left->bodies.package.imported_procedure_instances.size() == 4);
   EXPECT(state,
-      right->semantics.package.imported_procedure_instances.size() == 2);
-  EXPECT(state, generic->semantics.package.parametric_instances.size() == 6);
-  EXPECT(state, left->semantics.package.parametric_instances.size() == 2);
+      right->bodies.package.imported_procedure_instances.size() == 2);
+  EXPECT(state, generic->bodies.package.parametric_instances.size() == 6);
+  EXPECT(state, left->bodies.package.parametric_instances.size() == 2);
   EXPECT(state,
-      app->semantics.package.imported_type_instantiation_requests.empty());
+      app->bodies.package.imported_type_instantiation_requests.empty());
   EXPECT(state,
-      generic->semantics.package
+      generic->bodies.package
           .imported_type_instantiation_requests.empty());
   EXPECT(state,
-      layout->semantics.package
+      layout->bodies.package
           .imported_type_instantiation_requests.empty());
   // Resolving Transitive_Procedural_Bytes rebuilds generic after lib/layout
   // publishes its inner array. That clean rebuild intentionally discards
@@ -1094,9 +1490,9 @@ void test_cross_package_generic_procedures(TestState &state) {
   // local rows are an implementation detail, published graphs are the durable
   // cross-package result.
   EXPECT(state,
-      generic->semantics.package.parametric_type_instances.size() == 5);
+      generic->bodies.package.parametric_type_instances.size() == 5);
   EXPECT(state,
-      layout->semantics.package.parametric_type_instances.size() == 1);
+      layout->bodies.package.parametric_type_instances.size() == 1);
   const auto has_published_type = [&](std::string_view public_name) {
     return std::any_of(
         generic->interface.instantiated_types.begin(),
@@ -1350,18 +1746,18 @@ void test_cross_package_dependent_generic_effect(TestState &state) {
   EXPECT(state, generic_package != nullptr);
   if (app_package != nullptr && generic_package != nullptr) {
     EXPECT(state,
-        app_package->semantics.package.imported_procedure_instances.size() == 2);
+        app_package->bodies.package.imported_procedure_instances.size() == 2);
     EXPECT(state, generic_package->interface.procedure_instances.size() == 2);
     for (const draft::ImportedProcedureInstance &instance :
-         app_package->semantics.package.imported_procedure_instances) {
+         app_package->bodies.package.imported_procedure_instances) {
       EXPECT(state, instance.arguments.size() == 1);
       if (instance.arguments.size() != 1) continue;
       const draft::TypeKind argument_kind =
-          app_package->semantics.package.types.type(
+          app_package->bodies.package.types.type(
               instance.arguments.front().type).kind;
       const bool has_assert = std::any_of(
-          app_package->semantics.package.imported_effects.begin(),
-          app_package->semantics.package.imported_effects.end(),
+          app_package->bodies.package.imported_effects.begin(),
+          app_package->bodies.package.imported_effects.end(),
           [&](const draft::ImportedEffect &effect) {
             return effect.procedure_proxy == instance.instance_proxy &&
                 effect.kind == draft::EffectKind::RuntimeAssert;
@@ -1489,28 +1885,28 @@ void test_cross_package_static_argument_pack_effects(TestState &state) {
     }
 
     EXPECT(state,
-        app_package->semantics.package.imported_procedure_instances.size() == 4);
+        app_package->bodies.package.imported_procedure_instances.size() == 4);
     EXPECT(state, packing_package->interface.procedure_instances.size() == 4);
     std::size_t composed_instances = 0;
     for (const draft::ImportedProcedureInstance &instance :
-         app_package->semantics.package.imported_procedure_instances) {
+         app_package->bodies.package.imported_procedure_instances) {
       if (instance.public_template_name == "inspect_after") {
         ++composed_instances;
         EXPECT(state, instance.arguments.size() == 1);
         if (instance.arguments.size() == 1) {
           EXPECT(state, instance.arguments.front().is_type);
           EXPECT(state,
-              app_package->semantics.package.types.type(
+              app_package->bodies.package.types.type(
                   instance.arguments.front().type).kind ==
                   draft::TypeKind::UnsignedInteger);
         }
         EXPECT(state, instance.pack_types.size() == 2);
         if (instance.pack_types.size() == 2) {
           EXPECT(state,
-              app_package->semantics.package.types.type(
+              app_package->bodies.package.types.type(
                   instance.pack_types[0]).kind == draft::TypeKind::String);
           EXPECT(state,
-              app_package->semantics.package.types.type(
+              app_package->bodies.package.types.type(
                   instance.pack_types[1]).kind == draft::TypeKind::Bool);
         }
         continue;
@@ -1518,8 +1914,8 @@ void test_cross_package_static_argument_pack_effects(TestState &state) {
       EXPECT(state, instance.public_template_name == "inspect_all");
       EXPECT(state, instance.arguments.empty());
       const bool has_assert = std::any_of(
-          app_package->semantics.package.imported_effects.begin(),
-          app_package->semantics.package.imported_effects.end(),
+          app_package->bodies.package.imported_effects.begin(),
+          app_package->bodies.package.imported_effects.end(),
           [&](const draft::ImportedEffect &effect) {
             return effect.procedure_proxy == instance.instance_proxy &&
                 effect.kind == draft::EffectKind::RuntimeAssert;
@@ -1528,7 +1924,7 @@ void test_cross_package_static_argument_pack_effects(TestState &state) {
         EXPECT(state, !has_assert);
       } else if (instance.pack_types.size() == 1) {
         const draft::TypeKind kind =
-            app_package->semantics.package.types.type(
+            app_package->bodies.package.types.type(
                 instance.pack_types.front()).kind;
         EXPECT(state, has_assert == (kind == draft::TypeKind::Bool));
       } else {
@@ -1547,7 +1943,11 @@ void test_cross_package_static_argument_pack_effects(TestState &state) {
 
 int main() {
   TestState state;
+  test_procedure_demand_sets_are_canonical_and_exact(state);
   test_source_update_reuses_unaffected_semantics(state);
+  test_body_source_update_reuses_closed_generic_dependency(state);
+  test_body_work_graph_extends_and_removes_generic_demand(state);
+  test_body_work_graph_promotes_matching_local_instance(state);
   test_target_lowering_continues_checked_graph(state);
   test_multi_package_native_pipeline(state);
   test_hosted_entry_contract(state);

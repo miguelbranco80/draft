@@ -96,12 +96,12 @@ flow_caller :: proc() {
       target.facts,
       diagnostics);
   const draft::EffectSummaryResult effects =
-      draft::summarize_package_effects(semantics.package, bodies.program);
+      draft::summarize_package_effects(bodies.package, bodies.program);
   const draft::AgentMetadataResult empty_metadata;
   const draft::PackageInterface package_interface = draft::build_package_interface(
       {"workspace", "effects"},
-      semantics.package,
-      semantics.constants,
+      bodies.package,
+      bodies.constants,
       empty_metadata,
       effects,
       diagnostics);
@@ -112,11 +112,11 @@ flow_caller :: proc() {
   EXPECT(state, semantics.ok);
   EXPECT(state, bodies.ok);
   EXPECT(state, effects.procedures.size() == 5);
-  const std::optional<draft::SymbolId> leaf = symbol(semantics.package, "leaf");
-  const std::optional<draft::SymbolId> caller = symbol(semantics.package, "caller");
-  const std::optional<draft::SymbolId> invoke = symbol(semantics.package, "invoke");
+  const std::optional<draft::SymbolId> leaf = symbol(bodies.package, "leaf");
+  const std::optional<draft::SymbolId> caller = symbol(bodies.package, "caller");
+  const std::optional<draft::SymbolId> invoke = symbol(bodies.package, "invoke");
   const std::optional<draft::SymbolId> flow_caller =
-      symbol(semantics.package, "flow_caller");
+      symbol(bodies.package, "flow_caller");
   EXPECT(state, leaf.has_value());
   EXPECT(state, caller.has_value());
   EXPECT(state, invoke.has_value());
@@ -204,12 +204,12 @@ pub forward :: proc(text: string) -> [^]u8 {
       target.facts,
       diagnostics);
   const draft::EffectSummaryResult effects =
-      draft::summarize_package_effects(semantics.package, bodies.program);
+      draft::summarize_package_effects(bodies.package, bodies.program);
   const draft::AgentMetadataResult empty_metadata;
   const draft::PackageInterface package_interface = draft::build_package_interface(
       {"workspace", "raw_string_effects"},
-      semantics.package,
-      semantics.constants,
+      bodies.package,
+      bodies.constants,
       empty_metadata,
       effects,
       diagnostics);
@@ -220,9 +220,9 @@ pub forward :: proc(text: string) -> [^]u8 {
   EXPECT(state, semantics.ok);
   EXPECT(state, bodies.ok);
   const std::optional<draft::SymbolId> expose =
-      symbol(semantics.package, "expose");
+      symbol(bodies.package, "expose");
   const std::optional<draft::SymbolId> forward =
-      symbol(semantics.package, "forward");
+      symbol(bodies.package, "forward");
   EXPECT(state, expose.has_value());
   EXPECT(state, forward.has_value());
   if (!expose.has_value() || !forward.has_value()) return;
@@ -354,20 +354,20 @@ through_audit :: proc() {
   const std::vector<draft::ForeignProviderAudit> audits{audit};
   const draft::EffectSummaryResult effects =
       draft::summarize_package_effects(
-          semantics.package, bodies.program, &target, audits);
+          bodies.package, bodies.program, &target, audits);
   if (diagnostics.has_errors()) {
     std::cerr << draft::render_diagnostics(sources, diagnostics);
   }
   EXPECT(state, semantics.ok);
   EXPECT(state, bodies.ok);
   const std::optional<draft::SymbolId> through_system =
-      symbol(semantics.package, "through_system");
+      symbol(bodies.package, "through_system");
   const std::optional<draft::SymbolId> through_assembly =
-      symbol(semantics.package, "through_assembly");
+      symbol(bodies.package, "through_assembly");
   const std::optional<draft::SymbolId> through_unknown =
-      symbol(semantics.package, "through_unknown");
+      symbol(bodies.package, "through_unknown");
   const std::optional<draft::SymbolId> through_audit =
-      symbol(semantics.package, "through_audit");
+      symbol(bodies.package, "through_audit");
   EXPECT(state, through_system.has_value());
   EXPECT(state, through_assembly.has_value());
   EXPECT(state, through_unknown.has_value());
@@ -467,7 +467,7 @@ through_context :: proc() {
       diagnostics);
   const draft::EffectSummaryResult effects =
       draft::summarize_package_effects(
-          semantics.package, bodies.program, &target);
+          bodies.package, bodies.program, &target);
   if (diagnostics.has_errors()) {
     std::cerr << draft::render_diagnostics(sources, diagnostics);
   }
@@ -475,11 +475,11 @@ through_context :: proc() {
   EXPECT(state, bodies.ok);
 
   const std::optional<draft::SymbolId> invoke_box =
-      symbol(semantics.package, "invoke_box");
+      symbol(bodies.package, "invoke_box");
   const std::optional<draft::SymbolId> through_box =
-      symbol(semantics.package, "through_box");
+      symbol(bodies.package, "through_box");
   const std::optional<draft::SymbolId> through_context =
-      symbol(semantics.package, "through_context");
+      symbol(bodies.package, "through_context");
   EXPECT(state, invoke_box.has_value());
   EXPECT(state, through_box.has_value());
   EXPECT(state, through_context.has_value());
@@ -592,18 +592,18 @@ through_return :: proc() {
       diagnostics);
   const draft::EffectSummaryResult effects =
       draft::summarize_package_effects(
-          semantics.package, bodies.program, &target);
+          bodies.package, bodies.program, &target);
   if (diagnostics.has_errors()) {
     std::cerr << draft::render_diagnostics(sources, diagnostics);
   }
   EXPECT(state, semantics.ok);
   EXPECT(state, bodies.ok);
   const std::optional<draft::SymbolId> identity =
-      symbol(semantics.package, "identity");
+      symbol(bodies.package, "identity");
   const std::optional<draft::SymbolId> box_factory =
-      symbol(semantics.package, "box_factory");
+      symbol(bodies.package, "box_factory");
   const std::optional<draft::SymbolId> through_return =
-      symbol(semantics.package, "through_return");
+      symbol(bodies.package, "through_return");
   EXPECT(state, identity.has_value());
   EXPECT(state, box_factory.has_value());
   EXPECT(state, through_return.has_value());
@@ -737,7 +737,7 @@ through_install :: proc() {
       diagnostics);
   const draft::EffectSummaryResult effects =
       draft::summarize_package_effects(
-          semantics.package, bodies.program, &target);
+          bodies.package, bodies.program, &target);
   if (diagnostics.has_errors()) {
     std::cerr << draft::render_diagnostics(sources, diagnostics);
   }
@@ -745,21 +745,21 @@ through_install :: proc() {
   EXPECT(state, bodies.ok);
 
   const std::optional<draft::SymbolId> install =
-      symbol(semantics.package, "install");
+      symbol(bodies.package, "install");
   const std::optional<draft::SymbolId> forward_install =
-      symbol(semantics.package, "forward_install");
+      symbol(bodies.package, "forward_install");
   const std::optional<draft::SymbolId> deep_install =
-      symbol(semantics.package, "deep_install");
+      symbol(bodies.package, "deep_install");
   const std::optional<draft::SymbolId> deep_forward =
-      symbol(semantics.package, "deep_forward");
+      symbol(bodies.package, "deep_forward");
   const std::optional<draft::SymbolId> local_only =
-      symbol(semantics.package, "local_only");
+      symbol(bodies.package, "local_only");
   const std::optional<draft::SymbolId> install_local_copy =
-      symbol(semantics.package, "install_local_copy");
+      symbol(bodies.package, "install_local_copy");
   const std::optional<draft::SymbolId> choose_install =
-      symbol(semantics.package, "choose_install");
+      symbol(bodies.package, "choose_install");
   const std::optional<draft::SymbolId> through_install =
-      symbol(semantics.package, "through_install");
+      symbol(bodies.package, "through_install");
   EXPECT(state, install.has_value());
   EXPECT(state, forward_install.has_value());
   EXPECT(state, deep_install.has_value());
@@ -966,7 +966,7 @@ tuple_assignment_caller :: proc() {
       diagnostics);
   const draft::EffectSummaryResult effects =
       draft::summarize_package_effects(
-          semantics.package, bodies.program, &target);
+          bodies.package, bodies.program, &target);
   if (diagnostics.has_errors()) {
     std::cerr << draft::render_diagnostics(sources, diagnostics);
   }
@@ -974,19 +974,19 @@ tuple_assignment_caller :: proc() {
   EXPECT(state, bodies.ok);
 
   const std::optional<draft::SymbolId> apply =
-      symbol(semantics.package, "apply");
+      symbol(bodies.package, "apply");
   const std::optional<draft::SymbolId> apply_box =
-      symbol(semantics.package, "apply_box");
+      symbol(bodies.package, "apply_box");
   const std::optional<draft::SymbolId> apply_twice =
-      symbol(semantics.package, "apply_twice");
+      symbol(bodies.package, "apply_twice");
   const std::optional<draft::SymbolId> caller =
-      symbol(semantics.package, "caller");
+      symbol(bodies.package, "caller");
   const std::optional<draft::SymbolId> ordered_caller =
-      symbol(semantics.package, "ordered_caller");
+      symbol(bodies.package, "ordered_caller");
   const std::optional<draft::SymbolId> recursive_caller =
-      symbol(semantics.package, "recursive_caller");
+      symbol(bodies.package, "recursive_caller");
   const std::optional<draft::SymbolId> tuple_assignment_caller =
-      symbol(semantics.package, "tuple_assignment_caller");
+      symbol(bodies.package, "tuple_assignment_caller");
   EXPECT(state, apply.has_value());
   EXPECT(state, apply_box.has_value());
   EXPECT(state, apply_twice.has_value());

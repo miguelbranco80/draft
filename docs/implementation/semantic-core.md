@@ -189,6 +189,47 @@ arguments followed by a domain-separated pack count and those graphs. Final
 instance interface rows retain the same pack-type graphs beside the exact
 effect, return, and write contracts.
 
+## Declaration generations and demand-driven body work
+
+Status: bootstrap phase ownership and incremental command-local scheduling.
+
+Semantic analysis publishes an immutable declaration generation for each
+package. It contains the package/file scopes, declarations, signatures,
+constants, selected structural regions, imported interface bindings, layouts,
+and preliminary interface facts. Body checking never appends to that retained
+value. It copies the declaration prefix and returns the enriched SemanticPackage,
+body constants, and HIR as one `BodyCheckResult`. Every SymbolId, ScopeId, and
+TypeId in HIR belongs to that returned package; later effect, denial, interop,
+MIR, LLVM, metadata, and obligation passes consume the same body-owned tables.
+
+The compiler schedules package bodies consumer-first because checking a caller
+can demand a concrete public generic body from its dependency. A portable
+procedure-demand packet contains canonical interface type graphs, exact value
+arguments, ordered static-pack types, the full semantic digest, and the stable
+native instance name. The owning package sorts and deduplicates the complete set
+before using it as work identity. No consumer-local TypeId crosses the boundary,
+and materialized owner TypeIds live only in the body generation.
+
+One body work key is `(declaration generation, canonical external demand set)`:
+
+- an equal key retains the existing semantic tables and HIR without invoking
+  BodyChecker;
+- a strict demand-set addition preserves existing IDs and checks only newly
+  requested concrete procedures;
+- a removed or changed demand rebuilds from the declaration generation, which
+  removes stale concrete bodies and interface rows;
+- a matching package-local specialization is promoted in place to the canonical
+  external name, retaining its SymbolId and HIR rather than creating a duplicate;
+- a source or dependency-interface change creates a new declaration generation
+  and therefore cannot reuse a body built against the old prefix.
+
+Compile-time expression type preflight and early compile-time procedure checks
+operate on private copies. Their HIR is disposable and their only permitted
+lasting product is explicit early synthesis context. They cannot become a
+hidden preliminary body pass or contaminate the declaration baseline. This is
+command-lifetime reuse, not a persistent compiler cache: a new `draftc` process
+reconstructs all semantic state from authored and committed generated source.
+
 ## Contextual `c`
 
 Status: implementation representation; no intended semantic change.
@@ -417,7 +458,7 @@ traps, and message construction used solely by an assertion cannot survive,
 and no condition is converted into an optimizer assumption.
 
 The versioned `draft.resolved-program.v6` hash records the selected root and
-assertion mode beside compiler content v139. `build`, `resolve`, and `judge`
+assertion mode beside compiler content v140. `build`, `resolve`, and `judge`
 expose the same explicit flag so a provider-free manifest cannot be replayed
 under a different mode. Test and benchmark compilations deliberately override
 the release choice to assertions on and receive their own resolved validation

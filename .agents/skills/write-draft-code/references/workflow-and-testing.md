@@ -138,7 +138,8 @@ algorithm choices. Avoid narrating individual operators.
 ## Front-end validation
 
 Run from the repository root, increasing scope only after the narrow step
-passes:
+passes. For handwritten programs or `...` programs that already have fresh
+saved expansions for the selected target, use the provider-free sequence:
 
 ```sh
 build/draftc lex path/to/file.draft
@@ -150,6 +151,13 @@ build/draftc expand path/to/workspace --root package --out /tmp/expanded-source 
 build/draftc resolve path/to/workspace --root package --build -o /tmp/program \
   --target aarch64-macos
 ```
+
+For fresh source containing `...`, `check`, `expand`, and plain `build` must
+fail until a pin exists; they never contact a synthesis provider. After any
+useful `lex` or `syntax` inspection, run `resolve` separately for every target
+you intend to consume. `resolve --build` is the shortest first-run path when
+you also want the current host artifact. Subsequent `check`, `expand`, and
+plain `build` commands use only the saved target-scoped expansion.
 
 Use `lex` for token/semicolon questions, `syntax` for grammar/recovery, and
 `check` for package selection, names, types, constants, denials, layout, and
@@ -239,8 +247,16 @@ do not add per-worker timing writes to the single-threaded recorder.
 
 For resolved programs, distinguish `workspace loads` from `workspace source
 transitions`. A checked `...` expansion is reparsed into the existing
-command-local graph and reanalyzes only its package plus transitive import
-consumers; it is not another workspace load and creates no persistent cache.
+command-local graph. A declaration/member expansion reanalyzes its package and
+transitive import consumers. A body expansion reanalyzes only its containing
+package, retains equal-key dependency and consumer bodies, and recomputes
+affected closure. It is not another workspace load and creates no persistent
+cache. The body counters distinguish full checks, new generic-instance
+extensions, and exact retained-body reuse. They are package-level totals across
+the command, including separately selected validation-context graphs when those
+are needed. Reusing a body means BodyChecker did no work for that package; its
+effect, denial, metadata, or obligation closure may still be recomputed after a
+dependency changed.
 An additional compiler pass is expected only for a genuinely different source
 selection, such as the typed test or benchmark graph used as synthesis context.
 

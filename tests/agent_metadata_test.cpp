@@ -133,14 +133,14 @@ void test_agent_records(TestState &state) {
       diagnostics);
   const draft::AttachmentPolicy policy;
   const draft::AgentMetadataResult metadata = draft::collect_agent_metadata(
-      sources, loaded.package, semantics.package, policy, diagnostics);
+      sources, loaded.package, bodies.package, policy, diagnostics);
   const draft::AgentObligationResult obligations =
       draft::build_agent_obligations(
           {"workspace", "context"},
           sources,
           loaded.package,
-          semantics.package,
-          semantics.constants,
+          bodies.package,
+          bodies.constants,
           metadata,
           target,
           diagnostics,
@@ -148,8 +148,8 @@ void test_agent_records(TestState &state) {
           &bodies.program);
   const draft::PackageInterface package_interface = draft::build_package_interface(
       {"workspace", "context"},
-      semantics.package,
-      semantics.constants,
+      bodies.package,
+      bodies.constants,
       metadata,
       diagnostics);
 
@@ -181,7 +181,7 @@ void test_agent_records(TestState &state) {
   EXPECT(state, synthesis.kind == draft::AgentConstructKind::SynthesisExpression);
   EXPECT(state, synthesis.expected_type.is_valid());
   if (synthesis.expected_type.is_valid()) {
-    EXPECT(state, semantics.package.types.type(synthesis.expected_type).name == "i64");
+    EXPECT(state, bodies.package.types.type(synthesis.expected_type).name == "i64");
   }
   EXPECT(state, synthesis.files.size() == 1);
   EXPECT(state, synthesis.record_digest.hex().size() == 64);
@@ -395,7 +395,7 @@ void test_agent_records(TestState &state) {
         draft::collect_agent_metadata(
             sources,
             loaded.package,
-            semantics.package,
+            bodies.package,
             policy,
             diagnostics);
     const draft::AgentObligationResult changed_obligations =
@@ -403,8 +403,8 @@ void test_agent_records(TestState &state) {
             {"workspace", "context"},
             sources,
             loaded.package,
-            semantics.package,
-            semantics.constants,
+            bodies.package,
+            bodies.constants,
             changed_metadata,
             target,
             diagnostics);
@@ -456,7 +456,7 @@ void test_agent_records(TestState &state) {
             draft::collect_agent_metadata(
                 member_sources,
                 member_loaded.package,
-                member_semantics.package,
+                member_bodies.package,
                 policy,
                 member_diagnostics);
         const draft::AgentObligationResult member_obligations =
@@ -464,8 +464,8 @@ void test_agent_records(TestState &state) {
                 {"workspace", "context"},
                 member_sources,
                 member_loaded.package,
-                member_semantics.package,
-                member_semantics.constants,
+                member_bodies.package,
+                member_bodies.constants,
                 member_metadata,
                 target,
                 member_diagnostics);
@@ -587,14 +587,14 @@ work :: proc() -> i64 {
       target.facts,
       diagnostics);
   const draft::AgentMetadataResult metadata = draft::collect_agent_metadata(
-      sources, loaded.package, semantics.package, {}, diagnostics);
+      sources, loaded.package, bodies.package, {}, diagnostics);
   const draft::AgentObligationResult obligations =
       draft::build_agent_obligations(
           {"workspace", "judgment_context"},
           sources,
           loaded.package,
-          semantics.package,
-          semantics.constants,
+          bodies.package,
+          bodies.constants,
           metadata,
           target,
           diagnostics);
@@ -764,7 +764,7 @@ main :: proc() -> int {
   const draft::AgentMetadataResult metadata = draft::collect_agent_metadata(
       sources,
       loaded.package,
-      semantics.package,
+      bodies.package,
       {},
       diagnostics);
   const draft::AgentObligationResult obligations =
@@ -772,8 +772,8 @@ main :: proc() -> int {
           {"workspace", "package_judgment_context"},
           sources,
           loaded.package,
-          semantics.package,
-          semantics.constants,
+          bodies.package,
+          bodies.constants,
           metadata,
           target,
           diagnostics,
@@ -931,14 +931,14 @@ work :: proc(flag: bool, value: i64, values: []i64) {
       target.facts,
       diagnostics);
   const draft::AgentMetadataResult metadata = draft::collect_agent_metadata(
-      sources, loaded.package, semantics.package, {}, diagnostics);
+      sources, loaded.package, bodies.package, {}, diagnostics);
   const draft::AgentObligationResult obligations =
       draft::build_agent_obligations(
           {"workspace", "branch_context"},
           sources,
           loaded.package,
-          semantics.package,
-          semantics.constants,
+          bodies.package,
+          bodies.constants,
           metadata,
           target,
           diagnostics);
@@ -1484,14 +1484,14 @@ work :: proc() -> i64 {
       target.facts,
       diagnostics);
   const draft::AgentMetadataResult metadata = draft::collect_agent_metadata(
-      sources, loaded.package, semantics.package, {}, diagnostics);
+      sources, loaded.package, bodies.package, {}, diagnostics);
   const draft::AgentObligationResult obligations =
       draft::build_agent_obligations(
           {"workspace", "relevant_context"},
           sources,
           loaded.package,
-          semantics.package,
-          semantics.constants,
+          bodies.package,
+          bodies.constants,
           metadata,
           target,
           diagnostics,
@@ -1626,7 +1626,7 @@ work :: proc() -> i64 {
         draft::collect_agent_metadata(
             rebuilt_sources,
             rebuilt_loaded.package,
-            rebuilt_semantics.package,
+            rebuilt_bodies.package,
             {},
             rebuilt_diagnostics);
     const draft::AgentObligationResult rebuilt_obligations =
@@ -1634,8 +1634,8 @@ work :: proc() -> i64 {
             {"workspace", "relevant_context"},
             rebuilt_sources,
             rebuilt_loaded.package,
-            rebuilt_semantics.package,
-            rebuilt_semantics.constants,
+            rebuilt_bodies.package,
+            rebuilt_bodies.constants,
             rebuilt_metadata,
             target,
             rebuilt_diagnostics,
@@ -1832,14 +1832,14 @@ main :: proc() {
       target.facts,
       diagnostics);
   const draft::AgentMetadataResult metadata = draft::collect_agent_metadata(
-      sources, loaded.package, semantics.package, {}, diagnostics);
+      sources, loaded.package, bodies.package, {}, diagnostics);
   const draft::AgentObligationResult obligations =
       draft::build_agent_obligations(
           {"workspace", "pack_agent"},
           sources,
           loaded.package,
-          semantics.package,
-          semantics.constants,
+          bodies.package,
+          bodies.constants,
           metadata,
           target,
           diagnostics,

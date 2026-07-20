@@ -63,7 +63,7 @@ struct LoweredSource {
         target.facts,
         diagnostics);
     mir = draft::lower_package_to_mir(
-        semantics.package, bodies.program, runtime_assertions, diagnostics);
+        bodies.package, bodies.program, runtime_assertions, diagnostics);
   }
 };
 
@@ -234,7 +234,7 @@ wide_shift :: proc(value: u128, count: i8) -> u128 {
   std::size_t unreachable = 0;
   std::size_t full_width_count_conversions = 0;
   const std::optional<draft::TypeId> u128_type =
-      source.semantics.package.types.find_builtin("u128");
+      source.bodies.package.types.find_builtin("u128");
   EXPECT(state, u128_type.has_value());
   for (const draft::MirProcedure &procedure : source.mir.program.procedures()) {
     for (const draft::MirInstruction &instruction : procedure.instructions) {
@@ -295,7 +295,7 @@ main :: proc() -> i64 {
     std::size_t assertions = 0;
     for (const draft::MirProcedure &procedure :
          source.mir.program.procedures()) {
-      if (source.semantics.package.symbols.symbol(procedure.symbol).name !=
+      if (source.bodies.package.symbols.symbol(procedure.symbol).name !=
           "main") {
         continue;
       }
@@ -364,9 +364,9 @@ main :: proc() {
   draft::SymbolId populated_instance;
   draft::SymbolId empty_instance;
   for (const draft::ParametricInstanceRecord &instance :
-       source.semantics.package.parametric_instances) {
+       source.bodies.package.parametric_instances) {
     const draft::Symbol &source_symbol =
-        source.semantics.package.symbols.symbol(instance.source);
+        source.bodies.package.symbols.symbol(instance.source);
     if (source_symbol.name != "expand") continue;
     if (instance.pack_types.empty()) {
       empty_instance = instance.instance;
@@ -386,13 +386,13 @@ main :: proc() {
     }
 
     const draft::Type &signature =
-        source.semantics.package.types.type(procedure.type);
+        source.bodies.package.types.type(procedure.type);
     std::size_t parameter_count = 0;
     for (const draft::MirLocal &local : procedure.locals) {
       if (local.kind == draft::MirLocalKind::Parameter) ++parameter_count;
       EXPECT(
           state,
-          source.semantics.package.types.type(local.type).kind !=
+          source.bodies.package.types.type(local.type).kind !=
               draft::TypeKind::TypeParameter);
     }
     for (const draft::MirInstruction &instruction : procedure.instructions) {
@@ -400,7 +400,7 @@ main :: proc() {
       if (instruction.type.is_valid()) {
         EXPECT(
             state,
-            source.semantics.package.types.type(instruction.type).kind !=
+            source.bodies.package.types.type(instruction.type).kind !=
                 draft::TypeKind::TypeParameter);
       }
     }
@@ -472,7 +472,7 @@ main :: proc() -> int {
   EXPECT(state, source.bodies.program.procedures().size() == 3);
   EXPECT(state, source.mir.program.procedures().size() == 1);
   if (source.mir.program.procedures().size() == 1) {
-    const draft::Symbol &symbol = source.semantics.package.symbols.symbol(
+    const draft::Symbol &symbol = source.bodies.package.symbols.symbol(
         source.mir.program.procedures().front().symbol);
     EXPECT(state, symbol.name == "main");
   }
@@ -511,10 +511,10 @@ slice :: proc(text: string) -> [^]u8 {
         ++extractions;
         EXPECT(state, instruction.operands.size() == 1);
         const draft::Type &result =
-            source.semantics.package.types.type(instruction.type);
+            source.bodies.package.types.type(instruction.type);
         EXPECT(state, result.kind == draft::TypeKind::MultiPointer);
         EXPECT(state, result.element ==
-            source.semantics.package.types.builtins().u8_type);
+            source.bodies.package.types.builtins().u8_type);
       }
     }
   }

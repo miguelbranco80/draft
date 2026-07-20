@@ -53,6 +53,12 @@ resolution-manifest work, interface discovery and in-memory source transitions,
 body-semantic continuation, provider-synthesis ready waves, MIR/LLVM code
 generation, native object/link/debug-symbol work, and validation work when those
 phases run.
+Body continuation reports `package body checks`, `package body extensions`, and
+`package body reuses`: respectively complete body generations built from
+declarations, retained generations extended with newly demanded generic
+procedures, and exact declaration+demand work-key matches which perform no body
+checking. These are command-local reuse facts, not evidence of a persistent
+compiler cache.
 Native commands additionally report the user and system CPU accounted to the
 remaining Clang assembler/linker operations, other host tools, and validation
 executables. In-process LLVM work contributes ordinary parent wall/CPU time.

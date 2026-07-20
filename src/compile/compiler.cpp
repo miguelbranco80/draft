@@ -9,14 +9,19 @@
 // source bytes through stable FileIds; callers therefore keep SourceManager
 // alive for the complete command.
 //
-// Package interfaces become available dependency-first, generic body requests
+// Package interfaces become available dependency-first, generic body demands
 // propagate consumer-first, and completed effects publish dependency-first.
-// CompileWorkspaceProgress records the monotonic state boundary so native
-// lowering can continue a checked graph without reloading source. No state is
-// process-global or persisted as a compiler cache. Resolution orchestration
-// consumes generated Draft only through ordinary source overrides and may not
-// manufacture semantic or backend nodes. Relevant rules are specification
-// sections 10 and 15 and the implementation architecture document.
+// Within an unchanged source generation, CompileWorkspaceProgress advances so
+// native lowering can continue a checked graph without reloading source. A
+// checked generated-source transition explicitly moves the workspace aggregate
+// back to interface discovery while per-package progress retains unaffected
+// body and closure products under exact work keys.
+//
+// No state is process-global or persisted as a compiler cache. Resolution
+// orchestration consumes generated Draft only through ordinary source
+// overrides and may not manufacture semantic or backend nodes. Relevant rules
+// are specification sections 10 and 15 and the implementation architecture
+// document.
 
 #include "compile/compiler.h"
 
@@ -292,8 +297,12 @@ void hash_field(Sha256 &hash, std::string_view value) {
     const SourceManager &sources,
     const LoadedPackage &loaded,
     const TargetFacts &target,
-    SemanticAnalysisResult &semantics,
+    const SemanticAnalysisResult &semantics,
+    SemanticPackage &context_package,
+    ConstantTable &context_constants,
     DiagnosticSink &diagnostics) {
+  context_package = semantics.package;
+  context_constants = semantics.constants;
   if (semantics.compile_time_synthesis_procedures.empty() ||
       has_semantic_site(
           semantics.package, SemanticSiteKind::SynthesisDeclaration)) {
@@ -303,25 +312,23 @@ void hash_field(Sha256 &hash, std::string_view value) {
   const bool speculate = has_semantic_site(
       semantics.package, SemanticSiteKind::SynthesisMember);
   if (speculate) {
-    SemanticPackage candidate_package = semantics.package;
-    ConstantTable candidate_constants = semantics.constants;
     DiagnosticSink deferred_diagnostics;
-    const BodyCheckResult candidate = check_compile_time_procedure_bodies(
+    BodyCheckResult candidate = check_compile_time_procedure_bodies(
         sources,
         loaded,
         semantics.selections,
-        candidate_package,
-        candidate_constants,
+        semantics.package,
+        semantics.constants,
         target,
         semantics.compile_time_synthesis_procedures,
         deferred_diagnostics);
     if (!candidate.ok) return true;
-    semantics.package = std::move(candidate_package);
-    semantics.constants = std::move(candidate_constants);
+    context_package = std::move(candidate.package);
+    context_constants = std::move(candidate.constants);
     return true;
   }
 
-  const BodyCheckResult checked = check_compile_time_procedure_bodies(
+  BodyCheckResult checked = check_compile_time_procedure_bodies(
       sources,
       loaded,
       semantics.selections,
@@ -330,6 +337,10 @@ void hash_field(Sha256 &hash, std::string_view value) {
       target,
       semantics.compile_time_synthesis_procedures,
       diagnostics);
+  if (checked.ok) {
+    context_package = std::move(checked.package);
+    context_constants = std::move(checked.constants);
+  }
   return checked.ok;
 }
 
@@ -398,7 +409,7 @@ void hash_field(Sha256 &hash, std::string_view value) {
   Sha256 hash;
   hash_field(hash, "draft.type-instantiation-requests.v1");
   for (const ImportedTypeInstantiationRequest &request :
-       requester.semantics.package.imported_type_instantiation_requests) {
+       requester.declarations.package.imported_type_instantiation_requests) {
     hash_field(hash, request.root_identity);
     hash_field(hash, request.root_relative_path);
     hash_field(hash, request.public_template_name);
@@ -410,7 +421,7 @@ void hash_field(Sha256 &hash, std::string_view value) {
           : argument.value_type;
       const InterfaceTypeGraph graph = export_interface_type(
           requester.identity,
-          requester.semantics.package,
+          requester.declarations.package,
           type,
           diagnostics);
       hash.update(hash_interface_type_graph(graph).bytes);
@@ -501,18 +512,22 @@ void append_instantiated_type(
       compile_time_synthesis_mode(options.stage),
       diagnostics);
   if (!semantics.ok) return false;
+  SemanticPackage interface_context_package;
+  ConstantTable interface_context_constants;
   if (!append_compile_time_body_synthesis_sites(
           sources,
           workspace_package.loaded,
           options.target.facts,
           semantics,
+          interface_context_package,
+          interface_context_constants,
           diagnostics)) {
     return false;
   }
   AgentMetadataResult metadata = collect_agent_metadata(
       sources,
       workspace_package.loaded,
-      semantics.package,
+      interface_context_package,
       options.attachments,
       diagnostics);
   if (!metadata.ok) return false;
@@ -545,8 +560,8 @@ void append_instantiated_type(
         workspace_package.identity,
         sources,
         workspace_package.loaded,
-        semantics.package,
-        semantics.constants,
+        interface_context_package,
+        interface_context_constants,
         metadata,
         options.target,
         diagnostics,
@@ -554,7 +569,12 @@ void append_instantiated_type(
     if (!obligations.ok) return false;
   }
 
-  package.semantics = std::move(semantics);
+  package.declarations = std::move(semantics);
+  ++package.declaration_generation;
+  package.body_work_key = {};
+  BodyCheckResult empty_bodies;
+  package.bodies = std::move(empty_bodies);
+  package.semantic_progress = PackageSemanticProgress::InterfaceReady;
   package.metadata = std::move(metadata);
   package.validation_context = std::move(validation_context);
   package.interface = std::move(interface);
@@ -594,7 +614,7 @@ private:
       std::vector<std::size_t> &owner_stack) {
     bool ok = true;
     for (const ImportedTypeInstantiationRequest &request :
-         requester.semantics.package.imported_type_instantiation_requests) {
+         requester.declarations.package.imported_type_instantiation_requests) {
       ok = publish_request(requester, request, owner_stack) && ok;
     }
     return ok;
@@ -630,8 +650,8 @@ private:
     for (;;) {
       CompiledPackage &owner = *result_.packages[*owner_index];
       const std::optional<SymbolId> source =
-          owner.semantics.package.symbols.lookup_direct(
-              owner.semantics.package.package_scope,
+          owner.declarations.package.symbols.lookup_direct(
+              owner.declarations.package.package_scope,
               request.public_template_name);
       if (!source.has_value()) {
         diagnostics_.error(
@@ -642,7 +662,7 @@ private:
         return false;
       }
       const Symbol source_symbol =
-          owner.semantics.package.symbols.symbol(*source);
+          owner.declarations.package.symbols.symbol(*source);
       if (source_symbol.kind != SymbolKind::Type ||
           !source_symbol.flags.parametric ||
           source_symbol.visibility != Visibility::Public) {
@@ -673,7 +693,7 @@ private:
             : argument.value_type;
         const InterfaceTypeGraph graph = export_interface_type(
             requester.identity,
-            requester.semantics.package,
+            requester.declarations.package,
             argument_type,
             diagnostics_);
         if (!owner_result_is_concrete(graph)) {
@@ -684,7 +704,7 @@ private:
           return false;
         }
         const TypeId imported = import_interface_type(
-            graph, owner.semantics.package, diagnostics_);
+            graph, owner.declarations.package, diagnostics_);
         if (argument.is_type) {
           transferred.type = imported;
         } else {
@@ -699,22 +719,22 @@ private:
       const TypeId concrete = instantiate_parametric_type_application(
           sources_,
           result_.graph.packages[*owner_index].loaded,
-          owner.semantics.package,
-          owner.semantics.selections,
+          owner.declarations.package,
+          owner.declarations.selections,
           *source,
           std::move(transferred_arguments),
           source_symbol.name_range,
           options_.target.facts,
           diagnostics_);
       if (!concrete.is_valid() ||
-          owner.semantics.package.types.type(concrete).kind ==
+          owner.declarations.package.types.type(concrete).kind ==
               TypeKind::Invalid) {
         owner_stack.pop_back();
         return false;
       }
       const InterfaceTypeGraph graph = export_interface_type_application(
           owner.identity,
-          owner.semantics.package,
+          owner.declarations.package,
           concrete,
           *source,
           publication_arguments,
@@ -725,7 +745,7 @@ private:
         return true;
       }
 
-      if (owner.semantics.package
+      if (owner.declarations.package
               .imported_type_instantiation_requests.empty()) {
         diagnostics_.error(
             source_symbol.name_range,
@@ -1233,6 +1253,25 @@ void bind_handwritten_program_identity(
   return affected;
 }
 
+// Invalidates effect/obligation closure for one changed package and every
+// transitive consumer without discarding reusable body HIR. InterfaceReady rows
+// already need body work and therefore remain at their earlier phase.
+void invalidate_package_closure(
+    const WorkspaceDependencyIndex &schedule,
+    std::span<const PackageId> changed_packages,
+    CompileWorkspaceResult &result) {
+  const std::vector<bool> affected =
+      affected_packages(schedule, std::vector<PackageId>(
+          changed_packages.begin(), changed_packages.end()));
+  for (std::size_t index = 0; index < affected.size(); ++index) {
+    if (!affected[index] || !result.packages[index].has_value()) continue;
+    CompiledPackage &package = *result.packages[index];
+    if (package.semantic_progress == PackageSemanticProgress::ClosureReady) {
+      package.semantic_progress = PackageSemanticProgress::BodiesReady;
+    }
+  }
+}
+
 // Builds declaration semantics and preliminary interfaces for selected graph
 // rows. Dependencies must be selected whenever one of their interfaces is no
 // longer valid; affected_packages() establishes that closure for source
@@ -1245,18 +1284,28 @@ void analyze_workspace_interfaces(
     const CompileWorkspaceOptions &options,
     const WorkspaceDependencyIndex &schedule,
     const std::vector<bool> &selected,
+    WorkspaceSemanticChange change,
     CompileWorkspaceResult &result,
     DiagnosticSink &diagnostics) {
   std::vector<std::vector<AgentValidationContext>> retained_validation(
       result.packages.size());
   std::vector<bool> retained_validation_is_typed(
       result.packages.size(), false);
+  std::vector<std::uint64_t> next_declaration_generation(
+      result.packages.size(), 1);
   for (std::size_t index = 0; index < result.packages.size(); ++index) {
     if (!selected[index]) continue;
     if (result.packages[index].has_value()) {
+      next_declaration_generation[index] =
+          result.packages[index]->declaration_generation + 1;
       retained_validation[index] =
           std::move(result.packages[index]->validation_context);
+      // A body-category replacement cannot change declarations in either the
+      // ordinary package or its separately selected validation sources. An
+      // interface replacement can, so its previously typed validation context
+      // must be enriched again against the new declaration generation.
       retained_validation_is_typed[index] =
+          change == WorkspaceSemanticChange::Body &&
           result.packages[index]->validation_context_is_typed;
     }
     result.packages[index].reset();
@@ -1302,6 +1351,9 @@ void analyze_workspace_interfaces(
 
     CompiledPackage package;
     package.identity = workspace_package.identity;
+    package.declaration_generation =
+        next_declaration_generation[package_index];
+    package.semantic_progress = PackageSemanticProgress::InterfaceReady;
     package.validation_context = std::move(retained_validation[package_index]);
     package.validation_context_is_typed =
         retained_validation_is_typed[package_index];
@@ -1314,7 +1366,7 @@ void analyze_workspace_interfaces(
           std::string(sources.text(file.source)),
       });
     }
-    package.semantics = analyze_package_semantics(
+    package.declarations = analyze_package_semantics(
         sources,
         workspace_package.loaded,
         options.target.facts,
@@ -1329,8 +1381,8 @@ void analyze_workspace_interfaces(
     // Publishing may enrich a dependency interface in place; this package is
     // then rebuilt from its unchanged syntax until no request remains.
     std::vector<Sha256Digest> attempted_type_request_sets;
-    while (package.semantics.ok &&
-           !package.semantics.package
+    while (package.declarations.ok &&
+           !package.declarations.package
                 .imported_type_instantiation_requests.empty()) {
       const Sha256Digest request_digest =
           hash_type_instantiation_requests(package, diagnostics);
@@ -1350,7 +1402,7 @@ void analyze_workspace_interfaces(
               diagnostics)) {
         break;
       }
-      package.semantics = analyze_package_semantics(
+      package.declarations = analyze_package_semantics(
           sources,
           workspace_package.loaded,
           options.target.facts,
@@ -1360,27 +1412,31 @@ void analyze_workspace_interfaces(
         options.timings->add_counter("package semantic analyses", 1);
       }
     }
-    if (package.semantics.ok &&
-        !package.semantics.package
+    if (package.declarations.ok &&
+        !package.declarations.package
              .imported_type_instantiation_requests.empty()) {
       diagnostics.error(
           SourceRange::invalid(),
           "generic type layout requests made no semantic progress");
-      package.semantics.ok = false;
+      package.declarations.ok = false;
     }
-    if (!package.semantics.ok) continue;
+    if (!package.declarations.ok) continue;
+    SemanticPackage interface_context_package;
+    ConstantTable interface_context_constants;
     if (!append_compile_time_body_synthesis_sites(
             sources,
             workspace_package.loaded,
             options.target.facts,
-            package.semantics,
+            package.declarations,
+            interface_context_package,
+            interface_context_constants,
             diagnostics)) {
       continue;
     }
     package.metadata = collect_agent_metadata(
         sources,
         workspace_package.loaded,
-        package.semantics.package,
+        interface_context_package,
         options.attachments,
         diagnostics);
     if (options.validation_kind == ValidationKind::None &&
@@ -1394,11 +1450,11 @@ void analyze_workspace_interfaces(
         options.stage == CompileWorkspaceStage::DiscoverInterfaceSynthesis &&
             has_synthesis_record(package.metadata)
         ? withheld_package_interface(
-              workspace_package.identity, package.semantics.package)
+              workspace_package.identity, package.declarations.package)
         : build_package_interface(
               workspace_package.identity,
-              package.semantics.package,
-              package.semantics.constants,
+              package.declarations.package,
+              package.declarations.constants,
               package.metadata,
               diagnostics);
     if (options.stage == CompileWorkspaceStage::DiscoverInterfaceSynthesis) {
@@ -1406,8 +1462,8 @@ void analyze_workspace_interfaces(
           workspace_package.identity,
           sources,
           workspace_package.loaded,
-          package.semantics.package,
-          package.semantics.constants,
+          interface_context_package,
+          interface_context_constants,
           package.metadata,
           options.target,
           diagnostics,
@@ -1516,6 +1572,7 @@ CompileWorkspaceResult compile_workspace(
       options,
       schedule,
       all_packages,
+      WorkspaceSemanticChange::Interface,
       result,
       diagnostics);
 
@@ -1530,7 +1587,7 @@ CompileWorkspaceResult compile_workspace(
     for (const std::optional<CompiledPackage> &package : result.packages) {
       if (!package.has_value()) continue;
       every_ready_package_valid = every_ready_package_valid &&
-          package->semantics.ok && package->metadata.ok && package->obligations.ok;
+          package->declarations.ok && package->metadata.ok && package->obligations.ok;
     }
     result.ok = every_ready_package_valid &&
         diagnostics.error_count() == initial_errors;
@@ -1544,7 +1601,7 @@ CompileWorkspaceResult compile_workspace(
   for (const std::optional<CompiledPackage> &package : result.packages) {
     every_package_ready = every_package_ready && package.has_value();
     if (package.has_value()) {
-      every_package_ready = every_package_ready && package->semantics.ok &&
+      every_package_ready = every_package_ready && package->declarations.ok &&
           package->metadata.ok;
     }
   }
@@ -1575,6 +1632,7 @@ CompileWorkspaceResult compile_workspace(
 bool apply_compiled_workspace_source_overrides(
     SourceManager &sources,
     const std::vector<WorkspaceSourceOverride> &overrides,
+    WorkspaceSemanticChange change,
     CompileWorkspaceOptions options,
     CompileWorkspaceResult &result,
     DiagnosticSink &diagnostics) {
@@ -1624,8 +1682,18 @@ bool apply_compiled_workspace_source_overrides(
     result.ok = false;
     return false;
   }
-  const std::vector<bool> selected = affected_packages(
-      schedule, update.changed_packages);
+  std::vector<bool> selected;
+  if (change == WorkspaceSemanticChange::Interface) {
+    selected = affected_packages(schedule, update.changed_packages);
+  } else {
+    selected.assign(result.graph.packages.size(), false);
+    for (PackageId changed : update.changed_packages) {
+      if (changed.is_valid() &&
+          static_cast<std::size_t>(changed.value) < selected.size()) {
+        selected[changed.value] = true;
+      }
+    }
+  }
 
   // Every checked expansion first re-enters interface discovery. Even a body
   // expansion is parsed as a complete source file and must prove that it did
@@ -1640,14 +1708,16 @@ bool apply_compiled_workspace_source_overrides(
       options,
       schedule,
       selected,
+      change,
       result,
       diagnostics);
+  invalidate_package_closure(schedule, update.changed_packages, result);
 
   bool every_ready_package_valid = true;
   for (const std::optional<CompiledPackage> &package : result.packages) {
     if (!package.has_value()) continue;
     every_ready_package_valid = every_ready_package_valid &&
-        package->semantics.ok && package->metadata.ok &&
+        package->declarations.ok && package->metadata.ok &&
         package->obligations.ok;
   }
   result.ok = every_ready_package_valid &&
@@ -1705,11 +1775,14 @@ bool continue_compiled_workspace_semantics(
     return false;
   }
 
-  // Phase 2: body-check from consumers toward dependencies. A checked caller
-  // can request a public generic body from a package that has semantic tables
-  // but has not yet entered its body pass. The type graph transfer below is the
-  // only place a concrete argument crosses TypeStore ownership.
-  std::vector<std::vector<ProcedureInstantiationSeed>> seeds(
+  // Phase 2: advance the deterministic body work graph from consumers toward
+  // dependencies. Each package work key is its declaration generation plus
+  // the canonical externally requested generic set. An equal key reuses the
+  // complete body-owned semantic graph and HIR. A changed key starts from the
+  // immutable declaration baseline; no checker ever re-enters retained body
+  // state. Portable demands cross package TypeStore boundaries and are
+  // materialized only inside the owner's new body generation.
+  std::vector<std::vector<ProcedureInstantiationDemand>> demands(
       result.graph.packages.size());
   TimingScope body_timing = options.timings != nullptr
       ? options.timings->scope("body semantics")
@@ -1718,27 +1791,106 @@ bool continue_compiled_workspace_semantics(
     if (!result.packages[package_index].has_value()) continue;
     CompiledPackage &package = *result.packages[package_index];
     WorkspacePackage &workspace_package = result.graph.packages[package_index];
-    TimingScope package_timing = time_package_phase(
-        options.timings, "package bodies: ", package.identity);
-    package.bodies = check_package_bodies(
-        sources,
-        workspace_package.loaded,
-        package.semantics.selections,
-        package.semantics.package,
-        package.semantics.constants,
-        options.target.facts,
-        diagnostics,
-        seeds[package_index]);
-    if (options.timings != nullptr) {
-      options.timings->add_counter("package body checks", 1);
-      options.timings->add_counter(
-          "procedure bodies checked",
-          static_cast<std::uint64_t>(package.bodies.checked_procedures));
+    const std::size_t package_error_count = diagnostics.error_count();
+    if (!canonicalize_procedure_demands(
+            demands[package_index], diagnostics)) {
+      package.body_work_key = {};
+      package.semantic_progress = PackageSemanticProgress::InterfaceReady;
+      continue;
+    }
+    const bool stable_declarations =
+        package.body_work_key.declaration_generation ==
+            package.declaration_generation &&
+        package.semantic_progress != PackageSemanticProgress::InterfaceReady &&
+        package.bodies.ok;
+    const bool reusable = stable_declarations && same_procedure_demands(
+        package.body_work_key.procedure_demands, demands[package_index]);
+    if (reusable) {
+      if (options.timings != nullptr) {
+        options.timings->add_counter("package body reuses", 1);
+      }
+    } else {
+      // Until a complete replacement succeeds, the package owns only an
+      // authoritative declaration baseline. Any partial BodyCheckResult is
+      // diagnostic recovery state and must never satisfy a later reuse key.
+      package.semantic_progress = PackageSemanticProgress::InterfaceReady;
+      // A changed body can alter package effects and the completed interface
+      // seen by every importer, even when signatures are unchanged. Retain
+      // consumer HIR but mark its closure products stale before publishing the
+      // replacement below.
+      const PackageId changed{static_cast<std::uint32_t>(package_index)};
+      invalidate_package_closure(
+          schedule, std::span<const PackageId>(&changed, 1), result);
+
+      std::vector<ProcedureInstantiationDemand> added_demands;
+      const bool extendable = stable_declarations &&
+          added_procedure_demands(
+              package.body_work_key.procedure_demands,
+              demands[package_index],
+              added_demands) &&
+          !added_demands.empty();
+      if (extendable) {
+        TimingScope package_timing = time_package_phase(
+            options.timings, "package body extensions: ", package.identity);
+        const std::size_t previous_checked =
+            package.bodies.checked_procedures;
+        const std::vector<ProcedureInstantiationSeed> additional_seeds =
+            materialize_procedure_demands(
+                added_demands, package.bodies.package, diagnostics);
+        package.bodies = check_additional_package_instances(
+            sources,
+            workspace_package.loaded,
+            package.declarations.selections,
+            std::move(package.bodies),
+            options.target.facts,
+            diagnostics,
+            additional_seeds);
+        if (options.timings != nullptr) {
+          options.timings->add_counter("package body extensions", 1);
+          options.timings->add_counter(
+              "procedure bodies checked",
+              static_cast<std::uint64_t>(
+                  package.bodies.checked_procedures - previous_checked));
+        }
+      } else {
+        TimingScope package_timing = time_package_phase(
+            options.timings, "package bodies: ", package.identity);
+        SemanticPackage body_input = package.declarations.package;
+        const std::vector<ProcedureInstantiationSeed> seeds =
+            materialize_procedure_demands(
+                demands[package_index], body_input, diagnostics);
+        package.bodies = check_package_bodies(
+            sources,
+            workspace_package.loaded,
+            package.declarations.selections,
+            body_input,
+            package.declarations.constants,
+            options.target.facts,
+            diagnostics,
+            seeds);
+        if (options.timings != nullptr) {
+          options.timings->add_counter("package body checks", 1);
+          options.timings->add_counter(
+              "procedure bodies checked",
+              static_cast<std::uint64_t>(package.bodies.checked_procedures));
+        }
+      }
+      if (diagnostics.error_count() != package_error_count) {
+        package.bodies.ok = false;
+      }
+      if (package.bodies.ok) {
+        package.body_work_key.declaration_generation =
+            package.declaration_generation;
+        package.body_work_key.procedure_demands = demands[package_index];
+        package.semantic_progress = PackageSemanticProgress::BodiesReady;
+      } else {
+        package.body_work_key = {};
+      }
     }
     if (!package.bodies.ok) continue;
 
     for (const ImportedProcedureInstance &request :
-         package.semantics.package.imported_procedure_instances) {
+         package.bodies.package.imported_procedure_instances) {
       const std::optional<std::size_t> owner_index = package_index_for(
           result.graph,
           schedule,
@@ -1752,42 +1904,30 @@ bool continue_compiled_workspace_semantics(
         continue;
       }
 
-      CompiledPackage &owner = *result.packages[*owner_index];
-      ProcedureInstantiationSeed seed;
-      seed.public_template_name = request.public_template_name;
+      ProcedureInstantiationDemand demand;
+      demand.public_template_name = request.public_template_name;
       Sha256 name_hash;
       hash_field(name_hash, "draft.procedure-instance.v2");
       hash_field(name_hash, request.root_identity);
       hash_field(name_hash, request.root_relative_path);
       hash_field(name_hash, request.public_template_name);
       for (const ParametricArgument &argument : request.arguments) {
-        ParametricArgument transferred;
+        ProcedureInstantiationDemandArgument transferred;
         transferred.is_type = argument.is_type;
         hash_u64(name_hash, argument.is_type ? 1 : 0);
-        if (argument.is_type) {
-          const InterfaceTypeGraph graph = export_interface_type(
-              package.identity,
-              package.semantics.package,
-              argument.type,
-              diagnostics);
-          const Sha256Digest digest = hash_interface_type_graph(graph);
-          name_hash.update(digest.bytes);
-          transferred.type = import_interface_type(
-              graph, owner.semantics.package, diagnostics);
-        } else {
-          const InterfaceTypeGraph graph = export_interface_type(
-              package.identity,
-              package.semantics.package,
-              argument.value_type,
-              diagnostics);
-          const Sha256Digest digest = hash_interface_type_graph(graph);
-          name_hash.update(digest.bytes);
+        const TypeId argument_type =
+            argument.is_type ? argument.type : argument.value_type;
+        transferred.type = export_interface_type(
+            package.identity,
+            package.bodies.package,
+            argument_type,
+            diagnostics);
+        name_hash.update(hash_interface_type_graph(transferred.type).bytes);
+        if (!argument.is_type) {
           hash_field(name_hash, argument.value.integer.to_decimal());
-          transferred.value_type = import_interface_type(
-              graph, owner.semantics.package, diagnostics);
           transferred.value = argument.value;
         }
-        seed.arguments.push_back(std::move(transferred));
+        demand.arguments.push_back(std::move(transferred));
       }
       hash_field(name_hash, "static-argument-pack");
       hash_u64(
@@ -1795,23 +1935,23 @@ bool continue_compiled_workspace_semantics(
       for (TypeId pack_type : request.pack_types) {
         const InterfaceTypeGraph graph = export_interface_type(
             package.identity,
-            package.semantics.package,
+            package.bodies.package,
             pack_type,
             diagnostics);
         const Sha256Digest digest = hash_interface_type_graph(graph);
         name_hash.update(digest.bytes);
-        seed.pack_types.push_back(import_interface_type(
-            graph, owner.semantics.package, diagnostics));
+        demand.pack_types.push_back(graph);
       }
-      seed.instance_name = request.public_template_name + "$mono$" +
-          name_hash.finalize().hex().substr(0, 24);
-      seeds[*owner_index].push_back(seed);
+      demand.digest = name_hash.finalize();
+      demand.instance_name = request.public_template_name + "$mono$" +
+          demand.digest.hex().substr(0, 24);
+      demands[*owner_index].push_back(demand);
 
       bool named_proxy = false;
       for (ImportedSymbol &imported :
-           package.semantics.package.imported_symbols) {
+           package.bodies.package.imported_symbols) {
         if (imported.proxy == request.instance_proxy) {
-          imported.public_name = seed.instance_name;
+          imported.public_name = demand.instance_name;
           named_proxy = true;
           break;
         }
@@ -1842,11 +1982,14 @@ bool continue_compiled_workspace_semantics(
     if (!result.packages[package_index].has_value()) continue;
     CompiledPackage &package = *result.packages[package_index];
     if (!package.bodies.ok) continue;
+    if (package.semantic_progress == PackageSemanticProgress::ClosureReady) {
+      continue;
+    }
     WorkspacePackage &workspace_package = result.graph.packages[package_index];
     package.metadata = collect_agent_metadata(
         sources,
         workspace_package.loaded,
-        package.semantics.package,
+        package.bodies.package,
         options.attachments,
         diagnostics);
     if (!package.metadata.ok ||
@@ -1911,8 +2054,8 @@ bool continue_compiled_workspace_semantics(
       if (!enrich_agent_validation_context(
               typed_package.identity,
               validation.graph.packages[*validation_index].loaded,
-              typed_package.semantics.package,
-              typed_package.semantics.constants,
+              typed_package.bodies.package,
+              typed_package.bodies.constants,
               typed_package.bodies.program,
               kind,
               validation.validation_entries,
@@ -1945,36 +2088,39 @@ bool continue_compiled_workspace_semantics(
     CompiledPackage &package = *result.packages[package_index];
     WorkspacePackage &workspace_package = result.graph.packages[package_index];
     if (!package.bodies.ok) continue;
+    if (package.semantic_progress == PackageSemanticProgress::ClosureReady) {
+      continue;
+    }
     TimingScope package_timing = time_package_phase(
         options.timings, "package closure: ", package.identity);
 
     refresh_imported_effects(
-        package.semantics.package, result, schedule, diagnostics);
+        package.bodies.package, result, schedule, diagnostics);
     package.obligations = build_agent_obligations(
         workspace_package.identity,
         sources,
         workspace_package.loaded,
-        package.semantics.package,
-        package.semantics.constants,
+        package.bodies.package,
+        package.bodies.constants,
         package.metadata,
         options.target,
         diagnostics,
         package.validation_context,
         &package.bodies.program);
     package.effects = summarize_package_effects(
-        package.semantics.package,
+        package.bodies.package,
         package.bodies.program,
         &options.target,
         options.foreign_provider_audits);
     package.native_interop = validate_native_interop(
-        package.semantics.package,
+        package.bodies.package,
         package.bodies.program,
         options.target.facts,
         diagnostics);
     const bool denials_ok = check_package_denials(
         sources,
         workspace_package.loaded,
-        package.semantics.package,
+        package.bodies.package,
         package.bodies.program,
         package.effects,
         diagnostics);
@@ -1987,8 +2133,8 @@ bool continue_compiled_workspace_semantics(
         package.interface.instantiated_types;
     PackageInterface completed_interface = build_package_interface(
         workspace_package.identity,
-        package.semantics.package,
-        package.semantics.constants,
+        package.bodies.package,
+        package.bodies.constants,
         package.metadata,
         package.effects,
         diagnostics);
@@ -2000,10 +2146,17 @@ bool continue_compiled_workspace_semantics(
         !package.native_interop.ok) {
       continue;
     }
+    package.semantic_progress = PackageSemanticProgress::ClosureReady;
   }
   closure_timing.finish();
 
-  result.ok = diagnostics.error_count() == initial_errors;
+  bool every_package_closed = true;
+  for (const std::optional<CompiledPackage> &package : result.packages) {
+    every_package_closed = every_package_closed && package.has_value() &&
+        package->semantic_progress == PackageSemanticProgress::ClosureReady;
+  }
+  result.ok = every_package_closed &&
+      diagnostics.error_count() == initial_errors;
   if (result.ok) {
     result.progress = CompileWorkspaceProgress::SemanticClosure;
   }
@@ -2074,7 +2227,7 @@ bool continue_compiled_workspace(
           options.workspace.core_content_identity,
           package.identity,
           compiled.graph.packages[package_index].loaded,
-          package.semantics.package,
+          package.bodies.package,
           package.bodies.program,
           diagnostics);
       compiled.validation_entries.insert(
@@ -2106,12 +2259,12 @@ bool continue_compiled_workspace(
           sources,
           workspace_package.loaded,
           options.target,
-          package.semantics.package,
+          package.bodies.package,
           package.bodies.program,
           diagnostics);
       if (!package.assembly.ok) continue;
       package.mir = lower_package_to_mir(
-          package.semantics.package,
+          package.bodies.package,
           package.bodies.program,
           package.assembly,
           options.configuration.runtime_assertions,
@@ -2137,8 +2290,8 @@ bool continue_compiled_workspace(
           options.target,
           sources,
           llvm_options,
-          package.semantics.package,
-          package.semantics.global_initializers,
+          package.bodies.package,
+          package.declarations.global_initializers,
           package.mir.program,
           diagnostics);
       if (options.timings != nullptr) {
@@ -2309,6 +2462,7 @@ CompileWorkspaceResult compile_workspace_with_resolution(
           !apply_compiled_workspace_source_overrides(
               sources,
               interface_overlay.sources,
+              WorkspaceSemanticChange::Interface,
               interface_options,
               interface_surface,
               diagnostics)) {
@@ -2443,6 +2597,7 @@ CompileWorkspaceResult compile_workspace_with_resolution(
     if (!apply_compiled_workspace_source_overrides(
             sources,
             body_overlay.sources,
+            WorkspaceSemanticChange::Body,
             update_options,
             body_surface,
             diagnostics) ||

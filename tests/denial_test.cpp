@@ -63,11 +63,11 @@ struct DenialSource {
         target.facts,
         diagnostics);
     effects = draft::summarize_package_effects(
-        semantics.package, bodies.program, &target, provider_audits);
+        bodies.package, bodies.program, &target, provider_audits);
     denials_ok = draft::check_package_denials(
         sources,
         loaded,
-        semantics.package,
+        bodies.package,
         bodies.program,
         effects,
         diagnostics);

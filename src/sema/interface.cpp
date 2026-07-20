@@ -234,8 +234,15 @@ public:
         }
         InterfaceProcedureInstance translated;
         translated.template_name = source.name;
-        translated.instance_name =
-            package_.symbols.symbol(instance.instance).name;
+        const Symbol &instance_symbol =
+            package_.symbols.symbol(instance.instance);
+        // A package-local specialization can later become externally demanded
+        // without changing its stable lexical SymbolId or name. In that case
+        // linkage_name owns the canonical cross-package identity published in
+        // the interface and consumed by import proxies.
+        translated.instance_name = instance_symbol.linkage_name.empty()
+            ? instance_symbol.name
+            : instance_symbol.linkage_name;
         for (const ParametricArgument &argument : instance.arguments) {
           translated.arguments.push_back(translate_argument(argument));
         }

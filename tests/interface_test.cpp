@@ -294,8 +294,8 @@ main :: proc() {
   const draft::PackageIdentity consumer_identity{"workspace", "app"};
   draft::PackageInterface consumer_interface = draft::build_package_interface(
       consumer_identity,
-      consumer_semantics.package,
-      consumer_semantics.constants,
+      bodies.package,
+      bodies.constants,
       diagnostics);
 
   if (diagnostics.has_errors()) {
@@ -306,8 +306,8 @@ main :: proc() {
   EXPECT(state, consumer_semantics.ok);
   EXPECT(state, bodies.ok);
   EXPECT(state, bodies.checked_procedures == 3);
-  EXPECT(state, consumer_semantics.package.imported_symbols.size() == 7);
-  EXPECT(state, consumer_semantics.package.imported_types.size() == 2);
+  EXPECT(state, bodies.package.imported_symbols.size() == 7);
+  EXPECT(state, bodies.package.imported_types.size() == 2);
   EXPECT(state, consumer_interface.declarations.size() == 1);
   EXPECT(state, !diagnostics.has_errors());
 
@@ -350,22 +350,22 @@ main :: proc() {
   }
 
   const std::optional<draft::SymbolId> sized =
-      consumer_semantics.package.symbols.lookup_direct(
-          consumer_semantics.package.package_scope, "Sized");
+      bodies.package.symbols.lookup_direct(
+          bodies.package.package_scope, "Sized");
   EXPECT(state, sized.has_value());
   if (sized.has_value()) {
-    const draft::Type &type = consumer_semantics.package.types.type(
-        consumer_semantics.package.symbols.symbol(*sized).type);
+    const draft::Type &type = bodies.package.types.type(
+        bodies.package.symbols.symbol(*sized).type);
     EXPECT(state, type.layout == draft::TypeLayout({true, 7, 1}));
   }
 
   bool saw_c_point = false;
   for (const draft::ImportedSymbol &imported :
-       consumer_semantics.package.imported_symbols) {
+       bodies.package.imported_symbols) {
     if (imported.public_name != "C_Point") continue;
     saw_c_point = true;
-    const draft::Type &type = consumer_semantics.package.types.type(
-        consumer_semantics.package.symbols.symbol(imported.proxy).type);
+    const draft::Type &type = bodies.package.types.type(
+        bodies.package.symbols.symbol(imported.proxy).type);
     EXPECT(state, type.c_representation);
     EXPECT(state, type.requested_alignment == 16);
     EXPECT(state, type.layout == draft::TypeLayout({true, 16, 16}));
@@ -510,8 +510,8 @@ pub unwrap :: proc(value: option.Maybe[i64]) -> i64 {
       diagnostics);
   draft::PackageInterface consumer_interface = draft::build_package_interface(
       {"workspace", "middle"},
-      consumer_semantics.package,
-      consumer_semantics.constants,
+      bodies.package,
+      bodies.constants,
       diagnostics);
 
   draft::LoadedPackage final_consumer = parse_package(
@@ -797,13 +797,13 @@ pub make_assert :: proc() -> proc() {
       diagnostics);
   const draft::EffectSummaryResult dependency_effects =
       draft::summarize_package_effects(
-          dependency_semantics.package, dependency_bodies.program, &target);
+          dependency_bodies.package, dependency_bodies.program, &target);
   const draft::AgentMetadataResult empty_metadata;
   draft::PackageInterface dependency_interface =
       draft::build_package_interface(
           {"workspace", "callbacks"},
-          dependency_semantics.package,
-          dependency_semantics.constants,
+          dependency_bodies.package,
+          dependency_bodies.constants,
           empty_metadata,
           dependency_effects,
           diagnostics);
@@ -949,7 +949,7 @@ caller :: proc() {
       diagnostics);
   const draft::EffectSummaryResult consumer_effects =
       draft::summarize_package_effects(
-          consumer_semantics.package, consumer_bodies.program, &target);
+          consumer_bodies.package, consumer_bodies.program, &target);
 
   if (diagnostics.has_errors()) {
     std::cerr << draft::render_diagnostics(sources, diagnostics);
@@ -959,8 +959,8 @@ caller :: proc() {
   EXPECT(state, consumer_semantics.ok);
   EXPECT(state, consumer_bodies.ok);
   const std::optional<draft::SymbolId> caller =
-      consumer_semantics.package.symbols.lookup_direct(
-          consumer_semantics.package.package_scope, "caller");
+      consumer_bodies.package.symbols.lookup_direct(
+          consumer_bodies.package.package_scope, "caller");
   EXPECT(state, caller.has_value());
   if (!caller.has_value()) return;
   const draft::ProcedureEffectSummary *summary =

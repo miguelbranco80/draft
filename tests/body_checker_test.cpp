@@ -60,6 +60,92 @@ struct CheckedSource {
   }
 };
 
+// Declaration semantics are an immutable input generation. This regression
+// deliberately creates body-local scopes, constants, and a concrete static-pack
+// specialization, then runs the complete body phase twice from the same
+// declaration result. Both outputs must be complete and equal in shape while
+// the declaration tables remain byte-for-byte-sized at their original
+// boundaries. Re-entering the first enriched result would either duplicate the
+// specialization or make the second HIR refer into stale append-only tables.
+void test_body_results_do_not_mutate_or_reenter_declarations(TestState &state) {
+  CheckedSource source(R"draft(
+package bodies
+
+render :: proc(values: ..type) {
+    for value, index in values {
+        local :: index + 1
+        when type_of(value) == string {
+            _ = local
+        } else when type_kind(type_of(value)) == .signed_integer {
+            _ = local
+        } else {
+            static_assert(false, "unsupported value")
+        }
+    }
+}
+
+main :: proc() {
+    render("draft", 42)
+}
+)draft");
+  if (source.diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(source.sources, source.diagnostics);
+  }
+  EXPECT(state, source.semantics.ok);
+  EXPECT(state, source.bodies.ok);
+  EXPECT(state, !source.diagnostics.has_errors());
+
+  const std::size_t declaration_symbols =
+      source.semantics.package.symbols.symbol_count();
+  const std::size_t declaration_scopes =
+      source.semantics.package.symbols.scope_count();
+  const std::size_t declaration_types = source.semantics.package.types.size();
+  const std::size_t declaration_constants =
+      source.semantics.constants.bindings.size();
+  EXPECT(state, source.semantics.package.parametric_instances.empty());
+  EXPECT(state, source.bodies.package.parametric_instances.size() == 1);
+  EXPECT(state,
+         source.bodies.package.symbols.symbol_count() > declaration_symbols);
+  EXPECT(state,
+         source.bodies.package.symbols.scope_count() > declaration_scopes);
+  EXPECT(state,
+         source.bodies.constants.bindings.size() > declaration_constants);
+
+  draft::DiagnosticSink repeated_diagnostics;
+  const draft::TargetProfile target = draft::make_aarch64_macos_profile();
+  const draft::BodyCheckResult repeated = draft::check_package_bodies(
+      source.sources, source.loaded, source.semantics.selections,
+      source.semantics.package, source.semantics.constants, target.facts,
+      repeated_diagnostics);
+  if (repeated_diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(source.sources,
+                                           repeated_diagnostics);
+  }
+  EXPECT(state, repeated.ok);
+  EXPECT(state, !repeated_diagnostics.has_errors());
+  EXPECT(state, repeated.package.symbols.symbol_count() ==
+                    source.bodies.package.symbols.symbol_count());
+  EXPECT(state, repeated.package.symbols.scope_count() ==
+                    source.bodies.package.symbols.scope_count());
+  EXPECT(state,
+         repeated.package.types.size() == source.bodies.package.types.size());
+  EXPECT(state, repeated.constants.bindings.size() ==
+                    source.bodies.constants.bindings.size());
+  EXPECT(state, repeated.program.procedures().size() ==
+                    source.bodies.program.procedures().size());
+  EXPECT(state,
+         repeated.checked_procedures == source.bodies.checked_procedures);
+
+  EXPECT(state, source.semantics.package.symbols.symbol_count() ==
+                    declaration_symbols);
+  EXPECT(state,
+         source.semantics.package.symbols.scope_count() == declaration_scopes);
+  EXPECT(state, source.semantics.package.types.size() == declaration_types);
+  EXPECT(state,
+         source.semantics.constants.bindings.size() == declaration_constants);
+  EXPECT(state, source.semantics.package.parametric_instances.empty());
+}
+
 void test_common_typed_bodies(TestState &state) {
   CheckedSource source(R"draft(
 package bodies
@@ -387,15 +473,15 @@ main :: proc() -> i64 {
       ++templates;
     } else {
       const draft::Symbol &symbol =
-          source.semantics.package.symbols.symbol(procedure.symbol);
+          source.bodies.package.symbols.symbol(procedure.symbol);
       if (symbol.name.find("$instance") != std::string::npos) {
         ++concrete_instances;
         const draft::Type &signature =
-            source.semantics.package.types.type(procedure.type);
+            source.bodies.package.types.type(procedure.type);
         for (draft::TypeId member : signature.members) {
           EXPECT(
               state,
-              source.semantics.package.types.type(member).kind !=
+              source.bodies.package.types.type(member).kind !=
                   draft::TypeKind::TypeParameter);
         }
       }
@@ -478,34 +564,34 @@ main :: proc() {
   bool saw_mixed = false;
   bool saw_nested = false;
   for (const draft::ParametricInstanceRecord &instance :
-       source.semantics.package.parametric_instances) {
+       source.bodies.package.parametric_instances) {
     if (instance.pack_types.empty()) {
       saw_empty = true;
     }
     if (instance.pack_types.size() == 3) {
       saw_mixed = true;
       EXPECT(state,
-          source.semantics.package.types.type(instance.pack_types[0]).name ==
+          source.bodies.package.types.type(instance.pack_types[0]).name ==
               "int");
       EXPECT(state,
-          source.semantics.package.types.type(instance.pack_types[1]).name ==
+          source.bodies.package.types.type(instance.pack_types[1]).name ==
               "bool");
       EXPECT(state,
-          source.semantics.package.types.type(instance.pack_types[2]).name ==
+          source.bodies.package.types.type(instance.pack_types[2]).name ==
               "string");
     }
     if (!instance.pack_types.empty() ||
-        source.semantics.package.symbols.symbol(instance.source).name ==
+        source.bodies.package.symbols.symbol(instance.source).name ==
             "inspect_all") {
       ++pack_instances;
     }
-    if (source.semantics.package.symbols.symbol(instance.source).name ==
+    if (source.bodies.package.symbols.symbol(instance.source).name ==
         "inspect_nested") {
       saw_nested = true;
       EXPECT(state, instance.pack_types.size() == 2);
     }
-    const draft::Type &signature = source.semantics.package.types.type(
-        source.semantics.package.symbols.symbol(instance.instance).type);
+    const draft::Type &signature = source.bodies.package.types.type(
+        source.bodies.package.symbols.symbol(instance.instance).type);
     EXPECT(state, signature.members.size() >= instance.pack_types.size() + 1);
   }
   EXPECT(state, saw_empty);
@@ -514,7 +600,7 @@ main :: proc() {
   EXPECT(state, pack_instances >= 3);
   std::size_t judgment_sites = 0;
   std::size_t synthesis_sites = 0;
-  for (const draft::SemanticSite &site : source.semantics.package.sites) {
+  for (const draft::SemanticSite &site : source.bodies.package.sites) {
     if (site.kind == draft::SemanticSiteKind::Judgment) ++judgment_sites;
     if (site.kind == draft::SemanticSiteKind::SynthesisStatement) {
       ++synthesis_sites;
@@ -622,17 +708,17 @@ main :: proc() -> i64 {
 
   bool saw_concrete_envelope = false;
   for (const draft::ParametricTypeInstanceRecord &instance :
-       source.semantics.package.parametric_type_instances) {
+       source.bodies.package.parametric_type_instances) {
     const draft::Symbol &template_symbol =
-        source.semantics.package.symbols.symbol(instance.source);
+        source.bodies.package.symbols.symbol(instance.source);
     if (template_symbol.name != "Envelope" || instance.arguments.size() != 1 ||
         instance.arguments.front().value_expression.is_valid()) {
       continue;
     }
     const draft::TypeId type =
-        source.semantics.package.symbols.symbol(instance.instance).type;
+        source.bodies.package.symbols.symbol(instance.instance).type;
     saw_concrete_envelope = true;
-    EXPECT(state, source.semantics.package.types.type(type).layout ==
+    EXPECT(state, source.bodies.package.types.type(type).layout ==
                       draft::TypeLayout({true, 32, 8}));
   }
   EXPECT(state, saw_concrete_envelope);
@@ -829,7 +915,7 @@ main :: proc() -> i64 {
   for (const draft::HirProcedure &procedure :
        source.bodies.program.procedures()) {
     const draft::Symbol &symbol =
-        source.semantics.package.symbols.symbol(procedure.symbol);
+        source.bodies.package.symbols.symbol(procedure.symbol);
     if (!symbol.linkage_name.empty()) {
       ++nested_procedures;
       linkage_names.push_back(symbol.linkage_name);
@@ -853,7 +939,7 @@ main :: proc() -> i64 {
   for (const draft::HirProcedure &procedure :
        repeated.bodies.program.procedures()) {
     const draft::Symbol &symbol =
-        repeated.semantics.package.symbols.symbol(procedure.symbol);
+        repeated.bodies.package.symbols.symbol(procedure.symbol);
     if (!symbol.linkage_name.empty()) {
       repeated_linkage_names.push_back(symbol.linkage_name);
     }
@@ -1249,12 +1335,12 @@ main :: proc() -> u64 {
   std::size_t local_type_instances = 0;
   std::size_t type_statements = 0;
   for (std::size_t index = 0;
-       index < source.semantics.package.symbols.symbol_count();
+       index < source.bodies.package.symbols.symbol_count();
        ++index) {
-    const draft::Symbol &symbol = source.semantics.package.symbols.symbol(
+    const draft::Symbol &symbol = source.bodies.package.symbols.symbol(
         draft::SymbolId{static_cast<std::uint32_t>(index)});
     if (symbol.kind == draft::SymbolKind::Type &&
-        source.semantics.package.symbols.scope(symbol.scope).kind ==
+        source.bodies.package.symbols.scope(symbol.scope).kind ==
             draft::ScopeKind::Block) {
       if (symbol.name.find("$instance") == std::string::npos) {
         ++local_types;
@@ -2623,10 +2709,10 @@ set_user_index :: proc() -> int {
     std::cerr << draft::render_diagnostics(valid.sources, valid.diagnostics);
   }
   EXPECT(state, valid.bodies.ok);
-  EXPECT(state, valid.semantics.package.runtime_context_type.is_valid());
-  if (valid.semantics.package.runtime_context_type.is_valid()) {
-    const draft::Type &context = valid.semantics.package.types.type(
-        valid.semantics.package.runtime_context_type);
+  EXPECT(state, valid.bodies.package.runtime_context_type.is_valid());
+  if (valid.bodies.package.runtime_context_type.is_valid()) {
+    const draft::Type &context = valid.bodies.package.types.type(
+        valid.bodies.package.runtime_context_type);
     EXPECT(state, context.layout.size == 96);
     EXPECT(state, context.member_offsets.size() == 8);
   }
@@ -2852,7 +2938,7 @@ main :: proc() {
   for (const draft::HirProcedure &procedure :
        valid.bodies.program.procedures()) {
     const draft::Symbol &symbol =
-        valid.semantics.package.symbols.symbol(procedure.symbol);
+        valid.bodies.package.symbols.symbol(procedure.symbol);
     if (symbol.name == "choose_type" || symbol.name == "type_rank") {
       EXPECT(state, procedure.compile_time_only);
       ++compile_time_only;
@@ -2951,7 +3037,7 @@ main :: proc() {
   }
   EXPECT(state, synthesized.bodies.ok);
   std::size_t synthesis_sites = 0;
-  for (const draft::SemanticSite &site : synthesized.semantics.package.sites) {
+  for (const draft::SemanticSite &site : synthesized.bodies.package.sites) {
     if (site.kind != draft::SemanticSiteKind::SynthesisStatement) continue;
     ++synthesis_sites;
     EXPECT(state, site.branch_refinements.size() == 1);
@@ -3093,6 +3179,7 @@ ordinary :: proc(condition: bool) {
 
 int main() {
   TestState state;
+  test_body_results_do_not_mutate_or_reenter_declarations(state);
   test_common_typed_bodies(state);
   test_body_diagnostics(state);
   test_parametric_procedure_instances(state);

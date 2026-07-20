@@ -630,8 +630,8 @@ main :: proc() -> int {
   if (console_package == nullptr || os_package == nullptr) return;
 
   const std::optional<draft::SymbolId> write_to =
-      console_package->semantics.package.symbols.lookup_direct(
-          console_package->semantics.package.package_scope, "write_to");
+      console_package->bodies.package.symbols.lookup_direct(
+          console_package->bodies.package.package_scope, "write_to");
   EXPECT(state, name, write_to.has_value());
   if (!write_to.has_value()) return;
   const draft::ProcedureEffectSummary *write_to_effects =
@@ -659,8 +659,8 @@ main :: proc() -> int {
   EXPECT(state, name, console_raw_data == 0);
 
   const std::optional<draft::SymbolId> write_text =
-      os_package->semantics.package.symbols.lookup_direct(
-          os_package->semantics.package.package_scope, "write_text");
+      os_package->bodies.package.symbols.lookup_direct(
+          os_package->bodies.package.package_scope, "write_text");
   EXPECT(state, name, write_text.has_value());
   if (!write_text.has_value()) return;
   std::size_t write_text_raw_data = 0;

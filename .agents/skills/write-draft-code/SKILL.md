@@ -120,7 +120,9 @@ source, and `build` never invokes a provider.
 ## Validate in increasing scope
 
 Run commands from the repository root. Prefer the narrowest command that proves
-the current step, then broaden:
+the current step, then broaden. The provider-free sequence below applies to
+handwritten source and source whose `...` sites already have fresh saved
+expansions for the selected target:
 
 ```sh
 build/draftc lex path/to/file.draft
@@ -132,6 +134,13 @@ build/draftc test path/to/workspace --root package
 build/draftc build path/to/workspace --root package -o /tmp/program
 /tmp/program
 ```
+
+For fresh source containing `...`, run `lex` and `syntax` as useful, then run
+`resolve` for each target before `check`, `expand`, or plain `build`; those
+consumer commands never contact a provider and correctly reject a missing pin.
+`resolve --build` checks the accepted expansion and continues the same graph
+into native emission, so it is the shortest first-run path when an artifact is
+also wanted.
 
 Pass `--target aarch64-linux` when checking or building the Linux profile;
 macOS is the compatibility default. Run both target checks for portable code.

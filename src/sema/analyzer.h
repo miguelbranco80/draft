@@ -4,8 +4,11 @@
 // every package declaration that can be known without evaluating expressions,
 // creates file-local import scopes, assigns nominal type identities, and keeps
 // the source sites needed by later target selection, denial checking, judging,
-// and synthesis. Later passes enrich these stable rows instead of rebuilding a
-// second, disconnected view of the package.
+// and synthesis. The compiler retains the completed declaration result as an
+// immutable generation. Body checking starts from a copy and enriches that
+// body-owned generation with lexical and specialization rows, preserving one
+// ID prefix without allowing a later continuation to replay over old body
+// mutations.
 //
 // `when` branches are parsed but not collected here because selecting both
 // branches would create false duplicate declarations. Constant evaluation will
@@ -562,9 +565,20 @@ struct NativeBinding {
   SyntaxReference syntax;
 };
 
-// SemanticPackage is the append-only semantic foundation for one folder
-// package. Public fields are intentional: compiler passes operate on explicit
-// table rows and stable IDs rather than a deep accessor/object hierarchy.
+// SemanticPackage is the append-only semantic table set for one folder
+// package. A declaration generation owns the stable prefix established by
+// interface analysis. A BodyCheckResult owns a copy of that prefix plus lexical
+// scopes, local symbols, concrete procedure instances, body sites, imported
+// effect closure, and any types interned while checking HIR. Code which owns HIR
+// must use the body-owned package from the same result; declaration semantics
+// are not a substitute even when a particular SymbolId happens to lie in the
+// shared prefix.
+//
+// Public fields are intentional: compiler passes operate on explicit table
+// rows and stable IDs rather than a deep accessor/object hierarchy. Tables are
+// append-only within one generation. They are never truncated or re-entered by
+// another complete body pass; a source-generation change creates a new
+// declaration baseline instead.
 struct SemanticPackage {
   std::string short_name;
   // Workspace identity is present for package-aware analysis and empty in

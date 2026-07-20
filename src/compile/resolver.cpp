@@ -301,6 +301,9 @@ void publish_diagnostics(
   bool candidate_ok = apply_compiled_workspace_source_overrides(
       sources,
       candidate_overlay.sources,
+      stage_compile_options.stage == CompileWorkspaceStage::Complete
+          ? WorkspaceSemanticChange::Body
+          : WorkspaceSemanticChange::Interface,
       candidate_options,
       compiled,
       diagnostics);
@@ -859,6 +862,7 @@ ResolveWorkspaceResult resolve_workspace(
         !apply_compiled_workspace_source_overrides(
             sources,
             interface_stage.overrides,
+            WorkspaceSemanticChange::Interface,
             interface_options,
             interface_surface,
             diagnostics)) {
@@ -959,6 +963,7 @@ ResolveWorkspaceResult resolve_workspace(
     if (!apply_compiled_workspace_source_overrides(
             sources,
             body_stage.overrides,
+            WorkspaceSemanticChange::Body,
             update_options,
             body_surface,
             diagnostics) ||

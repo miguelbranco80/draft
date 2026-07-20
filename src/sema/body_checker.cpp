@@ -1,4 +1,21 @@
 // Runtime body checking and structured typed-HIR construction.
+//
+// This module consumes one immutable declaration SemanticPackage, its package
+// constants, selected `when` regions, and parsed source. The public entry point
+// copies that baseline, then BodyChecker appends lexical scopes, locals,
+// concrete generic procedure instances, body agent sites, lexical compile-time
+// constants, and typed HIR into one body-owned generation. Every HIR ID refers
+// to the semantic tables returned beside it. No ABI, storage, MIR, LLVM, or
+// provider operation belongs here.
+//
+// A retained successful generation may be extended only with newly demanded
+// concrete generic instances. Existing authored and concrete HIR is not
+// revisited; demand removal starts again from declarations so no stale machine
+// procedure can survive. Diagnostic-only package expression validation and
+// early compile-time dependency checks use private copies and cannot mutate the
+// compiler's authoritative declaration baseline. Relevant rules are
+// specification section 1's procedure/compile-time semantics, section 3's
+// typed synthesis sites, and section 10's semantic dependency order.
 
 #include "sema/body_checker.h"
 
@@ -180,11 +197,12 @@ struct TypeRefinementPredicate {
   bool true_branch_matches = true;
 };
 
-// BodyChecker is one sequential phase context. It owns only the HIR under
-// construction; source, syntax, semantic tables, constants, and selections are
-// caller-owned. SymbolTable and the constant table may grow, so operations
-// retain stable IDs and copy source records instead of holding element
-// references across declarations.
+// BodyChecker is one sequential body-generation context. It mutates the
+// body-owned SemanticPackage and ConstantTable supplied by the public wrapper
+// and owns the HIR under construction. Source, syntax, selections, target, and
+// diagnostics remain caller-owned. SymbolTable and constant/type tables may
+// grow, so operations retain stable IDs and copy source records instead of
+// holding element references across appends.
 class BodyChecker {
 public:
   BodyChecker(
@@ -195,10 +213,12 @@ public:
       ConstantTable &constants,
       const TargetFacts &target,
       DiagnosticSink &diagnostics,
-      const std::vector<ProcedureInstantiationSeed> &seeds)
+      const std::vector<ProcedureInstantiationSeed> &seeds,
+      HirProgram initial_program = {})
       : sources_(sources), loaded_(loaded), selections_(selections),
         semantic_(semantic), constants_(constants), target_(target),
-        diagnostics_(diagnostics), seeds_(seeds) {}
+        diagnostics_(diagnostics), seeds_(seeds),
+        hir_(std::move(initial_program)) {}
 
   [[nodiscard]] BodyCheckResult run() {
     BodyCheckResult result;
@@ -222,6 +242,30 @@ public:
     // Checking an ordinary body can discover a first concrete use. A growing
     // index loop is intentional: an instance body may instantiate another
     // template, and every newly appended row is checked exactly once.
+    for (std::size_t index = 0; index < instances_.size(); ++index) {
+      current_instance_index_ = index;
+      if (!instances_[index].checked &&
+          check_procedure(instances_[index].symbol, false)) {
+        ++result.checked_procedures;
+        instances_[index].checked = true;
+      }
+      current_instance_index_.reset();
+    }
+    result.ok = diagnostics_.error_count() == initial_errors;
+    result.program = std::move(hir_);
+    return result;
+  }
+
+  // Extends one retained body generation with newly demanded concrete
+  // instances. Authored procedures and existing instances already have HIR in
+  // hir_ and are never revisited. instantiate_procedure consults the retained
+  // semantic instance table before creating a row, so a new instance body may
+  // call an old local specialization without redeclaring or rechecking it.
+  [[nodiscard]] BodyCheckResult run_seeded_instances() {
+    BodyCheckResult result;
+    const std::size_t initial_errors = diagnostics_.error_count();
+    ensure_runtime_context_type(semantic_, diagnostics_);
+    instantiate_seeded_procedures();
     for (std::size_t index = 0; index < instances_.size(); ++index) {
       current_instance_index_ = index;
       if (!instances_[index].checked &&
@@ -4096,6 +4140,66 @@ private:
           use_range);
     }
 
+    const std::vector<ParametricArgument> requested_arguments =
+        ordered_arguments(
+            parameters, type_substitutions, value_substitutions);
+    for (ParametricInstanceRecord &instance :
+         semantic_.parametric_instances) {
+      if (instance.source == source &&
+          instance.arguments == requested_arguments &&
+          instance.pack_types == pack_types) {
+        if (!preferred_name.empty() && !instance.externally_requested) {
+          // A retained body generation may already contain the same
+          // specialization because the defining package calls its own public
+          // template. A later consumer demand does not require another body:
+          // give the existing private symbol the canonical native linkage name
+          // and let every existing HIR reference keep its stable SymbolId. Its
+          // lexical name must not change: SymbolTable names are immutable after
+          // declaration and direct lookup observes them.
+          const Scope &package_scope =
+              semantic_.symbols.scope(semantic_.package_scope);
+          for (SymbolId candidate_id : package_scope.symbols) {
+            if (candidate_id == instance.instance) continue;
+            const Symbol &candidate =
+                semantic_.symbols.symbol(candidate_id);
+            const std::string_view candidate_linkage =
+                candidate.linkage_name.empty()
+                    ? std::string_view(candidate.name)
+                    : std::string_view(candidate.linkage_name);
+            if (candidate_linkage == preferred_name) {
+              diagnostics_.error(
+                  use_range,
+                  "generic procedure instance name collides with an existing "
+                  "package symbol");
+              return {};
+            }
+          }
+          Symbol &promoted =
+              semantic_.symbols.symbol_mut(instance.instance);
+          promoted.linkage_name = std::string(preferred_name);
+          instance.externally_requested = true;
+        } else if (!preferred_name.empty()) {
+          const Symbol &existing =
+              semantic_.symbols.symbol(instance.instance);
+          const std::string_view existing_linkage =
+              existing.linkage_name.empty()
+                  ? std::string_view(existing.name)
+                  : std::string_view(existing.linkage_name);
+          if (existing_linkage == preferred_name) {
+            return instance.instance;
+          }
+          // Equal semantic arguments have exactly one canonical external
+          // spelling. Reaching a different spelling indicates inconsistent
+          // work-key construction, not a second legal specialization.
+          diagnostics_.error(
+              use_range,
+              "generic procedure instance has inconsistent external identity");
+          return {};
+        }
+        return instance.instance;
+      }
+    }
+
     for (const ProcedureInstance &instance : instances_) {
       if (instance.source != source ||
           instance.type_substitutions.size() != type_substitutions.size() ||
@@ -4244,8 +4348,7 @@ private:
           semantic_.symbols.declare(std::move(concrete), diagnostics_);
       if (parameter_id.is_valid()) pack_parameters.push_back(parameter_id);
     }
-    const std::vector<ParametricArgument> arguments = ordered_arguments(
-        parameters, type_substitutions, value_substitutions);
+    const std::vector<ParametricArgument> arguments = requested_arguments;
     instances_.push_back({
         source,
         instance_id,
@@ -8120,17 +8223,22 @@ bool validate_package_compile_time_expression_types(
     const SourceManager &sources,
     const LoadedPackage &loaded,
     const ConditionalSelections &selections,
-    SemanticPackage &package,
-    ConstantTable &constants,
+    const SemanticPackage &package,
+    const ConstantTable &constants,
     const TargetFacts &target,
     DiagnosticSink &diagnostics) {
+  // Expression checking interns types and can discover body-shaped semantic
+  // rows even when no HIR escapes. Run it against an isolated copy so this
+  // diagnostic preflight cannot become an undeclared first body pass.
+  SemanticPackage validation_package = package;
+  ConstantTable validation_constants = constants;
   const std::vector<ProcedureInstantiationSeed> no_seeds;
   BodyChecker checker(
       sources,
       loaded,
       selections,
-      package,
-      constants,
+      validation_package,
+      validation_constants,
       target,
       diagnostics,
       no_seeds);
@@ -8141,46 +8249,104 @@ BodyCheckResult check_package_bodies(
     const SourceManager &sources,
     const LoadedPackage &loaded,
     const ConditionalSelections &selections,
-    SemanticPackage &package,
-    ConstantTable &constants,
+    const SemanticPackage &package,
+    const ConstantTable &constants,
     const TargetFacts &target,
     DiagnosticSink &diagnostics,
     const std::vector<ProcedureInstantiationSeed> &seeds) {
+  // A body check is a replaceable phase product, not an in-place enrichment of
+  // its declaration input. Copying here gives every invocation the same clean
+  // starting invariant and lets compiler orchestration retain or discard a
+  // complete body generation atomically.
+  SemanticPackage checked_package = package;
+  ConstantTable checked_constants = constants;
   BodyChecker checker(
-      sources, loaded, selections, package, constants, target, diagnostics, seeds);
+      sources,
+      loaded,
+      selections,
+      checked_package,
+      checked_constants,
+      target,
+      diagnostics,
+      seeds);
   BodyCheckResult result = checker.run();
-  if (result.ok && !validate_target_types(package.types, target, diagnostics)) {
+  if (result.ok &&
+      !validate_target_types(checked_package.types, target, diagnostics)) {
     result.ok = false;
   }
   if (result.ok &&
-      !check_definite_initialization(package, result.program, diagnostics)) {
+      !check_definite_initialization(
+          checked_package, result.program, diagnostics)) {
     result.ok = false;
   }
-  infer_agent_loop_ranges(loaded, package, result.program);
+  infer_agent_loop_ranges(loaded, checked_package, result.program);
+  result.package = std::move(checked_package);
+  result.constants = std::move(checked_constants);
   return result;
+}
+
+BodyCheckResult check_additional_package_instances(
+    const SourceManager &sources,
+    const LoadedPackage &loaded,
+    const ConditionalSelections &selections,
+    BodyCheckResult previous,
+    const TargetFacts &target,
+    DiagnosticSink &diagnostics,
+    const std::vector<ProcedureInstantiationSeed> &additional_seeds) {
+  BodyChecker checker(
+      sources,
+      loaded,
+      selections,
+      previous.package,
+      previous.constants,
+      target,
+      diagnostics,
+      additional_seeds,
+      std::move(previous.program));
+  BodyCheckResult added = checker.run_seeded_instances();
+  if (added.ok &&
+      !validate_target_types(previous.package.types, target, diagnostics)) {
+    added.ok = false;
+  }
+  if (added.ok &&
+      !check_definite_initialization(
+          previous.package, added.program, diagnostics)) {
+    added.ok = false;
+  }
+  infer_agent_loop_ranges(loaded, previous.package, added.program);
+  added.package = std::move(previous.package);
+  added.constants = std::move(previous.constants);
+  // The completed generation's count is cumulative. Timing callers can
+  // subtract the incoming count before moving previous when they need only the
+  // newly checked work.
+  added.checked_procedures += previous.checked_procedures;
+  return added;
 }
 
 BodyCheckResult check_compile_time_procedure_bodies(
     const SourceManager &sources,
     const LoadedPackage &loaded,
     const ConditionalSelections &selections,
-    SemanticPackage &package,
-    ConstantTable &constants,
+    const SemanticPackage &package,
+    const ConstantTable &constants,
     const TargetFacts &target,
     std::span<const SymbolId> procedures,
     DiagnosticSink &diagnostics) {
+  SemanticPackage checked_package = package;
+  ConstantTable checked_constants = constants;
   const std::vector<ProcedureInstantiationSeed> no_seeds;
   BodyChecker checker(
       sources,
       loaded,
       selections,
-      package,
-      constants,
+      checked_package,
+      checked_constants,
       target,
       diagnostics,
       no_seeds);
   BodyCheckResult result = checker.run_selected(procedures);
-  if (result.ok && !validate_target_types(package.types, target, diagnostics)) {
+  if (result.ok &&
+      !validate_target_types(checked_package.types, target, diagnostics)) {
     result.ok = false;
   }
   // The early HIR is intentionally discarded and cannot reach MIR, but its
@@ -8188,10 +8354,13 @@ BodyCheckResult check_compile_time_procedure_bodies(
   // body. This prevents discovery from accepting a synthesis obligation whose
   // surrounding compile-time procedure is already invalid.
   if (result.ok &&
-      !check_definite_initialization(package, result.program, diagnostics)) {
+      !check_definite_initialization(
+          checked_package, result.program, diagnostics)) {
     result.ok = false;
   }
-  infer_agent_loop_ranges(loaded, package, result.program);
+  infer_agent_loop_ranges(loaded, checked_package, result.program);
+  result.package = std::move(checked_package);
+  result.constants = std::move(checked_constants);
   return result;
 }
 

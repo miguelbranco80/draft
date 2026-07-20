@@ -56,6 +56,13 @@ cache.
   validation discovery, and target lowering; package rows own the declarations,
   types, obligations, checked bodies, MIR, and LLVM products available at each
   state.
+- Each package has an immutable declaration generation and a separate
+  body-owned semantic/HIR generation. The body work key combines that
+  declaration generation with the exact canonical set of cross-package generic
+  specializations demanded by consumers. Equal keys reuse bodies, monotonic
+  additions check only new specializations, and removals rebuild from the clean
+  declaration baseline. Diagnostic preflight and early compile-time synthesis
+  checks use disposable copies rather than enriching authoritative state.
 - A command-local adjacency index records imports by consumer and consumers by
   dependency. It is built once with each source-selection graph and retained
   through source transitions, semantic closure, and lowering. A sequential Kahn
@@ -73,9 +80,12 @@ cache.
   for each conceptual phase.
 - Handwritten and generated declarations share the same semantic graph once
   generated source has passed its grammar boundary and ordinary checks. A
-  complete-file expansion is reparsed transactionally, may not change package
-  or import topology, and rebuilds only its package plus transitive consumers.
-  Unrelated dependency declarations and types remain live.
+  complete-file expansion is reparsed transactionally and may not change
+  package or import topology. Declaration/member replacement rebuilds its
+  package plus transitive consumers. Body-category replacement rebuilds only
+  its containing package's declaration IDs, retains consumer body generations,
+  and invalidates their closure products. Unrelated dependency declarations,
+  body HIR, and types remain live.
 
 ### Resolution and build workflow
 
@@ -209,6 +219,13 @@ cache.
     waves, checks responses sequentially, and repeats only rejected sites in
     correction waves. The Codex runtime uses multithread-safe `posix_spawnp` and
     one request directory per call.
+15. Semantic ownership was split into immutable declaration generations and
+    body-owned semantic/HIR generations. Cross-package procedure
+    specializations now use canonical demand-set work keys: retained dependencies
+    are reused during body proposals, new demands extend only missing bodies,
+    and removals rebuild exact state. This removed retained-table body replay,
+    including duplicate static-pack declarations, without introducing a
+    persistent cache or a second compiler graph.
 
 The qualifying timing counters were `compiler passes: 1`, `workspace loads: 1`
 for the handwritten hello build. The resolved agent-acceptance build, whose
@@ -237,6 +254,10 @@ and tests as applicable.
   selected source graph and produces the same native program as a later
   provider-free `build` of the committed source. Interface/body rounds never
   reconstruct the same workspace graph.
+- Rechecking a body proposal never re-enters an enriched semantic package. A
+  dependency with an equal declaration+demand work key retains its exact HIR;
+  an added external specialization checks only that new body, and removing the
+  demand leaves no stale concrete symbol or interface row.
 - The sorted sequential package-semantic scheduler produces stable manifests,
   generated-source selections, and diagnostics.
 - A synthesis ready wave may invoke only independent opaque-set sites in
@@ -264,9 +285,12 @@ and tests as applicable.
 - `draft_resolution_tests`, `draft_resolution_store_tests`, and
   `draft_resolution_overlay_tests` cover missing, corrupt, stale, duplicate,
   mismatched, interrupted, and transaction-injected persistent inputs.
-- `draft_compiler_tests` covers selective in-memory invalidation and exact
-  semantic/lowering continuation; `draft_driver_timings` checks the public
-  phase and graph-work counters.
+- `draft_compiler_tests` covers selective in-memory invalidation, immutable
+  declaration/body ownership, equal-key body reuse, generic-demand extension,
+  local-instance promotion, exact demand removal, and semantic/lowering
+  continuation. `draft_resolver_tests` reproduces a body `...` proposal which
+  requests the same dependency static-pack instance before and after expansion.
+  `draft_driver_timings` checks the public phase and graph-work counters.
 - `draft_resolve_build_reuses_final_graph` compares the assembly tree emitted by
   same-process `resolve --build` with a later offline build byte for byte, then
   proves an intentionally failing backend continuation leaves the successful

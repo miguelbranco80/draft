@@ -7,17 +7,19 @@
 // lifetime must enclose the result and every continuation or diagnostic render.
 //
 // Compilation is deterministic and provider-free. Dependencies publish before
-// consumers where semantic interfaces require it; state advances monotonically
-// from interface discovery to semantic closure to target lowering. The
-// continuation API mutates only an existing successful graph and creates no
-// persistent cache. Resolution may overlay checked generated Draft at the
-// source boundary, but lower layers never call a provider or update pins.
-// Relevant specification: sections 10 and 15.
+// consumers where semantic interfaces require it. An unchanged source graph
+// advances from interface discovery to semantic closure to target lowering. A
+// checked source overlay creates explicit new declaration generations only for
+// affected packages, then reuses or extends unaffected body generations by
+// exact work key. The continuation API mutates only this command-owned graph
+// and creates no persistent cache. Lower layers never call a provider or update
+// pins. Relevant specification: sections 10 and 15.
 
 #pragma once
 
 #include "assembly/aarch64.h"
 #include "backend/llvm_ir.h"
+#include "compile/body_work.h"
 #include "compile/configuration.h"
 #include "elaborator/obligation.h"
 #include "elaborator/resolution.h"
@@ -36,6 +38,7 @@
 #include "workspace/workspace.h"
 
 #include <cstddef>
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <vector>
@@ -63,7 +66,7 @@ struct CompileWorkspaceOptions {
   // Versioned identity of the compiler semantics and manifest algorithm. It is
   // a resolved-program input and must change when an implementation change can
   // alter accepted meaning or emitted behavior for the same other inputs.
-  std::string compiler_content_identity = "draft-bootstrap-cpp-v139";
+  std::string compiler_content_identity = "draft-bootstrap-cpp-v140";
   // Explicit build-time language choices are kept together and included in
   // resolved-program identity. They are not inferred from host environment or
   // optimization level.
@@ -97,13 +100,50 @@ struct CompiledAssemblySource {
   std::string contents;
 };
 
+// PackageSemanticProgress is the authoritative per-package phase state. A
+// source transition may leave one dependency at ClosureReady while rebuilding
+// a changed consumer from InterfaceReady, so one workspace-wide progress enum
+// cannot describe the rows accurately. InterfaceReady owns only declarations
+// and the preliminary public interface. BodiesReady additionally owns one
+// checked body result for the current declaration generation and exact external
+// generic demand set. ClosureReady additionally owns effects, denials, agent
+// obligations, native facts, and the completed public interface.
+enum class PackageSemanticProgress {
+  InterfaceReady,
+  BodiesReady,
+  ClosureReady,
+};
+
+// PackageBodyWorkKey names the complete inputs that make one retained body
+// result authoritative. declaration_generation identifies the immutable local
+// symbol/type baseline. procedure_demands is the canonical exact set of
+// cross-package generic specializations required by checked consumers. A zero
+// generation is the invalid sentinel; locally discovered specializations are a
+// deterministic consequence of these inputs and do not need a second key.
+struct PackageBodyWorkKey {
+  std::uint64_t declaration_generation = 0;
+  std::vector<ProcedureInstantiationDemand> procedure_demands;
+};
+
 // One row owns every representation of one package. Keeping phase products
 // together makes driver commands thin and gives later manifests a single place
 // to collect canonical inputs without rerunning semantic analysis.
 struct CompiledPackage {
   PackageIdentity identity;
   std::vector<CompiledAssemblySource> assembly_sources;
-  SemanticAnalysisResult semantics;
+  // declarations is the immutable baseline for declaration_generation. Body
+  // checking receives it by const reference and owns all later semantic rows in
+  // bodies; no continuation may append into this value.
+  SemanticAnalysisResult declarations;
+  // Incremented whenever this package's declaration baseline is rebuilt from a
+  // new parsed source generation or changed dependency interface. Zero denotes
+  // an uninitialized row and is never a successful package generation.
+  std::uint64_t declaration_generation = 0;
+  // Installed only with a successful BodyCheckResult. Its generation and
+  // demands are compared together before any retained HIR is reused.
+  PackageBodyWorkKey body_work_key;
+  PackageSemanticProgress semantic_progress =
+      PackageSemanticProgress::InterfaceReady;
   BodyCheckResult bodies;
   AgentMetadataResult metadata;
   AgentObligationResult obligations;
@@ -121,21 +161,37 @@ struct CompiledPackage {
   LlvmIrResult llvm;
 };
 
-// One result advances monotonically through these command-local states. Empty
-// is a failed or not-yet-started result. InterfaceDiscovery may intentionally
-// omit packages blocked by declaration/member synthesis. SemanticClosure owns
-// complete checked declarations, bodies, effects, denials, and native-interop
-// facts but no MIR. ValidationDiscovery additionally owns the canonical test or
-// benchmark entry set but still has no target IR. TargetLowering owns every
-// requested assembly program, MIR package, and LLVM module. The state is never
-// serialized or cached; it exists so later command stages can continue the
-// exact checked graph without guessing from empty output vectors.
+// CompileWorkspaceProgress is the aggregate command boundary. It advances
+// monotonically while source bytes are unchanged. A checked source transition
+// deliberately returns it to InterfaceDiscovery; PackageSemanticProgress and
+// PackageBodyWorkKey then say exactly which unaffected rows still own valid
+// bodies or closure. Empty is a failed or not-yet-started result.
+// InterfaceDiscovery may intentionally omit packages blocked by
+// declaration/member synthesis. SemanticClosure owns complete checked
+// declarations, bodies, effects, denials, and native-interop facts but no MIR.
+// ValidationDiscovery additionally owns the canonical test or benchmark entry
+// set but still has no target IR. TargetLowering owns every requested assembly
+// program, MIR package, and LLVM module. The state is never serialized or
+// cached; it exists so later command stages can continue the exact checked
+// graph without guessing from empty output vectors.
 enum class CompileWorkspaceProgress {
   Empty,
   InterfaceDiscovery,
   SemanticClosure,
   ValidationDiscovery,
   TargetLowering,
+};
+
+// Source replacements name their semantic invalidation boundary explicitly.
+// Interface replacements may change declarations or compile-time interface
+// decisions and therefore rebuild the changed package plus transitive
+// consumers. Body replacements are grammar-confined statement/expression/
+// assembly expansions: only their containing package needs new declaration IDs
+// for the reparsed file, while effect/obligation closure is invalidated through
+// consumers. Both forms still parse complete files and preserve topology.
+enum class WorkspaceSemanticChange {
+  Interface,
+  Body,
 };
 
 // Command-lifetime derived index over one immutable WorkspaceGraph topology.
@@ -228,6 +284,7 @@ struct ResolvedAgentBoundary {
 [[nodiscard]] bool apply_compiled_workspace_source_overrides(
     SourceManager &sources,
     const std::vector<WorkspaceSourceOverride> &overrides,
+    WorkspaceSemanticChange change,
     CompileWorkspaceOptions options,
     CompileWorkspaceResult &compiled,
     DiagnosticSink &diagnostics);

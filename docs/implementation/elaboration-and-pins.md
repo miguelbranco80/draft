@@ -205,15 +205,23 @@ fails, while the graph ownership boundary ensures the combined command does not
 reload the manifest or reconstruct declarations, types, HIR, or dependency
 edges merely to emit the artifact.
 
-Interface discovery and semantic closure are monotonic states of that result,
-not separate workspace compilations. Once declaration/member synthesis is
-absent, the compiler checks bodies and publishes effects on the existing loaded
-files, syntax trees, declarations, interned types, and dependency interfaces.
-Installing a checked complete-file expansion reparses it transactionally in
-that workspace graph, preserves package/import IDs, and rebuilds only its
-package plus transitive consumers. Unrelated dependency declarations and types
-remain live. Body-category replacement also retains already typed validation
-context because it cannot change declarations. Handwritten commands therefore
+Without a source transition, interface discovery, semantic closure, and target
+lowering advance monotonically on one result rather than forming separate
+workspace compilations. A checked complete-file expansion deliberately returns
+the aggregate result to interface discovery while retaining exact per-package
+progress. Package/import IDs remain stable. Declaration/member replacement
+rebuilds the changed package and transitive consumers; body-category replacement
+rebuilds declarations only for its containing package, retains consumer HIR,
+and invalidates effect/obligation closure through those consumers. It also
+retains already typed validation context because it cannot change declarations.
+
+The semantic ownership boundary is explicit. A package's declaration generation
+is immutable. Its checked HIR lives beside a body-owned semantic copy and
+constant table under a work key consisting of the declaration generation and
+canonical external generic demand set. Proposal checking can therefore copy the
+command graph without replaying BodyChecker over a dependency's already-enriched
+tables. Equal keys reuse the dependency result; added demands extend only new
+specializations; removal starts from declarations. Handwritten commands still
 load and analyze declarations once before later MIR/LLVM continuation.
 
 Provider proposals need isolation because sibling sites in one opaque set may
@@ -221,7 +229,10 @@ not observe each other. The resolver copies the current command-local semantic
 state for each private proposal check, applies only that proposal through the
 same in-memory transition, and discards the candidate afterward. Accepted
 siblings are then installed together in the authoritative graph. This copy is
-not a persistent cache and performs no repeated filesystem discovery.
+not a persistent cache and performs no repeated filesystem discovery. Private
+compile-time body discovery also checks copied declaration tables, so a rejected
+proposal or speculative member round cannot append lexical rows to the retained
+surface graph.
 
 The compiler treats the saved fragment as source inserted at its exact `...`
 site while retaining the original surface buffer and a composed source map.
@@ -330,7 +341,7 @@ upper source re-evaluates to the displayed value at the site. Other loop shapes
 produce no inferred range.
 
 `draft-agent-obligation-v19`, synthesis request v21 / prompt v22, judgment
-request/prompt v4, and compiler content v139 identities make these facts and
+request/prompt v4, and compiler content v140 identities make these facts and
 the compiler-checked correction policy stale-pin and evidence inputs. The
 synthesis adapter uses provider identity `openai-codex-cli-v28`; the judgment
 adapter uses `openai-codex-cli-v23`. Both recheck the canonical

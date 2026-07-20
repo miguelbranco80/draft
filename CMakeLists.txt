@@ -118,6 +118,7 @@ add_library(
   src/base/sha256.cpp
   src/base/timing.cpp
   src/base/work_graph.cpp
+  src/compile/body_work.cpp
   src/compile/compiler.cpp
   src/compile/expanded_source.cpp
   src/compile/resolver.cpp

@@ -351,6 +351,42 @@ struct TemporaryWorkspace {
            << "}\n";
   }
 
+  // This is the original retained-body replay failure in its smallest complete
+  // resolver form. The surface body and accepted replacement both request the
+  // same cross-package static-pack specialization. Proposal checking copies
+  // the current compiler graph, applies only the body overlay, and must reuse
+  // the dependency's equal body-work key instead of rechecking its already
+  // enriched semantic tables.
+  void write_body_site_with_static_pack_dependency() const {
+    std::error_code error;
+    const std::filesystem::path formatting = root / "formatting";
+    std::filesystem::create_directories(formatting, error);
+    if (error)
+      std::exit(EXIT_FAILURE);
+    std::ofstream formatting_source(formatting / "package.draft",
+                                    std::ios::binary | std::ios::trunc);
+    formatting_source
+        << "package formatting\n\n"
+           "pub consume :: proc(values: ..type) {\n"
+           "    for value in values {\n"
+           "        when type_of(value) == string {\n"
+           "        } else when type_kind(type_of(value)) == .signed_integer "
+           "{\n"
+           "        } else {\n"
+           "            static_assert(false, \"unsupported value\")\n"
+           "        }\n"
+           "    }\n"
+           "}\n";
+    std::ofstream source(package / "package.draft",
+                         std::ios::binary | std::ios::trunc);
+    source << "package app\n\n"
+              "import formatting\n\n"
+              "main :: proc() {\n"
+              "    expected: i64 = ... \"produce expected value\"\n"
+              "    formatting.consume(\"value\", expected)\n"
+              "}\n";
+  }
+
   void write_test_source(std::string_view extra_statement = {}) const {
     std::ofstream source(
         package / "candidate_test.draft", std::ios::binary | std::ios::trunc);
@@ -417,7 +453,6 @@ bool prepare_fake_provider(
   ++state->preparation_calls;
   return true;
 }
-
 [[nodiscard]] bool boolean_cancellation_requested(void *opaque) {
   return *static_cast<bool *>(opaque);
 }
@@ -968,6 +1003,46 @@ void test_resolution_reuse_revalidation_and_failure(TestState &state) {
   EXPECT(state,
       draft::serialize_resolution_manifest(after_failure.manifest) ==
       committed_manifest);
+}
+
+void test_body_proposal_reuses_static_pack_dependency(TestState &state) {
+  TemporaryWorkspace workspace;
+  workspace.write_body_site_with_static_pack_dependency();
+  FakeProviderState provider;
+  provider.response = "42";
+
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  const draft::ResolveWorkspaceResult resolved = draft::resolve_workspace(
+      sources, workspace.package.string(), resolve_options(workspace, provider),
+      diagnostics);
+  if (!resolved.ok) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+  }
+  EXPECT(state, resolved.ok);
+  EXPECT(state, resolved.committed);
+  EXPECT(state, resolved.synthesized_sites == 1);
+  EXPECT(state, provider.calls == 1);
+  EXPECT(state, resolved.compiled_program.has_value());
+  if (!resolved.compiled_program.has_value())
+    return;
+
+  const draft::CompiledPackage *formatting = nullptr;
+  for (const std::optional<draft::CompiledPackage> &package :
+       resolved.compiled_program->packages) {
+    if (package.has_value() &&
+        package->identity.root_relative_path == "formatting") {
+      formatting = &*package;
+      break;
+    }
+  }
+  EXPECT(state, formatting != nullptr);
+  if (formatting == nullptr)
+    return;
+  EXPECT(state, formatting->declarations.package.parametric_instances.empty());
+  EXPECT(state, formatting->bodies.package.parametric_instances.size() == 1);
+  EXPECT(state, formatting->semantic_progress ==
+                    draft::PackageSemanticProgress::ClosureReady);
 }
 
 void test_selective_regeneration_changes_only_selected_source(
@@ -2396,6 +2471,7 @@ void test_invalid_provider_parallel_bound_stops_before_call(TestState &state) {
 int main() {
   TestState state;
   test_resolution_reuse_revalidation_and_failure(state);
+  test_body_proposal_reuses_static_pack_dependency(state);
   test_selective_regeneration_changes_only_selected_source(state);
   test_compiler_rejection_retries_with_feedback(state);
   test_provider_error_cannot_hide_behind_success(state);

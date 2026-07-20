@@ -488,8 +488,8 @@ int compile_package(
   if (compiled.ok) {
     for (std::size_t index = 0; index < compiled.packages.size(); ++index) {
       const draft::CompiledPackage &package = *compiled.packages[index];
-      symbol_count += package.semantics.package.symbols.symbol_count();
-      type_count += package.semantics.package.types.size();
+      symbol_count += package.bodies.package.symbols.symbol_count();
+      type_count += package.bodies.package.types.size();
       procedure_count += package.bodies.checked_procedures;
       agent_record_count += package.metadata.records.size();
       if (emit_llvm) {
@@ -982,7 +982,7 @@ int emit_c_header_package(
           ? timings->scope("C header emission")
           : draft::TimingScope{};
       const draft::CHeaderResult header = draft::emit_c_header(
-          compiled.packages[root]->semantics.package,
+          compiled.packages[root]->bodies.package,
           target,
           {},
           diagnostics);
