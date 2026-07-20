@@ -6,6 +6,8 @@
 #include "elaborator/resolution.h"
 #include "source/diagnostic.h"
 
+#include "test_directory.h"
+
 #include <cerrno>
 #include <cstdlib>
 #include <filesystem>
@@ -40,23 +42,12 @@ struct TestState {
 #define EXPECT(state, expression) (state).expect((expression), #expression, __LINE__)
 
 struct TemporaryWorkspace {
+  draft::test::TemporaryDirectory directory;
   std::filesystem::path path;
 
-  explicit TemporaryWorkspace(std::string_view name) {
-    std::error_code error;
-    path = std::filesystem::temp_directory_path(error) /
-        ("draft-resolution-store-test-" + std::string(name));
-    if (error) std::exit(EXIT_FAILURE);
-    std::filesystem::remove_all(path, error);
-    error.clear();
-    std::filesystem::create_directory(path, error);
-    if (error) std::exit(EXIT_FAILURE);
-  }
-
-  ~TemporaryWorkspace() {
-    std::error_code ignored;
-    std::filesystem::remove_all(path, ignored);
-  }
+  explicit TemporaryWorkspace(std::string_view name)
+      : directory("draft-resolution-store-test-" + std::string(name)),
+        path(directory.path()) {}
 };
 
 draft::ResolutionManifest manifest_for(

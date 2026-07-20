@@ -19,6 +19,8 @@
 #include "source/source.h"
 #include "target/profile.h"
 
+#include "test_directory.h"
+
 #include <algorithm>
 #include <array>
 #include <cerrno>
@@ -184,17 +186,10 @@ struct ArtifactCase {
 }
 
 void test_backend_routes(TestState &state) {
+  draft::test::TemporaryDirectory temporary_directory{
+      "draft-native-backend-parity"};
+  const std::filesystem::path &temporary = temporary_directory.path();
   std::error_code error;
-  const std::filesystem::path temporary =
-      std::filesystem::temp_directory_path(error) /
-      ("draft-native-backend-parity-" + std::to_string(getpid()));
-  EXPECT(state, "setup", !error);
-  if (error) return;
-  std::filesystem::remove_all(temporary, error);
-  error.clear();
-  std::filesystem::create_directories(temporary, error);
-  EXPECT(state, "setup", !error);
-  if (error) return;
 
   const draft::TargetProfile target = native_host_target();
   draft::SourceManager executable_sources;
@@ -219,7 +214,6 @@ void test_backend_routes(TestState &state) {
   if (!executable.ok || !library.ok) {
     std::cerr << draft::render_diagnostics(
         executable_sources, compile_diagnostics);
-    std::filesystem::remove_all(temporary, error);
     return;
   }
 
@@ -322,7 +316,6 @@ void test_backend_routes(TestState &state) {
     }
   }
 
-  std::filesystem::remove_all(temporary, error);
 }
 
 } // namespace

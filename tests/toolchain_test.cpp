@@ -13,6 +13,8 @@
 #include "source/source.h"
 #include "target/profile.h"
 
+#include "test_directory.h"
+
 #include <algorithm>
 #include <cstdlib>
 #include <cstdint>
@@ -111,15 +113,10 @@ draft::CompileWorkspaceResult compile_fixture(
 }
 
 void test_explicit_foreign_provider_mapping(TestState &state) {
+  draft::test::TemporaryDirectory temporary_directory{
+      "draft-provider-link-test"};
+  const std::filesystem::path &temporary = temporary_directory.path();
   std::error_code error;
-  const std::filesystem::path temporary =
-      std::filesystem::temp_directory_path(error) /
-      "draft-provider-link-test";
-  EXPECT(state, !error);
-  std::filesystem::remove_all(temporary, error);
-  error.clear();
-  std::filesystem::create_directories(temporary, error);
-  EXPECT(state, !error);
   if (error) return;
 
   draft::SourceManager sources;
@@ -192,15 +189,10 @@ void test_explicit_foreign_provider_mapping(TestState &state) {
 }
 
 void test_all_native_artifact_kinds(TestState &state) {
+  draft::test::TemporaryDirectory temporary_directory{
+      "draft-native-artifact-kinds-test"};
+  const std::filesystem::path &temporary = temporary_directory.path();
   std::error_code error;
-  const std::filesystem::path temporary =
-      std::filesystem::temp_directory_path(error) /
-      "draft-native-artifact-kinds-test";
-  EXPECT(state, !error);
-  std::filesystem::remove_all(temporary, error);
-  error.clear();
-  std::filesystem::create_directories(temporary, error);
-  EXPECT(state, !error);
   if (error) return;
 
   draft::SourceManager sources;
@@ -317,15 +309,10 @@ void test_all_native_artifact_kinds(TestState &state) {
 // requiring a Linux sysroot in every unit-test environment. Real LLVM object
 // acceptance and hosted execution are separate qualification gates.
 void test_aarch64_linux_toolchain_arguments(TestState &state) {
+  draft::test::TemporaryDirectory temporary_directory{
+      "draft-aarch64-linux-toolchain-test"};
+  const std::filesystem::path &temporary = temporary_directory.path();
   std::error_code error;
-  const std::filesystem::path temporary =
-      std::filesystem::temp_directory_path(error) /
-      "draft-aarch64-linux-toolchain-test";
-  EXPECT(state, !error);
-  std::filesystem::remove_all(temporary, error);
-  error.clear();
-  std::filesystem::create_directories(temporary, error);
-  EXPECT(state, !error);
   if (error) return;
 
   const draft::TargetProfile target = draft::make_aarch64_linux_profile();
@@ -426,15 +413,10 @@ void test_aarch64_linux_toolchain_arguments(TestState &state) {
 }
 
 void test_package_assembly_reaches_link(TestState &state) {
+  draft::test::TemporaryDirectory temporary_directory{
+      "draft-bootstrap-toolchain-test"};
+  const std::filesystem::path &temporary = temporary_directory.path();
   std::error_code error;
-  const std::filesystem::path temporary =
-      std::filesystem::temp_directory_path(error) /
-      "draft-bootstrap-toolchain-test";
-  EXPECT(state, !error);
-  std::filesystem::remove_all(temporary, error);
-  error.clear();
-  std::filesystem::create_directories(temporary, error);
-  EXPECT(state, !error);
   if (error) return;
 
   draft::SourceManager sources;

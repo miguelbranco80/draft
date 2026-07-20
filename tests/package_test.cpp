@@ -10,6 +10,8 @@
 #include "source/source.h"
 #include "workspace/package.h"
 
+#include "test_directory.h"
+
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -40,17 +42,12 @@ void write_file(const std::filesystem::path &path, std::string_view contents) {
 }
 
 struct TemporaryPackage {
+  draft::test::TemporaryDirectory directory{"draft-bootstrap-package-test"};
   std::filesystem::path path;
 
   TemporaryPackage() {
+    path = directory.path();
     std::error_code error;
-    path = std::filesystem::temp_directory_path(error) / "draft-bootstrap-package-test";
-    if (error) {
-      std::cerr << "cannot find temporary directory: " << error.message() << '\n';
-      std::exit(EXIT_FAILURE);
-    }
-    std::filesystem::remove_all(path, error);
-    error.clear();
     std::filesystem::create_directories(path / "nested", error);
     if (error) {
       std::cerr << "cannot create temporary package: " << error.message() << '\n';
@@ -58,10 +55,6 @@ struct TemporaryPackage {
     }
   }
 
-  ~TemporaryPackage() {
-    std::error_code ignored;
-    std::filesystem::remove_all(path, ignored);
-  }
 };
 
 void populate_package(const TemporaryPackage &package) {

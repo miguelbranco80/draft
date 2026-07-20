@@ -4,6 +4,8 @@
 
 #include "source/diagnostic.h"
 
+#include "test_directory.h"
+
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -29,22 +31,11 @@ struct TestState {
 #define EXPECT(state, expression) (state).expect((expression), #expression, __LINE__)
 
 struct TemporaryAssets {
+  draft::test::TemporaryDirectory directory{"draft-runtime-assets-test"};
   std::filesystem::path root;
 
   TemporaryAssets() {
-    std::error_code error;
-    root = std::filesystem::temp_directory_path(error) /
-        "draft-runtime-assets-test";
-    if (error) std::exit(EXIT_FAILURE);
-    std::filesystem::remove_all(root, error);
-    error.clear();
-    std::filesystem::create_directories(root, error);
-    if (error) std::exit(EXIT_FAILURE);
-  }
-
-  ~TemporaryAssets() {
-    std::error_code ignored;
-    std::filesystem::remove_all(root, ignored);
+    root = directory.path();
   }
 };
 

@@ -10,6 +10,8 @@
 #include "source/source.h"
 #include "workspace/selection.h"
 
+#include "test_directory.h"
+
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -49,20 +51,15 @@ void write_file(const std::filesystem::path &path, std::string_view contents) {
 }
 
 struct TemporaryTree {
+  draft::test::TemporaryDirectory directory{
+      "draft-workspace-selection-test"};
   std::filesystem::path root;
   std::filesystem::path workspace;
   std::filesystem::path core;
 
   TemporaryTree() {
+    root = directory.path();
     std::error_code error;
-    root = std::filesystem::temp_directory_path(error) /
-        "draft-workspace-selection-test";
-    if (error) {
-      std::cerr << "cannot find temporary directory: " << error.message() << '\n';
-      std::exit(EXIT_FAILURE);
-    }
-    std::filesystem::remove_all(root, error);
-    error.clear();
     workspace = root / "workspace";
     core = root / "distribution" / "core";
     std::filesystem::create_directories(workspace, error);
@@ -77,10 +74,6 @@ struct TemporaryTree {
     }
   }
 
-  ~TemporaryTree() {
-    std::error_code ignored;
-    std::filesystem::remove_all(root, ignored);
-  }
 };
 
 draft::WorkspaceLoadOptions discovery_options(const TemporaryTree &tree) {

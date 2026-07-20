@@ -6,6 +6,8 @@
 #include "source/source.h"
 #include "target/profile.h"
 
+#include "test_directory.h"
+
 #include <algorithm>
 #include <cstdlib>
 #include <filesystem>
@@ -46,13 +48,10 @@ struct TestState {
 }
 
 void test_source_update_reuses_unaffected_semantics(TestState &state) {
+  draft::test::TemporaryDirectory temporary_directory{
+      "draft-bootstrap-compiler-source-update-test"};
+  const std::filesystem::path &root = temporary_directory.path();
   std::error_code error;
-  const std::filesystem::path root =
-      std::filesystem::temp_directory_path(error) /
-      "draft-bootstrap-compiler-source-update-test";
-  EXPECT(state, !error);
-  std::filesystem::remove_all(root, error);
-  error.clear();
   std::filesystem::create_directories(root / "app", error);
   std::filesystem::create_directories(root / "middle", error);
   std::filesystem::create_directories(root / "changed", error);
@@ -246,12 +245,10 @@ void test_multi_package_native_pipeline(TestState &state) {
 }
 
 void test_hosted_entry_contract(TestState &state) {
+  draft::test::TemporaryDirectory temporary_directory{
+      "draft-bootstrap-entry-test"};
+  const std::filesystem::path &root = temporary_directory.path();
   std::error_code error;
-  const std::filesystem::path root =
-      std::filesystem::temp_directory_path(error) / "draft-bootstrap-entry-test";
-  EXPECT(state, !error);
-  std::filesystem::remove_all(root, error);
-  error.clear();
   std::filesystem::create_directories(root / "app", error);
   EXPECT(state, !error);
   if (error) return;
@@ -287,13 +284,10 @@ void test_hosted_entry_contract(TestState &state) {
 }
 
 void test_file_local_imports_share_one_llvm_declaration(TestState &state) {
+  draft::test::TemporaryDirectory temporary_directory{
+      "draft-bootstrap-duplicate-import-llvm-test"};
+  const std::filesystem::path &root = temporary_directory.path();
   std::error_code error;
-  const std::filesystem::path root =
-      std::filesystem::temp_directory_path(error) /
-      "draft-bootstrap-duplicate-import-llvm-test";
-  EXPECT(state, !error);
-  std::filesystem::remove_all(root, error);
-  error.clear();
   std::filesystem::create_directories(root / "app", error);
   std::filesystem::create_directories(root / "lib", error);
   EXPECT(state, !error);
@@ -904,12 +898,10 @@ void test_compiler_distributed_atomic(TestState &state) {
 }
 
 void test_atomic_diagnostics(TestState &state) {
+  draft::test::TemporaryDirectory temporary_directory{
+      "draft-bootstrap-atomic-diagnostics-test"};
+  const std::filesystem::path &root = temporary_directory.path();
   std::error_code error;
-  const std::filesystem::path root = std::filesystem::temp_directory_path(error) /
-      "draft-bootstrap-atomic-diagnostics-test";
-  EXPECT(state, !error);
-  std::filesystem::remove_all(root, error);
-  error.clear();
   std::filesystem::create_directories(root / "app", error);
   EXPECT(state, !error);
   if (error) return;
@@ -1068,12 +1060,10 @@ void test_cross_package_generic_procedures(TestState &state) {
 }
 
 void test_runtime_context_bridge_diagnostics(TestState &state) {
+  draft::test::TemporaryDirectory temporary_directory{
+      "draft-bootstrap-context-bridge-test"};
+  const std::filesystem::path &root = temporary_directory.path();
   std::error_code error;
-  const std::filesystem::path root = std::filesystem::temp_directory_path(error) /
-      "draft-bootstrap-context-bridge-test";
-  EXPECT(state, !error);
-  std::filesystem::remove_all(root, error);
-  error.clear();
   std::filesystem::create_directories(root / "app", error);
   EXPECT(state, !error);
   if (error) return;
@@ -1114,13 +1104,10 @@ void test_runtime_context_bridge_diagnostics(TestState &state) {
 }
 
 void test_cross_package_higher_order_effect(TestState &state) {
+  draft::test::TemporaryDirectory temporary_directory{
+      "draft-bootstrap-higher-order-effect-test"};
+  const std::filesystem::path &root = temporary_directory.path();
   std::error_code error;
-  const std::filesystem::path root =
-      std::filesystem::temp_directory_path(error) /
-      "draft-bootstrap-higher-order-effect-test";
-  EXPECT(state, !error);
-  std::filesystem::remove_all(root, error);
-  error.clear();
   std::filesystem::create_directories(root / "app", error);
   std::filesystem::create_directories(root / "callbacks", error);
   EXPECT(state, !error);

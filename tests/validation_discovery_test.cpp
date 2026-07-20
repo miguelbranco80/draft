@@ -18,6 +18,8 @@
 #include "source/source.h"
 #include "target/profile.h"
 #include "validation/command.h"
+
+#include "test_directory.h"
 #include "validation/evidence.h"
 #include "validation/runner.h"
 
@@ -110,13 +112,10 @@ struct TestState {
 }
 
 void test_checked_test_harness(TestState &state) {
+  draft::test::TemporaryDirectory temporary_directory{
+      "draft-validation-discovery-test"};
+  const std::filesystem::path &root = temporary_directory.path();
   std::error_code error;
-  const std::filesystem::path root =
-      std::filesystem::temp_directory_path(error) /
-      "draft-validation-discovery-test";
-  EXPECT(state, !error);
-  std::filesystem::remove_all(root, error);
-  error.clear();
   std::filesystem::create_directories(root / "app", error);
   EXPECT(state, !error);
   if (error) return;
@@ -330,13 +329,10 @@ void test_checked_test_harness(TestState &state) {
 }
 
 void test_authenticated_synthesis_enters_validation_graph(TestState &state) {
+  draft::test::TemporaryDirectory temporary_directory{
+      "draft-validation-synthesis-test"};
+  const std::filesystem::path &root = temporary_directory.path();
   std::error_code error;
-  const std::filesystem::path root =
-      std::filesystem::temp_directory_path(error) /
-      "draft-validation-synthesis-test";
-  EXPECT(state, !error);
-  std::filesystem::remove_all(root, error);
-  error.clear();
   std::filesystem::create_directories(root / "app", error);
   EXPECT(state, !error);
   if (error) return;
@@ -496,13 +492,10 @@ void test_authenticated_synthesis_enters_validation_graph(TestState &state) {
 }
 
 void test_invalid_signature_is_rejected(TestState &state) {
+  draft::test::TemporaryDirectory temporary_directory{
+      "draft-validation-signature-test"};
+  const std::filesystem::path &root = temporary_directory.path();
   std::error_code error;
-  const std::filesystem::path root =
-      std::filesystem::temp_directory_path(error) /
-      "draft-validation-signature-test";
-  EXPECT(state, !error);
-  std::filesystem::remove_all(root, error);
-  error.clear();
   std::filesystem::create_directories(root / "app", error);
   EXPECT(state, !error);
   if (error) return;
@@ -528,13 +521,10 @@ void test_invalid_signature_is_rejected(TestState &state) {
 }
 
 void test_spoofed_core_nominal_is_rejected(TestState &state) {
+  draft::test::TemporaryDirectory temporary_directory{
+      "draft-validation-spoof-test"};
+  const std::filesystem::path &root = temporary_directory.path();
   std::error_code error;
-  const std::filesystem::path root =
-      std::filesystem::temp_directory_path(error) /
-      "draft-validation-spoof-test";
-  EXPECT(state, !error);
-  std::filesystem::remove_all(root, error);
-  error.clear();
   std::filesystem::create_directories(root / "app", error);
   std::filesystem::create_directories(root / "testing", error);
   EXPECT(state, !error);

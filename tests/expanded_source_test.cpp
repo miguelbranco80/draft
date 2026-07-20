@@ -10,6 +10,8 @@
 #include "source/source.h"
 #include "target/profile.h"
 
+#include "test_directory.h"
+
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -44,14 +46,13 @@ struct TestState {
 }
 
 void test_materializes_complete_graph_with_maps(TestState &state) {
+  draft::test::TemporaryDirectory temporary_directory{
+      "draft-expanded-source-test-output"};
   const std::filesystem::path source_root = DRAFT_SOURCE_DIRECTORY;
   const std::filesystem::path workspace =
       source_root / "examples" / "agent-acceptance";
-  const std::filesystem::path output =
-      std::filesystem::temp_directory_path() /
-      "draft-expanded-source-test-output";
+  const std::filesystem::path &output = temporary_directory.path();
   std::error_code ignored;
-  std::filesystem::remove_all(output, ignored);
   std::filesystem::remove_all(output.string() + ".tmp", ignored);
 
   draft::SourceManager sources;
@@ -111,7 +112,6 @@ void test_materializes_complete_graph_with_maps(TestState &state) {
   EXPECT(state, duplicate_diagnostics.error_count() == 1);
   EXPECT(state, read_file(app_source) == expanded);
 
-  std::filesystem::remove_all(output, ignored);
 }
 
 } // namespace

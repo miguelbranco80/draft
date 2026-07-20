@@ -15,6 +15,8 @@
 #include "target/profile.h"
 #include "workspace/workspace.h"
 
+#include "test_directory.h"
+
 #include <algorithm>
 #include <array>
 #include <cstddef>
@@ -210,21 +212,14 @@ void compare_repeated_artifact(
 }
 
 void test_repeated_native_link_is_byte_identical(TestState &state) {
+  draft::test::TemporaryDirectory temporary_directory{
+      "draft-native-determinism"};
+  const std::filesystem::path &temporary = temporary_directory.path();
   std::error_code error;
-  const std::filesystem::path temporary =
-      std::filesystem::temp_directory_path(error) /
-      ("draft-native-determinism-" + std::to_string(getpid()));
-  EXPECT(state, !error);
-  if (error) return;
 
   const draft::TargetProfile target = native_host_target();
-  // A process-specific directory permits parallel CTest invocations while the
-  // fixed output name inside it is the explicit identity used by both links.
-  std::filesystem::remove_all(temporary, error);
-  error.clear();
-  std::filesystem::create_directories(temporary, error);
-  EXPECT(state, !error);
-  if (error) return;
+  // The owned process-unique directory permits parallel CTest invocations
+  // while the fixed output name inside it identifies both compared links.
 
   draft::SourceManager sources;
   draft::DiagnosticSink compile_diagnostics;
@@ -242,10 +237,7 @@ void test_repeated_native_link_is_byte_identical(TestState &state) {
   EXPECT(state, executable.ok);
   EXPECT(state, library.ok);
   EXPECT(state, native_task_count(executable) > 1);
-  if (!executable.ok || !library.ok) {
-    std::filesystem::remove_all(temporary, error);
-    return;
-  }
+  if (!executable.ok || !library.ok) return;
   struct ArtifactCase {
     std::string_view name;
     draft::NativeArtifactKind kind;
@@ -306,7 +298,6 @@ void test_repeated_native_link_is_byte_identical(TestState &state) {
     EXPECT(state, false);
   }
 
-  std::filesystem::remove_all(temporary, error);
 }
 
 } // namespace

@@ -3,6 +3,8 @@
 #include "source/diagnostic.h"
 #include "validation/evidence_store.h"
 
+#include "test_directory.h"
+
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -64,16 +66,9 @@ struct TestState {
 }
 
 void test_history_and_revocation(TestState &state) {
-  std::error_code error;
-  const std::filesystem::path root =
-      std::filesystem::temp_directory_path(error) /
-      "draft-validation-evidence-store-test";
-  EXPECT(state, !error);
-  std::filesystem::remove_all(root, error);
-  error.clear();
-  std::filesystem::create_directories(root, error);
-  EXPECT(state, !error);
-  if (error) return;
+  draft::test::TemporaryDirectory temporary_directory{
+      "draft-validation-evidence-store-test"};
+  const std::filesystem::path &root = temporary_directory.path();
 
   draft::ValidationEvidence passing = evidence_attempt(true);
   const draft::Sha256Digest key = passing.key;
@@ -139,18 +134,12 @@ void test_history_and_revocation(TestState &state) {
       root, key, loaded, corrupt_diagnostics));
   EXPECT(state, corrupt_diagnostics.has_errors());
 
-  std::filesystem::remove_all(root, error);
 }
 
 void test_missing_state(TestState &state) {
-  std::error_code error;
-  const std::filesystem::path root =
-      std::filesystem::temp_directory_path(error) /
-      "draft-validation-evidence-missing-test";
-  std::filesystem::remove_all(root, error);
-  error.clear();
-  std::filesystem::create_directories(root, error);
-  EXPECT(state, !error);
+  draft::test::TemporaryDirectory temporary_directory{
+      "draft-validation-evidence-missing-test"};
+  const std::filesystem::path &root = temporary_directory.path();
   draft::ValidationEvidenceState loaded;
   draft::DiagnosticSink diagnostics;
   EXPECT(state, draft::load_validation_evidence_state(
@@ -158,23 +147,18 @@ void test_missing_state(TestState &state) {
   EXPECT(state,
       loaded.status == draft::ValidationEvidenceStateStatus::Missing);
   EXPECT(state, !diagnostics.has_errors());
-  std::filesystem::remove_all(root, error);
 }
 
 void test_symlink_store_is_rejected(TestState &state) {
 #if !defined(_WIN32)
+  draft::test::TemporaryDirectory root_directory{
+      "draft-validation-evidence-symlink-test"};
+  draft::test::TemporaryDirectory outside_directory{
+      "draft-validation-evidence-symlink-outside"};
+  const std::filesystem::path &root = root_directory.path();
+  const std::filesystem::path &outside = outside_directory.path();
   std::error_code error;
-  const std::filesystem::path root =
-      std::filesystem::temp_directory_path(error) /
-      "draft-validation-evidence-symlink-test";
-  const std::filesystem::path outside =
-      std::filesystem::temp_directory_path(error) /
-      "draft-validation-evidence-symlink-outside";
-  std::filesystem::remove_all(root, error);
-  std::filesystem::remove_all(outside, error);
-  error.clear();
   std::filesystem::create_directories(root / ".draft", error);
-  std::filesystem::create_directories(outside, error);
   EXPECT(state, !error);
   if (error) return;
   std::filesystem::create_directory_symlink(
@@ -189,8 +173,6 @@ void test_symlink_store_is_rejected(TestState &state) {
     EXPECT(state, diagnostics.has_errors());
     EXPECT(state, std::filesystem::is_empty(outside));
   }
-  std::filesystem::remove_all(root, error);
-  std::filesystem::remove_all(outside, error);
 #else
   (void)state;
 #endif

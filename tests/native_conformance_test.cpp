@@ -14,6 +14,8 @@
 #include "source/source.h"
 #include "target/profile.h"
 
+#include "test_directory.h"
+
 #include <array>
 #include <cerrno>
 #include <csignal>
@@ -140,17 +142,10 @@ void test_native_examples(TestState &state) {
           "examples/packages-generic/app"},
   };
 
+  draft::test::TemporaryDirectory temporary_directory{
+      "draft-native-conformance"};
+  const std::filesystem::path &temporary = temporary_directory.path();
   std::error_code error;
-  const std::filesystem::path temporary =
-      std::filesystem::temp_directory_path(error) /
-      ("draft-native-conformance-" + std::to_string(getpid()));
-  EXPECT(state, "setup", !error);
-  if (error) return;
-  std::filesystem::remove_all(temporary, error);
-  error.clear();
-  std::filesystem::create_directories(temporary, error);
-  EXPECT(state, "setup", !error);
-  if (error) return;
 
   const draft::TargetProfile target = native_host_target();
   const std::filesystem::path source_root(DRAFT_SOURCE_DIRECTORY);
@@ -248,7 +243,6 @@ void test_native_examples(TestState &state) {
     }
   }
 
-  std::filesystem::remove_all(temporary, error);
 }
 
 } // namespace

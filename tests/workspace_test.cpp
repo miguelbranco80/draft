@@ -9,6 +9,8 @@
 #include "source/source.h"
 #include "workspace/workspace.h"
 
+#include "test_directory.h"
+
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -45,27 +47,12 @@ void write_file(const std::filesystem::path &path, std::string_view contents) {
 }
 
 struct TemporaryWorkspace {
+  draft::test::TemporaryDirectory directory{
+      "draft-bootstrap-workspace-test"};
   std::filesystem::path path;
 
   TemporaryWorkspace() {
-    std::error_code error;
-    path = std::filesystem::temp_directory_path(error) / "draft-bootstrap-workspace-test";
-    if (error) {
-      std::cerr << "cannot find temporary directory: " << error.message() << '\n';
-      std::exit(EXIT_FAILURE);
-    }
-    std::filesystem::remove_all(path, error);
-    error.clear();
-    std::filesystem::create_directories(path, error);
-    if (error) {
-      std::cerr << "cannot create temporary workspace: " << error.message() << '\n';
-      std::exit(EXIT_FAILURE);
-    }
-  }
-
-  ~TemporaryWorkspace() {
-    std::error_code ignored;
-    std::filesystem::remove_all(path, ignored);
+    path = directory.path();
   }
 };
 

@@ -5,6 +5,8 @@
 #include "base/sha256.h"
 #include "source/diagnostic.h"
 
+#include "test_directory.h"
+
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -58,16 +60,9 @@ struct TestState {
 }
 
 void test_history_and_revocation(TestState &state) {
-  std::error_code error;
-  const std::filesystem::path root =
-      std::filesystem::temp_directory_path(error) /
-      "draft-judgment-evidence-store-test";
-  EXPECT(state, !error);
-  std::filesystem::remove_all(root, error);
-  error.clear();
-  std::filesystem::create_directories(root, error);
-  EXPECT(state, !error);
-  if (error) return;
+  draft::test::TemporaryDirectory temporary_directory{
+      "draft-judgment-evidence-store-test"};
+  const std::filesystem::path &root = temporary_directory.path();
 
   draft::JudgmentEvidence passing = evidence_attempt(true);
   const draft::Sha256Digest key = passing.key;
@@ -129,25 +124,18 @@ void test_history_and_revocation(TestState &state) {
       root, key, loaded, corrupt_diagnostics));
   EXPECT(state, corrupt_diagnostics.has_errors());
 
-  std::filesystem::remove_all(root, error);
 }
 
 void test_missing_state(TestState &state) {
-  std::error_code error;
-  const std::filesystem::path root =
-      std::filesystem::temp_directory_path(error) /
-      "draft-judgment-evidence-missing-test";
-  std::filesystem::remove_all(root, error);
-  error.clear();
-  std::filesystem::create_directories(root, error);
-  EXPECT(state, !error);
+  draft::test::TemporaryDirectory temporary_directory{
+      "draft-judgment-evidence-missing-test"};
+  const std::filesystem::path &root = temporary_directory.path();
   draft::JudgmentEvidenceState loaded;
   draft::DiagnosticSink diagnostics;
   EXPECT(state, draft::load_judgment_evidence_state(
       root, draft::sha256("missing judgment key"), loaded, diagnostics));
   EXPECT(state, loaded.status == draft::JudgmentEvidenceStateStatus::Missing);
   EXPECT(state, !diagnostics.has_errors());
-  std::filesystem::remove_all(root, error);
 }
 
 } // namespace

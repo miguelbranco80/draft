@@ -4,6 +4,8 @@
 
 #include "judgment/codex_cli.h"
 
+#include "test_directory.h"
+
 #include "base/sha256.h"
 #include "judgment/provider.h"
 #include "source/diagnostic.h"
@@ -38,18 +40,13 @@ struct TestState {
 #define EXPECT(state, expression) (state).expect((expression), #expression, __LINE__)
 
 struct TemporaryFixture {
+  draft::test::TemporaryDirectory directory{
+      "draft-judgment-codex-cli-test"};
   std::filesystem::path root;
   std::filesystem::path executable;
 
   TemporaryFixture() {
-    std::error_code error;
-    root = std::filesystem::temp_directory_path(error) /
-        "draft-judgment-codex-cli-test";
-    if (error) std::exit(EXIT_FAILURE);
-    std::filesystem::remove_all(root, error);
-    error.clear();
-    std::filesystem::create_directories(root, error);
-    if (error) std::exit(EXIT_FAILURE);
+    root = directory.path();
     executable = root / "fixture-codex";
 
     std::ofstream script(executable, std::ios::binary | std::ios::trunc);
@@ -98,10 +95,6 @@ struct TemporaryFixture {
 #endif
   }
 
-  ~TemporaryFixture() {
-    std::error_code ignored;
-    std::filesystem::remove_all(root, ignored);
-  }
 };
 
 draft::JudgmentRequest make_request() {

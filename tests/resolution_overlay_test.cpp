@@ -10,6 +10,8 @@
 #include "source/source.h"
 #include "target/profile.h"
 
+#include "test_directory.h"
+
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -37,17 +39,14 @@ struct TestState {
 #define EXPECT(state, expression) (state).expect((expression), #expression, __LINE__)
 
 struct TemporaryWorkspace {
+  draft::test::TemporaryDirectory directory{"draft-resolution-overlay-test"};
   std::filesystem::path root;
   std::filesystem::path package;
 
   TemporaryWorkspace() {
+    root = directory.path();
     std::error_code error;
-    root = std::filesystem::temp_directory_path(error) /
-        "draft-resolution-overlay-test";
-    if (error) std::exit(EXIT_FAILURE);
     package = root / "app";
-    std::filesystem::remove_all(root, error);
-    error.clear();
     std::filesystem::create_directories(package, error);
     if (error) std::exit(EXIT_FAILURE);
     std::ofstream source(package / "package.draft", std::ios::binary);
@@ -62,10 +61,6 @@ main :: proc() {
 )draft";
   }
 
-  ~TemporaryWorkspace() {
-    std::error_code ignored;
-    std::filesystem::remove_all(root, ignored);
-  }
 };
 
 draft::CompileWorkspaceOptions compile_options(

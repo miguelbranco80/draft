@@ -11,6 +11,8 @@
 #include "target/profile.h"
 #include "workspace/package.h"
 
+#include "test_directory.h"
+
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -61,12 +63,10 @@ std::string read_file(const std::filesystem::path &path) {
 }
 
 struct TemporaryPackage {
+  draft::test::TemporaryDirectory directory{"draft-agent-metadata-test"};
   std::filesystem::path path;
   TemporaryPackage() {
-    std::error_code error;
-    path = std::filesystem::temp_directory_path(error) / "draft-agent-metadata-test";
-    if (error) std::exit(EXIT_FAILURE);
-    std::filesystem::remove_all(path, error);
+    path = directory.path();
     write_file(
         path / "package.draft",
         R"draft(package context
@@ -109,10 +109,6 @@ pub work[T: integer, N: usize] :: proc(
     write_file(path / "notes" / "a.md", "first note\n");
     write_file(path / "notes" / "nested" / "b.txt", "second note\n");
     write_file(path / "notes" / ".secret", "ignored\n");
-  }
-  ~TemporaryPackage() {
-    std::error_code ignored;
-    std::filesystem::remove_all(path, ignored);
   }
 };
 

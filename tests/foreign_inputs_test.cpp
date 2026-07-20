@@ -3,6 +3,8 @@
 #include "backend/foreign_inputs.h"
 #include "backend/foreign_summaries.h"
 
+#include "test_directory.h"
+
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -29,13 +31,10 @@ struct TestState {
 #define EXPECT(state, expression) (state).expect((expression), #expression, __LINE__)
 
 void test_pin_verify_and_relocation(TestState &state) {
+  draft::test::TemporaryDirectory temporary_directory{
+      "draft-foreign-input-test"};
+  const std::filesystem::path &temporary = temporary_directory.path();
   std::error_code error;
-  const std::filesystem::path temporary =
-      std::filesystem::temp_directory_path(error) /
-      "draft-foreign-input-test";
-  EXPECT(state, !error);
-  std::filesystem::remove_all(temporary, error);
-  error.clear();
   std::filesystem::create_directories(temporary / "first", error);
   EXPECT(state, !error);
   std::filesystem::create_directories(temporary / "relocated", error);
@@ -65,10 +64,7 @@ void test_pin_verify_and_relocation(TestState &state) {
     EXPECT(state, pins[0].name == "custom_math");
     EXPECT(state, pins[0].entry_point.empty());
   }
-  if (pins.empty()) {
-    std::filesystem::remove_all(temporary, error);
-    return;
-  }
+  if (pins.empty()) return;
 
   const std::filesystem::path first_summary =
       temporary / "first" / "provider.summary";
@@ -193,7 +189,6 @@ void test_pin_verify_and_relocation(TestState &state) {
   EXPECT(state, !draft::pin_foreign_provider_inputs(
       duplicate, pins, duplicate_diagnostics));
   EXPECT(state, duplicate_diagnostics.has_errors());
-  std::filesystem::remove_all(temporary, error);
 }
 
 } // namespace

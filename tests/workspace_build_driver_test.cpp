@@ -9,6 +9,8 @@
 
 #include "target/profile.h"
 
+#include "test_directory.h"
+
 #include <cerrno>
 #include <cstdlib>
 #include <filesystem>
@@ -42,15 +44,13 @@ struct TestState {
 #define EXPECT(state, expression) (state).expect((expression), #expression, __LINE__)
 
 struct TemporaryWorkspace {
+  draft::test::TemporaryDirectory directory{
+      "draft-workspace-build-driver-test"};
   std::filesystem::path root;
 
   TemporaryWorkspace() {
+    root = directory.path();
     std::error_code error;
-    root = std::filesystem::temp_directory_path(error) /
-        "draft-workspace-build-driver-test";
-    if (error) std::exit(EXIT_FAILURE);
-    std::filesystem::remove_all(root, error);
-    error.clear();
     std::filesystem::create_directories(root / "app", error);
     if (error) std::exit(EXIT_FAILURE);
     std::filesystem::create_directories(root / "tools" / "admin", error);
@@ -63,11 +63,6 @@ struct TemporaryWorkspace {
     write_package(root / "app", "runner", true, false);
     write_package(root / "tools" / "admin", "runner", true, false);
     write_package(root / "lib", "lib", false, false);
-  }
-
-  ~TemporaryWorkspace() {
-    std::error_code ignored;
-    std::filesystem::remove_all(root, ignored);
   }
 
   static void write_package(

@@ -4,6 +4,8 @@
 
 #include "source/diagnostic.h"
 
+#include "test_directory.h"
+
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -33,27 +35,11 @@ void write_file(const std::filesystem::path &path, std::string_view contents) {
 }
 
 struct TemporaryTrees {
+  draft::test::TemporaryDirectory directory{"draft-content-tree-test"};
   std::filesystem::path root;
 
   TemporaryTrees() {
-    std::error_code error;
-    root = std::filesystem::temp_directory_path(error) / "draft-content-tree-test";
-    if (error) {
-      std::cerr << "cannot find temporary directory: " << error.message() << '\n';
-      std::exit(EXIT_FAILURE);
-    }
-    std::filesystem::remove_all(root, error);
-    error.clear();
-    std::filesystem::create_directories(root, error);
-    if (error) {
-      std::cerr << "cannot create temporary tree: " << error.message() << '\n';
-      std::exit(EXIT_FAILURE);
-    }
-  }
-
-  ~TemporaryTrees() {
-    std::error_code ignored;
-    std::filesystem::remove_all(root, ignored);
+    root = directory.path();
   }
 };
 

@@ -10,6 +10,8 @@
 #include "source/source.h"
 #include "target/profile.h"
 
+#include "test_directory.h"
+
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -98,16 +100,9 @@ void test_public_policy_input_helpers(TestState &state) {
   EXPECT(state, !draft::parse_judgment_validator(
       "missing-model", identity, model, reason));
 
-  std::error_code error;
-  const std::filesystem::path root =
-      std::filesystem::temp_directory_path(error) /
-      "draft-judgment-policy-input-test";
-  EXPECT(state, !error);
-  std::filesystem::remove_all(root, error);
-  error.clear();
-  std::filesystem::create_directories(root, error);
-  EXPECT(state, !error);
-  if (error) return;
+  draft::test::TemporaryDirectory temporary_directory{
+      "draft-judgment-policy-input-test"};
+  const std::filesystem::path &root = temporary_directory.path();
   const std::filesystem::path object = root / "artifact.bin";
   std::ofstream stream(object, std::ios::binary);
   stream << "artifact bytes";
@@ -128,17 +123,13 @@ void test_public_policy_input_helpers(TestState &state) {
         artifacts.front().digest == draft::sha256("artifact bytes"));
   }
 
-  std::filesystem::remove_all(root, error);
 }
 
 void test_execution_revocation_and_reactivation(TestState &state) {
+  draft::test::TemporaryDirectory temporary_directory{
+      "draft-judgment-command-test"};
+  const std::filesystem::path &root = temporary_directory.path();
   std::error_code error;
-  const std::filesystem::path root =
-      std::filesystem::temp_directory_path(error) /
-      "draft-judgment-command-test";
-  EXPECT(state, !error);
-  std::filesystem::remove_all(root, error);
-  error.clear();
   std::filesystem::create_directories(root / "app", error);
   EXPECT(state, !error);
   if (error) return;
@@ -166,10 +157,7 @@ void test_execution_revocation_and_reactivation(TestState &state) {
   EXPECT(state, compiled.ok);
   EXPECT(state, compiled.resolved_program_digest.has_value());
   EXPECT(state, !diagnostics.has_errors());
-  if (!compiled.ok) {
-    std::filesystem::remove_all(root, error);
-    return;
-  }
+  if (!compiled.ok) return;
 
   FakeProviderState provider;
   const draft::JudgmentCommandResult first =
@@ -354,7 +342,6 @@ void test_execution_revocation_and_reactivation(TestState &state) {
   EXPECT(state, !no_match.completed);
   EXPECT(state, unmatched_diagnostics.has_errors());
   EXPECT(state, provider.calls == 0);
-  std::filesystem::remove_all(root, error);
 }
 
 } // namespace

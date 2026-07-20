@@ -13,6 +13,8 @@
 #include "source/diagnostic.h"
 #include "target/profile.h"
 
+#include "test_directory.h"
+
 #include <algorithm>
 #include <cerrno>
 #include <cstdlib>
@@ -50,19 +52,17 @@ struct TestState {
 #define EXPECT(state, expression) (state).expect((expression), #expression, __LINE__)
 
 struct TemporaryWorkspace {
+  draft::test::TemporaryDirectory directory;
   std::filesystem::path root;
   std::filesystem::path package;
   std::filesystem::path codex_directory;
   std::filesystem::path executable;
   std::filesystem::path artifact;
 
-  TemporaryWorkspace(std::string_view name, bool passed) {
+  TemporaryWorkspace(std::string_view name, bool passed)
+      : directory("draft-judgment-driver-test-" + std::string(name)) {
+    root = directory.path();
     std::error_code error;
-    root = std::filesystem::temp_directory_path(error) /
-        ("draft-judgment-driver-test-" + std::string(name));
-    if (error) std::exit(EXIT_FAILURE);
-    std::filesystem::remove_all(root, error);
-    error.clear();
     package = root / "app";
     codex_directory = root / "codex-bin";
     std::filesystem::create_directories(package, error);
@@ -119,10 +119,6 @@ struct TemporaryWorkspace {
 #endif
   }
 
-  ~TemporaryWorkspace() {
-    std::error_code ignored;
-    std::filesystem::remove_all(root, ignored);
-  }
 };
 
 [[nodiscard]] int run_driver(

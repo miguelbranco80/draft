@@ -15,6 +15,8 @@
 #include "source/source.h"
 #include "target/profile.h"
 
+#include "test_directory.h"
+
 #include <cerrno>
 #include <cstdlib>
 #include <filesystem>
@@ -129,17 +131,9 @@ struct TestState {
 }
 
 void test_c_client_consumes_draft_shared_library(TestState &state) {
-  std::error_code error;
-  const std::filesystem::path temporary =
-      std::filesystem::temp_directory_path(error) /
-      ("draft-c-client-integration-" + std::to_string(getpid()));
-  EXPECT(state, !error);
-  if (error) return;
-  std::filesystem::remove_all(temporary, error);
-  error.clear();
-  std::filesystem::create_directories(temporary, error);
-  EXPECT(state, !error);
-  if (error) return;
+  draft::test::TemporaryDirectory temporary_directory{
+      "draft-c-client-integration"};
+  const std::filesystem::path &temporary = temporary_directory.path();
 
   const std::filesystem::path source_root(DRAFT_SOURCE_DIRECTORY);
   draft::SourceManager sources;
@@ -163,23 +157,14 @@ void test_c_client_consumes_draft_shared_library(TestState &state) {
     std::cerr << draft::render_diagnostics(sources, diagnostics);
   }
   EXPECT(state, compiled.ok);
-  if (!compiled.ok) {
-    std::filesystem::remove_all(temporary, error);
-    return;
-  }
+  if (!compiled.ok) return;
 
   const std::size_t root =
       static_cast<std::size_t>(compiled.graph.root_package.value);
   EXPECT(state, root < compiled.packages.size());
-  if (root >= compiled.packages.size()) {
-    std::filesystem::remove_all(temporary, error);
-    return;
-  }
+  if (root >= compiled.packages.size()) return;
   EXPECT(state, compiled.packages[root].has_value());
-  if (!compiled.packages[root].has_value()) {
-    std::filesystem::remove_all(temporary, error);
-    return;
-  }
+  if (!compiled.packages[root].has_value()) return;
 
   const draft::CHeaderResult header = draft::emit_c_header(
       compiled.packages[root]->semantics.package,
@@ -238,7 +223,6 @@ void test_c_client_consumes_draft_shared_library(TestState &state) {
     }
   }
 
-  std::filesystem::remove_all(temporary, error);
 }
 
 } // namespace

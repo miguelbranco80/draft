@@ -12,6 +12,8 @@
 #include "source/source.h"
 #include "target/profile.h"
 
+#include "test_directory.h"
+
 #include <algorithm>
 #include <atomic>
 #include <cerrno>
@@ -53,25 +55,18 @@ struct TestState {
 #define EXPECT(state, expression) (state).expect((expression), #expression, __LINE__)
 
 struct TemporaryWorkspace {
+  draft::test::TemporaryDirectory directory{"draft-resolver-test"};
   std::filesystem::path root;
   std::filesystem::path package;
 
   TemporaryWorkspace() {
+    root = directory.path();
     std::error_code error;
-    root = std::filesystem::temp_directory_path(error) / "draft-resolver-test";
-    if (error) std::exit(EXIT_FAILURE);
     package = root / "app";
-    std::filesystem::remove_all(root, error);
-    error.clear();
     std::filesystem::create_directories(package, error);
     if (error) std::exit(EXIT_FAILURE);
     std::ofstream attachment(package / "PROMPT.txt", std::ios::binary);
     attachment << "exact attachment bytes\n";
-  }
-
-  ~TemporaryWorkspace() {
-    std::error_code ignored;
-    std::filesystem::remove_all(root, ignored);
   }
 
   // Rewrites only surface source; .draft remains untouched so tests can observe
