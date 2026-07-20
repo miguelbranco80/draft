@@ -90,8 +90,8 @@ allocator and require explicit destruction.
 
 ## Formatting and console output
 
-Status: ordinary Draft library surface over `core/os.write`; no compiler or
-backend intrinsic.
+Status: ordinary Draft library surface over `core/os` byte and text writes; no
+formatting or printing intrinsic.
 
 `core/format` converts `u64`, `i64`, `u128`, and `i128` values to shortest
 base-ten byte slices inside caller-owned storage. The result borrows that
@@ -99,22 +99,22 @@ storage and formatting allocates nothing. Each signed path computes magnitude
 in the same-width unsigned type, so the minimum signed value is handled without
 signed overflow. A too-small destination returns an empty slice and `false`.
 
-`core/os.write_all` completes a borrowed byte-slice write by retrying partial
-native writes and rejects a successful zero-byte write on a non-empty suffix so
-callers cannot spin without progress. `core/console` uses that shared operation
-to write immutable strings, booleans, and formatted integers and returns
-`core/io.Error`. Draft strings expose no mutable backing pointer, while
-`core/os.write` accepts `[]u8`; console therefore copies text through one fixed
-256-byte stack buffer. This keeps string immutability and the native boundary
-honest. `console.println` uses a static `..type` pack: the source loop selects
-string, bool, signed-integer, or unsigned-integer formatting through dependent
-`when`, while every compiled call is an ordinary fixed-signature procedure.
-Arguments are separated by one ASCII space, zero arguments produce only a line
-feed, and the first write error stops the sequence. There is no runtime format
-registry, erased `any`, allocation, or variadic ABI. Direct string-backed writes
-can replace the copy only if a future specified library or language operation
-exposes a read-only byte view; that is not backend permission to reinterpret
-string layout.
+`core/os.write_all` and `core/os.write_text_all` complete borrowed byte-slice
+and immutable-string writes by retrying partial native writes. Both reject a
+successful zero-byte write on a nonempty suffix so callers cannot spin without
+progress. The text path uses the specified `raw_data(string)` bridge and passes
+the existing pointer plus length to the synchronous native write operation; it
+does not allocate, copy, terminate, or reinterpret encoding. The platform
+contract promises that the native call neither mutates nor retains those bytes.
+
+`core/console` sends strings and booleans through that text path, sends formatted
+integers through caller-owned byte slices, and returns `core/io.Error`.
+`console.println` uses a static `..type` pack: the source loop selects string,
+bool, signed-integer, or unsigned-integer formatting through dependent `when`,
+while every compiled call is an ordinary fixed-signature procedure. Arguments
+are separated by one ASCII space, zero arguments produce only one line feed,
+and the first write error stops the sequence. There is no runtime format
+registry, erased `any`, allocation, copy buffer, or variadic ABI.
 
 ## UTF-8 byte/scalar conversion
 

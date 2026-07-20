@@ -1,9 +1,10 @@
 // This package is the hosted operating-system boundary shared by the current
 // macOS and GNU/Linux targets. It exposes process-lifetime argument and
-// environment views, explicit descriptor handles, one-call byte reads/writes,
-// complete byte writes, pathname operations, and small process facts. Target
-// files and package assembly own platform constants and fixed C ABI adapters;
-// this common file owns portable Draft policy over those selected operations.
+// environment views, explicit descriptor handles, one-call byte/text
+// reads/writes, complete writes, pathname operations, and small process facts.
+// Target files and package assembly own platform constants and fixed C ABI
+// adapters; this common file owns portable Draft policy over those selected
+// operations.
 //
 // File values alias native descriptors and never own cleanup implicitly.
 // Callers retain ownership of every byte slice and must close each successfully
@@ -134,6 +135,24 @@ pub write :: proc(handle: File, source: []u8) -> (usize, io.Error) {
     return (cast[usize](count), .none)
 }
 
+// write_text performs one native write from immutable string storage without
+// copying it into a mutable byte buffer. raw_data is safe for this exact use:
+// the selected POSIX write operation reads `count` bytes synchronously and
+// neither mutates nor retains the pointer. The empty case avoids presenting a
+// possibly nil empty-string address to a native call and matches write([]u8).
+// A successful call may accept only a prefix; callers needing completion use
+// write_text_all.
+pub write_text :: proc(handle: File, source: string) -> (usize, io.Error) {
+    if len(source) == 0 {
+        return (0, .none)
+    }
+    count := native_write(handle.descriptor, raw_data(source), len(source))
+    if count < 0 {
+        return (0, .unavailable)
+    }
+    return (cast[usize](count), .none)
+}
+
 // write_all synchronously writes the complete borrowed source range in order.
 // A native write may accept only a prefix, so the operation advances by the
 // reported count until no bytes remain. A successful zero-byte write on a
@@ -144,6 +163,27 @@ pub write_all :: proc(handle: File, source: []u8) -> io.Error {
     written: usize
     for written < len(source) {
         (count, error) := write(handle, source[written:])
+        if error != .none {
+            return error
+        }
+        if count == 0 {
+            return .unavailable
+        }
+        written += count
+    }
+    return .none
+}
+
+// write_text_all is the immutable-string counterpart to write_all. Each
+// iteration passes a sliced string view whose data pointer already begins at
+// the first unwritten byte, so partial native writes advance without copying
+// or allocating. A successful zero-byte write on a nonempty suffix is an
+// unavailable error because retrying the same state could never make local
+// progress. Empty input succeeds without extracting or dereferencing data.
+pub write_text_all :: proc(handle: File, source: string) -> io.Error {
+    written: usize
+    for written < len(source) {
+        (count, error) := write_text(handle, source[written:])
         if error != .none {
             return error
         }

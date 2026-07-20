@@ -1,3 +1,12 @@
+// This target-selected half of core/os supplies GNU/Linux constants and fixed
+// C procedure declarations to the portable policy in package.draft. It owns no
+// resources or state: every pointer is borrowed for one synchronous native
+// call, and descriptor lifetime remains with the common File API.
+//
+// The declarations intentionally depend only on core/c and the Linux target
+// profile. Their numeric flags and C signatures are ABI facts rather than
+// portable POSIX assumptions. Draft specification: sections 5-7, section 11,
+// and the versioned AArch64 GNU/Linux target profile.
 package os
 
 import core/c as c
@@ -14,6 +23,10 @@ pub page_size :: proc() -> usize {
     return 4096
 }
 
+// POSIX read fills mutable caller storage, while write only observes its source
+// for the duration of the call. Draft has no const-qualified pointer family, so
+// both declarations use [^]u8; the write nonmutation/nonretention contract is
+// what permits package.draft to pass raw_data(string) without copying.
 foreign linux {
     native_read :: c "read" proc(
         descriptor: c.int,

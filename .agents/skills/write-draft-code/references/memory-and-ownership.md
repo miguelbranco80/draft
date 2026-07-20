@@ -99,6 +99,8 @@ inherits the string's backing lifetime, and does not make the bytes writable.
 Writing through that pointer is undefined unless the backing storage is
 independently known to be writable. Prefer typed core operations; copy into
 `memory.Owned_String` when a C path or API needs a terminator.
+`os.write_text` and `os.write_text_all` are the standard synchronous no-copy
+consumers for file output.
 
 A pointer or view is invalid after its storage is freed, unmapped, reallocated,
 reset, destroyed, or leaves scope. Common invalidation points include:
@@ -289,9 +291,11 @@ Use explicit results for expected failure:
 - `bool` for lifecycle operations;
 - an application enum or `result.Result` when the caller needs richer policy.
 
-Check partial I/O counts. `os.read` and `os.write` perform one native call;
-successful operations can process fewer bytes than requested. EOF is the
-`io.Error` case `.end_of_input`, not a zero-count success.
+Check partial I/O counts. `os.read`, `os.write`, and `os.write_text` perform one
+native call; successful operations can process fewer bytes than requested. Use
+the corresponding complete-write operation when a partial prefix is not an
+application result. EOF is the `io.Error` case `.end_of_input`, not a zero-count
+success.
 
 Use `assert` for a programmer invariant whose violation means the program is
 internally wrong. Assertions may be disabled and traps skip `defer`; never use

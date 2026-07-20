@@ -162,8 +162,9 @@ console.print_i64(value)
 console.print_bool(value)
 ```
 
-Console output completes partial writes and performs no hidden buffering,
-terminal detection, Unicode normalization, or newline conversion.
+Console text is written directly from immutable string storage without copying
+or allocation. Output completes partial writes and performs no hidden
+buffering, terminal detection, Unicode normalization, or newline conversion.
 `console.println` is a static `..type` pack, not runtime varargs: it accepts zero
 or more strings, booleans, and ordinary signed/unsigned integers of every width,
 separates them with one ASCII space, appends one line feed, and returns the first
@@ -393,15 +394,19 @@ os.create_for_writing(path: cstring) -> (os.File, io.Error)
 os.read(file, destination) -> (usize, io.Error)
 os.write(file, source) -> (usize, io.Error)
 os.write_all(file, source) -> io.Error
+os.write_text(file, source: string) -> (usize, io.Error)
+os.write_text_all(file, source: string) -> io.Error
 os.close(&file) -> bool
 os.remove(path: cstring) -> bool
 ```
 
 `File` is a non-RAII descriptor handle; copies alias. Paths are `cstring`, not
-ordinary Draft strings. Read and write perform one system call and may be
-partial; `write_all` retries until the complete source is accepted or an error
-prevents progress. EOF is `.end_of_input`. Native error detail is currently
-collapsed to `.unavailable` or `bool`.
+ordinary Draft strings. Read, `write`, and `write_text` perform one system call
+and may be partial; the corresponding `*_all` operations retry until the
+complete source is accepted or an error prevents progress. Text writes use
+`raw_data` internally and neither copy nor retain the string. EOF is
+`.end_of_input`. Native error detail is currently collapsed to `.unavailable`
+or `bool`.
 
 There is no path type, environment lookup, directory traversal, metadata,
 seek, flush/fsync, rename, pipe, socket, subprocess, signal, permission API,

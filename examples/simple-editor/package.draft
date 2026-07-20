@@ -207,8 +207,8 @@ bytes_equal_text :: proc(bytes: []u8, text: string) -> bool {
 }
 
 // write_text adapts core/console's structured result to the editor's binary
-// success/failure control flow. core/console owns the immutable-string copy and
-// core/os owns partial-write completion; this application adds no I/O policy.
+// success/failure control flow. core/os owns zero-copy immutable-string access
+// and partial-write completion; this application adds no I/O policy.
 write_text :: proc(handle: os.File, text: string) -> bool {
     return console.write_to(handle, text) == .none
 }

@@ -308,11 +308,277 @@ void test_native_examples(TestState &state) {
 
 }
 
+// Builds the production core/os and core/console sources against a deterministic
+// package-local native-write implementation. Real regular files commonly accept
+// a complete short write, so they cannot prove the retry loop. This fixture
+// caps each successful call at three bytes and records the exact source bytes;
+// the launched Draft program therefore proves literal, sliced, empty, partial,
+// zero-progress, and cross-package console paths without depending on kernel
+// pipe capacity or scheduler timing.
+void test_partial_text_writes(TestState &state) {
+  constexpr std::string_view name = "partial-text-write";
+  draft::test::TemporaryDirectory temporary_directory{
+      "draft-partial-text-write"};
+  const std::filesystem::path &root = temporary_directory.path();
+  const std::filesystem::path workspace = root / "workspace";
+  const std::filesystem::path core = root / "core";
+  std::error_code error;
+  for (const std::filesystem::path &directory : {
+           workspace / "app",
+           core / "c",
+           core / "console",
+           core / "format",
+           core / "io",
+           core / "os",
+           core / "runtime",
+       }) {
+    std::filesystem::create_directories(directory, error);
+    EXPECT(state, name, !error);
+    if (error) return;
+  }
+
+  const draft::TargetProfile target = native_host_target();
+  const std::filesystem::path source_root(DRAFT_SOURCE_DIRECTORY);
+  for (const std::filesystem::path &relative : {
+           std::filesystem::path("c/package.draft"),
+           std::filesystem::path("console/package.draft"),
+           std::filesystem::path("format/package.draft"),
+           std::filesystem::path("io/package.draft"),
+           std::filesystem::path("os/package.draft"),
+           std::filesystem::path("runtime/package.draft"),
+       }) {
+    std::filesystem::copy_file(
+        source_root / "core" / relative,
+        core / relative,
+        std::filesystem::copy_options::none,
+        error);
+    EXPECT(state, name, !error);
+    if (error) return;
+  }
+  const std::string target_tag = target.facts.file_tag;
+  const std::string open_name = "open@" + target_tag + ".s";
+  std::filesystem::copy_file(
+      source_root / "core" / "os" / open_name,
+      core / "os" / open_name,
+      std::filesystem::copy_options::none,
+      error);
+  EXPECT(state, name, !error);
+  if (error) return;
+
+  std::ofstream platform(
+      core / "os" / ("platform@" + target_tag + ".draft"),
+      std::ios::binary);
+  platform << R"draft(// This target-selected test provider replaces only core/os's native calls.
+// It records bytes from synchronous writes, caps forward progress to three
+// bytes per call, and can report zero progress on demand. The fixture owns one
+// fixed package-global capture buffer which the launched app resets between
+// cases; no pointer is retained after native_write returns.
+//
+// Production package.draft, console, format, io, runtime, and package assembly
+// remain unchanged. This provider depends only on core/c and intentionally
+// supplies the complete private seam required by core/os.
+package os
+
+import core/c as c
+
+pub open_append :: cast[c.int](0)
+pub open_create :: cast[c.int](0)
+pub open_truncate :: cast[c.int](0)
+pub open_exclusive :: cast[c.int](0)
+
+pub test_bytes: [64]u8
+pub test_length: usize
+pub test_calls: usize
+test_zero_progress: bool
+
+// Clears all recorded state so one launched-process case cannot inherit bytes,
+// call counts, or policy from the preceding case.
+pub test_reset :: proc() {
+    for index: usize = 0; index < len(test_bytes); index += 1 {
+        test_bytes[index] = 0
+    }
+    test_length = 0
+    test_calls = 0
+    test_zero_progress = false
+}
+
+// Selects the zero-progress result used to prove that write_text_all terminates
+// with an error instead of retrying the same nonempty suffix forever.
+pub test_force_zero_progress :: proc() {
+    test_zero_progress = true
+}
+
+// Satisfies the portable core/os surface; this deterministic value has no role
+// in text-write behavior.
+pub page_size :: proc() -> usize {
+    return 4096
+}
+
+// The launched fixture never reads through this provider. Returning a native
+// error keeps accidental reads deterministic and outside the write assertions.
+native_read :: proc(
+    descriptor: c.int,
+    destination: [^]u8,
+    count: c.size_t,
+) -> c.ssize_t {
+    return -1
+}
+
+// Borrows exactly the reported prefix of source for this call, copies it into
+// the bounded capture record, and retains no pointer. Three-byte progress makes
+// every ten-byte test require four calls and therefore exercises retry order.
+native_write :: proc(
+    descriptor: c.int,
+    source: [^]u8,
+    count: c.size_t,
+) -> c.ssize_t {
+    test_calls += 1
+    if test_zero_progress {
+        return 0
+    }
+    accepted := cast[usize](count)
+    if accepted > 3 {
+        accepted = 3
+    }
+    for index: usize = 0; index < accepted; index += 1 {
+        test_bytes[test_length + index] = source[index]
+    }
+    test_length += accepted
+    return cast[c.ssize_t](accepted)
+}
+
+// The remaining procedures complete core/os's private target seam. They own no
+// resources in this provider because the launched app uses only standard_output.
+native_close :: proc(descriptor: c.int) -> c.int {
+    return 0
+}
+
+native_unlink :: proc(path: cstring) -> c.int {
+    return 0
+}
+
+native_process_id :: proc() -> c.int {
+    return 1
+}
+
+native_exit :: proc(status: c.int) {
+}
+)draft";
+  platform.close();
+
+  std::ofstream app(workspace / "app" / "package.draft", std::ios::binary);
+  app << R"draft(// This launched conformance app drives production core/console and core/os
+// against the deterministic target provider. It owns no resource: the selected
+// standard-output handle is borrowed and the provider owns its capture globals.
+// Exit codes identify literal/partial, sliced/cross-package, empty, and
+// zero-progress failures without relying on host stdout contents.
+package app
+
+import core/console
+import core/os
+
+// Compares the provider's exact recorded prefix with expected immutable text.
+// Both values are borrowed for the call and no encoding interpretation occurs.
+captured :: proc(expected: string) -> bool {
+    if os.test_length != len(expected) {
+        return false
+    }
+    for index: usize = 0; index < len(expected); index += 1 {
+        if os.test_bytes[index] != expected[index] {
+            return false
+        }
+    }
+    return true
+}
+
+// Runs each independent write contract after resetting provider state. A zero
+// result proves all byte order, call-count, empty-call, and progress assertions.
+main :: proc() -> int {
+    os.test_reset()
+    if os.write_text_all(os.standard_output, "abcdefghij") != .none ||
+        os.test_calls != 4 || !captured("abcdefghij") {
+        return 1
+    }
+
+    os.test_reset()
+    decorated := "discardklmnopqrstrailer"
+    if console.write_to(os.standard_output, decorated[7:17]) != .none ||
+        os.test_calls != 4 || !captured("klmnopqrst") {
+        return 2
+    }
+
+    os.test_reset()
+    (count, error) := os.write_text(os.standard_output, "")
+    if error != .none || count != 0 || os.test_calls != 0 ||
+        os.write_text_all(os.standard_output, "") != .none {
+        return 3
+    }
+
+    os.test_reset()
+    os.test_force_zero_progress()
+    if os.write_text_all(os.standard_output, "x") != .unavailable ||
+        os.test_calls != 1 {
+        return 4
+    }
+    return 0
+}
+)draft";
+  app.close();
+  EXPECT(state, name, platform.good() && app.good());
+  if (!platform.good() || !app.good()) return;
+
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  draft::CompileWorkspaceOptions compile_options;
+  compile_options.target = target;
+  compile_options.workspace.workspace_directory = workspace.string();
+  compile_options.workspace.core_directory = core.string();
+  compile_options.workspace.core_content_identity =
+      "draft-partial-text-write-core-v1";
+  compile_options.lower_mir = true;
+  compile_options.emit_llvm = true;
+  draft::CompileWorkspaceResult compiled = draft::compile_workspace(
+      sources,
+      (workspace / "app").string(),
+      std::move(compile_options),
+      diagnostics);
+  if (diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+  }
+  EXPECT(state, name, compiled.ok);
+  if (!compiled.ok) return;
+
+  const std::filesystem::path case_directory = root / "native";
+  draft::NativeBuildOptions native_options;
+  native_options.build_directory = (case_directory / "build").string();
+  native_options.output_path = (case_directory / "program").string();
+  const draft::NativeBuildResult built = draft::build_native_executable(
+      target, compiled, native_options, diagnostics);
+  if (diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+  }
+  EXPECT(state, name, built.ok);
+  if (!built.ok) return;
+
+  std::filesystem::create_directories(case_directory, error);
+  EXPECT(state, name, !error);
+  if (error) return;
+  int process_status = 0;
+  EXPECT(state, name,
+      run_executable(
+          built.output_path, case_directory, {}, {}, process_status));
+  EXPECT(state, name, WIFEXITED(process_status));
+  if (WIFEXITED(process_status)) {
+    EXPECT(state, name, WEXITSTATUS(process_status) == 0);
+  }
+}
+
 } // namespace
 
 int main() {
   TestState state;
   test_native_examples(state);
+  test_partial_text_writes(state);
   if (state.failures != 0) {
     std::cerr << state.failures
               << " native-conformance expectation(s) failed\n";

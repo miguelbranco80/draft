@@ -217,6 +217,10 @@ writing through it is undefined unless the program independently knows those
 backing bytes are writable. Prefer a typed core operation over using this
 escape hatch directly.
 
+For file output, `core/os.write_text` and `write_text_all` are the ordinary
+typed wrappers. They keep `raw_data` and its native nonmutation proof inside
+the OS package.
+
 Use `nil` only for pointer-like and procedure-pointer values. Draft has no
 implicit pointer or integer truthiness; write `pointer != nil`.
 

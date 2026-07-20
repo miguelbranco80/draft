@@ -1,8 +1,22 @@
+// This native conformance example exercises the portable core/os surface over
+// both current target implementations. It inspects process views and target
+// facts, then owns one pathname conversion and one output/input descriptor pair
+// while proving byte-exact immutable text output through real native calls.
+//
+// The example owns no state after main returns. Its relative scratch pathname
+// is isolated by the native test runner's process-unique working directory;
+// explicit close and remove operations still make standalone runs predictable.
+// It depends only on core/os and core/memory. Draft specification: sections 5-7
+// and the selected AArch64 target profile.
 package core_os
 
 import core/os
 import core/memory
 
+// main borrows process-lifetime argument/environment views, then owns and
+// destroys one zero-terminated pathname plus two sequential descriptor handles.
+// Assertions make this a conformance executable: any platform or byte mismatch
+// traps instead of being treated as recoverable application input.
 main :: proc() {
     arguments := os.args()
     variables := os.environment()
@@ -24,30 +38,39 @@ main :: proc() {
     }
 
     // Exercise the complete pathname seam through real target assembly and
-    // hosted OS calls. The fixed path is removed before and after the test so
-    // a previously interrupted run cannot affect the result.
+    // hosted OS calls. A relative path stays inside the runner's process-unique
+    // working directory, while removal still makes a standalone rerun clean.
     path: memory.Owned_String
-    memory.owned_string_copy(&path, "/tmp/draft-core-os-round-trip")
+    memory.owned_string_copy(&path, "draft-core-os-round-trip")
     defer memory.owned_string_destroy(&path)
     native_path := memory.owned_string_cstring(&path)
     os.remove(native_path)
 
     (output, create_error) := os.create_for_writing(native_path)
     assert(create_error == .none)
-    bytes := [6]u8{68, 114, 97, 102, 116, 10}
-    assert(os.write_all(output, bytes[:]) == .none)
-    empty: [1]u8
-    assert(os.write_all(output, empty[:0]) == .none)
+    // Exercise both one-call and complete immutable-text paths. The decorated
+    // value proves a string slice begins at its adjusted data pointer rather
+    // than accidentally exposing the original backing-string prefix.
+    (literal_count, literal_error) := os.write_text(output, "Draft")
+    assert(literal_error == .none)
+    assert(literal_count == 5)
+    decorated := "discard!\ntrailer"
+    assert(os.write_text_all(output, decorated[7:9]) == .none)
+    (empty_count, empty_error) := os.write_text(output, "")
+    assert(empty_error == .none)
+    assert(empty_count == 0)
+    assert(os.write_text_all(output, "") == .none)
     assert(os.close(&output))
 
     (input, open_error) := os.open_for_reading(native_path)
     assert(open_error == .none)
-    received: [6]u8
+    received: [7]u8
     (read_count, read_error) := os.read(input, received[:])
     assert(read_error == .none)
     assert(read_count == len(received))
+    expected := [7]u8{68, 114, 97, 102, 116, 33, 10}
     for index: usize = 0; index < len(received); index += 1 {
-        assert(received[index] == bytes[index])
+        assert(received[index] == expected[index])
     }
     assert(os.close(&input))
     assert(os.remove(native_path))

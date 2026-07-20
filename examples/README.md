@@ -65,14 +65,14 @@ tests instead of reporting false skips.
 | [`hello`](hello/) | The smallest provider-free compiler and native-backend smoke program: a fixed array, slice, loop, procedure call, and assertion. |
 
 Console output is core-library policy, not special language syntax. Immutable
-strings are copied into a bounded stack buffer by `core/console`, decimal
-integers are formatted by ordinary Draft code in `core/format`, and bytes reach
-the existing `core/os.write` boundary. `console.println` uses a source-level
-`..type` pack which becomes one fixed-signature specialization per ordered type
-tuple; no printing intrinsic, runtime type erasure, or variadic ABI is involved.
-It covers text, `bool`, and every ordinary signed/unsigned integer width.
-Floating-point, rune, enum, distinct, endian-scalar, and composite formatting
-remain future library policy rather than missing backend features.
+strings reach `core/os.write_text` without allocation or copying; decimal
+integers are formatted into caller-owned byte buffers by ordinary Draft code in
+`core/format`. `console.println` uses a source-level `..type` pack which becomes
+one fixed-signature specialization per ordered type tuple; no printing
+intrinsic, runtime type erasure, or variadic ABI is involved. It covers text,
+`bool`, and every ordinary signed/unsigned integer width. Floating-point, rune,
+enum, distinct, endian-scalar, and composite formatting remain future library
+policy rather than missing backend features.
 
 ## Core library and runtime examples
 
@@ -83,7 +83,7 @@ remain future library policy rather than missing backend features.
 | [`core-array`](core-array/) | Owning growable arrays plus small uses of the heap, I/O interface, testing, benchmarking, and duration APIs. |
 | [`core-map`](core-map/) | Explicit string-key map initialization, insertion, replacement, lookup, removal, and destruction. |
 | [`core-utf8`](core-utf8/) | Allocation-free strict UTF-8 validation, forward/reverse scalar decoding, counting, and encoding into caller-owned storage. |
-| [`core-os`](core-os/) | Arguments, environment, process facts, file descriptors, path conversion, and raw byte file I/O. |
+| [`core-os`](core-os/) | Arguments, environment, process facts, file descriptors, path conversion, raw byte I/O, and zero-copy literal/sliced/empty string writes. |
 | [`core-thread`](core-thread/) | Thread creation and joining, mutexes, condition variables, per-thread context setup, temporary storage, and language TLS. |
 | [`core-atomic`](core-atomic/) | Atomic integer, pointer, and memory-order operations on one thread. |
 | [`core-atomic-thread`](core-atomic-thread/) | Atomic coordination across spawned threads. |

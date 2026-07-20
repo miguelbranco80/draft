@@ -14,11 +14,11 @@ import core/memory
 import core/os
 
 Path :: "draft-file-io-example.txt"
-Contents :: `Draft file example: this deliberately exceeds one console text
-chunk so the example exercises repeated immutable-string copying and repeated
-OS writes without allocating a second whole-string buffer. The bytes remain
-ordinary UTF-8 source data; core/console performs no normalization, terminal
-detection, newline rewriting, or hidden buffering while writing this file.
+Contents :: `Draft file example: this deliberately contains several hundred
+bytes so the native round trip covers a large immutable string rather than only
+short literals. The bytes remain ordinary UTF-8 source data; core/console
+performs no normalization, terminal detection, newline rewriting, allocation,
+copying, or hidden buffering while writing this file.
 `
 
 // bytes_equal_text validates the exact bytes returned by read. The function
@@ -66,5 +66,5 @@ main :: proc() {
     assert(bytes_equal_text(received[:total], Contents))
     assert(os.close(&input))
 
-    assert(console.println("multi-chunk file round trip: ok") == .none)
+    assert(console.println("large file round trip: ok") == .none)
 }

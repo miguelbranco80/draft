@@ -1,9 +1,7 @@
 // The console package is the small human-facing text output layer above
-// core/os. It copies immutable Draft strings into a bounded stack buffer, then
-// writes those bytes to an explicit OS handle. The copy is intentional in
-// Draft 1: string is an immutable view whose backing address is not exposed to
-// source code, while os.write accepts a mutable byte slice. This direct first
-// implementation preserves that immutability boundary without compiler magic.
+// core/os. Immutable Draft strings use core/os's zero-copy text-write path;
+// formatted numbers use caller-owned mutable byte buffers. Both paths complete
+// partial native writes before reporting success.
 //
 // The package owns no persistent state. Public operations report core/io errors
 // and never trap on an operating-system write failure. Numeric formatting is
@@ -15,40 +13,18 @@ import core/format
 import core/io
 import core/os
 
-Text_Chunk_Size :: 256
-
-// write_to writes one immutable string to handle. The temporary chunk belongs
-// to this stack frame and is reused only after the previous synchronous write
-// has returned. The function preserves byte content exactly; it performs no
-// Unicode normalization, newline conversion, buffering, or terminal detection.
-// core/os owns partial-write completion for this and other file consumers.
+// write_to writes one immutable string to handle without copying or allocating.
+// It preserves byte content exactly and performs no Unicode normalization,
+// newline conversion, buffering, or terminal detection. core/os owns the raw
+// pointer bridge and partial-write completion; console adds only text policy.
 pub write_to :: proc(handle: os.File, text: string) -> io.Error {
-    offset: usize
-    chunk: [Text_Chunk_Size]u8
-    for offset < len(text) {
-        count := len(text) - offset
-        if count > len(chunk) {
-            count = len(chunk)
-        }
-        for index: usize = 0; index < count; index += 1 {
-            chunk[index] = text[offset + index]
-        }
-        error := os.write_all(handle, chunk[:count])
-        if error != .none {
-            return error
-        }
-        offset += count
-    }
-    return .none
+    return os.write_text_all(handle, text)
 }
 
 // write_newline_to writes the single line-feed byte used by Draft's hosted
-// POSIX profiles. It is separate from write_to because Draft strings do
-// not expose mutable storage, while this local fixed array is already a byte
-// slice suitable for the core/os byte-writing surface.
+// POSIX profiles through the same immutable text path as every other literal.
 write_newline_to :: proc(handle: os.File) -> io.Error {
-    newline := [1]u8{10}
-    return os.write_all(handle, newline[:])
+    return os.write_text_all(handle, "\n")
 }
 
 // print writes text to standard output without appending a newline.
