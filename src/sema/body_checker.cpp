@@ -368,6 +368,10 @@ public:
       if (tree == nullptr || !site.syntax.node.is_valid()) continue;
       const SyntaxNode &when = tree->node(site.syntax.node);
       if (when.children.empty()) continue;
+      if (!initializer_requires_type_preflight(
+              *tree, when.children.front())) {
+        continue;
+      }
 
       ScopeId condition_scope = site.scope;
       if (site.kind == SemanticSiteKind::ConditionalDeclaration &&
@@ -437,11 +441,12 @@ private:
     return names.back().text;
   }
 
-  // Runtime HIR intentionally has no value representing the compile-time-only
-  // `target` object. The validation-only pass nevertheless has to type-check a
-  // complete selected `when` condition so short-circuiting or type_of cannot
-  // hide malformed source. Import the typed result of only the closed target
-  // forms below from the authoritative constant evaluator:
+  // Runtime HIR intentionally has no value representing some compile-time-only
+  // bindings or the predeclared `target` object. The validation-only pass
+  // nevertheless has to type-check a complete selected `when` condition so
+  // short-circuiting or type_of cannot hide malformed source. Import an
+  // already-evaluated constant binding, or the typed result of only the closed
+  // target forms below, from the authoritative constant evaluator:
   //
   //   target.pointer_bits
   //   target.has_feature("neon")
@@ -455,7 +460,7 @@ private:
   // the evaluator remains the sole owner of the language-defined target enum
   // relationship.
   [[nodiscard]] std::optional<HirExpressionId>
-  check_validation_only_target_expression(
+  check_validation_only_compile_time_expression(
       const SyntaxTree &tree,
       NodeId expression_id,
       ScopeId scope,
@@ -464,7 +469,16 @@ private:
 
     const SyntaxNode &expression = tree.node(expression_id);
     bool candidate = false;
-    if (const std::optional<std::string> member =
+    if (expression.kind == NodeKind::NameExpression) {
+      const std::optional<SourceName> name =
+          single_name_expression(tree, expression_id);
+      const std::optional<SymbolId> symbol = name.has_value()
+          ? semantic_.symbols.lookup(scope, name->text)
+          : std::nullopt;
+      candidate = symbol.has_value() &&
+          (constants_.find(*symbol) != nullptr ||
+           active_constant(*symbol) != nullptr);
+    } else if (const std::optional<std::string> member =
             direct_target_member(tree, expression_id, scope)) {
       candidate = *member == "identity" || *member == "file_tag" ||
           *member == "pointer_bits" || *member == "page_size";
@@ -4757,7 +4771,7 @@ private:
       TypeId expected = {}) {
     const SyntaxNode &node = tree.node(expression_id);
     if (const std::optional<HirExpressionId> target =
-            check_validation_only_target_expression(
+            check_validation_only_compile_time_expression(
                 tree, expression_id, scope, expected)) {
       return *target;
     }
@@ -7376,7 +7390,8 @@ private:
             (current_instance_index_.has_value() &&
              global_selection == nullptr);
 
-        if (!dependent || current_instance_index_.has_value()) {
+        if ((!dependent || current_instance_index_.has_value()) &&
+            initializer_requires_type_preflight(tree, condition_id)) {
           // A compile-time selection proves only the condition's value. The
           // constant evaluator may obtain a type_of result from an operand's
           // declared result shape without evaluating that operand, so the

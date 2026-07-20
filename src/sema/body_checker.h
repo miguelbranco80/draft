@@ -47,10 +47,11 @@ struct ProcedureInstantiationSeed {
 };
 
 // Validates package constant/global initializers and selected structural
-// `when` conditions with the same expression checker used by procedure bodies.
-// This catches invalid operands hidden by non-evaluating constructs such as
-// type_of and dead value-selection branches. No expression is executed and no
-// HIR escapes this validation pass.
+// `when` conditions which contain a non-evaluating or value-selecting form,
+// using the same expression checker as procedure bodies. This catches operands
+// hidden by type_of, short-circuiting, or a dead conditional branch without
+// rechecking ordinary constant expressions whose evaluator already visited
+// every operand. No expression is executed and no HIR escapes this pass.
 [[nodiscard]] bool validate_package_compile_time_expression_types(
     const SourceManager &sources,
     const LoadedPackage &loaded,

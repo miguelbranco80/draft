@@ -16,17 +16,18 @@ static type without retaining it as an evaluated operand, so an unused call,
 trap, or runtime read cannot become observable through inspection.
 Package-constant evaluation uses a non-executing declared-result reader to fold
 the type value, then reuses the ordinary BodyChecker expression path for every
-package initializer with a suppressed operand and every selected declaration
-or aggregate-member `when` condition. Procedure checking likewise validates a
-selected body `when` condition before trusting its constant value. These checks
-cover complete call arity, arguments, slicing, members, and nested intrinsics
-without lowering or executing an inspected expression; the result reader is
-not a second source type checker.
+package initializer and selected declaration, aggregate-member, or procedure
+`when` condition that contains `type_of`, short-circuiting, or a conditional
+value branch. The constant evaluator already checked every operand of an
+ordinary selected expression, so it is not redundantly sent through
+runtime-oriented HIR. The preflight checks complete call arity, arguments,
+slicing, members, and nested intrinsics without lowering or executing an
+inspected expression; the result reader is not a second source type checker.
 
-The validation-only HIR has no runtime representation for the predeclared
-`target` object. When a selected condition contains a closed target field,
-feature query, or categorical comparison, BodyChecker imports that
-subexpression's typed constant from the ordinary constant evaluator. It never
+The validation-only HIR has no runtime representation for some compile-time
+bindings or for the predeclared `target` object. BodyChecker imports an
+already-evaluated binding, closed target field, feature query, or categorical
+comparison as a typed constant from the ordinary constant evaluator. It never
 imports an enclosing logical or conditional result, because doing so could
 repeat the short-circuit behavior and hide the independent operand the pass is
 meant to validate. Invalid children propagate without secondary reflection or
@@ -375,7 +376,7 @@ traps, and message construction used solely by an assertion cannot survive,
 and no condition is converted into an optimizer assumption.
 
 The versioned `draft.resolved-program.v6` hash records the selected root and
-assertion mode beside compiler content v135. `build`, `resolve`, and `judge`
+assertion mode beside compiler content v136. `build`, `resolve`, and `judge`
 expose the same explicit flag so a provider-free manifest cannot be replayed
 under a different mode. Test and benchmark compilations deliberately override
 the release choice to assertions on and receive their own resolved validation
