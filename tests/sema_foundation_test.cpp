@@ -8,6 +8,7 @@
 
 #include "sema/symbol.h"
 #include "sema/type.h"
+#include "sema/type_inspection.h"
 #include "source/diagnostic.h"
 #include "source/source.h"
 
@@ -165,6 +166,54 @@ void test_nominal_identity(TestState &state) {
   EXPECT(state, types.type(distinct_a).layout == types.type(*u32).layout);
 }
 
+void test_type_inspection_waits_for_exact_facets(TestState &state) {
+  draft::SemanticPackage package;
+  const std::optional<draft::TypeId> u32 = package.types.find_builtin("u32");
+  EXPECT(state, u32.has_value());
+  if (!u32.has_value()) return;
+
+  const draft::TypeId record = package.types.begin_nominal(
+      draft::TypeKind::Struct, "Record", draft::SourceRange::invalid());
+  const draft::TypeInspectionAttempt pending_count = draft::inspect_type(
+      package, "type_member_count", record);
+  EXPECT(state, pending_count.recognized);
+  EXPECT(state, !pending_count.result.has_value());
+  EXPECT(state,
+         pending_count.required_facet == draft::TypeFacet::Members);
+
+  package.types.type_mut(record).c_representation = true;
+  package.types.complete_nominal(record, {true, 4, 4}, {*u32}, {0});
+  const draft::TypeInspectionAttempt ready_count = draft::inspect_type(
+      package, "type_member_count", record);
+  EXPECT(state, ready_count.result.has_value());
+  if (ready_count.result.has_value()) {
+    EXPECT(state,
+           ready_count.result->value.integer == draft::BigInteger::from_u64(1));
+  }
+  const draft::TypeInspectionAttempt ready_representation =
+      draft::inspect_type(package, "type_is_c_repr", record);
+  EXPECT(state, ready_representation.result.has_value());
+  if (ready_representation.result.has_value()) {
+    EXPECT(state, ready_representation.result->value.boolean);
+  }
+
+  const draft::TypeId layout_pending = package.types.begin_nominal(
+      draft::TypeKind::Struct,
+      "Layout_Pending",
+      draft::SourceRange::invalid());
+  package.types.complete_nominal(layout_pending, {}, {*u32}, {0});
+  const draft::TypeInspectionAttempt pending_offset = draft::inspect_type(
+      package, "type_member_offset", layout_pending, 0);
+  EXPECT(state,
+         pending_offset.required_facet == draft::TypeFacet::NaturalLayout);
+
+  const draft::TypeInspectionAttempt scalar_members = draft::inspect_type(
+      package, "type_member_count", *u32);
+  EXPECT(state, !scalar_members.required_facet.has_value());
+  EXPECT(state, !scalar_members.result.has_value());
+  EXPECT(state, !scalar_members.error.empty());
+}
+
 void test_scopes_and_duplicates(TestState &state) {
   draft::SourceManager sources;
   const draft::FileId file = sources.add_source("symbols.draft", "Value Value local\n");
@@ -212,6 +261,7 @@ int main() {
   TestState state;
   test_builtin_and_structural_types(state);
   test_nominal_identity(state);
+  test_type_inspection_waits_for_exact_facets(state);
   test_scopes_and_duplicates(state);
 
   if (state.failures != 0) {

@@ -101,6 +101,13 @@ constexpr std::array<std::string_view, 2> kTargetObjectFormatNames = {
   return result;
 }
 
+[[nodiscard]] TypeInspectionAttempt waiting(TypeFacet facet) {
+  TypeInspectionAttempt result;
+  result.recognized = true;
+  result.required_facet = facet;
+  return result;
+}
+
 [[nodiscard]] TypeInspectionAttempt success(
     ConstantValue value, TypeId type) {
   TypeInspectionAttempt result;
@@ -255,7 +262,34 @@ constexpr std::array<std::string_view, 2> kTargetObjectFormatNames = {
       ConstantValue::make_integer(BigInteger::from_u64(value)), enum_type);
 }
 
+[[nodiscard]] std::optional<TypeInspectionAttempt> require_facet(
+    const SemanticPackage &package,
+    TypeId type,
+    TypeFacet facet,
+    std::string_view query) {
+  const TypeFacetState state = package.types.facet_state(type, facet);
+  if (state == TypeFacetState::Complete) return std::nullopt;
+  if (state == TypeFacetState::Waiting) return waiting(facet);
+  return failure(
+      std::string(query) + " is not defined for a type without " +
+      std::string(type_facet_name(facet)));
+}
+
 } // namespace
+
+std::string_view type_facet_name(TypeFacet facet) {
+  switch (facet) {
+  case TypeFacet::Identity:
+    return "type identity";
+  case TypeFacet::Members:
+    return "complete members";
+  case TypeFacet::MemberTypes:
+    return "complete member types";
+  case TypeFacet::NaturalLayout:
+    return "complete natural layout";
+  }
+  return "type facet";
+}
 
 bool is_type_inspection_query(std::string_view name) {
   constexpr std::array<std::string_view, 18> names = {
@@ -337,11 +371,19 @@ TypeInspectionAttempt inspect_type(
     if (!aggregate_kind(type.kind)) {
       return failure("type_member_count requires a tuple or aggregate type");
     }
+    if (const std::optional<TypeInspectionAttempt> unavailable =
+            require_facet(package, queried, TypeFacet::Members, query)) {
+      return *unavailable;
+    }
     return integer_result(package, type.members.size());
   }
   if (query == "type_member_name") {
     if (!aggregate_kind(type.kind)) {
       return failure("type_member_name requires a tuple or aggregate type");
+    }
+    if (const std::optional<TypeInspectionAttempt> unavailable =
+            require_facet(package, queried, TypeFacet::Members, query)) {
+      return *unavailable;
     }
     const std::optional<std::uint64_t> member = required_index(
         index, static_cast<std::uint64_t>(type.members.size()));
@@ -407,6 +449,10 @@ TypeInspectionAttempt inspect_type(
     if (!aggregate_kind(type.kind)) {
       return failure("type_member_type requires a tuple or aggregate type");
     }
+    if (const std::optional<TypeInspectionAttempt> unavailable =
+            require_facet(package, queried, TypeFacet::MemberTypes, query)) {
+      return *unavailable;
+    }
     const std::optional<std::uint64_t> member = required_index(
         index, static_cast<std::uint64_t>(type.members.size()));
     return member.has_value()
@@ -420,6 +466,11 @@ TypeInspectionAttempt inspect_type(
     if (!aggregate_kind(type.kind)) {
       return failure("type_member_offset requires a tuple or aggregate type");
     }
+    if (const std::optional<TypeInspectionAttempt> unavailable =
+            require_facet(
+                package, queried, TypeFacet::NaturalLayout, query)) {
+      return *unavailable;
+    }
     const std::optional<std::uint64_t> member = required_index(
         index, static_cast<std::uint64_t>(type.member_offsets.size()));
     return member.has_value()
@@ -429,6 +480,10 @@ TypeInspectionAttempt inspect_type(
   if (query == "type_member_value") {
     if (type.kind != TypeKind::Enum) {
       return failure("type_member_value requires an enum type");
+    }
+    if (const std::optional<TypeInspectionAttempt> unavailable =
+            require_facet(package, queried, TypeFacet::Members, query)) {
+      return *unavailable;
     }
     const std::optional<std::uint64_t> member = required_index(
         index, static_cast<std::uint64_t>(type.members.size()));
@@ -461,12 +516,25 @@ TypeInspectionAttempt inspect_type(
         type.kind != TypeKind::EndianScalar) {
       return failure("type_underlying requires a distinct, enum, or endian scalar type");
     }
+    if (type.kind == TypeKind::Enum) {
+      if (const std::optional<TypeInspectionAttempt> unavailable =
+              require_facet(
+                  package, queried, TypeFacet::MemberTypes, query)) {
+        return *unavailable;
+      }
+    }
     return type_result(package, type.element);
   }
   if (query == "type_discriminator") {
-    return type.kind == TypeKind::TaggedUnion
-        ? type_result(package, type.element)
-        : failure("type_discriminator requires a tagged union type");
+    if (type.kind != TypeKind::TaggedUnion) {
+      return failure("type_discriminator requires a tagged union type");
+    }
+    if (const std::optional<TypeInspectionAttempt> unavailable =
+            require_facet(
+                package, queried, TypeFacet::MemberTypes, query)) {
+      return *unavailable;
+    }
+    return type_result(package, type.element);
   }
   if (query == "type_parameter_count") {
     if (type.kind != TypeKind::Procedure) {
@@ -503,11 +571,19 @@ TypeInspectionAttempt inspect_type(
         type.kind != TypeKind::RawUnion) {
       return failure("type_is_c_repr requires a struct, enum, or raw union type");
     }
+    if (const std::optional<TypeInspectionAttempt> unavailable =
+            require_facet(package, queried, TypeFacet::Members, query)) {
+      return *unavailable;
+    }
     return success(ConstantValue::make_bool(type.c_representation), builtins.bool_type);
   }
   if (query == "type_requested_alignment") {
     if (type.kind != TypeKind::Struct && type.kind != TypeKind::RawUnion) {
       return failure("type_requested_alignment requires a struct or raw union type");
+    }
+    if (const std::optional<TypeInspectionAttempt> unavailable =
+            require_facet(package, queried, TypeFacet::Members, query)) {
+      return *unavailable;
     }
     return integer_result(package, type.requested_alignment);
   }

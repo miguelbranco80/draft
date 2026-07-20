@@ -36,15 +36,20 @@ struct TypeInspectionResult {
   TypeId type;
 };
 
-// TypeInspectionAttempt separates an unrecognized name from a recognized query
-// that was used on the wrong type or with an invalid member index. Intrinsic
-// recognition needs that distinction so an ordinary procedure with another
-// name still follows normal lookup.
+// TypeInspectionAttempt separates an unrecognized name, a recognized query
+// blocked on one exact type facet, and a terminal applicability/index error.
+// required_facet is present only while that facet is Waiting; NotApplicable is
+// a terminal error because no later semantic task can manufacture the fact.
+// Intrinsic recognition needs the recognized distinction so an ordinary
+// procedure with another name still follows normal lookup.
 struct TypeInspectionAttempt {
   bool recognized = false;
   std::optional<TypeInspectionResult> result;
+  std::optional<TypeFacet> required_facet;
   std::string error;
 };
+
+[[nodiscard]] std::string_view type_facet_name(TypeFacet facet);
 
 [[nodiscard]] bool is_type_inspection_query(std::string_view name);
 

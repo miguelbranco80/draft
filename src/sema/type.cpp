@@ -191,6 +191,21 @@ const TypeCompletion &TypeStore::completion(TypeId id) const {
   return completion_[id.value];
 }
 
+TypeFacetState TypeStore::facet_state(TypeId id, TypeFacet facet) const {
+  const TypeCompletion &facets = completion(id);
+  switch (facet) {
+  case TypeFacet::Identity:
+    return facets.identity;
+  case TypeFacet::Members:
+    return facets.members;
+  case TypeFacet::MemberTypes:
+    return facets.member_types;
+  case TypeFacet::NaturalLayout:
+    return facets.natural_layout;
+  }
+  return TypeFacetState::NotApplicable;
+}
+
 std::size_t TypeStore::size() const {
   return types_.size();
 }

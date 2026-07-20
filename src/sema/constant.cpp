@@ -2707,6 +2707,9 @@ private:
 
     TypeInspectionAttempt inspection = inspect_type(
         semantic_, *name, *queried, index);
+    if (inspection.required_facet.has_value()) {
+      return pending();
+    }
     if (!inspection.result.has_value()) {
       return fail(call.range, std::move(inspection.error), required);
     }
@@ -2735,10 +2738,15 @@ private:
           required);
     }
     const TypeLayout layout = semantic_.types.type(*queried).layout;
-    if (!layout.known) {
+    const TypeFacetState readiness = semantic_.types.facet_state(
+        *queried, TypeFacet::NaturalLayout);
+    if (readiness == TypeFacetState::Waiting) {
+      return pending();
+    }
+    if (readiness != TypeFacetState::Complete || !layout.known) {
       return fail(
           tree.node(call.children[1]).range,
-          *name + " requires a type with complete layout",
+          *name + " requires a type with runtime natural layout",
           required);
     }
     const std::uint64_t value = *name == "size_of"

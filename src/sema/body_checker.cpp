@@ -4551,7 +4551,13 @@ private:
               *intrinsic,
               TypeId{checked_type.constant.type_index},
               index);
-          if (!inspected.result.has_value()) {
+          if (inspected.required_facet.has_value()) {
+            diagnostics_.error(
+                call.range,
+                *intrinsic + " requires " + std::string(type_facet_name(
+                    *inspected.required_facet)));
+            expression.type = semantic_.types.builtins().invalid;
+          } else if (!inspected.result.has_value()) {
             diagnostics_.error(
                 call.range,
                 inspected.error.empty()

@@ -108,6 +108,16 @@ enum class TypeFacetState {
   Complete,
 };
 
+// TypeFacet is the stable vocabulary used when a semantic consumer requests
+// one part of a type. It maps directly to the corresponding semantic product
+// kinds without making TypeStore depend on the compiler scheduler.
+enum class TypeFacet {
+  Identity,
+  Members,
+  MemberTypes,
+  NaturalLayout,
+};
+
 // TypeCompletion is parallel to one TypeStore row. identity is Complete for
 // every allocated TypeId because allocation itself establishes the structural
 // or nominal identity. members closes the set of member names; member_types
@@ -219,6 +229,7 @@ public:
   [[nodiscard]] const Type &type(TypeId id) const;
   [[nodiscard]] Type &type_mut(TypeId id);
   [[nodiscard]] const TypeCompletion &completion(TypeId id) const;
+  [[nodiscard]] TypeFacetState facet_state(TypeId id, TypeFacet facet) const;
   [[nodiscard]] std::size_t size() const;
 
   [[nodiscard]] std::optional<TypeId> find_builtin(std::string_view name) const;

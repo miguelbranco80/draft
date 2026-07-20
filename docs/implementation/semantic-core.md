@@ -20,9 +20,15 @@ finishes.
 no member set, while untyped and compile-time-only meta types have no runtime
 natural layout. Product errors remain in the semantic graph and diagnostics;
 they are not encoded as a counterfeit layout or as a second error type in the
-payload table. The current package type resolver publishes several facets in
-one call. The active replacement splits those publications into the individual
-products named by the target-state architecture.
+payload table. Structural inspection names the exact facet required by each
+query. Constant evaluation leaves a query pending when that facet is waiting;
+it never reads a partial member vector or reports a not-applicable error for a
+fact that later work can still publish. Final body checking instead diagnoses a
+still-incomplete query at its source call.
+
+The current package type resolver publishes several facets in one call. The
+active replacement splits those publications into the individual products
+named by the target-state architecture.
 
 ## Compile-time type values and inspection
 
