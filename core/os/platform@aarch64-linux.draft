@@ -5,7 +5,7 @@
 //
 // The declarations intentionally depend only on core/c and the Linux target
 // profile. Their numeric flags and C signatures are ABI facts rather than
-// portable POSIX assumptions. Draft specification: sections 5-7, section 11,
+// portable POSIX assumptions. Draft specification: sections 5-7, section 12,
 // and the versioned AArch64 GNU/Linux target profile.
 package os
 

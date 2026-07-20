@@ -48,17 +48,17 @@ semantic provider identities for denial summaries. The initial target-owned
 summary covers only the fixed libc, POSIX thread, mapping, file, process, and
 clock symbols used by the compiler runtime and first core packages.
 
-The v3 core source tree selects Linux file/open flags, anonymous-mapping bits,
-glibc pthread handle/storage types, `clock_gettime`, and ELF assembly symbol
-spelling with the profile's `aarch64-linux` file tag. Every package command now
-accepts `--target aarch64-linux` and carries this profile through compilation,
-C-header emission, validation, resolution, and judgment; macOS remains the
-compatibility default. The root LLVM runtime now emits glibc's 32-bit
-`pthread_once_t` and `pthread_key_t` layouts. The native adapter emits ELF
-relocatable objects, deterministic archives, `.so` files with SONAMEs, and PIE
-executables using the host glibc development files and `ld.lld`. Final ELF artifacts
-retain DWARF and a content-derived GNU build ID; they correctly omit a Mach-O
-dSYM companion.
+The current core source tree selects Linux file/open flags, anonymous-mapping
+bits, glibc pthread handle/storage types, `clock_gettime`, and ELF assembly
+symbol spelling with the profile's `aarch64-linux` file tag. Every package
+command now accepts `--target aarch64-linux` and carries this profile through
+compilation, C-header emission, validation, resolution, and judgment; macOS
+remains the compatibility default. The root LLVM runtime now emits glibc's
+32-bit `pthread_once_t` and `pthread_key_t` layouts. The native adapter emits
+ELF relocatable objects, deterministic archives, `.so` files with SONAMEs, and
+PIE executables using the host glibc development files and `ld.lld`. Final ELF
+artifacts retain DWARF and a content-derived GNU build ID; they correctly omit
+a Mach-O dSYM companion.
 
 The initial cross-target qualification used LLVM/LLD 22.1.8 and an Ubuntu
 24.04 arm64 sysroot containing glibc 2.39, Linux 6.8 UAPI headers, and the GCC
