@@ -333,6 +333,14 @@ Run the exhaustive example integration slice with:
 ctest --test-dir build -L examples --output-on-failure
 ```
 
+Codex worktrees use the checked-in local environment at
+`.codex/environments/environment.toml`. New worktrees configure `build/` and
+build `draftc` automatically on macOS or Linux; use its `Build all`, `Run all
+tests`, or `Test all examples` action for the broader gate. Keep every build
+and workspace `.draft/` store inside that worktree, and keep test scratch in a
+process-unique temporary directory or the current CMake binary directory so
+concurrent worktrees cannot share mutable state.
+
 `examples/qualification.tsv` must classify every tracked Draft/assembly package
 directory. Its rows drive both-target frontend checks, every ordinary native
 example execution, special C-library and foreign-provider link gates, and all

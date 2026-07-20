@@ -307,6 +307,11 @@ language feature.
 - Add regression tests before or with bug fixes.
 - Prefer small tests that isolate one rule, plus a smaller number of complete
   end-to-end programs that exercise stage composition.
+- Keep tests safe under simultaneous builds from multiple Git worktrees. Write
+  scratch only below the current CMake binary directory or a process-unique
+  temporary directory; never use a fixed shared path or write derived state
+  into the source checkout. Integration scripts must receive their scratch
+  root explicitly rather than deriving one from a repository-global location.
 
 ## Change discipline for agents
 

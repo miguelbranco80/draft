@@ -89,3 +89,21 @@ cmake -S . -B build-sanitized \
 cmake --build build-sanitized --parallel
 ctest --test-dir build-sanitized --output-on-failure
 ```
+
+## Codex worktrees
+
+The checked-in Codex local environment at
+`.codex/environments/environment.toml` prepares every newly created Codex
+worktree automatically. On macOS and Linux it configures the same warning-clean
+Debug build described above and builds the `draftc` target. It deliberately
+does not install LLVM or run the complete suite during worktree creation: LLVM
+22 must already exist at the qualified platform path, while full builds and
+tests remain explicit toolbar actions named `Build all`, `Run all tests`, and
+`Test all examples`.
+
+Each Git worktree has its own `build/` and workspace-local `.draft/` directory,
+so compiler outputs, resolution manifests, generated source, and test evidence
+do not cross between concurrent Codex tasks. Tests must likewise use their
+process-unique temporary directory or the current CMake binary directory.
+Untracked and ignored files are not worktree inputs; source or fixtures needed
+by a task must be committed rather than copied through a shared scratch path.
