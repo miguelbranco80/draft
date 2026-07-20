@@ -108,6 +108,16 @@ struct ConstantTypeBinding {
   TypeId replacement;
 };
 
+// A concrete static argument pack has no ConstantValue or runtime TypeId. The
+// constant evaluator nevertheless needs its exact length for len(pack) in
+// `when`, static_assert, and lexical compile-time declarations. This narrow
+// overlay exposes only that specified operation and lets every other attempted
+// value use fail instead of masquerading as an array, string, or erased object.
+struct ConstantStaticPackBinding {
+  SymbolId binding;
+  std::uint64_t length = 0;
+};
+
 struct CompileTimeRoundResult {
   ConstantTable constants;
   std::size_t new_selections = 0;
@@ -162,7 +172,8 @@ struct CompileTimeExpressionDiscoveryResult {
     ScopeId scope,
     DiagnosticSink &diagnostics,
     const ConstantTable *local_constants = nullptr,
-    const std::vector<ConstantTypeBinding> *local_types = nullptr);
+    const std::vector<ConstantTypeBinding> *local_types = nullptr,
+    const std::vector<ConstantStaticPackBinding> *local_packs = nullptr);
 
 // Typed form used by static storage and aggregate evaluation. Scalar callers
 // that need only the mathematical value use evaluate_constant_expression.
@@ -177,7 +188,8 @@ struct CompileTimeExpressionDiscoveryResult {
     DiagnosticSink &diagnostics,
     const ConstantTable *local_constants = nullptr,
     const std::vector<ConstantTypeBinding> *local_types = nullptr,
-    TypeId expected = {});
+    TypeId expected = {},
+    const std::vector<ConstantStaticPackBinding> *local_packs = nullptr);
 
 // Non-diagnosing interface-discovery form for a required scalar expression.
 // It uses the same interpreter as the rejecting API above, but returns the
@@ -194,6 +206,7 @@ discover_typed_constant_expression(
     ScopeId scope,
     const ConstantTable *local_constants = nullptr,
     const std::vector<ConstantTypeBinding> *local_types = nullptr,
-    TypeId expected = {});
+    TypeId expected = {},
+    const std::vector<ConstantStaticPackBinding> *local_packs = nullptr);
 
 } // namespace draft

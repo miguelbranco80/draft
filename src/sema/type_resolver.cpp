@@ -416,7 +416,14 @@ private:
       }
     }
     if (!parameters.has_value()) {
-      return parent;
+      if (!semantic_.symbols.symbol(owner).flags.parametric) return parent;
+      // A pack-only procedure is still a template but has no explicit
+      // compile-time parameter list. Give it the same phase boundary used by
+      // ordinary generics so concrete instance scopes have one stable parent.
+      const ScopeId scope = semantic_.symbols.add_scope(
+          ScopeKind::Parametric, parent, declaration.range);
+      semantic_.owned_scopes.push_back({owner, scope});
+      return scope;
     }
 
     const SyntaxNode &list = tree.node(*parameters);
@@ -511,6 +518,32 @@ private:
       return;
     }
 
+    if (node.kind == NodeKind::ForStatement && !node.children.empty()) {
+      const SyntaxNode &header = tree.node(node.children.front());
+      if (header.kind == NodeKind::IterationHeader &&
+          !header.children.empty()) {
+        const SyntaxNode &iterable = tree.node(header.children.front());
+        const std::vector<SourceName> iterable_names = names_in_span(
+            tree, iterable.token_begin, iterable.token_end);
+        if (iterable_names.size() == 1) {
+          const std::optional<SymbolId> binding =
+              semantic_.symbols.lookup(scope, iterable_names.front().text);
+          for (const StaticArgumentPack &pack :
+               semantic_.static_argument_packs) {
+            if (pack.owner == owner && binding.has_value() &&
+                *binding == pack.binding) {
+              // The iteration introduces its value/index bindings only during
+              // body checking. Conditional sites inside it therefore cannot
+              // be selected in the package-wide constant round; BodyChecker
+              // checks one symbolic expansion and each concrete expansion in
+              // their exact generated scopes instead.
+              return;
+            }
+          }
+        }
+      }
+    }
+
     switch (node.kind) {
     case NodeKind::Block:
     case NodeKind::StatementList:
@@ -553,21 +586,96 @@ private:
 
     std::vector<TypeId> parameters;
     TypeId result = semantic_.types.builtins().void_type;
+    bool saw_static_pack = false;
     for (NodeId child_id : procedure.children) {
       const SyntaxNode &child = tree.node(child_id);
       if (child.kind == NodeKind::ParameterList) {
-        for (NodeId parameter_id : child.children) {
+        for (std::size_t parameter_index = 0;
+             parameter_index < child.children.size(); ++parameter_index) {
+          const NodeId parameter_id = child.children[parameter_index];
           const SyntaxNode &parameter = tree.node(parameter_id);
           if (parameter.children.size() < 2) {
             continue;
           }
           const SyntaxNode &name_list = tree.node(parameter.children.front());
-          const TypeId parameter_type =
-              resolve_type(tree, parameter.children.back(), parent);
+          const SyntaxNode &parameter_type_node =
+              tree.node(parameter.children.back());
           const std::vector<SourceName> names = names_in_span(
               tree, name_list.token_begin, name_list.token_end);
+          if (parameter_type_node.kind == NodeKind::StaticPackType) {
+            if (saw_static_pack) {
+              diagnostics_.error(
+                  parameter.range,
+                  "procedure may declare only one static argument pack");
+              continue;
+            }
+            saw_static_pack = true;
+            if (parameter_index + 1 != child.children.size()) {
+              diagnostics_.error(
+                  parameter.range,
+                  "static argument pack must be the final procedure parameter");
+            }
+            if (names.size() != 1 || names.front().text == "_") {
+              diagnostics_.error(
+                  name_list.range,
+                  "static argument pack requires one named binding");
+              continue;
+            }
+            const std::vector<SourceName> pack_type_names = names_in_span(
+                tree,
+                parameter_type_node.token_begin,
+                parameter_type_node.token_end);
+            if (parameter_type_node.children.size() != 1 ||
+                pack_type_names.size() != 1 ||
+                pack_type_names.front().text != "type") {
+              diagnostics_.error(
+                  parameter_type_node.range,
+                  "static argument pack element marker must be '..type'");
+              continue;
+            }
+            if (!owner.has_value()) {
+              diagnostics_.error(
+                  parameter_type_node.range,
+                  "static argument packs require a named procedure body");
+              continue;
+            }
+            const Symbol &procedure_symbol = semantic_.symbols.symbol(*owner);
+            if (c_calling_convention(tree, procedure) ||
+                procedure_symbol.flags.foreign ||
+                procedure_symbol.flags.exported) {
+              diagnostics_.error(
+                  parameter_type_node.range,
+                  "C, foreign, and exported procedures require fixed signatures");
+              continue;
+            }
+
+            const TypeId symbolic_element = semantic_.types.type_parameter(
+                procedure_symbol.name + "." + names.front().text + ".element",
+                names.front().range);
+            Symbol binding;
+            binding.name = names.front().text;
+            binding.kind = SymbolKind::ValueParameter;
+            binding.scope = parameter_scope;
+            binding.type = symbolic_element;
+            binding.syntax = {tree.file(), parameter_id};
+            binding.name_range = names.front().range;
+            const SymbolId binding_id =
+                semantic_.symbols.declare(std::move(binding), diagnostics_);
+            if (binding_id.is_valid()) {
+              semantic_.static_argument_packs.push_back({
+                  *owner,
+                  binding_id,
+                  {tree.file(), parameter_id},
+                  static_cast<std::uint32_t>(parameters.size()),
+                  symbolic_element,
+              });
+            }
+            continue;
+          }
+          const TypeId resolved_parameter_type =
+              resolve_type(tree, parameter.children.back(), parent);
           for (const SourceName &name : names) {
-            parameters.push_back(parameter_type);
+            parameters.push_back(resolved_parameter_type);
             if (!owner.has_value() || name.text == "_") {
               continue;
             }
@@ -575,7 +683,7 @@ private:
             symbol.name = name.text;
             symbol.kind = SymbolKind::Parameter;
             symbol.scope = parameter_scope;
-            symbol.type = parameter_type;
+            symbol.type = resolved_parameter_type;
             symbol.syntax = {tree.file(), parameter_id};
             symbol.name_range = name.range;
             (void)semantic_.symbols.declare(std::move(symbol), diagnostics_);

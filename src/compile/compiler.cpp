@@ -1756,7 +1756,7 @@ bool continue_compiled_workspace_semantics(
       ProcedureInstantiationSeed seed;
       seed.public_template_name = request.public_template_name;
       Sha256 name_hash;
-      hash_field(name_hash, "draft.procedure-instance.v1");
+      hash_field(name_hash, "draft.procedure-instance.v2");
       hash_field(name_hash, request.root_identity);
       hash_field(name_hash, request.root_relative_path);
       hash_field(name_hash, request.public_template_name);
@@ -1788,6 +1788,20 @@ bool continue_compiled_workspace_semantics(
           transferred.value = argument.value;
         }
         seed.arguments.push_back(std::move(transferred));
+      }
+      hash_field(name_hash, "static-argument-pack");
+      hash_u64(
+          name_hash, static_cast<std::uint64_t>(request.pack_types.size()));
+      for (TypeId pack_type : request.pack_types) {
+        const InterfaceTypeGraph graph = export_interface_type(
+            package.identity,
+            package.semantics.package,
+            pack_type,
+            diagnostics);
+        const Sha256Digest digest = hash_interface_type_graph(graph);
+        name_hash.update(digest.bytes);
+        seed.pack_types.push_back(import_interface_type(
+            graph, owner.semantics.package, diagnostics));
       }
       seed.instance_name = request.public_template_name + "$mono$" +
           name_hash.finalize().hex().substr(0, 24);

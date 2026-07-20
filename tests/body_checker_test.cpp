@@ -388,6 +388,180 @@ main :: proc() -> i64 {
   EXPECT(state, concrete_instances == 11);
 }
 
+void test_static_argument_pack_instances(TestState &state) {
+  CheckedSource source(R"draft(
+package bodies
+
+inspect_all :: proc(values: ..type) {
+    static_assert(len(values) >= 0)
+    for value, index in values {
+        ... "retain one synthesis site for the source pack body"
+        judge "the pack element remains valid"
+        when index == 0 {
+            static_assert(index == 0)
+        } else {
+            static_assert(index > 0)
+        }
+        when type_of(value) == string {
+            len(value)
+        } else when type_of(value) == bool {
+            !value
+        } else when type_kind(type_of(value)) == .signed_integer {
+            value + value
+        } else when type_kind(type_of(value)) == .unsigned_integer {
+            value + value
+        } else when type_kind(type_of(value)) == .float {
+            value + value
+        } else {
+            static_assert(false, "unsupported pack element")
+        }
+    }
+}
+
+inspect_after[T: type] :: proc(first: T, values: ..type) {
+    inspect_all(first)
+    for value in values {
+        inspect_all(value)
+    }
+}
+
+main :: proc() {
+    inspect_nested :: proc(values: ..type) {
+        for value, index in values {
+            when index == 0 {
+                static_assert(type_of(value) == string)
+            } else when type_of(value) == bool {
+                !value
+            } else {
+                static_assert(false, "unsupported nested pack element")
+            }
+        }
+    }
+
+    inspect_all()
+    inspect_all(1, true, "draft")
+    // The concrete values differ, but the ordered tail types are identical and
+    // therefore reuse one specialization.
+    inspect_all(2, false, "again")
+    inspect_after(cast[u8](7), 1.5)
+    inspect_after[u8](cast[u8](8), 2.5)
+    inspect_nested("nested", true)
+}
+)draft");
+
+  if (source.diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(source.sources, source.diagnostics);
+  }
+  EXPECT(state, source.semantics.ok);
+  EXPECT(state, source.bodies.ok);
+  EXPECT(state, !source.diagnostics.has_errors());
+
+  std::size_t pack_instances = 0;
+  bool saw_empty = false;
+  bool saw_mixed = false;
+  bool saw_nested = false;
+  for (const draft::ParametricInstanceRecord &instance :
+       source.semantics.package.parametric_instances) {
+    if (instance.pack_types.empty()) {
+      saw_empty = true;
+    }
+    if (instance.pack_types.size() == 3) {
+      saw_mixed = true;
+      EXPECT(state,
+          source.semantics.package.types.type(instance.pack_types[0]).name ==
+              "int");
+      EXPECT(state,
+          source.semantics.package.types.type(instance.pack_types[1]).name ==
+              "bool");
+      EXPECT(state,
+          source.semantics.package.types.type(instance.pack_types[2]).name ==
+              "string");
+    }
+    if (!instance.pack_types.empty() ||
+        source.semantics.package.symbols.symbol(instance.source).name ==
+            "inspect_all") {
+      ++pack_instances;
+    }
+    if (source.semantics.package.symbols.symbol(instance.source).name ==
+        "inspect_nested") {
+      saw_nested = true;
+      EXPECT(state, instance.pack_types.size() == 2);
+    }
+    const draft::Type &signature = source.semantics.package.types.type(
+        source.semantics.package.symbols.symbol(instance.instance).type);
+    EXPECT(state, signature.members.size() >= instance.pack_types.size() + 1);
+  }
+  EXPECT(state, saw_empty);
+  EXPECT(state, saw_mixed);
+  EXPECT(state, saw_nested);
+  EXPECT(state, pack_instances >= 3);
+  std::size_t judgment_sites = 0;
+  std::size_t synthesis_sites = 0;
+  for (const draft::SemanticSite &site : source.semantics.package.sites) {
+    if (site.kind == draft::SemanticSiteKind::Judgment) ++judgment_sites;
+    if (site.kind == draft::SemanticSiteKind::SynthesisStatement) {
+      ++synthesis_sites;
+    }
+  }
+  EXPECT(state, judgment_sites == 1);
+  EXPECT(state, synthesis_sites == 1);
+}
+
+void test_static_argument_pack_use_diagnostics(TestState &state) {
+  CheckedSource source(R"draft(
+package bodies
+
+inspect_all :: proc(values: ..type) {
+    values
+}
+
+outer :: proc(values: ..type) {
+    inner :: proc() {
+        values
+    }
+    inner()
+}
+
+control :: proc(values: ..type) {
+    for value in values {
+        break
+        continue
+    }
+}
+
+main :: proc() {
+    callback := inspect_all
+    inspect_all[u8](1)
+}
+)draft");
+
+  EXPECT(state, !source.bodies.ok);
+  for (const draft::Diagnostic &diagnostic :
+       source.diagnostics.diagnostics()) {
+    if (diagnostic.severity == draft::DiagnosticSeverity::Error) {
+      EXPECT(state, diagnostic.range.is_valid());
+    }
+  }
+  const std::string rendered =
+      draft::render_diagnostics(source.sources, source.diagnostics);
+  EXPECT(state, rendered.find(
+      "static argument pack may be used only by len or static iteration") !=
+      std::string::npos);
+  EXPECT(state, rendered.find(
+      "procedure with a static argument pack must be called directly") !=
+      std::string::npos);
+  EXPECT(state, rendered.find(
+      "parametric procedure application has the wrong number of arguments") !=
+      std::string::npos);
+  EXPECT(state, rendered.find(
+      "nested procedure cannot capture an enclosing static argument pack") !=
+      std::string::npos);
+  EXPECT(state, rendered.find("break is outside a loop or switch") !=
+                    std::string::npos);
+  EXPECT(state, rendered.find("continue is outside a loop") !=
+                    std::string::npos);
+}
+
 void test_value_parametric_nominal_composition(TestState &state) {
   CheckedSource source(R"draft(
 package bodies
@@ -2345,6 +2519,8 @@ int main() {
   test_common_typed_bodies(state);
   test_body_diagnostics(state);
   test_parametric_procedure_instances(state);
+  test_static_argument_pack_instances(state);
+  test_static_argument_pack_use_diagnostics(state);
   test_value_parametric_nominal_composition(state);
   test_procedural_structural_alias_composition(state);
   test_dependent_value_inference(state);

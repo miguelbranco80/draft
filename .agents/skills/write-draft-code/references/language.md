@@ -92,7 +92,8 @@ overloading or default procedure arguments.
 Nested procedures are static procedures, not closures. They may use package
 declarations, imports, predeclared names, context, and enclosing compile-time or
 parametric names. They may not capture an outer invocation's runtime parameters,
-locals, or iteration bindings; pass those explicitly.
+locals, iteration bindings, or static argument pack; pass ordinary values
+explicitly or declare a separate pack on the nested procedure.
 
 ```draft
 outer :: proc(input: []u8) -> usize {
@@ -422,6 +423,34 @@ arguments can infer type and simple one-to-one integer value parameters; use
 explicit arguments when inference is not uniquely specified. There is no
 template metaprogramming or syntax reflection. Pass behavior outside the closed
 constraints explicitly through procedure values or records containing them.
+
+A Draft procedure body may have one named final static pack parameter:
+
+```draft
+print_values :: proc(prefix: string, values: ..type) {
+    for value, index in values {
+        when type_of(value) == string {
+            consume_text(prefix, value)
+        } else when type_kind(type_of(value)) == .signed_integer {
+            consume_integer(cast[i128](value), index)
+        } else {
+            static_assert(false, "unsupported argument type")
+        }
+    }
+}
+```
+
+Call it directly with the fixed prefix and any number of tail values. Each tail
+keeps its own concrete type; untyped integers/floats default independently to
+`int`/`f64`. `len(values)` is a compile-time `usize`, and static iteration
+expands in source order with a compile-time `usize` index. The pack is not a
+slice, tuple, runtime value, type list, or C varargs ABI. Do not take the
+procedure as a value, use the pack outside `len`/iteration, put `..type` in a
+standalone/C/foreign/exported signature, or invent `[Types: ..type]` syntax.
+The static expansion is not a runtime loop target, so its own body does not
+make `break` or `continue` valid.
+Explicit bracket parameters compose normally, as in
+`render[T: type] :: proc(first: T, values: ..type)`.
 
 Use parameter-dependent `static_assert` for relationships such as capacity or
 layout requirements. It constrains concrete instantiations but does not grant

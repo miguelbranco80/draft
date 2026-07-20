@@ -34,13 +34,16 @@ struct BodyCheckResult {
 
 // Compiler orchestration creates these rows from imported generic calls found
 // in packages earlier in the acyclic consumer-to-dependency order. arguments
-// have already been translated into the defining package's TypeStore. The
-// requested instance_name is shared with every consumer proxy and therefore is
-// the exact package-local symbol spelling used by native emission.
+// and pack_types have already been translated into the defining package's
+// TypeStore. The ordered pack tail follows the named argument packet in
+// specialization identity. The requested instance_name is shared with every
+// consumer proxy and therefore is the exact package-local symbol spelling used
+// by native emission.
 struct ProcedureInstantiationSeed {
   std::string public_template_name;
   std::string instance_name;
   std::vector<ParametricArgument> arguments;
+  std::vector<TypeId> pack_types;
 };
 
 // Validates package constant and global-initializer expressions with the same

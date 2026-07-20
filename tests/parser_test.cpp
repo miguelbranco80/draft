@@ -142,6 +142,9 @@ foreign libc {
     puts :: c "puts" proc(message: cstring) -> c.int
 }
 
+pack_proc :: proc(values: ..type) {
+}
+
 export draft_entry :: c "draft_entry" proc(argument: u32) -> c.int {
     values := [4]u32{1, 2, 3, 4}
     record := Container[u32, 4]{first = 1, second = 2}
@@ -523,6 +526,43 @@ void test_invalid_production_recovery(TestState &state) {
   }
 }
 
+void test_static_argument_pack_syntax(TestState &state) {
+  ParsedSource source(R"draft(
+package packs
+
+println :: proc(prefix: string, values: ..type) {
+    for value, index in values {
+        when index == 0 {
+            value
+        }
+    }
+}
+
+nonfinal :: proc(values: ..type, suffix: u8) {}
+multiple :: proc(left: ..type, right: ..type) {}
+)draft");
+  if (source.diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(source.sources, source.diagnostics);
+  }
+  EXPECT(state, !source.diagnostics.has_errors());
+  // Placement and uniqueness are declaration-semantic rules. The parser must
+  // retain every well-formed marker so TypeResolver can diagnose each exact
+  // parameter range instead of recovering away useful syntax.
+  EXPECT(state,
+      source.tree.count(draft::NodeKind::StaticPackType) == 4);
+
+  ParsedSource missing_type(
+      "package packs\nprintln :: proc(values: ..) {}\n");
+  const std::string rendered = draft::render_diagnostics(
+      missing_type.sources, missing_type.diagnostics);
+  EXPECT(state, missing_type.diagnostics.has_errors());
+  for (const draft::Diagnostic &diagnostic :
+       missing_type.diagnostics.diagnostics()) {
+    EXPECT(state, diagnostic.range.is_valid());
+  }
+  EXPECT(state, rendered.find("expected type") != std::string::npos);
+}
+
 void test_recovery_builds_a_tree(TestState &state) {
   ParsedSource source(R"draft(
 not_package broken
@@ -614,6 +654,7 @@ int main() {
   test_procedure_control_flow_and_expressions(state);
   test_binary_xor_and_postfix_dereference(state);
   test_synthesis_and_assembly_surface(state);
+  test_static_argument_pack_syntax(state);
   test_invalid_production_recovery(state);
   test_recovery_builds_a_tree(state);
   test_excessive_nesting_is_a_diagnostic(state);

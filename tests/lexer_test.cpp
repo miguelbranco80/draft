@@ -136,12 +136,14 @@ void test_comments_and_eof(TestState &state) {
 
 void test_longest_tokens(TestState &state) {
   const LexedSource source = lex(
-      ":: := -> ... --- <<= >>= += -= *= /= %= &= |= ^= == != <= >= << >> && ||\n");
+      ". .. ... :: := -> --- <<= >>= += -= *= /= %= &= |= ^= == != <= >= << >> && ||\n");
   const std::vector expected{
+      draft::TokenKind::Dot,
+      draft::TokenKind::DotDot,
+      draft::TokenKind::Ellipsis,
       draft::TokenKind::ColonColon,
       draft::TokenKind::ColonEqual,
       draft::TokenKind::Arrow,
-      draft::TokenKind::Ellipsis,
       draft::TokenKind::Uninitialized,
       draft::TokenKind::ShiftLeftEqual,
       draft::TokenKind::ShiftRightEqual,
@@ -165,6 +167,29 @@ void test_longest_tokens(TestState &state) {
   };
   EXPECT(state, kinds(source) == expected);
   EXPECT(state, !source.diagnostics.has_errors());
+}
+
+void test_decimal_and_dot_run_boundaries(TestState &state) {
+  const LexedSource source = lex("1.25 1..2 3... 4.\n");
+  const std::vector expected{
+      draft::TokenKind::FloatLiteral,
+      draft::TokenKind::IntegerLiteral,
+      draft::TokenKind::DotDot,
+      draft::TokenKind::IntegerLiteral,
+      draft::TokenKind::IntegerLiteral,
+      draft::TokenKind::Ellipsis,
+      draft::TokenKind::FloatLiteral,
+      draft::TokenKind::Semicolon,
+      draft::TokenKind::EndOfFile,
+  };
+  EXPECT(state, kinds(source) == expected);
+  const std::string rendered =
+      draft::render_diagnostics(source.sources, source.diagnostics);
+  EXPECT(state, source.diagnostics.error_count() == 1);
+  EXPECT(state, source.diagnostics.diagnostics().front().range.is_valid());
+  EXPECT(state,
+      rendered.find("fractional part requires at least one digit") !=
+          std::string::npos);
 }
 
 void test_literals(TestState &state) {
@@ -240,6 +265,7 @@ int main() {
   test_attachment_continuation(state);
   test_comments_and_eof(state);
   test_longest_tokens(state);
+  test_decimal_and_dot_run_boundaries(state);
   test_literals(state);
   test_malformed_literals(state);
   test_utf8_and_identifier_rules(state);

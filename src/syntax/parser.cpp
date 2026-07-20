@@ -604,7 +604,18 @@ private:
       std::vector<NodeId> children;
       children.push_back(parse_name_list());
       (void)expect(TokenKind::Colon, "expected ':' after parameter name");
-      children.push_back(parse_type());
+      if (at(TokenKind::DotDot)) {
+        const std::uint32_t pack_start = position_;
+        advance();
+        std::vector<NodeId> pack_children{parse_type()};
+        children.push_back(tree_.add_node(
+            NodeKind::StaticPackType,
+            pack_start,
+            position_,
+            std::move(pack_children)));
+      } else {
+        children.push_back(parse_type());
+      }
       parameters.push_back(tree_.add_node(
           NodeKind::Parameter, parameter_start, position_, std::move(children)));
       if (!match(TokenKind::Comma)) {

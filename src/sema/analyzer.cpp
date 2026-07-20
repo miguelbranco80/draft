@@ -231,6 +231,33 @@ private:
     return {};
   }
 
+  // Static heterogeneous packs participate in procedure specialization even
+  // without an explicit `[T: ...]` list. Marking the source procedure
+  // parametric here prevents its open signature from reaching MIR; the pack
+  // itself remains a dedicated semantic side-table row built by TypeResolver.
+  [[nodiscard]] bool procedure_has_static_pack(
+      const SyntaxTree &tree, const std::optional<NodeId> &payload) const {
+    if (!payload.has_value()) return false;
+    const SyntaxNode &procedure = tree.node(*payload);
+    if (procedure.kind != NodeKind::Procedure &&
+        procedure.kind != NodeKind::ProcedureType) {
+      return false;
+    }
+    for (NodeId child_id : procedure.children) {
+      const SyntaxNode &child = tree.node(child_id);
+      if (child.kind != NodeKind::ParameterList) continue;
+      for (NodeId parameter_id : child.children) {
+        const SyntaxNode &parameter = tree.node(parameter_id);
+        if (!parameter.children.empty() &&
+            tree.node(parameter.children.back()).kind ==
+                NodeKind::StaticPackType) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
   [[nodiscard]] std::vector<SymbolId> collect_declaration(
       const SyntaxTree &tree,
       NodeId declaration_id,
@@ -254,6 +281,8 @@ private:
         flags.parametric = true;
       }
     }
+    flags.parametric = flags.parametric ||
+        procedure_has_static_pack(tree, payload);
     flags.is_thread_local = node_has_token_before(
         tree, declaration, pattern.token_begin, TokenKind::KeywordThreadLocal);
     const Visibility visibility = node_has_token_before(

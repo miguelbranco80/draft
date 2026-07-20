@@ -13,6 +13,7 @@
 #include "syntax/token.h"
 
 #include <algorithm>
+#include <cassert>
 #include <bit>
 #include <cstddef>
 #include <cstdint>
@@ -102,17 +103,49 @@ struct ValueSubstitution {
   bool deferred_expression = false;
 };
 
+// Result of checking one bracketed procedure-argument list without creating an
+// instance. `valid` distinguishes an empty legal list from a diagnosed failure;
+// the two vectors retain declaration-parameter identity and source order for
+// the later fixed-prefix and static-tail call operation.
+struct ExplicitProcedureArguments {
+  bool valid = false;
+  std::vector<TypeSubstitution> type_substitutions;
+  std::vector<ValueSubstitution> value_substitutions;
+};
+
 // One source template can produce several concrete procedure bodies. Instances
 // retain both substitution kinds here while the permanent semantic graph owns
 // the concrete symbol, signature, and cloned runtime-parameter scope used by
 // later passes. Equality is semantic: types compare by canonical TypeId and
-// values compare by their exact ConstantValue representation.
+// values compare by their exact ConstantValue representation, and pack types
+// compare as an ordered vector. All referenced symbols and types live for the
+// complete SemanticPackage/BodyChecker run; no row outlives those owners.
 struct ProcedureInstance {
   SymbolId source;
   SymbolId symbol;
   std::vector<TypeSubstitution> type_substitutions;
   std::vector<ValueSubstitution> value_substitutions;
+  // Ordered concrete tail types. They define specialization identity and match
+  // the trailing members of the concrete procedure signature one-for-one.
+  std::vector<TypeId> pack_types;
+  // These are the ordinary parameters appended to the concrete procedure
+  // scope and signature. Static loop expansion aliases its per-iteration value
+  // binding directly to the corresponding symbol.
+  std::vector<SymbolId> pack_parameters;
+  // The concrete procedure scope also owns one compile-time-only marker under
+  // the source pack name. Constant evaluation uses it for len(pack); ordinary
+  // expression checking rejects every other use before HIR lowering.
+  SymbolId pack_binding;
   bool checked = false;
+};
+
+// During one concrete static-pack iteration the source value name denotes one
+// already-existing ordinary procedure parameter. The lexical alias still owns
+// source visibility and diagnostics, while this short-lived row prevents HIR
+// from inventing a local copy or storage slot for the alias.
+struct StaticPackValueAlias {
+  SymbolId alias;
+  SymbolId parameter;
 };
 
 // One symbolic fact established by entering a parameter-dependent `when`
@@ -394,6 +427,7 @@ private:
           *source,
           std::move(type_substitutions),
           std::move(value_substitutions),
+          seed.pack_types,
           source_symbol.name_range,
           seed.instance_name);
     }
@@ -1039,6 +1073,28 @@ private:
     for (const TypeSubstitution &substitution :
          instances_[*current_instance_index_].type_substitutions) {
       result.push_back({substitution.parameter, substitution.replacement});
+    }
+    return result;
+  }
+
+  [[nodiscard]] std::vector<ConstantStaticPackBinding>
+  active_constant_packs() const {
+    std::vector<ConstantStaticPackBinding> result;
+    if (!current_instance_index_.has_value()) return result;
+    const ProcedureInstance &instance = instances_[*current_instance_index_];
+    if (!current_procedure_.is_valid() ||
+        procedure_declaration_source(current_procedure_) != instance.source) {
+      // Nested procedures may capture enclosing compile-time type/value
+      // parameters, but a static pack also denotes outer runtime arguments.
+      // Do not make its length visible through the constant overlay when the
+      // nested procedure does not own that pack.
+      return result;
+    }
+    if (instance.pack_binding.is_valid()) {
+      result.push_back({
+          instance.pack_binding,
+          static_cast<std::uint64_t>(instance.pack_types.size()),
+      });
     }
     return result;
   }
@@ -2452,6 +2508,8 @@ private:
     const ConstantTable visible_constants = active_constant_table();
     const std::vector<ConstantTypeBinding> visible_types =
         active_constant_types();
+    const std::vector<ConstantStaticPackBinding> visible_packs =
+        active_constant_packs();
     const std::optional<EvaluatedConstant> evaluated =
         evaluate_typed_constant_expression(
             sources_,
@@ -2464,7 +2522,8 @@ private:
             diagnostics_,
             &visible_constants,
             &visible_types,
-            subject_type);
+            subject_type,
+            &visible_packs);
     if (!evaluated.has_value()) return checked;
 
     HirExpression &expression = hir_.expression_mut(checked);
@@ -2756,6 +2815,138 @@ private:
     return semantic_.types.builtins().invalid;
   }
 
+  // Checks the bracket arguments shared by ordinary generic procedure values
+  // and direct static-pack calls. This operation intentionally stops before
+  // instantiation: a pack call must first inspect and default its runtime tail
+  // types, while an ordinary generic application can instantiate immediately.
+  [[nodiscard]] ExplicitProcedureArguments check_explicit_procedure_arguments(
+      const SyntaxTree &tree,
+      const SyntaxNode &application,
+      ScopeId scope,
+      SymbolId source) {
+    ExplicitProcedureArguments result;
+    const std::vector<ParametricParameterRecord> parameters =
+        parameters_for(source);
+    if (application.children.size() - 1 != parameters.size()) {
+      diagnostics_.error(
+          application.range,
+          "parametric procedure application has the wrong number of arguments");
+      return result;
+    }
+
+    for (std::size_t index = 0; index < parameters.size(); ++index) {
+      const ParametricParameterRecord &parameter = parameters[index];
+      const NodeId argument_syntax = application.children[index + 1];
+      if (parameter.constraint == TypeConstraintKind::CompileTimeValue) {
+        const TypeId required =
+            semantic_.symbols.symbol(parameter.parameter).type;
+        if (current_procedure_is_template_ ||
+            !current_instance_index_.has_value()) {
+          const ConstantTable active_constants = active_constant_table();
+          const std::size_t errors_before = diagnostics_.error_count();
+          const std::optional<IntegerExpression> symbolic =
+              resolve_dependent_integer_expression_syntax(
+                  sources_,
+                  loaded_,
+                  semantic_,
+                  selections_,
+                  tree,
+                  argument_syntax,
+                  scope,
+                  required,
+                  active_constants,
+                  diagnostics_);
+          if (symbolic.has_value()) {
+            const IntegerExpressionNode &symbolic_root =
+                symbolic->nodes[symbolic->root];
+            if (symbolic_root.type != integer_expression_type(required)) {
+              diagnostics_.error(
+                  tree.node(argument_syntax).range,
+                  "symbolic procedure value argument has the wrong result type");
+              return result;
+            }
+            for (const IntegerExpressionNode &part : symbolic->nodes) {
+              if (part.operation != IntegerExpressionOperation::Parameter) {
+                continue;
+              }
+              const bool valid_symbol =
+                  part.parameter < semantic_.symbols.symbol_count();
+              const Symbol *supplied = valid_symbol
+                  ? &semantic_.symbols.symbol(SymbolId{part.parameter})
+                  : nullptr;
+              if (supplied == nullptr ||
+                  supplied->kind != SymbolKind::ValueParameter) {
+                diagnostics_.error(
+                    tree.node(argument_syntax).range,
+                    "symbolic procedure value argument names a non-parameter value");
+                return result;
+              }
+            }
+            result.value_substitutions.push_back(
+                {parameter.parameter, {}, *symbolic});
+            continue;
+          }
+          if (diagnostics_.error_count() != errors_before) return result;
+          if (current_procedure_is_template_ &&
+              expression_references_parametric_parameter(
+                  tree, argument_syntax, scope)) {
+            const HirExpressionId checked = check_expression(
+                tree, argument_syntax, scope, required);
+            if (is_invalid_type(hir_.expression(checked).type)) return result;
+            result.value_substitutions.push_back(
+                {parameter.parameter, {}, {}, true});
+            continue;
+          }
+        }
+
+        const ConstantTable active_constants = active_constant_table();
+        const std::vector<ConstantTypeBinding> active_types =
+            active_constant_types();
+        const std::vector<ConstantStaticPackBinding> active_packs =
+            active_constant_packs();
+        const std::optional<EvaluatedConstant> evaluated =
+            evaluate_typed_constant_expression(
+                sources_,
+                loaded_,
+                semantic_,
+                target_,
+                tree,
+                argument_syntax,
+                scope,
+                diagnostics_,
+                &active_constants,
+                &active_types,
+                required,
+                &active_packs);
+        if (!evaluated.has_value()) return result;
+        if (evaluated->value.kind != ConstantKind::Integer) {
+          diagnostics_.error(
+              tree.node(argument_syntax).range,
+              "procedure value argument must be a compile-time integer");
+          return result;
+        }
+        result.value_substitutions.push_back(
+            {parameter.parameter, evaluated->value, {}});
+        continue;
+      }
+
+      const TypeId argument =
+          type_value_expression(tree, argument_syntax, scope);
+      if (!constraint_accepts(parameter.constraint, argument)) {
+        diagnostics_.error(
+            tree.node(argument_syntax).range,
+            "procedure type argument does not satisfy its constraint");
+        return result;
+      }
+      result.type_substitutions.push_back({
+          semantic_.symbols.symbol(parameter.parameter).type,
+          argument,
+      });
+    }
+    result.valid = true;
+    return result;
+  }
+
   // `::` accepts either a compile-time value expression or a type value. Most
   // type constructors are syntactically unambiguous, but aliases and generic
   // applications arrive through the ordinary expression grammar. Probe only
@@ -2817,6 +3008,72 @@ private:
       if (parameter.owner == owner) result.push_back(parameter);
     }
     return result;
+  }
+
+  // A procedure owns at most one static pack. Keeping lookup as a linear scan
+  // mirrors the small parametric-parameter table and avoids a second index
+  // whose invalidation would have to follow imported-interface binding and
+  // nested declaration discovery. Ordinary procedures return null.
+  [[nodiscard]] const StaticArgumentPack *static_argument_pack(
+      SymbolId owner) const {
+    for (const StaticArgumentPack &pack : semantic_.static_argument_packs) {
+      if (pack.owner == owner) return &pack;
+    }
+    return nullptr;
+  }
+
+  // Identifies a visible marker owned by an enclosing procedure. Unlike an
+  // ordinary compile-time scalar parameter, a pack describes concrete runtime
+  // arguments as well as their types and length. Nested procedures therefore
+  // cannot capture it implicitly; they must declare their own pack or receive
+  // whatever ordinary value they need through fixed parameters.
+  [[nodiscard]] bool is_enclosing_static_argument_pack_binding(
+      SymbolId binding) const {
+    if (!current_procedure_.is_valid()) return false;
+    const SymbolId current_source =
+        procedure_declaration_source(current_procedure_);
+    for (const StaticArgumentPack &pack : semantic_.static_argument_packs) {
+      if (pack.binding == binding && pack.owner != current_source) return true;
+    }
+    if (current_instance_index_.has_value()) {
+      const ProcedureInstance &instance =
+          instances_[*current_instance_index_];
+      if (instance.pack_binding == binding &&
+          instance.source != current_source) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // Recognizes the pack binding owned by the procedure currently being
+  // checked. Restricting the owner is important for nested procedures: a pack
+  // is compile-time structure, but it is no more capturable than an ordinary
+  // enclosing runtime parameter.
+  [[nodiscard]] const StaticArgumentPack *active_static_argument_pack(
+      const SyntaxTree &tree,
+      NodeId expression,
+      ScopeId scope) const {
+    const std::optional<SourceName> name =
+        single_name_expression(tree, expression);
+    if (!name.has_value() || !current_procedure_.is_valid()) return nullptr;
+    const SymbolId source = procedure_declaration_source(current_procedure_);
+    const StaticArgumentPack *pack = static_argument_pack(source);
+    if (pack == nullptr ||
+        semantic_.symbols.symbol(pack->binding).name != name->text) {
+      return nullptr;
+    }
+    // The symbolic source pass resolves the actual marker binding. A concrete
+    // instance deliberately has no runtime marker, so its owner/name match is
+    // sufficient. The lookup guards against an inner local shadowing the pack.
+    const std::optional<SymbolId> visible =
+        semantic_.symbols.lookup(scope, name->text);
+    if (!current_instance_index_.has_value()) {
+      return visible.has_value() && *visible == pack->binding ? pack : nullptr;
+    }
+    const SymbolId concrete_binding =
+        instances_[*current_instance_index_].pack_binding;
+    return visible.has_value() && *visible == concrete_binding ? pack : nullptr;
   }
 
   [[nodiscard]] bool constraint_accepts(
@@ -3370,12 +3627,14 @@ private:
       const std::vector<ParametricParameterRecord> &parameters,
       const std::vector<TypeSubstitution> &type_substitutions,
       const std::vector<ValueSubstitution> &value_substitutions,
+      const std::vector<TypeId> &pack_types,
       SourceRange use_range) {
     const std::vector<ParametricArgument> arguments = ordered_arguments(
         parameters, type_substitutions, value_substitutions);
     for (const ImportedProcedureInstance &instance :
          semantic_.imported_procedure_instances) {
-      if (instance.source_proxy == source && instance.arguments == arguments) {
+      if (instance.source_proxy == source && instance.arguments == arguments &&
+          instance.pack_types == pack_types) {
         return instance.instance_proxy;
       }
     }
@@ -3395,17 +3654,33 @@ private:
         instance_symbol.name += "$v" + argument.value.integer.to_decimal();
       }
     }
+    instance_symbol.name += "$pack" + std::to_string(pack_types.size());
+    for (TypeId type : pack_types) {
+      instance_symbol.name += "$t" + std::to_string(type.value);
+    }
     instance_symbol.kind = SymbolKind::Procedure;
     instance_symbol.visibility = Visibility::Private;
     instance_symbol.flags = source_symbol.flags;
     instance_symbol.flags.parametric = false;
     instance_symbol.flags.exported = false;
     instance_symbol.scope = semantic_.package_scope;
-    instance_symbol.type = substitute_type(
+    const TypeId fixed_signature = substitute_type(
         source_symbol.type,
         type_substitutions,
         value_substitutions,
         use_range);
+    const Type &fixed = semantic_.types.type(fixed_signature);
+    std::vector<TypeId> concrete_parameters;
+    if (!fixed.members.empty()) {
+      concrete_parameters.assign(fixed.members.begin(), fixed.members.end() - 1);
+    }
+    concrete_parameters.insert(
+        concrete_parameters.end(), pack_types.begin(), pack_types.end());
+    const TypeId result = fixed.members.empty()
+        ? semantic_.types.builtins().void_type
+        : fixed.members.back();
+    instance_symbol.type = semantic_.types.procedure(
+        concrete_parameters, result, fixed.c_calling_convention);
     instance_symbol.syntax = source_symbol.syntax;
     instance_symbol.name_range = source_symbol.name_range;
     const SymbolId instance_id =
@@ -3458,6 +3733,7 @@ private:
         origin.root_relative_path,
         origin.public_name,
         arguments,
+        pack_types,
     });
     return instance_id;
   }
@@ -3493,11 +3769,13 @@ private:
       SymbolId source,
       std::vector<TypeSubstitution> type_substitutions,
       std::vector<ValueSubstitution> value_substitutions,
+      std::vector<TypeId> pack_types,
       SourceRange use_range,
       std::string_view preferred_name = {}) {
     const std::vector<ParametricParameterRecord> parameters =
         parameters_for(source);
-    if (parameters.empty()) {
+    const StaticArgumentPack *pack = static_argument_pack(source);
+    if (parameters.empty() && pack == nullptr) {
       diagnostics_.error(use_range, "parametric procedure has no parameter metadata");
       return {};
     }
@@ -3552,13 +3830,15 @@ private:
           parameters,
           type_substitutions,
           value_substitutions,
+          pack_types,
           use_range);
     }
 
     for (const ProcedureInstance &instance : instances_) {
       if (instance.source != source ||
           instance.type_substitutions.size() != type_substitutions.size() ||
-          instance.value_substitutions.size() != value_substitutions.size()) {
+          instance.value_substitutions.size() != value_substitutions.size() ||
+          instance.pack_types != pack_types) {
         continue;
       }
       bool same = true;
@@ -3615,6 +3895,10 @@ private:
               std::to_string(type_substitutions[index].replacement.value);
         }
       }
+      instance_symbol.name += "$pack" + std::to_string(pack_types.size());
+      for (TypeId type : pack_types) {
+        instance_symbol.name += "$t" + std::to_string(type.value);
+      }
     }
     if (!source_symbol.linkage_name.empty()) {
       instance_symbol.linkage_name = instance_symbol.name;
@@ -3625,11 +3909,23 @@ private:
     instance_symbol.flags.parametric = false;
     instance_symbol.flags.exported = false;
     instance_symbol.scope = semantic_.package_scope;
-    instance_symbol.type = substitute_type(
+    const TypeId fixed_signature = substitute_type(
         source_symbol.type,
         type_substitutions,
         value_substitutions,
         use_range);
+    const Type &fixed = semantic_.types.type(fixed_signature);
+    std::vector<TypeId> concrete_parameters;
+    if (!fixed.members.empty()) {
+      concrete_parameters.assign(fixed.members.begin(), fixed.members.end() - 1);
+    }
+    concrete_parameters.insert(
+        concrete_parameters.end(), pack_types.begin(), pack_types.end());
+    const TypeId result = fixed.members.empty()
+        ? semantic_.types.builtins().void_type
+        : fixed.members.back();
+    instance_symbol.type = semantic_.types.procedure(
+        concrete_parameters, result, fixed.c_calling_convention);
     instance_symbol.syntax = source_symbol.syntax;
     instance_symbol.name_range = source_symbol.name_range;
     const SymbolId instance_id =
@@ -3659,6 +3955,33 @@ private:
           use_range);
       (void)semantic_.symbols.declare(std::move(concrete), diagnostics_);
     }
+    SymbolId concrete_pack_binding;
+    if (pack != nullptr) {
+      const Symbol &source_binding = semantic_.symbols.symbol(pack->binding);
+      Symbol marker = source_binding;
+      marker.scope = instance_scope;
+      concrete_pack_binding =
+          semantic_.symbols.declare(std::move(marker), diagnostics_);
+    }
+    std::vector<SymbolId> pack_parameters;
+    pack_parameters.reserve(pack_types.size());
+    for (std::size_t index = 0; index < pack_types.size(); ++index) {
+      Symbol concrete;
+      // The source pack binding is compile-time structure and therefore is not
+      // cloned. Each element receives an internal ordinary parameter whose
+      // order exactly matches the tail of the concrete procedure signature.
+      // Static iteration aliases source names to these symbols; the spelling is
+      // intentionally unnameable in Draft source.
+      concrete.name = "$pack_element_" + std::to_string(index);
+      concrete.kind = SymbolKind::Parameter;
+      concrete.scope = instance_scope;
+      concrete.type = pack_types[index];
+      concrete.syntax = pack == nullptr ? SyntaxReference{} : pack->syntax;
+      concrete.name_range = use_range;
+      const SymbolId parameter_id =
+          semantic_.symbols.declare(std::move(concrete), diagnostics_);
+      if (parameter_id.is_valid()) pack_parameters.push_back(parameter_id);
+    }
     const std::vector<ParametricArgument> arguments = ordered_arguments(
         parameters, type_substitutions, value_substitutions);
     instances_.push_back({
@@ -3666,12 +3989,16 @@ private:
         instance_id,
         std::move(type_substitutions),
         std::move(value_substitutions),
+        std::move(pack_types),
+        std::move(pack_parameters),
+        concrete_pack_binding,
         false,
     });
     semantic_.parametric_instances.push_back({
         source,
         instance_id,
         arguments,
+        instances_.back().pack_types,
         !preferred_name.empty(),
     });
     return instance_id;
@@ -3927,6 +4254,8 @@ private:
       const ConstantTable active_constants = active_constant_table();
       const std::vector<ConstantTypeBinding> active_types =
           active_constant_types();
+      const std::vector<ConstantStaticPackBinding> active_packs =
+          active_constant_packs();
       const bool defer_symbolic_assertion =
           !current_instance_index_.has_value() && argument_count >= 1 &&
           (expression_references_parametric_parameter(
@@ -3944,7 +4273,8 @@ private:
             scope,
             diagnostics_,
             &active_constants,
-            &active_types);
+            &active_types,
+            &active_packs);
       }
       std::string message;
       if (argument_count >= 2 && !defer_symbolic_assertion) {
@@ -3959,7 +4289,8 @@ private:
                 scope,
                 diagnostics_,
                 &active_constants,
-                &active_types);
+                &active_types,
+                &active_packs);
         if (evaluated_message.has_value() &&
             evaluated_message->kind == ConstantKind::String) {
           message = evaluated_message->text;
@@ -4057,6 +4388,21 @@ private:
         diagnostics_.error(call.range, "len requires exactly one argument");
         expression.type = semantic_.types.builtins().invalid;
       } else {
+        const StaticArgumentPack *pack = active_static_argument_pack(
+            tree, call.children[1], scope);
+        if (pack != nullptr) {
+          expression.type = apply_expected_type(
+              semantic_.types.builtins().usize_type, expected, call.range);
+          if (current_instance_index_.has_value()) {
+            // A concrete instance owns the exact ordered tail. Fold its length
+            // here so neither the pack marker nor an intrinsic reaches MIR.
+            expression.kind = HirExpressionKind::Constant;
+            expression.constant = ConstantValue::make_integer(
+                BigInteger::from_u64(
+                    instances_[*current_instance_index_].pack_types.size()));
+          }
+          return hir_.add_expression(std::move(expression));
+        }
         const HirExpressionId argument =
             check_expression(tree, call.children[1], scope);
         expression.operands.push_back(argument);
@@ -4316,13 +4662,38 @@ private:
         expression.addressable = true;
         return hir_.add_expression(std::move(expression));
       }
-      const std::optional<SymbolId> found =
+      if (active_static_argument_pack(tree, expression_id, scope) != nullptr) {
+        diagnostics_.error(
+            names.front().range,
+            "static argument pack may be used only by len or static iteration");
+        return invalid_expression(node.range);
+      }
+      std::optional<SymbolId> found =
           semantic_.symbols.lookup(scope, names.front().text);
       if (!found.has_value()) {
         diagnostics_.error(names.front().range, "unknown name '" + names.front().text + "'");
         return invalid_expression(node.range);
       }
+      if (is_enclosing_static_argument_pack_binding(*found)) {
+        diagnostics_.error(
+            names.front().range,
+            "nested procedure cannot capture an enclosing static argument pack");
+        return invalid_expression(node.range);
+      }
+      for (const StaticPackValueAlias &alias : active_pack_value_aliases_) {
+        if (alias.alias == *found) {
+          found = alias.parameter;
+          break;
+        }
+      }
       const Symbol symbol = semantic_.symbols.symbol(*found);
+      if (symbol.kind == SymbolKind::Procedure &&
+          static_argument_pack(*found) != nullptr) {
+        diagnostics_.error(
+            names.front().range,
+            "procedure with a static argument pack must be called directly");
+        return invalid_expression(node.range);
+      }
       if (captures_enclosing_runtime_binding(symbol)) {
         diagnostics_.error(
             names.front().range,
@@ -4654,6 +5025,8 @@ private:
         const ConstantTable visible_constants = active_constant_table();
         const std::vector<ConstantTypeBinding> visible_types =
             active_constant_types();
+        const std::vector<ConstantStaticPackBinding> visible_packs =
+            active_constant_packs();
         const std::optional<ConstantValue> folded =
             evaluate_constant_expression(
                 sources_,
@@ -4665,7 +5038,8 @@ private:
                 scope,
                 diagnostics_,
                 &visible_constants,
-                &visible_types);
+                &visible_types,
+                &visible_packs);
         if (folded.has_value() && folded->kind == ConstantKind::Bool) {
           HirExpression comparison;
           comparison.kind = HirExpressionKind::Constant;
@@ -4714,8 +5088,29 @@ private:
       // structural unification must discover one concrete type for every type
       // parameter before an instance is created.
       std::optional<SymbolId> inferred_template;
-      if (const std::optional<SourceName> callee_name =
-              single_name_expression(tree, node.children.front())) {
+      std::optional<ExplicitProcedureArguments> explicit_arguments;
+      const SyntaxNode &callee_syntax = tree.node(node.children.front());
+      if (callee_syntax.kind == NodeKind::BracketExpression &&
+          !callee_syntax.children.empty()) {
+        const NodeId base_id = callee_syntax.children.front();
+        std::optional<SymbolId> base_symbol;
+        if (const std::optional<SourceName> base_name =
+                single_name_expression(tree, base_id)) {
+          base_symbol = semantic_.symbols.lookup(scope, base_name->text);
+        } else {
+          base_symbol = imported_member(tree, tree.node(base_id), scope);
+        }
+        if (base_symbol.has_value() &&
+            static_argument_pack(*base_symbol) != nullptr) {
+          inferred_template = *base_symbol;
+          explicit_arguments = check_explicit_procedure_arguments(
+              tree, callee_syntax, scope, *base_symbol);
+          if (!explicit_arguments->valid) {
+            return invalid_expression(node.range);
+          }
+        }
+      } else if (const std::optional<SourceName> callee_name =
+                     single_name_expression(tree, node.children.front())) {
         inferred_template = semantic_.symbols.lookup(scope, callee_name->text);
       } else {
         const SyntaxNode &callee = tree.node(node.children.front());
@@ -4731,14 +5126,30 @@ private:
                 template_signature.members.empty()
                 ? 0
                 : template_signature.members.size() - 1;
-            if (node.children.size() - 1 != parameter_count) {
+            const StaticArgumentPack *pack =
+                static_argument_pack(*inferred_template);
+            // Resolver and interface import both store the fixed-prefix count
+            // beside a source procedure type containing exactly that prefix
+            // plus its result. A mismatch is corrupted semantic state, not a
+            // recoverable property of source input.
+            assert(pack == nullptr ||
+                pack->fixed_parameter_count == parameter_count);
+            const std::size_t supplied_count = node.children.size() - 1;
+            if ((pack == nullptr && supplied_count != parameter_count) ||
+                (pack != nullptr && supplied_count < parameter_count)) {
               diagnostics_.error(
                   node.range, "procedure call has the wrong number of arguments");
               return invalid_expression(node.range);
             }
             std::vector<HirExpressionId> arguments;
-            std::vector<TypeSubstitution> type_substitutions;
-            std::vector<ValueSubstitution> value_substitutions;
+            std::vector<TypeSubstitution> type_substitutions =
+                explicit_arguments.has_value()
+                ? std::move(explicit_arguments->type_substitutions)
+                : std::vector<TypeSubstitution>{};
+            std::vector<ValueSubstitution> value_substitutions =
+                explicit_arguments.has_value()
+                ? std::move(explicit_arguments->value_substitutions)
+                : std::vector<ValueSubstitution>{};
             for (std::size_t index = 0; index < parameter_count; ++index) {
               const TypeId argument_pattern = substitute_type(
                   template_signature.members[index],
@@ -4768,6 +5179,18 @@ private:
                 return invalid_expression(node.range);
               }
             }
+            std::vector<TypeId> pack_types;
+            for (std::size_t index = parameter_count;
+                 index < supplied_count; ++index) {
+              const HirExpressionId argument = check_expression(
+                  tree, node.children[index + 1], scope);
+              TypeId concrete = default_inferred_runtime_type(
+                  hir_.expression(argument).type);
+              contextualize_inferred_runtime_expression(argument, concrete);
+              hir_.expression_mut(argument).type = concrete;
+              arguments.push_back(argument);
+              pack_types.push_back(concrete);
+            }
             // A template HIR row is semantic evidence, not executable code.
             // Do not let a concrete-looking call inside that row manufacture a
             // native specialization; the concrete enclosing body is checked
@@ -4776,19 +5199,40 @@ private:
                 current_procedure_is_template_ ||
                 (!current_instance_index_.has_value() &&
                  has_symbolic_type_substitution(type_substitutions));
+            bool symbolic_pack = false;
+            for (TypeId type : pack_types) {
+              if (contains_symbolic_type(type)) {
+                symbolic_pack = true;
+                break;
+              }
+            }
             SymbolId callee_symbol = *inferred_template;
             TypeId concrete_signature_id;
-            if (symbolic) {
-              concrete_signature_id = substitute_type(
+            if (symbolic || symbolic_pack) {
+              const TypeId fixed_signature = substitute_type(
                   candidate.type,
                   type_substitutions,
                   value_substitutions,
                   node.range);
+              const Type &fixed = semantic_.types.type(fixed_signature);
+              std::vector<TypeId> concrete_parameters;
+              if (!fixed.members.empty()) {
+                concrete_parameters.assign(
+                    fixed.members.begin(), fixed.members.end() - 1);
+              }
+              concrete_parameters.insert(
+                  concrete_parameters.end(), pack_types.begin(), pack_types.end());
+              const TypeId result = fixed.members.empty()
+                  ? semantic_.types.builtins().void_type
+                  : fixed.members.back();
+              concrete_signature_id = semantic_.types.procedure(
+                  concrete_parameters, result, fixed.c_calling_convention);
             } else {
               callee_symbol = instantiate_procedure(
                   *inferred_template,
                   std::move(type_substitutions),
                   std::move(value_substitutions),
+                  std::move(pack_types),
                   node.range);
               if (!callee_symbol.is_valid()) return invalid_expression(node.range);
               concrete_signature_id =
@@ -4888,6 +5332,13 @@ private:
           return invalid_expression(node.range);
         }
         const Symbol symbol = semantic_.symbols.symbol(*imported);
+        if (symbol.kind == SymbolKind::Procedure &&
+            static_argument_pack(*imported) != nullptr) {
+          diagnostics_.error(
+              node.range,
+              "procedure with a static argument pack must be called directly");
+          return invalid_expression(node.range);
+        }
         if (symbol.kind == SymbolKind::Type ||
             symbol.kind == SymbolKind::TypeParameter) {
           HirExpression expression;
@@ -5013,134 +5464,14 @@ private:
             semantic_.symbols.symbol(base_expression.symbol);
         if (base_symbol.kind == SymbolKind::Procedure &&
             base_symbol.flags.parametric) {
-          const std::vector<ParametricParameterRecord> parameters =
-              parameters_for(base_expression.symbol);
-          if (node.children.size() - 1 != parameters.size()) {
-            diagnostics_.error(
-                node.range,
-                "parametric procedure application has the wrong number of arguments");
-            return invalid_expression(node.range);
-          }
-          std::vector<TypeSubstitution> type_substitutions;
-          std::vector<ValueSubstitution> value_substitutions;
-          for (std::size_t index = 0; index < parameters.size(); ++index) {
-            const ParametricParameterRecord &parameter = parameters[index];
-            if (parameter.constraint == TypeConstraintKind::CompileTimeValue) {
-              const TypeId required =
-                  semantic_.symbols.symbol(parameter.parameter).type;
-              if (current_procedure_is_template_ ||
-                  !current_instance_index_.has_value()) {
-                const ConstantTable active_constants = active_constant_table();
-                const std::size_t errors_before = diagnostics_.error_count();
-                const std::optional<IntegerExpression> symbolic =
-                    resolve_dependent_integer_expression_syntax(
-                        sources_,
-                        loaded_,
-                        semantic_,
-                        selections_,
-                        tree,
-                        node.children[index + 1],
-                        scope,
-                        required,
-                        active_constants,
-                        diagnostics_);
-                if (symbolic.has_value()) {
-                  const IntegerExpressionNode &symbolic_root =
-                      symbolic->nodes[symbolic->root];
-                  if (symbolic_root.type != integer_expression_type(required)) {
-                    diagnostics_.error(
-                        tree.node(node.children[index + 1]).range,
-                        "symbolic procedure value argument has the wrong result type");
-                    return invalid_expression(node.range);
-                  }
-                  for (const IntegerExpressionNode &part : symbolic->nodes) {
-                    if (part.operation !=
-                        IntegerExpressionOperation::Parameter) {
-                      continue;
-                    }
-                    const bool valid_symbol =
-                        part.parameter < semantic_.symbols.symbol_count();
-                    const Symbol *supplied = valid_symbol
-                        ? &semantic_.symbols.symbol(SymbolId{part.parameter})
-                        : nullptr;
-                    if (supplied == nullptr ||
-                        supplied->kind != SymbolKind::ValueParameter) {
-                      diagnostics_.error(
-                          tree.node(node.children[index + 1]).range,
-                          "symbolic procedure value argument names a non-parameter value");
-                      return invalid_expression(node.range);
-                    }
-                  }
-                  value_substitutions.push_back(
-                      {parameter.parameter, {}, *symbolic});
-                  continue;
-                }
-                // A recognized dependent expression may already have emitted
-                // its precise arithmetic/type diagnostic. Do not obscure it
-                // with a second constant-evaluator failure.
-                if (diagnostics_.error_count() != errors_before) {
-                  return invalid_expression(node.range);
-                }
-                if (current_procedure_is_template_ &&
-                    expression_references_parametric_parameter(
-                        tree, node.children[index + 1], scope)) {
-                  // The compact dependent-integer representation deliberately
-                  // excludes calls. Check the full expression as ordinary
-                  // typed source now; its concrete outer instance will run the
-                  // compile-time interpreter below with N/T bindings active.
-                  const HirExpressionId checked = check_expression(
-                      tree,
-                      node.children[index + 1],
-                      scope,
-                      required);
-                  if (is_invalid_type(hir_.expression(checked).type)) {
-                    return invalid_expression(node.range);
-                  }
-                  value_substitutions.push_back(
-                      {parameter.parameter, {}, {}, true});
-                  continue;
-                }
-              }
-              const ConstantTable active_constants = active_constant_table();
-              const std::vector<ConstantTypeBinding> active_types =
-                  active_constant_types();
-              const std::optional<EvaluatedConstant> evaluated =
-                  evaluate_typed_constant_expression(
-                      sources_,
-                      loaded_,
-                      semantic_,
-                      target_,
-                      tree,
-                      node.children[index + 1],
-                      scope,
-                      diagnostics_,
-                      &active_constants,
-                      &active_types,
-                      required);
-              if (!evaluated.has_value()) {
-                return invalid_expression(node.range);
-              }
-              if (evaluated->value.kind != ConstantKind::Integer) {
-                diagnostics_.error(
-                    tree.node(node.children[index + 1]).range,
-                    "procedure value argument must be a compile-time integer");
-                return invalid_expression(node.range);
-              }
-              value_substitutions.push_back(
-                  {parameter.parameter, evaluated->value, {}});
-              continue;
-            }
-            const TypeId argument =
-                type_value_expression(tree, node.children[index + 1], scope);
-            if (!constraint_accepts(parameter.constraint, argument)) {
-              diagnostics_.error(
-                  tree.node(node.children[index + 1]).range,
-                  "procedure type argument does not satisfy its constraint");
-              return invalid_expression(node.range);
-            }
-            type_substitutions.push_back(
-                {semantic_.symbols.symbol(parameter.parameter).type, argument});
-          }
+          ExplicitProcedureArguments arguments =
+              check_explicit_procedure_arguments(
+                  tree, node, scope, base_expression.symbol);
+          if (!arguments.valid) return invalid_expression(node.range);
+          std::vector<TypeSubstitution> type_substitutions =
+              std::move(arguments.type_substitutions);
+          std::vector<ValueSubstitution> value_substitutions =
+              std::move(arguments.value_substitutions);
           if (type_validation_only_ || current_procedure_is_template_ ||
               (!current_instance_index_.has_value() &&
                (has_symbolic_type_substitution(type_substitutions) ||
@@ -5159,6 +5490,7 @@ private:
               base_expression.symbol,
               std::move(type_substitutions),
               std::move(value_substitutions),
+              {},
               node.range);
           if (!instance.is_valid()) return invalid_expression(node.range);
           return procedure_symbol_expression(instance, node.range);
@@ -5882,6 +6214,8 @@ private:
     const ConstantTable visible_constants = active_constant_table();
     const std::vector<ConstantTypeBinding> visible_types =
         active_constant_types();
+    const std::vector<ConstantStaticPackBinding> visible_packs =
+        active_constant_packs();
     const std::optional<EvaluatedConstant> evaluated =
         evaluate_typed_constant_expression(
             sources_,
@@ -5893,7 +6227,9 @@ private:
             scope,
             diagnostics_,
             &visible_constants,
-            &visible_types);
+            &visible_types,
+            {},
+            &visible_packs);
     if (!evaluated.has_value()) {
       semantic_.symbols.symbol_mut(id).type =
           semantic_.types.builtins().invalid;
@@ -5967,6 +6303,16 @@ private:
     for (NodeId child : declaration.children) {
       if (tree.node(child).kind == NodeKind::ParametricParameterList) {
         symbol.flags.parametric = true;
+      }
+    }
+    for (NodeId child : tree.node(procedure_id).children) {
+      if (tree.node(child).kind != NodeKind::ParameterList) continue;
+      for (NodeId parameter : tree.node(child).children) {
+        for (NodeId part : tree.node(parameter).children) {
+          if (tree.node(part).kind == NodeKind::StaticPackType) {
+            symbol.flags.parametric = true;
+          }
+        }
       }
     }
     const bool parametric = symbol.flags.parametric;
@@ -6278,6 +6624,136 @@ private:
     return checked;
   }
 
+  // Expands `for value, index in pack` while HIR is still structured. The
+  // symbolic template pass checks one representative body using the pack's
+  // element TypeParameter. A concrete instance emits one lexical block per
+  // argument, in source order, and aliases the value binding to the ordinary
+  // fixed-signature parameter created by instantiate_procedure. Thus MIR sees
+  // neither a pack value nor a runtime loop.
+  [[nodiscard]] std::optional<HirStatementId> check_static_pack_iteration(
+      const SyntaxTree &tree,
+      NodeId statement_id,
+      ScopeId scope,
+      TypeId result_type,
+      ControlDepth depth) {
+    const SyntaxNode &node = tree.node(statement_id);
+    if (node.children.empty()) return std::nullopt;
+    const SyntaxNode &header = tree.node(node.children.front());
+    if (header.kind != NodeKind::IterationHeader || header.children.empty()) {
+      return std::nullopt;
+    }
+    const StaticArgumentPack *pack = active_static_argument_pack(
+        tree, header.children.front(), scope);
+    if (pack == nullptr) return std::nullopt;
+
+    HirStatement statement;
+    statement.kind = HirStatementKind::CompileTimeSelection;
+    statement.range = node.range;
+    statement.syntax = {tree.file(), statement_id};
+    if (node.children.size() < 2) {
+      return hir_.add_statement(std::move(statement));
+    }
+
+    const SyntaxNode &iterable = tree.node(header.children.front());
+    const std::vector<SourceName> names = names_in_span(
+        tree, header.token_begin, iterable.token_begin);
+    if (names.empty() || names.size() > 2) {
+      diagnostics_.error(
+          header.range,
+          "static pack iteration requires a value and optional index binding");
+      return hir_.add_statement(std::move(statement));
+    }
+
+    auto declare_iteration_binding = [&](
+        const SourceName &name,
+        ScopeId iteration_scope,
+        SymbolKind kind,
+        TypeId type) -> SymbolId {
+      if (name.text == "_") return {};
+      Symbol binding;
+      binding.name = name.text;
+      binding.kind = kind;
+      binding.scope = iteration_scope;
+      binding.type = type;
+      binding.syntax = {tree.file(), node.children.front()};
+      binding.name_range = name.range;
+      return semantic_.symbols.declare(std::move(binding), diagnostics_);
+    };
+
+    if (!current_instance_index_.has_value()) {
+      // One representative body is sufficient for source-level diagnostics,
+      // refinements, judgments, and synthesis discovery. It is deliberately
+      // non-lowered, so its symbolic value/index bindings need no runtime ABI.
+      const ScopeId iteration_scope = semantic_.symbols.add_scope(
+          ScopeKind::Block, scope, header.range);
+      (void)declare_iteration_binding(
+          names.front(),
+          iteration_scope,
+          SymbolKind::Parameter,
+          pack->symbolic_element_type);
+      if (names.size() == 2) {
+        (void)declare_iteration_binding(
+            names[1],
+            iteration_scope,
+            SymbolKind::ValueParameter,
+            semantic_.types.builtins().usize_type);
+      }
+      statement.blocks.push_back(check_block(
+          tree,
+          node.children.back(),
+          iteration_scope,
+          result_type,
+          depth));
+      return hir_.add_statement(std::move(statement));
+    }
+
+    // Snapshot rather than retain references into instances_: checking one
+    // expanded body can discover another specialization and append to that
+    // vector, invalidating its storage before the next element is expanded.
+    const std::vector<TypeId> pack_types =
+        instances_[*current_instance_index_].pack_types;
+    const std::vector<SymbolId> pack_parameters =
+        instances_[*current_instance_index_].pack_parameters;
+    // Both vectors are constructed together from the call's ordered tail. A
+    // mismatch is an internal compiler error, never a property of Draft input.
+    assert(pack_types.size() == pack_parameters.size());
+    for (std::size_t index = 0; index < pack_types.size(); ++index) {
+      const ScopeId iteration_scope = semantic_.symbols.add_scope(
+          ScopeKind::Block, scope, header.range);
+      const SymbolId value_alias = declare_iteration_binding(
+          names.front(),
+          iteration_scope,
+          SymbolKind::Parameter,
+          pack_types[index]);
+      if (value_alias.is_valid()) {
+        active_pack_value_aliases_.push_back(
+            {value_alias, pack_parameters[index]});
+      }
+
+      if (names.size() == 2) {
+        const SymbolId index_binding = declare_iteration_binding(
+            names[1],
+            iteration_scope,
+            SymbolKind::Constant,
+            semantic_.types.builtins().usize_type);
+        if (index_binding.is_valid()) {
+          constants_.bindings.push_back({
+              index_binding,
+              ConstantValue::make_integer(BigInteger::from_u64(index)),
+          });
+        }
+      }
+      statement.blocks.push_back(check_block(
+          tree,
+          node.children.back(),
+          iteration_scope,
+          result_type,
+          depth));
+      if (value_alias.is_valid()) active_pack_value_aliases_.pop_back();
+    }
+    return hir_.add_statement(std::move(statement));
+  }
+
   // Checks the closed structured-statement vocabulary into typed HIR. Helpers
   // above keep declaration and assignment pattern mechanics out of this main
   // control-flow dispatch.
@@ -6395,6 +6871,11 @@ private:
       break;
 
     case NodeKind::ForStatement:
+      if (const std::optional<HirStatementId> expanded =
+              check_static_pack_iteration(
+                  tree, statement_id, scope, result_type, depth)) {
+        return *expanded;
+      }
       statement.kind = HirStatementKind::For;
       if (node.children.empty()) break;
       if (tree.node(node.children.front()).kind == NodeKind::IterationHeader) {
@@ -6644,6 +7125,8 @@ private:
           const ConstantTable visible_constants = active_constant_table();
           const std::vector<ConstantTypeBinding> visible_types =
               active_constant_types();
+          const std::vector<ConstantStaticPackBinding> visible_packs =
+              active_constant_packs();
           const std::optional<EvaluatedConstant> evaluated =
               evaluate_typed_constant_expression(
                   sources_,
@@ -6656,7 +7139,8 @@ private:
                   diagnostics_,
                   &visible_constants,
                   &visible_types,
-                  semantic_.types.builtins().bool_type);
+                  semantic_.types.builtins().bool_type,
+                  &visible_packs);
           if (!evaluated.has_value() ||
               evaluated->value.kind != ConstantKind::Bool) {
             if (evaluated.has_value()) {
@@ -6735,8 +7219,47 @@ private:
             statement.blocks.push_back(*selected);
           }
         } else {
-          diagnostics_.error(
-              node.range, "compile-time 'when' statement was not selected");
+          // Static-pack iteration bodies create their value/index scopes only
+          // in this phase, so TypeResolver deliberately leaves nested sites
+          // out of the package-wide selection round. A condition independent
+          // of those bindings (for example target.os) is still an ordinary
+          // constant and can be selected exactly here.
+          const ConstantTable visible_constants = active_constant_table();
+          const std::vector<ConstantTypeBinding> visible_types =
+              active_constant_types();
+          const std::vector<ConstantStaticPackBinding> visible_packs =
+              active_constant_packs();
+          const std::optional<EvaluatedConstant> evaluated =
+              evaluate_typed_constant_expression(
+                  sources_,
+                  loaded_,
+                  semantic_,
+                  target_,
+                  tree,
+                  condition_id,
+                  scope,
+                  diagnostics_,
+                  &visible_constants,
+                  &visible_types,
+                  semantic_.types.builtins().bool_type,
+                  &visible_packs);
+          if (evaluated.has_value() &&
+              evaluated->value.kind == ConstantKind::Bool) {
+            if (const std::optional<HirBlockId> selected =
+                    check_selected_when_branch(
+                        tree,
+                        node,
+                        evaluated->value.boolean,
+                        scope,
+                        result_type,
+                        depth)) {
+              statement.blocks.push_back(*selected);
+            }
+          } else if (evaluated.has_value()) {
+            diagnostics_.error(
+                tree.node(condition_id).range,
+                "compile-time 'when' condition must be a bool");
+          }
         }
       }
       break;
@@ -7030,12 +7553,15 @@ private:
         active_branch_refinements_;
     const std::vector<ActiveTypeRefinement> saved_type_refinements =
         active_type_refinements_;
+    const std::vector<StaticPackValueAlias> saved_pack_aliases =
+        active_pack_value_aliases_;
     // A nested procedure declaration may be checked while its declaration is
     // inside an outer runtime branch, but invoking that static procedure later
     // does not imply the declaration-time path. Only its own body branches may
     // refine sites in the nested procedure.
     active_branch_refinements_.clear();
     active_type_refinements_.clear();
+    active_pack_value_aliases_.clear();
     const SymbolId declaration_source = procedure_declaration_source(id);
     for (const DeclarationDenial &denial : semantic_.declaration_denials) {
       if (denial.declaration != declaration_source) continue;
@@ -7065,6 +7591,7 @@ private:
     active_statement_denials_ = saved_denials;
     active_branch_refinements_ = saved_refinements;
     active_type_refinements_ = saved_type_refinements;
+    active_pack_value_aliases_ = saved_pack_aliases;
     return true;
   }
 
@@ -7087,6 +7614,7 @@ private:
   // Keeping the stack beside the branch-refinement stack makes entry/exit
   // explicit and prevents a branch fact from changing a public signature.
   std::vector<ActiveTypeRefinement> active_type_refinements_;
+  std::vector<StaticPackValueAlias> active_pack_value_aliases_;
   std::vector<ProcedureInstance> instances_;
   std::optional<std::size_t> current_instance_index_;
   // Used only by the package-initializer preflight. It reuses the complete

@@ -87,6 +87,7 @@ enum class TokenKind {
   ColonColon,
   ColonEqual,
   Dot,
+  DotDot,
   Ellipsis,
   At,
   Hash,

@@ -191,6 +191,15 @@ public:
             translate_type(parameter_symbol.type),
         });
       }
+      for (const StaticArgumentPack &pack : package_.static_argument_packs) {
+        if (pack.owner != id) continue;
+        declaration.has_static_argument_pack = true;
+        declaration.static_argument_pack_name =
+            package_.symbols.symbol(pack.binding).name;
+        declaration.static_argument_pack_fixed_parameter_count =
+            pack.fixed_parameter_count;
+        break;
+      }
       for (const NativeBinding &binding : package_.native_bindings) {
         if (binding.symbol == id) {
           declaration.native_provider = binding.provider;
@@ -229,6 +238,9 @@ public:
             package_.symbols.symbol(instance.instance).name;
         for (const ParametricArgument &argument : instance.arguments) {
           translated.arguments.push_back(translate_argument(argument));
+        }
+        for (TypeId type : instance.pack_types) {
+          translated.pack_types.push_back(translate_type(type));
         }
         if (const ProcedureEffectSummary *summary =
                 effects_->find(instance.instance)) {
@@ -853,6 +865,38 @@ public:
       consumer_.symbols.symbol_mut(proxy_id).type =
           import_type(package, cache, declaration.type);
       active_parameters_ = previous_parameters;
+
+      if (declaration.has_static_argument_pack) {
+        // The imported marker lives in a procedure scope, matching a source
+        // declaration and keeping its name independent from explicit generic
+        // parameter names. It is compile-time-only and is never part of the
+        // imported procedure type.
+        const ScopeId procedure_scope = consumer_.symbols.add_scope(
+            ScopeKind::Procedure, imported_scope, SourceRange::invalid());
+        consumer_.owned_scopes.push_back({proxy_id, procedure_scope});
+        Symbol marker;
+        marker.name = declaration.static_argument_pack_name;
+        marker.kind = SymbolKind::ValueParameter;
+        marker.scope = procedure_scope;
+        marker.type = consumer_.types.type_parameter(
+            package.identity.root_identity + ":" +
+                package.identity.root_relative_path + ":" + declaration.name +
+                ".pack.element",
+            SourceRange::invalid());
+        marker.syntax = binding.syntax;
+        marker.name_range = import_symbol.name_range;
+        const SymbolId marker_id =
+            consumer_.symbols.declare(std::move(marker), diagnostics_);
+        if (marker_id.is_valid()) {
+          consumer_.static_argument_packs.push_back({
+              proxy_id,
+              marker_id,
+              binding.syntax,
+              declaration.static_argument_pack_fixed_parameter_count,
+              consumer_.symbols.symbol(marker_id).type,
+          });
+        }
+      }
 
       ConstantValue imported_constant = declaration.constant;
       if (declaration.has_constant) {

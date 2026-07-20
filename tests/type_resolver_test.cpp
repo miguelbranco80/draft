@@ -541,6 +541,94 @@ Wrong_Distinct_Constraint :: struct {
                     std::string::npos);
 }
 
+void test_static_argument_pack_signature_metadata(TestState &state) {
+  SemanticSource source(R"draft(
+package types
+
+visit :: proc(prefix: string, values: ..type) {}
+empty :: proc(values: ..type) {}
+)draft");
+
+  if (source.diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(source.sources, source.diagnostics);
+  }
+  EXPECT(state, !source.diagnostics.has_errors());
+  EXPECT(state, source.semantic.static_argument_packs.size() == 2);
+
+  const draft::Symbol *visit = find_symbol(source.semantic, "visit");
+  const draft::Symbol *empty = find_symbol(source.semantic, "empty");
+  EXPECT(state, visit != nullptr);
+  EXPECT(state, empty != nullptr);
+  if (visit == nullptr || empty == nullptr ||
+      source.semantic.static_argument_packs.size() != 2) {
+    return;
+  }
+
+  EXPECT(state, visit->flags.parametric);
+  EXPECT(state, empty->flags.parametric);
+  const draft::Type &visit_type = source.semantic.types.type(visit->type);
+  const draft::Type &empty_type = source.semantic.types.type(empty->type);
+  // A static pack is compile-time signature structure. Only the fixed prefix
+  // and result inhabit the source procedure type; concrete instances append
+  // their ordinary tail parameters later during body checking.
+  EXPECT(state, visit_type.members.size() == 2);
+  EXPECT(state, empty_type.members.size() == 1);
+
+  const draft::StaticArgumentPack &visit_pack =
+      source.semantic.static_argument_packs.front();
+  const draft::StaticArgumentPack &empty_pack =
+      source.semantic.static_argument_packs.back();
+  EXPECT(state, visit_pack.fixed_parameter_count == 1);
+  EXPECT(state,
+      source.semantic.symbols.symbol(visit_pack.binding).name == "values");
+  EXPECT(state, visit_pack.symbolic_element_type.is_valid());
+  EXPECT(state, empty_pack.fixed_parameter_count == 0);
+}
+
+void test_static_argument_pack_declaration_diagnostics(TestState &state) {
+  SemanticSource source(R"draft(
+package types
+
+not_final :: proc(values: ..type, suffix: u8) {}
+two :: proc(left: ..type, right: ..type) {}
+grouped :: proc(left, right: ..type) {}
+discarded :: proc(_: ..type) {}
+wrong_marker :: proc(values: ..u32) {}
+Callback :: proc(values: ..type)
+
+c_variadic :: c proc(values: ..type) {}
+
+foreign libc {
+    foreign_variadic :: proc(values: ..type)
+}
+
+export exported_variadic :: c "exported_variadic" proc(values: ..type) {}
+)draft");
+
+  EXPECT(state, source.diagnostics.has_errors());
+  for (const draft::Diagnostic &diagnostic :
+       source.diagnostics.diagnostics()) {
+    if (diagnostic.severity == draft::DiagnosticSeverity::Error) {
+      EXPECT(state, diagnostic.range.is_valid());
+    }
+  }
+  const std::string rendered =
+      draft::render_diagnostics(source.sources, source.diagnostics);
+  EXPECT(state, rendered.find("static argument pack must be the final") !=
+                    std::string::npos);
+  EXPECT(state, rendered.find("only one static argument pack") !=
+                    std::string::npos);
+  EXPECT(state, rendered.find("requires one named binding") !=
+                    std::string::npos);
+  EXPECT(state, rendered.find("element marker must be '..type'") !=
+                    std::string::npos);
+  EXPECT(state, rendered.find("require a named procedure body") !=
+                    std::string::npos);
+  EXPECT(state, rendered.find(
+      "C, foreign, and exported procedures require fixed signatures") !=
+                    std::string::npos);
+}
+
 void test_value_parameter_diagnostics(TestState &state) {
   SemanticSource source(R"draft(
 package types
@@ -770,6 +858,8 @@ int main() {
   test_dependent_integer_expression_diagnostics(state);
   test_layout_integer_context_diagnostics(state);
   test_parametric_type_diagnostics(state);
+  test_static_argument_pack_signature_metadata(state);
+  test_static_argument_pack_declaration_diagnostics(state);
   test_value_parameter_diagnostics(state);
   test_invalid_enum_values(state);
   test_c_enum_default_backing(state);

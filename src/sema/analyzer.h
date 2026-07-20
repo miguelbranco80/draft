@@ -130,16 +130,32 @@ struct ParametricArgument {
   bool operator==(const ParametricArgument &) const = default;
 };
 
+// A `name: ..type` final procedure parameter is compile-time structure, not a
+// runtime slice or a first-class procedure-type member. The source binding is
+// visible only to len and static iteration. symbolic_element_type lets the
+// template body be checked once; a concrete ProcedureInstance replaces it with
+// ordered ordinary parameters before executable HIR exists.
+struct StaticArgumentPack {
+  SymbolId owner;
+  SymbolId binding;
+  SyntaxReference syntax;
+  std::uint32_t fixed_parameter_count = 0;
+  TypeId symbolic_element_type;
+};
+
 // Concrete procedure symbols are created during body checking, after the
 // declaration graph is stable. The ordered argument packet is the semantic
-// identity of the specialization; package-local TypeIds never cross an
-// interface without translation. externally_requested distinguishes a body
-// requested by a consumer package from an implementation-private instance, so
-// only the former becomes a concrete interface effect row.
+// identity of the specialization; `arguments` holds named bracket parameters
+// and `pack_types` holds the ordered inferred runtime tail. Package-local
+// TypeIds never cross an interface without translation. externally_requested
+// distinguishes a body requested by a consumer package from an
+// implementation-private instance, so only the former becomes a concrete
+// interface effect row.
 struct ParametricInstanceRecord {
   SymbolId source;
   SymbolId instance;
   std::vector<ParametricArgument> arguments;
+  std::vector<TypeId> pack_types;
   bool externally_requested = false;
 };
 
@@ -220,6 +236,10 @@ struct ImportedProcedureInstance {
   std::string root_relative_path;
   std::string public_template_name;
   std::vector<ParametricArgument> arguments;
+  // Ordered heterogeneous tail types in this consumer's TypeStore. Compiler
+  // orchestration translates each graph into the defining package before
+  // constructing its ordinary concrete signature.
+  std::vector<TypeId> pack_types;
 };
 
 // A consumer cannot execute a procedure-dependent layout recipe imported from
@@ -557,6 +577,7 @@ struct SemanticPackage {
   std::vector<AggregateMember> aggregate_members;
   std::vector<EnumMemberValue> enum_member_values;
   std::vector<ParametricParameterRecord> parametric_parameters;
+  std::vector<StaticArgumentPack> static_argument_packs;
   std::vector<ParametricInstanceRecord> parametric_instances;
   std::vector<ParametricTypeInstanceRecord> parametric_type_instances;
   std::vector<ImportBinding> imports;

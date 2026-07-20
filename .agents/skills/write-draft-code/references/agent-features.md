@@ -283,6 +283,15 @@ Keep the two uses of “provider” distinct:
 
 Neither implies a package dependency manager or network access during build.
 
+Agent constructs inside a static `..type` pack body belong to the source
+template, not to each generated iteration or specialization. Draft records one
+`...` or `judge` site under the symbolic element type and its active `when`
+refinements and creates one provider obligation for that source site. Normal
+site-level retry policy still applies, but never once per argument. Draft then
+checks the accepted source in every concrete expansion that selects it. Do not
+write prompts that assume one model call per argument, and do not duplicate a
+site merely to manufacture pack parallelism.
+
 ## Compiler-enforced `deny`
 
 `deny` establishes a lexical, transitive capability boundary using resolved

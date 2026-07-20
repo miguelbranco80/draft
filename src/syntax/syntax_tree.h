@@ -71,6 +71,7 @@ enum class NodeKind {
   Procedure,
   ParameterList,
   Parameter,
+  StaticPackType,
   ResultClause,
   MemberList,
   FieldMember,

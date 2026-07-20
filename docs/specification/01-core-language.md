@@ -154,7 +154,9 @@ the Draft context, and enclosing compile-time declarations and parametric
 type or value parameters that are in lexical scope. It may not reference an
 enclosing invocation's parameters, locals, or iteration bindings, even when
 those bindings are immutable. Those values must be passed as explicit
-parameters.
+parameters. An enclosing static argument pack is likewise not capturable: it
+describes the outer specialization's runtime arguments as well as compile-time
+types and length. A nested procedure may declare and specialize its own pack.
 
 A normal call propagates the current hidden runtime-context pointer to the
 nested procedure; that is ordinary calling-convention behavior rather than
@@ -497,6 +499,11 @@ for _, index in input {
 Iteration values are copies; mutation of the underlying element uses explicit
 indexing or a pointer. `break` exits the nearest loop or `switch`; `continue`
 begins the next iteration of the nearest loop.
+
+The same binding spelling statically expands a procedure's final `..type`
+argument pack, but that form is compile-time specialization rather than a
+runtime loop. Its exact binding, ordering, and direct-call rules are specified
+under [parametric types and procedures](02-types-memory-runtime.md#parametric-types-and-procedures).
 
 `switch` evaluates its subject once. Constant `case` labels use the subject's
 type, comma-separated labels share a body, and an empty `case:` is the default:

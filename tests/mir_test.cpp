@@ -318,6 +318,128 @@ main :: proc() -> i64 {
   EXPECT(state, disabled_assertions == 0);
 }
 
+// Proves the erasure boundary for static argument packs. Body checking must
+// replace the open source tail with ordinary parameters and must splice one
+// loop body per argument before MIR sees the program. The calls to `record`
+// make expansion order observable in the MIR instruction stream without
+// relying on a native backend or optimizer.
+void test_static_argument_packs_erase_before_mir(TestState &state) {
+  LoweredSource source(R"draft(
+package mir
+
+record :: proc(index: usize) {
+}
+
+expand :: proc(values: ..type) {
+    static_assert(len(values) >= 0)
+    for value, index in values {
+        when index == 0 {
+            static_assert(type_of(value) == int)
+        } else when index == 1 {
+            static_assert(type_of(value) == bool)
+        } else when index == 2 {
+            static_assert(type_of(value) == string)
+        } else {
+            static_assert(type_of(value) == string)
+        }
+        record(index)
+    }
+}
+
+main :: proc() {
+    expand()
+    expand(7, true, "draft")
+}
+)draft");
+
+  if (source.diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(
+        source.sources, source.diagnostics);
+  }
+  EXPECT(state, source.semantics.ok);
+  EXPECT(state, source.bodies.ok);
+  EXPECT(state, source.mir.ok);
+  EXPECT(state, !source.diagnostics.has_errors());
+
+  draft::SymbolId populated_instance;
+  draft::SymbolId empty_instance;
+  for (const draft::ParametricInstanceRecord &instance :
+       source.semantics.package.parametric_instances) {
+    const draft::Symbol &source_symbol =
+        source.semantics.package.symbols.symbol(instance.source);
+    if (source_symbol.name != "expand") continue;
+    if (instance.pack_types.empty()) {
+      empty_instance = instance.instance;
+    } else if (instance.pack_types.size() == 3) {
+      populated_instance = instance.instance;
+    }
+  }
+  EXPECT(state, empty_instance.is_valid());
+  EXPECT(state, populated_instance.is_valid());
+
+  bool saw_empty = false;
+  bool saw_populated = false;
+  for (const draft::MirProcedure &procedure : source.mir.program.procedures()) {
+    if (procedure.symbol != empty_instance &&
+        procedure.symbol != populated_instance) {
+      continue;
+    }
+
+    const draft::Type &signature =
+        source.semantics.package.types.type(procedure.type);
+    std::size_t parameter_count = 0;
+    for (const draft::MirLocal &local : procedure.locals) {
+      if (local.kind == draft::MirLocalKind::Parameter) ++parameter_count;
+      EXPECT(
+          state,
+          source.semantics.package.types.type(local.type).kind !=
+              draft::TypeKind::TypeParameter);
+    }
+    for (const draft::MirInstruction &instruction : procedure.instructions) {
+      EXPECT(state, instruction.kind != draft::MirInstructionKind::Length);
+      if (instruction.type.is_valid()) {
+        EXPECT(
+            state,
+            source.semantics.package.types.type(instruction.type).kind !=
+                draft::TypeKind::TypeParameter);
+      }
+    }
+
+    if (procedure.symbol == empty_instance) {
+      saw_empty = true;
+      EXPECT(state, signature.members.size() == 1);
+      EXPECT(state, parameter_count == 0);
+      for (const draft::MirInstruction &instruction : procedure.instructions) {
+        EXPECT(state, instruction.kind != draft::MirInstructionKind::Call);
+      }
+      continue;
+    }
+
+    saw_populated = true;
+    EXPECT(state, signature.members.size() == 4);
+    EXPECT(state, parameter_count == 3);
+    std::vector<std::string> recorded_indices;
+    for (const draft::MirInstruction &instruction : procedure.instructions) {
+      if (instruction.kind != draft::MirInstructionKind::Call ||
+          instruction.operands.empty()) {
+        continue;
+      }
+      const draft::MirValue &argument =
+          procedure.value(instruction.operands.back());
+      const draft::MirInstruction &definition =
+          procedure.instruction(argument.definition);
+      if (definition.kind == draft::MirInstructionKind::Constant &&
+          definition.constant.kind == draft::ConstantKind::Integer) {
+        recorded_indices.push_back(
+            definition.constant.integer.to_decimal());
+      }
+    }
+    EXPECT(state, recorded_indices == std::vector<std::string>({"0", "1", "2"}));
+  }
+  EXPECT(state, saw_empty);
+  EXPECT(state, saw_populated);
+}
+
 } // namespace
 
 int main() {
@@ -326,6 +448,7 @@ int main() {
   test_unresolved_synthesis_stops_lowering(state);
   test_required_integer_traps_are_explicit(state);
   test_disabled_assertions_do_not_evaluate_operands(state);
+  test_static_argument_packs_erase_before_mir(state);
 
   if (state.failures != 0) {
     std::cerr << state.failures << " MIR expectation(s) failed\n";

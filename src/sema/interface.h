@@ -139,6 +139,13 @@ struct InterfaceDeclaration {
   std::string native_provider;
   std::string native_linker_name_spelling;
   std::vector<InterfaceParameter> parameters;
+  // A static pack is signature-generation metadata, not an InterfaceType row:
+  // the public source procedure type contains only its fixed prefix and result.
+  // Consumers reproduce the marker from these canonical source facts and send
+  // the ordered concrete tail types with each specialization request.
+  bool has_static_argument_pack = false;
+  std::string static_argument_pack_name;
+  std::uint32_t static_argument_pack_fixed_parameter_count = 0;
   struct ReturnFlowSlot {
     std::uint32_t parameter =
         std::numeric_limits<std::uint32_t>::max();
@@ -203,11 +210,13 @@ struct InterfaceDeclaration {
 // concrete body contract needed by callers that requested the exact ordered
 // arguments. instance_name is the canonical linker identity shared with every
 // consumer proxy. Argument types use this interface's type graph, never the
-// defining package's process-local TypeIds.
+// defining package's process-local TypeIds. `pack_types` is the ordered static
+// tail and participates in identity after the named `arguments` packet.
 struct InterfaceProcedureInstance {
   std::string template_name;
   std::string instance_name;
   std::vector<InterfaceNominalArgument> arguments;
+  std::vector<InterfaceTypeId> pack_types;
   bool has_effect_summary = false;
   std::vector<InterfaceDeclaration::Effect> effects;
   std::vector<InterfaceDeclaration::ReturnValue> return_values;

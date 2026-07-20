@@ -55,10 +55,51 @@ instances validate the accepted expansion.
 Effect closure includes every concrete HIR procedure. For a specialization
 requested across a package boundary, the completed interface publishes an
 instance row containing the public template name, canonical ordered generic
-arguments, stable monomorphized linker name, and that exact body's
-effect/return/write contract. Consumer proxies refresh from this row rather
-than inheriting the symbolic public template summary; two substitutions may
-select different calls and therefore legitimately expose different denials.
+arguments, canonical ordered pack types, stable monomorphized linker name, and
+that exact body's effect/return/write contract. Consumer proxies refresh from
+this row rather than inheriting the symbolic public template summary; two
+substitutions may select different calls and therefore legitimately expose
+different denials.
+
+## Static heterogeneous argument packs
+
+Status: implemented for local, nested, and cross-package direct calls, symbolic
+body checking, exact effects, and native lowering.
+
+Signature resolution records one `StaticArgumentPack` beside the owning
+procedure instead of adding a slice, tuple, or meta-type member to its source
+`TypeKind::Procedure`. The row owns the source binding, fixed-prefix count, and
+a unique symbolic element TypeId. The source procedure is parametric even when
+it has no bracketed parameters, so it follows the same non-lowered template
+boundary as an ordinary generic procedure.
+
+Call checking evaluates the fixed prefix and tail in source order. The tail is
+defaulted independently, producing an ordered TypeId vector. The instance key
+is the ordinary type/value substitution packet plus that vector. Instantiation
+appends one ordinary Parameter symbol and signature member per tail element;
+static iteration aliases its lexical value binding directly to that parameter.
+Each concrete index is a lexical compile-time `usize`. The resulting HIR and
+MIR contain fixed procedure calls and sequential blocks only—there is no pack
+value, runtime type tag, loop, or backend variadic operation.
+
+The symbolic source pass expands the loop body once using the unique element
+TypeParameter and a symbolic index. Concrete checking expands one lexical block
+per element and evaluates dependent `when` conditions with exact types and
+indices. `len(pack)` uses a narrow constant-evaluator overlay containing only
+the marker SymbolId and length; other attempts to evaluate the marker fail.
+This avoids pretending that the pack is an array or string in compile-time
+state. Static iteration blocks are sequential compile-time-selection HIR, not
+runtime loop HIR, so they do not create a `break`/`continue` target. A nested
+procedure cannot capture an enclosing pack because its elements are runtime
+parameters of the outer specialization; it may declare and specialize its own
+pack normally.
+
+Public interfaces carry the pack name and fixed-prefix count separately from
+the procedure type. Consumer calls send canonical graphs for every ordered tail
+type to the defining package. Stable instance names hash explicit generic
+arguments followed by a domain-separated pack count and those graphs. Final
+instance interface rows retain the same pack-type graphs beside the exact
+effect, return, and write contracts.
 
 ## Contextual `c`
 

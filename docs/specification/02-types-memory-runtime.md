@@ -368,6 +368,59 @@ Procedure arguments may infer parametric arguments when inference has a unique
 solution, so `swap(&left, &right)` may infer `T`. Explicit arguments remain
 available when inference is impossible or undesirable.
 
+A procedure body may additionally end its runtime parameter list with one
+static heterogeneous argument pack:
+
+```draft
+inspect_all :: proc(prefix: string, values: ..type) {
+    static_assert(len(values) >= 0)
+    for value, index in values {
+        when type_of(value) == string {
+            consume_text(prefix, value)
+        } else when type_kind(type_of(value)) == .signed_integer {
+            consume_integer(cast[i128](value), index)
+        } else {
+            static_assert(false, "unsupported argument type")
+        }
+    }
+}
+```
+
+`..type` is valid only on one named final parameter of a Draft procedure with a
+body. It is not valid in a standalone procedure type, a C procedure, a foreign
+declaration, or an exported procedure. It cannot share a grouped name list.
+Bracketed type/value parameters, when present, retain their existing syntax:
+`render[T: type] :: proc(destination: ^T, values: ..type)`. There is no
+bracketed pack parameter and no source-level pack-of-types object.
+
+A direct call supplies the fixed prefix followed by zero or more pack values.
+The callee and every argument are evaluated exactly once from left to right.
+Each tail expression is checked without a common expected type; an untyped
+integer therefore defaults to `int` and an untyped floating value defaults to
+`f64`. Explicit bracket arguments and ordinary inference determine any named
+parametric parameters independently of the tail. Taking a pack procedure as a
+procedure value or calling it indirectly is invalid.
+
+The pack binding is compile-time structure, not a runtime slice, tuple, erased
+value, or variadic ABI. Its only value-like operations are `len(values)`, which
+is a compile-time `usize`, and `for value, index in values`. Static iteration
+expands once per supplied tail value in source order. `value` denotes that
+ordinary argument with its exact concrete static type; the optional `index` is
+a compile-time `usize` beginning at zero. `_` may discard either binding. The
+same dependent-`when` refinement rules described below apply to `value`, and
+an index-dependent `when` is selected independently in each expansion. Static
+iteration is not itself a runtime control target: a `break` inside its source
+body applies only to an enclosing runtime loop or switch, and a `continue`
+applies only to an enclosing runtime loop.
+
+Before executable HIR or MIR, every ordered tuple of explicit generic arguments
+and pack element types produces an ordinary fixed-signature procedure. Equal
+ordered type tuples reuse a specialization regardless of the runtime values;
+different order or types are different specialization identities. This rule is
+the same across package interfaces. A synthesis or judgment site in the source
+body is collected once from the symbolic pack body and is not repeated for
+each element or concrete specialization.
+
 Nominal applications unify only when they have the same template identity and
 their ordered type and value arguments unify; identical layout or members do
 not make distinct nominal templates interchangeable. Substitutions learned

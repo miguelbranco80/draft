@@ -119,6 +119,7 @@ std::string_view node_kind_name(NodeKind kind) {
   case NodeKind::Procedure: return "Procedure";
   case NodeKind::ParameterList: return "ParameterList";
   case NodeKind::Parameter: return "Parameter";
+  case NodeKind::StaticPackType: return "StaticPackType";
   case NodeKind::ResultClause: return "ResultClause";
   case NodeKind::MemberList: return "MemberList";
   case NodeKind::FieldMember: return "FieldMember";

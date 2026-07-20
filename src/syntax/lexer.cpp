@@ -397,9 +397,11 @@ private:
     bool is_float = false;
 
     // A decimal point belongs to a float only when it is not the beginning of
-    // an ellipsis. Draft requires digits on both sides, so `1.` is retained as
-    // one malformed float and receives a lexical diagnostic.
-    if (!at_end() && current() == '.' && !starts_with("...")) {
+    // `..` or `...`. Draft requires digits on both sides, so an isolated `1.`
+    // remains one malformed float and receives a lexical diagnostic, while
+    // `1..2` is an integer followed by the static-pack marker and another
+    // integer. The parser will reject that marker outside its one legal site.
+    if (!at_end() && current() == '.' && !starts_with("..")) {
       is_float = true;
       ++offset_;
       scan_digit_sequence(10, true, "fractional part");
@@ -545,6 +547,7 @@ private:
         FixedToken{"<<=", TokenKind::ShiftLeftEqual},
         FixedToken{">>=", TokenKind::ShiftRightEqual},
         FixedToken{"...", TokenKind::Ellipsis},
+        FixedToken{"..", TokenKind::DotDot},
         FixedToken{"---", TokenKind::Uninitialized},
         FixedToken{"::", TokenKind::ColonColon},
         FixedToken{":=", TokenKind::ColonEqual},

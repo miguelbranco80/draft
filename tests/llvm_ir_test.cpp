@@ -260,6 +260,40 @@ pub increment :: proc(value: i64) -> i64 {
   EXPECT(state, baseline.text == with_agents.text);
 }
 
+// The frontend erases an open static pack into a conventional monomorphized
+// procedure before LLVM emission. Checking the physical parameter and call
+// spellings here guards against accidentally introducing a runtime pack
+// descriptor, an erased `any` value, or a target variadic ABI in the backend.
+void test_static_argument_pack_emits_fixed_signature(TestState &state) {
+  const EmittedFixture emitted = emit_fixture(R"draft(package pack_llvm
+
+combine :: proc(values: ..type) -> i64 {
+    total: i64
+    for value in values {
+        when type_kind(type_of(value)) == .signed_integer {
+            total += cast[i64](value)
+        } else when type_kind(type_of(value)) == .unsigned_integer {
+            total += cast[i64](value)
+        } else {
+            static_assert(false, "unsupported pack value")
+        }
+    }
+    return total + cast[i64](len(values))
+}
+
+main :: proc() -> i64 {
+    return combine(cast[i8](3), cast[u16](4))
+}
+)draft");
+
+  if (!emitted.ok) std::cerr << emitted.diagnostics;
+  EXPECT(state, emitted.ok);
+  EXPECT(state, emitted.text.find("i8 %arg0, i16 %arg1") != std::string::npos);
+  EXPECT(state, emitted.text.find("i8 3, i16 4") != std::string::npos);
+  EXPECT(state, emitted.text.find("TypeParameter") == std::string::npos);
+  EXPECT(state, emitted.text.find("static_pack") == std::string::npos);
+}
+
 // Verifies that tuple extraction uses the tuple's logical member numbers even
 // when semantic layout places alignment padding before a member. LLVM owns the
 // implicit padding of tuple types; only named packed structs contain explicit
@@ -840,6 +874,7 @@ int main() {
   test_agent_constructs_have_no_runtime_footprint(state);
   test_generated_debug_locations_are_hermetic(state);
   test_multistep_call_lowering_keeps_debug_locations(state);
+  test_static_argument_pack_emits_fixed_signature(state);
   test_padded_tuple_extraction_uses_logical_indices(state);
   test_scalar_executable_module(
       state, draft::make_aarch64_macos_profile());

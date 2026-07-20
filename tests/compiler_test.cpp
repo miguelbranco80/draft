@@ -1255,6 +1255,114 @@ void test_cross_package_dependent_generic_effect(TestState &state) {
   std::filesystem::remove_all(root, error);
 }
 
+void test_cross_package_static_argument_pack_effects(TestState &state) {
+  draft::test::TemporaryDirectory temporary_directory{
+      "draft-bootstrap-static-pack-effect-test"};
+  const std::filesystem::path &root = temporary_directory.path();
+  std::error_code error;
+  std::filesystem::create_directories(root / "app", error);
+  std::filesystem::create_directories(root / "packing", error);
+  EXPECT(state, !error);
+  if (error) return;
+
+  std::ofstream dependency(
+      root / "packing" / "package.draft", std::ios::binary);
+  dependency <<
+      "package packing\n"
+      "pub inspect_all :: proc(values: ..type) {\n"
+      "    for value in values {\n"
+      "        when type_of(value) == bool {\n"
+      "            assert(value)\n"
+      "        }\n"
+      "    }\n"
+      "}\n";
+  dependency.close();
+
+  std::ofstream app(root / "app" / "package.draft", std::ios::binary);
+  app <<
+      "package app\n"
+      "import packing\n"
+      "deny assert {\n"
+      "    safe :: proc() {\n"
+      "        packing.inspect_all()\n"
+      "        packing.inspect_all(cast[i32](1))\n"
+      "        packing.inspect_all(cast[i32](2))\n"
+      "    }\n"
+      "}\n"
+      "unsafe :: proc() {\n"
+      "    packing.inspect_all(true)\n"
+      "}\n";
+  app.close();
+  EXPECT(state, dependency.good() && app.good());
+
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  draft::CompileWorkspaceOptions options;
+  options.target = draft::make_aarch64_macos_profile();
+  options.workspace.workspace_directory = root.string();
+  const draft::CompileWorkspaceResult result = draft::compile_workspace(
+      sources, (root / "app").string(), std::move(options), diagnostics);
+  if (diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+  }
+  EXPECT(state, result.ok);
+  EXPECT(state, !diagnostics.has_errors());
+
+  const draft::CompiledPackage *app_package = nullptr;
+  const draft::CompiledPackage *packing_package = nullptr;
+  for (const std::optional<draft::CompiledPackage> &package : result.packages) {
+    if (!package.has_value()) continue;
+    if (package->identity.root_relative_path == "app") {
+      app_package = &*package;
+    } else if (package->identity.root_relative_path == "packing") {
+      packing_package = &*package;
+    }
+  }
+  EXPECT(state, app_package != nullptr);
+  EXPECT(state, packing_package != nullptr);
+  if (app_package != nullptr && packing_package != nullptr) {
+    const draft::InterfaceDeclaration *declaration = nullptr;
+    for (const draft::InterfaceDeclaration &candidate :
+         packing_package->interface.declarations) {
+      if (candidate.name == "inspect_all") declaration = &candidate;
+    }
+    EXPECT(state, declaration != nullptr);
+    if (declaration != nullptr) {
+      EXPECT(state, declaration->has_static_argument_pack);
+      EXPECT(state, declaration->static_argument_pack_name == "values");
+      EXPECT(state,
+          declaration->static_argument_pack_fixed_parameter_count == 0);
+    }
+
+    EXPECT(state,
+        app_package->semantics.package.imported_procedure_instances.size() == 3);
+    EXPECT(state, packing_package->interface.procedure_instances.size() == 3);
+    for (const draft::ImportedProcedureInstance &instance :
+         app_package->semantics.package.imported_procedure_instances) {
+      EXPECT(state, instance.arguments.empty());
+      const bool has_assert = std::any_of(
+          app_package->semantics.package.imported_effects.begin(),
+          app_package->semantics.package.imported_effects.end(),
+          [&](const draft::ImportedEffect &effect) {
+            return effect.procedure_proxy == instance.instance_proxy &&
+                effect.kind == draft::EffectKind::RuntimeAssert;
+          });
+      if (instance.pack_types.empty()) {
+        EXPECT(state, !has_assert);
+      } else if (instance.pack_types.size() == 1) {
+        const draft::TypeKind kind =
+            app_package->semantics.package.types.type(
+                instance.pack_types.front()).kind;
+        EXPECT(state, has_assert == (kind == draft::TypeKind::Bool));
+      } else {
+        EXPECT(state, false);
+      }
+    }
+  }
+
+  std::filesystem::remove_all(root, error);
+}
+
 } // namespace
 
 int main() {
@@ -1277,6 +1385,7 @@ int main() {
   test_runtime_context_bridge_diagnostics(state);
   test_cross_package_higher_order_effect(state);
   test_cross_package_dependent_generic_effect(state);
+  test_cross_package_static_argument_pack_effects(state);
   if (state.failures != 0) {
     std::cerr << state.failures << " compiler pipeline expectation(s) failed\n";
     return EXIT_FAILURE;

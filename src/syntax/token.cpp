@@ -75,6 +75,7 @@ std::string_view token_kind_name(TokenKind kind) {
   case TokenKind::ColonColon: return "::";
   case TokenKind::ColonEqual: return ":=";
   case TokenKind::Dot: return ".";
+  case TokenKind::DotDot: return "..";
   case TokenKind::Ellipsis: return "...";
   case TokenKind::At: return "@";
   case TokenKind::Hash: return "#";

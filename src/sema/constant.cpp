@@ -150,11 +150,13 @@ public:
       bool diagnose_unready,
       DiagnosticSink &diagnostics,
       const ConstantTable *local_constants = nullptr,
-      const std::vector<ConstantTypeBinding> *local_types = nullptr)
+      const std::vector<ConstantTypeBinding> *local_types = nullptr,
+      const std::vector<ConstantStaticPackBinding> *local_packs = nullptr)
       : sources_(sources), loaded_(loaded), semantic_(semantic), target_(target),
         synthesis_mode_(synthesis_mode), diagnose_unready_(diagnose_unready),
         diagnostics_(diagnostics),
         local_constants_(local_constants), local_types_(local_types),
+        local_packs_(local_packs),
         states_(semantic.symbols.symbol_count(), BindingState::Unvisited),
         values_(semantic.symbols.symbol_count()) {}
 
@@ -515,6 +517,27 @@ private:
       }
     }
     return result;
+  }
+
+  // Returns the concrete length only when expression is the exact marker
+  // binding supplied by BodyChecker. Name lookup, rather than spelling alone,
+  // preserves ordinary lexical shadowing inside an expanded iteration body.
+  [[nodiscard]] std::optional<std::uint64_t> static_pack_length(
+      const SyntaxTree &tree,
+      NodeId expression_id,
+      ScopeId scope) const {
+    if (local_packs_ == nullptr) return std::nullopt;
+    const SyntaxNode &expression = tree.node(expression_id);
+    if (expression.kind != NodeKind::NameExpression) return std::nullopt;
+    const std::optional<std::string> name = final_name(tree, expression);
+    if (!name.has_value()) return std::nullopt;
+    const std::optional<SymbolId> symbol =
+        semantic_.symbols.lookup(scope, *name);
+    if (!symbol.has_value()) return std::nullopt;
+    for (const ConstantStaticPackBinding &pack : *local_packs_) {
+      if (pack.binding == *symbol) return pack.length;
+    }
+    return std::nullopt;
   }
 
   // Contextual alternatives use the first name after '.', because a payload
@@ -2301,6 +2324,12 @@ private:
       if (call.children.size() != 2) {
         return fail(call.range, "type_of requires one expression", required);
       }
+      if (static_pack_length(tree, call.children[1], scope).has_value()) {
+        return fail(
+            tree.node(call.children[1]).range,
+            "static argument pack may be used only by len or static iteration",
+            required);
+      }
       TypeId operand = declared_value_type_hint(
           tree, call.children[1], scope);
       if (!operand.is_valid() ||
@@ -2865,6 +2894,12 @@ private:
     if (*name == "len") {
       if (call.children.size() != 2) {
         return fail(call.range, "len requires one compile-time value", required);
+      }
+      if (const std::optional<std::uint64_t> length = static_pack_length(
+              tree, call.children[1], scope)) {
+        return ready(
+            ConstantValue::make_integer(BigInteger::from_u64(*length)),
+            semantic_.types.builtins().usize_type);
       }
       const EvalResult argument =
           evaluate_expression(tree, call.children[1], scope, required);
@@ -4581,6 +4616,16 @@ private:
         }
         return pending();
       }
+      if (local_packs_ != nullptr) {
+        for (const ConstantStaticPackBinding &pack : *local_packs_) {
+          if (pack.binding == *symbol) {
+            return fail(
+                node.range,
+                "static argument pack may be used only by len or static iteration",
+                required);
+          }
+        }
+      }
       const Symbol &binding = semantic_.symbols.symbol(*symbol);
       if (binding.kind == SymbolKind::Type ||
           binding.kind == SymbolKind::TypeParameter) {
@@ -5199,6 +5244,7 @@ private:
   DiagnosticSink &diagnostics_;
   const ConstantTable *local_constants_ = nullptr;
   const std::vector<ConstantTypeBinding> *local_types_ = nullptr;
+  const std::vector<ConstantStaticPackBinding> *local_packs_ = nullptr;
   std::vector<BindingState> states_;
   std::vector<ConstantValue> values_;
   std::vector<LocalFrame> local_frames_;
@@ -5348,7 +5394,8 @@ std::optional<ConstantValue> evaluate_constant_expression(
     ScopeId scope,
     DiagnosticSink &diagnostics,
     const ConstantTable *local_constants,
-    const std::vector<ConstantTypeBinding> *local_types) {
+    const std::vector<ConstantTypeBinding> *local_types,
+    const std::vector<ConstantStaticPackBinding> *local_packs) {
   const std::optional<EvaluatedConstant> result =
       evaluate_typed_constant_expression(
           sources,
@@ -5361,7 +5408,8 @@ std::optional<ConstantValue> evaluate_constant_expression(
           diagnostics,
           local_constants,
           local_types,
-          {});
+          {},
+          local_packs);
   return result.has_value()
       ? std::optional<ConstantValue>(result->value)
       : std::nullopt;
@@ -5378,7 +5426,8 @@ std::optional<EvaluatedConstant> evaluate_typed_constant_expression(
     DiagnosticSink &diagnostics,
     const ConstantTable *local_constants,
     const std::vector<ConstantTypeBinding> *local_types,
-    TypeId expected) {
+    TypeId expected,
+    const std::vector<ConstantStaticPackBinding> *local_packs) {
   ConstantEvaluator evaluator(
       sources,
       loaded,
@@ -5388,7 +5437,8 @@ std::optional<EvaluatedConstant> evaluate_typed_constant_expression(
       true,
       diagnostics,
       local_constants,
-      local_types);
+      local_types,
+      local_packs);
   return evaluator.evaluate_required_expression(
       tree, expression, scope, expected);
 }
@@ -5403,7 +5453,8 @@ CompileTimeExpressionDiscoveryResult discover_typed_constant_expression(
     ScopeId scope,
     const ConstantTable *local_constants,
     const std::vector<ConstantTypeBinding> *local_types,
-    TypeId expected) {
+    TypeId expected,
+    const std::vector<ConstantStaticPackBinding> *local_packs) {
   DiagnosticSink ignored_diagnostics;
   ConstantEvaluator evaluator(
       sources,
@@ -5414,7 +5465,8 @@ CompileTimeExpressionDiscoveryResult discover_typed_constant_expression(
       false,
       ignored_diagnostics,
       local_constants,
-      local_types);
+      local_types,
+      local_packs);
   return evaluator.discover_required_expression(
       tree, expression, scope, expected);
 }
