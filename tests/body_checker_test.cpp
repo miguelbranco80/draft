@@ -1972,7 +1972,9 @@ void test_selected_when_condition_type_validation(TestState &state) {
 package bodies
 
 main :: proc() {
-    when target.os == .macos &&
+    when (target.os) == .macos &&
+         target.os == (.macos) &&
+         target.os == target.os &&
          type_kind(type_of(raw_data(target.identity))) == .multi_pointer {
     }
 }
@@ -1995,14 +1997,18 @@ main :: proc() {
     when target.os != .macos &&
          type_kind(type_of(raw_data(false))) == .multi_pointer {
     }
+    when false && target.has_feature("invented-feature") &&
+         type_kind(type_of(raw_data("ok"))) == .multi_pointer {
+    }
 }
 )draft");
   EXPECT(state, !invalid.bodies.ok);
-  EXPECT(state, invalid.diagnostics.error_count() == 3);
+  EXPECT(state, invalid.diagnostics.error_count() == 4);
 
   bool saw_wrong_type = false;
   bool saw_missing_argument = false;
   bool saw_short_circuited_wrong_type = false;
+  bool saw_unknown_feature = false;
   for (const draft::Diagnostic &diagnostic :
        invalid.diagnostics.diagnostics()) {
     const std::string_view spelling = invalid.sources.text(diagnostic.range);
@@ -2016,10 +2022,15 @@ main :: proc() {
     saw_short_circuited_wrong_type = saw_short_circuited_wrong_type ||
         (diagnostic.message == "raw_data requires a string argument" &&
          spelling == "false");
+    saw_unknown_feature = saw_unknown_feature ||
+        (diagnostic.message ==
+             "unrecognized target feature 'invented-feature'" &&
+         spelling == "\"invented-feature\"");
   }
   EXPECT(state, saw_wrong_type);
   EXPECT(state, saw_missing_argument);
   EXPECT(state, saw_short_circuited_wrong_type);
+  EXPECT(state, saw_unknown_feature);
 }
 
 void test_integer_shift_count_types(TestState &state) {

@@ -26,12 +26,16 @@ inspected expression; the result reader is not a second source type checker.
 
 The validation-only HIR has no runtime representation for some compile-time
 bindings or for the predeclared `target` object. BodyChecker imports an
-already-evaluated binding, closed target field, feature query, or categorical
-comparison as a typed constant from the ordinary constant evaluator. It never
-imports an enclosing logical or conditional result, because doing so could
-repeat the short-circuit behavior and hide the independent operand the pass is
-meant to validate. Invalid children propagate without secondary reflection or
-operator diagnostics once the exact operand error has been reported.
+already-evaluated binding or a direct target field or query as a typed constant
+from the ordinary constant evaluator. Importing every target field separately
+preserves grouping, contextual alternatives, and target-to-target comparisons
+without duplicating the compiler-defined target enum types in BodyChecker. The
+diagnosing evaluator handles target leaves so a short-circuited invalid feature
+still receives the authoritative feature diagnostic. The bridge never imports
+an enclosing logical or conditional result, because doing so could repeat the
+short-circuit behavior and hide the independent operand the pass is meant to
+validate. Invalid children propagate without secondary reflection or operator
+diagnostics once the exact operand error has been reported.
 
 At interface publication, every type-valued constant recursively rewrites its
 package-local TypeId into the same `InterfaceTypeId` graph used by public
@@ -376,7 +380,7 @@ traps, and message construction used solely by an assertion cannot survive,
 and no condition is converted into an optimizer assumption.
 
 The versioned `draft.resolved-program.v6` hash records the selected root and
-assertion mode beside compiler content v136. `build`, `resolve`, and `judge`
+assertion mode beside compiler content v137. `build`, `resolve`, and `judge`
 expose the same explicit flag so a provider-free manifest cannot be replayed
 under a different mode. Test and benchmark compilations deliberately override
 the release choice to assertions on and receive their own resolved validation

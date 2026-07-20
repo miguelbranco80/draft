@@ -445,8 +445,8 @@ private:
   // bindings or the predeclared `target` object. The validation-only pass
   // nevertheless has to type-check a complete selected `when` condition so
   // short-circuiting or type_of cannot hide malformed source. Import an
-  // already-evaluated constant binding, or the typed result of only the closed
-  // target forms below, from the authoritative constant evaluator:
+  // already-evaluated constant binding, or the typed result of a direct target
+  // field or query, from the authoritative constant evaluator:
   //
   //   target.pointer_bits
   //   target.has_feature("neon")
@@ -454,11 +454,17 @@ private:
   //
   // The candidate set is deliberately structural and small. In particular,
   // this function never folds a whole logical or conditional expression: doing
-  // so could skip another operand which this pass exists to validate. Numeric
-  // and string target fields become ordinary typed constants, while a
-  // categorical field is imported only together with its contextual label so
-  // the evaluator remains the sole owner of the language-defined target enum
-  // relationship.
+  // so could skip another operand which this pass exists to validate. Each
+  // target field becomes an ordinary typed constant, including categorical
+  // fields whose compiler-defined enum type then supplies context to a nearby
+  // alternative. This is enough for grouped comparisons and target-to-target
+  // comparisons without duplicating the target type model in BodyChecker.
+  //
+  // Target candidates use the diagnosing evaluator rather than discovery.
+  // This distinction matters for a short-circuited invalid feature query: the
+  // ordinary selection evaluator never visits that operand, but preflight must
+  // still report the authoritative unrecognized-feature diagnostic rather than
+  // a secondary runtime-HIR error about the predeclared target object.
   [[nodiscard]] std::optional<HirExpressionId>
   check_validation_only_compile_time_expression(
       const SyntaxTree &tree,
@@ -478,39 +484,13 @@ private:
       candidate = symbol.has_value() &&
           (constants_.find(*symbol) != nullptr ||
            active_constant(*symbol) != nullptr);
-    } else if (const std::optional<std::string> member =
-            direct_target_member(tree, expression_id, scope)) {
-      candidate = *member == "identity" || *member == "file_tag" ||
-          *member == "pointer_bits" || *member == "page_size";
+    } else if (direct_target_member(tree, expression_id, scope).has_value()) {
+      candidate = true;
     } else if (expression.kind == NodeKind::CallExpression &&
                !expression.children.empty()) {
       const std::optional<std::string> called_member = direct_target_member(
           tree, expression.children.front(), scope);
-      candidate = called_member.has_value() &&
-          *called_member == "has_feature";
-    } else if (expression.kind == NodeKind::BinaryExpression &&
-               expression.children.size() == 2) {
-      const TokenKind operation = binary_operator(tree, expression);
-      if (operation == TokenKind::EqualEqual ||
-          operation == TokenKind::BangEqual) {
-        const std::optional<std::string> left = direct_target_member(
-            tree, expression.children.front(), scope);
-        const std::optional<std::string> right = direct_target_member(
-            tree, expression.children.back(), scope);
-        const auto categorical = [](const std::optional<std::string> &member) {
-          return member.has_value() &&
-              (*member == "arch" || *member == "os" ||
-               *member == "abi" || *member == "byte_order" ||
-               *member == "object_format");
-        };
-        candidate =
-            (categorical(left) &&
-             tree.node(expression.children.back()).kind ==
-                 NodeKind::ContextualAlternativeExpression) ||
-            (categorical(right) &&
-             tree.node(expression.children.front()).kind ==
-                 NodeKind::ContextualAlternativeExpression);
-      }
+      candidate = called_member.has_value();
     }
     if (!candidate) return std::nullopt;
 
@@ -519,8 +499,8 @@ private:
         active_constant_types();
     const std::vector<ConstantStaticPackBinding> visible_packs =
         active_constant_packs();
-    const CompileTimeExpressionDiscoveryResult discovered =
-        discover_typed_constant_expression(
+    const std::optional<EvaluatedConstant> evaluated =
+        evaluate_typed_constant_expression(
             sources_,
             loaded_,
             semantic_,
@@ -528,25 +508,29 @@ private:
             tree,
             expression_id,
             scope,
+            diagnostics_,
             &visible_constants,
             &visible_types,
             expected,
             &visible_packs);
-    if (!discovered.value.has_value() ||
-        !discovered.value->type.is_valid() ||
-        is_invalid_type(discovered.value->type)) {
-      return std::nullopt;
+    if (!evaluated.has_value() || !evaluated->type.is_valid() ||
+        is_invalid_type(evaluated->type)) {
+      HirExpression invalid;
+      invalid.kind = HirExpressionKind::Invalid;
+      invalid.range = expression.range;
+      invalid.type = semantic_.types.builtins().invalid;
+      return hir_.add_expression(std::move(invalid));
     }
 
     HirExpression checked;
     checked.kind = HirExpressionKind::Constant;
     checked.range = expression.range;
-    checked.constant = discovered.value->value;
+    checked.constant = evaluated->value;
     checked.type = apply_expected_type(
-        discovered.value->type, expected, expression.range);
+        evaluated->type, expected, expression.range);
     contextualize_constant_value(
         checked.constant,
-        discovered.value->type,
+        evaluated->type,
         checked.type,
         expression.range);
     return hir_.add_expression(std::move(checked));
