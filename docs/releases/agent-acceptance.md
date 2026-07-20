@@ -102,16 +102,16 @@ publication, and expanded-source inspection with linked LLVM 22.1.8.
 
 The completed raw string-data integration and its final static-type and
 selected-condition review use compiler content identity
-`draft-bootstrap-cpp-v136` and core distribution identity
+`draft-bootstrap-cpp-v137` and core distribution identity
 `draft-core-bootstrap-v4`. Provider-free `resolve --revalidate` commands for
 macOS and Linux each reused and rechecked all four saved expansions; no
 generated source object changed. Both final manifests then passed their native
 frontend checks. On macOS, the final program built and launched without an LLVM
 debug-information warning, and fresh attempt-one test and verified-benchmark
 evidence passed under linked LLVM 22.1.8. The committed evidence objects are
-`f39f3d2f445e63f9be581ce2e4d97235606bb33b017a48e1a2f59d035bbe19b4`
+`46c34f332564651380474d523922cf1ba2df2e2dcfbc8a250f92a79f12c8be89`
 for the test and
-`3c14b3f9e60bb5de2dcfd3264ad4dff7b2a97f93e8830412f85b30214a19ee0f`
+`00f618e9e85012d94304f082e55b58256def1ee3cad9e807d6715a60a8be5b50`
 for the benchmark.
 
 The repository example matrix classified all 36 tracked Draft/assembly package
