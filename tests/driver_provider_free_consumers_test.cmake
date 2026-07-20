@@ -20,7 +20,6 @@ file(MAKE_DIRECTORY "${TEST_ROOT}")
 file(COPY "${SOURCE_WORKSPACE}" DESTINATION "${TEST_ROOT}")
 get_filename_component(workspace_name "${SOURCE_WORKSPACE}" NAME)
 set(workspace "${TEST_ROOT}/${workspace_name}")
-set(package "${workspace}/app")
 
 # The sentinel makes accidental provider execution observable without hiding
 # the platform tools required by native validation.
@@ -91,7 +90,7 @@ endif()
 if(EXISTS "${provider_marker}")
   message(FATAL_ERROR "a provider-free consumer invoked Codex")
 endif()
-file(GLOB validation_evidence "${package}/.draft/evidence/*.json")
+file(GLOB validation_evidence "${workspace}/.draft/evidence/*.json")
 if(NOT validation_evidence)
   message(FATAL_ERROR "provider-free validation did not publish evidence")
 endif()
@@ -106,8 +105,7 @@ if(NOT has_linked_llvm_evidence)
   message(FATAL_ERROR
     "fresh validation evidence does not identify linked LLVM 22")
 endif()
-if(EXISTS "${workspace}/.draft/cache" OR
-   EXISTS "${package}/.draft/cache")
+if(EXISTS "${workspace}/.draft/cache")
   message(FATAL_ERROR "repeated commands created a persistent compiler cache")
 endif()
 

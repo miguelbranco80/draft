@@ -55,7 +55,9 @@ defaults to package `.`, or accepts one normalized workspace-relative
 without selectors discovers all visible packages with a surface package-level
 `main`, while repeated `--root` options select an exact subset. Root/target
 manifests live under `project/.draft/resolutions/`, and generated source objects
-are shared by content identity under `project/.draft/generated/`.
+are shared by content identity under `project/.draft/generated/`. Test and
+benchmark evidence is also workspace-owned under `project/.draft/evidence/`;
+selecting a child root never creates a nested package-local `.draft` store.
 
 Recognized direct children are:
 
@@ -274,7 +276,9 @@ build/draftc bench path/to/workspace --root package --verify --target aarch64-ma
 ```
 
 Tests and benchmarks form a coherent resolved validation graph. They are not
-ordinary build prerequisites, and build never reruns their evidence.
+ordinary build prerequisites, and build never reruns their evidence. Their
+content-addressed evidence belongs to the selected workspace, while its key
+binds the executable root, validation procedure, target, and resolved program.
 
 ## Compiler regression tests
 

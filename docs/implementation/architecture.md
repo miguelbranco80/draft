@@ -171,7 +171,10 @@ The workspace-directory package and child-package rows are disjoint even when
 a child is literally named `workspace`. Manifests and derived artifacts are
 selected by exact root and target. Generated expansion objects are the one
 shared content-addressed pool because their digest already supplies collision-
-free identity. Automatic executable discovery is a workspace-layer operation:
+free identity. Evidence is likewise owned by this one workspace directory; its
+typed keys bind a resolved program and target rather than relying on a
+package-local physical path. Automatic executable discovery is a
+workspace-layer operation:
 it deterministically scans ordinary visible directories for surface
 package-level `main` declarations, then sends every selected root through an
 independent ordinary compiler graph. It never changes import resolution or

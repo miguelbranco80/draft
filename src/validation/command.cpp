@@ -260,8 +260,9 @@ void initialize_claim(
   // Test and benchmark executables are derived native artifacts just like an
   // ordinary build. Keep both their private scratch and published executable
   // under the same root/target namespace so alternating validation roots or
-  // profiles cannot replace one another's files. Evidence remains an
-  // independent package-keyed store below the selected package directory.
+  // profiles cannot replace one another's files. Evidence shares the
+  // workspace-owned store used by judgments; its typed key contains the
+  // selected resolved program and target, so sibling roots cannot alias.
   NativeBuildOptions native;
   native.build_directory =
       (artifact_directory / ("." + command + "-native")).string();
@@ -395,7 +396,7 @@ void initialize_claim(
       ? options.timings->scope("validation evidence commit")
       : TimingScope{};
   const ValidationEvidenceCommitResult committed = commit_validation_evidence(
-      options.package_directory, std::move(evidence), diagnostics);
+      options.workspace.workspace_directory, std::move(evidence), diagnostics);
   if (!committed.ok) return result;
 
   result.completed = true;

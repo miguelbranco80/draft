@@ -336,6 +336,11 @@ cleanup, and target cases—not only a happy example. Tests run in canonical
 package/declaration order; do not depend on ambient order or residue from a
 previous test.
 
+Test and benchmark evidence is stored once per workspace under
+`<workspace>/.draft/evidence/`. The evidence key binds the selected executable
+root, procedure, target, and resolved program, so child packages do not own or
+create nested `.draft` stores.
+
 Compiler rejection behavior belongs in the C++ diagnostic suite when it must
 assert an exact source range, parser recovery state, or language diagnostic.
 

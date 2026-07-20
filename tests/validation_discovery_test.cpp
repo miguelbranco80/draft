@@ -322,7 +322,7 @@ void test_checked_test_harness(TestState &state) {
     EXPECT(state, command.selected_procedures == 2);
     EXPECT(state, command.attempt == 1);
     EXPECT(state, std::filesystem::exists(
-        root / "app" / ".draft" / "evidence" /
+        root / ".draft" / "evidence" /
         (command.evidence_digest.hex() + ".json")));
   }
 

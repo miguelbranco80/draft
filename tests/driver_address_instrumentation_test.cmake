@@ -1,10 +1,10 @@
 # Source-tree-safe process test for public address instrumentation.
 #
-# `draftc test` intentionally records evidence beside its package. CTest must
-# therefore run the command against a private copy rather than mutate the
-# checked-in example. TEST_ROOT lives in the build tree and is recreated for
-# every invocation; a failed command may leave only disposable diagnostic state
-# there, never a source-tree `.draft` directory.
+# `draftc test` intentionally records evidence in its workspace. CTest must run
+# the command against a private copy rather than mutate the checked-in example.
+# TEST_ROOT lives in the build tree and is recreated for every invocation; a
+# failed command may leave only disposable diagnostic state there, never a
+# source-tree `.draft` directory.
 
 if(NOT DEFINED DRAFTC OR NOT DEFINED SOURCE_PACKAGE OR NOT DEFINED TEST_ROOT)
   message(FATAL_ERROR "DRAFTC, SOURCE_PACKAGE, and TEST_ROOT are required")

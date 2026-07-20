@@ -21,6 +21,7 @@ content identity, while manifests and derived build artifacts are isolated as:
 <workspace>/.draft/generated/<hash>.draft
 <workspace>/.draft/resolutions/<target-identity>/workspace/resolution.json
 <workspace>/.draft/resolutions/<target-identity>/packages/<root>/resolution.json
+<workspace>/.draft/evidence/<hash>.json
 <workspace>/.draft/build/<target-file-tag>/workspace/<artifact>
 <workspace>/.draft/build/<target-file-tag>/packages/<root>/<artifact>
 ```
@@ -247,6 +248,11 @@ append a typed evidence attempt. A passing attempt becomes active; a semantic
 failure revokes that exact key. Benchmark validation uses one warmup and ten
 process-isolated samples. `--verify` is a readable CI/release spelling; the
 benchmark still executes and records fresh evidence.
+
+Evidence is stored only below the explicit workspace's `.draft/evidence`
+directory. Its content-addressed object and state keys bind the selected root,
+resolved program, target, toolchain, environment, and policy; selecting a child
+package never creates a second `.draft` directory below that package.
 
 The macOS target currently supports `--instrument address`. The compiler owns
 the AddressSanitizer IR attributes and in-process LLVM pass, then lets the

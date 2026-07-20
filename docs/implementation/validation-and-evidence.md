@@ -44,8 +44,11 @@ validator verdicts and rationales are native counter reports.
 The state header is `draft-evidence-state-v1`. Changing the prior
 validation-specific header also advances the compiler content identity: an old
 evidence state is rejected instead of being silently reinterpreted by a newer
-compiler. Evidence-object keys remain domain-separated by their typed formats, so
-both kinds safely occupy the same `.draft/evidence` object namespace.
+compiler. Evidence-object keys remain domain-separated by their typed formats,
+so both kinds safely occupy the same workspace-owned `.draft/evidence` object
+namespace. Test and benchmark commands never create a package-local store;
+their evidence keys already bind the selected resolved program, root, and
+target.
 
 The provider-neutral judgment command evaluates sites in deterministic compiled
 package/obligation order. It revalidates every attachment identity before the
