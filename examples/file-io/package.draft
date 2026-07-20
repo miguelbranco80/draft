@@ -14,11 +14,10 @@ import core/memory
 import core/os
 
 Path :: "draft-file-io-example.txt"
-Contents :: `Draft file example: this deliberately contains several hundred
-bytes so the native round trip covers a large immutable string rather than only
-short literals. The bytes remain ordinary UTF-8 source data; core/console
-performs no normalization, terminal detection, newline rewriting, allocation,
-copying, or hidden buffering while writing this file.
+Contents :: `Draft file example: this multi-line immutable string passes through
+core/console without normalization, terminal detection, newline rewriting,
+allocation, copying, or hidden buffering. The native conformance suite owns the
+separate 16-KiB stress fixture; this example stays short enough to read as code.
 `
 
 // bytes_equal_text validates the exact bytes returned by read. The function
@@ -39,11 +38,6 @@ bytes_equal_text :: proc(bytes: []u8, text: string) -> bool {
 // descriptor. Cleanup order is explicit: the deferred remove runs before the
 // deferred pathname destruction because defers execute last-in, first-out.
 main :: proc() {
-    // Keep this fixture beyond the removed console copy-buffer size. The native
-    // example matrix therefore cannot silently regress into testing only the
-    // short-string case if the prose above is edited later.
-    static_assert(len(Contents) > 256, "file fixture must remain a large string")
-
     path: memory.Owned_String
     memory.owned_string_copy(&path, Path)
     defer memory.owned_string_destroy(&path)
@@ -71,5 +65,5 @@ main :: proc() {
     assert(bytes_equal_text(received[:total], Contents))
     assert(os.close(&input))
 
-    assert(console.println("large file round trip: ok") == .none)
+    assert(console.println("file round trip: ok") == .none)
 }

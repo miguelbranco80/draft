@@ -108,6 +108,12 @@ progress. The text path uses the specified `raw_data(string)` bridge and passes
 the existing pointer plus length to the synchronous native write operation; it
 does not allocate, copy, terminate, or reinterpret encoding. The platform
 contract promises that the native call neither mutates nor retains those bytes.
+Native conformance replaces only that platform seam with a deterministic
+three-byte writer. It checks literal, sliced, empty, and 16-KiB strings, an
+immediate native error, an error after a partial prefix, and successful zero
+progress. The same fixture inspects MIR and reachable effects to prove that the
+production console path reaches the one raw-data extraction in `core/os`
+without introducing a console-side representation escape.
 
 `core/console` sends strings and booleans through that text path, sends formatted
 integers through caller-owned byte slices, and returns `core/io.Error`.

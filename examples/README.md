@@ -59,7 +59,7 @@ tests instead of reporting false skips.
 | --- | --- |
 | [`language-tour`](language-tour/) | A readable ordinary-language tour: constants, `when`, arrays and slices, structs, enums, tagged `Result` and `Option`, tuples, distinct types, parametric types and procedures, pointers, `for`, `switch`, `defer`, assertions, `docs`, and console output. |
 | [`console`](console/) | Static heterogeneous `console.println` packs, allocation-free `core/format`, standard output, process arguments, booleans, mixed integer widths, and exact 64/128-bit boundary spellings. |
-| [`file-io`](file-io/) | Owned C path storage, explicit file handles, a large zero-copy immutable-text write, byte reads, `defer` cleanup, and a complete create/read/remove round trip. |
+| [`file-io`](file-io/) | Owned C path storage, explicit file handles, a zero-copy immutable-text write, byte reads, `defer` cleanup, and a complete create/read/remove round trip. |
 | [`simple-editor`](simple-editor/) | A useful but deliberately disposable ed-like application: line storage, byte input, numbered navigation, insertion, deletion, dirty-buffer protection, file load/save, command parsing, and focused Draft tests. |
 | [`denials`](denials/) | A runnable positive `deny` example whose transitive call graph is compiler-checked to avoid console access, assertions, assembly, unchecked access, and context access. Negative denial cases live in `tests/denial_test.cpp`. |
 | [`hello`](hello/) | The smallest provider-free compiler and native-backend smoke program: a fixed array, slice, loop, procedure call, and assertion. |

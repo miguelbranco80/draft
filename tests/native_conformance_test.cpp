@@ -16,6 +16,7 @@
 
 #include "test_directory.h"
 
+#include <algorithm>
 #include <array>
 #include <cerrno>
 #include <csignal>
@@ -23,6 +24,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -311,12 +313,14 @@ void test_native_examples(TestState &state) {
 // Builds the production core/os and core/console sources against a deterministic
 // package-local native-write implementation. Real regular files commonly accept
 // a complete short write, so they cannot prove the retry loop. This fixture
-// caps each successful call at three bytes and records the exact source bytes;
-// the launched Draft program therefore proves literal, sliced, empty, partial,
+// caps each successful call at three bytes, records the exact source bytes, and
+// can inject native errors at an exact call. The launched Draft program
+// therefore proves literal, sliced, empty, large, partial, failed,
 // zero-progress, and cross-package console paths without depending on kernel
 // pipe capacity or scheduler timing.
 void test_partial_text_writes(TestState &state) {
   constexpr std::string_view name = "partial-text-write";
+  constexpr std::size_t large_text_size = 16U * 1024U;
   draft::test::TemporaryDirectory temporary_directory{
       "draft-partial-text-write"};
   const std::filesystem::path &root = temporary_directory.path();
@@ -370,9 +374,9 @@ void test_partial_text_writes(TestState &state) {
       std::ios::binary);
   platform << R"draft(// This target-selected test provider replaces only core/os's native calls.
 // It records bytes from synchronous writes, caps forward progress to three
-// bytes per call, and can report zero progress on demand. The fixture owns one
-// fixed package-global capture buffer which the launched app resets between
-// cases; no pointer is retained after native_write returns.
+// bytes per call, and can report zero progress or a native error on demand. The
+// fixture owns one 16-KiB package-global capture buffer which the launched app
+// resets between cases; no pointer is retained after native_write returns.
 //
 // Production package.draft, console, format, io, runtime, and package assembly
 // remain unchanged. This provider depends only on core/c and intentionally
@@ -386,10 +390,13 @@ pub open_create :: cast[c.int](0)
 pub open_truncate :: cast[c.int](0)
 pub open_exclusive :: cast[c.int](0)
 
-pub test_bytes: [64]u8
+Test_Capacity :: 16384
+
+pub test_bytes: [Test_Capacity]u8
 pub test_length: usize
 pub test_calls: usize
 test_zero_progress: bool
+test_failure_call: usize
 
 // Clears all recorded state so one launched-process case cannot inherit bytes,
 // call counts, or policy from the preceding case.
@@ -400,12 +407,19 @@ pub test_reset :: proc() {
     test_length = 0
     test_calls = 0
     test_zero_progress = false
+    test_failure_call = 0
 }
 
 // Selects the zero-progress result used to prove that write_text_all terminates
 // with an error instead of retrying the same nonempty suffix forever.
 pub test_force_zero_progress :: proc() {
     test_zero_progress = true
+}
+
+// Selects one one-based native call which reports failure before consuming any
+// bytes. Zero, restored by test_reset, means that every call may make progress.
+pub test_fail_on_call :: proc(call: usize) {
+    test_failure_call = call
 }
 
 // Satisfies the portable core/os surface; this deterministic value has no role
@@ -427,18 +441,26 @@ native_read :: proc(
 // Borrows exactly the reported prefix of source for this call, copies it into
 // the bounded capture record, and retains no pointer. Three-byte progress makes
 // every ten-byte test require four calls and therefore exercises retry order.
+// An injected failure consumes no bytes, matching the native negative result
+// observed by core/os.
 native_write :: proc(
     descriptor: c.int,
     source: [^]u8,
     count: c.size_t,
 ) -> c.ssize_t {
     test_calls += 1
+    if test_failure_call != 0 && test_calls == test_failure_call {
+        return -1
+    }
     if test_zero_progress {
         return 0
     }
     accepted := cast[usize](count)
     if accepted > 3 {
         accepted = 3
+    }
+    if accepted > len(test_bytes) - test_length {
+        return -1
     }
     for index: usize = 0; index < accepted; index += 1 {
         test_bytes[test_length + index] = source[index]
@@ -470,8 +492,8 @@ native_exit :: proc(status: c.int) {
   app << R"draft(// This launched conformance app drives production core/console and core/os
 // against the deterministic target provider. It owns no resource: the selected
 // standard-output handle is borrowed and the provider owns its capture globals.
-// Exit codes identify literal/partial, sliced/cross-package, empty, and
-// zero-progress failures without relying on host stdout contents.
+// Exit codes identify literal/partial, sliced/cross-package, empty, large,
+// native-error, and zero-progress failures without relying on host stdout.
 package app
 
 import core/console
@@ -491,8 +513,19 @@ captured :: proc(expected: string) -> bool {
     return true
 }
 
+// Large_Text is generated by the C++ harness as exactly 16 KiB of repeating
+// lowercase ASCII. Keeping it in one immutable source literal exercises a
+// genuinely large string view without adding a generated fixture to the
+// repository or deriving the threshold from a former console implementation.
+Large_Text :: `)draft";
+  for (std::size_t index = 0; index < large_text_size; ++index) {
+    app.put(static_cast<char>('a' + (index % 26U)));
+  }
+  app << R"draft(`
+
 // Runs each independent write contract after resetting provider state. A zero
-// result proves all byte order, call-count, empty-call, and progress assertions.
+// result proves byte order, call counts, empty calls, large views, native-error
+// propagation, and progress assertions.
 main :: proc() -> int {
     os.test_reset()
     if os.write_text_all(os.standard_output, "abcdefghij") != .none ||
@@ -509,16 +542,44 @@ main :: proc() -> int {
 
     os.test_reset()
     (count, error) := os.write_text(os.standard_output, "")
-    if error != .none || count != 0 || os.test_calls != 0 ||
-        os.write_text_all(os.standard_output, "") != .none {
+    if error != .none || count != 0 || os.test_calls != 0 {
         return 3
+    }
+    if os.write_text_all(os.standard_output, "") != .none ||
+        os.test_calls != 0 {
+        return 3
+    }
+
+    os.test_reset()
+    if console.write_to(os.standard_output, Large_Text) != .none ||
+        os.test_calls != (len(Large_Text) + 2) / 3 ||
+        !captured(Large_Text) {
+        return 4
+    }
+
+    os.test_reset()
+    os.test_fail_on_call(1)
+    (failed_count, failed_error) := os.write_text(
+        os.standard_output,
+        "failure",
+    )
+    if failed_error != .unavailable || failed_count != 0 ||
+        os.test_calls != 1 || os.test_length != 0 {
+        return 5
+    }
+
+    os.test_reset()
+    os.test_fail_on_call(2)
+    if console.write_to(os.standard_output, "abcdef") != .unavailable ||
+        os.test_calls != 2 || !captured("abc") {
+        return 6
     }
 
     os.test_reset()
     os.test_force_zero_progress()
     if os.write_text_all(os.standard_output, "x") != .unavailable ||
         os.test_calls != 1 {
-        return 4
+        return 7
     }
     return 0
 }
@@ -547,6 +608,73 @@ main :: proc() -> int {
   }
   EXPECT(state, name, compiled.ok);
   if (!compiled.ok) return;
+
+  // Runtime output equality alone cannot distinguish the zero-copy path from
+  // an implementation which first copies into a temporary. Pin the production
+  // structure as well: console.write_to must transitively expose the raw-data
+  // effect imported from core/os, only core/os may contain RawData MIR, and
+  // write_text itself must contain exactly one such extraction.
+  const draft::CompiledPackage *console_package = nullptr;
+  const draft::CompiledPackage *os_package = nullptr;
+  for (const std::optional<draft::CompiledPackage> &package :
+       compiled.packages) {
+    if (!package.has_value()) continue;
+    if (package->identity.root_relative_path == "console") {
+      console_package = &*package;
+    } else if (package->identity.root_relative_path == "os") {
+      os_package = &*package;
+    }
+  }
+  EXPECT(state, name, console_package != nullptr);
+  EXPECT(state, name, os_package != nullptr);
+  if (console_package == nullptr || os_package == nullptr) return;
+
+  const std::optional<draft::SymbolId> write_to =
+      console_package->semantics.package.symbols.lookup_direct(
+          console_package->semantics.package.package_scope, "write_to");
+  EXPECT(state, name, write_to.has_value());
+  if (!write_to.has_value()) return;
+  const draft::ProcedureEffectSummary *write_to_effects =
+      console_package->effects.find(*write_to);
+  EXPECT(state, name, write_to_effects != nullptr);
+  if (write_to_effects == nullptr) return;
+  EXPECT(state, name,
+      std::any_of(
+          write_to_effects->effects.begin(),
+          write_to_effects->effects.end(),
+          [](const draft::SemanticEffect &effect) {
+            return effect.kind == draft::EffectKind::RawStringData;
+          }));
+
+  std::size_t console_raw_data = 0;
+  for (const draft::MirProcedure &procedure :
+       console_package->mir.program.procedures()) {
+    console_raw_data += static_cast<std::size_t>(std::count_if(
+        procedure.instructions.begin(),
+        procedure.instructions.end(),
+        [](const draft::MirInstruction &instruction) {
+          return instruction.kind == draft::MirInstructionKind::RawData;
+        }));
+  }
+  EXPECT(state, name, console_raw_data == 0);
+
+  const std::optional<draft::SymbolId> write_text =
+      os_package->semantics.package.symbols.lookup_direct(
+          os_package->semantics.package.package_scope, "write_text");
+  EXPECT(state, name, write_text.has_value());
+  if (!write_text.has_value()) return;
+  std::size_t write_text_raw_data = 0;
+  for (const draft::MirProcedure &procedure :
+       os_package->mir.program.procedures()) {
+    if (procedure.symbol != *write_text) continue;
+    write_text_raw_data += static_cast<std::size_t>(std::count_if(
+        procedure.instructions.begin(),
+        procedure.instructions.end(),
+        [](const draft::MirInstruction &instruction) {
+          return instruction.kind == draft::MirInstructionKind::RawData;
+        }));
+  }
+  EXPECT(state, name, write_text_raw_data == 1);
 
   const std::filesystem::path case_directory = root / "native";
   draft::NativeBuildOptions native_options;

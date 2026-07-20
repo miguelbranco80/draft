@@ -51,9 +51,7 @@ main :: proc() {
     // Exercise both one-call and complete immutable-text paths. The decorated
     // value proves a string slice begins at its adjusted data pointer rather
     // than accidentally exposing the original backing-string prefix.
-    (literal_count, literal_error) := os.write_text(output, "Draft")
-    assert(literal_error == .none)
-    assert(literal_count == 5)
+    assert(os.write_text_all(output, "Draft") == .none)
     decorated := "discard!\ntrailer"
     assert(os.write_text_all(output, decorated[7:9]) == .none)
     (empty_count, empty_error) := os.write_text(output, "")
