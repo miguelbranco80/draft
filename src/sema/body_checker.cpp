@@ -115,6 +115,38 @@ struct ProcedureInstance {
   bool checked = false;
 };
 
+// One symbolic fact established by entering a parameter-dependent `when`
+// branch. The subject is the ordinary value binding observed by type_of. An
+// exact type permits full ordinary checking as that type; allowed_kinds grants
+// only the common capability of the remaining Type_Kind set. False exact-type
+// branches record exclusions so a chained else-when retains the complement of
+// every earlier test without mutating the declaration's public constraint.
+struct ActiveTypeRefinement {
+  SymbolId subject;
+  std::optional<TypeId> exact_type;
+  std::vector<TypeKind> allowed_kinds;
+  std::vector<TypeId> excluded_exact_types;
+};
+
+enum class TypeRefinementPredicateKind {
+  ExactType,
+  TypeKind,
+};
+
+// TypeRefinementPredicate is the recognized, side-effect-free subset of a
+// dependent condition which can grant capabilities while symbolically checking
+// a branch. Conditions outside this subset are still selected concretely; they
+// simply grant no extra type operations during the symbolic pass.
+struct TypeRefinementPredicate {
+  TypeRefinementPredicateKind kind = TypeRefinementPredicateKind::ExactType;
+  SymbolId subject;
+  TypeId exact_type;
+  TypeKind type_kind = TypeKind::Invalid;
+  // Equality makes the true branch the matching branch; inequality reverses
+  // the matching and complement facts without changing either fact itself.
+  bool true_branch_matches = true;
+};
+
 // BodyChecker is one sequential phase context. It owns only the HIR under
 // construction; source, syntax, semantic tables, constants, and selections are
 // caller-owned. SymbolTable and the constant table may grow, so operations
@@ -497,6 +529,15 @@ private:
       SyntaxReference syntax,
       ScopeId scope,
       TypeId expected_type = {}) {
+    if (current_instance_index_.has_value()) {
+      // A synthesis/judgment site replaces or validates source owned by the
+      // template, not a separately generated copy of that source for every
+      // monomorphization. The symbolic template pass already recorded the site
+      // with its parameter contract and active branch refinements. Concrete
+      // bodies consume the accepted expansion while ordinary specialization
+      // checking verifies its selected path.
+      return;
+    }
     SemanticSite site;
     site.kind = kind;
     site.syntax = syntax;
@@ -537,12 +578,83 @@ private:
     if (!type.is_valid() || semantic_.types.type(type).kind != TypeKind::TypeParameter) {
       return std::nullopt;
     }
+    std::vector<TypeKind> possible;
+    for (const ActiveTypeRefinement &refinement : active_type_refinements_) {
+      if (!refinement.subject.is_valid() ||
+          semantic_.symbols.symbol(refinement.subject).type != type) {
+        continue;
+      }
+      if (refinement.exact_type.has_value()) {
+        possible = {runtime_scalar_type(*refinement.exact_type).kind};
+      }
+      if (!refinement.allowed_kinds.empty()) {
+        if (possible.empty()) {
+          possible = refinement.allowed_kinds;
+        } else {
+          std::vector<TypeKind> intersection;
+          for (TypeKind candidate : possible) {
+            if (std::find(
+                    refinement.allowed_kinds.begin(),
+                    refinement.allowed_kinds.end(),
+                    candidate) != refinement.allowed_kinds.end()) {
+              intersection.push_back(candidate);
+            }
+          }
+          possible = std::move(intersection);
+        }
+      }
+    }
+    if (!possible.empty()) {
+      const bool all_integer = std::all_of(
+          possible.begin(), possible.end(), [](TypeKind kind) {
+            return kind == TypeKind::SignedInteger ||
+                kind == TypeKind::UnsignedInteger;
+          });
+      if (all_integer) return TypeConstraintKind::Integer;
+      const bool all_float = std::all_of(
+          possible.begin(), possible.end(), [](TypeKind kind) {
+            return kind == TypeKind::Float;
+          });
+      if (all_float) return TypeConstraintKind::Float;
+      const bool all_number = std::all_of(
+          possible.begin(), possible.end(), [](TypeKind kind) {
+            return kind == TypeKind::SignedInteger ||
+                kind == TypeKind::UnsignedInteger || kind == TypeKind::Float;
+          });
+      if (all_number) return TypeConstraintKind::Number;
+    }
     for (const ParametricParameterRecord &parameter :
          semantic_.parametric_parameters) {
       const Symbol &symbol = semantic_.symbols.symbol(parameter.parameter);
       if (symbol.type == type) return parameter.constraint;
     }
     return std::nullopt;
+  }
+
+  // Exact refinements change only uses of the named value inside the active
+  // branch. The declaration and its public generic signature retain the
+  // original TypeParameter; no branch-local fact leaks into interface identity.
+  [[nodiscard]] TypeId refined_symbol_type(
+      SymbolId symbol, TypeId declared) const {
+    std::vector<TypeId> excluded;
+    for (const ActiveTypeRefinement &refinement : active_type_refinements_) {
+      if (refinement.subject != symbol) continue;
+      excluded.insert(
+          excluded.end(),
+          refinement.excluded_exact_types.begin(),
+          refinement.excluded_exact_types.end());
+    }
+    for (auto refinement = active_type_refinements_.rbegin();
+         refinement != active_type_refinements_.rend(); ++refinement) {
+      if (refinement->subject != symbol) continue;
+      if (refinement->exact_type.has_value() &&
+          std::find(
+              excluded.begin(), excluded.end(), *refinement->exact_type) ==
+              excluded.end()) {
+        return *refinement->exact_type;
+      }
+    }
+    return declared;
   }
 
   [[nodiscard]] bool is_integer(TypeId type) const {
@@ -2393,6 +2505,182 @@ private:
     return names.front();
   }
 
+  // Every structural query has a result category known from its name even when
+  // the queried type is a symbolic parameter. This lets the template pass
+  // check control flow and operators without pretending the query already has
+  // a concrete value; concrete instances fold it through inspect_type.
+  [[nodiscard]] TypeId symbolic_inspection_result_type(
+      std::string_view query) const {
+    if (query == "type_element" || query == "type_member_type" ||
+        query == "type_underlying" || query == "type_discriminator" ||
+        query == "type_parameter_type" || query == "type_result") {
+      return semantic_.types.builtins().meta_type;
+    }
+    if (query == "type_kind") {
+      return semantic_.types.builtins().type_kind_type;
+    }
+    if (query == "type_byte_order") {
+      return semantic_.types.builtins().type_byte_order_type;
+    }
+    if (query == "type_calling_convention") {
+      return semantic_.types.builtins().calling_convention_type;
+    }
+    if (query == "type_name" || query == "type_member_name") {
+      return semantic_.types.builtins().string_type;
+    }
+    if (query == "type_is_c_repr") {
+      return semantic_.types.builtins().bool_type;
+    }
+    return semantic_.types.builtins().usize_type;
+  }
+
+  // Recognizes `type_of(name)` without evaluating name. Refinement attaches to
+  // a stable symbol rather than source spelling, so shadowing and generated
+  // source preserve the ordinary lexical lookup rule.
+  [[nodiscard]] std::optional<SymbolId> type_of_subject(
+      const SyntaxTree &tree, NodeId expression_id, ScopeId scope) const {
+    const SyntaxNode &expression = tree.node(expression_id);
+    if (expression.kind != NodeKind::CallExpression ||
+        expression.children.size() != 2) {
+      return std::nullopt;
+    }
+    const std::optional<SourceName> callee =
+        single_name_expression(tree, expression.children.front());
+    if (!callee.has_value() || callee->text != "type_of") {
+      return std::nullopt;
+    }
+    const std::optional<SourceName> subject =
+        single_name_expression(tree, expression.children.back());
+    if (!subject.has_value()) return std::nullopt;
+    const std::optional<SymbolId> symbol =
+        semantic_.symbols.lookup(scope, subject->text);
+    if (!symbol.has_value() ||
+        !contains_symbolic_type(semantic_.symbols.symbol(*symbol).type)) {
+      return std::nullopt;
+    }
+    return symbol;
+  }
+
+  // Recognizes the second refinement form,
+  // `type_kind(type_of(name))`. Other structural queries remain valid
+  // compile-time conditions, but they do not grant an operator capability.
+  [[nodiscard]] std::optional<SymbolId> type_kind_subject(
+      const SyntaxTree &tree, NodeId expression_id, ScopeId scope) const {
+    const SyntaxNode &expression = tree.node(expression_id);
+    if (expression.kind != NodeKind::CallExpression ||
+        expression.children.size() != 2) {
+      return std::nullopt;
+    }
+    const std::optional<SourceName> callee =
+        single_name_expression(tree, expression.children.front());
+    if (!callee.has_value() || callee->text != "type_kind") {
+      return std::nullopt;
+    }
+    return type_of_subject(tree, expression.children.back(), scope);
+  }
+
+  [[nodiscard]] std::optional<std::string> contextual_alternative_name(
+      const SyntaxTree &tree, NodeId expression_id) const {
+    const SyntaxNode &expression = tree.node(expression_id);
+    if (expression.kind != NodeKind::ContextualAlternativeExpression) {
+      return std::nullopt;
+    }
+    const std::vector<SourceName> names = names_in_span(
+        tree, expression.token_begin, expression.token_end);
+    if (names.empty()) return std::nullopt;
+    return names.front().text;
+  }
+
+  // Extracts only the two condition shapes whose truth changes which
+  // operations are valid for a symbolic value. This is intentionally not a
+  // general theorem prover: every other dependent bool is still checked and
+  // selected per concrete instance, but grants no speculative capability.
+  [[nodiscard]] std::optional<TypeRefinementPredicate>
+  type_refinement_predicate(
+      const SyntaxTree &tree, NodeId condition_id, ScopeId scope) {
+    const SyntaxNode &condition = tree.node(condition_id);
+    if (condition.kind != NodeKind::BinaryExpression ||
+        condition.children.size() != 2) {
+      return std::nullopt;
+    }
+    const TokenKind operation = binary_operator(tree, condition);
+    if (operation != TokenKind::EqualEqual &&
+        operation != TokenKind::BangEqual) {
+      return std::nullopt;
+    }
+
+    const auto exact = [&](NodeId observed, NodeId expected)
+        -> std::optional<TypeRefinementPredicate> {
+      const std::optional<SymbolId> subject =
+          type_of_subject(tree, observed, scope);
+      if (!subject.has_value()) return std::nullopt;
+      const TypeId expected_type = type_value_expression(tree, expected, scope);
+      if (is_invalid_type(expected_type)) return std::nullopt;
+      TypeRefinementPredicate result;
+      result.kind = TypeRefinementPredicateKind::ExactType;
+      result.subject = *subject;
+      result.exact_type = expected_type;
+      result.true_branch_matches = operation == TokenKind::EqualEqual;
+      return result;
+    };
+    const auto kind = [&](NodeId observed, NodeId expected)
+        -> std::optional<TypeRefinementPredicate> {
+      const std::optional<SymbolId> subject =
+          type_kind_subject(tree, observed, scope);
+      if (!subject.has_value()) return std::nullopt;
+      const std::optional<std::string> name =
+          contextual_alternative_name(tree, expected);
+      if (!name.has_value()) return std::nullopt;
+      const std::optional<TypeKind> expected_kind =
+          inspected_type_kind(*name);
+      if (!expected_kind.has_value()) return std::nullopt;
+      TypeRefinementPredicate result;
+      result.kind = TypeRefinementPredicateKind::TypeKind;
+      result.subject = *subject;
+      result.type_kind = *expected_kind;
+      result.true_branch_matches = operation == TokenKind::EqualEqual;
+      return result;
+    };
+
+    const NodeId left = condition.children.front();
+    const NodeId right = condition.children.back();
+    if (std::optional<TypeRefinementPredicate> result = exact(left, right)) {
+      return result;
+    }
+    if (std::optional<TypeRefinementPredicate> result = exact(right, left)) {
+      return result;
+    }
+    if (std::optional<TypeRefinementPredicate> result = kind(left, right)) {
+      return result;
+    }
+    return kind(right, left);
+  }
+
+  // Produces the matching fact and its exact complement. Chained else-when
+  // statements simply push each complement before checking the next
+  // condition, so facts accumulate in source order and unwind with the
+  // lexical recursion.
+  [[nodiscard]] std::pair<ActiveTypeRefinement, ActiveTypeRefinement>
+  branch_type_refinements(const TypeRefinementPredicate &predicate) const {
+    ActiveTypeRefinement matching;
+    matching.subject = predicate.subject;
+    ActiveTypeRefinement complement;
+    complement.subject = predicate.subject;
+    if (predicate.kind == TypeRefinementPredicateKind::ExactType) {
+      matching.exact_type = predicate.exact_type;
+      complement.excluded_exact_types.push_back(predicate.exact_type);
+    } else {
+      matching.allowed_kinds.push_back(predicate.type_kind);
+      for (TypeKind kind : inspectable_type_kinds()) {
+        if (kind != predicate.type_kind) {
+          complement.allowed_kinds.push_back(kind);
+        }
+      }
+    }
+    if (predicate.true_branch_matches) return {matching, complement};
+    return {complement, matching};
+  }
+
   // Detects whether a compile-time expression depends on a symbolic parameter
   // from the current lexical scope. A parametric template must defer such a
   // static assertion; reporting "not evaluable" during symbolic checking would
@@ -2408,9 +2696,11 @@ private:
         const std::optional<SymbolId> symbol =
             semantic_.symbols.lookup(scope, name->text);
         if (symbol.has_value()) {
-          const SymbolKind kind = semantic_.symbols.symbol(*symbol).kind;
+          const Symbol &binding = semantic_.symbols.symbol(*symbol);
+          const SymbolKind kind = binding.kind;
           if (kind == SymbolKind::TypeParameter ||
-              kind == SymbolKind::ValueParameter) {
+              kind == SymbolKind::ValueParameter ||
+              contains_symbolic_type(binding.type)) {
             return true;
           }
         }
@@ -2449,15 +2739,18 @@ private:
     }
     const std::optional<SourceName> name = single_name_expression(tree, node_id);
     if (!name.has_value()) return semantic_.types.builtins().invalid;
-    if (const std::optional<TypeId> builtin = semantic_.types.find_builtin(name->text)) {
-      return *builtin;
-    }
     const std::optional<SymbolId> symbol = semantic_.symbols.lookup(scope, name->text);
     if (symbol.has_value()) {
       const Symbol binding = semantic_.symbols.symbol(*symbol);
       if (binding.kind == SymbolKind::Type || binding.kind == SymbolKind::TypeParameter) {
         return substitute_active(binding.type, node.range);
       }
+      diagnostics_.error(name->range, "name does not denote a type");
+      return semantic_.types.builtins().invalid;
+    }
+    if (const std::optional<TypeId> builtin =
+            semantic_.types.find_builtin(name->text)) {
+      return *builtin;
     }
     diagnostics_.error(name->range, "name does not denote a type");
     return semantic_.types.builtins().invalid;
@@ -3366,6 +3659,8 @@ private:
           use_range);
       (void)semantic_.symbols.declare(std::move(concrete), diagnostics_);
     }
+    const std::vector<ParametricArgument> arguments = ordered_arguments(
+        parameters, type_substitutions, value_substitutions);
     instances_.push_back({
         source,
         instance_id,
@@ -3373,7 +3668,12 @@ private:
         std::move(value_substitutions),
         false,
     });
-    semantic_.parametric_instances.push_back({source, instance_id});
+    semantic_.parametric_instances.push_back({
+        source,
+        instance_id,
+        arguments,
+        !preferred_name.empty(),
+    });
     return instance_id;
   }
 
@@ -3442,6 +3742,14 @@ private:
               tree.node(call.children[1]).range,
               "type_of requires an expression with a known static type");
           expression.type = semantic_.types.builtins().invalid;
+        } else if (!current_instance_index_.has_value() &&
+                   contains_symbolic_type(observed)) {
+          // The symbolic template pass knows that type_of returns a type but
+          // does not yet know which type. Preserve that fact as typed,
+          // non-lowered HIR. Rechecking a concrete instance substitutes the
+          // parameter first and folds this same source expression exactly.
+          expression.type = apply_expected_type(
+              semantic_.types.builtins().meta_type, expected, call.range);
         } else {
           expression.kind = HirExpressionKind::Constant;
           expression.constant = ConstantValue::make_type(observed.value);
@@ -3487,7 +3795,12 @@ private:
         // reference here would make indexed reflection depend on vector
         // capacity and could misdiagnose a valid type value.
         const HirExpression checked_type = hir_.expression(type_value);
+        const bool defer_symbolic_type =
+            !current_instance_index_.has_value() &&
+            expression_references_parametric_parameter(
+                tree, call.children[1], scope);
         std::optional<std::uint64_t> index;
+        bool defer_symbolic_index = false;
         if (indexed) {
           const HirExpressionId checked_index = check_expression(
               tree,
@@ -3499,13 +3812,27 @@ private:
               index_expression.constant.kind == ConstantKind::Integer) {
             index = index_expression.constant.integer.to_u64();
           }
-          if (!index.has_value()) {
+          defer_symbolic_index =
+              !current_instance_index_.has_value() &&
+              expression_references_parametric_parameter(
+                  tree, call.children[2], scope);
+          if (!index.has_value() && !defer_symbolic_index) {
             diagnostics_.error(
                 tree.node(call.children[2]).range,
                 *intrinsic + " index must be a compile-time usize");
           }
         }
-        if (checked_type.kind != HirExpressionKind::Constant ||
+        if (defer_symbolic_type && (!indexed || index.has_value() ||
+                                    defer_symbolic_index)) {
+          // Query applicability and index bounds depend on the eventual type
+          // (and possibly a value parameter). The template pass retains only
+          // the query's fixed result category. Concrete instances perform the
+          // full inspect_type check and fold the exact result.
+          expression.type = apply_expected_type(
+              symbolic_inspection_result_type(*intrinsic),
+              expected,
+              call.range);
+        } else if (checked_type.kind != HirExpressionKind::Constant ||
             checked_type.constant.kind != ConstantKind::Type ||
             checked_type.constant.type_index >= semantic_.types.size()) {
           diagnostics_.error(
@@ -3602,8 +3929,9 @@ private:
           active_constant_types();
       const bool defer_symbolic_assertion =
           !current_instance_index_.has_value() && argument_count >= 1 &&
-          expression_references_parametric_parameter(
-              tree, call.children[1], scope);
+          (expression_references_parametric_parameter(
+               tree, call.children[1], scope) ||
+           !active_type_refinements_.empty());
       std::optional<ConstantValue> condition;
       if (argument_count >= 1 && !defer_symbolic_assertion) {
         condition = evaluate_constant_expression(
@@ -3798,8 +4126,7 @@ private:
             (target_kind == TypeKind::Enum && target_type.element == source);
         const bool source_plain_numeric = source_kind != TypeKind::Distinct &&
             source_kind != TypeKind::Enum &&
-            (numeric_value_type(source) || is_untyped_integer(source) ||
-             is_untyped_float(source));
+            (numeric_value_type(source) || is_numeric(source));
         const bool target_plain_numeric = target_kind != TypeKind::Distinct &&
             target_kind != TypeKind::Enum && numeric_value_type(cast_target);
         const bool numeric = source_plain_numeric && target_plain_numeric;
@@ -4012,7 +4339,8 @@ private:
       expression.kind = HirExpressionKind::Symbol;
       expression.range = node.range;
       expression.symbol = *found;
-      const TypeId symbol_type = substitute_active(symbol.type, node.range);
+      const TypeId symbol_type = refined_symbol_type(
+          *found, substitute_active(symbol.type, node.range));
       expression.type = apply_expected_type(
           symbol_type, expected, node.range);
       // Parameters are immutable value bindings. Pointer and slice parameters
@@ -5881,6 +6209,75 @@ private:
     return hir_.add_block(std::move(block));
   }
 
+  // Materializes the one branch selected for executable HIR. Braced contents
+  // use the surrounding scope because `when` is a compile-time splice, while
+  // `else when` needs only an ordered HIR container around its nested
+  // statement. A missing branch is represented by no block.
+  [[nodiscard]] std::optional<HirBlockId> check_selected_when_branch(
+      const SyntaxTree &tree,
+      const SyntaxNode &when,
+      bool select_true,
+      ScopeId scope,
+      TypeId result_type,
+      ControlDepth depth) {
+    if (select_true) {
+      if (when.children.size() < 2) return std::nullopt;
+      return check_compile_time_block(
+          tree, when.children[1], scope, result_type, depth);
+    }
+    if (when.children.size() < 3) return std::nullopt;
+    const NodeId alternative = when.children[2];
+    if (tree.node(alternative).kind != NodeKind::WhenStatement) {
+      return check_compile_time_block(
+          tree, alternative, scope, result_type, depth);
+    }
+    HirBlock nested;
+    nested.scope = scope;
+    nested.range = tree.node(alternative).range;
+    nested.statements.push_back(check_statement(
+        tree, alternative, scope, result_type, depth));
+    return hir_.add_block(std::move(nested));
+  }
+
+  // Checks one possibility of a non-lowered parametric source template. A
+  // temporary lexical scope prevents declarations from two mutually exclusive
+  // symbolic possibilities colliding in the shared append-only SymbolTable;
+  // concrete checking above still applies Draft's transparent `when` scope.
+  // Agent sites snapshot both the ordinary branch path and the type fact.
+  [[nodiscard]] HirBlockId check_symbolic_when_branch(
+      const SyntaxTree &tree,
+      NodeId branch_id,
+      NodeId condition_id,
+      ScopeId scope,
+      TypeId result_type,
+      ControlDepth depth,
+      SemanticBranchRefinementKind branch_kind,
+      const ActiveTypeRefinement *type_fact) {
+    SemanticBranchRefinement branch_fact;
+    branch_fact.kind = branch_kind;
+    branch_fact.subject = {tree.file(), condition_id};
+    branch_fact.subject_type = semantic_.types.builtins().bool_type;
+    active_branch_refinements_.push_back(std::move(branch_fact));
+    if (type_fact != nullptr) active_type_refinements_.push_back(*type_fact);
+
+    HirBlockId checked;
+    if (tree.node(branch_id).kind == NodeKind::WhenStatement) {
+      HirBlock nested;
+      nested.scope = semantic_.symbols.add_scope(
+          ScopeKind::Block, scope, tree.node(branch_id).range);
+      nested.range = tree.node(branch_id).range;
+      nested.statements.push_back(check_statement(
+          tree, branch_id, nested.scope, result_type, depth));
+      checked = hir_.add_block(std::move(nested));
+    } else {
+      checked = check_block(tree, branch_id, scope, result_type, depth);
+    }
+
+    if (type_fact != nullptr) active_type_refinements_.pop_back();
+    active_branch_refinements_.pop_back();
+    return checked;
+  }
+
   // Checks the closed structured-statement vocabulary into typed HIR. Helpers
   // above keep declaration and assignment pattern mechanics out of this main
   // control-flow dispatch.
@@ -6224,29 +6621,123 @@ private:
 
     case NodeKind::WhenStatement:
       statement.kind = HirStatementKind::CompileTimeSelection;
-      if (const ConditionalSelection *selection =
-              selections_.find({tree.file(), statement_id})) {
-        if (selection->select_true) {
-          if (node.children.size() >= 2) {
-            statement.blocks.push_back(check_compile_time_block(
-                tree, node.children[1], scope, result_type, depth));
+      if (node.children.empty()) break;
+      {
+        const NodeId condition_id = node.children.front();
+        const ConditionalSelection *global_selection =
+            selections_.find({tree.file(), statement_id});
+        const bool dependent =
+            expression_references_parametric_parameter(
+                tree, condition_id, scope) ||
+            // Concrete parameter symbols already carry substituted types, so
+            // the source expression no longer looks symbolic. The missing
+            // package-global selection is the durable marker left by constant
+            // discovery for the corresponding dependent source site.
+            (current_instance_index_.has_value() &&
+             global_selection == nullptr);
+
+        if (dependent && current_instance_index_.has_value()) {
+          // A concrete procedure instance has an exact overlay for every type
+          // and value parameter. Evaluate once, then check only the selected
+          // transparent branch. Thus no symbolic-only operation and no
+          // rejected static assertion from the other branch reaches HIR/MIR.
+          const ConstantTable visible_constants = active_constant_table();
+          const std::vector<ConstantTypeBinding> visible_types =
+              active_constant_types();
+          const std::optional<EvaluatedConstant> evaluated =
+              evaluate_typed_constant_expression(
+                  sources_,
+                  loaded_,
+                  semantic_,
+                  target_,
+                  tree,
+                  condition_id,
+                  scope,
+                  diagnostics_,
+                  &visible_constants,
+                  &visible_types,
+                  semantic_.types.builtins().bool_type);
+          if (!evaluated.has_value() ||
+              evaluated->value.kind != ConstantKind::Bool) {
+            if (evaluated.has_value()) {
+              diagnostics_.error(
+                  tree.node(condition_id).range,
+                  "compile-time 'when' condition must be a bool");
+            }
+            break;
           }
-        } else if (node.children.size() >= 3) {
-          const NodeId alternative = node.children[2];
-          if (tree.node(alternative).kind == NodeKind::WhenStatement) {
-            HirBlock nested;
-            nested.scope = scope;
-            nested.range = tree.node(alternative).range;
-            nested.statements.push_back(check_statement(
-                tree, alternative, scope, result_type, depth));
-            statement.blocks.push_back(hir_.add_block(std::move(nested)));
-          } else {
-            statement.blocks.push_back(check_compile_time_block(
-                tree, alternative, scope, result_type, depth));
+          const bool select_true = evaluated->value.boolean;
+          if (const std::optional<HirBlockId> selected =
+                  check_selected_when_branch(
+                      tree,
+                      node,
+                      select_true,
+                      scope,
+                      result_type,
+                      depth)) {
+            statement.blocks.push_back(*selected);
           }
+          break;
         }
-      } else {
-        diagnostics_.error(node.range, "compile-time 'when' statement was not selected");
+
+        if (dependent) {
+          // The source template is permanent semantic evidence but is never
+          // lowered. Check the condition and both possible branches once. The
+          // narrow predicate recognizer grants exactly the capabilities proved
+          // by type_of/type_kind; arbitrary dependent bools grant none.
+          statement.expressions.push_back(check_expression(
+              tree,
+              condition_id,
+              scope,
+              semantic_.types.builtins().bool_type));
+          const std::optional<TypeRefinementPredicate> predicate =
+              type_refinement_predicate(tree, condition_id, scope);
+          std::optional<std::pair<ActiveTypeRefinement, ActiveTypeRefinement>>
+              type_facts;
+          if (predicate.has_value()) {
+            type_facts = branch_type_refinements(*predicate);
+          }
+
+          if (node.children.size() >= 2) {
+            statement.blocks.push_back(check_symbolic_when_branch(
+                tree,
+                node.children[1],
+                condition_id,
+                scope,
+                result_type,
+                depth,
+                SemanticBranchRefinementKind::ConditionTrue,
+                type_facts.has_value() ? &type_facts->first : nullptr));
+          }
+          if (node.children.size() >= 3) {
+            statement.blocks.push_back(check_symbolic_when_branch(
+                tree,
+                node.children[2],
+                condition_id,
+                scope,
+                result_type,
+                depth,
+                SemanticBranchRefinementKind::ConditionFalse,
+                type_facts.has_value() ? &type_facts->second : nullptr));
+          }
+          break;
+        }
+
+        if (global_selection != nullptr) {
+          if (const std::optional<HirBlockId> selected =
+                  check_selected_when_branch(
+                      tree,
+                      node,
+                      global_selection->select_true,
+                      scope,
+                      result_type,
+                      depth)) {
+            statement.blocks.push_back(*selected);
+          }
+        } else {
+          diagnostics_.error(
+              node.range, "compile-time 'when' statement was not selected");
+        }
       }
       break;
 
@@ -6463,9 +6954,21 @@ private:
     }
     if (statement.kind == HirStatementKind::Block ||
         statement.kind == HirStatementKind::Denial ||
-        statement.kind == HirStatementKind::Unchecked ||
-        statement.kind == HirStatementKind::CompileTimeSelection) {
+        statement.kind == HirStatementKind::Unchecked) {
       return statement.blocks.size() == 1 &&
+          block_definitely_returns(statement.blocks.front());
+    }
+    if (statement.kind == HirStatementKind::CompileTimeSelection) {
+      // Executable HIR contains exactly one selected block. A non-lowered
+      // symbolic template may contain both possibilities; it returns only if
+      // both do. A dependent `when` without else retains one symbolic block
+      // and is conservatively not treated as a selected executable branch.
+      if (statement.blocks.size() == 2) {
+        return block_definitely_returns(statement.blocks[0]) &&
+            block_definitely_returns(statement.blocks[1]);
+      }
+      return !current_procedure_is_template_ &&
+          statement.blocks.size() == 1 &&
           block_definitely_returns(statement.blocks.front());
     }
     // Loops remain conservative: even a syntactically infinite loop may exit
@@ -6525,11 +7028,14 @@ private:
         active_statement_denials_;
     const std::vector<SemanticBranchRefinement> saved_refinements =
         active_branch_refinements_;
+    const std::vector<ActiveTypeRefinement> saved_type_refinements =
+        active_type_refinements_;
     // A nested procedure declaration may be checked while its declaration is
     // inside an outer runtime branch, but invoking that static procedure later
     // does not imply the declaration-time path. Only its own body branches may
     // refine sites in the nested procedure.
     active_branch_refinements_.clear();
+    active_type_refinements_.clear();
     const SymbolId declaration_source = procedure_declaration_source(id);
     for (const DeclarationDenial &denial : semantic_.declaration_denials) {
       if (denial.declaration != declaration_source) continue;
@@ -6558,6 +7064,7 @@ private:
     current_procedure_is_template_ = saved_template;
     active_statement_denials_ = saved_denials;
     active_branch_refinements_ = saved_refinements;
+    active_type_refinements_ = saved_type_refinements;
     return true;
   }
 
@@ -6574,6 +7081,12 @@ private:
   bool current_procedure_is_template_ = false;
   std::vector<SyntaxReference> active_statement_denials_;
   std::vector<SemanticBranchRefinement> active_branch_refinements_;
+  // These semantic type facts exist only while the symbolic template pass is
+  // checking a dependent `when` branch. Concrete instances select one branch
+  // and therefore use their ordinary substituted parameter types instead.
+  // Keeping the stack beside the branch-refinement stack makes entry/exit
+  // explicit and prevents a branch fact from changing a public signature.
+  std::vector<ActiveTypeRefinement> active_type_refinements_;
   std::vector<ProcedureInstance> instances_;
   std::optional<std::size_t> current_instance_index_;
   // Used only by the package-initializer preflight. It reuses the complete

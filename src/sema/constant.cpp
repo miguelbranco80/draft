@@ -198,6 +198,16 @@ public:
               site.scope == semantic_.package_scope
           ? file_scope(site.syntax.file)
           : site.scope;
+      if (site.kind == SemanticSiteKind::ConditionalStatement &&
+          expression_references_parametric_parameter(
+              *tree, when.children.front(), condition_scope)) {
+        // A body `when` whose answer changes with a specialization has no
+        // package-global selection. BodyChecker checks both refined symbolic
+        // branches, then evaluates this same condition with each concrete
+        // instance overlay. Leaving it out of unresolved_conditionals is what
+        // permits the package semantic fixed point to complete.
+        continue;
+      }
       const EvalResult condition = evaluate_expression(
           *tree,
           when.children.front(),
@@ -2171,19 +2181,76 @@ private:
     if (expression.kind != NodeKind::NameExpression) return std::nullopt;
     const std::optional<std::string> name = final_name(tree, expression);
     if (!name.has_value()) return std::nullopt;
-    if (const std::optional<TypeId> builtin =
-            semantic_.types.find_builtin(*name)) {
-      return *builtin;
-    }
     const std::optional<SymbolId> found =
         semantic_.symbols.lookup(scope, *name);
-    if (!found.has_value()) return std::nullopt;
-    const Symbol &symbol = semantic_.symbols.symbol(*found);
-    if (symbol.kind != SymbolKind::Type &&
-        symbol.kind != SymbolKind::TypeParameter) {
-      return std::nullopt;
+    if (found.has_value()) {
+      const Symbol &symbol = semantic_.symbols.symbol(*found);
+      if (symbol.kind != SymbolKind::Type &&
+          symbol.kind != SymbolKind::TypeParameter) {
+        return std::nullopt;
+      }
+      return substitute_local_type(symbol.type);
     }
-    return substitute_local_type(symbol.type);
+    return semantic_.types.find_builtin(*name);
+  }
+
+  // A body conditional also depends on a type parameter when it names an
+  // ordinary value whose declared type contains that parameter. The direct
+  // `TypeParameter`/`ValueParameter` symbol test is insufficient for the most
+  // common form: `value` in `proc[T: type](value: T)` is a runtime Parameter.
+  [[nodiscard]] bool type_references_parametric_parameter(TypeId type) const {
+    if (!type.is_valid()) return false;
+    const Type value = semantic_.types.type(type);
+    if (value.kind == TypeKind::TypeParameter ||
+        value.owner_evaluated_type_application ||
+        value.owner_evaluated_element_count ||
+        value.element_count_expression.is_valid()) {
+      return true;
+    }
+    if ((value.kind == TypeKind::Pointer ||
+         value.kind == TypeKind::MultiPointer ||
+         value.kind == TypeKind::Slice || value.kind == TypeKind::Array ||
+         value.kind == TypeKind::Simd) && value.element.is_valid()) {
+      return type_references_parametric_parameter(value.element);
+    }
+    if (value.kind == TypeKind::Tuple || value.kind == TypeKind::Procedure) {
+      for (TypeId member : value.members) {
+        if (type_references_parametric_parameter(member)) return true;
+      }
+    }
+    return false;
+  }
+
+  // Reports only dependencies on a declaration's compile-time parameters.
+  // Ordinary constants and target facts still belong to the package-global
+  // selection fixed point even when they appear inside a parametric body.
+  [[nodiscard]] bool expression_references_parametric_parameter(
+      const SyntaxTree &tree,
+      NodeId expression_id,
+      ScopeId scope) const {
+    const SyntaxNode &expression = tree.node(expression_id);
+    if (expression.kind == NodeKind::NameExpression) {
+      const std::optional<std::string> name = final_name(tree, expression);
+      if (name.has_value()) {
+        const std::optional<SymbolId> symbol =
+            semantic_.symbols.lookup(scope, *name);
+        if (symbol.has_value()) {
+          const Symbol &binding = semantic_.symbols.symbol(*symbol);
+          const SymbolKind kind = binding.kind;
+          if (kind == SymbolKind::TypeParameter ||
+              kind == SymbolKind::ValueParameter ||
+              type_references_parametric_parameter(binding.type)) {
+            return true;
+          }
+        }
+      }
+    }
+    for (NodeId child : expression.children) {
+      if (expression_references_parametric_parameter(tree, child, scope)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   [[nodiscard]] TypeId substitute_type_bindings(

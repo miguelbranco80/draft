@@ -131,7 +131,9 @@ Context availability, and other typed facts. It has zero runtime width:
 - no effect on initialization, reachability, or return analysis;
 - evaluated once per selected validator invocation, not once per runtime visit;
 - loop judgments use fixed-point facts, not one invocation per iteration;
-- judgments in unselected `when` branches are absent;
+- judgments in an unselected parameter-independent `when` branch are absent;
+- each branch of a parameter-dependent `when` contributes one symbolic site
+  with its refinement facts, never one site per concrete specialization;
 - `defer judge ...` is invalid;
 - a statically unreachable judgment is rejected.
 
@@ -179,6 +181,13 @@ decode_one :: proc(input: []u8) -> Decode_Result {
     return ... "produce one result" // expression obligation
 }
 ```
+
+A synthesis site inside a parametric declaration is resolved once in the
+symbolic source environment. If it is inside a parameter-dependent `when`, its
+obligation includes that branch's exact/kind refinement and earlier
+else-branch exclusions. Concrete specializations type-check the pinned
+expansion in their selected branch but do not create additional provider
+requests.
 
 In the first form the expansion may contain declarations, branches, calls, and
 returns. In the second it must be exactly one `Decode_Result` expression.

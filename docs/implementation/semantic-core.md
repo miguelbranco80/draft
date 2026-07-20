@@ -29,6 +29,37 @@ source symbols. A folded enum result may reach runtime as its ordinary integer
 representation; the `type` meta-value itself must be gone before MIR and is
 diagnosed defensively if it reaches the backend.
 
+## Instance-dependent `when` and refinement
+
+Status: implemented for parametric procedure bodies and concrete generic
+instances.
+
+Constant discovery leaves a body `when` unselected when its expression names a
+type/value parameter or an ordinary value whose type graph contains one. The
+symbolic body checker then checks both branch HIR containers. An explicit
+refinement stack records the subject SymbolId, optional exact TypeId, allowed
+`TypeKind` set, and accumulated exact exclusions. Only the recognized
+`type_of(subject)` and `type_kind(type_of(subject))` comparisons add facts;
+arbitrary dependent booleans remain selection-only expressions. Refinements
+affect expression capability checks but never mutate declaration types or
+public constraint rows.
+
+Concrete procedure instances reuse the ordinary constant interpreter with
+their type/value substitution overlay, check only the selected transparent
+branch, and emit no symbolic type query. A symbolic `static_assert` in a
+refined branch is deferred; the same source is evaluated if a concrete
+instance selects it. Body agent sites are recorded only by the symbolic source
+pass, with the active branch-refinement path, and are not duplicated while
+instances validate the accepted expansion.
+
+Effect closure includes every concrete HIR procedure. For a specialization
+requested across a package boundary, the completed interface publishes an
+instance row containing the public template name, canonical ordered generic
+arguments, stable monomorphized linker name, and that exact body's
+effect/return/write contract. Consumer proxies refresh from this row rather
+than inheriting the symbolic public template summary; two substitutions may
+select different calls and therefore legitimately expose different denials.
+
 ## Contextual `c`
 
 Status: implementation representation; no intended semantic change.

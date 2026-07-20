@@ -198,6 +198,22 @@ struct InterfaceDeclaration {
   std::vector<FieldWrite> field_writes;
 };
 
+// One consumer-requested specialization of a public procedure template. The
+// source template remains the public declaration; this row publishes only the
+// concrete body contract needed by callers that requested the exact ordered
+// arguments. instance_name is the canonical linker identity shared with every
+// consumer proxy. Argument types use this interface's type graph, never the
+// defining package's process-local TypeIds.
+struct InterfaceProcedureInstance {
+  std::string template_name;
+  std::string instance_name;
+  std::vector<InterfaceNominalArgument> arguments;
+  bool has_effect_summary = false;
+  std::vector<InterfaceDeclaration::Effect> effects;
+  std::vector<InterfaceDeclaration::ReturnValue> return_values;
+  std::vector<InterfaceDeclaration::FieldWrite> field_writes;
+};
+
 // InterfaceDocumentation contains public design context and its exact explicit
 // attachment bytes for process-local dependency context construction. It
 // intentionally omits FileId, SyntaxReference, and physical paths and is never
@@ -234,6 +250,10 @@ struct PackageInterface {
   std::string short_name;
   std::vector<InterfaceType> types;
   std::vector<InterfaceDeclaration> declarations;
+  // Concrete effect rows are demand-driven compilation results, not new
+  // source-visible declarations. They are keyed by public template identity,
+  // canonical ordered arguments, and the shared stable instance name.
+  std::vector<InterfaceProcedureInstance> procedure_instances;
   std::vector<InterfaceDocumentation> documentation;
   // Concrete public generic applications whose layout had to execute in this
   // defining package. Consumers import these self-contained graphs before

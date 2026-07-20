@@ -383,6 +383,17 @@ syntax. The target exposes `identity`, `arch`, `os`, `abi`, `byte_order`,
 `object_format`, `file_tag`, `pointer_bits`, `page_size`, and compile-time
 `has_feature`.
 
+Inside a parametric procedure, a statement `when` may depend on the concrete
+type/value arguments. The template is checked symbolically in both branches,
+then each instance retains only its selected branch. The compiler recognizes
+exact refinement through `type_of(value) == T` and kind refinement through
+`type_kind(type_of(value)) == .signed_integer`; `!=`, reversed operands, and
+chained `else when` carry the corresponding complements. Use an exact test when
+an operation needs a complete type such as `string`; use a kind test for the
+operations guaranteed by a numeric category. A final
+`static_assert(false, "unsupported type")` rejects only concrete instances
+which reach it.
+
 ## Parametric declarations
 
 Put compile-time type/value parameters in brackets after the declaration name:

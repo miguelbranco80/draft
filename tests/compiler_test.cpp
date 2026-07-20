@@ -1163,6 +1163,98 @@ void test_cross_package_higher_order_effect(TestState &state) {
   std::filesystem::remove_all(root, error);
 }
 
+void test_cross_package_dependent_generic_effect(TestState &state) {
+  draft::test::TemporaryDirectory temporary_directory{
+      "draft-bootstrap-dependent-generic-effect-test"};
+  const std::filesystem::path &root = temporary_directory.path();
+  std::error_code error;
+  std::filesystem::create_directories(root / "app", error);
+  std::filesystem::create_directories(root / "generic", error);
+  EXPECT(state, !error);
+  if (error) return;
+
+  std::ofstream dependency(
+      root / "generic" / "package.draft", std::ios::binary);
+  dependency <<
+      "package generic\n"
+      "pub inspect[T: type] :: proc(value: T) {\n"
+      "    when type_of(value) == bool {\n"
+      "        assert(value)\n"
+      "    }\n"
+      "}\n";
+  dependency.close();
+
+  std::ofstream app(root / "app" / "package.draft", std::ios::binary);
+  app <<
+      "package app\n"
+      "import generic\n"
+      "deny assert {\n"
+      "    safe :: proc() {\n"
+      "        generic.inspect(cast[i32](1))\n"
+      "    }\n"
+      "}\n"
+      "unsafe :: proc() {\n"
+      "    generic.inspect(true)\n"
+      "}\n";
+  app.close();
+  EXPECT(state, dependency.good() && app.good());
+
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  draft::CompileWorkspaceOptions options;
+  options.target = draft::make_aarch64_macos_profile();
+  options.workspace.workspace_directory = root.string();
+  const draft::CompileWorkspaceResult result = draft::compile_workspace(
+      sources, (root / "app").string(), std::move(options), diagnostics);
+  if (diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+  }
+  EXPECT(state, result.ok);
+  EXPECT(state, !diagnostics.has_errors());
+
+  const draft::CompiledPackage *app_package = nullptr;
+  const draft::CompiledPackage *generic_package = nullptr;
+  for (const std::optional<draft::CompiledPackage> &package : result.packages) {
+    if (!package.has_value()) continue;
+    if (package->identity.root_relative_path == "app") {
+      app_package = &*package;
+    } else if (package->identity.root_relative_path == "generic") {
+      generic_package = &*package;
+    }
+  }
+  EXPECT(state, app_package != nullptr);
+  EXPECT(state, generic_package != nullptr);
+  if (app_package != nullptr && generic_package != nullptr) {
+    EXPECT(state,
+        app_package->semantics.package.imported_procedure_instances.size() == 2);
+    EXPECT(state, generic_package->interface.procedure_instances.size() == 2);
+    for (const draft::ImportedProcedureInstance &instance :
+         app_package->semantics.package.imported_procedure_instances) {
+      EXPECT(state, instance.arguments.size() == 1);
+      if (instance.arguments.size() != 1) continue;
+      const draft::TypeKind argument_kind =
+          app_package->semantics.package.types.type(
+              instance.arguments.front().type).kind;
+      const bool has_assert = std::any_of(
+          app_package->semantics.package.imported_effects.begin(),
+          app_package->semantics.package.imported_effects.end(),
+          [&](const draft::ImportedEffect &effect) {
+            return effect.procedure_proxy == instance.instance_proxy &&
+                effect.kind == draft::EffectKind::RuntimeAssert;
+          });
+      if (argument_kind == draft::TypeKind::Bool) {
+        EXPECT(state, has_assert);
+      } else if (argument_kind == draft::TypeKind::SignedInteger) {
+        EXPECT(state, !has_assert);
+      } else {
+        EXPECT(state, false);
+      }
+    }
+  }
+
+  std::filesystem::remove_all(root, error);
+}
+
 } // namespace
 
 int main() {
@@ -1184,6 +1276,7 @@ int main() {
   test_cross_package_generic_procedures(state);
   test_runtime_context_bridge_diagnostics(state);
   test_cross_package_higher_order_effect(state);
+  test_cross_package_dependent_generic_effect(state);
   if (state.failures != 0) {
     std::cerr << state.failures << " compiler pipeline expectation(s) failed\n";
     return EXIT_FAILURE;

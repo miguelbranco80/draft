@@ -548,10 +548,21 @@ when target.os == .linux {
 ```
 
 The condition follows the constant-evaluation rules above and must produce a
-`bool`. Every branch is parsed, but only the selected branch contributes its
-contents and proceeds through name and type checking. `when` introduces no
-lexical scope; declarations and members in the selected branch belong to the
-surrounding scope or type.
+`bool`. When the condition is independent of an enclosing parametric
+declaration, every branch is parsed but only the selected branch contributes
+its contents and proceeds through name and type checking.
+
+A statement `when` inside a parametric procedure may instead depend on that
+declaration's compile-time type or value parameters. The source template is
+checked symbolically in every possible branch, using the type refinements
+defined by the type specification. Each concrete instantiation evaluates the
+condition after substitution and retains only its selected branch. A rejected
+operation or `static_assert` in another concrete branch cannot affect that
+instance. Parameter-dependent selection is still compilation, not a runtime
+branch, and no symbolic query or type value reaches MIR.
+
+`when` introduces no lexical scope; declarations and members in the concrete
+selected branch belong to the surrounding scope or type.
 
 The filename qualifier in [section 3](01-core-language.md#section-3) handles
 implementations that differ by whole files. `when` handles smaller target,

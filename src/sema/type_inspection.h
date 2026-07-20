@@ -22,6 +22,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 
@@ -65,5 +66,13 @@ struct TypeInspectionAttempt {
     const SemanticPackage &package,
     TypeId enum_type,
     std::uint64_t value);
+
+// Dependent `when` refinement consumes the same source vocabulary as
+// type_kind. Keeping both conversions here prevents the refinement checker
+// from acquiring a second, subtly different list of visible type categories.
+[[nodiscard]] std::optional<TypeKind> inspected_type_kind(
+    std::string_view name);
+
+[[nodiscard]] std::span<const TypeKind> inspectable_type_kinds();
 
 } // namespace draft

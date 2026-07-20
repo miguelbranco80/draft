@@ -204,37 +204,43 @@ public:
       }
       if (effects_ != nullptr && symbol.kind == SymbolKind::Procedure) {
         if (const ProcedureEffectSummary *summary = effects_->find(id)) {
-          declaration.has_effect_summary = true;
-          for (const SemanticEffect &effect : summary->effects) {
-            declaration.effects.push_back(translate_effect(effect));
-          }
-          for (const ProcedureFieldValueSummary &returned :
-               summary->return_values) {
-            InterfaceDeclaration::ReturnValue interface_return;
-            interface_return.path = returned.path;
-            translate_procedure_value(
-                returned.value,
-                interface_return.flow_slots,
-                interface_return.contract_effects,
-                interface_return.unknown);
-            declaration.return_values.push_back(std::move(interface_return));
-          }
-          for (const ProcedureFieldWriteSummary &write :
-               summary->field_writes) {
-            InterfaceDeclaration::FieldWrite interface_write;
-            interface_write.parameter = write.parameter;
-            interface_write.indirection = write.indirection;
-            interface_write.path = write.path;
-            translate_procedure_value(
-                write.value,
-                interface_write.value_flow_slots,
-                interface_write.value_contract_effects,
-                interface_write.value_unknown);
-            declaration.field_writes.push_back(std::move(interface_write));
-          }
+          translate_effect_summary(
+              *summary,
+              declaration.has_effect_summary,
+              declaration.effects,
+              declaration.return_values,
+              declaration.field_writes);
         }
       }
       result_.declarations.push_back(std::move(declaration));
+    }
+    if (effects_ != nullptr) {
+      for (const ParametricInstanceRecord &instance :
+           package_.parametric_instances) {
+        if (!instance.externally_requested) continue;
+        const Symbol &source = package_.symbols.symbol(instance.source);
+        if (source.visibility != Visibility::Public ||
+            source.kind != SymbolKind::Procedure) {
+          continue;
+        }
+        InterfaceProcedureInstance translated;
+        translated.template_name = source.name;
+        translated.instance_name =
+            package_.symbols.symbol(instance.instance).name;
+        for (const ParametricArgument &argument : instance.arguments) {
+          translated.arguments.push_back(translate_argument(argument));
+        }
+        if (const ProcedureEffectSummary *summary =
+                effects_->find(instance.instance)) {
+          translate_effect_summary(
+              *summary,
+              translated.has_effect_summary,
+              translated.effects,
+              translated.return_values,
+              translated.field_writes);
+        }
+        result_.procedure_instances.push_back(std::move(translated));
+      }
     }
     if (metadata_ != nullptr) {
       for (const AgentRecord &record : metadata_->records) {
@@ -303,6 +309,44 @@ public:
   }
 
 private:
+  // Public declarations and externally requested concrete instances use the
+  // identical provider-neutral effect representation. Keeping the mechanical
+  // translation here ensures a new return/write contract cannot accidentally
+  // be published for templates but omitted from their exact specializations.
+  void translate_effect_summary(
+      const ProcedureEffectSummary &summary,
+      bool &has_effect_summary,
+      std::vector<InterfaceDeclaration::Effect> &effects,
+      std::vector<InterfaceDeclaration::ReturnValue> &return_values,
+      std::vector<InterfaceDeclaration::FieldWrite> &field_writes) const {
+    has_effect_summary = true;
+    for (const SemanticEffect &effect : summary.effects) {
+      effects.push_back(translate_effect(effect));
+    }
+    for (const ProcedureFieldValueSummary &returned : summary.return_values) {
+      InterfaceDeclaration::ReturnValue interface_return;
+      interface_return.path = returned.path;
+      translate_procedure_value(
+          returned.value,
+          interface_return.flow_slots,
+          interface_return.contract_effects,
+          interface_return.unknown);
+      return_values.push_back(std::move(interface_return));
+    }
+    for (const ProcedureFieldWriteSummary &write : summary.field_writes) {
+      InterfaceDeclaration::FieldWrite interface_write;
+      interface_write.parameter = write.parameter;
+      interface_write.indirection = write.indirection;
+      interface_write.path = write.path;
+      translate_procedure_value(
+          write.value,
+          interface_write.value_flow_slots,
+          interface_write.value_contract_effects,
+          interface_write.value_unknown);
+      field_writes.push_back(std::move(interface_write));
+    }
+  }
+
   [[nodiscard]] InterfaceDeclaration::Effect translate_effect(
       const SemanticEffect &effect) const {
     InterfaceDeclaration::Effect result;

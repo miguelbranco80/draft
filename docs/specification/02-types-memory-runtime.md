@@ -231,7 +231,10 @@ alternatives are `.void`, `.bool`, `.boolean_storage`, `.signed_integer`,
 `.c_string`, `.string`, `.pointer`, `.multi_pointer`, `.slice`, `.array`,
 `.tuple`, `.procedure`, `.simd`, `.struct`, `.enumeration`, `.tagged_union`,
 `.raw_union`, `.distinct`, and `.type`. Untyped values and unresolved type
-parameters are not concrete type values and cannot be queried.
+parameters are not concrete type values and cannot produce a folded query
+result. A query in a parameter-dependent compile-time expression may remain
+symbolic until a concrete instantiation supplies the exact type; it never
+creates a runtime type descriptor.
 
 The remaining structural queries are compile-time intrinsics:
 
@@ -410,6 +413,27 @@ sum[T: number] :: proc(values: []T) -> T {
 }
 ```
 
+A parameter-dependent statement `when` may refine one named value without
+changing its declaration or the procedure's public constraint. The recognized
+refinement predicates are exact-type comparisons
+`type_of(value) == Some_Type` and broad-kind comparisons
+`type_kind(type_of(value)) == .signed_integer`; `!=` and either operand order
+are equivalent with the true and false facts exchanged. In the matching exact
+branch, ordinary checking treats `value` as `Some_Type`. In a matching kind
+branch, it grants only the operations common to that `Type_Kind` alternative:
+for example, `.signed_integer` and `.unsigned_integer` grant the `integer`
+constraint operations, while `.float` grants the `float` operations. The
+`else` branch receives the exact complement, and an `else when` chain
+accumulates earlier exclusions in source order.
+
+Other parameter-dependent boolean conditions remain valid compile-time
+selection but grant no additional type operations during symbolic checking.
+The compiler checks the symbolic template once under these facts, then checks
+only the selected branch of each concrete instance. A terminal
+`static_assert(false, message)` is therefore a valid way to reject every
+concrete type not accepted by earlier branches. This refinement stack is not a
+generic constraint solver and never changes interface identity.
+
 Relationships involving parametric type or value parameters use `static_assert`
 inside the declaration. An assertion independent of those parameters is
 evaluated immediately. A parameter-dependent assertion becomes an instantiation
@@ -436,10 +460,11 @@ merge machine-identical instantiations without changing program semantics.
 Instantiation introduces no boxing or implicit dynamic dispatch.
 
 A synthesis site inside a parametric declaration receives its named
-compile-time parameters, declared constraints, and expected type. It is
-resolved once in that symbolic environment and must type-check under those
-constraints. Ordinary monomorphization then specializes the pinned generated
-source.
+compile-time parameters, declared constraints, active dependent-`when`
+refinements, and expected type. It is resolved once in that symbolic
+environment and must type-check under those facts. Ordinary monomorphization
+then specializes the pinned generated source; it does not issue another
+provider request for each concrete instance.
 
 Parametric declarations do not inspect, construct, or rewrite syntax. They
 substitute only their declared type and value parameters into an already parsed

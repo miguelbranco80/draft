@@ -46,6 +46,33 @@ constexpr std::array<std::string_view, 24> kTypeKindNames = {
     "type",
 };
 
+constexpr std::array<TypeKind, 24> kTypeKinds = {
+    TypeKind::Void,
+    TypeKind::Bool,
+    TypeKind::BooleanStorage,
+    TypeKind::SignedInteger,
+    TypeKind::UnsignedInteger,
+    TypeKind::Float,
+    TypeKind::Rune,
+    TypeKind::EndianScalar,
+    TypeKind::RawPointer,
+    TypeKind::CString,
+    TypeKind::String,
+    TypeKind::Pointer,
+    TypeKind::MultiPointer,
+    TypeKind::Slice,
+    TypeKind::Array,
+    TypeKind::Tuple,
+    TypeKind::Procedure,
+    TypeKind::Simd,
+    TypeKind::Struct,
+    TypeKind::Enum,
+    TypeKind::TaggedUnion,
+    TypeKind::RawUnion,
+    TypeKind::Distinct,
+    TypeKind::MetaType,
+};
+
 constexpr std::array<std::string_view, 3> kByteOrderNames = {
     "native", "little", "big"};
 
@@ -474,6 +501,17 @@ std::optional<std::string_view> compiler_enum_member_name(
     return kCallingConventionNames[value];
   }
   return std::nullopt;
+}
+
+std::optional<TypeKind> inspected_type_kind(std::string_view name) {
+  for (std::size_t index = 0; index < kTypeKindNames.size(); ++index) {
+    if (kTypeKindNames[index] == name) return kTypeKinds[index];
+  }
+  return std::nullopt;
+}
+
+std::span<const TypeKind> inspectable_type_kinds() {
+  return kTypeKinds;
 }
 
 } // namespace draft

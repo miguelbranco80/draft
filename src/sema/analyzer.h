@@ -107,15 +107,6 @@ struct ParametricParameterRecord {
   TypeConstraintKind constraint = TypeConstraintKind::AnyType;
 };
 
-// Concrete procedure symbols are created during body checking, after the
-// declaration graph is stable. Retaining their source template relationship
-// lets denial and diagnostic passes apply declaration contracts to every
-// monomorphized body without copying policy records.
-struct ParametricInstanceRecord {
-  SymbolId source;
-  SymbolId instance;
-};
-
 // A nominal template argument is either a type or a compile-time scalar.
 // Concrete scalar applications own value; a template may instead retain a
 // symbolic integer expression whose parameter leaves are ValueParameter
@@ -137,6 +128,19 @@ struct ParametricArgument {
       std::numeric_limits<std::uint32_t>::max();
 
   bool operator==(const ParametricArgument &) const = default;
+};
+
+// Concrete procedure symbols are created during body checking, after the
+// declaration graph is stable. The ordered argument packet is the semantic
+// identity of the specialization; package-local TypeIds never cross an
+// interface without translation. externally_requested distinguishes a body
+// requested by a consumer package from an implementation-private instance, so
+// only the former becomes a concrete interface effect row.
+struct ParametricInstanceRecord {
+  SymbolId source;
+  SymbolId instance;
+  std::vector<ParametricArgument> arguments;
+  bool externally_requested = false;
 };
 
 // Nominal type instances must survive the short-lived TypeResolver used for

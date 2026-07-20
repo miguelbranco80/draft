@@ -950,9 +950,9 @@ private:
 
 // Preliminary interfaces intentionally contain no body-derived effects. Once
 // dependency bodies are checked, refresh each already-bound proxy from the
-// final dependency interface. Concrete generic proxies inherit the public
-// template's audited summary, because their body is that template under a
-// semantics-preserving type/value substitution.
+// final dependency interface. A concrete generic proxy must use its exact
+// specialization row: dependent `when` can deliberately make two instances of
+// the same source template expose different effects.
 void refresh_imported_effects(
     SemanticPackage &package,
     const CompileWorkspaceResult &result,
@@ -962,11 +962,11 @@ void refresh_imported_effects(
   package.imported_returns.clear();
   package.imported_writes.clear();
   for (ImportedSymbol &imported : package.imported_symbols) {
-    std::string_view declaration_name = imported.public_name;
+    const ImportedProcedureInstance *requested_instance = nullptr;
     for (const ImportedProcedureInstance &instance :
          package.imported_procedure_instances) {
       if (instance.instance_proxy == imported.proxy) {
-        declaration_name = instance.public_template_name;
+        requested_instance = &instance;
         break;
       }
     }
@@ -982,22 +982,56 @@ void refresh_imported_effects(
           "cannot refresh effects for an unavailable imported package");
       continue;
     }
-    const InterfaceDeclaration *declaration = find_interface_declaration(
-        result.packages[*dependency]->interface, declaration_name);
-    if (declaration == nullptr) {
-      diagnostics.error(
-          SourceRange::invalid(),
-          "cannot refresh effects for missing imported declaration '" +
-              std::string(declaration_name) + "'");
-      continue;
+    const PackageInterface &dependency_interface =
+        result.packages[*dependency]->interface;
+    bool has_effect_summary = false;
+    const std::vector<InterfaceDeclaration::Effect> *interface_effects = nullptr;
+    const std::vector<InterfaceDeclaration::ReturnValue> *interface_returns = nullptr;
+    const std::vector<InterfaceDeclaration::FieldWrite> *interface_writes = nullptr;
+    if (requested_instance != nullptr) {
+      const InterfaceProcedureInstance *concrete = nullptr;
+      for (const InterfaceProcedureInstance &candidate :
+           dependency_interface.procedure_instances) {
+        if (candidate.template_name ==
+                requested_instance->public_template_name &&
+            candidate.instance_name == imported.public_name) {
+          concrete = &candidate;
+          break;
+        }
+      }
+      if (concrete == nullptr) {
+        diagnostics.error(
+            SourceRange::invalid(),
+            "cannot refresh effects for missing imported procedure instance '" +
+                imported.public_name + "'");
+        continue;
+      }
+      has_effect_summary = concrete->has_effect_summary;
+      interface_effects = &concrete->effects;
+      interface_returns = &concrete->return_values;
+      interface_writes = &concrete->field_writes;
+    } else {
+      const InterfaceDeclaration *declaration = find_interface_declaration(
+          dependency_interface, imported.public_name);
+      if (declaration == nullptr) {
+        diagnostics.error(
+            SourceRange::invalid(),
+            "cannot refresh effects for missing imported declaration '" +
+                imported.public_name + "'");
+        continue;
+      }
+      has_effect_summary = declaration->has_effect_summary;
+      interface_effects = &declaration->effects;
+      interface_returns = &declaration->return_values;
+      interface_writes = &declaration->field_writes;
     }
-    imported.has_effect_summary = declaration->has_effect_summary;
-    for (const InterfaceDeclaration::Effect &effect : declaration->effects) {
+    imported.has_effect_summary = has_effect_summary;
+    for (const InterfaceDeclaration::Effect &effect : *interface_effects) {
       package.imported_effects.push_back(
           import_interface_effect(imported.proxy, effect));
     }
     for (const InterfaceDeclaration::ReturnValue &returned :
-         declaration->return_values) {
+         *interface_returns) {
       ImportedProcedureReturn imported_return;
       imported_return.procedure_proxy = imported.proxy;
       imported_return.path = returned.path;
@@ -1015,7 +1049,7 @@ void refresh_imported_effects(
       package.imported_returns.push_back(std::move(imported_return));
     }
     for (const InterfaceDeclaration::FieldWrite &write :
-         declaration->field_writes) {
+         *interface_writes) {
       ImportedProcedureWrite imported_write;
       imported_write.procedure_proxy = imported.proxy;
       imported_write.parameter = write.parameter;

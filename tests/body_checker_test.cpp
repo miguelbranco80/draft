@@ -2244,6 +2244,100 @@ bad_queries :: proc() {
       std::string::npos);
 }
 
+void test_dependent_when_type_refinement(TestState &state) {
+  CheckedSource valid(R"draft(
+package bodies
+
+inspect[T: type] :: proc(value: T) {
+    when type_of(value) == string {
+        len(value)
+    } else when type_of(value) == bool {
+        !value
+    } else when type_kind(type_of(value)) == .signed_integer {
+        cast[i128](value + value)
+    } else when type_kind(type_of(value)) == .unsigned_integer {
+        cast[u128](value + value)
+    } else {
+        // The assertion belongs to an unsupported concrete instance. It must
+        // not reject the symbolic template or either selected valid branch.
+        static_assert(false, "unsupported inspect type")
+    }
+}
+
+main :: proc() {
+    inspect("draft")
+    inspect(true)
+    inspect(cast[i32](21))
+    inspect(cast[u32](21))
+}
+)draft");
+  if (valid.diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(valid.sources, valid.diagnostics);
+  }
+  EXPECT(state, valid.semantics.ok);
+  EXPECT(state, valid.bodies.ok);
+  EXPECT(state, !valid.diagnostics.has_errors());
+
+  CheckedSource synthesized(R"draft(
+package bodies
+
+fill[T: type] :: proc(value: T) {
+    when type_of(value) == string {
+        ... "emit a string-specific statement"
+    } else {
+        ... "emit a non-string statement"
+    }
+}
+
+main :: proc() {
+    fill("draft")
+    fill(cast[i32](1))
+}
+)draft");
+  if (synthesized.diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(
+        synthesized.sources, synthesized.diagnostics);
+  }
+  EXPECT(state, synthesized.bodies.ok);
+  std::size_t synthesis_sites = 0;
+  for (const draft::SemanticSite &site : synthesized.semantics.package.sites) {
+    if (site.kind != draft::SemanticSiteKind::SynthesisStatement) continue;
+    ++synthesis_sites;
+    EXPECT(state, site.branch_refinements.size() == 1);
+  }
+  // Sites belong to symbolic source branches. Rechecking two concrete
+  // instances must not manufacture four more provider obligations.
+  EXPECT(state, synthesis_sites == 2);
+
+  CheckedSource invalid(R"draft(
+package bodies
+
+inspect[T: type] :: proc(value: T) {
+    when type_of(value) == string {
+        len(value)
+    } else when type_of(value) == bool {
+        !value
+    } else when type_kind(type_of(value)) == .signed_integer {
+        cast[i128](value + value)
+    } else when type_kind(type_of(value)) == .unsigned_integer {
+        cast[u128](value + value)
+    } else {
+        static_assert(false, "unsupported inspect type")
+    }
+}
+
+main :: proc() {
+    inspect(cast[f64](1))
+}
+)draft");
+  EXPECT(state, !invalid.bodies.ok);
+  const std::string invalid_rendered =
+      draft::render_diagnostics(invalid.sources, invalid.diagnostics);
+  EXPECT(state, invalid_rendered.find(
+      "static assertion failed: unsupported inspect type") !=
+      std::string::npos);
+}
+
 } // namespace
 
 int main() {
@@ -2276,6 +2370,7 @@ int main() {
   test_numeric_context_boundaries(state);
   test_builtin_context_value(state);
   test_compile_time_type_inspection(state);
+  test_dependent_when_type_refinement(state);
 
   if (state.failures != 0) {
     std::cerr << state.failures << " body checker expectation(s) failed\n";
