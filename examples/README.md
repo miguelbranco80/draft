@@ -58,7 +58,7 @@ tests instead of reporting false skips.
 | Example | What it covers |
 | --- | --- |
 | [`language-tour`](language-tour/) | A readable ordinary-language tour: constants, `when`, arrays and slices, structs, enums, tagged `Result` and `Option`, tuples, distinct types, parametric types and procedures, pointers, `for`, `switch`, `defer`, assertions, `docs`, and console output. |
-| [`console`](console/) | `core/console`, allocation-free `core/format`, standard output, process arguments, booleans, and the exact minimum `i64` and maximum `u64` spellings. |
+| [`console`](console/) | Static heterogeneous `console.println` packs, allocation-free `core/format`, standard output, process arguments, booleans, mixed integer widths, and exact 64/128-bit boundary spellings. |
 | [`file-io`](file-io/) | Owned C path storage, explicit file handles, immutable-text writes, byte reads, `defer` cleanup, and a complete create/read/remove round trip. |
 | [`simple-editor`](simple-editor/) | A useful but deliberately disposable ed-like application: line storage, byte input, numbered navigation, insertion, deletion, dirty-buffer protection, file load/save, command parsing, and focused Draft tests. |
 | [`denials`](denials/) | A runnable positive `deny` example whose transitive call graph is compiler-checked to avoid console access, assertions, assembly, unchecked access, and context access. Negative denial cases live in `tests/denial_test.cpp`. |
@@ -67,10 +67,12 @@ tests instead of reporting false skips.
 Console output is core-library policy, not special language syntax. Immutable
 strings are copied into a bounded stack buffer by `core/console`, decimal
 integers are formatted by ordinary Draft code in `core/format`, and bytes reach
-the existing `core/os.write` boundary. No new compiler or LLVM intrinsic is
-needed. The first API deliberately covers text, `bool`, `u64`, and `i64`;
-floating-point, rune, and general composite formatting remain future library
-work rather than missing backend features.
+the existing `core/os.write` boundary. `console.println` uses a source-level
+`..type` pack which becomes one fixed-signature specialization per ordered type
+tuple; no printing intrinsic, runtime type erasure, or variadic ABI is involved.
+It covers text, `bool`, and every ordinary signed/unsigned integer width.
+Floating-point, rune, enum, distinct, endian-scalar, and composite formatting
+remain future library policy rather than missing backend features.
 
 ## Core library and runtime examples
 
@@ -116,7 +118,7 @@ work rather than missing backend features.
 | Draft area | Primary examples |
 | --- | --- |
 | Declarations, expressions, literals, arrays, slices, control flow, tuples, pointers, aggregates, enums, tagged unions, and distinct types | `language-tour`, `runtime-checks` |
-| Compile-time evaluation, target facts, layout, `when`, and parametrics | `language-tour`, `packages`, `packages-generic`, `nested-procedures` |
+| Compile-time evaluation, target facts, layout, `when`, parametrics, structural type inspection, and static heterogeneous argument packs | `language-tour`, `console`, `packages`, `packages-generic`, `nested-procedures` |
 | Globals, TLS, context, allocation, collections, atomics, and threads | `core-runtime`, `core-memory`, `core-array`, `core-map`, `core-atomic`, `core-thread`, `runtime-checks` |
 | Console, formatting, files, arguments, environment, and a complete line-oriented application | `console`, `file-io`, `core-os`, `simple-editor` |
 | Explicit UTF-8 validation, scalar traversal, and encoding over byte strings | `core-utf8` |

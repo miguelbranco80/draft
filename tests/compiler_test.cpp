@@ -508,6 +508,63 @@ void test_compiler_distributed_core(TestState &state) {
       0, 16, 32, 40, 56, 72, 80, 88}));
 }
 
+// `console.println` is ordinary cross-package Draft code, so an unsupported
+// concrete pack type must select the library's dependent failure branch while
+// compiling the owner specialization. This test guards both the public core
+// policy and the diagnostic range propagated through the instance request.
+void test_console_println_rejects_unsupported_pack_type(TestState &state) {
+  draft::test::TemporaryDirectory temporary_directory{
+      "draft-console-unsupported-pack-test"};
+  const std::filesystem::path &root = temporary_directory.path();
+  std::error_code error;
+  std::filesystem::create_directories(root / "app", error);
+  EXPECT(state, !error);
+  if (error) return;
+
+  std::ofstream app(root / "app" / "package.draft", std::ios::binary);
+  app << "package app\n"
+         "import core/console\n"
+         "main :: proc() {\n"
+         "    console.println(1.5)\n"
+         "}\n";
+  app.close();
+  EXPECT(state, app.good());
+
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  draft::CompileWorkspaceOptions options;
+  options.target = draft::make_aarch64_macos_profile();
+  options.workspace.workspace_directory = root.string();
+  options.workspace.core_directory =
+      std::string(DRAFT_SOURCE_DIRECTORY) + "/core";
+  options.workspace.core_content_identity = "draft-core-test-v1";
+  const draft::CompileWorkspaceResult result = draft::compile_workspace(
+      sources, (root / "app").string(), std::move(options), diagnostics);
+
+  EXPECT(state, !result.ok);
+  bool found = false;
+  for (const draft::Diagnostic &diagnostic : diagnostics.diagnostics()) {
+    if (diagnostic.message !=
+        "static assertion failed: console.println does not support this type") {
+      continue;
+    }
+    found = true;
+    EXPECT(state, diagnostic.range.is_valid());
+    if (diagnostic.range.is_valid()) {
+      EXPECT(
+          state,
+          sources.text(diagnostic.range).find("static_assert(false") !=
+              std::string_view::npos);
+    }
+  }
+  if (!found && diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+  }
+  EXPECT(state, found);
+
+  std::filesystem::remove_all(root, error);
+}
+
 void test_compiler_distributed_memory(TestState &state) {
   draft::SourceManager sources;
   draft::DiagnosticSink diagnostics;
@@ -1373,6 +1430,7 @@ int main() {
   test_hosted_entry_contract(state);
   test_file_local_imports_share_one_llvm_declaration(state);
   test_compiler_distributed_core(state);
+  test_console_println_rejects_unsupported_pack_type(state);
   test_compiler_distributed_memory(state);
   test_compiler_distributed_array_and_support(state);
   test_compiler_distributed_map(state);

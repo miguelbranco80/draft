@@ -93,11 +93,11 @@ allocator and require explicit destruction.
 Status: ordinary Draft library surface over `core/os.write`; no compiler or
 backend intrinsic.
 
-`core/format` converts `u64` and `i64` values to shortest base-ten byte slices
-inside caller-owned storage. The result borrows that storage, formatting
-allocates nothing, and the signed path computes magnitude in `u64` so the
-minimum `i64` is handled without signed overflow. A too-small destination
-returns an empty slice and `false`.
+`core/format` converts `u64`, `i64`, `u128`, and `i128` values to shortest
+base-ten byte slices inside caller-owned storage. The result borrows that
+storage and formatting allocates nothing. Each signed path computes magnitude
+in the same-width unsigned type, so the minimum signed value is handled without
+signed overflow. A too-small destination returns an empty slice and `false`.
 
 `core/os.write_all` completes a borrowed byte-slice write by retrying partial
 native writes and rejects a successful zero-byte write on a non-empty suffix so
@@ -106,9 +106,15 @@ to write immutable strings, booleans, and formatted integers and returns
 `core/io.Error`. Draft strings expose no mutable backing pointer, while
 `core/os.write` accepts `[]u8`; console therefore copies text through one fixed
 256-byte stack buffer. This keeps string immutability and the native boundary
-honest. Direct string-backed writes can replace the copy only if a future
-specified library or language operation exposes a read-only byte view; that is
-not backend permission to reinterpret string layout.
+honest. `console.println` uses a static `..type` pack: the source loop selects
+string, bool, signed-integer, or unsigned-integer formatting through dependent
+`when`, while every compiled call is an ordinary fixed-signature procedure.
+Arguments are separated by one ASCII space, zero arguments produce only a line
+feed, and the first write error stops the sequence. There is no runtime format
+registry, erased `any`, allocation, or variadic ABI. Direct string-backed writes
+can replace the copy only if a future specified library or language operation
+exposes a read-only byte view; that is not backend permission to reinterpret
+string layout.
 
 ## UTF-8 byte/scalar conversion
 

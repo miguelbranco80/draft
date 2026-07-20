@@ -915,10 +915,13 @@ predeclared names.
 
 `core/format` and `core/console` are ordinary Draft packages rather than
 compiler formatting or printing intrinsics. The initial formatting surface
-provides base-ten `u64` and `i64` conversion into caller-owned byte slices.
-Console operations write immutable text, booleans, and those integers to the
-standard process handles and return `core/io.Error`. More formatting policy can
-grow in these packages without changing the language or backend.
+provides base-ten `u64`, `i64`, `u128`, and `i128` conversion into caller-owned
+byte slices. `console.println(values: ..type)` writes zero or more strings,
+booleans, and ordinary signed or unsigned integers separated by one ASCII space,
+then one line feed. It returns the first `core/io.Error`; an unsupported type is
+a compile-time error for that concrete call. The other console operations keep
+their fixed text/scalar signatures. More formatting policy can grow in these
+packages without changing the language or backend.
 
 `core/utf8` explicitly interprets a `string` or `[]u8` as UTF-8 without changing
 the built-in types: strings remain arbitrary immutable bytes, indexing still

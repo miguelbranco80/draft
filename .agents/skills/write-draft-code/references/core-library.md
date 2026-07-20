@@ -152,7 +152,8 @@ All operations return `io.Error`:
 ```draft
 console.write_to(file, text)
 console.print(text)
-console.println(text)
+console.println("count:", count, true)
+console.println()
 console.newline()
 console.eprint(text)
 console.eprintln(text)
@@ -162,9 +163,12 @@ console.print_bool(value)
 ```
 
 Console output completes partial writes and performs no hidden buffering,
-terminal detection, Unicode normalization, or newline conversion. It currently
-has no float, rune, `int`, `usize`, composite, format-string, interpolation,
-input, color, or terminal-control API.
+terminal detection, Unicode normalization, or newline conversion.
+`console.println` is a static `..type` pack, not runtime varargs: it accepts zero
+or more strings, booleans, and ordinary signed/unsigned integers of every width,
+separates them with one ASCII space, appends one line feed, and returns the first
+write error. Floats, runes, enums, endian scalars, distinct values, aggregates,
+format strings, interpolation, input, color, and terminal control are absent.
 
 ## `core/format`
 
@@ -173,6 +177,8 @@ Allocation-free decimal formatting:
 ```draft
 format.unsigned_decimal(destination: []u8, value: u64) -> ([]u8, bool)
 format.signed_decimal(destination: []u8, value: i64) -> ([]u8, bool)
+format.unsigned_decimal_128(destination: []u8, value: u128) -> ([]u8, bool)
+format.signed_decimal_128(destination: []u8, value: i128) -> ([]u8, bool)
 ```
 
 The returned slice aliases `destination` and begins at index zero. A false

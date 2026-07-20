@@ -88,3 +88,72 @@ pub signed_decimal :: proc(
     destination[0] = cast[u8]('-')
     return (destination[:len(digits) + 1], true)
 }
+
+// unsigned_decimal_128 is the full-width counterpart used by heterogeneous
+// console formatting. Thirty-nine bytes hold every u128 decimal spelling. It
+// intentionally keeps the same caller-owned-buffer contract as
+// unsigned_decimal instead of allocating a temporary string or hiding storage
+// in package state.
+pub unsigned_decimal_128 :: proc(
+    destination: []u8,
+    value: u128,
+) -> ([]u8, bool) {
+    if len(destination) == 0 {
+        return (destination[:0], false)
+    }
+
+    cursor := len(destination)
+    remaining := value
+    for {
+        if cursor == 0 {
+            return (destination[:0], false)
+        }
+        cursor -= 1
+        digit := remaining % 10
+        destination[cursor] = cast[u8]('0') + cast[u8](digit)
+        remaining /= 10
+        if remaining == 0 {
+            break
+        }
+    }
+
+    count := len(destination) - cursor
+    for index: usize = 0; index < count; index += 1 {
+        destination[index] = destination[cursor + index]
+    }
+    return (destination[:count], true)
+}
+
+// signed_decimal_128 formats the complete i128 domain, including its minimum
+// value. Converting to u128 before unsigned subtraction avoids attempting to
+// represent +2^127 in i128. Forty bytes hold the optional sign and all decimal
+// magnitude digits.
+pub signed_decimal_128 :: proc(
+    destination: []u8,
+    value: i128,
+) -> ([]u8, bool) {
+    negative := value < 0
+    magnitude := cast[u128](value)
+    if negative {
+        magnitude = 0 - magnitude
+    }
+
+    (digits, formatted) := unsigned_decimal_128(destination, magnitude)
+    if !formatted {
+        return (destination[:0], false)
+    }
+    if !negative {
+        return (digits, true)
+    }
+    if len(digits) == len(destination) {
+        return (destination[:0], false)
+    }
+
+    index := len(digits)
+    for index != 0 {
+        destination[index] = destination[index - 1]
+        index -= 1
+    }
+    destination[0] = cast[u8]('-')
+    return (destination[:len(digits) + 1], true)
+}

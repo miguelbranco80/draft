@@ -56,12 +56,68 @@ pub print :: proc(text: string) -> io.Error {
     return write_to(os.standard_output, text)
 }
 
-// println writes text followed by one line-feed to standard output. If writing
-// text fails, the newline is not attempted and the first error is returned.
-pub println :: proc(text: string) -> io.Error {
-    error := print(text)
-    if error != .none {
-        return error
+// write_unsigned_to formats the full unsigned integer domain into bounded
+// stack storage, then writes exactly the produced bytes. The buffer is one byte
+// larger than the maximum u128 decimal spelling only to keep the invariant
+// visually obvious; no allocation or hidden formatter state is involved.
+write_unsigned_to :: proc(handle: os.File, value: u128) -> io.Error {
+    storage: [40]u8
+    (text, formatted) := format.unsigned_decimal_128(storage[:], value)
+    assert(formatted, "u128 console buffer is too small")
+    return os.write_all(handle, text)
+}
+
+// write_signed_to covers every i128 value. Forty bytes are exactly sufficient
+// for the sign plus the 39-digit magnitude of -2^127.
+write_signed_to :: proc(handle: os.File, value: i128) -> io.Error {
+    storage: [40]u8
+    (text, formatted) := format.signed_decimal_128(storage[:], value)
+    assert(formatted, "i128 console buffer is too small")
+    return os.write_all(handle, text)
+}
+
+// write_bool_to uses the language spellings and the same immutable-text path
+// as caller strings.
+write_bool_to :: proc(handle: os.File, value: bool) -> io.Error {
+    if value {
+        return write_to(handle, "true")
+    }
+    return write_to(handle, "false")
+}
+
+// println writes a heterogeneous, statically known argument pack followed by
+// one line-feed. Arguments are expanded in source order and separated by one
+// ASCII space. Supported values are string, bool, and every ordinary signed or
+// unsigned integer width, including i128/u128. Each concrete specialization is
+// an ordinary fixed-signature procedure; there is no runtime varargs object,
+// type erasure, formatter registry, allocation, or C variadic ABI.
+//
+// The first write error returns immediately. An unsupported type fails during
+// compilation only for the concrete call which supplies it.
+pub println :: proc(values: ..type) -> io.Error {
+    for value, index in values {
+        when index != 0 {
+            separator_error := write_to(os.standard_output, " ")
+            if separator_error != .none {
+                return separator_error
+            }
+        }
+
+        value_error: io.Error = .none
+        when type_of(value) == string {
+            value_error = write_to(os.standard_output, value)
+        } else when type_of(value) == bool {
+            value_error = write_bool_to(os.standard_output, value)
+        } else when type_kind(type_of(value)) == .signed_integer {
+            value_error = write_signed_to(os.standard_output, cast[i128](value))
+        } else when type_kind(type_of(value)) == .unsigned_integer {
+            value_error = write_unsigned_to(os.standard_output, cast[u128](value))
+        } else {
+            static_assert(false, "console.println does not support this type")
+        }
+        if value_error != .none {
+            return value_error
+        }
     }
     return write_newline_to(os.standard_output)
 }
@@ -109,8 +165,5 @@ pub print_i64 :: proc(value: i64) -> io.Error {
 // strings are immutable program data and pass through the same text path as
 // caller-provided strings.
 pub print_bool :: proc(value: bool) -> io.Error {
-    if value {
-        return print("true")
-    }
-    return print("false")
+    return write_bool_to(os.standard_output, value)
 }

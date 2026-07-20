@@ -14,6 +14,8 @@ import core/os
 
 Minimum_I64 :: cast[i64](0x8000000000000000)
 Maximum_U64 :: cast[u64](0xffffffffffffffff)
+Minimum_I128 :: cast[i128](0x80000000000000000000000000000000)
+Maximum_U128 :: cast[u128](0xffffffffffffffffffffffffffffffff)
 
 // bytes_equal_text compares one mutable byte view with an immutable string
 // without conflating their ownership or mutability. Neither input is retained.
@@ -55,6 +57,38 @@ main :: proc() {
     assert(signed_ok)
     assert(bytes_equal_text(signed_text, "-9223372036854775808"))
 
+    wide_unsigned_storage: [39]u8
+    (wide_unsigned_text, wide_unsigned_ok) :=
+        format.unsigned_decimal_128(wide_unsigned_storage[:], Maximum_U128)
+    assert(wide_unsigned_ok)
+    assert(bytes_equal_text(
+        wide_unsigned_text,
+        "340282366920938463463374607431768211455",
+    ))
+
+    wide_signed_storage: [40]u8
+    (wide_signed_text, wide_signed_ok) :=
+        format.signed_decimal_128(wide_signed_storage[:], Minimum_I128)
+    assert(wide_signed_ok)
+    assert(bytes_equal_text(
+        wide_signed_text,
+        "-170141183460469231731687303715884105728",
+    ))
+
+    short_wide_unsigned_storage: [38]u8
+    (_, short_wide_unsigned_ok) := format.unsigned_decimal_128(
+        short_wide_unsigned_storage[:],
+        Maximum_U128,
+    )
+    assert(!short_wide_unsigned_ok)
+
+    short_wide_signed_storage: [39]u8
+    (_, short_wide_signed_ok) := format.signed_decimal_128(
+        short_wide_signed_storage[:],
+        Minimum_I128,
+    )
+    assert(!short_wide_signed_ok)
+
     positive_storage: [2]u8
     (positive_text, positive_ok) :=
         format.signed_decimal(positive_storage[:], 42)
@@ -62,14 +96,19 @@ main :: proc() {
     assert(bytes_equal_text(positive_text, "42"))
 
     arguments := os.args()
+    small_signed: i8 = -8
+    small_unsigned: u16 = 16
     assert(console.println("Draft console example") == .none)
-    assert(console.print("minimum i64: ") == .none)
-    assert(console.print_i64(Minimum_I64) == .none)
-    assert(console.newline() == .none)
-    assert(console.print("maximum u64: ") == .none)
-    assert(console.print_u64(Maximum_U64) == .none)
-    assert(console.newline() == .none)
-    assert(console.print("has executable argument: ") == .none)
-    assert(console.print_bool(len(arguments) != 0) == .none)
-    assert(console.newline() == .none)
+    assert(console.println("minimum i64:", Minimum_I64) == .none)
+    assert(console.println("maximum u64:", Maximum_U64) == .none)
+    assert(console.println("minimum i128:", Minimum_I128) == .none)
+    assert(console.println("maximum u128:", Maximum_U128) == .none)
+    assert(console.println(
+        "mixed:",
+        true,
+        small_signed,
+        small_unsigned,
+        len(arguments) != 0,
+    ) == .none)
+    assert(console.println() == .none)
 }
