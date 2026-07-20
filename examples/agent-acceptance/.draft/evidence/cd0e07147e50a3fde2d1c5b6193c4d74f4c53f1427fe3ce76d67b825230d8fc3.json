@@ -1,0 +1,27 @@
+{
+  "format": "draft-validation-evidence-v2",
+  "key": "5ab7d9c178bcea03b8cc1dedbb1b9d11ebe1d91196bf7eaefa598b7535f58361",
+  "attempt": 1,
+  "resolved_program": "be4b8cc94d9618fb8b268610e3a90930d50b7a69555454944462717dc5e3fe9a",
+  "kind": "benchmark",
+  "target": "draft-aarch64-macos-v5",
+  "compiler": "draft-bootstrap-cpp-v131",
+  "toolchain": "linked-llvm-version:22.1.8",
+  "environment": "target-cpu=generic;target-features=+neon;host-machine=arm64;host-release=25.5.0;process-environment=draft-validation-process-environment-v1;hw-model=Mac16,7",
+  "runner": "draft-native-validation-runner-v2-fd3",
+  "policy": "draft-benchmark-policy-v1:warmup=1:samples=10:process-isolated",
+  "instrumentation": "draft-validation-instrumentation-v1:none",
+  "artifact": "aarch64-macos-executable-v1:arm64-apple-macosx14.0.0",
+  "warmup_runs": 1,
+  "sample_runs": 10,
+  "entries": [
+    {"kind": "benchmark", "root": "workspace", "package": "app", "procedure": "bench_generated_program", "state_size": 40, "state_alignment": 8, "failure_offset": 24, "report_size": 32}
+  ],
+  "observations": [
+    {"root": "workspace", "package": "app", "procedure": "bench_generated_program", "checks": 0, "library_samples": 10, "failures": 0, "maximum_time_ns": 1000000000, "durations_ns": [250, 125, 125, 125, 83, 84, 84, 42, 41, 42]}
+  ],
+  "observations_complete": true,
+  "verdict": "pass",
+  "exit_code": 0,
+  "signal": 0
+}

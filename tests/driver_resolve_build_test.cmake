@@ -77,14 +77,25 @@ endforeach()
 # AArch64 assembly validator because x1 is neither an output nor a clobber. The
 # revalidated manifest must change despite the command's nonzero build result,
 # and a later provider-free check must consume that committed source normally.
-file(GLOB manifest_candidates
-  "${workspace}/.draft/resolutions/*/packages/app/resolution.json")
-list(LENGTH manifest_candidates manifest_count)
-if(NOT manifest_count EQUAL 1)
+execute_process(
+  COMMAND "${DRAFTC}" target --target "${TARGET_SELECTOR}"
+  RESULT_VARIABLE target_status
+  OUTPUT_VARIABLE target_stdout
+  ERROR_VARIABLE target_stderr
+)
+if(NOT target_status EQUAL 0 OR
+   NOT target_stdout MATCHES "identity ([^\r\n ]+)")
   message(FATAL_ERROR
-    "expected one selected app resolution manifest, found ${manifest_count}")
+    "cannot identify selected target (${target_status})\n"
+    "stdout:\n${target_stdout}\nstderr:\n${target_stderr}")
 endif()
-list(GET manifest_candidates 0 manifest)
+set(target_identity "${CMAKE_MATCH_1}")
+set(manifest
+  "${workspace}/.draft/resolutions/${target_identity}/packages/app/resolution.json")
+if(NOT EXISTS "${manifest}")
+  message(FATAL_ERROR
+    "selected app resolution manifest does not exist: ${manifest}")
+endif()
 file(SHA256 "${manifest}" manifest_before_backend_failure)
 file(WRITE "${package}/invalid_assembly.draft"
   "package app\n\n"

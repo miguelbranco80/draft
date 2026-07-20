@@ -51,7 +51,11 @@ void test_materializes_complete_graph_with_maps(TestState &state) {
   const std::filesystem::path source_root = DRAFT_SOURCE_DIRECTORY;
   const std::filesystem::path workspace =
       source_root / "examples" / "agent-acceptance";
-  const std::filesystem::path &output = temporary_directory.path();
+  // The projection API atomically creates its requested output and therefore
+  // requires that leaf not to exist. The RAII owner claims only its parent,
+  // preserving both that API precondition and isolated cleanup.
+  const std::filesystem::path output =
+      temporary_directory.path() / "expanded-source";
   std::error_code ignored;
   std::filesystem::remove_all(output.string() + ".tmp", ignored);
 
@@ -87,7 +91,7 @@ void test_materializes_complete_graph_with_maps(TestState &state) {
       expanded.find("generated_offset :: cast[i64](2);") !=
           std::string::npos);
   EXPECT(state, expanded.find("value: i64,") != std::string::npos);
-  EXPECT(state, expanded.find("cast[i64](42)") != std::string::npos);
+  EXPECT(state, expanded.find("expected: i64 = 42") != std::string::npos);
   EXPECT(state,
       expanded.find("assert(actual == expected)") != std::string::npos);
   EXPECT(state, expanded.find("... ") == std::string::npos);

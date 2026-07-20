@@ -12,10 +12,13 @@ operations. It combines features that are most useful when exercised together:
 - generated-source correlation in the native debug sidecar.
 
 The committed `.draft` files are content-addressed acceptance inputs, not build
-caches. They contain four checked generated Draft fragments and a v6 resolution
-manifest. Validation and judgment evidence is stored independently and is not
-selected by that manifest. `.draft/build` is ignored and may be deleted at any
-time.
+caches. They contain five checked generated-source objects and separate v6
+resolution manifests for AArch64 macOS and GNU/Linux. Each selected program has
+four sites; three expansions are shared across targets, while the accepted
+expression has one target-specific spelling. Validation and judgment evidence
+is stored independently in the workspace-level `.draft/evidence` store and is
+not selected by either manifest. `.draft/build` and `.draft/staging` are ignored
+and may be deleted at any time.
 
 ## Reproduce the committed program
 
@@ -30,6 +33,9 @@ build/draftc build examples/agent-acceptance --root app \
 build/draftc test examples/agent-acceptance --root app
 build/draftc bench examples/agent-acceptance --root app
 ```
+
+These commands use the macOS compatibility default. Pass
+`--target aarch64-linux` to select the independently committed Linux manifest.
 
 All four commands load the committed generated source without contacting
 Codex. `build` uses the host native toolchain and does not require test,
@@ -81,15 +87,25 @@ The original Codex/model qualification and the former native-distribution
 experiment remain available in the
 [historical first-compiler qualification](../history/releases/first-compiler-qualification.md).
 
-## 2026-07-20 live adapter requalification
+## 2026-07-20 live adapter and matrix requalification
 
-On AArch64 macOS, `codex-cli 0.144.6` using its configured default model resolved
-a clean temporary copy of this fixture through provider identity
-`openai-codex-cli-v28`. All four sites were accepted in two ready waves with
-four actual provider calls: declaration/member first, then expression/statement.
-`resolve --build` emitted and ran the native executable; the saved manifest and
-generated objects then passed provider-free `check`, `build`, execution, and
-expanded-source inspection.
+On AArch64 macOS 26.5.2, `codex-cli 0.144.6` using its configured default model
+resolved this fixture from zero `.draft` state through provider identity
+`openai-codex-cli-v28`. Separate macOS and Linux commands each synthesized all
+four sites with zero reused pins. Both saved manifests then passed provider-free
+frontend checks, while the macOS program passed native build/execution, Draft
+test and verified benchmark execution, workspace evidence publication, and
+expanded-source inspection with linked LLVM 22.1.8.
+
+The repository example matrix classified all 36 tracked Draft/assembly package
+directories. Both-target frontend qualification passed for every declared
+positive or intentionally unresolved row. On the native macOS host, all 25
+ordinary executable rows built and launched, the C client consumed the Draft
+library, the explicitly mapped C object supplied the foreign-provider example,
+and every classified example test and benchmark passed from an isolated
+workspace copy. The Linux manifest's native execution remains the responsibility
+of the required AArch64 Linux CI row; this local run does not claim Linux-host
+execution.
 
 The corrected `agent-pending/app` walkthrough was independently resolved to the
 checked expression `42`, built and executed, rebuilt provider-free, expanded,
