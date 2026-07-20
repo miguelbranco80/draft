@@ -9,11 +9,13 @@
 #include "sema/symbol.h"
 #include "sema/type.h"
 #include "sema/type_inspection.h"
+#include "sema/type_layout.h"
 #include "source/diagnostic.h"
 #include "source/source.h"
 
 #include <cstdlib>
 #include <iostream>
+#include <limits>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -170,6 +172,81 @@ void test_nominal_identity(TestState &state) {
   EXPECT(state, types.type(distinct_a).layout == types.type(*u32).layout);
 }
 
+void test_pure_natural_aggregate_layout(TestState &state) {
+  draft::TypeStore types;
+  const std::optional<draft::TypeId> u8 = types.find_builtin("u8");
+  const std::optional<draft::TypeId> u64 = types.find_builtin("u64");
+  EXPECT(state, u8.has_value());
+  EXPECT(state, u64.has_value());
+  if (!u8.has_value() || !u64.has_value()) return;
+
+  const std::vector<draft::TypeId> members = {*u8, *u64};
+  const draft::NaturalAggregateLayout structure =
+      draft::compute_struct_natural_layout(types, members);
+  EXPECT(state, structure.status == draft::NaturalLayoutStatus::Complete);
+  EXPECT(state, structure.layout == draft::TypeLayout({true, 16, 8}));
+  EXPECT(state,
+      structure.member_offsets == std::vector<std::uint64_t>({0, 8}));
+
+  const draft::NaturalAggregateLayout raw_union =
+      draft::compute_raw_union_natural_layout(types, members);
+  EXPECT(state, raw_union.status == draft::NaturalLayoutStatus::Complete);
+  EXPECT(state, raw_union.layout == draft::TypeLayout({true, 8, 8}));
+  EXPECT(state,
+      raw_union.member_offsets == std::vector<std::uint64_t>({0, 0}));
+
+  const draft::NaturalAggregateLayout tagged_union =
+      draft::compute_tagged_union_natural_layout(types, *u8, members);
+  EXPECT(state, tagged_union.status == draft::NaturalLayoutStatus::Complete);
+  EXPECT(state, tagged_union.layout == draft::TypeLayout({true, 16, 8}));
+  EXPECT(state,
+      tagged_union.member_offsets == std::vector<std::uint64_t>({8, 8}));
+
+  // An inline recursive dependency waits for the aggregate's layout product.
+  // A pointer to the same incomplete nominal type is already pointer-sized and
+  // therefore proves that legal pointer recursion does not create a wait edge.
+  const draft::TypeId incomplete = types.begin_nominal(
+      draft::TypeKind::Struct,
+      "Incomplete",
+      draft::SourceRange::invalid());
+  const std::vector<draft::TypeId> inline_member = {incomplete};
+  const draft::NaturalAggregateLayout waiting =
+      draft::compute_struct_natural_layout(types, inline_member);
+  EXPECT(state, waiting.status == draft::NaturalLayoutStatus::Waiting);
+  EXPECT(state, waiting.member_offsets.empty());
+
+  const std::vector<draft::TypeId> pointer_member =
+      {types.pointer(incomplete)};
+  const draft::NaturalAggregateLayout pointer_recursive =
+      draft::compute_struct_natural_layout(types, pointer_member);
+  EXPECT(state,
+      pointer_recursive.status == draft::NaturalLayoutStatus::Complete);
+  EXPECT(state,
+      pointer_recursive.layout == draft::TypeLayout({true, 8, 8}));
+  EXPECT(state,
+      pointer_recursive.member_offsets == std::vector<std::uint64_t>({0}));
+
+  // Overflow is terminal rather than a dependency wait. The synthetic type is
+  // valid input to this layer: target layout has already been published, and
+  // the pure operation is responsible only for checked aggregate arithmetic.
+  const draft::TypeId maximum_sized = types.begin_nominal(
+      draft::TypeKind::Struct,
+      "Maximum_Sized",
+      draft::SourceRange::invalid());
+  types.publish_nominal_members(maximum_sized);
+  types.publish_nominal_member_types(maximum_sized, {});
+  types.publish_nominal_natural_layout(
+      maximum_sized,
+      {true, std::numeric_limits<std::uint64_t>::max(), 1},
+      {});
+  const std::vector<draft::TypeId> overflowing_members =
+      {*u8, maximum_sized};
+  const draft::NaturalAggregateLayout overflow =
+      draft::compute_struct_natural_layout(types, overflowing_members);
+  EXPECT(state, overflow.status == draft::NaturalLayoutStatus::Overflow);
+  EXPECT(state, overflow.member_offsets.empty());
+}
+
 void test_type_inspection_waits_for_exact_facets(TestState &state) {
   draft::SemanticPackage package;
   const std::optional<draft::TypeId> u32 = package.types.find_builtin("u32");
@@ -269,6 +346,7 @@ int main() {
   TestState state;
   test_builtin_and_structural_types(state);
   test_nominal_identity(state);
+  test_pure_natural_aggregate_layout(state);
   test_type_inspection_waits_for_exact_facets(state);
   test_scopes_and_duplicates(state);
 

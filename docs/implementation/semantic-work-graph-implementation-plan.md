@@ -40,9 +40,11 @@ gate.
    natural layout as separate completion facets, and type inspection blocks on
    the exact missing facet instead of reading partial rows. The bundled nominal
    completion API is gone; member-name, member-type, and natural-layout
-   publication are separate one-way operations. The remaining work is to make
-   those producers individual graph tasks, replace private type/constant/layout
-   readiness copies, and delete the final aggregate pass.
+   publication are separate one-way operations. Aggregate natural layout is a
+   pure producer that distinguishes dependency waits from arithmetic overflow;
+   it no longer belongs to declaration resolution. The remaining work is to
+   make those producers individual graph tasks, replace private
+   type/constant/layout readiness copies, and delete the final aggregate pass.
 
 4. **Canonical generic type demand.** Give every concrete type application one
    canonical command-local key and owner task. Cross-package owner evaluation

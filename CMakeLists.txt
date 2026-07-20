@@ -167,6 +167,7 @@ add_library(
   src/sema/target_validation.cpp
   src/sema/type.cpp
   src/sema/type_inspection.cpp
+  src/sema/type_layout.cpp
   src/sema/type_resolver.cpp
   src/syntax/lexer.cpp
   src/syntax/literal.cpp

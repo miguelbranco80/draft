@@ -2,6 +2,7 @@
 
 #include "sema/type_resolver.h"
 
+#include "sema/type_layout.h"
 #include "syntax/token.h"
 
 #include <algorithm>
@@ -2441,13 +2442,20 @@ private:
     semantic_.types.type_mut(concrete).element = element;
     TypeLayout layout;
     if (pattern_type.kind == TypeKind::Struct) {
-      layout = struct_layout(data);
+      layout = retain_natural_layout(
+          data,
+          compute_struct_natural_layout(semantic_.types, data.types));
     } else if (pattern_type.kind == TypeKind::RawUnion) {
-      layout = raw_union_layout(data);
+      layout = retain_natural_layout(
+          data,
+          compute_raw_union_natural_layout(semantic_.types, data.types));
     } else if (pattern_type.kind == TypeKind::Enum) {
       layout = semantic_.types.type(element).layout;
     } else {
-      layout = tagged_union_layout(element, data);
+      layout = retain_natural_layout(
+          data,
+          compute_tagged_union_natural_layout(
+              semantic_.types, element, data.types));
     }
     layout = apply_requested_alignment(
         layout, pattern_type.requested_alignment, use_range);
@@ -2801,13 +2809,20 @@ private:
       // layout exists until the defining package evaluates the argument.
       layout = {};
     } else if (template_type.kind == TypeKind::Struct) {
-      layout = struct_layout(data);
+      layout = retain_natural_layout(
+          data,
+          compute_struct_natural_layout(semantic_.types, data.types));
     } else if (template_type.kind == TypeKind::RawUnion) {
-      layout = raw_union_layout(data);
+      layout = retain_natural_layout(
+          data,
+          compute_raw_union_natural_layout(semantic_.types, data.types));
     } else if (template_type.kind == TypeKind::Enum) {
       layout = semantic_.types.type(element).layout;
     } else {
-      layout = tagged_union_layout(element, data);
+      layout = retain_natural_layout(
+          data,
+          compute_tagged_union_natural_layout(
+              semantic_.types, element, data.types));
     }
     layout = apply_requested_alignment(
         layout, template_type.requested_alignment, use_range);
@@ -3954,51 +3969,14 @@ private:
     }
   }
 
-  // Computes ordinary field-order layout and writes each field offset into the
-  // parallel work vector. Overflow or an unknown member yields unknown layout.
-  [[nodiscard]] TypeLayout struct_layout(MemberData &data) const {
-    TypeLayout result{true, 0, 1};
-    for (std::size_t index = 0; index < data.types.size(); ++index) {
-      const TypeLayout member = semantic_.types.type(data.types[index]).layout;
-      if (!member.known) {
-        return {};
-      }
-      const std::optional<std::uint64_t> offset = round_up(result.size, member.alignment);
-      if (!offset.has_value() ||
-          member.size > std::numeric_limits<std::uint64_t>::max() - *offset) {
-        return {};
-      }
-      data.offsets[index] = *offset;
-      result.size = *offset + member.size;
-      result.alignment = std::max(result.alignment, member.alignment);
-    }
-    const std::optional<std::uint64_t> size = round_up(result.size, result.alignment);
-    if (!size.has_value()) {
-      return {};
-    }
-    result.size = *size;
-    return result;
-  }
-
-  // Computes overlay layout: every field starts at zero, size is the rounded
-  // maximum member size, and alignment is the maximum member alignment.
-  [[nodiscard]] TypeLayout raw_union_layout(MemberData &data) const {
-    TypeLayout result{true, 0, 1};
-    for (std::size_t index = 0; index < data.types.size(); ++index) {
-      const TypeLayout member = semantic_.types.type(data.types[index]).layout;
-      if (!member.known) {
-        return {};
-      }
-      data.offsets[index] = 0;
-      result.size = std::max(result.size, member.size);
-      result.alignment = std::max(result.alignment, member.alignment);
-    }
-    const std::optional<std::uint64_t> size = round_up(result.size, result.alignment);
-    if (!size.has_value()) {
-      return {};
-    }
-    result.size = *size;
-    return result;
+  // Moves a complete pure layout result into the aggregate's source-order work
+  // packet. Waiting and overflow deliberately retain zero placeholder offsets;
+  // callers publish no natural-layout facet for either state.
+  [[nodiscard]] TypeLayout retain_natural_layout(
+      MemberData &data, NaturalAggregateLayout result) const {
+    if (result.status != NaturalLayoutStatus::Complete) return {};
+    data.offsets = std::move(result.member_offsets);
+    return result.layout;
   }
 
   // Chooses the smallest fixed-width unsigned discriminator capable of naming
@@ -4099,46 +4077,6 @@ private:
     return semantic_.types.builtins().invalid;
   }
 
-  // Applies the exact tagged-union formula from section 5. All alternatives use
-  // the one computed payload offset; payload-free alternatives remain valid.
-  [[nodiscard]] TypeLayout tagged_union_layout(
-      TypeId discriminator, MemberData &data) const {
-    const TypeLayout discriminator_layout = semantic_.types.type(discriminator).layout;
-    if (!discriminator_layout.known) {
-      return {};
-    }
-    std::uint64_t payload_size = 0;
-    std::uint32_t payload_alignment = 1;
-    for (TypeId type : data.types) {
-      const TypeLayout payload = semantic_.types.type(type).layout;
-      if (!payload.known) {
-        return {};
-      }
-      payload_size = std::max(payload_size, payload.size);
-      payload_alignment = std::max(payload_alignment, payload.alignment);
-    }
-    const std::optional<std::uint64_t> rounded_payload =
-        round_up(payload_size, payload_alignment);
-    const std::optional<std::uint64_t> payload_offset =
-        round_up(discriminator_layout.size, payload_alignment);
-    if (!rounded_payload.has_value() || !payload_offset.has_value() ||
-        *rounded_payload >
-            std::numeric_limits<std::uint64_t>::max() - *payload_offset) {
-      return {};
-    }
-    for (std::uint64_t &offset : data.offsets) {
-      offset = *payload_offset;
-    }
-    const std::uint32_t alignment =
-        std::max(discriminator_layout.alignment, payload_alignment);
-    const std::optional<std::uint64_t> size = round_up(
-        *payload_offset + *rounded_payload, alignment);
-    if (!size.has_value()) {
-      return {};
-    }
-    return {true, *size, alignment};
-  }
-
   // Resolves member names/types and completes one pre-interned nominal type.
   // Completion may intentionally retain layout.known=false for generic,
   // conditional, imported, erroneous, or synthesis-dependent members.
@@ -4201,9 +4139,13 @@ private:
     TypeLayout layout;
     if (!data.incomplete) {
       if (kind == TypeKind::Struct) {
-        layout = struct_layout(data);
+        layout = retain_natural_layout(
+            data,
+            compute_struct_natural_layout(semantic_.types, data.types));
       } else if (kind == TypeKind::RawUnion) {
-        layout = raw_union_layout(data);
+        layout = retain_natural_layout(
+            data,
+            compute_raw_union_natural_layout(semantic_.types, data.types));
       } else if (kind == TypeKind::Enum) {
         const bool has_zero_member = std::any_of(
             data.enum_values.begin(),
@@ -4261,7 +4203,10 @@ private:
           }
         }
         semantic_.types.type_mut(nominal).element = discriminator;
-        layout = tagged_union_layout(discriminator, data);
+        layout = retain_natural_layout(
+            data,
+            compute_tagged_union_natural_layout(
+                semantic_.types, discriminator, data.types));
       }
     }
 

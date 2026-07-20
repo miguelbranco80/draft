@@ -31,10 +31,14 @@ aggregate resolution operation. The old bundled `complete_nominal` operation
 has been removed: member-name closure, member-type closure, and natural layout
 now have separate one-way publication operations. Source resolution, interface
 import, generic instantiation, and the compiler-owned runtime context all use
-those same boundaries. The current package resolver still invokes several
-publications sequentially inside one aggregate task; the active replacement
-moves those calls into the individual products named by the target-state
-architecture.
+those same boundaries. Target-natural struct, raw-union, and tagged-union layout
+is now a pure `sema/type_layout` operation over an immutable `TypeStore` and an
+ordered member-type list. It returns task-owned layout and offset data while
+distinguishing an incomplete dependency from checked arithmetic overflow; it
+does not re-enter syntax or mutate the canonical type row. The current package
+resolver still invokes that producer and several publications sequentially
+inside one aggregate task. The active replacement moves those calls into the
+individual products named by the target-state architecture.
 
 ## Compile-time type values and inspection
 
