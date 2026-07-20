@@ -2451,8 +2451,12 @@ private:
     }
     layout = apply_requested_alignment(
         layout, pattern_type.requested_alignment, use_range);
-    semantic_.types.complete_nominal(
-        concrete, layout, data.types, data.offsets);
+    semantic_.types.publish_nominal_members(concrete);
+    semantic_.types.publish_nominal_member_types(concrete, data.types);
+    if (layout.known) {
+      semantic_.types.publish_nominal_natural_layout(
+          concrete, layout, data.offsets);
+    }
     for (std::size_t index = 0; index < data.symbols.size(); ++index) {
       semantic_.aggregate_members.push_back(
           {owner_id, data.symbols[index], data.offsets[index]});
@@ -2807,8 +2811,12 @@ private:
     }
     layout = apply_requested_alignment(
         layout, template_type.requested_alignment, use_range);
-    semantic_.types.complete_nominal(
-        concrete, layout, data.types, data.offsets);
+    semantic_.types.publish_nominal_members(concrete);
+    semantic_.types.publish_nominal_member_types(concrete, data.types);
+    if (layout.known) {
+      semantic_.types.publish_nominal_natural_layout(
+          concrete, layout, data.offsets);
+    }
     for (std::size_t index = 0; index < data.symbols.size(); ++index) {
       semantic_.aggregate_members.push_back(
           {instance_id, data.symbols[index], data.offsets[index]});
@@ -4173,7 +4181,6 @@ private:
     }
     if (!list.has_value()) {
       diagnostics_.error(aggregate.range, "aggregate type has no member list");
-      semantic_.types.complete_nominal(nominal, {}, {});
       return;
     }
 
@@ -4261,13 +4268,14 @@ private:
     layout = apply_requested_alignment(
         layout, attributes.requested_alignment, aggregate.range);
 
-    semantic_.types.complete_nominal(
-        nominal,
-        layout,
-        data.types,
-        data.offsets,
-        !data.incomplete,
-        !data.incomplete);
+    if (!data.incomplete) {
+      semantic_.types.publish_nominal_members(nominal);
+      semantic_.types.publish_nominal_member_types(nominal, data.types);
+      if (layout.known) {
+        semantic_.types.publish_nominal_natural_layout(
+            nominal, layout, data.offsets);
+      }
+    }
     for (std::size_t index = 0; index < data.symbols.size(); ++index) {
       semantic_.aggregate_members.push_back(
           {owner, data.symbols[index], data.offsets[index]});

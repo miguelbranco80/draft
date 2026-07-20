@@ -683,30 +683,40 @@ TypeId TypeStore::begin_nominal(TypeKind kind, std::string name, SourceRange dec
   return add(std::move(result));
 }
 
-void TypeStore::complete_nominal(
-    TypeId id,
-    TypeLayout layout,
-    std::vector<TypeId> members,
-    std::vector<std::uint64_t> member_offsets,
-    bool members_complete,
-    bool member_types_complete) {
+void TypeStore::publish_nominal_members(TypeId id) {
   Type &nominal = type_mut(id);
   assert(nominal.kind == TypeKind::Struct || nominal.kind == TypeKind::Enum ||
          nominal.kind == TypeKind::TaggedUnion || nominal.kind == TypeKind::RawUnion);
-  assert(!nominal.layout.known);
-  nominal.layout = layout;
-  nominal.members = std::move(members);
-  nominal.member_offsets = std::move(member_offsets);
   TypeCompletion &facets = completion_[id.value];
-  facets.members = members_complete
-      ? TypeFacetState::Complete
-      : TypeFacetState::Waiting;
-  facets.member_types = member_types_complete
-      ? TypeFacetState::Complete
-      : TypeFacetState::Waiting;
-  facets.natural_layout = layout.known
-      ? TypeFacetState::Complete
-      : TypeFacetState::Waiting;
+  assert(facets.members == TypeFacetState::Waiting);
+  facets.members = TypeFacetState::Complete;
+}
+
+void TypeStore::publish_nominal_member_types(
+    TypeId id, std::vector<TypeId> members) {
+  Type &nominal = type_mut(id);
+  assert(nominal.kind == TypeKind::Struct || nominal.kind == TypeKind::Enum ||
+         nominal.kind == TypeKind::TaggedUnion || nominal.kind == TypeKind::RawUnion);
+  TypeCompletion &facets = completion_[id.value];
+  assert(facets.member_types == TypeFacetState::Waiting);
+  nominal.members = std::move(members);
+  facets.member_types = TypeFacetState::Complete;
+}
+
+void TypeStore::publish_nominal_natural_layout(
+    TypeId id,
+    TypeLayout layout,
+    std::vector<std::uint64_t> member_offsets) {
+  Type &nominal = type_mut(id);
+  assert(nominal.kind == TypeKind::Struct || nominal.kind == TypeKind::Enum ||
+         nominal.kind == TypeKind::TaggedUnion || nominal.kind == TypeKind::RawUnion);
+  assert(layout.known);
+  TypeCompletion &facets = completion_[id.value];
+  assert(facets.natural_layout == TypeFacetState::Waiting);
+  assert(facets.member_types == TypeFacetState::Complete);
+  nominal.layout = layout;
+  nominal.member_offsets = std::move(member_offsets);
+  facets.natural_layout = TypeFacetState::Complete;
   // A return tuple can be interned from a procedure signature before a struct
   // declared in another selected package file is laid out. Body checking later
   // reuses that exact TypeId, so repair the canonical row here rather than

@@ -26,9 +26,15 @@ it never reads a partial member vector or reports a not-applicable error for a
 fact that later work can still publish. Final body checking instead diagnoses a
 still-incomplete query at its source call.
 
-The current package type resolver publishes several facets in one call. The
-active replacement splits those publications into the individual products
-named by the target-state architecture.
+The current package type resolver still publishes several facets during one
+aggregate resolution operation. The old bundled `complete_nominal` operation
+has been removed: member-name closure, member-type closure, and natural layout
+now have separate one-way publication operations. Source resolution, interface
+import, generic instantiation, and the compiler-owned runtime context all use
+those same boundaries. The current package resolver still invokes several
+publications sequentially inside one aggregate task; the active replacement
+moves those calls into the individual products named by the target-state
+architecture.
 
 ## Compile-time type values and inspection
 

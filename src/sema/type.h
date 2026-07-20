@@ -270,13 +270,18 @@ public:
   [[nodiscard]] TypeId type_parameter(std::string name, SourceRange declaration);
   [[nodiscard]] TypeId begin_nominal(
       TypeKind kind, std::string name, SourceRange declaration);
-  void complete_nominal(
+  // Publishes the three nominal facets independently. Member-name payloads
+  // live in SemanticPackage's owner scope, so the first operation advances
+  // readiness without copying those SymbolIds into TypeStore. Member types and
+  // natural layout are stored directly on the Type row. Each operation is a
+  // one-way Waiting -> Complete transition; callers must not republish a facet.
+  void publish_nominal_members(TypeId id);
+  void publish_nominal_member_types(
+      TypeId id, std::vector<TypeId> members);
+  void publish_nominal_natural_layout(
       TypeId id,
       TypeLayout layout,
-      std::vector<TypeId> members,
-      std::vector<std::uint64_t> member_offsets = {},
-      bool members_complete = true,
-      bool member_types_complete = true);
+      std::vector<std::uint64_t> member_offsets = {});
 
   [[nodiscard]] bool is_integer(TypeId id) const;
   [[nodiscard]] bool is_float(TypeId id) const;

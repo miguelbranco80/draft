@@ -93,8 +93,9 @@ void ensure_runtime_context_type(
   };
   const std::vector<std::uint64_t> offsets = {
       0, 16, 32, 40, 56, 72, 80, 88};
-  package.types.complete_nominal(
-      context, {true, 96, 8}, members, offsets);
+  package.types.publish_nominal_member_types(context, members);
+  package.types.publish_nominal_natural_layout(
+      context, {true, 96, 8}, offsets);
 
   Symbol owner;
   owner.name = "<runtime-context>";
@@ -135,6 +136,7 @@ void ensure_runtime_context_type(
           {owner_id, field_id, offsets[index]});
     }
   }
+  package.types.publish_nominal_members(context);
   package.runtime_context_type = context;
 }
 

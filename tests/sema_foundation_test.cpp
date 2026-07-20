@@ -137,8 +137,12 @@ void test_nominal_identity(TestState &state) {
              draft::TypeFacetState::Waiting);
   EXPECT(state, left != right);
   EXPECT(state, !types.type(left).layout.known);
-  types.complete_nominal(left, {true, 4, 4}, {*u32});
-  types.complete_nominal(right, {true, 4, 4}, {*u32});
+  types.publish_nominal_members(left);
+  types.publish_nominal_member_types(left, {*u32});
+  types.publish_nominal_natural_layout(left, {true, 4, 4}, {0});
+  types.publish_nominal_members(right);
+  types.publish_nominal_member_types(right, {*u32});
+  types.publish_nominal_natural_layout(right, {true, 4, 4}, {0});
   EXPECT(state,
       types.type(pending_tuple).layout == draft::TypeLayout({true, 8, 4}));
   EXPECT(state,
@@ -182,7 +186,10 @@ void test_type_inspection_waits_for_exact_facets(TestState &state) {
          pending_count.required_facet == draft::TypeFacet::Members);
 
   package.types.type_mut(record).c_representation = true;
-  package.types.complete_nominal(record, {true, 4, 4}, {*u32}, {0});
+  package.types.publish_nominal_members(record);
+  package.types.publish_nominal_member_types(record, {*u32});
+  package.types.publish_nominal_natural_layout(
+      record, {true, 4, 4}, {0});
   const draft::TypeInspectionAttempt ready_count = draft::inspect_type(
       package, "type_member_count", record);
   EXPECT(state, ready_count.result.has_value());
@@ -201,7 +208,8 @@ void test_type_inspection_waits_for_exact_facets(TestState &state) {
       draft::TypeKind::Struct,
       "Layout_Pending",
       draft::SourceRange::invalid());
-  package.types.complete_nominal(layout_pending, {}, {*u32}, {0});
+  package.types.publish_nominal_members(layout_pending);
+  package.types.publish_nominal_member_types(layout_pending, {*u32});
   const draft::TypeInspectionAttempt pending_offset = draft::inspect_type(
       package, "type_member_offset", layout_pending, 0);
   EXPECT(state,

@@ -1354,8 +1354,12 @@ private:
         members.push_back(import_type(package, cache, member));
       }
       consumer_.types.type_mut(result).element = element;
-      consumer_.types.complete_nominal(
-          result, source.layout, std::move(members), source.member_offsets);
+      consumer_.types.publish_nominal_member_types(
+          result, std::move(members));
+      if (source.layout.known) {
+        consumer_.types.publish_nominal_natural_layout(
+            result, source.layout, source.member_offsets);
+      }
 
       // A nominal may arrive only as a nested procedure parameter or result,
       // with no public type declaration in this immediate package interface.
@@ -1474,6 +1478,12 @@ private:
               {member_id, member.enum_value});
         }
       }
+    }
+    const TypeId owner_type = consumer_.symbols.symbol(owner).type;
+    if (owner_type.is_valid() &&
+        consumer_.types.facet_state(owner_type, TypeFacet::Members) ==
+            TypeFacetState::Waiting) {
+      consumer_.types.publish_nominal_members(owner_type);
     }
   }
 

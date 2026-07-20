@@ -364,11 +364,24 @@ main :: proc() {
        bodies.package.imported_symbols) {
     if (imported.public_name != "C_Point") continue;
     saw_c_point = true;
-    const draft::Type &type = bodies.package.types.type(
-        bodies.package.symbols.symbol(imported.proxy).type);
+    const draft::TypeId imported_type =
+        bodies.package.symbols.symbol(imported.proxy).type;
+    const draft::Type &type = bodies.package.types.type(imported_type);
     EXPECT(state, type.c_representation);
     EXPECT(state, type.requested_alignment == 16);
     EXPECT(state, type.layout == draft::TypeLayout({true, 16, 16}));
+    EXPECT(state,
+           bodies.package.types.facet_state(
+               imported_type, draft::TypeFacet::Members) ==
+               draft::TypeFacetState::Complete);
+    EXPECT(state,
+           bodies.package.types.facet_state(
+               imported_type, draft::TypeFacet::MemberTypes) ==
+               draft::TypeFacetState::Complete);
+    EXPECT(state,
+           bodies.package.types.facet_state(
+               imported_type, draft::TypeFacet::NaturalLayout) ==
+               draft::TypeFacetState::Complete);
   }
   EXPECT(state, saw_c_point);
 

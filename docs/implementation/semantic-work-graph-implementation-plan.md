@@ -38,9 +38,11 @@ gate.
    Initial collection/import binding and package-branch materialization are now
    append-only. `TypeStore` now retains identity, members, member types, and
    natural layout as separate completion facets, and type inspection blocks on
-   the exact missing facet instead of reading partial rows. The remaining work
-   is to make their producers individual graph tasks, replace private
-   type/constant/layout readiness copies, and delete the final aggregate pass.
+   the exact missing facet instead of reading partial rows. The bundled nominal
+   completion API is gone; member-name, member-type, and natural-layout
+   publication are separate one-way operations. The remaining work is to make
+   those producers individual graph tasks, replace private type/constant/layout
+   readiness copies, and delete the final aggregate pass.
 
 4. **Canonical generic type demand.** Give every concrete type application one
    canonical command-local key and owner task. Cross-package owner evaluation
