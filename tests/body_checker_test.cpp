@@ -2657,6 +2657,106 @@ main :: proc() {
       std::string::npos);
 }
 
+void test_dependent_when_assertion_selection(TestState &state) {
+  CheckedSource valid(R"draft(
+package bodies
+
+exactly_one :: proc(values: ..type) {
+    for value, index in values {
+        when index == 0 {
+            _ = value
+        } else {
+            // The literal assertion does not itself name index. It still
+            // belongs to the dependent branch and must wait for expansion.
+            static_assert(false, "exactly_one received another value")
+        }
+    }
+}
+
+at_most_two :: proc(values: ..type) {
+    for value, index in values {
+        when index == 0 {
+            _ = value
+        } else when index == 1 {
+            _ = value
+        } else {
+            static_assert(false, "at_most_two received another value")
+        }
+    }
+}
+
+accept_zero[N: usize] :: proc() {
+    when N == 0 {
+        static_assert(true)
+    } else {
+        static_assert(false, "N must be zero")
+    }
+}
+
+main :: proc() {
+    exactly_one(42)
+    at_most_two("draft", true)
+    accept_zero[0]()
+}
+)draft");
+  if (valid.diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(valid.sources, valid.diagnostics);
+  }
+  EXPECT(state, valid.semantics.ok);
+  EXPECT(state, valid.bodies.ok);
+  EXPECT(state, !valid.diagnostics.has_errors());
+
+  CheckedSource selected_invalid(R"draft(
+package bodies
+
+exactly_one :: proc(values: ..type) {
+    for value, index in values {
+        when index == 0 {
+            _ = value
+        } else {
+            static_assert(false, "exactly_one received another value")
+        }
+    }
+}
+
+accept_zero[N: usize] :: proc() {
+    when N == 0 {
+    } else {
+        static_assert(false, "N must be zero")
+    }
+}
+
+main :: proc() {
+    exactly_one(1, 2)
+    accept_zero[1]()
+}
+)draft");
+  EXPECT(state, !selected_invalid.bodies.ok);
+  const std::string selected_rendered = draft::render_diagnostics(
+      selected_invalid.sources, selected_invalid.diagnostics);
+  EXPECT(state, selected_rendered.find(
+      "static assertion failed: exactly_one received another value") !=
+      std::string::npos);
+  EXPECT(state, selected_rendered.find(
+      "static assertion failed: N must be zero") != std::string::npos);
+
+  CheckedSource runtime_if(R"draft(
+package bodies
+
+ordinary :: proc(condition: bool) {
+    if condition {
+        static_assert(false, "runtime if cannot delay static_assert")
+    }
+}
+)draft");
+  EXPECT(state, !runtime_if.bodies.ok);
+  const std::string runtime_rendered =
+      draft::render_diagnostics(runtime_if.sources, runtime_if.diagnostics);
+  EXPECT(state, runtime_rendered.find(
+      "static assertion failed: runtime if cannot delay static_assert") !=
+      std::string::npos);
+}
+
 } // namespace
 
 int main() {
@@ -2693,6 +2793,7 @@ int main() {
   test_compile_time_type_inspection(state);
   test_compile_time_type_runtime_boundary(state);
   test_dependent_when_type_refinement(state);
+  test_dependent_when_assertion_selection(state);
 
   if (state.failures != 0) {
     std::cerr << state.failures << " body checker expectation(s) failed\n";

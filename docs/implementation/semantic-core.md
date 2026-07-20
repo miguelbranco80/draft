@@ -52,11 +52,13 @@ public constraint rows.
 
 Concrete procedure instances reuse the ordinary constant interpreter with
 their type/value substitution overlay, check only the selected transparent
-branch, and emit no symbolic type query. A symbolic `static_assert` in a
-refined branch is deferred; the same source is evaluated if a concrete
-instance selects it. Body agent sites are recorded only by the symbolic source
-pass, with the active branch-refinement path, and are not duplicated while
-instances validate the accepted expansion.
+branch, and emit no symbolic type query. A dedicated dependent-`when` depth
+marks every symbolic possibility, including index/value conditions which grant
+no type refinement. A `static_assert` in any such possibility is deferred and
+evaluated only when a concrete instance selects it; ordinary runtime branch
+facts do not defer assertions. Body agent sites are recorded only by the
+symbolic source pass, with the active branch-refinement path, and are not
+duplicated while instances validate the accepted expansion.
 
 Effect closure includes every concrete HIR procedure. For a specialization
 requested across a package boundary, the completed interface publishes an

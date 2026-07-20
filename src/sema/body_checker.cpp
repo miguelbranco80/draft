@@ -4275,7 +4275,7 @@ private:
           !current_instance_index_.has_value() && argument_count >= 1 &&
           (expression_references_parametric_parameter(
                tree, call.children[1], scope) ||
-           !active_type_refinements_.empty());
+           active_dependent_when_depth_ != 0);
       std::optional<ConstantValue> condition;
       if (argument_count >= 1 && !defer_symbolic_assertion) {
         condition = evaluate_constant_expression(
@@ -6620,6 +6620,12 @@ private:
     branch_fact.subject_type = semantic_.types.builtins().bool_type;
     active_branch_refinements_.push_back(std::move(branch_fact));
     if (type_fact != nullptr) active_type_refinements_.push_back(*type_fact);
+    // Any assertion in this symbolic possibility belongs to a concrete branch
+    // selection, even when the assertion expression itself is a literal and
+    // the `when` grants no type refinement (for example `when index == 0`).
+    // Count dependent selections separately from ordinary runtime branch facts
+    // so an `if` never delays a source-independent static assertion.
+    ++active_dependent_when_depth_;
 
     HirBlockId checked;
     if (tree.node(branch_id).kind == NodeKind::WhenStatement) {
@@ -6634,6 +6640,8 @@ private:
       checked = check_block(tree, branch_id, scope, result_type, depth);
     }
 
+    assert(active_dependent_when_depth_ != 0);
+    --active_dependent_when_depth_;
     if (type_fact != nullptr) active_type_refinements_.pop_back();
     active_branch_refinements_.pop_back();
     return checked;
@@ -7653,6 +7661,8 @@ private:
         active_branch_refinements_;
     const std::vector<ActiveTypeRefinement> saved_type_refinements =
         active_type_refinements_;
+    const std::size_t saved_dependent_when_depth =
+        active_dependent_when_depth_;
     const std::vector<StaticPackValueAlias> saved_pack_aliases =
         active_pack_value_aliases_;
     // A nested procedure declaration may be checked while its declaration is
@@ -7661,6 +7671,7 @@ private:
     // refine sites in the nested procedure.
     active_branch_refinements_.clear();
     active_type_refinements_.clear();
+    active_dependent_when_depth_ = 0;
     active_pack_value_aliases_.clear();
     const SymbolId declaration_source = procedure_declaration_source(id);
     for (const DeclarationDenial &denial : semantic_.declaration_denials) {
@@ -7698,6 +7709,7 @@ private:
     active_statement_denials_ = saved_denials;
     active_branch_refinements_ = saved_refinements;
     active_type_refinements_ = saved_type_refinements;
+    active_dependent_when_depth_ = saved_dependent_when_depth;
     active_pack_value_aliases_ = saved_pack_aliases;
     return true;
   }
@@ -7721,6 +7733,10 @@ private:
   // Keeping the stack beside the branch-refinement stack makes entry/exit
   // explicit and prevents a branch fact from changing a public signature.
   std::vector<ActiveTypeRefinement> active_type_refinements_;
+  // Counts only parameter-dependent `when` possibilities currently being
+  // checked in a symbolic template. Runtime `if`/loop/switch facts use the
+  // neighboring branch-refinement vector but must not defer static_assert.
+  std::size_t active_dependent_when_depth_ = 0;
   std::vector<StaticPackValueAlias> active_pack_value_aliases_;
   std::vector<ProcedureInstance> instances_;
   std::optional<std::size_t> current_instance_index_;
