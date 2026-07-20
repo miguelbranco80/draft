@@ -28,6 +28,7 @@
 #include "elaborator/resolved_program.h"
 #include "sema/denial.h"
 #include "sema/type_resolver.h"
+#include "workspace/selection.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -1075,6 +1076,7 @@ void refresh_imported_effects(
     std::vector<bool> &matched) {
   ResolutionManifest result;
   result.target_identity = full.target_identity;
+  result.root_package = full.root_package;
   result.resolved_program_digest = full.resolved_program_digest;
   for (const std::optional<CompiledPackage> &package : compiled.packages) {
     if (!package.has_value()) continue;
@@ -1153,6 +1155,8 @@ void bind_handwritten_program_identity(
   if (!result.ok) return;
   ResolutionManifest empty_manifest;
   empty_manifest.target_identity = options.target.facts.identity;
+  empty_manifest.root_package =
+      result.graph.package(result.graph.root_package).identity;
   result.resolved_program_digest = hash_resolved_program(
       sources,
       result.graph,
@@ -2134,12 +2138,25 @@ CompileWorkspaceResult compile_workspace_with_resolution(
       : TimingScope{};
   const std::size_t initial_errors = diagnostics.error_count();
 
+  WorkspacePackageSelection selected_root;
+  if (!identify_workspace_package(
+          options.workspace.workspace_directory,
+          root_package_directory,
+          selected_root,
+          diagnostics)) {
+    return {};
+  }
+  const ResolutionStoreKey store_key{
+      options.target.facts.identity,
+      selected_root.identity,
+  };
+
   TimingScope manifest_timing = options.timings != nullptr
       ? options.timings->scope(
             "resolution manifest loading", TimingVisibility::Detail)
       : TimingScope{};
   const ResolutionManifestLoadResult loaded_manifest = load_resolution_manifest(
-      options.workspace.workspace_directory, diagnostics);
+      options.workspace.workspace_directory, store_key, diagnostics);
   manifest_timing.finish();
   if (loaded_manifest.state == ResolutionManifestLoadState::Invalid) {
     return {};

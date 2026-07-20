@@ -179,6 +179,7 @@ add_library(
   src/validation/instrumentation.cpp
   src/validation/runner.cpp
   src/workspace/package.cpp
+  src/workspace/selection.cpp
   src/workspace/workspace.cpp
 )
 
@@ -278,6 +279,16 @@ if(BUILD_TESTING)
   add_executable(draft_workspace_tests tests/workspace_test.cpp)
   target_link_libraries(draft_workspace_tests PRIVATE draft_compiler)
   add_test(NAME draft_workspace_tests COMMAND draft_workspace_tests)
+
+  add_executable(
+    draft_workspace_selection_tests
+    tests/workspace_selection_test.cpp
+  )
+  target_link_libraries(draft_workspace_selection_tests PRIVATE draft_compiler)
+  add_test(
+    NAME draft_workspace_selection_tests
+    COMMAND draft_workspace_selection_tests
+  )
 
   add_executable(draft_sema_foundation_tests tests/sema_foundation_test.cpp)
   target_link_libraries(draft_sema_foundation_tests PRIVATE draft_compiler)
@@ -576,6 +587,23 @@ if(BUILD_TESTING)
   add_dependencies(draft_judgment_driver_tests draftc)
   add_test(NAME draft_judgment_driver_tests COMMAND draft_judgment_driver_tests)
 
+  add_executable(
+    draft_workspace_build_driver_tests
+    tests/workspace_build_driver_test.cpp
+  )
+  target_link_libraries(
+    draft_workspace_build_driver_tests PRIVATE draft_compiler
+  )
+  target_compile_definitions(
+    draft_workspace_build_driver_tests
+    PRIVATE DRAFT_DRIVER_PATH="$<TARGET_FILE:draftc>"
+  )
+  add_dependencies(draft_workspace_build_driver_tests draftc)
+  add_test(
+    NAME draft_workspace_build_driver_tests
+    COMMAND draft_workspace_build_driver_tests
+  )
+
   # The handwritten tour must stay usable without provider access. The first
   # command exercises its complete semantic graph; the second proves that the
   # public selector surface discovers a type-member and procedure judgment
@@ -583,12 +611,12 @@ if(BUILD_TESTING)
   add_test(
     NAME draft_judgment_tour_check
     COMMAND draftc check
-      "${CMAKE_CURRENT_SOURCE_DIR}/examples/judgment-tour/app"
+      "${CMAKE_CURRENT_SOURCE_DIR}/examples/judgment-tour" --root app
   )
   add_test(
     NAME draft_judgment_tour_list
     COMMAND draftc judge
-      "${CMAKE_CURRENT_SOURCE_DIR}/examples/judgment-tour/app" --list
+      "${CMAKE_CURRENT_SOURCE_DIR}/examples/judgment-tour" --root app --list
   )
   set_tests_properties(
     draft_judgment_tour_list
@@ -646,7 +674,7 @@ if(BUILD_TESTING)
   )
 
   add_test(
-    NAME draft_driver_canonicalizes_symlinked_parent
+    NAME draft_driver_canonicalizes_symlinked_workspace
     COMMAND
       "${CMAKE_COMMAND}"
       "-DDRAFTC=$<TARGET_FILE:draftc>"
@@ -663,7 +691,7 @@ if(BUILD_TESTING)
     COMMAND
       "${CMAKE_COMMAND}"
       "-DDRAFTC=$<TARGET_FILE:draftc>"
-      "-DSOURCE_PACKAGE=${CMAKE_CURRENT_SOURCE_DIR}/examples/agent-acceptance/app"
+      "-DSOURCE_WORKSPACE=${CMAKE_CURRENT_SOURCE_DIR}/examples/agent-acceptance"
       "-DTEST_ROOT=${CMAKE_CURRENT_BINARY_DIR}/expanded-source-driver-test"
       -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/driver_expand_test.cmake"
   )
@@ -691,7 +719,8 @@ if(BUILD_TESTING)
     COMMAND "${CMAKE_COMMAND}" -E env
       "PATH=${CMAKE_CURRENT_BINARY_DIR}/no-codex-path"
       $<TARGET_FILE:draftc> resolve
-      "${CMAKE_CURRENT_SOURCE_DIR}/examples/agent-pending/app" --assertions=off
+      "${CMAKE_CURRENT_SOURCE_DIR}/examples/agent-pending" --root app
+      --assertions=off
   )
   set_tests_properties(
     draft_resolve_reports_unavailable_codex
@@ -703,7 +732,8 @@ if(BUILD_TESTING)
     COMMAND "${CMAKE_COMMAND}" -E env
       "PATH=${CMAKE_CURRENT_BINARY_DIR}/no-codex-path"
       $<TARGET_FILE:draftc> judge
-      "${CMAKE_CURRENT_SOURCE_DIR}/examples/agent-pending/app" --assertions=off
+      "${CMAKE_CURRENT_SOURCE_DIR}/examples/agent-pending" --root app
+      --assertions=off
   )
   set_tests_properties(
     draft_judge_reports_unavailable_codex
@@ -716,7 +746,7 @@ if(BUILD_TESTING)
   add_test(
     NAME draft_regeneration_rejects_unknown_site
     COMMAND draftc resolve
-      "${CMAKE_CURRENT_SOURCE_DIR}/examples/agent-acceptance/app"
+      "${CMAKE_CURRENT_SOURCE_DIR}/examples/agent-acceptance" --root app
       --regenerate site-does-not-exist
   )
   set_tests_properties(

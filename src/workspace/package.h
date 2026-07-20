@@ -21,6 +21,7 @@
 
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace draft {
@@ -87,6 +88,16 @@ struct PackageLoadResult {
   bool ok = false;
   LoadedPackage package;
 };
+
+// Classifies one direct-child filename under the exact same target and
+// validation selection rules used by load_package. The operation inspects no
+// filesystem state and returns no physical path: workspace discovery uses it
+// to decide whether a directory contains ordinary Draft source without
+// duplicating target-qualifier or `_test`/`_bench` policy. A missing result
+// means the filename is not selected for this command.
+[[nodiscard]] std::optional<PackageFileKind> selected_package_file_kind(
+    std::string_view filename,
+    const PackageLoadOptions &options);
 
 // Loads and parses one directory without throwing. All filesystem and source
 // failures become diagnostics. Syntax errors remain in the returned trees for

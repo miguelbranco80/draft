@@ -85,6 +85,18 @@ std::string target_identity() {
   return draft::make_aarch64_macos_profile().facts.identity;
 }
 
+// Every fixture compiles the `app` package inside the temporary workspace.
+// Bind that selected root explicitly so offline compiler loads exercise the
+// same root/target namespace as resolver-produced manifests.
+void bind_selected_root(draft::ResolutionManifest &manifest) {
+  manifest.root_package = {"workspace", "app"};
+}
+
+draft::ResolutionStoreKey store_key_for(
+    const draft::ResolutionManifest &manifest) {
+  return {manifest.target_identity, manifest.root_package};
+}
+
 // Manual manifest fixtures must carry the same persistent map the resolver
 // derives from an obligation. Keeping the helper here makes each negative test
 // vary only the field it intends to invalidate.
@@ -148,11 +160,13 @@ void test_pinned_expression_reenters_compiler(TestState &state) {
       pin, obligation, surface.graph.packages[0].loaded, expansion.source);
   draft::ResolutionManifest manifest;
   manifest.target_identity = target_identity();
+  bind_selected_root(manifest);
   manifest.resolved_program_digest = draft::sha256("resolved fixture");
   manifest.pins.push_back(pin);
   EXPECT(state,
       draft::commit_resolution(
           workspace.root,
+          store_key_for(manifest),
           manifest,
           std::span<const draft::GeneratedExpansion>(&expansion, 1),
           diagnostics));
@@ -250,6 +264,7 @@ void test_pinned_expression_reenters_compiler(TestState &state) {
   EXPECT(state,
       draft::commit_resolution(
           workspace.root,
+          store_key_for(manifest),
           manifest,
           std::span<const draft::GeneratedExpansion>(),
           diagnostics));
@@ -282,6 +297,7 @@ void test_pinned_expression_reenters_compiler(TestState &state) {
   EXPECT(state,
       draft::commit_resolution(
           workspace.root,
+          store_key_for(manifest),
           manifest,
           std::span<const draft::GeneratedExpansion>(),
           diagnostics));
@@ -347,11 +363,13 @@ main :: proc() {
       pin, obligation, surface.graph.packages[0].loaded, expansion.source);
   draft::ResolutionManifest manifest;
   manifest.target_identity = target_identity();
+  bind_selected_root(manifest);
   manifest.resolved_program_digest = draft::sha256("invalid generated judgment");
   manifest.pins.push_back(pin);
   EXPECT(state,
       draft::commit_resolution(
           workspace.root,
+          store_key_for(manifest),
           manifest,
           std::span<const draft::GeneratedExpansion>(&expansion, 1),
           diagnostics));
@@ -405,11 +423,13 @@ void test_stale_pin_produces_no_overlay(TestState &state) {
       pin, obligation, surface.graph.packages[0].loaded, expansion.source);
   draft::ResolutionManifest manifest;
   manifest.target_identity = target_identity();
+  bind_selected_root(manifest);
   manifest.resolved_program_digest = draft::sha256("stale program");
   manifest.pins.push_back(pin);
   EXPECT(state,
       draft::commit_resolution(
           workspace.root,
+          store_key_for(manifest),
           manifest,
           std::span<const draft::GeneratedExpansion>(&expansion, 1),
           diagnostics));

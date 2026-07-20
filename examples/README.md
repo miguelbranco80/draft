@@ -17,6 +17,19 @@ build/draftc build examples/language-tour -o /tmp/draft-language-tour
 /tmp/draft-language-tour
 ```
 
+The positional directory is always the workspace. A package in that directory
+is root `.`, so the commands above need no conventionally named child. In a
+multi-package workspace, select a child explicitly or let `build` discover all
+packages with a surface package-level `main`:
+
+```sh
+build/draftc check examples/packages --root app
+build/draftc build examples/packages
+```
+
+Here `app` imports `lib/math` from the same workspace. `lib/math` is compiled as
+its dependency but is not an executable target because it has no `main`.
+
 ## Start here
 
 | Example | What it covers |

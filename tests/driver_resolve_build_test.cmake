@@ -20,11 +20,12 @@ file(MAKE_DIRECTORY "${TEST_ROOT}")
 file(COPY "${SOURCE_WORKSPACE}" DESTINATION "${TEST_ROOT}")
 get_filename_component(workspace_name "${SOURCE_WORKSPACE}" NAME)
 set(package "${TEST_ROOT}/${workspace_name}/app")
+set(workspace "${TEST_ROOT}/${workspace_name}")
 set(resolve_output "${TEST_ROOT}/resolve-assembly")
 set(build_output "${TEST_ROOT}/later-assembly")
 
 execute_process(
-  COMMAND "${DRAFTC}" resolve "${package}" --revalidate --build
+  COMMAND "${DRAFTC}" resolve "${workspace}" --root app --revalidate --build
     --target "${TARGET_SELECTOR}" --kind assembly -o "${resolve_output}"
   RESULT_VARIABLE resolve_status
   OUTPUT_VARIABLE resolve_stdout
@@ -40,7 +41,7 @@ if(NOT resolve_stdout MATCHES "resolved 4 synthesis sites" OR
 endif()
 
 execute_process(
-  COMMAND "${DRAFTC}" build "${package}"
+  COMMAND "${DRAFTC}" build "${workspace}" --root app
     --target "${TARGET_SELECTOR}" --kind assembly -o "${build_output}"
   RESULT_VARIABLE build_status
   OUTPUT_VARIABLE build_stdout
@@ -76,7 +77,14 @@ endforeach()
 # AArch64 assembly validator because x1 is neither an output nor a clobber. The
 # revalidated manifest must change despite the command's nonzero build result,
 # and a later provider-free check must consume that committed source normally.
-set(manifest "${TEST_ROOT}/${workspace_name}/.draft/resolution.json")
+file(GLOB manifest_candidates
+  "${workspace}/.draft/resolutions/*/packages/app/resolution.json")
+list(LENGTH manifest_candidates manifest_count)
+if(NOT manifest_count EQUAL 1)
+  message(FATAL_ERROR
+    "expected one selected app resolution manifest, found ${manifest_count}")
+endif()
+list(GET manifest_candidates 0 manifest)
 file(SHA256 "${manifest}" manifest_before_backend_failure)
 file(WRITE "${package}/invalid_assembly.draft"
   "package app\n\n"
@@ -89,7 +97,7 @@ file(WRITE "${package}/invalid_assembly.draft"
   "}\n")
 
 execute_process(
-  COMMAND "${DRAFTC}" resolve "${package}" --revalidate --build
+  COMMAND "${DRAFTC}" resolve "${workspace}" --root app --revalidate --build
     --target "${TARGET_SELECTOR}" --kind assembly
     -o "${TEST_ROOT}/invalid-assembly-output"
   RESULT_VARIABLE failed_build_status
@@ -112,7 +120,8 @@ if(manifest_before_backend_failure STREQUAL manifest_after_backend_failure)
 endif()
 
 execute_process(
-  COMMAND "${DRAFTC}" check "${package}" --target "${TARGET_SELECTOR}"
+  COMMAND "${DRAFTC}" check "${workspace}" --root app
+    --target "${TARGET_SELECTOR}"
   RESULT_VARIABLE committed_check_status
   OUTPUT_VARIABLE committed_check_stdout
   ERROR_VARIABLE committed_check_stderr

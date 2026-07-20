@@ -100,6 +100,10 @@ public:
     if (!punctuation('{') || !key("format") ||
         !string(parsed.format) || !comma() ||
         !key("target") || !string(parsed.target_identity) || !comma() ||
+        !key("root_identity") ||
+        !string(parsed.root_package.root_identity) || !comma() ||
+        !key("root_package") ||
+        !string(parsed.root_package.root_relative_path) || !comma() ||
         !key("resolved_program") ||
         !digest(parsed.resolved_program_digest) || !comma() ||
         !key("external_inputs") ||
@@ -109,11 +113,19 @@ public:
     }
     whitespace();
     if (position_ != input_.size()) return fail("trailing bytes after manifest");
-    if (parsed.format != "draft-resolution-v5") {
+    if (parsed.format != "draft-resolution-v6") {
       return fail("unsupported resolution manifest format");
     }
     if (parsed.target_identity.empty()) {
       return fail("resolution manifest target identity must not be empty");
+    }
+    if (parsed.root_package.root_identity != "workspace") {
+      return fail("resolution manifest root identity must be 'workspace'");
+    }
+    if (parsed.root_package.root_relative_path != "." &&
+        !valid_relative_entry(parsed.root_package.root_relative_path)) {
+      return fail(
+          "resolution manifest root package must be '.' or a normalized relative path");
     }
     std::sort(
         parsed.external_inputs.begin(), parsed.external_inputs.end(),
@@ -498,6 +510,10 @@ std::string serialize_resolution_manifest(const ResolutionManifest &manifest) {
   append_json_string(manifest.format, output);
   output += ",\n  \"target\": ";
   append_json_string(manifest.target_identity, output);
+  output += ",\n  \"root_identity\": ";
+  append_json_string(manifest.root_package.root_identity, output);
+  output += ",\n  \"root_package\": ";
+  append_json_string(manifest.root_package.root_relative_path, output);
   output += ",\n  \"resolved_program\": ";
   append_json_string(manifest.resolved_program_digest.hex(), output);
   output += ",\n  \"external_inputs\": [";

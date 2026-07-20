@@ -13,6 +13,9 @@ if(NOT DEFINED DRAFTC OR NOT DEFINED SOURCE_PACKAGE)
   message(FATAL_ERROR "DRAFTC and SOURCE_PACKAGE are required")
 endif()
 
+get_filename_component(source_workspace "${SOURCE_PACKAGE}" DIRECTORY)
+get_filename_component(source_root "${SOURCE_PACKAGE}" NAME)
+
 execute_process(
   COMMAND "${DRAFTC}"
   RESULT_VARIABLE usage_result
@@ -32,7 +35,8 @@ if(NOT timing_usage_count EQUAL 9 OR
 endif()
 
 execute_process(
-  COMMAND "${DRAFTC}" check "${SOURCE_PACKAGE}" --timings
+  COMMAND "${DRAFTC}" check "${source_workspace}" --root "${source_root}"
+    --timings
   RESULT_VARIABLE summary_result
   OUTPUT_VARIABLE summary_stdout
   ERROR_VARIABLE summary_stderr
@@ -56,7 +60,8 @@ if(summary_stderr MATCHES "package declarations:" OR
 endif()
 
 execute_process(
-  COMMAND "${DRAFTC}" check "${SOURCE_PACKAGE}" --timings=all
+  COMMAND "${DRAFTC}" check "${source_workspace}" --root "${source_root}"
+    --timings=all
   RESULT_VARIABLE all_result
   OUTPUT_VARIABLE all_stdout
   ERROR_VARIABLE all_stderr
@@ -74,7 +79,8 @@ if(NOT all_stderr MATCHES "source file I/O: package.draft" OR
 endif()
 
 execute_process(
-  COMMAND "${DRAFTC}" check "${SOURCE_PACKAGE}" --timings --timings=all
+  COMMAND "${DRAFTC}" check "${source_workspace}" --root "${source_root}"
+    --timings --timings=all
   RESULT_VARIABLE duplicate_result
   OUTPUT_VARIABLE duplicate_stdout
   ERROR_VARIABLE duplicate_stderr

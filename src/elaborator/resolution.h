@@ -16,6 +16,7 @@
 #include "base/sha256.h"
 #include "sema/agent_metadata.h"
 #include "source/diagnostic.h"
+#include "workspace/workspace.h"
 
 #include <cstdint>
 #include <string>
@@ -91,8 +92,12 @@ struct ExternalInputPin {
 // benchmark, and judgment evidence live in their independent stores and never
 // mutate source selection.
 struct ResolutionManifest {
-  std::string format = "draft-resolution-v5";
+  std::string format = "draft-resolution-v6";
   std::string target_identity;
+  // The selected executable root is semantic workspace identity, never a
+  // physical path. It authenticates a loaded manifest and owns that program's
+  // root/target-specific namespace in the persistent resolution store.
+  PackageIdentity root_package{"workspace", "."};
   Sha256Digest resolved_program_digest;
   std::vector<ExternalInputPin> external_inputs;
   std::vector<ResolutionPin> pins;

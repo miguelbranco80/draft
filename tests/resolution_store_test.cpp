@@ -81,6 +81,29 @@ draft::ResolutionManifest manifest_for(
   return manifest;
 }
 
+// Tests derive the filesystem namespace from the same persistent identities
+// carried by the manifest. This keeps each fixture honest about the invariant
+// enforced by commit_resolution: a manifest may only be published at its exact
+// selected-root and target key.
+draft::ResolutionStoreKey store_key_for(
+    const draft::ResolutionManifest &manifest) {
+  return {manifest.target_identity, manifest.root_package};
+}
+
+std::filesystem::path manifest_path_for(
+    const std::filesystem::path &workspace,
+    const draft::ResolutionManifest &manifest) {
+  std::filesystem::path directory = workspace / ".draft" / "resolutions" /
+      manifest.target_identity;
+  if (manifest.root_package.root_relative_path == ".") {
+    directory /= "workspace";
+  } else {
+    directory /= "packages";
+    directory /= manifest.root_package.root_relative_path;
+  }
+  return directory / "resolution.json";
+}
+
 struct StopAtCheckpoint {
   draft::ResolutionCommitCheckpoint target =
       draft::ResolutionCommitCheckpoint::StagingDirectoryCreated;
@@ -107,6 +130,7 @@ void test_commit_and_reload(TestState &state) {
   EXPECT(state,
       draft::commit_resolution(
           workspace.path,
+          store_key_for(manifest),
           manifest,
           std::span<const draft::GeneratedExpansion>(&expansion, 1),
           diagnostics));
@@ -117,11 +141,12 @@ void test_commit_and_reload(TestState &state) {
   EXPECT(state, std::filesystem::is_regular_file(generated));
   EXPECT(state,
       std::filesystem::is_regular_file(
-          workspace.path / ".draft" / "resolution.json"));
+          manifest_path_for(workspace.path, manifest)));
 
   draft::DiagnosticSink load_diagnostics;
   const draft::ResolutionManifestLoadResult loaded =
-      draft::load_resolution_manifest(workspace.path, load_diagnostics);
+      draft::load_resolution_manifest(
+          workspace.path, store_key_for(manifest), load_diagnostics);
   EXPECT(state,
       loaded.state == draft::ResolutionManifestLoadState::Loaded);
   EXPECT(state, !load_diagnostics.has_errors());
@@ -145,12 +170,14 @@ void test_commit_and_reload(TestState &state) {
   EXPECT(state,
       draft::commit_resolution(
           workspace.path,
+          store_key_for(manifest),
           manifest,
           std::span<const draft::GeneratedExpansion>(),
           repin_diagnostics));
   EXPECT(state, !repin_diagnostics.has_errors());
   const draft::ResolutionManifestLoadResult repinned =
-      draft::load_resolution_manifest(workspace.path, repin_diagnostics);
+      draft::load_resolution_manifest(
+          workspace.path, store_key_for(manifest), repin_diagnostics);
   EXPECT(state,
       repinned.state == draft::ResolutionManifestLoadState::Loaded);
   if (repinned.manifest.pins.size() == 1) {
@@ -179,11 +206,26 @@ void test_validation_precedes_writes(TestState &state) {
   EXPECT(state,
       !draft::commit_resolution(
           workspace.path,
+          store_key_for(manifest),
           manifest,
           std::span<const draft::GeneratedExpansion>(&expansion, 1),
           diagnostics));
   EXPECT(state, diagnostics.has_errors());
   EXPECT(state, !std::filesystem::exists(workspace.path / ".draft"));
+
+  TemporaryWorkspace wrong_namespace("wrong-namespace");
+  draft::ResolutionStoreKey mismatched_key = store_key_for(manifest);
+  mismatched_key.root_package.root_relative_path = "another-root";
+  draft::DiagnosticSink namespace_diagnostics;
+  EXPECT(state,
+      !draft::commit_resolution(
+          wrong_namespace.path,
+          mismatched_key,
+          manifest,
+          std::span<const draft::GeneratedExpansion>(&expansion, 1),
+          namespace_diagnostics));
+  EXPECT(state, namespace_diagnostics.has_errors());
+  EXPECT(state, !std::filesystem::exists(wrong_namespace.path / ".draft"));
 
   // A correct content digest is insufficient when the persistent source map
   // claims a different generated interval length. Reject that mismatch before
@@ -196,6 +238,7 @@ void test_validation_precedes_writes(TestState &state) {
   EXPECT(state,
       !draft::commit_resolution(
           wrong_map.path,
+          store_key_for(wrong_map_manifest),
           wrong_map_manifest,
           std::span<const draft::GeneratedExpansion>(&expansion, 1),
           wrong_map_diagnostics));
@@ -213,6 +256,7 @@ void test_validation_precedes_writes(TestState &state) {
   EXPECT(state,
       !draft::commit_resolution(
           missing.path,
+          store_key_for(missing_manifest),
           missing_manifest,
           std::span<const draft::GeneratedExpansion>(),
           missing_diagnostics));
@@ -229,6 +273,7 @@ void test_corrupt_object_is_rejected(TestState &state) {
   draft::DiagnosticSink diagnostics;
   if (!draft::commit_resolution(
           workspace.path,
+          store_key_for(manifest),
           manifest,
           std::span<const draft::GeneratedExpansion>(&expansion, 1),
           diagnostics)) {
@@ -253,6 +298,66 @@ void test_corrupt_object_is_rejected(TestState &state) {
   EXPECT(state, corrupt_diagnostics.has_errors());
 }
 
+void test_root_and_target_namespaces_are_independent(TestState &state) {
+  TemporaryWorkspace workspace("namespaces");
+  draft::GeneratedExpansion expansion;
+  expansion.source = "one shared generated object";
+  expansion.digest = draft::sha256(expansion.source);
+
+  draft::ResolutionManifest app = manifest_for(expansion);
+  app.root_package = {"workspace", "app"};
+  app.resolved_program_digest = draft::sha256("app program");
+  draft::ResolutionManifest admin = manifest_for(expansion);
+  admin.root_package = {"workspace", "tools/admin"};
+  admin.resolved_program_digest = draft::sha256("admin program");
+  draft::ResolutionManifest linux = app;
+  linux.target_identity = "aarch64-linux-gnu";
+  linux.resolved_program_digest = draft::sha256("linux app program");
+
+  draft::DiagnosticSink diagnostics;
+  EXPECT(state, draft::commit_resolution(
+      workspace.path,
+      store_key_for(app),
+      app,
+      std::span<const draft::GeneratedExpansion>(&expansion, 1),
+      diagnostics));
+  EXPECT(state, draft::commit_resolution(
+      workspace.path,
+      store_key_for(admin),
+      admin,
+      std::span<const draft::GeneratedExpansion>(),
+      diagnostics));
+  EXPECT(state, draft::commit_resolution(
+      workspace.path,
+      store_key_for(linux),
+      linux,
+      std::span<const draft::GeneratedExpansion>(),
+      diagnostics));
+  EXPECT(state, !diagnostics.has_errors());
+
+  for (const draft::ResolutionManifest *expected : {&app, &admin, &linux}) {
+    draft::DiagnosticSink load_diagnostics;
+    const draft::ResolutionManifestLoadResult loaded =
+        draft::load_resolution_manifest(
+            workspace.path, store_key_for(*expected), load_diagnostics);
+    EXPECT(state, loaded.state == draft::ResolutionManifestLoadState::Loaded);
+    EXPECT(state, !load_diagnostics.has_errors());
+    EXPECT(state,
+        loaded.manifest.resolved_program_digest ==
+            expected->resolved_program_digest);
+    EXPECT(state,
+        std::filesystem::is_regular_file(
+            manifest_path_for(workspace.path, *expected)));
+  }
+
+  // Content addressing deliberately remains workspace-wide: all three
+  // manifests reference one immutable generated object rather than copying it
+  // into each root/target namespace.
+  const std::filesystem::path generated = workspace.path / ".draft" /
+      "generated" / (expansion.digest.hex() + ".draft");
+  EXPECT(state, std::filesystem::is_regular_file(generated));
+}
+
 void test_interrupted_publish_recovery(TestState &state) {
   TemporaryWorkspace workspace("interrupted");
   draft::GeneratedExpansion first;
@@ -263,6 +368,7 @@ void test_interrupted_publish_recovery(TestState &state) {
   EXPECT(state,
       draft::commit_resolution(
           workspace.path,
+          store_key_for(first_manifest),
           first_manifest,
           std::span<const draft::GeneratedExpansion>(&first, 1),
           diagnostics));
@@ -291,7 +397,10 @@ void test_interrupted_publish_recovery(TestState &state) {
 
   draft::DiagnosticSink interrupted_diagnostics;
   const draft::ResolutionManifestLoadResult interrupted =
-      draft::load_resolution_manifest(workspace.path, interrupted_diagnostics);
+      draft::load_resolution_manifest(
+          workspace.path,
+          store_key_for(first_manifest),
+          interrupted_diagnostics);
   EXPECT(state,
       interrupted.state == draft::ResolutionManifestLoadState::Loaded);
   EXPECT(state, !interrupted_diagnostics.has_errors());
@@ -307,12 +416,16 @@ void test_interrupted_publish_recovery(TestState &state) {
   EXPECT(state,
       draft::commit_resolution(
           workspace.path,
+          store_key_for(second_manifest),
           second_manifest,
           std::span<const draft::GeneratedExpansion>(),
           recovery_diagnostics));
   EXPECT(state, !recovery_diagnostics.has_errors());
   const draft::ResolutionManifestLoadResult recovered =
-      draft::load_resolution_manifest(workspace.path, recovery_diagnostics);
+      draft::load_resolution_manifest(
+          workspace.path,
+          store_key_for(second_manifest),
+          recovery_diagnostics);
   EXPECT(state, recovered.state == draft::ResolutionManifestLoadState::Loaded);
   if (recovered.manifest.pins.size() == 1) {
     EXPECT(state,
@@ -341,6 +454,7 @@ void test_injected_transaction_boundaries(TestState &state) {
     EXPECT(state,
         draft::commit_resolution(
             workspace.path,
+            store_key_for(first_manifest),
             first_manifest,
             std::span<const draft::GeneratedExpansion>(&first, 1),
             initial_diagnostics));
@@ -359,6 +473,7 @@ void test_injected_transaction_boundaries(TestState &state) {
     EXPECT(state,
         !draft::commit_resolution(
             workspace.path,
+            store_key_for(second_manifest),
             second_manifest,
             std::span<const draft::GeneratedExpansion>(&second, 1),
             stopped_diagnostics,
@@ -368,7 +483,10 @@ void test_injected_transaction_boundaries(TestState &state) {
 
     draft::DiagnosticSink observed_diagnostics;
     const draft::ResolutionManifestLoadResult observed =
-        draft::load_resolution_manifest(workspace.path, observed_diagnostics);
+        draft::load_resolution_manifest(
+            workspace.path,
+            store_key_for(first_manifest),
+            observed_diagnostics);
     EXPECT(state,
         observed.state == draft::ResolutionManifestLoadState::Loaded);
     EXPECT(state, !observed_diagnostics.has_errors());
@@ -392,12 +510,16 @@ void test_injected_transaction_boundaries(TestState &state) {
     EXPECT(state,
         draft::commit_resolution(
             workspace.path,
+            store_key_for(second_manifest),
             second_manifest,
             std::span<const draft::GeneratedExpansion>(&second, 1),
             retry_diagnostics));
     EXPECT(state, !retry_diagnostics.has_errors());
     const draft::ResolutionManifestLoadResult recovered =
-        draft::load_resolution_manifest(workspace.path, retry_diagnostics);
+        draft::load_resolution_manifest(
+            workspace.path,
+            store_key_for(second_manifest),
+            retry_diagnostics);
     EXPECT(state,
         recovered.state == draft::ResolutionManifestLoadState::Loaded);
     if (recovered.manifest.pins.size() == 1) {
@@ -459,6 +581,7 @@ void test_concurrent_process_writers(TestState &state) {
         draft::DiagnosticSink diagnostics;
         const bool committed = draft::commit_resolution(
             workspace.path,
+            store_key_for(manifests[writer]),
             manifests[writer],
             std::span<const draft::GeneratedExpansion>(&expansion, 1),
             diagnostics);
@@ -491,7 +614,8 @@ void test_concurrent_process_writers(TestState &state) {
 
     draft::DiagnosticSink diagnostics;
     const draft::ResolutionManifestLoadResult loaded =
-        draft::load_resolution_manifest(workspace.path, diagnostics);
+        draft::load_resolution_manifest(
+            workspace.path, store_key_for(manifests[0]), diagnostics);
     EXPECT(state, loaded.state == draft::ResolutionManifestLoadState::Loaded);
     EXPECT(state, !diagnostics.has_errors());
     bool complete_winner = false;
@@ -537,7 +661,9 @@ void test_store_rejects_redirected_and_unbounded_files(TestState &state) {
   draft::DiagnosticSink redirected_load_diagnostics;
   const draft::ResolutionManifestLoadResult redirected_load =
       draft::load_resolution_manifest(
-          redirected.path, redirected_load_diagnostics);
+          redirected.path,
+          store_key_for(manifest),
+          redirected_load_diagnostics);
   EXPECT(state,
       redirected_load.state == draft::ResolutionManifestLoadState::Invalid);
   EXPECT(state, redirected_load_diagnostics.has_errors());
@@ -545,6 +671,7 @@ void test_store_rejects_redirected_and_unbounded_files(TestState &state) {
   EXPECT(state,
       !draft::commit_resolution(
           redirected.path,
+          store_key_for(manifest),
           manifest,
           std::span<const draft::GeneratedExpansion>(&expansion, 1),
           redirected_commit_diagnostics));
@@ -556,7 +683,9 @@ void test_store_rejects_redirected_and_unbounded_files(TestState &state) {
   // Final files receive the same treatment as directories. A valid manifest
   // reached through a symlink is still not part of the selected store.
   TemporaryWorkspace manifest_link("manifest-link");
-  std::filesystem::create_directory(manifest_link.path / ".draft", error);
+  const std::filesystem::path linked_manifest_path =
+      manifest_path_for(manifest_link.path, manifest);
+  std::filesystem::create_directories(linked_manifest_path.parent_path(), error);
   EXPECT(state, !error);
   const std::filesystem::path outside_manifest =
       manifest_link.path / "outside-resolution.json";
@@ -564,13 +693,15 @@ void test_store_rejects_redirected_and_unbounded_files(TestState &state) {
       << draft::serialize_resolution_manifest(manifest);
   std::filesystem::create_symlink(
       outside_manifest,
-      manifest_link.path / ".draft" / "resolution.json",
+      linked_manifest_path,
       error);
   EXPECT(state, !error);
   draft::DiagnosticSink manifest_link_diagnostics;
   const draft::ResolutionManifestLoadResult linked_manifest =
       draft::load_resolution_manifest(
-          manifest_link.path, manifest_link_diagnostics);
+          manifest_link.path,
+          store_key_for(manifest),
+          manifest_link_diagnostics);
   EXPECT(state,
       linked_manifest.state == draft::ResolutionManifestLoadState::Invalid);
   EXPECT(state, manifest_link_diagnostics.has_errors());
@@ -583,6 +714,7 @@ void test_store_rejects_redirected_and_unbounded_files(TestState &state) {
   EXPECT(state,
       draft::commit_resolution(
           object_link.path,
+          store_key_for(manifest),
           manifest,
           std::span<const draft::GeneratedExpansion>(&expansion, 1),
           object_commit_diagnostics));
@@ -608,12 +740,14 @@ void test_store_rejects_redirected_and_unbounded_files(TestState &state) {
   // Sparse files make the size gates cheap to test while still presenting the
   // exact oversized metadata a hostile workspace could create.
   TemporaryWorkspace oversized_manifest("oversized-manifest");
-  std::filesystem::create_directory(
-      oversized_manifest.path / ".draft", error);
+  const std::filesystem::path oversized_manifest_path =
+      manifest_path_for(oversized_manifest.path, manifest);
+  std::filesystem::create_directories(
+      oversized_manifest_path.parent_path(), error);
   EXPECT(state, !error);
   {
     std::ofstream output(
-        oversized_manifest.path / ".draft" / "resolution.json",
+        oversized_manifest_path,
         std::ios::binary | std::ios::trunc);
     output.seekp(static_cast<std::streamoff>(16U * 1024U * 1024U));
     output.put('x');
@@ -621,7 +755,9 @@ void test_store_rejects_redirected_and_unbounded_files(TestState &state) {
   draft::DiagnosticSink oversized_manifest_diagnostics;
   const draft::ResolutionManifestLoadResult too_large_manifest =
       draft::load_resolution_manifest(
-          oversized_manifest.path, oversized_manifest_diagnostics);
+          oversized_manifest.path,
+          store_key_for(manifest),
+          oversized_manifest_diagnostics);
   EXPECT(state,
       too_large_manifest.state == draft::ResolutionManifestLoadState::Invalid);
   EXPECT(state, oversized_manifest_diagnostics.has_errors());
@@ -631,6 +767,7 @@ void test_store_rejects_redirected_and_unbounded_files(TestState &state) {
   EXPECT(state,
       draft::commit_resolution(
           oversized_object.path,
+          store_key_for(manifest),
           manifest,
           std::span<const draft::GeneratedExpansion>(&expansion, 1),
           oversized_commit_diagnostics));
@@ -660,6 +797,7 @@ int main() {
   test_commit_and_reload(state);
   test_validation_precedes_writes(state);
   test_corrupt_object_is_rejected(state);
+  test_root_and_target_namespaces_are_independent(state);
   test_interrupted_publish_recovery(state);
   test_injected_transaction_boundaries(state);
   test_concurrent_process_writers(state);

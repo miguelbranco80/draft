@@ -69,6 +69,7 @@ draft::ExternalInputPin make_external(
 void test_canonical_round_trip(TestState &state) {
   draft::ResolutionManifest manifest;
   manifest.target_identity = "aarch64-apple-macos";
+  manifest.root_package = {"workspace", "tools/admin"};
   manifest.resolved_program_digest = draft::sha256("resolved program");
   manifest.external_inputs.push_back(make_external(
       draft::ExternalInputKind::RuntimeAsset,
@@ -106,8 +107,9 @@ void test_canonical_round_trip(TestState &state) {
   EXPECT(state,
       draft::parse_resolution_manifest(encoded, parsed, diagnostics));
   EXPECT(state, !diagnostics.has_errors());
-  EXPECT(state, parsed.format == "draft-resolution-v5");
+  EXPECT(state, parsed.format == "draft-resolution-v6");
   EXPECT(state, parsed.target_identity == manifest.target_identity);
+  EXPECT(state, parsed.root_package == manifest.root_package);
   EXPECT(state,
       parsed.resolved_program_digest == manifest.resolved_program_digest);
   EXPECT(state, parsed.pins.size() == 2);
@@ -161,6 +163,39 @@ void test_invalid_inputs(TestState &state) {
       "runtime data",
       "tables.bin"));
   std::string encoded = draft::serialize_resolution_manifest(manifest);
+
+  std::string old_format = encoded;
+  const std::size_t format = old_format.find("draft-resolution-v6");
+  EXPECT(state, format != std::string::npos);
+  if (format != std::string::npos) {
+    old_format.replace(
+        format,
+        std::string_view("draft-resolution-v6").size(),
+        "draft-resolution-v5");
+  }
+  expect_rejected(state, old_format);
+
+  // The root is an exact workspace identity. Absolute paths, dot traversal,
+  // and a different identity domain cannot be interpreted as store paths.
+  std::string absolute_root = encoded;
+  const std::string root_row = "\"root_package\": \".\"";
+  std::size_t root = absolute_root.find(root_row);
+  EXPECT(state, root != std::string::npos);
+  if (root != std::string::npos) {
+    absolute_root.replace(
+        root, root_row.size(), "\"root_package\": \"/app\"");
+  }
+  expect_rejected(state, absolute_root);
+
+  std::string wrong_identity = encoded;
+  const std::string identity_row = "\"root_identity\": \"workspace\"";
+  root = wrong_identity.find(identity_row);
+  EXPECT(state, root != std::string::npos);
+  if (root != std::string::npos) {
+    wrong_identity.replace(
+        root, identity_row.size(), "\"root_identity\": \"physical\"");
+  }
+  expect_rejected(state, wrong_identity);
 
   // Digests are fixed-width values. Shortening one must be diagnosed rather
   // than silently producing a different identity.

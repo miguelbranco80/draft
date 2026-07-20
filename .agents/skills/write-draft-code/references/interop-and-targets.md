@@ -182,7 +182,7 @@ The resolver or CLI maps non-system providers to an exact object, archive, or
 shared library:
 
 ```sh
-build/draftc build path/to/package \
+build/draftc build path/to/workspace --root package \
   --provider zlib=archive:/absolute/path/to/libz.a
 ```
 
@@ -329,7 +329,7 @@ assembly
 Example:
 
 ```sh
-build/draftc build path/to/package \
+build/draftc build path/to/workspace --root package \
   --target aarch64-linux \
   --kind static-library \
   -o /tmp/libexample.a

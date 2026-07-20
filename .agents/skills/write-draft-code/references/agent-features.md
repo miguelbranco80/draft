@@ -237,7 +237,7 @@ parallel waves. The compiler joins the wave, checks proposals sequentially in
 canonical package/obligation order, and sends only rejected sites through a
 correction wave. Never assume another same-wave expansion is visible merely
 because its provider call finished first.
-Use `draftc resolve <package> --regenerate` to reconsider every fresh expansion,
+Use `draftc resolve <workspace> --root <package> --regenerate` to reconsider every fresh expansion,
 or append one exact `site-...` identity to reconsider only that site. This is
 the deliberate source-changing operation; changing `--model` alone is not.
 
@@ -260,6 +260,12 @@ hash. The
 manifest also records exact source, dependency, foreign artifact, provider
 summary, and runtime-asset content identity. Invocation-local physical paths
 do not become semantic identity.
+
+Each selected root and target owns a distinct manifest below
+`.draft/resolutions/<target-identity>/`; generated objects remain shared below
+`.draft/generated/`. Never look for a single workspace-wide
+`.draft/resolution.json`, because resolving a sibling must not replace the
+current root's pins.
 
 Keep the two uses of “provider” distinct:
 

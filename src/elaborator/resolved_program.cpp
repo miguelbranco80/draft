@@ -113,12 +113,20 @@ Sha256Digest hash_resolved_program(
     std::string_view compiler_content_identity,
     const CompileConfiguration &configuration) {
   Sha256 hash;
-  hash_field(hash, "draft.resolved-program.v5");
+  hash_field(hash, "draft.resolved-program.v6");
   hash_field(hash, compiler_content_identity);
   hash_field(
       hash,
       runtime_assertion_mode_name(configuration.runtime_assertions));
   hash_target(hash, target);
+
+  // The selected executable/library root is a semantic input independent of
+  // the transitive package set. Record its stable identity directly rather
+  // than relying on the incidental fact that today's graph loader visits the
+  // root package first.
+  const WorkspacePackage &selected_root = graph.package(graph.root_package);
+  hash_field(hash, selected_root.identity.root_identity);
+  hash_field(hash, selected_root.identity.root_relative_path);
 
   // Root physical directories are intentionally absent. Kind, identity, and
   // import prefix capture how the same source-visible import is interpreted.

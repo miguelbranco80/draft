@@ -159,10 +159,30 @@ identity, and commits.
 Persistent on-disk shape:
 
 ```text
-.draft/resolution.json
+.draft/resolutions/<target-identity>/workspace/resolution.json
+.draft/resolutions/<target-identity>/packages/<root-path>/resolution.json
 .draft/generated/<content-hash>.draft
 .draft/evidence/<content-hash>.json
+.draft/build/<target-file-tag>/workspace/<artifact>
+.draft/build/<target-file-tag>/packages/<root-path>/<artifact>
 ```
+
+The workspace-directory package and child-package rows are disjoint even when
+a child is literally named `workspace`. Manifests and derived artifacts are
+selected by exact root and target. Generated expansion objects are the one
+shared content-addressed pool because their digest already supplies collision-
+free identity. Automatic executable discovery is a workspace-layer operation:
+it deterministically scans ordinary visible directories for surface
+package-level `main` declarations, then sends every selected root through an
+independent ordinary compiler graph. It never changes import resolution or
+merges multiple executables into one semantic graph.
+
+The first aggregate implementation runs those root graphs sequentially and may
+repeat shared dependency analysis and code generation. A later optimization may
+deduplicate immutable package work by exact source identity, target, and compiler
+configuration. Persistent object reuse is intentionally deferred until its key,
+invalidation, ownership, and determinism contract are specified; neither future
+optimization may change discovery, diagnostics, or artifact identity.
 
 The bootstrap deliberately has no persistent compiler cache. Parsed syntax,
 typed graphs, MIR, native objects, and other derived compiler state live only

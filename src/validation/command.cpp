@@ -1,4 +1,16 @@
 // Native validation command orchestration and evidence policy.
+//
+// This module consumes one fully specified workspace/package/target selection,
+// compiles its command-only test or benchmark graph, publishes a root/target-
+// namespaced native harness, executes the fixed validation policy, and commits
+// immutable evidence. It owns only command-local process and artifact state;
+// source graphs belong to compile/, native mechanics belong to backend/, and
+// evidence serialization belongs to validation/evidence_store.
+//
+// The selected package and workspace must remain valid for the synchronous
+// call. Native output is derived and replaceable, while an evidence attempt is
+// committed only after at least one harness process starts. Validation never
+// mutates synthesis resolution state.
 
 #include "validation/command.h"
 
@@ -9,6 +21,7 @@
 #include "validation/runner.h"
 
 #include <cstdint>
+#include <filesystem>
 #include <limits>
 #include <optional>
 #include <string>
@@ -231,12 +244,30 @@ void initialize_claim(
   }
 
   const std::string command(validation_kind_name(options.kind));
+  const WorkspacePackage &selected_root =
+      compiled.graph.package(compiled.graph.root_package);
+  std::filesystem::path artifact_directory =
+      std::filesystem::path(options.workspace.workspace_directory) /
+      ".draft" / "build" / options.target.facts.file_tag;
+  if (selected_root.identity.root_relative_path == ".") {
+    artifact_directory /= "workspace";
+  } else {
+    artifact_directory /= "packages";
+    artifact_directory /= selected_root.identity.root_relative_path;
+  }
+  artifact_directory /= "validation";
+
+  // Test and benchmark executables are derived native artifacts just like an
+  // ordinary build. Keep both their private scratch and published executable
+  // under the same root/target namespace so alternating validation roots or
+  // profiles cannot replace one another's files. Evidence remains an
+  // independent package-keyed store below the selected package directory.
   NativeBuildOptions native;
   native.build_directory =
-      (options.package_directory / ".draft" / "build" / command).string();
+      (artifact_directory / ("." + command + "-native")).string();
   native.output_path =
-      (options.package_directory / ".draft" / "build" /
-       (options.package_directory.filename().string() + "-" + command)).string();
+      (artifact_directory /
+       (selected_root.loaded.short_name + "-" + command)).string();
   native.artifact_kind = NativeArtifactKind::Executable;
   if (!options.instrumentation.empty()) {
     native.instrumentation = NativeInstrumentationProfile::AddressSanitizer;

@@ -63,7 +63,7 @@ struct CompileWorkspaceOptions {
   // Versioned identity of the compiler semantics and manifest algorithm. It is
   // a resolved-program input and must change when an implementation change can
   // alter accepted meaning or emitted behavior for the same other inputs.
-  std::string compiler_content_identity = "draft-bootstrap-cpp-v130";
+  std::string compiler_content_identity = "draft-bootstrap-cpp-v131";
   // Explicit build-time language choices are kept together and included in
   // resolved-program identity. They are not inferred from host environment or
   // optimization level.
@@ -272,7 +272,7 @@ struct ResolvedAgentBoundary {
     DiagnosticSink &diagnostics);
 
 // Compiles the surface graph first to obtain stable typed obligations, consumes
-// .draft/resolution.json when synthesis sites exist (or when a manifest is
+// the selected root/target manifest when synthesis sites exist (or when one is
 // already present), constructs resolved source overrides, and compiles those
 // complete files through the same pipeline. Missing, stale, corrupt, extra, or
 // target-mismatched pins are errors. Generated source may not introduce a new

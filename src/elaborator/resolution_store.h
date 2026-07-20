@@ -2,10 +2,11 @@
 //
 // The elaborator passes this module an already checked coherent program. The
 // store verifies content identities again, stages immutable generated source,
-// and publishes resolution.json only after every expansion is durable and in
-// its final content-addressed location. A failed operation therefore leaves the
-// previously visible manifest authoritative; newly installed but unreferenced
-// expansion files are harmless immutable objects.
+// and publishes the selected root/target resolution.json only after every
+// expansion is durable and in its final shared content-addressed location. A
+// failed operation therefore leaves that namespace's previously visible
+// manifest authoritative; newly installed but unreferenced expansion files are
+// harmless immutable objects and sibling namespaces remain untouched.
 //
 // This is deliberately a filesystem boundary, not a provider or semantic
 // boundary. It does not invoke Codex, parse Draft, decide whether a pin is
@@ -74,11 +75,23 @@ struct ResolutionManifestLoadResult {
   ResolutionManifest manifest;
 };
 
-// Reads .draft/resolution.json without modifying the workspace. Symlinks,
-// non-regular files, excessive files, malformed JSON, and I/O failures are
-// invalid. A nonexistent .draft directory or manifest returns Missing.
+// One persistent manifest namespace. target_identity is the exact semantic
+// target profile identity recorded by the manifest, while root_package is the
+// selected workspace package. The store accepts only the `workspace` root and
+// normalized root-relative paths. Generated expansion objects remain shared
+// across every key under the workspace-level content-addressed directory.
+struct ResolutionStoreKey {
+  std::string target_identity;
+  PackageIdentity root_package{"workspace", "."};
+};
+
+// Reads the root/target-specific manifest without modifying the workspace.
+// Symlinks, non-regular files, excessive files, malformed JSON, key mismatch,
+// and I/O failures are invalid. A nonexistent .draft directory or keyed
+// manifest returns Missing.
 [[nodiscard]] ResolutionManifestLoadResult load_resolution_manifest(
     const std::filesystem::path &workspace_directory,
+    const ResolutionStoreKey &key,
     DiagnosticSink &diagnostics);
 
 // Loads one exact generated object and verifies its name against its contents.
@@ -98,6 +111,7 @@ struct ResolutionManifestLoadResult {
 // source and never removes a previously committed object.
 [[nodiscard]] bool commit_resolution(
     const std::filesystem::path &workspace_directory,
+    const ResolutionStoreKey &key,
     const ResolutionManifest &manifest,
     std::span<const GeneratedExpansion> expansions,
     DiagnosticSink &diagnostics,

@@ -3,7 +3,7 @@
 // The test crosses argument parsing, provider configuration, typed compilation,
 // judgment execution, and durable evidence history. Judgment evidence is
 // deliberately independent from source resolution: running this command must
-// never create or modify `.draft/resolution.json`. No network service or
+// never create or modify its root/target resolution manifest. No network service or
 // release Codex installation is required.
 
 #include "elaborator/resolution_store.h"
@@ -178,7 +178,9 @@ void append_codex_arguments(std::vector<std::string> &arguments) {
   std::vector<std::string> arguments{
       DRAFT_DRIVER_PATH,
       "judge",
-      workspace.package.string(),
+      workspace.root.string(),
+      "--root",
+      "app",
   };
   for (const std::string &selector : selectors) {
     arguments.push_back(selector);
@@ -196,7 +198,9 @@ void append_codex_arguments(std::vector<std::string> &arguments) {
   return run_driver({
       DRAFT_DRIVER_PATH,
       "judge",
-      workspace.package.string(),
+      workspace.root.string(),
+      "--root",
+      "app",
       "--judge-validator",
       "review-primary:fixture-primary",
       "--judge-validator",
@@ -204,6 +208,13 @@ void append_codex_arguments(std::vector<std::string> &arguments) {
       "--judge-artifact",
       "object:" + workspace.artifact.string(),
   }, workspace.codex_directory);
+}
+
+[[nodiscard]] draft::ResolutionStoreKey app_store_key() {
+  return {
+      draft::make_aarch64_macos_profile().facts.identity,
+      {"workspace", "app"},
+  };
 }
 
 [[nodiscard]] draft::CompileWorkspaceResult compile_resolved(
@@ -260,7 +271,8 @@ void test_passing_command_selects_evidence(TestState &state) {
 
   draft::DiagnosticSink diagnostics;
   draft::ResolutionManifestLoadResult loaded =
-      draft::load_resolution_manifest(workspace.root, diagnostics);
+      draft::load_resolution_manifest(
+          workspace.root, app_store_key(), diagnostics);
   EXPECT(state,
       loaded.state == draft::ResolutionManifestLoadState::Missing);
 
@@ -278,7 +290,8 @@ void test_passing_command_selects_evidence(TestState &state) {
   // before provider configuration, and neither command mutates resolution.
   EXPECT(state, run_judge(workspace, {sites.front().site_identity}) == 0);
   diagnostics = {};
-  loaded = draft::load_resolution_manifest(workspace.root, diagnostics);
+  loaded = draft::load_resolution_manifest(
+      workspace.root, app_store_key(), diagnostics);
   EXPECT(state,
       loaded.state == draft::ResolutionManifestLoadState::Missing);
   std::vector<draft::Sha256Digest> keys = judgment_evidence_keys(workspace);
@@ -298,7 +311,8 @@ void test_passing_command_selects_evidence(TestState &state) {
   // for the existing exact key and creates the other site's independent key.
   EXPECT(state, run_judge(workspace) == 0);
   diagnostics = {};
-  loaded = draft::load_resolution_manifest(workspace.root, diagnostics);
+  loaded = draft::load_resolution_manifest(
+      workspace.root, app_store_key(), diagnostics);
   EXPECT(state,
       loaded.state == draft::ResolutionManifestLoadState::Missing);
   keys = judgment_evidence_keys(workspace);
@@ -360,7 +374,8 @@ void test_failing_command_records_independent_evidence(TestState &state) {
   EXPECT(state, run_judge(workspace) == 1);
   draft::DiagnosticSink diagnostics;
   const draft::ResolutionManifestLoadResult loaded =
-      draft::load_resolution_manifest(workspace.root, diagnostics);
+      draft::load_resolution_manifest(
+          workspace.root, app_store_key(), diagnostics);
   EXPECT(state,
       loaded.state == draft::ResolutionManifestLoadState::Missing);
   const std::vector<draft::Sha256Digest> keys =
@@ -382,7 +397,8 @@ void test_public_multi_validator_artifact_policy(TestState &state) {
 
   draft::DiagnosticSink diagnostics;
   const draft::ResolutionManifestLoadResult loaded =
-      draft::load_resolution_manifest(workspace.root, diagnostics);
+      draft::load_resolution_manifest(
+          workspace.root, app_store_key(), diagnostics);
   EXPECT(state,
       loaded.state == draft::ResolutionManifestLoadState::Missing);
   const std::vector<draft::Sha256Digest> keys =

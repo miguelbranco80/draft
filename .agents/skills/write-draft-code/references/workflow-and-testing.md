@@ -49,12 +49,13 @@ One directory is one package, compilation unit, namespace, visibility boundary,
 and synthesis-context boundary. Every selected `.draft` file declares the same
 short package name.
 
-The current CLI uses the canonical parent of the requested root package as the
-workspace root. Put an application package in a child such as `project/app/`
-when resolution state should belong to `project/.draft/`; passing
-`project/app/` then keeps the manifest and generated source inside that project.
-This distinction is invisible for handwritten packages until a command needs
-persistent resolution inputs.
+The current CLI takes the workspace directory explicitly. A single-root command
+defaults to package `.`, or accepts one normalized workspace-relative
+`--root`; `app` and `lib` are ordinary directory names. `build <workspace>`
+without selectors discovers all visible packages with a surface package-level
+`main`, while repeated `--root` options select an exact subset. Root/target
+manifests live under `project/.draft/resolutions/`, and generated source objects
+are shared by content identity under `project/.draft/generated/`.
 
 Recognized direct children are:
 
@@ -140,11 +141,11 @@ passes:
 ```sh
 build/draftc lex path/to/file.draft
 build/draftc syntax path/to/file.draft
-build/draftc check path/to/package --target aarch64-macos
-build/draftc check path/to/package --target aarch64-linux
-build/draftc expand path/to/package --out /tmp/expanded-source \
+build/draftc check path/to/workspace --root package --target aarch64-macos
+build/draftc check path/to/workspace --root package --target aarch64-linux
+build/draftc expand path/to/workspace --root package --out /tmp/expanded-source \
   --target aarch64-macos
-build/draftc resolve path/to/package --build -o /tmp/program \
+build/draftc resolve path/to/workspace --root package --build -o /tmp/program \
   --target aarch64-macos
 ```
 
@@ -157,8 +158,8 @@ Other useful inspections:
 ```sh
 build/draftc target --target aarch64-macos
 build/draftc target --target aarch64-linux
-build/draftc emit-llvm path/to/package --target aarch64-macos
-build/draftc emit-c-header path/to/package -o /tmp/package.h \
+build/draftc emit-llvm path/to/workspace --root package --target aarch64-macos
+build/draftc emit-c-header path/to/workspace --root package -o /tmp/package.h \
   --target aarch64-macos
 ```
 
@@ -176,12 +177,20 @@ Resolution commits only after the complete program checks; native lowering then
 continues the returned graph without another front-end construction. It does
 not implicitly execute tests, benchmarks, or judgments.
 
+The positional path is always the workspace. Single-root commands default to
+root `.`, while `--root package/path` selects a child package; names such as
+`app` and `lib` have no special meaning. `build <workspace>` without selectors
+discovers every visible ordinary package with a surface package-level `main`.
+Use repeated `--root` options for an exact subset. Default outputs mirror each
+root path under `.draft/build/<target-file-tag>/`; `-o` requires exactly one
+selected root.
+
 ## Native validation
 
 On a matching AArch64 host:
 
 ```sh
-build/draftc build path/to/package \
+build/draftc build path/to/workspace --root package \
   --target aarch64-macos \
   -o /tmp/draft-program
 /tmp/draft-program
@@ -194,10 +203,10 @@ matching AArch64 host toolchain and runtime.
 For a library or artifact-specific task, select the actual kind:
 
 ```sh
-build/draftc build path/to/package --kind object -o /tmp/package.o
-build/draftc build path/to/package --kind static-library -o /tmp/libpackage.a
-build/draftc build path/to/package --kind dynamic-library -o /tmp/libpackage.dylib
-build/draftc build path/to/package --kind assembly -o /tmp/package-assembly
+build/draftc build path/to/workspace --root package --kind object -o /tmp/package.o
+build/draftc build path/to/workspace --root package --kind static-library -o /tmp/libpackage.a
+build/draftc build path/to/workspace --root package --kind dynamic-library -o /tmp/libpackage.dylib
+build/draftc build path/to/workspace --root package --kind assembly -o /tmp/package-assembly
 ```
 
 Use `.so` on Linux. Validate generated headers with an independent C compiler
@@ -209,8 +218,8 @@ that a C consumer sees the intended layout and symbols.
 Use the driver timing report before changing compiler architecture for speed:
 
 ```sh
-build/draftc check path/to/package --timings
-build/draftc build path/to/package -o /tmp/program --timings=all
+build/draftc check path/to/workspace --root package --timings
+build/draftc build path/to/workspace --root package -o /tmp/program --timings=all
 ```
 
 `--timings` reports major wall-clock phases and work counters to stderr.
@@ -254,14 +263,14 @@ with a `test_` prefix, exactly one `^testing.Test` argument, and no result.
 Run:
 
 ```sh
-build/draftc test path/to/package --target aarch64-macos
+build/draftc test path/to/workspace --root package --target aarch64-macos
 ```
 
 Use `*_bench.draft`, a `bench_` prefix, and exactly one
 `^benchmark.Benchmark` for benchmarks:
 
 ```sh
-build/draftc bench path/to/package --verify --target aarch64-macos
+build/draftc bench path/to/workspace --root package --verify --target aarch64-macos
 ```
 
 Tests and benchmarks form a coherent resolved validation graph. They are not

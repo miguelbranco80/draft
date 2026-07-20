@@ -15,7 +15,7 @@ The durable resolved program remains:
 
 ```text
 authored Draft source
-+ .draft/resolution.json
++ .draft/resolutions/<target-identity>/{workspace|packages/<root>}/resolution.json
 + .draft/generated/<source-hash>.draft
 ```
 
@@ -117,7 +117,7 @@ cache.
 
 ### Persistent state and inspection
 
-- `.draft/resolution.json` and every referenced
+- Each selected root/target manifest below `.draft/resolutions/` and every referenced
   `.draft/generated/*.draft` object are normally committed.
 - `.draft` transaction staging and native intermediates remain temporary or
   ignored. Do not create a `.draft/cache` hierarchy or another persistent
@@ -125,7 +125,7 @@ cache.
 - Validation and judgment evidence remain separate from the generated-source
   selection. Evidence may be retained for auditing or release qualification,
   but ordinary builds neither require nor update it.
-- `draftc expand <package> --out <directory>` materializes complete source
+- `draftc expand <workspace> --root <package> --out <directory>` materializes complete source
   files with every `...` replaced, while preserving generated-to-surface source
   maps.
 

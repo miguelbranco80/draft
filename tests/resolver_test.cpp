@@ -725,6 +725,16 @@ draft::CompileWorkspaceOptions compile_options(
   return options;
 }
 
+// Every resolver fixture selects the `app` package below its workspace root.
+// Store assertions name that package explicitly so they cannot accidentally
+// observe another executable's manifest.
+draft::ResolutionStoreKey app_store_key() {
+  return {
+      draft::make_aarch64_macos_profile().facts.identity,
+      {"workspace", "app"},
+  };
+}
+
 draft::ResolveWorkspaceOptions resolve_options(
     const TemporaryWorkspace &workspace,
     FakeProviderState &provider_state) {
@@ -922,7 +932,7 @@ void test_resolution_reuse_revalidation_and_failure(TestState &state) {
   draft::DiagnosticSink before_failure_diagnostics;
   const draft::ResolutionManifestLoadResult before_failure =
       draft::load_resolution_manifest(
-          workspace.root, before_failure_diagnostics);
+          workspace.root, app_store_key(), before_failure_diagnostics);
   EXPECT(state,
       before_failure.state == draft::ResolutionManifestLoadState::Loaded);
   const std::string committed_manifest =
@@ -956,7 +966,8 @@ void test_resolution_reuse_revalidation_and_failure(TestState &state) {
 
   draft::DiagnosticSink after_failure_diagnostics;
   const draft::ResolutionManifestLoadResult after_failure =
-      draft::load_resolution_manifest(workspace.root, after_failure_diagnostics);
+      draft::load_resolution_manifest(
+          workspace.root, app_store_key(), after_failure_diagnostics);
   EXPECT(state,
       after_failure.state == draft::ResolutionManifestLoadState::Loaded);
   EXPECT(state,
@@ -1043,7 +1054,8 @@ void test_selective_regeneration_changes_only_selected_source(
           "selector did not match") != std::string::npos);
   draft::DiagnosticSink persisted_diagnostics;
   const draft::ResolutionManifestLoadResult persisted =
-      draft::load_resolution_manifest(workspace.root, persisted_diagnostics);
+      draft::load_resolution_manifest(
+          workspace.root, app_store_key(), persisted_diagnostics);
   EXPECT(state,
       persisted.state == draft::ResolutionManifestLoadState::Loaded);
   EXPECT(state,
@@ -1154,7 +1166,8 @@ void test_external_inputs_commit_without_synthesis(TestState &state) {
 
   draft::DiagnosticSink loaded_diagnostics;
   const draft::ResolutionManifestLoadResult loaded =
-      draft::load_resolution_manifest(workspace.root, loaded_diagnostics);
+      draft::load_resolution_manifest(
+          workspace.root, app_store_key(), loaded_diagnostics);
   EXPECT(state,
       loaded.state == draft::ResolutionManifestLoadState::Loaded);
   EXPECT(state, loaded.manifest.external_inputs.size() == 1);
@@ -1227,7 +1240,7 @@ void test_interface_sites_precede_dependent_bodies(TestState &state) {
   }
   EXPECT(state, offline.ok);
   EXPECT(state, !offline_diagnostics.has_errors());
-  EXPECT(state, resolved.manifest.format == "draft-resolution-v5");
+  EXPECT(state, resolved.manifest.format == "draft-resolution-v6");
   EXPECT(state, resolved.manifest.pins.size() == 4);
   std::size_t composed_maps = 0;
   for (const draft::WorkspacePackage &package : offline.graph.packages) {
@@ -2068,7 +2081,7 @@ void test_resolution_keeps_validation_as_context_only(TestState &state) {
   draft::DiagnosticSink manifest_diagnostics;
   const draft::ResolutionManifestLoadResult manifest =
       draft::load_resolution_manifest(
-          workspace.root, manifest_diagnostics);
+          workspace.root, app_store_key(), manifest_diagnostics);
   EXPECT(state,
       manifest.state == draft::ResolutionManifestLoadState::Loaded);
   EXPECT(state, !manifest_diagnostics.has_errors());
@@ -2163,7 +2176,8 @@ void test_cancelled_resolution_does_not_start_transaction(TestState &state) {
   }
   draft::DiagnosticSink manifest_diagnostics;
   const draft::ResolutionManifestLoadResult manifest =
-      draft::load_resolution_manifest(workspace.root, manifest_diagnostics);
+      draft::load_resolution_manifest(
+          workspace.root, app_store_key(), manifest_diagnostics);
   EXPECT(state, manifest.state == draft::ResolutionManifestLoadState::Missing);
 }
 

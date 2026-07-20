@@ -17,6 +17,7 @@
 #include "elaborator/resolved_program.h"
 #include "elaborator/resolution_overlay.h"
 #include "elaborator/resolution_store.h"
+#include "workspace/selection.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -770,13 +771,27 @@ ResolveWorkspaceResult resolve_workspace(
   }
   if (resolution_cancelled(options, diagnostics)) return result;
 
+  WorkspacePackageSelection selected_root;
+  if (!identify_workspace_package(
+          options.compile.workspace.workspace_directory,
+          root_package_directory,
+          selected_root,
+          diagnostics)) {
+    return result;
+  }
+  const ResolutionStoreKey store_key{
+      options.compile.target.facts.identity,
+      selected_root.identity,
+  };
+
   const ResolutionManifestLoadResult loaded = load_resolution_manifest(
-      options.compile.workspace.workspace_directory, diagnostics);
+      options.compile.workspace.workspace_directory, store_key, diagnostics);
   if (loaded.state == ResolutionManifestLoadState::Invalid) return result;
 
   std::vector<GeneratedExpansion> expansions;
   ResolutionManifest manifest;
   manifest.target_identity = options.compile.target.facts.identity;
+  manifest.root_package = selected_root.identity;
   if (options.external_inputs_configured) {
     manifest.external_inputs = std::move(options.external_inputs);
   } else if (loaded.state == ResolutionManifestLoadState::Loaded) {
@@ -997,6 +1012,7 @@ ResolveWorkspaceResult resolve_workspace(
   if (resolution_cancelled(options, diagnostics)) return result;
   if (!commit_resolution(
           options.compile.workspace.workspace_directory,
+          store_key,
           manifest,
           expansions,
           diagnostics)) {

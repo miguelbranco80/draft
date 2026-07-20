@@ -57,33 +57,33 @@ endfunction()
 # provider-free and lets the same committed generated source qualify the copied
 # fixture for either supported native host before the four consumer commands.
 run_provider_free(resolve_stdout
-  resolve "${package}" --revalidate --target "${TARGET_SELECTOR}")
+  resolve "${workspace}" --root app --revalidate --target "${TARGET_SELECTOR}")
 if(NOT resolve_stdout MATCHES "resolved 4 synthesis sites")
   message(FATAL_ERROR "revalidation lost its resolution report: ${resolve_stdout}")
 endif()
 
 run_provider_free(check_stdout
-  check "${package}" --target "${TARGET_SELECTOR}")
+  check "${workspace}" --root app --target "${TARGET_SELECTOR}")
 if(NOT check_stdout MATCHES "checked package graph rooted at app")
   message(FATAL_ERROR "check lost its success report: ${check_stdout}")
 endif()
 
 set(assembly_output "${TEST_ROOT}/assembly")
 run_provider_free(build_stdout
-  build "${package}" --target "${TARGET_SELECTOR}"
+  build "${workspace}" --root app --target "${TARGET_SELECTOR}"
   --kind assembly -o "${assembly_output}")
 if(NOT build_stdout MATCHES "built ${assembly_output}")
   message(FATAL_ERROR "build lost its success report: ${build_stdout}")
 endif()
 
 run_provider_free(test_stdout
-  test "${package}" --target "${TARGET_SELECTOR}")
+  test "${workspace}" --root app --target "${TARGET_SELECTOR}")
 if(NOT test_stdout MATCHES "test passed: 1 selected procedures")
   message(FATAL_ERROR "test lost its success report: ${test_stdout}")
 endif()
 
 run_provider_free(bench_stdout
-  bench "${package}" --target "${TARGET_SELECTOR}")
+  bench "${workspace}" --root app --target "${TARGET_SELECTOR}")
 if(NOT bench_stdout MATCHES "benchmark passed: 1 selected procedures")
   message(FATAL_ERROR "bench lost its success report: ${bench_stdout}")
 endif()

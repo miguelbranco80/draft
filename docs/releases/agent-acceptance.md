@@ -12,7 +12,7 @@ operations. It combines features that are most useful when exercised together:
 - generated-source correlation in the native debug sidecar.
 
 The committed `.draft` files are content-addressed acceptance inputs, not build
-caches. They contain four checked generated Draft fragments and a v5 resolution
+caches. They contain four checked generated Draft fragments and a v6 resolution
 manifest. Validation and judgment evidence is stored independently and is not
 selected by that manifest. `.draft/build` is ignored and may be deleted at any
 time.
@@ -23,12 +23,12 @@ The fixture already contains fresh checked expansions, so ordinary consumer
 commands are deliberately provider-free:
 
 ```sh
-build/draftc check examples/agent-acceptance/app
-build/draftc build examples/agent-acceptance/app \
+build/draftc check examples/agent-acceptance --root app
+build/draftc build examples/agent-acceptance --root app \
   -o /tmp/draft-agent-acceptance
 /tmp/draft-agent-acceptance
-build/draftc test examples/agent-acceptance/app
-build/draftc bench examples/agent-acceptance/app
+build/draftc test examples/agent-acceptance --root app
+build/draftc bench examples/agent-acceptance --root app
 ```
 
 All four commands load the committed generated source without contacting
@@ -37,7 +37,7 @@ benchmark, or judgment evidence. To recheck every saved expansion without
 provider access, run:
 
 ```sh
-build/draftc resolve examples/agent-acceptance/app --revalidate
+build/draftc resolve examples/agent-acceptance --root app --revalidate
 ```
 
 ## Exercise live synthesis
@@ -55,7 +55,7 @@ cp examples/agent-acceptance/app/*.draft \
 cp examples/agent-acceptance/lib/*.draft \
   /tmp/draft-agent-acceptance-live/lib/
 
-build/draftc resolve /tmp/draft-agent-acceptance-live/app \
+build/draftc resolve /tmp/draft-agent-acceptance-live --root app \
   --build -o /tmp/draft-agent-acceptance-live/program \
   --model model-name
 /tmp/draft-agent-acceptance-live/program
@@ -72,7 +72,7 @@ return value from its interface alone. Supply the exact library source as the
 claim artifact:
 
 ```sh
-build/draftc judge examples/agent-acceptance/app \
+build/draftc judge examples/agent-acceptance --root app \
   --judge-artifact library-source:examples/agent-acceptance/lib/package.draft \
   --model model-name
 ```
@@ -94,5 +94,6 @@ expanded-source inspection.
 The corrected `agent-pending/app` walkthrough was independently resolved to the
 checked expression `42`, built and executed, rebuilt provider-free, expanded,
 and judged successfully. That smaller run also verified that its resolution
-store lands under `agent-pending/.draft/`, rather than the shared parent of the
-examples collection.
+store lands in the `app` root/target namespace under
+`agent-pending/.draft/resolutions/`, rather than the shared parent of the
+examples collection or a sibling executable's manifest.

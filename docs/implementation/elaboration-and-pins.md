@@ -222,7 +222,7 @@ not a persistent cache and performs no repeated filesystem discovery.
 
 The compiler treats the saved fragment as source inserted at its exact `...`
 site while retaining the original surface buffer and a composed source map.
-`draftc expand <package> --out <directory>` exposes that final checked view as
+`draftc expand <workspace> --root <package> --out <directory>` exposes that final checked view as
 ordinary files plus deterministic `.draft-map` sidecars. Indexed output-root
 directories avoid treating semantic root identities as trusted host paths; a
 top-level map retains each root's actual kind, import prefix, and identity.
@@ -327,7 +327,7 @@ upper source re-evaluates to the displayed value at the site. Other loop shapes
 produce no inferred range.
 
 `draft-agent-obligation-v19`, synthesis request v21 / prompt v22, judgment
-request/prompt v4, and compiler content v130 identities make these facts and
+request/prompt v4, and compiler content v131 identities make these facts and
 the compiler-checked correction policy stale-pin and evidence inputs. The
 synthesis adapter uses provider identity `openai-codex-cli-v28`; the judgment
 adapter uses `openai-codex-cli-v23`. Both recheck the canonical

@@ -689,7 +689,10 @@ are no hidden package destructors.
 
 ### Program entry
 
-`draft build path/to/root-package` treats that package as the executable root.
+`draft build path/to/workspace --root path/to/package` treats the selected
+package as one executable root. Omitting `--root` discovers every surface
+package-level `main` below the workspace and builds each selected package as an
+independent program target; `--root .` names the workspace-directory package.
 A hosted executable root must contain exactly one package-level, non-parametric
 ordinary procedure named `main`. The declaration must appear explicitly in
 surface source, although its body may contain synthesis sites. `main` uses the

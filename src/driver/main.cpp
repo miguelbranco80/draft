@@ -1,11 +1,21 @@
-// Bootstrap compiler command-line entry point.
+// Bootstrap compiler command-line entry point and workspace target selection.
 //
-// The driver is intentionally thin: it owns process-facing argument and stream
-// behavior, while source loading, diagnostics, syntax, semantics, and codegen
-// remain reusable modules. The initial `lex` command is an inspectable front-end
-// probes and will remain useful after `check`, `build`, `resolve`, and `judge`
-// are added. They print exact token spellings, grammar structure, or the complete
-// versioned target profile without embedding phase logic in this file.
+// The driver owns process-facing argument parsing, canonical workspace paths,
+// explicit or discovered root selection, output naming, signal cancellation,
+// timing report streams, and calls into reusable compiler/native/validation
+// operations. It owns no source graph or semantic state beyond one synchronous
+// command. Source loading, diagnostics, language meaning, generated-source
+// transactions, evidence, and native mechanics stay behind their subsystem
+// interfaces.
+//
+// Every package command receives one explicit workspace. Single-root commands
+// default to package `.`, while aggregate build discovers surface package-level
+// `main` declarations or accepts repeated `--root` selectors. Physical paths
+// are used only for I/O; persistent manifests and derived outputs are keyed by
+// canonical workspace PackageIdentity plus target. Command ordering and output
+// paths must therefore remain independent of filesystem enumeration and host
+// path spelling. See specification sections 3, 6 (Program entry), and 10, and
+// docs/operations/command-reference.md.
 
 #include "backend/toolchain.h"
 #include "backend/foreign_summaries.h"
@@ -30,9 +40,12 @@
 #include "target/profile.h"
 #include "validation/command.h"
 #include "workspace/package.h"
+#include "workspace/selection.h"
 #include "workspace/workspace.h"
 
+#include <algorithm>
 #include <csignal>
+#include <cstddef>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -40,6 +53,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -113,13 +127,12 @@ void configure_core_distribution(draft::WorkspaceLoadOptions &options) {
   options.core_content_identity = DRAFT_CORE_CONTENT_IDENTITY;
 }
 
-// Package commands derive the workspace root from the package's parent. That
-// parent is also the security boundary for the no-follow resolution store, so
-// it must not retain a symlink spelling such as macOS `/tmp`. Canonicalizing the
-// already-existing package first resolves every parent component consistently
-// while leaving output paths and relocatable external inputs under their own
-// separate policies.
-[[nodiscard]] bool canonical_package_directory(
+// Package commands take the workspace root explicitly. It is also the security
+// boundary for the no-follow resolution and build stores, so it must not retain
+// a symlink spelling such as macOS `/tmp`. Root-package selectors are resolved
+// separately against this canonical directory and remain stable workspace
+// identities rather than physical paths.
+[[nodiscard]] bool canonical_workspace_directory(
     const std::string &spelling,
     std::filesystem::path &directory,
     std::string &reason) {
@@ -127,21 +140,46 @@ void configure_core_distribution(draft::WorkspaceLoadOptions &options) {
   const std::filesystem::path absolute =
       std::filesystem::absolute(spelling, error);
   if (error) {
-    reason = "cannot make package path absolute: " + error.message();
+    reason = "cannot make workspace path absolute: " + error.message();
     return false;
   }
   directory = std::filesystem::canonical(absolute, error);
   if (error) {
-    reason = "cannot canonicalize package path: " + error.message();
+    reason = "cannot canonicalize workspace path: " + error.message();
     return false;
   }
   if (!std::filesystem::is_directory(directory, error)) {
     reason = error
-        ? "cannot inspect package path: " + error.message()
-        : "package path is not a directory";
+        ? "cannot inspect workspace path: " + error.message()
+        : "workspace path is not a directory";
     return false;
   }
   return true;
+}
+
+// Resolves the explicit command root after the workspace boundary is known.
+// The returned physical directory is used only for source I/O; all persistent
+// store selection uses the paired canonical PackageIdentity.
+[[nodiscard]] bool select_command_package(
+    const std::string &workspace_spelling,
+    std::string_view root_selector,
+    std::filesystem::path &workspace_directory,
+    draft::WorkspacePackageSelection &package,
+    draft::DiagnosticSink &diagnostics) {
+  std::string reason;
+  if (!canonical_workspace_directory(
+          workspace_spelling, workspace_directory, reason)) {
+    diagnostics.error(draft::SourceRange::invalid(), std::move(reason));
+    return false;
+  }
+  return draft::select_workspace_package(
+      workspace_directory, root_selector, package, diagnostics);
+}
+
+[[nodiscard]] draft::ResolutionStoreKey resolution_store_key(
+    const draft::TargetProfile &target,
+    const draft::WorkspacePackageSelection &package) {
+  return {target.facts.identity, package.identity};
 }
 
 // Resolves one user-facing target selector at the process boundary.  All
@@ -270,12 +308,14 @@ parse_native_artifact_kind(std::string_view spelling) {
 // summary-to-artifact binding, but has no persistent pin set to compare.
 [[nodiscard]] bool load_foreign_provider_audits(
     const std::string &workspace_directory,
+    const draft::ResolutionStoreKey &store_key,
     const std::vector<draft::ForeignProviderSummaryInput> &summary_inputs,
     const std::vector<draft::ForeignProviderInput> &foreign_providers,
     std::vector<draft::ForeignProviderAudit> &audits,
     draft::DiagnosticSink &diagnostics) {
   const draft::ResolutionManifestLoadResult loaded =
-      draft::load_resolution_manifest(workspace_directory, diagnostics);
+      draft::load_resolution_manifest(
+          workspace_directory, store_key, diagnostics);
   if (loaded.state == draft::ResolutionManifestLoadState::Invalid) return false;
   if (loaded.state == draft::ResolutionManifestLoadState::Loaded) {
     return draft::verify_foreign_provider_summary_inputs(
@@ -404,29 +444,33 @@ int print_target(const draft::TargetProfile &profile) {
   return 0;
 }
 
-// Runs one dependency-ordered provider-free pipeline. Until a build manifest
-// supplies explicit roots, the requested package's parent is the workspace
-// root. `check` stops after typed HIR/interfaces; `emit-llvm` additionally
-// lowers MIR and prints each package module without invoking LLVM or a linker.
+// Runs one dependency-ordered provider-free pipeline for an explicit package
+// inside the requested workspace. `check` stops after typed HIR/interfaces;
+// `emit-llvm` additionally lowers MIR and prints each package module without
+// invoking LLVM or a linker.
 int compile_package(
-    const std::string &directory,
+    const std::string &workspace_spelling,
+    std::string_view root_selector,
     bool emit_llvm,
     const draft::TargetProfile &target,
     draft::TimingRecorder *timings) {
   draft::SourceManager sources;
   draft::DiagnosticSink diagnostics;
-  std::filesystem::path absolute_directory;
-  std::string path_error;
-  if (!canonical_package_directory(
-          directory, absolute_directory, path_error)) {
-    std::cerr << "error: " << path_error << '\n';
+  std::filesystem::path workspace_directory;
+  draft::WorkspacePackageSelection selected_package;
+  if (!select_command_package(
+          workspace_spelling,
+          root_selector,
+          workspace_directory,
+          selected_package,
+          diagnostics)) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
     return 1;
   }
 
   draft::CompileWorkspaceOptions options;
   options.target = target;
-  options.workspace.workspace_directory =
-      absolute_directory.parent_path().string();
+  options.workspace.workspace_directory = workspace_directory.string();
   configure_core_distribution(options.workspace);
   options.lower_mir = emit_llvm;
   options.emit_llvm = emit_llvm;
@@ -434,7 +478,7 @@ int compile_package(
   draft::CompileWorkspaceResult compiled =
       draft::compile_workspace_with_resolution(
           sources,
-          absolute_directory.string(),
+          selected_package.physical_directory.string(),
           std::move(options),
           diagnostics);
   std::size_t symbol_count = 0;
@@ -480,7 +524,8 @@ int compile_package(
 // mutation. The output directory must be absent so old files cannot survive a
 // later graph and masquerade as part of the current expanded program.
 int expand_package(
-    const std::string &directory,
+    const std::string &workspace_spelling,
+    std::string_view root_selector,
     const std::filesystem::path &output_directory,
     const draft::TargetProfile &target,
     draft::RuntimeAssertionMode runtime_assertions,
@@ -490,23 +535,27 @@ int expand_package(
     draft::TimingRecorder *timings) {
   draft::SourceManager sources;
   draft::DiagnosticSink diagnostics;
-  std::filesystem::path absolute_directory;
-  std::string path_error;
-  if (!canonical_package_directory(
-          directory, absolute_directory, path_error)) {
-    std::cerr << "error: " << path_error << '\n';
+  std::filesystem::path workspace_directory;
+  draft::WorkspacePackageSelection selected_package;
+  if (!select_command_package(
+          workspace_spelling,
+          root_selector,
+          workspace_directory,
+          selected_package,
+          diagnostics)) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
     return 1;
   }
 
   draft::CompileWorkspaceOptions options;
   options.target = target;
   options.configuration.runtime_assertions = runtime_assertions;
-  options.workspace.workspace_directory =
-      absolute_directory.parent_path().string();
+  options.workspace.workspace_directory = workspace_directory.string();
   configure_core_distribution(options.workspace);
   options.timings = timings;
   if (!load_foreign_provider_audits(
           options.workspace.workspace_directory,
+          resolution_store_key(target, selected_package),
           provider_summaries,
           foreign_providers,
           options.foreign_provider_audits,
@@ -518,7 +567,7 @@ int expand_package(
   const draft::CompileWorkspaceResult compiled =
       draft::compile_workspace_with_resolution(
           sources,
-          absolute_directory.string(),
+          selected_package.physical_directory.string(),
           std::move(options),
           diagnostics);
   bool authenticated_inputs = compiled.ok;
@@ -576,7 +625,8 @@ int expand_package(
 // differs. The helper selects process-facing output paths and invokes the native
 // adapter, but never reloads Draft source or a resolution manifest.
 [[nodiscard]] bool emit_native_package(
-    const std::filesystem::path &absolute_directory,
+    const std::filesystem::path &workspace_directory,
+    const draft::WorkspacePackageSelection &selected_package,
     const draft::TargetProfile &target,
     const std::optional<std::string> &requested_output,
     draft::NativeArtifactKind artifact_kind,
@@ -593,27 +643,40 @@ int expand_package(
     return false;
   }
 
+  // Artifact namespaces mirror the package's workspace-relative folder path.
+  // Fixed `workspace` and `packages` rows keep root `.` distinct from a child
+  // literally named `workspace`; the target file tag prevents cross-target
+  // scratch and outputs from replacing one another.
+  std::filesystem::path artifact_directory = workspace_directory / ".draft" /
+      "build" / target.facts.file_tag;
+  if (selected_package.identity.root_relative_path == ".") {
+    artifact_directory /= "workspace";
+  } else {
+    artifact_directory /= "packages";
+    artifact_directory /= selected_package.identity.root_relative_path;
+  }
   const std::filesystem::path build_directory =
-      absolute_directory / ".draft" / "build";
-  const std::string package_name = absolute_directory.filename().string();
+      artifact_directory / ".native";
+  const std::string package_name = compiled.graph
+      .package(compiled.graph.root_package).loaded.short_name;
   std::filesystem::path output;
   switch (artifact_kind) {
   case draft::NativeArtifactKind::Executable:
-    output = build_directory / package_name;
+    output = artifact_directory / package_name;
     break;
   case draft::NativeArtifactKind::Object:
-    output = build_directory / (package_name + ".o");
+    output = artifact_directory / (package_name + ".o");
     break;
   case draft::NativeArtifactKind::StaticLibrary:
-    output = build_directory / ("lib" + package_name + ".a");
+    output = artifact_directory / ("lib" + package_name + ".a");
     break;
   case draft::NativeArtifactKind::DynamicLibrary:
-    output = build_directory /
+    output = artifact_directory /
         ("lib" + package_name +
          (target.facts.object_format == "elf" ? ".so" : ".dylib"));
     break;
   case draft::NativeArtifactKind::Assembly:
-    output = build_directory / (package_name + "-assembly");
+    output = artifact_directory / (package_name + "-assembly");
     break;
   }
   if (requested_output.has_value()) {
@@ -645,8 +708,13 @@ int expand_package(
   return true;
 }
 
-int build_package(
-    const std::string &directory,
+// Builds one already-selected root. Aggregate workspace builds call this in
+// canonical root-path order and stop at the first failure; an artifact already
+// completed for an earlier root remains a valid independently namespaced
+// result, while the aggregate command still returns failure.
+int build_selected_package(
+    const std::filesystem::path &workspace_directory,
+    const draft::WorkspacePackageSelection &selected_package,
     const draft::TargetProfile &target,
     const std::optional<std::string> &requested_output,
     draft::NativeArtifactKind artifact_kind,
@@ -657,21 +725,14 @@ int build_package(
     draft::TimingRecorder *timings) {
   draft::SourceManager sources;
   draft::DiagnosticSink diagnostics;
-  std::filesystem::path absolute_directory;
-  std::string package_path_error;
-  if (!canonical_package_directory(
-          directory, absolute_directory, package_path_error)) {
-    std::cerr << "error: " << package_path_error << '\n';
-    return 1;
-  }
   draft::CompileWorkspaceOptions compile_options;
   compile_options.target = target;
   compile_options.configuration.runtime_assertions = runtime_assertions;
-  compile_options.workspace.workspace_directory =
-      absolute_directory.parent_path().string();
+  compile_options.workspace.workspace_directory = workspace_directory.string();
   configure_core_distribution(compile_options.workspace);
   if (!load_foreign_provider_audits(
           compile_options.workspace.workspace_directory,
+          resolution_store_key(target, selected_package),
           provider_summaries,
           foreign_providers,
           compile_options.foreign_provider_audits,
@@ -687,11 +748,12 @@ int build_package(
   const draft::CompileWorkspaceResult compiled =
       draft::compile_workspace_with_resolution(
           sources,
-          absolute_directory.string(),
+          selected_package.physical_directory.string(),
           std::move(compile_options),
           diagnostics);
   const bool built = compiled.ok && emit_native_package(
-      absolute_directory,
+      workspace_directory,
+      selected_package,
       target,
       requested_output,
       artifact_kind,
@@ -706,8 +768,109 @@ int build_package(
   return built && !diagnostics.has_errors() ? 0 : 1;
 }
 
+// Selects the complete executable target set for `build <workspace>`. Without
+// `--root`, discovery returns every ordinary package-level `main`; repeated
+// selectors replace discovery with an explicit subset and may therefore name a
+// library root for non-executable artifact kinds. Selection is complete before
+// output validation, so `-o` can be rejected deterministically for a multi-root
+// build without compiling or writing an artifact.
+int build_workspace(
+    const std::string &workspace_spelling,
+    const std::vector<std::string> &root_selectors,
+    const draft::TargetProfile &target,
+    const std::optional<std::string> &requested_output,
+    draft::NativeArtifactKind artifact_kind,
+    draft::RuntimeAssertionMode runtime_assertions,
+    const std::vector<draft::ForeignProviderInput> &foreign_providers,
+    const std::vector<draft::ForeignProviderSummaryInput> &provider_summaries,
+    const std::vector<draft::RuntimeAssetInput> &runtime_assets,
+    draft::TimingRecorder *timings) {
+  std::filesystem::path workspace_directory;
+  std::string path_error;
+  if (!canonical_workspace_directory(
+          workspace_spelling, workspace_directory, path_error)) {
+    std::cerr << "error: " << path_error << '\n';
+    return 1;
+  }
+
+  draft::SourceManager discovery_sources;
+  draft::DiagnosticSink discovery_diagnostics;
+  std::vector<draft::WorkspacePackageSelection> roots;
+  if (root_selectors.empty()) {
+    draft::WorkspaceLoadOptions discovery_options;
+    discovery_options.workspace_directory = workspace_directory.string();
+    configure_core_distribution(discovery_options);
+    discovery_options.package_options.file_tag = target.facts.file_tag;
+    const draft::ExecutableRootDiscoveryResult discovered =
+        draft::discover_executable_roots(
+            discovery_sources, discovery_options, discovery_diagnostics);
+    if (discovered.ok) roots = discovered.roots;
+  } else {
+    roots.reserve(root_selectors.size());
+    for (const std::string &selector : root_selectors) {
+      draft::WorkspacePackageSelection root;
+      if (!draft::select_workspace_package(
+              workspace_directory,
+              selector,
+              root,
+              discovery_diagnostics)) {
+        break;
+      }
+      roots.push_back(std::move(root));
+    }
+    std::sort(
+        roots.begin(),
+        roots.end(),
+        [](const draft::WorkspacePackageSelection &left,
+           const draft::WorkspacePackageSelection &right) {
+          return left.identity.root_relative_path <
+              right.identity.root_relative_path;
+        });
+    for (std::size_t index = 1; index < roots.size(); ++index) {
+      if (roots[index - 1].identity == roots[index].identity) {
+        discovery_diagnostics.error(
+            draft::SourceRange::invalid(),
+            "duplicate build root selector '" +
+                roots[index].identity.root_relative_path + "'");
+        break;
+      }
+    }
+  }
+
+  if (!discovery_diagnostics.diagnostics().empty()) {
+    std::cerr << draft::render_diagnostics(
+        discovery_sources, discovery_diagnostics);
+  }
+  if (discovery_diagnostics.has_errors()) return 1;
+  if (roots.empty()) {
+    std::cerr << "error: workspace contains no executable packages\n";
+    return 1;
+  }
+  if (requested_output.has_value() && roots.size() != 1) {
+    std::cerr << "error: -o requires exactly one selected build root\n";
+    return 2;
+  }
+
+  for (const draft::WorkspacePackageSelection &root : roots) {
+    const int result = build_selected_package(
+        workspace_directory,
+        root,
+        target,
+        requested_output,
+        artifact_kind,
+        runtime_assertions,
+        foreign_providers,
+        provider_summaries,
+        runtime_assets,
+        timings);
+    if (result != 0) return result;
+  }
+  return 0;
+}
+
 int validate_package(
-    const std::string &directory,
+    const std::string &workspace_spelling,
+    std::string_view root_selector,
     const draft::TargetProfile &target,
     draft::ValidationKind kind,
     const std::vector<draft::ValidationInstrumentationKind> &instrumentation,
@@ -717,22 +880,26 @@ int validate_package(
     draft::TimingRecorder *timings) {
   draft::SourceManager sources;
   draft::DiagnosticSink diagnostics;
-  std::filesystem::path absolute_directory;
-  std::string path_error;
-  if (!canonical_package_directory(
-          directory, absolute_directory, path_error)) {
-    std::cerr << "error: " << path_error << '\n';
+  std::filesystem::path workspace_directory;
+  draft::WorkspacePackageSelection selected_package;
+  if (!select_command_package(
+          workspace_spelling,
+          root_selector,
+          workspace_directory,
+          selected_package,
+          diagnostics)) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
     return 1;
   }
 
   draft::ValidationCommandOptions options;
-  options.package_directory = absolute_directory;
+  options.package_directory = selected_package.physical_directory;
   options.target = target;
-  options.workspace.workspace_directory =
-      absolute_directory.parent_path().string();
+  options.workspace.workspace_directory = workspace_directory.string();
   configure_core_distribution(options.workspace);
   if (!load_foreign_provider_audits(
           options.workspace.workspace_directory,
+          resolution_store_key(target, selected_package),
           provider_summaries,
           foreign_providers,
           options.foreign_provider_audits,
@@ -770,32 +937,36 @@ int validate_package(
 }
 
 int emit_c_header_package(
-    const std::string &directory,
+    const std::string &workspace_spelling,
+    std::string_view root_selector,
     const draft::TargetProfile &target,
     const std::optional<std::string> &requested_output,
     draft::TimingRecorder *timings) {
   draft::SourceManager sources;
   draft::DiagnosticSink diagnostics;
-  std::filesystem::path absolute_directory;
-  std::string package_path_error;
-  if (!canonical_package_directory(
-          directory, absolute_directory, package_path_error)) {
-    std::cerr << "error: " << package_path_error << '\n';
+  std::filesystem::path workspace_directory;
+  draft::WorkspacePackageSelection selected_package;
+  if (!select_command_package(
+          workspace_spelling,
+          root_selector,
+          workspace_directory,
+          selected_package,
+          diagnostics)) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
     return 1;
   }
   std::error_code path_error;
 
   draft::CompileWorkspaceOptions options;
   options.target = target;
-  options.workspace.workspace_directory =
-      absolute_directory.parent_path().string();
+  options.workspace.workspace_directory = workspace_directory.string();
   configure_core_distribution(options.workspace);
   options.emit_program_entry = false;
   options.timings = timings;
   const draft::CompileWorkspaceResult compiled =
       draft::compile_workspace_with_resolution(
           sources,
-          absolute_directory.string(),
+          selected_package.physical_directory.string(),
           std::move(options),
           diagnostics);
   if (compiled.ok) {
@@ -816,8 +987,16 @@ int emit_c_header_package(
           {},
           diagnostics);
       if (header.ok) {
-        std::filesystem::path output = absolute_directory / ".draft" / "build" /
-            (absolute_directory.filename().string() + ".h");
+        std::filesystem::path output = workspace_directory / ".draft" /
+            "build" / target.facts.file_tag;
+        if (selected_package.identity.root_relative_path == ".") {
+          output /= "workspace";
+        } else {
+          output /= "packages";
+          output /= selected_package.identity.root_relative_path;
+        }
+        output /= compiled.graph.package(compiled.graph.root_package)
+            .loaded.short_name + ".h";
         if (requested_output.has_value()) {
           output = std::filesystem::absolute(*requested_output, path_error);
           if (path_error) {
@@ -896,7 +1075,8 @@ struct ResolveBuildRequest {
 // provider call. Judge runs only after the same provider-free compilation and
 // records evidence in its independent store without mutating source selection.
 int run_agent_command(
-    const std::string &directory,
+    const std::string &workspace_spelling,
+    std::string_view root_selector,
     AgentCommandKind command,
     const draft::TargetProfile &target,
     bool revalidate = false,
@@ -916,19 +1096,22 @@ int run_agent_command(
     const std::optional<ResolveBuildRequest> &resolve_build = std::nullopt) {
   draft::SourceManager sources;
   draft::DiagnosticSink diagnostics;
-  std::filesystem::path absolute_directory;
-  std::string path_error;
-  if (!canonical_package_directory(
-          directory, absolute_directory, path_error)) {
-    std::cerr << "error: " << path_error << '\n';
+  std::filesystem::path workspace_directory;
+  draft::WorkspacePackageSelection selected_package;
+  if (!select_command_package(
+          workspace_spelling,
+          root_selector,
+          workspace_directory,
+          selected_package,
+          diagnostics)) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
     return 1;
   }
 
   draft::CompileWorkspaceOptions options;
   options.target = target;
   options.configuration.runtime_assertions = runtime_assertions;
-  options.workspace.workspace_directory =
-      absolute_directory.parent_path().string();
+  options.workspace.workspace_directory = workspace_directory.string();
   configure_core_distribution(options.workspace);
   options.timings = timings;
   if (command == AgentCommandKind::Resolve) {
@@ -950,6 +1133,7 @@ int run_agent_command(
       const draft::ResolutionManifestLoadResult loaded =
           draft::load_resolution_manifest(
               resolve_options.compile.workspace.workspace_directory,
+              resolution_store_key(target, selected_package),
               diagnostics);
       if (loaded.state == draft::ResolutionManifestLoadState::Invalid ||
           (loaded.state == draft::ResolutionManifestLoadState::Loaded &&
@@ -1017,7 +1201,7 @@ int run_agent_command(
         : draft::TimingScope{};
     draft::ResolveWorkspaceResult resolved = draft::resolve_workspace(
         sources,
-        absolute_directory.string(),
+        selected_package.physical_directory.string(),
         std::move(resolve_options),
         diagnostics);
     resolve_timing.finish();
@@ -1054,7 +1238,8 @@ int run_agent_command(
               diagnostics);
           if (native_ok) {
             native_ok = emit_native_package(
-                absolute_directory,
+                workspace_directory,
+                selected_package,
                 target,
                 resolve_build->output,
                 resolve_build->artifact_kind,
@@ -1075,6 +1260,7 @@ int run_agent_command(
 
   if (!load_foreign_provider_audits(
           options.workspace.workspace_directory,
+          resolution_store_key(target, selected_package),
           provider_summaries,
           foreign_providers,
           options.foreign_provider_audits,
@@ -1085,7 +1271,7 @@ int run_agent_command(
   const draft::CompileWorkspaceResult compiled =
       draft::compile_workspace_with_resolution(
           sources,
-          absolute_directory.string(),
+          selected_package.physical_directory.string(),
           std::move(options),
           diagnostics);
   if (!compiled.ok) {
@@ -1125,8 +1311,7 @@ int run_agent_command(
 
   std::vector<draft::CodexCliProviderState> judgment_codex_states;
   draft::JudgmentCommandOptions judgment_options;
-  judgment_options.workspace_directory =
-      absolute_directory.parent_path();
+  judgment_options.workspace_directory = workspace_directory;
   judgment_options.target = target;
   judgment_options.selectors = judgment_selectors;
   if (!configure_codex_judgment_policy(
@@ -1169,21 +1354,21 @@ void print_usage() {
   std::cerr << "usage:\n"
             << "  draftc lex <file.draft>\n"
             << "  draftc syntax <file.draft>\n"
-            << "  draftc check <package-directory>\n"
+            << "  draftc check <workspace> [--root <package>]\n"
             << "      [--target aarch64-macos|aarch64-linux] [--timings|--timings=all]\n"
-            << "  draftc emit-llvm <package-directory>\n"
+            << "  draftc emit-llvm <workspace> [--root <package>]\n"
             << "      [--target aarch64-macos|aarch64-linux] [--timings|--timings=all]\n"
-            << "  draftc emit-c-header <package-directory> [-o <output.h>]\n"
+            << "  draftc emit-c-header <workspace> [--root <package>] [-o <output.h>]\n"
             << "      [--target aarch64-macos|aarch64-linux]\n"
             << "      [--timings|--timings=all]\n"
-            << "  draftc expand <package-directory> --out <directory>\n"
+            << "  draftc expand <workspace> [--root <package>] --out <directory>\n"
             << "      [--target aarch64-macos|aarch64-linux]\n"
             << "      [--assertions=off]\n"
             << "      [--provider name=object|archive|shared-library:<path>]...\n"
             << "      [--provider-summary name:<path>]...\n"
             << "      [--runtime-asset name:<file-or-directory>]...\n"
             << "      [--timings|--timings=all]\n"
-            << "  draftc build <package-directory> [-o <output>]\n"
+            << "  draftc build <workspace> [--root <package>]... [-o <output>]\n"
             << "      [--target aarch64-macos|aarch64-linux]\n"
             << "      [--kind executable|object|static-library|dynamic-library|assembly]\n"
             << "      [--assertions=off]\n"
@@ -1191,21 +1376,21 @@ void print_usage() {
             << "      [--provider-summary name:<path>]...\n"
             << "      [--runtime-asset name:<file-or-directory>]...\n"
             << "      [--timings|--timings=all]\n"
-            << "  draftc test <package-directory>\n"
+            << "  draftc test <workspace> [--root <package>]\n"
             << "      [--target aarch64-macos|aarch64-linux]\n"
             << "      [--instrument address|lifetime|undefined-operation|allocator-poisoning|race]...\n"
             << "      [--provider name=object|archive|shared-library:<path>]...\n"
             << "      [--provider-summary name:<path>]...\n"
             << "      [--runtime-asset name:<file-or-directory>]...\n"
             << "      [--timings|--timings=all]\n"
-            << "  draftc bench <package-directory> [--verify]\n"
+            << "  draftc bench <workspace> [--root <package>] [--verify]\n"
             << "      [--target aarch64-macos|aarch64-linux]\n"
             << "      [--instrument address|lifetime|undefined-operation|allocator-poisoning|race]...\n"
             << "      [--provider name=object|archive|shared-library:<path>]...\n"
             << "      [--provider-summary name:<path>]...\n"
             << "      [--runtime-asset name:<file-or-directory>]...\n"
             << "      [--timings|--timings=all]\n"
-            << "  draftc resolve <package-directory> [--revalidate] [--build]\n"
+            << "  draftc resolve <workspace> [--root <package>] [--revalidate] [--build]\n"
             << "      [--regenerate [site-id]]\n"
             << "      [-o <output>]\n"
             << "      [--kind executable|object|static-library|dynamic-library|assembly]\n"
@@ -1216,7 +1401,7 @@ void print_usage() {
             << "      [--provider-summary name:<path>]...\n"
             << "      [--runtime-asset name:<file-or-directory>]...\n"
             << "      [--timings|--timings=all]\n"
-            << "  draftc judge <package-directory> [<selector>...] [--list]\n"
+            << "  draftc judge <workspace> [--root <package>] [<selector>...] [--list]\n"
             << "      [--target aarch64-macos|aarch64-linux]\n"
             << "      [--assertions=off]\n"
             << "      [--judge-validator <identity>:<model>]...\n"
@@ -1254,11 +1439,16 @@ int main(int argc, char **argv) {
       (std::string_view(argv[1]) == "check" ||
        std::string_view(argv[1]) == "emit-llvm")) {
     bool target_set = false;
+    bool root_set = false;
+    std::string root_selector = ".";
     for (int index = 3; index < argc; ++index) {
       const std::string_view argument(argv[index]);
       if (argument == "--target" && !target_set && index + 1 < argc) {
         target_set = true;
         if (!select_command_target(argv[++index], target)) return 2;
+      } else if (argument == "--root" && !root_set && index + 1 < argc) {
+        root_set = true;
+        root_selector = argv[++index];
       } else if (is_timing_argument(argument)) {
         continue;
       } else {
@@ -1267,11 +1457,17 @@ int main(int argc, char **argv) {
       }
     }
     return compile_package(
-        argv[2], std::string_view(argv[1]) == "emit-llvm", target, timings);
+        argv[2],
+        root_selector,
+        std::string_view(argv[1]) == "emit-llvm",
+        target,
+        timings);
   }
   if (argc >= 3 && std::string_view(argv[1]) == "emit-c-header") {
     std::optional<std::string> output;
     bool target_set = false;
+    bool root_set = false;
+    std::string root_selector = ".";
     for (int index = 3; index < argc; ++index) {
       const std::string_view argument(argv[index]);
       if (argument == "-o" && !output.has_value() && index + 1 < argc) {
@@ -1279,6 +1475,9 @@ int main(int argc, char **argv) {
       } else if (argument == "--target" && !target_set && index + 1 < argc) {
         target_set = true;
         if (!select_command_target(argv[++index], target)) return 2;
+      } else if (argument == "--root" && !root_set && index + 1 < argc) {
+        root_set = true;
+        root_selector = argv[++index];
       } else if (is_timing_argument(argument)) {
         continue;
       } else {
@@ -1286,12 +1485,15 @@ int main(int argc, char **argv) {
         return 2;
       }
     }
-    return emit_c_header_package(argv[2], target, output, timings);
+    return emit_c_header_package(
+        argv[2], root_selector, target, output, timings);
   }
   if (argc >= 3 && std::string_view(argv[1]) == "expand") {
     std::optional<std::filesystem::path> output_directory;
     bool assertions_off = false;
     bool target_set = false;
+    bool root_set = false;
+    std::string root_selector = ".";
     std::vector<draft::ForeignProviderInput> foreign_providers;
     std::vector<draft::ForeignProviderSummaryInput> provider_summaries;
     std::vector<draft::RuntimeAssetInput> runtime_assets;
@@ -1304,6 +1506,9 @@ int main(int argc, char **argv) {
                  index + 1 < argc) {
         target_set = true;
         if (!select_command_target(argv[++index], target)) return 2;
+      } else if (argument == "--root" && !root_set && index + 1 < argc) {
+        root_set = true;
+        root_selector = argv[++index];
       } else if (argument == "--assertions=off" && !assertions_off) {
         assertions_off = true;
       } else if (argument == "--provider" && index + 1 < argc) {
@@ -1344,6 +1549,7 @@ int main(int argc, char **argv) {
     }
     return expand_package(
         argv[2],
+        root_selector,
         *output_directory,
         target,
         assertions_off
@@ -1360,7 +1566,9 @@ int main(int argc, char **argv) {
     bool build_after_resolution = false;
     bool assertions_off = false;
     bool target_set = false;
+    bool root_set = false;
     bool artifact_kind_set = false;
+    std::string root_selector = ".";
     std::optional<std::string> codex_model;
     std::optional<std::string> output;
     draft::NativeArtifactKind artifact_kind =
@@ -1385,6 +1593,9 @@ int main(int argc, char **argv) {
                  index + 1 < argc) {
         target_set = true;
         if (!select_command_target(argv[++index], target)) return 2;
+      } else if (argument == "--root" && !root_set && index + 1 < argc) {
+        root_set = true;
+        root_selector = argv[++index];
       } else if (argument == "--assertions=off" && !assertions_off) {
         assertions_off = true;
       } else if (argument == "-o" && !output.has_value() &&
@@ -1458,6 +1669,7 @@ int main(int argc, char **argv) {
     }
     return run_agent_command(
         argv[2],
+        root_selector,
         AgentCommandKind::Resolve,
         target,
         revalidate,
@@ -1482,6 +1694,8 @@ int main(int argc, char **argv) {
     bool list_judgments = false;
     bool assertions_off = false;
     bool target_set = false;
+    bool root_set = false;
+    std::string root_selector = ".";
     std::vector<std::string> judgment_selectors;
     std::vector<NamedCodexJudgmentValidator> judgment_validators;
     std::vector<JudgmentArtifactPath> judgment_artifact_paths;
@@ -1493,6 +1707,9 @@ int main(int argc, char **argv) {
                  index + 1 < argc) {
         target_set = true;
         if (!select_command_target(argv[++index], target)) return 2;
+      } else if (argument == "--root" && !root_set && index + 1 < argc) {
+        root_set = true;
+        root_selector = argv[++index];
       } else if (argument == "--assertions=off" && !assertions_off) {
         assertions_off = true;
       } else if (argument == "--model" &&
@@ -1579,6 +1796,7 @@ int main(int argc, char **argv) {
     }
     return run_agent_command(
         argv[2],
+        root_selector,
         AgentCommandKind::Judge,
         target,
         false,
@@ -1606,6 +1824,8 @@ int main(int argc, char **argv) {
         : draft::ValidationKind::Benchmark;
     bool verify = false;
     bool target_set = false;
+    bool root_set = false;
+    std::string root_selector = ".";
     std::vector<draft::ForeignProviderInput> foreign_providers;
     std::vector<draft::ForeignProviderSummaryInput> provider_summaries;
     std::vector<draft::RuntimeAssetInput> runtime_assets;
@@ -1616,6 +1836,9 @@ int main(int argc, char **argv) {
                  index + 1 < argc) {
         target_set = true;
         if (!select_command_target(argv[++index], target)) return 2;
+      } else if (argument == "--root" && !root_set && index + 1 < argc) {
+        root_set = true;
+        root_selector = argv[++index];
       } else if (argument == "--verify" && !verify &&
                  validation_kind == draft::ValidationKind::Benchmark) {
         // Bench always executes and records fresh evidence. `--verify` is an
@@ -1665,6 +1888,7 @@ int main(int argc, char **argv) {
     }
     return validate_package(
         argv[2],
+        root_selector,
         target,
         validation_kind,
         instrumentation,
@@ -1680,6 +1904,7 @@ int main(int argc, char **argv) {
     bool artifact_kind_set = false;
     bool assertions_off = false;
     bool target_set = false;
+    std::vector<std::string> root_selectors;
     std::vector<draft::ForeignProviderInput> foreign_providers;
     std::vector<draft::ForeignProviderSummaryInput> provider_summaries;
     std::vector<draft::RuntimeAssetInput> runtime_assets;
@@ -1689,6 +1914,8 @@ int main(int argc, char **argv) {
                  index + 1 < argc) {
         target_set = true;
         if (!select_command_target(argv[++index], target)) return 2;
+      } else if (argument == "--root" && index + 1 < argc) {
+        root_selectors.emplace_back(argv[++index]);
       } else if (argument == "--assertions=off" && !assertions_off) {
         assertions_off = true;
       } else if (argument == "--kind" && !artifact_kind_set &&
@@ -1736,8 +1963,9 @@ int main(int argc, char **argv) {
         return 2;
       }
     }
-    return build_package(
+    return build_workspace(
         argv[2],
+        root_selectors,
         target,
         output,
         artifact_kind,

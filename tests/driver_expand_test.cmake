@@ -6,13 +6,14 @@
 # overwrite an existing projection. TEST_ROOT is build-tree state owned and
 # removed by this script, so the source fixture remains immutable.
 
-if(NOT DEFINED DRAFTC OR NOT DEFINED SOURCE_PACKAGE OR NOT DEFINED TEST_ROOT)
-  message(FATAL_ERROR "DRAFTC, SOURCE_PACKAGE, and TEST_ROOT are required")
+if(NOT DEFINED DRAFTC OR NOT DEFINED SOURCE_WORKSPACE OR NOT DEFINED TEST_ROOT)
+  message(FATAL_ERROR "DRAFTC, SOURCE_WORKSPACE, and TEST_ROOT are required")
 endif()
 
 file(REMOVE_RECURSE "${TEST_ROOT}" "${TEST_ROOT}.tmp")
 execute_process(
-  COMMAND "${DRAFTC}" expand "${SOURCE_PACKAGE}" --out "${TEST_ROOT}"
+  COMMAND "${DRAFTC}" expand "${SOURCE_WORKSPACE}" --root app
+    --out "${TEST_ROOT}"
   RESULT_VARIABLE first_status
   OUTPUT_VARIABLE first_stdout
   ERROR_VARIABLE first_stderr
@@ -29,7 +30,8 @@ if(NOT EXISTS "${TEST_ROOT}/draft-expanded-source.map")
 endif()
 
 execute_process(
-  COMMAND "${DRAFTC}" expand "${SOURCE_PACKAGE}" --out "${TEST_ROOT}"
+  COMMAND "${DRAFTC}" expand "${SOURCE_WORKSPACE}" --root app
+    --out "${TEST_ROOT}"
   RESULT_VARIABLE second_status
   OUTPUT_VARIABLE second_stdout
   ERROR_VARIABLE second_stderr

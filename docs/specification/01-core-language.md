@@ -10,8 +10,9 @@ Part of the [Draft language specification](../../README.md).
 
 A directory is one package: a namespace, visibility boundary, compilation unit,
 and synthesis-context boundary. Every Draft source file in the directory declares
-the same short package name. Every build selects one canonical workspace root.
-An import path resolves relative to that root or through one explicit
+the same short package name. Every program target selects one package inside one
+canonical workspace root; an aggregate command may build several such targets
+independently. An import path resolves relative to that workspace root or through one explicit
 import-prefix mapping to a dependency root; `core/...` resolves in the selected
 compiler distribution. Ambiguous mappings, paths escaping a mapped root, and
 ambient searches through parent directories, environment paths, or the process
@@ -68,7 +69,9 @@ pub decode :: proc(input: []u8, output: []Pixel) -> Decode_Result {
 defined separately by C export declarations.
 
 A conventional `package.draft` may collect central public types and package
-documentation, but it is an ordinary source file.
+documentation, but it is an ordinary source file. Likewise, package directory
+names such as `app`, `cmd`, or `lib` are ordinary names and carry no language or
+build meaning.
 
 The compiler derives a canonical public interface from all `pub` declarations.
 Tools, dependent packages, and agents consume this interface without reading

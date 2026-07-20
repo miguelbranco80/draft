@@ -157,6 +157,20 @@ struct SelectedFile {
 
 } // namespace
 
+std::optional<PackageFileKind> selected_package_file_kind(
+    std::string_view filename,
+    const PackageLoadOptions &options) {
+  const std::filesystem::path path{std::string(filename)};
+  const std::optional<PackageFileKind> kind =
+      recognized_kind(path.extension().string());
+  if (!kind.has_value()) return std::nullopt;
+  std::string unqualified_stem;
+  if (!file_participates(filename, *kind, options, unqualified_stem)) {
+    return std::nullopt;
+  }
+  return kind;
+}
+
 PackageLoadResult load_package(
     SourceManager &sources,
     const std::string &directory,
@@ -209,14 +223,8 @@ PackageLoadResult load_package(
 
     const std::string name = iterator->path().filename().string();
     const std::optional<PackageFileKind> kind =
-        recognized_kind(iterator->path().extension().string());
-    if (!kind.has_value()) {
-      continue;
-    }
-    std::string unqualified_stem;
-    if (file_participates(name, *kind, options, unqualified_stem)) {
-      selected.push_back({name, *kind});
-    }
+        selected_package_file_kind(name, options);
+    if (kind.has_value()) selected.push_back({name, *kind});
   }
 
   // Bytewise filename order is the canonical source processing order. std::less

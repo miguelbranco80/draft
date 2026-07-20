@@ -3,7 +3,8 @@
 // Files are staged below the same .draft directory as their destinations, so a
 // rename cannot cross filesystems. Generated objects are immutable and may
 // become harmless orphans if a process stops before manifest publication. The
-// manifest rename is the single visibility point for the new resolved program.
+// root/target manifest rename is the single visibility point for one resolved
+// program. Generated objects remain shared by content hash across namespaces.
 // File and directory synchronization makes the ordering durable on the first
 // supported platform, AArch64 macOS. Other hosts retain atomic visibility but
 // may not provide the same power-loss durability guarantee.
@@ -21,6 +22,7 @@
 #include <string>
 #include <system_error>
 #include <utility>
+#include <vector>
 
 #if defined(__APPLE__) || defined(__unix__)
 #include <fcntl.h>
@@ -391,6 +393,101 @@ private:
   return referenced;
 }
 
+[[nodiscard]] bool valid_store_component(std::string_view value) {
+  if (value.empty() || value == "." || value == "..") return false;
+  for (const char byte : value) {
+    const bool ascii_letter =
+        (byte >= 'a' && byte <= 'z') || (byte >= 'A' && byte <= 'Z');
+    const bool ascii_digit = byte >= '0' && byte <= '9';
+    if (!ascii_letter && !ascii_digit && byte != '-' && byte != '_' &&
+        byte != '.') {
+      return false;
+    }
+  }
+  return true;
+}
+
+[[nodiscard]] bool valid_root_package_path(std::string_view value) {
+  if (value == ".") return true;
+  if (value.empty() || value.front() == '/' || value.back() == '/' ||
+      value.find('\\') != std::string_view::npos) {
+    return false;
+  }
+  std::size_t begin = 0;
+  while (begin < value.size()) {
+    const std::size_t slash = value.find('/', begin);
+    const std::size_t end = slash == std::string_view::npos
+        ? value.size()
+        : slash;
+    const std::string_view component = value.substr(begin, end - begin);
+    if (component.empty() || component == "." || component == "..") {
+      return false;
+    }
+    begin = end + 1;
+  }
+  return true;
+}
+
+[[nodiscard]] bool validate_store_key(
+    const ResolutionStoreKey &key,
+    DiagnosticSink &diagnostics) {
+  if (!valid_store_component(key.target_identity)) {
+    store_error(
+        diagnostics,
+        "resolution store target identity is not a safe path component");
+    return false;
+  }
+  if (key.root_package.root_identity != "workspace" ||
+      !valid_root_package_path(key.root_package.root_relative_path)) {
+    store_error(
+        diagnostics,
+        "resolution store root package is not a canonical workspace identity");
+    return false;
+  }
+  return true;
+}
+
+// Root `.` and a child package must never contend for the same filesystem row.
+// Separate fixed namespaces make the mapping injective while retaining the
+// complete original child-package folder structure below `packages/`.
+[[nodiscard]] std::filesystem::path manifest_directory(
+    const std::filesystem::path &workspace_directory,
+    const ResolutionStoreKey &key) {
+  std::filesystem::path result = workspace_directory / ".draft" /
+      "resolutions" / key.target_identity;
+  if (key.root_package.root_relative_path == ".") {
+    return result / "workspace";
+  }
+  return result / "packages" / key.root_package.root_relative_path;
+}
+
+[[nodiscard]] std::vector<std::filesystem::path> manifest_directory_chain(
+    const std::filesystem::path &workspace_directory,
+    const ResolutionStoreKey &key) {
+  const std::filesystem::path store = workspace_directory / ".draft";
+  const std::filesystem::path resolutions = store / "resolutions";
+  const std::filesystem::path target = resolutions / key.target_identity;
+  std::vector<std::filesystem::path> result{store, resolutions, target};
+  if (key.root_package.root_relative_path == ".") {
+    result.push_back(target / "workspace");
+    return result;
+  }
+  std::filesystem::path current = target / "packages";
+  result.push_back(current);
+  std::size_t begin = 0;
+  const std::string &relative = key.root_package.root_relative_path;
+  while (begin < relative.size()) {
+    const std::size_t slash = relative.find('/', begin);
+    const std::size_t end = slash == std::string::npos
+        ? relative.size()
+        : slash;
+    current /= relative.substr(begin, end - begin);
+    result.push_back(current);
+    begin = end + 1;
+  }
+  return result;
+}
+
 [[nodiscard]] std::filesystem::path generated_path(
     const std::filesystem::path &workspace_directory,
     const Sha256Digest &digest) {
@@ -433,19 +530,26 @@ private:
 
 ResolutionManifestLoadResult load_resolution_manifest(
     const std::filesystem::path &workspace_directory,
+    const ResolutionStoreKey &key,
     DiagnosticSink &diagnostics) {
   ResolutionManifestLoadResult result;
-  bool store_exists = false;
-  if (!inspect_store_directory(
-          workspace_directory / ".draft", store_exists, diagnostics)) {
+  if (!validate_store_key(key, diagnostics)) {
     result.state = ResolutionManifestLoadState::Invalid;
     return result;
   }
-  if (!store_exists) return result;
+  for (const std::filesystem::path &directory :
+       manifest_directory_chain(workspace_directory, key)) {
+    bool exists = false;
+    if (!inspect_store_directory(directory, exists, diagnostics)) {
+      result.state = ResolutionManifestLoadState::Invalid;
+      return result;
+    }
+    if (!exists) return result;
+  }
   bool exists = false;
   std::string json;
   const std::filesystem::path path =
-      workspace_directory / ".draft" / "resolution.json";
+      manifest_directory(workspace_directory, key) / "resolution.json";
   if (!read_store_file(
           path, kMaximumManifestBytes, exists, json, diagnostics)) {
     result.state = ResolutionManifestLoadState::Invalid;
@@ -453,6 +557,14 @@ ResolutionManifestLoadResult load_resolution_manifest(
   }
   if (!exists) return result;
   if (!parse_resolution_manifest(json, result.manifest, diagnostics)) {
+    result.state = ResolutionManifestLoadState::Invalid;
+    return result;
+  }
+  if (result.manifest.target_identity != key.target_identity ||
+      !(result.manifest.root_package == key.root_package)) {
+    store_error(
+        diagnostics,
+        "resolution manifest does not match its root and target namespace");
     result.state = ResolutionManifestLoadState::Invalid;
     return result;
   }
@@ -486,11 +598,21 @@ bool load_generated_expansion(
 
 static bool commit_resolution_unlocked(
     const std::filesystem::path &workspace_directory,
+    const ResolutionStoreKey &key,
     const ResolutionManifest &manifest,
     std::span<const GeneratedExpansion> expansions,
     DiagnosticSink &diagnostics,
     ResolutionCommitControl control) {
   const std::size_t initial_errors = diagnostics.error_count();
+
+  if (!validate_store_key(key, diagnostics)) return false;
+  if (manifest.target_identity != key.target_identity ||
+      !(manifest.root_package == key.root_package)) {
+    store_error(
+        diagnostics,
+        "resolution manifest does not match the selected root and target");
+    return false;
+  }
 
   // Round-trip through the strict schema before touching the filesystem. This
   // applies the same duplicate-site and kind invariants to compiler-produced
@@ -568,6 +690,10 @@ static bool commit_resolution_unlocked(
       !ensure_directory(generated, diagnostics) ||
       !ensure_directory(staging_root, diagnostics)) {
     return false;
+  }
+  for (const std::filesystem::path &directory :
+       manifest_directory_chain(workspace_directory, key)) {
+    if (!ensure_directory(directory, diagnostics)) return false;
   }
 
   // create_directory is the concurrency primitive here: two resolver
@@ -706,7 +832,8 @@ static bool commit_resolution_unlocked(
 
   // POSIX rename replaces an existing manifest atomically. This is the only
   // point at which readers can observe the new program identity and pin set.
-  const std::filesystem::path destination_manifest = store / "resolution.json";
+  const std::filesystem::path destination_manifest =
+      manifest_directory(workspace_directory, key) / "resolution.json";
   std::error_code rename_error;
   std::filesystem::rename(staged_manifest, destination_manifest, rename_error);
   if (rename_error) {
@@ -720,12 +847,18 @@ static bool commit_resolution_unlocked(
           diagnostics)) {
     return false;
   }
-  if (!synchronize_path(store, diagnostics)) return false;
+  std::vector<std::filesystem::path> manifest_directories =
+      manifest_directory_chain(workspace_directory, key);
+  for (auto directory = manifest_directories.rbegin();
+       directory != manifest_directories.rend(); ++directory) {
+    if (!synchronize_path(*directory, diagnostics)) return false;
+  }
   return diagnostics.error_count() == initial_errors;
 }
 
 bool commit_resolution(
     const std::filesystem::path &workspace_directory,
+    const ResolutionStoreKey &key,
     const ResolutionManifest &manifest,
     std::span<const GeneratedExpansion> expansions,
     DiagnosticSink &diagnostics,
@@ -733,7 +866,7 @@ bool commit_resolution(
   ResolutionLock lock(workspace_directory, diagnostics);
   if (!lock.ok()) return false;
   return commit_resolution_unlocked(
-      workspace_directory, manifest, expansions, diagnostics, control);
+      workspace_directory, key, manifest, expansions, diagnostics, control);
 }
 
 } // namespace draft

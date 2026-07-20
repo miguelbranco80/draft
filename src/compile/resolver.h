@@ -99,7 +99,7 @@ struct ResolveWorkspaceResult {
 // invoking the native toolchain. The SourceManager owns both surface and
 // resolved source for diagnostic rendering and for compiled_program until the
 // result is consumed. On every failure before the final store commit,
-// .draft/resolution.json remains unchanged. After success, a caller may pass
+// the selected root/target resolution manifest remains unchanged. After success, a caller may pass
 // compiled_program to continue_compiled_workspace without reconstructing the
 // front end.
 [[nodiscard]] ResolveWorkspaceResult resolve_workspace(

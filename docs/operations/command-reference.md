@@ -3,18 +3,31 @@
 Status: current bootstrap CLI. The executable is named `draftc`; examples below
 use the default `build/draftc` CMake output.
 
+All package commands take an explicit workspace directory as their first
+positional path. The workspace is canonicalized before package selection and
+the resolution-store boundary are established. A single-root command accepts
+`--root <package>` as a normalized path relative to that workspace and defaults
+to `--root .`; no directory name such as `app` has special meaning. Thus
+`draftc check project` compiles the package in `project/`, while
+`draftc check project --root tools/admin` compiles the package in
+`project/tools/admin/` and permits imports such as `lib` from `project/lib/`.
+
 All package commands accept `--target aarch64-macos|aarch64-linux` where shown.
-macOS remains the compatibility default. Package paths are canonicalized before
-the workspace and resolution-store boundaries are established.
-The current CLI treats the canonical parent of the requested package directory
-as the workspace root. Resolution manifests and generated source therefore live
-in `<package-parent>/.draft/`; place a root package in a child such as `app/`
-when the surrounding directory is meant to be the project workspace. Native
-scratch output remains derived under the selected package's `.draft/build/`.
+macOS remains the compatibility default. The workspace, selected root, and
+target determine persistent namespaces. Generated source objects are shared by
+content identity, while manifests and derived build artifacts are isolated as:
+
+```text
+<workspace>/.draft/generated/<hash>.draft
+<workspace>/.draft/resolutions/<target-identity>/workspace/resolution.json
+<workspace>/.draft/resolutions/<target-identity>/packages/<root>/resolution.json
+<workspace>/.draft/build/<target-file-tag>/workspace/<artifact>
+<workspace>/.draft/build/<target-file-tag>/packages/<root>/<artifact>
+```
 
 All package commands also accept `--timings` or `--timings=all`. Put the option
 anywhere after the package directory, alongside the command's other options;
-for example, `draftc build examples/hello-world -o hello_world --timings=all`.
+for example, `draftc build examples/hello --timings=all`.
 The compact form writes a hierarchical wall-clock report and deterministic
 work counters to stderr after ordinary command output. It separates
 resolution-manifest work, interface discovery and in-memory source transitions,
@@ -39,11 +52,11 @@ the option useful for locating failure-path costs.
 ```sh
 build/draftc lex path/to/file.draft
 build/draftc syntax path/to/file.draft
-build/draftc check path/to/package \
+build/draftc check path/to/workspace [--root package/path] \
   [--target aarch64-macos|aarch64-linux] [--timings|--timings=all]
-build/draftc emit-llvm path/to/package \
+build/draftc emit-llvm path/to/workspace [--root package/path] \
   [--target aarch64-macos|aarch64-linux] [--timings|--timings=all]
-build/draftc emit-c-header path/to/package [-o output.h] \
+build/draftc emit-c-header path/to/workspace [--root package/path] [-o output.h] \
   [--target aarch64-macos|aarch64-linux] [--timings|--timings=all]
 build/draftc target [--target aarch64-macos|aarch64-linux]
 ```
@@ -55,7 +68,7 @@ a provider. `emit-llvm` additionally lowers MIR and prints each package module.
 ## Expand checked source
 
 ```sh
-build/draftc expand path/to/package --out new-directory \
+build/draftc expand path/to/workspace [--root package/path] --out new-directory \
   [--target aarch64-macos|aarch64-linux] [--assertions=off] \
   [--provider name=object|archive|shared-library:/absolute/path]... \
   [--provider-summary name:/absolute/path]... \
@@ -72,15 +85,16 @@ generated-to-surface intervals. The output directory must not exist, preventing
 stale files from a previous graph from surviving in the new projection.
 
 This tree is an explicitly requested inspection artifact, not a cache or a
-second source of truth. Continue to commit `.draft/resolution.json` and every
-referenced `.draft/generated/<hash>.draft` object. Do not commit native
+second source of truth. Continue to commit the selected
+`.draft/resolutions/<target-identity>/{workspace|packages/<root>}/resolution.json`
+and every referenced `.draft/generated/<hash>.draft` object. Do not commit native
 intermediates, transaction staging, or an expanded tree unless the project has
 a separate reason to version that derived view.
 
 ## Build native artifacts
 
 ```sh
-build/draftc build path/to/package [-o output] \
+build/draftc build path/to/workspace [--root package/path]... [-o output] \
   [--target aarch64-macos|aarch64-linux] \
   [--kind executable|object|static-library|dynamic-library|assembly] \
   [--assertions=off] \
@@ -95,6 +109,35 @@ resolved programs from their saved generated Draft source. It rechecks source,
 generated expansions, foreign artifacts, summaries, and runtime assets, but it
 does not contact Codex, execute judgments, require validation evidence, or
 modify the resolution manifest.
+
+Without `--root`, `build` recursively discovers every ordinary surface package
+under the workspace that contains a package-level procedure named `main` and
+builds all of them in canonical root-path order. Discovery does not follow
+symlinks, enter a directory whose leaf begins with `.`, descend into configured
+core or dependency roots, enter a `draft-expanded-source.map` projection, or
+select target-inapplicable, test, or benchmark files. Compiler-generated build
+and resolution state is already below hidden `.draft`. A malformed discovered package or any selected executable
+that fails normal compilation makes the aggregate command fail. Repeated
+`--root` options replace discovery with exactly that subset; this is also how a
+library package without `main` is selected for object, archive, dynamic-library,
+or assembly output.
+
+Each selected root currently receives an independent compiler graph and native
+pipeline. Shared imported packages may therefore be analyzed or emitted more
+than once during one aggregate command. This is a performance limitation, not a
+semantic obstacle to building all executables. Later command-local deduplication
+may reuse work keyed by source identity, target, and compiler configuration;
+persistent object caching remains a separate later feature with an explicit
+invalidation contract.
+
+Default output paths mirror the selected package folder below the target build
+namespace. For example, roots `cli` and `tools/admin` produce executables at
+`.draft/build/aarch64-macos/packages/cli/cli` and
+`.draft/build/aarch64-macos/packages/tools/admin/admin`. The folder path, not
+only the package's short name, prevents output collisions. Duplicate explicit
+roots are rejected. `-o` is accepted only when exactly one root is selected;
+an aggregate build with several discovered or explicit roots must use their
+independent default paths.
 
 The native adapter emits package objects through the LLVM 22 library linked into
 `draftc`. Clang, `dsymutil`, and LLVM utilities default to the matching tools
@@ -120,7 +163,7 @@ SONAME, and executables add hosted entry glue.
 ## Resolve synthesis sites
 
 ```sh
-build/draftc resolve path/to/package [--revalidate] [--build] \
+build/draftc resolve path/to/workspace [--root package/path] [--revalidate] [--build] \
   [--regenerate [site-id]] \
   [-o output] \
   [--kind executable|object|static-library|dynamic-library|assembly] \
@@ -173,8 +216,10 @@ External provider, summary, and runtime-asset mappings become content-addressed
 resolved-program inputs. Validation and judgment evidence remain separate and
 are changed only by their own commands.
 
-The resolution manifest and all generated objects it references are normal
-project source and should ordinarily be committed together. A clean checkout
+The root/target-specific resolution manifest and all generated objects it
+references are normal project source and should ordinarily be committed
+together. Resolving one executable never replaces a sibling executable's
+manifest, and changing targets selects a separate row. A clean checkout
 can therefore `check`, `expand`, `test`, or `build` without Codex credentials.
 The compiler creates no persistent AST, HIR, MIR, native-object, or incremental
 cache; `.draft/generated` is source, not cached compiler state.
@@ -182,14 +227,14 @@ cache; `.draft/generated` is source, not cached compiler state.
 ## Test and benchmark
 
 ```sh
-build/draftc test path/to/package \
+build/draftc test path/to/workspace [--root package/path] \
   [--target aarch64-macos|aarch64-linux] [--instrument address|...] \
   [--provider name=object|archive|shared-library:/absolute/path]... \
   [--provider-summary name:/absolute/path]... \
   [--runtime-asset name:/absolute/file-or-directory]... \
   [--timings|--timings=all]
 
-build/draftc bench path/to/package [--verify] \
+build/draftc bench path/to/workspace [--root package/path] [--verify] \
   [--target aarch64-macos|aarch64-linux] [--instrument address|...] \
   [--provider name=object|archive|shared-library:/absolute/path]... \
   [--provider-summary name:/absolute/path]... \
@@ -211,7 +256,7 @@ Linux Draft sanitizer profile fail closed with an explicit diagnostic.
 ## Judge
 
 ```sh
-build/draftc judge path/to/package [selector...] [--list] \
+build/draftc judge path/to/workspace [--root package/path] [selector...] [--list] \
   [--target aarch64-macos|aarch64-linux] [--assertions=off] \
   [--judge-validator identity:model]... \
   [--judge-artifact kind:/absolute/path]... \

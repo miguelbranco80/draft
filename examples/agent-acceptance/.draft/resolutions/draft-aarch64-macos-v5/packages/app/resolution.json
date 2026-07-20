@@ -1,7 +1,9 @@
 {
-  "format": "draft-resolution-v5",
+  "format": "draft-resolution-v6",
   "target": "draft-aarch64-macos-v5",
-  "resolved_program": "52df6db522da28024c01f2d624b3ef8c7959b5af291cd0599a1ee3b7d25f43e5",
+  "root_identity": "workspace",
+  "root_package": "app",
+  "resolved_program": "b62a9ceebbb7cf08b8c20005b9dc085a6e95008ea40f102c4dbc796eec166d49",
   "external_inputs": [  ],
   "sites": [
     {"site": "site-3935380269c5cd0c2dd36c641ee7d34857b4ab4648bfcceff871e677c1cd76d9", "kind": "member", "input": "0f968f08c79269b709261058ad8a63f0529b3b3aa05bc5f6f8bb4801f21ac321", "expansion": "4e17ea297b4b9548eb049a561480a28246075a36b62b13dc4c00950caeb98dd8", "source_root": "workspace", "source_package": "app", "source_file": "package.draft", "surface_begin": 677, "surface_end": 771, "expansion_bytes": 11, "provider": "openai-codex-cli-v24", "model": "gpt-5.6-sol", "configuration": "codex-config-94cb1f5b079750d3d39d8880cec209fa2f3d528d1669b4c18b9f1d8f93b55b8e"},

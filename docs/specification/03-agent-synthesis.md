@@ -343,15 +343,15 @@ movement requires the programmer to select the intended manifest identity in
 tooling.
 
 ```text
-draft resolve
-draft resolve --regenerate
-draft resolve --regenerate site-0123456789abcdef
-draft resolve --revalidate
-draft resolve --build
-draft expand ./cmd/viewer --out /tmp/viewer-expanded
-draft judge
-draft judge codec/jpeg:decode
-draft build ./cmd/viewer
+draft resolve . --root cmd/viewer
+draft resolve . --root cmd/viewer --regenerate
+draft resolve . --root cmd/viewer --regenerate site-0123456789abcdef
+draft resolve . --root cmd/viewer --revalidate
+draft resolve . --root cmd/viewer --build
+draft expand . --root cmd/viewer --out /tmp/viewer-expanded
+draft judge . --root cmd/viewer
+draft judge . --root cmd/viewer codec/jpeg:decode
+draft build . --root cmd/viewer
 ```
 
 `draft resolve` loads valid pins and synthesizes missing or stale sites in
@@ -374,7 +374,7 @@ A complete handwritten program with no synthesis sites needs no resolution
 manifest. This provider boundary is unconditional rather than an optional build
 mode: only `draft resolve` may request generated source.
 
-`draft expand <package> --out <directory>` performs the same provider-free
+`draft expand <workspace> --root <package> --out <directory>` performs the same provider-free
 checks, then writes a complete source projection in which every selected `...`
 site has been replaced by its checked generated Draft bytes. The requested
 directory must not already exist. The projection includes deterministic root
@@ -439,7 +439,8 @@ are covered like any other input. A changed hash makes the site's pin stale.
 Each pin also records the exact resolver or synthesizer provider, model, and
 configuration identity as non-semantic provenance.
 
-The manifest identifies the coherent resolved program from the selected target;
+The manifest identifies the coherent resolved program from the selected root
+package and target;
 the exact identities of all selected workspace and dependency source,
 compiler-distributed core and runtime inputs, explicit foreign artifacts,
 provider summaries, and runtime assets; the build graph; and every
@@ -448,6 +449,14 @@ that identity to the selected validation definitions, requested artifacts,
 tool version, and execution policy; it cannot be reused for a different
 resolved program. Evidence objects and their active/revoked state are stored
 separately from the resolution manifest.
+
+Each selected root and target owns one manifest namespace below
+`.draft/resolutions/<target-identity>/`. The workspace-directory package uses
+`workspace/resolution.json`; a child root uses
+`packages/<root-relative-path>/resolution.json`. Resolving one root therefore
+cannot replace a sibling root's pins, and manifests for different targets can
+coexist. Generated source objects remain shared by content identity under
+`.draft/generated/` because identical accepted bytes need no root-specific copy.
 
 Generated source is the inspectable persistent representation. The compiler
 does not maintain a persistent AST, typed-IR, native-object, or incremental

@@ -63,6 +63,14 @@ struct TestState {
 #endif
 }
 
+// Validation fixtures select the `app` package from a larger temporary
+// workspace. The ordinary manifest therefore belongs to that package, not to
+// the workspace directory package `.`.
+[[nodiscard]] draft::ResolutionStoreKey app_store_key(
+    const draft::ResolutionManifest &manifest) {
+  return {manifest.target_identity, {"workspace", "app"}};
+}
+
 // Return whether artifacts for validation_target() are native to this test
 // process. Only these hosts may enter the build-and-run portion of the test;
 // cross-host builds need an explicit sysroot and cannot prove execution.
@@ -157,6 +165,7 @@ void test_checked_test_harness(TestState &state) {
   EXPECT(state, ordinary.ok);
   draft::ResolutionManifest manifest;
   manifest.target_identity = target.facts.identity;
+  manifest.root_package = {"workspace", "app"};
   manifest.resolved_program_digest = draft::hash_resolved_program(
       ordinary_sources,
       ordinary.graph,
@@ -164,7 +173,8 @@ void test_checked_test_harness(TestState &state) {
       manifest,
       compiler_identity,
       ordinary.configuration);
-  EXPECT(state, draft::commit_resolution(root, manifest, {}, ordinary_diagnostics));
+  EXPECT(state, draft::commit_resolution(
+      root, app_store_key(manifest), manifest, {}, ordinary_diagnostics));
   if (ordinary_diagnostics.has_errors()) {
     std::cerr << draft::render_diagnostics(
         ordinary_sources, ordinary_diagnostics);
@@ -406,6 +416,7 @@ void test_authenticated_synthesis_enters_validation_graph(TestState &state) {
   }
   draft::ResolutionManifest manifest;
   manifest.target_identity = surface_options.target.facts.identity;
+  manifest.root_package = {"workspace", "app"};
   manifest.pins.push_back(pin);
   const draft::ResolutionSurfacePackage surface_package{
       &surface.packages[0]->identity,
@@ -457,6 +468,7 @@ void test_authenticated_synthesis_enters_validation_graph(TestState &state) {
       resolved_options.configuration);
   EXPECT(state, draft::commit_resolution(
       root,
+      app_store_key(manifest),
       manifest,
       std::span<const draft::GeneratedExpansion>(&expansion, 1),
       resolved_diagnostics));
