@@ -104,6 +104,9 @@ matching contextual alternative or a value of that exact type; for example,
 `target.has_feature` requires a compile-time string, and an unknown
 architecture feature name is a compile error. Prefer a profile fact to an
 ambient host check. The host running `draftc` does not define program meaning.
+Direct fields and `has_feature` results are compile-time scalar values, so code
+may bind or return one like any other constant. The compiler materializes the
+selected scalar; it never creates a runtime value for the whole `target` object.
 
 Target-sensitive constants are evaluated and cached per selected profile.
 Physical SDK paths, linker paths, cwd, and environment ordering must not enter

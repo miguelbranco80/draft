@@ -204,17 +204,27 @@ public:
           expression_references_parametric_parameter(
               *tree, when.children.front(), condition_scope)) {
         // A body `when` whose answer changes with a specialization has no
-        // package-global selection. BodyChecker checks both refined symbolic
-        // branches, then evaluates this same condition with each concrete
-        // instance overlay. Leaving it out of unresolved_conditionals is what
-        // permits the package semantic fixed point to complete.
+        // package-global discovery selection. BodyChecker checks both refined
+        // symbolic branches, then evaluates this same condition with each
+        // concrete instance overlay.
         continue;
       }
+      // Statement evaluation here is discovery, not the authoritative branch
+      // choice. A body-local binding does not exist in this package scope yet;
+      // requiring the expression could therefore misread a shadowed
+      // predeclared name or diagnose an ordinary source-ordered local as
+      // missing. Non-required evaluation may still discover synthesis and may
+      // record a ready provisional selection so TypeResolver can scan nested
+      // statement sites. BodyChecker always selects executable HIR again at
+      // the exact lexical program point.
+      const bool required = site.kind == SemanticSiteKind::ConditionalStatement
+          ? false
+          : diagnose_unready_;
       const EvalResult condition = evaluate_expression(
           *tree,
           when.children.front(),
           condition_scope,
-          diagnose_unready_,
+          required,
           semantic_.types.builtins().bool_type);
       if (condition.status == EvalStatus::Ready &&
           condition.value.kind == ConstantKind::Bool) {
@@ -223,6 +233,11 @@ public:
         continue;
       }
       if (condition.status == EvalStatus::BlockedBySynthesis) {
+        continue;
+      }
+      if (site.kind == SemanticSiteKind::ConditionalStatement) {
+        // Pending statement conditions are resolved later with lexical locals
+        // and must not keep the package semantic fixed point open.
         continue;
       }
       ++result.unresolved_conditionals;
@@ -1034,6 +1049,28 @@ private:
             final_name(tree, expression);
         return member.has_value() ? target_member_type(*member) : TypeId{};
       }
+
+      // type_of is non-evaluating, but an ordinary aggregate member's static
+      // type is still determined entirely by the base type and declaration
+      // table. This path is also what makes lexical shadowing of `target`
+      // precise: after the predeclared-object case above declines a shadowed
+      // name, the user's struct member is read here instead.
+      if (!expression.children.empty()) {
+        const TypeId base = declared_value_type_hint(
+            tree, expression.children.front(), scope);
+        const std::optional<std::string> member = final_name(tree, expression);
+        if (base.is_valid() && member.has_value()) {
+          const Type aggregate = semantic_.types.type(base);
+          if (aggregate.kind == TypeKind::Struct ||
+              aggregate.kind == TypeKind::RawUnion) {
+            const std::optional<std::size_t> index =
+                aggregate_member_index(base, *member);
+            if (index.has_value() && *index < aggregate.members.size()) {
+              return aggregate.members[*index];
+            }
+          }
+        }
+      }
       return {};
     }
     if ((expression.kind == NodeKind::GroupExpression ||
@@ -1078,6 +1115,19 @@ private:
     }
 
     const SyntaxNode &callee = tree.node(expression.children.front());
+    if (callee.kind == NodeKind::MemberExpression &&
+        !callee.children.empty() &&
+        is_predeclared_target_expression(
+            tree, callee.children.front(), scope)) {
+      const std::optional<std::string> method = final_name(tree, callee);
+      if (method.has_value() && *method == "has_feature") {
+        // Like every type_of hint, this is result-shape discovery only. The
+        // validation preflight checks arity, each argument subtree, the
+        // compile-time-string requirement, and the feature spelling before a
+        // package constant or selected declaration is accepted.
+        return semantic_.types.builtins().bool_type;
+      }
+    }
     if (callee.kind == NodeKind::NameExpression) {
       const std::optional<std::string> intrinsic = final_name(tree, callee);
       if (intrinsic.has_value()) {
@@ -1469,6 +1519,12 @@ private:
 
   [[nodiscard]] bool valid_enum_value(
       TypeId type_id, const BigInteger &value) const {
+    const std::optional<std::uint64_t> compiler_value = value.to_u64();
+    if (compiler_value.has_value() &&
+        compiler_enum_member_name(
+            semantic_, type_id, *compiler_value).has_value()) {
+      return true;
+    }
     const std::optional<SymbolId> owner = aggregate_owner(type_id);
     if (!owner.has_value()) return false;
     for (const AggregateMember &member : semantic_.aggregate_members) {
@@ -2006,8 +2062,25 @@ private:
          left_hint == right_hint)) {
       numeric_context = left_hint.is_valid() ? left_hint : right_hint;
     }
+
+    // A contextual alternative has no type until its matching operand supplies
+    // one. Source evaluation still begins on the left, but static typing may
+    // inspect the right operand's declared type first; doing so does not read
+    // its value or change evaluation order. This makes `.macos == target.os`
+    // equivalent in type validity to `target.os == .macos` while retaining the
+    // ordinary left-to-right execution rule for value-producing operands.
+    TypeId left_context = numeric_context;
+    if (!left_context.is_valid() &&
+        needs_value_context(tree, node.children.front())) {
+      const TypeId right_type = declared_value_type_hint(
+          tree, node.children.back(), scope);
+      if (accepts_context_hint(
+              tree, node.children.front(), right_type)) {
+        left_context = right_type;
+      }
+    }
     EvalResult left = evaluate_expression(
-        tree, node.children[0], scope, required, numeric_context);
+        tree, node.children[0], scope, required, left_context);
     if (left.status != EvalStatus::Ready) return left;
     if (operation == TokenKind::LogicalAnd || operation == TokenKind::LogicalOr) {
       if (left.value.kind != ConstantKind::Bool || !left.type.is_valid() ||
@@ -2226,6 +2299,18 @@ private:
     }
     const EvalResult argument =
         evaluate_expression(tree, call.children[1], scope, required);
+    if (argument.status == EvalStatus::Pending) {
+      // Once the callee is known to be the predeclared target method, an
+      // unavailable runtime argument is a failed compile-time-string contract,
+      // not an invitation to reinterpret `has_feature` as an ordinary target
+      // field or procedure call. Discovery still receives Pending through
+      // fail(required=false), allowing forward constants another semantic
+      // round before the final diagnostic is required.
+      return fail(
+          tree.node(call.children[1]).range,
+          "target.has_feature requires a compile-time string",
+          required);
+    }
     if (argument.status != EvalStatus::Ready) return argument;
     if (argument.value.kind != ConstantKind::String) {
       return fail(
@@ -2294,6 +2379,22 @@ private:
             ? std::optional<TypeId>(semantic_.types.array(*element, *length))
             : std::nullopt;
       }
+      if (expression.kind == NodeKind::SimdType &&
+          expression.children.size() == 2) {
+        const EvalResult count = evaluate_expression(
+            tree, expression.children.front(), scope, true);
+        const std::optional<TypeId> element =
+            type_value(tree, expression.children.back(), scope);
+        if (count.status != EvalStatus::Ready ||
+            count.value.kind != ConstantKind::Integer || !element.has_value()) {
+          return std::nullopt;
+        }
+        const std::optional<std::uint64_t> lanes = count.value.integer.to_u64();
+        return lanes.has_value() && *lanes != 0
+            ? std::optional<TypeId>(
+                  semantic_.types.simd(*element, *lanes, expression.range))
+            : std::nullopt;
+      }
       if (expression.kind == NodeKind::TupleType) {
         std::vector<TypeId> members;
         for (NodeId child : expression.children) {
@@ -2302,6 +2403,55 @@ private:
           members.push_back(*member);
         }
         return semantic_.types.tuple(members);
+      }
+      if (expression.kind == NodeKind::ProcedureType) {
+        // Standalone procedure types have no declaration-owned parameter
+        // scope. Their identity is only the ordered parameter TypeIds, result,
+        // and calling convention, so reconstruct exactly that canonical row.
+        // A static argument pack deliberately fails here: packs require a
+        // named procedure body and therefore are not standalone type values.
+        std::vector<TypeId> parameters;
+        TypeId result = semantic_.types.builtins().void_type;
+        for (NodeId child_id : expression.children) {
+          const SyntaxNode &child = tree.node(child_id);
+          if (child.kind == NodeKind::ParameterList) {
+            for (NodeId parameter_id : child.children) {
+              const SyntaxNode &parameter = tree.node(parameter_id);
+              if (parameter.children.size() < 2) return std::nullopt;
+              const SyntaxNode &parameter_type =
+                  tree.node(parameter.children.back());
+              if (parameter_type.kind == NodeKind::StaticPackType) {
+                return std::nullopt;
+              }
+              const std::optional<TypeId> resolved =
+                  type_value(tree, parameter.children.back(), scope);
+              if (!resolved.has_value()) return std::nullopt;
+              const SyntaxNode &name_list =
+                  tree.node(parameter.children.front());
+              const std::vector<std::string> names =
+                  names_in_node(tree, name_list);
+              if (names.empty()) return std::nullopt;
+              for (std::size_t index = 0; index < names.size(); ++index) {
+                parameters.push_back(*resolved);
+              }
+            }
+          } else if (child.kind == NodeKind::ResultClause &&
+                     !child.children.empty()) {
+            const std::optional<TypeId> resolved =
+                type_value(tree, child.children.front(), scope);
+            if (!resolved.has_value()) return std::nullopt;
+            result = *resolved;
+          }
+        }
+        bool c_calling = false;
+        for (std::uint32_t index = expression.token_begin;
+             index < expression.token_end;
+             ++index) {
+          const TokenKind kind = tree.token(index).kind;
+          if (kind == TokenKind::KeywordC) c_calling = true;
+          if (kind == TokenKind::KeywordProc) break;
+        }
+        return semantic_.types.procedure(parameters, result, c_calling);
       }
       if (expression.kind == NodeKind::DistinctType &&
           !expression.children.empty()) {
@@ -2316,6 +2466,12 @@ private:
           symbol.kind == SymbolKind::TypeParameter) {
         return substitute_local_type(symbol.type);
       }
+      const EvalResult evaluated = evaluate_binding(*imported, false);
+      if (evaluated.status == EvalStatus::Ready &&
+          evaluated.value.kind == ConstantKind::Type &&
+          evaluated.value.type_index < semantic_.types.size()) {
+        return substitute_local_type(TypeId{evaluated.value.type_index});
+      }
       return std::nullopt;
     }
     if (expression.kind != NodeKind::NameExpression) return std::nullopt;
@@ -2325,11 +2481,36 @@ private:
         semantic_.symbols.lookup(scope, *name);
     if (found.has_value()) {
       const Symbol &symbol = semantic_.symbols.symbol(*found);
-      if (symbol.kind != SymbolKind::Type &&
-          symbol.kind != SymbolKind::TypeParameter) {
-        return std::nullopt;
+      if (symbol.kind == SymbolKind::Type ||
+          symbol.kind == SymbolKind::TypeParameter) {
+        return substitute_local_type(symbol.type);
       }
-      return substitute_local_type(symbol.type);
+
+      // A constant may itself carry an exact compile-time type value, for
+      // example `T :: type_of(value); cast[T](other)`. Prefer the caller's
+      // lexical/instance overlay, then use ordinary cycle-guarded binding
+      // evaluation for package and imported constants. The symbol's own type
+      // is only the meta-type; the ConstantValue payload names the actual type
+      // requested by the surrounding type position.
+      const ConstantValue *constant = local_constants_ != nullptr
+          ? local_constants_->find(*found)
+          : nullptr;
+      EvalResult evaluated;
+      if (constant != nullptr) {
+        evaluated = ready(
+            *constant,
+            semantic_.types.builtins().meta_type);
+      } else if (symbol.kind == SymbolKind::Constant ||
+                 symbol.kind == SymbolKind::UnresolvedDeclaration) {
+        evaluated = evaluate_binding(*found, false);
+      }
+      if (evaluated.status == EvalStatus::Ready &&
+          evaluated.value.kind == ConstantKind::Type &&
+          evaluated.value.type_index < semantic_.types.size()) {
+        return substitute_local_type(
+            TypeId{evaluated.value.type_index});
+      }
+      return std::nullopt;
     }
     return semantic_.types.find_builtin(*name);
   }
@@ -4649,6 +4830,36 @@ private:
       bool required,
       TypeId expected = {}) {
     const SyntaxNode &node = tree.node(expression_id);
+
+    // Structural type syntax is itself an exact compile-time `type` value.
+    // Most source examples compare type_of against a named type, which enters
+    // the NameExpression case below. Constructors such as `[^]u8`, `[4]u8`,
+    // `proc(value: i32) -> i32`, and `#simd[4]u32` retain their type-syntax
+    // nodes, however, and must not become pending runtime expressions merely
+    // because they appear to the right of `==`. Keep this bridge deliberately
+    // aligned with type_value's exact structural subset. In particular, do not
+    // accept DistinctType here:
+    // type_value unwraps that node only while reading a named declaration and
+    // returning the underlying TypeId as a first-class value would erase the
+    // distinct type's identity.
+    const bool exact_structural_type_value =
+        node.kind == NodeKind::NamedType ||
+        node.kind == NodeKind::PointerType ||
+        node.kind == NodeKind::MultiPointerType ||
+        node.kind == NodeKind::SliceType ||
+        node.kind == NodeKind::ArrayType ||
+        node.kind == NodeKind::SimdType ||
+        node.kind == NodeKind::TupleType ||
+        node.kind == NodeKind::ProcedureType;
+    if (exact_structural_type_value) {
+      const std::optional<TypeId> type = type_value(tree, expression_id, scope);
+      if (type.has_value()) {
+        return ready(
+            ConstantValue::make_type(type->value),
+            semantic_.types.builtins().meta_type);
+      }
+    }
+
     switch (node.kind) {
     case NodeKind::LiteralExpression: {
       if (node.token_begin >= node.token_end) return pending();

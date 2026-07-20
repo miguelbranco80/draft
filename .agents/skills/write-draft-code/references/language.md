@@ -373,7 +373,10 @@ parametric code, type/layout queries, and target facts, but not runtime globals,
 context, foreign calls, or assembly.
 
 Exact type values have the compile-time-only type `type`; they can be constants,
-cross package interfaces, and compare with `==`/`!=`, but cannot reach runtime.
+cross package interfaces, supply later annotations or parametric arguments, and
+compare with `==`/`!=`, but cannot reach runtime. A structural constructor such
+as `[^]u8`, `proc(value: i32) -> i32`, or `#simd[4]u32` is the exact type value
+when expression grammar places it in a compile-time comparison.
 `type_of(expression)` observes the checked static type without evaluating the
 expression. Structural inspection uses `type_kind`, `type_name`, scalar
 bit-width/byte-order queries, element and member queries, underlying and
@@ -400,7 +403,9 @@ syntax. The target exposes `identity`, `arch`, `os`, `abi`, `byte_order`,
 `has_feature`. Its five categorical fields use the distinct compiler-defined
 enums `Target_Architecture`, `Target_Operating_System`, `Target_ABI`,
 `Target_Byte_Order`, and `Target_Object_Format`; their contextual alternatives
-do not cross those type boundaries.
+do not cross those type boundaries. Each field or `has_feature` result is an
+ordinary compile-time scalar and may be assigned to a runtime binding; the
+whole `target` object has no runtime representation.
 
 Inside a parametric procedure, a statement `when` may depend on the concrete
 type/value arguments. The template is checked symbolically in both branches,

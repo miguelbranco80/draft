@@ -37,6 +37,10 @@ the underlying labels or integer representations happen to coincide.
 `target.has_feature(feature: string) -> bool` requires a compile-time string.
 It returns whether the profile enables a feature known to its architecture;
 an unrecognized feature name is a compile error.
+Each direct field and query result is an ordinary compile-time scalar and may
+materialize where runtime code requires that scalar value. The complete
+`target` object has no runtime representation and cannot itself be stored or
+passed.
 
 A Draft 1 compiler is required to support only one profile and rejects other
 targets. Additional profiles extend target coverage without changing language
@@ -249,6 +253,12 @@ interfaces. They have no runtime layout or runtime type descriptor and must be
 folded before MIR. `type_of(expression)` returns the expression's exact static
 type without evaluating the expression. An otherwise untyped integer or float
 operand defaults to `int` or `f64` at this boundary.
+
+A constant or compile-time expression which produces a type value may supply
+any type position, including an annotation, a structural element/result type,
+a parametric type or procedure argument, and an explicit cast target. An
+imported public type-valued constant has the same meaning after its exact type
+graph is reconstructed in the consumer package.
 
 `type_kind(T)` returns the compiler-defined `Type_Kind` enum. Its stable
 alternatives are `.void`, `.bool`, `.boolean_storage`, `.signed_integer`,

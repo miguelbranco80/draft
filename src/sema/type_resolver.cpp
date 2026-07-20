@@ -2952,6 +2952,74 @@ private:
   // Attempts a builtin, type-parameter, or package-local type lookup without
   // diagnosing failure. This is used to disambiguate `Alias :: Existing_Name`
   // from an ordinary constant whose value is another constant.
+  [[nodiscard]] std::optional<TypeId> constant_type_value(
+      SymbolId symbol_id) {
+    // Body-local compile-time declarations and concrete generic arguments are
+    // already present in the caller's overlay. Their Symbol type is the
+    // meta-type; the payload is the represented exact TypeId.
+    if (active_constants_ != nullptr) {
+      if (const ConstantValue *active = active_constants_->find(symbol_id)) {
+        if (active->kind == ConstantKind::Type &&
+            active->type_index < semantic_.types.size()) {
+          return active_type(TypeId{active->type_index});
+        }
+        return std::nullopt;
+      }
+    }
+
+    // Interface import has already rewritten a dependency-local type index
+    // into this package's TypeStore. Reading that ready value is therefore the
+    // same operation as reading a source Type symbol, not cross-package ID
+    // leakage.
+    for (const ImportedSymbol &imported : semantic_.imported_symbols) {
+      if (imported.proxy != symbol_id || !imported.has_constant) continue;
+      if (imported.constant.kind == ConstantKind::Type &&
+          imported.constant.type_index < semantic_.types.size()) {
+        return active_type(TypeId{imported.constant.type_index});
+      }
+      return std::nullopt;
+    }
+
+    const Symbol &symbol = semantic_.symbols.symbol(symbol_id);
+    if ((symbol.kind != SymbolKind::Constant &&
+         symbol.kind != SymbolKind::UnresolvedDeclaration) ||
+        target_ == nullptr || !symbol.syntax.node.is_valid()) {
+      return std::nullopt;
+    }
+    const SyntaxTree *tree = find_tree(symbol.syntax.file);
+    if (tree == nullptr) return std::nullopt;
+    const SyntaxNode &declaration = tree->node(symbol.syntax.node);
+    const std::optional<NodeId> payload = declaration_payload(*tree, declaration);
+    if (!payload.has_value()) return std::nullopt;
+
+    // The general constant interpreter is the semantic authority for computed
+    // type values (`T :: type_of(value)`, type-returning compile-time calls,
+    // and aliases of those values). This probe intentionally discards
+    // diagnostics: try_named_type is also used to distinguish an ordinary
+    // constant declaration from a type alias, where failure to produce a type
+    // is expected. An actual type position emits its own precise "does not
+    // denote a type" diagnostic after the probe declines the value.
+    DiagnosticSink probe_diagnostics;
+    const std::optional<EvaluatedConstant> evaluated =
+        evaluate_typed_constant_expression(
+            sources_,
+            loaded_,
+            semantic_,
+            *target_,
+            *tree,
+            *payload,
+            file_scope(symbol.syntax.file),
+            probe_diagnostics,
+            active_constants_,
+            active_types_);
+    if (!evaluated.has_value() ||
+        evaluated->value.kind != ConstantKind::Type ||
+        evaluated->value.type_index >= semantic_.types.size()) {
+      return std::nullopt;
+    }
+    return active_type(TypeId{evaluated->value.type_index});
+  }
+
   [[nodiscard]] std::optional<TypeId> try_named_type(
       const SyntaxTree &tree, const SyntaxNode &node, ScopeId scope) {
     const std::optional<SourceName> name = simple_type_name(tree, node);
@@ -2973,7 +3041,7 @@ private:
         symbol.type.is_valid()) {
       return active_type(symbol.type);
     }
-    return std::nullopt;
+    return constant_type_value(*found);
   }
 
   // Resolves `alias.Public_Type` through the ImportedPackage scope installed by
@@ -3005,7 +3073,11 @@ private:
         return semantic_.types.builtins().invalid;
       }
       const Symbol &symbol = semantic_.symbols.symbol(*member);
-      if (symbol.kind != SymbolKind::Type && symbol.kind != SymbolKind::TypeParameter) {
+      if (symbol.kind != SymbolKind::Type &&
+          symbol.kind != SymbolKind::TypeParameter) {
+        if (const std::optional<TypeId> type = constant_type_value(*member)) {
+          return *type;
+        }
         diagnostics_.error(names.back().range, "imported name does not denote a type");
         return semantic_.types.builtins().invalid;
       }
@@ -3039,7 +3111,7 @@ private:
           binding.type.is_valid()) {
         return active_type(binding.type);
       }
-      return std::nullopt;
+      return constant_type_value(*symbol);
     }
     if (node.kind == NodeKind::BracketExpression &&
         !node.children.empty()) {
@@ -4405,11 +4477,13 @@ TypeId resolve_type_syntax(
     const SyntaxTree &tree,
     NodeId type,
     ScopeId scope,
+    const ConstantTable &active_constants,
+    const std::vector<ConstantTypeBinding> &active_types,
     const TargetFacts &target,
     DiagnosticSink &diagnostics) {
   TypeResolver resolver(
       sources, loaded, package, selections, diagnostics,
-      nullptr, nullptr, nullptr, &target);
+      &active_constants, &active_types, nullptr, &target);
   return resolver.resolve_one_type(tree, type, scope);
 }
 
@@ -4446,11 +4520,13 @@ TypeId resolve_local_procedure_signature(
     NodeId procedure,
     ScopeId scope,
     SymbolId owner,
+    const ConstantTable &active_constants,
+    const std::vector<ConstantTypeBinding> &active_types,
     const TargetFacts &target,
     DiagnosticSink &diagnostics) {
   TypeResolver resolver(
       sources, loaded, package, selections, diagnostics,
-      nullptr, nullptr, nullptr, &target);
+      &active_constants, &active_types, nullptr, &target);
   return resolver.resolve_one_procedure(
       tree, declaration, procedure, scope, owner);
 }

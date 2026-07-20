@@ -64,6 +64,15 @@ void test_common_typed_bodies(TestState &state) {
   CheckedSource source(R"draft(
 package bodies
 
+OS_Type_Value :: type_of(target.os)
+
+Box[T: type] :: struct {
+    value: T,
+}
+
+selected_os: OS_Type_Value
+selected_box: Box[OS_Type_Value]
+
 Pair :: struct {
     left: u64,
     right: u64,
@@ -157,6 +166,14 @@ rune_value :: proc() -> rune {
 }
 
 main :: proc() {
+    Local_OS :: type_of(target.os)
+    local_os: Local_OS = target.os
+    current_os: OS_Type_Value = target.os
+    current_box: Box[OS_Type_Value] =
+        Box[OS_Type_Value]{value = target.os}
+    assert(current_os == .macos)
+    assert(local_os == .macos)
+    assert(current_box.value == .macos)
     pair: Pair
     pair.left = 1
     value := add(20, 21)
@@ -1638,6 +1655,8 @@ Code :: enum i16 {
     Seven = 7,
 }
 
+Target_OS_Type_Value :: type_of(target.os)
+
 small :: proc() -> i8 {
     return cast[i8](127.9)
 }
@@ -1656,6 +1675,13 @@ scalar :: proc(value: i64) -> rune {
 
 code :: proc(value: i64) -> Code {
     return cast[Code](cast[i16](value))
+}
+
+target_os :: proc(value: u8) -> Target_Operating_System {
+    static_assert(cast[Target_Operating_System](cast[u8](0)) == .macos)
+    static_assert(cast[Target_Operating_System](cast[u8](1)) == .linux)
+    static_assert(cast[Target_OS_Type_Value](cast[u8](1)) == .linux)
+    return cast[Target_Operating_System](value)
 }
 )draft");
   if (safe.diagnostics.has_errors()) {
@@ -1682,6 +1708,10 @@ surrogate :: proc() -> rune {
 
 invalid_code :: proc() -> Code {
     return cast[Code](cast[i16](1))
+}
+
+invalid_target_os :: proc() -> Target_Operating_System {
+    return cast[Target_Operating_System](cast[u8](2))
 }
 )draft");
   EXPECT(state, !failing.bodies.ok);
@@ -1976,6 +2006,8 @@ main :: proc() {
     when (target).os == .macos &&
          (target).has_feature("neon") &&
          target.os == (.macos) &&
+         (.macos) == target.os &&
+         .aarch64 == target.arch &&
          target.os == target.os &&
          type_kind(type_of(raw_data(target.identity))) == .multi_pointer {
         result = 42
@@ -2015,15 +2047,21 @@ main :: proc() {
     when false && target.has_feature("invented-feature") &&
          type_kind(type_of(raw_data("ok"))) == .multi_pointer {
     }
+    when .macos == target.arch {
+    }
+    when .neon == target.os {
+    }
 }
 )draft");
   EXPECT(state, !invalid.bodies.ok);
-  EXPECT(state, invalid.diagnostics.error_count() == 4);
+  EXPECT(state, invalid.diagnostics.error_count() == 6);
 
   bool saw_wrong_type = false;
   bool saw_missing_argument = false;
   bool saw_short_circuited_wrong_type = false;
   bool saw_unknown_feature = false;
+  bool saw_reverse_os = false;
+  bool saw_reverse_feature = false;
   for (const draft::Diagnostic &diagnostic :
        invalid.diagnostics.diagnostics()) {
     const std::string_view spelling = invalid.sources.text(diagnostic.range);
@@ -2041,11 +2079,143 @@ main :: proc() {
         (diagnostic.message ==
              "unrecognized target feature 'invented-feature'" &&
          spelling == "\"invented-feature\"");
+    saw_reverse_os = saw_reverse_os || spelling == ".macos";
+    saw_reverse_feature = saw_reverse_feature || spelling == ".neon";
   }
   EXPECT(state, saw_wrong_type);
   EXPECT(state, saw_missing_argument);
   EXPECT(state, saw_short_circuited_wrong_type);
   EXPECT(state, saw_unknown_feature);
+  EXPECT(state, saw_reverse_os);
+  EXPECT(state, saw_reverse_feature);
+}
+
+// A folded target query is a leaf only after each source argument has passed
+// ordinary type checking. Constant evaluation may select one conditional
+// argument branch, but package, member, and body preflight must still reject a
+// malformed branch which execution did not visit.
+void test_target_query_argument_preflight(TestState &state) {
+  CheckedSource invalid(R"draft(
+package bodies
+
+when target.has_feature("neon" if true else 42) &&
+     type_kind(type_of(raw_data("ok"))) == .multi_pointer {
+    Package_Selected :: true
+}
+
+Broken :: struct {
+    when target.has_feature("neon" if true else false) &&
+         type_kind(type_of(raw_data("ok"))) == .multi_pointer {
+        selected: bool,
+    }
+}
+
+main :: proc() {
+    when target.has_feature("neon" if true else 1.5) &&
+         type_kind(type_of(raw_data("ok"))) == .multi_pointer {
+    }
+}
+
+probe :: proc(feature: string) {
+    when false && target.has_feature(feature) &&
+         type_kind(type_of(raw_data("ok"))) == .multi_pointer {
+    }
+}
+)draft");
+  EXPECT(state, !invalid.bodies.ok);
+  EXPECT(state, invalid.diagnostics.error_count() == 4);
+
+  bool saw_package_branch = false;
+  bool saw_member_branch = false;
+  bool saw_body_branch = false;
+  bool saw_runtime_feature = false;
+  for (const draft::Diagnostic &diagnostic :
+       invalid.diagnostics.diagnostics()) {
+    const std::string_view spelling = invalid.sources.text(diagnostic.range);
+    const bool expected_mismatch = diagnostic.message.find(
+        "does not match expected type") != std::string::npos;
+    saw_package_branch = saw_package_branch ||
+        (expected_mismatch && spelling == "42");
+    saw_member_branch = saw_member_branch ||
+        (expected_mismatch && spelling == "false");
+    saw_body_branch = saw_body_branch ||
+        (expected_mismatch && spelling == "1.5");
+    saw_runtime_feature = saw_runtime_feature ||
+        (diagnostic.message ==
+             "target.has_feature requires a compile-time string" &&
+         spelling == "feature");
+  }
+  EXPECT(state, saw_package_branch);
+  EXPECT(state, saw_member_branch);
+  EXPECT(state, saw_body_branch);
+  EXPECT(state, saw_runtime_feature);
+  if (invalid.diagnostics.error_count() != 4 || !saw_package_branch ||
+      !saw_member_branch || !saw_body_branch || !saw_runtime_feature) {
+    std::cerr << draft::render_diagnostics(
+        invalid.sources, invalid.diagnostics);
+  }
+}
+
+// Statement `when` selection occurs after preceding locals are declared. This
+// is essential for ordinary lexical shadowing: the package semantic graph must
+// not select a branch against the predeclared target object before it can see a
+// body-local binding with the same name.
+void test_statement_when_uses_lexical_bindings(TestState &state) {
+  CheckedSource valid(R"draft(
+package bodies
+
+Target_Snapshot :: struct {
+    os: Target_Operating_System,
+}
+
+compile_time_shadow :: proc() -> int {
+    target :: 42
+    when target == 42 {
+        static_assert(type_of(target) == int)
+        return 1
+    } else {
+        return 0
+    }
+}
+
+runtime_shadow :: proc() -> int {
+    target := 42
+    when type_of(target) == int {
+        return target
+    } else {
+        return 0
+    }
+}
+
+member_type_shadow :: proc() -> int {
+    target := Target_Snapshot{os = .macos}
+    when type_of(target.os) == Target_Operating_System {
+        return 1
+    } else {
+        return 0
+    }
+}
+
+materialized_target_facts :: proc() -> bool {
+    os := target.os
+    neon := target.has_feature("neon")
+    return os == target.os && neon == target.has_feature("neon")
+}
+
+main :: proc() {
+    assert(compile_time_shadow() == 1)
+    assert(runtime_shadow() == 42)
+    assert(member_type_shadow() == 1)
+    assert(materialized_target_facts())
+}
+)draft");
+  if (valid.diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(
+        valid.sources, valid.diagnostics);
+  }
+  EXPECT(state, valid.semantics.ok);
+  EXPECT(state, valid.bodies.ok);
+  EXPECT(state, !valid.diagnostics.has_errors());
 }
 
 void test_integer_shift_count_types(TestState &state) {
@@ -2531,6 +2701,18 @@ inspect_types :: proc() {
     static_assert(type_of(runtime_value()) == int)
     static_assert(type_of(1) == int)
 
+    // Runtime locals still have compile-time-visible static types. An inline
+    // constructor is the exact type value, so this comparison neither reads
+    // the string nor requires a named alias for [^]u8.
+    payload := "draft"
+    data := raw_data(payload)
+    static_assert(type_of(data) == [^]u8)
+    static_assert([^]u8 == type_of(data))
+    static_assert(type_of(payload) == string)
+    static_assert([]u8 != [^]u8)
+    static_assert(Callback == proc(value: i32, flag: bool) -> u64)
+    static_assert(Vector == #simd[4]u32)
+
     // Exercise every stable Type_Kind alternative. This is intentionally
     // exhaustive: the compiler-defined enum is source API, and reserved-word
     // alternatives such as `.struct` and `.distinct` must remain usable.
@@ -2936,6 +3118,8 @@ int main() {
   test_storage_pointer_and_distinct_semantics(state);
   test_raw_string_data_intrinsic(state);
   test_selected_when_condition_type_validation(state);
+  test_target_query_argument_preflight(state);
+  test_statement_when_uses_lexical_bindings(state);
   test_integer_shift_count_types(state);
   test_conditional_context_from_either_branch(state);
   test_compound_assignment_operators(state);

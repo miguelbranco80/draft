@@ -470,12 +470,13 @@ private:
     return names.back().text;
   }
 
-  // Runtime HIR intentionally has no value representing some compile-time-only
-  // bindings or the predeclared `target` object. The validation-only pass
-  // nevertheless has to type-check a complete selected `when` condition so
-  // short-circuiting or type_of cannot hide malformed source. Import an
-  // already-evaluated constant binding, or the typed result of a direct target
-  // field or query, from the authoritative constant evaluator:
+  // Runtime HIR intentionally has no value representing the predeclared
+  // `target` object, but each target fact and query is an ordinary compile-time
+  // scalar which may be materialized in executable source. The validation-only
+  // pass additionally needs to import already-evaluated constant bindings so a
+  // complete selected `when` condition can be checked without short-circuiting
+  // away malformed source. Import only those exact leaves from the
+  // authoritative constant evaluator:
   //
   //   target.pointer_bits
   //   target.has_feature("neon")
@@ -495,16 +496,14 @@ private:
   // still report the authoritative unrecognized-feature diagnostic rather than
   // a secondary runtime-HIR error about the predeclared target object.
   [[nodiscard]] std::optional<HirExpressionId>
-  check_validation_only_compile_time_expression(
+  check_compile_time_leaf_expression(
       const SyntaxTree &tree,
       NodeId expression_id,
       ScopeId scope,
       TypeId expected) {
-    if (!type_validation_only_) return std::nullopt;
-
     const SyntaxNode &expression = tree.node(expression_id);
     bool candidate = false;
-    if (expression.kind == NodeKind::NameExpression) {
+    if (type_validation_only_ && expression.kind == NodeKind::NameExpression) {
       const std::optional<SourceName> name =
           single_name_expression(tree, expression_id);
       const std::optional<SymbolId> symbol = name.has_value()
@@ -520,6 +519,27 @@ private:
       const std::optional<std::string> called_member = direct_target_member(
           tree, expression.children.front(), scope);
       candidate = called_member.has_value();
+
+      if (candidate && *called_member == "has_feature") {
+        // The constant evaluator owns the call contract and selected feature
+        // value, but evaluating the complete call would skip any unselected
+        // branch inside an argument such as
+        //
+        //   target.has_feature("neon" if true else 42)
+        //
+        // Preflight every supplied argument as an ordinary expression before
+        // importing the folded call. Do not impose the string context here:
+        // the evaluator will issue its precise arity/type/feature diagnostic
+        // for the selected value, while ordinary conditional checking still
+        // rejects incompatible hidden branches without duplicating the call's
+        // contract error for a simple `target.has_feature(42)`.
+        for (std::size_t index = 1;
+             index < expression.children.size();
+             ++index) {
+          (void)check_expression(
+              tree, expression.children[index], scope);
+        }
+      }
     }
     if (!candidate) return std::nullopt;
 
@@ -1704,6 +1724,12 @@ private:
 
   [[nodiscard]] bool valid_enum_constant(
       TypeId target, const BigInteger &value) const {
+    const std::optional<std::uint64_t> compiler_value = value.to_u64();
+    if (compiler_value.has_value() &&
+        compiler_enum_member_name(
+            semantic_, target, *compiler_value).has_value()) {
+      return true;
+    }
     const std::optional<SymbolId> owner = type_owner(target);
     if (!owner.has_value()) return false;
     for (const AggregateMember &member : semantic_.aggregate_members) {
@@ -2997,10 +3023,13 @@ private:
     const SyntaxNode &node = tree.node(node_id);
     if (node_is_type_syntax(node.kind) ||
         node.kind == NodeKind::BracketExpression) {
+      const ConstantTable visible_constants = active_constant_table();
+      const std::vector<ConstantTypeBinding> visible_types =
+          active_constant_types();
       return substitute_active(
           resolve_type_syntax(
               sources_, loaded_, semantic_, selections_, tree, node_id, scope,
-              target_,
+              visible_constants, visible_types, target_,
               diagnostics_),
           node.range);
     }
@@ -3008,6 +3037,11 @@ private:
       const Symbol binding = semantic_.symbols.symbol(*imported);
       if (binding.kind == SymbolKind::Type || binding.kind == SymbolKind::TypeParameter) {
         return substitute_active(binding.type, node.range);
+      }
+      const ConstantValue *constant = imported_constant(*imported);
+      if (constant != nullptr && constant->kind == ConstantKind::Type &&
+          constant->type_index < semantic_.types.size()) {
+        return substitute_active(TypeId{constant->type_index}, node.range);
       }
       diagnostics_.error(node.range, "imported name does not denote a type");
       return semantic_.types.builtins().invalid;
@@ -3019,6 +3053,18 @@ private:
       const Symbol binding = semantic_.symbols.symbol(*symbol);
       if (binding.kind == SymbolKind::Type || binding.kind == SymbolKind::TypeParameter) {
         return substitute_active(binding.type, node.range);
+      }
+
+      // `::` may name a computed type value rather than syntactically declaring
+      // a type alias: `T :: type_of(value); cast[T](other)`. Its Symbol type is
+      // the compile-time meta-type, while the retained ConstantValue carries
+      // the exact TypeId needed by this type position.
+      const ConstantValue *constant = constants_.find(*symbol);
+      if (constant == nullptr) constant = active_constant(*symbol);
+      if (constant != nullptr && constant->kind == ConstantKind::Type &&
+          constant->type_index < semantic_.types.size()) {
+        return substitute_active(
+            TypeId{constant->type_index}, node.range);
       }
       diagnostics_.error(name->range, "name does not denote a type");
       return semantic_.types.builtins().invalid;
@@ -4784,10 +4830,31 @@ private:
       TypeId expected = {}) {
     const SyntaxNode &node = tree.node(expression_id);
     if (const std::optional<HirExpressionId> target =
-            check_validation_only_compile_time_expression(
+            check_compile_time_leaf_expression(
                 tree, expression_id, scope, expected)) {
       return *target;
     }
+
+    // Type constructors are first-class compile-time values when expression
+    // grammar places them beside another value, for example
+    // `type_of(bytes) == [^]u8`. Named types already arrive through the
+    // NameExpression case below, while structural constructors retain their
+    // dedicated syntax nodes. Resolve those nodes with the ordinary type
+    // resolver so validation-only preflight and normal body checking observe
+    // the same exact TypeId. The resulting HIR constant is compile-time-only
+    // and the existing meta-type boundary prevents it from reaching MIR.
+    if (node_is_type_syntax(node.kind)) {
+      const TypeId value = type_value_expression(tree, expression_id, scope);
+      if (is_invalid_type(value)) return invalid_expression(node.range);
+      HirExpression expression;
+      expression.kind = HirExpressionKind::Constant;
+      expression.range = node.range;
+      expression.type = apply_expected_type(
+          semantic_.types.builtins().meta_type, expected, node.range);
+      expression.constant = ConstantValue::make_type(value.value);
+      return hir_.add_expression(std::move(expression));
+    }
+
     switch (node.kind) {
     case NodeKind::LiteralExpression: {
       if (node.token_begin >= node.token_end) return invalid_expression(node.range);
@@ -5998,8 +6065,17 @@ private:
             right_expected);
       }
       TypeId result = left_type;
-      if (hir_.expression(right).type != left_type) {
-        result = common_numeric_type(left_type, hir_.expression(right).type, node.range);
+      const TypeId right_type = hir_.expression(right).type;
+      if (is_invalid_type(left_type) || is_invalid_type(right_type)) {
+        // Both branches were checked above, so their precise source error is
+        // already available. A conditional has no meaningful common-type
+        // operation after either branch is invalid; attempting numeric
+        // unification here would add a misleading secondary diagnostic to an
+        // unrelated mismatch such as `"text" if true else 42`.
+        return invalid_expression(node.range);
+      }
+      if (right_type != left_type) {
+        result = common_numeric_type(left_type, right_type, node.range);
       }
       HirExpression expression;
       expression.kind = HirExpressionKind::Conditional;
@@ -6127,9 +6203,12 @@ private:
       expression.scope = scope;
       for (NodeId child : node.children) {
         if (node_is_type_syntax(tree.node(child).kind)) {
+          const ConstantTable visible_constants = active_constant_table();
+          const std::vector<ConstantTypeBinding> visible_types =
+              active_constant_types();
           result = resolve_type_syntax(
               sources_, loaded_, semantic_, selections_, tree, child, scope,
-              target_, diagnostics_);
+              visible_constants, visible_types, target_, diagnostics_);
         } else if (tree.node(child).kind == NodeKind::AsmInput &&
                    !tree.node(child).children.empty()) {
           expression.operands.push_back(check_expression(
@@ -6617,6 +6696,8 @@ private:
         procedure_id,
         scope,
         id,
+        active_constant_table(),
+        active_constant_types(),
         target_,
         diagnostics_);
     signature = substitute_active(signature, declaration.range);
@@ -6711,9 +6792,12 @@ private:
     for (std::size_t index = 1; index < declaration.children.size(); ++index) {
       const NodeId child = declaration.children[index];
       if (node_is_type_syntax(tree.node(child).kind)) {
+        const ConstantTable visible_constants = active_constant_table();
+        const std::vector<ConstantTypeBinding> visible_types =
+            active_constant_types();
         declared_type = resolve_type_syntax(
             sources_, loaded_, semantic_, selections_, tree, child, scope,
-            target_, diagnostics_);
+            visible_constants, visible_types, target_, diagnostics_);
         declared_type = substitute_active(
             declared_type, tree.node(child).range);
       } else if (tree.node(child).kind != NodeKind::ParametricParameterList) {
@@ -7391,17 +7475,14 @@ private:
       if (node.children.empty()) break;
       {
         const NodeId condition_id = node.children.front();
-        const ConditionalSelection *global_selection =
-            selections_.find({tree.file(), statement_id});
         const bool dependent =
             expression_references_parametric_parameter(
                 tree, condition_id, scope) ||
             // Concrete parameter symbols already carry substituted types, so
-            // the source expression no longer looks symbolic. The missing
-            // package-global selection is the durable marker left by constant
-            // discovery for the corresponding dependent source site.
-            (current_instance_index_.has_value() &&
-             global_selection == nullptr);
+            // the source expression may no longer look symbolic. Every
+            // concrete instance nevertheless selects its body conditions with
+            // the active substitution overlay at this exact program point.
+            current_instance_index_.has_value();
 
         if ((!dependent || current_instance_index_.has_value()) &&
             initializer_requires_type_preflight(tree, condition_id)) {
@@ -7529,59 +7610,44 @@ private:
           break;
         }
 
-        if (global_selection != nullptr) {
+        // Non-parametric body conditions are also selected here rather than in
+        // the package graph. At this point every preceding lexical declaration
+        // is visible, so ordinary shadowing and source-order rules are exact.
+        const ConstantTable visible_constants = active_constant_table();
+        const std::vector<ConstantTypeBinding> visible_types =
+            active_constant_types();
+        const std::vector<ConstantStaticPackBinding> visible_packs =
+            active_constant_packs();
+        const std::optional<EvaluatedConstant> evaluated =
+            evaluate_typed_constant_expression(
+                sources_,
+                loaded_,
+                semantic_,
+                target_,
+                tree,
+                condition_id,
+                scope,
+                diagnostics_,
+                &visible_constants,
+                &visible_types,
+                semantic_.types.builtins().bool_type,
+                &visible_packs);
+        if (evaluated.has_value() &&
+            evaluated->value.kind == ConstantKind::Bool) {
           if (const std::optional<HirBlockId> selected =
                   check_selected_when_branch(
                       tree,
                       node,
-                      global_selection->select_true,
+                      evaluated->value.boolean,
                       scope,
                       result_type,
                       depth)) {
             statement.blocks.push_back(*selected);
           }
-        } else {
-          // Static-pack iteration bodies create their value/index scopes only
-          // in this phase, so TypeResolver deliberately leaves nested sites
-          // out of the package-wide selection round. A condition independent
-          // of those bindings (for example target.os) is still an ordinary
-          // constant and can be selected exactly here.
-          const ConstantTable visible_constants = active_constant_table();
-          const std::vector<ConstantTypeBinding> visible_types =
-              active_constant_types();
-          const std::vector<ConstantStaticPackBinding> visible_packs =
-              active_constant_packs();
-          const std::optional<EvaluatedConstant> evaluated =
-              evaluate_typed_constant_expression(
-                  sources_,
-                  loaded_,
-                  semantic_,
-                  target_,
-                  tree,
-                  condition_id,
-                  scope,
-                  diagnostics_,
-                  &visible_constants,
-                  &visible_types,
-                  semantic_.types.builtins().bool_type,
-                  &visible_packs);
-          if (evaluated.has_value() &&
-              evaluated->value.kind == ConstantKind::Bool) {
-            if (const std::optional<HirBlockId> selected =
-                    check_selected_when_branch(
-                        tree,
-                        node,
-                        evaluated->value.boolean,
-                        scope,
-                        result_type,
-                        depth)) {
-              statement.blocks.push_back(*selected);
-            }
-          } else if (evaluated.has_value()) {
-            diagnostics_.error(
-                tree.node(condition_id).range,
-                "compile-time 'when' condition must be a bool");
-          }
+        } else if (evaluated.has_value()) {
+          diagnostics_.error(
+              tree.node(condition_id).range,
+              "compile-time 'when' condition must be a bool");
         }
       }
       break;

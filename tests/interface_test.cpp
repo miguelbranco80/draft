@@ -212,6 +212,7 @@ pub add :: proc(a, b: i64) -> i64 {
 
 pub Add_Procedure :: add
 pub Point_Type :: type_element(^Point)
+pub OS_Type :: type_of(target.os)
 
 Hidden :: struct { value: u64, }
 )draft");
@@ -246,6 +247,8 @@ when math.Point_Type == math.Point {
     Type_Selected :: Does_Not_Exist
 }
 
+Linux :: cast[math.OS_Type](cast[u8](1))
+
 pub echo :: proc(point: math.Point) -> math.Point {
     copy := math.Point{x = point.x, y = math.Count}
     return copy
@@ -266,6 +269,8 @@ main :: proc() {
     assert(value == 8)
     assert(callback(20, 22) == 42)
     assert(float_count() == 7.0)
+    static_assert(cast[math.OS_Type](cast[u8](1)) == .linux)
+    static_assert(Linux == .linux)
 }
 )draft");
   const std::optional<draft::SyntaxReference> import = first_import(consumer);
@@ -297,11 +302,11 @@ main :: proc() {
     std::cerr << draft::render_diagnostics(sources, diagnostics);
   }
   EXPECT(state, dependency_semantics.ok);
-  EXPECT(state, dependency_interface.declarations.size() == 6);
+  EXPECT(state, dependency_interface.declarations.size() == 7);
   EXPECT(state, consumer_semantics.ok);
   EXPECT(state, bodies.ok);
   EXPECT(state, bodies.checked_procedures == 3);
-  EXPECT(state, consumer_semantics.package.imported_symbols.size() == 6);
+  EXPECT(state, consumer_semantics.package.imported_symbols.size() == 7);
   EXPECT(state, consumer_semantics.package.imported_types.size() == 2);
   EXPECT(state, consumer_interface.declarations.size() == 1);
   EXPECT(state, !diagnostics.has_errors());

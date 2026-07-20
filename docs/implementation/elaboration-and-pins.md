@@ -104,10 +104,13 @@ the ordinary typed HIR path, so an expression or statement site used by a
 constant or declaration-level `when` receives the same expected type, lexical
 bindings, denials, enclosing declaration, and structured branch facts as a
 runtime body site. A direct `when ...` condition is evaluator-owned and receives
-the compiler-known `bool` expectation. These sites run in interface rounds; a
-later round reevaluates the constant and may reveal another declaration/member
-completeness set. Complete semantic checking retains the rejecting behavior, so
-only the resolver/offline pin scheduler can cross this temporary blocked state.
+the compiler-known `bool` expectation. A statement condition may contribute a
+provisional discovery selection, but executable HIR selects it again during
+source-ordered body checking, after lexical locals exist. These sites run in
+interface rounds; a later round reevaluates the constant and may reveal another
+declaration/member completeness set. Complete semantic checking retains the
+rejecting behavior, so only the resolver/offline pin scheduler can cross this
+temporary blocked state.
 Package-level conditional rounds share one persistent site namespace. When an
 earlier site has already been replaced, its generated-source map reserves that
 structural identity while obligations for the next round are built. The next
@@ -327,7 +330,7 @@ upper source re-evaluates to the displayed value at the site. Other loop shapes
 produce no inferred range.
 
 `draft-agent-obligation-v19`, synthesis request v21 / prompt v22, judgment
-request/prompt v4, and compiler content v138 identities make these facts and
+request/prompt v4, and compiler content v139 identities make these facts and
 the compiler-checked correction policy stale-pin and evidence inputs. The
 synthesis adapter uses provider identity `openai-codex-cli-v28`; the judgment
 adapter uses `openai-codex-cli-v23`. Both recheck the canonical

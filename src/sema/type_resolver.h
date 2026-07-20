@@ -34,8 +34,10 @@ void resolve_package_types(
 
 // Resolves one type node encountered after package signature resolution, such as
 // a local declaration annotation. The caller supplies its lexical scope and the
-// active compile-time member selections. The operation may intern new structural
-// or anonymous types but does not revisit unrelated package declarations.
+// active compile-time member selections and value/type overlays. A ready
+// ConstantValue::Type in those bindings denotes its represented TypeId in the
+// same way as a source Type symbol. The operation may intern new structural or
+// anonymous types but does not revisit unrelated package declarations.
 [[nodiscard]] TypeId resolve_type_syntax(
     const SourceManager &sources,
     const LoadedPackage &loaded,
@@ -44,6 +46,8 @@ void resolve_package_types(
     const SyntaxTree &tree,
     NodeId type,
     ScopeId scope,
+    const ConstantTable &active_constants,
+    const std::vector<ConstantTypeBinding> &active_types,
     const TargetFacts &target,
     DiagnosticSink &diagnostics);
 
@@ -68,8 +72,10 @@ resolve_dependent_integer_expression_syntax(
 // Resolves one procedure declaration introduced in a lexical statement scope.
 // Body checking first declares owner so recursion can find the name, then calls
 // this routine to create its optional parametric scope, immutable parameter
-// symbols, and canonical procedure type. Package declarations use the same
-// internal path during the ordinary signature-resolution pass.
+// symbols, and canonical procedure type. Active bindings allow a preceding
+// lexical type-valued constant or enclosing generic parameter to appear in the
+// signature. Package declarations use the same internal path during the
+// ordinary signature-resolution pass.
 [[nodiscard]] TypeId resolve_local_procedure_signature(
     const SourceManager &sources,
     const LoadedPackage &loaded,
@@ -80,6 +86,8 @@ resolve_dependent_integer_expression_syntax(
     NodeId procedure,
     ScopeId scope,
     SymbolId owner,
+    const ConstantTable &active_constants,
+    const std::vector<ConstantTypeBinding> &active_types,
     const TargetFacts &target,
     DiagnosticSink &diagnostics);
 

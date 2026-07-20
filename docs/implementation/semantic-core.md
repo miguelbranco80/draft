@@ -14,6 +14,17 @@ query implementation in `sema/type_inspection`; query applicability is not
 reimplemented by LLVM lowering or core packages. `type_of` checks an operand's
 static type without retaining it as an evaluated operand, so an unused call,
 trap, or runtime read cannot become observable through inspection.
+Structural type constructors used as expressions, including pointers, views,
+arrays, tuples, procedures, and SIMD vectors, resolve to the same exact `TypeId`
+and meta-type constant as a named type; they do not pass through the runtime
+expression or lowering paths. A `::` constant whose value is a
+`ConstantValue::Type` may in turn supply that exact TypeId to an annotation,
+structural type, parametric type/procedure argument, or cast. TypeResolver probes
+the ordinary constant interpreter when a name in type syntax is not a declared
+type, so computed values and their aliases have one meaning in every type
+position. Ready imported type constants take the same path after interface
+rewriting; the meta-type stored on either Symbol is never mistaken for the
+represented type.
 Package-constant evaluation uses a non-executing declared-result reader to fold
 the type value, then reuses the ordinary BodyChecker expression path for every
 package initializer and selected declaration, aggregate-member, or procedure
@@ -24,30 +35,37 @@ runtime-oriented HIR. The preflight checks complete call arity, arguments,
 slicing, members, and nested intrinsics without lowering or executing an
 inspected expression; the result reader is not a second source type checker.
 
-The validation-only HIR has no runtime representation for some compile-time
-bindings or for the predeclared `target` object. BodyChecker imports an
-already-evaluated binding or a direct target field or query as a typed constant
-from the ordinary constant evaluator. Importing every target field separately
-preserves grouping, contextual alternatives, and target-to-target comparisons
-without duplicating the compiler-defined target enum types in BodyChecker. The
-diagnosing evaluator handles target leaves so a short-circuited invalid feature
-still receives the authoritative feature diagnostic. The bridge never imports
-an enclosing logical or conditional result, because doing so could repeat the
-short-circuit behavior and hide the independent operand the pass is meant to
-validate. Invalid children propagate without secondary reflection or operator
-diagnostics once the exact operand error has been reported. If validation ever
-produces an invalid HIR value without such a child diagnostic, the preflight
-boundary emits a fail-closed static-type error; a selected declaration or
-statement branch cannot disappear silently.
+HIR has no value for the whole predeclared `target` object. BodyChecker instead
+imports each direct target field or query as a typed constant from the ordinary
+constant evaluator, both in validation and executable source; this is how
+`os := target.os` materializes the compile-time scalar without manufacturing a
+runtime target record. Validation-only HIR may additionally import an
+already-evaluated binding. Importing exact leaves preserves grouping,
+contextual alternatives, and target-to-target comparisons without duplicating
+the compiler-defined target enum types in BodyChecker. The diagnosing evaluator
+handles target leaves so a short-circuited invalid feature still receives the
+authoritative feature diagnostic. The bridge never imports an enclosing
+logical or conditional result, because doing so could repeat short-circuiting
+and hide the independent operand the pass is meant to validate. Invalid
+children propagate without secondary reflection or operator diagnostics once
+the exact operand error has been reported. If validation ever produces an
+invalid HIR value without such a child diagnostic, the preflight boundary emits
+a fail-closed static-type error; a selected declaration or statement branch
+cannot disappear silently.
 
 The five categorical target fields use separate compiler-defined enum rows in
 every `TypeStore`. The constant evaluator converts each profile spelling to its
 stable member ordinal and exact enum `TypeId` before comparison or reflection;
 sharing an integer representation therefore cannot make `target.os` compatible
 with `target.arch`. `type_of`, `type_name`, and member inspection observe those
-ordinary named enum types. Direct target-member recognition unwraps transparent
-parentheses around the target base, while preserving the normal rule that a
-lexical declaration named `target` shadows the predeclared object.
+ordinary named enum types. Contextual alternatives receive that exact type from
+either binary operand, and integer-to-enum casts validate the compiler-defined
+member table just as source enums validate their declared members. Direct
+target-member recognition unwraps transparent parentheses around the target
+base, while preserving the normal rule that a lexical declaration named
+`target` shadows the predeclared object. `target.has_feature` exposes its
+declared bool result to non-evaluating `type_of`, but validation still checks its
+arity, complete argument subtrees, compile-time string, and known spelling.
 
 At interface publication, every type-valued constant recursively rewrites its
 package-local TypeId into the same `InterfaceTypeId` graph used by public
@@ -95,11 +113,18 @@ user-facing enforcement point.
 Status: implemented for parametric procedure bodies and concrete generic
 instances.
 
-Constant discovery leaves a body `when` unselected when its expression names a
-type/value parameter or an ordinary value whose type graph contains one. The
-symbolic body checker then checks both branch HIR containers. An explicit
-refinement stack records the subject SymbolId, optional exact TypeId, allowed
-`TypeKind` set, and accumulated exact exclusions. Only the recognized
+Package discovery may record a provisional selection for a body `when` whose
+condition is already ready, allowing nested synthesis sites to be found. It
+does not require a pending statement condition, because body-local declarations
+do not exist in the package scope. BodyChecker always makes the authoritative
+selection again at the statement's source-ordered lexical point; preceding
+compile-time constants, ordinary locals visible through `type_of`, lexical
+shadowing, and concrete instance substitutions are therefore exact. A body
+`when` that names a type/value parameter or an ordinary value whose type graph
+contains one remains unselected in package discovery. The symbolic body checker
+then checks both branch HIR containers. An explicit refinement stack records
+the subject SymbolId, optional exact TypeId, allowed `TypeKind` set, and
+accumulated exact exclusions. Only the recognized
 `type_of(subject)` and `type_kind(type_of(subject))` comparisons add facts;
 arbitrary dependent booleans remain selection-only expressions. Refinements
 affect expression capability checks but never mutate declaration types or
@@ -392,7 +417,7 @@ traps, and message construction used solely by an assertion cannot survive,
 and no condition is converted into an optimizer assumption.
 
 The versioned `draft.resolved-program.v6` hash records the selected root and
-assertion mode beside compiler content v138. `build`, `resolve`, and `judge`
+assertion mode beside compiler content v139. `build`, `resolve`, and `judge`
 expose the same explicit flag so a provider-free manifest cannot be replayed
 under a different mode. Test and benchmark compilations deliberately override
 the release choice to assertions on and receive their own resolved validation

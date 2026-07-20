@@ -332,6 +332,8 @@ when Accent == '\u{e9}' {
   }
   EXPECT(state, source.analysis.ok);
   EXPECT(state, !source.diagnostics.has_errors());
+  // The statement selection in target_word is provisional discovery evidence;
+  // BodyChecker still evaluates it again at its lexical program point.
   EXPECT(state, source.analysis.selections.entries.size() == 11);
   EXPECT(state, find_symbol(source.analysis.package, "Word").has_value());
   EXPECT(state, find_symbol(source.analysis.package, "Platform_Value").has_value());
@@ -1397,7 +1399,7 @@ Bad_Dead_Conditional :: 42 if true else "wrong"
   EXPECT(state, rendered.find(
                     "logical operators require matching bool operands") !=
                     std::string::npos);
-  EXPECT(state, rendered.find("numeric operands require one common type") !=
+  EXPECT(state, rendered.find("does not match expected type") !=
                     std::string::npos);
 }
 
@@ -1697,7 +1699,7 @@ dead_conditional_type: i64 = 42 if true else "wrong"
                     std::string::npos);
   EXPECT(state, rendered.find("logical operators require matching bool operands") !=
                     std::string::npos);
-  EXPECT(state, rendered.find("numeric operands require one common type") !=
+  EXPECT(state, rendered.find("does not match expected type") !=
                     std::string::npos);
 }
 
@@ -1762,10 +1764,39 @@ Observed_Type :: type_of(runtime_only())
 Raw_Data_Type :: type_of(raw_data(runtime_text()))
 Sliced_Raw_Data_Type :: type_of(raw_data("abc"[1:]))
 Length_Type :: type_of(len(runtime_text()))
+Feature_Type :: type_of((target).has_feature("neon"))
+Target_OS_Type_Value :: type_of(target.os)
+Integer_Type_Value :: type_of(1)
+Callback :: proc(value: i32) -> i32
+Vector :: #simd[4]u32
+callback_identity :: proc(value: i32) -> i32 {
+    return value
+}
+Target_MacOS :: cast[Target_Operating_System](cast[u8](0))
+Target_Linux :: cast[Target_Operating_System](cast[u8](1))
+Target_Linux_Through_Type_Value :: cast[Target_OS_Type_Value](cast[u8](1))
+Integer_Through_Type_Value :: cast[Integer_Type_Value](42)
 Element_Type :: type_element(^u64)
 Meta_Type :: type_of(u64)
 Array_Name :: type_name([4]u8)
 Array_Count :: type_element_count([4]u8)
+
+// A structural type constructor is the type value itself, not runtime syntax.
+// Keep this condition direct so the test exercises both constant evaluation
+// and the selected-condition type-validation preflight.
+when type_of(raw_data(runtime_text())) == [^]u8 && []u8 != [^]u8 {
+    Exact_Structural_Type_Selected :: true
+}
+
+when type_of(callback_identity) == proc(value: i32) -> i32 &&
+     Callback == proc(value: i32) -> i32 &&
+     Vector == #simd[4]u32 {
+    Exact_Procedure_And_SIMD_Selected :: true
+}
+
+when .macos == target.os && .aarch64 == target.arch {
+    Reverse_Target_Alternatives_Selected :: true
+}
 
 when type_kind(Element_Type) == .unsigned_integer {
     Selected :: 1
@@ -1787,6 +1818,16 @@ when type_kind(Element_Type) == .unsigned_integer {
       find_symbol(source.analysis.package, "Sliced_Raw_Data_Type");
   const std::optional<draft::SymbolId> length =
       find_symbol(source.analysis.package, "Length_Type");
+  const std::optional<draft::SymbolId> feature_type =
+      find_symbol(source.analysis.package, "Feature_Type");
+  const std::optional<draft::SymbolId> target_macos =
+      find_symbol(source.analysis.package, "Target_MacOS");
+  const std::optional<draft::SymbolId> target_linux =
+      find_symbol(source.analysis.package, "Target_Linux");
+  const std::optional<draft::SymbolId> target_linux_through_type_value =
+      find_symbol(source.analysis.package, "Target_Linux_Through_Type_Value");
+  const std::optional<draft::SymbolId> integer_through_type_value =
+      find_symbol(source.analysis.package, "Integer_Through_Type_Value");
   const std::optional<draft::SymbolId> element =
       find_symbol(source.analysis.package, "Element_Type");
   const std::optional<draft::SymbolId> meta =
@@ -1797,19 +1838,40 @@ when type_kind(Element_Type) == .unsigned_integer {
       find_symbol(source.analysis.package, "Array_Count");
   const std::optional<draft::SymbolId> selected =
       find_symbol(source.analysis.package, "Selected");
+  const std::optional<draft::SymbolId> exact_structural_type_selected =
+      find_symbol(source.analysis.package, "Exact_Structural_Type_Selected");
+  const std::optional<draft::SymbolId> exact_procedure_and_simd_selected =
+      find_symbol(source.analysis.package, "Exact_Procedure_And_SIMD_Selected");
+  const std::optional<draft::SymbolId> reverse_target_alternatives_selected =
+      find_symbol(source.analysis.package, "Reverse_Target_Alternatives_Selected");
   EXPECT(state, observed.has_value());
   EXPECT(state, raw_data.has_value());
   EXPECT(state, sliced_raw_data.has_value());
   EXPECT(state, length.has_value());
+  EXPECT(state, feature_type.has_value());
+  EXPECT(state, target_macos.has_value());
+  EXPECT(state, target_linux.has_value());
+  EXPECT(state, target_linux_through_type_value.has_value());
+  EXPECT(state, integer_through_type_value.has_value());
   EXPECT(state, element.has_value());
   EXPECT(state, meta.has_value());
   EXPECT(state, name.has_value());
   EXPECT(state, count.has_value());
   EXPECT(state, selected.has_value());
+  EXPECT(state, exact_structural_type_selected.has_value());
+  EXPECT(state, exact_procedure_and_simd_selected.has_value());
+  EXPECT(state, reverse_target_alternatives_selected.has_value());
   if (!observed.has_value() || !raw_data.has_value() ||
       !sliced_raw_data.has_value() || !length.has_value() ||
-      !element.has_value() || !meta.has_value() || !name.has_value() ||
-      !count.has_value() || !selected.has_value()) {
+      !feature_type.has_value() || !target_macos.has_value() ||
+      !target_linux.has_value() ||
+      !target_linux_through_type_value.has_value() ||
+      !integer_through_type_value.has_value() || !element.has_value() ||
+      !meta.has_value() || !name.has_value() ||
+      !count.has_value() || !selected.has_value() ||
+      !exact_structural_type_selected.has_value() ||
+      !exact_procedure_and_simd_selected.has_value() ||
+      !reverse_target_alternatives_selected.has_value()) {
     return;
   }
 
@@ -1821,6 +1883,16 @@ when type_kind(Element_Type) == .unsigned_integer {
       source.analysis.constants.find(*sliced_raw_data);
   const draft::ConstantValue *length_value =
       source.analysis.constants.find(*length);
+  const draft::ConstantValue *feature_type_value =
+      source.analysis.constants.find(*feature_type);
+  const draft::ConstantValue *target_macos_value =
+      source.analysis.constants.find(*target_macos);
+  const draft::ConstantValue *target_linux_value =
+      source.analysis.constants.find(*target_linux);
+  const draft::ConstantValue *target_linux_through_type_value_value =
+      source.analysis.constants.find(*target_linux_through_type_value);
+  const draft::ConstantValue *integer_through_type_value_value =
+      source.analysis.constants.find(*integer_through_type_value);
   const draft::ConstantValue *element_value =
       source.analysis.constants.find(*element);
   const draft::ConstantValue *meta_value = source.analysis.constants.find(*meta);
@@ -1832,6 +1904,11 @@ when type_kind(Element_Type) == .unsigned_integer {
   EXPECT(state, raw_data_value != nullptr);
   EXPECT(state, sliced_raw_data_value != nullptr);
   EXPECT(state, length_value != nullptr);
+  EXPECT(state, feature_type_value != nullptr);
+  EXPECT(state, target_macos_value != nullptr);
+  EXPECT(state, target_linux_value != nullptr);
+  EXPECT(state, target_linux_through_type_value_value != nullptr);
+  EXPECT(state, integer_through_type_value_value != nullptr);
   EXPECT(state, element_value != nullptr);
   EXPECT(state, meta_value != nullptr);
   EXPECT(state, name_value != nullptr);
@@ -1839,7 +1916,10 @@ when type_kind(Element_Type) == .unsigned_integer {
   EXPECT(state, selected_value != nullptr);
   if (observed_value == nullptr || raw_data_value == nullptr ||
       sliced_raw_data_value == nullptr || length_value == nullptr ||
-      element_value == nullptr ||
+      feature_type_value == nullptr || target_macos_value == nullptr ||
+      target_linux_value == nullptr ||
+      target_linux_through_type_value_value == nullptr ||
+      integer_through_type_value_value == nullptr || element_value == nullptr ||
       meta_value == nullptr || name_value == nullptr ||
       count_value == nullptr || selected_value == nullptr) {
     return;
@@ -1849,6 +1929,7 @@ when type_kind(Element_Type) == .unsigned_integer {
   EXPECT(state, raw_data_value->kind == draft::ConstantKind::Type);
   EXPECT(state, sliced_raw_data_value->kind == draft::ConstantKind::Type);
   EXPECT(state, length_value->kind == draft::ConstantKind::Type);
+  EXPECT(state, feature_type_value->kind == draft::ConstantKind::Type);
   EXPECT(state, element_value->kind == draft::ConstantKind::Type);
   EXPECT(state, meta_value->kind == draft::ConstantKind::Type);
   if (observed_value->kind == draft::ConstantKind::Type) {
@@ -1878,6 +1959,24 @@ when type_kind(Element_Type) == .unsigned_integer {
         draft::TypeId{length_value->type_index} ==
             source.analysis.package.types.builtins().usize_type);
   }
+  if (feature_type_value->kind == draft::ConstantKind::Type) {
+    EXPECT(state,
+        draft::TypeId{feature_type_value->type_index} ==
+            source.analysis.package.types.builtins().bool_type);
+  }
+  EXPECT(state, target_macos_value->kind == draft::ConstantKind::Integer);
+  EXPECT(state, target_macos_value->integer.to_decimal() == "0");
+  EXPECT(state, target_linux_value->kind == draft::ConstantKind::Integer);
+  EXPECT(state, target_linux_value->integer.to_decimal() == "1");
+  EXPECT(state,
+      target_linux_through_type_value_value->kind ==
+          draft::ConstantKind::Integer);
+  EXPECT(state,
+      target_linux_through_type_value_value->integer.to_decimal() == "1");
+  EXPECT(state,
+      integer_through_type_value_value->kind == draft::ConstantKind::Integer);
+  EXPECT(state,
+      integer_through_type_value_value->integer.to_decimal() == "42");
   if (element_value->kind == draft::ConstantKind::Type) {
     EXPECT(state,
         source.analysis.package.types.type(
@@ -1901,6 +2000,10 @@ package conditions
 Bad_Element :: type_element(bool)
 Bad_Index :: type_member_type(Type_Kind, 100)
 Bad_Raw_Data_Type :: type_of(raw_data(42))
+Bad_Feature_Missing :: type_of(target.has_feature())
+Bad_Feature_Extra :: type_of(target.has_feature("neon", "extra"))
+Bad_Feature_Argument :: type_of(target.has_feature(42))
+Bad_Target_OS_Value :: cast[Target_Operating_System](cast[u8](2))
 
 runtime_text_with_value :: proc(value: int) -> string {
     return "runtime text"
@@ -1909,7 +2012,7 @@ runtime_text_with_value :: proc(value: int) -> string {
 Bad_Raw_Data_Call_Type :: type_of(raw_data(runtime_text_with_value()))
 )draft");
   EXPECT(state, !invalid.analysis.ok);
-  EXPECT(state, invalid.diagnostics.error_count() == 4);
+  EXPECT(state, invalid.diagnostics.error_count() == 8);
   const std::string rendered =
       draft::render_diagnostics(invalid.sources, invalid.diagnostics);
   EXPECT(state, rendered.find("type_element requires a pointer") !=
@@ -1920,6 +2023,15 @@ Bad_Raw_Data_Call_Type :: type_of(raw_data(runtime_text_with_value()))
       std::string::npos);
   EXPECT(state, rendered.find(
       "procedure call has the wrong number of arguments") !=
+      std::string::npos);
+  EXPECT(state, rendered.find(
+      "target.has_feature requires exactly one argument") !=
+      std::string::npos);
+  EXPECT(state, rendered.find(
+      "target.has_feature requires a compile-time string") !=
+      std::string::npos);
+  EXPECT(state, rendered.find(
+      "compile-time cast does not name an enum member") !=
       std::string::npos);
   EXPECT(state, rendered.find(
       "type_of requires an expression with a known static type") ==
@@ -2059,6 +2171,14 @@ when target.os == .neon {
     Unknown_Target_Alternative :: true
 }
 
+when .macos == target.arch {
+    Reverse_Mismatched_Target_Alternative :: true
+}
+
+when .neon == target.os {
+    Reverse_Unknown_Target_Alternative :: true
+}
+
 when false && (target).has_feature() &&
      type_kind(type_of(raw_data("ok"))) == .multi_pointer {
     Missing_Feature_Argument :: true
@@ -2075,8 +2195,8 @@ when false && target.has_feature(42) &&
 }
 )draft");
   EXPECT(state, !invalid.analysis.ok);
-  EXPECT(state, invalid.diagnostics.error_count() == 9);
-  if (invalid.diagnostics.error_count() != 9) {
+  EXPECT(state, invalid.diagnostics.error_count() == 11);
+  if (invalid.diagnostics.error_count() != 11) {
     std::cerr << draft::render_diagnostics(invalid.sources, invalid.diagnostics);
   }
 
@@ -2086,6 +2206,7 @@ when false && target.has_feature(42) &&
   bool saw_unknown_feature = false;
   bool saw_mismatched_target_types = false;
   bool saw_unknown_target_alternative = false;
+  std::size_t unknown_target_alternative_errors = 0;
   std::size_t feature_arity_errors = 0;
   bool saw_invalid_feature_argument = false;
   for (const draft::Diagnostic &diagnostic :
@@ -2112,6 +2233,11 @@ when false && target.has_feature(42) &&
         diagnostic.message ==
             "compile-time enum initializer names no matching member";
     if (diagnostic.message ==
+            "compile-time enum initializer names no matching member" &&
+        (spelling == ".macos" || spelling == ".neon")) {
+      ++unknown_target_alternative_errors;
+    }
+    if (diagnostic.message ==
         "target.has_feature requires exactly one argument") {
       ++feature_arity_errors;
     }
@@ -2126,9 +2252,11 @@ when false && target.has_feature(42) &&
   EXPECT(state, saw_unknown_feature);
   EXPECT(state, saw_mismatched_target_types);
   EXPECT(state, saw_unknown_target_alternative);
+  EXPECT(state, unknown_target_alternative_errors == 3);
   EXPECT(state, feature_arity_errors == 2);
   EXPECT(state, saw_invalid_feature_argument);
   if (!saw_mismatched_target_types || !saw_unknown_target_alternative ||
+      unknown_target_alternative_errors != 3 ||
       feature_arity_errors != 2 || !saw_invalid_feature_argument) {
     std::cerr << draft::render_diagnostics(invalid.sources, invalid.diagnostics);
   }
