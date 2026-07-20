@@ -31,7 +31,7 @@ build/draftc build examples/agent-acceptance --root app \
   -o /tmp/draft-agent-acceptance
 /tmp/draft-agent-acceptance
 build/draftc test examples/agent-acceptance --root app
-build/draftc bench examples/agent-acceptance --root app
+build/draftc bench examples/agent-acceptance --root app --verify
 ```
 
 These commands use the macOS compatibility default. Pass
@@ -100,19 +100,21 @@ provider-free frontend checks, while the macOS program passed native
 build/execution, Draft test and verified benchmark execution, workspace evidence
 publication, and expanded-source inspection with linked LLVM 22.1.8.
 
-The completed raw string-data integration and its final static-type and
-selected-condition review use compiler content identity
-`draft-bootstrap-cpp-v138` and core distribution identity
-`draft-core-bootstrap-v4`. Provider-free `resolve --revalidate` commands for
-macOS and Linux each reused and rechecked all four saved expansions; no
-generated source object changed. Both final manifests then passed their native
-frontend checks. On macOS, the final program built and launched without an LLVM
-debug-information warning, and fresh attempt-one test and verified-benchmark
-evidence passed under linked LLVM 22.1.8. The committed evidence objects are
-`4d81f15b58a5386a32e2b581c2f88f065f8f10610a6763dd8d9038f7657b6f79`
+The completed raw string-data integration, exact compile-time type-value
+semantics, lexical statement selection, and target-scalar materialization use
+compiler content identity `draft-bootstrap-cpp-v139` and core distribution
+identity `draft-core-bootstrap-v4`. Provider-free `resolve --revalidate`
+commands for macOS and Linux each reused and rechecked all four saved
+expansions; no generated source object changed. Both final manifests then
+passed frontend checks. On macOS, the final program built and launched without
+an LLVM debug-information warning; the Linux target emitted an AArch64 ELF
+object. Fresh attempt-one test and verified-benchmark evidence passed under
+linked LLVM 22.1.8. The committed evidence objects are
+`f076bbfae10007e1888147530e54e81ff1cd8bcb318c64072fad6ee64c4f9100`
 for the test and
-`a09eab357ea9d908a443eda6667c166679bf3694cf48ff0bddd1e3386ad56965`
-for the benchmark.
+`4f2157fbd8fe050ddb2658f47174fca9c753783af4f4a5df4de61daeaab4c0f7`
+for the benchmark. The complete normal and ASan/UBSan CTest matrices each
+passed 71 of 71 tests.
 
 The repository example matrix classified all 36 tracked Draft/assembly package
 directories. Both-target frontend qualification passed for every declared
