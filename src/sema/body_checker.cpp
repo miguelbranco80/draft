@@ -276,7 +276,7 @@ public:
     return result;
   }
 
-  [[nodiscard]] bool validate_package_initializer_expression_types() {
+  [[nodiscard]] bool validate_package_compile_time_expression_types() {
     const std::size_t initial_errors = diagnostics_.error_count();
     type_validation_only_ = true;
     std::vector<SyntaxReference> checked;
@@ -343,6 +343,46 @@ public:
       }
       (void)check_expression(*tree, initializer, *scope, expected);
     }
+
+    // Declaration and aggregate-member `when` sites are selected before body
+    // checking so the chosen declarations can be collected into their
+    // surrounding scopes. Constant evaluation computes the value, but
+    // non-evaluating operations such as type_of may need only a declared result
+    // hint and therefore do not validate their source operand. Check every
+    // selected structural condition through the ordinary expression checker
+    // before trusting that selection. Procedure-body conditions are checked at
+    // their exact lexical program point in check_statement instead.
+    // Expression checking may append denial or agent sites. Iterate a value
+    // snapshot so vector growth cannot invalidate the current site reference,
+    // and so newly discovered body-level sites cannot accidentally join this
+    // package-structural validation round.
+    const std::vector<SemanticSite> structural_sites = semantic_.sites;
+    for (const SemanticSite &site : structural_sites) {
+      if (site.kind != SemanticSiteKind::ConditionalDeclaration &&
+          site.kind != SemanticSiteKind::ConditionalMember) {
+        continue;
+      }
+      if (selections_.find(site.syntax) == nullptr) continue;
+
+      const SyntaxTree *tree = find_tree(site.syntax.file);
+      if (tree == nullptr || !site.syntax.node.is_valid()) continue;
+      const SyntaxNode &when = tree->node(site.syntax.node);
+      if (when.children.empty()) continue;
+
+      ScopeId condition_scope = site.scope;
+      if (site.kind == SemanticSiteKind::ConditionalDeclaration &&
+          condition_scope == semantic_.package_scope) {
+        const std::optional<ScopeId> file_scope =
+            source_file_scope(site.syntax.file);
+        if (!file_scope.has_value()) continue;
+        condition_scope = *file_scope;
+      }
+      (void)check_expression(
+          *tree,
+          when.children.front(),
+          condition_scope,
+          semantic_.types.builtins().bool_type);
+    }
     type_validation_only_ = false;
     return diagnostics_.error_count() == initial_errors;
   }
@@ -372,6 +412,130 @@ private:
       if (initializer_requires_type_preflight(tree, child)) return true;
     }
     return false;
+  }
+
+  // Returns the selector of a direct reference to the predeclared target
+  // object. A lexical declaration named `target` wins, exactly as it does in
+  // ordinary name lookup, so validation never assigns target-profile meaning
+  // to a user value merely because it has the conventional spelling.
+  [[nodiscard]] std::optional<std::string> direct_target_member(
+      const SyntaxTree &tree, NodeId expression, ScopeId scope) const {
+    const SyntaxNode &member = tree.node(expression);
+    if (member.kind != NodeKind::MemberExpression ||
+        member.children.empty()) {
+      return std::nullopt;
+    }
+    const std::optional<SourceName> base =
+        single_name_expression(tree, member.children.front());
+    if (!base.has_value() || base->text != "target" ||
+        semantic_.symbols.lookup(scope, "target").has_value()) {
+      return std::nullopt;
+    }
+    const std::vector<SourceName> names = alternative_names_in_span(
+        tree, member.token_begin, member.token_end);
+    if (names.empty()) return std::nullopt;
+    return names.back().text;
+  }
+
+  // Runtime HIR intentionally has no value representing the compile-time-only
+  // `target` object. The validation-only pass nevertheless has to type-check a
+  // complete selected `when` condition so short-circuiting or type_of cannot
+  // hide malformed source. Import the typed result of only the closed target
+  // forms below from the authoritative constant evaluator:
+  //
+  //   target.pointer_bits
+  //   target.has_feature("neon")
+  //   target.os == .macos
+  //
+  // The candidate set is deliberately structural and small. In particular,
+  // this function never folds a whole logical or conditional expression: doing
+  // so could skip another operand which this pass exists to validate. Numeric
+  // and string target fields become ordinary typed constants, while a
+  // categorical field is imported only together with its contextual label so
+  // the evaluator remains the sole owner of the language-defined target enum
+  // relationship.
+  [[nodiscard]] std::optional<HirExpressionId>
+  check_validation_only_target_expression(
+      const SyntaxTree &tree,
+      NodeId expression_id,
+      ScopeId scope,
+      TypeId expected) {
+    if (!type_validation_only_) return std::nullopt;
+
+    const SyntaxNode &expression = tree.node(expression_id);
+    bool candidate = false;
+    if (const std::optional<std::string> member =
+            direct_target_member(tree, expression_id, scope)) {
+      candidate = *member == "identity" || *member == "file_tag" ||
+          *member == "pointer_bits" || *member == "page_size";
+    } else if (expression.kind == NodeKind::CallExpression &&
+               !expression.children.empty()) {
+      const std::optional<std::string> called_member = direct_target_member(
+          tree, expression.children.front(), scope);
+      candidate = called_member.has_value() &&
+          *called_member == "has_feature";
+    } else if (expression.kind == NodeKind::BinaryExpression &&
+               expression.children.size() == 2) {
+      const TokenKind operation = binary_operator(tree, expression);
+      if (operation == TokenKind::EqualEqual ||
+          operation == TokenKind::BangEqual) {
+        const std::optional<std::string> left = direct_target_member(
+            tree, expression.children.front(), scope);
+        const std::optional<std::string> right = direct_target_member(
+            tree, expression.children.back(), scope);
+        const auto categorical = [](const std::optional<std::string> &member) {
+          return member.has_value() &&
+              (*member == "arch" || *member == "os" ||
+               *member == "abi" || *member == "byte_order" ||
+               *member == "object_format");
+        };
+        candidate =
+            (categorical(left) &&
+             tree.node(expression.children.back()).kind ==
+                 NodeKind::ContextualAlternativeExpression) ||
+            (categorical(right) &&
+             tree.node(expression.children.front()).kind ==
+                 NodeKind::ContextualAlternativeExpression);
+      }
+    }
+    if (!candidate) return std::nullopt;
+
+    const ConstantTable visible_constants = active_constant_table();
+    const std::vector<ConstantTypeBinding> visible_types =
+        active_constant_types();
+    const std::vector<ConstantStaticPackBinding> visible_packs =
+        active_constant_packs();
+    const CompileTimeExpressionDiscoveryResult discovered =
+        discover_typed_constant_expression(
+            sources_,
+            loaded_,
+            semantic_,
+            target_,
+            tree,
+            expression_id,
+            scope,
+            &visible_constants,
+            &visible_types,
+            expected,
+            &visible_packs);
+    if (!discovered.value.has_value() ||
+        !discovered.value->type.is_valid() ||
+        is_invalid_type(discovered.value->type)) {
+      return std::nullopt;
+    }
+
+    HirExpression checked;
+    checked.kind = HirExpressionKind::Constant;
+    checked.range = expression.range;
+    checked.constant = discovered.value->value;
+    checked.type = apply_expected_type(
+        discovered.value->type, expected, expression.range);
+    contextualize_constant_value(
+        checked.constant,
+        discovered.value->type,
+        checked.type,
+        expression.range);
+    return hir_.add_expression(std::move(checked));
   }
 
   void instantiate_seeded_procedures() {
@@ -4086,14 +4250,21 @@ private:
         // leaves the resulting HIR node unreferenced. `type_of(call())` must
         // neither execute nor lower call(); it observes only the type assigned
         // by ordinary expression checking.
+        const std::size_t initial_operand_errors = diagnostics_.error_count();
         const HirExpressionId operand = check_expression(
             tree, call.children[1], scope);
         TypeId observed = hir_.expression(operand).type;
         observed = default_inferred_runtime_type(observed);
         if (is_invalid_type(observed)) {
-          diagnostics_.error(
-              tree.node(call.children[1]).range,
-              "type_of requires an expression with a known static type");
+          // Preserve the operand's precise diagnostic. The fallback is needed
+          // only for an invalid internal result which reached this boundary
+          // without its own user-facing error; reporting both would obscure
+          // the actual malformed call, member, or operator.
+          if (diagnostics_.error_count() == initial_operand_errors) {
+            diagnostics_.error(
+                tree.node(call.children[1]).range,
+                "type_of requires an expression with a known static type");
+          }
           expression.type = semantic_.types.builtins().invalid;
         } else if (!current_instance_index_.has_value() &&
                    contains_symbolic_type(observed)) {
@@ -4175,8 +4346,14 @@ private:
                 *intrinsic + " index must be a compile-time usize");
           }
         }
-        if (defer_symbolic_type && (!indexed || index.has_value() ||
-                                    defer_symbolic_index)) {
+        if (is_invalid_type(checked_type.type)) {
+          // The argument checker has already reported the malformed nested
+          // expression. A structural query cannot add useful information when
+          // no type value reached this boundary, so propagate the invalid type
+          // without replacing the primary diagnostic with a query complaint.
+          expression.type = semantic_.types.builtins().invalid;
+        } else if (defer_symbolic_type && (!indexed || index.has_value() ||
+                                           defer_symbolic_index)) {
           // Query applicability and index bounds depend on the eventual type
           // (and possibly a value parameter). The template pass retains only
           // the query's fixed result category. Concrete instances perform the
@@ -4579,6 +4756,11 @@ private:
       ScopeId scope,
       TypeId expected = {}) {
     const SyntaxNode &node = tree.node(expression_id);
+    if (const std::optional<HirExpressionId> target =
+            check_validation_only_target_expression(
+                tree, expression_id, scope, expected)) {
+      return *target;
+    }
     switch (node.kind) {
     case NodeKind::LiteralExpression: {
       if (node.token_begin >= node.token_end) return invalid_expression(node.range);
@@ -4984,19 +5166,34 @@ private:
       HirExpressionId right_id;
       if (left_needs_context && !right_needs_context) {
         right_id = check_expression(tree, node.children[1], scope);
-        left_id = check_expression(
-            tree, node.children[0], scope, hir_.expression(right_id).type);
+        left_id = is_invalid_type(hir_.expression(right_id).type)
+            ? invalid_expression(tree.node(node.children[0]).range)
+            : check_expression(
+                  tree,
+                  node.children[0],
+                  scope,
+                  hir_.expression(right_id).type);
       } else {
         left_id = check_expression(tree, node.children[0], scope);
         TypeId right_expected;
         if (right_needs_context) {
           right_expected = hir_.expression(left_id).type;
         }
-        right_id = check_expression(
-            tree, node.children[1], scope, right_expected);
+        right_id = right_needs_context && is_invalid_type(right_expected)
+            ? invalid_expression(tree.node(node.children[1]).range)
+            : check_expression(
+                  tree, node.children[1], scope, right_expected);
       }
       const TypeId left = hir_.expression(left_id).type;
       const TypeId right = hir_.expression(right_id).type;
+      if (is_invalid_type(left) || is_invalid_type(right)) {
+        // Both non-contextual operands were still checked above, so independent
+        // source errors survive. The enclosing operator, however, has no
+        // meaningful type relation to diagnose once either child is invalid.
+        // A contextual nil/alternative operand is represented by an invalid
+        // placeholder when its sibling could not supply the required type.
+        return invalid_expression(node.range);
+      }
       if ((operation == TokenKind::EqualEqual ||
            operation == TokenKind::BangEqual) &&
           hir_.expression(left_id).kind == HirExpressionKind::Constant &&
@@ -7179,6 +7376,30 @@ private:
             (current_instance_index_.has_value() &&
              global_selection == nullptr);
 
+        if (!dependent || current_instance_index_.has_value()) {
+          // A compile-time selection proves only the condition's value. The
+          // constant evaluator may obtain a type_of result from an operand's
+          // declared result shape without evaluating that operand, so the
+          // selection is not evidence that calls, slices, members, or nested
+          // intrinsics inside it are well typed. Reuse the ordinary checker at
+          // the exact lexical program point and discard its condition HIR;
+          // compile-time conditions never reach executable lowering.
+          const std::size_t initial_condition_errors =
+              diagnostics_.error_count();
+          const bool prior_validation_only = type_validation_only_;
+          type_validation_only_ = true;
+          const HirExpressionId checked_condition = check_expression(
+              tree,
+              condition_id,
+              scope,
+              semantic_.types.builtins().bool_type);
+          type_validation_only_ = prior_validation_only;
+          if (diagnostics_.error_count() != initial_condition_errors ||
+              is_invalid_type(hir_.expression(checked_condition).type)) {
+            break;
+          }
+        }
+
         if (dependent && current_instance_index_.has_value()) {
           // A concrete procedure instance has an exact overlay for every type
           // and value parameter. Evaluate once, then check only the selected
@@ -7779,15 +8000,16 @@ private:
   std::vector<StaticPackValueAlias> active_pack_value_aliases_;
   std::vector<ProcedureInstance> instances_;
   std::optional<std::size_t> current_instance_index_;
-  // Used only by the package-initializer preflight. It reuses the complete
-  // expression type checker while suppressing operations whose diagnostics
-  // depend on actually evaluating a branch.
+  // Used only by the package compile-time-expression preflight. It reuses the
+  // complete expression type checker for initializers and structural `when`
+  // conditions while suppressing operations whose diagnostics depend on
+  // actually evaluating a branch.
   bool type_validation_only_ = false;
 };
 
 } // namespace
 
-bool validate_package_initializer_expression_types(
+bool validate_package_compile_time_expression_types(
     const SourceManager &sources,
     const LoadedPackage &loaded,
     const ConditionalSelections &selections,
@@ -7805,7 +8027,7 @@ bool validate_package_initializer_expression_types(
       target,
       diagnostics,
       no_seeds);
-  return checker.validate_package_initializer_expression_types();
+  return checker.validate_package_compile_time_expression_types();
 }
 
 BodyCheckResult check_package_bodies(

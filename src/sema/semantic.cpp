@@ -377,7 +377,7 @@ SemanticAnalysisResult analyze_package_semantics(
       result.constants,
       result.global_initializers,
       diagnostics);
-  (void)validate_package_initializer_expression_types(
+  (void)validate_package_compile_time_expression_types(
       sources,
       loaded,
       result.selections,

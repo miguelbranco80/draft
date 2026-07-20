@@ -1964,6 +1964,64 @@ wrong :: proc() {
   EXPECT(state, saw_wrong);
 }
 
+// Procedure-body `when` may reuse a package-wide constant selection, but that
+// value is not a substitute for checking non-evaluated type_of operands at the
+// condition's lexical program point.
+void test_selected_when_condition_type_validation(TestState &state) {
+  CheckedSource valid(R"draft(
+package bodies
+
+main :: proc() {
+    when target.os == .macos &&
+         type_kind(type_of(raw_data(target.identity))) == .multi_pointer {
+    }
+}
+)draft");
+  EXPECT(state, valid.bodies.ok);
+  EXPECT(state, !valid.diagnostics.has_errors());
+
+  CheckedSource invalid(R"draft(
+package bodies
+
+runtime_text_with_value :: proc(value: int) -> string {
+    return "runtime text"
+}
+
+main :: proc() {
+    when type_kind(type_of(raw_data(42))) == .multi_pointer {
+    }
+    when type_kind(type_of(raw_data(runtime_text_with_value()))) == .multi_pointer {
+    }
+    when target.os != .macos &&
+         type_kind(type_of(raw_data(false))) == .multi_pointer {
+    }
+}
+)draft");
+  EXPECT(state, !invalid.bodies.ok);
+  EXPECT(state, invalid.diagnostics.error_count() == 3);
+
+  bool saw_wrong_type = false;
+  bool saw_missing_argument = false;
+  bool saw_short_circuited_wrong_type = false;
+  for (const draft::Diagnostic &diagnostic :
+       invalid.diagnostics.diagnostics()) {
+    const std::string_view spelling = invalid.sources.text(diagnostic.range);
+    saw_wrong_type = saw_wrong_type ||
+        (diagnostic.message == "raw_data requires a string argument" &&
+         spelling == "42");
+    saw_missing_argument = saw_missing_argument ||
+        (diagnostic.message ==
+             "procedure call has the wrong number of arguments" &&
+         spelling == "runtime_text_with_value()");
+    saw_short_circuited_wrong_type = saw_short_circuited_wrong_type ||
+        (diagnostic.message == "raw_data requires a string argument" &&
+         spelling == "false");
+  }
+  EXPECT(state, saw_wrong_type);
+  EXPECT(state, saw_missing_argument);
+  EXPECT(state, saw_short_circuited_wrong_type);
+}
+
 void test_integer_shift_count_types(TestState &state) {
   CheckedSource source(R"draft(
 package bodies
@@ -2851,6 +2909,7 @@ int main() {
   test_checked_numeric_casts(state);
   test_storage_pointer_and_distinct_semantics(state);
   test_raw_string_data_intrinsic(state);
+  test_selected_when_condition_type_validation(state);
   test_integer_shift_count_types(state);
   test_conditional_context_from_either_branch(state);
   test_compound_assignment_operators(state);

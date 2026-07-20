@@ -46,11 +46,12 @@ struct ProcedureInstantiationSeed {
   std::vector<TypeId> pack_types;
 };
 
-// Validates package constant and global-initializer expressions with the same
-// operator and expected-type rules used by procedure bodies. Both branches of
-// short-circuit and conditional expressions are checked, but no expression is
-// executed and no HIR escapes this validation pass.
-[[nodiscard]] bool validate_package_initializer_expression_types(
+// Validates package constant/global initializers and selected structural
+// `when` conditions with the same expression checker used by procedure bodies.
+// This catches invalid operands hidden by non-evaluating constructs such as
+// type_of and dead value-selection branches. No expression is executed and no
+// HIR escapes this validation pass.
+[[nodiscard]] bool validate_package_compile_time_expression_types(
     const SourceManager &sources,
     const LoadedPackage &loaded,
     const ConditionalSelections &selections,

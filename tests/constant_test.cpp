@@ -1909,6 +1909,7 @@ runtime_text_with_value :: proc(value: int) -> string {
 Bad_Raw_Data_Call_Type :: type_of(raw_data(runtime_text_with_value()))
 )draft");
   EXPECT(state, !invalid.analysis.ok);
+  EXPECT(state, invalid.diagnostics.error_count() == 4);
   const std::string rendered =
       draft::render_diagnostics(invalid.sources, invalid.diagnostics);
   EXPECT(state, rendered.find("type_element requires a pointer") !=
@@ -1920,6 +1921,71 @@ Bad_Raw_Data_Call_Type :: type_of(raw_data(runtime_text_with_value()))
   EXPECT(state, rendered.find(
       "procedure call has the wrong number of arguments") !=
       std::string::npos);
+  EXPECT(state, rendered.find(
+      "type_of requires an expression with a known static type") ==
+      std::string::npos);
+}
+
+// Constant selection may learn type_of's result without evaluating its
+// operand. Selected package/member conditions must still pass through the one
+// ordinary expression checker before their declarations are trusted.
+void test_selected_when_condition_type_validation(TestState &state) {
+  AnalyzedSource valid(R"draft(
+package conditions
+
+when target.os == .macos &&
+     type_kind(type_of(raw_data(target.identity))) == .multi_pointer {
+    Target_Selected :: true
+}
+)draft");
+  EXPECT(state, valid.analysis.ok);
+  EXPECT(state, !valid.diagnostics.has_errors());
+
+  AnalyzedSource invalid(R"draft(
+package conditions
+
+runtime_text_with_value :: proc(value: int) -> string {
+    return "runtime text"
+}
+
+when type_kind(type_of(raw_data(42))) == .multi_pointer {
+    Package_Selected :: true
+}
+
+Broken_Member :: struct {
+    when type_kind(type_of(raw_data(runtime_text_with_value()))) == .multi_pointer {
+        selected: bool,
+    }
+}
+
+when target.os != .macos &&
+     type_kind(type_of(raw_data(false))) == .multi_pointer {
+    Short_Circuited :: true
+}
+)draft");
+  EXPECT(state, !invalid.analysis.ok);
+  EXPECT(state, invalid.diagnostics.error_count() == 3);
+
+  bool saw_wrong_type = false;
+  bool saw_missing_argument = false;
+  bool saw_short_circuited_wrong_type = false;
+  for (const draft::Diagnostic &diagnostic :
+       invalid.diagnostics.diagnostics()) {
+    const std::string_view spelling = invalid.sources.text(diagnostic.range);
+    saw_wrong_type = saw_wrong_type ||
+        (diagnostic.message == "raw_data requires a string argument" &&
+         spelling == "42");
+    saw_missing_argument = saw_missing_argument ||
+        (diagnostic.message ==
+             "procedure call has the wrong number of arguments" &&
+         spelling == "runtime_text_with_value()");
+    saw_short_circuited_wrong_type = saw_short_circuited_wrong_type ||
+        (diagnostic.message == "raw_data requires a string argument" &&
+         spelling == "false");
+  }
+  EXPECT(state, saw_wrong_type);
+  EXPECT(state, saw_missing_argument);
+  EXPECT(state, saw_short_circuited_wrong_type);
 }
 
 } // namespace
@@ -1938,6 +2004,7 @@ int main() {
   test_global_type_value_storage_is_rejected(state);
   test_constant_dependency_depth_is_bounded(state);
   test_type_values_and_structural_queries(state);
+  test_selected_when_condition_type_validation(state);
 
   if (state.failures != 0) {
     std::cerr << state.failures << " constant evaluation expectation(s) failed\n";
