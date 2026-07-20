@@ -164,16 +164,16 @@ void test_invalid_inputs(TestState &state) {
       "tables.bin"));
   std::string encoded = draft::serialize_resolution_manifest(manifest);
 
-  std::string old_format = encoded;
-  const std::size_t format = old_format.find("draft-resolution-v6");
+  std::string unsupported_format = encoded;
+  const std::size_t format = unsupported_format.find("draft-resolution-v6");
   EXPECT(state, format != std::string::npos);
   if (format != std::string::npos) {
-    old_format.replace(
+    unsupported_format.replace(
         format,
         std::string_view("draft-resolution-v6").size(),
-        "draft-resolution-v5");
+        "draft-resolution-unknown");
   }
-  expect_rejected(state, old_format);
+  expect_rejected(state, unsupported_format);
 
   // The root is an exact workspace identity. Absolute paths, dot traversal,
   // and a different identity domain cannot be interpreted as store paths.
