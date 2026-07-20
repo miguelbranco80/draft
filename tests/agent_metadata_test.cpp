@@ -1783,6 +1783,156 @@ void test_early_synthesis_receives_permitted_context(TestState &state) {
   EXPECT(state, saw_member);
 }
 
+// A source-authored agent site in a static-pack loop is checked while the pack
+// element and index are symbolic.  Building obligations must preserve those
+// symbolic bindings and the enclosing dependent-when facts exactly once per
+// site: later concrete procedure specializations may validate the branches,
+// but they must not multiply provider work or change the provider's context.
+void test_static_pack_sites_build_one_symbolic_obligation(TestState &state) {
+  TemporaryPackage temporary;
+  write_file(
+      temporary.path / "package.draft",
+      R"draft(package pack_agent
+
+render :: proc(values: ..type) {
+    for value, index in values {
+        when type_of(value) == string {
+            ... "render the string pack element"
+        } else when type_kind(type_of(value)) == .signed_integer {
+            judge "the signed pack element is handled"
+        } else {
+            static_assert(false, "unsupported pack element")
+        }
+    }
+}
+
+main :: proc() {
+    render("draft", 1)
+    // Equal ordered tail types reuse the specialization and must not create a
+    // second agent record for either source-authored site.
+    render("again", 2)
+}
+)draft");
+
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  const draft::TargetProfile target = draft::make_aarch64_macos_profile();
+  draft::PackageLoadOptions load_options;
+  load_options.file_tag = target.facts.file_tag;
+  const draft::PackageLoadResult loaded = draft::load_package(
+      sources, temporary.path.string(), load_options, diagnostics);
+  draft::SemanticAnalysisResult semantics = draft::analyze_package_semantics(
+      sources, loaded.package, target.facts, diagnostics);
+  const draft::BodyCheckResult bodies = draft::check_package_bodies(
+      sources,
+      loaded.package,
+      semantics.selections,
+      semantics.package,
+      semantics.constants,
+      target.facts,
+      diagnostics);
+  const draft::AgentMetadataResult metadata = draft::collect_agent_metadata(
+      sources, loaded.package, semantics.package, {}, diagnostics);
+  const draft::AgentObligationResult obligations =
+      draft::build_agent_obligations(
+          {"workspace", "pack_agent"},
+          sources,
+          loaded.package,
+          semantics.package,
+          semantics.constants,
+          metadata,
+          target,
+          diagnostics,
+          {},
+          &bodies.program);
+
+  if (diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+  }
+  EXPECT(state, loaded.ok);
+  EXPECT(state, semantics.ok);
+  EXPECT(state, bodies.ok);
+  EXPECT(state, metadata.ok);
+  EXPECT(state, obligations.ok);
+  EXPECT(state, !diagnostics.has_errors());
+  EXPECT(state, metadata.records.size() == 2);
+  EXPECT(state, obligations.obligations.size() == 2);
+
+  const draft::AgentObligation *synthesis = nullptr;
+  const draft::AgentObligation *judgment = nullptr;
+  for (const draft::AgentObligation &obligation : obligations.obligations) {
+    if (obligation.kind == draft::AgentConstructKind::SynthesisStatement) {
+      synthesis = &obligation;
+    } else if (obligation.kind == draft::AgentConstructKind::Judgment) {
+      judgment = &obligation;
+    }
+  }
+  EXPECT(state, synthesis != nullptr);
+  EXPECT(state, judgment != nullptr);
+
+  const auto check_symbolic_bindings = [&state](
+                                           const draft::AgentObligation &item) {
+    bool saw_value = false;
+    bool saw_index = false;
+    bool saw_pack = false;
+    for (const draft::AgentVisibleBinding &binding : item.visible_bindings) {
+      if (binding.name == "value") {
+        EXPECT(state, binding.kind == draft::SymbolKind::Parameter);
+        EXPECT(state,
+            binding.type_text.find("render.values.element") !=
+                std::string::npos);
+        saw_value = true;
+      } else if (binding.name == "index") {
+        EXPECT(state, binding.kind == draft::SymbolKind::ValueParameter);
+        EXPECT(state, binding.type_text == "usize");
+        saw_index = true;
+      } else if (binding.name == "values") {
+        EXPECT(state, binding.kind == draft::SymbolKind::ValueParameter);
+        EXPECT(state,
+            binding.type_text.find("render.values.element") !=
+                std::string::npos);
+        saw_pack = true;
+      }
+    }
+    EXPECT(state, saw_value);
+    EXPECT(state, saw_index);
+    EXPECT(state, saw_pack);
+  };
+
+  if (synthesis != nullptr) {
+    check_symbolic_bindings(*synthesis);
+    EXPECT(state, synthesis->branch_refinements.size() == 1);
+    if (synthesis->branch_refinements.size() == 1) {
+      const draft::AgentBranchRefinement &refinement =
+          synthesis->branch_refinements.front();
+      EXPECT(state,
+          refinement.kind ==
+              draft::AgentBranchRefinementKind::ConditionTrue);
+      EXPECT(state,
+          refinement.subject == "type_of(value) == string");
+      EXPECT(state, refinement.type_text == "bool");
+    }
+  }
+  if (judgment != nullptr) {
+    check_symbolic_bindings(*judgment);
+    EXPECT(state, judgment->branch_refinements.size() == 2);
+    if (judgment->branch_refinements.size() == 2) {
+      EXPECT(state,
+          judgment->branch_refinements[0].kind ==
+              draft::AgentBranchRefinementKind::ConditionFalse);
+      EXPECT(state,
+          judgment->branch_refinements[0].subject ==
+              "type_of(value) == string");
+      EXPECT(state,
+          judgment->branch_refinements[1].kind ==
+              draft::AgentBranchRefinementKind::ConditionTrue);
+      EXPECT(state,
+          judgment->branch_refinements[1].subject ==
+              "type_kind(type_of(value)) == .signed_integer");
+    }
+  }
+}
+
 } // namespace
 
 int main() {
@@ -1797,6 +1947,7 @@ int main() {
   test_denied_imports_are_removed_from_usable_context(state);
   test_source_definitions_follow_semantic_references(state);
   test_early_synthesis_receives_permitted_context(state);
+  test_static_pack_sites_build_one_symbolic_obligation(state);
   if (state.failures != 0) {
     std::cerr << state.failures << " agent metadata expectation(s) failed\n";
     return EXIT_FAILURE;

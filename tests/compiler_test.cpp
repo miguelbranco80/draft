@@ -1332,6 +1332,19 @@ void test_cross_package_static_argument_pack_effects(TestState &state) {
       "            assert(value)\n"
       "        }\n"
       "    }\n"
+      "}\n"
+      "pub inspect_after[T: type] :: proc(prefix: T, values: ..type) -> usize {\n"
+      "    static_assert(type_of(prefix) == T)\n"
+      "    for value, index in values {\n"
+      "        when index == 0 {\n"
+      "            static_assert(type_of(value) == string)\n"
+      "        } else when index == 1 {\n"
+      "            static_assert(type_of(value) == bool)\n"
+      "        } else {\n"
+      "            static_assert(false, \"unexpected tail element\")\n"
+      "        }\n"
+      "    }\n"
+      "    return len(values)\n"
       "}\n";
   dependency.close();
 
@@ -1344,6 +1357,10 @@ void test_cross_package_static_argument_pack_effects(TestState &state) {
       "        packing.inspect_all()\n"
       "        packing.inspect_all(cast[i32](1))\n"
       "        packing.inspect_all(cast[i32](2))\n"
+      "        inferred := packing.inspect_after(cast[u8](7), \"draft\", true)\n"
+      "        explicit := packing.inspect_after[u8](cast[u8](8), \"again\", false)\n"
+      "        _ = inferred\n"
+      "        _ = explicit\n"
       "    }\n"
       "}\n"
       "unsafe :: proc() {\n"
@@ -1379,9 +1396,13 @@ void test_cross_package_static_argument_pack_effects(TestState &state) {
   EXPECT(state, packing_package != nullptr);
   if (app_package != nullptr && packing_package != nullptr) {
     const draft::InterfaceDeclaration *declaration = nullptr;
+    const draft::InterfaceDeclaration *composed_declaration = nullptr;
     for (const draft::InterfaceDeclaration &candidate :
          packing_package->interface.declarations) {
       if (candidate.name == "inspect_all") declaration = &candidate;
+      if (candidate.name == "inspect_after") {
+        composed_declaration = &candidate;
+      }
     }
     EXPECT(state, declaration != nullptr);
     if (declaration != nullptr) {
@@ -1390,12 +1411,44 @@ void test_cross_package_static_argument_pack_effects(TestState &state) {
       EXPECT(state,
           declaration->static_argument_pack_fixed_parameter_count == 0);
     }
+    EXPECT(state, composed_declaration != nullptr);
+    if (composed_declaration != nullptr) {
+      EXPECT(state, composed_declaration->has_static_argument_pack);
+      EXPECT(state,
+          composed_declaration->static_argument_pack_name == "values");
+      EXPECT(state,
+          composed_declaration->static_argument_pack_fixed_parameter_count ==
+              1);
+    }
 
     EXPECT(state,
-        app_package->semantics.package.imported_procedure_instances.size() == 3);
-    EXPECT(state, packing_package->interface.procedure_instances.size() == 3);
+        app_package->semantics.package.imported_procedure_instances.size() == 4);
+    EXPECT(state, packing_package->interface.procedure_instances.size() == 4);
+    std::size_t composed_instances = 0;
     for (const draft::ImportedProcedureInstance &instance :
          app_package->semantics.package.imported_procedure_instances) {
+      if (instance.public_template_name == "inspect_after") {
+        ++composed_instances;
+        EXPECT(state, instance.arguments.size() == 1);
+        if (instance.arguments.size() == 1) {
+          EXPECT(state, instance.arguments.front().is_type);
+          EXPECT(state,
+              app_package->semantics.package.types.type(
+                  instance.arguments.front().type).kind ==
+                  draft::TypeKind::UnsignedInteger);
+        }
+        EXPECT(state, instance.pack_types.size() == 2);
+        if (instance.pack_types.size() == 2) {
+          EXPECT(state,
+              app_package->semantics.package.types.type(
+                  instance.pack_types[0]).kind == draft::TypeKind::String);
+          EXPECT(state,
+              app_package->semantics.package.types.type(
+                  instance.pack_types[1]).kind == draft::TypeKind::Bool);
+        }
+        continue;
+      }
+      EXPECT(state, instance.public_template_name == "inspect_all");
       EXPECT(state, instance.arguments.empty());
       const bool has_assert = std::any_of(
           app_package->semantics.package.imported_effects.begin(),
@@ -1415,6 +1468,9 @@ void test_cross_package_static_argument_pack_effects(TestState &state) {
         EXPECT(state, false);
       }
     }
+    // Inferred and explicit `T = u8` calls with the same ordered pack tail
+    // denote one specialization across the package interface.
+    EXPECT(state, composed_instances == 1);
   }
 
   std::filesystem::remove_all(root, error);
