@@ -327,6 +327,18 @@ List registered tests without executing:
 ctest --test-dir build -N
 ```
 
+Run the exhaustive example integration slice with:
+
+```sh
+ctest --test-dir build -L examples --output-on-failure
+```
+
+`examples/qualification.tsv` must classify every tracked Draft/assembly package
+directory. Its rows drive both-target frontend checks, every ordinary native
+example execution, special C-library and foreign-provider link gates, and all
+example-owned Draft tests and benchmarks. Do not add an example source package
+without adding its explicit final-state classification.
+
 Run one or a small regular-expression slice while iterating:
 
 ```sh
@@ -350,10 +362,11 @@ ctest --test-dir build --output-on-failure \
 
 On a native AArch64 macOS/Linux host, artifact closure also includes
 `draft_native_determinism_tests`, `draft_native_backend_parity_tests`,
-`draft_native_conformance_tests`, and `draft_c_client_integration_tests`. The
-first compares one-worker and four-worker output; the second exercises every
-artifact kind through embedded LLVM and the external Clang oracle. CMake
-deliberately omits unsupported native tests rather than reporting false skips.
+`draft_native_conformance_tests`, `draft_c_client_integration_tests`, the
+foreign-provider link/run gate, and the example test/benchmark matrix. The first
+compares one-worker and four-worker output; the second exercises every artifact
+kind through embedded LLVM and the external Clang oracle. CMake deliberately
+omits unsupported native tests rather than reporting false skips.
 
 There is currently no repository formatter or lint command. Do not invent one.
 Compilation with the strict warning set, tests, and sanitizers are the

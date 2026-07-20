@@ -1,0 +1,44 @@
+# Exhaustive tracked example-package qualification matrix.
+#
+# Each non-comment row has five tab-separated fields:
+#   workspace  root  frontend  native  validation
+# Paths are repository-relative. `frontend` is `pass` or the exact expected
+# unresolved state. `native` assigns every package to one host gate rather than
+# silently omitting libraries or special link inputs. `validation` declares
+# every package whose Draft tests or benchmarks must run in native CI.
+examples/agent-acceptance	app	pass	resolved	test-bench
+examples/agent-acceptance	lib	pass	dependency	none
+examples/agent-judgment-mix	app	unresolved	none	none
+examples/agent-pending	app	unresolved	none	none
+examples	assembly	pass	run	none
+examples	c-interop	pass	run	none
+examples	c-library	pass	c-library	none
+examples	console	pass	run	none
+examples	core-array	pass	run	none
+examples	core-atomic	pass	run	none
+examples	core-atomic-thread	pass	run	none
+examples	core-map	pass	run	none
+examples	core-memory	pass	run	none
+examples	core-os	pass	run	none
+examples	core-runtime	pass	run	none
+examples	core-thread	pass	run	none
+examples	core-utf8	pass	run	test
+examples	denials	pass	run	none
+examples	external-assembly	pass	run	none
+examples	file-io	pass	run	none
+examples	foreign-provider	pass	foreign-provider	none
+examples	hello	pass	run	none
+examples/judgment-tour	app	pass	run	none
+examples	language-tour	pass	run	none
+examples	nested-procedures	pass	run	none
+examples/packages-generic	app	pass	run	none
+examples/packages-generic	lib/generic	pass	dependency	none
+examples/packages-generic	lib/layout	pass	dependency	none
+examples/packages-generic	lib/left	pass	dependency	none
+examples/packages-generic	lib/right	pass	dependency	none
+examples/packages	app	pass	run	none
+examples/packages	lib/math	pass	dependency	none
+examples	runtime-checks	pass	run	none
+examples	runtime-traps	pass	run	none
+examples	simple-editor	pass	run	test
+examples	validation	pass	run	test-bench

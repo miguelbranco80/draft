@@ -83,9 +83,10 @@ jobs:
       - name: Build
         run: cmake --build build --parallel ${{ matrix.parallel }}
 
-      # CMake includes executable conformance, one-worker/four-worker artifact
-      # determinism, embedded-LLVM/Clang parity, and C-client integration only
-      # on a supported native AArch64 host. A green matrix row therefore proves
+      # CMake includes the exhaustive classified example matrix, Draft example
+      # tests/benchmarks, foreign-provider and C-client linking, executable
+      # conformance, artifact determinism, and embedded-LLVM/Clang parity only
+      # on a supported native AArch64 host. A green row therefore proves native
       # execution for that OS rather than cross-lowering alone.
       - name: Test
         run: ctest --test-dir build --output-on-failure --parallel ${{ matrix.parallel }}
@@ -140,8 +141,9 @@ jobs:
       - name: Build
         run: cmake --build build --parallel 4
 
-      # x86-64 cannot execute Draft's AArch64 artifacts. CMake omits only those
-      # three native-host integration executables; semantic, lowering, target,
-      # driver, validation, and backend contract tests still run instrumented.
+      # x86-64 cannot execute Draft's AArch64 artifacts. CMake omits native-host
+      # integration tests, while the exhaustive both-target example frontend
+      # matrix and all semantic, lowering, driver, validation, and backend
+      # contract tests still run instrumented.
       - name: Test
         run: ctest --test-dir build --output-on-failure --parallel 4

@@ -8,8 +8,8 @@ in `tests/`, where diagnostics and source ranges can be checked directly;
 [`runtime-checks`](runtime-checks/package.draft) is the broad native conformance
 program.
 
-The first backend targets AArch64 macOS. On that host, a provider-free example
-can be checked or built with:
+The native backends target AArch64 macOS and AArch64 GNU/Linux. On a matching
+host, a provider-free example can be checked or built with:
 
 ```sh
 build/draftc check examples/language-tour
@@ -29,6 +29,29 @@ build/draftc build examples/packages
 
 Here `app` imports `lib/math` from the same workspace. `lib/math` is compiled as
 its dependency but is not an executable target because it has no `main`.
+
+## Qualification matrix
+
+[`qualification.tsv`](qualification.tsv) classifies every tracked directory
+containing Draft or assembly source. It is exhaustive data, not a naming
+convention: ordinary executables are built and launched, dependency packages
+are frontend-checked, the C library and foreign-provider packages have their
+own native link gates, resolved agent programs consume committed pins, and
+intentionally unresolved programs must fail for the declared reason. The same
+rows identify every example-owned Draft test and benchmark.
+
+After configuring and building the bootstrap, run the complete example slice
+with:
+
+```sh
+ctest --test-dir build -L examples --output-on-failure
+```
+
+The ordinary unfiltered CTest command used by CI includes this label. Frontend
+qualification runs for both supported targets on every host. Native execution,
+C-client/provider linking, and Draft test/benchmark execution are registered on
+matching AArch64 macOS and Linux hosts; unsupported hosts omit those native
+tests instead of reporting false skips.
 
 ## Start here
 

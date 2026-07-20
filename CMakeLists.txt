@@ -487,6 +487,10 @@ if(BUILD_TESTING)
       NAME draft_native_conformance_tests
       COMMAND draft_native_conformance_tests
     )
+    set_tests_properties(
+      draft_native_conformance_tests
+      PROPERTIES LABELS "examples;integration"
+    )
 
     # This closes the C ABI loop with two independent compilers: Draft emits a
     # dylib and header, then the host C compiler consumes both and the resulting
@@ -506,6 +510,10 @@ if(BUILD_TESTING)
     add_test(
       NAME draft_c_client_integration_tests
       COMMAND draft_c_client_integration_tests
+    )
+    set_tests_properties(
+      draft_c_client_integration_tests
+      PROPERTIES LABELS "examples;integration"
     )
   endif()
 
@@ -602,6 +610,27 @@ if(BUILD_TESTING)
   add_test(
     NAME draft_workspace_build_driver_tests
     COMMAND draft_workspace_build_driver_tests
+  )
+
+  # The TSV is the exhaustive repository-owned package inventory. This gate is
+  # target-independent and provider-free: every tracked example package either
+  # checks successfully on both targets or fails with its declared unresolved
+  # synthesis diagnostic. Git is used only to prove that the data file has no
+  # omissions; it works in both a primary checkout and a linked worktree.
+  find_program(DRAFT_GIT_EXECUTABLE NAMES git)
+  add_test(
+    NAME draft_example_frontend_matrix
+    COMMAND
+      "${CMAKE_COMMAND}"
+      "-DDRAFTC=$<TARGET_FILE:draftc>"
+      "-DSOURCE_ROOT=${CMAKE_CURRENT_SOURCE_DIR}"
+      "-DMATRIX=${CMAKE_CURRENT_SOURCE_DIR}/examples/qualification.tsv"
+      "-DGIT_EXECUTABLE=${DRAFT_GIT_EXECUTABLE}"
+      -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/driver_example_frontend_matrix_test.cmake"
+  )
+  set_tests_properties(
+    draft_example_frontend_matrix
+    PROPERTIES LABELS "examples;integration"
   )
 
   # The handwritten tour must stay usable without provider access. The first
@@ -771,6 +800,10 @@ if(BUILD_TESTING)
         "-DTARGET_SELECTOR=${DRAFT_NATIVE_TEST_TARGET}"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/driver_resolve_build_test.cmake"
     )
+    set_tests_properties(
+      draft_resolve_build_reuses_final_graph
+      PROPERTIES LABELS "examples;integration"
+    )
 
     # A target-qualified copied manifest must remain consumable when a failing
     # Codex sentinel shadows any real provider. This covers all four ordinary
@@ -784,6 +817,52 @@ if(BUILD_TESTING)
         "-DTEST_ROOT=${CMAKE_CURRENT_BINARY_DIR}/provider-free-consumers-test"
         "-DTARGET_SELECTOR=${DRAFT_NATIVE_TEST_TARGET}"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/driver_provider_free_consumers_test.cmake"
+    )
+    set_tests_properties(
+      draft_provider_free_resolved_program_consumers
+      PROPERTIES LABELS "examples;integration"
+    )
+
+    # Every example-owned Draft test and benchmark runs from a private copy of
+    # its declared workspace. The same target-qualified acceptance pins used by
+    # ordinary provider-free builds are therefore exercised on both native CI
+    # hosts, alongside the handwritten validation packages.
+    add_test(
+      NAME draft_example_validation_matrix
+      COMMAND
+        "${CMAKE_COMMAND}"
+        "-DDRAFTC=$<TARGET_FILE:draftc>"
+        "-DSOURCE_ROOT=${CMAKE_CURRENT_SOURCE_DIR}"
+        "-DMATRIX=${CMAKE_CURRENT_SOURCE_DIR}/examples/qualification.tsv"
+        "-DTEST_ROOT=${CMAKE_CURRENT_BINARY_DIR}/example-validation-matrix"
+        "-DTARGET_SELECTOR=${DRAFT_NATIVE_TEST_TARGET}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/driver_example_validation_matrix_test.cmake"
+    )
+    set_tests_properties(
+      draft_example_validation_matrix
+      PROPERTIES LABELS "examples;integration"
+    )
+
+    # Build the logical custom_math provider independently as C, then map its
+    # exact object into the public Draft build and launch the checked example.
+    add_library(
+      draft_foreign_provider_fixture OBJECT
+      tests/foreign_provider_fixture.c
+    )
+    add_test(
+      NAME draft_foreign_provider_example
+      COMMAND
+        "${CMAKE_COMMAND}"
+        "-DDRAFTC=$<TARGET_FILE:draftc>"
+        "-DSOURCE_PACKAGE=${CMAKE_CURRENT_SOURCE_DIR}/examples/foreign-provider"
+        "-DPROVIDER_OBJECT=$<TARGET_OBJECTS:draft_foreign_provider_fixture>"
+        "-DTEST_ROOT=${CMAKE_CURRENT_BINARY_DIR}/foreign-provider-example"
+        "-DTARGET_SELECTOR=${DRAFT_NATIVE_TEST_TARGET}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/driver_foreign_provider_example_test.cmake"
+    )
+    set_tests_properties(
+      draft_foreign_provider_example
+      PROPERTIES LABELS "examples;integration"
     )
   endif()
 endif()

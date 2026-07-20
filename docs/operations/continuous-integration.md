@@ -14,9 +14,13 @@ the two implemented native host/target pairs:
 Both jobs treat warnings as errors, build the complete test suite, and run it on
 the host. On these AArch64 pairs CMake includes native conformance,
 one-worker/four-worker byte-for-byte artifact determinism, embedded-LLVM versus
-external-Clang parity, generated-C-header/client, and validation harness tests.
-Linux native execution is therefore a required job, not an optional
-cross-compilation probe.
+external-Clang parity, generated-C-header/client, explicit foreign-provider
+linking, and validation harness tests. The exhaustive
+`examples/qualification.tsv` gate checks every tracked example package for both
+targets, builds and launches every ordinary executable row, and runs every
+classified Draft test and benchmark from an isolated workspace copy. Linux
+native execution is therefore a required job, not an optional cross-compilation
+probe.
 
 A separate `ubuntu-24.04` x86-64 job builds the C++ bootstrap with GCC's Address
 Sanitizer and UndefinedBehaviorSanitizer enabled. It runs every
@@ -56,6 +60,13 @@ cmake -S . -B build \
   -DDRAFT_ENABLE_SANITIZERS=OFF
 cmake --build build --parallel
 ctest --test-dir build --output-on-failure
+```
+
+The example integration subset is independently selectable without changing
+what the unfiltered CI command runs:
+
+```sh
+ctest --test-dir build -L examples --output-on-failure
 ```
 
 On Linux, use `-DLLVM_DIR=/usr/lib/llvm-22/lib/cmake/llvm`. That LLVM

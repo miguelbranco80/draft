@@ -21,6 +21,7 @@
 #include <csignal>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <string>
 #include <string_view>
@@ -54,10 +55,69 @@ struct TestState {
   (state).expect((expression), (package), #expression, __LINE__)
 
 struct ConformanceCase {
-  std::string_view name;
-  std::string_view workspace;
-  std::string_view package;
+  std::string name;
+  std::string workspace;
+  std::string package;
+  std::string argument;
+  std::string standard_input;
 };
+
+// Reads every row classified as a runnable native program from the repository
+// qualification matrix. The matrix, rather than this test binary, owns example
+// coverage: adding a new executable package without classifying it makes the
+// frontend inventory test fail, and classifying it as `run` includes it here.
+// Malformed rows are test-infrastructure errors and fail before compilation.
+[[nodiscard]] std::vector<ConformanceCase> load_conformance_cases() {
+  const std::filesystem::path source_root(DRAFT_SOURCE_DIRECTORY);
+  std::ifstream input(source_root / "examples" / "qualification.tsv");
+  if (!input) {
+    std::cerr << "cannot open examples/qualification.tsv\n";
+    std::exit(EXIT_FAILURE);
+  }
+
+  std::vector<ConformanceCase> cases;
+  std::string line;
+  while (std::getline(input, line)) {
+    if (line.empty() || line.front() == '#') continue;
+    if (line.back() == '\r') line.pop_back();
+
+    std::array<std::string, 5> fields;
+    std::size_t begin = 0;
+    for (std::size_t field = 0; field != fields.size(); ++field) {
+      const std::size_t end = line.find('\t', begin);
+      if ((field + 1 == fields.size()) != (end == std::string::npos)) {
+        std::cerr << "malformed example qualification row: " << line << '\n';
+        std::exit(EXIT_FAILURE);
+      }
+      fields[field] = line.substr(begin, end - begin);
+      begin = end + 1;
+    }
+    if (fields[3] != "run") continue;
+
+    ConformanceCase test;
+    test.workspace = fields[0];
+    test.package = fields[1] == "."
+        ? test.workspace
+        : test.workspace + "/" + fields[1];
+    test.name = test.package.substr(std::string("examples/").size());
+    for (char &byte : test.name) {
+      if (byte == '/') byte = '-';
+    }
+    if (test.package == "examples/simple-editor") {
+      // The editor is intentionally interactive. A relative document path and
+      // one quit command exercise its startup, unavailable-file, command-loop,
+      // and clean shutdown paths without leaving a source-tree artifact.
+      test.argument = "document.txt";
+      test.standard_input = "q\n";
+    }
+    cases.push_back(std::move(test));
+  }
+  if (!input.eof()) {
+    std::cerr << "cannot read examples/qualification.tsv\n";
+    std::exit(EXIT_FAILURE);
+  }
+  return cases;
+}
 
 // Selects the Draft target whose executables the current CI host can launch
 // directly. CMake only builds this test on the two supported AArch64 hosts, so
@@ -80,14 +140,26 @@ struct ConformanceCase {
     const std::filesystem::path &executable,
     const std::filesystem::path &working_directory,
     std::string_view argument,
+    std::string_view standard_input,
     int &status) {
-  // Materialize the optional argument before fork. The child performs only the
-  // small async-signal-safe setup needed for exec and never allocates through
-  // a post-fork C++ library path.
+  // Materialize inputs and create the pipe before fork. The child performs only
+  // async-signal-safe descriptor setup before exec and never allocates through
+  // a post-fork C++ library path. Redirecting every fixture's stdin also keeps
+  // interactive behavior independent of the terminal that launched CTest.
   const std::string argument_storage(argument);
+  const std::string input_storage(standard_input);
+  int input_pipe[2];
+  if (::pipe(input_pipe) != 0) return false;
   const pid_t child = ::fork();
-  if (child < 0) return false;
+  if (child < 0) {
+    ::close(input_pipe[0]);
+    ::close(input_pipe[1]);
+    return false;
+  }
   if (child == 0) {
+    ::close(input_pipe[1]);
+    if (::dup2(input_pipe[0], STDIN_FILENO) < 0) _exit(125);
+    ::close(input_pipe[0]);
     if (::chdir(working_directory.c_str()) != 0) _exit(126);
     if (argument_storage.empty()) {
       ::execl(executable.c_str(), executable.c_str(), nullptr);
@@ -100,6 +172,21 @@ struct ConformanceCase {
     }
     _exit(127);
   }
+  ::close(input_pipe[0]);
+  std::size_t written = 0;
+  while (written != input_storage.size()) {
+    const ssize_t count = ::write(
+        input_pipe[1],
+        input_storage.data() + written,
+        input_storage.size() - written);
+    if (count < 0) {
+      if (errno == EINTR) continue;
+      ::close(input_pipe[1]);
+      return false;
+    }
+    written += static_cast<std::size_t>(count);
+  }
+  ::close(input_pipe[1]);
   while (::waitpid(child, &status, 0) < 0) {
     if (errno != EINTR) return false;
   }
@@ -107,40 +194,7 @@ struct ConformanceCase {
 }
 
 void test_native_examples(TestState &state) {
-  constexpr std::array cases{
-      ConformanceCase{"hello", "examples", "examples/hello"},
-      ConformanceCase{
-          "language-tour", "examples", "examples/language-tour"},
-      ConformanceCase{"console", "examples", "examples/console"},
-      ConformanceCase{"file-io", "examples", "examples/file-io"},
-      ConformanceCase{"denials", "examples", "examples/denials"},
-      ConformanceCase{
-          "runtime-checks", "examples", "examples/runtime-checks"},
-      ConformanceCase{
-          "runtime-traps", "examples", "examples/runtime-traps"},
-      ConformanceCase{
-          "core-runtime", "examples", "examples/core-runtime"},
-      ConformanceCase{"core-memory", "examples", "examples/core-memory"},
-      ConformanceCase{"core-array", "examples", "examples/core-array"},
-      ConformanceCase{"core-map", "examples", "examples/core-map"},
-      ConformanceCase{"core-os", "examples", "examples/core-os"},
-      ConformanceCase{"core-thread", "examples", "examples/core-thread"},
-      ConformanceCase{"core-atomic", "examples", "examples/core-atomic"},
-      ConformanceCase{
-          "core-atomic-thread", "examples", "examples/core-atomic-thread"},
-      ConformanceCase{
-          "nested-procedures", "examples", "examples/nested-procedures"},
-      ConformanceCase{"assembly", "examples", "examples/assembly"},
-      ConformanceCase{
-          "external-assembly", "examples", "examples/external-assembly"},
-      ConformanceCase{"c-interop", "examples", "examples/c-interop"},
-      ConformanceCase{
-          "packages", "examples/packages", "examples/packages/app"},
-      ConformanceCase{
-          "packages-generic",
-          "examples/packages-generic",
-          "examples/packages-generic/app"},
-  };
+  const std::vector<ConformanceCase> cases = load_conformance_cases();
 
   draft::test::TemporaryDirectory temporary_directory{
       "draft-native-conformance"};
@@ -222,7 +276,11 @@ void test_native_examples(TestState &state) {
         int process_status = 0;
         EXPECT(state, test.name,
             run_executable(
-                built.output_path, case_directory, selector, process_status));
+                built.output_path,
+                case_directory,
+                selector,
+                {},
+                process_status));
         EXPECT(state, test.name, WIFSIGNALED(process_status));
         if (WIFSIGNALED(process_status)) {
           // LLVM lowers llvm.trap to AArch64 BRK for both selected targets, and
@@ -235,7 +293,12 @@ void test_native_examples(TestState &state) {
     } else {
       int process_status = 0;
       EXPECT(state, test.name,
-          run_executable(built.output_path, case_directory, {}, process_status));
+          run_executable(
+              built.output_path,
+              case_directory,
+              test.argument,
+              test.standard_input,
+              process_status));
       EXPECT(state, test.name, WIFEXITED(process_status));
       if (WIFEXITED(process_status)) {
         EXPECT(state, test.name, WEXITSTATUS(process_status) == 0);
