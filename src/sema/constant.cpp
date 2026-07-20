@@ -1008,6 +1008,27 @@ private:
       if (left.is_valid() && right.is_valid() && left != right) return {};
       return left.is_valid() ? left : right;
     }
+    if (expression.kind == NodeKind::SliceExpression &&
+        !expression.children.empty()) {
+      // A slice expression's result category is determined entirely by the
+      // base type; checking its bounds belongs to the ordinary expression
+      // checker. This reader intentionally supplies only that declared result
+      // so type_of can remain non-evaluating while the package-initializer
+      // preflight validates every suppressed operand and bound.
+      const TypeId base = declared_value_type_hint(
+          tree, expression.children.front(), scope);
+      if (!base.is_valid()) return {};
+      const Type &base_type = semantic_.types.type(base);
+      if (base_type.kind == TypeKind::String ||
+          base_type.kind == TypeKind::Slice) {
+        return base;
+      }
+      if (base_type.kind == TypeKind::Array ||
+          base_type.kind == TypeKind::MultiPointer) {
+        return semantic_.types.slice(base_type.element);
+      }
+      return {};
+    }
     if (expression.kind != NodeKind::CallExpression ||
         expression.children.empty()) {
       return {};
@@ -1018,35 +1039,19 @@ private:
       const std::optional<std::string> intrinsic = final_name(tree, callee);
       if (intrinsic.has_value()) {
         // `raw_data` and `len` produce runtime values, but type_of observes
-        // only their checked static result. Neither intrinsic has an ordinary
+        // only their declared static result. Neither intrinsic has an ordinary
         // declaration whose procedure result could supply the hint below, so
-        // recognize their exact source contracts here. Validate the operand
-        // shape as well as the result: accepting `type_of(raw_data(42))` merely
-        // because every valid raw_data call returns [^]u8 would let an invalid
-        // nested expression escape ordinary type checking.
+        // recognize those result types here. This function is deliberately a
+        // non-evaluating shape reader, not a second expression checker: the
+        // package-initializer preflight checks the complete type_of operand
+        // with BodyChecker and owns arity, argument, slicing, and intrinsic
+        // diagnostics.
         if (*intrinsic == "raw_data") {
-          if (expression.children.size() != 2) return {};
-          const TypeId argument = declared_value_type_hint(
-              tree, expression.children[1], scope);
-          return argument == semantic_.types.builtins().string_type
-              ? semantic_.types.multi_pointer(
-                    semantic_.types.builtins().u8_type)
-              : TypeId{};
+          return semantic_.types.multi_pointer(
+              semantic_.types.builtins().u8_type);
         }
         if (*intrinsic == "len") {
-          if (expression.children.size() != 2) return {};
-          if (static_pack_length(
-                  tree, expression.children[1], scope).has_value()) {
-            return semantic_.types.builtins().usize_type;
-          }
-          const TypeId argument = declared_value_type_hint(
-              tree, expression.children[1], scope);
-          if (!argument.is_valid()) return {};
-          const TypeKind kind = semantic_.types.type(argument).kind;
-          return kind == TypeKind::Array || kind == TypeKind::Slice ||
-                  kind == TypeKind::String
-              ? semantic_.types.builtins().usize_type
-              : TypeId{};
+          return semantic_.types.builtins().usize_type;
         }
         if (*intrinsic == "type_of" || *intrinsic == "type_element" ||
             *intrinsic == "type_member_type" ||

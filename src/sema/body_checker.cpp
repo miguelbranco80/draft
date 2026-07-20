@@ -320,11 +320,12 @@ public:
         continue;
       }
       // The constant evaluator already validates every expression it actually
-      // executes. This preflight exists specifically for value-selection forms
-      // whose dead operand is deliberately not executed. Keeping the entry
-      // point narrow also avoids pretending that runtime HIR has values for
+      // executes. This preflight exists specifically for forms which suppress
+      // evaluation of one or more source operands: conditional/short-circuit
+      // selection and type_of's inspected expression. Keeping the entry point
+      // narrow also avoids pretending that runtime HIR has values for
       // compile-time-only objects such as `target`.
-      if (!contains_value_selection(*tree, initializer)) continue;
+      if (!initializer_requires_type_preflight(*tree, initializer)) continue;
 
       TypeId expected = symbol.type;
       const SyntaxNode &pattern = tree->node(declaration.children.front());
@@ -347,7 +348,11 @@ public:
   }
 
 private:
-  [[nodiscard]] bool contains_value_selection(
+  // Detects package initializers whose constant result can be computed without
+  // executing every contained expression. The full BodyChecker pass below is
+  // what validates those suppressed expressions; the constant evaluator's
+  // declared-type hints must never become an alternate source type checker.
+  [[nodiscard]] bool initializer_requires_type_preflight(
       const SyntaxTree &tree, NodeId expression) const {
     const SyntaxNode &node = tree.node(expression);
     if (node.kind == NodeKind::ConditionalExpression) return true;
@@ -358,8 +363,13 @@ private:
         return true;
       }
     }
+    if (node.kind == NodeKind::CallExpression && !node.children.empty()) {
+      const std::optional<SourceName> callee =
+          single_name_expression(tree, node.children.front());
+      if (callee.has_value() && callee->text == "type_of") return true;
+    }
     for (NodeId child : node.children) {
-      if (contains_value_selection(tree, child)) return true;
+      if (initializer_requires_type_preflight(tree, child)) return true;
     }
     return false;
   }

@@ -1760,6 +1760,7 @@ runtime_text :: proc() -> string {
 
 Observed_Type :: type_of(runtime_only())
 Raw_Data_Type :: type_of(raw_data(runtime_text()))
+Sliced_Raw_Data_Type :: type_of(raw_data("abc"[1:]))
 Length_Type :: type_of(len(runtime_text()))
 Element_Type :: type_element(^u64)
 Meta_Type :: type_of(u64)
@@ -1782,6 +1783,8 @@ when type_kind(Element_Type) == .unsigned_integer {
       find_symbol(source.analysis.package, "Observed_Type");
   const std::optional<draft::SymbolId> raw_data =
       find_symbol(source.analysis.package, "Raw_Data_Type");
+  const std::optional<draft::SymbolId> sliced_raw_data =
+      find_symbol(source.analysis.package, "Sliced_Raw_Data_Type");
   const std::optional<draft::SymbolId> length =
       find_symbol(source.analysis.package, "Length_Type");
   const std::optional<draft::SymbolId> element =
@@ -1796,13 +1799,15 @@ when type_kind(Element_Type) == .unsigned_integer {
       find_symbol(source.analysis.package, "Selected");
   EXPECT(state, observed.has_value());
   EXPECT(state, raw_data.has_value());
+  EXPECT(state, sliced_raw_data.has_value());
   EXPECT(state, length.has_value());
   EXPECT(state, element.has_value());
   EXPECT(state, meta.has_value());
   EXPECT(state, name.has_value());
   EXPECT(state, count.has_value());
   EXPECT(state, selected.has_value());
-  if (!observed.has_value() || !raw_data.has_value() || !length.has_value() ||
+  if (!observed.has_value() || !raw_data.has_value() ||
+      !sliced_raw_data.has_value() || !length.has_value() ||
       !element.has_value() || !meta.has_value() || !name.has_value() ||
       !count.has_value() || !selected.has_value()) {
     return;
@@ -1812,6 +1817,8 @@ when type_kind(Element_Type) == .unsigned_integer {
       source.analysis.constants.find(*observed);
   const draft::ConstantValue *raw_data_value =
       source.analysis.constants.find(*raw_data);
+  const draft::ConstantValue *sliced_raw_data_value =
+      source.analysis.constants.find(*sliced_raw_data);
   const draft::ConstantValue *length_value =
       source.analysis.constants.find(*length);
   const draft::ConstantValue *element_value =
@@ -1823,6 +1830,7 @@ when type_kind(Element_Type) == .unsigned_integer {
       source.analysis.constants.find(*selected);
   EXPECT(state, observed_value != nullptr);
   EXPECT(state, raw_data_value != nullptr);
+  EXPECT(state, sliced_raw_data_value != nullptr);
   EXPECT(state, length_value != nullptr);
   EXPECT(state, element_value != nullptr);
   EXPECT(state, meta_value != nullptr);
@@ -1830,7 +1838,8 @@ when type_kind(Element_Type) == .unsigned_integer {
   EXPECT(state, count_value != nullptr);
   EXPECT(state, selected_value != nullptr);
   if (observed_value == nullptr || raw_data_value == nullptr ||
-      length_value == nullptr || element_value == nullptr ||
+      sliced_raw_data_value == nullptr || length_value == nullptr ||
+      element_value == nullptr ||
       meta_value == nullptr || name_value == nullptr ||
       count_value == nullptr || selected_value == nullptr) {
     return;
@@ -1838,6 +1847,7 @@ when type_kind(Element_Type) == .unsigned_integer {
 
   EXPECT(state, observed_value->kind == draft::ConstantKind::Type);
   EXPECT(state, raw_data_value->kind == draft::ConstantKind::Type);
+  EXPECT(state, sliced_raw_data_value->kind == draft::ConstantKind::Type);
   EXPECT(state, length_value->kind == draft::ConstantKind::Type);
   EXPECT(state, element_value->kind == draft::ConstantKind::Type);
   EXPECT(state, meta_value->kind == draft::ConstantKind::Type);
@@ -1850,6 +1860,14 @@ when type_kind(Element_Type) == .unsigned_integer {
   if (raw_data_value->kind == draft::ConstantKind::Type) {
     const draft::Type &raw_data_type = source.analysis.package.types.type(
         draft::TypeId{raw_data_value->type_index});
+    EXPECT(state, raw_data_type.kind == draft::TypeKind::MultiPointer);
+    EXPECT(state,
+        raw_data_type.element ==
+            source.analysis.package.types.builtins().u8_type);
+  }
+  if (sliced_raw_data_value->kind == draft::ConstantKind::Type) {
+    const draft::Type &raw_data_type = source.analysis.package.types.type(
+        draft::TypeId{sliced_raw_data_value->type_index});
     EXPECT(state, raw_data_type.kind == draft::TypeKind::MultiPointer);
     EXPECT(state,
         raw_data_type.element ==
@@ -1883,6 +1901,12 @@ package conditions
 Bad_Element :: type_element(bool)
 Bad_Index :: type_member_type(Type_Kind, 100)
 Bad_Raw_Data_Type :: type_of(raw_data(42))
+
+runtime_text_with_value :: proc(value: int) -> string {
+    return "runtime text"
+}
+
+Bad_Raw_Data_Call_Type :: type_of(raw_data(runtime_text_with_value()))
 )draft");
   EXPECT(state, !invalid.analysis.ok);
   const std::string rendered =
@@ -1891,8 +1915,10 @@ Bad_Raw_Data_Type :: type_of(raw_data(42))
       std::string::npos);
   EXPECT(state, rendered.find("type_member_type index is out of bounds") !=
       std::string::npos);
+  EXPECT(state, rendered.find("raw_data requires a string argument") !=
+      std::string::npos);
   EXPECT(state, rendered.find(
-      "type_of could not determine the expression type without evaluating it") !=
+      "procedure call has the wrong number of arguments") !=
       std::string::npos);
 }
 
