@@ -1017,6 +1017,37 @@ private:
     if (callee.kind == NodeKind::NameExpression) {
       const std::optional<std::string> intrinsic = final_name(tree, callee);
       if (intrinsic.has_value()) {
+        // `raw_data` and `len` produce runtime values, but type_of observes
+        // only their checked static result. Neither intrinsic has an ordinary
+        // declaration whose procedure result could supply the hint below, so
+        // recognize their exact source contracts here. Validate the operand
+        // shape as well as the result: accepting `type_of(raw_data(42))` merely
+        // because every valid raw_data call returns [^]u8 would let an invalid
+        // nested expression escape ordinary type checking.
+        if (*intrinsic == "raw_data") {
+          if (expression.children.size() != 2) return {};
+          const TypeId argument = declared_value_type_hint(
+              tree, expression.children[1], scope);
+          return argument == semantic_.types.builtins().string_type
+              ? semantic_.types.multi_pointer(
+                    semantic_.types.builtins().u8_type)
+              : TypeId{};
+        }
+        if (*intrinsic == "len") {
+          if (expression.children.size() != 2) return {};
+          if (static_pack_length(
+                  tree, expression.children[1], scope).has_value()) {
+            return semantic_.types.builtins().usize_type;
+          }
+          const TypeId argument = declared_value_type_hint(
+              tree, expression.children[1], scope);
+          if (!argument.is_valid()) return {};
+          const TypeKind kind = semantic_.types.type(argument).kind;
+          return kind == TypeKind::Array || kind == TypeKind::Slice ||
+                  kind == TypeKind::String
+              ? semantic_.types.builtins().usize_type
+              : TypeId{};
+        }
         if (*intrinsic == "type_of" || *intrinsic == "type_element" ||
             *intrinsic == "type_member_type" ||
             *intrinsic == "type_underlying" ||

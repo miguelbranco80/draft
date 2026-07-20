@@ -716,7 +716,7 @@ draft::CompileWorkspaceOptions compile_options(
   options.workspace.workspace_directory = workspace.root.string();
   options.workspace.core_directory =
       std::string(DRAFT_SOURCE_DIRECTORY) + "/core";
-  options.workspace.core_content_identity = "draft-core-bootstrap-v3";
+  options.workspace.core_content_identity = "draft-core-bootstrap-v4";
   return options;
 }
 
@@ -2044,7 +2044,7 @@ void test_resolution_keeps_validation_as_context_only(TestState &state) {
           saw_answer = true;
         }
         if (reference.name == "expect" &&
-            reference.root_identity == "draft-core-bootstrap-v3" &&
+            reference.root_identity == "draft-core-bootstrap-v4" &&
             reference.root_relative_path == "testing") {
           saw_expect = true;
         }

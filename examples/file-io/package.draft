@@ -39,6 +39,11 @@ bytes_equal_text :: proc(bytes: []u8, text: string) -> bool {
 // descriptor. Cleanup order is explicit: the deferred remove runs before the
 // deferred pathname destruction because defers execute last-in, first-out.
 main :: proc() {
+    // Keep this fixture beyond the removed console copy-buffer size. The native
+    // example matrix therefore cannot silently regress into testing only the
+    // short-string case if the prose above is edited later.
+    static_assert(len(Contents) > 256, "file fixture must remain a large string")
+
     path: memory.Owned_String
     memory.owned_string_copy(&path, Path)
     defer memory.owned_string_destroy(&path)

@@ -22,6 +22,27 @@ TypeStore. Interface hashes include that canonical interface index. No
 package-local ID crosses the boundary, including type values nested in a
 compile-time aggregate or generic value packet.
 
+## Raw string-data intrinsic
+
+Status: exact string-to-pointer typing and explicit runtime lowering are
+implemented.
+
+The body checker recognizes `raw_data` as a predeclared intrinsic rather than a
+library declaration. It requires exactly one `string` operand and assigns the
+ordinary `[^]u8` result type. The checked HIR retains the operand because the
+pointer is a runtime value derived from that particular string view; constant
+evaluation may inspect the call's static result type but never folds the call
+or reads its bytes. No implicit string-to-slice or string-to-pointer conversion
+exists beside this named operation.
+
+The result borrows the string's backing lifetime and does not establish that
+the storage is writable. Those facts remain source-level semantic contracts;
+the HIR type is intentionally the existing multi-pointer type rather than a
+second const-qualified pointer family. Denial summaries record the intrinsic
+as its own reachable effect, so `deny raw_data` applies through local helpers
+and imported package interfaces exactly like the other compiler-defined
+operations.
+
 The compiler-defined `Type_Kind`, `Type_Byte_Order`, and `Calling_Convention`
 enums are canonical builtin TypeStore rows. Their source-facing alternatives
 are maintained beside the query implementation rather than manufactured as
@@ -337,7 +358,7 @@ traps, and message construction used solely by an assertion cannot survive,
 and no condition is converted into an optimizer assumption.
 
 The versioned `draft.resolved-program.v6` hash records the selected root and
-assertion mode beside compiler content v131. `build`, `resolve`, and `judge` expose the same explicit
+assertion mode beside compiler content v132. `build`, `resolve`, and `judge` expose the same explicit
 flag so a provider-free manifest cannot be replayed under a different
 mode. Test and benchmark compilations deliberately override the release choice
 to assertions on and receive their own resolved validation digest; disabling

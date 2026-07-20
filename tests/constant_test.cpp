@@ -1754,7 +1754,13 @@ runtime_only :: proc() -> int {
     return runtime_storage
 }
 
+runtime_text :: proc() -> string {
+    return "runtime text"
+}
+
 Observed_Type :: type_of(runtime_only())
+Raw_Data_Type :: type_of(raw_data(runtime_text()))
+Length_Type :: type_of(len(runtime_text()))
 Element_Type :: type_element(^u64)
 Meta_Type :: type_of(u64)
 Array_Name :: type_name([4]u8)
@@ -1774,6 +1780,10 @@ when type_kind(Element_Type) == .unsigned_integer {
 
   const std::optional<draft::SymbolId> observed =
       find_symbol(source.analysis.package, "Observed_Type");
+  const std::optional<draft::SymbolId> raw_data =
+      find_symbol(source.analysis.package, "Raw_Data_Type");
+  const std::optional<draft::SymbolId> length =
+      find_symbol(source.analysis.package, "Length_Type");
   const std::optional<draft::SymbolId> element =
       find_symbol(source.analysis.package, "Element_Type");
   const std::optional<draft::SymbolId> meta =
@@ -1785,18 +1795,25 @@ when type_kind(Element_Type) == .unsigned_integer {
   const std::optional<draft::SymbolId> selected =
       find_symbol(source.analysis.package, "Selected");
   EXPECT(state, observed.has_value());
+  EXPECT(state, raw_data.has_value());
+  EXPECT(state, length.has_value());
   EXPECT(state, element.has_value());
   EXPECT(state, meta.has_value());
   EXPECT(state, name.has_value());
   EXPECT(state, count.has_value());
   EXPECT(state, selected.has_value());
-  if (!observed.has_value() || !element.has_value() || !meta.has_value() ||
-      !name.has_value() || !count.has_value() || !selected.has_value()) {
+  if (!observed.has_value() || !raw_data.has_value() || !length.has_value() ||
+      !element.has_value() || !meta.has_value() || !name.has_value() ||
+      !count.has_value() || !selected.has_value()) {
     return;
   }
 
   const draft::ConstantValue *observed_value =
       source.analysis.constants.find(*observed);
+  const draft::ConstantValue *raw_data_value =
+      source.analysis.constants.find(*raw_data);
+  const draft::ConstantValue *length_value =
+      source.analysis.constants.find(*length);
   const draft::ConstantValue *element_value =
       source.analysis.constants.find(*element);
   const draft::ConstantValue *meta_value = source.analysis.constants.find(*meta);
@@ -1805,18 +1822,23 @@ when type_kind(Element_Type) == .unsigned_integer {
   const draft::ConstantValue *selected_value =
       source.analysis.constants.find(*selected);
   EXPECT(state, observed_value != nullptr);
+  EXPECT(state, raw_data_value != nullptr);
+  EXPECT(state, length_value != nullptr);
   EXPECT(state, element_value != nullptr);
   EXPECT(state, meta_value != nullptr);
   EXPECT(state, name_value != nullptr);
   EXPECT(state, count_value != nullptr);
   EXPECT(state, selected_value != nullptr);
-  if (observed_value == nullptr || element_value == nullptr ||
+  if (observed_value == nullptr || raw_data_value == nullptr ||
+      length_value == nullptr || element_value == nullptr ||
       meta_value == nullptr || name_value == nullptr ||
       count_value == nullptr || selected_value == nullptr) {
     return;
   }
 
   EXPECT(state, observed_value->kind == draft::ConstantKind::Type);
+  EXPECT(state, raw_data_value->kind == draft::ConstantKind::Type);
+  EXPECT(state, length_value->kind == draft::ConstantKind::Type);
   EXPECT(state, element_value->kind == draft::ConstantKind::Type);
   EXPECT(state, meta_value->kind == draft::ConstantKind::Type);
   if (observed_value->kind == draft::ConstantKind::Type) {
@@ -1824,6 +1846,19 @@ when type_kind(Element_Type) == .unsigned_integer {
         draft::type_kind_name(source.analysis.package.types.type(
             draft::TypeId{observed_value->type_index}).kind) ==
             "signed integer");
+  }
+  if (raw_data_value->kind == draft::ConstantKind::Type) {
+    const draft::Type &raw_data_type = source.analysis.package.types.type(
+        draft::TypeId{raw_data_value->type_index});
+    EXPECT(state, raw_data_type.kind == draft::TypeKind::MultiPointer);
+    EXPECT(state,
+        raw_data_type.element ==
+            source.analysis.package.types.builtins().u8_type);
+  }
+  if (length_value->kind == draft::ConstantKind::Type) {
+    EXPECT(state,
+        draft::TypeId{length_value->type_index} ==
+            source.analysis.package.types.builtins().usize_type);
   }
   if (element_value->kind == draft::ConstantKind::Type) {
     EXPECT(state,
@@ -1847,6 +1882,7 @@ package conditions
 
 Bad_Element :: type_element(bool)
 Bad_Index :: type_member_type(Type_Kind, 100)
+Bad_Raw_Data_Type :: type_of(raw_data(42))
 )draft");
   EXPECT(state, !invalid.analysis.ok);
   const std::string rendered =
@@ -1854,6 +1890,9 @@ Bad_Index :: type_member_type(Type_Kind, 100)
   EXPECT(state, rendered.find("type_element requires a pointer") !=
       std::string::npos);
   EXPECT(state, rendered.find("type_member_type index is out of bounds") !=
+      std::string::npos);
+  EXPECT(state, rendered.find(
+      "type_of could not determine the expression type without evaluating it") !=
       std::string::npos);
 }
 

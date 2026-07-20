@@ -224,7 +224,7 @@ target_compile_definitions(
   draftc
   PRIVATE
     DRAFT_CORE_DIRECTORY="${CMAKE_CURRENT_SOURCE_DIR}/core"
-    DRAFT_CORE_CONTENT_IDENTITY="draft-core-bootstrap-v3"
+    DRAFT_CORE_CONTENT_IDENTITY="draft-core-bootstrap-v4"
 )
 
 include(CTest)
@@ -591,7 +591,7 @@ if(BUILD_TESTING)
     PRIVATE
       DRAFT_DRIVER_PATH="$<TARGET_FILE:draftc>"
       DRAFT_CORE_DIRECTORY="${CMAKE_CURRENT_SOURCE_DIR}/core"
-      DRAFT_CORE_CONTENT_IDENTITY="draft-core-bootstrap-v3"
+      DRAFT_CORE_CONTENT_IDENTITY="draft-core-bootstrap-v4"
   )
   add_dependencies(draft_judgment_driver_tests draftc)
   add_test(NAME draft_judgment_driver_tests COMMAND draft_judgment_driver_tests)

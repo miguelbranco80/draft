@@ -165,6 +165,105 @@ flow_caller :: proc() {
   }
 }
 
+// raw_data is a representation escape rather than an ordinary declaration.
+// Its dedicated effect must therefore begin at the intrinsic, close through a
+// local caller, and survive publication in the same package interface that a
+// downstream denial will consume.
+void test_raw_string_data_effect(TestState &state) {
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  draft::LoadedPackage loaded;
+  loaded.short_name = "raw_string_effects";
+  draft::LoadedPackageFile file;
+  file.kind = draft::PackageFileKind::DraftSource;
+  file.relative_name = "package.draft";
+  file.source = sources.add_source(
+      "package.draft",
+      R"draft(package raw_string_effects
+
+pub expose :: proc(text: string) -> [^]u8 {
+    return raw_data(text)
+}
+
+pub forward :: proc(text: string) -> [^]u8 {
+    return expose(text)
+}
+)draft");
+  file.syntax.emplace(draft::parse_source_file(sources, file.source, diagnostics));
+  loaded.files.push_back(std::move(file));
+
+  const draft::TargetProfile target = draft::make_aarch64_macos_profile();
+  draft::SemanticAnalysisResult semantics = draft::analyze_package_semantics(
+      sources, loaded, target.facts, diagnostics);
+  draft::BodyCheckResult bodies = draft::check_package_bodies(
+      sources,
+      loaded,
+      semantics.selections,
+      semantics.package,
+      semantics.constants,
+      target.facts,
+      diagnostics);
+  const draft::EffectSummaryResult effects =
+      draft::summarize_package_effects(semantics.package, bodies.program);
+  const draft::AgentMetadataResult empty_metadata;
+  const draft::PackageInterface package_interface = draft::build_package_interface(
+      {"workspace", "raw_string_effects"},
+      semantics.package,
+      semantics.constants,
+      empty_metadata,
+      effects,
+      diagnostics);
+  if (diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+  }
+
+  EXPECT(state, semantics.ok);
+  EXPECT(state, bodies.ok);
+  const std::optional<draft::SymbolId> expose =
+      symbol(semantics.package, "expose");
+  const std::optional<draft::SymbolId> forward =
+      symbol(semantics.package, "forward");
+  EXPECT(state, expose.has_value());
+  EXPECT(state, forward.has_value());
+  if (!expose.has_value() || !forward.has_value()) return;
+
+  const draft::ProcedureEffectSummary *expose_summary = effects.find(*expose);
+  const draft::ProcedureEffectSummary *forward_summary = effects.find(*forward);
+  EXPECT(state, expose_summary != nullptr);
+  EXPECT(state, forward_summary != nullptr);
+  if (expose_summary == nullptr || forward_summary == nullptr) return;
+
+  const bool expose_has_direct_raw_data = std::any_of(
+      expose_summary->direct_effects.begin(),
+      expose_summary->direct_effects.end(),
+      [](const draft::SemanticEffect &effect) {
+        return effect.kind == draft::EffectKind::RawStringData;
+      });
+  EXPECT(state, expose_has_direct_raw_data);
+  EXPECT(state,
+      has_effect(*expose_summary, draft::EffectKind::RawStringData));
+  EXPECT(state,
+      !has_effect(*expose_summary, draft::EffectKind::UnknownCall));
+  EXPECT(state, forward_summary->direct_calls.size() == 1);
+  EXPECT(state,
+      has_effect(*forward_summary, draft::EffectKind::RawStringData));
+  EXPECT(state,
+      !has_effect(*forward_summary, draft::EffectKind::UnknownCall));
+
+  EXPECT(state, package_interface.declarations.size() == 2);
+  for (const draft::InterfaceDeclaration &declaration :
+       package_interface.declarations) {
+    EXPECT(state, declaration.has_effect_summary);
+    const bool exports_raw_data = std::any_of(
+        declaration.effects.begin(),
+        declaration.effects.end(),
+        [](const draft::InterfaceDeclaration::Effect &effect) {
+          return effect.kind == draft::EffectKind::RawStringData;
+        });
+    EXPECT(state, exports_raw_data);
+  }
+}
+
 void test_target_and_package_assembly_summaries(TestState &state) {
   draft::SourceManager sources;
   draft::DiagnosticSink diagnostics;
@@ -991,6 +1090,7 @@ tuple_assignment_caller :: proc() {
 int main() {
   TestState state;
   test_transitive_effects(state);
+  test_raw_string_data_effect(state);
   test_target_and_package_assembly_summaries(state);
   test_typed_and_context_flow_paths(state);
   test_returned_procedure_flow(state);

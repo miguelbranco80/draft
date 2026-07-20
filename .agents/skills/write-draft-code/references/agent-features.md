@@ -312,7 +312,7 @@ Its position selects the region category:
 - declaration/member: contents contribute to the surrounding package/type.
 
 Selectors can name an imported package alias, declaration, global, `context`,
-a Context field, `assert`, `asm`, or `unchecked`. They resolve to stable
+a Context field, `assert`, `raw_data`, `asm`, or `unchecked`. They resolve to stable
 semantic identities despite aliases, parametric instances, or linker names.
 
 The restriction applies to every reachable handwritten or generated helper,
@@ -325,7 +325,11 @@ Nested denials only add restrictions. `deny unchecked` permits checked or
 statically proven bounded access but rejects multi-pointer indexing and
 reachable unchecked operations. `deny assert` rejects runtime `assert`, not
 `static_assert`. Because runtime assertion reporting uses Context, denying all
-`context` also rejects it. Parsed and package assembly both count as `asm`.
+`context` also rejects it. `deny raw_data` rejects the string representation
+escape directly and through local or imported helpers. It is separate from
+`deny unchecked`: extracting the pointer does not itself index memory, and a
+native read-only consumer can use it without an unchecked Draft access. Parsed
+and package assembly both count as `asm`.
 
 Optimization may not weaken a denial, and a generated expansion cannot bypass
 one. Use denials for architecture boundaries that must remain mechanically

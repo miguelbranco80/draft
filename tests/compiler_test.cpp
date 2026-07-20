@@ -1220,6 +1220,73 @@ void test_cross_package_higher_order_effect(TestState &state) {
   std::filesystem::remove_all(root, error);
 }
 
+// Public interface summaries must retain raw string-data extraction even when
+// the importing package calls only a wrapper. This exercises the complete
+// producer-interface-consumer path; a local-only denial test cannot prove that
+// the dedicated effect survives package translation and proxy import.
+void test_cross_package_raw_string_data_denial(TestState &state) {
+  draft::test::TemporaryDirectory temporary_directory{
+      "draft-bootstrap-raw-string-data-denial-test"};
+  const std::filesystem::path &root = temporary_directory.path();
+  std::error_code error;
+  std::filesystem::create_directories(root / "app", error);
+  std::filesystem::create_directories(root / "bytes", error);
+  EXPECT(state, !error);
+  if (error) return;
+
+  std::ofstream dependency(
+      root / "bytes" / "package.draft", std::ios::binary);
+  dependency <<
+      "package bytes\n"
+      "pub expose :: proc(text: string) -> [^]u8 {\n"
+      "    return raw_data(text)\n"
+      "}\n"
+      "pub forward :: proc(text: string) -> [^]u8 {\n"
+      "    return expose(text)\n"
+      "}\n";
+  dependency.close();
+  EXPECT(state, dependency.good());
+
+  std::ofstream app(root / "app" / "package.draft", std::ios::binary);
+  app <<
+      "package app\n"
+      "import bytes\n"
+      "deny raw_data {\n"
+      "    main :: proc(text: string) {\n"
+      "        pointer := bytes.forward(text)\n"
+      "    }\n"
+      "}\n";
+  app.close();
+  EXPECT(state, app.good());
+
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  draft::CompileWorkspaceOptions options;
+  options.target = draft::make_aarch64_macos_profile();
+  options.workspace.workspace_directory = root.string();
+  const draft::CompileWorkspaceResult result = draft::compile_workspace(
+      sources, (root / "app").string(), std::move(options), diagnostics);
+  EXPECT(state, !result.ok);
+  EXPECT(state, diagnostics.error_count() == 1);
+  const std::string rendered = draft::render_diagnostics(sources, diagnostics);
+  if (rendered.find("denied raw_data") == std::string::npos ||
+      rendered.find("unknown call") != std::string::npos) {
+    std::cerr << rendered;
+  }
+  EXPECT(state, rendered.find("denied raw_data") != std::string::npos);
+  EXPECT(state, rendered.find("unknown call") == std::string::npos);
+
+  bool exact_imported_call_range = false;
+  for (const draft::Diagnostic &diagnostic : diagnostics.diagnostics()) {
+    if (diagnostic.message != "operation reaches denied raw_data") continue;
+    exact_imported_call_range =
+        sources.text(diagnostic.range) == "bytes.forward(text)";
+  }
+  EXPECT(state, exact_imported_call_range);
+
+  std::filesystem::remove_all(root, error);
+}
+
 void test_cross_package_dependent_generic_effect(TestState &state) {
   draft::test::TemporaryDirectory temporary_directory{
       "draft-bootstrap-dependent-generic-effect-test"};
@@ -1498,6 +1565,7 @@ int main() {
   test_cross_package_generic_procedures(state);
   test_runtime_context_bridge_diagnostics(state);
   test_cross_package_higher_order_effect(state);
+  test_cross_package_raw_string_data_denial(state);
   test_cross_package_dependent_generic_effect(state);
   test_cross_package_static_argument_pack_effects(state);
   if (state.failures != 0) {

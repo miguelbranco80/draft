@@ -91,7 +91,7 @@ struct ArtifactCase {
   options.target = target;
   options.workspace.workspace_directory = (source_root / workspace).string();
   options.workspace.core_directory = (source_root / "core").string();
-  options.workspace.core_content_identity = "draft-core-bootstrap-v3";
+  options.workspace.core_content_identity = "draft-core-bootstrap-v4";
   options.lower_mir = true;
   options.emit_llvm = true;
   options.emit_program_entry = emit_program_entry;

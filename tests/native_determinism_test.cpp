@@ -119,7 +119,7 @@ using ArtifactSnapshot =
       (package == "packages/app" ? "/examples/packages" : "/examples");
   options.workspace.core_directory =
       std::string(DRAFT_SOURCE_DIRECTORY) + "/core";
-  options.workspace.core_content_identity = "draft-core-bootstrap-v3";
+  options.workspace.core_content_identity = "draft-core-bootstrap-v4";
   options.lower_mir = true;
   options.emit_llvm = true;
   options.emit_program_entry = emit_program_entry;

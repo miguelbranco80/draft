@@ -113,8 +113,25 @@ private:
       return;
     }
     if (first_name == "assert") {
+      if (selector_names.size() != 1) {
+        diagnostics_.error(
+            selector.range,
+            "assert deny selector does not accept a member path");
+        return;
+      }
       result.push_back(
           {ResolvedDenialKind::RuntimeAssert, {}, {}, {}, {}, selector.range});
+      return;
+    }
+    if (first_name == "raw_data") {
+      if (selector_names.size() != 1) {
+        diagnostics_.error(
+            selector.range,
+            "raw_data deny selector does not accept a member path");
+        return;
+      }
+      result.push_back(
+          {ResolvedDenialKind::RawStringData, {}, {}, {}, {}, selector.range});
       return;
     }
     if (first_name == "context") {
@@ -283,6 +300,8 @@ private:
       return effect.symbol.is_valid() && symbol_from_package(effect.symbol, denied);
     case ResolvedDenialKind::RuntimeAssert:
       return effect.kind == EffectKind::RuntimeAssert;
+    case ResolvedDenialKind::RawStringData:
+      return effect.kind == EffectKind::RawStringData;
     case ResolvedDenialKind::Context:
       return effect.kind == EffectKind::ContextField;
     case ResolvedDenialKind::ContextField:
@@ -411,6 +430,17 @@ private:
           {EffectKind::RuntimeAssert, {}, "assert", {}, {}, {}}, expression.range, active);
       check_effect(
           {EffectKind::ContextField, {}, "assertion_failure_proc", {}, {}, {}},
+          expression.range,
+          active);
+    } else if (expression.kind == HirExpressionKind::Intrinsic &&
+               expression.constant.kind == ConstantKind::String &&
+               expression.constant.text == "raw_data") {
+      // The exact intrinsic range is retained even though transitive calls use
+      // their call-site range. This gives a direct denial a diagnostic on the
+      // representation escape itself and lets the same effect row flow through
+      // ordinary local and imported procedure summaries.
+      check_effect(
+          {EffectKind::RawStringData, {}, "raw_data", {}, {}, {}},
           expression.range,
           active);
     } else if (expression.kind == HirExpressionKind::Assembly) {

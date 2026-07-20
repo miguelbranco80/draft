@@ -144,7 +144,7 @@ void test_c_client_consumes_draft_shared_library(TestState &state) {
   compile_options.workspace.workspace_directory =
       (source_root / "examples").string();
   compile_options.workspace.core_directory = (source_root / "core").string();
-  compile_options.workspace.core_content_identity = "draft-core-bootstrap-v3";
+  compile_options.workspace.core_content_identity = "draft-core-bootstrap-v4";
   compile_options.lower_mir = true;
   compile_options.emit_llvm = true;
   compile_options.emit_program_entry = false;

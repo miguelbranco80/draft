@@ -27,6 +27,24 @@ qualification oracle. Ordinary commands never select it and never run
 `dsymutil` default to tools from that same selected LLVM installation. Platform
 SDKs, startup objects, and system libraries remain operational host inputs.
 
+## Raw string-data lowering
+
+Status: explicit zero-copy MIR and LLVM lowering implemented.
+
+HIR `raw_data` lowers to one `MirInstructionKind::RawData` instruction with one
+string operand and a `[^]u8` result. MIR verification checks that exact shape,
+so a malformed producer cannot silently turn an unrelated aggregate into a
+pointer. The instruction is retained as a visible semantic operation instead
+of being disguised as a cast or delegated to a runtime helper.
+
+Draft strings use the physical `{data, length}` view fixed by the target
+profile. LLVM lowering extracts field zero from that already-materialized value
+and returns the pointer unchanged. It emits no helper call, allocation, copy,
+terminator, encoding conversion, or length adjustment; a sliced string has
+already adjusted the extracted address. The ordinary borrow lifetime and
+non-writability contract therefore remain exactly those established by semantic
+checking.
+
 ## Deterministic native work graph
 
 Status: bounded parallel emission and ordered publication implemented.

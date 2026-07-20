@@ -1574,6 +1574,17 @@ private:
            {},
            {},
            {}});
+    } else if (expression.kind == HirExpressionKind::Intrinsic &&
+               expression.constant.kind == ConstantKind::String &&
+               expression.constant.text == "raw_data") {
+      // Raw string-data extraction is a semantic representation escape, not an
+      // unchecked memory access. Record it independently so callers can deny
+      // this capability without rejecting every multi-pointer operation. The
+      // ordinary fixed point and interface translation carry this row through
+      // helpers and package boundaries.
+      add_effect(
+          current_->direct_effects,
+          {EffectKind::RawStringData, {}, "raw_data", {}, {}, {}});
     } else if (expression.kind == HirExpressionKind::Assembly) {
       add_effect(
           current_->direct_effects,
@@ -1739,6 +1750,7 @@ std::string_view effect_kind_name(EffectKind kind) {
   case EffectKind::Declaration: return "declaration";
   case EffectKind::PackageGlobal: return "package global";
   case EffectKind::RuntimeAssert: return "assert";
+  case EffectKind::RawStringData: return "raw_data";
   case EffectKind::ContextField: return "context field";
   case EffectKind::Assembly: return "assembly";
   case EffectKind::Unchecked: return "unchecked";

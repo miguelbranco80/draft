@@ -69,6 +69,14 @@ to `context.assertion_failure_proc`, so denying `context` rejects it. A build-
 wide unchecked default is represented as an outer `unchecked` region and cannot
 weaken a denial.
 
+`deny raw_data` rejects direct or reachable extraction of a string's backing
+pointer, including extraction performed by a helper from another package. The
+selector does not imply `deny unchecked`: obtaining the pointer performs no
+indexing, while a later multi-pointer access remains governed independently by
+the ordinary checked/unchecked rules. Conversely, `deny unchecked` does not
+forbid a `raw_data` value that is passed without an inherently unchecked Draft
+access to a native read-only pointer-and-length interface.
+
 Nested denials add restrictions. A nested region cannot restore an entity
 denied by an enclosing region. The same rule applies to handwritten and
 synthesized syntax.

@@ -45,6 +45,12 @@ enum class EffectKind {
   Declaration,
   PackageGlobal,
   RuntimeAssert,
+  // Extracting a raw pointer from immutable string storage is a distinct
+  // representation escape. It is not Unchecked: the extraction performs no
+  // indexed access and can be used safely by a read-only native consumer.
+  // Keeping it explicit lets a denial forbid the escape transitively without
+  // also forbidding every legitimate multi-pointer operation.
+  RawStringData,
   ContextField,
   Assembly,
   Unchecked,

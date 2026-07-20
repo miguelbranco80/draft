@@ -399,6 +399,92 @@ outer :: proc() {
   EXPECT(state, exact_source_range);
 }
 
+// raw_data has no declaration SymbolId, so this test pins its dedicated
+// selector/effect path. One violation is direct and the other arrives through
+// a local summary; unrelated pure and assertion operations prove that the
+// selector is not accidentally treated as unchecked or as a wildcard.
+void test_raw_string_data_denial(TestState &state) {
+  DenialSource source(R"draft(package denials
+
+helper :: proc(text: string) -> [^]u8 {
+    return raw_data(text)
+}
+
+deny raw_data {
+    direct :: proc(text: string) {
+        pointer := raw_data(text)
+    }
+
+    transitive :: proc(text: string) {
+        pointer := helper(text)
+    }
+
+    unrelated :: proc(text: string) {
+        count := len(text)
+        assert(count >= 0)
+    }
+}
+)draft");
+  EXPECT(state, source.semantics.ok);
+  EXPECT(state, source.bodies.ok);
+  EXPECT(state, !source.denials_ok);
+  EXPECT(state, source.diagnostics.error_count() == 2);
+
+  bool saw_direct = false;
+  bool saw_transitive = false;
+  std::size_t denial_notes = 0;
+  for (const draft::Diagnostic &diagnostic :
+       source.diagnostics.diagnostics()) {
+    if (diagnostic.message == "operation reaches denied raw_data") {
+      const std::string_view spelling = source.sources.text(diagnostic.range);
+      saw_direct = saw_direct || spelling == "raw_data(text)";
+      saw_transitive = saw_transitive || spelling == "helper(text)";
+    }
+    if (diagnostic.message == "denial is established here") {
+      ++denial_notes;
+      EXPECT(state, source.sources.text(diagnostic.range) == "raw_data");
+    }
+  }
+  EXPECT(state, saw_direct);
+  EXPECT(state, saw_transitive);
+  EXPECT(state, denial_notes == 2);
+}
+
+// Identifier-shaped compiler capabilities are complete selectors, not
+// package-like roots. Rejecting a suffix prevents `raw_data.member` from
+// silently establishing the broader `raw_data` policy. Keyword capabilities
+// such as asm and unchecked reject the dot earlier in the parser.
+void test_builtin_denial_selectors_reject_member_paths(TestState &state) {
+  DenialSource source(R"draft(package denials
+
+deny assert.member {
+    first :: proc() {}
+}
+
+deny raw_data.member {
+    second :: proc() {}
+}
+)draft");
+  EXPECT(state, source.semantics.ok);
+  EXPECT(state, source.bodies.ok);
+  EXPECT(state, !source.denials_ok);
+  EXPECT(state, source.diagnostics.error_count() == 2);
+
+  std::size_t member_path_errors = 0;
+  for (const draft::Diagnostic &diagnostic :
+       source.diagnostics.diagnostics()) {
+    if (diagnostic.message.find("does not accept a member path") ==
+        std::string::npos) {
+      continue;
+    }
+    ++member_path_errors;
+    const std::string_view spelling = source.sources.text(diagnostic.range);
+    EXPECT(state,
+        spelling == "assert.member" || spelling == "raw_data.member");
+  }
+  EXPECT(state, member_path_errors == 2);
+}
+
 } // namespace
 
 int main() {
@@ -414,6 +500,8 @@ int main() {
   test_pointer_field_write_substitution(state);
   test_higher_order_substitution(state);
   test_nested_procedure_inherits_statement_denial(state);
+  test_raw_string_data_denial(state);
+  test_builtin_denial_selectors_reject_member_paths(state);
   if (state.failures != 0) {
     std::cerr << state.failures << " denial expectation(s) failed\n";
     return EXIT_FAILURE;

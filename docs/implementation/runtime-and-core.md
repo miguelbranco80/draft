@@ -9,10 +9,12 @@ exact machine and OS facts live in the selected target profile.
 
 Status: bootstrap runtime ABI; synchronized with `core/runtime` by tests.
 
-Core content identity `draft-core-bootstrap-v3` introduces target-qualified
-Darwin/Linux OS, memory, thread, time, and package-assembly sources. The earlier
-v2 identity remains the selected macOS qualification baseline; v3 requires new
-native qualification after the ELF backend is complete.
+Core content identity `draft-core-bootstrap-v4` names the current target-
+qualified Darwin/Linux OS, memory, thread, time, package-assembly, formatting,
+and console distribution. It includes the typed immutable-string write path:
+core code may pass existing string storage to a synchronous nonmutating native
+write without manufacturing a mutable byte slice or copying through a bounded
+buffer.
 
 Both current AArch64 profiles use a root Context of 96 bytes with 8-byte
 alignment. Its fields
