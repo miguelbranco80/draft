@@ -21,11 +21,12 @@ gate.
    a sequential scheduling oracle. The existing closed `WorkGraph` remains only
    for already frozen provider and native batches.
 
-2. **Command inputs and package barriers.** Represent the selected target,
-   source generation, parsed files, package imports, package name completeness,
-   and package interface readiness as products. Move package-interface ordering
-   from the bespoke topological loop to the product coordinator. A package
-   blocked by an opaque interface `...` set must suspend dependants explicitly.
+2. **Command inputs and package barriers — complete.** The selected target,
+   source generations, parsed files, package imports, package name completeness,
+   opaque interface `...` sets, and package interface readiness are products.
+   Package-interface ordering now runs through the product coordinator. Checked
+   source transitions append successor products, supersede only the affected
+   interface slice, and retain unrelated current products.
 
 3. **Declaration completion without rounds.** Parse once and retain stable
    syntax identities. Replace `analyze_package_semantics` reconstruction with

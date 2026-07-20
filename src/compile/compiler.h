@@ -6,14 +6,16 @@
 // produced for it. Source bytes remain in the caller-owned SourceManager, whose
 // lifetime must enclose the result and every continuation or diagnostic render.
 //
-// Compilation is deterministic and provider-free. Dependencies publish before
-// consumers where semantic interfaces require it. An unchanged source graph
-// advances from interface discovery to semantic closure to target lowering. A
-// checked source overlay creates explicit new declaration generations only for
-// affected packages, then reuses or extends unaffected body generations by
-// exact work key. The continuation API mutates only this command-owned graph
-// and creates no persistent cache. Lower layers never call a provider or update
-// pins. Relevant specification: sections 10 and 15.
+// Compilation is deterministic and provider-free. A dynamic semantic product
+// graph orders target, source, parsed-file, package-name, synthesis, and package
+// interface facts; dependencies publish before consumers. An unchanged source
+// graph advances from interface discovery to semantic closure to target
+// lowering. A checked source overlay appends a successor source generation and
+// new declaration products only for affected packages, then reuses or extends
+// unaffected body generations by exact work key. The continuation API mutates
+// only this command-owned graph and creates no persistent cache. Lower layers
+// never call a provider or update pins. Relevant specification: sections 10
+// and 15.
 
 #pragma once
 
@@ -21,6 +23,7 @@
 #include "backend/llvm_ir.h"
 #include "compile/body_work.h"
 #include "compile/configuration.h"
+#include "compile/semantic_work_graph.h"
 #include "elaborator/obligation.h"
 #include "elaborator/resolution.h"
 #include "interop/native.h"
@@ -218,6 +221,43 @@ struct WorkspaceDependencyIndex {
   std::vector<std::size_t> consumer_first_order;
 };
 
+// PackageSemanticProducts names the current source generation's eager file and
+// import facts plus the two interface-stage semantic barriers for one package.
+// parsed_files follow LoadedPackage::files after assembly-only rows are
+// omitted. imports depends on those exact parsed-file products. name_set
+// depends on the selected target, this package's eager inputs, and every
+// imported package's current interface. package_interface then publishes or
+// suspends the interface assembled while completing name_set.
+//
+// A checked source transition appends successor rows and replaces these IDs;
+// earlier rows remain immutable and become Superseded. No ID is serialized or
+// compared across commands.
+struct PackageSemanticProducts {
+  std::vector<SemanticProductId> parsed_files;
+  SemanticProductId imports;
+  SemanticProductId name_set;
+  // Present only when this generation's name-set task discovers one opaque
+  // declaration/member synthesis set. name_set blocks on this waiting row and
+  // package_interface therefore cannot publish to consumers.
+  SemanticProductId opaque_synthesis_set;
+  SemanticProductId package_interface;
+};
+
+// WorkspaceSemanticProducts is the typed index from the general product graph
+// back to workspace packages. target is fixed for the command.
+// source_generation advances after each accepted in-memory source transition.
+// package_by_product has exactly one row per SemanticProductGraph row; input
+// products contain an invalid PackageId, while package-owned semantic tasks
+// name their package. This direct parallel table avoids an O(products *
+// packages) owner search in the coordinator and leaves future procedure/type
+// payloads free to add their own typed side tables.
+struct WorkspaceSemanticProducts {
+  SemanticProductId target;
+  SemanticProductId source_generation;
+  std::vector<PackageSemanticProducts> packages;
+  std::vector<PackageId> package_by_product;
+};
+
 struct CompileWorkspaceResult {
   bool ok = false;
   CompileWorkspaceProgress progress = CompileWorkspaceProgress::Empty;
@@ -235,6 +275,11 @@ struct CompileWorkspaceResult {
   // this index beside its owning topology avoids rebuilding or rescanning
   // package edges merely because the graph advances to another compiler phase.
   WorkspaceDependencyIndex dependencies;
+  // Dynamic semantic scheduling state for the selected source generations.
+  // Payloads remain in packages and later typed side tables; this graph owns
+  // only stable command-local product IDs, dependencies, and lifecycle state.
+  SemanticProductGraph semantic_graph;
+  WorkspaceSemanticProducts semantic_products;
   // Indices exactly match graph.packages. In Complete, a missing row means the
   // package failed before publishing an interface. Interface discovery may
   // also leave a consumer empty while a dependency has pending generated

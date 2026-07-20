@@ -22,6 +22,20 @@ walks over HIR, MIR, interface types, effects, and constants either follow the
 already bounded syntax/type shape or install a visited/cycle row before
 following children.
 
+## Semantic product migration limit
+
+Status: temporary bootstrap architecture limit; not a Draft language limit.
+
+The command-local semantic product graph currently owns target/source/parsed
+inputs, package name and interface barriers, opaque interface synthesis waits,
+and their source-generation transitions. The declaration task behind one name
+barrier still runs the older intra-package conditional/constant/type rounds and
+the cross-package generic-layout owner retry. Procedure bodies, effect closure,
+denials, and MIR are still package-wide phases. Those mechanisms are explicit
+remaining deletion work in the
+[semantic work graph implementation plan](semantic-work-graph-implementation-plan.md),
+not alternate final architecture paths.
+
 ## Native host and instrumentation limits
 
 Status: explicit two-target bootstrap boundary.

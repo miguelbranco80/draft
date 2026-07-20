@@ -2,7 +2,9 @@
 
 Status: implemented on 2026-07-19. This is a non-normative architecture and
 completion record; the language specification and command reference remain
-authoritative for behavior.
+authoritative for behavior. Its package-interface scheduling record describes
+the completed v140 foundation; current replacement work is tracked by the
+[semantic work graph implementation plan](semantic-work-graph-implementation-plan.md).
 
 ## Purpose
 

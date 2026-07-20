@@ -85,8 +85,11 @@ enum class SemanticProductKind {
 // product. Waiting products have explicit prerequisites which are not complete.
 // Running products belong to the currently frozen wave. WaitingForSynthesis is
 // a semantic suspension, not an error: accepted ordinary source creates a
-// successor source generation. DependencyFailed is terminal and identifies
-// work which was correctly not invoked after a prerequisite failed.
+// successor source generation. Superseded identifies a product from an earlier
+// source generation which is no longer selected; its immutable payload may
+// remain inspectable but it cannot schedule consumers. DependencyFailed is
+// terminal and identifies work which was correctly not invoked after a
+// prerequisite failed.
 enum class SemanticProductState {
   Waiting,
   Running,
@@ -94,6 +97,7 @@ enum class SemanticProductState {
   Error,
   DependencyFailed,
   WaitingForSynthesis,
+  Superseded,
 };
 
 // One scheduling row owns a canonical dependency set and terminal failure
@@ -161,6 +165,24 @@ struct SemanticProductOutcome {
 append_semantic_product(SemanticProductGraph &graph, SemanticProductKind kind,
                         std::span<const SemanticProductId> dependencies,
                         std::string &reason);
+
+// Appends an already complete eager input or product. Every dependency must be
+// Complete. This is the explicit boundary used after target selection,
+// workspace loading, and parsing have already produced immutable command
+// inputs before semantic scheduling begins; semantic tasks must instead use a
+// normal Waiting row and publish an outcome.
+[[nodiscard]] SemanticProductId append_completed_semantic_product(
+    SemanticProductGraph &graph, SemanticProductKind kind,
+    std::span<const SemanticProductId> dependencies, std::string &reason);
+
+// Marks products from an earlier selected source generation as Superseded.
+// The whole set is validated before mutation. Running products cannot be
+// superseded because their worker-owned outputs have not joined; input IDs and
+// duplicates are accepted and canonicalized by the caller's semantic set.
+[[nodiscard]] bool
+supersede_semantic_products(SemanticProductGraph &graph,
+                            std::span<const SemanticProductId> products,
+                            std::string &reason);
 
 // Freezes every currently ready product in ascending SemanticProductId order.
 // Before selection, terminal dependency failures propagate through consumers.

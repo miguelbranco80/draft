@@ -135,6 +135,38 @@ void test_source_update_reuses_unaffected_semantics(TestState &state) {
       sources, (root / "app").string(), options, diagnostics);
   EXPECT(state, compiled.ok);
   EXPECT(state, compiled.graph.packages.size() == 4);
+  EXPECT(state, compiled.semantic_products.package_by_product.size() ==
+                    compiled.semantic_graph.products.size());
+  EXPECT(state, compiled.semantic_graph
+                        .products[compiled.semantic_products.target.value]
+                        .state == draft::SemanticProductState::Complete);
+  EXPECT(state,
+         draft::freeze_semantic_ready_wave(compiled.semantic_graph).status ==
+             draft::SemanticReadyWaveStatus::Complete);
+
+  const draft::SemanticProductId initial_source_generation =
+      compiled.semantic_products.source_generation;
+  const std::vector<draft::PackageSemanticProducts> initial_products =
+      compiled.semantic_products.packages;
+  std::optional<std::size_t> changed_index;
+  std::optional<std::size_t> stable_index;
+  for (std::size_t index = 0; index < compiled.graph.packages.size(); ++index) {
+    const std::string &path =
+        compiled.graph.packages[index].identity.root_relative_path;
+    if (path == "changed")
+      changed_index = index;
+    if (path == "stable")
+      stable_index = index;
+    EXPECT(state, compiled.semantic_graph
+                          .products[initial_products[index].name_set.value]
+                          .state == draft::SemanticProductState::Complete);
+    EXPECT(state,
+           compiled.semantic_graph
+                   .products[initial_products[index].package_interface.value]
+                   .state == draft::SemanticProductState::Complete);
+  }
+  EXPECT(state, changed_index.has_value());
+  EXPECT(state, stable_index.has_value());
 
   draft::WorkspaceSourceOverride source_override;
   source_override.identity = {"workspace", "changed"};
@@ -151,6 +183,37 @@ void test_source_update_reuses_unaffected_semantics(TestState &state) {
   EXPECT(state, compiled.progress ==
                     draft::CompileWorkspaceProgress::InterfaceDiscovery);
 
+  EXPECT(state, compiled.semantic_products.source_generation !=
+                    initial_source_generation);
+  EXPECT(
+      state,
+      compiled.semantic_graph.products[initial_source_generation.value].state ==
+          draft::SemanticProductState::Complete);
+  if (changed_index.has_value()) {
+    EXPECT(state,
+           compiled.semantic_graph
+                   .products[initial_products[*changed_index].name_set.value]
+                   .state == draft::SemanticProductState::Superseded);
+    EXPECT(state,
+           compiled.semantic_products.packages[*changed_index].parsed_files !=
+               initial_products[*changed_index].parsed_files);
+    EXPECT(state,
+           compiled.semantic_graph
+                   .products[compiled.semantic_products.packages[*changed_index]
+                                 .package_interface.value]
+                   .state == draft::SemanticProductState::Complete);
+  }
+  if (stable_index.has_value()) {
+    EXPECT(state, compiled.semantic_products.packages[*stable_index].name_set ==
+                      initial_products[*stable_index].name_set);
+    EXPECT(state,
+           compiled.semantic_products.packages[*stable_index].parsed_files ==
+               initial_products[*stable_index].parsed_files);
+  }
+  EXPECT(state,
+         draft::freeze_semantic_ready_wave(compiled.semantic_graph).status ==
+             draft::SemanticReadyWaveStatus::Complete);
+
   // Initial analysis visits all four packages. Replacing changed then revisits
   // changed, its direct middle consumer, and the transitive app consumer, but
   // not the independent stable dependency. The same recorder also proves that
@@ -161,6 +224,66 @@ void test_source_update_reuses_unaffected_semantics(TestState &state) {
   EXPECT(state, report.find("workspace loads: 1") != std::string::npos);
   EXPECT(state,
          report.find("workspace source transitions: 1") != std::string::npos);
+
+  std::filesystem::remove_all(root, error);
+}
+
+void test_interface_synthesis_is_an_explicit_graph_wait(TestState &state) {
+  draft::test::TemporaryDirectory temporary_directory{
+      "draft-bootstrap-interface-product-wait-test"};
+  const std::filesystem::path &root = temporary_directory.path();
+  std::error_code error;
+  std::filesystem::create_directories(root / "app", error);
+  EXPECT(state, !error);
+  if (error)
+    return;
+
+  std::ofstream app(root / "app" / "package.draft", std::ios::binary);
+  app << "package app\n"
+         "... \"Declare a package constant named Value with value 1\"\n";
+  app.close();
+  EXPECT(state, app.good());
+
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  draft::CompileWorkspaceOptions options;
+  options.target = draft::make_aarch64_macos_profile();
+  options.workspace.workspace_directory = root.string();
+  options.stage = draft::CompileWorkspaceStage::DiscoverInterfaceSynthesis;
+  draft::CompileWorkspaceResult compiled = draft::compile_workspace(
+      sources, (root / "app").string(), options, diagnostics);
+  if (diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+  }
+  EXPECT(state, compiled.ok);
+  EXPECT(state, compiled.packages.size() == 1);
+  if (!compiled.ok || compiled.packages.size() != 1)
+    return;
+
+  const draft::PackageSemanticProducts &products =
+      compiled.semantic_products.packages.front();
+  EXPECT(state, products.opaque_synthesis_set.is_valid());
+  EXPECT(state,
+         compiled.semantic_graph.products[products.name_set.value].state ==
+             draft::SemanticProductState::Waiting);
+  EXPECT(state,
+         compiled.semantic_graph.products[products.opaque_synthesis_set.value]
+                 .state == draft::SemanticProductState::WaitingForSynthesis);
+  EXPECT(state,
+         compiled.semantic_graph.products[products.package_interface.value]
+                 .state == draft::SemanticProductState::Waiting);
+  const std::vector<draft::SemanticProductId> &name_dependencies =
+      compiled.semantic_graph.products[products.name_set.value].dependencies;
+  EXPECT(state,
+         std::find(name_dependencies.begin(), name_dependencies.end(),
+                   products.opaque_synthesis_set) != name_dependencies.end());
+  EXPECT(state,
+         draft::freeze_semantic_ready_wave(compiled.semantic_graph).status ==
+             draft::SemanticReadyWaveStatus::WaitingForSynthesis);
+  EXPECT(state, compiled.packages.front().has_value());
+  if (compiled.packages.front().has_value()) {
+    EXPECT(state, !compiled.packages.front()->obligations.obligations.empty());
+  }
 
   std::filesystem::remove_all(root, error);
 }
@@ -1945,6 +2068,7 @@ int main() {
   TestState state;
   test_procedure_demand_sets_are_canonical_and_exact(state);
   test_source_update_reuses_unaffected_semantics(state);
+  test_interface_synthesis_is_an_explicit_graph_wait(state);
   test_body_source_update_reuses_closed_generic_dependency(state);
   test_body_work_graph_extends_and_removes_generic_demand(state);
   test_body_work_graph_promotes_matching_local_instance(state);

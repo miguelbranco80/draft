@@ -102,16 +102,26 @@ independent package objects through embedded LLVM, then invokes only the
 remaining platform tools; it does not reload or recheck handwritten source.
 `--timings` exposes resolution rounds as in-memory source transitions. A
 checked complete-file overlay is parsed into the existing workspace graph;
-package/root/import IDs remain stable. A declaration/member expansion rebuilds
-the changed package and transitive consumers because their interfaces may have
-changed. A statement/expression/assembly expansion rebuilds declarations only
-for its containing package—the grammar boundary proves that it cannot alter a
-package interface—while transitive consumers retain checked HIR and invalidate
-only effect/obligation closure. Unrelated dependency rows remain authoritative.
-One command-local adjacency index is built with the graph, retained across
-every continuation, and supports import lookup, reverse source invalidation,
-and a PackageId-ordered Kahn min-heap; ordering costs
-O((packages + imports) log(packages + imports)) and invalidation costs
+package/root/import IDs remain stable. Target selection, source generations,
+parsed files, per-package imports, package name sets, opaque interface
+synthesis sets, and package interfaces have stable command-local product IDs.
+The interface coordinator freezes dependency-ready waves and publishes
+task-local diagnostics and package payloads in product-ID order. An unresolved
+declaration/member set leaves an explicit synthesis product waiting and keeps
+the name/interface products of every dependent package blocked. An accepted
+overlay appends successor products and marks the affected former interface
+slice superseded; unrelated products remain authoritative.
+
+A declaration/member expansion rebuilds the changed package and transitive
+consumers because their interfaces may have changed. A statement/expression/
+assembly expansion rebuilds declarations only for its containing package—the
+grammar boundary proves that it cannot alter a package interface—while
+transitive consumers retain checked HIR and invalidate only effect/obligation
+closure. One command-local adjacency index is built with the workspace graph,
+retained across every continuation, and supports import lookup, reverse source
+invalidation, canonical initial product construction, and the body/closure
+traversals not yet migrated to semantic products. Building its sorted views
+costs O((packages + imports) log(packages + imports)); invalidation costs
 O(packages + imports), without a persistent cache. The `compiler passes`,
 `workspace loads`, `workspace source transitions`, `package body checks`,
 `package body extensions`, and `package body reuses` counters make those
@@ -142,6 +152,12 @@ parallel scheduling changes elapsed time, never artifacts or diagnostics.
 
 - **Surface AST:** lossless enough for diagnostics, structural site identity,
   generated-source maps, and exact grammar-category replacement.
+- **Semantic product graph:** an append-only command-local table of explicit
+  product kinds, dependencies, and states. Eager target/source/parse/import
+  inputs begin complete; semantic tasks move through frozen ready waves.
+  Source transitions append successors and supersede unselected generations.
+  Payload side tables remain typed and phase-owned rather than entering a
+  generic graph value.
 - **Declaration semantic generation:** package declarations, imports,
   signatures, constants, layouts, and preliminary interfaces have stable IDs
   and remain immutable after publication.

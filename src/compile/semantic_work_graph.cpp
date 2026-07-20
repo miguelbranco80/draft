@@ -165,6 +165,47 @@ append_semantic_product(SemanticProductGraph &graph, SemanticProductKind kind,
   return id;
 }
 
+SemanticProductId append_completed_semantic_product(
+    SemanticProductGraph &graph, SemanticProductKind kind,
+    std::span<const SemanticProductId> dependencies, std::string &reason) {
+  const SemanticProductId id =
+      append_semantic_product(graph, kind, dependencies, reason);
+  if (!id.is_valid())
+    return {};
+  for (SemanticProductId dependency : graph.products[id.value].dependencies) {
+    if (graph.products[dependency.value].state !=
+        SemanticProductState::Complete) {
+      graph.products.pop_back();
+      reason = "completed semantic product has an incomplete dependency";
+      return {};
+    }
+  }
+  graph.products[id.value].state = SemanticProductState::Complete;
+  return id;
+}
+
+bool supersede_semantic_products(SemanticProductGraph &graph,
+                                 std::span<const SemanticProductId> products,
+                                 std::string &reason) {
+  reason.clear();
+  for (SemanticProductId product : products) {
+    if (!id_in_graph(graph, product)) {
+      reason = "cannot supersede an out-of-range semantic product";
+      return false;
+    }
+    if (graph.products[product.value].state == SemanticProductState::Running) {
+      reason = "cannot supersede a running semantic product";
+      return false;
+    }
+  }
+  for (SemanticProductId product : products) {
+    SemanticProduct &row = graph.products[product.value];
+    row.state = SemanticProductState::Superseded;
+    row.failure.clear();
+  }
+  return true;
+}
+
 SemanticReadyWave freeze_semantic_ready_wave(SemanticProductGraph &graph) {
   SemanticReadyWave wave;
   for (const SemanticProduct &product : graph.products) {
@@ -409,6 +450,8 @@ std::string_view semantic_product_state_name(SemanticProductState state) {
     return "dependency failed";
   case SemanticProductState::WaitingForSynthesis:
     return "waiting for synthesis";
+  case SemanticProductState::Superseded:
+    return "superseded";
   }
   return "unknown semantic product state";
 }

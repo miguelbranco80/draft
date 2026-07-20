@@ -241,6 +241,63 @@ void test_partial_wave_is_rejected(TestState &state) {
          graph.products[1].state == draft::SemanticProductState::Running);
 }
 
+void test_completed_inputs_and_superseded_generation(TestState &state) {
+  draft::SemanticProductGraph graph;
+  std::string reason;
+  const auto target = draft::append_completed_semantic_product(
+      graph, draft::SemanticProductKind::TargetProfile, {}, reason);
+  EXPECT(state, target.is_valid());
+  const auto surface_source = draft::append_completed_semantic_product(
+      graph, draft::SemanticProductKind::SourceGeneration, {}, reason);
+  const auto surface_file = draft::append_completed_semantic_product(
+      graph, draft::SemanticProductKind::ParsedFile,
+      std::vector<draft::SemanticProductId>{surface_source}, reason);
+  EXPECT(state, surface_file.is_valid());
+  const auto surface_names =
+      append(state, graph, draft::SemanticProductKind::PackageNameSet,
+             {target, surface_file});
+  draft::SemanticReadyWave wave = draft::freeze_semantic_ready_wave(graph);
+  draft::SemanticProductOutcome waiting;
+  waiting.kind = draft::SemanticProductOutcomeKind::WaitingForSynthesis;
+  draft::DiagnosticSink diagnostics;
+  publish(state, graph, wave, {std::move(waiting)}, diagnostics);
+  EXPECT(state, draft::freeze_semantic_ready_wave(graph).status ==
+                    draft::SemanticReadyWaveStatus::WaitingForSynthesis);
+
+  EXPECT(state, draft::supersede_semantic_products(
+                    graph, std::vector<draft::SemanticProductId>{surface_names},
+                    reason));
+  const auto resolved_source = draft::append_completed_semantic_product(
+      graph, draft::SemanticProductKind::SourceGeneration, {}, reason);
+  const auto resolved_file = draft::append_completed_semantic_product(
+      graph, draft::SemanticProductKind::ParsedFile,
+      std::vector<draft::SemanticProductId>{resolved_source}, reason);
+  const auto resolved_names =
+      append(state, graph, draft::SemanticProductKind::PackageNameSet,
+             {target, resolved_file});
+  wave = draft::freeze_semantic_ready_wave(graph);
+  EXPECT(state, wave.products ==
+                    std::vector<draft::SemanticProductId>({resolved_names}));
+  publish(state, graph, wave, std::vector<draft::SemanticProductOutcome>(1),
+          diagnostics);
+  EXPECT(state, draft::freeze_semantic_ready_wave(graph).status ==
+                    draft::SemanticReadyWaveStatus::Complete);
+}
+
+void test_completed_product_rejects_incomplete_dependency(TestState &state) {
+  draft::SemanticProductGraph graph;
+  const auto waiting =
+      append(state, graph, draft::SemanticProductKind::TypeIdentity);
+  std::string reason;
+  const auto invalid = draft::append_completed_semantic_product(
+      graph, draft::SemanticProductKind::TypeMembers,
+      std::vector<draft::SemanticProductId>{waiting}, reason);
+  EXPECT(state, !invalid.is_valid());
+  EXPECT(state,
+         reason == "completed semantic product has an incomplete dependency");
+  EXPECT(state, graph.products.size() == 1);
+}
+
 } // namespace
 
 int main() {
@@ -252,6 +309,8 @@ int main() {
   test_uncollapsed_cycle_stalls(state);
   test_invalid_outcome_is_atomic(state);
   test_partial_wave_is_rejected(state);
+  test_completed_inputs_and_superseded_generation(state);
+  test_completed_product_rejects_incomplete_dependency(state);
   if (state.failures != 0) {
     std::cerr << state.failures
               << " semantic work graph expectation(s) failed\n";
