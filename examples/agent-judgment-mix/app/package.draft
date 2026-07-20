@@ -1,0 +1,76 @@
+// This intentionally unresolved package demonstrates the deterministic ways
+// in which surface `judge` claims guide later `...` synthesis. It contains one
+// site in every synthesis grammar category: package declaration, type member,
+// expression, statement list, and assembly instruction. Generated source may
+// not add judgments, so every claim remains visible here in authored source.
+// See specification sections 8-10.
+package app
+
+// Package judgments guide every synthesis site in the package. The attached
+// contract therefore enters all four synthesis input hashes without being
+// copied into generated source.
+judge `Every generated fragment must preserve CONTRACT.md: Generated_Offset is
+40, Generated_Record contains one i64 value, compute adds that value to the
+offset, emit_barrier contains a DMB ISH instruction, and main checks that the
+result is 42.`
+    file "CONTRACT.md"
+
+// This declaration site is resolved as an interface before procedure bodies
+// that use Generated_Offset are completed. The direct prompt keeps the example
+// about grammar boundaries and judgment guidance, not API invention.
+... `Output exactly this Draft declaration:
+Generated_Offset :: cast[i64](40)`
+
+// Generated_Record demonstrates guidance local to a type member list. The
+// claim is before the member site because only later sites in the same list
+// receive a type-member judgment as synthesis context.
+Generated_Record :: struct {
+    judge `The following generated member must be exactly one field named value
+of type i64 and must not add ownership or hidden state.`
+
+    ... `Output exactly this Draft struct member:
+value: i64,`
+}
+
+// compute demonstrates procedure-body judgment dominance. Every path to the
+// expression site passes through the claim, so the resolver supplies it to the
+// expression request together with record's checked type.
+compute :: proc(record: Generated_Record) -> i64 {
+    judge `The generated return expression must add record.value and
+Generated_Offset exactly once each.`
+
+    return ... `Output exactly this Draft expression:
+record.value + Generated_Offset`
+}
+
+// emit_barrier demonstrates the parsed-assembly category. The judgment is an
+// ordinary procedure statement that dominates the later asm expression's
+// nested instruction site. The clobber declaration stays authored because it
+// is part of the surrounding assembly boundary, while Codex supplies exactly
+// one instruction row.
+emit_barrier :: proc() {
+    judge `The generated assembly instruction must be DMB ISH, and the
+enclosing assembly block must declare its memory clobber.`
+
+    asm aarch64 {
+        clobber memory
+        ... `Output exactly this Draft assembly instruction:
+dmb ish`
+    }
+}
+
+// main demonstrates the statement-list category. The preceding claim
+// dominates the site and describes one assertion statement; it does not run
+// while resolve generates that statement.
+main :: proc() -> int {
+    record := Generated_Record{value = 2}
+    actual := compute(record)
+
+    judge `The generated statement must assert that actual equals 42 and must
+not change actual.`
+
+    ... `Output exactly this Draft statement:
+assert(actual == 42)`
+    emit_barrier()
+    return 0
+}

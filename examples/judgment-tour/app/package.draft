@@ -1,0 +1,129 @@
+// This provider-free package is a compact tour of every useful Draft 1
+// judgment placement. The judgments review source and compiler-provided typed
+// facts; they own no runtime state and emit no instructions. Ordinary
+// assertions separately enforce the objective behavior that the program can
+// check for itself. See specification section 8, "Agent judgments."
+package judgment_tour
+
+// The package judgment reviews the whole package and attaches a small design
+// contract as additional evidence. A package-level claim is also available as
+// guidance to every later synthesis site, although this handwritten tour has
+// no synthesis and therefore needs no resolution manifest.
+judge `The package follows DESIGN.md: Counter has one i64 value, counter_add is
+the only procedure that mutates a Counter through a pointer, and the executable
+checks the demonstrated operations with ordinary assertions.`
+    file "DESIGN.md"
+
+// Counter is a plain value record with no hidden ownership. Draft 1 does not
+// have method declarations, so behavior that another language might spell as
+// Counter.add is an ordinary procedure taking ^Counter below.
+Counter :: struct {
+    value: i64,
+
+    // A type-member judgment reviews the enclosing type and its member/layout
+    // state at this exact member position. It is not a runtime member and does
+    // not change Counter's size or alignment.
+    judge `Counter contains exactly one member named value of type i64 and owns
+no indirect resource.`
+}
+
+// Choice supplies an exhaustive switch example without relying on an integer
+// default case. Its representation is ordinary Draft enum storage.
+Choice :: enum u8 {
+    left,
+    right,
+}
+
+// counter_add is the Draft 1 equivalent of a small mutating method. The caller
+// owns the Counter and keeps its address valid for the call; this procedure
+// retains no pointer and changes only the pointed-to value.
+counter_add :: proc(counter: ^Counter, amount: i64) {
+    // A procedure judgment sees the enclosing procedure, visible counter and
+    // amount bindings, and the typed facts at this exact program point.
+    judge `counter_add changes only counter^.value, adds amount exactly once,
+and does not retain counter.`
+
+    counter^.value += amount
+}
+
+// choose_with_if demonstrates judgments in distinct runtime control-flow
+// regions. Each selected judgment is evaluated once by the judge command, not
+// when a particular branch happens to execute.
+choose_with_if :: proc(
+    take_left: bool,
+    left: i64,
+    right: i64,
+) -> i64 {
+    if take_left {
+        // The request includes the branch refinement take_left == true.
+        judge `This branch returns left without mutating either candidate.`
+        return left
+    }
+
+    // Every control-flow path reaching this point has the complementary
+    // refinement. This claim therefore tests a post-branch program point.
+    judge `Every path reaching this point has take_left == false, and this path
+returns right without mutating either candidate.`
+    return right
+}
+
+// sum_values demonstrates a judgment nested in a loop. The judge command
+// evaluates the site once with fixed-point loop facts; it does not create one
+// agent request per runtime iteration.
+sum_values :: proc(values: []i64) -> i64 {
+    total: i64
+    for value in values {
+        judge `The loop body adds the current value to total exactly once and
+does not mutate the borrowed values slice.`
+        total += value
+    }
+    return total
+}
+
+// choose_with_switch demonstrates that judgments in separate switch cases are
+// independently selectable and receive the case's static refinement.
+choose_with_switch :: proc(
+    choice: Choice,
+    left: i64,
+    right: i64,
+) -> i64 {
+    switch choice {
+    case .left:
+        judge `The .left case returns left and does not mutate either input.`
+        return left
+    case .right:
+        judge `The .right case returns right and does not mutate either input.`
+        return right
+    }
+}
+
+// Compile-time selection removes the unselected branch before semantic agent
+// sites are collected. Listing this package for macOS therefore shows only the
+// else judgment; listing it for Linux shows only the first judgment.
+when target.os == .linux {
+    judge `This package-level judgment is present only in the selected Linux
+program.`
+} else {
+    judge `This package-level judgment is present only when the selected target
+is not Linux.`
+}
+
+// main proves the executable behavior with ordinary assertions. Judgments are
+// intentionally absent from this correctness path: building or running the
+// program never contacts a judging provider and never consumes judgment
+// evidence.
+main :: proc() -> int {
+    counter := Counter{value = 40}
+    counter_add(&counter, 2)
+    assert(counter.value == 42)
+
+    assert(choose_with_if(true, 11, 22) == 11)
+    assert(choose_with_if(false, 11, 22) == 22)
+
+    values := [3]i64{10, 20, 12}
+    assert(sum_values(values[:]) == 42)
+
+    assert(choose_with_switch(.left, 33, 44) == 33)
+    assert(choose_with_switch(.right, 33, 44) == 44)
+    return 0
+}

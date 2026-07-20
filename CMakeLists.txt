@@ -576,6 +576,40 @@ if(BUILD_TESTING)
   add_dependencies(draft_judgment_driver_tests draftc)
   add_test(NAME draft_judgment_driver_tests COMMAND draft_judgment_driver_tests)
 
+  # The handwritten tour must stay usable without provider access. The first
+  # command exercises its complete semantic graph; the second proves that the
+  # public selector surface discovers a type-member and procedure judgment
+  # without configuring or launching Codex.
+  add_test(
+    NAME draft_judgment_tour_check
+    COMMAND draftc check
+      "${CMAKE_CURRENT_SOURCE_DIR}/examples/judgment-tour/app"
+  )
+  add_test(
+    NAME draft_judgment_tour_list
+    COMMAND draftc judge
+      "${CMAKE_CURRENT_SOURCE_DIR}/examples/judgment-tour/app" --list
+  )
+  set_tests_properties(
+    draft_judgment_tour_list
+    PROPERTIES PASS_REGULAR_EXPRESSION
+      "workspace:app counter_add package.draft:0"
+  )
+
+  # The mixed example intentionally has no resolution manifest, so a normal
+  # check must reject it until Codex supplies the four fragments. Parsing its
+  # surface file still gives CI a provider-free guard for every synthesis and
+  # judgment placement used by the live walkthrough.
+  add_test(
+    NAME draft_agent_judgment_mix_syntax
+    COMMAND draftc syntax
+      "${CMAKE_CURRENT_SOURCE_DIR}/examples/agent-judgment-mix/app/package.draft"
+  )
+  set_tests_properties(
+    draft_agent_judgment_mix_syntax
+    PROPERTIES PASS_REGULAR_EXPRESSION "SynthesisAssembly"
+  )
+
   # Target selection is a driver concern as well as a profile-library concern.
   # These process-level tests prove that the selector reaches both profile
   # reporting and a complete dependency-ordered semantic compilation.

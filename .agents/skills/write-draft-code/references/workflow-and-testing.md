@@ -383,7 +383,10 @@ Every new or materially broadened example updates `examples/README.md` with:
 Keep intentionally invalid input in compiler tests, not a runnable examples
 directory. `examples/language-tour` is the readable language starting point;
 `examples/runtime-checks` is dense native conformance, not the style model for
-all applications.
+all applications. For agent constructs, `examples/judgment-tour` is the
+provider-free placement tour, `examples/agent-pending` is the smallest live
+Codex transaction, and `examples/agent-judgment-mix` demonstrates judgments
+guiding all five synthesis grammar categories.
 
 ## Documentation routing
 

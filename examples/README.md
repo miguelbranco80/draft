@@ -71,6 +71,8 @@ work rather than missing backend features.
 | --- | --- |
 | [`agent-acceptance`](agent-acceptance/) | End-to-end declaration, member, expression, and statement synthesis; `judge`; committed content-addressed expansions; tests and benchmarks that consume generated declarations; evidence; generated-source correlation; and provider-free rebuilding. See the [acceptance guide](../docs/releases/agent-acceptance.md). |
 | [`agent-pending`](agent-pending/) | The smallest intentionally unresolved synthesis and judgment workspace, with a self-contained [live-run guide](agent-pending/README.md). It demonstrates the first Codex-backed `resolve`, generated-source inspection, and the subsequent provider-free build. |
+| [`judgment-tour`](judgment-tour/) | Provider-free package, struct-member, procedure, branch, loop, switch-case, and target-selected judgments; attached evidence; selective execution; ordinary assertions; and a pointer-taking procedure as Draft's current method-style pattern. |
+| [`agent-judgment-mix`](agent-judgment-mix/) | Intentionally unresolved declaration, member, expression, statement, and parsed-assembly synthesis guided by package, type-member, and dominating procedure judgments, with a self-contained live-run guide. |
 | [`validation`](validation/) | Discovery and execution of `*_test.draft` and `*_bench.draft` procedures through `core/testing` and `core/benchmark`. |
 
 ## Feature map
@@ -83,7 +85,7 @@ work rather than missing backend features.
 | Console, formatting, files, arguments, environment, and a complete line-oriented application | `console`, `file-io`, `core-os`, `simple-editor` |
 | Explicit UTF-8 validation, scalar traversal, and encoding over byte strings | `core-utf8` |
 | Parsed and external assembly, SIMD, C imports, C exports, and foreign providers | `assembly`, `external-assembly`, `c-interop`, `c-library`, `foreign-provider` |
-| `docs`, `judge`, synthesis, deterministic resolution, and provider-free builds | `language-tour`, `agent-acceptance`, `agent-pending` |
+| `docs`, `judge`, synthesis, deterministic resolution, and provider-free builds | `language-tour`, `judgment-tour`, `agent-judgment-mix`, `agent-acceptance`, `agent-pending` |
 | Denials, assertions, traps, tests, and benchmarks | `denials`, `runtime-traps`, `validation` |
 
 This map covers positive surface-language capabilities. Parser recovery,
