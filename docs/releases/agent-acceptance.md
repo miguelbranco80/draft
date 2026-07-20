@@ -100,6 +100,19 @@ provider-free frontend checks, while the macOS program passed native
 build/execution, Draft test and verified benchmark execution, workspace evidence
 publication, and expanded-source inspection with linked LLVM 22.1.8.
 
+The final raw string-data integration advanced the compiler content identity to
+`draft-bootstrap-cpp-v133` and the core distribution identity to
+`draft-core-bootstrap-v4`. Provider-free `resolve --revalidate` commands for
+macOS and Linux each reused and rechecked all four saved expansions; no
+generated source object changed. Both final manifests then passed their native
+frontend checks. On macOS, the final program built and launched without an LLVM
+debug-information warning, and fresh attempt-one test and verified-benchmark
+evidence passed under linked LLVM 22.1.8. The committed evidence objects are
+`bc0a092628149e42952293c087eef98f3ea1ddf12f60cb4e2ed1b2f07147a737`
+for the test and
+`dbc61f568d752a8fae9dd6833bef2daa28d9e3d91adea47db68c293bbe1f1e03`
+for the benchmark.
+
 The repository example matrix classified all 36 tracked Draft/assembly package
 directories. Both-target frontend qualification passed for every declared
 positive or intentionally unresolved row. On the native macOS host, all 25
