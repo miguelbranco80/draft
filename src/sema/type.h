@@ -8,10 +8,12 @@
 // generic count lives in SemanticPackage's side table. This table is Draft's
 // type identity authority and will later be reproduced by the self-hosted compiler.
 //
-// Layout values are byte counts for the selected target profile. Unknown
-// layout is explicit and occurs while a nominal type is incomplete or when a
-// requested aggregate overflows the target addressable size. The semantic layer
-// must diagnose use that requires a still-unknown layout.
+// Layout values are byte counts for the selected target profile. TypeStore also
+// records the readiness of identity, members, member types, and natural layout
+// separately. A nominal identity therefore exists before its member set closes,
+// and a pointer to that identity can be complete while an inline use still waits
+// for layout. The semantic work graph uses those facets as distinct product
+// payloads; an unknown layout must never stand in for every earlier type fact.
 //
 // Relevant specification: docs/specification/02-types-memory-runtime.md, sections 5-6.
 
@@ -91,6 +93,32 @@ struct TypeLayout {
   std::uint32_t alignment = 1;
 
   bool operator==(const TypeLayout &) const = default;
+};
+
+// TypeFacetState describes whether one facet has meaning and, when it does,
+// whether its immutable value has been published. NotApplicable is a completed
+// semantic answer rather than a scheduling wait: scalar types have no member
+// set, and compile-time-only `type` values have no runtime natural layout.
+// Waiting means another semantic product can still supply the facet. Errors are
+// owned by the semantic product state and diagnostics, not encoded in this
+// payload table.
+enum class TypeFacetState {
+  NotApplicable,
+  Waiting,
+  Complete,
+};
+
+// TypeCompletion is parallel to one TypeStore row. identity is Complete for
+// every allocated TypeId because allocation itself establishes the structural
+// or nominal identity. members closes the set of member names; member_types
+// closes the declared type attached to every member. natural_layout is
+// independent: pointer recursion can leave it Waiting while the preceding
+// facets are Complete. The record is command-local and is never serialized.
+struct TypeCompletion {
+  TypeFacetState identity = TypeFacetState::Complete;
+  TypeFacetState members = TypeFacetState::NotApplicable;
+  TypeFacetState member_types = TypeFacetState::NotApplicable;
+  TypeFacetState natural_layout = TypeFacetState::NotApplicable;
 };
 
 // Type is one canonical table row. Fields have meaning according to kind:
@@ -190,6 +218,7 @@ public:
   [[nodiscard]] const BuiltinTypes &builtins() const;
   [[nodiscard]] const Type &type(TypeId id) const;
   [[nodiscard]] Type &type_mut(TypeId id);
+  [[nodiscard]] const TypeCompletion &completion(TypeId id) const;
   [[nodiscard]] std::size_t size() const;
 
   [[nodiscard]] std::optional<TypeId> find_builtin(std::string_view name) const;
@@ -234,7 +263,9 @@ public:
       TypeId id,
       TypeLayout layout,
       std::vector<TypeId> members,
-      std::vector<std::uint64_t> member_offsets = {});
+      std::vector<std::uint64_t> member_offsets = {},
+      bool members_complete = true,
+      bool member_types_complete = true);
 
   [[nodiscard]] bool is_integer(TypeId id) const;
   [[nodiscard]] bool is_float(TypeId id) const;
@@ -270,6 +301,10 @@ private:
 
   std::uint32_t pointer_bits_ = 64;
   std::vector<Type> types_;
+  // completion_ has exactly one row per types_ entry and shares its TypeId
+  // index domain. Keeping the facts parallel avoids enlarging the hot Type row
+  // while making phase readiness directly inspectable.
+  std::vector<TypeCompletion> completion_;
   std::vector<BuiltinName> builtin_names_;
   BuiltinTypes builtins_;
 };

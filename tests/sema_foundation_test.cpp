@@ -51,6 +51,14 @@ void test_builtin_and_structural_types(TestState &state) {
   EXPECT(state, pointer_a == pointer_b);
   EXPECT(state, types.type(pointer_a).layout.size == 8);
   EXPECT(state, types.type(pointer_a).layout.alignment == 8);
+  EXPECT(state,
+         types.completion(*u32).identity == draft::TypeFacetState::Complete);
+  EXPECT(state,
+         types.completion(*u32).members ==
+             draft::TypeFacetState::NotApplicable);
+  EXPECT(state,
+         types.completion(*u32).natural_layout ==
+             draft::TypeFacetState::Complete);
 
   const draft::TypeId slice = types.slice(*u32);
   EXPECT(state, types.type(slice).layout == draft::TypeLayout({true, 16, 8}));
@@ -71,6 +79,9 @@ void test_builtin_and_structural_types(TestState &state) {
   EXPECT(state,
          types.type(deferred_array_a).deferred_element_count_index == 0);
   EXPECT(state, !types.type(deferred_array_a).layout.known);
+  EXPECT(state,
+         types.completion(deferred_array_a).natural_layout ==
+             draft::TypeFacetState::Waiting);
 
   const draft::TypeId deferred_simd =
       types.owner_evaluated_simd(*u32, 2);
@@ -105,6 +116,24 @@ void test_nominal_identity(TestState &state) {
   const draft::TypeId pending_tuple = types.tuple(
       {left, types.builtins().bool_type});
   EXPECT(state, !types.type(pending_tuple).layout.known);
+  EXPECT(state,
+         types.completion(left).identity == draft::TypeFacetState::Complete);
+  EXPECT(state,
+         types.completion(left).members == draft::TypeFacetState::Waiting);
+  EXPECT(state,
+         types.completion(left).member_types == draft::TypeFacetState::Waiting);
+  EXPECT(state,
+         types.completion(left).natural_layout ==
+             draft::TypeFacetState::Waiting);
+  EXPECT(state,
+         types.completion(pending_tuple).members ==
+             draft::TypeFacetState::Complete);
+  EXPECT(state,
+         types.completion(pending_tuple).member_types ==
+             draft::TypeFacetState::Complete);
+  EXPECT(state,
+         types.completion(pending_tuple).natural_layout ==
+             draft::TypeFacetState::Waiting);
   EXPECT(state, left != right);
   EXPECT(state, !types.type(left).layout.known);
   types.complete_nominal(left, {true, 4, 4}, {*u32});
@@ -114,6 +143,17 @@ void test_nominal_identity(TestState &state) {
   EXPECT(state,
       types.type(pending_tuple).member_offsets ==
           std::vector<std::uint64_t>({0, 4}));
+  EXPECT(state,
+         types.completion(left).members == draft::TypeFacetState::Complete);
+  EXPECT(state,
+         types.completion(left).member_types ==
+             draft::TypeFacetState::Complete);
+  EXPECT(state,
+         types.completion(left).natural_layout ==
+             draft::TypeFacetState::Complete);
+  EXPECT(state,
+         types.completion(pending_tuple).natural_layout ==
+             draft::TypeFacetState::Complete);
   EXPECT(state, types.type(left).layout == types.type(right).layout);
   EXPECT(state, left != right);
 

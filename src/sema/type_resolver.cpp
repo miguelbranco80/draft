@@ -4262,7 +4262,12 @@ private:
         layout, attributes.requested_alignment, aggregate.range);
 
     semantic_.types.complete_nominal(
-        nominal, layout, data.types, data.offsets);
+        nominal,
+        layout,
+        data.types,
+        data.offsets,
+        !data.incomplete,
+        !data.incomplete);
     for (std::size_t index = 0; index < data.symbols.size(); ++index) {
       semantic_.aggregate_members.push_back(
           {owner, data.symbols[index], data.offsets[index]});

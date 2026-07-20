@@ -2,6 +2,28 @@
 
 This document records bootstrap representations and algorithms for lexical classification, type inference, compile-time evaluation, effect summaries, and expression checking. Observable Draft behavior remains authoritative in the language specification.
 
+## Type completion facets
+
+Status: payload representation implemented; individual graph scheduling remains
+part of the semantic-work-graph replacement.
+
+`TypeStore` retains one `TypeCompletion` row beside every canonical `Type` row.
+Allocation completes type identity. Member-name completeness, member-type
+completeness, and target-natural layout readiness are independent states. A
+fresh nominal aggregate therefore has a complete identity and waiting member
+facets; `^Node` can have complete pointer layout before `Node` itself has a
+complete inline layout. Tuples similarly retain complete member types while
+waiting for a member's layout, then publish their own layout when that member
+finishes.
+
+`NotApplicable` is a semantic answer rather than a pending state: scalars have
+no member set, while untyped and compile-time-only meta types have no runtime
+natural layout. Product errors remain in the semantic graph and diagnostics;
+they are not encoded as a counterfeit layout or as a second error type in the
+payload table. The current package type resolver publishes several facets in
+one call. The active replacement splits those publications into the individual
+products named by the target-state architecture.
+
 ## Compile-time type values and inspection
 
 Status: exact type values and the complete Draft 1 structural query vocabulary

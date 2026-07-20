@@ -185,6 +185,12 @@ Type &TypeStore::type_mut(TypeId id) {
   return types_[id.value];
 }
 
+const TypeCompletion &TypeStore::completion(TypeId id) const {
+  assert(id.is_valid());
+  assert(static_cast<std::size_t>(id.value) < completion_.size());
+  return completion_[id.value];
+}
+
 std::size_t TypeStore::size() const {
   return types_.size();
 }
@@ -201,7 +207,47 @@ std::optional<TypeId> TypeStore::find_builtin(std::string_view name) const {
 TypeId TypeStore::add(Type type_value) {
   assert(types_.size() < static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max()));
   const TypeId id{static_cast<std::uint32_t>(types_.size())};
+  TypeCompletion completion;
+  switch (type_value.kind) {
+  case TypeKind::Tuple:
+  case TypeKind::Procedure:
+    completion.members = TypeFacetState::Complete;
+    completion.member_types = TypeFacetState::Complete;
+    break;
+  case TypeKind::Struct:
+  case TypeKind::Enum:
+  case TypeKind::TaggedUnion:
+  case TypeKind::RawUnion:
+    // begin_nominal allocates an empty shell. Compiler-defined enums arrive
+    // with their complete member packet already installed.
+    if (!type_value.members.empty()) {
+      completion.members = TypeFacetState::Complete;
+      completion.member_types = TypeFacetState::Complete;
+    } else {
+      completion.members = TypeFacetState::Waiting;
+      completion.member_types = TypeFacetState::Waiting;
+    }
+    break;
+  default:
+    break;
+  }
+  if (type_value.layout.known) {
+    completion.natural_layout = TypeFacetState::Complete;
+  } else {
+    switch (type_value.kind) {
+    case TypeKind::UntypedInteger:
+    case TypeKind::UntypedFloat:
+    case TypeKind::MetaType:
+    case TypeKind::Invalid:
+      completion.natural_layout = TypeFacetState::NotApplicable;
+      break;
+    default:
+      completion.natural_layout = TypeFacetState::Waiting;
+      break;
+    }
+  }
   types_.push_back(std::move(type_value));
+  completion_.push_back(completion);
   return id;
 }
 
@@ -473,7 +519,9 @@ void TypeStore::complete_pending_tuple_layouts() {
   bool made_progress = true;
   while (made_progress) {
     made_progress = false;
-    for (Type &pending : types_) {
+    for (std::size_t pending_index = 0; pending_index < types_.size();
+         ++pending_index) {
+      Type &pending = types_[pending_index];
       if (pending.kind != TypeKind::Tuple || pending.layout.known ||
           pending.owner_evaluated_type_application) {
         continue;
@@ -497,6 +545,7 @@ void TypeStore::complete_pending_tuple_layouts() {
       }
       pending.layout = layout;
       pending.member_offsets = std::move(offsets);
+      completion_[pending_index].natural_layout = TypeFacetState::Complete;
       made_progress = true;
     }
   }
@@ -623,7 +672,9 @@ void TypeStore::complete_nominal(
     TypeId id,
     TypeLayout layout,
     std::vector<TypeId> members,
-    std::vector<std::uint64_t> member_offsets) {
+    std::vector<std::uint64_t> member_offsets,
+    bool members_complete,
+    bool member_types_complete) {
   Type &nominal = type_mut(id);
   assert(nominal.kind == TypeKind::Struct || nominal.kind == TypeKind::Enum ||
          nominal.kind == TypeKind::TaggedUnion || nominal.kind == TypeKind::RawUnion);
@@ -631,6 +682,16 @@ void TypeStore::complete_nominal(
   nominal.layout = layout;
   nominal.members = std::move(members);
   nominal.member_offsets = std::move(member_offsets);
+  TypeCompletion &facets = completion_[id.value];
+  facets.members = members_complete
+      ? TypeFacetState::Complete
+      : TypeFacetState::Waiting;
+  facets.member_types = member_types_complete
+      ? TypeFacetState::Complete
+      : TypeFacetState::Waiting;
+  facets.natural_layout = layout.known
+      ? TypeFacetState::Complete
+      : TypeFacetState::Waiting;
   // A return tuple can be interned from a procedure signature before a struct
   // declared in another selected package file is laid out. Body checking later
   // reuses that exact TypeId, so repair the canonical row here rather than
