@@ -102,7 +102,7 @@ publication, and expanded-source inspection with linked LLVM 22.1.8.
 
 The completed raw string-data integration, exact compile-time type-value
 semantics, lexical statement selection, and target-scalar materialization use
-compiler content identity `draft-bootstrap-cpp-v139` and core distribution
+compiler content identity `draft-bootstrap-cpp-v140` and core distribution
 identity `draft-core-bootstrap-v4`. Provider-free `resolve --revalidate`
 commands for macOS and Linux each reused and rechecked all four saved
 expansions; no generated source object changed. Both final manifests then
@@ -113,8 +113,20 @@ linked LLVM 22.1.8. The committed evidence objects are
 `f076bbfae10007e1888147530e54e81ff1cd8bcb318c64072fad6ee64c4f9100`
 for the test and
 `4f2157fbd8fe050ddb2658f47174fca9c753783af4f4a5df4de61daeaab4c0f7`
-for the benchmark. The complete normal and ASan/UBSan CTest matrices each
-passed 71 of 71 tests.
+for the benchmark. The complete normal, release, and ASan/UBSan CTest matrices
+each passed 71 of 71 tests on the final tree.
+
+The semantic work-graph repair was requalified on 2026-07-20 with compiler
+content identity `draft-bootstrap-cpp-v140`. The compiler now retains immutable
+declaration baselines separately from generation-owned body semantics and HIR,
+and keys retained body work by the exact canonical concrete-instance demand
+set. Provider-free `resolve --revalidate` reused and rechecked all four sites
+for each target with zero synthesis calls. The resulting committed program
+digests are
+`8393122f7ffed79faa0322779db944e26c0976a80d6ab991762748fc940dd50e`
+for AArch64 macOS and
+`92ccb29aa3f8718aad0763cf433636c2ef9c92ed22603d97715cd98d8e6f7091`
+for AArch64 GNU/Linux; the four generated source objects did not change.
 
 The repository example matrix classified all 36 tracked Draft/assembly package
 directories. Both-target frontend qualification passed for every declared
