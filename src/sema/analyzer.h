@@ -565,6 +565,28 @@ struct NativeBinding {
   SyntaxReference syntax;
 };
 
+// ConditionalDeclarationRegion retains the lexical declaration context needed
+// to append exactly one selected package-level `when` branch. Initial
+// collection records the region but does not collect either branch. When the
+// semantic dependency graph publishes the boolean selection, the collector
+// moves the selected declarations into the same authoritative SemanticPackage
+// without revisiting unconditional source.
+//
+// flags, foreign_provider, and denials are the value-owned snapshot of the
+// enclosing foreign/export/deny context. scope is a stable package or nested
+// declaration scope in this SemanticPackage generation. materialized changes
+// once, from false to true, after the selected branch has been appended; trying
+// to materialize it again is an internal scheduling error rather than an
+// idempotent recheck.
+struct ConditionalDeclarationRegion {
+  SyntaxReference syntax;
+  ScopeId scope;
+  SymbolFlags flags;
+  std::string foreign_provider;
+  std::vector<SyntaxReference> denials;
+  bool materialized = false;
+};
+
 // SemanticPackage is the append-only semantic table set for one folder
 // package. A declaration generation owns the stable prefix established by
 // interface analysis. A BodyCheckResult owns a copy of that prefix plus lexical
@@ -617,6 +639,7 @@ struct SemanticPackage {
   std::vector<DeferredValueExpression> deferred_value_expressions;
   std::vector<DeferredTypeApplication> deferred_type_applications;
   std::vector<NativeBinding> native_bindings;
+  std::vector<ConditionalDeclarationRegion> conditional_declarations;
 };
 
 // One selection chooses the true or false branch of a particular parsed `when`.
@@ -650,6 +673,20 @@ struct ConditionalSelections {
     const SourceManager &sources,
     const LoadedPackage &package,
     const ConditionalSelections &selections,
+    DiagnosticSink &diagnostics);
+
+// Appends the already selected branch of one recorded package-level `when` to
+// the existing declaration generation. The supplied selections must contain
+// site. Nested `else when` nodes discovered in the chosen branch are recorded
+// as new, unmaterialized regions. Returns false with a diagnostic for a missing,
+// duplicate, malformed, or source-mismatched region; it never rebuilds or
+// replaces declarations already in package.
+[[nodiscard]] bool materialize_conditional_declaration(
+    const SourceManager &sources,
+    const LoadedPackage &loaded,
+    const ConditionalSelections &selections,
+    SyntaxReference site,
+    SemanticPackage &package,
     DiagnosticSink &diagnostics);
 
 [[nodiscard]] std::string_view semantic_site_kind_name(SemanticSiteKind kind);

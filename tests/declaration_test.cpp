@@ -239,6 +239,80 @@ void test_duplicate_nominal_does_not_allocate_type(TestState &state) {
   EXPECT(state, item_type_count == 1);
 }
 
+void test_conditional_branches_append_without_recollection(TestState &state) {
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  draft::LoadedPackage loaded;
+  loaded.short_name = "conditional_append";
+  add_file(sources, loaded, diagnostics, "package.draft", R"draft(
+package conditional_append
+
+Before :: struct { value: u8, }
+
+when false {
+    Wrong :: u16
+} else when true {
+    Selected :: struct { value: u32, }
+} else {
+    Also_Wrong :: u64
+}
+
+After :: struct { value: u8, }
+)draft");
+  EXPECT(state, !diagnostics.has_errors());
+
+  draft::SemanticPackage package =
+      draft::collect_package_declarations(sources, loaded, diagnostics);
+  EXPECT(state, !diagnostics.has_errors());
+  EXPECT(state, package.conditional_declarations.size() == 1);
+  const std::optional<draft::SymbolId> before =
+      package.symbols.lookup_direct(package.package_scope, "Before");
+  const std::optional<draft::SymbolId> after =
+      package.symbols.lookup_direct(package.package_scope, "After");
+  EXPECT(state, before.has_value());
+  EXPECT(state, after.has_value());
+  if (!before.has_value() || !after.has_value() ||
+      package.conditional_declarations.empty()) {
+    return;
+  }
+  const draft::TypeId before_type = package.symbols.symbol(*before).type;
+  const draft::TypeId after_type = package.symbols.symbol(*after).type;
+  const std::size_t initial_symbol_count = package.symbols.symbol_count();
+  const draft::SyntaxReference outer =
+      package.conditional_declarations.front().syntax;
+
+  draft::ConditionalSelections selections;
+  selections.entries.push_back({outer, false});
+  EXPECT(state, draft::materialize_conditional_declaration(
+                    sources, loaded, selections, outer, package, diagnostics));
+  EXPECT(state, !diagnostics.has_errors());
+  EXPECT(state, package.conditional_declarations.size() == 2);
+  EXPECT(state, package.symbols.symbol_count() == initial_symbol_count);
+  EXPECT(state, package.symbols.symbol(*before).type == before_type);
+  EXPECT(state, package.symbols.symbol(*after).type == after_type);
+
+  const draft::SyntaxReference nested =
+      package.conditional_declarations.back().syntax;
+  selections.entries.push_back({nested, true});
+  EXPECT(state, draft::materialize_conditional_declaration(
+                    sources, loaded, selections, nested, package, diagnostics));
+  EXPECT(state, !diagnostics.has_errors());
+  const std::optional<draft::SymbolId> selected =
+      package.symbols.lookup_direct(package.package_scope, "Selected");
+  EXPECT(state, selected.has_value());
+  EXPECT(state, !package.symbols.lookup_direct(
+                     package.package_scope, "Wrong").has_value());
+  EXPECT(state, !package.symbols.lookup_direct(
+                     package.package_scope, "Also_Wrong").has_value());
+  EXPECT(state, package.symbols.symbol_count() == initial_symbol_count + 1);
+  if (selected.has_value()) {
+    EXPECT(state, selected->value > after->value);
+    EXPECT(state, package.symbols.symbol(*selected).type.is_valid());
+  }
+  EXPECT(state, package.symbols.symbol(*before).type == before_type);
+  EXPECT(state, package.symbols.symbol(*after).type == after_type);
+}
+
 void test_declaration_modifier_boundaries(TestState &state) {
   draft::SourceManager sources;
   draft::DiagnosticSink diagnostics;
@@ -273,6 +347,7 @@ int main() {
   test_package_collection(state);
   test_cross_file_duplicate(state);
   test_duplicate_nominal_does_not_allocate_type(state);
+  test_conditional_branches_append_without_recollection(state);
   test_declaration_modifier_boundaries(state);
 
   if (state.failures != 0) {

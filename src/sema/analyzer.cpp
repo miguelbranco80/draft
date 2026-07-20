@@ -75,13 +75,14 @@ public:
       const SourceManager &sources,
       const LoadedPackage &loaded,
       const ConditionalSelections &selections,
+      SemanticPackage &semantic,
       DiagnosticSink &diagnostics)
       : sources_(sources), loaded_(loaded), selections_(selections),
-        diagnostics_(diagnostics) {
+        diagnostics_(diagnostics), semantic_(semantic) {
     semantic_.short_name = loaded_.short_name;
   }
 
-  [[nodiscard]] SemanticPackage collect() {
+  void collect() {
     // The package range is used only as a broad owner range. Prefer the first
     // parsed file so the scope remains source-located even when assembly sorts
     // before Draft source. A valid package is guaranteed to have such a file.
@@ -116,10 +117,89 @@ public:
       collect_file(*file.syntax, semantic_.files[semantic_file_index].scope);
       ++semantic_file_index;
     }
-    return std::move(semantic_);
+  }
+
+  // Appends only the branch named by a published conditional selection. The
+  // region's context is copied before traversal because a nested `else when`
+  // can append another region and reallocate the side table.
+  [[nodiscard]] bool materialize_conditional(SyntaxReference site) {
+    std::size_t region_index = semantic_.conditional_declarations.size();
+    for (std::size_t index = 0;
+         index < semantic_.conditional_declarations.size();
+         ++index) {
+      if (semantic_.conditional_declarations[index].syntax == site) {
+        region_index = index;
+        break;
+      }
+    }
+    if (region_index == semantic_.conditional_declarations.size()) {
+      diagnostics_.error(
+          SourceRange::invalid(),
+          "conditional declaration region is not present in its package");
+      return false;
+    }
+    if (semantic_.conditional_declarations[region_index].materialized) {
+      diagnostics_.error(
+          SourceRange::invalid(),
+          "conditional declaration region was materialized more than once");
+      return false;
+    }
+    const ConditionalSelection *selection = selections_.find(site);
+    if (selection == nullptr) {
+      diagnostics_.error(
+          SourceRange::invalid(),
+          "conditional declaration has no published selection");
+      return false;
+    }
+    const SyntaxTree *tree = find_tree(site.file);
+    if (tree == nullptr || !site.node.is_valid()) {
+      diagnostics_.error(
+          SourceRange::invalid(),
+          "conditional declaration source is unavailable");
+      return false;
+    }
+    const SyntaxNode &node = tree->node(site.node);
+    if (node.kind != NodeKind::WhenDeclaration || node.children.empty()) {
+      diagnostics_.error(
+          node.range,
+          "conditional declaration region does not name a valid 'when'");
+      return false;
+    }
+
+    const ConditionalDeclarationRegion region =
+        semantic_.conditional_declarations[region_index];
+    semantic_.conditional_declarations[region_index].materialized = true;
+    CollectionContext context;
+    context.flags = region.flags;
+    context.foreign_provider = region.foreign_provider;
+    context.denials = region.denials;
+    if (selection->select_true) {
+      if (node.children.size() >= 2) {
+        collect_declaration_list(
+            *tree, node.children[1], region.scope, context);
+      }
+      return true;
+    }
+    if (node.children.size() < 3) return true;
+    const NodeId alternative = node.children[2];
+    if (tree->node(alternative).kind == NodeKind::WhenDeclaration) {
+      (void)collect_item(*tree, alternative, region.scope, context);
+    } else {
+      collect_declaration_list(*tree, alternative, region.scope, context);
+    }
+    return true;
   }
 
 private:
+  [[nodiscard]] const SyntaxTree *find_tree(FileId file) const {
+    for (const LoadedPackageFile &entry : loaded_.files) {
+      if (entry.source == file && entry.syntax.has_value()) {
+        return &*entry.syntax;
+      }
+    }
+    return nullptr;
+  }
+
   [[nodiscard]] SourceName token_name(const SyntaxTree &tree, std::uint32_t index) const {
     const Token &token = tree.token(index);
     return {std::string(sources_.text(token.range)), token.range};
@@ -420,11 +500,21 @@ private:
 
     case NodeKind::WhenDeclaration: {
       add_site(SemanticSiteKind::ConditionalDeclaration, tree, node_id, scope);
+      ConditionalDeclarationRegion region;
+      region.syntax = {tree.file(), node_id};
+      region.scope = scope;
+      region.flags = context.flags;
+      region.foreign_provider = context.foreign_provider;
+      region.denials = context.denials;
+      semantic_.conditional_declarations.push_back(std::move(region));
+      const std::size_t region_index =
+          semantic_.conditional_declarations.size() - 1;
       const ConditionalSelection *selection =
           selections_.find({tree.file(), node_id});
       if (selection == nullptr) {
         return {};
       }
+      semantic_.conditional_declarations[region_index].materialized = true;
       if (selection->select_true) {
         if (node.children.size() >= 2) {
           collect_declaration_list(tree, node.children[1], scope, context);
@@ -569,7 +659,7 @@ private:
   const LoadedPackage &loaded_;
   const ConditionalSelections &selections_;
   DiagnosticSink &diagnostics_;
-  SemanticPackage semantic_;
+  SemanticPackage &semantic_;
 };
 
 } // namespace
@@ -579,8 +669,11 @@ SemanticPackage collect_package_declarations(
     const LoadedPackage &package,
     DiagnosticSink &diagnostics) {
   const ConditionalSelections selections;
-  DeclarationCollector collector(sources, package, selections, diagnostics);
-  return collector.collect();
+  SemanticPackage semantic;
+  DeclarationCollector collector(
+      sources, package, selections, semantic, diagnostics);
+  collector.collect();
+  return semantic;
 }
 
 SemanticPackage collect_package_declarations(
@@ -588,8 +681,23 @@ SemanticPackage collect_package_declarations(
     const LoadedPackage &package,
     const ConditionalSelections &selections,
     DiagnosticSink &diagnostics) {
-  DeclarationCollector collector(sources, package, selections, diagnostics);
-  return collector.collect();
+  SemanticPackage semantic;
+  DeclarationCollector collector(
+      sources, package, selections, semantic, diagnostics);
+  collector.collect();
+  return semantic;
+}
+
+bool materialize_conditional_declaration(
+    const SourceManager &sources,
+    const LoadedPackage &loaded,
+    const ConditionalSelections &selections,
+    SyntaxReference site,
+    SemanticPackage &package,
+    DiagnosticSink &diagnostics) {
+  DeclarationCollector collector(
+      sources, loaded, selections, package, diagnostics);
+  return collector.materialize_conditional(site);
 }
 
 const ConditionalSelection *ConditionalSelections::find(SyntaxReference site) const {

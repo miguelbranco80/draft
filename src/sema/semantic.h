@@ -1,11 +1,12 @@
-// Fixed-point orchestration of declaration collection, type resolution,
-// compile-time constants, and declaration-level `when` selection.
+// Append-only declaration selection plus provisional type/constant discovery.
 //
-// Individual semantic passes stay simple and inspectable: collection never
-// evaluates expressions, and constant evaluation never mutates syntax. This
-// module composes them into deterministic rounds. Provisional rounds write into
-// temporary diagnostics; once selections stop changing, one final round builds
-// the returned semantic graph and emits each real diagnostic exactly once.
+// Initial collection and interface binding run once. Package-level `when`
+// regions retain their lexical declaration context; each ready selection
+// appends only its chosen branch to the authoritative declaration generation.
+// Until type, constant, and layout facets become independent semantic products,
+// discovery evaluates those facts on private copies. One final authoritative
+// type/constant pass emits real diagnostics. No provisional copy may be returned
+// or paired with later HIR.
 
 #pragma once
 
@@ -36,10 +37,10 @@ struct SemanticAnalysisResult {
   std::vector<SymbolId> compile_time_synthesis_procedures;
 };
 
-// Runs semantic rounds until no new declaration-level conditional becomes
-// ready, then performs one diagnostic final round. The returned package contains
-// only selected declarations and member regions. A conditional that depends on
-// an unavailable generic instantiation remains an explicit unresolved site.
+// Collects declarations once, appends each newly selected package-level branch,
+// and probes type/constant readiness until no product changes. One final pass
+// resolves the authoritative selected package. A conditional that depends on
+// unavailable synthesis remains an explicit unresolved site.
 [[nodiscard]] SemanticAnalysisResult analyze_package_semantics(
     const SourceManager &sources,
     const LoadedPackage &loaded,
@@ -47,8 +48,8 @@ struct SemanticAnalysisResult {
     DiagnosticSink &diagnostics);
 
 // Workspace-aware form. Every source import must have a matching dependency
-// interface. Binding occurs in every provisional fixed-point round because the
-// imported constants and types can select `when` declarations.
+// interface. Binding occurs once on the authoritative declaration generation;
+// private readiness probes copy those already bound interface rows.
 [[nodiscard]] SemanticAnalysisResult analyze_package_semantics(
     const SourceManager &sources,
     const LoadedPackage &loaded,

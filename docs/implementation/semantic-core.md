@@ -194,13 +194,20 @@ effect, return, and write contracts.
 Status: bootstrap phase ownership and incremental command-local scheduling.
 
 Semantic analysis publishes an immutable declaration generation for each
-package. It contains the package/file scopes, declarations, signatures,
-constants, selected structural regions, imported interface bindings, layouts,
-and preliminary interface facts. Body checking never appends to that retained
-value. It copies the declaration prefix and returns the enriched SemanticPackage,
-body constants, and HIR as one `BodyCheckResult`. Every SymbolId, ScopeId, and
-TypeId in HIR belongs to that returned package; later effect, denial, interop,
-MIR, LLVM, metadata, and obligation passes consume the same body-owned tables.
+package. Initial collection and interface binding happen once. Each package
+`when` records the foreign/export/deny context needed to append its selected
+branch; when the condition becomes ready, only that branch is added to the same
+declaration table. Unconditional declarations and existing IDs are not
+recollected. Type, constant, member, and layout readiness still uses private
+copies until those facts move into individual semantic products; one final
+authoritative pass supplies signatures, constants, selected member regions,
+layouts, and preliminary interface facts.
+
+Body checking never appends to that retained value. It copies the declaration
+prefix and returns the enriched SemanticPackage, body constants, and HIR as one
+`BodyCheckResult`. Every SymbolId, ScopeId, and TypeId in HIR belongs to that
+returned package; later effect, denial, interop, MIR, LLVM, metadata, and
+obligation passes consume the same body-owned tables.
 
 The compiler schedules package bodies consumer-first because checking a caller
 can demand a concrete public generic body from its dependency. A portable

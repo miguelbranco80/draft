@@ -1,4 +1,4 @@
-// Deterministic semantic fixed-point driver.
+// Append-only declaration selection and deterministic semantic readiness probes.
 
 #include "sema/semantic.h"
 
@@ -16,7 +16,7 @@
 namespace draft {
 namespace {
 
-// Finds the immutable parsed tree named by a cross-round SyntaxReference.
+// Finds the immutable parsed tree named by a cross-probe SyntaxReference.
 // LoadedPackage owns every returned tree for the complete semantic operation;
 // a missing/non-Draft file is a recoverable failed lookup rather than an
 // assertion because malformed package inputs may still reach diagnostics.
@@ -30,7 +30,7 @@ namespace {
   return nullptr;
 }
 
-// Source syntax, rather than a discarded round's SymbolId or TypeId, is the
+// Source syntax, rather than a private probe's SymbolId or TypeId, is the
 // equality key for interpreter progress. The vector is deliberately scanned in
 // insertion order: required layout sites are normally few, and preserving the
 // direct deterministic representation is more valuable than a second index.
@@ -69,7 +69,7 @@ namespace {
 // A pending constant or `when` condition may name declarations or members
 // supplied by the package's current opaque interface set. Discovery must return
 // that structural set without diagnosing the dependent expression yet. Once
-// the set is overlaid, the next clean semantic round either makes progress or
+// the set is overlaid, the successor source generation either makes progress or
 // emits the ordinary precise unready diagnostic.
 [[nodiscard]] bool has_structural_synthesis_site(
     const SemanticPackage &package) {
@@ -78,6 +78,19 @@ namespace {
         site.kind == SemanticSiteKind::SynthesisMember) {
       return true;
     }
+  }
+  return false;
+}
+
+// Returns true only for a package-level conditional branch recorded by the
+// append-only declaration collector and not yet merged into the authoritative
+// declaration generation. Conditional member and statement selections share
+// ConditionalSelections but are consumed by their later owning phases.
+[[nodiscard]] bool conditional_declaration_needs_materialization(
+    const SemanticPackage &package, SyntaxReference site) {
+  for (const ConditionalDeclarationRegion &region :
+       package.conditional_declarations) {
+    if (region.syntax == site) return !region.materialized;
   }
   return false;
 }
@@ -250,16 +263,26 @@ SemanticAnalysisResult analyze_package_semantics(
   std::vector<ResolvedIntegerExpression> resolved_integers;
   std::vector<SyntaxReference> blocked_integer_synthesis;
 
-  // Discover selections without copying provisional diagnostics into the user
-  // sink. Each progress round adds at least one distinct SyntaxReference, and a
-  // finite parsed tree therefore guarantees termination without an arbitrary
-  // iteration limit.
+  // Collect and bind unconditional declarations exactly once. Conditional
+  // declaration regions retain the lexical context required to append a branch
+  // after its boolean product becomes ready. The authoritative declaration
+  // table remains free of provisional type/member rows until the selections are
+  // complete.
+  SemanticPackage declarations =
+      collect_package_declarations(sources, loaded, diagnostics);
+  declarations.identity = imports.consumer_identity;
+  bind_package_interfaces(declarations, imports, diagnostics);
+
+  // Type and constant discovery still uses a private copy until those facts
+  // become individual semantic products. Crucially, the copy begins from the
+  // one authoritative declaration table: unconditional source is never
+  // recollected, and each newly selected declaration branch is appended once.
+  // Each progress wave adds a selection, a resolved integer recipe, or a new
+  // synthesis blocker, so finite syntax guarantees termination without an
+  // arbitrary iteration limit.
   while (true) {
     DiagnosticSink provisional_diagnostics;
-    SemanticPackage provisional = collect_package_declarations(
-        sources, loaded, result.selections, provisional_diagnostics);
-    provisional.identity = imports.consumer_identity;
-    bind_package_interfaces(provisional, imports, provisional_diagnostics);
+    SemanticPackage provisional = declarations;
     if (synthesis_mode == CompileTimeSynthesisMode::Discover) {
       resolve_package_types(
           sources,
@@ -280,6 +303,8 @@ SemanticAnalysisResult analyze_package_semantics(
           target,
           provisional_diagnostics);
     }
+    const std::size_t previous_selection_count =
+        result.selections.entries.size();
     const CompileTimeRoundResult round = evaluate_compile_time_round(
         sources,
         loaded,
@@ -300,19 +325,35 @@ SemanticAnalysisResult analyze_package_semantics(
             synthesis_mode,
             blocked_integer_synthesis,
             provisional_diagnostics);
+    bool materialization_ok = true;
+    for (std::size_t selection_index = previous_selection_count;
+         selection_index < result.selections.entries.size();
+         ++selection_index) {
+      const ConditionalSelection &selection =
+          result.selections.entries[selection_index];
+      if (!conditional_declaration_needs_materialization(
+              declarations, selection.site)) {
+        continue;
+      }
+      materialization_ok = materialize_conditional_declaration(
+          sources,
+          loaded,
+          result.selections,
+          selection.site,
+          declarations,
+          diagnostics) && materialization_ok;
+    }
+    if (!materialization_ok) break;
     if (round.new_selections == 0 && integer_round.resolved == 0 &&
         integer_round.newly_blocked == 0) {
       break;
     }
   }
 
-  // Rebuild once from the complete known selection set. This is the only round
-  // that contributes semantic diagnostics and the only graph returned to later
-  // HIR construction, so stable IDs cannot refer into discarded rounds.
-  result.package = collect_package_declarations(
-      sources, loaded, result.selections, diagnostics);
-  result.package.identity = imports.consumer_identity;
-  bind_package_interfaces(result.package, imports, diagnostics);
+  // The complete selected name set is already the authoritative declaration
+  // generation. Resolve it once with real diagnostics; no final collection or
+  // import rebinding pass exists.
+  result.package = std::move(declarations);
   if (synthesis_mode == CompileTimeSynthesisMode::Discover) {
     resolve_package_types(
         sources,
