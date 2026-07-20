@@ -310,6 +310,29 @@ language feature.
 
 ## Change discipline for agents
 
+### Pre-release final-state discipline
+
+Draft is still being built and has no released compatibility contract. When a
+repository change replaces a schema, path layout, command contract, fixture,
+or internal representation, leave only the intended final state:
+
+- Do not add legacy readers, migration code, dual writes, deprecated aliases,
+  fallback paths, or compatibility adapters unless the user explicitly asks
+  to preserve a released external contract.
+- Update every current producer, consumer, test, example, document, CI entry,
+  and skill reference in the same coherent change. Search the repository for
+  the replaced spelling or shape and remove stale current-state references.
+- Delete obsolete repository-owned fixtures and generated state, then
+  regenerate only the artifacts required by the final implementation. Do not
+  carry an old manifest or evidence row forward merely to avoid rebuilding it.
+- Keep historical documents historical. They may describe an earlier state,
+  but current code must not retain a compatibility path solely because that
+  state once existed.
+
+This rule does not authorize deleting unrelated user work in a dirty checkout.
+Resolve ownership first, and restrict cleanup to state that is demonstrably an
+obsolete product of the repository behavior being replaced.
+
 ### Commits
 
 - Keep the work in a sequence of reasonably small, coherent commits. Each
