@@ -327,7 +327,7 @@ upper source re-evaluates to the displayed value at the site. Other loop shapes
 produce no inferred range.
 
 `draft-agent-obligation-v19`, synthesis request v21 / prompt v22, judgment
-request/prompt v4, and compiler content v137 identities make these facts and
+request/prompt v4, and compiler content v138 identities make these facts and
 the compiler-checked correction policy stale-pin and evidence inputs. The
 synthesis adapter uses provider identity `openai-codex-cli-v28`; the judgment
 adapter uses `openai-codex-cli-v23`. Both recheck the canonical

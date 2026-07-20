@@ -79,6 +79,21 @@ constexpr std::array<std::string_view, 3> kByteOrderNames = {
 constexpr std::array<std::string_view, 2> kCallingConventionNames = {
     "draft", "c"};
 
+// Target categorical values are nominal enums, not interchangeable labels.
+// The source order below defines their stable member ordinals and the order
+// observed by structural type inspection. New target profiles may append
+// alternatives, but must not reorder an existing vocabulary.
+constexpr std::array<std::string_view, 1> kTargetArchitectureNames = {
+    "aarch64"};
+constexpr std::array<std::string_view, 2> kTargetOperatingSystemNames = {
+    "macos", "linux"};
+constexpr std::array<std::string_view, 2> kTargetAbiNames = {
+    "darwin_arm64", "aapcs64_gnu"};
+constexpr std::array<std::string_view, 2> kTargetByteOrderNames = {
+    "little", "big"};
+constexpr std::array<std::string_view, 2> kTargetObjectFormatNames = {
+    "macho", "elf"};
+
 [[nodiscard]] TypeInspectionAttempt failure(std::string error) {
   TypeInspectionAttempt result;
   result.recognized = true;
@@ -351,6 +366,35 @@ TypeInspectionAttempt inspect_type(
           ConstantValue::make_string(std::string(kCallingConventionNames[*member])),
           builtins.string_type);
     }
+    if (queried == builtins.target_architecture_type) {
+      return success(
+          ConstantValue::make_string(
+              std::string(kTargetArchitectureNames[*member])),
+          builtins.string_type);
+    }
+    if (queried == builtins.target_operating_system_type) {
+      return success(
+          ConstantValue::make_string(
+              std::string(kTargetOperatingSystemNames[*member])),
+          builtins.string_type);
+    }
+    if (queried == builtins.target_abi_type) {
+      return success(
+          ConstantValue::make_string(std::string(kTargetAbiNames[*member])),
+          builtins.string_type);
+    }
+    if (queried == builtins.target_byte_order_type) {
+      return success(
+          ConstantValue::make_string(
+              std::string(kTargetByteOrderNames[*member])),
+          builtins.string_type);
+    }
+    if (queried == builtins.target_object_format_type) {
+      return success(
+          ConstantValue::make_string(
+              std::string(kTargetObjectFormatNames[*member])),
+          builtins.string_type);
+    }
     const std::vector<SymbolId> members = named_members(package, queried);
     if (*member >= members.size()) {
       return failure("type_member_name has no source member metadata");
@@ -391,7 +435,12 @@ TypeInspectionAttempt inspect_type(
     if (!member.has_value()) return failure("type_member_value index is out of bounds");
     if (queried == builtins.type_kind_type ||
         queried == builtins.type_byte_order_type ||
-        queried == builtins.calling_convention_type) {
+        queried == builtins.calling_convention_type ||
+        queried == builtins.target_architecture_type ||
+        queried == builtins.target_operating_system_type ||
+        queried == builtins.target_abi_type ||
+        queried == builtins.target_byte_order_type ||
+        queried == builtins.target_object_format_type) {
       return success(
           ConstantValue::make_integer(BigInteger::from_u64(*member)),
           type.element);
@@ -481,6 +530,19 @@ std::optional<std::uint64_t> compiler_enum_member_value(
   if (enum_type == builtins.calling_convention_type) {
     return find(kCallingConventionNames);
   }
+  if (enum_type == builtins.target_architecture_type) {
+    return find(kTargetArchitectureNames);
+  }
+  if (enum_type == builtins.target_operating_system_type) {
+    return find(kTargetOperatingSystemNames);
+  }
+  if (enum_type == builtins.target_abi_type) return find(kTargetAbiNames);
+  if (enum_type == builtins.target_byte_order_type) {
+    return find(kTargetByteOrderNames);
+  }
+  if (enum_type == builtins.target_object_format_type) {
+    return find(kTargetObjectFormatNames);
+  }
   return std::nullopt;
 }
 
@@ -499,6 +561,26 @@ std::optional<std::string_view> compiler_enum_member_name(
   if (enum_type == builtins.calling_convention_type &&
       value < kCallingConventionNames.size()) {
     return kCallingConventionNames[value];
+  }
+  if (enum_type == builtins.target_architecture_type &&
+      value < kTargetArchitectureNames.size()) {
+    return kTargetArchitectureNames[value];
+  }
+  if (enum_type == builtins.target_operating_system_type &&
+      value < kTargetOperatingSystemNames.size()) {
+    return kTargetOperatingSystemNames[value];
+  }
+  if (enum_type == builtins.target_abi_type &&
+      value < kTargetAbiNames.size()) {
+    return kTargetAbiNames[value];
+  }
+  if (enum_type == builtins.target_byte_order_type &&
+      value < kTargetByteOrderNames.size()) {
+    return kTargetByteOrderNames[value];
+  }
+  if (enum_type == builtins.target_object_format_type &&
+      value < kTargetObjectFormatNames.size()) {
+    return kTargetObjectFormatNames[value];
   }
   return std::nullopt;
 }

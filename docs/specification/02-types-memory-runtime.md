@@ -20,10 +20,19 @@ triple and data layout, pointer width, byte order, scalar sizes and alignments,
 object format, platform C ABI, CPU features, relocation and code models, TLS
 model, trap and termination lowering, and parsed-assembly architecture. The
 built-in `target` value exposes
-the stable compile-time fields `identity: string`, `arch`, `os`, `abi`,
-`byte_order`, `object_format`, `file_tag: string`, `pointer_bits: uint`, and
-`page_size: usize`.
-The enum types of the categorical fields are language-defined.
+the stable compile-time fields `identity: string`,
+`arch: Target_Architecture`, `os: Target_Operating_System`,
+`abi: Target_ABI`, `byte_order: Target_Byte_Order`,
+`object_format: Target_Object_Format`, `file_tag: string`,
+`pointer_bits: uint`, and `page_size: usize`.
+The categorical types are distinct compiler-defined enums. Draft 1 defines
+`Target_Architecture` with `.aarch64`; `Target_Operating_System` with `.macos`
+and `.linux`; `Target_ABI` with `.darwin_arm64` and `.aapcs64_gnu`;
+`Target_Byte_Order` with `.little` and `.big`; and `Target_Object_Format` with
+`.macho` and `.elf`, in the stated source order. A later target profile may
+append alternatives but cannot reorder or conflate existing types. Consequently
+`target.os == target.arch` and `target.os == .aarch64` are type errors even when
+the underlying labels or integer representations happen to coincide.
 `file_tag` is a unique filename-safe ASCII identifier for source selection.
 `target.has_feature(feature: string) -> bool` requires a compile-time string.
 It returns whether the profile enables a feature known to its architecture;

@@ -913,6 +913,42 @@ private:
     return false;
   }
 
+  // Recognizes the predeclared target object through transparent grouping.
+  // A compile-time local or lexical source declaration named `target` wins;
+  // target facts are language predeclared values, not a spelling-based macro.
+  [[nodiscard]] bool is_predeclared_target_expression(
+      const SyntaxTree &tree, NodeId expression_id, ScopeId scope) const {
+    NodeId current = expression_id;
+    while (tree.node(current).kind == NodeKind::GroupExpression &&
+           tree.node(current).children.size() == 1) {
+      current = tree.node(current).children.front();
+    }
+    const SyntaxNode &expression = tree.node(current);
+    if (expression.kind != NodeKind::NameExpression) return false;
+    const std::optional<std::string> name = final_name(tree, expression);
+    if (!name.has_value() || *name != "target") return false;
+    return local_binding("target") == nullptr &&
+        !semantic_.symbols.lookup(scope, "target").has_value();
+  }
+
+  // Returns the specified static type of one target field without reading its
+  // selected-profile value. `type_of(target.os)` uses this table so inspection
+  // remains non-evaluating while still observing the exact nominal enum.
+  [[nodiscard]] TypeId target_member_type(std::string_view member) const {
+    const BuiltinTypes &builtins = semantic_.types.builtins();
+    if (member == "identity" || member == "file_tag") {
+      return builtins.string_type;
+    }
+    if (member == "arch") return builtins.target_architecture_type;
+    if (member == "os") return builtins.target_operating_system_type;
+    if (member == "abi") return builtins.target_abi_type;
+    if (member == "byte_order") return builtins.target_byte_order_type;
+    if (member == "object_format") return builtins.target_object_format_type;
+    if (member == "pointer_bits") return builtins.uint_type;
+    if (member == "page_size") return builtins.usize_type;
+    return {};
+  }
+
   // Finds the declared type of a non-executed expression when that type is
   // enough to contextualize the selected branch of a constant conditional.
   // This deliberately recognizes only shapes whose type is available without
@@ -990,6 +1026,13 @@ private:
           return semantic_.types.builtins().meta_type;
         }
         return substitute_local_type(symbol.type);
+      }
+      if (!expression.children.empty() &&
+          is_predeclared_target_expression(
+              tree, expression.children.front(), scope)) {
+        const std::optional<std::string> member =
+            final_name(tree, expression);
+        return member.has_value() ? target_member_type(*member) : TypeId{};
       }
       return {};
     }
@@ -2094,22 +2137,49 @@ private:
   }
 
   // Maps the built-in target object's stable fields to scalar compile-time
-  // values. Unknown fields are diagnosed only when the expression is required.
+  // values with their specified static types. Unknown fields are diagnosed
+  // only when the expression is required.
   [[nodiscard]] EvalResult evaluate_target_member(
       std::string_view member, SourceRange range, bool required) {
+    const auto categorical = [&](TypeId type, std::string_view value) {
+      const std::optional<std::uint64_t> ordinal =
+          compiler_enum_member_value(semantic_, type, value);
+      if (!ordinal.has_value()) {
+        // Target profiles are validated before semantic analysis, so this is a
+        // defensive user-facing failure for an invalid embedded/custom profile
+        // rather than an assertion on ambient target data.
+        return fail(
+            range,
+            "target profile uses an unknown categorical value '" +
+                std::string(value) + "'",
+            required);
+      }
+      return ready(
+          ConstantValue::make_integer(BigInteger::from_u64(*ordinal)),
+          type);
+    };
+
     if (member == "identity") {
       return ready(
           ConstantValue::make_string(target_.identity),
           semantic_.types.builtins().string_type);
     }
-    if (member == "arch") return ready(ConstantValue::make_enum_label(target_.arch));
-    if (member == "os") return ready(ConstantValue::make_enum_label(target_.os));
-    if (member == "abi") return ready(ConstantValue::make_enum_label(target_.abi));
+    const BuiltinTypes &builtins = semantic_.types.builtins();
+    if (member == "arch") {
+      return categorical(builtins.target_architecture_type, target_.arch);
+    }
+    if (member == "os") {
+      return categorical(builtins.target_operating_system_type, target_.os);
+    }
+    if (member == "abi") {
+      return categorical(builtins.target_abi_type, target_.abi);
+    }
     if (member == "byte_order") {
-      return ready(ConstantValue::make_enum_label(target_.byte_order));
+      return categorical(builtins.target_byte_order_type, target_.byte_order);
     }
     if (member == "object_format") {
-      return ready(ConstantValue::make_enum_label(target_.object_format));
+      return categorical(
+          builtins.target_object_format_type, target_.object_format);
     }
     if (member == "file_tag") {
       return ready(
@@ -2122,7 +2192,9 @@ private:
           : target_.page_size;
       return ready(
           ConstantValue::make_integer(BigInteger::from_u64(source)),
-          semantic_.types.builtins().usize_type);
+          member == "pointer_bits"
+              ? semantic_.types.builtins().uint_type
+              : semantic_.types.builtins().usize_type);
     }
     return fail(range, "unknown target field '" + std::string(member) + "'", required);
   }
@@ -2134,7 +2206,7 @@ private:
       const SyntaxNode &call,
       ScopeId scope,
       bool required) {
-    if (call.children.size() != 2) return pending();
+    if (call.children.empty()) return pending();
     const SyntaxNode &callee = tree.node(call.children.front());
     if (callee.kind != NodeKind::MemberExpression || callee.children.empty()) {
       return pending();
@@ -2146,11 +2218,20 @@ private:
         !method.has_value() || *method != "has_feature") {
       return pending();
     }
+    if (call.children.size() != 2) {
+      return fail(
+          call.range,
+          "target.has_feature requires exactly one argument",
+          required);
+    }
     const EvalResult argument =
         evaluate_expression(tree, call.children[1], scope, required);
     if (argument.status != EvalStatus::Ready) return argument;
     if (argument.value.kind != ConstantKind::String) {
-      return fail(call.range, "target.has_feature requires a compile-time string", required);
+      return fail(
+          tree.node(call.children[1]).range,
+          "target.has_feature requires a compile-time string",
+          required);
     }
     const bool known = std::binary_search(
         target_.known_features.begin(), target_.known_features.end(), argument.value.text);
@@ -4632,7 +4713,6 @@ private:
     case NodeKind::NameExpression: {
       const std::optional<std::string> name = final_name(tree, node);
       if (!name.has_value()) return pending();
-      if (*name == "target") return ready(ConstantValue::make_target());
       if (const LocalBinding *local = local_binding(*name)) {
         if (contains_uninitialized(local->value)) {
           return fail(
@@ -4644,6 +4724,7 @@ private:
       }
       const std::optional<SymbolId> symbol = semantic_.symbols.lookup(scope, *name);
       if (!symbol.has_value()) {
+        if (*name == "target") return ready(ConstantValue::make_target());
         if (const std::optional<TypeId> builtin =
                 semantic_.types.find_builtin(*name)) {
           return ready(
@@ -4695,6 +4776,13 @@ private:
               ConstantValue::make_integer(
                   BigInteger::from_u64(*compiler_member)),
               expected);
+        }
+        if (runtime_type(expected).kind == TypeKind::Enum &&
+            compiler_enum_member_name(semantic_, expected, 0).has_value()) {
+          return fail(
+              node.range,
+              "compile-time enum initializer names no matching member",
+              required);
         }
       }
       TypeId payload_type;

@@ -1972,15 +1972,30 @@ void test_selected_when_condition_type_validation(TestState &state) {
 package bodies
 
 main :: proc() {
-    when (target.os) == .macos &&
+    result := 0
+    when (target).os == .macos &&
+         (target).has_feature("neon") &&
          target.os == (.macos) &&
          target.os == target.os &&
          type_kind(type_of(raw_data(target.identity))) == .multi_pointer {
+        result = 42
     }
+    assert(result == 42)
 }
 )draft");
   EXPECT(state, valid.bodies.ok);
   EXPECT(state, !valid.diagnostics.has_errors());
+  bool saw_selected_assignment = false;
+  for (std::size_t index = 0;
+       index < valid.bodies.program.statement_count();
+       ++index) {
+    const draft::HirStatement &statement = valid.bodies.program.statement(
+        draft::HirStatementId{static_cast<std::uint32_t>(index)});
+    saw_selected_assignment = saw_selected_assignment ||
+        (statement.kind == draft::HirStatementKind::Assignment &&
+         valid.sources.text(statement.range) == "result = 42");
+  }
+  EXPECT(state, saw_selected_assignment);
 
   CheckedSource invalid(R"draft(
 package bodies

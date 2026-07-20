@@ -397,7 +397,10 @@ Every branch is parsed; only the selected branch is name/type checked and
 contributes contents. `when` introduces no lexical scope and cannot construct
 syntax. The target exposes `identity`, `arch`, `os`, `abi`, `byte_order`,
 `object_format`, `file_tag`, `pointer_bits`, `page_size`, and compile-time
-`has_feature`.
+`has_feature`. Its five categorical fields use the distinct compiler-defined
+enums `Target_Architecture`, `Target_Operating_System`, `Target_ABI`,
+`Target_Byte_Order`, and `Target_Object_Format`; their contextual alternatives
+do not cross those type boundaries.
 
 Inside a parametric procedure, a statement `when` may depend on the concrete
 type/value arguments. The template is checked symbolically in both branches,

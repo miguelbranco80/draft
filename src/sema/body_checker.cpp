@@ -341,7 +341,18 @@ public:
             ? semantic_.types.tuple(members)
             : TypeId{};
       }
-      (void)check_expression(*tree, initializer, *scope, expected);
+      const std::size_t initial_initializer_errors = diagnostics_.error_count();
+      const HirExpressionId checked_initializer =
+          check_expression(*tree, initializer, *scope, expected);
+      if (is_invalid_type(hir_.expression(checked_initializer).type) &&
+          diagnostics_.error_count() == initial_initializer_errors) {
+        // An invalid validation-only HIR value without a diagnostic would let
+        // a declared constant silently retain the type inferred by constant
+        // discovery. Fail closed at the source initializer instead.
+        diagnostics_.error(
+            tree->node(initializer).range,
+            "compile-time expression has no valid static type");
+      }
     }
 
     // Declaration and aggregate-member `when` sites are selected before body
@@ -381,11 +392,21 @@ public:
         if (!file_scope.has_value()) continue;
         condition_scope = *file_scope;
       }
-      (void)check_expression(
+      const std::size_t initial_condition_errors = diagnostics_.error_count();
+      const HirExpressionId checked_condition = check_expression(
           *tree,
           when.children.front(),
           condition_scope,
           semantic_.types.builtins().bool_type);
+      if (is_invalid_type(hir_.expression(checked_condition).type) &&
+          diagnostics_.error_count() == initial_condition_errors) {
+        // Structural selection has already contributed its chosen declaration
+        // or member. Never retain it merely because validation produced an
+        // unexplained invalid HIR value.
+        diagnostics_.error(
+            tree->node(when.children.front()).range,
+            "compile-time condition has no valid static type");
+      }
     }
     type_validation_only_ = false;
     return diagnostics_.error_count() == initial_errors;
@@ -429,8 +450,16 @@ private:
         member.children.empty()) {
       return std::nullopt;
     }
+    NodeId base_id = member.children.front();
+    while (tree.node(base_id).kind == NodeKind::GroupExpression &&
+           tree.node(base_id).children.size() == 1) {
+      // Parentheses preserve the identity of the predeclared target object.
+      // Unwrap only that transparent syntax; member access, calls, and every
+      // other expression shape still follow ordinary lexical lookup.
+      base_id = tree.node(base_id).children.front();
+    }
     const std::optional<SourceName> base =
-        single_name_expression(tree, member.children.front());
+        single_name_expression(tree, base_id);
     if (!base.has_value() || base->text != "target" ||
         semantic_.symbols.lookup(scope, "target").has_value()) {
       return std::nullopt;
@@ -7393,8 +7422,19 @@ private:
               scope,
               semantic_.types.builtins().bool_type);
           type_validation_only_ = prior_validation_only;
+          const bool invalid_condition =
+              is_invalid_type(hir_.expression(checked_condition).type);
+          if (invalid_condition &&
+              diagnostics_.error_count() == initial_condition_errors) {
+            // The selected statement branch must never disappear silently.
+            // If the validation bridge cannot construct a typed condition and
+            // no child owned a more precise error, diagnose the condition here.
+            diagnostics_.error(
+                tree.node(condition_id).range,
+                "compile-time condition has no valid static type");
+          }
           if (diagnostics_.error_count() != initial_condition_errors ||
-              is_invalid_type(hir_.expression(checked_condition).type)) {
+              invalid_condition) {
             break;
           }
         }
@@ -7999,10 +8039,12 @@ private:
   std::vector<StaticPackValueAlias> active_pack_value_aliases_;
   std::vector<ProcedureInstance> instances_;
   std::optional<std::size_t> current_instance_index_;
-  // Used only by the package compile-time-expression preflight. It reuses the
-  // complete expression type checker for initializers and structural `when`
-  // conditions while suppressing operations whose diagnostics depend on
-  // actually evaluating a branch.
+  // Compile-time-expression preflight reuses the complete expression checker
+  // without emitting executable HIR. The package pass enables this mode for
+  // initializers and structural `when` conditions; procedure-body `when`
+  // enables it temporarily at the exact lexical statement. In both cases it
+  // suppresses operations whose diagnostics depend on actually evaluating a
+  // branch.
   bool type_validation_only_ = false;
 };
 

@@ -35,7 +35,19 @@ still receives the authoritative feature diagnostic. The bridge never imports
 an enclosing logical or conditional result, because doing so could repeat the
 short-circuit behavior and hide the independent operand the pass is meant to
 validate. Invalid children propagate without secondary reflection or operator
-diagnostics once the exact operand error has been reported.
+diagnostics once the exact operand error has been reported. If validation ever
+produces an invalid HIR value without such a child diagnostic, the preflight
+boundary emits a fail-closed static-type error; a selected declaration or
+statement branch cannot disappear silently.
+
+The five categorical target fields use separate compiler-defined enum rows in
+every `TypeStore`. The constant evaluator converts each profile spelling to its
+stable member ordinal and exact enum `TypeId` before comparison or reflection;
+sharing an integer representation therefore cannot make `target.os` compatible
+with `target.arch`. `type_of`, `type_name`, and member inspection observe those
+ordinary named enum types. Direct target-member recognition unwraps transparent
+parentheses around the target base, while preserving the normal rule that a
+lexical declaration named `target` shadows the predeclared object.
 
 At interface publication, every type-valued constant recursively rewrites its
 package-local TypeId into the same `InterfaceTypeId` graph used by public
@@ -380,7 +392,7 @@ traps, and message construction used solely by an assertion cannot survive,
 and no condition is converted into an optimizer assumption.
 
 The versioned `draft.resolved-program.v6` hash records the selected root and
-assertion mode beside compiler content v137. `build`, `resolve`, and `judge`
+assertion mode beside compiler content v138. `build`, `resolve`, and `judge`
 expose the same explicit flag so a provider-free manifest cannot be replayed
 under a different mode. Test and benchmark compilations deliberately override
 the release choice to assertions on and receive their own resolved validation

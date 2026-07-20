@@ -49,7 +49,7 @@ struct AnalyzedSource {
     target.identity = "draft-aarch64-macos-v5";
     target.arch = "aarch64";
     target.os = "macos";
-    target.abi = "darwin";
+    target.abi = "darwin_arm64";
     target.byte_order = "little";
     target.object_format = "macho";
     target.file_tag = "aarch64-macos";
@@ -1933,15 +1933,96 @@ void test_selected_when_condition_type_validation(TestState &state) {
   AnalyzedSource valid(R"draft(
 package conditions
 
-when (target.os) == .macos &&
+Target_OS_Type :: type_of(target.os)
+Target_OS_Name :: type_name(Target_OS_Type)
+Target_OS_Member_Count :: type_member_count(Target_OS_Type)
+Target_OS_First_Member :: type_member_name(Target_OS_Type, 0)
+Target_OS_First_Value :: type_member_value(Target_OS_Type, 0)
+Target_Arch_Type :: type_of(target.arch)
+Target_ABI_Type :: type_of(target.abi)
+Target_Byte_Order_Type :: type_of(target.byte_order)
+Target_Object_Format_Type :: type_of(target.object_format)
+Target_Pointer_Bits_Type :: type_of(target.pointer_bits)
+Target_Page_Size_Type :: type_of(target.page_size)
+
+when (target).os == .macos &&
+     (target).has_feature("neon") &&
      target.os == (.macos) &&
      target.os == target.os &&
      type_kind(type_of(raw_data(target.identity))) == .multi_pointer {
     Target_Selected :: true
 }
 )draft");
+  if (valid.diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(valid.sources, valid.diagnostics);
+  }
   EXPECT(state, valid.analysis.ok);
   EXPECT(state, !valid.diagnostics.has_errors());
+  EXPECT(state,
+      valid.analysis.package.symbols.lookup(
+          valid.analysis.package.package_scope,
+          "Target_Selected").has_value());
+  const auto expect_type_constant =
+      [&](std::string_view name, draft::TypeId expected) {
+    const std::optional<draft::SymbolId> symbol =
+        find_symbol(valid.analysis.package, name);
+    EXPECT(state, symbol.has_value());
+    if (!symbol.has_value()) return;
+    const draft::ConstantValue *value =
+        valid.analysis.constants.find(*symbol);
+    EXPECT(state, value != nullptr);
+    if (value == nullptr) return;
+    EXPECT(state, value->kind == draft::ConstantKind::Type);
+    EXPECT(state, value->type_index == expected.value);
+  };
+  const draft::BuiltinTypes &builtins = valid.analysis.package.types.builtins();
+  expect_type_constant("Target_OS_Type", builtins.target_operating_system_type);
+  expect_type_constant("Target_Arch_Type", builtins.target_architecture_type);
+  expect_type_constant("Target_ABI_Type", builtins.target_abi_type);
+  expect_type_constant("Target_Byte_Order_Type", builtins.target_byte_order_type);
+  expect_type_constant(
+      "Target_Object_Format_Type", builtins.target_object_format_type);
+  expect_type_constant("Target_Pointer_Bits_Type", builtins.uint_type);
+  expect_type_constant("Target_Page_Size_Type", builtins.usize_type);
+  const std::optional<draft::SymbolId> target_os_name =
+      find_symbol(valid.analysis.package, "Target_OS_Name");
+  EXPECT(state, target_os_name.has_value());
+  if (target_os_name.has_value()) {
+    const draft::ConstantValue *value =
+        valid.analysis.constants.find(*target_os_name);
+    EXPECT(state, value != nullptr);
+    if (value != nullptr) {
+      EXPECT(state, value->kind == draft::ConstantKind::String);
+      EXPECT(state, value->text == "Target_Operating_System");
+    }
+  }
+  const auto expect_integer_constant =
+      [&valid, &state](std::string_view name, std::string_view expected) {
+    const std::optional<draft::SymbolId> symbol =
+        find_symbol(valid.analysis.package, name);
+    EXPECT(state, symbol.has_value());
+    if (!symbol.has_value()) return;
+    const draft::ConstantValue *value =
+        valid.analysis.constants.find(*symbol);
+    EXPECT(state, value != nullptr);
+    if (value == nullptr) return;
+    EXPECT(state, value->kind == draft::ConstantKind::Integer);
+    EXPECT(state, value->integer.to_decimal() == expected);
+  };
+  expect_integer_constant("Target_OS_Member_Count", "2");
+  expect_integer_constant("Target_OS_First_Value", "0");
+  const std::optional<draft::SymbolId> target_os_first =
+      find_symbol(valid.analysis.package, "Target_OS_First_Member");
+  EXPECT(state, target_os_first.has_value());
+  if (target_os_first.has_value()) {
+    const draft::ConstantValue *value =
+        valid.analysis.constants.find(*target_os_first);
+    EXPECT(state, value != nullptr);
+    if (value != nullptr) {
+      EXPECT(state, value->kind == draft::ConstantKind::String);
+      EXPECT(state, value->text == "macos");
+    }
+  }
 
   AnalyzedSource invalid(R"draft(
 package conditions
@@ -1969,14 +2050,44 @@ when false && target.has_feature("invented-feature") &&
      type_kind(type_of(raw_data("ok"))) == .multi_pointer {
     Invalid_Feature :: true
 }
+
+when target.os == target.arch {
+    Mismatched_Target_Types :: true
+}
+
+when target.os == .neon {
+    Unknown_Target_Alternative :: true
+}
+
+when false && (target).has_feature() &&
+     type_kind(type_of(raw_data("ok"))) == .multi_pointer {
+    Missing_Feature_Argument :: true
+}
+
+when false && target.has_feature("neon", "extra") &&
+     type_kind(type_of(raw_data("ok"))) == .multi_pointer {
+    Extra_Feature_Argument :: true
+}
+
+when false && target.has_feature(42) &&
+     type_kind(type_of(raw_data("ok"))) == .multi_pointer {
+    Invalid_Feature_Argument :: true
+}
 )draft");
   EXPECT(state, !invalid.analysis.ok);
-  EXPECT(state, invalid.diagnostics.error_count() == 4);
+  EXPECT(state, invalid.diagnostics.error_count() == 9);
+  if (invalid.diagnostics.error_count() != 9) {
+    std::cerr << draft::render_diagnostics(invalid.sources, invalid.diagnostics);
+  }
 
   bool saw_wrong_type = false;
   bool saw_missing_argument = false;
   bool saw_short_circuited_wrong_type = false;
   bool saw_unknown_feature = false;
+  bool saw_mismatched_target_types = false;
+  bool saw_unknown_target_alternative = false;
+  std::size_t feature_arity_errors = 0;
+  bool saw_invalid_feature_argument = false;
   for (const draft::Diagnostic &diagnostic :
        invalid.diagnostics.diagnostics()) {
     const std::string_view spelling = invalid.sources.text(diagnostic.range);
@@ -1994,11 +2105,33 @@ when false && target.has_feature("invented-feature") &&
         (diagnostic.message ==
              "unrecognized target feature 'invented-feature'" &&
          spelling == "\"invented-feature\"");
+    saw_mismatched_target_types = saw_mismatched_target_types ||
+        diagnostic.message ==
+            "compile-time operator is not defined for operand types";
+    saw_unknown_target_alternative = saw_unknown_target_alternative ||
+        diagnostic.message ==
+            "compile-time enum initializer names no matching member";
+    if (diagnostic.message ==
+        "target.has_feature requires exactly one argument") {
+      ++feature_arity_errors;
+    }
+    saw_invalid_feature_argument = saw_invalid_feature_argument ||
+        (diagnostic.message ==
+             "target.has_feature requires a compile-time string" &&
+         spelling == "42");
   }
   EXPECT(state, saw_wrong_type);
   EXPECT(state, saw_missing_argument);
   EXPECT(state, saw_short_circuited_wrong_type);
   EXPECT(state, saw_unknown_feature);
+  EXPECT(state, saw_mismatched_target_types);
+  EXPECT(state, saw_unknown_target_alternative);
+  EXPECT(state, feature_arity_errors == 2);
+  EXPECT(state, saw_invalid_feature_argument);
+  if (!saw_mismatched_target_types || !saw_unknown_target_alternative ||
+      feature_arity_errors != 2 || !saw_invalid_feature_argument) {
+    std::cerr << draft::render_diagnostics(invalid.sources, invalid.diagnostics);
+  }
 }
 
 } // namespace

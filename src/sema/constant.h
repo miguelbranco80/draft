@@ -8,8 +8,9 @@
 // then rebuild declaration collection with those decisions and repeat.
 //
 // The current value representation covers booleans, arbitrary-precision
-// integers, exact decimal rationals, strings, categorical target labels, and the
-// built-in target object. The evaluator also interprets scalar procedure bodies,
+// integers, exact decimal rationals, strings, typed categorical target values,
+// and the built-in target object. The evaluator also interprets scalar procedure
+// bodies,
 // including bounded recursion, loops, switches, parametric values, and type/layout
 // queries. Aggregate values, procedure identities, type values, and exact target
 // rounding after each typed floating operation extend this same table before the

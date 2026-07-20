@@ -96,6 +96,11 @@ target.page_size
 target.has_feature("feature-name")
 ```
 
+The categorical fields have distinct compiler-defined enum types:
+`Target_Architecture`, `Target_Operating_System`, `Target_ABI`,
+`Target_Byte_Order`, and `Target_Object_Format`. Compare each field only with a
+matching contextual alternative or a value of that exact type; for example,
+`target.os == .linux` is valid while `target.os == target.arch` is not.
 `target.has_feature` requires a compile-time string, and an unknown
 architecture feature name is a compile error. Prefer a profile fact to an
 ambient host check. The host running `draftc` does not define program meaning.

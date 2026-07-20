@@ -165,13 +165,20 @@ struct BuiltinTypes {
   TypeId rawptr_type;
   TypeId rune_type;
   TypeId meta_type;
-  // These three compiler-defined enums are ordinary scalar compile-time
-  // results. Their source spellings and member ordinals are a stable Draft
-  // contract; they deliberately do not expose the host C++ enum values used by
-  // the bootstrap implementation.
+  // Compiler-defined enums are ordinary scalar compile-time results. Their
+  // source spellings and member ordinals are a stable Draft contract; they
+  // deliberately do not expose the host C++ enum values used by the bootstrap
+  // implementation. The five target enums keep categorical target fields
+  // nominally distinct: sharing a ConstantKind or backing u8 does not make an
+  // operating system comparable to an architecture or object format.
   TypeId type_kind_type;
   TypeId type_byte_order_type;
   TypeId calling_convention_type;
+  TypeId target_architecture_type;
+  TypeId target_operating_system_type;
+  TypeId target_abi_type;
+  TypeId target_byte_order_type;
+  TypeId target_object_format_type;
 };
 
 class TypeStore {
