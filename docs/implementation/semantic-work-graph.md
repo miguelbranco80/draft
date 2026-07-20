@@ -4,6 +4,8 @@ Status: desired end-state architecture, not a description of the current
 implementation and not normative language semantics. The specification remains
 authoritative, especially the dependency-ordered elaboration rules in
 [Compiler architecture](../specification/06-compiler.md#dependency-ordered-elaboration).
+The active replacement and deletion sequence is tracked in the
+[implementation plan](semantic-work-graph-implementation-plan.md).
 
 ## Objective
 
