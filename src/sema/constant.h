@@ -90,6 +90,37 @@ struct EvaluatedConstant {
   TypeId type;
 };
 
+// One faceted type prerequisite discovered while evaluating a single constant
+// product. Identity and layout are distinct because a type value may be ready
+// while size_of on that same type must still wait for natural layout.
+struct ConstantTypeFacetDependency {
+  TypeId type;
+  TypeFacet facet = TypeFacet::Identity;
+
+  bool operator==(const ConstantTypeFacetDependency &) const = default;
+};
+
+enum class ConstantProductStatus {
+  Complete,
+  Blocked,
+  WaitingForSynthesis,
+  Error,
+};
+
+// ConstantProductAttempt is task-owned. The caller supplies a private semantic
+// package snapshot because successful evaluation may infer the root Symbol's
+// type, intern an exact structural type value, or discover synthesis metadata.
+// Only Complete may be published. Blocked names canonical local SymbolIds and
+// exact type facets; Error has already emitted a source diagnostic into the
+// caller-owned task sink.
+struct ConstantProductAttempt {
+  ConstantProductStatus status = ConstantProductStatus::Error;
+  std::optional<EvaluatedConstant> result;
+  std::vector<SymbolId> constant_dependencies;
+  std::vector<ConstantTypeFacetDependency> type_dependencies;
+  std::vector<SymbolId> compile_time_procedures;
+};
+
 // Interface discovery is the only phase allowed to stop constant execution at
 // a source synthesis site. Ordinary semantic analysis rejects that same site:
 // by the time a complete program is checked, resolution must already have
@@ -154,6 +185,21 @@ struct CompileTimeExpressionDiscoveryResult {
     ConditionalSelections &selections,
     CompileTimeSynthesisMode synthesis_mode,
     bool diagnose_unready,
+    DiagnosticSink &diagnostics);
+
+// Evaluates exactly root. References to other local package constants consume
+// published_constants or become explicit blockers; they are never evaluated
+// recursively by this task. Imported ready constants remain ordinary immutable
+// interface inputs. root must belong to task_package and denote Constant or
+// UnresolvedDeclaration source. The function does not mutate published_constants.
+[[nodiscard]] ConstantProductAttempt evaluate_package_constant_product(
+    const SourceManager &sources,
+    const LoadedPackage &loaded,
+    SemanticPackage &task_package,
+    const TargetFacts &target,
+    SymbolId root,
+    const ConstantTable &published_constants,
+    CompileTimeSynthesisMode synthesis_mode,
     DiagnosticSink &diagnostics);
 
 // Evaluates one required scalar expression in the already resolved semantic

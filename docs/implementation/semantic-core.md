@@ -49,6 +49,15 @@ validation runs on that same package. There is no longer a second final type
 resolution pass which reconstructs an equivalent package solely to obtain
 authoritative diagnostics.
 
+Named-constant evaluation now also has a single-product entry point. It accepts
+an immutable table of already published constants, evaluates only its named
+root, and returns canonical local-constant and exact type-facet blockers. A
+reference to another unpublished local constant is not evaluated recursively;
+the coordinator can add the corresponding `ConstantValue` edge. The attempt
+owns inferred root type, structural-type additions, synthesis discoveries, and
+diagnostics in its private package snapshot. Package scheduling has not yet
+replaced the remaining whole-table discovery call with these products.
+
 ## Compile-time type values and inspection
 
 Status: exact type values and the complete Draft 1 structural query vocabulary

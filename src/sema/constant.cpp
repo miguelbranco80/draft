@@ -151,14 +151,70 @@ public:
       DiagnosticSink &diagnostics,
       const ConstantTable *local_constants = nullptr,
       const std::vector<ConstantTypeBinding> *local_types = nullptr,
-      const std::vector<ConstantStaticPackBinding> *local_packs = nullptr)
+      const std::vector<ConstantStaticPackBinding> *local_packs = nullptr,
+      SymbolId product_root = {},
+      const ConstantTable *published_constants = nullptr)
       : sources_(sources), loaded_(loaded), semantic_(semantic), target_(target),
         synthesis_mode_(synthesis_mode), diagnose_unready_(diagnose_unready),
         diagnostics_(diagnostics),
         local_constants_(local_constants), local_types_(local_types),
         local_packs_(local_packs),
         states_(semantic.symbols.symbol_count(), BindingState::Unvisited),
-        values_(semantic.symbols.symbol_count()) {}
+        values_(semantic.symbols.symbol_count()), product_root_(product_root),
+        published_constants_(published_constants) {}
+
+  // Runs one graph-owned constant without recursively claiming another local
+  // constant's result. Dependency rows are canonicalized before returning so
+  // publication is independent of expression traversal accidents.
+  [[nodiscard]] ConstantProductAttempt run_product(SymbolId root) {
+    ConstantProductAttempt attempt;
+    const EvalResult evaluated = evaluate_binding(root, true);
+    attempt.compile_time_procedures = compile_time_procedures_;
+    std::sort(
+        constant_dependencies_.begin(), constant_dependencies_.end(),
+        [](SymbolId left, SymbolId right) { return left.value < right.value; });
+    constant_dependencies_.erase(
+        std::unique(
+            constant_dependencies_.begin(), constant_dependencies_.end()),
+        constant_dependencies_.end());
+    std::sort(
+        type_dependencies_.begin(), type_dependencies_.end(),
+        [](const ConstantTypeFacetDependency &left,
+           const ConstantTypeFacetDependency &right) {
+          if (left.type != right.type) return left.type.value < right.type.value;
+          return static_cast<int>(left.facet) < static_cast<int>(right.facet);
+        });
+    type_dependencies_.erase(
+        std::unique(type_dependencies_.begin(), type_dependencies_.end()),
+        type_dependencies_.end());
+    attempt.constant_dependencies = constant_dependencies_;
+    attempt.type_dependencies = type_dependencies_;
+
+    if (!attempt.constant_dependencies.empty() ||
+        !attempt.type_dependencies.empty()) {
+      attempt.status = ConstantProductStatus::Blocked;
+      return attempt;
+    }
+    if (evaluated.status == EvalStatus::BlockedBySynthesis) {
+      attempt.status = ConstantProductStatus::WaitingForSynthesis;
+      return attempt;
+    }
+    if (evaluated.status == EvalStatus::Ready) {
+      attempt.status = ConstantProductStatus::Complete;
+      attempt.result = EvaluatedConstant{evaluated.value, evaluated.type};
+      return attempt;
+    }
+    if (evaluated.status == EvalStatus::Pending && root.is_valid() &&
+        static_cast<std::size_t>(root.value) <
+            semantic_.symbols.symbol_count()) {
+      const Symbol &symbol = semantic_.symbols.symbol(root);
+      diagnostics_.error(
+          symbol.name_range,
+          "constant '" + symbol.name + "' is not compile-time evaluable");
+    }
+    attempt.status = ConstantProductStatus::Error;
+    return attempt;
+  }
 
   // Evaluates each pending declaration conditional in source/site order. A
   // newly selected false branch may reveal a nested `else when` only in the next
@@ -2708,6 +2764,7 @@ private:
     TypeInspectionAttempt inspection = inspect_type(
         semantic_, *name, *queried, index);
     if (inspection.required_facet.has_value()) {
+      type_dependencies_.push_back({*queried, *inspection.required_facet});
       return pending();
     }
     if (!inspection.result.has_value()) {
@@ -2741,6 +2798,7 @@ private:
     const TypeFacetState readiness = semantic_.types.facet_state(
         *queried, TypeFacet::NaturalLayout);
     if (readiness == TypeFacetState::Waiting) {
+      type_dependencies_.push_back({*queried, TypeFacet::NaturalLayout});
       return pending();
     }
     if (readiness != TypeFacetState::Complete || !layout.known) {
@@ -4744,6 +4802,18 @@ private:
       values_[id.value] = imported.constant;
       return ready(imported.constant, initial.type);
     }
+    if (product_root_.is_valid() && id != product_root_) {
+      if (published_constants_ != nullptr) {
+        if (const ConstantValue *published =
+                published_constants_->find(id)) {
+          state = BindingState::Ready;
+          values_[id.value] = *published;
+          return ready(*published, initial.type);
+        }
+      }
+      constant_dependencies_.push_back(id);
+      return pending();
+    }
     if (state == BindingState::Evaluating) {
       return fail(
           initial.name_range,
@@ -5590,6 +5660,12 @@ private:
   const std::vector<ConstantStaticPackBinding> *local_packs_ = nullptr;
   std::vector<BindingState> states_;
   std::vector<ConstantValue> values_;
+  // Valid only for the single-product entry point. Ordinary round/expression
+  // evaluation leaves product_root invalid and retains recursive lazy binding.
+  SymbolId product_root_;
+  const ConstantTable *published_constants_ = nullptr;
+  std::vector<SymbolId> constant_dependencies_;
+  std::vector<ConstantTypeFacetDependency> type_dependencies_;
   std::vector<LocalFrame> local_frames_;
   // active_procedures_ mirrors local_frames_ only during procedure execution
   // and lets a reached `...` defer context construction to BodyChecker.
@@ -5725,6 +5801,39 @@ CompileTimeRoundResult evaluate_compile_time_round(
       diagnose_unready,
       diagnostics);
   return evaluator.run(selections);
+}
+
+ConstantProductAttempt evaluate_package_constant_product(
+    const SourceManager &sources,
+    const LoadedPackage &loaded,
+    SemanticPackage &task_package,
+    const TargetFacts &target,
+    SymbolId root,
+    const ConstantTable &published_constants,
+    CompileTimeSynthesisMode synthesis_mode,
+    DiagnosticSink &diagnostics) {
+  if (!root.is_valid() ||
+      static_cast<std::size_t>(root.value) >=
+          task_package.symbols.symbol_count()) {
+    diagnostics.error(
+        SourceRange::invalid(),
+        "constant product root is outside its semantic package");
+    return {};
+  }
+  ConstantEvaluator evaluator(
+      sources,
+      loaded,
+      task_package,
+      target,
+      synthesis_mode,
+      true,
+      diagnostics,
+      &published_constants,
+      nullptr,
+      nullptr,
+      root,
+      &published_constants);
+  return evaluator.run_product(root);
 }
 
 std::optional<ConstantValue> evaluate_constant_expression(

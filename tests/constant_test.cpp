@@ -30,6 +30,23 @@ struct TestState {
 
 #define EXPECT(state, expression) (state).expect((expression), #expression, __LINE__)
 
+[[nodiscard]] draft::TargetFacts test_target() {
+  draft::TargetFacts target;
+  target.identity = "draft-aarch64-macos-v5";
+  target.arch = "aarch64";
+  target.os = "macos";
+  target.abi = "darwin_arm64";
+  target.byte_order = "little";
+  target.object_format = "macho";
+  target.file_tag = "aarch64-macos";
+  target.pointer_bits = 64;
+  target.page_size = 16384;
+  target.known_features = {"crc", "neon"};
+  target.simd_shapes = {{"u32", 4}};
+  target.features = {"neon"};
+  return target;
+}
+
 struct AnalyzedSource {
   draft::SourceManager sources;
   draft::DiagnosticSink diagnostics;
@@ -45,19 +62,7 @@ struct AnalyzedSource {
     file.syntax.emplace(draft::parse_source_file(sources, file.source, diagnostics));
     loaded.files.push_back(std::move(file));
 
-    draft::TargetFacts target;
-    target.identity = "draft-aarch64-macos-v5";
-    target.arch = "aarch64";
-    target.os = "macos";
-    target.abi = "darwin_arm64";
-    target.byte_order = "little";
-    target.object_format = "macho";
-    target.file_tag = "aarch64-macos";
-    target.pointer_bits = 64;
-    target.page_size = 16384;
-    target.known_features = {"crc", "neon"};
-    target.simd_shapes = {{"u32", 4}};
-    target.features = {"neon"};
+    const draft::TargetFacts target = test_target();
     analysis = draft::analyze_package_semantics(
         sources, loaded, target, diagnostics);
   }
@@ -66,6 +71,119 @@ struct AnalyzedSource {
 [[nodiscard]] std::optional<draft::SymbolId> find_symbol(
     const draft::SemanticPackage &package, std::string_view name) {
   return package.symbols.lookup_direct(package.package_scope, name);
+}
+
+void test_single_constant_product_dependencies(TestState &state) {
+  AnalyzedSource source(R"draft(
+package conditions
+
+Header :: struct {
+    tag: u8,
+    value: u64,
+}
+
+Base :: 40
+Derived :: Base + 2
+Header_Size :: size_of(Header)
+)draft");
+  EXPECT(state, source.analysis.ok);
+  const std::optional<draft::SymbolId> base =
+      find_symbol(source.analysis.package, "Base");
+  const std::optional<draft::SymbolId> derived =
+      find_symbol(source.analysis.package, "Derived");
+  const std::optional<draft::SymbolId> header =
+      find_symbol(source.analysis.package, "Header");
+  const std::optional<draft::SymbolId> header_size =
+      find_symbol(source.analysis.package, "Header_Size");
+  EXPECT(state, base.has_value());
+  EXPECT(state, derived.has_value());
+  EXPECT(state, header.has_value());
+  EXPECT(state, header_size.has_value());
+  if (!base || !derived || !header || !header_size) return;
+
+  draft::ConstantTable published;
+  draft::SemanticPackage blocked_package = source.analysis.package;
+  draft::DiagnosticSink blocked_diagnostics;
+  const draft::ConstantProductAttempt blocked =
+      draft::evaluate_package_constant_product(
+          source.sources,
+          source.loaded,
+          blocked_package,
+          test_target(),
+          *derived,
+          published,
+          draft::CompileTimeSynthesisMode::Reject,
+          blocked_diagnostics);
+  EXPECT(state, blocked.status == draft::ConstantProductStatus::Blocked);
+  EXPECT(state,
+      blocked.constant_dependencies == std::vector<draft::SymbolId>({*base}));
+  EXPECT(state, blocked.type_dependencies.empty());
+  EXPECT(state, !blocked_diagnostics.has_errors());
+
+  draft::SemanticPackage base_package = source.analysis.package;
+  draft::DiagnosticSink base_diagnostics;
+  const draft::ConstantProductAttempt base_result =
+      draft::evaluate_package_constant_product(
+          source.sources,
+          source.loaded,
+          base_package,
+          test_target(),
+          *base,
+          published,
+          draft::CompileTimeSynthesisMode::Reject,
+          base_diagnostics);
+  EXPECT(state, base_result.status == draft::ConstantProductStatus::Complete);
+  EXPECT(state, base_result.result.has_value());
+  if (!base_result.result.has_value()) return;
+  published.bindings.push_back({*base, base_result.result->value});
+
+  draft::SemanticPackage ready_package = source.analysis.package;
+  draft::DiagnosticSink ready_diagnostics;
+  const draft::ConstantProductAttempt ready =
+      draft::evaluate_package_constant_product(
+          source.sources,
+          source.loaded,
+          ready_package,
+          test_target(),
+          *derived,
+          published,
+          draft::CompileTimeSynthesisMode::Reject,
+          ready_diagnostics);
+  EXPECT(state, ready.status == draft::ConstantProductStatus::Complete);
+  EXPECT(state, ready.result.has_value());
+  if (ready.result.has_value()) {
+    EXPECT(state,
+        ready.result->value.integer == draft::BigInteger::from_u64(42));
+  }
+
+  // Replace only the source type symbol with an incomplete nominal identity.
+  // The constant producer must name that exact natural-layout facet rather
+  // than diagnosing size_of or recursively trying to complete the type.
+  draft::SemanticPackage layout_package = source.analysis.package;
+  const draft::TypeId waiting_type = layout_package.types.begin_nominal(
+      draft::TypeKind::Struct,
+      "Waiting_Header",
+      draft::SourceRange::invalid());
+  layout_package.symbols.symbol_mut(*header).type = waiting_type;
+  draft::DiagnosticSink layout_diagnostics;
+  const draft::ConstantProductAttempt layout =
+      draft::evaluate_package_constant_product(
+          source.sources,
+          source.loaded,
+          layout_package,
+          test_target(),
+          *header_size,
+          published,
+          draft::CompileTimeSynthesisMode::Reject,
+          layout_diagnostics);
+  EXPECT(state, layout.status == draft::ConstantProductStatus::Blocked);
+  EXPECT(state, layout.constant_dependencies.empty());
+  EXPECT(state,
+      layout.type_dependencies ==
+          std::vector<draft::ConstantTypeFacetDependency>({
+              {waiting_type, draft::TypeFacet::NaturalLayout},
+          }));
+  EXPECT(state, !layout_diagnostics.has_errors());
 }
 
 void test_constants_and_conditional_rounds(TestState &state) {
@@ -2266,6 +2384,7 @@ when false && target.has_feature(42) &&
 
 int main() {
   TestState state;
+  test_single_constant_product_dependencies(state);
   test_constants_and_conditional_rounds(state);
   test_invalid_required_constants(state);
   test_invalid_procedural_constants(state);

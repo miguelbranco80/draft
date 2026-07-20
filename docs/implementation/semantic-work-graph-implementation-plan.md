@@ -46,6 +46,9 @@ gate.
    package is now published directly, so the redundant final aggregate type
    replay is gone. The remaining work is to make those producers individual
    graph tasks and replace the private type/constant/layout readiness copies.
+   The constant evaluator can now produce one named constant with explicit
+   constant and type-facet blockers; wiring those attempts into the workspace
+   product graph is the next replacement gate.
 
 4. **Canonical generic type demand.** Give every concrete type application one
    canonical command-local key and owner task. Cross-package owner evaluation
