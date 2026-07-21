@@ -7,6 +7,7 @@
 #include "source/source.h"
 #include "syntax/parser.h"
 #include "target/profile.h"
+#include "native_pipeline.h"
 #include "workspace/package.h"
 
 #include <cstdlib>
@@ -38,8 +39,7 @@ struct LoweredSource {
   draft::LoadedPackage loaded;
   draft::SemanticAnalysisResult semantics;
   draft::BodyCheckResult bodies;
-  draft::HirProgram hir;
-  draft::MirLoweringResult mir;
+  draft::test_support::LoweredProcedureProducts mir;
   std::size_t semantic_type_count_before_mir = 0;
 
   explicit LoweredSource(
@@ -64,10 +64,9 @@ struct LoweredSource {
         semantics.constants,
         target.facts,
         diagnostics);
-    hir = draft::project_package_body_hir(bodies.procedures);
     semantic_type_count_before_mir = bodies.package.types.size();
-    mir = draft::lower_package_to_mir(
-        bodies.package, hir, runtime_assertions, diagnostics);
+    mir = draft::test_support::lower_procedure_products(
+        bodies.package, bodies.procedures, diagnostics, runtime_assertions);
   }
 };
 
@@ -153,24 +152,27 @@ compute :: proc(values: []i64, flag: bool) -> i64 {
   EXPECT(state, source.mir.ok);
   EXPECT(state, !source.diagnostics.has_errors());
   EXPECT(state, source.mir.lowered_procedures == 5);
-  EXPECT(state, source.mir.program.procedures().size() == 5);
+  EXPECT(state, source.mir.procedures.size() == 5);
   EXPECT(state, source.bodies.package.types.size() ==
                     source.semantic_type_count_before_mir);
   draft::DiagnosticSink procedure_diagnostics;
   std::size_t independently_lowered = 0;
-  for (const draft::HirProcedure &procedure : source.hir.procedures()) {
-    const draft::MirProcedureLoweringResult lowered =
-        draft::lower_procedure_to_mir(
-            source.bodies.package,
-            source.hir,
-            procedure,
-            nullptr,
-            draft::RuntimeAssertionMode::On,
-            procedure_diagnostics);
-    EXPECT(state, lowered.ok);
-    if (lowered.lowered) {
-      ++independently_lowered;
-      EXPECT(state, lowered.procedure.symbol == procedure.symbol);
+  for (const draft::ProcedureBodyHirResult &product :
+       source.bodies.procedures) {
+    for (const draft::HirProcedure &procedure : product.program.procedures()) {
+      const draft::MirProcedureLoweringResult lowered =
+          draft::lower_procedure_to_mir(
+              source.bodies.package,
+              product.program,
+              procedure,
+              nullptr,
+              draft::RuntimeAssertionMode::On,
+              procedure_diagnostics);
+      EXPECT(state, lowered.ok);
+      if (lowered.lowered) {
+        ++independently_lowered;
+        EXPECT(state, lowered.procedure.symbol == procedure.symbol);
+      }
     }
   }
   EXPECT(state, independently_lowered == source.mir.lowered_procedures);
@@ -183,7 +185,7 @@ compute :: proc(values: []i64, flag: bool) -> i64 {
   std::size_t slice_bounds_checks = 0;
   std::size_t stores = 0;
   std::size_t extracted_members = 0;
-  for (const draft::MirProcedure &procedure : source.mir.program.procedures()) {
+  for (const draft::MirProcedure &procedure : source.mir.procedures) {
     EXPECT(state, procedure.valid);
     EXPECT(state, procedure.entry.is_valid());
     for (const draft::MirBlock &block : procedure.blocks) {
@@ -261,7 +263,7 @@ wide_shift :: proc(value: u128, count: i8) -> u128 {
   const std::optional<draft::TypeId> u128_type =
       source.bodies.package.types.find_builtin("u128");
   EXPECT(state, u128_type.has_value());
-  for (const draft::MirProcedure &procedure : source.mir.program.procedures()) {
+  for (const draft::MirProcedure &procedure : source.mir.procedures) {
     for (const draft::MirInstruction &instruction : procedure.instructions) {
       if (instruction.kind == draft::MirInstructionKind::Trap) ++traps;
       if (u128_type.has_value() &&
@@ -319,7 +321,7 @@ main :: proc() -> i64 {
     std::size_t calls = 0;
     std::size_t assertions = 0;
     for (const draft::MirProcedure &procedure :
-         source.mir.program.procedures()) {
+         source.mir.procedures) {
       if (source.bodies.package.symbols.symbol(procedure.symbol).name !=
           "main") {
         continue;
@@ -404,7 +406,7 @@ main :: proc() {
 
   bool saw_empty = false;
   bool saw_populated = false;
-  for (const draft::MirProcedure &procedure : source.mir.program.procedures()) {
+  for (const draft::MirProcedure &procedure : source.mir.procedures) {
     if (procedure.symbol != empty_instance &&
         procedure.symbol != populated_instance) {
       continue;
@@ -494,27 +496,30 @@ main :: proc() -> int {
   EXPECT(state, source.bodies.ok);
   EXPECT(state, source.mir.ok);
   EXPECT(state, !source.diagnostics.has_errors());
-  EXPECT(state, source.hir.procedures().size() == 3);
-  EXPECT(state, source.mir.program.procedures().size() == 1);
+  EXPECT(state, source.bodies.procedures.size() == 3);
+  EXPECT(state, source.mir.procedures.size() == 1);
   draft::DiagnosticSink procedure_diagnostics;
   std::size_t runtime_procedures = 0;
-  for (const draft::HirProcedure &procedure : source.hir.procedures()) {
-    const draft::MirProcedureLoweringResult lowered =
-        draft::lower_procedure_to_mir(
-            source.bodies.package,
-            source.hir,
-            procedure,
-            nullptr,
-            draft::RuntimeAssertionMode::On,
-            procedure_diagnostics);
-    EXPECT(state, lowered.ok);
-    if (lowered.lowered) ++runtime_procedures;
+  for (const draft::ProcedureBodyHirResult &product :
+       source.bodies.procedures) {
+    for (const draft::HirProcedure &procedure : product.program.procedures()) {
+      const draft::MirProcedureLoweringResult lowered =
+          draft::lower_procedure_to_mir(
+              source.bodies.package,
+              product.program,
+              procedure,
+              nullptr,
+              draft::RuntimeAssertionMode::On,
+              procedure_diagnostics);
+      EXPECT(state, lowered.ok);
+      if (lowered.lowered) ++runtime_procedures;
+    }
   }
   EXPECT(state, runtime_procedures == 1);
   EXPECT(state, !procedure_diagnostics.has_errors());
-  if (source.mir.program.procedures().size() == 1) {
+  if (source.mir.procedures.size() == 1) {
     const draft::Symbol &symbol = source.bodies.package.symbols.symbol(
-        source.mir.program.procedures().front().symbol);
+        source.mir.procedures.front().symbol);
     EXPECT(state, symbol.name == "main");
   }
 }
@@ -546,7 +551,7 @@ slice :: proc(text: string) -> [^]u8 {
 
   std::size_t extractions = 0;
   for (const draft::MirProcedure &procedure :
-       source.mir.program.procedures()) {
+       source.mir.procedures) {
     for (const draft::MirInstruction &instruction : procedure.instructions) {
       if (instruction.kind == draft::MirInstructionKind::RawData) {
         ++extractions;

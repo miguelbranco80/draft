@@ -91,14 +91,6 @@ const MirBlock &MirProcedure::block(MirBlockId id) const {
   return blocks[id.value];
 }
 
-void MirProgram::add_procedure(MirProcedure procedure) {
-  procedures_.push_back(std::move(procedure));
-}
-
-const std::vector<MirProcedure> &MirProgram::procedures() const {
-  return procedures_;
-}
-
 const char *mir_instruction_kind_name(MirInstructionKind kind) {
   switch (kind) {
   case MirInstructionKind::Invalid: return "invalid";

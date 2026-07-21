@@ -9,6 +9,7 @@
 #include "source/source.h"
 #include "syntax/parser.h"
 #include "target/profile.h"
+#include "native_pipeline.h"
 #include "workspace/package.h"
 
 #include <cstdlib>
@@ -39,7 +40,6 @@ struct CheckedSource {
   draft::TargetProfile target = draft::make_aarch64_macos_profile();
   draft::SemanticAnalysisResult semantics;
   draft::BodyCheckResult bodies;
-  draft::HirProgram hir;
   draft::Aarch64CAbiTable abi;
 
   explicit CheckedSource(
@@ -64,9 +64,8 @@ struct CheckedSource {
         semantics.constants,
         target.facts,
         diagnostics);
-    hir = draft::project_package_body_hir(bodies.procedures);
     abi = draft::classify_aarch64_c_types(
-        semantics.package.types, target.facts);
+        bodies.package.types, target.facts);
   }
 };
 
@@ -89,18 +88,22 @@ export increment :: c "draft_increment" proc(value: i32) -> i32 {
       source.abi,
       source.target.facts,
       source.diagnostics);
-  const draft::MirLoweringResult mir = draft::lower_package_to_mir(
-      source.semantics.package, source.hir, source.diagnostics);
+  const draft::test_support::LoweredProcedureProducts mir =
+      draft::test_support::lower_procedure_products(
+          source.bodies.package,
+          source.bodies.procedures,
+          source.diagnostics);
   draft::LlvmIrOptions options;
   options.package = {"workspace", "native"};
-  const draft::LlvmIrResult llvm = draft::emit_llvm_ir(
+  const draft::test_support::EmittedLlvmProducts llvm =
+      draft::test_support::emit_llvm_products(
       source.target,
       source.sources,
       options,
-      source.semantics.package,
+      source.bodies.package,
       source.abi,
       source.semantics.global_initializers,
-      mir.program,
+      mir.procedures,
       source.diagnostics);
   if (source.diagnostics.has_errors()) {
     std::cerr << draft::render_diagnostics(source.sources, source.diagnostics);
@@ -142,18 +145,22 @@ export wrap_narrow :: c "wrap_narrow" proc(
       source.abi,
       source.target.facts,
       source.diagnostics);
-  const draft::MirLoweringResult mir = draft::lower_package_to_mir(
-      source.semantics.package, source.hir, source.diagnostics);
+  const draft::test_support::LoweredProcedureProducts mir =
+      draft::test_support::lower_procedure_products(
+          source.bodies.package,
+          source.bodies.procedures,
+          source.diagnostics);
   draft::LlvmIrOptions options;
   options.package = {"workspace", "native"};
-  const draft::LlvmIrResult llvm = draft::emit_llvm_ir(
+  const draft::test_support::EmittedLlvmProducts llvm =
+      draft::test_support::emit_llvm_products(
       source.target,
       source.sources,
       options,
-      source.semantics.package,
+      source.bodies.package,
       source.abi,
       source.semantics.global_initializers,
-      mir.program,
+      mir.procedures,
       source.diagnostics);
   if (source.diagnostics.has_errors()) {
     std::cerr << draft::render_diagnostics(
@@ -302,18 +309,22 @@ export wrap_large :: c "wrap_large" proc(value: C24) -> C24 {
       source.abi,
       source.target.facts,
       source.diagnostics);
-  const draft::MirLoweringResult mir = draft::lower_package_to_mir(
-      source.semantics.package, source.hir, source.diagnostics);
+  const draft::test_support::LoweredProcedureProducts mir =
+      draft::test_support::lower_procedure_products(
+          source.bodies.package,
+          source.bodies.procedures,
+          source.diagnostics);
   draft::LlvmIrOptions options;
   options.package = {"workspace", "native"};
-  const draft::LlvmIrResult llvm = draft::emit_llvm_ir(
+  const draft::test_support::EmittedLlvmProducts llvm =
+      draft::test_support::emit_llvm_products(
       source.target,
       source.sources,
       options,
-      source.semantics.package,
+      source.bodies.package,
       source.abi,
       source.semantics.global_initializers,
-      mir.program,
+      mir.procedures,
       source.diagnostics);
   if (source.diagnostics.has_errors()) {
     std::cerr << draft::render_diagnostics(source.sources, source.diagnostics);

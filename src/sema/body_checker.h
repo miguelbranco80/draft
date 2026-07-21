@@ -60,9 +60,8 @@ struct ProcedureBodyHirResult {
 // result, and constants addresses those body-owned symbols. These values must
 // therefore move and live together.
 //
-// No workspace phase concatenates these arenas. The temporary projection below
-// remains only for direct subsystem tests while those callers move to the
-// procedure-owned APIs.
+// No phase concatenates these arenas. Direct subsystem tests use the same
+// procedure-owned APIs as workspace compilation.
 struct BodyCheckResult {
   bool ok = false;
   SemanticPackage package;
@@ -73,26 +72,6 @@ struct BodyCheckResult {
   // declarations and procedure types have no body and do not contribute.
   std::size_t checked_procedures = 0;
 };
-
-// Builds the temporary package-wide HIR view required by consumers which have
-// not yet moved to procedure products. Procedure arenas are concatenated in
-// their canonical publication order and every HIR-local expression, statement,
-// and block ID is rewritten into the returned arena. Semantic IDs are not
-// changed. The caller owns the returned value and should keep it only for the
-// duration of the package-wide operation; the SemanticPackage addressed by the
-// arenas' semantic IDs must outlive that operation.
-[[nodiscard]] HirProgram
-project_package_body_hir(
-    std::span<const ProcedureBodyHirResult> procedures);
-
-// Builds the same temporary HIR projection for an explicit selected subset.
-// selected_indices are indices into procedures, must be strictly increasing,
-// and preserve canonical body-product order. This is the workspace form: old
-// completed demand products may remain inspectable in procedures while later
-// semantic phases consume only the currently selected program.
-[[nodiscard]] HirProgram project_package_body_hir(
-    std::span<const ProcedureBodyHirResult> procedures,
-    std::span<const std::size_t> selected_indices);
 
 // Compiler orchestration creates these rows from imported generic calls found
 // in packages earlier in the acyclic consumer-to-dependency order. arguments

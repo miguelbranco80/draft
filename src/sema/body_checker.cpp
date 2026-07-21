@@ -8517,35 +8517,6 @@ void append_body_root(
 
 } // namespace
 
-HirProgram project_package_body_hir(
-    std::span<const ProcedureBodyHirResult> procedures) {
-  HirProgram program;
-  for (const ProcedureBodyHirResult &procedure : procedures) {
-    append_hir_program(program, procedure.program);
-  }
-  return program;
-}
-
-HirProgram project_package_body_hir(
-    std::span<const ProcedureBodyHirResult> procedures,
-    std::span<const std::size_t> selected_indices) {
-  HirProgram program;
-  std::optional<std::size_t> previous;
-  for (std::size_t index : selected_indices) {
-    // The workspace coordinator constructs this ordered selection from the
-    // package work table. Treat a malformed internal index as an absent row;
-    // its own invariant check reports the scheduling failure before any
-    // lowering consumer can observe this projection.
-    if (index >= procedures.size() ||
-        (previous.has_value() && index <= *previous)) {
-      continue;
-    }
-    append_hir_program(program, procedures[index].program);
-    previous = index;
-  }
-  return program;
-}
-
 bool validate_package_compile_time_expression_types(
     const SourceManager &sources,
     const LoadedPackage &loaded,

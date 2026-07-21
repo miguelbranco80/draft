@@ -37,7 +37,6 @@ struct CheckedSource {
   draft::LoadedPackage loaded;
   draft::SemanticAnalysisResult semantics;
   draft::BodyCheckResult bodies;
-  draft::HirProgram hir;
 
   explicit CheckedSource(std::string text) {
     loaded.short_name = "bodies";
@@ -58,9 +57,44 @@ struct CheckedSource {
         semantics.constants,
         target.facts,
         diagnostics);
-    hir = draft::project_package_body_hir(bodies.procedures);
   }
 };
+
+[[nodiscard]] std::size_t hir_procedure_count(
+    const draft::BodyCheckResult &bodies) {
+  std::size_t count = 0;
+  for (const draft::ProcedureBodyHirResult &product : bodies.procedures) {
+    count += product.program.procedures().size();
+  }
+  return count;
+}
+
+[[nodiscard]] std::size_t hir_expression_count(
+    const draft::BodyCheckResult &bodies) {
+  std::size_t count = 0;
+  for (const draft::ProcedureBodyHirResult &product : bodies.procedures) {
+    count += product.program.expression_count();
+  }
+  return count;
+}
+
+[[nodiscard]] std::size_t hir_statement_count(
+    const draft::BodyCheckResult &bodies) {
+  std::size_t count = 0;
+  for (const draft::ProcedureBodyHirResult &product : bodies.procedures) {
+    count += product.program.statement_count();
+  }
+  return count;
+}
+
+[[nodiscard]] std::size_t hir_block_count(
+    const draft::BodyCheckResult &bodies) {
+  std::size_t count = 0;
+  for (const draft::ProcedureBodyHirResult &product : bodies.procedures) {
+    count += product.program.block_count();
+  }
+  return count;
+}
 
 // Declaration semantics are an immutable input generation. This regression
 // deliberately creates body-local scopes, constants, and a concrete static-pack
@@ -119,8 +153,6 @@ main :: proc() {
       source.sources, source.loaded, source.semantics.selections,
       source.semantics.package, source.semantics.constants, target.facts,
       repeated_diagnostics);
-  const draft::HirProgram repeated_hir =
-      draft::project_package_body_hir(repeated.procedures);
   if (repeated_diagnostics.has_errors()) {
     std::cerr << draft::render_diagnostics(source.sources,
                                            repeated_diagnostics);
@@ -135,8 +167,8 @@ main :: proc() {
          repeated.package.types.size() == source.bodies.package.types.size());
   EXPECT(state, repeated.constants.bindings.size() ==
                     source.bodies.constants.bindings.size());
-  EXPECT(state, repeated_hir.procedures().size() ==
-                    source.hir.procedures().size());
+  EXPECT(state, hir_procedure_count(repeated) ==
+                    hir_procedure_count(source.bodies));
   EXPECT(state,
          repeated.checked_procedures == source.bodies.checked_procedures);
 
@@ -438,17 +470,13 @@ second :: proc() -> i64 {
 
   const draft::BodyCheckResult bodies = draft::finish_package_body_work(
       target.facts, std::move(work), diagnostics);
-  const draft::HirProgram hir =
-      draft::project_package_body_hir(bodies.procedures);
   if (diagnostics.has_errors()) {
     std::cerr << draft::render_diagnostics(sources, diagnostics);
   }
   EXPECT(state, bodies.ok);
   EXPECT(state, bodies.checked_procedures == 2);
   EXPECT(state, bodies.procedures.size() == 2);
-  EXPECT(state, hir.procedures().size() == 2);
-  if (bodies.procedures.size() == 2 &&
-      hir.procedures().size() == 2) {
+  if (bodies.procedures.size() == 2) {
     const draft::HirProgram &first_local = bodies.procedures[0].program;
     const draft::HirProgram &second_local = bodies.procedures[1].program;
     EXPECT(state, first_local.procedures().size() == 1);
@@ -459,39 +487,25 @@ second :: proc() -> i64 {
     }
     const draft::HirProcedure &second_local_procedure =
         second_local.procedures().front();
-    const draft::HirProcedure &second_aggregate_procedure =
-        hir.procedures()[1];
-    EXPECT(state,
-           second_aggregate_procedure.body.value ==
-               second_local_procedure.body.value + first_local.block_count());
+    EXPECT(state, second_local_procedure.body.value <
+                      second_local.block_count());
 
-    // The second procedure's final return statement and its symbol expression
-    // prove that the projection rewrites all three HIR-local ID domains rather
-    // than only the procedure root block.
+    // The second product deliberately starts each HIR-local table at zero.
+    // Its root, return statement, and expression must all address that local
+    // arena directly; no offset from the first product participates in their
+    // identity.
     const draft::HirBlock &second_local_body =
         second_local.block(second_local_procedure.body);
-    const draft::HirBlock &second_aggregate_body =
-        hir.block(second_aggregate_procedure.body);
     EXPECT(state, second_local_body.statements.size() == 2);
-    EXPECT(state, second_aggregate_body.statements.size() == 2);
-    if (second_local_body.statements.size() == 2 &&
-        second_aggregate_body.statements.size() == 2) {
-      EXPECT(state,
-             second_aggregate_body.statements.back().value ==
-                 second_local_body.statements.back().value +
-                     first_local.statement_count());
+    if (second_local_body.statements.size() == 2) {
+      EXPECT(state, second_local_body.statements.back().value <
+                        second_local.statement_count());
       const draft::HirStatement &second_local_return =
           second_local.statement(second_local_body.statements.back());
-      const draft::HirStatement &second_aggregate_return =
-          hir.statement(second_aggregate_body.statements.back());
       EXPECT(state, second_local_return.expressions.size() == 1);
-      EXPECT(state, second_aggregate_return.expressions.size() == 1);
-      if (second_local_return.expressions.size() == 1 &&
-          second_aggregate_return.expressions.size() == 1) {
-        EXPECT(state,
-               second_aggregate_return.expressions.front().value ==
-                   second_local_return.expressions.front().value +
-                       first_local.expression_count());
+      if (second_local_return.expressions.size() == 1) {
+        EXPECT(state, second_local_return.expressions.front().value <
+                          second_local.expression_count());
       }
     }
   }
@@ -715,13 +729,16 @@ main :: proc() {
   EXPECT(state, source.bodies.ok);
   EXPECT(state, !source.diagnostics.has_errors());
   EXPECT(state, source.bodies.checked_procedures == 9);
-  EXPECT(state, source.hir.procedures().size() == 9);
-  EXPECT(state, source.hir.expression_count() >= 55);
-  EXPECT(state, source.hir.statement_count() >= 28);
-  EXPECT(state, source.hir.block_count() >= 12);
-  for (const draft::HirProcedure &procedure : source.hir.procedures()) {
-    EXPECT(state, procedure.valid);
-    EXPECT(state, procedure.body.is_valid());
+  EXPECT(state, hir_procedure_count(source.bodies) == 9);
+  EXPECT(state, hir_expression_count(source.bodies) >= 55);
+  EXPECT(state, hir_statement_count(source.bodies) >= 28);
+  EXPECT(state, hir_block_count(source.bodies) >= 12);
+  for (const draft::ProcedureBodyHirResult &product :
+       source.bodies.procedures) {
+    for (const draft::HirProcedure &procedure : product.program.procedures()) {
+      EXPECT(state, procedure.valid);
+      EXPECT(state, procedure.body.is_valid());
+    }
   }
 
 
@@ -731,39 +748,44 @@ main :: proc() {
   bool saw_switch_shape = false;
   bool saw_tuple_destructuring = false;
   bool saw_union_payload_binding = false;
-  for (std::size_t index = 0; index < source.hir.expression_count(); ++index) {
-    const draft::HirExpression &expression =
-        source.hir.expression(draft::HirExpressionId{
-            static_cast<std::uint32_t>(index)});
-    saw_add = saw_add ||
-        (expression.kind == draft::HirExpressionKind::Binary &&
-         expression.operation == draft::HirOperation::Add);
-    saw_greater = saw_greater ||
-        (expression.kind == draft::HirExpressionKind::Binary &&
-         expression.operation == draft::HirOperation::Greater);
-  }
-  for (std::size_t index = 0; index < source.hir.statement_count(); ++index) {
-    const draft::HirStatement &statement =
-        source.hir.statement(draft::HirStatementId{
-            static_cast<std::uint32_t>(index)});
-    saw_compound_add = saw_compound_add ||
-        (statement.kind == draft::HirStatementKind::Assignment &&
-         statement.operation == draft::HirOperation::Add);
-    saw_tuple_destructuring = saw_tuple_destructuring ||
-        (statement.kind == draft::HirStatementKind::LocalDeclaration &&
-         statement.local_destructures_tuple &&
-         statement.bindings.size() == 1 &&
-         statement.binding_member_indices.size() == 1);
-    if (statement.kind == draft::HirStatementKind::Switch) {
-      saw_switch_shape = saw_switch_shape || (statement.switch_cases.size() == 2 &&
-          statement.switch_cases[0].label_count == 1 &&
-          statement.switch_cases[1].label_count == 1 &&
-          !statement.switch_cases[0].is_default &&
-          !statement.switch_cases[1].is_default);
-      for (const draft::HirSwitchCase &switch_case : statement.switch_cases) {
-        saw_union_payload_binding = saw_union_payload_binding ||
-            (switch_case.payload_alternative.is_valid() &&
-             switch_case.payload_binding.is_valid());
+  for (const draft::ProcedureBodyHirResult &product :
+       source.bodies.procedures) {
+    for (std::size_t index = 0;
+         index < product.program.expression_count(); ++index) {
+      const draft::HirExpression &expression = product.program.expression(
+          draft::HirExpressionId{static_cast<std::uint32_t>(index)});
+      saw_add = saw_add ||
+          (expression.kind == draft::HirExpressionKind::Binary &&
+           expression.operation == draft::HirOperation::Add);
+      saw_greater = saw_greater ||
+          (expression.kind == draft::HirExpressionKind::Binary &&
+           expression.operation == draft::HirOperation::Greater);
+    }
+    for (std::size_t index = 0;
+         index < product.program.statement_count(); ++index) {
+      const draft::HirStatement &statement = product.program.statement(
+          draft::HirStatementId{static_cast<std::uint32_t>(index)});
+      saw_compound_add = saw_compound_add ||
+          (statement.kind == draft::HirStatementKind::Assignment &&
+           statement.operation == draft::HirOperation::Add);
+      saw_tuple_destructuring = saw_tuple_destructuring ||
+          (statement.kind == draft::HirStatementKind::LocalDeclaration &&
+           statement.local_destructures_tuple &&
+           statement.bindings.size() == 1 &&
+           statement.binding_member_indices.size() == 1);
+      if (statement.kind == draft::HirStatementKind::Switch) {
+        saw_switch_shape = saw_switch_shape ||
+            (statement.switch_cases.size() == 2 &&
+             statement.switch_cases[0].label_count == 1 &&
+             statement.switch_cases[1].label_count == 1 &&
+             !statement.switch_cases[0].is_default &&
+             !statement.switch_cases[1].is_default);
+        for (const draft::HirSwitchCase &switch_case :
+             statement.switch_cases) {
+          saw_union_payload_binding = saw_union_payload_binding ||
+              (switch_case.payload_alternative.is_valid() &&
+               switch_case.payload_binding.is_valid());
+        }
       }
     }
   }
@@ -897,25 +919,27 @@ main :: proc() -> i64 {
   EXPECT(state, source.bodies.ok);
   EXPECT(state, !source.diagnostics.has_errors());
   EXPECT(state, source.bodies.checked_procedures == 24);
-  EXPECT(state, source.hir.procedures().size() == 24);
+  EXPECT(state, hir_procedure_count(source.bodies) == 24);
   std::size_t templates = 0;
   std::size_t concrete_instances = 0;
-  for (const draft::HirProcedure &procedure :
-       source.hir.procedures()) {
-    if (procedure.parametric_template) {
-      ++templates;
-    } else {
-      const draft::Symbol &symbol =
-          source.bodies.package.symbols.symbol(procedure.symbol);
-      if (symbol.name.find("$instance") != std::string::npos) {
-        ++concrete_instances;
-        const draft::Type &signature =
-            source.bodies.package.types.type(procedure.type);
-        for (draft::TypeId member : signature.members) {
-          EXPECT(
-              state,
-              source.bodies.package.types.type(member).kind !=
-                  draft::TypeKind::TypeParameter);
+  for (const draft::ProcedureBodyHirResult &product :
+       source.bodies.procedures) {
+    for (const draft::HirProcedure &procedure : product.program.procedures()) {
+      if (procedure.parametric_template) {
+        ++templates;
+      } else {
+        const draft::Symbol &symbol =
+            source.bodies.package.symbols.symbol(procedure.symbol);
+        if (symbol.name.find("$instance") != std::string::npos) {
+          ++concrete_instances;
+          const draft::Type &signature =
+              source.bodies.package.types.type(procedure.type);
+          for (draft::TypeId member : signature.members) {
+            EXPECT(
+                state,
+                source.bodies.package.types.type(member).kind !=
+                    draft::TypeKind::TypeParameter);
+          }
         }
       }
     }
@@ -1342,21 +1366,25 @@ main :: proc() -> i64 {
   EXPECT(state, source.bodies.ok);
   EXPECT(state, !source.diagnostics.has_errors());
   EXPECT(state, source.bodies.checked_procedures ==
-                    source.hir.procedures().size());
+                    hir_procedure_count(source.bodies));
 
   std::size_t nested_procedures = 0;
   std::vector<std::string> linkage_names;
   std::vector<std::string> helper_linkage_names;
-  for (const draft::HirProcedure &procedure :
-       source.hir.procedures()) {
-    const draft::Symbol &symbol =
-        source.bodies.package.symbols.symbol(procedure.symbol);
-    if (!symbol.linkage_name.empty()) {
-      ++nested_procedures;
-      linkage_names.push_back(symbol.linkage_name);
-      EXPECT(state, symbol.linkage_name.find("$nested$") != std::string::npos);
-      if (symbol.name == "helper") {
-        helper_linkage_names.push_back(symbol.linkage_name);
+  for (const draft::ProcedureBodyHirResult &product :
+       source.bodies.procedures) {
+    for (const draft::HirProcedure &procedure : product.program.procedures()) {
+      const draft::Symbol &symbol =
+          source.bodies.package.symbols.symbol(procedure.symbol);
+      if (!symbol.linkage_name.empty()) {
+        ++nested_procedures;
+        linkage_names.push_back(symbol.linkage_name);
+        EXPECT(
+            state,
+            symbol.linkage_name.find("$nested$") != std::string::npos);
+        if (symbol.name == "helper") {
+          helper_linkage_names.push_back(symbol.linkage_name);
+        }
       }
     }
   }
@@ -1393,12 +1421,14 @@ main :: proc() -> i64 {
   // SymbolId/ScopeId allocation from another compilation.
   CheckedSource repeated(text);
   std::vector<std::string> repeated_linkage_names;
-  for (const draft::HirProcedure &procedure :
-       repeated.hir.procedures()) {
-    const draft::Symbol &symbol =
-        repeated.bodies.package.symbols.symbol(procedure.symbol);
-    if (!symbol.linkage_name.empty()) {
-      repeated_linkage_names.push_back(symbol.linkage_name);
+  for (const draft::ProcedureBodyHirResult &product :
+       repeated.bodies.procedures) {
+    for (const draft::HirProcedure &procedure : product.program.procedures()) {
+      const draft::Symbol &symbol =
+          repeated.bodies.package.symbols.symbol(procedure.symbol);
+      if (!symbol.linkage_name.empty()) {
+        repeated_linkage_names.push_back(symbol.linkage_name);
+      }
     }
   }
   EXPECT(state, repeated.bodies.ok);
@@ -1480,26 +1510,28 @@ main :: proc() -> i64 {
 
   std::size_t discard_rows = 0;
   std::size_t tuple_assignments = 0;
-  for (std::size_t index = 0;
-       index < source.hir.statement_count();
-       ++index) {
-    const draft::HirStatement &statement = source.hir.statement(
-        draft::HirStatementId{static_cast<std::uint32_t>(index)});
-    if (statement.kind != draft::HirStatementKind::Assignment) continue;
-    if (statement.assignment_destructures_tuple) {
-      ++tuple_assignments;
-      EXPECT(
-          state,
-          statement.assignment_member_indices.size() ==
-              statement.assignment_target_count);
-    }
-    for (std::size_t expression = 0;
-         expression < statement.assignment_target_count;
-         ++expression) {
-      if (source.hir.expression(
-              statement.expressions[expression]).kind ==
-          draft::HirExpressionKind::Discard) {
-        ++discard_rows;
+  for (const draft::ProcedureBodyHirResult &product :
+       source.bodies.procedures) {
+    for (std::size_t index = 0;
+         index < product.program.statement_count(); ++index) {
+      const draft::HirStatement &statement = product.program.statement(
+          draft::HirStatementId{static_cast<std::uint32_t>(index)});
+      if (statement.kind != draft::HirStatementKind::Assignment) continue;
+      if (statement.assignment_destructures_tuple) {
+        ++tuple_assignments;
+        EXPECT(
+            state,
+            statement.assignment_member_indices.size() ==
+                statement.assignment_target_count);
+      }
+      for (std::size_t expression = 0;
+           expression < statement.assignment_target_count;
+           ++expression) {
+        if (product.program.expression(
+                statement.expressions[expression]).kind ==
+            draft::HirExpressionKind::Discard) {
+          ++discard_rows;
+        }
       }
     }
   }
@@ -1807,14 +1839,16 @@ main :: proc() -> u64 {
       EXPECT(state, symbol.type.is_valid());
     }
   }
-  for (std::size_t index = 0;
-       index < source.hir.statement_count();
-       ++index) {
-    const draft::HirStatement &statement = source.hir.statement(
-        draft::HirStatementId{static_cast<std::uint32_t>(index)});
-    if (statement.kind == draft::HirStatementKind::TypeDeclaration) {
-      ++type_statements;
-      EXPECT(state, statement.bindings.size() == 1);
+  for (const draft::ProcedureBodyHirResult &product :
+       source.bodies.procedures) {
+    for (std::size_t index = 0;
+         index < product.program.statement_count(); ++index) {
+      const draft::HirStatement &statement = product.program.statement(
+          draft::HirStatementId{static_cast<std::uint32_t>(index)});
+      if (statement.kind == draft::HirStatementKind::TypeDeclaration) {
+        ++type_statements;
+        EXPECT(state, statement.bindings.size() == 1);
+      }
     }
   }
   // The template and its concrete u64/2 specialization each own a separate
@@ -2561,14 +2595,16 @@ main :: proc() {
   EXPECT(state, valid.bodies.ok);
   EXPECT(state, !valid.diagnostics.has_errors());
   bool saw_selected_assignment = false;
-  for (std::size_t index = 0;
-       index < valid.hir.statement_count();
-       ++index) {
-    const draft::HirStatement &statement = valid.hir.statement(
-        draft::HirStatementId{static_cast<std::uint32_t>(index)});
-    saw_selected_assignment = saw_selected_assignment ||
-        (statement.kind == draft::HirStatementKind::Assignment &&
-         valid.sources.text(statement.range) == "result = 42");
+  for (const draft::ProcedureBodyHirResult &product :
+       valid.bodies.procedures) {
+    for (std::size_t index = 0;
+         index < product.program.statement_count(); ++index) {
+      const draft::HirStatement &statement = product.program.statement(
+          draft::HirStatementId{static_cast<std::uint32_t>(index)});
+      saw_selected_assignment = saw_selected_assignment ||
+          (statement.kind == draft::HirStatementKind::Assignment &&
+           valid.sources.text(statement.range) == "result = 42");
+    }
   }
   EXPECT(state, saw_selected_assignment);
 
@@ -3392,15 +3428,17 @@ main :: proc() {
   EXPECT(state, !valid.diagnostics.has_errors());
 
   std::size_t compile_time_only = 0;
-  for (const draft::HirProcedure &procedure :
-       valid.hir.procedures()) {
-    const draft::Symbol &symbol =
-        valid.bodies.package.symbols.symbol(procedure.symbol);
-    if (symbol.name == "choose_type" || symbol.name == "type_rank") {
-      EXPECT(state, procedure.compile_time_only);
-      ++compile_time_only;
-    } else if (symbol.name == "main") {
-      EXPECT(state, !procedure.compile_time_only);
+  for (const draft::ProcedureBodyHirResult &product :
+       valid.bodies.procedures) {
+    for (const draft::HirProcedure &procedure : product.program.procedures()) {
+      const draft::Symbol &symbol =
+          valid.bodies.package.symbols.symbol(procedure.symbol);
+      if (symbol.name == "choose_type" || symbol.name == "type_rank") {
+        EXPECT(state, procedure.compile_time_only);
+        ++compile_time_only;
+      } else if (symbol.name == "main") {
+        EXPECT(state, !procedure.compile_time_only);
+      }
     }
   }
   EXPECT(state, compile_time_only == 2);

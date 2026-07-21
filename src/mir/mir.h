@@ -210,15 +210,6 @@ struct MirProcedure {
   [[nodiscard]] const MirBlock &block(MirBlockId id) const;
 };
 
-class MirProgram {
-public:
-  void add_procedure(MirProcedure procedure);
-  [[nodiscard]] const std::vector<MirProcedure> &procedures() const;
-
-private:
-  std::vector<MirProcedure> procedures_;
-};
-
 [[nodiscard]] const char *mir_instruction_kind_name(MirInstructionKind kind);
 [[nodiscard]] const char *mir_terminator_kind_name(MirTerminatorKind kind);
 

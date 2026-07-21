@@ -296,8 +296,9 @@ gate.
    The lowering boundary is now procedure-local as well: one immutable HIR
    procedure produces one independently verified `MirProcedure`, while
    symbolic and compile-time-only procedures return an explicit successful
-   non-runtime result. The package API is only a source-order compatibility
-   composer over that operation. Compiler orchestration publishes one
+   non-runtime result. The package-wide MIR API and container are deleted;
+   direct subsystem tests perform an explicit source-order loop over the same
+   product operation. Compiler orchestration publishes one
    `PackageStaticData` barrier over the immutable global/constants payload and
    one `PackageAssembly` barrier over captured standalone assembly plus parsed
    inline regions. It then appends one `MirProcedure` row per selected concrete
@@ -327,12 +328,13 @@ gate.
     task. Every concrete `MirProcedure` row produces one live `MachineFunction`
     row and isolated single-definition LLVM unit in a workspace-wide wave. One
     `ArtifactLayout` row per package then publishes static data, functions, and
-    selected assembly in canonical order. Native object planning consumes only
-    those layouts and runs every LLVM unit or assembly source as one independent
-    task. The compiler retains no concatenated package LLVM module. Tests prove
-    exact product dependencies, one-/four-worker IR identity, cross-package
-    ready sets, split-module verification, artifact ordering, native parity,
-    and byte-for-byte artifact determinism.
+   selected assembly in canonical order. Native object planning consumes only
+   those layouts and runs every LLVM unit or assembly source as one independent
+   task. The compiler retains no concatenated package LLVM module, and the old
+   complete-package LLVM emitter is deleted. Tests prove exact product
+   dependencies, one-/four-worker IR identity, cross-package ready sets,
+   split-module verification, artifact ordering, native parity, and
+   byte-for-byte artifact determinism.
 
 11. **Final-state deletion and qualification.** Remove `PackageSemanticProgress`,
     declaration/body generations, semantic retry counters, package-wide HIR/MIR
@@ -346,9 +348,10 @@ gate.
     are deleted. Body initialization now follows the live body state; closure
     reuse is derived from exact completed product slices and terminal payloads.
     Workspace MIR payloads likewise live only at their `MirProcedure` product
-    IDs. Package-wide HIR compatibility consumers, standalone package-wide MIR
-    composition, sequential declaration snapshots, and the final qualification
-    gates remain in this step.
+    IDs. The HIR projection, `MirProgram`, package MIR lowering, and
+    complete-package LLVM compatibility paths are deleted. The standalone
+    `BodyCheckResult` transfer, sequential declaration snapshots, and final
+    qualification gates remain in this step.
 
 ## Completion evidence
 

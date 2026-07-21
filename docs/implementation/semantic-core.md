@@ -330,8 +330,9 @@ effects, denials, metadata/obligation context, native interop, validation,
 parsed assembly, and MIR all select procedure arenas directly. A transitive
 agent-context walk carries the owning arena beside each found procedure, so an
 expression ID is never interpreted in a sibling product. `BodyCheckResult`
-retains no second HIR representation; its compatibility composer is now only a
-standalone subsystem migration seam.
+retains no second HIR representation. The former HIR projection and package MIR
+container are deleted; direct subsystem tests traverse the same product-owned
+arenas and lowering operations as workspace compilation.
 
 Definite-initialization and agent loop-range inference complete inside the
 isolated procedure task before publication. Initialization diagnostics

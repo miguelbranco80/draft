@@ -39,25 +39,11 @@ struct LlvmIrResult {
   std::vector<SourceCorrelationEntry> source_correlations;
 };
 
-// The emitter produces opaque-pointer LLVM IR and never invokes a toolchain.
-// Object emission and linking are separate host adapters that obey the selected
-// target profile. The textual form is intentionally testable without LLVM
-// headers or libraries on the bootstrap compiler's build machine.
-[[nodiscard]] LlvmIrResult emit_llvm_ir(
-    const TargetProfile &target,
-    const SourceManager &sources,
-    const LlvmIrOptions &options,
-    const SemanticPackage &semantic,
-    const Aarch64CAbiTable &abi,
-    const ConstantTable &global_initializers,
-    const MirProgram &mir,
-    DiagnosticSink &diagnostics);
-
 // Emits the one complete LLVM module which owns package-level storage and
 // process support but no Draft procedure definition. package_procedures is the
 // complete canonical runtime procedure set for this package. It lets the
 // static module declare procedure-valued constants and construct the hosted
-// entry point without borrowing a package-wide MirProgram. Every listed symbol
+// entry point without borrowing procedure MIR payloads. Every listed symbol
 // must name a checked, concrete procedure in semantic.
 [[nodiscard]] LlvmIrResult emit_llvm_package_static_data(
     const TargetProfile &target,

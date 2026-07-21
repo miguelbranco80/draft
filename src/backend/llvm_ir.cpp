@@ -28,12 +28,10 @@ namespace draft {
 namespace {
 
 // LLVM accepts and optimizes a complete module at a time, but a module need
-// not own a whole Draft package. These three units make ownership explicit:
-// the compatibility unit preserves the direct subsystem API, the package unit
-// owns non-function definitions, and a machine-function unit owns exactly one
-// Draft procedure definition. Every unit is valid standalone LLVM IR.
+// not own a whole Draft package. The package unit owns non-function definitions
+// and each machine-function unit owns exactly one Draft procedure definition.
+// Every unit is valid standalone LLVM IR.
 enum class LlvmIrUnitKind {
-  CompletePackage,
   PackageStaticData,
   MachineFunction,
 };
@@ -4328,7 +4326,7 @@ private:
   const ConstantTable &global_initializers_;
   std::span<const MirProcedure> procedures_;
   std::span<const SymbolId> package_procedures_;
-  LlvmIrUnitKind unit_kind_ = LlvmIrUnitKind::CompletePackage;
+  LlvmIrUnitKind unit_kind_;
   std::size_t first_procedure_ordinal_ = 0;
   DiagnosticSink &diagnostics_;
   std::ostringstream output_;
@@ -4354,30 +4352,6 @@ private:
 };
 
 } // namespace
-
-LlvmIrResult emit_llvm_ir(
-    const TargetProfile &target,
-    const SourceManager &sources,
-    const LlvmIrOptions &options,
-    const SemanticPackage &semantic,
-    const Aarch64CAbiTable &abi,
-    const ConstantTable &global_initializers,
-    const MirProgram &mir,
-    DiagnosticSink &diagnostics) {
-  const std::vector<MirProcedure> &procedures = mir.procedures();
-  return Emitter(
-      target,
-      sources,
-      options,
-      semantic,
-      abi,
-      global_initializers,
-      procedures,
-      {},
-      LlvmIrUnitKind::CompletePackage,
-      0,
-      diagnostics).run();
-}
 
 LlvmIrResult emit_llvm_package_static_data(
     const TargetProfile &target,

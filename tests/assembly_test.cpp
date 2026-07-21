@@ -9,10 +9,12 @@
 #include "source/source.h"
 #include "syntax/parser.h"
 #include "target/profile.h"
+#include "native_pipeline.h"
 #include "workspace/package.h"
 
 #include <cstdlib>
 #include <iostream>
+#include <iterator>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -33,6 +35,19 @@ struct TestState {
 
 #define EXPECT(state, expression) (state).expect((expression), #expression, __LINE__)
 
+// Product-owned assembly analysis publishes regions in procedure-product
+// order. Tests identify a region by its canonical instruction text instead of
+// depending on the deleted aggregate walker's expression-before-statement
+// traversal order.
+[[nodiscard]] const draft::AssemblyRegion *find_region(
+    const draft::AssemblyProgram &program,
+    std::string_view instruction_text) {
+  for (const draft::AssemblyRegion &region : program.regions) {
+    if (region.instruction_text == instruction_text) return &region;
+  }
+  return nullptr;
+}
+
 struct CheckedAssembly {
   draft::SourceManager sources;
   draft::DiagnosticSink diagnostics;
@@ -40,7 +55,6 @@ struct CheckedAssembly {
   draft::TargetProfile target = draft::make_aarch64_macos_profile();
   draft::SemanticAnalysisResult semantics;
   draft::BodyCheckResult bodies;
-  draft::HirProgram hir;
   draft::Aarch64CAbiTable abi;
   draft::AssemblyProgram assembly;
 
@@ -62,17 +76,24 @@ struct CheckedAssembly {
         semantics.constants,
         target.facts,
         diagnostics);
-    hir = draft::project_package_body_hir(bodies.procedures);
     abi = draft::classify_aarch64_c_types(
-        semantics.package.types, target.facts);
+        bodies.package.types, target.facts);
+    assembly.ok = bodies.ok;
     if (bodies.ok) {
-      assembly = draft::analyze_aarch64_assembly(
-          sources,
-          loaded,
-          target,
-          semantics.package,
-          hir,
-          diagnostics);
+      for (const draft::ProcedureBodyHirResult &product : bodies.procedures) {
+        draft::AssemblyProgram local = draft::analyze_aarch64_assembly(
+            sources,
+            loaded,
+            target,
+            bodies.package,
+            product.program,
+            diagnostics);
+        assembly.ok = assembly.ok && local.ok;
+        assembly.regions.insert(
+            assembly.regions.end(),
+            std::make_move_iterator(local.regions.begin()),
+            std::make_move_iterator(local.regions.end()));
+      }
     }
   }
 };
@@ -190,44 +211,73 @@ main :: proc() -> int {
   EXPECT(state, !source.diagnostics.has_errors());
   EXPECT(state, source.assembly.regions.size() == 11);
   if (source.assembly.regions.size() == 11) {
-    EXPECT(state, source.assembly.regions[0].llvm_constraints == "={x0},0");
-    EXPECT(state, source.assembly.regions[0].instruction_text ==
-        "add x0, x0, #1");
-    EXPECT(state, source.assembly.regions[1].llvm_constraints ==
-        "={x1},{x0},~{memory}");
-    EXPECT(state, source.assembly.regions[2].llvm_constraints ==
-        "={d0},0,{d1}");
-    EXPECT(state, source.assembly.regions[3].llvm_constraints ==
-        "={q0},{x0},~{memory}");
-    EXPECT(state, source.assembly.regions[4].instruction_text ==
-        "cmp x0, x1\n\tcsel x0, x0, x1, ge");
-    EXPECT(state, source.assembly.regions[5].instruction_text ==
-        "ldr x1, [x0, #8]");
-    EXPECT(state, source.assembly.regions[6].instruction_text ==
-        "ldp x1, x2, [x0, #0]\n\tadd x1, x1, x2");
-    EXPECT(state, source.assembly.regions[8].instruction_text ==
-        "add v0.2d, v0.2d, v0.2d");
-    EXPECT(state, source.assembly.regions[9].llvm_constraints ==
-        "{x0},{w1},~{memory}");
-    EXPECT(state, source.assembly.regions[10].llvm_constraints == "~{memory}");
+    const draft::AssemblyRegion *increment =
+        find_region(source.assembly, "add x0, x0, #1");
+    const draft::AssemblyRegion *load =
+        find_region(source.assembly, "ldr x1, [x0]");
+    const draft::AssemblyRegion *floating =
+        find_region(source.assembly, "fadd d0, d0, d1");
+    const draft::AssemblyRegion *vector_load =
+        find_region(source.assembly, "ldr q0, [x0]");
+    const draft::AssemblyRegion *store =
+        find_region(source.assembly, "str w1, [x0]");
+    const draft::AssemblyRegion *barrier =
+        find_region(source.assembly, "dmb ish");
+    EXPECT(state, increment != nullptr);
+    EXPECT(state, load != nullptr);
+    EXPECT(state, floating != nullptr);
+    EXPECT(state, vector_load != nullptr);
+    EXPECT(state, store != nullptr);
+    EXPECT(state, barrier != nullptr);
+    if (increment != nullptr) {
+      EXPECT(state, increment->llvm_constraints == "={x0},0");
+    }
+    if (load != nullptr) {
+      EXPECT(state, load->llvm_constraints == "={x1},{x0},~{memory}");
+    }
+    if (floating != nullptr) {
+      EXPECT(state, floating->llvm_constraints == "={d0},0,{d1}");
+    }
+    if (vector_load != nullptr) {
+      EXPECT(state, vector_load->llvm_constraints == "={q0},{x0},~{memory}");
+    }
+    if (store != nullptr) {
+      EXPECT(state, store->llvm_constraints == "{x0},{w1},~{memory}");
+    }
+    if (barrier != nullptr) {
+      EXPECT(state, barrier->llvm_constraints == "~{memory}");
+    }
+    EXPECT(state, find_region(
+                      source.assembly,
+                      "cmp x0, x1\n\tcsel x0, x0, x1, ge") != nullptr);
+    EXPECT(state, find_region(source.assembly, "ldr x1, [x0, #8]") != nullptr);
+    EXPECT(state, find_region(
+                      source.assembly,
+                      "ldp x1, x2, [x0, #0]\n\tadd x1, x1, x2") != nullptr);
+    EXPECT(state, find_region(
+                      source.assembly,
+                      "add v0.2d, v0.2d, v0.2d") != nullptr);
   }
 
-  const draft::MirLoweringResult mir = draft::lower_package_to_mir(
-      source.semantics.package,
-      source.hir,
-      source.assembly,
-      source.diagnostics);
+  const draft::test_support::LoweredProcedureProducts mir =
+      draft::test_support::lower_procedure_products(
+          source.bodies.package,
+          source.bodies.procedures,
+          &source.assembly,
+          draft::RuntimeAssertionMode::On,
+          source.diagnostics);
   draft::LlvmIrOptions options;
   options.package = {"workspace", "assembly"};
   options.emit_program_entry = true;
-  const draft::LlvmIrResult llvm = draft::emit_llvm_ir(
+  const draft::test_support::EmittedLlvmProducts llvm =
+      draft::test_support::emit_llvm_products(
       source.target,
       source.sources,
       options,
-      source.semantics.package,
+      source.bodies.package,
       source.abi,
       source.semantics.global_initializers,
-      mir.program,
+      mir.procedures,
       source.diagnostics);
   EXPECT(state, mir.ok);
   EXPECT(state, llvm.ok);

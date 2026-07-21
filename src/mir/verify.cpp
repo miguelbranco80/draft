@@ -14,14 +14,6 @@ public:
   Verifier(const TypeStore &types, DiagnosticSink &diagnostics)
       : types_(types), diagnostics_(diagnostics) {}
 
-  [[nodiscard]] bool run(const MirProgram &program) {
-    const std::size_t initial_errors = diagnostics_.error_count();
-    for (const MirProcedure &procedure : program.procedures()) {
-      verify_procedure(procedure);
-    }
-    return diagnostics_.error_count() == initial_errors;
-  }
-
   // Verifies one product-owned procedure without constructing a temporary
   // package MIR container. This is the publication boundary used by parallel
   // lowering tasks; all verifier state remains invocation-local.
@@ -455,13 +447,6 @@ bool verify_mir_procedure(
     const TypeStore &types,
     DiagnosticSink &diagnostics) {
   return Verifier(types, diagnostics).run(procedure);
-}
-
-bool verify_mir_program(
-    const MirProgram &program,
-    const TypeStore &types,
-    DiagnosticSink &diagnostics) {
-  return Verifier(types, diagnostics).run(program);
 }
 
 } // namespace draft

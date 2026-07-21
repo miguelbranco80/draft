@@ -94,9 +94,10 @@ longer use a package-wide HIR compatibility projection. Metadata/obligation
 context, native interop, and validation discovery also resolve only the exact
 selected procedure products. Each completed MIR product owns its procedure
 payload directly in the workspace side table; the compiler retains neither a
-package-wide HIR copy nor a reconstructed package MIR program. Standalone
-subsystem compatibility composers remain explicit final cleanup in the
-[semantic work graph implementation plan](semantic-work-graph-implementation-plan.md).
+package-wide HIR copy nor a reconstructed package MIR program. The standalone
+HIR projection, package MIR container/lowering pass, and complete-package LLVM
+emitter have been deleted; direct subsystem tests use the same split product
+operations as compiler orchestration.
 Definite-initialization diagnostics and agent loop-range facts are produced by
 the isolated body task before its semantic suffix is published; package
 finalization no longer needs a temporary HIR projection.

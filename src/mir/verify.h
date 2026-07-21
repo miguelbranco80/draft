@@ -17,9 +17,4 @@ namespace draft {
     const TypeStore &types,
     DiagnosticSink &diagnostics);
 
-[[nodiscard]] bool verify_mir_program(
-    const MirProgram &program,
-    const TypeStore &types,
-    DiagnosticSink &diagnostics);
-
 } // namespace draft

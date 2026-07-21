@@ -9,6 +9,7 @@
 #include "source/source.h"
 #include "syntax/parser.h"
 #include "target/profile.h"
+#include "native_pipeline.h"
 #include "workspace/package.h"
 
 #include <algorithm>
@@ -82,22 +83,22 @@ struct EmittedFixture {
       semantics.constants,
       target.facts,
       diagnostics);
-  const draft::HirProgram hir =
-      draft::project_package_body_hir(bodies.procedures);
-  draft::MirLoweringResult mir = draft::lower_package_to_mir(
-      bodies.package, hir, diagnostics);
+  draft::test_support::LoweredProcedureProducts mir =
+      draft::test_support::lower_procedure_products(
+          bodies.package, bodies.procedures, diagnostics);
   const draft::Aarch64CAbiTable abi =
       draft::classify_aarch64_c_types(bodies.package.types, target.facts);
   draft::LlvmIrOptions options;
   options.package = {"workspace", "agent-noop"};
-  draft::LlvmIrResult module = draft::emit_llvm_ir(
+  draft::test_support::EmittedLlvmProducts module =
+      draft::test_support::emit_llvm_products(
       target,
       sources,
       options,
       bodies.package,
       abi,
       semantics.global_initializers,
-      mir.program,
+      mir.procedures,
       diagnostics);
 
   EmittedFixture result;
@@ -238,14 +239,13 @@ main :: proc() -> int {
       semantics.constants,
       target.facts,
       diagnostics);
-  const draft::HirProgram hir =
-      draft::project_package_body_hir(bodies.procedures);
-  draft::MirLoweringResult mir = draft::lower_package_to_mir(
-      bodies.package, hir, diagnostics);
+  draft::test_support::LoweredProcedureProducts mir =
+      draft::test_support::lower_procedure_products(
+          bodies.package, bodies.procedures, diagnostics);
   const draft::Aarch64CAbiTable abi =
       draft::classify_aarch64_c_types(bodies.package.types, target.facts);
   std::vector<draft::SymbolId> procedures;
-  for (const draft::MirProcedure &procedure : mir.program.procedures()) {
+  for (const draft::MirProcedure &procedure : mir.procedures) {
     procedures.push_back(procedure.symbol);
   }
 
@@ -278,7 +278,7 @@ main :: proc() -> int {
   EXPECT(state, package_object.ok);
 
   for (std::size_t index = 0;
-       index < mir.program.procedures().size(); ++index) {
+       index < mir.procedures.size(); ++index) {
     draft::DiagnosticSink function_diagnostics;
     const draft::LlvmIrResult function = draft::emit_llvm_machine_function(
         target,
@@ -288,7 +288,7 @@ main :: proc() -> int {
         abi,
         procedures,
         index,
-        mir.program.procedures()[index],
+        mir.procedures[index],
         function_diagnostics);
     EXPECT(state, function.ok);
     EXPECT(state, !function_diagnostics.has_errors());
@@ -876,23 +876,23 @@ main :: proc() -> int {
       semantics.constants,
       target.facts,
       diagnostics);
-  const draft::HirProgram hir =
-      draft::project_package_body_hir(bodies.procedures);
-  draft::MirLoweringResult mir = draft::lower_package_to_mir(
-      bodies.package, hir, diagnostics);
+  draft::test_support::LoweredProcedureProducts mir =
+      draft::test_support::lower_procedure_products(
+          bodies.package, bodies.procedures, diagnostics);
   const draft::Aarch64CAbiTable abi =
       draft::classify_aarch64_c_types(bodies.package.types, target.facts);
   draft::LlvmIrOptions options;
   options.package = {"workspace", "native"};
   options.emit_program_entry = true;
-  const draft::LlvmIrResult module = draft::emit_llvm_ir(
+  const draft::test_support::EmittedLlvmProducts module =
+      draft::test_support::emit_llvm_products(
       target,
       sources,
       options,
       bodies.package,
       abi,
       semantics.global_initializers,
-      mir.program,
+      mir.procedures,
       diagnostics);
 
   if (diagnostics.has_errors()) {

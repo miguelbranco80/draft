@@ -300,14 +300,4 @@ private:
   std::vector<HirProcedure> procedures_;
 };
 
-// Appends every arena row from source to destination and rewrites only HIR-local
-// expression, statement, and block IDs by the destination's prior table sizes.
-// Semantic SymbolId, ScopeId, and TypeId values are intentionally unchanged:
-// both programs must belong to the same semantic package generation. Source is
-// not mutated. Procedure order and every within-procedure source order remain
-// exact, making this the deterministic compatibility projection from
-// procedure-owned HIR arenas to consumers not yet migrated to per-procedure
-// products.
-void append_hir_program(HirProgram &destination, const HirProgram &source);
-
 } // namespace draft
