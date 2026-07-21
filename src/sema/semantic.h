@@ -73,6 +73,16 @@ struct PackageDeclarationDiscovery {
     const AvailablePackageImports &imports,
     DiagnosticSink &diagnostics);
 
+// Closes the PackageNameSet barrier after graph products have published all
+// selected declarations, declaration types, member types, and natural layouts.
+// The operation performs no semantic evaluation. It validates readiness,
+// installs the compiler-defined runtime Context, and advances terminal exactly
+// once. A false result has emitted an integration diagnostic and leaves the
+// payload nonterminal.
+[[nodiscard]] bool finish_package_declaration_discovery(
+    PackageDeclarationDiscovery &discovery,
+    DiagnosticSink &diagnostics);
+
 // Performs collection, interface binding, append-only package `when`
 // materialization, and terminal type discovery. It deliberately stops before
 // final all-constant evaluation so the compiler coordinator can schedule each

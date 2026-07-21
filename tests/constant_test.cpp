@@ -327,6 +327,28 @@ when size_of(Header) == 16 {
            .has_value());
   EXPECT(state, !initial_diagnostics.has_errors());
 
+  draft::SourceManager ready_sources;
+  draft::DiagnosticSink barrier_diagnostics;
+  draft::LoadedPackage ready_loaded;
+  ready_loaded.short_name = "ready";
+  draft::LoadedPackageFile ready_file;
+  ready_file.kind = draft::PackageFileKind::DraftSource;
+  ready_file.relative_name = "package.draft";
+  ready_file.source = ready_sources.add_source(
+      "package.draft", "package ready\nAnswer :: 42\n");
+  ready_file.syntax.emplace(draft::parse_source_file(
+      ready_sources, ready_file.source, barrier_diagnostics));
+  ready_loaded.files.push_back(std::move(ready_file));
+  draft::PackageDeclarationDiscovery barrier_ready =
+      draft::begin_package_declaration_discovery(
+          ready_sources, ready_loaded, no_imports, barrier_diagnostics);
+  EXPECT(
+      state,
+      draft::finish_package_declaration_discovery(
+          barrier_ready, barrier_diagnostics));
+  EXPECT(state, barrier_ready.terminal);
+  EXPECT(state, !barrier_diagnostics.has_errors());
+
   const draft::PackageDeclarationDiscovery discovery =
       draft::discover_package_declarations(
           synthesis_sources,

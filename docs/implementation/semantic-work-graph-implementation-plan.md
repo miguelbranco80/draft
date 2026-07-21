@@ -64,7 +64,10 @@ gate.
    before this path can replace the recursive package resolver. Eager authored
    declaration collection and import binding are now exposed as a distinct
    nonterminal discovery operation whose payload is the authoritative
-   append-only table the workspace coordinator will retain.
+   append-only table the workspace coordinator will retain. Its matching
+   PackageNameSet close operation performs no evaluation: it accepts only an
+   already selected, typed, and naturally laid-out payload, then installs the
+   runtime Context and marks that barrier terminal.
    Complete workspace compilation now schedules every final package-scope
    constant as an individual product with explicit constant dependencies,
    coordinator-owned structural-type interning, and an interface barrier that

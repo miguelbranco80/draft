@@ -443,6 +443,65 @@ PackageDeclarationDiscovery begin_package_declaration_discovery(
   return result;
 }
 
+bool finish_package_declaration_discovery(
+    PackageDeclarationDiscovery &discovery,
+    DiagnosticSink &diagnostics) {
+  const std::size_t initial_error_count = diagnostics.error_count();
+  if (discovery.terminal) {
+    diagnostics.error(
+        SourceRange::invalid(),
+        "package declaration discovery was finalized more than once");
+    return false;
+  }
+  for (const ConditionalDeclarationRegion &region :
+       discovery.package.conditional_declarations) {
+    if (region.materialized) continue;
+    diagnostics.error(
+        discovery.package.symbols.scope(region.scope).range,
+        "package name set still contains an unselected conditional region");
+    return false;
+  }
+
+  const std::vector<SymbolId> package_symbols =
+      discovery.package.symbols.scope(discovery.package.package_scope).symbols;
+  for (SymbolId symbol_id : package_symbols) {
+    const Symbol &symbol = discovery.package.symbols.symbol(symbol_id);
+    if ((symbol.kind == SymbolKind::Type ||
+         symbol.kind == SymbolKind::Procedure) &&
+        !symbol.type.is_valid()) {
+      diagnostics.error(
+          symbol.name_range,
+          "package declaration type product is not complete for '" +
+              symbol.name + "'");
+      return false;
+    }
+    if (symbol.kind != SymbolKind::Type || !symbol.type.is_valid()) continue;
+    const TypeKind kind = discovery.package.types.type(symbol.type).kind;
+    if (kind != TypeKind::Struct && kind != TypeKind::Enum &&
+        kind != TypeKind::TaggedUnion && kind != TypeKind::RawUnion) {
+      continue;
+    }
+    if (discovery.package.types.facet_state(
+            symbol.type, TypeFacet::MemberTypes) !=
+            TypeFacetState::Complete ||
+        discovery.package.types.facet_state(
+            symbol.type, TypeFacet::NaturalLayout) !=
+            TypeFacetState::Complete) {
+      diagnostics.error(
+          symbol.name_range,
+          "nominal type products are not complete for '" + symbol.name +
+              "'");
+      return false;
+    }
+  }
+
+  ensure_runtime_context_type(discovery.package, diagnostics);
+  if (diagnostics.error_count() != initial_error_count) return false;
+  discovery.unresolved_conditionals = 0;
+  discovery.terminal = true;
+  return true;
+}
+
 [[nodiscard]] static SemanticAnalysisResult finish_package_semantics_impl(
     const SourceManager &sources,
     const LoadedPackage &loaded,
