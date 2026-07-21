@@ -43,11 +43,18 @@ namespace {
   return false;
 }
 
-[[nodiscard]] bool has_body(const HirProgram &hir, SymbolId procedure) {
-  for (const HirProcedure &candidate : hir.procedures()) {
-    if (candidate.symbol == procedure && candidate.valid &&
-        !candidate.parametric_template && !candidate.compile_time_only) {
-      return true;
+[[nodiscard]] bool has_body(
+    std::span<const ProcedureBodyHirResult> procedures,
+    std::span<const std::size_t> selected_indices,
+    SymbolId procedure) {
+  for (std::size_t index : selected_indices) {
+    if (index >= procedures.size()) continue;
+    for (const HirProcedure &candidate :
+         procedures[index].program.procedures()) {
+      if (candidate.symbol == procedure && candidate.valid &&
+          !candidate.parametric_template && !candidate.compile_time_only) {
+        return true;
+      }
     }
   }
   return false;
@@ -95,7 +102,8 @@ struct ExpectedState {
     std::string_view core_root_identity,
     const PackageIdentity &identity,
     const SemanticPackage &semantic,
-    const HirProgram &hir,
+    std::span<const ProcedureBodyHirResult> procedures,
+    std::span<const std::size_t> selected_indices,
     SymbolId symbol_id,
     DiagnosticSink &diagnostics) {
   const Symbol &symbol = semantic.symbols.symbol(symbol_id);
@@ -108,7 +116,8 @@ struct ExpectedState {
     return std::nullopt;
   };
 
-  if (symbol.flags.foreign || symbol.flags.parametric || !has_body(hir, symbol_id)) {
+  if (symbol.flags.foreign || symbol.flags.parametric ||
+      !has_body(procedures, selected_indices, symbol_id)) {
     return reject("must be a defined non-parametric Draft procedure");
   }
   if (!symbol.type.is_valid()) return reject("has no checked procedure type");
@@ -172,10 +181,22 @@ std::vector<ValidationEntry> discover_validation_entries(
     const PackageIdentity &identity,
     const LoadedPackage &loaded,
     const SemanticPackage &semantic,
-    const HirProgram &hir,
+    std::span<const ProcedureBodyHirResult> procedures,
+    std::span<const std::size_t> selected_indices,
     DiagnosticSink &diagnostics) {
   std::vector<ValidationEntry> result;
   if (kind == ValidationKind::None) return result;
+  std::optional<std::size_t> previous;
+  for (std::size_t index : selected_indices) {
+    if (index >= procedures.size() ||
+        (previous.has_value() && index <= *previous)) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "validation discovery received an invalid selected body product order");
+      return result;
+    }
+    previous = index;
+  }
   const ExpectedState expected = expected_state(kind);
   const Scope &scope = semantic.symbols.scope(semantic.package_scope);
   for (SymbolId symbol_id : scope.symbols) {
@@ -190,7 +211,8 @@ std::vector<ValidationEntry> discover_validation_entries(
         core_root_identity,
         identity,
         semantic,
-        hir,
+        procedures,
+        selected_indices,
         symbol_id,
         diagnostics);
     if (entry.has_value()) result.push_back(std::move(*entry));

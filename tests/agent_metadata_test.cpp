@@ -134,8 +134,6 @@ void test_agent_records(TestState &state) {
   const draft::AttachmentPolicy policy;
   const draft::AgentMetadataResult metadata = draft::collect_agent_metadata(
       sources, loaded.package, bodies.package, policy, diagnostics);
-  const draft::HirProgram hir =
-      draft::project_package_body_hir(bodies.procedures);
   const draft::AgentObligationResult obligations =
       draft::build_agent_obligations(
           {"workspace", "context"},
@@ -148,7 +146,7 @@ void test_agent_records(TestState &state) {
           target,
           diagnostics,
           {},
-          &hir);
+          bodies.procedures);
   const draft::PackageInterface package_interface = draft::build_package_interface(
       {"workspace", "context"},
       bodies.package,
@@ -763,8 +761,6 @@ main :: proc() -> int {
       bodies.package,
       {},
       diagnostics);
-  const draft::HirProgram hir =
-      draft::project_package_body_hir(bodies.procedures);
   const draft::AgentObligationResult obligations =
       draft::build_agent_obligations(
           {"workspace", "package_judgment_context"},
@@ -777,7 +773,7 @@ main :: proc() -> int {
           target,
           diagnostics,
           {},
-          &hir);
+          bodies.procedures);
 
   if (diagnostics.has_errors()) {
     std::cerr << draft::render_diagnostics(sources, diagnostics);
@@ -1485,8 +1481,6 @@ work :: proc() -> i64 {
       diagnostics);
   const draft::AgentMetadataResult metadata = draft::collect_agent_metadata(
       sources, loaded.package, bodies.package, {}, diagnostics);
-  const draft::HirProgram hir =
-      draft::project_package_body_hir(bodies.procedures);
   const draft::AgentObligationResult obligations =
       draft::build_agent_obligations(
           {"workspace", "relevant_context"},
@@ -1499,7 +1493,7 @@ work :: proc() -> i64 {
           target,
           diagnostics,
           {},
-          &hir);
+          bodies.procedures);
 
   if (diagnostics.has_errors()) {
     std::cerr << draft::render_diagnostics(sources, diagnostics);
@@ -1632,8 +1626,6 @@ work :: proc() -> i64 {
             rebuilt_bodies.package,
             {},
             rebuilt_diagnostics);
-    const draft::HirProgram rebuilt_hir =
-        draft::project_package_body_hir(rebuilt_bodies.procedures);
     const draft::AgentObligationResult rebuilt_obligations =
         draft::build_agent_obligations(
             {"workspace", "relevant_context"},
@@ -1646,7 +1638,7 @@ work :: proc() -> i64 {
             target,
             rebuilt_diagnostics,
             {},
-            &rebuilt_hir);
+            rebuilt_bodies.procedures);
     if (rebuilt_diagnostics.has_errors()) {
       std::cerr << draft::render_diagnostics(
           rebuilt_sources, rebuilt_diagnostics);
@@ -1822,8 +1814,6 @@ main :: proc() {
       diagnostics);
   const draft::AgentMetadataResult metadata = draft::collect_agent_metadata(
       sources, loaded.package, bodies.package, {}, diagnostics);
-  const draft::HirProgram hir =
-      draft::project_package_body_hir(bodies.procedures);
   const draft::AgentObligationResult obligations =
       draft::build_agent_obligations(
           {"workspace", "pack_agent"},
@@ -1836,7 +1826,7 @@ main :: proc() {
           target,
           diagnostics,
           {},
-          &hir);
+          bodies.procedures);
 
   if (diagnostics.has_errors()) {
     std::cerr << draft::render_diagnostics(sources, diagnostics);

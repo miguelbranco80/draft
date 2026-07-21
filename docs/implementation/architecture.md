@@ -148,12 +148,11 @@ frozen wave which exposed them joins, with an exact edge to that exposing body.
 Each root owns a task-local diagnostic sink, and graph publication merges those
 diagnostics in product order. HIR-local IDs begin at zero in each product; every
 semantic ID addresses the body package returned beside the product set. Direct
-effect, denial, assembly, and MIR tasks consume those arenas without
-concatenating them. A deterministic compatibility projection still rewrites
-local IDs for metadata, agent obligations, native interop, and validation
-consumers which remain package-wide. The projection is a short-lived value
-owned by the invoking operation; it is never stored in `BodyCheckResult`, so
-procedure products remain the only retained HIR.
+effects, denials, metadata/obligation context, native interop, validation,
+assembly, and MIR consume the exact selected arenas without concatenating them.
+When an operation follows procedure references, it keeps each procedure beside
+the local arena which owns its HIR IDs. Procedure products are therefore the
+only workspace HIR representation.
 
 The coordinator retains the canonical semantic and constant prefix while one
 root checks a private view frozen at exact table counts. `TypeStore` and
@@ -281,14 +280,13 @@ test convenience and is not a compiler or native-build path.
   Source transitions append successors and supersede unselected generations.
   Payload side tables remain typed and phase-owned rather than entering a
   generic graph value.
-- **Declaration semantic generation:** package declarations, imports,
+- **Declaration semantic products:** package declarations, imports,
   signatures, constants, layouts, and preliminary interfaces have stable IDs
   and remain immutable after publication.
-- **Body semantic generation / typed HIR:** the coordinator owns the canonical
+- **Body semantic tables / typed HIR:** the coordinator owns the canonical
   body prefix; each procedure product owns its semantic suffix and HIR arena.
-  Publication joins those rows into the generation consumed by current
-  package-wide compatibility passes. No HIR is paired with declaration-only
-  tables.
+  HIR-local IDs start at zero and remain local through every workspace
+  consumer. No HIR is paired with declaration-only tables.
 - **Target ABI facet:** one immutable row per source-semantic TypeId, published
   after body closure with explicit target and exact type-producer edges. An
   `Illegal` row is a completed answer. Later consumers read the table through

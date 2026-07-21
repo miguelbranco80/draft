@@ -85,7 +85,7 @@ export increment :: c "draft_increment" proc(value: i32) -> i32 {
 
   const draft::NativeInteropResult native = draft::validate_native_interop(
       source.semantics.package,
-      source.hir,
+      source.bodies.procedures,
       source.abi,
       source.target.facts,
       source.diagnostics);
@@ -138,7 +138,7 @@ export wrap_narrow :: c "wrap_narrow" proc(
 
   const draft::NativeInteropResult native = draft::validate_native_interop(
       source.semantics.package,
-      source.hir,
+      source.bodies.procedures,
       source.abi,
       source.target.facts,
       source.diagnostics);
@@ -184,7 +184,7 @@ foreign provider {
 )draft");
   const draft::NativeInteropResult native = draft::validate_native_interop(
       source.semantics.package,
-      source.hir,
+      source.bodies.procedures,
       source.abi,
       source.target.facts,
       source.diagnostics);
@@ -298,7 +298,7 @@ export wrap_large :: c "wrap_large" proc(value: C24) -> C24 {
 
   const draft::NativeInteropResult native = draft::validate_native_interop(
       source.semantics.package,
-      source.hir,
+      source.bodies.procedures,
       source.abi,
       source.target.facts,
       source.diagnostics);
@@ -384,7 +384,7 @@ foreign provider {
 )draft");
   const draft::NativeInteropResult native = draft::validate_native_interop(
       source.semantics.package,
-      source.hir,
+      source.bodies.procedures,
       source.abi,
       source.target.facts,
       source.diagnostics);
@@ -407,7 +407,7 @@ callback_slot: Bad_Callback
 )draft");
   const draft::NativeInteropResult native = draft::validate_native_interop(
       source.semantics.package,
-      source.hir,
+      source.bodies.procedures,
       source.abi,
       source.target.facts,
       source.diagnostics);

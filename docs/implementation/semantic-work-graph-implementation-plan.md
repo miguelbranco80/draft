@@ -165,9 +165,8 @@ gate.
 
    HIR ownership is now product-local: every exact root starts an empty arena,
    publishes one permanent `ProcedureBodyHirResult`, and never receives earlier
-   HIR as input. `BodyCheckResult` no longer stores a package-wide copy;
-   remaining package-wide consumers explicitly build, use, and discard one
-   deterministic ID-rewritten projection. Each result also records the
+   HIR as input. `BodyCheckResult` no longer stores a package-wide copy. Each
+   result also records the
    canonical TypeIds first installed by its semantic append. A package side
    table maps those IDs back to the exact procedure product, establishing the
    dependency seam for ABI and other later type facets.
@@ -222,10 +221,11 @@ gate.
    canonical TypeId first published by their append packet, allowing each ABI
    product to name one exact producer rather than a package-wide body barrier.
 
-   The remaining step-5 cleanup is `BodyCheckResult`'s package-wide semantic
-   transfer form in direct non-workspace APIs. Package-wide compatibility HIR
-   projections belong to the downstream flow-closure and MIR migrations in
-   steps 7 and 8 rather than to the body scheduler.
+   Workspace metadata/obligation context, native interop, and validation now
+   join effects, denials, assembly, and MIR in consuming exact selected
+   procedure arenas. Transitive procedure lookup retains the owning arena for
+   every HIR-local ID. The remaining step-5 cleanup is `BodyCheckResult`'s
+   package-wide semantic transfer/composer form in direct non-workspace APIs.
 
 6. **Synthesis as an explicit wait state — complete.** A body or declaration task may
    report its exact ready `...` set after producing the typed constraint needed

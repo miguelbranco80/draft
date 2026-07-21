@@ -258,10 +258,11 @@ cache.
     declaration-generation body key. This removed retained-table body replay,
     including duplicate static-pack declarations, without introducing a
     persistent cache or a second compiler graph. Exact body products retain
-    their own HIR arenas. Package-wide consumers still awaiting migration build
-    a short-lived compatibility projection; no aggregate HIR is retained in
-    compiler state. Workspace packages retain the live body scheduler itself,
-    allowing an added external specialization to continue the exact completed
+    their own HIR arenas. Metadata, obligations, native interoperation,
+    validation discovery, effects, denials, assembly, and lowering consume the
+    exact selected arenas directly; no aggregate HIR is retained in compiler
+    state. Workspace packages retain the live body scheduler itself, allowing
+    an added external specialization to continue the exact completed
     work/product prefix without reconstructing extension state. The body
     coordinator now closes one workspace-wide dynamic ready graph rather than
     visiting packages consumer-first; new owner bodies retain exact requester

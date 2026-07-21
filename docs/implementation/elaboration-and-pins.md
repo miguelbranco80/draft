@@ -225,9 +225,10 @@ complete package row; no generation counter participates in identity.
 Otherwise every completed procedure product remains
 immutable while an explicit current selection follows authored roots, external
 demands, and discovered prerequisites. No package-wide HIR copy is retained; a
-package-wide consumer builds and discards an ID-rewritten view. Proposal
-checking can therefore copy the command graph without replaying BodyChecker over
-a dependency's already-enriched tables. Equal demands select retained products,
+workspace consumer resolves each procedure in the local arena which owns its
+HIR IDs. Proposal checking can therefore copy the command graph without
+replaying BodyChecker over a dependency's already-enriched tables. Equal
+demands select retained products,
 additions extend only new specializations, and removal changes selection without
 rebuilding. Handwritten commands still load and analyze declarations once
 before later MIR/LLVM continuation.

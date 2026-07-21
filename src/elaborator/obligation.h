@@ -28,10 +28,10 @@
 
 namespace draft {
 
-class HirProgram;
 enum class ValidationKind;
 struct ValidationEntry;
 struct ImportedProcedureContracts;
+struct ProcedureBodyHirResult;
 
 // One binding visible at a synthesis/judgment program point. type_digest is the
 // complete canonical type graph rather than a package-local TypeId. kind stays
@@ -351,16 +351,18 @@ collect_agent_validation_context(
     const LoadedPackage &loaded,
     const SemanticPackage &package,
     const ConstantTable &constants,
-    const HirProgram &hir,
+    std::span<const ProcedureBodyHirResult> procedures,
+    std::span<const std::size_t> selected_indices,
     ValidationKind kind,
     std::span<const ValidationEntry> entries,
     std::vector<AgentValidationContext> &context,
     DiagnosticSink &diagnostics);
 
-// Builds obligations for judgments and every synthesis grammar category. Docs
-// remain inputs through AgentRecord and package interfaces but do not form
-// independently executable obligations. Diagnostics report malformed semantic
-// rows rather than manufacturing identities from invalid local IDs.
+// Builds obligations for judgments and every synthesis grammar category. Every
+// supplied procedure product is selected. Docs remain inputs through
+// AgentRecord and package interfaces but do not form independently executable
+// obligations. Diagnostics report malformed semantic rows rather than
+// manufacturing identities from invalid local IDs.
 [[nodiscard]] AgentObligationResult build_agent_obligations(
     const PackageIdentity &identity,
     const SourceManager &sources,
@@ -372,7 +374,25 @@ collect_agent_validation_context(
     const TargetProfile &target,
     DiagnosticSink &diagnostics,
     std::span<const AgentValidationContext> validation_context = {},
-    const HirProgram *hir = nullptr);
+    std::span<const ProcedureBodyHirResult> procedures = {});
+
+// Workspace form over an explicit current-program selection. selected_indices
+// address procedures in strictly increasing product order. Relevant-definition
+// closure resolves each procedure inside its owning local HIR arena and never
+// constructs a package-wide ID domain.
+[[nodiscard]] AgentObligationResult build_selected_agent_obligations(
+    const PackageIdentity &identity,
+    const SourceManager &sources,
+    const LoadedPackage &loaded,
+    const SemanticPackage &package,
+    const ConstantTable &constants,
+    const AgentMetadataResult &metadata,
+    const ImportedProcedureContracts &imported_contracts,
+    const TargetProfile &target,
+    DiagnosticSink &diagnostics,
+    std::span<const AgentValidationContext> validation_context,
+    std::span<const ProcedureBodyHirResult> procedures,
+    std::span<const std::size_t> selected_indices);
 
 // Appends the one provider obligation named by metadata.records[record_index]
 // to an existing result. This is the deterministic publication form used when
@@ -395,8 +415,7 @@ collect_agent_validation_context(
     const TargetProfile &target,
     AgentObligationResult &result,
     DiagnosticSink &diagnostics,
-    std::span<const AgentValidationContext> validation_context = {},
-    const HirProgram *hir = nullptr);
+    std::span<const AgentValidationContext> validation_context = {});
 
 [[nodiscard]] std::string_view agent_construct_kind_name(
     AgentConstructKind kind);

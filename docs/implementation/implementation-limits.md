@@ -90,15 +90,13 @@ MIR lowering reads the shared `TypeStore` immutably. Compiler-only addresses
 use MIR-local addressed-type metadata, so there is no unclassified post-ABI
 type suffix. Direct effects, denials, parsed assembly, and MIR consume
 authoritative procedure-owned HIR arenas and publish live products; they no
-longer use a package-wide HIR compatibility projection. Each completed MIR
-product owns its procedure payload directly in the workspace side table; the
-compiler does not retain or reconstruct a package-wide MIR program. Agent
-metadata/obligation construction, native interop validation, and validation
-discovery still build and discard such a projection. The compiler retains no
-package-wide HIR copy. Migrating those remaining consumers away from the
-temporary projection is explicit remaining work in the
-[semantic work graph implementation plan](semantic-work-graph-implementation-plan.md),
-not alternate final architecture paths.
+longer use a package-wide HIR compatibility projection. Metadata/obligation
+context, native interop, and validation discovery also resolve only the exact
+selected procedure products. Each completed MIR product owns its procedure
+payload directly in the workspace side table; the compiler retains neither a
+package-wide HIR copy nor a reconstructed package MIR program. Standalone
+subsystem compatibility composers remain explicit final cleanup in the
+[semantic work graph implementation plan](semantic-work-graph-implementation-plan.md).
 
 LLVM and native lowering now follow live semantic products. Package static data
 owns one independently compilable unit; each concrete MIR procedure owns one

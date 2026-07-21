@@ -15,13 +15,18 @@
 namespace draft {
 namespace {
 
-[[nodiscard]] bool has_body(const HirProgram &hir, SymbolId symbol) {
-  return std::any_of(
-      hir.procedures().begin(),
-      hir.procedures().end(),
-      [symbol](const HirProcedure &procedure) {
-        return procedure.symbol == symbol && procedure.valid;
-      });
+[[nodiscard]] bool has_body(
+    std::span<const ProcedureBodyHirResult> procedures,
+    std::span<const std::size_t> selected_indices,
+    SymbolId symbol) {
+  for (std::size_t index : selected_indices) {
+    if (index >= procedures.size()) continue;
+    for (const HirProcedure &procedure :
+         procedures[index].program.procedures()) {
+      if (procedure.symbol == symbol && procedure.valid) return true;
+    }
+  }
+  return false;
 }
 
 [[nodiscard]] bool valid_c_signature(
@@ -170,12 +175,24 @@ void validate_c_procedure_type_graph(
 
 NativeInteropResult validate_native_interop(
     const SemanticPackage &semantic,
-    const HirProgram &hir,
+    std::span<const ProcedureBodyHirResult> procedures,
+    std::span<const std::size_t> selected_indices,
     const Aarch64CAbiTable &abi,
     const TargetFacts &target,
     DiagnosticSink &diagnostics) {
   NativeInteropResult result;
   const std::size_t initial_errors = diagnostics.error_count();
+  std::optional<std::size_t> previous;
+  for (std::size_t index : selected_indices) {
+    if (index >= procedures.size() ||
+        (previous.has_value() && index <= *previous)) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "native interop received an invalid selected body product order");
+      return result;
+    }
+    previous = index;
+  }
   // Native validation is a consumer of the explicit ABI facet, not another
   // hidden classifier pass. A missing row or mismatched target is an internal
   // orchestration failure: continuing would make the accepted C boundary
@@ -205,7 +222,7 @@ NativeInteropResult validate_native_interop(
           "native import or export requires a Draft 1 C-ABI-legal 'c proc' signature");
       diagnosed_c_procedures.push_back(symbol.type);
     }
-    const bool body = has_body(hir, binding.symbol);
+    const bool body = has_body(procedures, selected_indices, binding.symbol);
     if (binding.kind == NativeBindingKind::ForeignImport && body) {
       diagnostics.error(symbol.name_range, "foreign procedure cannot define a body");
     }
@@ -245,6 +262,21 @@ NativeInteropResult validate_native_interop(
   }
   result.ok = diagnostics.error_count() == initial_errors;
   return result;
+}
+
+NativeInteropResult validate_native_interop(
+    const SemanticPackage &semantic,
+    std::span<const ProcedureBodyHirResult> procedures,
+    const Aarch64CAbiTable &abi,
+    const TargetFacts &target,
+    DiagnosticSink &diagnostics) {
+  std::vector<std::size_t> selected;
+  selected.reserve(procedures.size());
+  for (std::size_t index = 0; index < procedures.size(); ++index) {
+    selected.push_back(index);
+  }
+  return validate_native_interop(
+      semantic, procedures, selected, abi, target, diagnostics);
 }
 
 } // namespace draft

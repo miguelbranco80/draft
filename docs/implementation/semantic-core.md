@@ -325,13 +325,13 @@ work rows, procedure results, and semantic products preserve one append-only
 index domain for later discoveries. Direct subsystem entry points transfer the
 same final SemanticPackage, body constants, and procedure-owned arenas into a
 smaller `BodyCheckResult`. Every SymbolId, ScopeId, and TypeId in those arenas
-belongs to that accompanying package. A deterministic compatibility
-projection rewrites HIR-local IDs and concatenates the arenas only at a
-package-wide consumer boundary. The operation owns and discards that temporary
-view; `BodyCheckResult` retains no second HIR representation. Direct effects,
-denials, parsed assembly, and MIR consume the arenas directly. Interop,
-metadata, obligation, and validation still require the projection until their
-own product migrations complete.
+belongs to that accompanying package. Workspace consumers retain HIR-local IDs:
+effects, denials, metadata/obligation context, native interop, validation,
+parsed assembly, and MIR all select procedure arenas directly. A transitive
+agent-context walk carries the owning arena beside each found procedure, so an
+expression ID is never interpreted in a sibling product. `BodyCheckResult`
+retains no second HIR representation; its compatibility composer is now only a
+standalone subsystem migration seam.
 
 The body coordinator no longer retains one `BodyChecker` while walking a
 package and its growing instance vector. Seed materialization is separate, then

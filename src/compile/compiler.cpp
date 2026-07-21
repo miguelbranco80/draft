@@ -6957,15 +6957,13 @@ bool continue_compiled_workspace_semantics(
       }
       const CompiledPackage &typed_package =
           *validation.packages[*validation_index];
-      const HirProgram typed_hir = project_package_body_hir(
-          typed_package.bodies.procedures,
-          typed_package.selected_procedure_work);
       if (!enrich_agent_validation_context(
               typed_package.identity,
               validation.graph.packages[*validation_index].loaded,
               typed_package.bodies.package,
               typed_package.bodies.constants,
-              typed_hir,
+              typed_package.bodies.procedures,
+              typed_package.selected_procedure_work,
               kind,
               validation.validation_entries,
               package.validation_context,
@@ -7002,12 +7000,6 @@ bool continue_compiled_workspace_semantics(
     }
     TimingScope package_timing = time_package_phase(
         options.timings, "package closure: ", package.identity);
-    // Agent-obligation and native-interop construction have not yet moved to
-    // procedure products, so they share one temporary local projection which
-    // is discarded before the next package. Direct effects and denials consume
-    // the selected procedure-owned arenas below and never observe this view.
-    HirProgram package_hir = project_package_body_hir(
-        package.bodies.procedures, package.selected_procedure_work);
     const std::vector<SymbolId> active_imported_instances =
         selected_imported_instance_proxies(package);
     const std::vector<SymbolId> active_external_instances =
@@ -7019,7 +7011,7 @@ bool continue_compiled_workspace_semantics(
         schedule,
         active_imported_instances,
         diagnostics);
-    package.obligations = build_agent_obligations(
+    package.obligations = build_selected_agent_obligations(
         workspace_package.identity,
         sources,
         workspace_package.loaded,
@@ -7030,7 +7022,8 @@ bool continue_compiled_workspace_semantics(
         options.target,
         diagnostics,
         package.validation_context,
-        &package_hir);
+        package.bodies.procedures,
+        package.selected_procedure_work);
     if (!run_package_direct_effect_products(
             package_index,
             schedule,
@@ -7062,7 +7055,8 @@ bool continue_compiled_workspace_semantics(
     }
     package.native_interop = validate_native_interop(
         package.bodies.package,
-        package_hir,
+        package.bodies.procedures,
+        package.selected_procedure_work,
         package.c_abi,
         options.target.facts,
         diagnostics);
@@ -7166,15 +7160,14 @@ bool continue_compiled_workspace(
           !package.obligations.ok || !package.native_interop.ok) {
         continue;
       }
-      const HirProgram package_hir = project_package_body_hir(
-          package.bodies.procedures, package.selected_procedure_work);
       std::vector<ValidationEntry> discovered = discover_validation_entries(
           options.validation_kind,
           options.workspace.core_content_identity,
           package.identity,
           compiled.graph.packages[package_index].loaded,
           package.bodies.package,
-          package_hir,
+          package.bodies.procedures,
+          package.selected_procedure_work,
           diagnostics);
       compiled.validation_entries.insert(
           compiled.validation_entries.end(),

@@ -3,6 +3,7 @@
 #include "elaborator/obligation.h"
 
 #include "base/sha256.h"
+#include "sema/body_checker.h"
 #include "sema/denial.h"
 #include "sema/effect.h"
 #include "sema/hir.h"
@@ -126,12 +127,27 @@ void hash_field(Sha256 &hash, std::string_view value) {
   return std::find(symbols.begin(), symbols.end(), wanted) != symbols.end();
 }
 
-[[nodiscard]] const HirProcedure *find_hir_procedure(
-    const HirProgram &hir, SymbolId symbol) {
-  for (const HirProcedure &procedure : hir.procedures()) {
-    if (procedure.symbol == symbol) return &procedure;
+// One lookup result keeps the procedure beside the local arena which owns all
+// of its expression, statement, and block IDs. Returning only HirProcedure
+// would make a later traversal accidentally interpret those IDs in a sibling
+// arena.
+struct HirProcedureLocation {
+  const HirProgram *program = nullptr;
+  const HirProcedure *procedure = nullptr;
+};
+
+[[nodiscard]] HirProcedureLocation find_hir_procedure(
+    std::span<const ProcedureBodyHirResult> procedures,
+    std::span<const std::size_t> selected_indices,
+    SymbolId symbol) {
+  for (std::size_t index : selected_indices) {
+    if (index >= procedures.size()) continue;
+    const HirProgram &program = procedures[index].program;
+    for (const HirProcedure &procedure : program.procedures()) {
+      if (procedure.symbol == symbol) return {&program, &procedure};
+    }
   }
-  return nullptr;
+  return {};
 }
 
 // HIR is a small explicit graph. These walkers deliberately follow every
@@ -315,7 +331,8 @@ void collect_constant_procedures(
     const ConstantTable &constants,
     const AgentRecord &record,
     std::span<const ResolvedDenialSelector> denials,
-    const HirProgram *hir,
+    std::span<const ProcedureBodyHirResult> procedures,
+    std::span<const std::size_t> selected_indices,
     DiagnosticSink &diagnostics) {
   constexpr std::size_t maximum_definitions = 256;
   std::vector<SymbolId> result;
@@ -341,9 +358,10 @@ void collect_constant_procedures(
       // Interface discovery may have installed generated declaration syntax
       // while another opaque declaration/member set still prevents its type
       // from becoming complete. Such a row is not truthful typed provider
-      // context yet. The next semantic round will select it after completion;
-      // an actually invalid authored program already has an authoritative
-      // semantic diagnostic and cannot reach provider execution.
+      // context yet. Its successor source generation may publish a complete
+      // declaration product; an actually invalid authored program already has
+      // an authoritative semantic diagnostic and cannot reach provider
+      // execution.
       return std::nullopt;
     }
     if (!contains_symbol(result, declaration)) {
@@ -355,7 +373,8 @@ void collect_constant_procedures(
   const auto add_procedure_reference = [&](SymbolId reference) {
     if (!add_definition(reference).has_value()) return;
     const Symbol &referenced = package.symbols.symbol(reference);
-    if (hir != nullptr && referenced.kind == SymbolKind::Procedure &&
+    if (!selected_indices.empty() &&
+        referenced.kind == SymbolKind::Procedure &&
         !contains_symbol(procedure_queue, reference)) {
       procedure_queue.push_back(reference);
     }
@@ -365,7 +384,8 @@ void collect_constant_procedures(
     const std::optional<SymbolId> declaration = add_definition(reference);
     if (!declaration.has_value()) return;
     const Symbol &referenced = package.symbols.symbol(reference);
-    if (hir != nullptr && referenced.kind == SymbolKind::Procedure &&
+    if (!selected_indices.empty() &&
+        referenced.kind == SymbolKind::Procedure &&
         !contains_symbol(procedure_queue, reference)) {
       procedure_queue.push_back(reference);
     }
@@ -399,10 +419,12 @@ void collect_constant_procedures(
     if (mentions_identifier(record.text, symbol.name)) add_reference(symbol_id);
   }
 
-  if (hir != nullptr && record.anchor.is_valid()) {
-    if (const HirProcedure *anchor =
-            find_hir_procedure(*hir, record.anchor)) {
-      for (SymbolId reference : hir_procedure_symbols(*hir, *anchor)) {
+  if (!selected_indices.empty() && record.anchor.is_valid()) {
+    const HirProcedureLocation anchor = find_hir_procedure(
+        procedures, selected_indices, record.anchor);
+    if (anchor.procedure != nullptr) {
+      for (SymbolId reference : hir_procedure_symbols(
+               *anchor.program, *anchor.procedure)) {
         add_reference(reference);
       }
     }
@@ -425,13 +447,15 @@ void collect_constant_procedures(
     const SymbolId procedure_id = procedure_queue[index];
     if (contains_symbol(traversed_procedures, procedure_id)) continue;
     traversed_procedures.push_back(procedure_id);
-    const HirProcedure *procedure = find_hir_procedure(*hir, procedure_id);
-    if (procedure == nullptr) {
+    HirProcedureLocation procedure = find_hir_procedure(
+        procedures, selected_indices, procedure_id);
+    if (procedure.procedure == nullptr) {
       const SymbolId source = declaration_symbol(package, procedure_id);
-      procedure = find_hir_procedure(*hir, source);
+      procedure = find_hir_procedure(procedures, selected_indices, source);
     }
-    if (procedure == nullptr) continue;
-    for (SymbolId reference : hir_procedure_symbols(*hir, *procedure)) {
+    if (procedure.procedure == nullptr) continue;
+    for (SymbolId reference : hir_procedure_symbols(
+             *procedure.program, *procedure.procedure)) {
       add_reference(reference);
     }
     if (!enforce_limit()) break;
@@ -2347,7 +2371,8 @@ bool enrich_agent_validation_context(
     const LoadedPackage &loaded,
     const SemanticPackage &package,
     const ConstantTable &constants,
-    const HirProgram &hir,
+    std::span<const ProcedureBodyHirResult> procedures,
+    std::span<const std::size_t> selected_indices,
     ValidationKind kind,
     std::span<const ValidationEntry> entries,
     std::vector<AgentValidationContext> &context,
@@ -2355,6 +2380,17 @@ bool enrich_agent_validation_context(
   const std::size_t initial_errors = diagnostics.error_count();
   const std::string kind_text(validation_kind_name(kind));
   constexpr std::size_t maximum_references_per_procedure = 256;
+  std::optional<std::size_t> previous;
+  for (std::size_t index : selected_indices) {
+    if (index >= procedures.size() ||
+        (previous.has_value() && index <= *previous)) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "agent validation context received an invalid selected body order");
+      return false;
+    }
+    previous = index;
+  }
 
   // A successful validation compile proves every selected file of this kind,
   // including helper-only files with no executable entry. Clear first so a
@@ -2376,8 +2412,9 @@ bool enrich_agent_validation_context(
       continue;
     }
     const Symbol &symbol = package.symbols.symbol(*found);
-    const HirProcedure *procedure = find_hir_procedure(hir, *found);
-    if (procedure == nullptr || !procedure->valid) {
+    const HirProcedureLocation procedure = find_hir_procedure(
+        procedures, selected_indices, *found);
+    if (procedure.procedure == nullptr || !procedure.procedure->valid) {
       diagnostics.error(
           symbol.name_range,
           "typed validation entry has no valid checked body");
@@ -2416,7 +2453,7 @@ bool enrich_agent_validation_context(
     procedure_context.report_size = entry.report_size;
 
     const std::vector<SymbolId> references =
-        hir_procedure_symbols(hir, *procedure);
+        hir_procedure_symbols(*procedure.program, *procedure.procedure);
     for (SymbolId reference_id : references) {
       if (!reference_id.is_valid()) continue;
       const Symbol &reference = package.symbols.symbol(reference_id);
@@ -2549,7 +2586,14 @@ std::string_view agent_loop_range_kind_name(AgentLoopRangeKind kind) {
   return "invalid";
 }
 
-bool append_agent_obligation(
+// Builds and appends one obligation while resolving body references only
+// through the explicitly selected procedure products. The public single-row
+// helper passes an empty selection because interface synthesis has no checked
+// runtime bodies. Workspace publication passes its exact current selection, so
+// local HIR IDs never escape the arena which owns them. Failure records a
+// diagnostic, marks the accumulated result invalid, and leaves any earlier
+// obligations intact in deterministic metadata order.
+[[nodiscard]] bool append_agent_obligation_with_selection(
     const PackageIdentity &identity,
     const SourceManager &sources,
     const LoadedPackage &loaded,
@@ -2562,7 +2606,8 @@ bool append_agent_obligation(
     AgentObligationResult &result,
     DiagnosticSink &diagnostics,
     std::span<const AgentValidationContext> validation_context,
-    const HirProgram *hir) {
+    std::span<const ProcedureBodyHirResult> procedures,
+    std::span<const std::size_t> selected_indices) {
   const std::size_t initial_errors = diagnostics.error_count();
   if (record_index >= metadata.records.size()) {
     diagnostics.error(
@@ -2613,7 +2658,8 @@ bool append_agent_obligation(
             constants,
             record,
             denials.resolved,
-            hir,
+            procedures,
+            selected_indices,
             diagnostics);
     obligation.visible_bindings = visible_bindings(
         identity,
@@ -2701,7 +2747,37 @@ bool append_agent_obligation(
   return ok;
 }
 
-AgentObligationResult build_agent_obligations(
+bool append_agent_obligation(
+    const PackageIdentity &identity,
+    const SourceManager &sources,
+    const LoadedPackage &loaded,
+    const SemanticPackage &package,
+    const ConstantTable &constants,
+    const AgentMetadataResult &metadata,
+    std::size_t record_index,
+    const ImportedProcedureContracts &imported_contracts,
+    const TargetProfile &target,
+    AgentObligationResult &result,
+    DiagnosticSink &diagnostics,
+    std::span<const AgentValidationContext> validation_context) {
+  return append_agent_obligation_with_selection(
+      identity,
+      sources,
+      loaded,
+      package,
+      constants,
+      metadata,
+      record_index,
+      imported_contracts,
+      target,
+      result,
+      diagnostics,
+      validation_context,
+      {},
+      {});
+}
+
+AgentObligationResult build_selected_agent_obligations(
     const PackageIdentity &identity,
     const SourceManager &sources,
     const LoadedPackage &loaded,
@@ -2712,11 +2788,24 @@ AgentObligationResult build_agent_obligations(
     const TargetProfile &target,
     DiagnosticSink &diagnostics,
     std::span<const AgentValidationContext> validation_context,
-    const HirProgram *hir) {
+    std::span<const ProcedureBodyHirResult> procedures,
+    std::span<const std::size_t> selected_indices) {
   AgentObligationResult result;
   result.ok = true;
+  std::optional<std::size_t> previous;
+  for (std::size_t index : selected_indices) {
+    if (index >= procedures.size() ||
+        (previous.has_value() && index <= *previous)) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "agent obligations received an invalid selected body order");
+      result.ok = false;
+      return result;
+    }
+    previous = index;
+  }
   for (std::size_t index = 0; index < metadata.records.size(); ++index) {
-    (void)append_agent_obligation(
+    (void)append_agent_obligation_with_selection(
         identity,
         sources,
         loaded,
@@ -2729,9 +2818,42 @@ AgentObligationResult build_agent_obligations(
         result,
         diagnostics,
         validation_context,
-        hir);
+        procedures,
+        selected_indices);
   }
   return result;
+}
+
+AgentObligationResult build_agent_obligations(
+    const PackageIdentity &identity,
+    const SourceManager &sources,
+    const LoadedPackage &loaded,
+    const SemanticPackage &package,
+    const ConstantTable &constants,
+    const AgentMetadataResult &metadata,
+    const ImportedProcedureContracts &imported_contracts,
+    const TargetProfile &target,
+    DiagnosticSink &diagnostics,
+    std::span<const AgentValidationContext> validation_context,
+    std::span<const ProcedureBodyHirResult> procedures) {
+  std::vector<std::size_t> selected;
+  selected.reserve(procedures.size());
+  for (std::size_t index = 0; index < procedures.size(); ++index) {
+    selected.push_back(index);
+  }
+  return build_selected_agent_obligations(
+      identity,
+      sources,
+      loaded,
+      package,
+      constants,
+      metadata,
+      imported_contracts,
+      target,
+      diagnostics,
+      validation_context,
+      procedures,
+      selected);
 }
 
 } // namespace draft

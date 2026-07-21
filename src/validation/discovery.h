@@ -9,12 +9,14 @@
 #pragma once
 
 #include "sema/analyzer.h"
-#include "sema/hir.h"
+#include "sema/body_checker.h"
 #include "source/diagnostic.h"
 #include "workspace/package.h"
 #include "workspace/workspace.h"
 
 #include <cstdint>
+#include <cstddef>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -49,14 +51,17 @@ struct ValidationEntry {
 
 // Discovers one package in declaration order. Invalid candidate signatures are
 // diagnosed at their declaration and omitted; the enclosing compilation fails
-// through the shared DiagnosticSink.
+// through the shared DiagnosticSink. selected_indices address procedure-owned
+// HIR products in canonical selected-program order. Discovery needs only body
+// presence and therefore never constructs a package HIR projection.
 [[nodiscard]] std::vector<ValidationEntry> discover_validation_entries(
     ValidationKind kind,
     std::string_view core_root_identity,
     const PackageIdentity &identity,
     const LoadedPackage &loaded,
     const SemanticPackage &semantic,
-    const HirProgram &hir,
+    std::span<const ProcedureBodyHirResult> procedures,
+    std::span<const std::size_t> selected_indices,
     DiagnosticSink &diagnostics);
 
 // Package graph discovery order is deterministic but not the language's
