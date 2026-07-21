@@ -206,7 +206,7 @@ void test_checked_test_harness(TestState &state) {
         result.packages[result.graph.root_package.value];
     EXPECT(state, root_package.has_value());
     if (root_package.has_value()) {
-      const std::string &llvm = root_package->llvm.text;
+      const std::string &llvm = root_package->llvm.static_data.text;
       EXPECT(state, llvm.find("define i32 @main") != std::string::npos);
       EXPECT(state, llvm.find(
           "call void @\"draft.workspace.app.test_5Falpha\"") !=

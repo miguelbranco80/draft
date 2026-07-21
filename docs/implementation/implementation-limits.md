@@ -94,14 +94,12 @@ temporary projection is explicit remaining work in the
 [semantic work graph implementation plan](semantic-work-graph-implementation-plan.md),
 not alternate final architecture paths.
 
-The LLVM adapter can now emit one independently compilable module for package
-static data and one for each concrete MIR procedure. Function units define one
-Draft symbol and declare package storage and sibling functions; the static unit
-owns globals, runtime definitions, and the hosted entry. Compiler orchestration
-and the native object planner still consume the compatibility package-wide
-module, so live `MachineFunction` and `ArtifactLayout` products have not yet
-replaced package object tasks. That final native migration is step 10 of the
-same plan.
+LLVM and native lowering now follow live semantic products. Package static data
+owns one independently compilable unit; each concrete MIR procedure owns one
+`MachineFunction` unit; and each package publishes a deterministic
+`ArtifactLayout` over static data, functions, and assembly. The object planner
+consumes only that layout. No concatenated package LLVM module or package object
+remains in compiler state.
 
 ## Native host and instrumentation limits
 
@@ -109,7 +107,7 @@ Status: explicit two-target bootstrap boundary.
 
 The bootstrap compiler runs and executes its complete native integration suite
 on both AArch64 macOS and AArch64 GNU/Linux. It links a selected LLVM 22 library
-for ordinary package-object emission. Matching Clang/`ld.lld`/`llvm-ar`/
+for ordinary split-unit object emission. Matching Clang/`ld.lld`/`llvm-ar`/
 `dsymutil`, the Apple linker, `libtool`, SDK, and system runtime remain ordinary
 tooling prerequisites rather than Draft program inputs. Draft currently emits
 only AArch64 machine code; x86-64 hosts can build and sanitize the bootstrap

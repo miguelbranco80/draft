@@ -145,6 +145,41 @@ struct ExternalProcedureBodyProduct {
   SemanticProductId requester;
 };
 
+// One compiler-owned native input in the exact order eventually presented to
+// object emission and the platform linker. index addresses the field selected
+// by kind: zero for PackageStaticData, CompiledPackage::llvm.machine_functions
+// for MachineFunction, or CompiledPackage::assembly_sources for
+// PackageAssembly. producer is the immutable semantic product which made the
+// bytes ready. Rows contain no physical paths and may be serialized or compared
+// for command-local determinism.
+enum class PackageArtifactInputKind {
+  PackageStaticData,
+  MachineFunction,
+  PackageAssembly,
+};
+
+struct PackageArtifactInput {
+  PackageArtifactInputKind kind = PackageArtifactInputKind::PackageStaticData;
+  std::size_t index = 0;
+  SemanticProductId producer;
+};
+
+struct PackageArtifactLayout {
+  bool ok = false;
+  std::vector<PackageArtifactInput> inputs;
+};
+
+// LLVM emission remains split at the same ownership boundary as the semantic
+// graph. static_data defines package globals, runtime support, and any hosted
+// entry. machine_functions aligns one-for-one with
+// PackageSemanticProducts::machine_functions and each row defines exactly one
+// Draft procedure. No concatenated package module is retained.
+struct LlvmPackageEmission {
+  bool ok = false;
+  LlvmIrResult static_data;
+  std::vector<LlvmIrResult> machine_functions;
+};
+
 // One row owns every representation of one package. Keeping phase products
 // together makes driver commands thin and gives later manifests a single place
 // to collect canonical inputs without rerunning semantic analysis.
@@ -207,7 +242,8 @@ struct CompiledPackage {
   NativeInteropResult native_interop;
   AssemblyProgram assembly;
   MirLoweringResult mir;
-  LlvmIrResult llvm;
+  LlvmPackageEmission llvm;
+  PackageArtifactLayout artifact_layout;
 };
 
 // CompileWorkspaceProgress is the aggregate command boundary. It advances
@@ -220,9 +256,9 @@ struct CompiledPackage {
 // declarations, bodies, effects, denials, and native-interop facts but no MIR.
 // ValidationDiscovery additionally owns the canonical test or benchmark entry
 // set but still has no target IR. TargetLowering owns every requested assembly
-// program, MIR package, and LLVM module. The state is never serialized or
-// cached; it exists so later command stages can continue the exact checked
-// graph without guessing from empty output vectors.
+// program, procedure-owned MIR, split LLVM units, and artifact layout. The
+// state is never serialized or cached; it exists so later command stages can
+// continue the exact checked graph without guessing from empty output vectors.
 enum class CompileWorkspaceProgress {
   Empty,
   InterfaceDiscovery,
@@ -391,6 +427,11 @@ struct PackageSemanticProducts {
   SemanticProductId package_assembly;
   std::vector<std::size_t> mir_body_work_indices;
   std::vector<SemanticProductId> mir_procedures;
+  // machine_functions aligns one-for-one with mir_procedures and the emitted
+  // LLVM function units. artifact_layout is the package publication barrier
+  // over package_static_data, package_assembly, and every machine function.
+  std::vector<SemanticProductId> machine_functions;
+  SemanticProductId artifact_layout;
   // Parallel to the body generation's TypeStore after at least one body wave.
   // Declaration-baseline types contain an invalid product because their
   // package interface is the producer barrier. A body-appended TypeId names the
@@ -419,9 +460,9 @@ struct WorkspaceSemanticProducts {
   // package symbol; other products contain an invalid SymbolId.
   std::vector<SymbolId> declaration_by_product;
   // Parallel to SemanticProductGraph. ProcedureTemplateBody,
-  // ProcedureInstanceBody, DirectEffectSummary, DenialResult, and MirProcedure
-  // rows name their exact package-local procedure symbol; every other product
-  // contains an invalid SymbolId.
+  // ProcedureInstanceBody, DirectEffectSummary, DenialResult, MirProcedure,
+  // and MachineFunction rows name their exact package-local procedure symbol;
+  // every other product contains an invalid SymbolId.
   std::vector<SymbolId> procedure_by_product;
   // Parallel to SemanticProductGraph. Type facet rows name their canonical
   // command-local TypeId; other products contain an invalid TypeId.

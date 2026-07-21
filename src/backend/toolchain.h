@@ -1,10 +1,11 @@
 // Native artifact adapter for AArch64 objects, archives, and final links.
 //
 // This module receives a completely lowered Draft program, schedules its
-// independent package objects through embedded LLVM, and invokes the remaining
-// selected platform tools to materialize the requested artifact. Tool paths are
-// operational configuration: they do not enter resolution manifests or
-// synthesis identities. The adapter owns the exact argument/publication
+// independent package-static, machine-function, and assembly objects, and
+// invokes the remaining selected platform tools to materialize the requested
+// artifact. Tool paths are operational configuration: they do not enter
+// resolution manifests or synthesis identities. The adapter owns the exact
+// argument/publication
 // contract for each Draft target and keeps language semantics in MIR/LLVM
 // lowering rather than inferring them from the host environment.
 //
@@ -53,10 +54,11 @@ enum class NativeInstrumentationProfile {
   AddressSanitizer,
 };
 
-// Ordinary native builds emit package modules through the LLVM library linked
-// into draftc. ExternalClangOracle preserves the former subprocess path only so
-// qualification tests can compile the exact same IR with an independent driver;
-// it is not a user build mode or a second semantic backend.
+// Ordinary native builds emit every artifact-layout LLVM unit through the
+// library linked into draftc. ExternalClangOracle preserves the former
+// subprocess path only so qualification tests can compile the exact same IR
+// with an independent driver; it is not a user build mode or a second semantic
+// backend.
 enum class NativeObjectEmitter {
   InProcessLlvm,
   ExternalClangOracle,
@@ -132,14 +134,15 @@ struct NativeBuildResult {
   std::vector<VerifiedRuntimeAssetInput> runtime_assets;
 };
 
-// Emits each package module in-process and materializes the requested native
-// artifact. Object mode performs a relocatable link over every package object;
-// archive and dynamic-library modes retain every package and package-assembly
-// object; assembly mode produces a directory with one collision-free source per
-// module/input. Remaining host-tool arguments are passed directly to exec rather
-// than through a shell. Runtime assets are verified as external program inputs
-// and returned to the caller, but are never linker operands. The linked LLVM
-// version is reported for diagnostics/evidence and is not a semantic pin.
+// Emits each package-static and machine-function unit in-process and
+// materializes the requested native artifact. Object mode performs a
+// relocatable link over every layout object; archive and dynamic-library modes
+// retain every LLVM and package-assembly object; assembly mode produces a
+// directory with one collision-free source per unit/input. Remaining host-tool
+// arguments are passed directly to exec rather than through a shell. Runtime
+// assets are verified as external program inputs and returned to the caller,
+// but are never linker operands. The linked LLVM version is reported for
+// diagnostics/evidence and is not a semantic pin.
 [[nodiscard]] NativeBuildResult build_native_artifact(
     const TargetProfile &target,
     const CompileWorkspaceResult &compiled,

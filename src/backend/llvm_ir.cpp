@@ -866,10 +866,10 @@ private:
   }
 
   void emit_runtime_declarations() {
-    // LLVM intrinsics are declared in every package module that may use them.
-    // The Draft runtime helpers below are different: dependency modules only
-    // declare them, while the executable root owns their single definitions
-    // and the one process-wide root context.
+    // LLVM intrinsics are declared in every native unit that may use them. The
+    // Draft runtime helpers below are different: machine-function and
+    // dependency static-data units only declare them, while the root static
+    // unit owns their single definitions and the process-wide root context.
     output_ << "declare void @llvm.trap() cold noreturn nounwind\n"
             << "declare void @llvm.dbg.label(metadata)\n"
             << "declare i16 @llvm.bswap.i16(i16)\n"

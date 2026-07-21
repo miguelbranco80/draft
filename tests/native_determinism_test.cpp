@@ -66,7 +66,7 @@ using ArtifactSnapshot =
   for (const std::optional<draft::CompiledPackage> &package :
        compiled.packages) {
     if (!package.has_value()) continue;
-    count += 1 + package->assembly_sources.size();
+    count += package->artifact_layout.inputs.size();
   }
   return count;
 }
@@ -263,18 +263,21 @@ void test_repeated_native_link_is_byte_identical(TestState &state) {
         artifact.kind);
   }
 
-  // Corrupt two independent modules after planning facts have been produced.
-  // Both workers may fail in either order, but only task 0's reason is
-  // diagnosed and no canonical object or complete-looking correlation map may
-  // be published from the failed ready set.
+  // Corrupt two independent package-static units after planning facts have
+  // been produced. Workers may fail in either order, but only the lowest task
+  // ID's reason is diagnosed and no canonical object or complete-looking
+  // correlation map may be published from the failed ready set.
   if (executable.packages.size() >= 2 &&
       executable.packages[0].has_value() &&
       executable.packages[1].has_value()) {
     draft::CompileWorkspaceResult broken = executable;
-    broken.packages[0]->llvm.text = "not an LLVM module for task zero\n";
-    broken.packages[1]->llvm.text = "not an LLVM module for task one\n";
+    broken.packages[0]->llvm.static_data.text =
+        "not an LLVM module for task zero\n";
+    broken.packages[1]->llvm.static_data.text =
+        "not an LLVM module for a later task\n";
     const std::string first_identity =
-        draft::display_package_identity(broken.packages[0]->identity);
+        draft::display_package_identity(broken.packages[0]->identity) +
+        " static data";
     const std::filesystem::path failed_directory = temporary / "failed-ready-set";
     draft::NativeBuildOptions failed_options;
     failed_options.build_directory = (failed_directory / "build").string();
@@ -291,7 +294,7 @@ void test_repeated_native_link_is_byte_identical(TestState &state) {
           std::string::npos);
     }
     EXPECT(state, !std::filesystem::exists(
-        failed_directory / "build" / "package-0.o"));
+        failed_directory / "build" / "package-0-static.o"));
     EXPECT(state, !std::filesystem::exists(
         failed_directory / "build" / "draft-source-correlation.json"));
   } else {

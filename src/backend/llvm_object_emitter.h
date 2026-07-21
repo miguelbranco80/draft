@@ -1,11 +1,12 @@
-// In-process LLVM object and assembly emission for one lowered Draft package.
+// In-process LLVM object and assembly emission for one lowered Draft unit.
 //
 // This module is the only bootstrap layer that links LLVM's native target
-// library. It accepts the compiler's inspectable textual LLVM module plus a
-// complete Draft target profile, parses and verifies the module in a fresh
-// LLVM context, checks LLVM's target-machine data layout against the profile,
-// and returns emitted bytes in memory. It performs no filesystem I/O, process
-// launch, package scheduling, linking, or diagnostic publication.
+// library. It accepts one complete textual LLVM module--either package-static
+// data or one machine function--plus a complete Draft target profile, parses
+// and verifies the module in a fresh LLVM context, checks LLVM's target-machine
+// data layout against the profile, and returns emitted bytes in memory. It
+// performs no filesystem I/O, process launch, package scheduling, linking, or
+// diagnostic publication.
 //
 // Every invocation owns an isolated LLVM context, module, target machine, and
 // output buffer. Calls may therefore execute concurrently as long as the linked

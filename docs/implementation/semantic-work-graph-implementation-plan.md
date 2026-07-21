@@ -312,18 +312,23 @@ gate.
    multi-worker output, diagnostics, generated source, and failure selection as
    identical.
 
-10. **Native product consumption.** Emit independent machine functions from MIR
+10. **Native product consumption — complete.** Emit independent machine functions from MIR
     products, keep package static data and assembly explicit, and perform symbol,
     section, relocation, and linker-input layout as deterministic publication
     barriers. Start conservatively by emitting every concrete procedure; any
     later demand-only emission must use the roots defined by the target-state
     document.
 
-    The LLVM adapter boundary is prepared: it can emit one complete package
-    static-data module and one complete single-procedure module with exact
-    definition/declaration ownership. Focused tests compile every split unit in
-    an isolated LLVM context. Compiler graph publication, native task planning,
-    and canonical artifact layout still need to consume those operations.
+    `PackageStaticData` emits the complete non-function LLVM unit in its own
+    task. Every concrete `MirProcedure` row produces one live `MachineFunction`
+    row and isolated single-definition LLVM unit in a workspace-wide wave. One
+    `ArtifactLayout` row per package then publishes static data, functions, and
+    selected assembly in canonical order. Native object planning consumes only
+    those layouts and runs every LLVM unit or assembly source as one independent
+    task. The compiler retains no concatenated package LLVM module. Tests prove
+    exact product dependencies, one-/four-worker IR identity, cross-package
+    ready sets, split-module verification, artifact ordering, native parity,
+    and byte-for-byte artifact determinism.
 
 11. **Final-state deletion and qualification.** Remove `PackageSemanticProgress`,
     declaration/body generations, semantic retry counters, package-wide HIR/MIR

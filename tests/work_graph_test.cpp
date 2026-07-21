@@ -2,8 +2,8 @@
 //
 // These tests exercise graph validation, true concurrent execution, stable
 // task-indexed output, and transitive failure blocking without involving a
-// compiler subsystem. Native LLVM tests separately prove that package object
-// tasks obey this base-level operation contract.
+// compiler subsystem. Native LLVM tests separately prove that artifact-layout
+// object tasks obey this base-level operation contract.
 
 #include "base/work_graph.h"
 

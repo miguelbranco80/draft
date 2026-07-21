@@ -95,7 +95,9 @@ build/draftc target [--target aarch64-macos|aarch64-linux]
 
 `check` runs the provider-free front end and semantic pipeline. If the program
 contains saved `...` expansions, it loads and revalidates them. It never starts
-a provider. `emit-llvm` additionally lowers MIR and prints each package module.
+a provider. `emit-llvm` additionally lowers MIR and prints each package-static
+unit followed by its source-ordered single-procedure units. Every printed block
+is a complete independently compilable LLVM module.
 
 ## Expand checked source
 
@@ -171,24 +173,26 @@ roots are rejected. `-o` is accepted only when exactly one root is selected;
 an aggregate build with several discovered or explicit roots must use their
 independent default paths.
 
-The native adapter emits package objects through the LLVM 22 library linked into
-`draftc`. Clang, `dsymutil`, and LLVM utilities default to the matching tools
-directory selected while building the compiler. On macOS it additionally uses
-the Apple linker/SDK and `libtool`; on Linux it uses `ld.lld`, `llvm-ar`, and the
-target's libc development files. These installations are compiler operational
-prerequisites, not resolution-manifest inputs. Ordinary builds do not execute a
-toolchain-version probe.
+The native adapter emits package-static and single-procedure objects through
+the LLVM 22 library linked into `draftc`. Clang, `dsymutil`, and LLVM utilities
+default to the matching tools directory selected while building the compiler.
+On macOS it additionally uses the Apple linker/SDK and `libtool`; on Linux it
+uses `ld.lld`, `llvm-ar`, and the target's libc development files. These
+installations are compiler operational prerequisites, not resolution-manifest
+inputs. Ordinary builds do not execute a toolchain-version probe.
 
-All completely lowered package modules and package-assembly inputs form one
-bounded native ready set. Workers emit only task-local bytes; after they join,
-the compiler reports the lowest task-ID failure or publishes files and linker
-inputs in canonical task order. `--timings=all` lists these task measurements in
-that same order and reports `native object tasks` and `native object workers`
-counters. Worker scheduling never changes diagnostics or artifact identity.
+All completely lowered package-static units, single-procedure units, and
+package-assembly inputs form one bounded native ready set. Workers emit only
+task-local bytes; after they join, the compiler reports the lowest task-ID
+failure or publishes files and linker inputs in canonical artifact-layout
+order. `--timings=all` lists these task measurements in that same order and
+reports `native object tasks` and `native object workers` counters. Worker
+scheduling never changes diagnostics or artifact identity.
 
-Assembly output is a directory containing one `.s` file per package module and
-one exact copied source per package assembly input. Object output performs a
-relocatable link over the complete package graph. Static archives use
+Assembly output is a directory containing one `.s` file per package-static or
+single-procedure unit and one exact copied source per package assembly input.
+Object output performs a relocatable link over the complete package graph.
+Static archives use
 deterministic metadata, shared libraries receive a platform install name or
 SONAME, and executables add hosted entry glue.
 

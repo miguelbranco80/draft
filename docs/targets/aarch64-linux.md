@@ -64,7 +64,7 @@ The initial cross-target qualification used LLVM/LLD 22.1.8 and an Ubuntu
 24.04 arm64 sysroot containing glibc 2.39, Linux 6.8 UAPI headers, and the GCC
 13 runtime. That run is preserved in the
 [qualification archive](../history/releases/aarch64-linux-qualification.md).
-Current native AArch64 Linux CI links LLVM 22 in-process for package-object
+Current native AArch64 Linux CI links LLVM 22 in-process for split-unit object
 emission and uses the matching Clang/LLD utilities for assembly and final links.
 It passes the language tour, console output,
 argv/environment/process/file operations, target-qualified ELF package

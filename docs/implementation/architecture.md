@@ -98,8 +98,9 @@ conceptual diagram alone. An ordinary handwritten `check` constructs one graph:
 interface discovery installs declarations and types, then semantic continuation
 checks bodies, effects, denials, and completed interfaces on those same package
 rows. A native `build` continues that graph directly through MIR/LLVM, emits
-independent package objects through embedded LLVM, then invokes only the
-remaining platform tools; it does not reload or recheck handwritten source.
+independent package-static and single-procedure objects through embedded LLVM,
+then invokes only the remaining platform tools; it does not reload or recheck
+handwritten source.
 `--timings` exposes resolution rounds as in-memory source transitions. A
 checked complete-file overlay is parsed into the existing workspace graph;
 package/root/import IDs remain stable. Target selection, source generations,
@@ -258,17 +259,17 @@ procedures. Each split unit can therefore enter a private LLVM context and
 produce an object independently; no textual fragment linker or shared LLVM
 module is required.
 
-After every selected package has reached target lowering, the current backend
-derives a closed native work graph in canonical package/module/assembly order.
-Package modules have already expressed imported symbols as external
-declarations, so their object tasks are independent and form one bounded ready
-set. Each worker owns an isolated LLVM context or private assembler paths and
-writes one result slot. The main thread joins the set, selects diagnostics by
-lowest stable task ID, and only then publishes files and linker inputs in
-task-ID order. Moving compiler orchestration and artifact layout from the
-compatibility package operation to the split static/function operations is the
-remaining native-product migration. In both forms, parallel scheduling changes
-elapsed time, never artifacts or diagnostics.
+Compiler orchestration consumes only the split operations. `PackageStaticData`
+owns the static unit, every concrete `MirProcedure` produces one
+`MachineFunction`, and one `ArtifactLayout` product per package publishes the
+canonical static/function/assembly input sequence. After every selected package
+reaches target lowering, those layout rows form one closed native ready set.
+Each worker owns an isolated LLVM context or private assembler paths and writes
+one result slot. The main thread joins the set, selects diagnostics by lowest
+stable task ID, and only then publishes files and linker inputs in task-ID
+order. Parallel scheduling changes elapsed time, never artifacts or
+diagnostics. The complete-package LLVM operation remains a direct subsystem
+test convenience and is not a compiler or native-build path.
 
 ### Internal representations
 

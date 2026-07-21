@@ -910,6 +910,13 @@ void bind_handwritten_program_identity(
         superseded.end(),
         products.mir_procedures.begin(),
         products.mir_procedures.end());
+    superseded.insert(
+        superseded.end(),
+        products.machine_functions.begin(),
+        products.machine_functions.end());
+    if (products.artifact_layout.is_valid()) {
+      superseded.push_back(products.artifact_layout);
+    }
   }
   if (!superseded.empty()) {
     std::string reason;
@@ -934,11 +941,14 @@ void bind_handwritten_program_identity(
     products.package_assembly = {};
     products.mir_body_work_indices.clear();
     products.mir_procedures.clear();
+    products.machine_functions.clear();
+    products.artifact_layout = {};
     package.direct_effects = {};
     package.effects = {};
     package.assembly = {};
     package.mir = {};
     package.llvm = {};
+    package.artifact_layout = {};
     if (package.semantic_progress == PackageSemanticProgress::ClosureReady) {
       package.semantic_progress = PackageSemanticProgress::BodiesReady;
     }
@@ -1137,6 +1147,13 @@ void bind_handwritten_program_identity(
         superseded.end(),
         products.mir_procedures.begin(),
         products.mir_procedures.end());
+    superseded.insert(
+        superseded.end(),
+        products.machine_functions.begin(),
+        products.machine_functions.end());
+    if (products.artifact_layout.is_valid()) {
+      superseded.push_back(products.artifact_layout);
+    }
     if (products.opaque_synthesis_set.is_valid())
       superseded.push_back(products.opaque_synthesis_set);
     if (products.package_interface.is_valid()) {
@@ -1177,6 +1194,8 @@ void bind_handwritten_program_identity(
     products.package_assembly = {};
     products.mir_body_work_indices.clear();
     products.mir_procedures.clear();
+    products.machine_functions.clear();
+    products.artifact_layout = {};
     products.body_type_producer.clear();
     products.declaration_inputs.clear();
     products.declaration_inputs.push_back(result.semantic_products.target);
@@ -5165,18 +5184,59 @@ enum class PackageLoweringBarrierKind {
   ParsedAssembly,
 };
 
-// One task slot owns either the package-static barrier or the complete assembly
-// payload for one selected package. Static data and captured standalone
-// assembly bytes are already immutable compiler state and need no duplicate
-// payload. Inline-assembly analysis visits each procedure-owned HIR arena
-// separately and concatenates only its source-keyed AssemblyRegion rows; it
-// never constructs a package HIR program.
+// Freezes the exact selected concrete runtime body order once, before either
+// package-static emission or MIR scheduling uses it. Symbolic templates and
+// compile-time-only procedures remain checked semantic products but have no
+// runtime artifact. The output order is the selected body-product order and is
+// therefore independent of worker completion.
+[[nodiscard]] bool select_runtime_procedure_work(
+    const CompiledPackage &package,
+    std::vector<std::size_t> &selected,
+    DiagnosticSink &diagnostics) {
+  selected.clear();
+  for (std::size_t work_index : package.selected_procedure_work) {
+    if (work_index >= package.bodies.procedures.size()) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "selected runtime body is outside the HIR product table");
+      return false;
+    }
+    const std::vector<HirProcedure> &procedures =
+        package.bodies.procedures[work_index].program.procedures();
+    if (procedures.empty()) continue;
+    if (procedures.size() != 1) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "one procedure body product owns multiple runtime candidates");
+      return false;
+    }
+    if (procedures.front().parametric_template ||
+        procedures.front().compile_time_only) {
+      continue;
+    }
+    selected.push_back(work_index);
+  }
+  return true;
+}
+
+// One task slot owns either the package-static product or the complete assembly
+// payload for one selected package. When LLVM is requested, the static task
+// emits the unit which defines globals, runtime support, and any hosted entry;
+// otherwise the same product is only the immutable global/constants barrier.
+// Captured standalone assembly bytes already live in compiler state. Inline-
+// assembly analysis visits each procedure-owned HIR arena separately and
+// concatenates only its source-keyed AssemblyRegion rows; it never constructs a
+// package HIR program.
 struct PackageLoweringBarrierTaskSlot {
   PackageLoweringBarrierKind kind = PackageLoweringBarrierKind::StaticData;
   const SourceManager *sources = nullptr;
   const LoadedPackage *loaded = nullptr;
   const TargetProfile *target = nullptr;
   const CompiledPackage *package = nullptr;
+  bool emit_llvm = false;
+  LlvmIrOptions llvm_options;
+  std::vector<SymbolId> runtime_procedures;
+  LlvmIrResult static_data;
   AssemblyProgram assembly;
 };
 
@@ -5200,7 +5260,30 @@ struct PackageLoweringBarrierWaveExecution {
   PackageLoweringBarrierTaskSlot &slot = (*context.slots)[index];
   SemanticProductOutcome &outcome = (*context.outcomes)[index];
   if (slot.kind == PackageLoweringBarrierKind::StaticData) {
-    outcome.kind = SemanticProductOutcomeKind::Complete;
+    if (!slot.emit_llvm) {
+      outcome.kind = SemanticProductOutcomeKind::Complete;
+      return true;
+    }
+    if (slot.sources == nullptr || slot.target == nullptr ||
+        slot.package == nullptr) {
+      failure = "package-static worker received incomplete package inputs";
+      return false;
+    }
+    slot.static_data = emit_llvm_package_static_data(
+        *slot.target,
+        *slot.sources,
+        slot.llvm_options,
+        slot.package->bodies.package,
+        slot.package->c_abi,
+        slot.package->declarations.global_initializers,
+        slot.runtime_procedures,
+        outcome.diagnostics);
+    outcome.kind = slot.static_data.ok
+        ? SemanticProductOutcomeKind::Complete
+        : SemanticProductOutcomeKind::Error;
+    if (!slot.static_data.ok) {
+      outcome.failure = "package static data failed LLVM emission";
+    }
     return true;
   }
   if (slot.sources == nullptr || slot.loaded == nullptr ||
@@ -5240,11 +5323,16 @@ struct PackageLoweringBarrierWaveExecution {
 // Publishes package static-data and parsed-assembly barriers in one workspace
 // wave. Both products name the selected body/denial generation explicitly;
 // static data additionally names every ABI row because native global layout
-// consumes that complete target facet. Independent packages may analyze their
-// assembly concurrently, while publication remains PackageId/product ordered.
+// and the independently compilable LLVM unit consume that complete target
+// facet. Independent packages may emit static data and analyze assembly
+// concurrently, while publication remains PackageId/product ordered.
 [[nodiscard]] bool run_workspace_lowering_barriers(
     const SourceManager &sources,
     const TargetProfile &target,
+    bool emit_llvm,
+    bool emit_program_entry,
+    ValidationKind validation_kind,
+    std::span<const ValidationEntry> validation_entries,
     std::size_t worker_count,
     TimingRecorder *timings,
     CompileWorkspaceResult &result,
@@ -5260,6 +5348,12 @@ struct PackageLoweringBarrierWaveExecution {
       diagnostics.error(
           SourceRange::invalid(),
           "package lowering barriers were already published");
+      return false;
+    }
+    if (!select_runtime_procedure_work(
+            *result.packages[package_index],
+            products.mir_body_work_indices,
+            diagnostics)) {
       return false;
     }
     std::vector<SemanticProductId> static_dependencies{
@@ -5350,6 +5444,33 @@ struct PackageLoweringBarrierWaveExecution {
     slots[index].loaded = &result.graph.packages[owner.value].loaded;
     slots[index].target = &target;
     slots[index].package = &*result.packages[owner.value];
+    slots[index].emit_llvm = emit_llvm;
+    if (slots[index].kind == PackageLoweringBarrierKind::StaticData &&
+        emit_llvm) {
+      slots[index].llvm_options.package =
+          result.graph.packages[owner.value].identity;
+      slots[index].llvm_options.emit_runtime_support =
+          owner.value == result.graph.root_package.value;
+      slots[index].llvm_options.emit_program_entry =
+          emit_program_entry && slots[index].llvm_options.emit_runtime_support;
+      if (slots[index].llvm_options.emit_runtime_support) {
+        slots[index].llvm_options.validation_kind = validation_kind;
+        slots[index].llvm_options.validation_entries.assign(
+            validation_entries.begin(), validation_entries.end());
+      }
+      const PackageSemanticProducts &products =
+          result.semantic_products.packages[owner.value];
+      slots[index].runtime_procedures.reserve(
+          products.mir_body_work_indices.size());
+      for (std::size_t work_index : products.mir_body_work_indices) {
+        slots[index].runtime_procedures.push_back(
+            slots[index]
+                .package->bodies.procedures[work_index]
+                .program.procedures()
+                .front()
+                .symbol);
+      }
+    }
   }
   WorkGraph execution_graph;
   execution_graph.tasks.resize(slots.size());
@@ -5397,13 +5518,21 @@ struct PackageLoweringBarrierWaveExecution {
     return false;
   }
   for (std::size_t index = 0; index < wave.products.size(); ++index) {
-    if (slots[index].kind != PackageLoweringBarrierKind::ParsedAssembly) {
-      continue;
-    }
     const PackageId owner = result.semantic_products.package_by_product[
         wave.products[index].value];
-    result.packages[owner.value]->assembly =
-        std::move(slots[index].assembly);
+    CompiledPackage &package = *result.packages[owner.value];
+    if (slots[index].kind == PackageLoweringBarrierKind::StaticData) {
+      if (emit_llvm) {
+        package.llvm.static_data = std::move(slots[index].static_data);
+        if (timings != nullptr) {
+          timings->add_counter("LLVM static data modules emitted", 1);
+          timings->add_counter(
+              "LLVM IR bytes", package.llvm.static_data.text.size());
+        }
+      }
+    } else {
+      package.assembly = std::move(slots[index].assembly);
+    }
   }
   return barriers_ok;
 }
@@ -5488,8 +5617,7 @@ struct MirProcedureWaveExecution {
     CompiledPackage &package = *result.packages[package_index];
     PackageSemanticProducts &products =
         result.semantic_products.packages[package_index];
-    if (!products.mir_body_work_indices.empty() ||
-        !products.mir_procedures.empty() ||
+    if (!products.mir_procedures.empty() ||
         !package.mir.program.procedures().empty()) {
       diagnostics.error(
           SourceRange::invalid(),
@@ -5499,7 +5627,7 @@ struct MirProcedureWaveExecution {
     package.mir = {};
     package.mir.ok = true;
     const PackageId owner{static_cast<std::uint32_t>(package_index)};
-    for (std::size_t work_index : package.selected_procedure_work) {
+    for (std::size_t work_index : products.mir_body_work_indices) {
       if (work_index >= package.bodies.procedures.size()) {
         diagnostics.error(
             SourceRange::invalid(),
@@ -5508,7 +5636,6 @@ struct MirProcedureWaveExecution {
       }
       const std::vector<HirProcedure> &procedures =
           package.bodies.procedures[work_index].program.procedures();
-      if (procedures.empty()) continue;
       if (procedures.size() != 1) {
         diagnostics.error(
             SourceRange::invalid(),
@@ -5516,9 +5643,6 @@ struct MirProcedureWaveExecution {
         return false;
       }
       const HirProcedure &procedure = procedures.front();
-      if (procedure.parametric_template || procedure.compile_time_only) {
-        continue;
-      }
       const std::optional<SemanticProductId> denial =
           denial_product_for_body(products, work_index);
       if (!denial.has_value()) {
@@ -5542,7 +5666,6 @@ struct MirProcedureWaveExecution {
       if (!product.is_valid()) return false;
       result.semantic_products.procedure_by_product[product.value] =
           procedure.symbol;
-      products.mir_body_work_indices.push_back(work_index);
       products.mir_procedures.push_back(product);
       expected_wave.push_back(product);
     }
@@ -5652,6 +5775,418 @@ struct MirProcedureWaveExecution {
     }
   }
   return mir_ok;
+}
+
+// One worker owns the complete textual LLVM module for one MIR product. The
+// input spans borrow immutable package state for the duration of the joined
+// wave; the result and diagnostics remain task-local until product-ordered
+// publication.
+struct MachineFunctionTaskSlot {
+  const SourceManager *sources = nullptr;
+  const TargetProfile *target = nullptr;
+  const SemanticPackage *semantic = nullptr;
+  const Aarch64CAbiTable *abi = nullptr;
+  const std::vector<SymbolId> *runtime_procedures = nullptr;
+  const MirProcedure *procedure = nullptr;
+  LlvmIrOptions options;
+  std::size_t procedure_ordinal = 0;
+  std::size_t package_function_index = 0;
+  LlvmIrResult llvm;
+};
+
+struct MachineFunctionWaveExecution {
+  std::vector<MachineFunctionTaskSlot> *slots = nullptr;
+  std::vector<SemanticProductOutcome> *outcomes = nullptr;
+};
+
+[[nodiscard]] bool execute_machine_function_task(
+    void *opaque_context,
+    WorkTaskId task,
+    std::string &failure) {
+  auto &context =
+      *static_cast<MachineFunctionWaveExecution *>(opaque_context);
+  const std::size_t index = static_cast<std::size_t>(task);
+  if (context.slots == nullptr || context.outcomes == nullptr ||
+      index >= context.slots->size() || index >= context.outcomes->size()) {
+    failure = "machine-function worker received an invalid task slot";
+    return false;
+  }
+  MachineFunctionTaskSlot &slot = (*context.slots)[index];
+  if (slot.sources == nullptr || slot.target == nullptr ||
+      slot.semantic == nullptr || slot.abi == nullptr ||
+      slot.runtime_procedures == nullptr || slot.procedure == nullptr) {
+    failure = "machine-function worker received incomplete inputs";
+    return false;
+  }
+  SemanticProductOutcome &outcome = (*context.outcomes)[index];
+  slot.llvm = emit_llvm_machine_function(
+      *slot.target,
+      *slot.sources,
+      slot.options,
+      *slot.semantic,
+      *slot.abi,
+      *slot.runtime_procedures,
+      slot.procedure_ordinal,
+      *slot.procedure,
+      outcome.diagnostics);
+  outcome.kind = slot.llvm.ok
+      ? SemanticProductOutcomeKind::Complete
+      : SemanticProductOutcomeKind::Error;
+  if (!slot.llvm.ok) {
+    outcome.failure = "procedure failed LLVM machine-function emission";
+  }
+  return true;
+}
+
+// Artifact layout is a publication barrier rather than an emitter. Its worker
+// validates the complete immutable input set and writes the canonical
+// static/function/assembly sequence into one private slot. Later native I/O is
+// allowed to consume only this sequence.
+struct ArtifactLayoutTaskSlot {
+  const CompiledPackage *package = nullptr;
+  const PackageSemanticProducts *products = nullptr;
+  PackageArtifactLayout layout;
+};
+
+struct ArtifactLayoutWaveExecution {
+  std::vector<ArtifactLayoutTaskSlot> *slots = nullptr;
+  std::vector<SemanticProductOutcome> *outcomes = nullptr;
+};
+
+[[nodiscard]] bool execute_artifact_layout_task(
+    void *opaque_context,
+    WorkTaskId task,
+    std::string &failure) {
+  auto &context =
+      *static_cast<ArtifactLayoutWaveExecution *>(opaque_context);
+  const std::size_t index = static_cast<std::size_t>(task);
+  if (context.slots == nullptr || context.outcomes == nullptr ||
+      index >= context.slots->size() || index >= context.outcomes->size()) {
+    failure = "artifact-layout worker received an invalid task slot";
+    return false;
+  }
+  ArtifactLayoutTaskSlot &slot = (*context.slots)[index];
+  SemanticProductOutcome &outcome = (*context.outcomes)[index];
+  if (slot.package == nullptr || slot.products == nullptr ||
+      !slot.package->llvm.static_data.ok ||
+      slot.package->llvm.machine_functions.size() !=
+          slot.products->machine_functions.size()) {
+    failure = "artifact-layout worker received incomplete native products";
+    return false;
+  }
+
+  slot.layout.inputs.reserve(
+      1 + slot.products->machine_functions.size() +
+      slot.package->assembly_sources.size());
+  slot.layout.inputs.push_back({
+      PackageArtifactInputKind::PackageStaticData,
+      0,
+      slot.products->package_static_data});
+  for (std::size_t function_index = 0;
+       function_index < slot.products->machine_functions.size();
+       ++function_index) {
+    if (!slot.package->llvm.machine_functions[function_index].ok) {
+      failure = "artifact layout contains an invalid machine function";
+      return false;
+    }
+    slot.layout.inputs.push_back({
+        PackageArtifactInputKind::MachineFunction,
+        function_index,
+        slot.products->machine_functions[function_index]});
+  }
+  for (std::size_t assembly_index = 0;
+       assembly_index < slot.package->assembly_sources.size();
+       ++assembly_index) {
+    slot.layout.inputs.push_back({
+        PackageArtifactInputKind::PackageAssembly,
+        assembly_index,
+        slot.products->package_assembly});
+  }
+  slot.layout.ok = true;
+  outcome.kind = SemanticProductOutcomeKind::Complete;
+  return true;
+}
+
+// Publishes all backend-native semantic products in two explicit waves. First,
+// every concrete MIR procedure in every package becomes one independently
+// compilable MachineFunction module. Second, one ArtifactLayout barrier per
+// package fixes linker input order. The static-data units were already emitted
+// by their earlier package products, so no package-wide LLVM operation remains.
+[[nodiscard]] bool run_workspace_native_products(
+    const SourceManager &sources,
+    const TargetProfile &target,
+    std::size_t worker_count,
+    TimingRecorder *timings,
+    CompileWorkspaceResult &result,
+    DiagnosticSink &diagnostics) {
+  std::vector<std::vector<SymbolId>> runtime_procedures(
+      result.packages.size());
+  std::vector<SemanticProductId> expected_machine_wave;
+  for (std::size_t package_index = 0;
+       package_index < result.packages.size(); ++package_index) {
+    if (!result.packages[package_index].has_value()) continue;
+    CompiledPackage &package = *result.packages[package_index];
+    PackageSemanticProducts &products =
+        result.semantic_products.packages[package_index];
+    if (!products.machine_functions.empty() ||
+        products.artifact_layout.is_valid() ||
+        !package.llvm.machine_functions.empty() ||
+        package.artifact_layout.ok) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "native product slice is not empty before scheduling");
+      return false;
+    }
+    if (!package.llvm.static_data.ok ||
+        products.mir_procedures.size() !=
+            package.mir.program.procedures().size()) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "native products require complete static data and MIR products");
+      return false;
+    }
+    for (const MirProcedure &procedure : package.mir.program.procedures()) {
+      runtime_procedures[package_index].push_back(procedure.symbol);
+    }
+    package.llvm.machine_functions.resize(products.mir_procedures.size());
+    const PackageId owner{static_cast<std::uint32_t>(package_index)};
+    for (std::size_t function_index = 0;
+         function_index < products.mir_procedures.size();
+         ++function_index) {
+      const std::array dependencies{
+          products.mir_procedures[function_index],
+          products.package_static_data};
+      const SemanticProductId product = append_workspace_semantic_product(
+          result,
+          SemanticProductKind::MachineFunction,
+          dependencies,
+          owner,
+          false,
+          diagnostics);
+      if (!product.is_valid()) return false;
+      result.semantic_products.procedure_by_product[product.value] =
+          package.mir.program.procedures()[function_index].symbol;
+      products.machine_functions.push_back(product);
+      expected_machine_wave.push_back(product);
+    }
+  }
+
+  if (!expected_machine_wave.empty()) {
+    const SemanticReadyWave wave =
+        freeze_semantic_ready_wave(result.semantic_graph);
+    if (wave.status != SemanticReadyWaveStatus::Ready ||
+        wave.products != expected_machine_wave) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "machine functions did not form their exact workspace ready wave" +
+              (wave.failure.empty() ? std::string{} : ": " + wave.failure));
+      return false;
+    }
+    std::vector<MachineFunctionTaskSlot> slots(wave.products.size());
+    std::vector<SemanticProductOutcome> outcomes(wave.products.size());
+    for (std::size_t index = 0; index < wave.products.size(); ++index) {
+      const SemanticProductId product = wave.products[index];
+      const PackageId owner =
+          result.semantic_products.package_by_product[product.value];
+      if (!owner.is_valid() || owner.value >= result.packages.size() ||
+          !result.packages[owner.value].has_value()) {
+        diagnostics.error(
+            SourceRange::invalid(),
+            "machine function has no retained package owner");
+        return false;
+      }
+      CompiledPackage &package = *result.packages[owner.value];
+      const PackageSemanticProducts &products =
+          result.semantic_products.packages[owner.value];
+      const auto position = std::find(
+          products.machine_functions.begin(),
+          products.machine_functions.end(),
+          product);
+      if (position == products.machine_functions.end()) {
+        diagnostics.error(
+            SourceRange::invalid(),
+            "machine function is absent from its package index");
+        return false;
+      }
+      const std::size_t function_index = static_cast<std::size_t>(
+          position - products.machine_functions.begin());
+      MachineFunctionTaskSlot &slot = slots[index];
+      slot.sources = &sources;
+      slot.target = &target;
+      slot.semantic = &package.bodies.package;
+      slot.abi = &package.c_abi;
+      slot.runtime_procedures = &runtime_procedures[owner.value];
+      slot.procedure = &package.mir.program.procedures()[function_index];
+      slot.options.package = result.graph.packages[owner.value].identity;
+      slot.procedure_ordinal = function_index;
+      slot.package_function_index = function_index;
+    }
+    WorkGraph execution_graph;
+    execution_graph.tasks.resize(slots.size());
+    MachineFunctionWaveExecution execution{&slots, &outcomes};
+    const WorkGraphRunResult scheduled = run_work_graph(
+        execution_graph,
+        WorkGraphRunOptions{worker_count},
+        execute_machine_function_task,
+        &execution);
+    if (timings != nullptr) {
+      timings->add_counter("machine-function ready waves", 1);
+      timings->add_counter("machine-function tasks", slots.size());
+      timings->add_counter(
+          "machine-function worker slots", scheduled.workers_used);
+    }
+    if (!scheduled.ok) {
+      std::string failure = "machine-function worker scheduling failed";
+      for (std::size_t index = 0; index < scheduled.tasks.size(); ++index) {
+        if (scheduled.tasks[index].state != WorkTaskState::Failed) continue;
+        failure += " at task " + std::to_string(index) + ": " +
+            scheduled.tasks[index].failure;
+        break;
+      }
+      diagnostics.error(SourceRange::invalid(), std::move(failure));
+      return false;
+    }
+    bool machine_functions_ok = true;
+    for (const SemanticProductOutcome &outcome : outcomes) {
+      machine_functions_ok = machine_functions_ok &&
+          outcome.kind == SemanticProductOutcomeKind::Complete;
+    }
+    std::string publication_error;
+    if (!publish_semantic_ready_wave(
+            result.semantic_graph,
+            wave,
+            outcomes,
+            diagnostics,
+            publication_error)) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "cannot publish machine-function wave: " + publication_error);
+      return false;
+    }
+    for (std::size_t index = 0; index < wave.products.size(); ++index) {
+      const PackageId owner = result.semantic_products.package_by_product[
+          wave.products[index].value];
+      CompiledPackage &package = *result.packages[owner.value];
+      package.llvm.machine_functions[slots[index].package_function_index] =
+          std::move(slots[index].llvm);
+      if (timings != nullptr) {
+        timings->add_counter("LLVM machine function modules emitted", 1);
+        timings->add_counter(
+            "LLVM IR bytes",
+            static_cast<std::uint64_t>(package.llvm.machine_functions[
+                slots[index].package_function_index].text.size()));
+      }
+    }
+    if (!machine_functions_ok) return false;
+  }
+
+  std::vector<SemanticProductId> expected_layout_wave;
+  for (std::size_t package_index = 0;
+       package_index < result.packages.size(); ++package_index) {
+    if (!result.packages[package_index].has_value()) continue;
+    PackageSemanticProducts &products =
+        result.semantic_products.packages[package_index];
+    std::vector<SemanticProductId> dependencies{
+        products.package_static_data,
+        products.package_assembly};
+    dependencies.insert(
+        dependencies.end(),
+        products.machine_functions.begin(),
+        products.machine_functions.end());
+    const PackageId owner{static_cast<std::uint32_t>(package_index)};
+    products.artifact_layout = append_workspace_semantic_product(
+        result,
+        SemanticProductKind::ArtifactLayout,
+        dependencies,
+        owner,
+        false,
+        diagnostics);
+    if (!products.artifact_layout.is_valid()) return false;
+    expected_layout_wave.push_back(products.artifact_layout);
+  }
+  if (expected_layout_wave.empty()) return true;
+
+  const SemanticReadyWave layout_wave =
+      freeze_semantic_ready_wave(result.semantic_graph);
+  if (layout_wave.status != SemanticReadyWaveStatus::Ready ||
+      layout_wave.products != expected_layout_wave) {
+    diagnostics.error(
+        SourceRange::invalid(),
+        "artifact layouts did not form their exact workspace ready wave" +
+            (layout_wave.failure.empty()
+                 ? std::string{}
+                 : ": " + layout_wave.failure));
+    return false;
+  }
+  std::vector<ArtifactLayoutTaskSlot> layout_slots(
+      layout_wave.products.size());
+  std::vector<SemanticProductOutcome> layout_outcomes(
+      layout_wave.products.size());
+  for (std::size_t index = 0;
+       index < layout_wave.products.size(); ++index) {
+    const PackageId owner = result.semantic_products.package_by_product[
+        layout_wave.products[index].value];
+    if (!owner.is_valid() || owner.value >= result.packages.size() ||
+        !result.packages[owner.value].has_value()) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "artifact layout has no retained package owner");
+      return false;
+    }
+    layout_slots[index].package = &*result.packages[owner.value];
+    layout_slots[index].products =
+        &result.semantic_products.packages[owner.value];
+  }
+  WorkGraph layout_execution_graph;
+  layout_execution_graph.tasks.resize(layout_slots.size());
+  ArtifactLayoutWaveExecution layout_execution{
+      &layout_slots, &layout_outcomes};
+  const WorkGraphRunResult layout_scheduled = run_work_graph(
+      layout_execution_graph,
+      WorkGraphRunOptions{worker_count},
+      execute_artifact_layout_task,
+      &layout_execution);
+  if (timings != nullptr) {
+    timings->add_counter("artifact-layout ready waves", 1);
+    timings->add_counter("artifact-layout tasks", layout_slots.size());
+    timings->add_counter(
+        "artifact-layout worker slots", layout_scheduled.workers_used);
+  }
+  if (!layout_scheduled.ok) {
+    std::string failure = "artifact-layout worker scheduling failed";
+    for (std::size_t index = 0;
+         index < layout_scheduled.tasks.size(); ++index) {
+      if (layout_scheduled.tasks[index].state != WorkTaskState::Failed) {
+        continue;
+      }
+      failure += " at task " + std::to_string(index) + ": " +
+          layout_scheduled.tasks[index].failure;
+      break;
+    }
+    diagnostics.error(SourceRange::invalid(), std::move(failure));
+    return false;
+  }
+  std::string layout_publication_error;
+  if (!publish_semantic_ready_wave(
+          result.semantic_graph,
+          layout_wave,
+          layout_outcomes,
+          diagnostics,
+          layout_publication_error)) {
+    diagnostics.error(
+        SourceRange::invalid(),
+        "cannot publish artifact-layout wave: " + layout_publication_error);
+    return false;
+  }
+  for (std::size_t index = 0;
+       index < layout_wave.products.size(); ++index) {
+    const PackageId owner = result.semantic_products.package_by_product[
+        layout_wave.products[index].value];
+    CompiledPackage &package = *result.packages[owner.value];
+    package.artifact_layout = std::move(layout_slots[index].layout);
+    package.llvm.ok = package.artifact_layout.ok;
+  }
+  return true;
 }
 
 } // namespace
@@ -6605,6 +7140,10 @@ bool continue_compiled_workspace(
     if (!run_workspace_lowering_barriers(
             sources,
             options.target,
+            options.emit_llvm,
+            options.emit_program_entry,
+            options.validation_kind,
+            compiled.validation_entries,
             options.semantic_worker_count,
             options.timings,
             compiled,
@@ -6618,56 +7157,17 @@ bool continue_compiled_workspace(
       compiled.ok = false;
       return false;
     }
-  }
-
-  for (auto position = schedule.consumer_first_order.rbegin();
-       position != schedule.consumer_first_order.rend(); ++position) {
-    const std::size_t package_index = *position;
-    if (!compiled.packages[package_index].has_value()) continue;
-    CompiledPackage &package = *compiled.packages[package_index];
-    WorkspacePackage &workspace_package =
-        compiled.graph.packages[package_index];
-    if (!package.bodies.ok || !package.metadata.ok || !package.obligations.ok ||
-        !package.native_interop.ok) {
-      continue;
-    }
-    TimingScope package_timing = options.lower_mir || options.emit_llvm
-        ? time_package_phase(
-              options.timings, "package lowering: ", package.identity)
-        : TimingScope{};
-
-    if ((options.lower_mir || options.emit_llvm) &&
-        (!package.assembly.ok || !package.mir.ok)) {
-      continue;
-    }
     if (options.emit_llvm) {
-      LlvmIrOptions llvm_options;
-      llvm_options.package = workspace_package.identity;
-      llvm_options.emit_runtime_support =
-          package_index ==
-          static_cast<std::size_t>(compiled.graph.root_package.value);
-      llvm_options.emit_program_entry =
-          options.emit_program_entry && llvm_options.emit_runtime_support;
-      if (llvm_options.emit_runtime_support) {
-        llvm_options.validation_kind = options.validation_kind;
-        llvm_options.validation_entries = compiled.validation_entries;
+      if (!run_workspace_native_products(
+              sources,
+              options.target,
+              options.semantic_worker_count,
+              options.timings,
+              compiled,
+              diagnostics)) {
+        compiled.ok = false;
+        return false;
       }
-      package.llvm = emit_llvm_ir(
-          options.target,
-          sources,
-          llvm_options,
-          package.bodies.package,
-          package.c_abi,
-          package.declarations.global_initializers,
-          package.mir.program,
-          diagnostics);
-      if (options.timings != nullptr) {
-        options.timings->add_counter("LLVM modules emitted", 1);
-        options.timings->add_counter(
-            "LLVM IR bytes",
-            static_cast<std::uint64_t>(package.llvm.text.size()));
-      }
-      if (!package.llvm.ok) continue;
     }
   }
   lowering_timing.finish();
