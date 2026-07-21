@@ -231,7 +231,7 @@ public:
 private:
   [[nodiscard]] SymbolId declaration_source(SymbolId procedure) const {
     for (const ParametricInstanceRecord &instance :
-         package_.parametric_instances) {
+         package_.parametric_instances_for_read()) {
       if (instance.instance == procedure) return instance.source;
     }
     return procedure;

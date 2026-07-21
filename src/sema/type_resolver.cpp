@@ -352,7 +352,7 @@ private:
         }
       }
       for (const ParametricTypeInstanceRecord &instance :
-           semantic_.parametric_type_instances) {
+           semantic_.parametric_type_instances_for_read()) {
         if (semantic_.symbols.symbol(instance.instance).type == type) {
           concrete_instance = true;
           break;
@@ -1832,7 +1832,7 @@ private:
          value.kind == TypeKind::TaggedUnion ||
          value.kind == TypeKind::RawUnion)) {
       for (const ParametricTypeInstanceRecord &instance :
-           semantic_.parametric_type_instances) {
+           semantic_.parametric_type_instances_for_read()) {
         if (semantic_.symbols.symbol(instance.instance).type != type) continue;
         for (const ParametricArgument &argument : instance.arguments) {
           if ((argument.is_type && type_has_parameters(argument.type, active)) ||
@@ -1896,7 +1896,7 @@ private:
          value.kind == TypeKind::TaggedUnion ||
          value.kind == TypeKind::RawUnion)) {
       for (const ParametricTypeInstanceRecord &instance :
-           semantic_.parametric_type_instances) {
+           semantic_.parametric_type_instances_for_read()) {
         if (semantic_.symbols.symbol(instance.instance).type != type) continue;
         for (const ParametricArgument &argument : instance.arguments) {
           if (argument.owner_evaluated_value) {
@@ -2453,7 +2453,7 @@ private:
       std::vector<ParametricArgument> arguments;
       std::optional<ImportedType> imported_application;
       for (const ParametricTypeInstanceRecord &instance :
-           semantic_.parametric_type_instances) {
+           semantic_.parametric_type_instances_for_read()) {
         if (semantic_.symbols.symbol(instance.instance).type != source) continue;
         template_source = instance.source;
         arguments = instance.arguments;
@@ -2923,7 +2923,7 @@ private:
     }
 
     for (const ParametricTypeInstanceRecord &instance :
-         semantic_.parametric_type_instances) {
+         semantic_.parametric_type_instances_for_read()) {
       if (instance.source == source && instance.arguments == arguments) {
         return semantic_.symbols.symbol(instance.instance).type;
       }

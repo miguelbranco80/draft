@@ -358,17 +358,17 @@ for immutable package constants and task-local lexical constants.
 Declaration-closed file scopes, imports, imported documentation, native
 bindings, and package conditional regions are direct immutable views and are no
 longer represented in the body append packet. Owned scopes, aggregate members,
-enum values, parametric parameter records, and static argument packs use
-read-only-prefix/local-suffix views as well: a task's raw vectors own only its
-new rows. Aggregate layout publication uses a global combined-table index but
-maps mutable access explicitly to the task suffix; prefix offsets remain
-immutable. The remaining body-mutable semantic side tables remain value
-snapshots. The worker returns only a `ProcedureBodySemanticAppend`, one
-procedure-local HIR arena, diagnostics, and discovered roots; it never aliases
-or returns a replacement for `PackageBodyWorkState`. The coordinator validates
-the work index, root symbol, and complete prefix, then appends type/symbol rows
-and every semantic side table in product order before exposing discovered
-roots.
+enum values, parametric parameter records, static argument packs, and procedure
+and type specialization records use read-only-prefix/local-suffix views as
+well: a task's raw vectors own only its new rows. Aggregate layout publication
+and procedure-specialization promotion use global combined-table indices but
+map mutable access explicitly to the task suffix; prefix rows remain immutable.
+The remaining body-mutable semantic side tables remain value snapshots. The
+worker returns only a `ProcedureBodySemanticAppend`, one procedure-local HIR
+arena, diagnostics, and discovered roots; it never aliases or returns a
+replacement for `PackageBodyWorkState`. The coordinator validates the work
+index, root symbol, and complete prefix, then appends type/symbol rows and every
+semantic side table in product order before exposing discovered roots.
 
 The result boundary is therefore procedure-local, but execution is not yet the
 final parallel implementation. Constructing the private view still copies the

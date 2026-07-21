@@ -226,7 +226,7 @@ public:
     }
     if (effects_ != nullptr) {
       for (const ParametricInstanceRecord &instance :
-           package_.parametric_instances) {
+           package_.parametric_instances_for_read()) {
         if (!instance.externally_requested) continue;
         const Symbol &source = package_.symbols.symbol(instance.source);
         if (source.visibility != Visibility::Public ||
@@ -739,7 +739,7 @@ private:
     }
     if (!retained_import_arguments) {
       for (const ParametricTypeInstanceRecord &instance :
-           package_.parametric_type_instances) {
+           package_.parametric_type_instances_for_read()) {
         if (package_.symbols.symbol(instance.instance).type != source) {
           continue;
         }
@@ -1116,7 +1116,7 @@ private:
           return symbol.type;
         }
         for (const ParametricTypeInstanceRecord &instance :
-             consumer_.parametric_type_instances) {
+             consumer_.parametric_type_instances_for_read()) {
           if (instance.source == *local && instance.arguments == arguments) {
             return consumer_.symbols.symbol(instance.instance).type;
           }

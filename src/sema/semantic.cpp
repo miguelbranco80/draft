@@ -421,7 +421,7 @@ private:
   // the enlarged symbol table.
   [[nodiscard]] bool is_authored_instance(SymbolId symbol) const {
     for (const ParametricTypeInstanceRecord &instance :
-         discovery_.package.parametric_type_instances) {
+         discovery_.package.parametric_type_instances_for_read()) {
       if (instance.instance == symbol) return true;
     }
     return false;
@@ -1200,7 +1200,7 @@ bool finish_package_declaration_discovery(
     }
     bool is_type_instance = false;
     for (const ParametricTypeInstanceRecord &instance :
-         discovery.package.parametric_type_instances) {
+         discovery.package.parametric_type_instances_for_read()) {
       if (instance.instance == symbol_id) {
         is_type_instance = true;
         break;

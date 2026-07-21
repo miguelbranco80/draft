@@ -756,6 +756,10 @@ struct SemanticPackage {
   parametric_parameters_for_read() const;
   [[nodiscard]] AppendOnlyTableView<StaticArgumentPack>
   static_argument_packs_for_read() const;
+  [[nodiscard]] AppendOnlyTableView<ParametricInstanceRecord>
+  parametric_instances_for_read() const;
+  [[nodiscard]] AppendOnlyTableView<ParametricTypeInstanceRecord>
+  parametric_type_instances_for_read() const;
 
   // Returns the aggregate-member row at one global table index for controlled
   // layout publication. A canonical package may update any row whose layout is
@@ -763,6 +767,13 @@ struct SemanticPackage {
   // a retained prefix row would violate the immutable body-input boundary and
   // is therefore an internal invariant failure.
   [[nodiscard]] AggregateMember &aggregate_member_mut(std::size_t index);
+
+  // External-demand initialization may promote an existing procedure
+  // specialization before body tasks begin. During a task, only a record first
+  // discovered by that task may be changed. The global index keeps the caller's
+  // identity stable while this operation enforces the local-suffix boundary.
+  [[nodiscard]] ParametricInstanceRecord &
+  parametric_instance_mut(std::size_t index);
 
   std::string short_name;
   // Workspace identity is present for package-aware analysis and empty in

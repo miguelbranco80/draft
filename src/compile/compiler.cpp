@@ -1537,7 +1537,7 @@ has_symbol_product(std::span<const SemanticProductId> products,
 [[nodiscard]] bool is_parametric_type_instance(const SemanticPackage &package,
                                                SymbolId symbol) {
   for (const ParametricTypeInstanceRecord &instance :
-       package.parametric_type_instances) {
+       package.parametric_type_instances_for_read()) {
     if (instance.instance == symbol)
       return true;
   }

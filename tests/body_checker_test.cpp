@@ -221,6 +221,29 @@ second :: proc() -> i64 {
          member_view.aggregate_members_for_read()[retained_member_count].offset ==
              retained_offset + 1);
 
+  // Specialization records use the same combined global index domain. A task
+  // reads retained instances, owns new records, and can promote only a record
+  // in that local suffix.
+  draft::SemanticPackage specialization_prefix;
+  specialization_prefix.parametric_instances.push_back({});
+  specialization_prefix.parametric_type_instances.push_back({});
+  draft::SemanticPackage specialization_view =
+      specialization_prefix.fork_body_task_view();
+  EXPECT(state, specialization_view.parametric_instances.empty());
+  EXPECT(state,
+         specialization_view.parametric_instances_for_read().size() == 1);
+  EXPECT(state, specialization_view.parametric_type_instances.empty());
+  EXPECT(state,
+         specialization_view.parametric_type_instances_for_read().size() == 1);
+  specialization_view.parametric_instances.push_back({});
+  specialization_view.parametric_instance_mut(1).externally_requested = true;
+  EXPECT(state,
+         !specialization_prefix.parametric_instances.front()
+              .externally_requested);
+  EXPECT(state,
+         specialization_view.parametric_instances_for_read()[1]
+             .externally_requested);
+
   draft::DiagnosticSink first_diagnostics;
   draft::ProcedureBodyTaskInput first_input =
       draft::take_next_procedure_body_work(work, first_diagnostics);

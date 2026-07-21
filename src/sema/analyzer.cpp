@@ -26,8 +26,6 @@ SemanticPackage::SemanticPackage(
       symbols(base.symbols.fork_append_only()),
       package_scope(base.package_scope),
       runtime_context_type(base.runtime_context_type),
-      parametric_instances(base.parametric_instances),
-      parametric_type_instances(base.parametric_type_instances),
       imported_symbols(base.imported_symbols),
       imported_procedure_instances(base.imported_procedure_instances),
       imported_type_instantiation_requests(
@@ -121,6 +119,24 @@ SemanticPackage::static_argument_packs_for_read() const {
       static_argument_packs);
 }
 
+AppendOnlyTableView<ParametricInstanceRecord>
+SemanticPackage::parametric_instances_for_read() const {
+  return AppendOnlyTableView<ParametricInstanceRecord>(
+      body_read_prefix_ != nullptr
+          ? &body_read_prefix_->parametric_instances
+          : nullptr,
+      parametric_instances);
+}
+
+AppendOnlyTableView<ParametricTypeInstanceRecord>
+SemanticPackage::parametric_type_instances_for_read() const {
+  return AppendOnlyTableView<ParametricTypeInstanceRecord>(
+      body_read_prefix_ != nullptr
+          ? &body_read_prefix_->parametric_type_instances
+          : nullptr,
+      parametric_type_instances);
+}
+
 AggregateMember &SemanticPackage::aggregate_member_mut(std::size_t index) {
   if (body_read_prefix_ == nullptr) {
     assert(index < aggregate_members.size());
@@ -131,6 +147,20 @@ AggregateMember &SemanticPackage::aggregate_member_mut(std::size_t index) {
   assert(index >= prefix_size);
   assert(index - prefix_size < aggregate_members.size());
   return aggregate_members[index - prefix_size];
+}
+
+ParametricInstanceRecord &
+SemanticPackage::parametric_instance_mut(std::size_t index) {
+  if (body_read_prefix_ == nullptr) {
+    assert(index < parametric_instances.size());
+    return parametric_instances[index];
+  }
+
+  const std::size_t prefix_size =
+      body_read_prefix_->parametric_instances.size();
+  assert(index >= prefix_size);
+  assert(index - prefix_size < parametric_instances.size());
+  return parametric_instances[index - prefix_size];
 }
 
 namespace {

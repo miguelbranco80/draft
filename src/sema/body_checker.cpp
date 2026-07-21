@@ -3659,7 +3659,7 @@ private:
   [[nodiscard]] std::optional<NominalApplication> nominal_application(
       TypeId type) const {
     for (const ParametricTypeInstanceRecord &instance :
-         semantic_.parametric_type_instances) {
+         semantic_.parametric_type_instances_for_read()) {
       if (semantic_.symbols.symbol(instance.instance).type == type) {
         return NominalApplication{
             instance.source, nullptr, &instance.arguments};
@@ -4096,7 +4096,7 @@ private:
       SymbolId procedure) {
     const ParametricInstanceRecord *retained = nullptr;
     for (const ParametricInstanceRecord &candidate :
-         semantic_.parametric_instances) {
+         semantic_.parametric_instances_for_read()) {
       if (candidate.instance == procedure) {
         retained = &candidate;
         break;
@@ -4268,8 +4268,12 @@ private:
     const std::vector<ParametricArgument> requested_arguments =
         ordered_arguments(
             parameters, type_substitutions, value_substitutions);
-    for (ParametricInstanceRecord &instance :
-         semantic_.parametric_instances) {
+    const AppendOnlyTableView<ParametricInstanceRecord> retained_instances =
+        semantic_.parametric_instances_for_read();
+    for (std::size_t instance_index = 0;
+         instance_index < retained_instances.size(); ++instance_index) {
+      const ParametricInstanceRecord &instance =
+          retained_instances[instance_index];
       if (instance.source == source &&
           instance.arguments == requested_arguments &&
           instance.pack_types == pack_types) {
@@ -4302,7 +4306,8 @@ private:
           Symbol &promoted =
               semantic_.symbols.symbol_mut(instance.instance);
           promoted.linkage_name = std::string(preferred_name);
-          instance.externally_requested = true;
+          semantic_.parametric_instance_mut(instance_index)
+              .externally_requested = true;
         } else if (!preferred_name.empty()) {
           const Symbol &existing =
               semantic_.symbols.symbol(instance.instance);
@@ -8242,7 +8247,7 @@ private:
   [[nodiscard]] SymbolId procedure_declaration_source(
       SymbolId procedure) const {
     for (const ParametricInstanceRecord &instance :
-         semantic_.parametric_instances) {
+         semantic_.parametric_instances_for_read()) {
       if (instance.instance == procedure) return instance.source;
     }
     return procedure;
@@ -8417,9 +8422,10 @@ void append_body_root(
       package.parametric_parameters_for_read().size();
   prefix.static_argument_pack_count =
       package.static_argument_packs_for_read().size();
-  prefix.parametric_instance_count = package.parametric_instances.size();
+  prefix.parametric_instance_count =
+      package.parametric_instances_for_read().size();
   prefix.parametric_type_instance_count =
-      package.parametric_type_instances.size();
+      package.parametric_type_instances_for_read().size();
   prefix.imported_symbol_count = package.imported_symbols.size();
   prefix.imported_procedure_instance_count =
       package.imported_procedure_instances.size();
@@ -8473,7 +8479,7 @@ void append_body_suffix(
   appended.types = package.types.appended_since(prefix.type_count);
   appended.symbols = package.symbols.appended_since(
       prefix.scope_count, prefix.symbol_count);
-  // These five raw vectors already own only this task's suffix. Their
+  // These seven raw vectors already own only this task's suffix. Their
   // canonical prefix is visible through AppendOnlyTableView and must not be
   // copied back into the append packet.
   appended.owned_scopes = package.owned_scopes;
@@ -8481,11 +8487,8 @@ void append_body_suffix(
   appended.enum_member_values = package.enum_member_values;
   appended.parametric_parameters = package.parametric_parameters;
   appended.static_argument_packs = package.static_argument_packs;
-  appended.parametric_instances = copy_body_suffix(
-      package.parametric_instances, prefix.parametric_instance_count);
-  appended.parametric_type_instances = copy_body_suffix(
-      package.parametric_type_instances,
-      prefix.parametric_type_instance_count);
+  appended.parametric_instances = package.parametric_instances;
+  appended.parametric_type_instances = package.parametric_type_instances;
   appended.imported_symbols = copy_body_suffix(
       package.imported_symbols, prefix.imported_symbol_count);
   appended.imported_procedure_instances = copy_body_suffix(
@@ -8651,12 +8654,12 @@ PackageBodyWorkState begin_package_body_work(
     }
   }
   for (const ParametricInstanceRecord &instance :
-       state.package.parametric_instances) {
+       state.package.parametric_instances_for_read()) {
     append_body_root(
         state.work,
         {instance.instance, false, std::nullopt, std::nullopt});
   }
-  state.next_instance = state.package.parametric_instances.size();
+  state.next_instance = state.package.parametric_instances_for_read().size();
   return state;
 }
 
@@ -8675,7 +8678,7 @@ PackageBodyWorkState begin_additional_package_body_work(
   state.procedures = std::move(previous.procedures);
   state.checked_procedures = previous.checked_procedures;
   const std::size_t previous_instance_count =
-      state.package.parametric_instances.size();
+      state.package.parametric_instances_for_read().size();
 
   BodyChecker initializer(
       sources,
@@ -8688,17 +8691,18 @@ PackageBodyWorkState begin_additional_package_body_work(
       additional_seeds);
   BodyCheckResult initialized = initializer.initialize();
   state.ok = state.ok && initialized.ok;
+  const AppendOnlyTableView<ParametricInstanceRecord> instances =
+      state.package.parametric_instances_for_read();
   for (std::size_t index = previous_instance_count;
-       index < state.package.parametric_instances.size();
-       ++index) {
+       index < instances.size(); ++index) {
     append_body_root(
         state.work,
-        {state.package.parametric_instances[index].instance,
+        {instances[index].instance,
          false,
          std::nullopt,
          std::nullopt});
   }
-  state.next_instance = state.package.parametric_instances.size();
+  state.next_instance = instances.size();
   return state;
 }
 
@@ -8772,10 +8776,12 @@ ProcedureBodyTaskResult check_procedure_body_work(
     append_body_root(result.discovered_work, std::move(nested));
   }
   std::size_t next_instance = input.next_instance;
-  while (next_instance < package.parametric_instances.size()) {
+  const AppendOnlyTableView<ParametricInstanceRecord> instances =
+      package.parametric_instances_for_read();
+  while (next_instance < instances.size()) {
     ProcedureBodyRoot instance_root;
     instance_root.symbol =
-        package.parametric_instances[next_instance].instance;
+        instances[next_instance].instance;
     append_body_root(result.discovered_work, std::move(instance_root));
     ++next_instance;
   }

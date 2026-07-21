@@ -114,7 +114,7 @@ void hash_field(Sha256 &hash, std::string_view value) {
   // lexical scope. Collapse only that presentation identity; traversal still
   // follows the concrete instance below.
   for (const ParametricInstanceRecord &instance :
-       package.parametric_instances) {
+       package.parametric_instances_for_read()) {
     if (instance.instance == symbol) return instance.source;
   }
   return symbol;
@@ -1685,7 +1685,7 @@ struct ActiveDenialContext {
   // the provider still needs to understand the template syntax it is filling.
   SymbolId owner = record.anchor;
   for (const ParametricInstanceRecord &instance :
-       package.parametric_instances) {
+       package.parametric_instances_for_read()) {
     if (instance.instance == owner) {
       owner = instance.source;
       break;
