@@ -36,7 +36,7 @@ namespace {
 // Type rows are filled later because structural interning may map several local
 // rows to one canonical TypeId.
 struct PublicationMaps {
-  ProcedureBodySemanticPrefix prefix;
+  SemanticTaskPrefix prefix;
   std::vector<TypeId> types;
   std::vector<ScopeId> scopes;
   std::vector<SymbolId> symbols;
@@ -246,7 +246,7 @@ void remap_type_row(Type &type, const PublicationMaps &maps) {
 // retained store and rows selected earlier from this packet.
 [[nodiscard]] bool plan_type_publication(
     SemanticPackage &package,
-    ProcedureBodySemanticAppend &semantic,
+    SemanticTaskAppend &semantic,
     PublicationMaps &maps,
     TypePublicationPlan &plan,
     DiagnosticSink &diagnostics,
@@ -406,7 +406,7 @@ struct InstanceMerge {
 // its arguments has itself become canonical.
 [[nodiscard]] bool discover_type_instance_merges(
     const SemanticPackage &package,
-    const ProcedureBodySemanticAppend &semantic,
+    const SemanticTaskAppend &semantic,
     PublicationMaps &maps,
     std::vector<TypeId> &forced_types,
     std::vector<InstanceMerge> &merges,
@@ -485,7 +485,7 @@ struct InstanceMerge {
 // orphan semantic storage or duplicate package binding survives publication.
 [[nodiscard]] bool canonicalize_instances(
     SemanticPackage &package,
-    ProcedureBodySemanticAppend &semantic,
+    SemanticTaskAppend &semantic,
     PublicationMaps &maps,
     std::vector<InstanceMerge> merges,
     DiagnosticSink &diagnostics) {
@@ -773,7 +773,7 @@ void remap_value_binding(
 }
 
 void remap_side_tables(
-    ProcedureBodySemanticAppend &semantic,
+    SemanticTaskAppend &semantic,
     const PublicationMaps &maps) {
   for (OwnedSemanticScope &row : semantic.owned_scopes) {
     row.owner = remap_symbol(row.owner, maps);
@@ -998,7 +998,7 @@ void append_rows(std::vector<Value> &destination, std::vector<Value> source) {
 [[nodiscard]] bool prefix_is_available(
     const SemanticPackage &package,
     const ConstantTable &constants,
-    const ProcedureBodySemanticPrefix &prefix) {
+    const SemanticTaskPrefix &prefix) {
   return package.types.size() >= prefix.type_count &&
       package.symbols.scope_count() >= prefix.scope_count &&
       package.symbols.symbol_count() >= prefix.symbol_count &&
@@ -1048,7 +1048,7 @@ bool publish_body_task_semantics(
     ConstantTable &constants,
     ProcedureBodyTaskResult &task,
     DiagnosticSink &diagnostics) {
-  ProcedureBodySemanticAppend &semantic = task.semantic;
+  SemanticTaskAppend &semantic = task.semantic;
   if (!prefix_is_available(package, constants, semantic.prefix) ||
       semantic.types.base_size != semantic.prefix.type_count ||
       semantic.symbols.base_scope_count != semantic.prefix.scope_count ||

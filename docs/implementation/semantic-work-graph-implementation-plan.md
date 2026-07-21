@@ -157,8 +157,8 @@ gate.
    constants. Declaration-closed file, import, documentation, native-binding,
    and package-condition tables are direct immutable views and have been
    deleted from the task append packet. The worker has no mutable alias to
-   `PackageBodyWorkState` and returns only a
-   `ProcedureBodySemanticAppend`, not a complete successor. The coordinator
+   `PackageBodyWorkState` and returns only a `SemanticTaskAppend`, not a
+   complete successor. The coordinator
    rejects a stale prefix and appends the packet in product order. A focused
    test proves the work cursor cannot advance before publication and canonical
    state remains unchanged while the task is in flight.

@@ -387,8 +387,8 @@ and deferred element counts, value expressions, and type applications.
 Aggregate layout publication, procedure-specialization promotion,
 required-integer refinement, and site enrichment use global combined-table
 indices but map mutable access explicitly to the task suffix; prefix rows remain
-immutable. The worker returns only a
-`ProcedureBodySemanticAppend`, one procedure-local HIR arena, diagnostics, and
+immutable. The worker returns only a `SemanticTaskAppend`, one procedure-local
+HIR arena, diagnostics, and
 discovered roots; it never aliases or returns a replacement for
 `PackageBodyWorkState`. The coordinator validates the work index, root symbol,
 and complete prefix, then appends type/symbol rows and every semantic side table

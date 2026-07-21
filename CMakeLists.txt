@@ -163,6 +163,7 @@ add_library(
   src/sema/interface.cpp
   src/sema/integer_expression.cpp
   src/sema/runtime_context.cpp
+  src/sema/task_semantics.cpp
   src/sema/semantic.cpp
   src/sema/symbol.cpp
   src/sema/target_validation.cpp

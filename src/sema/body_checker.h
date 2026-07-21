@@ -15,6 +15,7 @@
 #include "sema/analyzer.h"
 #include "sema/constant.h"
 #include "sema/hir.h"
+#include "sema/task_semantics.h"
 #include "source/diagnostic.h"
 #include "source/source.h"
 #include "workspace/package.h"
@@ -111,76 +112,6 @@ struct ProcedureBodyWorkItem {
   ProcedureBodyWorkOrigin origin = ProcedureBodyWorkOrigin::Discovered;
 };
 
-// ProcedureBodySemanticPrefix records every append-only table boundary seen by
-// one dispatched body task. The worker checks a private view frozen at these
-// counts. Publication succeeds only if the canonical package still contains
-// this complete prefix; earlier siblings from the same wave may already have
-// extended it. The packet's work identity and frozen counts make a result from
-// another generation or wave explicit.
-struct ProcedureBodySemanticPrefix {
-  std::size_t type_count = 0;
-  std::size_t scope_count = 0;
-  std::size_t symbol_count = 0;
-  std::size_t owned_scope_count = 0;
-  std::size_t aggregate_member_count = 0;
-  std::size_t enum_member_value_count = 0;
-  std::size_t parametric_parameter_count = 0;
-  std::size_t static_argument_pack_count = 0;
-  std::size_t parametric_instance_count = 0;
-  std::size_t parametric_type_instance_count = 0;
-  std::size_t imported_symbol_count = 0;
-  std::size_t imported_procedure_instance_count = 0;
-  std::size_t imported_type_instantiation_request_count = 0;
-  std::size_t imported_type_count = 0;
-  std::size_t imported_effect_count = 0;
-  std::size_t imported_return_count = 0;
-  std::size_t imported_write_count = 0;
-  std::size_t declaration_denial_count = 0;
-  std::size_t site_count = 0;
-  std::size_t required_integer_expression_count = 0;
-  std::size_t deferred_element_count_count = 0;
-  std::size_t deferred_value_expression_count = 0;
-  std::size_t deferred_type_application_count = 0;
-  std::size_t constant_count = 0;
-
-  bool operator==(const ProcedureBodySemanticPrefix &) const = default;
-};
-
-// ProcedureBodySemanticAppend is the semantic output owned by one exact body
-// task. It contains only rows appended after prefix; no complete package or
-// ConstantTable successor travels through the work graph. IDs at or above a
-// prefix count are private task-domain IDs, not assumed canonical positions.
-// Frozen-wave publication translates every retained reference, interns equal
-// structural types, and canonicalizes equal procedure and nominal type
-// specializations in stable work order.
-struct ProcedureBodySemanticAppend {
-  ProcedureBodySemanticPrefix prefix;
-  TypeStoreAppend types;
-  SymbolTableAppend symbols;
-  std::vector<OwnedSemanticScope> owned_scopes;
-  std::vector<AggregateMember> aggregate_members;
-  std::vector<EnumMemberValue> enum_member_values;
-  std::vector<ParametricParameterRecord> parametric_parameters;
-  std::vector<StaticArgumentPack> static_argument_packs;
-  std::vector<ParametricInstanceRecord> parametric_instances;
-  std::vector<ParametricTypeInstanceRecord> parametric_type_instances;
-  std::vector<ImportedSymbol> imported_symbols;
-  std::vector<ImportedProcedureInstance> imported_procedure_instances;
-  std::vector<ImportedTypeInstantiationRequest>
-      imported_type_instantiation_requests;
-  std::vector<ImportedType> imported_types;
-  std::vector<ImportedEffect> imported_effects;
-  std::vector<ImportedProcedureReturn> imported_returns;
-  std::vector<ImportedProcedureWrite> imported_writes;
-  std::vector<DeclarationDenial> declaration_denials;
-  std::vector<SemanticSite> sites;
-  std::vector<RequiredIntegerExpression> required_integer_expressions;
-  std::vector<DeferredElementCount> deferred_element_counts;
-  std::vector<DeferredValueExpression> deferred_value_expressions;
-  std::vector<DeferredTypeApplication> deferred_type_applications;
-  std::vector<ConstantBinding> constants;
-};
-
 // ProcedureBodyTaskInput owns the private semantic view frozen at prefix.
 // TypeStore, SymbolTable, and ConstantTable are append-only overlays whose
 // non-owning bases live in PackageBodyWorkState. Declaration-closed files,
@@ -198,7 +129,7 @@ struct ProcedureBodyTaskInput {
   bool valid = false;
   std::size_t work_index = 0;
   ProcedureBodyWorkItem work;
-  ProcedureBodySemanticPrefix prefix;
+  SemanticTaskPrefix prefix;
   SemanticPackage package;
   ConstantTable constants;
 };
@@ -213,7 +144,7 @@ struct ProcedureBodyTaskResult {
   std::size_t work_index = 0;
   SymbolId symbol;
   std::size_t checked_procedures = 0;
-  ProcedureBodySemanticAppend semantic;
+  SemanticTaskAppend semantic;
   // One local arena containing only this root's recoverable HIR.
   HirProgram program;
   std::vector<ProcedureBodyWorkItem> discovered_work;
