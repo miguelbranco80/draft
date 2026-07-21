@@ -178,12 +178,16 @@ struct ProcedureInvocationSummary {
   HirExpressionId expression;
   SymbolId callee;
   std::vector<ProcedureArgumentSummary> arguments;
+
+  bool operator==(const ProcedureInvocationSummary &) const = default;
 };
 
 struct ProcedureFlowInvocationSummary {
   HirExpressionId expression;
   ProcedureValueSummary callee;
   std::vector<ProcedureArgumentSummary> arguments;
+
+  bool operator==(const ProcedureFlowInvocationSummary &) const = default;
 };
 
 // Lexical denials need the effects of the exact call expression, after typed
@@ -226,6 +230,8 @@ struct DirectProcedureEffectSummary {
   std::vector<ProcedureFieldValueSummary> return_values;
   // Procedure leaves assigned into caller-owned typed storage.
   std::vector<ProcedureFieldWriteSummary> field_writes;
+
+  bool operator==(const DirectProcedureEffectSummary &) const = default;
 };
 
 // DirectEffectSummaryResult is the immutable input to SCC discovery. Procedure

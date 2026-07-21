@@ -261,13 +261,16 @@ public:
     // Install every local row before discovering bodies. Returned procedure
     // values can then refer forward or recursively without source order
     // changing their meaning.
+    std::vector<SourceProcedure> source_procedures;
     for (const HirProgram *program : programs_) {
       for (const HirProcedure &procedure : program->procedures()) {
         DirectProcedureEffectSummary summary;
         summary.procedure = procedure.symbol;
         direct_.procedures.push_back(std::move(summary));
+        source_procedures.push_back({program, &procedure});
       }
     }
+    source_procedure_count_ = source_procedures.size();
 
     // Foreign declarations have no HIR body, but a lexical denial may enclose
     // a call to one directly. Give every foreign procedure its own composed
@@ -367,52 +370,29 @@ public:
       direct_.procedures.push_back(std::move(direct));
     }
 
-    // Replay source bodies until every returned procedure leaf is stable.
-    // Each replay also refreshes call arguments that may themselves be the
-    // result of a factory call. Local environments union every semantic write,
-    // so branches remain conservative and optimization can never narrow the
-    // selected may-target set.
-    bool returns_changed = false;
-    do {
-      returns_changed = false;
-      std::size_t procedure_index = 0;
-      for (const HirProgram *program : programs_) {
-        hir_ = program;
-        for (const HirProcedure &procedure : program->procedures()) {
-          DirectProcedureEffectSummary discovered;
-          discovered.procedure = procedure.symbol;
-          current_ = &discovered;
-          current_procedure_ = procedure.symbol;
-          current_result_type_ = {};
-          const Symbol &symbol = package_.symbols.symbol(procedure.symbol);
-          if (symbol.type.is_valid()) {
-            const Type &type = package_.types.type(symbol.type);
-            if (type.kind == TypeKind::Procedure && !type.members.empty()) {
-              current_result_type_ = type.members.back();
-            }
-          }
-          procedure_values_.clear();
-          storage_origins_.clear();
-          seed_parameter_slots(procedure.symbol);
-          visit_block(procedure.body);
-          if (direct_.procedures[procedure_index].return_values !=
-                  discovered.return_values ||
-              direct_.procedures[procedure_index].field_writes !=
-                  discovered.field_writes) {
-            returns_changed = true;
-          }
-          direct_.procedures[procedure_index] = std::move(discovered);
-          ++procedure_index;
-        }
-      }
-    } while (returns_changed);
+    // Discover every source row once to expose all syntactically named call
+    // edges. A procedure return which has not been discovered yet is lattice
+    // bottom during this phase, not an arbitrary unknown callback. Treating it
+    // as unknown would make source order part of the semantic result.
+    for (std::size_t index = 0; index < source_procedures.size(); ++index) {
+      direct_.procedures[index] =
+          discover_source_procedure(source_procedures[index]);
+    }
 
-    hir_ = nullptr;
-    current_ = nullptr;
-    current_procedure_ = {};
-    current_result_type_ = {};
-    procedure_values_.clear();
-    storage_origins_.clear();
+    // Close returned procedure values and caller-visible pointer writes over
+    // the concrete call graph. A newly resolved finite callback can add an
+    // edge, so closure rebuilds SCCs only when adjacency grows. It never
+    // replays an unrelated stable component merely because another component
+    // changed.
+    close_source_flow(source_procedures);
+
+    // Once the finite-target lattice is closed, a missing local return path is
+    // no longer temporary bottom. Publish it as unknown and close that fact
+    // through the same dependency-first SCCs. Unknown contributes no concrete
+    // edge, so this phase cannot invalidate the graph just established.
+    local_returns_complete_ = true;
+    close_source_flow(source_procedures);
+
     return std::move(direct_);
   }
 
@@ -483,6 +463,15 @@ public:
   }
 
 private:
+  // SourceProcedure binds one selected immutable HIR arena to one procedure
+  // row inside that arena. DirectEffectSummaryResult uses the same canonical
+  // order, so SCC node indices can recover their source without a package-wide
+  // HIR projection or a symbol lookup table.
+  struct SourceProcedure {
+    const HirProgram *hir = nullptr;
+    const HirProcedure *procedure = nullptr;
+  };
+
   struct StoragePath {
     SymbolId symbol;
     std::vector<std::string> fields;
@@ -518,6 +507,98 @@ private:
     SymbolId callee;
     std::vector<ProcedureArgumentSummary> arguments;
   };
+
+  // Discovers one source procedure against the currently published direct
+  // contracts of its callees. All body-local value and storage state is owned
+  // by this invocation and discarded before returning. Repeating this
+  // operation is therefore deterministic: only explicit callee contracts can
+  // change its result.
+  [[nodiscard]] DirectProcedureEffectSummary discover_source_procedure(
+      const SourceProcedure &source) {
+    assert(source.hir != nullptr && source.procedure != nullptr);
+    hir_ = source.hir;
+    DirectProcedureEffectSummary discovered;
+    discovered.procedure = source.procedure->symbol;
+    current_ = &discovered;
+    current_procedure_ = source.procedure->symbol;
+    current_result_type_ = {};
+    const Symbol &symbol = package_.symbols.symbol(source.procedure->symbol);
+    if (symbol.type.is_valid()) {
+      const Type &type = package_.types.type(symbol.type);
+      if (type.kind == TypeKind::Procedure && !type.members.empty()) {
+        current_result_type_ = type.members.back();
+      }
+    }
+    procedure_values_.clear();
+    storage_origins_.clear();
+    seed_parameter_slots(source.procedure->symbol);
+    visit_block(source.procedure->body);
+
+    hir_ = nullptr;
+    current_ = nullptr;
+    current_procedure_ = {};
+    current_result_type_ = {};
+    procedure_values_.clear();
+    storage_origins_.clear();
+    return discovered;
+  }
+
+  // Closes procedure-return and pointer-write facts one concrete SCC at a
+  // time. The condensation order makes every external dependency stable before
+  // its callers. If a newly learned returned callback adds an edge, the outer
+  // loop rebuilds the graph; the finite source procedure domain guarantees
+  // termination. Existing edges may never disappear, which is the central
+  // monotonicity invariant of this flow lattice.
+  void close_source_flow(
+      const std::vector<SourceProcedure> &source_procedures) {
+    bool graph_changed = false;
+    do {
+      std::vector<std::vector<SymbolId>> previous_edges;
+      previous_edges.reserve(source_procedure_count_);
+      for (std::size_t index = 0; index < source_procedure_count_; ++index) {
+        previous_edges.push_back(direct_.procedures[index].direct_calls);
+      }
+
+      const std::vector<ClosedEffectComponent> components =
+          build_effect_components(direct_.procedures);
+      for (const ClosedEffectComponent &component : components) {
+        bool component_changed = false;
+        do {
+          component_changed = false;
+          for (std::size_t procedure_index : component.procedure_indices) {
+            if (procedure_index >= source_procedure_count_) continue;
+            const DirectProcedureEffectSummary &previous =
+                direct_.procedures[procedure_index];
+            DirectProcedureEffectSummary discovered =
+                discover_source_procedure(
+                    source_procedures[procedure_index]);
+            for (SymbolId edge : previous.direct_calls) {
+              // Losing a finite target would make termination and scheduling
+              // depend on replay order. Such a loss is an internal compiler
+              // error: source-local flow joins only add possible values.
+              assert(
+                  std::find(
+                      discovered.direct_calls.begin(),
+                      discovered.direct_calls.end(),
+                      edge) != discovered.direct_calls.end());
+            }
+            if (previous != discovered) {
+              direct_.procedures[procedure_index] = std::move(discovered);
+              component_changed = true;
+            }
+          }
+        } while (component_changed);
+      }
+
+      graph_changed = false;
+      for (std::size_t index = 0; index < source_procedure_count_; ++index) {
+        if (previous_edges[index] != direct_.procedures[index].direct_calls) {
+          graph_changed = true;
+          break;
+        }
+      }
+    } while (graph_changed);
+  }
 
   [[nodiscard]] bool procedure_type(TypeId type) const {
     return type.is_valid() &&
@@ -866,6 +947,17 @@ private:
     return direct_.find(symbol) != nullptr;
   }
 
+  // Source rows occupy the stable prefix installed before native and imported
+  // terminal contracts. During flow closure, an absent return on one of these
+  // rows means "not discovered yet"; absence on a terminal row is already a
+  // final unknown contract.
+  [[nodiscard]] bool has_source_body(SymbolId symbol) const {
+    for (std::size_t index = 0; index < source_procedure_count_; ++index) {
+      if (direct_.procedures[index].procedure == symbol) return true;
+    }
+    return false;
+  }
+
   [[nodiscard]] const NativeBinding *native_binding(SymbolId symbol) const {
     for (const NativeBinding &binding : package_.native_bindings) {
       if (binding.symbol == symbol &&
@@ -1199,6 +1291,12 @@ private:
               std::numeric_limits<std::uint32_t>::max(), path, true});
           return result;
         }
+      }
+      if (has_source_body(callee.symbol) && !local_returns_complete_) {
+        // The dependency SCC has not yet published this local path. Bottom is
+        // intentionally distinct from unknown: a later component pass may
+        // still discover an exact finite procedure value.
+        return result;
       }
       result.unknown = true;
       return result;
@@ -1973,6 +2071,11 @@ private:
   std::span<const ForeignProviderAudit> provider_audits_;
   DirectEffectSummaryResult direct_;
   EffectSummaryResult closed_;
+  // Source rows are a prefix of direct_.procedures. local_returns_complete_
+  // changes only after concrete target/edge discovery reaches its fixed point;
+  // it turns any remaining absent local return path into a final unknown fact.
+  std::size_t source_procedure_count_ = 0;
+  bool local_returns_complete_ = false;
   DirectProcedureEffectSummary *current_ = nullptr;
   SymbolId current_procedure_;
   TypeId current_result_type_;

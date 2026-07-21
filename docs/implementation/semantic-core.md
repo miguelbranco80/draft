@@ -493,18 +493,28 @@ factory-input slots or a flattened imported call contract, keeping those two
 parameter scopes distinct across package interfaces. Typed pointer-field writes
 carry the same value contracts back through local or imported callees; a signed
 address/dereference balance prevents writes to an addressed local copy from
-being misreported as caller mutation. Body replay makes chained write-through
-helpers independent of declaration order. Higher-order FlowCall rows recursively
-retain the typed arguments supplied to the callback, including their own finite
-procedure contracts, and the same shape crosses package interfaces. Callees and
-arguments are snapshotted in source evaluation order before a call's write-back
-becomes visible, so later argument effects cannot rewrite earlier values.
+being misreported as caller mutation. Concrete flow-SCC closure makes chained
+write-through helpers independent of declaration order. Higher-order FlowCall
+rows recursively retain the typed arguments supplied to the callback, including
+their own finite procedure contracts, and the same shape crosses package
+interfaces. Callees and arguments are snapshotted in source evaluation order
+before a call's write-back becomes visible, so later argument effects cannot
+rewrite earlier values.
 
-Once those direct call and finite procedure-target rows are stable, the effect
-phase builds an explicit local procedure graph. It identifies strongly
-connected components without recursion on the compiler's C++ stack, then
-closes the condensation graph from callees to callers. Only procedures inside
-one legal recursive component iterate together; independent and acyclic
+Initial direct discovery exposes every syntactically named call edge. Procedure
+return and caller-visible pointer-write contracts then close over explicit
+dependency-first SCCs. A returned finite procedure target may add a concrete
+edge; only that graph refinement rebuilds the SCC condensation, and only members
+of one changing component are revisited. During target discovery an absent local
+return path is lattice bottom rather than an arbitrary callback. After concrete
+edges stabilize, any path still absent becomes a final unknown fact and closes
+through the same components. This removes the selected-body/global flow replay
+while preserving source-order-independent may-target semantics.
+
+The effect phase uses the resulting immutable direct graph. It identifies
+strongly connected components without recursion on the compiler's C++ stack,
+then closes the condensation graph from callees to callers. Only procedures
+inside one legal recursive component iterate together; independent and acyclic
 components never participate in a package-wide effect retry. Component members
 use canonical procedure-row order, and independent ready components use their
 smallest member as the deterministic tie-break. Exact call-site summaries are
@@ -529,10 +539,9 @@ Provider obligation context consumes this same exact payload, so the compiler
 does not describe a preliminary imported contract to Codex after closing a
 different one for denials.
 
-Procedure-value return/write discovery still replays the selected body set
-before direct rows become immutable. Moving that flow replay into explicit SCC
-products and attaching direct/SCC/denial payloads to live semantic-product rows
-are the remaining flow-closure migration seams.
+The remaining flow-closure migration seam is attaching direct summary,
+closed-SCC, and denial payloads to their live semantic-product rows. The
+algorithmic package-wide flow and effect replay paths are gone.
 
 External artifact summaries use the strict
 `draft-provider-denial-summary-v1` line format documented in section 12. The

@@ -262,10 +262,13 @@ gate.
    the last package-HIR identity dependency in those phases. Final imported
    contracts now form a separate immutable payload built from dependency
    interfaces; effect closure and provider context consume it without mutating
-   retained package semantic tables. Procedure return/write discovery still
-   replays the selected body set. The step remains incomplete until that replay
-   is expressed through the concrete flow SCCs and the direct/SCC/denial
-   payloads are attached to their live semantic product rows.
+   retained package semantic tables. Procedure return/write discovery now uses
+   the same explicit dependency-first SCC representation. Finite returned
+   targets refine the concrete graph monotonically; only a changed component is
+   revisited, and SCCs are rebuilt only when a new edge appears. A final pass
+   distinguishes a genuinely absent return contract from temporary lattice
+   bottom. The step remains incomplete only until direct/SCC/denial payloads are
+   attached to their live semantic product rows.
 
 8. **Per-procedure MIR.** Lower each checked concrete procedure into a private
    MIR result without mutating semantic type tables. Publish package static data

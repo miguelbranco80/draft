@@ -169,6 +169,119 @@ entry :: proc() {
       has_effect(effects.procedures[*entry_row], draft::EffectKind::RuntimeAssert));
 }
 
+// The first source procedure calls a factory declared later, then invokes the
+// returned procedure. Initial discovery can see only caller -> factory. Flow
+// closure must discover caller -> danger, rebuild the SCC condensation graph,
+// and publish both dependencies before the caller. This is the regression that
+// distinguishes graph refinement from a source-ordered whole-package replay.
+void test_returned_target_refines_effect_graph(TestState &state) {
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  draft::LoadedPackage loaded;
+  loaded.short_name = "returned_target_graph";
+  draft::LoadedPackageFile file;
+  file.kind = draft::PackageFileKind::DraftSource;
+  file.relative_name = "package.draft";
+  file.source = sources.add_source(
+      "package.draft",
+      R"draft(package returned_target_graph
+
+caller :: proc() {
+    callback := factory()
+    callback()
+}
+
+factory :: proc() -> proc() {
+    return danger
+}
+
+danger :: proc() {
+    assert(true)
+}
+)draft");
+  file.syntax.emplace(draft::parse_source_file(sources, file.source, diagnostics));
+  loaded.files.push_back(std::move(file));
+
+  const draft::TargetProfile target = draft::make_aarch64_macos_profile();
+  draft::SemanticAnalysisResult semantics = draft::analyze_package_semantics(
+      sources, loaded, target.facts, diagnostics);
+  draft::BodyCheckResult bodies = draft::check_package_bodies(
+      sources,
+      loaded,
+      semantics.selections,
+      semantics.package,
+      semantics.constants,
+      target.facts,
+      diagnostics);
+  const draft::ImportedProcedureContracts imported =
+      draft::imported_procedure_contracts(bodies.package);
+  const draft::DirectEffectSummaryResult direct =
+      draft::collect_direct_procedure_effects(
+          bodies.package, bodies.procedures, imported, &target);
+  const draft::EffectSummaryResult effects = draft::close_procedure_effects(
+      bodies.package, direct, imported, &target);
+  if (diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+  }
+  EXPECT(state, semantics.ok);
+  EXPECT(state, bodies.ok);
+
+  const std::optional<draft::SymbolId> caller =
+      symbol(bodies.package, "caller");
+  const std::optional<draft::SymbolId> factory =
+      symbol(bodies.package, "factory");
+  const std::optional<draft::SymbolId> danger =
+      symbol(bodies.package, "danger");
+  EXPECT(state, caller.has_value());
+  EXPECT(state, factory.has_value());
+  EXPECT(state, danger.has_value());
+  if (!caller || !factory || !danger) return;
+
+  const draft::DirectProcedureEffectSummary *caller_direct =
+      direct.find(*caller);
+  EXPECT(state, caller_direct != nullptr);
+  if (caller_direct == nullptr) return;
+  EXPECT(state,
+      std::find(
+          caller_direct->direct_calls.begin(),
+          caller_direct->direct_calls.end(),
+          *factory) != caller_direct->direct_calls.end());
+  EXPECT(state,
+      std::find(
+          caller_direct->direct_calls.begin(),
+          caller_direct->direct_calls.end(),
+          *danger) != caller_direct->direct_calls.end());
+
+  const std::optional<std::size_t> caller_row = effect_row(effects, *caller);
+  const std::optional<std::size_t> factory_row = effect_row(effects, *factory);
+  const std::optional<std::size_t> danger_row = effect_row(effects, *danger);
+  EXPECT(state, caller_row.has_value());
+  EXPECT(state, factory_row.has_value());
+  EXPECT(state, danger_row.has_value());
+  if (!caller_row || !factory_row || !danger_row) return;
+  const std::optional<std::size_t> caller_component =
+      effect_component(effects, *caller_row);
+  const std::optional<std::size_t> factory_component =
+      effect_component(effects, *factory_row);
+  const std::optional<std::size_t> danger_component =
+      effect_component(effects, *danger_row);
+  EXPECT(state, caller_component.has_value());
+  EXPECT(state, factory_component.has_value());
+  EXPECT(state, danger_component.has_value());
+  if (!caller_component || !factory_component || !danger_component) return;
+  EXPECT(state, *factory_component < *caller_component);
+  EXPECT(state, *danger_component < *caller_component);
+
+  const draft::ProcedureEffectSummary *caller_summary = effects.find(*caller);
+  EXPECT(state, caller_summary != nullptr);
+  if (caller_summary != nullptr) {
+    EXPECT(state,
+        has_effect(*caller_summary, draft::EffectKind::RuntimeAssert));
+    EXPECT(state,
+        !has_effect(*caller_summary, draft::EffectKind::UnknownCall));
+  }
+}
+
 void test_transitive_effects(TestState &state) {
   draft::SourceManager sources;
   draft::DiagnosticSink diagnostics;
@@ -1225,6 +1338,7 @@ tuple_assignment_caller :: proc() {
 int main() {
   TestState state;
   test_recursive_effect_component(state);
+  test_returned_target_refines_effect_graph(state);
   test_transitive_effects(state);
   test_raw_string_data_effect(state);
   test_target_and_package_assembly_summaries(state);
