@@ -172,27 +172,44 @@ TypeStore::TypeStore(std::uint32_t pointer_bits) : pointer_bits_(pointer_bits) {
       "Target_Object_Format", builtins_.u8_type, 2);
 }
 
+TypeStore::TypeStore(AppendOnlyOverlayTag, const TypeStore &base)
+    : pointer_bits_(base.pointer_bits_), base_(&base),
+      base_size_(base.size()), builtins_(base.builtins_) {
+  assert(base.base_ == nullptr);
+}
+
 const BuiltinTypes &TypeStore::builtins() const {
   return builtins_;
 }
 
 const Type &TypeStore::type(TypeId id) const {
   assert(id.is_valid());
-  assert(static_cast<std::size_t>(id.value) < types_.size());
-  return types_[id.value];
+  const std::size_t index = static_cast<std::size_t>(id.value);
+  assert(index < size());
+  if (index < base_size_) {
+    assert(base_ != nullptr);
+    return base_->type(id);
+  }
+  return types_[index - base_size_];
 }
 
 Type &TypeStore::type_mut(TypeId id) {
   assert(id.is_valid());
-  assert(static_cast<std::size_t>(id.value) < types_.size());
-  assert(static_cast<std::size_t>(id.value) >= immutable_prefix_size_);
-  return types_[id.value];
+  const std::size_t index = static_cast<std::size_t>(id.value);
+  assert(index < size());
+  assert(index >= base_size_);
+  return types_[index - base_size_];
 }
 
 const TypeCompletion &TypeStore::completion(TypeId id) const {
   assert(id.is_valid());
-  assert(static_cast<std::size_t>(id.value) < completion_.size());
-  return completion_[id.value];
+  const std::size_t index = static_cast<std::size_t>(id.value);
+  assert(index < size());
+  if (index < base_size_) {
+    assert(base_ != nullptr);
+    return base_->completion(id);
+  }
+  return completion_[index - base_size_];
 }
 
 TypeFacetState TypeStore::facet_state(TypeId id, TypeFacet facet) const {
@@ -211,28 +228,27 @@ TypeFacetState TypeStore::facet_state(TypeId id, TypeFacet facet) const {
 }
 
 std::size_t TypeStore::size() const {
-  return types_.size();
+  return base_size_ + types_.size();
 }
 
-void TypeStore::freeze_existing_rows() {
-  immutable_prefix_size_ = types_.size();
+TypeStore TypeStore::fork_append_only() const {
+  return TypeStore(AppendOnlyOverlayTag{}, *this);
 }
 
 TypeStoreAppend TypeStore::appended_since(std::size_t base_size) const {
-  assert(base_size <= types_.size());
+  assert(base_ != nullptr);
+  assert(base_size == base_size_);
   assert(types_.size() == completion_.size());
   TypeStoreAppend appended;
   appended.base_size = base_size;
-  appended.types.assign(types_.begin() + static_cast<std::ptrdiff_t>(base_size),
-                        types_.end());
-  appended.completions.assign(
-      completion_.begin() + static_cast<std::ptrdiff_t>(base_size),
-      completion_.end());
+  appended.types = types_;
+  appended.completions = completion_;
   return appended;
 }
 
 void TypeStore::append_exact(TypeStoreAppend appended) {
-  assert(types_.size() == appended.base_size);
+  assert(base_ == nullptr);
+  assert(size() == appended.base_size);
   assert(appended.types.size() == appended.completions.size());
   types_.insert(
       types_.end(),
@@ -245,6 +261,7 @@ void TypeStore::append_exact(TypeStoreAppend appended) {
 }
 
 std::optional<TypeId> TypeStore::find_builtin(std::string_view name) const {
+  if (base_ != nullptr) return base_->find_builtin(name);
   for (const BuiltinName &builtin : builtin_names_) {
     if (builtin.name == name) {
       return builtin.type;
@@ -254,8 +271,8 @@ std::optional<TypeId> TypeStore::find_builtin(std::string_view name) const {
 }
 
 TypeId TypeStore::add(Type type_value) {
-  assert(types_.size() < static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max()));
-  const TypeId id{static_cast<std::uint32_t>(types_.size())};
+  assert(size() < static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max()));
+  const TypeId id{static_cast<std::uint32_t>(size())};
   TypeCompletion completion;
   switch (type_value.kind) {
   case TypeKind::Tuple:
@@ -332,8 +349,8 @@ TypeId TypeStore::add_compiler_enum(
 }
 
 TypeId TypeStore::pointer(TypeId element) {
-  for (std::uint32_t index = 0; index < types_.size(); ++index) {
-    const Type &candidate = types_[index];
+  for (std::uint32_t index = 0; index < size(); ++index) {
+    const Type &candidate = type(TypeId{index});
     if (candidate.kind == TypeKind::Pointer && candidate.element == element &&
         !candidate.owner_evaluated_type_application) {
       return TypeId{index};
@@ -348,8 +365,8 @@ TypeId TypeStore::pointer(TypeId element) {
 }
 
 TypeId TypeStore::multi_pointer(TypeId element) {
-  for (std::uint32_t index = 0; index < types_.size(); ++index) {
-    const Type &candidate = types_[index];
+  for (std::uint32_t index = 0; index < size(); ++index) {
+    const Type &candidate = type(TypeId{index});
     if (candidate.kind == TypeKind::MultiPointer &&
         candidate.element == element &&
         !candidate.owner_evaluated_type_application) {
@@ -365,8 +382,8 @@ TypeId TypeStore::multi_pointer(TypeId element) {
 }
 
 TypeId TypeStore::slice(TypeId element) {
-  for (std::uint32_t index = 0; index < types_.size(); ++index) {
-    const Type &candidate = types_[index];
+  for (std::uint32_t index = 0; index < size(); ++index) {
+    const Type &candidate = type(TypeId{index});
     if (candidate.kind == TypeKind::Slice && candidate.element == element &&
         !candidate.owner_evaluated_type_application) {
       return TypeId{index};
@@ -381,8 +398,8 @@ TypeId TypeStore::slice(TypeId element) {
 }
 
 TypeId TypeStore::array(TypeId element, std::uint64_t count) {
-  for (std::uint32_t index = 0; index < types_.size(); ++index) {
-    const Type &candidate = types_[index];
+  for (std::uint32_t index = 0; index < size(); ++index) {
+    const Type &candidate = type(TypeId{index});
     if (candidate.kind == TypeKind::Array && candidate.element == element &&
         candidate.element_count == count &&
         !candidate.owner_evaluated_type_application) {
@@ -404,8 +421,8 @@ TypeId TypeStore::array(TypeId element, std::uint64_t count) {
 
 TypeId TypeStore::parametric_array(
     TypeId element, IntegerExpression count) {
-  for (std::uint32_t index = 0; index < types_.size(); ++index) {
-    const Type &candidate = types_[index];
+  for (std::uint32_t index = 0; index < size(); ++index) {
+    const Type &candidate = type(TypeId{index});
     if (candidate.kind == TypeKind::Array && candidate.element == element &&
         candidate.element_count_expression == count &&
         !candidate.owner_evaluated_type_application) {
@@ -436,17 +453,17 @@ TypeId TypeStore::simd(
     TypeId element,
     std::uint64_t lanes,
     SourceRange declaration) {
-  for (std::uint32_t index = 0; index < types_.size(); ++index) {
-    const Type &candidate = types_[index];
+  for (std::uint32_t index = 0; index < size(); ++index) {
+    const Type &candidate = type(TypeId{index});
     if (candidate.kind == TypeKind::Simd && candidate.element == element &&
         candidate.element_count == lanes &&
         !candidate.owner_evaluated_type_application) {
       // Structural interning may first see a type through an imported graph,
       // which has no local source location. Preserve the first useful local use
       // so a target-profile rejection points at source instead of file zero.
-      if (static_cast<std::size_t>(index) >= immutable_prefix_size_ &&
+      if (static_cast<std::size_t>(index) >= base_size_ &&
           !candidate.declaration.is_valid() && declaration.is_valid()) {
-        types_[index].declaration = declaration;
+        type_mut(TypeId{index}).declaration = declaration;
       }
       return TypeId{index};
     }
@@ -476,8 +493,8 @@ TypeId TypeStore::simd(
 
 TypeId TypeStore::parametric_simd(
     TypeId element, IntegerExpression lanes) {
-  for (std::uint32_t index = 0; index < types_.size(); ++index) {
-    const Type &candidate = types_[index];
+  for (std::uint32_t index = 0; index < size(); ++index) {
+    const Type &candidate = type(TypeId{index});
     if (candidate.kind == TypeKind::Simd && candidate.element == element &&
         candidate.element_count_expression == lanes &&
         !candidate.owner_evaluated_type_application) {
@@ -539,8 +556,8 @@ TypeLayout TypeStore::aggregate_layout(const std::vector<TypeId> &members) const
 }
 
 TypeId TypeStore::tuple(const std::vector<TypeId> &members) {
-  for (std::uint32_t index = 0; index < types_.size(); ++index) {
-    const Type &candidate = types_[index];
+  for (std::uint32_t index = 0; index < size(); ++index) {
+    const Type &candidate = type(TypeId{index});
     if (candidate.kind == TypeKind::Tuple && candidate.members == members &&
         !candidate.owner_evaluated_type_application) {
       return TypeId{index};
@@ -569,10 +586,9 @@ void TypeStore::complete_pending_tuple_layouts() {
   bool made_progress = true;
   while (made_progress) {
     made_progress = false;
-    for (std::size_t pending_index = immutable_prefix_size_;
-         pending_index < types_.size();
-         ++pending_index) {
-      Type &pending = types_[pending_index];
+    for (std::size_t local_index = 0; local_index < types_.size();
+         ++local_index) {
+      Type &pending = types_[local_index];
       if (pending.kind != TypeKind::Tuple || pending.layout.known ||
           pending.owner_evaluated_type_application) {
         continue;
@@ -596,7 +612,7 @@ void TypeStore::complete_pending_tuple_layouts() {
       }
       pending.layout = layout;
       pending.member_offsets = std::move(offsets);
-      completion_[pending_index].natural_layout = TypeFacetState::Complete;
+      completion_[local_index].natural_layout = TypeFacetState::Complete;
       made_progress = true;
     }
   }
@@ -606,8 +622,8 @@ TypeId TypeStore::procedure(
     const std::vector<TypeId> &parameters, TypeId result_type, bool c_calling_convention) {
   std::vector<TypeId> signature = parameters;
   signature.push_back(result_type);
-  for (std::uint32_t index = 0; index < types_.size(); ++index) {
-    const Type &candidate = types_[index];
+  for (std::uint32_t index = 0; index < size(); ++index) {
+    const Type &candidate = type(TypeId{index});
     if (candidate.kind == TypeKind::Procedure && candidate.members == signature &&
         candidate.c_calling_convention == c_calling_convention &&
         !candidate.owner_evaluated_type_application) {
@@ -723,7 +739,7 @@ void TypeStore::publish_nominal_members(TypeId id) {
   Type &nominal = type_mut(id);
   assert(nominal.kind == TypeKind::Struct || nominal.kind == TypeKind::Enum ||
          nominal.kind == TypeKind::TaggedUnion || nominal.kind == TypeKind::RawUnion);
-  TypeCompletion &facets = completion_[id.value];
+  TypeCompletion &facets = completion_[id.value - base_size_];
   assert(facets.members == TypeFacetState::Waiting);
   facets.members = TypeFacetState::Complete;
 }
@@ -733,7 +749,7 @@ void TypeStore::publish_nominal_member_types(
   Type &nominal = type_mut(id);
   assert(nominal.kind == TypeKind::Struct || nominal.kind == TypeKind::Enum ||
          nominal.kind == TypeKind::TaggedUnion || nominal.kind == TypeKind::RawUnion);
-  TypeCompletion &facets = completion_[id.value];
+  TypeCompletion &facets = completion_[id.value - base_size_];
   assert(facets.member_types == TypeFacetState::Waiting);
   nominal.members = std::move(members);
   facets.member_types = TypeFacetState::Complete;
@@ -747,7 +763,7 @@ void TypeStore::publish_nominal_natural_layout(
   assert(nominal.kind == TypeKind::Struct || nominal.kind == TypeKind::Enum ||
          nominal.kind == TypeKind::TaggedUnion || nominal.kind == TypeKind::RawUnion);
   assert(layout.known);
-  TypeCompletion &facets = completion_[id.value];
+  TypeCompletion &facets = completion_[id.value - base_size_];
   assert(facets.natural_layout == TypeFacetState::Waiting);
   assert(facets.member_types == TypeFacetState::Complete);
   nominal.layout = layout;

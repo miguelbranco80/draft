@@ -143,9 +143,11 @@ gate.
    the same explicit item-at-a-time body state and live product publisher.
 
    Root invocation is worker-owned as well. The coordinator retains the
-   canonical package and gives the worker a private snapshot frozen at explicit
-   TypeStore, SymbolTable, side-table, and ConstantTable counts. The worker has
-   no alias to `PackageBodyWorkState` and returns only a
+   canonical package and gives the worker a private view frozen at explicit
+   TypeStore, SymbolTable, side-table, and ConstantTable counts. TypeStore and
+   SymbolTable prefixes are non-owning read-only overlays; a task owns only new
+   rows and explicit additions to existing scopes. The worker has no mutable
+   alias to `PackageBodyWorkState` and returns only a
    `ProcedureBodySemanticAppend`, not a complete successor. The coordinator
    rejects a stale prefix and appends the packet in product order. A focused
    test proves the work cursor cannot advance before publication and canonical
@@ -161,11 +163,12 @@ gate.
    may repair a retained declaration symbol as a side effect.
 
    The remaining split is substantive but narrower. The task result is local,
-   while its private read prefix is still a full package/constants copy and its
-   suffix IDs assume sequential publication. Replace the copied prefix with
-   read-only overlays and add deterministic remapping/canonical interning for a
-   shared ready wave. The consumer-first external-demand loop, body work key,
-   and extension/rebuild paths remain until that publication model closes.
+   while semantic side tables and constants are still copied into its private
+   view and suffix IDs assume sequential publication. Replace those remaining
+   copies with read-only views and add deterministic remapping/canonical
+   interning for a shared ready wave. The consumer-first external-demand loop,
+   body work key, and extension/rebuild paths remain until that publication
+   model closes.
 
 6. **Synthesis as an explicit wait state.** A body or declaration task may
    report its exact ready `...` set after producing the typed constraint needed

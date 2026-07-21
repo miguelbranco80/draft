@@ -20,6 +20,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -433,6 +434,111 @@ void test_type_inspection_waits_for_exact_facets(TestState &state) {
   EXPECT(state, !scalar_members.error.empty());
 }
 
+void test_append_only_table_overlays(TestState &state) {
+  // A worker must reuse canonical structural identities without cloning the
+  // prefix, then allocate any new identity at exactly the first suffix ID. The
+  // canonical table remains unchanged until its coordinator accepts the packet.
+  draft::TypeStore canonical_types;
+  const std::optional<draft::TypeId> u32 = canonical_types.find_builtin("u32");
+  EXPECT(state, u32.has_value());
+  if (!u32.has_value()) return;
+  const draft::TypeId existing_pointer = canonical_types.pointer(*u32);
+  const std::size_t type_prefix = canonical_types.size();
+
+  draft::TypeStore task_types = canonical_types.fork_append_only();
+  EXPECT(state, task_types.size() == type_prefix);
+  EXPECT(state, task_types.pointer(*u32) == existing_pointer);
+  const draft::TypeId task_array = task_types.array(*u32, 37);
+  const draft::TypeId task_tuple = task_types.tuple(
+      {task_array, task_types.builtins().bool_type});
+  EXPECT(state, task_array.value == type_prefix);
+  EXPECT(state, task_tuple.value == type_prefix + 1);
+  EXPECT(state, canonical_types.size() == type_prefix);
+
+  draft::TypeStoreAppend type_append =
+      task_types.appended_since(type_prefix);
+  EXPECT(state, type_append.types.size() == 2);
+  canonical_types.append_exact(std::move(type_append));
+  EXPECT(state, canonical_types.size() == type_prefix + 2);
+  EXPECT(state, canonical_types.type(task_array).element == *u32);
+  EXPECT(state,
+         canonical_types.type(task_tuple).members ==
+             std::vector<draft::TypeId>(
+                 {task_array, canonical_types.builtins().bool_type}));
+
+  // Symbol overlays have one extra case: a task can append a binding to a
+  // canonical scope without mutating that Scope row. Direct lookup and ordered
+  // enumeration must see the overlay addition, while the base table must not
+  // see it until exact publication.
+  draft::SourceManager sources;
+  const draft::FileId file =
+      sources.add_source("overlay.draft", "base generated local\n");
+  draft::DiagnosticSink diagnostics;
+  draft::SymbolTable canonical_symbols;
+  const draft::ScopeId package_scope = canonical_symbols.add_scope(
+      draft::ScopeKind::Package, {}, draft::SourceRange::at(file, 0));
+  const draft::ScopeId file_scope = canonical_symbols.add_scope(
+      draft::ScopeKind::File, package_scope, draft::SourceRange::at(file, 0));
+
+  draft::Symbol base_symbol;
+  base_symbol.name = "base";
+  base_symbol.kind = draft::SymbolKind::Constant;
+  base_symbol.scope = package_scope;
+  base_symbol.name_range = {{file, 0}, {file, 4}};
+  const draft::SymbolId base_id =
+      canonical_symbols.declare(std::move(base_symbol), diagnostics);
+  const std::size_t scope_prefix = canonical_symbols.scope_count();
+  const std::size_t symbol_prefix = canonical_symbols.symbol_count();
+
+  draft::SymbolTable task_symbols = canonical_symbols.fork_append_only();
+  EXPECT(state, task_symbols.lookup(file_scope, "base") == base_id);
+  draft::Symbol generated_symbol;
+  generated_symbol.name = "generated";
+  generated_symbol.kind = draft::SymbolKind::Procedure;
+  generated_symbol.scope = package_scope;
+  generated_symbol.name_range = {{file, 5}, {file, 14}};
+  const draft::SymbolId generated_id =
+      task_symbols.declare(std::move(generated_symbol), diagnostics);
+  EXPECT(state, generated_id.value == symbol_prefix);
+
+  const draft::ScopeId local_scope = task_symbols.add_scope(
+      draft::ScopeKind::Block,
+      file_scope,
+      draft::SourceRange::at(file, 15));
+  draft::Symbol local_symbol;
+  local_symbol.name = "local";
+  local_symbol.kind = draft::SymbolKind::Local;
+  local_symbol.scope = local_scope;
+  local_symbol.name_range = {{file, 15}, {file, 20}};
+  const draft::SymbolId local_id =
+      task_symbols.declare(std::move(local_symbol), diagnostics);
+
+  EXPECT(state, local_scope.value == scope_prefix);
+  EXPECT(state, local_id.value == symbol_prefix + 1);
+  EXPECT(state, task_symbols.lookup_direct(package_scope, "generated") ==
+                    generated_id);
+  EXPECT(state,
+         task_symbols.symbols_in_scope(package_scope) ==
+             std::vector<draft::SymbolId>({base_id, generated_id}));
+  EXPECT(state,
+         !canonical_symbols.lookup_direct(package_scope, "generated")
+              .has_value());
+  EXPECT(state, canonical_symbols.scope_count() == scope_prefix);
+  EXPECT(state, canonical_symbols.symbol_count() == symbol_prefix);
+
+  draft::SymbolTableAppend symbol_append = task_symbols.appended_since(
+      scope_prefix, symbol_prefix);
+  EXPECT(state, symbol_append.scopes.size() == 1);
+  EXPECT(state, symbol_append.symbols.size() == 2);
+  EXPECT(state, symbol_append.existing_scope_symbols.size() == 1);
+  canonical_symbols.append_exact(std::move(symbol_append));
+  EXPECT(state,
+         canonical_symbols.lookup_direct(package_scope, "generated") ==
+             generated_id);
+  EXPECT(state, canonical_symbols.lookup(local_scope, "local") == local_id);
+  EXPECT(state, diagnostics.error_count() == 0);
+}
+
 void test_scopes_and_duplicates(TestState &state) {
   draft::SourceManager sources;
   const draft::FileId file = sources.add_source("symbols.draft", "Value Value local\n");
@@ -483,6 +589,7 @@ int main() {
   test_pure_natural_aggregate_layout(state);
   test_natural_layout_product(state);
   test_type_inspection_waits_for_exact_facets(state);
+  test_append_only_table_overlays(state);
   test_scopes_and_duplicates(state);
 
   if (state.failures != 0) {

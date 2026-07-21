@@ -311,13 +311,15 @@ operations through a package-local sequential coordinator. Only the explicit
 direct Discover-mode entry point retains the aggregate compatibility
 composition during migration.
 
-Body checking never appends to that retained value. It copies the declaration
-prefix and returns the enriched SemanticPackage, body constants, and one local
-HIR arena for each exact procedure root as one `BodyCheckResult`. Every
-SymbolId, ScopeId, and TypeId in those arenas belongs to that returned package.
-A deterministic compatibility projection rewrites HIR-local IDs and
-concatenates the arenas once for later package-wide effect, denial, interop,
-MIR, LLVM, metadata, and obligation passes.
+Body workers never append directly to the coordinator's retained value. Each
+returns an exact semantic append packet and one local HIR arena; the coordinator
+publishes those packets into its canonical body generation. Once all roots are
+complete, `BodyCheckResult` receives that final SemanticPackage, body constants,
+and the procedure-owned arenas. Every SymbolId, ScopeId, and TypeId in those
+arenas belongs to that returned package. A deterministic compatibility
+projection rewrites HIR-local IDs and concatenates the arenas once for later
+package-wide effect, denial, interop, MIR, LLVM, metadata, and obligation
+passes.
 
 The sequential body oracle no longer retains one `BodyChecker` while walking a
 package and its growing instance vector. Seed materialization is separate, then
@@ -347,9 +349,12 @@ the containing body state invalid, allowing later authored roots to be checked
 without permitting effects or lowering to consume the package.
 
 The coordinator retains the published package and constants while a
-`ProcedureBodyTaskInput` owns one private snapshot frozen at explicit counts for
-every append-only table. Existing TypeStore and SymbolTable rows are immutable
-inside that snapshot. The worker returns only a
+`ProcedureBodyTaskInput` owns one private view frozen at explicit counts for
+every append-only table. Its TypeStore and SymbolTable are append-only overlays:
+existing rows are read directly from the canonical tables, new rows remain
+task-owned, and bindings added to an existing scope are recorded separately
+without mutating that scope. Semantic side tables and constants remain value
+snapshots. The worker returns only a
 `ProcedureBodySemanticAppend`, one procedure-local HIR arena, diagnostics, and
 discovered roots; it never aliases or returns a replacement for
 `PackageBodyWorkState`. The coordinator validates the work index, root symbol,
@@ -357,11 +362,11 @@ and complete prefix, then appends type/symbol rows and every semantic side table
 in product order before exposing discovered roots.
 
 The result boundary is therefore procedure-local, but execution is not yet the
-final parallel implementation. Constructing the private snapshot still copies
-its read-only package and constant prefix, and suffix IDs are valid only while
-one task is in flight. Read-only table overlays remove the copy; deterministic
-remapping and canonical interning then permit every independent root in one
-frozen wave to check concurrently.
+final parallel implementation. Constructing the private view still copies
+semantic side-table and constant prefixes, and suffix IDs are valid only while
+one task is in flight. Read-only views for those remaining inputs plus
+deterministic remapping and canonical interning will permit every independent
+root in one frozen wave to check concurrently.
 
 Named constant products carry both `ConstantValue` and checked `TypeId`.
 Package-interface finalization installs that type payload into its retained

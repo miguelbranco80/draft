@@ -118,9 +118,12 @@ struct Symbol {
   SourceRange name_range;
 };
 
-// Scope owns bindings declared directly in one lexical region. symbol IDs remain
-// in declaration order for canonical diagnostics and interface construction.
-// parent is invalid only for the package scope.
+// Scope owns bindings declared directly in one lexical region. Symbol IDs
+// remain in declaration order for canonical diagnostics and interface
+// construction. An append-only task overlay reads a canonical prefix Scope
+// without mutating this vector and records its new direct bindings in a
+// separate ExistingScopeSymbolAppend. Call symbols_in_scope when the table may
+// be such an overlay. parent is invalid only for the package scope.
 struct Scope {
   ScopeKind kind = ScopeKind::Block;
   ScopeId parent;
@@ -150,6 +153,8 @@ struct SymbolTableAppend {
 
 class SymbolTable {
 public:
+  SymbolTable() = default;
+
   [[nodiscard]] ScopeId add_scope(ScopeKind kind, ScopeId parent, SourceRange range);
 
   // Declares a new binding and diagnoses a duplicate in the same scope. Shadowing
@@ -163,24 +168,39 @@ public:
 
   [[nodiscard]] const Scope &scope(ScopeId id) const;
   [[nodiscard]] Scope &scope_mut(ScopeId id);
+  // Returns direct bindings in declaration order, including task-local
+  // additions to a scope owned by an immutable overlay prefix.
+  [[nodiscard]] std::vector<SymbolId> symbols_in_scope(ScopeId id) const;
   [[nodiscard]] const Symbol &symbol(SymbolId id) const;
   [[nodiscard]] Symbol &symbol_mut(SymbolId id);
   [[nodiscard]] std::size_t scope_count() const;
   [[nodiscard]] std::size_t symbol_count() const;
 
-  // Existing symbols become immutable inside one task snapshot. New bindings
-  // may still be declared in an existing scope; appended_since represents that
-  // change explicitly rather than treating the complete scope row as output.
-  void freeze_existing_rows();
+  // Creates an empty append-only overlay over this canonical table. Existing
+  // scopes and symbols are read through base; declarations occupy local suffix
+  // rows, with additions to base scopes recorded separately. base must outlive
+  // the overlay and may not itself be an overlay.
+  [[nodiscard]] SymbolTable fork_append_only() const;
+
+  // Extracts one overlay's local rows, including explicit binding additions to
+  // canonical prefix scopes, or publishes those rows to the canonical table.
   [[nodiscard]] SymbolTableAppend appended_since(
       std::size_t base_scope_count,
       std::size_t base_symbol_count) const;
   void append_exact(SymbolTableAppend appended);
 
 private:
+  struct AppendOnlyOverlayTag {};
+  SymbolTable(AppendOnlyOverlayTag, const SymbolTable &base);
+
+  [[nodiscard]] ExistingScopeSymbolAppend *base_scope_append(ScopeId scope);
+
+  const SymbolTable *base_ = nullptr;
+  std::size_t base_scope_count_ = 0;
+  std::size_t base_symbol_count_ = 0;
   std::vector<Scope> scopes_;
   std::vector<Symbol> symbols_;
-  std::size_t immutable_symbol_prefix_size_ = 0;
+  std::vector<ExistingScopeSymbolAppend> base_scope_symbols_;
 };
 
 [[nodiscard]] std::string_view scope_kind_name(ScopeKind kind);

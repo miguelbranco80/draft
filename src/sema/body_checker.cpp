@@ -357,7 +357,7 @@ public:
     // tuple pattern). Check its initializer once, in stable package-symbol
     // order, so one source error produces one diagnostic.
     const std::vector<SymbolId> package_symbols =
-        semantic_.symbols.scope(semantic_.package_scope).symbols;
+        semantic_.symbols.symbols_in_scope(semantic_.package_scope);
     for (SymbolId id : package_symbols) {
       const Symbol symbol = semantic_.symbols.symbol(id);
       if (symbol.kind != SymbolKind::Constant &&
@@ -4274,9 +4274,9 @@ private:
           // and let every existing HIR reference keep its stable SymbolId. Its
           // lexical name must not change: SymbolTable names are immutable after
           // declaration and direct lookup observes them.
-          const Scope &package_scope =
-              semantic_.symbols.scope(semantic_.package_scope);
-          for (SymbolId candidate_id : package_scope.symbols) {
+          for (SymbolId candidate_id :
+               semantic_.symbols.symbols_in_scope(
+                   semantic_.package_scope)) {
             if (candidate_id == instance.instance) continue;
             const Symbol &candidate =
                 semantic_.symbols.symbol(candidate_id);
@@ -4426,7 +4426,8 @@ private:
     const ScopeId instance_scope = semantic_.symbols.add_scope(
         ScopeKind::Procedure, *compile_time_parameters, source_scope.range);
     semantic_.owned_scopes.push_back({instance_id, instance_scope});
-    const std::vector<SymbolId> source_parameter_symbols = source_scope.symbols;
+    const std::vector<SymbolId> source_parameter_symbols =
+        semantic_.symbols.symbols_in_scope(*source_parameters);
     for (SymbolId parameter_id : source_parameter_symbols) {
       const Symbol parameter = semantic_.symbols.symbol(parameter_id);
       if (parameter.kind != SymbolKind::Parameter) continue;
@@ -6951,8 +6952,8 @@ private:
     // types now. Type-parameter identities themselves must remain symbolic.
     for (const OwnedSemanticScope &owned : semantic_.owned_scopes) {
       if (owned.owner != id) continue;
-      const Scope scope_record = semantic_.symbols.scope(owned.scope);
-      for (SymbolId child : scope_record.symbols) {
+      for (SymbolId child :
+           semantic_.symbols.symbols_in_scope(owned.scope)) {
         Symbol &owned_symbol = semantic_.symbols.symbol_mut(child);
         if (owned_symbol.kind == SymbolKind::Parameter ||
             owned_symbol.kind == SymbolKind::ValueParameter) {
@@ -8389,6 +8390,56 @@ void append_body_root(
   }
 }
 
+// Creates the private semantic view consumed by one procedure task. The two
+// largest identity tables remain in the coordinator and are exposed through
+// append-only overlays: prefix TypeIds, ScopeIds, and SymbolIds therefore keep
+// their exact values without copying rows or permitting worker mutation. The
+// remaining side tables are value snapshots for now because BodyChecker still
+// performs direct indexed reads over them and can append task-local rows. They
+// are listed explicitly so adding a SemanticPackage field forces this phase
+// boundary to be reviewed instead of silently omitting task-visible state.
+//
+// PackageBodyWorkState permits only one active task and does not publish while
+// that task runs. Its canonical package consequently outlives both overlay
+// pointers and cannot reallocate either base table before extraction finishes.
+[[nodiscard]] SemanticPackage fork_body_semantic_view(
+    const SemanticPackage &package) {
+  return SemanticPackage{
+      .short_name = package.short_name,
+      .identity = package.identity,
+      .types = package.types.fork_append_only(),
+      .symbols = package.symbols.fork_append_only(),
+      .package_scope = package.package_scope,
+      .runtime_context_type = package.runtime_context_type,
+      .files = package.files,
+      .owned_scopes = package.owned_scopes,
+      .aggregate_members = package.aggregate_members,
+      .enum_member_values = package.enum_member_values,
+      .parametric_parameters = package.parametric_parameters,
+      .static_argument_packs = package.static_argument_packs,
+      .parametric_instances = package.parametric_instances,
+      .parametric_type_instances = package.parametric_type_instances,
+      .imports = package.imports,
+      .imported_symbols = package.imported_symbols,
+      .imported_documentation = package.imported_documentation,
+      .imported_procedure_instances = package.imported_procedure_instances,
+      .imported_type_instantiation_requests =
+          package.imported_type_instantiation_requests,
+      .imported_types = package.imported_types,
+      .imported_effects = package.imported_effects,
+      .imported_returns = package.imported_returns,
+      .imported_writes = package.imported_writes,
+      .declaration_denials = package.declaration_denials,
+      .sites = package.sites,
+      .required_integer_expressions = package.required_integer_expressions,
+      .deferred_element_counts = package.deferred_element_counts,
+      .deferred_value_expressions = package.deferred_value_expressions,
+      .deferred_type_applications = package.deferred_type_applications,
+      .native_bindings = package.native_bindings,
+      .conditional_declarations = package.conditional_declarations,
+  };
+}
+
 // Captures every append-only boundary which body checking is allowed to extend.
 // Keeping this list explicit makes a newly mutable SemanticPackage table a
 // compile-time review point: it must be added both here and to extraction and
@@ -8657,7 +8708,7 @@ PackageBodyWorkState begin_package_body_work(
   // receive their own instance roots below and must not masquerade as authored
   // source procedures.
   const std::vector<SymbolId> package_symbols =
-      package.symbols.scope(package.package_scope).symbols;
+      package.symbols.symbols_in_scope(package.package_scope);
   for (SymbolId id : package_symbols) {
     const Symbol &symbol = package.symbols.symbol(id);
     if (symbol.kind == SymbolKind::Procedure && symbol.type.is_valid()) {
@@ -8740,10 +8791,8 @@ ProcedureBodyTaskInput take_next_procedure_body_work(
   input.work = state.work[state.next_work];
   input.next_instance = state.next_instance;
   input.prefix = capture_body_semantic_prefix(state.package, state.constants);
-  input.package = state.package;
+  input.package = fork_body_semantic_view(state.package);
   input.constants = state.constants;
-  input.package.types.freeze_existing_rows();
-  input.package.symbols.freeze_existing_rows();
   state.active_work = state.next_work;
   return input;
 }
@@ -8944,7 +8993,7 @@ BodyCheckResult check_compile_time_procedure_bodies(
   state.work.clear();
   state.next_work = 0;
   const std::vector<SymbolId> package_symbols =
-      state.package.symbols.scope(state.package.package_scope).symbols;
+      state.package.symbols.symbols_in_scope(state.package.package_scope);
   for (SymbolId id : package_symbols) {
     if (std::find(procedures.begin(), procedures.end(), id) ==
         procedures.end()) {

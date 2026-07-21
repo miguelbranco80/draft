@@ -110,7 +110,7 @@ struct ProcedureBodyWorkItem {
 };
 
 // ProcedureBodySemanticPrefix records every append-only table boundary seen by
-// one dispatched body task. The worker checks a private copy frozen at these
+// one dispatched body task. The worker checks a private view frozen at these
 // counts. Publication succeeds only if the canonical package still has exactly
 // this prefix, making stale or out-of-order task results explicit.
 struct ProcedureBodySemanticPrefix {
@@ -186,13 +186,13 @@ struct ProcedureBodySemanticAppend {
   std::vector<ConstantBinding> constants;
 };
 
-// ProcedureBodyTaskInput owns a private semantic snapshot frozen at prefix.
-// PackageBodyWorkState retains the canonical package while the task is in
-// flight. HIR is not an input: every task starts one new local arena. work is
-// the exact root and next_instance partitions already published concrete
-// records from any suffix discovered by this task. The snapshot currently
-// copies its immutable prefix; read-only overlays will remove that transport
-// cost without changing this ownership contract.
+// ProcedureBodyTaskInput owns the private semantic view frozen at prefix.
+// TypeStore and SymbolTable are append-only overlays whose non-owning bases live
+// in PackageBodyWorkState; all other semantic side tables and constants remain
+// value snapshots until their product migrations remove that transport. HIR is
+// not an input: every task starts one new local arena. work is the exact root,
+// and next_instance partitions already published concrete records from any
+// suffix discovered by this task.
 struct ProcedureBodyTaskInput {
   bool valid = false;
   std::size_t work_index = 0;

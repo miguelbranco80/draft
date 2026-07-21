@@ -181,7 +181,7 @@ public:
     // Copy the package symbol list because resolving aggregates and procedures
     // appends member/parameter symbols to other scopes in the same table.
     const std::vector<SymbolId> package_symbols =
-        semantic_.symbols.scope(semantic_.package_scope).symbols;
+        semantic_.symbols.symbols_in_scope(semantic_.package_scope);
     for (SymbolId symbol : package_symbols) {
       resolve_symbol(symbol);
     }
@@ -245,7 +245,7 @@ public:
   // member declarations themselves.
   void discover_member_condition_sites() {
     const std::vector<SymbolId> package_symbols =
-        semantic_.symbols.scope(semantic_.package_scope).symbols;
+        semantic_.symbols.symbols_in_scope(semantic_.package_scope);
     for (SymbolId owner : package_symbols) {
       const Symbol &symbol = semantic_.symbols.symbol(owner);
       if (symbol.kind != SymbolKind::Type || !symbol.type.is_valid() ||
@@ -2689,7 +2689,7 @@ private:
           semantic_.symbols.symbol(owned.owner).type != pattern) {
         continue;
       }
-      template_members = semantic_.symbols.scope(owned.scope).symbols;
+      template_members = semantic_.symbols.symbols_in_scope(owned.scope);
       break;
     }
 

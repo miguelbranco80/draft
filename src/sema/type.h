@@ -258,15 +258,16 @@ public:
   [[nodiscard]] TypeFacetState facet_state(TypeId id, TypeFacet facet) const;
   [[nodiscard]] std::size_t size() const;
 
-  // Prevents a task-local checker from enriching an existing canonical row.
-  // Structural constructors may still reuse prefix IDs and append new rows;
-  // type_mut and completion publication are restricted to the suffix. The
-  // frozen marker belongs only to a private task snapshot.
-  void freeze_existing_rows();
+  // Creates an empty append-only overlay over this immutable canonical store.
+  // Prefix TypeIds resolve through base without copying rows; new IDs begin at
+  // base.size(). The base must outlive the overlay and may not itself be an
+  // overlay. Body tasks use this command-local view while their coordinator
+  // retains the canonical package.
+  [[nodiscard]] TypeStore fork_append_only() const;
 
-  // Extracts or publishes one exact suffix. append requires this store still to
-  // equal the producer's frozen prefix; callers publish task results in stable
-  // order and must remap before using this operation for a shared-prefix wave.
+  // Extracts one overlay's local suffix or publishes it to the canonical
+  // store. append requires the canonical store still to equal the producer's
+  // base prefix; callers must remap before using it for a shared-prefix wave.
   [[nodiscard]] TypeStoreAppend appended_since(std::size_t base_size) const;
   void append_exact(TypeStoreAppend appended);
 
@@ -333,6 +334,9 @@ public:
   [[nodiscard]] bool contains_compile_time_type(TypeId id) const;
 
 private:
+  struct AppendOnlyOverlayTag {};
+  TypeStore(AppendOnlyOverlayTag, const TypeStore &base);
+
   [[nodiscard]] TypeId add(Type type);
   void add_builtin_alias(std::string name, TypeId id);
   [[nodiscard]] TypeId add_scalar(
@@ -354,6 +358,11 @@ private:
   };
 
   std::uint32_t pointer_bits_ = 64;
+  // An overlay owns only rows at and above base_size_. Canonical stores leave
+  // base null and base_size zero. The pointer is non-owning and valid for the
+  // body task lifetime guaranteed by PackageBodyWorkState.
+  const TypeStore *base_ = nullptr;
+  std::size_t base_size_ = 0;
   std::vector<Type> types_;
   // completion_ has exactly one row per types_ entry and shares its TypeId
   // index domain. Keeping the facts parallel avoids enlarging the hot Type row
@@ -361,9 +370,6 @@ private:
   std::vector<TypeCompletion> completion_;
   std::vector<BuiltinName> builtin_names_;
   BuiltinTypes builtins_;
-  // Rows below this limit are immutable in a private procedure task snapshot.
-  // Ordinary declaration stores leave the limit at zero.
-  std::size_t immutable_prefix_size_ = 0;
 };
 
 [[nodiscard]] std::string_view type_kind_name(TypeKind kind);
