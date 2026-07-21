@@ -1574,7 +1574,8 @@ private:
         if (!decoded.empty()) return exact_linker_symbol(decoded);
       }
     }
-    for (const ImportedSymbol &imported : semantic_.imported_symbols) {
+    for (const ImportedSymbol &imported :
+         semantic_.imported_symbols_for_read()) {
       if (imported.proxy == symbol_id &&
           !imported.native_linker_name_spelling.empty()) {
         const std::string decoded =
@@ -1586,7 +1587,8 @@ private:
   }
 
   [[nodiscard]] bool is_imported_symbol(SymbolId symbol_id) const {
-    for (const ImportedSymbol &imported : semantic_.imported_symbols) {
+    for (const ImportedSymbol &imported :
+         semantic_.imported_symbols_for_read()) {
       if (imported.proxy == symbol_id) return true;
     }
     return false;
@@ -1606,7 +1608,8 @@ private:
     if (const std::optional<std::string> native = native_symbol_name(symbol_id)) {
       return *native;
     }
-    for (const ImportedSymbol &imported : semantic_.imported_symbols) {
+    for (const ImportedSymbol &imported :
+         semantic_.imported_symbols_for_read()) {
       if (imported.proxy == symbol_id) {
         return package_symbol_name(
             {imported.root_identity, imported.root_relative_path},
@@ -1631,7 +1634,8 @@ private:
     if (value.root_identity.empty() || value.text.empty()) {
       return std::nullopt;
     }
-    for (const ImportedSymbol &imported : semantic_.imported_symbols) {
+    for (const ImportedSymbol &imported :
+         semantic_.imported_symbols_for_read()) {
       if (imported.root_identity == value.root_identity &&
           imported.root_relative_path == value.root_relative_path &&
           imported.public_name == value.text &&
@@ -1888,7 +1892,8 @@ private:
   }
 
   void emit_external_declarations() {
-    for (const ImportedSymbol &imported : semantic_.imported_symbols) {
+    for (const ImportedSymbol &imported :
+         semantic_.imported_symbols_for_read()) {
       const Symbol &symbol = semantic_.symbols.symbol(imported.proxy);
       if (root_runtime_defines(imported.proxy)) continue;
       if (symbol.kind == SymbolKind::Procedure) {
@@ -1943,7 +1948,8 @@ private:
 
   [[nodiscard]] bool has_imported_validation_declaration(
       const ValidationEntry &entry) const {
-    for (const ImportedSymbol &imported : semantic_.imported_symbols) {
+    for (const ImportedSymbol &imported :
+         semantic_.imported_symbols_for_read()) {
       if (imported.root_identity != entry.package.root_identity ||
           imported.root_relative_path != entry.package.root_relative_path ||
           imported.public_name != entry.procedure) {

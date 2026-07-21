@@ -824,7 +824,8 @@ private:
   // current package's workspace identity.
   [[nodiscard]] ConstantValue procedure_value(SymbolId symbol_id) const {
     const Symbol &symbol = semantic_.symbols.symbol(symbol_id);
-    for (const ImportedSymbol &imported : semantic_.imported_symbols) {
+    for (const ImportedSymbol &imported :
+         semantic_.imported_symbols_for_read()) {
       if (imported.proxy == symbol_id) {
         return ConstantValue::make_procedure(
             symbol_id.value,
@@ -847,7 +848,8 @@ private:
       }
     }
     if (!value.root_identity.empty()) {
-      for (const ImportedSymbol &imported : semantic_.imported_symbols) {
+      for (const ImportedSymbol &imported :
+           semantic_.imported_symbols_for_read()) {
         if (imported.root_identity == value.root_identity &&
             imported.root_relative_path == value.root_relative_path &&
             imported.public_name == value.text &&
@@ -5018,7 +5020,8 @@ private:
         return ready(values_[id.value], value_types_[id.value]);
       }
     }
-    for (const ImportedSymbol &imported : semantic_.imported_symbols) {
+    for (const ImportedSymbol &imported :
+         semantic_.imported_symbols_for_read()) {
       if (imported.proxy != id) {
         continue;
       }

@@ -588,14 +588,14 @@ private:
   }
 
   [[nodiscard]] bool is_imported(SymbolId symbol) const {
-    for (const ImportedSymbol &imported : package_.imported_symbols) {
+    for (const ImportedSymbol &imported : package_.imported_symbols_for_read()) {
       if (imported.proxy == symbol) return true;
     }
     return false;
   }
 
   [[nodiscard]] const ImportedSymbol *imported_symbol(SymbolId symbol) const {
-    for (const ImportedSymbol &imported : package_.imported_symbols) {
+    for (const ImportedSymbol &imported : package_.imported_symbols_for_read()) {
       if (imported.proxy == symbol) return &imported;
     }
     return nullptr;
@@ -755,7 +755,8 @@ private:
       const std::vector<ProcedureArgumentSummary> &arguments) const {
     ProcedureValueSummary canonical;
     bool found = false;
-    for (const ImportedProcedureReturn &returned : package_.imported_returns) {
+    for (const ImportedProcedureReturn &returned :
+         package_.imported_returns_for_read()) {
       if (returned.procedure_proxy != callee || returned.path != path) continue;
       found = true;
       canonical.unknown = returned.unknown;
@@ -867,7 +868,8 @@ private:
       }
       return;
     }
-    for (const ImportedProcedureWrite &write : package_.imported_writes) {
+    for (const ImportedProcedureWrite &write :
+         package_.imported_writes_for_read()) {
       if (write.procedure_proxy != callee) continue;
       if (call.operands.empty() ||
           write.parameter >= call.operands.size() - 1U) {
@@ -1311,7 +1313,7 @@ private:
            {}});
     }
     bool changed = false;
-    for (const ImportedEffect &effect : package_.imported_effects) {
+    for (const ImportedEffect &effect : package_.imported_effects_for_read()) {
       if (effect.procedure_proxy != callee) continue;
       changed = compose_effect(
           destination, semantic_effect(effect),

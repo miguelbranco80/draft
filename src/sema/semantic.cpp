@@ -69,7 +69,7 @@ void publish_diagnostics(
 // not evaluation or recursive dependency work.
 void append_imported_constant_bindings(
     const SemanticPackage &package, ConstantTable &constants) {
-  for (const ImportedSymbol &imported : package.imported_symbols) {
+  for (const ImportedSymbol &imported : package.imported_symbols_for_read()) {
     if (!imported.has_constant) continue;
     const auto position = std::lower_bound(
         constants.bindings.begin(),

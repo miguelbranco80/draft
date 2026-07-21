@@ -16,7 +16,7 @@ namespace {
     const SemanticPackage &package) {
   for (const ImportBinding &binding : package.imports) {
     if (binding.package_path != "core/runtime") continue;
-    for (const ImportedType &imported : package.imported_types) {
+    for (const ImportedType &imported : package.imported_types_for_read()) {
       if (imported.root_identity == binding.root_identity &&
           imported.root_relative_path == binding.root_relative_path &&
           imported.public_name == "Context" && imported.arguments.empty()) {

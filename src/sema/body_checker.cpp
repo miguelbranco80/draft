@@ -1193,7 +1193,8 @@ private:
 
         std::optional<SymbolId> template_source = application->source;
         if (!template_source.has_value() && application->imported != nullptr) {
-          for (const ImportedSymbol &imported : semantic_.imported_symbols) {
+          for (const ImportedSymbol &imported :
+               semantic_.imported_symbols_for_read()) {
             if (imported.root_identity != application->imported->root_identity ||
                 imported.root_relative_path !=
                     application->imported->root_relative_path ||
@@ -2278,7 +2279,8 @@ private:
   }
 
   [[nodiscard]] const ConstantValue *imported_constant(SymbolId proxy) const {
-    for (const ImportedSymbol &imported : semantic_.imported_symbols) {
+    for (const ImportedSymbol &imported :
+         semantic_.imported_symbols_for_read()) {
       if (imported.proxy == proxy && imported.has_constant) {
         return &imported.constant;
       }
@@ -2288,7 +2290,8 @@ private:
 
   [[nodiscard]] bool is_runtime_intrinsic(
       SymbolId proxy, std::string_view public_name) const {
-    for (const ImportedSymbol &imported : semantic_.imported_symbols) {
+    for (const ImportedSymbol &imported :
+         semantic_.imported_symbols_for_read()) {
       if (imported.proxy != proxy || imported.public_name != public_name ||
           imported.root_relative_path != "runtime") {
         continue;
@@ -2394,7 +2397,8 @@ private:
   // privileged lowering merely by spelling a procedure `atomic.load`.
   [[nodiscard]] std::optional<ImportedSymbol> atomic_intrinsic(
       SymbolId proxy) const {
-    for (const ImportedSymbol &imported : semantic_.imported_symbols) {
+    for (const ImportedSymbol &imported :
+         semantic_.imported_symbols_for_read()) {
       if (imported.proxy != proxy || imported.root_relative_path != "atomic") {
         continue;
       }
@@ -3665,7 +3669,7 @@ private:
             instance.source, nullptr, &instance.arguments};
       }
     }
-    for (const ImportedType &imported : semantic_.imported_types) {
+    for (const ImportedType &imported : semantic_.imported_types_for_read()) {
       if (imported.type == type && !imported.arguments.empty()) {
         return NominalApplication{
             std::nullopt, &imported, &imported.arguments};
@@ -3689,7 +3693,8 @@ private:
           application.imported->public_name};
     }
     if (!application.source.has_value()) return std::nullopt;
-    for (const ImportedSymbol &imported : semantic_.imported_symbols) {
+    for (const ImportedSymbol &imported :
+         semantic_.imported_symbols_for_read()) {
       if (imported.proxy == *application.source) {
         return NominalOrigin{
             imported.root_identity,
@@ -3923,7 +3928,8 @@ private:
 
   [[nodiscard]] std::optional<ImportedSymbol> imported_symbol_record(
       SymbolId proxy) const {
-    for (const ImportedSymbol &imported : semantic_.imported_symbols) {
+    for (const ImportedSymbol &imported :
+         semantic_.imported_symbols_for_read()) {
       if (imported.proxy == proxy) return imported;
     }
     return std::nullopt;
@@ -3978,7 +3984,7 @@ private:
     const std::vector<ParametricArgument> arguments = ordered_arguments(
         parameters, type_substitutions, value_substitutions);
     for (const ImportedProcedureInstance &instance :
-         semantic_.imported_procedure_instances) {
+         semantic_.imported_procedure_instances_for_read()) {
       if (instance.source_proxy == source && instance.arguments == arguments &&
           instance.pack_types == pack_types) {
         return instance.instance_proxy;
@@ -4043,15 +4049,26 @@ private:
     concrete.native_linker_name_spelling.clear();
     semantic_.imported_symbols.push_back(std::move(concrete));
 
-    const std::vector<ImportedEffect> existing_effects = semantic_.imported_effects;
+    // Snapshot the visible prefix and any earlier task-local clones before
+    // appending this instance's rows. Iterating the live two-segment view while
+    // growing its suffix would invalidate vector storage and recursively visit
+    // the rows being created.
+    std::vector<ImportedEffect> existing_effects;
+    for (const ImportedEffect &effect :
+         semantic_.imported_effects_for_read()) {
+      existing_effects.push_back(effect);
+    }
     for (const ImportedEffect &effect : existing_effects) {
       if (effect.procedure_proxy != source) continue;
       ImportedEffect concrete_effect = effect;
       concrete_effect.procedure_proxy = instance_id;
       semantic_.imported_effects.push_back(std::move(concrete_effect));
     }
-    const std::vector<ImportedProcedureReturn> existing_returns =
-        semantic_.imported_returns;
+    std::vector<ImportedProcedureReturn> existing_returns;
+    for (const ImportedProcedureReturn &returned :
+         semantic_.imported_returns_for_read()) {
+      existing_returns.push_back(returned);
+    }
     for (const ImportedProcedureReturn &returned : existing_returns) {
       if (returned.procedure_proxy != source) continue;
       ImportedProcedureReturn concrete_return = returned;
@@ -4061,8 +4078,11 @@ private:
       }
       semantic_.imported_returns.push_back(std::move(concrete_return));
     }
-    const std::vector<ImportedProcedureWrite> existing_writes =
-        semantic_.imported_writes;
+    std::vector<ImportedProcedureWrite> existing_writes;
+    for (const ImportedProcedureWrite &write :
+         semantic_.imported_writes_for_read()) {
+      existing_writes.push_back(write);
+    }
     for (const ImportedProcedureWrite &write : existing_writes) {
       if (write.procedure_proxy != source) continue;
       ImportedProcedureWrite concrete_write = write;
@@ -8426,15 +8446,15 @@ void append_body_root(
       package.parametric_instances_for_read().size();
   prefix.parametric_type_instance_count =
       package.parametric_type_instances_for_read().size();
-  prefix.imported_symbol_count = package.imported_symbols.size();
+  prefix.imported_symbol_count = package.imported_symbols_for_read().size();
   prefix.imported_procedure_instance_count =
-      package.imported_procedure_instances.size();
+      package.imported_procedure_instances_for_read().size();
   prefix.imported_type_instantiation_request_count =
-      package.imported_type_instantiation_requests.size();
-  prefix.imported_type_count = package.imported_types.size();
-  prefix.imported_effect_count = package.imported_effects.size();
-  prefix.imported_return_count = package.imported_returns.size();
-  prefix.imported_write_count = package.imported_writes.size();
+      package.imported_type_instantiation_requests_for_read().size();
+  prefix.imported_type_count = package.imported_types_for_read().size();
+  prefix.imported_effect_count = package.imported_effects_for_read().size();
+  prefix.imported_return_count = package.imported_returns_for_read().size();
+  prefix.imported_write_count = package.imported_writes_for_read().size();
   prefix.declaration_denial_count = package.declaration_denials.size();
   prefix.site_count = package.sites.size();
   prefix.required_integer_expression_count =
@@ -8479,7 +8499,7 @@ void append_body_suffix(
   appended.types = package.types.appended_since(prefix.type_count);
   appended.symbols = package.symbols.appended_since(
       prefix.scope_count, prefix.symbol_count);
-  // These seven raw vectors already own only this task's suffix. Their
+  // These fourteen raw vectors already own only this task's suffix. Their
   // canonical prefix is visible through AppendOnlyTableView and must not be
   // copied back into the append packet.
   appended.owned_scopes = package.owned_scopes;
@@ -8489,22 +8509,15 @@ void append_body_suffix(
   appended.static_argument_packs = package.static_argument_packs;
   appended.parametric_instances = package.parametric_instances;
   appended.parametric_type_instances = package.parametric_type_instances;
-  appended.imported_symbols = copy_body_suffix(
-      package.imported_symbols, prefix.imported_symbol_count);
-  appended.imported_procedure_instances = copy_body_suffix(
-      package.imported_procedure_instances,
-      prefix.imported_procedure_instance_count);
-  appended.imported_type_instantiation_requests = copy_body_suffix(
-      package.imported_type_instantiation_requests,
-      prefix.imported_type_instantiation_request_count);
-  appended.imported_types = copy_body_suffix(
-      package.imported_types, prefix.imported_type_count);
-  appended.imported_effects = copy_body_suffix(
-      package.imported_effects, prefix.imported_effect_count);
-  appended.imported_returns = copy_body_suffix(
-      package.imported_returns, prefix.imported_return_count);
-  appended.imported_writes = copy_body_suffix(
-      package.imported_writes, prefix.imported_write_count);
+  appended.imported_symbols = package.imported_symbols;
+  appended.imported_procedure_instances =
+      package.imported_procedure_instances;
+  appended.imported_type_instantiation_requests =
+      package.imported_type_instantiation_requests;
+  appended.imported_types = package.imported_types;
+  appended.imported_effects = package.imported_effects;
+  appended.imported_returns = package.imported_returns;
+  appended.imported_writes = package.imported_writes;
   appended.declaration_denials = copy_body_suffix(
       package.declaration_denials, prefix.declaration_denial_count);
   appended.sites = copy_body_suffix(package.sites, prefix.site_count);

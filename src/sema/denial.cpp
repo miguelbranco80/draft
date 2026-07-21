@@ -258,7 +258,7 @@ private:
 
   [[nodiscard]] bool symbol_from_package(
       SymbolId symbol, const ResolvedDenialSelector &denied) const {
-    for (const ImportedSymbol &imported : package_.imported_symbols) {
+    for (const ImportedSymbol &imported : package_.imported_symbols_for_read()) {
       if (imported.proxy == symbol) {
         return imported.root_identity == denied.root_identity &&
             imported.root_relative_path == denied.root_relative_path;
@@ -269,7 +269,7 @@ private:
 
   [[nodiscard]] bool origin_is_symbol(
       const SemanticEffect &effect, SymbolId symbol) const {
-    for (const ImportedSymbol &imported : package_.imported_symbols) {
+    for (const ImportedSymbol &imported : package_.imported_symbols_for_read()) {
       if (imported.proxy != symbol) continue;
       return imported.root_identity == effect.root_identity &&
           imported.root_relative_path == effect.root_relative_path &&
@@ -392,11 +392,13 @@ private:
     } else if (expression.kind == HirExpressionKind::Symbol &&
                expression.symbol.is_valid()) {
       const Symbol &symbol = package_.symbols.symbol(expression.symbol);
+      const AppendOnlyTableView<ImportedSymbol> imported_symbols =
+          package_.imported_symbols_for_read();
       if (symbol.kind == SymbolKind::Variable &&
           (symbol.scope == package_.package_scope ||
            std::any_of(
-               package_.imported_symbols.begin(),
-               package_.imported_symbols.end(),
+               imported_symbols.begin(),
+               imported_symbols.end(),
                [&expression](const ImportedSymbol &imported) {
                  return imported.proxy == expression.symbol;
                }))) {

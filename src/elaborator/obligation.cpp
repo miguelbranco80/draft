@@ -636,7 +636,7 @@ void append_constant_context(
       const TypeId type{value.type_index};
       value.text = type_text(package, type);
       bool imported_identity = false;
-      for (const ImportedType &imported : package.imported_types) {
+      for (const ImportedType &imported : package.imported_types_for_read()) {
         if (imported.type != type) continue;
         value.root_identity = imported.root_identity;
         value.root_relative_path = imported.root_relative_path;
@@ -657,7 +657,7 @@ void append_constant_context(
       value.symbol_index < package.symbols.symbol_count()) {
     const SymbolId referenced{value.symbol_index};
     bool imported_identity = false;
-    for (const ImportedSymbol &imported : package.imported_symbols) {
+    for (const ImportedSymbol &imported : package.imported_symbols_for_read()) {
       if (imported.proxy != referenced) continue;
       value.root_identity = imported.root_identity;
       value.root_relative_path = imported.root_relative_path;
@@ -895,7 +895,7 @@ void append_imported_effect_context(
     const SemanticPackage &package,
     SymbolId proxy) {
   for (const ImportedProcedureInstance &instance :
-       package.imported_procedure_instances) {
+       package.imported_procedure_instances_for_read()) {
     if (instance.instance_proxy == proxy) return true;
   }
   return false;
@@ -905,7 +905,7 @@ void append_imported_effect_context(
     const SemanticPackage &package,
     SymbolId import_symbol,
     std::string_view public_name) {
-  for (const ImportedSymbol &imported : package.imported_symbols) {
+  for (const ImportedSymbol &imported : package.imported_symbols_for_read()) {
     if (imported.import_symbol == import_symbol &&
         imported.public_name == public_name &&
         !is_concrete_imported_instance(package, imported.proxy)) {
@@ -924,7 +924,7 @@ void append_imported_effect_context(
     DiagnosticSink &diagnostics) {
   std::string output;
   std::size_t declaration_count = 0;
-  for (const ImportedSymbol &imported : package.imported_symbols) {
+  for (const ImportedSymbol &imported : package.imported_symbols_for_read()) {
     if (imported.import_symbol == binding.symbol &&
         !denies_symbol(denials, imported.proxy) &&
         !is_concrete_imported_instance(package, imported.proxy)) {
@@ -934,7 +934,7 @@ void append_imported_effect_context(
   output += "IMPORTED_DECLARATIONS ";
   append_context_u64(
       static_cast<std::uint64_t>(declaration_count), output);
-  for (const ImportedSymbol &imported : package.imported_symbols) {
+  for (const ImportedSymbol &imported : package.imported_symbols_for_read()) {
     if (imported.import_symbol != binding.symbol ||
         denies_symbol(denials, imported.proxy) ||
         is_concrete_imported_instance(package, imported.proxy)) {
@@ -1026,23 +1026,25 @@ void append_imported_effect_context(
         imported.has_effect_summary ? "true" : "false",
         output);
     std::size_t effect_count = 0;
-    for (const ImportedEffect &effect : package.imported_effects) {
+    for (const ImportedEffect &effect : package.imported_effects_for_read()) {
       if (effect.procedure_proxy == imported.proxy) ++effect_count;
     }
     output += "DECLARATION_EFFECTS ";
     append_context_u64(static_cast<std::uint64_t>(effect_count), output);
-    for (const ImportedEffect &effect : package.imported_effects) {
+    for (const ImportedEffect &effect : package.imported_effects_for_read()) {
       if (effect.procedure_proxy == imported.proxy) {
         append_imported_effect_context(effect, output);
       }
     }
     std::size_t return_count = 0;
-    for (const ImportedProcedureReturn &returned : package.imported_returns) {
+    for (const ImportedProcedureReturn &returned :
+         package.imported_returns_for_read()) {
       if (returned.procedure_proxy == imported.proxy) ++return_count;
     }
     output += "DECLARATION_RETURNS ";
     append_context_u64(static_cast<std::uint64_t>(return_count), output);
-    for (const ImportedProcedureReturn &returned : package.imported_returns) {
+    for (const ImportedProcedureReturn &returned :
+         package.imported_returns_for_read()) {
       if (returned.procedure_proxy != imported.proxy) continue;
       append_path_context(
           "RETURN_PATH", "RETURN_PATH_FIELD", returned.path, output);
@@ -1053,12 +1055,14 @@ void append_imported_effect_context(
       append_imported_flow_value_context(value, output);
     }
     std::size_t write_count = 0;
-    for (const ImportedProcedureWrite &write : package.imported_writes) {
+    for (const ImportedProcedureWrite &write :
+         package.imported_writes_for_read()) {
       if (write.procedure_proxy == imported.proxy) ++write_count;
     }
     output += "DECLARATION_WRITES ";
     append_context_u64(static_cast<std::uint64_t>(write_count), output);
-    for (const ImportedProcedureWrite &write : package.imported_writes) {
+    for (const ImportedProcedureWrite &write :
+         package.imported_writes_for_read()) {
       if (write.procedure_proxy != imported.proxy) continue;
       append_context_field(
           "WRITE_PARAMETER", std::to_string(write.parameter), output);
@@ -2423,7 +2427,8 @@ bool enrich_agent_validation_context(
       reference_context.root_relative_path = identity.root_relative_path;
       reference_context.name = reference.name;
       reference_context.kind = reference.kind;
-      for (const ImportedSymbol &imported : package.imported_symbols) {
+      for (const ImportedSymbol &imported :
+           package.imported_symbols_for_read()) {
         if (imported.proxy != reference_id) continue;
         reference_context.root_identity = imported.root_identity;
         reference_context.root_relative_path = imported.root_relative_path;

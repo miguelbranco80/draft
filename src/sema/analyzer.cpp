@@ -26,14 +26,6 @@ SemanticPackage::SemanticPackage(
       symbols(base.symbols.fork_append_only()),
       package_scope(base.package_scope),
       runtime_context_type(base.runtime_context_type),
-      imported_symbols(base.imported_symbols),
-      imported_procedure_instances(base.imported_procedure_instances),
-      imported_type_instantiation_requests(
-          base.imported_type_instantiation_requests),
-      imported_types(base.imported_types),
-      imported_effects(base.imported_effects),
-      imported_returns(base.imported_returns),
-      imported_writes(base.imported_writes),
       declaration_denials(base.declaration_denials), sites(base.sites),
       required_integer_expressions(base.required_integer_expressions),
       deferred_element_counts(base.deferred_element_counts),
@@ -135,6 +127,69 @@ SemanticPackage::parametric_type_instances_for_read() const {
           ? &body_read_prefix_->parametric_type_instances
           : nullptr,
       parametric_type_instances);
+}
+
+AppendOnlyTableView<ImportedSymbol>
+SemanticPackage::imported_symbols_for_read() const {
+  return AppendOnlyTableView<ImportedSymbol>(
+      body_read_prefix_ != nullptr
+          ? &body_read_prefix_->imported_symbols
+          : nullptr,
+      imported_symbols);
+}
+
+AppendOnlyTableView<ImportedProcedureInstance>
+SemanticPackage::imported_procedure_instances_for_read() const {
+  return AppendOnlyTableView<ImportedProcedureInstance>(
+      body_read_prefix_ != nullptr
+          ? &body_read_prefix_->imported_procedure_instances
+          : nullptr,
+      imported_procedure_instances);
+}
+
+AppendOnlyTableView<ImportedTypeInstantiationRequest>
+SemanticPackage::imported_type_instantiation_requests_for_read() const {
+  return AppendOnlyTableView<ImportedTypeInstantiationRequest>(
+      body_read_prefix_ != nullptr
+          ? &body_read_prefix_->imported_type_instantiation_requests
+          : nullptr,
+      imported_type_instantiation_requests);
+}
+
+AppendOnlyTableView<ImportedType>
+SemanticPackage::imported_types_for_read() const {
+  return AppendOnlyTableView<ImportedType>(
+      body_read_prefix_ != nullptr
+          ? &body_read_prefix_->imported_types
+          : nullptr,
+      imported_types);
+}
+
+AppendOnlyTableView<ImportedEffect>
+SemanticPackage::imported_effects_for_read() const {
+  return AppendOnlyTableView<ImportedEffect>(
+      body_read_prefix_ != nullptr
+          ? &body_read_prefix_->imported_effects
+          : nullptr,
+      imported_effects);
+}
+
+AppendOnlyTableView<ImportedProcedureReturn>
+SemanticPackage::imported_returns_for_read() const {
+  return AppendOnlyTableView<ImportedProcedureReturn>(
+      body_read_prefix_ != nullptr
+          ? &body_read_prefix_->imported_returns
+          : nullptr,
+      imported_returns);
+}
+
+AppendOnlyTableView<ImportedProcedureWrite>
+SemanticPackage::imported_writes_for_read() const {
+  return AppendOnlyTableView<ImportedProcedureWrite>(
+      body_read_prefix_ != nullptr
+          ? &body_read_prefix_->imported_writes
+          : nullptr,
+      imported_writes);
 }
 
 AggregateMember &SemanticPackage::aggregate_member_mut(std::size_t index) {

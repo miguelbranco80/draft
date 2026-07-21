@@ -159,7 +159,7 @@ public:
         blocked_integer_synthesis_(blocked_integer_synthesis),
         product_root_(product_root),
         product_request_begin_(
-            semantic.imported_type_instantiation_requests.size()),
+            semantic.imported_type_instantiation_requests_for_read().size()),
         goal_(goal), synthesis_mode_(synthesis_mode) {
     // A product attempt may consume only declarations that the coordinator has
     // already published. Their semantic payloads are present in this snapshot,
@@ -201,11 +201,12 @@ public:
     }
     resolve_symbol(product_root_);
     canonicalize_product_dependencies();
+    const AppendOnlyTableView<ImportedTypeInstantiationRequest> requests =
+        semantic_.imported_type_instantiation_requests_for_read();
     for (std::size_t index = product_request_begin_;
-         index < semantic_.imported_type_instantiation_requests.size();
-         ++index) {
+         index < requests.size(); ++index) {
       result.generic_type_dependencies.push_back(
-          semantic_.imported_type_instantiation_requests[index]);
+          requests[index]);
     }
     result.compile_time_procedures = compile_time_procedures_;
     if (!declaration_dependencies_.empty() || !constant_dependencies_.empty() ||
@@ -345,7 +346,7 @@ private:
       // NaturalLayout product. resolve_product returns that request separately;
       // the command coordinator turns it into a canonical owner-product edge.
       // Do not also invent an unresolvable local edge for the proxy TypeId.
-      for (const ImportedType &imported : semantic_.imported_types) {
+      for (const ImportedType &imported : semantic_.imported_types_for_read()) {
         if (imported.type == type) {
           active.pop_back();
           return;
@@ -1846,7 +1847,8 @@ private:
         break;
       }
       if (!result) {
-        for (const ImportedType &imported : semantic_.imported_types) {
+        for (const ImportedType &imported :
+             semantic_.imported_types_for_read()) {
           if (imported.type != type) continue;
           for (const ParametricArgument &argument : imported.arguments) {
             if ((argument.is_type && type_has_parameters(argument.type, active)) ||
@@ -1907,7 +1909,8 @@ private:
         break;
       }
       if (!result) {
-        for (const ImportedType &imported : semantic_.imported_types) {
+        for (const ImportedType &imported :
+             semantic_.imported_types_for_read()) {
           if (imported.type != type) continue;
           for (const ParametricArgument &argument : imported.arguments) {
             if (argument.owner_evaluated_value) {
@@ -2460,7 +2463,8 @@ private:
         break;
       }
       if (arguments.empty()) {
-        for (const ImportedType &imported : semantic_.imported_types) {
+        for (const ImportedType &imported :
+             semantic_.imported_types_for_read()) {
           if (imported.type != source || imported.arguments.empty()) continue;
           imported_application = imported;
           arguments = imported.arguments;
@@ -2474,7 +2478,8 @@ private:
         if (!*changed) return source;
 
         if (!template_source.has_value() && imported_application.has_value()) {
-          for (const ImportedSymbol &imported : semantic_.imported_symbols) {
+          for (const ImportedSymbol &imported :
+               semantic_.imported_symbols_for_read()) {
             if (imported.root_identity !=
                     imported_application->root_identity ||
                 imported.root_relative_path !=
@@ -2618,7 +2623,7 @@ private:
       const std::vector<ResolverValueSubstitution> &value_substitutions,
       SourceRange use_range) {
     const Type pattern_type = semantic_.types.type(pattern);
-    for (const ImportedType &existing : semantic_.imported_types) {
+    for (const ImportedType &existing : semantic_.imported_types_for_read()) {
       if (existing.root_identity == origin.root_identity &&
           existing.root_relative_path == origin.root_relative_path &&
           existing.public_name == origin.public_name &&
@@ -2934,10 +2939,10 @@ private:
     // Reuse that consumer-local TypeId instead of creating a second nominal
     // type for the same public template identity and arguments.
     std::optional<ImportedSymbol> imported_origin;
-    for (const ImportedSymbol &origin : semantic_.imported_symbols) {
+    for (const ImportedSymbol &origin : semantic_.imported_symbols_for_read()) {
       if (origin.proxy != source) continue;
       imported_origin = origin;
-      for (const ImportedType &imported : semantic_.imported_types) {
+      for (const ImportedType &imported : semantic_.imported_types_for_read()) {
         if (imported.root_identity == origin.root_identity &&
             imported.root_relative_path == origin.root_relative_path &&
             imported.public_name == origin.public_name &&
@@ -2962,7 +2967,7 @@ private:
         type_requires_owner_evaluation(template_symbol.type)) {
       bool already_requested = false;
       for (const ImportedTypeInstantiationRequest &request :
-           semantic_.imported_type_instantiation_requests) {
+           semantic_.imported_type_instantiation_requests_for_read()) {
         if (request.source_proxy == source && request.arguments == arguments) {
           already_requested = true;
           break;
@@ -3333,7 +3338,8 @@ private:
     // into this package's TypeStore. Reading that ready value is therefore the
     // same operation as reading a source Type symbol, not cross-package ID
     // leakage.
-    for (const ImportedSymbol &imported : semantic_.imported_symbols) {
+    for (const ImportedSymbol &imported :
+         semantic_.imported_symbols_for_read()) {
       if (imported.proxy != symbol_id || !imported.has_constant) continue;
       if (imported.constant.kind == ConstantKind::Type &&
           imported.constant.type_index < semantic_.types.size()) {
@@ -4069,7 +4075,8 @@ private:
         if (active->kind == ConstantKind::Integer) return active->integer;
       }
     }
-    for (const ImportedSymbol &imported : semantic_.imported_symbols) {
+    for (const ImportedSymbol &imported :
+         semantic_.imported_symbols_for_read()) {
       if (imported.proxy != symbol_id || !imported.has_constant ||
           imported.constant.kind != ConstantKind::Integer) {
         continue;

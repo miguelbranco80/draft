@@ -630,7 +630,7 @@ void refresh_imported_effects(
   for (ImportedSymbol &imported : package.imported_symbols) {
     const ImportedProcedureInstance *requested_instance = nullptr;
     for (const ImportedProcedureInstance &instance :
-         package.imported_procedure_instances) {
+         package.imported_procedure_instances_for_read()) {
       if (instance.instance_proxy == imported.proxy) {
         requested_instance = &instance;
         break;
@@ -2664,7 +2664,8 @@ package_condition_needs_materialization(const SemanticPackage &package,
           const Symbol source_symbol =
               task_package.symbols.symbol(demand.source);
           const std::size_t request_begin =
-              task_package.imported_type_instantiation_requests.size();
+              task_package.imported_type_instantiation_requests_for_read()
+                  .size();
           const TypeId concrete = instantiate_parametric_type_application(
               sources, result.graph.packages[package_index].loaded,
               task_package,
@@ -2682,11 +2683,12 @@ package_condition_needs_materialization(const SemanticPackage &package,
           slot.generic_result = export_interface_type_application(
               result.packages[package_index]->identity, task_package, concrete,
               demand.source, demand.arguments, slot.outcome.diagnostics);
+          const AppendOnlyTableView<ImportedTypeInstantiationRequest> requests =
+              task_package.imported_type_instantiation_requests_for_read();
           for (std::size_t index = request_begin;
-               index < task_package.imported_type_instantiation_requests.size();
-               ++index) {
+               index < requests.size(); ++index) {
             slot.generic_dependencies.push_back(
-                task_package.imported_type_instantiation_requests[index]);
+                requests[index]);
           }
           if (!slot.generic_dependencies.empty()) {
             slot.generic_package = std::move(task_package);
@@ -4061,7 +4063,7 @@ bool continue_compiled_workspace_semantics(
     if (!package.bodies.ok) continue;
 
     for (const ImportedProcedureInstance &request :
-         package.bodies.package.imported_procedure_instances) {
+         package.bodies.package.imported_procedure_instances_for_read()) {
       const std::optional<std::size_t> owner_index = package_index_for(
           result.graph,
           schedule,

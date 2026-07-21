@@ -760,6 +760,20 @@ struct SemanticPackage {
   parametric_instances_for_read() const;
   [[nodiscard]] AppendOnlyTableView<ParametricTypeInstanceRecord>
   parametric_type_instances_for_read() const;
+  [[nodiscard]] AppendOnlyTableView<ImportedSymbol>
+  imported_symbols_for_read() const;
+  [[nodiscard]] AppendOnlyTableView<ImportedProcedureInstance>
+  imported_procedure_instances_for_read() const;
+  [[nodiscard]] AppendOnlyTableView<ImportedTypeInstantiationRequest>
+  imported_type_instantiation_requests_for_read() const;
+  [[nodiscard]] AppendOnlyTableView<ImportedType>
+  imported_types_for_read() const;
+  [[nodiscard]] AppendOnlyTableView<ImportedEffect>
+  imported_effects_for_read() const;
+  [[nodiscard]] AppendOnlyTableView<ImportedProcedureReturn>
+  imported_returns_for_read() const;
+  [[nodiscard]] AppendOnlyTableView<ImportedProcedureWrite>
+  imported_writes_for_read() const;
 
   // Returns the aggregate-member row at one global table index for controlled
   // layout publication. A canonical package may update any row whose layout is

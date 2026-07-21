@@ -244,6 +244,35 @@ second :: proc() -> i64 {
          specialization_view.parametric_instances_for_read()[1]
              .externally_requested);
 
+  // Imported semantic rows may be cloned for a concrete imported procedure,
+  // but the dependency interface prefix itself remains coordinator-owned.
+  draft::SemanticPackage import_prefix;
+  import_prefix.imported_symbols.push_back({});
+  import_prefix.imported_procedure_instances.push_back({});
+  import_prefix.imported_type_instantiation_requests.push_back({});
+  import_prefix.imported_types.push_back({});
+  import_prefix.imported_effects.push_back({});
+  import_prefix.imported_returns.push_back({});
+  import_prefix.imported_writes.push_back({});
+  draft::SemanticPackage import_view = import_prefix.fork_body_task_view();
+  EXPECT(state, import_view.imported_symbols.empty());
+  EXPECT(state, import_view.imported_symbols_for_read().size() == 1);
+  EXPECT(state, import_view.imported_procedure_instances.empty());
+  EXPECT(state,
+         import_view.imported_procedure_instances_for_read().size() == 1);
+  EXPECT(state, import_view.imported_type_instantiation_requests.empty());
+  EXPECT(state,
+         import_view.imported_type_instantiation_requests_for_read().size() ==
+             1);
+  EXPECT(state, import_view.imported_types.empty());
+  EXPECT(state, import_view.imported_types_for_read().size() == 1);
+  EXPECT(state, import_view.imported_effects.empty());
+  EXPECT(state, import_view.imported_effects_for_read().size() == 1);
+  EXPECT(state, import_view.imported_returns.empty());
+  EXPECT(state, import_view.imported_returns_for_read().size() == 1);
+  EXPECT(state, import_view.imported_writes.empty());
+  EXPECT(state, import_view.imported_writes_for_read().size() == 1);
+
   draft::DiagnosticSink first_diagnostics;
   draft::ProcedureBodyTaskInput first_input =
       draft::take_next_procedure_body_work(work, first_diagnostics);

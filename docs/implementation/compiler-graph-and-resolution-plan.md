@@ -74,9 +74,10 @@ cache.
   validates an exact frozen prefix, and appends each packet rather than adopting
   a complete worker successor. TypeStore, SymbolTable, and ConstantTable
   prefixes are read-only overlays; declaration-closed semantic inputs are direct
-  immutable views. Owned scopes, aggregate members, enum values, parametric
-  parameters, static argument packs, and procedure/type specialization records
-  use canonical-prefix/task-local-suffix views; aggregate offset and
+  immutable views. Owned-scope, aggregate/enum, parametric, specialization, and
+  imported semantic records use canonical-prefix/task-local-suffix views;
+  imported rows cover symbols, types, concrete procedures, outbound type
+  requests, and effect/return/write contracts. Aggregate offset and
   specialization-promotion writes are local-suffix-only. Other body-mutable
   side tables are still copied. IDs are not yet remapped across independent
   results, so invocation remains a sequential oracle. Remaining local-suffix

@@ -73,7 +73,7 @@ struct ExpectedState {
     const SemanticPackage &semantic,
     TypeId type,
     const ExpectedState &expected) {
-  for (const ImportedType &imported : semantic.imported_types) {
+  for (const ImportedType &imported : semantic.imported_types_for_read()) {
     if (imported.type == type &&
         imported.root_identity == core_root_identity &&
         imported.root_relative_path == expected.package_path &&

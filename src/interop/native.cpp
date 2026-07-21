@@ -93,7 +93,7 @@ namespace {
 // prevents an unrelated package member named default_context from borrowing it.
 [[nodiscard]] bool imported_default_context_bridge(
     const SemanticPackage &semantic, SymbolId symbol) {
-  for (const ImportedSymbol &imported : semantic.imported_symbols) {
+  for (const ImportedSymbol &imported : semantic.imported_symbols_for_read()) {
     if (imported.proxy != symbol || imported.public_name != "default_context" ||
         imported.root_relative_path != "runtime" ||
         imported.native_provider != "draft_runtime") {

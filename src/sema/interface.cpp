@@ -396,7 +396,7 @@ private:
       return result;
     }
     if (!effect.symbol.is_valid()) return result;
-    for (const ImportedSymbol &imported : package_.imported_symbols) {
+    for (const ImportedSymbol &imported : package_.imported_symbols_for_read()) {
       if (imported.proxy != effect.symbol) continue;
       result.root_identity = imported.root_identity;
       result.root_relative_path = imported.root_relative_path;
@@ -442,7 +442,8 @@ private:
         continue;
       }
       bool imported_known = false;
-      for (const ImportedSymbol &imported : package_.imported_symbols) {
+      for (const ImportedSymbol &imported :
+           package_.imported_symbols_for_read()) {
         if (imported.proxy == target) {
           imported_known = imported.has_effect_summary;
           break;
@@ -452,7 +453,8 @@ private:
         unknown = true;
         continue;
       }
-      for (const ImportedEffect &effect : package_.imported_effects) {
+      for (const ImportedEffect &effect :
+           package_.imported_effects_for_read()) {
         if (effect.procedure_proxy != target) continue;
         const SemanticEffect semantic_effect = import_effect(effect);
         if (std::find(contract.begin(), contract.end(), semantic_effect) ==
@@ -529,7 +531,8 @@ private:
         value.symbol_index < package_.symbols.symbol_count()) {
       const SymbolId referenced{value.symbol_index};
       bool imported_identity = false;
-      for (const ImportedSymbol &imported : package_.imported_symbols) {
+      for (const ImportedSymbol &imported :
+           package_.imported_symbols_for_read()) {
         if (imported.proxy != referenced) continue;
         value.root_identity = imported.root_identity;
         value.root_relative_path = imported.root_relative_path;
@@ -661,7 +664,7 @@ private:
         kind != TypeKind::Distinct && kind != TypeKind::TypeParameter) {
       return;
     }
-    for (const ImportedType &imported : package_.imported_types) {
+    for (const ImportedType &imported : package_.imported_types_for_read()) {
       if (imported.type == source) {
         translated.nominal_root_identity = imported.root_identity;
         translated.nominal_root_relative_path = imported.root_relative_path;
@@ -727,7 +730,7 @@ private:
     translated.requested_alignment = source_type.requested_alignment;
     set_nominal_identity(source, translated);
     bool retained_import_arguments = false;
-    for (const ImportedType &imported : package_.imported_types) {
+    for (const ImportedType &imported : package_.imported_types_for_read()) {
       if (imported.type != source) {
         continue;
       }
@@ -748,7 +751,8 @@ private:
         translated.nominal_root_identity = identity_.root_identity;
         translated.nominal_root_relative_path = identity_.root_relative_path;
         translated.nominal_public_name = template_symbol.name;
-        for (const ImportedSymbol &imported : package_.imported_symbols) {
+        for (const ImportedSymbol &imported :
+             package_.imported_symbols_for_read()) {
           if (imported.proxy == instance.source) {
             translated.nominal_root_identity = imported.root_identity;
             translated.nominal_root_relative_path = imported.root_relative_path;
@@ -1136,7 +1140,7 @@ private:
     // objects. Consult the permanent semantic provenance table as well so two
     // independent generic requests for the same foreign nominal type converge
     // on one destination TypeId.
-    for (const ImportedType &imported : consumer_.imported_types) {
+    for (const ImportedType &imported : consumer_.imported_types_for_read()) {
       if (imported.root_identity == source.nominal_root_identity &&
           imported.root_relative_path == source.nominal_root_relative_path &&
           imported.public_name == source.nominal_public_name &&
