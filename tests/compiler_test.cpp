@@ -686,6 +686,120 @@ void test_procedure_body_worker_counts_are_deterministic(TestState &state) {
              std::string::npos);
 }
 
+// A broad authored package guards the scheduler's asymptotic shape and gives
+// the timing counters a repeatable large-source qualification. Every procedure
+// signature and body is independent, so the declaration and body coordinators
+// should each expose a wide ready set rather than accidentally constructing a
+// source-order task chain. Wall time is deliberately not asserted; exact graph
+// rows, diagnostics, task counts, ready-wave counts, and worker-slot counts are
+// stable across machines.
+void test_large_source_worker_counts_are_deterministic(TestState &state) {
+  constexpr std::size_t procedure_count = 256;
+  draft::test::TemporaryDirectory temporary_directory{
+      "draft-bootstrap-large-source-worker-test"};
+  const std::filesystem::path &root = temporary_directory.path();
+  std::error_code error;
+  std::filesystem::create_directories(root / "app", error);
+  EXPECT(state, !error);
+  if (error) return;
+
+  std::ofstream app(root / "app" / "package.draft", std::ios::binary);
+  app << "package app\n";
+  for (std::size_t index = 0; index < procedure_count; ++index) {
+    app << "work_" << index << " :: proc(value: i64) -> i64 {\n"
+        << "    return value + " << index << "\n"
+        << "}\n";
+  }
+  app << "main :: proc() {}\n";
+  app.close();
+  EXPECT(state, app.good());
+
+  draft::SourceManager sequential_sources;
+  draft::DiagnosticSink sequential_diagnostics;
+  draft::TimingRecorder sequential_timings(draft::TimingOutput::Summary);
+  draft::CompileWorkspaceOptions sequential_options;
+  sequential_options.target = draft::make_aarch64_macos_profile();
+  sequential_options.workspace.workspace_directory = root.string();
+  sequential_options.semantic_worker_count = 1;
+  sequential_options.timings = &sequential_timings;
+  const draft::CompileWorkspaceResult sequential = draft::compile_workspace(
+      sequential_sources,
+      (root / "app").string(),
+      sequential_options,
+      sequential_diagnostics);
+
+  draft::SourceManager parallel_sources;
+  draft::DiagnosticSink parallel_diagnostics;
+  draft::TimingRecorder parallel_timings(draft::TimingOutput::Summary);
+  draft::CompileWorkspaceOptions parallel_options = sequential_options;
+  parallel_options.semantic_worker_count = 4;
+  parallel_options.timings = &parallel_timings;
+  const draft::CompileWorkspaceResult parallel = draft::compile_workspace(
+      parallel_sources,
+      (root / "app").string(),
+      parallel_options,
+      parallel_diagnostics);
+
+  if (!sequential.ok) {
+    std::cerr << draft::render_diagnostics(
+        sequential_sources, sequential_diagnostics);
+  }
+  if (!parallel.ok) {
+    std::cerr << draft::render_diagnostics(
+        parallel_sources, parallel_diagnostics);
+  }
+  EXPECT(state, sequential.ok);
+  EXPECT(state, parallel.ok);
+  EXPECT(state,
+         draft::render_diagnostics(
+             sequential_sources, sequential_diagnostics) ==
+             draft::render_diagnostics(
+                 parallel_sources, parallel_diagnostics));
+  EXPECT(state,
+         sequential.semantic_graph.products.size() ==
+             parallel.semantic_graph.products.size());
+  const std::size_t compared_products = std::min(
+      sequential.semantic_graph.products.size(),
+      parallel.semantic_graph.products.size());
+  for (std::size_t index = 0; index < compared_products; ++index) {
+    const draft::SemanticProduct &left =
+        sequential.semantic_graph.products[index];
+    const draft::SemanticProduct &right =
+        parallel.semantic_graph.products[index];
+    EXPECT(state, left.kind == right.kind);
+    EXPECT(state, left.state == right.state);
+    EXPECT(state, left.dependencies == right.dependencies);
+    EXPECT(state, left.failure == right.failure);
+  }
+
+  const std::string task_count = std::to_string(procedure_count + 1);
+  const std::string sequential_report = sequential_timings.render();
+  const std::string parallel_report = parallel_timings.render();
+  EXPECT(state,
+         sequential_report.find(
+             "procedure body tasks scheduled: " + task_count) !=
+             std::string::npos);
+  EXPECT(state,
+         parallel_report.find(
+             "procedure body tasks scheduled: " + task_count) !=
+             std::string::npos);
+  EXPECT(state,
+         sequential_report.find("procedure body ready waves: 1") !=
+             std::string::npos);
+  EXPECT(state,
+         parallel_report.find("procedure body ready waves: 1") !=
+             std::string::npos);
+  EXPECT(state,
+         sequential_report.find("procedure body worker slots: 1") !=
+             std::string::npos);
+  EXPECT(state,
+         parallel_report.find("procedure body worker slots: 4") !=
+             std::string::npos);
+  EXPECT(state,
+         parallel_report.find("declaration tasks in shared ready waves:") !=
+             std::string::npos);
+}
+
 // Package import order constrains interfaces, not independent authored bodies.
 // With both interfaces complete, these two roots must occupy one workspace
 // ready wave. The timing counters are deterministic work facts rather than wall
@@ -4369,6 +4483,7 @@ int main() {
   test_procedure_demands_are_canonical_and_exact(state);
   test_procedure_bodies_are_dynamic_semantic_products(state);
   test_procedure_body_worker_counts_are_deterministic(state);
+  test_large_source_worker_counts_are_deterministic(state);
   test_independent_packages_share_one_body_ready_wave(state);
   test_parallel_body_diagnostics_are_canonical(state);
   test_parallel_declaration_failures_are_canonical(state);
