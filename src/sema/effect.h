@@ -1,11 +1,11 @@
-// Procedure effect and direct-call summaries for denial composition.
+// Procedure effect, concrete flow-graph, and SCC summaries for denials.
 //
 // Denials are transitive: a region denying `assert`, assembly, unchecked access,
 // or a package global must also reject a helper that reaches that entity. This
-// pass walks checked HIR, records direct effects and statically named callees,
-// and computes a deterministic fixed point over local procedures. Unknown
-// procedure-pointer or bodyless calls stay explicit instead of being assumed
-// harmless.
+// pass walks checked HIR, records direct effects and concrete finite callees,
+// identifies strongly connected components in that graph, and closes those
+// components in dependency-first order. Unknown procedure-pointer or bodyless
+// calls stay explicit instead of being assumed harmless.
 //
 // These summaries are semantic contracts, not optimization call graphs. Later
 // package-interface and link composition extends the same rows with imported
@@ -162,6 +162,17 @@ struct CallSiteEffectSummary {
   std::vector<SemanticEffect> effects;
 };
 
+// One legal recursive component in the concrete procedure call/value-flow
+// graph. procedure_indices address EffectSummaryResult::procedures and are
+// sorted in canonical procedure-row order. components themselves are stored in
+// dependency-first condensation order: every local callee component appears
+// before a component which calls it. A singleton with no self-edge is retained
+// because the same explicit closure representation covers recursive and
+// acyclic procedures without a hidden second scheduling path.
+struct ClosedEffectComponent {
+  std::vector<std::size_t> procedure_indices;
+};
+
 // ProcedureEffectSummary keeps direct facts separate from the closed local
 // fixed point. direct_calls are SymbolIds in the same consumer-local table and
 // source discovery order. effects begin with direct_effects and then append
@@ -182,6 +193,7 @@ struct ProcedureEffectSummary {
 
 struct EffectSummaryResult {
   std::vector<ProcedureEffectSummary> procedures;
+  std::vector<ClosedEffectComponent> components;
   std::vector<CallSiteEffectSummary> call_sites;
 
   [[nodiscard]] const ProcedureEffectSummary *find(SymbolId procedure) const;

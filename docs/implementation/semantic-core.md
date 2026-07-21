@@ -500,6 +500,24 @@ procedure contracts, and the same shape crosses package interfaces. Callees and
 arguments are snapshotted in source evaluation order before a call's write-back
 becomes visible, so later argument effects cannot rewrite earlier values.
 
+Once those direct call and finite procedure-target rows are stable, the effect
+phase builds an explicit local procedure graph. It identifies strongly
+connected components without recursion on the compiler's C++ stack, then
+closes the condensation graph from callees to callers. Only procedures inside
+one legal recursive component iterate together; independent and acyclic
+components never participate in a package-wide effect retry. Component members
+use canonical procedure-row order, and independent ready components use their
+smallest member as the deterministic tie-break. Exact call-site summaries are
+derived only after every component is closed and are the summaries consumed by
+lexical denial checking.
+
+Direct procedure summaries are not yet separate semantic-graph payloads: the
+current effect collector still discovers them through one temporary selected
+package HIR projection, and procedure-value return/write discovery still uses
+a preliminary body replay. Moving those direct rows onto body-product inputs
+and replacing imported-contract refresh are the remaining flow-closure
+migration seams; neither is part of the intended final architecture.
+
 External artifact summaries use the strict
 `draft-provider-denial-summary-v1` line format documented in section 12. The
 summary declares the exact canonical artifact digest; the manifest separately

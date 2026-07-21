@@ -46,6 +46,116 @@ bool has_effect(
       });
 }
 
+std::optional<std::size_t> effect_row(
+    const draft::EffectSummaryResult &effects, draft::SymbolId procedure) {
+  for (std::size_t index = 0; index < effects.procedures.size(); ++index) {
+    if (effects.procedures[index].procedure == procedure) return index;
+  }
+  return std::nullopt;
+}
+
+std::optional<std::size_t> effect_component(
+    const draft::EffectSummaryResult &effects, std::size_t procedure_row) {
+  for (std::size_t index = 0; index < effects.components.size(); ++index) {
+    const std::vector<std::size_t> &procedures =
+        effects.components[index].procedure_indices;
+    if (std::find(procedures.begin(), procedures.end(), procedure_row) !=
+        procedures.end()) {
+      return index;
+    }
+  }
+  return std::nullopt;
+}
+
+// Legal recursive procedures are one explicit closure product. The SCC must
+// publish before its acyclic caller, and an effect originating in either member
+// must reach both members and the later caller.
+void test_recursive_effect_component(TestState &state) {
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  draft::LoadedPackage loaded;
+  loaded.short_name = "recursive_effects";
+  draft::LoadedPackageFile file;
+  file.kind = draft::PackageFileKind::DraftSource;
+  file.relative_name = "package.draft";
+  file.source = sources.add_source(
+      "package.draft",
+      R"draft(package recursive_effects
+
+left :: proc() {
+    right()
+}
+
+right :: proc() {
+    assert(true)
+    left()
+}
+
+entry :: proc() {
+    left()
+}
+)draft");
+  file.syntax.emplace(draft::parse_source_file(sources, file.source, diagnostics));
+  loaded.files.push_back(std::move(file));
+  const draft::TargetProfile target = draft::make_aarch64_macos_profile();
+  draft::SemanticAnalysisResult semantics = draft::analyze_package_semantics(
+      sources, loaded, target.facts, diagnostics);
+  draft::BodyCheckResult bodies = draft::check_package_bodies(
+      sources,
+      loaded,
+      semantics.selections,
+      semantics.package,
+      semantics.constants,
+      target.facts,
+      diagnostics);
+  const draft::EffectSummaryResult effects =
+      draft::summarize_package_effects(
+          bodies.package,
+          draft::project_package_body_hir(bodies.procedures),
+          &target);
+  if (diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+  }
+  EXPECT(state, semantics.ok);
+  EXPECT(state, bodies.ok);
+
+  const std::optional<draft::SymbolId> left = symbol(bodies.package, "left");
+  const std::optional<draft::SymbolId> right = symbol(bodies.package, "right");
+  const std::optional<draft::SymbolId> entry = symbol(bodies.package, "entry");
+  EXPECT(state, left.has_value());
+  EXPECT(state, right.has_value());
+  EXPECT(state, entry.has_value());
+  if (!left || !right || !entry) return;
+
+  const std::optional<std::size_t> left_row = effect_row(effects, *left);
+  const std::optional<std::size_t> right_row = effect_row(effects, *right);
+  const std::optional<std::size_t> entry_row = effect_row(effects, *entry);
+  EXPECT(state, left_row.has_value());
+  EXPECT(state, right_row.has_value());
+  EXPECT(state, entry_row.has_value());
+  if (!left_row || !right_row || !entry_row) return;
+
+  const std::optional<std::size_t> left_component =
+      effect_component(effects, *left_row);
+  const std::optional<std::size_t> right_component =
+      effect_component(effects, *right_row);
+  const std::optional<std::size_t> entry_component =
+      effect_component(effects, *entry_row);
+  EXPECT(state, left_component.has_value());
+  EXPECT(state, right_component.has_value());
+  EXPECT(state, entry_component.has_value());
+  if (!left_component || !right_component || !entry_component) return;
+  EXPECT(state, *left_component == *right_component);
+  EXPECT(state, *left_component < *entry_component);
+  EXPECT(state, effects.components[*left_component].procedure_indices.size() == 2);
+  EXPECT(state,
+      has_effect(effects.procedures[*left_row], draft::EffectKind::RuntimeAssert));
+  EXPECT(state,
+      has_effect(effects.procedures[*right_row], draft::EffectKind::RuntimeAssert));
+  EXPECT(state,
+      has_effect(effects.procedures[*entry_row], draft::EffectKind::RuntimeAssert));
+}
+
 void test_transitive_effects(TestState &state) {
   draft::SourceManager sources;
   draft::DiagnosticSink diagnostics;
@@ -1104,6 +1214,7 @@ tuple_assignment_caller :: proc() {
 
 int main() {
   TestState state;
+  test_recursive_effect_component(state);
   test_transitive_effects(state);
   test_raw_string_data_effect(state);
   test_target_and_package_assembly_summaries(state);

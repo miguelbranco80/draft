@@ -252,6 +252,16 @@ gate.
    against closed summaries. Delete the package-wide effect fixed point and
    imported-effect refresh mutation.
 
+   Closed effect propagation now uses explicit concrete SCCs in deterministic
+   dependency-first condensation order; the former scan over every package
+   procedure until a global fixed point is deleted. Recursive members iterate
+   only inside their component, and call-site denial summaries are derived
+   after closure. Direct summaries are still discovered through the temporary
+   package HIR projection, procedure return/write discovery still replays that
+   projection, and imported contracts still refresh retained package tables.
+   The step remains incomplete until those three transitional seams and the
+   package-wide denial projection are removed.
+
 8. **Per-procedure MIR.** Lower each checked concrete procedure into a private
    MIR result without mutating semantic type tables. Publish package static data
    and parsed assembly separately. Delete package-wide MIR lowering and semantic

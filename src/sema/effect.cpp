@@ -6,8 +6,10 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <functional>
 #include <limits>
 #include <optional>
+#include <queue>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -70,6 +72,176 @@ void merge_value(
     return decode_string_literal(spelling, TokenKind::StringLiteral);
   }
   return std::string(spelling);
+}
+
+// Builds the concrete local call/value-flow condensation graph without using
+// hash-table or traversal-order identity. Procedure rows are the stable node
+// domain. The first depth-first pass records finish order in the caller-to-
+// callee graph; the second walks reversed edges to recover SCCs. Standard
+// Kosaraju order yields caller components first for this edge direction, so the
+// final reversal makes every callee component complete before its consumers.
+//
+// Iterative stacks avoid making a large source call graph consume the C++ call
+// stack. Sorting each component by procedure-row index makes publication
+// independent from the exact DFS path used to discover the same SCC.
+[[nodiscard]] std::vector<ClosedEffectComponent> build_effect_components(
+    const std::vector<ProcedureEffectSummary> &procedures) {
+  std::size_t symbol_domain = 0;
+  for (const ProcedureEffectSummary &procedure : procedures) {
+    if (procedure.procedure.is_valid()) {
+      symbol_domain = std::max(
+          symbol_domain,
+          static_cast<std::size_t>(procedure.procedure.value) + 1U);
+    }
+  }
+  const std::size_t absent = procedures.size();
+  std::vector<std::size_t> row_by_symbol(symbol_domain, absent);
+  for (std::size_t index = 0; index < procedures.size(); ++index) {
+    const SymbolId symbol = procedures[index].procedure;
+    if (symbol.is_valid()) row_by_symbol[symbol.value] = index;
+  }
+
+  std::vector<std::vector<std::size_t>> edges(procedures.size());
+  std::vector<std::vector<std::size_t>> reverse_edges(procedures.size());
+  for (std::size_t caller = 0; caller < procedures.size(); ++caller) {
+    for (SymbolId callee_symbol : procedures[caller].direct_calls) {
+      if (!callee_symbol.is_valid() ||
+          callee_symbol.value >= row_by_symbol.size()) {
+        continue;
+      }
+      const std::size_t callee = row_by_symbol[callee_symbol.value];
+      if (callee == absent) continue;
+      edges[caller].push_back(callee);
+    }
+    std::sort(edges[caller].begin(), edges[caller].end());
+    edges[caller].erase(
+        std::unique(edges[caller].begin(), edges[caller].end()),
+        edges[caller].end());
+    for (std::size_t callee : edges[caller]) {
+      reverse_edges[callee].push_back(caller);
+    }
+  }
+
+  struct DfsFrame {
+    std::size_t procedure = 0;
+    std::size_t next_edge = 0;
+  };
+  std::vector<bool> visited(procedures.size(), false);
+  std::vector<std::size_t> finish_order;
+  finish_order.reserve(procedures.size());
+  for (std::size_t root = 0; root < procedures.size(); ++root) {
+    if (visited[root]) continue;
+    visited[root] = true;
+    std::vector<DfsFrame> stack{{root, 0}};
+    while (!stack.empty()) {
+      DfsFrame &frame = stack.back();
+      if (frame.next_edge < edges[frame.procedure].size()) {
+        const std::size_t callee =
+            edges[frame.procedure][frame.next_edge++];
+        if (!visited[callee]) {
+          visited[callee] = true;
+          stack.push_back({callee, 0});
+        }
+        continue;
+      }
+      finish_order.push_back(frame.procedure);
+      stack.pop_back();
+    }
+  }
+
+  std::fill(visited.begin(), visited.end(), false);
+  std::vector<ClosedEffectComponent> caller_first;
+  for (auto position = finish_order.rbegin();
+       position != finish_order.rend(); ++position) {
+    const std::size_t root = *position;
+    if (visited[root]) continue;
+    ClosedEffectComponent component;
+    visited[root] = true;
+    std::vector<std::size_t> stack{root};
+    while (!stack.empty()) {
+      const std::size_t procedure = stack.back();
+      stack.pop_back();
+      component.procedure_indices.push_back(procedure);
+      // Push reversed so the smaller canonical row is visited first after the
+      // LIFO pop. The final sort below is still the publication authority.
+      for (auto edge = reverse_edges[procedure].rbegin();
+           edge != reverse_edges[procedure].rend(); ++edge) {
+        if (visited[*edge]) continue;
+        visited[*edge] = true;
+        stack.push_back(*edge);
+      }
+    }
+    std::sort(
+        component.procedure_indices.begin(),
+        component.procedure_indices.end());
+    caller_first.push_back(std::move(component));
+  }
+  std::vector<std::size_t> component_by_procedure(
+      procedures.size(), caller_first.size());
+  for (std::size_t component = 0; component < caller_first.size(); ++component) {
+    for (std::size_t procedure :
+         caller_first[component].procedure_indices) {
+      component_by_procedure[procedure] = component;
+    }
+  }
+  std::vector<std::vector<std::size_t>> consumers(caller_first.size());
+  std::vector<std::size_t> remaining_dependencies(caller_first.size(), 0);
+  for (std::size_t caller = 0; caller < procedures.size(); ++caller) {
+    const std::size_t caller_component = component_by_procedure[caller];
+    std::vector<std::size_t> dependencies;
+    for (std::size_t callee : edges[caller]) {
+      const std::size_t callee_component = component_by_procedure[callee];
+      if (callee_component != caller_component) {
+        dependencies.push_back(callee_component);
+      }
+    }
+    std::sort(dependencies.begin(), dependencies.end());
+    dependencies.erase(
+        std::unique(dependencies.begin(), dependencies.end()),
+        dependencies.end());
+    for (std::size_t dependency : dependencies) {
+      consumers[dependency].push_back(caller_component);
+    }
+  }
+  for (std::size_t dependency = 0; dependency < consumers.size(); ++dependency) {
+    std::sort(consumers[dependency].begin(), consumers[dependency].end());
+    consumers[dependency].erase(
+        std::unique(
+            consumers[dependency].begin(), consumers[dependency].end()),
+        consumers[dependency].end());
+    for (std::size_t consumer : consumers[dependency]) {
+      ++remaining_dependencies[consumer];
+    }
+  }
+
+  // A component is ready after all components it calls are published. The
+  // smallest procedure-row index is the stable tie-break for independent SCCs.
+  using ReadyComponent = std::pair<std::size_t, std::size_t>;
+  std::priority_queue<
+      ReadyComponent,
+      std::vector<ReadyComponent>,
+      std::greater<ReadyComponent>>
+      ready;
+  for (std::size_t component = 0; component < caller_first.size(); ++component) {
+    if (remaining_dependencies[component] == 0) {
+      ready.push({
+          caller_first[component].procedure_indices.front(), component});
+    }
+  }
+  std::vector<ClosedEffectComponent> dependency_first;
+  dependency_first.reserve(caller_first.size());
+  while (!ready.empty()) {
+    const std::size_t component = ready.top().second;
+    ready.pop();
+    dependency_first.push_back(std::move(caller_first[component]));
+    for (std::size_t consumer : consumers[component]) {
+      if (--remaining_dependencies[consumer] == 0) {
+        ready.push({
+            caller_first[consumer].procedure_indices.front(), consumer});
+      }
+    }
+  }
+  return dependency_first;
 }
 
 class EffectCollector {
@@ -176,24 +348,31 @@ public:
     procedure_values_.clear();
     storage_origins_.clear();
 
-    // Every progress step adds one member of a finite source-derived set. The
-    // deterministic procedure/call/effect traversal makes recursion converge
-    // without a work-queue ordering dependency.
-    while (true) {
+    // The direct summary graph is now immutable. Collapse legal recursive
+    // call/value-flow cycles explicitly, then close the condensation graph from
+    // callees to callers. An acyclic singleton executes once. A recursive SCC
+    // repeats only its own rows; each changing pass adds one member of a finite
+    // source-derived effect set, so no arbitrary iteration bound is required.
+    result_.components = build_effect_components(result_.procedures);
+    for (const ClosedEffectComponent &component : result_.components) {
       bool changed = false;
-      for (ProcedureEffectSummary &summary : result_.procedures) {
-        for (const ProcedureInvocationSummary &invocation :
-             summary.direct_invocations) {
-          changed = compose_named_call(
-              summary, invocation.callee, invocation.arguments) || changed;
+      do {
+        changed = false;
+        for (std::size_t procedure_index : component.procedure_indices) {
+          ProcedureEffectSummary &summary =
+              result_.procedures[procedure_index];
+          for (const ProcedureInvocationSummary &invocation :
+               summary.direct_invocations) {
+            changed = compose_named_call(
+                summary, invocation.callee, invocation.arguments) || changed;
+          }
+          for (const ProcedureFlowInvocationSummary &invocation :
+               summary.direct_flow_calls) {
+            changed = compose_value_call(
+                summary, invocation.callee, invocation.arguments) || changed;
+          }
         }
-        for (const ProcedureFlowInvocationSummary &invocation :
-             summary.direct_flow_calls) {
-          changed = compose_value_call(
-              summary, invocation.callee, invocation.arguments) || changed;
-        }
-      }
-      if (!changed) break;
+      } while (changed);
     }
 
     // Recompose each source call once against the closed procedure summaries.
