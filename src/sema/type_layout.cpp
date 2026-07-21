@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <limits>
 #include <optional>
+#include <utility>
 
 namespace draft {
 namespace {
@@ -26,25 +27,51 @@ namespace {
   return (value + mask) & ~mask;
 }
 
-[[nodiscard]] NaturalAggregateLayout waiting_layout() {
-  return {NaturalLayoutStatus::Waiting, {}, {}};
+// Collects the exact incomplete natural-layout inputs in first-use order. An
+// aggregate may mention the same incomplete type more than once; one graph edge
+// is sufficient and gives cycle diagnostics a minimal dependency set.
+[[nodiscard]] std::vector<TypeId> missing_layout_dependencies(
+    const TypeStore &types, std::span<const TypeId> inputs) {
+  std::vector<TypeId> result;
+  for (TypeId input : inputs) {
+    if (types.type(input).layout.known ||
+        std::find(result.begin(), result.end(), input) != result.end()) {
+      continue;
+    }
+    result.push_back(input);
+  }
+  return result;
+}
+
+[[nodiscard]] NaturalAggregateLayout waiting_layout(
+    std::vector<TypeId> dependencies) {
+  NaturalAggregateLayout result;
+  result.status = NaturalLayoutStatus::Waiting;
+  result.dependencies = std::move(dependencies);
+  return result;
 }
 
 [[nodiscard]] NaturalAggregateLayout overflow_layout() {
-  return {NaturalLayoutStatus::Overflow, {}, {}};
+  NaturalAggregateLayout result;
+  result.status = NaturalLayoutStatus::Overflow;
+  return result;
 }
 
 } // namespace
 
 NaturalAggregateLayout compute_struct_natural_layout(
     const TypeStore &types, std::span<const TypeId> members) {
+  std::vector<TypeId> dependencies =
+      missing_layout_dependencies(types, members);
+  if (!dependencies.empty()) return waiting_layout(std::move(dependencies));
+
   NaturalAggregateLayout result;
   result.status = NaturalLayoutStatus::Complete;
   result.layout = {true, 0, 1};
   result.member_offsets.reserve(members.size());
   for (TypeId member_id : members) {
     const TypeLayout member = types.type(member_id).layout;
-    if (!member.known) return waiting_layout();
+    assert(member.known);
     const std::optional<std::uint64_t> offset =
         round_up(result.layout.size, member.alignment);
     if (!offset.has_value() ||
@@ -65,13 +92,17 @@ NaturalAggregateLayout compute_struct_natural_layout(
 
 NaturalAggregateLayout compute_raw_union_natural_layout(
     const TypeStore &types, std::span<const TypeId> members) {
+  std::vector<TypeId> dependencies =
+      missing_layout_dependencies(types, members);
+  if (!dependencies.empty()) return waiting_layout(std::move(dependencies));
+
   NaturalAggregateLayout result;
   result.status = NaturalLayoutStatus::Complete;
   result.layout = {true, 0, 1};
   result.member_offsets.assign(members.size(), 0);
   for (TypeId member_id : members) {
     const TypeLayout member = types.type(member_id).layout;
-    if (!member.known) return waiting_layout();
+    assert(member.known);
     result.layout.size = std::max(result.layout.size, member.size);
     result.layout.alignment =
         std::max(result.layout.alignment, member.alignment);
@@ -87,14 +118,28 @@ NaturalAggregateLayout compute_tagged_union_natural_layout(
     const TypeStore &types,
     TypeId discriminator,
     std::span<const TypeId> alternatives) {
+  std::vector<TypeId> dependencies;
+  if (!types.type(discriminator).layout.known) {
+    dependencies.push_back(discriminator);
+  }
+  std::vector<TypeId> alternative_dependencies =
+      missing_layout_dependencies(types, alternatives);
+  for (TypeId dependency : alternative_dependencies) {
+    if (std::find(dependencies.begin(), dependencies.end(), dependency) ==
+        dependencies.end()) {
+      dependencies.push_back(dependency);
+    }
+  }
+  if (!dependencies.empty()) return waiting_layout(std::move(dependencies));
+
   const TypeLayout discriminator_layout = types.type(discriminator).layout;
-  if (!discriminator_layout.known) return waiting_layout();
+  assert(discriminator_layout.known);
 
   std::uint64_t payload_size = 0;
   std::uint32_t payload_alignment = 1;
   for (TypeId alternative : alternatives) {
     const TypeLayout payload = types.type(alternative).layout;
-    if (!payload.known) return waiting_layout();
+    assert(payload.known);
     payload_size = std::max(payload_size, payload.size);
     payload_alignment = std::max(payload_alignment, payload.alignment);
   }

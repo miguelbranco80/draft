@@ -214,6 +214,31 @@ void test_pure_natural_aggregate_layout(TestState &state) {
       draft::compute_struct_natural_layout(types, inline_member);
   EXPECT(state, waiting.status == draft::NaturalLayoutStatus::Waiting);
   EXPECT(state, waiting.member_offsets.empty());
+  EXPECT(state, waiting.dependencies == inline_member);
+
+  const std::vector<draft::TypeId> repeated_inline_members = {
+      incomplete, incomplete};
+  const draft::NaturalAggregateLayout repeated_waiting =
+      draft::compute_raw_union_natural_layout(types, repeated_inline_members);
+  EXPECT(state, repeated_waiting.status == draft::NaturalLayoutStatus::Waiting);
+  EXPECT(
+      state,
+      repeated_waiting.dependencies ==
+          std::vector<draft::TypeId>({incomplete}));
+
+  const draft::TypeId other_incomplete = types.begin_nominal(
+      draft::TypeKind::Struct,
+      "Other_Incomplete",
+      draft::SourceRange::invalid());
+  const std::vector<draft::TypeId> waiting_alternatives = {
+      incomplete, other_incomplete, incomplete};
+  const draft::NaturalAggregateLayout tagged_waiting =
+      draft::compute_tagged_union_natural_layout(
+          types, incomplete, waiting_alternatives);
+  EXPECT(
+      state,
+      tagged_waiting.dependencies ==
+          std::vector<draft::TypeId>({incomplete, other_incomplete}));
 
   const std::vector<draft::TypeId> pointer_member =
       {types.pointer(incomplete)};
@@ -221,6 +246,7 @@ void test_pure_natural_aggregate_layout(TestState &state) {
       draft::compute_struct_natural_layout(types, pointer_member);
   EXPECT(state,
       pointer_recursive.status == draft::NaturalLayoutStatus::Complete);
+  EXPECT(state, pointer_recursive.dependencies.empty());
   EXPECT(state,
       pointer_recursive.layout == draft::TypeLayout({true, 8, 8}));
   EXPECT(state,

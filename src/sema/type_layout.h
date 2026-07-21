@@ -35,10 +35,16 @@ enum class NaturalLayoutStatus {
 // NaturalAggregateLayout is task-owned until deterministic publication copies
 // layout and member_offsets into the canonical Type row. member_offsets is
 // populated only for Complete and has exactly the input member count.
+// dependencies is populated only for Waiting and contains each distinct input
+// TypeId whose NaturalLayout facet is not complete, in first-use order. The
+// semantic coordinator maps those IDs to TypeNaturalLayout products; keeping
+// dependency discovery here prevents callers from duplicating the aggregate
+// and tagged-union discriminator traversal rules.
 struct NaturalAggregateLayout {
   NaturalLayoutStatus status = NaturalLayoutStatus::Waiting;
   TypeLayout layout;
   std::vector<std::uint64_t> member_offsets;
+  std::vector<TypeId> dependencies;
 };
 
 [[nodiscard]] NaturalAggregateLayout compute_struct_natural_layout(

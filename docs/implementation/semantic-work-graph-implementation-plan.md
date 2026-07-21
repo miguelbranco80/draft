@@ -41,8 +41,10 @@ gate.
    the exact missing facet instead of reading partial rows. The bundled nominal
    completion API is gone; member-name, member-type, and natural-layout
    publication are separate one-way operations. Aggregate natural layout is a
-   pure producer that distinguishes dependency waits from arithmetic overflow;
-   it no longer belongs to declaration resolution. The terminal discovery
+   pure producer that distinguishes dependency waits from arithmetic overflow
+   and returns the exact incomplete input types in first-use order, ready to
+   become graph edges; it no longer belongs to declaration resolution. The
+   terminal discovery
    package is now published directly, so the redundant final aggregate type
    replay is gone. The remaining work is to make those producers individual
    graph tasks and replace the private type/constant/layout readiness copies.
