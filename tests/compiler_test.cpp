@@ -335,6 +335,62 @@ void test_procedure_body_worker_counts_are_deterministic(TestState &state) {
                     std::string::npos);
 }
 
+// Package import order constrains interfaces, not independent authored bodies.
+// With both interfaces complete, these two roots must occupy one workspace
+// ready wave. The timing counters are deterministic work facts rather than wall
+// time, so they directly distinguish the global scheduler from the deleted
+// package-by-package executor.
+void test_independent_packages_share_one_body_ready_wave(TestState &state) {
+  draft::test::TemporaryDirectory temporary_directory{
+      "draft-bootstrap-workspace-body-wave-test"};
+  const std::filesystem::path &root = temporary_directory.path();
+  std::error_code error;
+  std::filesystem::create_directories(root / "app", error);
+  std::filesystem::create_directories(root / "support", error);
+  EXPECT(state, !error);
+  if (error) return;
+
+  std::ofstream app(root / "app" / "package.draft", std::ios::binary);
+  app << "package app\n"
+         "import support\n"
+         "main :: proc() -> int {\n"
+         "    return cast[int](support.answer())\n"
+         "}\n";
+  app.close();
+  std::ofstream support(
+      root / "support" / "package.draft", std::ios::binary);
+  support << "package support\n"
+             "pub answer :: proc() -> i64 {\n"
+             "    return 42\n"
+             "}\n";
+  support.close();
+  EXPECT(state, app.good() && support.good());
+
+  draft::TimingRecorder timings(draft::TimingOutput::Summary);
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  draft::CompileWorkspaceOptions options;
+  options.target = draft::make_aarch64_macos_profile();
+  options.workspace.workspace_directory = root.string();
+  options.semantic_worker_count = 4;
+  options.timings = &timings;
+  const draft::CompileWorkspaceResult compiled = draft::compile_workspace(
+      sources, (root / "app").string(), std::move(options), diagnostics);
+  if (diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+  }
+  EXPECT(state, compiled.ok);
+  EXPECT(state, compiled.packages.size() == 2);
+
+  const std::string report = timings.render();
+  EXPECT(state, report.find("procedure body ready waves: 1") !=
+                    std::string::npos);
+  EXPECT(state, report.find("procedure body tasks scheduled: 2") !=
+                    std::string::npos);
+  EXPECT(state, report.find("procedure body worker slots: 2") !=
+                    std::string::npos);
+}
+
 // Source diagnostics are stored in task-indexed sinks and replayed only after
 // join. Comparing complete rendered output catches a completion-order leak that
 // an error-count assertion would miss.
@@ -1543,6 +1599,27 @@ void test_body_products_survive_external_demand_removal(TestState &state) {
                     extended_body_products.begin()));
   EXPECT(state, extended.declarations.package.symbols.symbol_count() ==
                     declaration_symbol_count);
+  if (extended.external_procedure_products.size() == 1) {
+    const draft::ExternalProcedureBodyProduct &external =
+        extended.external_procedure_products.front();
+    EXPECT(state, external.requester.is_valid());
+    EXPECT(state, external.work_index < extended_body_products.size());
+    if (external.requester.is_valid() &&
+        external.work_index < extended_body_products.size()) {
+      const draft::SemanticProductId owner_product =
+          extended_body_products[external.work_index];
+      const std::vector<draft::SemanticProductId> &dependencies =
+          compiled.semantic_graph.products[owner_product.value].dependencies;
+      EXPECT(state,
+             std::find(
+                 dependencies.begin(), dependencies.end(), external.requester) !=
+                 dependencies.end());
+      EXPECT(state,
+             compiled.semantic_products
+                     .package_by_product[external.requester.value] ==
+                 compiled.graph.root_package);
+    }
+  }
   const std::size_t extended_body_symbol_count =
       extended.bodies.package.symbols.symbol_count();
   const std::size_t extended_checked = extended.bodies.checked_procedures;
@@ -3580,6 +3657,7 @@ int main() {
   test_procedure_demands_are_canonical_and_exact(state);
   test_procedure_bodies_are_dynamic_semantic_products(state);
   test_procedure_body_worker_counts_are_deterministic(state);
+  test_independent_packages_share_one_body_ready_wave(state);
   test_parallel_body_diagnostics_are_canonical(state);
   test_invalid_unused_body_products_do_not_stop_the_wave(state);
   test_named_constants_are_semantic_products(state);

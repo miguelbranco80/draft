@@ -225,9 +225,14 @@ Its work rows, procedure results, and semantic-product rows share one append-onl
 index domain, so an added demand resumes the exact completed prefix. The
 compiler no longer reconstructs an extension scheduler from a reduced
 `BodyCheckResult`; that transfer object remains only for direct subsystem
-callers. The remaining scheduling limit is that packages are still visited in
-consumer-first order; one workspace-wide frozen body ready set will replace
-that outer traversal.
+callers. Pending roots from every package now enter one workspace-wide frozen
+ready set. Product IDs are appended in PackageId/work order, workers may execute
+the complete independent set concurrently, and package-local semantic suffixes
+publish in that same canonical order after join. A newly materialized external
+root carries an explicit edge to the completed consumer body which exposed its
+demand. Cross-package demand discovery and retained-product selection repeat
+until the current program reaches a fixed point; there is no consumer-first
+body executor outside the graph.
 
 After every selected package has reached target lowering, the backend derives a
 closed native work graph in canonical package/module/assembly order. Package

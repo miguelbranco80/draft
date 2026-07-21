@@ -56,7 +56,8 @@ phases run.
 Body continuation reports `package body starts`, `procedure bodies checked`,
 `procedure body ready waves`, and `external procedure bodies materialized`.
 They distinguish a new package body generation, exact body tasks actually run,
-frozen worker waves, and previously unseen cross-package specializations.
+workspace-wide frozen worker waves, and previously unseen cross-package
+specializations.
 Selection changes which reuse already completed products perform no body work
 and need no special “reuse” counter. All rows remain command-local; none is
 evidence of a persistent compiler cache.

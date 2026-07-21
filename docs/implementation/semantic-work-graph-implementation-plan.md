@@ -199,11 +199,20 @@ gate.
    promotion, transitive removal, proxy reuse, stable product IDs, and zero
    rechecking of retained owner bodies.
 
-   The remaining step-5 deletion boundary is the package-by-package
-   consumer-first outer scheduler and package-wide canonical semantic table.
-   Replace it with one workspace body ready-set coordinator whose package-local
-   publishers remain deterministic, then remove `BodyCheckResult`'s remaining
-   package-wide semantic transfer form from non-workspace APIs.
+   The package-by-package consumer-first outer scheduler is now deleted. One
+   workspace coordinator appends pending products in PackageId/work order,
+   freezes the global body ready set, invokes one bounded worker batch, then
+   publishes each package suffix and the graph outcomes deterministically. A
+   newly materialized external owner body depends on the exact completed
+   consumer product which requested it. Demand discovery, retained-product
+   selection, and new owner work repeat to one workspace fixed point. Public
+   tests prove independent imported packages share a ready wave and that the
+   requester edge survives source transitions.
+
+   The remaining step-5 cleanup is `BodyCheckResult`'s package-wide semantic
+   transfer form in direct non-workspace APIs. Package-wide compatibility HIR
+   projections belong to the downstream flow-closure and MIR migrations in
+   steps 7 and 8 rather than to the body scheduler.
 
 6. **Synthesis as an explicit wait state.** A body or declaration task may
    report its exact ready `...` set after producing the typed constraint needed

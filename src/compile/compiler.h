@@ -133,12 +133,15 @@ enum class PackageSemanticProgress {
 // product which satisfies it. The portable demand remains the stable lookup
 // key across later source selections in the same command. work_index addresses
 // CompiledPackage::bodies.work/procedures and never changes while that package
-// declaration generation remains alive. A row may be unselected; completed
-// products remain immutable and become active again without rechecking if an
-// equivalent demand returns.
+// declaration generation remains alive. requester is the first completed body
+// product which discovered this demand and becomes the new product's explicit
+// graph prerequisite when materialization creates a new owner body. A row may
+// be unselected; completed products remain immutable and become active again
+// without rechecking if an equivalent demand returns.
 struct ExternalProcedureBodyProduct {
   ProcedureInstantiationDemand demand;
   std::size_t work_index = 0;
+  SemanticProductId requester;
 };
 
 // One row owns every representation of one package. Keeping phase products

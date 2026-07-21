@@ -395,14 +395,17 @@ declaration symbol before validation. Constant evaluation also retains a ready
 value's type in evaluator-owned state, so reading an immutable published
 constant never rewrites a declaration merely to recover an inferred type.
 
-The compiler schedules package bodies consumer-first because checking a caller
-can demand a concrete public generic body from its dependency. A portable
-procedure-demand packet contains canonical interface type graphs, exact value
-arguments, ordered static-pack types, the full semantic digest, and the stable
-native instance name. The owning package sorts and deduplicates each current
-ready set before looking up individual products. No consumer-local TypeId
-crosses the boundary, and materialized owner TypeIds live only in the body
-generation.
+The compiler closes procedure work through workspace-wide ready waves. Once
+package interfaces are complete, import order does not serialize independent
+authored bodies: pending roots from every package share one bounded worker set.
+Checking a caller can still demand a concrete public generic body from its
+dependency. A portable procedure-demand packet contains canonical interface
+type graphs, exact value arguments, ordered static-pack types, the full semantic
+digest, and the stable native instance name. The owning package sorts and
+deduplicates each current ready set before looking up individual products. A
+new owner body has an explicit graph edge to the exact completed consumer body
+which exposed it. No consumer-local TypeId crosses the boundary, and
+materialized owner TypeIds live only in the body generation.
 
 Each retained package owns one append-only row for every external demand seen in
 its current declaration generation. Authored roots are always selected; current
@@ -423,6 +426,14 @@ import proxy created by another product, so deactivating the first product does
 not lose a still-live transitive owner demand. This is direct semantic
 selection, not an aggregate reuse/rebuild policy or a second body
 representation.
+
+After each global worker join, package-local semantic suffixes publish in
+PackageId and work order, then graph states and diagnostics publish in
+SemanticProductId order. Selection and outbound demands are recomputed only
+between waves. The fixed point is complete when no body is pending and neither
+the selected program nor its canonical demand sets change. This makes worker
+count a scheduling choice while retaining direct, deterministic package-local
+ID interning.
 
 Compile-time expression type preflight and early compile-time procedure checks
 operate on private copies. Their HIR is disposable and their only permitted

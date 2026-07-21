@@ -59,13 +59,13 @@ cache.
   types, obligations, checked bodies, MIR, and LLVM products available at each
   state.
 - Each package has an immutable declaration generation and a separate
-  body-owned semantic generation plus procedure-owned HIR arenas. The body work
-  key combines that
-  declaration generation with the exact canonical set of cross-package generic
-  specializations demanded by consumers. Equal keys reuse bodies, monotonic
-  additions check only new specializations, and removals rebuild from the clean
-  declaration baseline. Diagnostic preflight and early compile-time synthesis
-  checks use disposable copies rather than enriching authoritative state.
+  body-owned semantic generation plus procedure-owned HIR arenas. Body work and
+  products share one append-only package-local index domain. Current selection
+  includes authored roots, current external roots, and prerequisite-reachable
+  descendants; removing a demand changes that projection without rebuilding or
+  mutating retained products. Diagnostic preflight and early compile-time
+  synthesis checks use disposable copies rather than enriching authoritative
+  state.
 - Each authored template or concrete procedure is an explicit live body
   product. Initial roots depend on the package interface; nested procedures and
   locally discovered specializations are added after the exposing frozen wave
@@ -88,20 +88,21 @@ cache.
   equal procedure and nominal type specializations. The isolated workers run
   through the bounded executor; one-worker and four-worker tests compare the
   complete semantic product graph, diagnostic rendering, table sizes, and LLVM
-  bytes. The preceding body-key retention mechanism is now the next deletion
-  boundary rather than a prerequisite for parallel body execution.
+  bytes. Pending roots from all packages now enter one workspace ready set; a
+  newly materialized external owner body depends on the exact completed
+  consumer product which requested it. Package-local semantic suffixes publish
+  in PackageId/work order only after the global set joins.
 - A command-local adjacency index records imports by consumer and consumers by
   dependency. It is built once with each source-selection graph and retained
   through source transitions, semantic closure, and lowering. A sequential Kahn
   traversal uses a PackageId-ordered min-heap, so dependency scheduling is
   deterministic. Building its sorted identity and reverse-adjacency views costs
   O((packages + imports) log(packages + imports)); source invalidation walks the
-  completed reverse rows in O(packages + imports). This dependency-ordered
-  semantic traversal remains sequential. Parallel execution is used for the
-  immutable provider-call ready set during resolution and the closed independent
-  native-object ready set after target lowering. In both cases workers write
-  task-indexed slots and the owning thread publishes in stable order, so
-  scheduling cannot change compiler results.
+  completed reverse rows in O(packages + imports). Interface and remaining
+  package-snapshot phases use deterministic package traversal. Procedure bodies,
+  provider calls, and native objects instead use bounded independent ready sets.
+  Workers write task-indexed slots and the owning thread publishes in stable
+  order, so scheduling cannot change compiler results.
 - The graph reuses loaded files, tokens, syntax, declarations, interned types,
   checked expansions, and dependency facts instead of reloading the workspace
   for each conceptual phase.
@@ -205,10 +206,12 @@ cache.
    ordinary graph construction plus separately selected typed test- and
    benchmark-context graphs, rather than repeated compiler/workspace passes for
    interface and body stages. Typed validation state survives the body-source
-   transition. Parallel package-semantic traversal was therefore not added: its
-   coordination and timing-recorder complexity are not justified by the
-   measured remaining work. The sorted sequential package ready set is the
-   qualified implementation; provider waiting is a separate task-local boundary.
+   transition. At that stage, parallel traversal of package-snapshot declaration
+   work was not added: its coordination and timing-recorder complexity were not
+   justified by the measured work. The sorted sequential package ready set was
+   retained for those products; provider waiting was already a separate
+   task-local boundary. Later item 15 records the independently justified
+   procedure-product scheduler, whose payload no longer uses package snapshots.
 8. A final complexity audit replaced whole-edge rescans and shifting sorted
    vectors with one explicit adjacency index and PackageId-ordered min-heap
    (`83cd919`), then retained that index across graph continuations
@@ -248,18 +251,21 @@ cache.
     one request directory per call.
 15. Semantic ownership was split into immutable declaration generations and
     body-owned semantic generations. Cross-package procedure
-    specializations now use canonical demand-set selection: retained dependencies
-    are reused during body proposals, new demands extend only missing bodies,
-    and removals rebuild exact state. A changed declaration replaces its whole
-    package row, so there is no separate declaration-generation body key. This
-    removed retained-table body replay, including duplicate static-pack
-    declarations, without introducing a persistent cache or a second compiler
-    graph. Exact body products now retain
+    specializations now use canonical retained products and an explicit current
+    selection. New demands extend only missing bodies; removals deselect their
+    owner roots and transitive descendants without rebuilding completed state. A
+    changed declaration replaces its whole package row, so there is no separate
+    declaration-generation body key. This removed retained-table body replay,
+    including duplicate static-pack declarations, without introducing a
+    persistent cache or a second compiler graph. Exact body products retain
     their own HIR arenas. Package-wide consumers still awaiting migration build
     a short-lived compatibility projection; no aggregate HIR is retained in
     compiler state. Workspace packages retain the live body scheduler itself,
     allowing an added external specialization to continue the exact completed
-    work/product prefix without reconstructing extension state.
+    work/product prefix without reconstructing extension state. The body
+    coordinator now closes one workspace-wide dynamic ready graph rather than
+    visiting packages consumer-first; new owner bodies retain exact requester
+    product edges.
 
 The qualifying timing counters were `compiler passes: 1`, `workspace loads: 1`
 for the handwritten hello build. The resolved agent-acceptance build, whose
@@ -288,12 +294,13 @@ and tests as applicable.
   selected source graph and produces the same native program as a later
   provider-free `build` of the committed source. Interface/body rounds never
   reconstruct the same workspace graph.
-- Rechecking a body proposal never re-enters an enriched semantic package. A
-  dependency with an equal external-demand set retains its exact HIR;
-  an added external specialization checks only that new body, and removing the
-  demand leaves no stale concrete symbol or interface row.
-- The sorted sequential package-semantic scheduler produces stable manifests,
-  generated-source selections, and diagnostics.
+- Rechecking a body proposal never re-enters an enriched semantic package. An
+  equal external demand reselects its exact retained HIR; an added external
+  specialization checks only that new body, and removing the demand excludes
+  its retained concrete symbol from the current interface and lowered program.
+- The sorted interface/package scheduler and workspace-wide body ready waves
+  produce stable manifests, generated-source selections, product graphs, and
+  diagnostics at every qualified worker count.
 - A synthesis ready wave may invoke only independent opaque-set sites in
   parallel. Proposal checking remains single-threaded, lowest-site provider
   failures are stable, and only rejected sites enter a correction wave.

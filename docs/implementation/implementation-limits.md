@@ -70,9 +70,12 @@ from transitive discovery, metadata, effects, interfaces, lowering, and native
 emission. Exact product-owned outbound requests and a selected-HIR proxy scan
 keep transitive demands live even when their original discovering product is no
 longer selected. There is no aggregate demand-set comparison, demand-removal
-rebuild, or declaration-generation body work key. Package body scheduling is
-still consumer-first and sequential between package-local parallel waves;
-workspace-wide body ready waves remain planned work.
+rebuild, or declaration-generation body work key. All packages now contribute
+their pending procedure products to one workspace-wide frozen ready set. New
+external owner bodies depend on the exact completed consumer product which
+requested them; package-local semantic suffixes still publish in PackageId/work
+order after the whole worker set joins. Package loops whose payloads still use
+package snapshots remain sequential.
 Effect closure, denials, and MIR still consume a package-wide HIR compatibility
 projection. Each operation builds and discards that view from authoritative
 procedure products; the compiler retains no package-wide HIR copy. Migrating
