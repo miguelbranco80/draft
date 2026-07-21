@@ -57,7 +57,9 @@ gate.
    completed declaration products, returns forward aliases as stable SymbolId
    blockers, names local ConstantValue prerequisites for layout integers and
    type-valued declarations instead of recursively evaluating them, and keeps
-   blocked mutations and diagnostics task-local. The
+   blocked mutations and diagnostics task-local. For nominal declarations that
+   attempt stops after MemberTypes; a separate NaturalLayout attempt is now the
+   only product path that can publish physical layout. The
    workspace still needs typed product indices and deterministic publication
    before this path can replace the recursive package resolver. Eager authored
    declaration collection and import binding are now exposed as a distinct

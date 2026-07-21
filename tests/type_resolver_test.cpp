@@ -100,6 +100,10 @@ First :: Second
 Second :: u32
 Count :: 4
 Buffer :: [Count]u8
+Record :: struct {
+    small: u8,
+    large: u64,
+}
 Cycle_A :: Cycle_B
 Cycle_B :: Cycle_A
 )draft");
@@ -117,14 +121,18 @@ Cycle_B :: Cycle_A
       find_symbol_id(source.semantic, "Count");
   const std::optional<draft::SymbolId> buffer =
       find_symbol_id(source.semantic, "Buffer");
+  const std::optional<draft::SymbolId> record =
+      find_symbol_id(source.semantic, "Record");
   EXPECT(state, first.has_value());
   EXPECT(state, second.has_value());
   EXPECT(state, cycle_a.has_value());
   EXPECT(state, cycle_b.has_value());
   EXPECT(state, count.has_value());
   EXPECT(state, buffer.has_value());
+  EXPECT(state, record.has_value());
   if (!first.has_value() || !second.has_value() || !cycle_a.has_value() ||
-      !cycle_b.has_value() || !count.has_value() || !buffer.has_value()) {
+      !cycle_b.has_value() || !count.has_value() || !buffer.has_value() ||
+      !record.has_value()) {
     return;
   }
 
@@ -204,6 +212,55 @@ Cycle_B :: Cycle_A
     EXPECT(state, buffer_type.kind == draft::TypeKind::Array);
     EXPECT(state, buffer_type.element_count == 4);
   }
+
+  draft::SemanticPackage record_package = source.semantic;
+  draft::DiagnosticSink record_diagnostics;
+  const draft::DeclarationTypeProductAttempt record_complete =
+      draft::resolve_package_declaration_type_product(
+          source.sources,
+          source.loaded,
+          record_package,
+          selections,
+          *record,
+          {},
+          constants,
+          resolved_integers,
+          target,
+          record_diagnostics);
+  EXPECT(
+      state,
+      record_complete.status == draft::TypeProductStatus::Complete);
+  const draft::TypeId record_type =
+      record_package.symbols.symbol(*record).type;
+  EXPECT(
+      state,
+      record_package.types.facet_state(
+          record_type, draft::TypeFacet::MemberTypes) ==
+          draft::TypeFacetState::Complete);
+  EXPECT(
+      state,
+      record_package.types.facet_state(
+          record_type, draft::TypeFacet::NaturalLayout) ==
+          draft::TypeFacetState::Waiting);
+  draft::NaturalLayoutProductAttempt record_layout =
+      draft::evaluate_natural_layout_product(
+          record_package.types, record_type, record_diagnostics);
+  EXPECT(
+      state,
+      record_layout.status == draft::TypeProductStatus::Complete);
+  EXPECT(
+      state,
+      draft::publish_natural_layout_product(
+          record_package,
+          *record,
+          record_type,
+          std::move(record_layout),
+          record_diagnostics));
+  EXPECT(
+      state,
+      record_package.types.type(record_type).layout ==
+          draft::TypeLayout({true, 16, 8}));
+  EXPECT(state, !record_diagnostics.has_errors());
 
   draft::SemanticPackage second_package = source.semantic;
   draft::DiagnosticSink second_diagnostics;

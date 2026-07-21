@@ -4299,7 +4299,7 @@ private:
     // publication have one authority. A blocked result simply leaves the facet
     // Waiting; the workspace graph will attach its explicit dependencies when
     // it takes ownership of this task.
-    if (!data.incomplete) {
+    if (!data.incomplete && !product_root_.is_valid()) {
       NaturalLayoutProductAttempt layout = evaluate_natural_layout_product(
           semantic_.types, nominal, diagnostics_);
       if (layout.status == TypeProductStatus::Complete) {

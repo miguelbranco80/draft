@@ -38,10 +38,12 @@ struct DeclarationTypeProductAttempt {
 
 // Resolves exactly root in task_package. completed_declarations are immutable
 // products already present in that snapshot. Any other forward declaration is
-// recorded as a blocker rather than resolved recursively. The function keeps
-// blocked-attempt diagnostics private and publishes diagnostics only for a
-// terminal Error. task_package is suitable for coordinator publication only
-// when the returned status is Complete.
+// recorded as a blocker rather than resolved recursively. A nominal root
+// publishes member names and member types but deliberately leaves NaturalLayout
+// Waiting for its separate product. The function keeps blocked-attempt
+// diagnostics private and publishes diagnostics only for a terminal Error.
+// task_package is suitable for coordinator publication only when the returned
+// status is Complete.
 [[nodiscard]] DeclarationTypeProductAttempt
 resolve_package_declaration_type_product(
     const SourceManager &sources,
