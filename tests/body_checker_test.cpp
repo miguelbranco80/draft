@@ -931,6 +931,28 @@ main :: proc() -> i64 {
     EXPECT(state, helper_linkage_names[0] != helper_linkage_names[1]);
   }
 
+  // The inner identity specialization is discovered while checking a
+  // concrete last_of body. Its public argument identity contains only U, but
+  // checking its body also needs the enclosing last_of bindings T and N. The
+  // retained execution environment must therefore be strictly richer than the
+  // specialization key; otherwise a fresh per-root checker would lose N or
+  // leave T symbolic when it reconstructs this nested instance.
+  bool saw_nested_instance_environment = false;
+  for (const draft::ParametricInstanceRecord &instance :
+       source.bodies.package.parametric_instances) {
+    const draft::Symbol &source_symbol =
+        source.bodies.package.symbols.symbol(instance.source);
+    if (source_symbol.name != "identity" ||
+        source_symbol.linkage_name.empty()) {
+      continue;
+    }
+    saw_nested_instance_environment = true;
+    EXPECT(state, instance.arguments.size() == 1);
+    EXPECT(state, instance.type_substitutions.size() == 2);
+    EXPECT(state, instance.value_substitutions.size() == 1);
+  }
+  EXPECT(state, saw_nested_instance_environment);
+
   // Compile through a fresh semantic graph, rather than merely emitting the
   // first graph twice. The exact linkage sequence must not depend on transient
   // SymbolId/ScopeId allocation from another compilation.

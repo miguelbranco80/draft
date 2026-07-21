@@ -135,8 +135,11 @@ struct ExplicitProcedureArguments {
 // the concrete symbol, signature, and cloned runtime-parameter scope used by
 // later passes. Equality is semantic: types compare by canonical TypeId and
 // values compare by their exact ConstantValue representation, and pack types
-// compare as an ordered vector. All referenced symbols and types live for the
-// complete SemanticPackage/BodyChecker run; no row outlives those owners.
+// compare as an ordered vector. This is the active, checker-local form of the
+// durable ParametricInstanceRecord. A fresh checker reconstructs exactly the
+// instance it is about to check; instances discovered by that body are retained
+// in SemanticPackage for later roots. All referenced symbols and types live for
+// the complete body-owned SemanticPackage generation.
 struct ProcedureInstance {
   SymbolId source;
   SymbolId symbol;
@@ -153,7 +156,17 @@ struct ProcedureInstance {
   // the source pack name. Constant evaluation uses it for len(pack); ordinary
   // expression checking rejects every other use before HIR lowering.
   SymbolId pack_binding;
-  bool checked = false;
+};
+
+// ProcedureInstanceActivation distinguishes an authored procedure from a
+// concrete instance whose retained environment failed internal reconstruction.
+// An empty optional alone could not express that difference safely: treating a
+// malformed concrete symbol as an authored procedure would check its source
+// template without the required substitutions and manufacture misleading user
+// diagnostics.
+struct ProcedureInstanceActivation {
+  bool concrete = false;
+  std::optional<std::size_t> index;
 };
 
 // During one concrete static-pack iteration the source value name denotes one
@@ -220,101 +233,45 @@ public:
         diagnostics_(diagnostics), seeds_(seeds),
         hir_(std::move(initial_program)) {}
 
-  [[nodiscard]] BodyCheckResult run() {
+  // Establishes the body-owned runtime context and materializes external
+  // specialization seeds without checking any procedure. The public package
+  // wrapper invokes this operation once, snapshots the resulting concrete
+  // instance records as work roots, and then gives every root a fresh
+  // BodyChecker. Keeping seed materialization separate prevents the first
+  // authored procedure from accidentally owning unrelated external work.
+  [[nodiscard]] BodyCheckResult initialize() {
     BodyCheckResult result;
     const std::size_t initial_errors = diagnostics_.error_count();
     ensure_runtime_context_type(semantic_, diagnostics_);
-    const std::vector<SymbolId> package_symbols =
-        semantic_.symbols.scope(semantic_.package_scope).symbols;
-    // Capture the original declaration list before seeding. Instantiation adds
-    // private package symbols, but those bodies belong to the growing
-    // instances_ loop below and must not be checked a second time here.
     instantiate_seeded_procedures();
-    for (SymbolId id : package_symbols) {
-      const Symbol symbol = semantic_.symbols.symbol(id);
-      if (symbol.kind != SymbolKind::Procedure || !symbol.type.is_valid()) {
-        continue;
-      }
-      if (check_procedure(id, symbol.flags.parametric)) {
-        ++result.checked_procedures;
-      }
-    }
-    // Checking an ordinary body can discover a first concrete use. A growing
-    // index loop is intentional: an instance body may instantiate another
-    // template, and every newly appended row is checked exactly once.
-    for (std::size_t index = 0; index < instances_.size(); ++index) {
-      current_instance_index_ = index;
-      if (!instances_[index].checked &&
-          check_procedure(instances_[index].symbol, false)) {
-        ++result.checked_procedures;
-        instances_[index].checked = true;
-      }
-      current_instance_index_.reset();
-    }
     result.ok = diagnostics_.error_count() == initial_errors;
     result.program = std::move(hir_);
     return result;
   }
 
-  // Extends one retained body generation with newly demanded concrete
-  // instances. Authored procedures and existing instances already have HIR in
-  // hir_ and are never revisited. instantiate_procedure consults the retained
-  // semantic instance table before creating a row, so a new instance body may
-  // call an old local specialization without redeclaring or rechecking it.
-  [[nodiscard]] BodyCheckResult run_seeded_instances() {
+  // Checks one package-level authored procedure or one retained concrete
+  // instance and nothing from the surrounding package work list. A concrete
+  // instance rebuilds its active substitutions and pack bindings from the
+  // permanent ParametricInstanceRecord before source checking starts. Calls in
+  // this body may append new instance records, but their bodies are deliberately
+  // left for later roots. Nested source procedures still belong recursively to
+  // their enclosing root in this transition; separating those lexical products
+  // is the next procedure-owned-checking slice.
+  [[nodiscard]] BodyCheckResult run_one(SymbolId procedure) {
     BodyCheckResult result;
     const std::size_t initial_errors = diagnostics_.error_count();
     ensure_runtime_context_type(semantic_, diagnostics_);
-    instantiate_seeded_procedures();
-    for (std::size_t index = 0; index < instances_.size(); ++index) {
-      current_instance_index_ = index;
-      if (!instances_[index].checked &&
-          check_procedure(instances_[index].symbol, false)) {
-        ++result.checked_procedures;
-        instances_[index].checked = true;
-      }
-      current_instance_index_.reset();
+    const ProcedureInstanceActivation instance = restore_instance(procedure);
+    if (instance.index.has_value()) current_instance_index_ = *instance.index;
+    const Symbol symbol = semantic_.symbols.symbol(procedure);
+    if ((!instance.concrete || instance.index.has_value()) &&
+        symbol.kind == SymbolKind::Procedure && symbol.type.is_valid() &&
+        check_procedure(
+            procedure,
+            !instance.concrete && symbol.flags.parametric)) {
+      ++result.checked_procedures;
     }
-    result.ok = diagnostics_.error_count() == initial_errors;
-    result.program = std::move(hir_);
-    return result;
-  }
-
-  // Early interface discovery needs ordinary body semantics, but only for
-  // procedures the constant interpreter actually reached. Applying selection
-  // while walking the package scope keeps diagnostics and site order identical
-  // to a complete body pass and independent of evaluator recursion order.
-  [[nodiscard]] BodyCheckResult run_selected(
-      std::span<const SymbolId> selected) {
-    BodyCheckResult result;
-    const std::size_t initial_errors = diagnostics_.error_count();
-    ensure_runtime_context_type(semantic_, diagnostics_);
-    const std::vector<SymbolId> package_symbols =
-        semantic_.symbols.scope(semantic_.package_scope).symbols;
-    for (SymbolId id : package_symbols) {
-      if (std::find(selected.begin(), selected.end(), id) == selected.end()) {
-        continue;
-      }
-      const Symbol symbol = semantic_.symbols.symbol(id);
-      if (symbol.kind != SymbolKind::Procedure || !symbol.type.is_valid()) {
-        continue;
-      }
-      if (check_procedure(id, symbol.flags.parametric)) {
-        ++result.checked_procedures;
-      }
-    }
-    // A reached compile-time helper can itself make a concrete generic call.
-    // Those instance bodies are part of the same dependency closure and follow
-    // the normal growing-vector rule used by the complete body pass.
-    for (std::size_t index = 0; index < instances_.size(); ++index) {
-      current_instance_index_ = index;
-      if (!instances_[index].checked &&
-          check_procedure(instances_[index].symbol, false)) {
-        ++result.checked_procedures;
-        instances_[index].checked = true;
-      }
-      current_instance_index_.reset();
-    }
+    current_instance_index_.reset();
     result.ok = diagnostics_.error_count() == initial_errors;
     result.program = std::move(hir_);
     return result;
@@ -4045,6 +4002,91 @@ private:
     return instance_id;
   }
 
+  // Reconstructs the active checking environment for one retained concrete
+  // procedure. ParametricInstanceRecord owns the exact type/value bindings;
+  // the concrete Procedure scope owns the fixed parameters, static-pack marker,
+  // and unnameable pack-element parameters. Rebuilding this small view makes
+  // body roots independent of the BodyChecker which happened to discover the
+  // specialization. Missing rows indicate a compiler ownership violation, but
+  // are still reported through diagnostics so malformed state never reaches an
+  // assertion or gets interpreted as ordinary Draft source.
+  [[nodiscard]] ProcedureInstanceActivation restore_instance(
+      SymbolId procedure) {
+    const ParametricInstanceRecord *retained = nullptr;
+    for (const ParametricInstanceRecord &candidate :
+         semantic_.parametric_instances) {
+      if (candidate.instance == procedure) {
+        retained = &candidate;
+        break;
+      }
+    }
+    if (retained == nullptr) return {};
+
+    ProcedureInstance restored;
+    restored.source = retained->source;
+    restored.symbol = retained->instance;
+    restored.pack_types = retained->pack_types;
+    restored.type_substitutions.reserve(
+        retained->type_substitutions.size());
+    for (const ConcreteProcedureTypeSubstitution &substitution :
+         retained->type_substitutions) {
+      restored.type_substitutions.push_back(
+          {substitution.parameter, substitution.replacement});
+    }
+    restored.value_substitutions.reserve(
+        retained->value_substitutions.size());
+    for (const ConcreteProcedureValueSubstitution &substitution :
+         retained->value_substitutions) {
+      restored.value_substitutions.push_back(
+          {substitution.parameter, substitution.value, {}});
+    }
+
+    const StaticArgumentPack *pack = static_argument_pack(retained->source);
+    if (pack == nullptr) {
+      if (!retained->pack_types.empty()) {
+        diagnostics_.error(
+            semantic_.symbols.symbol(procedure).name_range,
+            "concrete procedure retains pack types without a source pack");
+        return {true, std::nullopt};
+      }
+    } else {
+      const std::optional<ScopeId> scope = procedure_scope(procedure);
+      if (!scope.has_value()) {
+        diagnostics_.error(
+            semantic_.symbols.symbol(procedure).name_range,
+            "concrete procedure parameter scope is missing");
+        return {true, std::nullopt};
+      }
+      const std::string &binding_name =
+          semantic_.symbols.symbol(pack->binding).name;
+      const std::optional<SymbolId> binding =
+          semantic_.symbols.lookup_direct(*scope, binding_name);
+      if (!binding.has_value()) {
+        diagnostics_.error(
+            semantic_.symbols.symbol(procedure).name_range,
+            "concrete procedure static-pack binding is missing");
+        return {true, std::nullopt};
+      }
+      restored.pack_binding = *binding;
+      restored.pack_parameters.reserve(retained->pack_types.size());
+      for (std::size_t index = 0; index < retained->pack_types.size(); ++index) {
+        const std::optional<SymbolId> parameter =
+            semantic_.symbols.lookup_direct(
+                *scope, "$pack_element_" + std::to_string(index));
+        if (!parameter.has_value()) {
+          diagnostics_.error(
+              semantic_.symbols.symbol(procedure).name_range,
+              "concrete procedure static-pack parameter is missing");
+          return {true, std::nullopt};
+        }
+        restored.pack_parameters.push_back(*parameter);
+      }
+    }
+
+    instances_.push_back(std::move(restored));
+    return {true, instances_.size() - 1};
+  }
+
   // A nested template can mention compile-time parameters owned by every
   // enclosing template. Its concrete instance must therefore retain both its
   // explicitly inferred arguments and the active outer specialization. Keep
@@ -4350,6 +4392,20 @@ private:
       if (parameter_id.is_valid()) pack_parameters.push_back(parameter_id);
     }
     const std::vector<ParametricArgument> arguments = requested_arguments;
+    std::vector<ConcreteProcedureTypeSubstitution> retained_types;
+    retained_types.reserve(type_substitutions.size());
+    for (const TypeSubstitution &substitution : type_substitutions) {
+      retained_types.push_back(
+          {substitution.parameter, substitution.replacement});
+    }
+    std::vector<ConcreteProcedureValueSubstitution> retained_values;
+    retained_values.reserve(value_substitutions.size());
+    for (const ValueSubstitution &substitution : value_substitutions) {
+      // instantiate_procedure rejects symbolic and deferred bindings before
+      // reaching this point. Retaining only the exact value is therefore the
+      // complete environment needed by a later concrete body task.
+      retained_values.push_back({substitution.parameter, substitution.value});
+    }
     instances_.push_back({
         source,
         instance_id,
@@ -4358,13 +4414,14 @@ private:
         std::move(pack_types),
         std::move(pack_parameters),
         concrete_pack_binding,
-        false,
     });
     semantic_.parametric_instances.push_back({
         source,
         instance_id,
         arguments,
         instances_.back().pack_types,
+        std::move(retained_types),
+        std::move(retained_values),
         !preferred_name.empty(),
     });
     return instance_id;
@@ -8224,6 +8281,76 @@ private:
   bool type_validation_only_ = false;
 };
 
+// Appends one body root if it has not already been scheduled. Package symbols
+// and concrete instances occupy one SymbolId domain, so a direct linear scan is
+// an exact deterministic set operation. Body root lists are normally small and
+// preserve source/discovery order; sorting would change diagnostic order.
+void append_body_root(std::vector<SymbolId> &roots, SymbolId root) {
+  if (std::find(roots.begin(), roots.end(), root) == roots.end()) {
+    roots.push_back(root);
+  }
+}
+
+// Checks a dynamic list of exact procedure roots. Every iteration constructs a
+// fresh BodyChecker around the retained append-only package, constants, and HIR
+// prefix. The checker therefore cannot rely on transient state from the root
+// which discovered a concrete instance. New ParametricInstanceRecord rows are
+// appended to the work list only after the current root has finished, which is
+// the sequential publication oracle for the later procedure product graph.
+//
+// first_unscheduled_instance is the first retained instance not already named
+// by roots or represented in initial_program. Fresh package checks place every
+// seed on roots and pass the resulting retained count. Body-generation
+// extensions likewise place new seeds on roots while the earlier prefix already
+// has HIR. Instances discovered after checking begins form the unscheduled
+// suffix consumed below.
+[[nodiscard]] BodyCheckResult check_body_roots(
+    const SourceManager &sources,
+    const LoadedPackage &loaded,
+    const ConditionalSelections &selections,
+    SemanticPackage &semantic,
+    ConstantTable &constants,
+    const TargetFacts &target,
+    DiagnosticSink &diagnostics,
+    std::vector<SymbolId> roots,
+    std::size_t first_unscheduled_instance,
+    HirProgram initial_program) {
+  BodyCheckResult result;
+  result.ok = true;
+  result.program = std::move(initial_program);
+
+  std::size_t next_instance = first_unscheduled_instance;
+  for (std::size_t root_index = 0; root_index < roots.size(); ++root_index) {
+    const std::vector<ProcedureInstantiationSeed> no_seeds;
+    BodyChecker checker(
+        sources,
+        loaded,
+        selections,
+        semantic,
+        constants,
+        target,
+        diagnostics,
+        no_seeds,
+        std::move(result.program));
+    BodyCheckResult checked = checker.run_one(roots[root_index]);
+    result.ok = result.ok && checked.ok;
+    result.checked_procedures += checked.checked_procedures;
+    result.program = std::move(checked.program);
+
+    // A direct call may discover several specializations, and checking one
+    // concrete body may discover more. Their retained order is deterministic
+    // expression/source order. Publish that complete suffix before advancing
+    // to the next root; duplicate semantic identities were already collapsed
+    // by instantiate_procedure.
+    while (next_instance < semantic.parametric_instances.size()) {
+      append_body_root(
+          roots, semantic.parametric_instances[next_instance].instance);
+      ++next_instance;
+    }
+  }
+  return result;
+}
+
 } // namespace
 
 bool validate_package_compile_time_expression_types(
@@ -8267,7 +8394,7 @@ BodyCheckResult check_package_bodies(
   // complete body generation atomically.
   SemanticPackage checked_package = package;
   ConstantTable checked_constants = constants;
-  BodyChecker checker(
+  BodyChecker initializer(
       sources,
       loaded,
       selections,
@@ -8276,7 +8403,38 @@ BodyCheckResult check_package_bodies(
       target,
       diagnostics,
       seeds);
-  BodyCheckResult result = checker.run();
+  BodyCheckResult initialized = initializer.initialize();
+
+  // Capture authored roots from the declaration prefix. Seed materialization
+  // appends private concrete symbols to package scope, but those receive their
+  // own roots below and must not masquerade as authored procedures.
+  std::vector<SymbolId> roots;
+  const std::vector<SymbolId> package_symbols =
+      package.symbols.scope(package.package_scope).symbols;
+  for (SymbolId id : package_symbols) {
+    const Symbol &symbol = package.symbols.symbol(id);
+    if (symbol.kind == SymbolKind::Procedure && symbol.type.is_valid()) {
+      append_body_root(roots, id);
+    }
+  }
+  for (const ParametricInstanceRecord &instance :
+       checked_package.parametric_instances) {
+    append_body_root(roots, instance.instance);
+  }
+  const std::size_t published_instances =
+      checked_package.parametric_instances.size();
+  BodyCheckResult result = check_body_roots(
+      sources,
+      loaded,
+      selections,
+      checked_package,
+      checked_constants,
+      target,
+      diagnostics,
+      std::move(roots),
+      published_instances,
+      std::move(initialized.program));
+  result.ok = initialized.ok && result.ok;
   if (result.ok &&
       !validate_target_types(checked_package.types, target, diagnostics)) {
     result.ok = false;
@@ -8300,7 +8458,9 @@ BodyCheckResult check_additional_package_instances(
     const TargetFacts &target,
     DiagnosticSink &diagnostics,
     const std::vector<ProcedureInstantiationSeed> &additional_seeds) {
-  BodyChecker checker(
+  const std::size_t previous_instance_count =
+      previous.package.parametric_instances.size();
+  BodyChecker initializer(
       sources,
       loaded,
       selections,
@@ -8310,7 +8470,28 @@ BodyCheckResult check_additional_package_instances(
       diagnostics,
       additional_seeds,
       std::move(previous.program));
-  BodyCheckResult added = checker.run_seeded_instances();
+  BodyCheckResult initialized = initializer.initialize();
+  std::vector<SymbolId> roots;
+  for (std::size_t index = previous_instance_count;
+       index < previous.package.parametric_instances.size();
+       ++index) {
+    append_body_root(
+        roots, previous.package.parametric_instances[index].instance);
+  }
+  const std::size_t published_instances =
+      previous.package.parametric_instances.size();
+  BodyCheckResult added = check_body_roots(
+      sources,
+      loaded,
+      selections,
+      previous.package,
+      previous.constants,
+      target,
+      diagnostics,
+      std::move(roots),
+      published_instances,
+      std::move(initialized.program));
+  added.ok = initialized.ok && added.ok;
   if (added.ok &&
       !validate_target_types(previous.package.types, target, diagnostics)) {
     added.ok = false;
@@ -8342,7 +8523,7 @@ BodyCheckResult check_compile_time_procedure_bodies(
   SemanticPackage checked_package = package;
   ConstantTable checked_constants = constants;
   const std::vector<ProcedureInstantiationSeed> no_seeds;
-  BodyChecker checker(
+  BodyChecker initializer(
       sources,
       loaded,
       selections,
@@ -8351,7 +8532,32 @@ BodyCheckResult check_compile_time_procedure_bodies(
       target,
       diagnostics,
       no_seeds);
-  BodyCheckResult result = checker.run_selected(procedures);
+  BodyCheckResult initialized = initializer.initialize();
+  std::vector<SymbolId> roots;
+  const std::vector<SymbolId> package_symbols =
+      checked_package.symbols.scope(checked_package.package_scope).symbols;
+  for (SymbolId id : package_symbols) {
+    if (std::find(procedures.begin(), procedures.end(), id) ==
+        procedures.end()) {
+      continue;
+    }
+    const Symbol &symbol = checked_package.symbols.symbol(id);
+    if (symbol.kind == SymbolKind::Procedure && symbol.type.is_valid()) {
+      append_body_root(roots, id);
+    }
+  }
+  BodyCheckResult result = check_body_roots(
+      sources,
+      loaded,
+      selections,
+      checked_package,
+      checked_constants,
+      target,
+      diagnostics,
+      std::move(roots),
+      checked_package.parametric_instances.size(),
+      std::move(initialized.program));
+  result.ok = initialized.ok && result.ok;
   if (result.ok &&
       !validate_target_types(checked_package.types, target, diagnostics)) {
     result.ok = false;

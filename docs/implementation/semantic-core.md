@@ -317,6 +317,22 @@ prefix and returns the enriched SemanticPackage, body constants, and HIR as one
 returned package; later effect, denial, interop, MIR, LLVM, metadata, and
 obligation passes consume the same body-owned tables.
 
+The sequential body oracle no longer retains one `BodyChecker` while walking a
+package and its growing instance vector. Seed materialization is separate, then
+each package-level procedure or concrete specialization is checked by a fresh
+checker over the published append-only body state. A body may publish new
+specialization records, but those records become later roots. Each concrete
+record retains its complete type/value substitution environment in addition to
+its public specialization key; this distinction matters for a nested generic
+procedure whose body uses compile-time bindings inherited from an enclosing
+specialization. Its concrete parameter scope retains the static-pack marker and
+element parameters, so the fresh checker reconstructs the complete active pack
+without consulting the discoverer's transient state. This is the sequential
+reconstruction boundary for procedure products, not the final isolated result:
+lexically nested procedure declarations are still checked recursively with
+their enclosing root, and the roots still publish into one package-wide
+`BodyCheckResult` until step 5 completes.
+
 The compiler schedules package bodies consumer-first because checking a caller
 can demand a concrete public generic body from its dependency. A portable
 procedure-demand packet contains canonical interface type graphs, exact value

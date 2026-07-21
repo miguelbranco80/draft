@@ -77,13 +77,18 @@ struct ProcedureInstantiationSeed {
     const TargetFacts &target,
     DiagnosticSink &diagnostics);
 
-// Checks every package procedure definition in stable declaration order.
-// Foreign declarations and standalone procedure types have no body and are
-// skipped. The declaration package and constants are immutable baselines.
-// Successfully evaluated lexical `::` values append only to the returned
-// result, so later agent obligations observe the same values as body
-// expressions without contaminating a reusable declaration graph. Errors in
-// one body do not prevent independent bodies from producing recoverable HIR.
+// Checks every package procedure definition in stable declaration order, then
+// every concrete specialization in deterministic discovery order. Each
+// package-level or concrete root receives a fresh checker reconstructed from
+// the retained body-owned semantic state; a root may discover more instance
+// records but never checks their bodies recursively through a hidden growing
+// loop. Lexically nested procedure declarations still belong to their enclosing
+// root during this migration. Foreign declarations and standalone procedure
+// types have no body and are skipped. The declaration package and constants are
+// immutable baselines. Successfully evaluated lexical `::` values append only
+// to the returned result, so later agent obligations observe the same values as
+// body expressions without contaminating a reusable declaration graph. Errors
+// in one body do not prevent independent bodies from producing recoverable HIR.
 [[nodiscard]] BodyCheckResult check_package_bodies(
     const SourceManager &sources,
     const LoadedPackage &loaded,
@@ -97,9 +102,11 @@ struct ProcedureInstantiationSeed {
 // Adds only newly requested concrete generic instances to a successful body
 // generation whose declaration source is unchanged. previous is consumed and
 // returned with stable existing SymbolIds/HIR IDs plus append-only rows for the
-// new instances. Callers must supply only demands absent from the generation's
-// recorded work key; removing a demand requires a clean check from the
-// declaration baseline so stale executable bodies cannot survive.
+// new instances. Every added specialization is reconstructed from its durable
+// instance record in a fresh checker, including substitutions inherited by a
+// nested generic procedure. Callers must supply only demands absent from the
+// generation's recorded work key; removing a demand requires a clean check from
+// the declaration baseline so stale executable bodies cannot survive.
 [[nodiscard]] BodyCheckResult check_additional_package_instances(
     const SourceManager &sources,
     const LoadedPackage &loaded,

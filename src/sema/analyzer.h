@@ -152,19 +152,47 @@ struct StaticArgumentPack {
   TypeId symbolic_element_type;
 };
 
+// ConcreteProcedureTypeSubstitution is one exact type environment binding
+// needed to check a concrete procedure specialization independently of the
+// BodyChecker invocation which discovered it. parameter is the unique
+// TypeParameter TypeId owned by the source declaration; replacement is a
+// concrete TypeId in the same body-owned TypeStore. Both IDs live for the
+// lifetime of the containing SemanticPackage and are never serialized or
+// transferred across package boundaries.
+struct ConcreteProcedureTypeSubstitution {
+  TypeId parameter;
+  TypeId replacement;
+};
+
+// ConcreteProcedureValueSubstitution is the value-parameter counterpart of
+// ConcreteProcedureTypeSubstitution. Value parameters are keyed by SymbolId
+// because two parameters may have the same declared integer type. value is an
+// exact checked compile-time integer; symbolic and deferred expressions are
+// resolved before a concrete instance can be created, so they are invalid in
+// this retained execution environment.
+struct ConcreteProcedureValueSubstitution {
+  SymbolId parameter;
+  ConstantValue value;
+};
+
 // Concrete procedure symbols are created during body checking, after the
 // declaration graph is stable. The ordered argument packet is the semantic
 // identity of the specialization; `arguments` holds named bracket parameters
-// and `pack_types` holds the ordered inferred runtime tail. Package-local
-// TypeIds never cross an interface without translation. externally_requested
-// distinguishes a body requested by a consumer package from an
-// implementation-private instance, so only the former becomes a concrete
-// interface effect row.
+// and `pack_types` holds the ordered inferred runtime tail. The two substitution
+// vectors are the complete concrete checking environment, including bindings
+// inherited by a nested template from an enclosing specialization. They let a
+// later procedure-body task reconstruct its checker state without retaining or
+// re-entering the checker which discovered the instance. Package-local TypeIds
+// never cross an interface without translation. externally_requested
+// distinguishes a body requested by a consumer package from an implementation-
+// private instance, so only the former becomes a concrete interface effect row.
 struct ParametricInstanceRecord {
   SymbolId source;
   SymbolId instance;
   std::vector<ParametricArgument> arguments;
   std::vector<TypeId> pack_types;
+  std::vector<ConcreteProcedureTypeSubstitution> type_substitutions;
+  std::vector<ConcreteProcedureValueSubstitution> value_substitutions;
   bool externally_requested = false;
 };
 
