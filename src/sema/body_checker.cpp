@@ -439,7 +439,10 @@ public:
     // snapshot so vector growth cannot invalidate the current site reference,
     // and so newly discovered body-level sites cannot accidentally join this
     // package-structural validation round.
-    const std::vector<SemanticSite> structural_sites = semantic_.sites;
+    const AppendOnlyTableView<SemanticSite> visible_sites =
+        semantic_.sites_for_read();
+    const std::vector<SemanticSite> structural_sites(
+        visible_sites.begin(), visible_sites.end());
     for (const SemanticSite &site : structural_sites) {
       if (site.kind != SemanticSiteKind::ConditionalDeclaration &&
           site.kind != SemanticSiteKind::ConditionalMember) {
@@ -8328,7 +8331,8 @@ private:
     active_dependent_when_depth_ = 0;
     active_pack_value_aliases_.clear();
     const SymbolId declaration_source = procedure_declaration_source(id);
-    for (const DeclarationDenial &denial : semantic_.declaration_denials) {
+    for (const DeclarationDenial &denial :
+         semantic_.declaration_denials_for_read()) {
       if (denial.declaration != declaration_source) continue;
       if (std::find(
               active_statement_denials_.begin(),
@@ -8455,8 +8459,9 @@ void append_body_root(
   prefix.imported_effect_count = package.imported_effects_for_read().size();
   prefix.imported_return_count = package.imported_returns_for_read().size();
   prefix.imported_write_count = package.imported_writes_for_read().size();
-  prefix.declaration_denial_count = package.declaration_denials.size();
-  prefix.site_count = package.sites.size();
+  prefix.declaration_denial_count =
+      package.declaration_denials_for_read().size();
+  prefix.site_count = package.sites_for_read().size();
   prefix.required_integer_expression_count =
       package.required_integer_expressions_for_read().size();
   prefix.deferred_element_count_count =
@@ -8467,15 +8472,6 @@ void append_body_root(
       package.deferred_type_applications_for_read().size();
   prefix.constant_count = constants.size();
   return prefix;
-}
-
-template <typename Value>
-[[nodiscard]] std::vector<Value> copy_body_suffix(
-    const std::vector<Value> &values,
-    std::size_t begin) {
-  assert(begin <= values.size());
-  return std::vector<Value>(
-      values.begin() + static_cast<std::ptrdiff_t>(begin), values.end());
 }
 
 template <typename Value>
@@ -8500,7 +8496,7 @@ void append_body_suffix(
   appended.types = package.types.appended_since(prefix.type_count);
   appended.symbols = package.symbols.appended_since(
       prefix.scope_count, prefix.symbol_count);
-  // These eighteen raw vectors already own only this task's suffix. Their
+  // These twenty raw vectors already own only this task's suffix. Their
   // canonical prefix is visible through AppendOnlyTableView and must not be
   // copied back into the append packet.
   appended.owned_scopes = package.owned_scopes;
@@ -8519,9 +8515,8 @@ void append_body_suffix(
   appended.imported_effects = package.imported_effects;
   appended.imported_returns = package.imported_returns;
   appended.imported_writes = package.imported_writes;
-  appended.declaration_denials = copy_body_suffix(
-      package.declaration_denials, prefix.declaration_denial_count);
-  appended.sites = copy_body_suffix(package.sites, prefix.site_count);
+  appended.declaration_denials = package.declaration_denials;
+  appended.sites = package.sites;
   appended.required_integer_expressions =
       package.required_integer_expressions;
   appended.deferred_element_counts = package.deferred_element_counts;

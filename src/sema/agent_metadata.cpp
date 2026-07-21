@@ -179,7 +179,7 @@ public:
       return result;
     }
 
-    for (const SemanticSite &site : package_.sites) {
+    for (const SemanticSite &site : package_.sites_for_read()) {
       const std::optional<AgentConstructKind> kind = agent_kind(site.kind);
       if (!kind.has_value()) continue;
       const SyntaxTree *tree = find_tree(site.syntax.file);

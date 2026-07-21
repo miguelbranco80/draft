@@ -26,7 +26,6 @@ SemanticPackage::SemanticPackage(
       symbols(base.symbols.fork_append_only()),
       package_scope(base.package_scope),
       runtime_context_type(base.runtime_context_type),
-      declaration_denials(base.declaration_denials), sites(base.sites),
       body_read_prefix_(&base) {
   assert(base.body_read_prefix_ == nullptr);
 }
@@ -224,6 +223,21 @@ SemanticPackage::deferred_type_applications_for_read() const {
       deferred_type_applications);
 }
 
+AppendOnlyTableView<DeclarationDenial>
+SemanticPackage::declaration_denials_for_read() const {
+  return AppendOnlyTableView<DeclarationDenial>(
+      body_read_prefix_ != nullptr
+          ? &body_read_prefix_->declaration_denials
+          : nullptr,
+      declaration_denials);
+}
+
+AppendOnlyTableView<SemanticSite> SemanticPackage::sites_for_read() const {
+  return AppendOnlyTableView<SemanticSite>(
+      body_read_prefix_ != nullptr ? &body_read_prefix_->sites : nullptr,
+      sites);
+}
+
 AggregateMember &SemanticPackage::aggregate_member_mut(std::size_t index) {
   if (body_read_prefix_ == nullptr) {
     assert(index < aggregate_members.size());
@@ -262,6 +276,18 @@ SemanticPackage::required_integer_expression_mut(std::size_t index) {
   assert(index >= prefix_size);
   assert(index - prefix_size < required_integer_expressions.size());
   return required_integer_expressions[index - prefix_size];
+}
+
+SemanticSite &SemanticPackage::semantic_site_mut(std::size_t index) {
+  if (body_read_prefix_ == nullptr) {
+    assert(index < sites.size());
+    return sites[index];
+  }
+
+  const std::size_t prefix_size = body_read_prefix_->sites.size();
+  assert(index >= prefix_size);
+  assert(index - prefix_size < sites.size());
+  return sites[index - prefix_size];
 }
 
 namespace {

@@ -218,7 +218,8 @@ public:
     const std::size_t initial_errors = diagnostics_.error_count();
     for (const HirProcedure &procedure : hir_.procedures()) {
       std::vector<ResolvedDenialSelector> active;
-      for (const DeclarationDenial &contract : package_.declaration_denials) {
+      for (const DeclarationDenial &contract :
+           package_.declaration_denials_for_read()) {
         if (contract.declaration == declaration_source(procedure.symbol)) {
           append_denial(contract.denial, file_scope(contract.denial.file), active);
         }

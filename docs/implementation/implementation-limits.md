@@ -45,14 +45,15 @@ Procedure HIR and semantic append packets are now owned by exact live body
 products. Type, symbol, and constant prefixes use read-only overlays, and
 declaration-closed semantic inputs are direct immutable views. Owned-scope,
 aggregate/enum, parametric, specialization, imported semantic, and
-dependent-type recipe records also use canonical-prefix and task-local-suffix
-views. Imported rows cover symbols, types, concrete procedures, outbound type
-requests, and effect/return/write contracts. Recipe rows cover required integer
-expressions and deferred element counts, value expressions, and type
-applications. Aggregate offset, procedure-specialization, and required-integer
-mutation are explicitly restricted to a task's local suffix. Semantic sites and
-declaration denials are the final copied side tables. Append IDs still require
-sequential exact-prefix publication rather than shared-wave remapping.
+dependent-type recipe, semantic-site, and declaration-denial records also use
+canonical-prefix and task-local-suffix views. Imported rows cover symbols,
+types, concrete procedures, outbound type requests, and effect/return/write
+contracts. Recipe rows cover required integer expressions and deferred element
+counts, value expressions, and type applications. Aggregate offset,
+procedure-specialization, required-integer, and semantic-site mutation are
+explicitly restricted to a task's local suffix. No retained semantic table is
+copied into a body task. Append IDs still require sequential exact-prefix
+publication rather than shared-wave remapping.
 Effect closure, denials, and MIR still consume a package-wide HIR compatibility
 projection. Those mechanisms are explicit remaining deletion work in the
 [semantic work graph implementation plan](semantic-work-graph-implementation-plan.md),

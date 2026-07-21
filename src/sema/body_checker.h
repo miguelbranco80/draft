@@ -185,12 +185,11 @@ struct ProcedureBodySemanticAppend {
 // static argument packs, and procedure/type specialization records expose the
 // same base followed by a task-owned suffix. Imported symbols, types, concrete
 // procedures, outbound type requests, and effect/return/write contracts use the
-// same boundary, as do required-integer and deferred dependent-type recipes.
-// Sites and declaration denials remain value snapshots until their final
-// product migration removes that transport. HIR is not an input: every task
-// starts one new local arena. work is the exact root, and next_instance
-// partitions already published concrete records from any suffix discovered by
-// this task.
+// same boundary, as do required-integer and deferred dependent-type recipes,
+// semantic sites, and declaration denials. No body-mutable table prefix is
+// copied into the task. HIR is not an input: every task starts one new local
+// arena. work is the exact root, and next_instance partitions already published
+// concrete records from any suffix discovered by this task.
 struct ProcedureBodyTaskInput {
   bool valid = false;
   std::size_t work_index = 0;

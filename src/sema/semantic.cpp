@@ -133,7 +133,7 @@ void append_imported_constant_bindings(
 // emits the ordinary precise unready diagnostic.
 [[nodiscard]] bool has_structural_synthesis_site(
     const SemanticPackage &package) {
-  for (const SemanticSite &site : package.sites) {
+  for (const SemanticSite &site : package.sites_for_read()) {
     if (site.kind == SemanticSiteKind::SynthesisDeclaration ||
         site.kind == SemanticSiteKind::SynthesisMember) {
       return true;
@@ -216,7 +216,8 @@ resolve_required_integer_expressions(
     if (tree == nullptr || !required.syntax.node.is_valid()) continue;
     std::optional<EvaluatedConstant> value;
     if (synthesis_mode == CompileTimeSynthesisMode::Discover) {
-      const std::size_t original_site_count = package.sites.size();
+      const std::size_t original_site_count =
+          package.sites_for_read().size();
       CompileTimeExpressionDiscoveryResult discovery =
           discover_typed_constant_expression(
               sources,
@@ -236,9 +237,9 @@ resolve_required_integer_expressions(
         // whose type is incomplete. Procedure-body sites already carry their
         // own procedure anchor and are not changed here.
         for (std::size_t site_index = original_site_count;
-             site_index < package.sites.size();
+             site_index < package.sites_for_read().size();
              ++site_index) {
-          SemanticSite &site = package.sites[site_index];
+          SemanticSite &site = package.semantic_site_mut(site_index);
           if (site.kind == SemanticSiteKind::SynthesisExpression &&
               !site.anchor.is_valid() && required.anchor.is_valid()) {
             site.anchor = required.anchor;
@@ -469,7 +470,7 @@ private:
   // same canonical tables and re-enter this operation; existing rows are found
   // by stable SymbolId or SyntaxReference and never duplicated.
   [[nodiscard]] bool append_visible_products() {
-    for (const SemanticSite &site : discovery_.package.sites) {
+    for (const SemanticSite &site : discovery_.package.sites_for_read()) {
       if (site.kind != SemanticSiteKind::ConditionalDeclaration &&
           site.kind != SemanticSiteKind::ConditionalMember) {
         continue;
@@ -514,7 +515,8 @@ private:
           members.kind = DirectProductKind::TypeMembers;
           members.root = symbol;
           members.type = declaration.type;
-          for (const SemanticSite &site : discovery_.package.sites) {
+          for (const SemanticSite &site :
+               discovery_.package.sites_for_read()) {
             if (site.kind != SemanticSiteKind::ConditionalMember ||
                 site.anchor != symbol) {
               continue;
@@ -766,7 +768,7 @@ private:
   // discovery.
   [[nodiscard]] const SemanticSite *find_condition_site(
       SyntaxReference syntax) const {
-    for (const SemanticSite &site : discovery_.package.sites) {
+    for (const SemanticSite &site : discovery_.package.sites_for_read()) {
       if (site.syntax == syntax) return &site;
     }
     return nullptr;

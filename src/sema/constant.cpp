@@ -370,11 +370,14 @@ public:
     // one condition. Snapshot the original count and copy each row so vector
     // growth cannot invalidate the active site reference; appended synthesis
     // rows are outputs, not new conditionals for this interpreter pass.
-    const std::size_t original_site_count = semantic_.sites.size();
+    const std::size_t original_site_count =
+        semantic_.sites_for_read().size();
+    const AppendOnlyTableView<SemanticSite> sites =
+        semantic_.sites_for_read();
     for (std::size_t site_index = 0;
          site_index < original_site_count;
          ++site_index) {
-      const SemanticSite site = semantic_.sites[site_index];
+      const SemanticSite site = sites[site_index];
       if ((site.kind != SemanticSiteKind::ConditionalDeclaration &&
            site.kind != SemanticSiteKind::ConditionalMember &&
            site.kind != SemanticSiteKind::ConditionalStatement) ||
@@ -573,13 +576,17 @@ private:
     }
 
     const SyntaxReference syntax{tree.file(), expression};
-    for (SemanticSite &site : semantic_.sites) {
+    const AppendOnlyTableView<SemanticSite> sites =
+        semantic_.sites_for_read();
+    for (std::size_t site_index = 0;
+         site_index < sites.size(); ++site_index) {
+      const SemanticSite &site = sites[site_index];
       if (site.kind != SemanticSiteKind::SynthesisExpression ||
           site.syntax != syntax) {
         continue;
       }
       if (!site.expected_type.is_valid() && expected.is_valid()) {
-        site.expected_type = expected;
+        semantic_.semantic_site_mut(site_index).expected_type = expected;
       } else if (site.expected_type.is_valid() && expected.is_valid() &&
                  site.expected_type != expected) {
         return fail(

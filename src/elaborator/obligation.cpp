@@ -1582,7 +1582,7 @@ imported_package_context(
     const SemanticPackage &package,
     SyntaxReference denial,
     ScopeId fallback) {
-  for (const SemanticSite &site : package.sites) {
+  for (const SemanticSite &site : package.sites_for_read()) {
     if (is_denial_site(site.kind) && site.syntax == denial) return site.scope;
   }
   return fallback;

@@ -598,7 +598,7 @@ private:
       ScopeId scope,
       SymbolId owner) {
     const SyntaxReference syntax{tree.file(), node};
-    for (const SemanticSite &site : semantic_.sites) {
+    for (const SemanticSite &site : semantic_.sites_for_read()) {
       if (site.kind == kind && site.syntax == syntax && site.anchor == owner) {
         return;
       }
@@ -4303,7 +4303,8 @@ private:
       return std::nullopt;
     }
 
-    const std::size_t original_site_count = semantic_.sites.size();
+    const std::size_t original_site_count =
+        semantic_.sites_for_read().size();
     IntegerExpressionProductAttempt attempt =
         evaluate_integer_expression_product(
             sources_, loaded_, semantic_, *target_, tree, expression_id, scope,
@@ -4335,8 +4336,8 @@ private:
       // it to only the sites appended by this evaluation, matching the direct
       // required-integer discovery contract without a second package round.
       for (std::size_t site_index = original_site_count;
-           site_index < semantic_.sites.size(); ++site_index) {
-        SemanticSite &site = semantic_.sites[site_index];
+           site_index < semantic_.sites_for_read().size(); ++site_index) {
+        SemanticSite &site = semantic_.semantic_site_mut(site_index);
         if (site.kind == SemanticSiteKind::SynthesisExpression &&
             !site.anchor.is_valid()) {
           site.anchor = product_root_;

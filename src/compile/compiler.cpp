@@ -309,7 +309,7 @@ void hash_field(Sha256 &hash, std::string_view value) {
 
 [[nodiscard]] bool has_semantic_site(
     const SemanticPackage &package, SemanticSiteKind kind) {
-  for (const SemanticSite &site : package.sites) {
+  for (const SemanticSite &site : package.sites_for_read()) {
     if (site.kind == kind) return true;
   }
   return false;
@@ -1624,7 +1624,7 @@ has_symbol_product(std::span<const SemanticProductId> products,
       // A member-name task may inspect only the selected branch of each
       // reachable `when`. Initial sites were discovered without declaring
       // members, so their exact condition rows can precede the first attempt.
-      for (const SemanticSite &site : semantic.sites) {
+      for (const SemanticSite &site : semantic.sites_for_read()) {
         if (site.kind != SemanticSiteKind::ConditionalMember ||
             site.anchor != symbol) {
           continue;
@@ -1751,7 +1751,8 @@ has_symbol_product(std::span<const SemanticProductId> products,
     const CompiledPackage &package, DiagnosticSink &diagnostics) {
   PackageSemanticProducts &products =
       result.semantic_products.packages[owner.value];
-  for (const SemanticSite &site : package.declaration_discovery.package.sites) {
+  for (const SemanticSite &site :
+       package.declaration_discovery.package.sites_for_read()) {
     if (site.kind != SemanticSiteKind::ConditionalDeclaration &&
         site.kind != SemanticSiteKind::ConditionalMember) {
       continue;
@@ -1821,7 +1822,7 @@ package_has_unindexed_declaration_work(const CompileWorkspaceResult &result,
       return true;
     }
   }
-  for (const SemanticSite &site : semantic.sites) {
+  for (const SemanticSite &site : semantic.sites_for_read()) {
     if (site.kind != SemanticSiteKind::ConditionalDeclaration &&
         site.kind != SemanticSiteKind::ConditionalMember) {
       continue;
@@ -2179,7 +2180,7 @@ struct GenericTypeDemandAppendResult {
 // across branch materialization.
 [[nodiscard]] const SemanticSite *
 find_semantic_site(const SemanticPackage &package, SyntaxReference syntax) {
-  for (const SemanticSite &site : package.sites) {
+  for (const SemanticSite &site : package.sites_for_read()) {
     if (site.syntax == syntax)
       return &site;
   }

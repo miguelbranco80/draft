@@ -724,9 +724,9 @@ struct SemanticPackage {
 
   // Creates the semantic view used by one procedure task. Declaration-only
   // tables are read through this package without copying, TypeStore and
-  // SymbolTable become append-only overlays, and migrated body-mutable tables
-  // expose the source prefix followed by their task-local suffix. Other
-  // body-mutable tables remain snapshots until their own product migration.
+  // SymbolTable become append-only overlays, and every body-mutable table
+  // exposes the source prefix followed by its task-local suffix. No table
+  // prefix is copied into the task package.
   // The source package must outlive the returned view and may not itself be a
   // task view.
   [[nodiscard]] SemanticPackage fork_body_task_view() const;
@@ -782,6 +782,9 @@ struct SemanticPackage {
   deferred_value_expressions_for_read() const;
   [[nodiscard]] AppendOnlyTableView<DeferredTypeApplication>
   deferred_type_applications_for_read() const;
+  [[nodiscard]] AppendOnlyTableView<DeclarationDenial>
+  declaration_denials_for_read() const;
+  [[nodiscard]] AppendOnlyTableView<SemanticSite> sites_for_read() const;
 
   // Returns the aggregate-member row at one global table index for controlled
   // layout publication. A canonical package may update any row whose layout is
@@ -802,6 +805,13 @@ struct SemanticPackage {
   // body dispatch; a body task may update only its local recipe suffix.
   [[nodiscard]] RequiredIntegerExpression &
   required_integer_expression_mut(std::size_t index);
+
+  // Site identity is append-only, but the phase which creates a row may fill
+  // its expected type or semantic anchor before publication. Later whole-body
+  // analysis may enrich canonical rows with loop ranges. A procedure task may
+  // mutate only a site in its local suffix; retained metadata is immutable
+  // input even when it names the same source syntax.
+  [[nodiscard]] SemanticSite &semantic_site_mut(std::size_t index);
 
   std::string short_name;
   // Workspace identity is present for package-aware analysis and empty in
@@ -847,7 +857,7 @@ private:
   SemanticPackage(BodyTaskViewTag, const SemanticPackage &base);
 
   // A task view is non-owning and cannot outlive PackageBodyWorkState. The
-  // pointer supplies only declaration-closed inputs; body-produced rows remain
+  // pointer supplies every retained read-only prefix; body-produced rows remain
   // owned by this package until their append packet is extracted.
   const SemanticPackage *body_read_prefix_ = nullptr;
 };

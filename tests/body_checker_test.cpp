@@ -301,6 +301,26 @@ second :: proc() -> i64 {
                  .expected_type ==
              draft::TypeId{1});
 
+  // Agent sites and declaration denials are also immutable retained input.
+  // A site created by this task may be refined through its global combined
+  // index without exposing mutable access to the canonical prefix.
+  draft::SemanticPackage metadata_prefix;
+  metadata_prefix.declaration_denials.push_back({});
+  metadata_prefix.sites.push_back({});
+  draft::SemanticPackage metadata_view =
+      metadata_prefix.fork_body_task_view();
+  EXPECT(state, metadata_view.declaration_denials.empty());
+  EXPECT(state, metadata_view.declaration_denials_for_read().size() == 1);
+  EXPECT(state, metadata_view.sites.empty());
+  EXPECT(state, metadata_view.sites_for_read().size() == 1);
+  metadata_view.declaration_denials.push_back({});
+  metadata_view.sites.push_back({});
+  metadata_view.semantic_site_mut(1).expected_type = draft::TypeId{1};
+  EXPECT(state,
+         !metadata_prefix.sites.front().expected_type.is_valid());
+  EXPECT(state,
+         metadata_view.sites_for_read()[1].expected_type == draft::TypeId{1});
+
   draft::DiagnosticSink first_diagnostics;
   draft::ProcedureBodyTaskInput first_input =
       draft::take_next_procedure_body_work(work, first_diagnostics);

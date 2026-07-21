@@ -358,16 +358,16 @@ for immutable package constants and task-local lexical constants.
 Declaration-closed file scopes, imports, imported documentation, native
 bindings, and package conditional regions are direct immutable views and are no
 longer represented in the body append packet. Owned-scope, aggregate/enum,
-parametric, specialization, imported semantic, and dependent-type recipe tables
-use read-only-prefix/local-suffix views as well: a task's raw vectors own only
-its new rows. Imported rows in this boundary are symbols, types, concrete
-procedures, outbound type requests, and effect/return/write contracts. Recipe
-rows describe required integer expressions and deferred element counts, value
-expressions, and type applications. Aggregate layout publication,
-procedure-specialization promotion, and required-integer refinement use global
-combined-table indices but map mutable access explicitly to the task suffix;
-prefix rows remain immutable. Only semantic sites and declaration denials
-remain value snapshots. The worker returns only a
+parametric, specialization, imported semantic, dependent-type recipe,
+semantic-site, and declaration-denial tables use read-only-prefix/local-suffix
+views as well: a task's raw vectors own only its new rows. Imported rows in this
+boundary are symbols, types, concrete procedures, outbound type requests, and
+effect/return/write contracts. Recipe rows describe required integer expressions
+and deferred element counts, value expressions, and type applications.
+Aggregate layout publication, procedure-specialization promotion,
+required-integer refinement, and site enrichment use global combined-table
+indices but map mutable access explicitly to the task suffix; prefix rows remain
+immutable. The worker returns only a
 `ProcedureBodySemanticAppend`, one procedure-local HIR arena, diagnostics, and
 discovered roots; it never aliases or returns a replacement for
 `PackageBodyWorkState`. The coordinator validates the work index, root symbol,
@@ -375,11 +375,10 @@ and complete prefix, then appends type/symbol rows and every semantic side table
 in product order before exposing discovered roots.
 
 The result boundary is therefore procedure-local, but execution is not yet the
-final parallel implementation. Constructing the private view still copies the
-site and declaration-denial prefixes, and suffix IDs are valid only while one
-task is in flight. Read-only-prefix/local-suffix views for those final tables
-plus deterministic remapping and canonical interning will permit every
-independent root in one frozen wave to check concurrently.
+final parallel implementation. No retained semantic table is copied into the
+private view, but suffix IDs are valid only while one task is in flight.
+Deterministic remapping and canonical interning will permit every independent
+root in one frozen wave to check concurrently.
 
 Named constant products carry both `ConstantValue` and checked `TypeId`.
 Package-interface finalization installs that type payload into its retained
