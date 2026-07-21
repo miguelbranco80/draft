@@ -522,12 +522,16 @@ derived only after every component is closed and are the summaries consumed by
 lexical denial checking.
 
 Direct and closed procedure contracts have distinct immutable payload types.
-Discovery reads the selected procedure-owned HIR arenas directly; each
-HIR-local expression ID remains paired with its owning procedure, including in
-the call-site table consumed by denials. Denial traversal reads the same selected
-procedure products and never reconstructs a package HIR. The compiler retains
-the direct payload separately from the closed SCC result so downstream code
-cannot accidentally treat a local fact as transitive.
+Each direct row is discovered independently against the same bottom source-row
+domain and immutable native/imported terminal contracts; no earlier source body
+can enrich a later direct product. Flow/effect closure receives those rows plus
+the exact selected procedure-owned HIR arenas and owns every derived return,
+write, finite-target, and transitive-effect fact. Each HIR-local expression ID
+remains paired with its owning procedure, including in the call-site table
+consumed by denials. Denial traversal reads the same selected procedure products
+and never reconstructs a package HIR. The compiler retains the direct payload
+separately from the closed SCC result so downstream code cannot accidentally
+treat a local fact as transitive.
 
 Final imported effect/return/write contracts are a separate immutable closure
 input built from already-closed dependency interfaces. Imported procedures are

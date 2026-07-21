@@ -258,148 +258,53 @@ public:
         provider_audits_(provider_audits) {}
 
   [[nodiscard]] DirectEffectSummaryResult collect_direct() {
-    // Install every local row before discovering bodies. Returned procedure
-    // values can then refer forward or recursively without source order
-    // changing their meaning.
-    std::vector<SourceProcedure> source_procedures;
-    for (const HirProgram *program : programs_) {
-      for (const HirProcedure &procedure : program->procedures()) {
-        DirectProcedureEffectSummary summary;
-        summary.procedure = procedure.symbol;
-        direct_.procedures.push_back(std::move(summary));
-        source_procedures.push_back({program, &procedure});
-      }
+    const std::vector<SourceProcedure> source_procedures =
+        selected_source_procedures();
+    initialize_direct_rows(source_procedures);
+
+    // Every source row is discovered against the same bottom source prefix and
+    // immutable terminal contracts. Results therefore have no source-order
+    // dependency and can be computed by independent DirectEffectSummary tasks.
+    DirectEffectSummaryResult result;
+    result.procedures.reserve(source_procedures.size());
+    for (const SourceProcedure &source : source_procedures) {
+      result.procedures.push_back(discover_source_procedure(source));
     }
-    source_procedure_count_ = source_procedures.size();
+    return result;
+  }
 
-    // Foreign declarations have no HIR body, but a lexical denial may enclose
-    // a call to one directly. Give every foreign procedure its own composed
-    // row so that both ordinary callers and the denial walker consult exactly
-    // the same target/artifact-bound contract. Procedure-valued parameters are
-    // seeded as symbolic flow slots; composing the row at a real call site then
-    // substitutes the actual callback just like a Draft procedure does.
-    for (const NativeBinding &binding : package_.native_bindings) {
-      if (binding.kind != NativeBindingKind::ForeignImport) continue;
-      ProcedureEffectSummary composed;
-      composed.procedure = binding.symbol;
-      const Symbol &symbol = package_.symbols.symbol(binding.symbol);
-      std::vector<ProcedureArgumentSummary> arguments;
-      if (symbol.type.is_valid()) {
-        const Type &type = package_.types.type(symbol.type);
-        if (type.kind == TypeKind::Procedure && !type.members.empty()) {
-          arguments.resize(type.members.size() - 1);
-          for (std::size_t index = 0; index < arguments.size(); ++index) {
-            const Type &parameter_type =
-                package_.types.type(type.members[index]);
-            const bool follow_pointer =
-                parameter_type.kind == TypeKind::Pointer ||
-                parameter_type.kind == TypeKind::MultiPointer;
-            for (const std::vector<std::string> &path :
-                 procedure_paths(type.members[index], follow_pointer)) {
-              ProcedureValueSummary value;
-              value.flow_slots.push_back({
-                  static_cast<std::uint32_t>(index), path, false});
-              arguments[index].fields.push_back({path, std::move(value)});
-            }
-          }
-        }
-      }
-      [[maybe_unused]] const bool added =
-          compose_native_call(composed, binding.symbol, binding, arguments);
-      DirectProcedureEffectSummary direct;
-      direct.procedure = binding.symbol;
-      direct.direct_effects = std::move(composed.effects);
-      direct_.procedures.push_back(std::move(direct));
-    }
-
-    // Final dependency contracts are already closed in their owning packages.
-    // Install them as immutable leaf rows before replaying local bodies so a
-    // returned imported callback or imported pointer write uses the same direct
-    // lookup as a local callee. These rows have no consumer-local call edges;
-    // FlowCall effects inside their portable contracts are substituted only at
-    // an actual local call site.
-    for (const ImportedProcedureContractStatus &status :
-         imported_.procedures) {
-      DirectProcedureEffectSummary direct;
-      direct.procedure = status.proxy;
-      if (!status.has_effect_summary) {
-        direct.direct_effects.push_back({
-            EffectKind::UnknownCall,
-            status.proxy,
-            "imported callee has no audited summary",
-            {},
-            {},
-            {}});
-      } else {
-        for (const ImportedEffect &effect : imported_.effects) {
-          if (effect.procedure_proxy == status.proxy) {
-            add_effect(direct.direct_effects, semantic_effect(effect));
-          }
-        }
-      }
-      for (const ImportedProcedureReturn &returned : imported_.returns) {
-        if (returned.procedure_proxy != status.proxy) continue;
-        ProcedureValueSummary value;
-        value.unknown = returned.unknown;
-        for (const ImportedReturnFlowSlot &slot : returned.flow_slots) {
-          value.flow_slots.push_back(
-              {slot.parameter, slot.path, slot.context});
-        }
-        for (const ImportedEffect &effect : returned.contract_effects) {
-          add_effect(value.contract_effects, semantic_effect(effect));
-        }
-        direct.return_values.push_back({returned.path, std::move(value)});
-      }
-      for (const ImportedProcedureWrite &write : imported_.writes) {
-        if (write.procedure_proxy != status.proxy) continue;
-        ProcedureValueSummary value;
-        value.unknown = write.value_unknown;
-        for (const ImportedReturnFlowSlot &slot : write.value_flow_slots) {
-          value.flow_slots.push_back(
-              {slot.parameter, slot.path, slot.context});
-        }
-        for (const ImportedEffect &effect : write.value_contract_effects) {
-          add_effect(value.contract_effects, semantic_effect(effect));
-        }
-        direct.field_writes.push_back({
-            write.parameter,
-            write.indirection,
-            write.path,
-            std::move(value)});
-      }
-      direct_.procedures.push_back(std::move(direct));
-    }
-
-    // Discover every source row once to expose all syntactically named call
-    // edges. A procedure return which has not been discovered yet is lattice
-    // bottom during this phase, not an arbitrary unknown callback. Treating it
-    // as unknown would make source order part of the semantic result.
-    for (std::size_t index = 0; index < source_procedures.size(); ++index) {
-      direct_.procedures[index] =
-          discover_source_procedure(source_procedures[index]);
-    }
-
-    // Close returned procedure values and caller-visible pointer writes over
-    // the concrete call graph. A newly resolved finite callback can add an
-    // edge, so closure rebuilds SCCs only when adjacency grows. It never
-    // replays an unrelated stable component merely because another component
-    // changed.
-    close_source_flow(source_procedures);
-
-    // Once the finite-target lattice is closed, a missing local return path is
-    // no longer temporary bottom. Publish it as unknown and close that fact
-    // through the same dependency-first SCCs. Unknown contributes no concrete
-    // edge, so this phase cannot invalidate the graph just established.
-    local_returns_complete_ = true;
-    close_source_flow(source_procedures);
-
-    return std::move(direct_);
+  [[nodiscard]] DirectProcedureEffectSummary collect_direct_at(
+      std::size_t selected_index) {
+    const std::vector<SourceProcedure> source_procedures =
+        selected_source_procedures();
+    assert(selected_index < source_procedures.size());
+    initialize_direct_rows(source_procedures);
+    return discover_source_procedure(source_procedures[selected_index]);
   }
 
   [[nodiscard]] EffectSummaryResult close(
       const DirectEffectSummaryResult &direct) {
-    closed_.procedures.reserve(direct.procedures.size());
-    for (const DirectProcedureEffectSummary &source : direct.procedures) {
+    const std::vector<SourceProcedure> source_procedures =
+        selected_source_procedures();
+    initialize_direct_rows(source_procedures);
+    assert(direct.procedures.size() == source_procedure_count_);
+    for (std::size_t index = 0; index < source_procedure_count_; ++index) {
+      assert(
+          direct.procedures[index].procedure ==
+          direct_.procedures[index].procedure);
+      direct_.procedures[index] = direct.procedures[index];
+    }
+
+    // Returned procedure values and caller-visible pointer writes are closed
+    // only after the independent body-local products exist. Concrete target
+    // discovery may refine the graph; each refinement rebuilds SCCs before the
+    // affected components continue.
+    close_source_flow(source_procedures);
+    local_returns_complete_ = true;
+    close_source_flow(source_procedures);
+
+    closed_.procedures.reserve(direct_.procedures.size());
+    for (const DirectProcedureEffectSummary &source : direct_.procedures) {
       ProcedureEffectSummary summary;
       summary.procedure = source.procedure;
       summary.return_values = source.return_values;
@@ -413,7 +318,7 @@ public:
     // callees to callers. An acyclic singleton executes once. A recursive SCC
     // repeats only its own rows; each changing pass adds one member of a finite
     // source-derived effect set, so no arbitrary iteration bound is required.
-    closed_.components = build_effect_components(direct.procedures);
+    closed_.components = build_effect_components(direct_.procedures);
     for (const ClosedEffectComponent &component : closed_.components) {
       bool changed = false;
       do {
@@ -422,7 +327,7 @@ public:
           ProcedureEffectSummary &summary =
               closed_.procedures[procedure_index];
           const DirectProcedureEffectSummary &source =
-              direct.procedures[procedure_index];
+              direct_.procedures[procedure_index];
           for (const ProcedureInvocationSummary &invocation :
                source.direct_invocations) {
             changed = compose_named_call(
@@ -441,7 +346,7 @@ public:
     // The denial walker consumes these exact rows, so a typed field selected at
     // one call site cannot degrade back into an unknown edge during its second
     // lexical-policy check.
-    for (const DirectProcedureEffectSummary &summary : direct.procedures) {
+    for (const DirectProcedureEffectSummary &summary : direct_.procedures) {
       for (const ProcedureInvocationSummary &invocation :
            summary.direct_invocations) {
         ProcedureEffectSummary site;
@@ -471,6 +376,118 @@ private:
     const HirProgram *hir = nullptr;
     const HirProcedure *procedure = nullptr;
   };
+
+  [[nodiscard]] std::vector<SourceProcedure> selected_source_procedures() const {
+    std::vector<SourceProcedure> result;
+    for (const HirProgram *program : programs_) {
+      for (const HirProcedure &procedure : program->procedures()) {
+        result.push_back({program, &procedure});
+      }
+    }
+    return result;
+  }
+
+  // Installs the lookup domain shared by independent direct discovery and SCC
+  // closure. Source rows begin as bottom placeholders; native and imported rows
+  // are immutable terminal contracts. No HIR body is visited here.
+  void initialize_direct_rows(
+      const std::vector<SourceProcedure> &source_procedures) {
+    assert(direct_.procedures.empty());
+    source_procedure_count_ = source_procedures.size();
+    for (const SourceProcedure &source : source_procedures) {
+      DirectProcedureEffectSummary summary;
+      summary.procedure = source.procedure->symbol;
+      direct_.procedures.push_back(std::move(summary));
+    }
+
+    // Foreign declarations have no HIR body, but a lexical denial may enclose
+    // a call to one directly. Give every foreign procedure its own composed
+    // row so that both ordinary callers and the denial walker consult exactly
+    // the same target/artifact-bound contract. Procedure-valued parameters are
+    // seeded as symbolic flow slots; composing the row at a real call site then
+    // substitutes the actual callback just like a Draft procedure does.
+    for (const NativeBinding &binding : package_.native_bindings) {
+      if (binding.kind != NativeBindingKind::ForeignImport) continue;
+      ProcedureEffectSummary composed;
+      composed.procedure = binding.symbol;
+      const Symbol &symbol = package_.symbols.symbol(binding.symbol);
+      std::vector<ProcedureArgumentSummary> arguments;
+      if (symbol.type.is_valid()) {
+        const Type &type = package_.types.type(symbol.type);
+        if (type.kind == TypeKind::Procedure && !type.members.empty()) {
+          arguments.resize(type.members.size() - 1);
+          for (std::size_t index = 0; index < arguments.size(); ++index) {
+            const Type &parameter_type = package_.types.type(type.members[index]);
+            const bool follow_pointer =
+                parameter_type.kind == TypeKind::Pointer ||
+                parameter_type.kind == TypeKind::MultiPointer;
+            for (const std::vector<std::string> &path :
+                 procedure_paths(type.members[index], follow_pointer)) {
+              ProcedureValueSummary value;
+              value.flow_slots.push_back(
+                  {static_cast<std::uint32_t>(index), path, false});
+              arguments[index].fields.push_back({path, std::move(value)});
+            }
+          }
+        }
+      }
+      [[maybe_unused]] const bool added =
+          compose_native_call(composed, binding.symbol, binding, arguments);
+      DirectProcedureEffectSummary direct;
+      direct.procedure = binding.symbol;
+      direct.direct_effects = std::move(composed.effects);
+      direct_.procedures.push_back(std::move(direct));
+    }
+
+    // Final dependency contracts are already closed in their owning packages.
+    // Install them as immutable leaf rows so direct source discovery and later
+    // SCC closure perform the same exact return/write lookup.
+    for (const ImportedProcedureContractStatus &status : imported_.procedures) {
+      DirectProcedureEffectSummary direct;
+      direct.procedure = status.proxy;
+      if (!status.has_effect_summary) {
+        direct.direct_effects.push_back({
+            EffectKind::UnknownCall,
+            status.proxy,
+            "imported callee has no audited summary",
+            {},
+            {},
+            {}});
+      } else {
+        for (const ImportedEffect &effect : imported_.effects) {
+          if (effect.procedure_proxy == status.proxy) {
+            add_effect(direct.direct_effects, semantic_effect(effect));
+          }
+        }
+      }
+      for (const ImportedProcedureReturn &returned : imported_.returns) {
+        if (returned.procedure_proxy != status.proxy) continue;
+        ProcedureValueSummary value;
+        value.unknown = returned.unknown;
+        for (const ImportedReturnFlowSlot &slot : returned.flow_slots) {
+          value.flow_slots.push_back({slot.parameter, slot.path, slot.context});
+        }
+        for (const ImportedEffect &effect : returned.contract_effects) {
+          add_effect(value.contract_effects, semantic_effect(effect));
+        }
+        direct.return_values.push_back({returned.path, std::move(value)});
+      }
+      for (const ImportedProcedureWrite &write : imported_.writes) {
+        if (write.procedure_proxy != status.proxy) continue;
+        ProcedureValueSummary value;
+        value.unknown = write.value_unknown;
+        for (const ImportedReturnFlowSlot &slot : write.value_flow_slots) {
+          value.flow_slots.push_back({slot.parameter, slot.path, slot.context});
+        }
+        for (const ImportedEffect &effect : write.value_contract_effects) {
+          add_effect(value.contract_effects, semantic_effect(effect));
+        }
+        direct.field_writes.push_back(
+            {write.parameter, write.indirection, write.path, std::move(value)});
+      }
+      direct_.procedures.push_back(std::move(direct));
+    }
+  }
 
   struct StoragePath {
     SymbolId symbol;
@@ -2168,6 +2185,31 @@ DirectEffectSummaryResult collect_direct_procedure_effects(
   return collector.collect_direct();
 }
 
+DirectProcedureEffectSummary collect_direct_procedure_effect(
+    const SemanticPackage &package,
+    std::span<const ProcedureBodyHirResult> procedures,
+    std::span<const std::size_t> selected_indices,
+    std::size_t selected_position,
+    const ImportedProcedureContracts &imported,
+    const TargetProfile *target,
+    std::span<const ForeignProviderAudit> provider_audits) {
+  std::vector<const HirProgram *> programs;
+  programs.reserve(selected_indices.size());
+  std::size_t previous = 0;
+  bool has_previous = false;
+  for (std::size_t index : selected_indices) {
+    assert(index < procedures.size());
+    assert(!has_previous || previous < index);
+    previous = index;
+    has_previous = true;
+    programs.push_back(&procedures[index].program);
+  }
+  assert(selected_position < programs.size());
+  EffectCollector collector(
+      package, programs, imported, target, provider_audits);
+  return collector.collect_direct_at(selected_position);
+}
+
 DirectEffectSummaryResult collect_direct_procedure_effects(
     const SemanticPackage &package,
     std::span<const ProcedureBodyHirResult> procedures,
@@ -2186,14 +2228,47 @@ DirectEffectSummaryResult collect_direct_procedure_effects(
 
 EffectSummaryResult close_procedure_effects(
     const SemanticPackage &package,
+    std::span<const ProcedureBodyHirResult> procedures,
+    std::span<const std::size_t> selected_indices,
     const DirectEffectSummaryResult &direct,
     const ImportedProcedureContracts &imported,
     const TargetProfile *target,
     std::span<const ForeignProviderAudit> provider_audits) {
-  const std::span<const HirProgram *const> no_programs;
+  std::vector<const HirProgram *> programs;
+  programs.reserve(selected_indices.size());
+  std::size_t previous = 0;
+  bool has_previous = false;
+  for (std::size_t index : selected_indices) {
+    assert(index < procedures.size());
+    assert(!has_previous || previous < index);
+    previous = index;
+    has_previous = true;
+    programs.push_back(&procedures[index].program);
+  }
   EffectCollector collector(
-      package, no_programs, imported, target, provider_audits);
+      package, programs, imported, target, provider_audits);
   return collector.close(direct);
+}
+
+EffectSummaryResult close_procedure_effects(
+    const SemanticPackage &package,
+    std::span<const ProcedureBodyHirResult> procedures,
+    const DirectEffectSummaryResult &direct,
+    const ImportedProcedureContracts &imported,
+    const TargetProfile *target,
+    std::span<const ForeignProviderAudit> provider_audits) {
+  std::vector<std::size_t> selected_indices(procedures.size());
+  for (std::size_t index = 0; index < selected_indices.size(); ++index) {
+    selected_indices[index] = index;
+  }
+  return close_procedure_effects(
+      package,
+      procedures,
+      selected_indices,
+      direct,
+      imported,
+      target,
+      provider_audits);
 }
 
 std::string_view effect_kind_name(EffectKind kind) {

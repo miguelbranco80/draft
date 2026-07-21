@@ -52,7 +52,12 @@ draft::EffectSummaryResult close_effects(
           target,
           provider_audits);
   return draft::close_procedure_effects(
-      bodies.package, direct, imported, target, provider_audits);
+      bodies.package,
+      bodies.procedures,
+      direct,
+      imported,
+      target,
+      provider_audits);
 }
 
 bool has_effect(
@@ -218,8 +223,25 @@ danger :: proc() {
   const draft::DirectEffectSummaryResult direct =
       draft::collect_direct_procedure_effects(
           bodies.package, bodies.procedures, imported, &target);
+  std::vector<std::size_t> selected_indices(bodies.procedures.size());
+  for (std::size_t index = 0; index < selected_indices.size(); ++index) {
+    selected_indices[index] = index;
+  }
+  EXPECT(state, direct.procedures.size() == selected_indices.size());
+  for (std::size_t position = 0;
+       position < direct.procedures.size(); ++position) {
+    const draft::DirectProcedureEffectSummary independent =
+        draft::collect_direct_procedure_effect(
+            bodies.package,
+            bodies.procedures,
+            selected_indices,
+            position,
+            imported,
+            &target);
+    EXPECT(state, independent == direct.procedures[position]);
+  }
   const draft::EffectSummaryResult effects = draft::close_procedure_effects(
-      bodies.package, direct, imported, &target);
+      bodies.package, bodies.procedures, direct, imported, &target);
   if (diagnostics.has_errors()) {
     std::cerr << draft::render_diagnostics(sources, diagnostics);
   }
@@ -250,7 +272,7 @@ danger :: proc() {
       std::find(
           caller_direct->direct_calls.begin(),
           caller_direct->direct_calls.end(),
-          *danger) != caller_direct->direct_calls.end());
+          *danger) == caller_direct->direct_calls.end());
 
   const std::optional<std::size_t> caller_row = effect_row(effects, *caller);
   const std::optional<std::size_t> factory_row = effect_row(effects, *factory);
@@ -337,7 +359,8 @@ flow_caller :: proc() {
       draft::collect_direct_procedure_effects(
           bodies.package, bodies.procedures, imported);
   const draft::EffectSummaryResult effects =
-      draft::close_procedure_effects(bodies.package, direct, imported);
+      draft::close_procedure_effects(
+          bodies.package, bodies.procedures, direct, imported);
   const draft::AgentMetadataResult empty_metadata;
   const draft::PackageInterface package_interface = draft::build_package_interface(
       {"workspace", "effects"},
@@ -454,7 +477,8 @@ pub forward :: proc(text: string) -> [^]u8 {
       draft::collect_direct_procedure_effects(
           bodies.package, bodies.procedures, imported);
   const draft::EffectSummaryResult effects =
-      draft::close_procedure_effects(bodies.package, direct, imported);
+      draft::close_procedure_effects(
+          bodies.package, bodies.procedures, direct, imported);
   const draft::AgentMetadataResult empty_metadata;
   const draft::PackageInterface package_interface = draft::build_package_interface(
       {"workspace", "raw_string_effects"},

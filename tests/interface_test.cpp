@@ -819,6 +819,7 @@ pub make_assert :: proc() -> proc() {
   const draft::EffectSummaryResult dependency_effects =
       draft::close_procedure_effects(
           dependency_bodies.package,
+          dependency_bodies.procedures,
           dependency_direct_effects,
           dependency_imported_contracts,
           &target);
@@ -982,6 +983,7 @@ caller :: proc() {
   const draft::EffectSummaryResult consumer_effects =
       draft::close_procedure_effects(
           consumer_bodies.package,
+          consumer_bodies.procedures,
           consumer_direct_effects,
           consumer_imported_contracts,
           &target);

@@ -5377,6 +5377,8 @@ bool continue_compiled_workspace_semantics(
         options.foreign_provider_audits);
     package.effects = close_procedure_effects(
         package.bodies.package,
+        package.bodies.procedures,
+        package.selected_procedure_work,
         package.direct_effects,
         package.imported_contracts,
         &options.target,

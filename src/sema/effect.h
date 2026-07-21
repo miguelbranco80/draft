@@ -211,14 +211,14 @@ struct ClosedEffectComponent {
 };
 
 // One independently discovered direct procedure contract. Every field is
-// local to this body before transitive call/value-flow effect propagation.
+// local to this body before transitive call/value-flow closure.
 // direct_calls are concrete consumer-local SymbolIds with a known direct row
 // and form the SCC/condensation graph; imported/native rows are terminal leaves.
 // Invocation rows retain exact source-ordered argument value sets so closure
 // can substitute callback contracts without revisiting HIR. Return and
-// pointer-write rows are the closed local procedure-flow transfer contract
-// discovered before effect SCC closure; they remain unchanged while effects
-// propagate.
+// pointer-write rows contain only body-local facts at this boundary. Closed SCC
+// products may derive additional targets, arguments, returns, and writes without
+// mutating this direct product.
 struct DirectProcedureEffectSummary {
   SymbolId procedure;
   std::vector<SemanticEffect> direct_effects;
@@ -277,6 +277,18 @@ struct EffectSummaryResult {
     const TargetProfile *target = nullptr,
     std::span<const ForeignProviderAudit> provider_audits = {});
 
+// Worker form of direct discovery. selected_position addresses selected_indices
+// rather than procedures, and the returned row depends only on that exact body,
+// the selected source symbol domain, and immutable native/imported contracts.
+[[nodiscard]] DirectProcedureEffectSummary collect_direct_procedure_effect(
+    const SemanticPackage &package,
+    std::span<const ProcedureBodyHirResult> procedures,
+    std::span<const std::size_t> selected_indices,
+    std::size_t selected_position,
+    const ImportedProcedureContracts &imported,
+    const TargetProfile *target = nullptr,
+    std::span<const ForeignProviderAudit> provider_audits = {});
+
 // Standalone subsystem form which selects every supplied procedure product.
 [[nodiscard]] DirectEffectSummaryResult collect_direct_procedure_effects(
     const SemanticPackage &package,
@@ -285,10 +297,23 @@ struct EffectSummaryResult {
     const TargetProfile *target = nullptr,
     std::span<const ForeignProviderAudit> provider_audits = {});
 
-// Closes one immutable direct-summary set through explicit SCC products. The
-// returned call-site rows are keyed by procedure plus HIR-local expression ID.
+// Closes one immutable direct-summary set through explicit flow/effect SCCs.
+// selected_indices must be the exact body projection used for direct discovery.
+// The returned call-site rows are keyed by procedure plus HIR-local expression
+// ID.
 [[nodiscard]] EffectSummaryResult close_procedure_effects(
     const SemanticPackage &package,
+    std::span<const ProcedureBodyHirResult> procedures,
+    std::span<const std::size_t> selected_indices,
+    const DirectEffectSummaryResult &direct,
+    const ImportedProcedureContracts &imported,
+    const TargetProfile *target = nullptr,
+    std::span<const ForeignProviderAudit> provider_audits = {});
+
+// Standalone subsystem form which closes every supplied procedure product.
+[[nodiscard]] EffectSummaryResult close_procedure_effects(
+    const SemanticPackage &package,
+    std::span<const ProcedureBodyHirResult> procedures,
     const DirectEffectSummaryResult &direct,
     const ImportedProcedureContracts &imported,
     const TargetProfile *target = nullptr,

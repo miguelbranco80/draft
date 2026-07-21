@@ -73,6 +73,7 @@ struct DenialSource {
         provider_audits);
     effects = draft::close_procedure_effects(
         bodies.package,
+        bodies.procedures,
         direct_effects,
         imported_contracts,
         &target,

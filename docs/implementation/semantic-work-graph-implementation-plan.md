@@ -267,8 +267,11 @@ gate.
    targets refine the concrete graph monotonically; only a changed component is
    revisited, and SCCs are rebuilt only when a new edge appears. A final pass
    distinguishes a genuinely absent return contract from temporary lattice
-   bottom. The step remains incomplete only until direct/SCC/denial payloads are
-   attached to their live semantic product rows.
+   bottom. Direct rows are now genuinely body-local products: every row is
+   discoverable independently against one shared bottom source domain, while
+   all derived return/write facts belong to later flow closure. The step remains
+   incomplete only until direct/SCC/denial payloads are attached to their live
+   semantic product rows.
 
 8. **Per-procedure MIR.** Lower each checked concrete procedure into a private
    MIR result without mutating semantic type tables. Publish package static data
