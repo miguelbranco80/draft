@@ -18,8 +18,9 @@
 // template and instance bodies are live dynamic products: authored roots are
 // appended before checking, and nested or locally instantiated roots are
 // appended between frozen waves with exact discovery edges. Their current
-// worker-owned payload is a private full successor snapshot which the
-// coordinator adopts through one sequential package-owned body state;
+// worker-owned payload is one local HIR arena plus semantic append packet. A
+// bounded executor checks a frozen ready wave against one shared prefix, then
+// the coordinator remaps and publishes results in canonical product order;
 // generic demands still propagate consumer-first, and completed effects still
 // publish dependency-first. Later implementation slices isolate those task
 // payloads and move the remaining package loops into the same graph. Within an
@@ -39,6 +40,7 @@
 
 #include "base/sha256.h"
 #include "base/timing.h"
+#include "base/work_graph.h"
 #include "elaborator/generated_source.h"
 #include "elaborator/resolution_overlay.h"
 #include "elaborator/resolution_store.h"
@@ -3465,14 +3467,59 @@ package_condition_needs_materialization(const SemanticPackage &package,
 // PackageBodyWorkState::ok prevents effects/lowering from consuming it. Graph
 // Error is reserved here for scheduler/publication failure which produced no
 // usable body result. This distinction lets independent and lexically nested
-// authored bodies continue checking after an earlier source diagnostic. Task
-// invocation remains sequential here; the inputs and result packets already
-// have the ownership and remapping boundary required for bounded parallel work.
+// authored bodies continue checking after an earlier source diagnostic.
+//
+// ProcedureBodyWaveExecution is the complete borrowing context for one
+// synchronous bounded run. The four phase inputs are read-only; one WorkTaskId
+// moves exactly one input and writes exactly one result/outcome slot. Vectors
+// are sized before workers start and are not resized until after join. Source
+// errors remain successful scheduler operations because the recoverable task
+// result and diagnostic sink are both valid products.
+struct ProcedureBodyWaveExecution {
+  const SourceManager *sources = nullptr;
+  const LoadedPackage *loaded = nullptr;
+  const ConditionalSelections *selections = nullptr;
+  const TargetFacts *target = nullptr;
+  std::vector<ProcedureBodyTaskInput> *inputs = nullptr;
+  std::vector<ProcedureBodyTaskResult> *results = nullptr;
+  std::vector<SemanticProductOutcome> *outcomes = nullptr;
+};
+
+[[nodiscard]] bool execute_procedure_body_task(
+    void *opaque_context,
+    WorkTaskId task,
+    std::string &failure) {
+  auto &context =
+      *static_cast<ProcedureBodyWaveExecution *>(opaque_context);
+  const std::size_t index = static_cast<std::size_t>(task);
+  if (context.sources == nullptr || context.loaded == nullptr ||
+      context.selections == nullptr || context.target == nullptr ||
+      context.inputs == nullptr || context.results == nullptr ||
+      context.outcomes == nullptr || index >= context.inputs->size() ||
+      index >= context.results->size() || index >= context.outcomes->size()) {
+    failure = "procedure body worker received an invalid task slot";
+    return false;
+  }
+
+  SemanticProductOutcome &outcome = (*context.outcomes)[index];
+  (*context.results)[index] = check_procedure_body_work(
+      *context.sources,
+      *context.loaded,
+      *context.selections,
+      *context.target,
+      std::move((*context.inputs)[index]),
+      outcome.diagnostics);
+  outcome.kind = SemanticProductOutcomeKind::Complete;
+  return true;
+}
+
 [[nodiscard]] bool run_package_body_products(
     const SourceManager &sources,
     const LoadedPackage &loaded,
     const ConditionalSelections &selections,
     const TargetFacts &target,
+    std::size_t worker_count,
+    TimingRecorder *timings,
     PackageId owner,
     PackageBodyWorkState &state,
     CompileWorkspaceResult &result,
@@ -3546,10 +3593,8 @@ package_condition_needs_materialization(const SemanticPackage &package,
       return false;
     }
 
-    std::vector<SemanticProductOutcome> outcomes;
-    std::vector<ProcedureBodyTaskResult> tasks;
-    outcomes.reserve(wave.products.size());
-    tasks.reserve(wave.products.size());
+    std::vector<SemanticProductOutcome> outcomes(wave.products.size());
+    std::vector<ProcedureBodyTaskResult> tasks(wave.products.size());
     std::vector<ProcedureBodyTaskInput> inputs =
         take_ready_procedure_body_wave(state, diagnostics);
     if (inputs.size() != wave.products.size()) {
@@ -3567,16 +3612,45 @@ package_condition_needs_materialization(const SemanticPackage &package,
             "procedure body wave is not in canonical work order");
         return false;
       }
-      SemanticProductOutcome outcome;
-      tasks.push_back(check_procedure_body_work(
-          sources,
-          loaded,
-          selections,
-          target,
-          std::move(inputs[index]),
-          outcome.diagnostics));
-      outcome.kind = SemanticProductOutcomeKind::Complete;
-      outcomes.push_back(std::move(outcome));
+    }
+
+    // Every row in this transient graph is already ready. WorkGraph supplies
+    // only the bounded execution/join mechanism; the semantic graph remains
+    // authoritative for product identity and dynamic dependencies.
+    WorkGraph execution_graph;
+    execution_graph.tasks.resize(wave.products.size());
+    ProcedureBodyWaveExecution execution{
+        &sources,
+        &loaded,
+        &selections,
+        &target,
+        &inputs,
+        &tasks,
+        &outcomes,
+    };
+    const WorkGraphRunResult scheduled = run_work_graph(
+        execution_graph,
+        WorkGraphRunOptions{worker_count},
+        execute_procedure_body_task,
+        &execution);
+    if (timings != nullptr) {
+      timings->add_counter("procedure body ready waves", 1);
+      timings->add_counter(
+          "procedure body tasks scheduled", wave.products.size());
+      timings->add_counter(
+          "procedure body worker slots", scheduled.workers_used);
+    }
+    if (!scheduled.ok) {
+      std::string failure = "procedure body worker scheduling failed";
+      for (std::size_t index = 0; index < scheduled.tasks.size(); ++index) {
+        if (scheduled.tasks[index].state == WorkTaskState::Failed) {
+          failure += " at task " + std::to_string(index) + ": " +
+              scheduled.tasks[index].failure;
+          break;
+        }
+      }
+      diagnostics.error(SourceRange::invalid(), std::move(failure));
+      return false;
     }
     if (!publish_procedure_body_wave(
             state, std::move(tasks), diagnostics)) {
@@ -3986,6 +4060,8 @@ bool continue_compiled_workspace_semantics(
                 workspace_package.loaded,
                 package.declarations.selections,
                 options.target.facts,
+                options.semantic_worker_count,
+                options.timings,
                 owner,
                 body_work,
                 result,
@@ -4042,6 +4118,8 @@ bool continue_compiled_workspace_semantics(
                 workspace_package.loaded,
                 package.declarations.selections,
                 options.target.facts,
+                options.semantic_worker_count,
+                options.timings,
                 owner,
                 body_work,
                 result,

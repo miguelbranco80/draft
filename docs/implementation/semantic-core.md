@@ -321,7 +321,7 @@ projection rewrites HIR-local IDs and concatenates the arenas once for later
 package-wide effect, denial, interop, MIR, LLVM, metadata, and obligation
 passes.
 
-The sequential body oracle no longer retains one `BodyChecker` while walking a
+The body coordinator no longer retains one `BodyChecker` while walking a
 package and its growing instance vector. Seed materialization is separate, then
 each package-level procedure or concrete specialization is checked by a fresh
 checker over the published append-only body state. A body may publish new
@@ -331,7 +331,7 @@ its public specialization key; this distinction matters for a nested generic
 procedure whose body uses compile-time bindings inherited from an enclosing
 specialization. Its concrete parameter scope retains the static-pack marker and
 element parameters, so the fresh checker reconstructs the complete active pack
-without consulting the discoverer's transient state. This is the sequential
+without consulting the discoverer's transient state. This is the independent
 reconstruction boundary for procedure products. Lexically nested declarations
 also publish later roots instead of recursively checking their bodies. A nested
 root snapshots the enclosing concrete environment, including the pack marker
@@ -379,9 +379,10 @@ the same frozen prefix. Suffix IDs remain private to each task. After the whole
 wave joins, the publisher translates them into the grown canonical tables,
 interns equal structural types, and merges equal procedure and nominal type
 specializations without retaining duplicate roots, scopes, parameters,
-members, or nominal TypeIds. Worker invocation remains sequential in the
-bootstrap driver; the remaining parallelization step changes execution only,
-not result ownership or publication semantics.
+members, or nominal TypeIds. The closed-wave executor invokes those isolated
+workers with a bounded count; task-indexed results and diagnostics are consumed
+only after join. Qualification compares one-worker and four-worker product
+graphs, diagnostics, semantic table sizes, and final LLVM bytes.
 
 Named constant products carry both `ConstantValue` and checked `TypeId`.
 Package-interface finalization installs that type payload into its retained

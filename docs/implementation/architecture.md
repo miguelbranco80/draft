@@ -183,9 +183,15 @@ Constant products now carry their checked static type beside the immutable
 value, and the package-interface barrier installs that payload explicitly.
 
 Every currently ready root is now dispatched from one shared prefix and all
-results join before deterministic publication. Worker invocation remains
-sequential in the bootstrap compiler; bounded parallel execution is the next
-scheduler step, not a remaining semantic ownership or ID-stability problem.
+workers run through the bounded closed-wave executor. Results join before
+deterministic publication. Worker count is scheduling policy only: one-worker
+and four-worker qualification compares product graphs, diagnostics, semantic
+table sizes, and final LLVM bytes. Dynamic discovery still occurs only between
+waves, never by concurrent mutation of the semantic graph. A one-worker wave
+runs directly on the calling thread. Supported POSIX hosts create larger pools
+with an explicit eight-MiB stack per worker, matching the syntax-recursion
+budget available to the main compiler thread instead of inheriting macOS's
+smaller pthread default.
 
 The transitional body work key is the declaration generation plus the exact
 canonical set of concrete generic procedures demanded by consumer packages.

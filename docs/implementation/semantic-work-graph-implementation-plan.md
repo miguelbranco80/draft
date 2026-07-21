@@ -18,8 +18,9 @@ gate.
 1. **Dynamic product graph — complete.** The command-local
    `SemanticProductId`, product kind/state rows, dependency edges, frozen ready
    waves, task-local outcomes, and deterministic publication operation now have
-   a sequential scheduling oracle. The existing closed `WorkGraph` remains only
-   for already frozen provider and native batches.
+   a sequential scheduling oracle. The existing closed `WorkGraph` remains a
+   bounded executor for already frozen provider, procedure-body, and native
+   batches; it does not own dynamic semantic identity or discovery.
 
 2. **Command inputs and package barriers — complete.** The selected target,
    source generations, parsed files, package imports, package name completeness,
@@ -175,10 +176,12 @@ gate.
    explicit local-only mutable operations. All roots in one ready wave now read
    one frozen prefix. Publication translates task-private suffix IDs, interns
    structural types, and canonicalizes equal procedure and nominal type
-   specializations in stable work order after the wave joins. Run those workers
-   through the bounded executor and qualify worker-count determinism. The
-   consumer-first external-demand loop, body work key, and extension/rebuild
-   paths then remain as the deletion boundary for this step.
+   specializations in stable work order after the wave joins. The isolated
+   workers run through the bounded executor, and public compiler tests qualify
+   identical product graphs, diagnostic order, semantic table sizes, and LLVM
+   bytes with one and four workers. The consumer-first external-demand loop,
+   body work key, and extension/rebuild paths remain as the deletion boundary
+   for this step.
 
 6. **Synthesis as an explicit wait state.** A body or declaration task may
    report its exact ready `...` set after producing the typed constraint needed

@@ -17,6 +17,7 @@
 #include <string_view>
 #include <system_error>
 #include <utility>
+#include <vector>
 
 namespace {
 
@@ -208,6 +209,205 @@ void test_procedure_bodies_are_dynamic_semantic_products(TestState &state) {
                               *outer_product) != row.dependencies.end());
     }
   }
+}
+
+// Parallel body execution is a scheduling choice, never a semantic input. This
+// program makes four sibling callers independently discover the same generic
+// procedure and nominal type instances, then compares the complete product
+// graph and final LLVM bytes against the one-worker oracle. Timing counters
+// prove the test actually selected more than one worker slot.
+void test_procedure_body_worker_counts_are_deterministic(TestState &state) {
+  draft::test::TemporaryDirectory temporary_directory{
+      "draft-bootstrap-body-worker-determinism-test"};
+  const std::filesystem::path &root = temporary_directory.path();
+  std::error_code error;
+  std::filesystem::create_directories(root / "app", error);
+  EXPECT(state, !error);
+  if (error) return;
+
+  std::ofstream app(root / "app" / "package.draft", std::ios::binary);
+  app << "package app\n"
+         "Box[T: type] :: struct {\n"
+         "    value: T,\n"
+         "}\n"
+         "identity[T: type] :: proc(value: T) -> T {\n"
+         "    return value\n"
+         "}\n"
+         "first :: proc() -> i64 {\n"
+         "    box := Box[i64]{value = 10}\n"
+         "    return identity[i64](box.value)\n"
+         "}\n"
+         "second :: proc() -> i64 {\n"
+         "    box := Box[i64]{value = 20}\n"
+         "    return identity[i64](box.value)\n"
+         "}\n"
+         "third :: proc() -> i64 {\n"
+         "    box := Box[i64]{value = 30}\n"
+         "    return identity[i64](box.value)\n"
+         "}\n"
+         "fourth :: proc() -> i64 {\n"
+         "    box := Box[i64]{value = 40}\n"
+         "    return identity[i64](box.value)\n"
+         "}\n"
+         "main :: proc() -> int {\n"
+         "    return cast[int](first() + second() + third() + fourth())\n"
+         "}\n";
+  app.close();
+  EXPECT(state, app.good());
+
+  draft::SourceManager sequential_sources;
+  draft::DiagnosticSink sequential_diagnostics;
+  draft::TimingRecorder sequential_timings(draft::TimingOutput::Summary);
+  draft::CompileWorkspaceOptions sequential_options;
+  sequential_options.target = draft::make_aarch64_macos_profile();
+  sequential_options.workspace.workspace_directory = root.string();
+  sequential_options.lower_mir = true;
+  sequential_options.emit_llvm = true;
+  sequential_options.semantic_worker_count = 1;
+  sequential_options.timings = &sequential_timings;
+  const draft::CompileWorkspaceResult sequential = draft::compile_workspace(
+      sequential_sources,
+      (root / "app").string(),
+      sequential_options,
+      sequential_diagnostics);
+
+  draft::SourceManager parallel_sources;
+  draft::DiagnosticSink parallel_diagnostics;
+  draft::TimingRecorder parallel_timings(draft::TimingOutput::Summary);
+  draft::CompileWorkspaceOptions parallel_options = sequential_options;
+  parallel_options.semantic_worker_count = 4;
+  parallel_options.timings = &parallel_timings;
+  const draft::CompileWorkspaceResult parallel = draft::compile_workspace(
+      parallel_sources,
+      (root / "app").string(),
+      parallel_options,
+      parallel_diagnostics);
+
+  if (sequential_diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(
+        sequential_sources, sequential_diagnostics);
+  }
+  if (parallel_diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(
+        parallel_sources, parallel_diagnostics);
+  }
+  EXPECT(state, sequential.ok);
+  EXPECT(state, parallel.ok);
+  EXPECT(state,
+         draft::render_diagnostics(
+             sequential_sources, sequential_diagnostics) ==
+             draft::render_diagnostics(
+                 parallel_sources, parallel_diagnostics));
+  EXPECT(state,
+         sequential.semantic_graph.products.size() ==
+             parallel.semantic_graph.products.size());
+  const std::size_t compared_products = std::min(
+      sequential.semantic_graph.products.size(),
+      parallel.semantic_graph.products.size());
+  for (std::size_t index = 0; index < compared_products; ++index) {
+    const draft::SemanticProduct &left =
+        sequential.semantic_graph.products[index];
+    const draft::SemanticProduct &right =
+        parallel.semantic_graph.products[index];
+    EXPECT(state, left.kind == right.kind);
+    EXPECT(state, left.state == right.state);
+    EXPECT(state, left.dependencies == right.dependencies);
+    EXPECT(state, left.failure == right.failure);
+  }
+  EXPECT(state,
+         sequential.semantic_products.procedure_by_product ==
+             parallel.semantic_products.procedure_by_product);
+  EXPECT(state, sequential.packages.size() == 1);
+  EXPECT(state, parallel.packages.size() == 1);
+  if (sequential.packages.size() == 1 && parallel.packages.size() == 1 &&
+      sequential.packages.front().has_value() &&
+      parallel.packages.front().has_value()) {
+    const draft::CompiledPackage &left = *sequential.packages.front();
+    const draft::CompiledPackage &right = *parallel.packages.front();
+    EXPECT(state, left.llvm.text == right.llvm.text);
+    EXPECT(state,
+           left.bodies.checked_procedures == right.bodies.checked_procedures);
+    EXPECT(state,
+           left.bodies.package.types.size() ==
+               right.bodies.package.types.size());
+    EXPECT(state,
+           left.bodies.package.symbols.symbol_count() ==
+               right.bodies.package.symbols.symbol_count());
+    EXPECT(state, left.bodies.package.parametric_instances.size() == 1);
+    EXPECT(state, right.bodies.package.parametric_instances.size() == 1);
+    EXPECT(state, left.bodies.package.parametric_type_instances.size() == 1);
+    EXPECT(state, right.bodies.package.parametric_type_instances.size() == 1);
+  }
+  const std::string sequential_report = sequential_timings.render();
+  const std::string parallel_report = parallel_timings.render();
+  EXPECT(state, sequential_report.find("procedure body worker slots: 2") !=
+                    std::string::npos);
+  EXPECT(state, parallel_report.find("procedure body worker slots: 5") !=
+                    std::string::npos);
+}
+
+// Source diagnostics are stored in task-indexed sinks and replayed only after
+// join. Comparing complete rendered output catches a completion-order leak that
+// an error-count assertion would miss.
+void test_parallel_body_diagnostics_are_canonical(TestState &state) {
+  draft::test::TemporaryDirectory temporary_directory{
+      "draft-bootstrap-body-diagnostic-determinism-test"};
+  const std::filesystem::path &root = temporary_directory.path();
+  std::error_code error;
+  std::filesystem::create_directories(root / "app", error);
+  EXPECT(state, !error);
+  if (error) return;
+
+  std::ofstream app(root / "app" / "package.draft", std::ios::binary);
+  app << "package app\n"
+         "bad_first :: proc() {\n"
+         "    value: i64 = true\n"
+         "}\n"
+         "bad_second :: proc() {\n"
+         "    value: bool = 2\n"
+         "}\n"
+         "bad_third :: proc() {\n"
+         "    value: ^i64 = 3\n"
+         "}\n"
+         "bad_fourth :: proc() {\n"
+         "    value: string = false\n"
+         "}\n"
+         "main :: proc() {\n"
+         "}\n";
+  app.close();
+  EXPECT(state, app.good());
+
+  draft::SourceManager sequential_sources;
+  draft::DiagnosticSink sequential_diagnostics;
+  draft::CompileWorkspaceOptions sequential_options;
+  sequential_options.target = draft::make_aarch64_macos_profile();
+  sequential_options.workspace.workspace_directory = root.string();
+  sequential_options.semantic_worker_count = 1;
+  const draft::CompileWorkspaceResult sequential = draft::compile_workspace(
+      sequential_sources,
+      (root / "app").string(),
+      sequential_options,
+      sequential_diagnostics);
+
+  draft::SourceManager parallel_sources;
+  draft::DiagnosticSink parallel_diagnostics;
+  draft::CompileWorkspaceOptions parallel_options = sequential_options;
+  parallel_options.semantic_worker_count = 4;
+  const draft::CompileWorkspaceResult parallel = draft::compile_workspace(
+      parallel_sources,
+      (root / "app").string(),
+      parallel_options,
+      parallel_diagnostics);
+
+  EXPECT(state, !sequential.ok);
+  EXPECT(state, !parallel.ok);
+  EXPECT(state, sequential_diagnostics.error_count() == 4);
+  EXPECT(state, parallel_diagnostics.error_count() == 4);
+  EXPECT(state,
+         draft::render_diagnostics(
+             sequential_sources, sequential_diagnostics) ==
+             draft::render_diagnostics(
+                 parallel_sources, parallel_diagnostics));
 }
 
 // A diagnosed body still owns recoverable HIR, so its product completes while
@@ -3044,6 +3244,8 @@ int main() {
   TestState state;
   test_procedure_demand_sets_are_canonical_and_exact(state);
   test_procedure_bodies_are_dynamic_semantic_products(state);
+  test_procedure_body_worker_counts_are_deterministic(state);
+  test_parallel_body_diagnostics_are_canonical(state);
   test_invalid_unused_body_products_do_not_stop_the_wave(state);
   test_named_constants_are_semantic_products(state);
   test_conditional_members_extend_the_semantic_graph(state);

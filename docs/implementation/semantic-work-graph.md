@@ -141,12 +141,12 @@ products; procedure workers publish isolated immutable bodies; effects and
 denials close through explicit SCCs; MIR is produced per concrete procedure;
 and deterministic parallel scheduling is qualified at multiple worker counts.
 
-The existing package-wide semantic tables, sequential body mutation,
+The existing package-wide semantic tables, body work-key retention,
 declaration fixed-point reconstruction, package-wide HIR/MIR passes, and closed
 immutable work-graph executor are migration constraints, not parts of the final
-design. The executor may remain useful for already frozen provider and native
-ready sets, but the semantic coordinator must support deterministic dynamic
-discovery.
+design. The executor remains useful for already frozen provider, procedure-body,
+and native ready sets, but the semantic coordinator owns deterministic dynamic
+discovery and publication between those runs.
 
 The intentionally rejected endpoints are equally important: no node per
 expression, no universal incremental-query engine, no callback or future maze,

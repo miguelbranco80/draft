@@ -2,13 +2,15 @@
 //
 // See work_graph.h for the public ownership and determinism contract. This file
 // owns only per-run scheduling state: canonical reverse edges, dependency
-// counters, a smallest-ID ready heap, worker threads, and synchronization. All
-// state dies after the synchronous run and no result is cached across compiler
-// commands.
+// counters, a smallest-ID ready heap, bounded worker loops, and synchronization.
+// A one-worker run executes the same loop on the calling thread to avoid paying
+// thread creation and join overhead for the common one-task wave. All state dies
+// after the synchronous run and no result is cached across compiler commands.
 
 #include "base/work_graph.h"
 
 #include <algorithm>
+#include <cassert>
 #include <condition_variable>
 #include <cstddef>
 #include <functional>
@@ -20,8 +22,36 @@
 #include <utility>
 #include <vector>
 
+#if !defined(_WIN32)
+#include <pthread.h>
+#endif
+
 namespace draft {
 namespace {
+
+#if !defined(_WIN32)
+
+// Apple creates ordinary pthreads with a substantially smaller stack than the
+// process main thread. Compiler tasks legitimately recurse over authored syntax
+// trees, so using std::thread's platform default made a large expression safe
+// in a one-worker run but capable of crossing a worker's guard page. Eight MiB
+// matches the ordinary main-thread budget on the supported POSIX hosts without
+// making stack size depend on semantic input or worker completion order.
+constexpr std::size_t kPosixWorkerStackBytes = 8U * 1024U * 1024U;
+
+struct PosixWorkerStart {
+  const std::function<void()> *operation = nullptr;
+};
+
+void *run_posix_worker(void *opaque) {
+  const auto *start = static_cast<const PosixWorkerStart *>(opaque);
+  assert(start != nullptr);
+  assert(start->operation != nullptr);
+  (*start->operation)();
+  return nullptr;
+}
+
+#endif
 
 // Builds reverse rows in ascending consumer order. Iterating tasks by stable ID
 // means push_back already produces canonical rows; no hash table or post-sort is
@@ -245,12 +275,71 @@ WorkGraphRunResult run_work_graph(
     }
   };
 
-  std::vector<std::thread> workers;
-  workers.reserve(worker_count);
-  for (std::size_t worker_index = 0; worker_index < worker_count; ++worker_index) {
-    workers.emplace_back(worker);
+  if (worker_count == 1) {
+    // The scheduling state is identical to the threaded path. Running the loop
+    // directly is an execution optimization only and preserves the same task
+    // states, failure propagation, and workers_used evidence.
+    worker();
+  } else {
+#if defined(_WIN32)
+    std::vector<std::thread> workers;
+    workers.reserve(worker_count);
+    for (std::size_t worker_index = 0;
+         worker_index < worker_count;
+         ++worker_index) {
+      workers.emplace_back(worker);
+    }
+    for (std::thread &thread : workers) thread.join();
+#else
+    // pthread_attr_setstacksize is the one platform operation intentionally
+    // kept at this low-level executor boundary. Semantic callers remain fully
+    // portable and cannot vary the stack budget. No worker starts with a
+    // pointer to temporary task data: start and worker_operation live until all
+    // pthreads below have joined.
+    const std::function<void()> worker_operation = worker;
+    PosixWorkerStart start{&worker_operation};
+    pthread_attr_t attributes;
+    const int initialized = pthread_attr_init(&attributes);
+    const int stack_configured = initialized == 0
+        ? pthread_attr_setstacksize(&attributes, kPosixWorkerStackBytes)
+        : initialized;
+    std::vector<pthread_t> posix_workers;
+    bool launch_failed = stack_configured != 0;
+    if (!launch_failed) {
+      posix_workers.reserve(worker_count);
+      for (std::size_t worker_index = 0;
+           worker_index < worker_count;
+           ++worker_index) {
+        pthread_t thread{};
+        if (pthread_create(
+                &thread,
+                &attributes,
+                run_posix_worker,
+                &start) != 0) {
+          launch_failed = true;
+          break;
+        }
+        posix_workers.push_back(thread);
+      }
+    }
+    if (initialized == 0) (void)pthread_attr_destroy(&attributes);
+
+    // A partial pool can still drain the complete graph. If no pthread started,
+    // use the caller loop so all task-owned operations reach a terminal state
+    // before reporting the launch failure; callers never observe a half-running
+    // graph or live thread after this synchronous function returns.
+    result.workers_used = posix_workers.empty() ? 1 : posix_workers.size();
+    if (posix_workers.empty()) worker();
+    for (pthread_t thread : posix_workers) (void)pthread_join(thread, nullptr);
+    if (launch_failed) {
+      result.tasks.front().state = WorkTaskState::Failed;
+      result.tasks.front().failure =
+          "cannot start requested work graph worker pool";
+      result.ok = false;
+      return result;
+    }
+#endif
   }
-  for (std::thread &thread : workers) thread.join();
 
   result.ok = std::all_of(
       result.tasks.begin(),

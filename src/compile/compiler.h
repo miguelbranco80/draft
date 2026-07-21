@@ -96,6 +96,12 @@ struct CompileWorkspaceOptions {
   // semantic configuration, resolved-program identity, or emitted artifacts.
   // The caller must keep it alive through this synchronous compilation.
   TimingRecorder *timings = nullptr;
+  // Bounds independent semantic work in one frozen ready wave. Zero selects
+  // host hardware concurrency with a one-worker fallback; the executor caps it
+  // to the wave size. This is scheduling policy only and must not alter semantic
+  // identity, diagnostics, HIR, MIR, or emitted bytes. Procedure bodies are the
+  // first semantic product kind to use the bound.
+  std::size_t semantic_worker_count = 0;
 };
 
 // Exact package assembly bytes are copied out of SourceManager when a package
