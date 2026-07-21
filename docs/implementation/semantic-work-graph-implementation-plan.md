@@ -126,12 +126,13 @@ gate.
    including substitutions inherited by nested templates, while its concrete
    procedure scope retains static-pack bindings and element parameters. A later
    root can therefore be checked without the transient checker which discovered
-   it. The remaining split is substantive: nested procedure declarations still
-   check recursively inside their enclosing root, roots still append lexical
-   symbols/constants/HIR into one package-wide result, and compiler body work is
-   not yet represented by live `ProcedureTemplateBody`/
-   `ProcedureInstanceBody` rows. Those three facts must be removed together
-   before this step can close or parallel workers can begin.
+   it. Nested procedure declarations now publish their own later roots as well;
+   each retains the enclosing concrete environment and pack-capture boundary,
+   so no `check_procedure` recursion hides another body. The remaining split is
+   substantive: roots still append lexical symbols/constants/HIR into one
+   package-wide result, and compiler body work is not yet represented by live
+   `ProcedureTemplateBody`/`ProcedureInstanceBody` rows. Those two facts must be
+   removed together before this step can close or parallel workers can begin.
 
 6. **Synthesis as an explicit wait state.** A body or declaration task may
    report its exact ready `...` set after producing the typed constraint needed

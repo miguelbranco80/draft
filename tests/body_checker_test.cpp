@@ -908,6 +908,8 @@ main :: proc() -> i64 {
   EXPECT(state, source.semantics.ok);
   EXPECT(state, source.bodies.ok);
   EXPECT(state, !source.diagnostics.has_errors());
+  EXPECT(state, source.bodies.checked_procedures ==
+                    source.bodies.program.procedures().size());
 
   std::size_t nested_procedures = 0;
   std::vector<std::string> linkage_names;

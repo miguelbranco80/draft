@@ -169,6 +169,28 @@ struct ProcedureInstanceActivation {
   std::optional<std::size_t> index;
 };
 
+// ProcedureBodyRoot is the sequential oracle's complete request for one source
+// body. Package roots need only their symbol and template bit. A lexically
+// nested root additionally snapshots the active concrete outer environment so
+// its later checker sees the same type/value substitutions and the same pack-
+// capture boundary as the checker which declared it. The environment is a
+// command-local view over stable body-owned IDs; it is never serialized or used
+// as specialization identity.
+struct ProcedureBodyRoot {
+  SymbolId symbol;
+  bool parametric_template = false;
+  std::optional<ProcedureInstance> enclosing_environment;
+};
+
+// One exact root returns ordinary append-only HIR plus later lexical roots. It
+// deliberately does not run the discovered roots itself. The package
+// coordinator publishes them after this result, which makes nested procedure
+// bodies visible work rather than hidden recursion inside check_procedure.
+struct ProcedureBodyRootResult {
+  BodyCheckResult checked;
+  std::vector<ProcedureBodyRoot> discovered_roots;
+};
+
 // During one concrete static-pack iteration the source value name denotes one
 // already-existing ordinary procedure parameter. The lexical alias still owns
 // source visibility and diagnostics, while this short-lived row prevents HIR
@@ -254,26 +276,30 @@ public:
   // instance rebuilds its active substitutions and pack bindings from the
   // permanent ParametricInstanceRecord before source checking starts. Calls in
   // this body may append new instance records, but their bodies are deliberately
-  // left for later roots. Nested source procedures still belong recursively to
-  // their enclosing root in this transition; separating those lexical products
-  // is the next procedure-owned-checking slice.
-  [[nodiscard]] BodyCheckResult run_one(SymbolId procedure) {
-    BodyCheckResult result;
+  // left for later roots. A nested declaration likewise publishes a later root
+  // with its enclosing concrete environment instead of entering its body
+  // recursively.
+  [[nodiscard]] ProcedureBodyRootResult run_one(
+      const ProcedureBodyRoot &root) {
+    ProcedureBodyRootResult result;
     const std::size_t initial_errors = diagnostics_.error_count();
     ensure_runtime_context_type(semantic_, diagnostics_);
-    const ProcedureInstanceActivation instance = restore_instance(procedure);
+    const ProcedureInstanceActivation instance = restore_instance(root.symbol);
     if (instance.index.has_value()) current_instance_index_ = *instance.index;
-    const Symbol symbol = semantic_.symbols.symbol(procedure);
+    if (!instance.concrete && root.enclosing_environment.has_value()) {
+      instances_.push_back(*root.enclosing_environment);
+      current_instance_index_ = instances_.size() - 1;
+    }
+    const Symbol symbol = semantic_.symbols.symbol(root.symbol);
     if ((!instance.concrete || instance.index.has_value()) &&
         symbol.kind == SymbolKind::Procedure && symbol.type.is_valid() &&
-        check_procedure(
-            procedure,
-            !instance.concrete && symbol.flags.parametric)) {
-      ++result.checked_procedures;
+        check_procedure(root.symbol, root.parametric_template)) {
+      ++result.checked.checked_procedures;
     }
     current_instance_index_.reset();
-    result.ok = diagnostics_.error_count() == initial_errors;
-    result.program = std::move(hir_);
+    result.checked.ok = diagnostics_.error_count() == initial_errors;
+    result.checked.program = std::move(hir_);
+    result.discovered_roots = std::move(discovered_body_roots_);
     return result;
   }
 
@@ -6890,8 +6916,20 @@ private:
     // A body nested in a symbolic outer template is itself non-executable even
     // when it has no parameters of its own. The concrete outer body is checked
     // again and creates the executable lexical procedure for that instance.
-    (void)check_procedure(
-        id, current_procedure_is_template_ || parametric);
+    // Publish the body as later work rather than checking it recursively here.
+    // A concrete outer specialization contributes more than substitutions: its
+    // pack marker identifies an illegal capture boundary. Snapshot the complete
+    // active environment so the later root reproduces both the permitted
+    // compile-time names and that rejection rule exactly.
+    ProcedureBodyRoot nested_root;
+    nested_root.symbol = id;
+    nested_root.parametric_template =
+        current_procedure_is_template_ || parametric;
+    if (current_instance_index_.has_value()) {
+      nested_root.enclosing_environment =
+          instances_[*current_instance_index_];
+    }
+    discovered_body_roots_.push_back(std::move(nested_root));
     return hir_.add_statement(std::move(statement));
   }
 
@@ -8270,6 +8308,10 @@ private:
   // neighboring branch-refinement vector but must not defer static_assert.
   std::size_t active_dependent_when_depth_ = 0;
   std::vector<StaticPackValueAlias> active_pack_value_aliases_;
+  // Nested declarations publish exact later roots. This vector belongs to one
+  // run_one invocation and is moved out before the checker dies; no discovered
+  // body can be lost in transient checker state.
+  std::vector<ProcedureBodyRoot> discovered_body_roots_;
   std::vector<ProcedureInstance> instances_;
   std::optional<std::size_t> current_instance_index_;
   // Compile-time-expression preflight reuses the complete expression checker
@@ -8281,13 +8323,19 @@ private:
   bool type_validation_only_ = false;
 };
 
-// Appends one body root if it has not already been scheduled. Package symbols
-// and concrete instances occupy one SymbolId domain, so a direct linear scan is
-// an exact deterministic set operation. Body root lists are normally small and
-// preserve source/discovery order; sorting would change diagnostic order.
-void append_body_root(std::vector<SymbolId> &roots, SymbolId root) {
-  if (std::find(roots.begin(), roots.end(), root) == roots.end()) {
-    roots.push_back(root);
+// Appends one body root if it has not already been scheduled. Package, nested,
+// and concrete-instance procedures occupy one SymbolId domain, so a direct
+// linear scan is an exact deterministic set operation. Body root lists are
+// normally small and preserve source/discovery order; sorting would change
+// diagnostic order.
+void append_body_root(
+    std::vector<ProcedureBodyRoot> &roots, ProcedureBodyRoot root) {
+  const auto existing = std::find_if(
+      roots.begin(), roots.end(), [&](const ProcedureBodyRoot &candidate) {
+        return candidate.symbol == root.symbol;
+      });
+  if (existing == roots.end()) {
+    roots.push_back(std::move(root));
   }
 }
 
@@ -8312,7 +8360,7 @@ void append_body_root(std::vector<SymbolId> &roots, SymbolId root) {
     ConstantTable &constants,
     const TargetFacts &target,
     DiagnosticSink &diagnostics,
-    std::vector<SymbolId> roots,
+    std::vector<ProcedureBodyRoot> roots,
     std::size_t first_unscheduled_instance,
     HirProgram initial_program) {
   BodyCheckResult result;
@@ -8332,10 +8380,19 @@ void append_body_root(std::vector<SymbolId> &roots, SymbolId root) {
         diagnostics,
         no_seeds,
         std::move(result.program));
-    BodyCheckResult checked = checker.run_one(roots[root_index]);
-    result.ok = result.ok && checked.ok;
-    result.checked_procedures += checked.checked_procedures;
-    result.program = std::move(checked.program);
+    ProcedureBodyRootResult checked = checker.run_one(roots[root_index]);
+    result.ok = result.ok && checked.checked.ok;
+    result.checked_procedures += checked.checked.checked_procedures;
+    result.program = std::move(checked.checked.program);
+
+    // Nested declarations use lexical source order within this root. Publish
+    // that stable list before the retained instance suffix. This ordering is an
+    // explicit sequential policy; semantics do not depend on whether an
+    // instance call text appeared before or after a nested declaration because
+    // both work categories consume the completed enclosing root.
+    for (ProcedureBodyRoot &nested : checked.discovered_roots) {
+      append_body_root(roots, std::move(nested));
+    }
 
     // A direct call may discover several specializations, and checking one
     // concrete body may discover more. Their retained order is deterministic
@@ -8343,8 +8400,10 @@ void append_body_root(std::vector<SymbolId> &roots, SymbolId root) {
     // to the next root; duplicate semantic identities were already collapsed
     // by instantiate_procedure.
     while (next_instance < semantic.parametric_instances.size()) {
-      append_body_root(
-          roots, semantic.parametric_instances[next_instance].instance);
+      ProcedureBodyRoot instance_root;
+      instance_root.symbol =
+          semantic.parametric_instances[next_instance].instance;
+      append_body_root(roots, std::move(instance_root));
       ++next_instance;
     }
   }
@@ -8408,18 +8467,18 @@ BodyCheckResult check_package_bodies(
   // Capture authored roots from the declaration prefix. Seed materialization
   // appends private concrete symbols to package scope, but those receive their
   // own roots below and must not masquerade as authored procedures.
-  std::vector<SymbolId> roots;
+  std::vector<ProcedureBodyRoot> roots;
   const std::vector<SymbolId> package_symbols =
       package.symbols.scope(package.package_scope).symbols;
   for (SymbolId id : package_symbols) {
     const Symbol &symbol = package.symbols.symbol(id);
     if (symbol.kind == SymbolKind::Procedure && symbol.type.is_valid()) {
-      append_body_root(roots, id);
+      append_body_root(roots, {id, symbol.flags.parametric, std::nullopt});
     }
   }
   for (const ParametricInstanceRecord &instance :
        checked_package.parametric_instances) {
-    append_body_root(roots, instance.instance);
+    append_body_root(roots, {instance.instance, false, std::nullopt});
   }
   const std::size_t published_instances =
       checked_package.parametric_instances.size();
@@ -8471,12 +8530,15 @@ BodyCheckResult check_additional_package_instances(
       additional_seeds,
       std::move(previous.program));
   BodyCheckResult initialized = initializer.initialize();
-  std::vector<SymbolId> roots;
+  std::vector<ProcedureBodyRoot> roots;
   for (std::size_t index = previous_instance_count;
        index < previous.package.parametric_instances.size();
        ++index) {
     append_body_root(
-        roots, previous.package.parametric_instances[index].instance);
+        roots,
+        {previous.package.parametric_instances[index].instance,
+         false,
+         std::nullopt});
   }
   const std::size_t published_instances =
       previous.package.parametric_instances.size();
@@ -8533,7 +8595,7 @@ BodyCheckResult check_compile_time_procedure_bodies(
       diagnostics,
       no_seeds);
   BodyCheckResult initialized = initializer.initialize();
-  std::vector<SymbolId> roots;
+  std::vector<ProcedureBodyRoot> roots;
   const std::vector<SymbolId> package_symbols =
       checked_package.symbols.scope(checked_package.package_scope).symbols;
   for (SymbolId id : package_symbols) {
@@ -8543,7 +8605,7 @@ BodyCheckResult check_compile_time_procedure_bodies(
     }
     const Symbol &symbol = checked_package.symbols.symbol(id);
     if (symbol.kind == SymbolKind::Procedure && symbol.type.is_valid()) {
-      append_body_root(roots, id);
+      append_body_root(roots, {id, symbol.flags.parametric, std::nullopt});
     }
   }
   BodyCheckResult result = check_body_roots(

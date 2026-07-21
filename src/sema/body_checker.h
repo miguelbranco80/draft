@@ -44,6 +44,9 @@ struct BodyCheckResult {
   SemanticPackage package;
   ConstantTable constants;
   HirProgram program;
+  // Number of exact authored/template/instance roots which produced a
+  // HirProcedure row. Nested procedures are roots in their own right; foreign
+  // declarations and procedure types have no body and do not contribute.
   std::size_t checked_procedures = 0;
 };
 
@@ -82,13 +85,15 @@ struct ProcedureInstantiationSeed {
 // package-level or concrete root receives a fresh checker reconstructed from
 // the retained body-owned semantic state; a root may discover more instance
 // records but never checks their bodies recursively through a hidden growing
-// loop. Lexically nested procedure declarations still belong to their enclosing
-// root during this migration. Foreign declarations and standalone procedure
-// types have no body and are skipped. The declaration package and constants are
-// immutable baselines. Successfully evaluated lexical `::` values append only
-// to the returned result, so later agent obligations observe the same values as
-// body expressions without contaminating a reusable declaration graph. Errors
-// in one body do not prevent independent bodies from producing recoverable HIR.
+// loop. A lexically nested declaration publishes another root with an exact
+// snapshot of any enclosing concrete substitutions and pack-capture boundary;
+// its body is checked only after the enclosing root completes. Foreign
+// declarations and standalone procedure types have no body and are skipped.
+// The declaration package and constants are immutable baselines. Successfully
+// evaluated lexical `::` values append only to the returned result, so later
+// agent obligations observe the same values as body expressions without
+// contaminating a reusable declaration graph. Errors in one body do not prevent
+// independent bodies from producing recoverable HIR.
 [[nodiscard]] BodyCheckResult check_package_bodies(
     const SourceManager &sources,
     const LoadedPackage &loaded,

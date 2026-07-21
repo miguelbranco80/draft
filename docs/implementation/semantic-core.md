@@ -328,10 +328,15 @@ procedure whose body uses compile-time bindings inherited from an enclosing
 specialization. Its concrete parameter scope retains the static-pack marker and
 element parameters, so the fresh checker reconstructs the complete active pack
 without consulting the discoverer's transient state. This is the sequential
-reconstruction boundary for procedure products, not the final isolated result:
-lexically nested procedure declarations are still checked recursively with
-their enclosing root, and the roots still publish into one package-wide
-`BodyCheckResult` until step 5 completes.
+reconstruction boundary for procedure products. Lexically nested declarations
+also publish later roots instead of recursively checking their bodies. A nested
+root snapshots the enclosing concrete environment, including the pack marker
+which must remain an illegal capture, while its lexical symbol and signature
+remain in the completed enclosing root. Each authored or concrete HIR procedure
+is therefore produced by one root invocation. This is not yet the final isolated
+result: roots still append lexical symbols, constants, sites, types, and HIR into
+one package-wide `BodyCheckResult` until deterministic task-local publication
+replaces those shared tables.
 
 The compiler schedules package bodies consumer-first because checking a caller
 can demand a concrete public generic body from its dependency. A portable
