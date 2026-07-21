@@ -280,7 +280,7 @@ gate.
    products. Public compiler tests prove payload identity, exact dependency
    edges, denial error states, invalidation, and one-/four-worker determinism.
 
-8. **Per-procedure MIR.** Lower each checked concrete procedure into a private
+8. **Per-procedure MIR — complete.** Lower each checked concrete procedure into a private
    MIR result without mutating semantic type tables. Publish package static data
    and parsed assembly separately. Delete package-wide MIR lowering and semantic
    type interning from the lowering phase.
@@ -294,9 +294,16 @@ gate.
    procedure produces one independently verified `MirProcedure`, while
    symbolic and compile-time-only procedures return an explicit successful
    non-runtime result. The package API is only a source-order compatibility
-   composer over that operation. Compiler orchestration still invokes the
-   package projection and the live MIR/static-data/assembly products remain in
-   this step.
+   composer over that operation. Compiler orchestration publishes one
+   `PackageStaticData` barrier over the immutable global/constants payload and
+   one `PackageAssembly` barrier over captured standalone assembly plus parsed
+   inline regions. It then appends one `MirProcedure` row per selected concrete
+   runtime body, depending on that exact body, its denial result, and both
+   package barriers. One bounded workspace wave lowers and verifies private MIR
+   tasks; the coordinator composes compatibility programs in product order.
+   Tests prove exact dependency/payload identity, unchanged semantic type
+   tables, identical one-/four-worker graphs and LLVM, and a single ready wave
+   spanning independent packages.
 
 9. **Parallel semantic waves.** Run each frozen ready wave with bounded workers.
    Workers write only task slots; the coordinator sorts by stable product ID,

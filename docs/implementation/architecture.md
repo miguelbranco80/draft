@@ -147,12 +147,12 @@ frozen wave which exposed them joins, with an exact edge to that exposing body.
 Each root owns a task-local diagnostic sink, and graph publication merges those
 diagnostics in product order. HIR-local IDs begin at zero in each product; every
 semantic ID addresses the body package returned beside the product set. Direct
-effect and denial tasks consume those arenas without concatenating them. A
-deterministic compatibility projection still rewrites local IDs for metadata,
-agent obligations, native interop, validation, assembly, and MIR consumers
-which remain package-wide. The projection is a short-lived value owned by the
-invoking operation; it is never stored in `BodyCheckResult`, so procedure
-products remain the only retained HIR.
+effect, denial, assembly, and MIR tasks consume those arenas without
+concatenating them. A deterministic compatibility projection still rewrites
+local IDs for metadata, agent obligations, native interop, and validation
+consumers which remain package-wide. The projection is a short-lived value
+owned by the invoking operation; it is never stored in `BodyCheckResult`, so
+procedure products remain the only retained HIR.
 
 The coordinator retains the canonical semantic and constant prefix while one
 root checks a private view frozen at exact table counts. `TypeStore` and
@@ -284,7 +284,9 @@ parallel scheduling changes elapsed time, never artifacts or diagnostics.
 - **Draft MIR:** a small non-optimizing IR with explicit loads, stores, checks,
   context arguments, calls, aggregate operations, and source locations. One
   checked runtime HIR procedure lowers to one privately verified MIR procedure;
-  the package API is a source-order composer over that operation. LLVM is an
+  the package API is a source-order composer over that operation. Workspace
+  compilation publishes package static-data and assembly barriers, then lowers
+  every independent runtime procedure in one bounded ready wave. LLVM is an
   emission/optimization back end rather than Draft's semantic model.
 
 LLVM types stay behind numeric, target, ABI, and code-generation adapters. The

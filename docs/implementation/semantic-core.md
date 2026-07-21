@@ -328,11 +328,10 @@ smaller `BodyCheckResult`. Every SymbolId, ScopeId, and TypeId in those arenas
 belongs to that accompanying package. A deterministic compatibility
 projection rewrites HIR-local IDs and concatenates the arenas only at a
 package-wide consumer boundary. The operation owns and discards that temporary
-view; `BodyCheckResult` retains no second HIR representation. Direct effects
-and denials consume the arenas directly. Interop, metadata, obligation,
-validation, assembly, and current compiler MIR orchestration still require the
-projection until their own product migrations complete; MIR's lowering and
-verification operation itself is already procedure-local.
+view; `BodyCheckResult` retains no second HIR representation. Direct effects,
+denials, parsed assembly, and MIR consume the arenas directly. Interop,
+metadata, obligation, and validation still require the projection until their
+own product migrations complete.
 
 The body coordinator no longer retains one `BodyChecker` while walking a
 package and its growing instance vector. Seed materialization is separate, then

@@ -82,17 +82,15 @@ external owner bodies depend on the exact completed consumer product which
 requested them; package-local semantic suffixes still publish in PackageId/work
 order after the whole worker set joins. Package loops whose payloads still use
 package snapshots remain sequential.
-MIR lowering now reads the shared `TypeStore` immutably. Compiler-only addresses
+MIR lowering reads the shared `TypeStore` immutably. Compiler-only addresses
 use MIR-local addressed-type metadata, so there is no unclassified post-ABI
-type suffix. MIR is still invoked over a temporary package HIR projection until
-the per-procedure product migration is complete.
-Direct effects and denials consume authoritative procedure-owned HIR arenas and
-publish live procedure products; they no longer use a package-wide HIR
-compatibility projection. Agent metadata/obligation construction, native
-interop validation, validation discovery, assembly, and MIR still build and
-discard such a projection. The compiler retains no package-wide HIR copy.
-Migrating those remaining consumers away from the temporary projection is
-explicit remaining work in the
+type suffix. Direct effects, denials, parsed assembly, and MIR consume
+authoritative procedure-owned HIR arenas and publish live products; they no
+longer use a package-wide HIR compatibility projection. Agent
+metadata/obligation construction, native interop validation, and validation
+discovery still build and discard such a projection. The compiler retains no
+package-wide HIR copy. Migrating those remaining consumers away from the
+temporary projection is explicit remaining work in the
 [semantic work graph implementation plan](semantic-work-graph-implementation-plan.md),
 not alternate final architecture paths.
 

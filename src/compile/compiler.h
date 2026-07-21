@@ -379,6 +379,18 @@ struct PackageSemanticProducts {
   std::vector<SemanticProductId> direct_effect_summaries;
   std::vector<SemanticProductId> closed_effect_sccs;
   std::vector<SemanticProductId> denial_results;
+  // Target lowering begins with two explicit package barriers. Static data
+  // names the immutable global/constant semantic payload consumed by native
+  // emission; package_assembly owns the already captured package assembly
+  // source bytes plus parsed inline-assembly metadata for the selected HIR set.
+  // Each runtime HIR-bearing work row then maps one-to-one to a MirProcedure
+  // product and CompiledPackage::mir.program row through
+  // mir_body_work_indices. Symbolic and compile-time-only bodies intentionally
+  // have no runtime MIR product.
+  SemanticProductId package_static_data;
+  SemanticProductId package_assembly;
+  std::vector<std::size_t> mir_body_work_indices;
+  std::vector<SemanticProductId> mir_procedures;
   // Parallel to the body generation's TypeStore after at least one body wave.
   // Declaration-baseline types contain an invalid product because their
   // package interface is the producer barrier. A body-appended TypeId names the
@@ -407,9 +419,9 @@ struct WorkspaceSemanticProducts {
   // package symbol; other products contain an invalid SymbolId.
   std::vector<SymbolId> declaration_by_product;
   // Parallel to SemanticProductGraph. ProcedureTemplateBody,
-  // ProcedureInstanceBody, DirectEffectSummary, and DenialResult rows name
-  // their exact package-local procedure symbol; every other product contains an
-  // invalid SymbolId.
+  // ProcedureInstanceBody, DirectEffectSummary, DenialResult, and MirProcedure
+  // rows name their exact package-local procedure symbol; every other product
+  // contains an invalid SymbolId.
   std::vector<SymbolId> procedure_by_product;
   // Parallel to SemanticProductGraph. Type facet rows name their canonical
   // command-local TypeId; other products contain an invalid TypeId.

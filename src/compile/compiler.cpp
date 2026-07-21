@@ -25,9 +25,10 @@
 // cross-package generic body depends on the exact completed consumer body which
 // requested it. Direct effects and denials run as bounded procedure-owned
 // waves; legal flow/effect SCCs publish dependency-first with their exact
-// component edges. Later implementation slices isolate MIR and native task
-// payloads and move their remaining package loops into the same graph. Within
-// an unchanged source
+// component edges. Package static data and assembly are explicit barriers, and
+// all concrete runtime procedures lower in one bounded workspace MIR wave.
+// Later implementation slices isolate native task payloads and move their
+// remaining package loops into the same graph. Within an unchanged source
 // generation, CompileWorkspaceProgress advances so native lowering can continue
 // checked state without reloading source. A checked generated-source transition
 // appends a successor generation and supersedes only the affected interface
@@ -899,6 +900,16 @@ void bind_handwritten_program_identity(
         superseded.end(),
         products.denial_results.begin(),
         products.denial_results.end());
+    if (products.package_static_data.is_valid()) {
+      superseded.push_back(products.package_static_data);
+    }
+    if (products.package_assembly.is_valid()) {
+      superseded.push_back(products.package_assembly);
+    }
+    superseded.insert(
+        superseded.end(),
+        products.mir_procedures.begin(),
+        products.mir_procedures.end());
   }
   if (!superseded.empty()) {
     std::string reason;
@@ -919,8 +930,15 @@ void bind_handwritten_program_identity(
     products.direct_effect_summaries.clear();
     products.closed_effect_sccs.clear();
     products.denial_results.clear();
+    products.package_static_data = {};
+    products.package_assembly = {};
+    products.mir_body_work_indices.clear();
+    products.mir_procedures.clear();
     package.direct_effects = {};
     package.effects = {};
+    package.assembly = {};
+    package.mir = {};
+    package.llvm = {};
     if (package.semantic_progress == PackageSemanticProgress::ClosureReady) {
       package.semantic_progress = PackageSemanticProgress::BodiesReady;
     }
@@ -1109,6 +1127,16 @@ void bind_handwritten_program_identity(
         superseded.end(),
         products.denial_results.begin(),
         products.denial_results.end());
+    if (products.package_static_data.is_valid()) {
+      superseded.push_back(products.package_static_data);
+    }
+    if (products.package_assembly.is_valid()) {
+      superseded.push_back(products.package_assembly);
+    }
+    superseded.insert(
+        superseded.end(),
+        products.mir_procedures.begin(),
+        products.mir_procedures.end());
     if (products.opaque_synthesis_set.is_valid())
       superseded.push_back(products.opaque_synthesis_set);
     if (products.package_interface.is_valid()) {
@@ -1145,6 +1173,10 @@ void bind_handwritten_program_identity(
     products.direct_effect_summaries.clear();
     products.closed_effect_sccs.clear();
     products.denial_results.clear();
+    products.package_static_data = {};
+    products.package_assembly = {};
+    products.mir_body_work_indices.clear();
+    products.mir_procedures.clear();
     products.body_type_producer.clear();
     products.declaration_inputs.clear();
     products.declaration_inputs.push_back(result.semantic_products.target);
@@ -5128,6 +5160,500 @@ struct DenialWaveExecution {
   return true;
 }
 
+enum class PackageLoweringBarrierKind {
+  StaticData,
+  ParsedAssembly,
+};
+
+// One task slot owns either the package-static barrier or the complete assembly
+// payload for one selected package. Static data and captured standalone
+// assembly bytes are already immutable compiler state and need no duplicate
+// payload. Inline-assembly analysis visits each procedure-owned HIR arena
+// separately and concatenates only its source-keyed AssemblyRegion rows; it
+// never constructs a package HIR program.
+struct PackageLoweringBarrierTaskSlot {
+  PackageLoweringBarrierKind kind = PackageLoweringBarrierKind::StaticData;
+  const SourceManager *sources = nullptr;
+  const LoadedPackage *loaded = nullptr;
+  const TargetProfile *target = nullptr;
+  const CompiledPackage *package = nullptr;
+  AssemblyProgram assembly;
+};
+
+struct PackageLoweringBarrierWaveExecution {
+  std::vector<PackageLoweringBarrierTaskSlot> *slots = nullptr;
+  std::vector<SemanticProductOutcome> *outcomes = nullptr;
+};
+
+[[nodiscard]] bool execute_package_lowering_barrier_task(
+    void *opaque_context,
+    WorkTaskId task,
+    std::string &failure) {
+  auto &context =
+      *static_cast<PackageLoweringBarrierWaveExecution *>(opaque_context);
+  const std::size_t index = static_cast<std::size_t>(task);
+  if (context.slots == nullptr || context.outcomes == nullptr ||
+      index >= context.slots->size() || index >= context.outcomes->size()) {
+    failure = "package-lowering worker received an invalid task slot";
+    return false;
+  }
+  PackageLoweringBarrierTaskSlot &slot = (*context.slots)[index];
+  SemanticProductOutcome &outcome = (*context.outcomes)[index];
+  if (slot.kind == PackageLoweringBarrierKind::StaticData) {
+    outcome.kind = SemanticProductOutcomeKind::Complete;
+    return true;
+  }
+  if (slot.sources == nullptr || slot.loaded == nullptr ||
+      slot.target == nullptr || slot.package == nullptr) {
+    failure = "parsed-assembly worker received incomplete package inputs";
+    return false;
+  }
+
+  slot.assembly.ok = true;
+  for (std::size_t work_index : slot.package->selected_procedure_work) {
+    if (work_index >= slot.package->bodies.procedures.size()) {
+      failure = "parsed-assembly body index is outside the HIR product table";
+      return false;
+    }
+    AssemblyProgram local = analyze_aarch64_assembly(
+        *slot.sources,
+        *slot.loaded,
+        *slot.target,
+        slot.package->bodies.package,
+        slot.package->bodies.procedures[work_index].program,
+        outcome.diagnostics);
+    slot.assembly.ok = slot.assembly.ok && local.ok;
+    slot.assembly.regions.insert(
+        slot.assembly.regions.end(),
+        std::make_move_iterator(local.regions.begin()),
+        std::make_move_iterator(local.regions.end()));
+  }
+  outcome.kind = slot.assembly.ok
+      ? SemanticProductOutcomeKind::Complete
+      : SemanticProductOutcomeKind::Error;
+  if (!slot.assembly.ok) {
+    outcome.failure = "package contains invalid parsed assembly";
+  }
+  return true;
+}
+
+// Publishes package static-data and parsed-assembly barriers in one workspace
+// wave. Both products name the selected body/denial generation explicitly;
+// static data additionally names every ABI row because native global layout
+// consumes that complete target facet. Independent packages may analyze their
+// assembly concurrently, while publication remains PackageId/product ordered.
+[[nodiscard]] bool run_workspace_lowering_barriers(
+    const SourceManager &sources,
+    const TargetProfile &target,
+    std::size_t worker_count,
+    TimingRecorder *timings,
+    CompileWorkspaceResult &result,
+    DiagnosticSink &diagnostics) {
+  std::vector<SemanticProductId> expected_wave;
+  for (std::size_t package_index = 0;
+       package_index < result.packages.size(); ++package_index) {
+    if (!result.packages[package_index].has_value()) continue;
+    PackageSemanticProducts &products =
+        result.semantic_products.packages[package_index];
+    if (products.package_static_data.is_valid() ||
+        products.package_assembly.is_valid()) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "package lowering barriers were already published");
+      return false;
+    }
+    std::vector<SemanticProductId> static_dependencies{
+        result.semantic_products.target,
+        products.package_interface};
+    static_dependencies.insert(
+        static_dependencies.end(),
+        products.selected_procedure_bodies.begin(),
+        products.selected_procedure_bodies.end());
+    static_dependencies.insert(
+        static_dependencies.end(),
+        products.abi_classifications.begin(),
+        products.abi_classifications.end());
+    static_dependencies.insert(
+        static_dependencies.end(),
+        products.denial_results.begin(),
+        products.denial_results.end());
+    const PackageId owner{static_cast<std::uint32_t>(package_index)};
+    products.package_static_data = append_workspace_semantic_product(
+        result,
+        SemanticProductKind::PackageStaticData,
+        static_dependencies,
+        owner,
+        false,
+        diagnostics);
+    if (!products.package_static_data.is_valid()) return false;
+    expected_wave.push_back(products.package_static_data);
+
+    std::vector<SemanticProductId> assembly_dependencies{
+        result.semantic_products.target,
+        result.semantic_products.source_generation};
+    assembly_dependencies.insert(
+        assembly_dependencies.end(),
+        products.selected_procedure_bodies.begin(),
+        products.selected_procedure_bodies.end());
+    assembly_dependencies.insert(
+        assembly_dependencies.end(),
+        products.denial_results.begin(),
+        products.denial_results.end());
+    products.package_assembly = append_workspace_semantic_product(
+        result,
+        SemanticProductKind::PackageAssembly,
+        assembly_dependencies,
+        owner,
+        false,
+        diagnostics);
+    if (!products.package_assembly.is_valid()) return false;
+    expected_wave.push_back(products.package_assembly);
+  }
+  if (expected_wave.empty()) return true;
+
+  const SemanticReadyWave wave =
+      freeze_semantic_ready_wave(result.semantic_graph);
+  if (wave.status != SemanticReadyWaveStatus::Ready ||
+      wave.products != expected_wave) {
+    diagnostics.error(
+        SourceRange::invalid(),
+        "package lowering barriers did not form their exact ready wave" +
+            (wave.failure.empty() ? std::string{} : ": " + wave.failure));
+    return false;
+  }
+  std::vector<PackageLoweringBarrierTaskSlot> slots(wave.products.size());
+  std::vector<SemanticProductOutcome> outcomes(wave.products.size());
+  for (std::size_t index = 0; index < wave.products.size(); ++index) {
+    const SemanticProductId product = wave.products[index];
+    const PackageId owner =
+        result.semantic_products.package_by_product[product.value];
+    if (!owner.is_valid() || owner.value >= result.packages.size() ||
+        !result.packages[owner.value].has_value()) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "package lowering barrier has no retained package owner");
+      return false;
+    }
+    const SemanticProductKind kind =
+        result.semantic_graph.products[product.value].kind;
+    slots[index].kind = kind == SemanticProductKind::PackageStaticData
+        ? PackageLoweringBarrierKind::StaticData
+        : PackageLoweringBarrierKind::ParsedAssembly;
+    if (kind != SemanticProductKind::PackageStaticData &&
+        kind != SemanticProductKind::PackageAssembly) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "package lowering wave contains another product kind");
+      return false;
+    }
+    slots[index].sources = &sources;
+    slots[index].loaded = &result.graph.packages[owner.value].loaded;
+    slots[index].target = &target;
+    slots[index].package = &*result.packages[owner.value];
+  }
+  WorkGraph execution_graph;
+  execution_graph.tasks.resize(slots.size());
+  PackageLoweringBarrierWaveExecution execution{&slots, &outcomes};
+  const WorkGraphRunResult scheduled = run_work_graph(
+      execution_graph,
+      WorkGraphRunOptions{worker_count},
+      execute_package_lowering_barrier_task,
+      &execution);
+  if (timings != nullptr) {
+    timings->add_counter("package lowering barrier ready waves", 1);
+    timings->add_counter(
+        "package lowering barrier tasks", slots.size());
+    timings->add_counter(
+        "package lowering barrier worker slots", scheduled.workers_used);
+  }
+  if (!scheduled.ok) {
+    std::string failure =
+        "package lowering barrier worker scheduling failed";
+    for (std::size_t index = 0; index < scheduled.tasks.size(); ++index) {
+      if (scheduled.tasks[index].state != WorkTaskState::Failed) continue;
+      failure += " at task " + std::to_string(index) + ": " +
+          scheduled.tasks[index].failure;
+      break;
+    }
+    diagnostics.error(SourceRange::invalid(), std::move(failure));
+    return false;
+  }
+  bool barriers_ok = true;
+  for (const SemanticProductOutcome &outcome : outcomes) {
+    barriers_ok = barriers_ok &&
+        outcome.kind == SemanticProductOutcomeKind::Complete;
+  }
+  std::string publication_error;
+  if (!publish_semantic_ready_wave(
+          result.semantic_graph,
+          wave,
+          outcomes,
+          diagnostics,
+          publication_error)) {
+    diagnostics.error(
+        SourceRange::invalid(),
+        "cannot publish package lowering barrier wave: " +
+            publication_error);
+    return false;
+  }
+  for (std::size_t index = 0; index < wave.products.size(); ++index) {
+    if (slots[index].kind != PackageLoweringBarrierKind::ParsedAssembly) {
+      continue;
+    }
+    const PackageId owner = result.semantic_products.package_by_product[
+        wave.products[index].value];
+    result.packages[owner.value]->assembly =
+        std::move(slots[index].assembly);
+  }
+  return barriers_ok;
+}
+
+struct MirProcedureTaskSlot {
+  const SemanticPackage *semantic = nullptr;
+  const ProcedureBodyHirResult *body = nullptr;
+  const AssemblyProgram *assembly = nullptr;
+  RuntimeAssertionMode runtime_assertions = RuntimeAssertionMode::On;
+  MirProcedureLoweringResult result;
+};
+
+struct MirProcedureWaveExecution {
+  std::vector<MirProcedureTaskSlot> *slots = nullptr;
+  std::vector<SemanticProductOutcome> *outcomes = nullptr;
+};
+
+[[nodiscard]] bool execute_mir_procedure_task(
+    void *opaque_context,
+    WorkTaskId task,
+    std::string &failure) {
+  auto &context =
+      *static_cast<MirProcedureWaveExecution *>(opaque_context);
+  const std::size_t index = static_cast<std::size_t>(task);
+  if (context.slots == nullptr || context.outcomes == nullptr ||
+      index >= context.slots->size() || index >= context.outcomes->size()) {
+    failure = "MIR worker received an invalid task slot";
+    return false;
+  }
+  MirProcedureTaskSlot &slot = (*context.slots)[index];
+  if (slot.semantic == nullptr || slot.body == nullptr ||
+      slot.assembly == nullptr ||
+      slot.body->program.procedures().size() != 1) {
+    failure = "MIR worker received an invalid procedure product";
+    return false;
+  }
+  SemanticProductOutcome &outcome = (*context.outcomes)[index];
+  slot.result = lower_procedure_to_mir(
+      *slot.semantic,
+      slot.body->program,
+      slot.body->program.procedures().front(),
+      slot.assembly,
+      slot.runtime_assertions,
+      outcome.diagnostics);
+  outcome.kind = slot.result.ok && slot.result.lowered
+      ? SemanticProductOutcomeKind::Complete
+      : SemanticProductOutcomeKind::Error;
+  if (outcome.kind == SemanticProductOutcomeKind::Error) {
+    outcome.failure = "procedure failed MIR lowering";
+  }
+  return true;
+}
+
+[[nodiscard]] std::optional<SemanticProductId> denial_product_for_body(
+    const PackageSemanticProducts &products,
+    std::size_t work_index) {
+  for (std::size_t position = 0;
+       position < products.effect_body_work_indices.size(); ++position) {
+    if (products.effect_body_work_indices[position] == work_index &&
+        position < products.denial_results.size()) {
+      return products.denial_results[position];
+    }
+  }
+  return std::nullopt;
+}
+
+// Appends and executes one MirProcedure product for every selected concrete
+// runtime body in the workspace. Tasks read immutable semantic/HIR/assembly
+// inputs and own one private MIR procedure plus diagnostics. The coordinator
+// rebuilds each compatibility MirProgram only after the complete global wave
+// joins, preserving the former source order without retaining package HIR.
+[[nodiscard]] bool run_workspace_mir_products(
+    RuntimeAssertionMode runtime_assertions,
+    std::size_t worker_count,
+    TimingRecorder *timings,
+    CompileWorkspaceResult &result,
+    DiagnosticSink &diagnostics) {
+  std::vector<SemanticProductId> expected_wave;
+  for (std::size_t package_index = 0;
+       package_index < result.packages.size(); ++package_index) {
+    if (!result.packages[package_index].has_value()) continue;
+    CompiledPackage &package = *result.packages[package_index];
+    PackageSemanticProducts &products =
+        result.semantic_products.packages[package_index];
+    if (!products.mir_body_work_indices.empty() ||
+        !products.mir_procedures.empty() ||
+        !package.mir.program.procedures().empty()) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "MIR product slice is not empty before scheduling");
+      return false;
+    }
+    package.mir = {};
+    package.mir.ok = true;
+    const PackageId owner{static_cast<std::uint32_t>(package_index)};
+    for (std::size_t work_index : package.selected_procedure_work) {
+      if (work_index >= package.bodies.procedures.size()) {
+        diagnostics.error(
+            SourceRange::invalid(),
+            "selected MIR body is outside the HIR product table");
+        return false;
+      }
+      const std::vector<HirProcedure> &procedures =
+          package.bodies.procedures[work_index].program.procedures();
+      if (procedures.empty()) continue;
+      if (procedures.size() != 1) {
+        diagnostics.error(
+            SourceRange::invalid(),
+            "one procedure body product owns multiple MIR candidates");
+        return false;
+      }
+      const HirProcedure &procedure = procedures.front();
+      if (procedure.parametric_template || procedure.compile_time_only) {
+        continue;
+      }
+      const std::optional<SemanticProductId> denial =
+          denial_product_for_body(products, work_index);
+      if (!denial.has_value()) {
+        diagnostics.error(
+            SourceRange::invalid(),
+            "runtime procedure has no denial result product");
+        return false;
+      }
+      const std::array dependencies{
+          products.procedure_bodies[work_index],
+          *denial,
+          products.package_static_data,
+          products.package_assembly};
+      const SemanticProductId product = append_workspace_semantic_product(
+          result,
+          SemanticProductKind::MirProcedure,
+          dependencies,
+          owner,
+          false,
+          diagnostics);
+      if (!product.is_valid()) return false;
+      result.semantic_products.procedure_by_product[product.value] =
+          procedure.symbol;
+      products.mir_body_work_indices.push_back(work_index);
+      products.mir_procedures.push_back(product);
+      expected_wave.push_back(product);
+    }
+  }
+  if (expected_wave.empty()) return true;
+
+  const SemanticReadyWave wave =
+      freeze_semantic_ready_wave(result.semantic_graph);
+  if (wave.status != SemanticReadyWaveStatus::Ready ||
+      wave.products != expected_wave) {
+    diagnostics.error(
+        SourceRange::invalid(),
+        "MIR products did not form their exact workspace ready wave" +
+            (wave.failure.empty() ? std::string{} : ": " + wave.failure));
+    return false;
+  }
+  std::vector<MirProcedureTaskSlot> slots(wave.products.size());
+  std::vector<SemanticProductOutcome> outcomes(wave.products.size());
+  for (std::size_t index = 0; index < wave.products.size(); ++index) {
+    const SemanticProductId product = wave.products[index];
+    const PackageId owner =
+        result.semantic_products.package_by_product[product.value];
+    if (!owner.is_valid() || owner.value >= result.packages.size() ||
+        !result.packages[owner.value].has_value()) {
+      diagnostics.error(
+          SourceRange::invalid(), "MIR product has no retained package owner");
+      return false;
+    }
+    CompiledPackage &package = *result.packages[owner.value];
+    const PackageSemanticProducts &products =
+        result.semantic_products.packages[owner.value];
+    const auto position = std::find(
+        products.mir_procedures.begin(),
+        products.mir_procedures.end(),
+        product);
+    if (position == products.mir_procedures.end()) {
+      diagnostics.error(
+          SourceRange::invalid(), "MIR product is absent from its package index");
+      return false;
+    }
+    const std::size_t local_index = static_cast<std::size_t>(
+        position - products.mir_procedures.begin());
+    const std::size_t work_index =
+        products.mir_body_work_indices[local_index];
+    slots[index].semantic = &package.bodies.package;
+    slots[index].body = &package.bodies.procedures[work_index];
+    slots[index].assembly = &package.assembly;
+    slots[index].runtime_assertions = runtime_assertions;
+  }
+  WorkGraph execution_graph;
+  execution_graph.tasks.resize(slots.size());
+  MirProcedureWaveExecution execution{&slots, &outcomes};
+  const WorkGraphRunResult scheduled = run_work_graph(
+      execution_graph,
+      WorkGraphRunOptions{worker_count},
+      execute_mir_procedure_task,
+      &execution);
+  if (timings != nullptr) {
+    timings->add_counter("MIR ready waves", 1);
+    timings->add_counter("MIR procedure tasks", slots.size());
+    timings->add_counter("MIR worker slots", scheduled.workers_used);
+  }
+  if (!scheduled.ok) {
+    std::string failure = "MIR worker scheduling failed";
+    for (std::size_t index = 0; index < scheduled.tasks.size(); ++index) {
+      if (scheduled.tasks[index].state != WorkTaskState::Failed) continue;
+      failure += " at task " + std::to_string(index) + ": " +
+          scheduled.tasks[index].failure;
+      break;
+    }
+    diagnostics.error(SourceRange::invalid(), std::move(failure));
+    return false;
+  }
+  bool mir_ok = true;
+  for (const SemanticProductOutcome &outcome : outcomes) {
+    mir_ok = mir_ok && outcome.kind == SemanticProductOutcomeKind::Complete;
+  }
+  std::string publication_error;
+  if (!publish_semantic_ready_wave(
+          result.semantic_graph,
+          wave,
+          outcomes,
+          diagnostics,
+          publication_error)) {
+    diagnostics.error(
+        SourceRange::invalid(),
+        "cannot publish MIR procedure wave: " + publication_error);
+    return false;
+  }
+  for (std::size_t index = 0; index < wave.products.size(); ++index) {
+    const PackageId owner = result.semantic_products.package_by_product[
+        wave.products[index].value];
+    CompiledPackage &package = *result.packages[owner.value];
+    if (slots[index].result.ok && slots[index].result.lowered) {
+      package.mir.program.add_procedure(
+          std::move(slots[index].result.procedure));
+      ++package.mir.lowered_procedures;
+    } else {
+      package.mir.ok = false;
+    }
+  }
+  if (timings != nullptr) {
+    for (const std::optional<CompiledPackage> &package : result.packages) {
+      if (package.has_value() && package->mir.ok) {
+        timings->add_counter("MIR packages lowered", 1);
+      }
+    }
+  }
+  return mir_ok;
+}
+
 } // namespace
 
 CompileWorkspaceResult compile_workspace(
@@ -6070,6 +6596,30 @@ bool continue_compiled_workspace(
     sort_validation_entries(compiled.validation_entries);
   }
 
+  // Native-bound package facts and executable procedures now continue the
+  // same semantic graph. Parsed assembly is one package payload assembled from
+  // procedure-owned HIR arenas; MIR itself is one immutable task per concrete
+  // runtime body across the complete workspace. No package HIR projection or
+  // semantic-table mutation participates in lowering.
+  if (options.lower_mir || options.emit_llvm) {
+    if (!run_workspace_lowering_barriers(
+            sources,
+            options.target,
+            options.semantic_worker_count,
+            options.timings,
+            compiled,
+            diagnostics) ||
+        !run_workspace_mir_products(
+            options.configuration.runtime_assertions,
+            options.semantic_worker_count,
+            options.timings,
+            compiled,
+            diagnostics)) {
+      compiled.ok = false;
+      return false;
+    }
+  }
+
   for (auto position = schedule.consumer_first_order.rbegin();
        position != schedule.consumer_first_order.rend(); ++position) {
     const std::size_t package_index = *position;
@@ -6086,27 +6636,9 @@ bool continue_compiled_workspace(
               options.timings, "package lowering: ", package.identity)
         : TimingScope{};
 
-    if (options.lower_mir || options.emit_llvm) {
-      const HirProgram package_hir = project_package_body_hir(
-          package.bodies.procedures, package.selected_procedure_work);
-      package.assembly = analyze_aarch64_assembly(
-          sources,
-          workspace_package.loaded,
-          options.target,
-          package.bodies.package,
-          package_hir,
-          diagnostics);
-      if (!package.assembly.ok) continue;
-      package.mir = lower_package_to_mir(
-          package.bodies.package,
-          package_hir,
-          package.assembly,
-          options.configuration.runtime_assertions,
-          diagnostics);
-      if (options.timings != nullptr) {
-        options.timings->add_counter("MIR packages lowered", 1);
-      }
-      if (!package.mir.ok) continue;
+    if ((options.lower_mir || options.emit_llvm) &&
+        (!package.assembly.ok || !package.mir.ok)) {
+      continue;
     }
     if (options.emit_llvm) {
       LlvmIrOptions llvm_options;

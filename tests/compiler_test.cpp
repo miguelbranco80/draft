@@ -481,6 +481,69 @@ void test_procedure_body_worker_counts_are_deterministic(TestState &state) {
     EXPECT(state, right.bodies.package.parametric_instances.size() == 1);
     EXPECT(state, left.bodies.package.parametric_type_instances.size() == 1);
     EXPECT(state, right.bodies.package.parametric_type_instances.size() == 1);
+    EXPECT(state, left.bodies.package.types.size() == left.c_abi.rows.size());
+    EXPECT(state, right.bodies.package.types.size() == right.c_abi.rows.size());
+    const draft::PackageSemanticProducts &left_products =
+        sequential.semantic_products.packages.front();
+    EXPECT(state, left_products.package_static_data.is_valid());
+    EXPECT(state, left_products.package_assembly.is_valid());
+    if (left_products.package_static_data.is_valid()) {
+      const draft::SemanticProduct &row = sequential.semantic_graph.products[
+          left_products.package_static_data.value];
+      EXPECT(state, row.kind == draft::SemanticProductKind::PackageStaticData);
+      EXPECT(state, row.state == draft::SemanticProductState::Complete);
+    }
+    if (left_products.package_assembly.is_valid()) {
+      const draft::SemanticProduct &row = sequential.semantic_graph.products[
+          left_products.package_assembly.value];
+      EXPECT(state, row.kind == draft::SemanticProductKind::PackageAssembly);
+      EXPECT(state, row.state == draft::SemanticProductState::Complete);
+    }
+    EXPECT(state, left_products.mir_body_work_indices.size() ==
+                      left_products.mir_procedures.size());
+    EXPECT(state, left_products.mir_procedures.size() ==
+                      left.mir.program.procedures().size());
+    for (std::size_t mir_index = 0;
+         mir_index < left_products.mir_procedures.size(); ++mir_index) {
+      const std::size_t work_index =
+          left_products.mir_body_work_indices[mir_index];
+      const draft::SemanticProductId product =
+          left_products.mir_procedures[mir_index];
+      const draft::SemanticProduct &row =
+          sequential.semantic_graph.products[product.value];
+      EXPECT(state, row.kind == draft::SemanticProductKind::MirProcedure);
+      EXPECT(state, row.state == draft::SemanticProductState::Complete);
+      EXPECT(state,
+             sequential.semantic_products.procedure_by_product[product.value] ==
+                 left.mir.program.procedures()[mir_index].symbol);
+      EXPECT(state,
+             std::find(row.dependencies.begin(), row.dependencies.end(),
+                       left_products.procedure_bodies[work_index]) !=
+                 row.dependencies.end());
+      EXPECT(state,
+             std::find(row.dependencies.begin(), row.dependencies.end(),
+                       left_products.package_static_data) !=
+                 row.dependencies.end());
+      EXPECT(state,
+             std::find(row.dependencies.begin(), row.dependencies.end(),
+                       left_products.package_assembly) !=
+                 row.dependencies.end());
+      std::optional<draft::SemanticProductId> denial;
+      for (std::size_t denial_index = 0;
+           denial_index < left_products.effect_body_work_indices.size();
+           ++denial_index) {
+        if (left_products.effect_body_work_indices[denial_index] == work_index) {
+          denial = left_products.denial_results[denial_index];
+          break;
+        }
+      }
+      EXPECT(state, denial.has_value());
+      if (denial.has_value()) {
+        EXPECT(state,
+               std::find(row.dependencies.begin(), row.dependencies.end(),
+                         *denial) != row.dependencies.end());
+      }
+    }
   }
   const std::string sequential_report = sequential_timings.render();
   const std::string parallel_report = parallel_timings.render();
@@ -495,6 +558,16 @@ void test_procedure_body_worker_counts_are_deterministic(TestState &state) {
   EXPECT(state, sequential_report.find("denial worker slots: 1") !=
                     std::string::npos);
   EXPECT(state, parallel_report.find("denial worker slots: 4") !=
+                    std::string::npos);
+  EXPECT(state,
+         sequential_report.find("package lowering barrier worker slots: 1") !=
+             std::string::npos);
+  EXPECT(state,
+         parallel_report.find("package lowering barrier worker slots: 2") !=
+             std::string::npos);
+  EXPECT(state, sequential_report.find("MIR worker slots: 1") !=
+                    std::string::npos);
+  EXPECT(state, parallel_report.find("MIR worker slots: 4") !=
                     std::string::npos);
 }
 
@@ -536,6 +609,7 @@ void test_independent_packages_share_one_body_ready_wave(TestState &state) {
   options.target = draft::make_aarch64_macos_profile();
   options.workspace.workspace_directory = root.string();
   options.semantic_worker_count = 4;
+  options.lower_mir = true;
   options.timings = &timings;
   const draft::CompileWorkspaceResult compiled = draft::compile_workspace(
       sources, (root / "app").string(), std::move(options), diagnostics);
@@ -554,6 +628,13 @@ void test_independent_packages_share_one_body_ready_wave(TestState &state) {
                     std::string::npos);
   EXPECT(state, report.find("ABI classification ready waves: 1") !=
                     std::string::npos);
+  EXPECT(state, report.find("package lowering barrier ready waves: 1") !=
+                    std::string::npos);
+  EXPECT(state, report.find("package lowering barrier worker slots: 4") !=
+                    std::string::npos);
+  EXPECT(state, report.find("MIR ready waves: 1") != std::string::npos);
+  EXPECT(state, report.find("MIR procedure tasks: 2") != std::string::npos);
+  EXPECT(state, report.find("MIR worker slots: 2") != std::string::npos);
 }
 
 // Source diagnostics are stored in task-indexed sinks and replayed only after
