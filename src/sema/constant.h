@@ -104,25 +104,46 @@ enum class CompileTimeProductStatus {
 // ConstantProductAttempt is task-owned. The caller supplies a private semantic
 // package snapshot because successful evaluation may infer the root Symbol's
 // type, intern an exact structural type value, or discover synthesis metadata.
-// Only Complete may be published. Blocked names canonical local SymbolIds and
-// exact type facets; Error has already emitted a source diagnostic into the
-// caller-owned task sink.
+// Only Complete may be published. Blocked separately names unfinished
+// declaration classifications, constant values, and exact type facets. Its
+// provisional diagnostics are discarded because a missing prerequisite may
+// make an otherwise diagnostic expression valid; Error alone publishes the
+// task-owned source diagnostics.
 struct ConstantProductAttempt {
   CompileTimeProductStatus status = CompileTimeProductStatus::Error;
   std::optional<EvaluatedConstant> result;
+  std::vector<SymbolId> declaration_dependencies;
+  std::vector<SymbolId> constant_dependencies;
+  std::vector<TypeFacetDependency> type_dependencies;
+  std::vector<SymbolId> compile_time_procedures;
+};
+
+// IntegerExpressionProductAttempt is the task-owned result of evaluating one
+// declaration-owned integer recipe, such as an array count, enum value, or
+// `@align` argument. The recipe is deliberately part of its owning declaration
+// product rather than a graph node per expression. Blocked names the exact
+// declaration, constant, and type-facet products which must publish before the
+// owner can be attempted again. Complete retains the interpreter's exact Draft
+// type so the type resolver can distinguish, for example, usize from u64 even
+// when the selected target gives them the same representation.
+struct IntegerExpressionProductAttempt {
+  CompileTimeProductStatus status = CompileTimeProductStatus::Error;
+  std::optional<EvaluatedConstant> result;
+  std::vector<SymbolId> declaration_dependencies;
   std::vector<SymbolId> constant_dependencies;
   std::vector<TypeFacetDependency> type_dependencies;
   std::vector<SymbolId> compile_time_procedures;
 };
 
 // ConditionalProductAttempt is the task-owned result for one package or member
-// `when` site. Complete publishes selected_true. Blocked names every local
-// ConstantValue and exact type facet required by the condition. Waiting does
-// not select either branch, and Error has already emitted the source-located
-// condition diagnostic into the task sink.
+// `when` site. Complete publishes selected_true. Blocked names every unfinished
+// declaration classification, local ConstantValue, and exact type facet
+// required by the condition. Waiting does not select either branch, and Error
+// alone publishes the source-located condition diagnostic from the task sink.
 struct ConditionalProductAttempt {
   CompileTimeProductStatus status = CompileTimeProductStatus::Error;
   bool selected_true = false;
+  std::vector<SymbolId> declaration_dependencies;
   std::vector<SymbolId> constant_dependencies;
   std::vector<TypeFacetDependency> type_dependencies;
   std::vector<SymbolId> compile_time_procedures;
@@ -223,6 +244,20 @@ struct CompileTimeExpressionDiscoveryResult {
     const ConstantTable &published_constants,
     CompileTimeSynthesisMode synthesis_mode,
     DiagnosticSink &diagnostics);
+
+// Evaluates one integer-valued syntax site as part of root's declaration-type
+// product. References to unfinished package declarations, unpublished local
+// constants, or incomplete type facets are returned as explicit blockers. The
+// function never recursively completes another graph product and publishes no
+// mutation by itself. A blocked attempt contributes no diagnostics because its
+// private evaluation may have observed only a provisional semantic snapshot.
+[[nodiscard]] IntegerExpressionProductAttempt
+evaluate_integer_expression_product(
+    const SourceManager &sources, const LoadedPackage &loaded,
+    SemanticPackage &task_package, const TargetFacts &target,
+    const SyntaxTree &tree, NodeId expression, ScopeId scope, TypeId expected,
+    SymbolId root, const ConstantTable &published_constants,
+    CompileTimeSynthesisMode synthesis_mode, DiagnosticSink &diagnostics);
 
 // Evaluates exactly one declaration/member `when` condition against published
 // local constants and ready imported-interface values. It neither appends a

@@ -7,11 +7,13 @@
 // lifetime must enclose the result and every continuation or diagnostic render.
 //
 // Compilation is deterministic and provider-free. A dynamic semantic product
-// graph orders target, source, parsed-file, package-name, named-constant,
-// synthesis, and package-interface facts; dependencies publish before
-// consumers. Constant workers evaluate one root against immutable published
-// prerequisites; the coordinator interns task-local structural type values and
-// publishes constants in product-ID order. An unchanged source
+// graph orders target, source, parsed-file, package-name, declaration type,
+// nominal layout, conditional choice, named-constant, synthesis, and
+// package-interface facts; dependencies publish before consumers. Declaration
+// and constant workers evaluate one root against immutable published
+// prerequisites; the coordinator publishes accepted package snapshots,
+// structural type values, layouts, branch selections, and constants in
+// product-ID order. An unchanged source
 // graph advances from interface discovery to semantic closure to target
 // lowering. A checked source overlay appends a successor source generation and
 // new declaration products only for affected packages, then reuses or extends
@@ -229,7 +231,8 @@ struct WorkspaceDependencyIndex {
 };
 
 // PackageSemanticProducts names the current source generation's eager file and
-// import facts plus the two interface-stage semantic barriers for one package.
+// import facts, declaration products, and two interface-stage barriers for one
+// package.
 // parsed_files follow LoadedPackage::files after assembly-only rows are
 // omitted. imports depends on those exact parsed-file products. name_set
 // depends on the selected target, this package's eager inputs, and every
@@ -243,12 +246,14 @@ struct PackageSemanticProducts {
   std::vector<SemanticProductId> parsed_files;
   SemanticProductId imports;
   SemanticProductId name_set;
-  // One declaration-type row per package symbol whose signature or type must
-  // be completed. Nominal identities are eager; their row produces members and
-  // member types. Other rows produce TypeIdentity directly.
+  // One declaration-type row per authored package symbol whose signature or
+  // type must be completed. Nominal identities are eager; their row produces
+  // members and member types. Other rows produce TypeIdentity directly.
   std::vector<SemanticProductId> declaration_types;
-  // One TypeNaturalLayout row per nominal aggregate identity. These products
-  // consume declaration_types and may add edges to other layout rows.
+  // One TypeNaturalLayout row per non-parametric authored nominal aggregate.
+  // Symbolic templates have no single layout; their concrete applications are
+  // owned by the generic-demand path. These products consume declaration_types
+  // and may add edges to other layout rows.
   std::vector<SemanticProductId> natural_layouts;
   // One compile-time branch-choice row per discovered package/member `when`.
   // New selected syntax may append more rows before name_set closes.

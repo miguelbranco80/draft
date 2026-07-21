@@ -35,50 +35,41 @@ gate.
    `when` branches publish declarations into a deterministic package-name
    barrier. Declaration cycles and inline-layout cycles become precise graph
    diagnostics. Delete provisional semantic rounds and discarded packages.
-   Initial collection/import binding and package-branch materialization are now
-   append-only. `TypeStore` now retains identity, members, member types, and
-   natural layout as separate completion facets, and type inspection blocks on
-   the exact missing facet instead of reading partial rows. The bundled nominal
-   completion API is gone; member-name, member-type, and natural-layout
-   publication are separate one-way operations. Aggregate natural layout is a
-   pure producer that distinguishes dependency waits from arithmetic overflow
-   and returns the exact incomplete input types in first-use order, ready to
-   become graph edges; its arithmetic no longer belongs to declaration
-   resolution. The
-   nominal NaturalLayout task now evaluates one type into a task-owned packet,
-   names exact MemberTypes or NaturalLayout blockers, and publishes through a
-   separate one-way coordinator operation. Ordinary aggregate resolution uses
-   that same task contract synchronously; wiring those attempts to workspace
-   TypeNaturalLayout rows remains. The terminal discovery
-   package is now published directly, so the redundant final aggregate type
-   replay is gone. The remaining work is to make those producers individual
-   graph tasks and replace the private type/constant/layout readiness copies.
-   A single-declaration TypeIdentity attempt now consumes only explicitly
-   completed declaration products, returns forward aliases as stable SymbolId
-   blockers, names local ConstantValue prerequisites for layout integers and
-   type-valued declarations instead of recursively evaluating them, and keeps
-   blocked mutations and diagnostics task-local. For nominal declarations that
-   attempt stops after MemberTypes; a separate NaturalLayout attempt is now the
-   only product path that can publish physical layout. The
-   workspace still needs typed product indices and deterministic publication
-   before this path can replace the recursive package resolver. Eager authored
-   declaration collection and import binding are now exposed as a distinct
-   nonterminal discovery operation whose payload is the authoritative
-   append-only table the workspace coordinator will retain. Its matching
-   PackageNameSet close operation performs no evaluation: it accepts only an
-   already selected, typed, and naturally laid-out payload, then installs the
-   runtime Context and marks that barrier terminal.
-   Complete workspace compilation now schedules every final package-scope
-   constant as an individual product with explicit constant dependencies,
-   coordinator-owned structural-type interning, and an interface barrier that
-   consumes published local values without recomputation. Ready imported
-   constants remain upstream interface inputs and are copied to consumer-local
-   proxy bindings at finalization. A one-site conditional producer now returns
-   a boolean selection or exact constant/type-facet/synthesis blockers without
-   mutating the branch table. The remaining declaration work is to connect that
-   producer to dynamic branch discovery, productize type/member/layout facets,
-   extend the same path through interface-synthesis waits, and then delete the
-   private readiness attempts and aggregate compatibility composition.
+
+   Complete workspace compilation now retains one append-only declaration
+   package and schedules authored declaration types, non-parametric nominal
+   layouts, package/member conditional choices, and final named constants as
+   individual products. Forward type aliases and type-valued constant uses add
+   exact `SymbolId` edges; aggregate layout adds exact type-facet edges; a
+   selected package branch appends only its new declarations and conditions.
+   Blocked attempts own disposable package copies and diagnostics, while the
+   coordinator publishes successful snapshots, structural constant types,
+   layouts, selections, and values in `SemanticProductId` order. The
+   `PackageNameSet` barrier closes only after those indexed products complete.
+   Imported interface nominals are immutable upstream inputs, and symbolic
+   parametric templates intentionally receive member-type products but no
+   fictitious concrete layout product.
+
+   `TypeStore` retains identity, members, member types, and natural layout as
+   separate one-way facets. Natural layout is produced by the single pure
+   `sema/type_product` contract, which distinguishes exact waits from overflow;
+   declaration resolution no longer publishes an authored nominal layout in
+   product mode. Tests at the public compiler boundary prove a forward
+   declaration edge, a full-interpreter layout-call edge, a separate nominal-
+   layout edge, constant-to-member-facet edges, stable structural-type
+   publication across mixed waves, source-generation supersession, and full
+   core/generic pipeline composition.
+
+   This step remains open in three places. Interface-synthesis discovery still
+   uses the aggregate declaration compatibility path until opaque waits produce
+   graph successors. Conditional aggregate members need an explicit
+   member-name/member-type continuation rather than sharing the declaration
+   attempt. ABI classification still lacks its own product. The terminal
+   barrier also carries one narrow exception for an imported owner-evaluated
+   generic shell; step 4 replaces that owner retry and declaration rebuild with
+   canonical generic-demand products. Once those paths move, delete
+   `discover_package_declarations`, the aggregate conditional/readiness rounds,
+   and the remaining private readiness copies.
 
 4. **Canonical generic type demand.** Give every concrete type application one
    canonical command-local key and owner task. Cross-package owner evaluation

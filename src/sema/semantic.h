@@ -1,13 +1,13 @@
 // Append-only declaration selection plus terminal type/constant discovery.
 //
-// Initial collection and interface binding run once. Package-level `when`
-// regions retain their lexical declaration context; each ready selection
-// appends only its chosen branch to the authoritative declaration generation.
-// Until type, constant, and layout facets become independent semantic products,
-// blocked discovery attempts evaluate those facts on private copies. The first
-// no-progress attempt becomes the authoritative semantic package and contributes
-// its type diagnostics; constant validation then runs against that exact package.
-// Type resolution is never replayed merely to recreate an equivalent final row.
+// Initial collection and interface binding run once. In complete workspace
+// compilation, package-level `when` selections append only their chosen branch
+// and declaration, constant, and nominal-layout products publish into that
+// authoritative generation before its one terminal close operation. Direct
+// semantic clients and interface-synthesis discovery still use the aggregate
+// compatibility composition declared below; it evaluates readiness on private
+// copies and retains only the terminal package. Neither path owns source bytes,
+// invokes providers, or lowers target IR.
 
 #pragma once
 
@@ -43,9 +43,9 @@ struct SemanticAnalysisResult {
 // PackageDeclarationDiscovery owns the selected declaration/type graph before
 // final constant validation, storage initialization, and target checks. It is
 // the payload of PackageNameSet while ConstantValue products are scheduled.
-// terminal is false only when branch materialization could not produce a
-// coherent name set. blocked_integer_synthesis is phase-private dependency
-// evidence retained for the final discovery-mode check; it is never serialized.
+// terminal is false while graph products or aggregate discovery are incomplete.
+// blocked_integer_synthesis is phase-private dependency evidence retained for
+// the final discovery-mode check; it is never serialized.
 struct PackageDeclarationDiscovery {
   bool terminal = false;
   bool discovery_ok = false;
@@ -74,14 +74,15 @@ struct PackageDeclarationDiscovery {
     DiagnosticSink &diagnostics);
 
 // Closes the PackageNameSet barrier after graph products have published all
-// selected declarations, declaration types, member types, and natural layouts.
-// The operation performs no semantic evaluation. It validates readiness,
-// installs the compiler-defined runtime Context, and advances terminal exactly
-// once. A false result has emitted an integration diagnostic and leaves the
-// payload nonterminal.
-[[nodiscard]] bool finish_package_declaration_discovery(
-    PackageDeclarationDiscovery &discovery,
-    DiagnosticSink &diagnostics);
+// selected declarations, declaration types, member types, and every applicable
+// natural layout. Symbolic parametric templates require their member pattern,
+// not a nonexistent concrete layout. The operation performs no semantic
+// evaluation. It validates readiness, installs the compiler-defined runtime
+// Context, and advances terminal exactly once. A false result has emitted an
+// integration diagnostic and leaves the payload nonterminal.
+[[nodiscard]] bool
+finish_package_declaration_discovery(PackageDeclarationDiscovery &discovery,
+                                     DiagnosticSink &diagnostics);
 
 // Performs collection, interface binding, append-only package `when`
 // materialization, and terminal type discovery. It deliberately stops before

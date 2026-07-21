@@ -185,15 +185,13 @@ public:
       return result;
     }
     resolve_symbol(product_root_);
-    if (!declaration_dependencies_.empty()) {
+    canonicalize_product_dependencies();
+    if (!declaration_dependencies_.empty() || !constant_dependencies_.empty() ||
+        !type_dependencies_.empty()) {
       result.status = TypeProductStatus::Blocked;
       result.declaration_dependencies = declaration_dependencies_;
       result.constant_dependencies = constant_dependencies_;
-      return result;
-    }
-    if (!constant_dependencies_.empty()) {
-      result.status = TypeProductStatus::Blocked;
-      result.constant_dependencies = constant_dependencies_;
+      result.type_dependencies = type_dependencies_;
       return result;
     }
     result.status = diagnostics_.has_errors()
@@ -202,6 +200,100 @@ public:
     return result;
   }
 
+private:
+  // A declaration-owned expression may encounter the same prerequisite through
+  // several syntax paths (for example both size_of(T) and align_of(T)). The
+  // coordinator requires one stable edge packet, independent of traversal
+  // accidents, so normalize all three dependency domains before returning the
+  // task result.
+  void canonicalize_product_dependencies() {
+    std::sort(
+        declaration_dependencies_.begin(), declaration_dependencies_.end(),
+        [](SymbolId left, SymbolId right) { return left.value < right.value; });
+    declaration_dependencies_.erase(
+        std::unique(declaration_dependencies_.begin(),
+                    declaration_dependencies_.end()),
+        declaration_dependencies_.end());
+    std::sort(
+        constant_dependencies_.begin(), constant_dependencies_.end(),
+        [](SymbolId left, SymbolId right) { return left.value < right.value; });
+    constant_dependencies_.erase(std::unique(constant_dependencies_.begin(),
+                                             constant_dependencies_.end()),
+                                 constant_dependencies_.end());
+    std::sort(
+        type_dependencies_.begin(), type_dependencies_.end(),
+        [](const TypeFacetDependency &left, const TypeFacetDependency &right) {
+          if (left.type != right.type)
+            return left.type.value < right.type.value;
+          return static_cast<int>(left.facet) < static_cast<int>(right.facet);
+        });
+    type_dependencies_.erase(
+        std::unique(type_dependencies_.begin(), type_dependencies_.end()),
+        type_dependencies_.end());
+  }
+
+  // Reduces a waiting derived layout to the authored nominal products that can
+  // actually unblock it in the current graph. Arrays, tuples, distinct types,
+  // and concrete generic instances have derived shapes but no independent
+  // TypeNaturalLayout row in this migration step. Reporting one of those
+  // intermediate TypeIds would leave the coordinator unable to find an owner.
+  // Pointer recursion stops naturally because pointer layout is complete;
+  // active also protects malformed recovery graphs from recursive traversal.
+  void record_natural_layout_dependencies(TypeId type,
+                                          std::vector<TypeId> &active) {
+    if (!type.is_valid() ||
+        semantic_.types.facet_state(type, TypeFacet::NaturalLayout) !=
+            TypeFacetState::Waiting ||
+        std::find(active.begin(), active.end(), type) != active.end()) {
+      return;
+    }
+    active.push_back(type);
+    const Type &value = semantic_.types.type(type);
+    const bool nominal =
+        value.kind == TypeKind::Struct || value.kind == TypeKind::Enum ||
+        value.kind == TypeKind::TaggedUnion || value.kind == TypeKind::RawUnion;
+    bool concrete_instance = false;
+    if (nominal) {
+      // A waiting imported nominal with concrete owner-evaluated arguments is
+      // represented by ImportedTypeInstantiationRequest, not by a product in
+      // this consumer package. The package-owner publication seam consumes that
+      // request after the name barrier. Step 4 replaces the seam with a
+      // cross-package canonical generic-demand edge; until then, do not invent
+      // an unresolvable local NaturalLayout dependency for the proxy TypeId.
+      for (const ImportedType &imported : semantic_.imported_types) {
+        if (imported.type == type) {
+          active.pop_back();
+          return;
+        }
+      }
+      for (const ParametricTypeInstanceRecord &instance :
+           semantic_.parametric_type_instances) {
+        if (semantic_.symbols.symbol(instance.instance).type == type) {
+          concrete_instance = true;
+          break;
+        }
+      }
+      if (!concrete_instance) {
+        type_dependencies_.push_back({type, TypeFacet::NaturalLayout});
+        active.pop_back();
+        return;
+      }
+    }
+    if (value.element.is_valid()) {
+      record_natural_layout_dependencies(value.element, active);
+    }
+    for (TypeId member : value.members) {
+      record_natural_layout_dependencies(member, active);
+    }
+    active.pop_back();
+  }
+
+  void record_natural_layout_dependencies(TypeId type) {
+    std::vector<TypeId> active;
+    record_natural_layout_dependencies(type, active);
+  }
+
+public:
   // Public single-node entry used by body checking after package declarations
   // have already been resolved by resolve().
   [[nodiscard]] TypeId resolve_one_type(
@@ -758,22 +850,28 @@ private:
   // enum values and @align. Conversion to u64 happens only after arbitrary-
   // precision evaluation, so overflow and negative values never wrap through
   // the bootstrap host.
-  [[nodiscard]] std::optional<std::uint64_t> layout_integer(
-      const SyntaxTree &tree, NodeId expression_id, ScopeId scope) {
+  [[nodiscard]] std::optional<std::uint64_t>
+  layout_integer(const SyntaxTree &tree, NodeId expression_id, ScopeId scope) {
     const std::optional<BigInteger> value = integer_constant_expression(
-        tree, expression_id, scope);
+        tree, expression_id, scope, semantic_.types.builtins().usize_type);
     return value.has_value() ? value->to_u64() : std::nullopt;
   }
 
   // Looks up a full-interpreter result produced by a prior semantic round.
   // Returning a pointer is safe only until the resolver returns: the driver
   // keeps the supplied vector immutable for the entire clean rebuild.
-  [[nodiscard]] const ResolvedIntegerExpression *resolved_integer(
-      const SyntaxTree &tree, NodeId expression) const {
-    if (resolved_integers_ == nullptr) return nullptr;
+  [[nodiscard]] const ResolvedIntegerExpression *
+  resolved_integer(const SyntaxTree &tree, NodeId expression) const {
     const SyntaxReference wanted{tree.file(), expression};
-    for (const ResolvedIntegerExpression &entry : *resolved_integers_) {
-      if (entry.syntax == wanted) return &entry;
+    if (resolved_integers_ != nullptr) {
+      for (const ResolvedIntegerExpression &entry : *resolved_integers_) {
+        if (entry.syntax == wanted)
+          return &entry;
+      }
+    }
+    for (const ResolvedIntegerExpression &entry : product_integers_) {
+      if (entry.syntax == wanted)
+        return &entry;
     }
     return nullptr;
   }
@@ -2843,6 +2941,7 @@ private:
     }
 
     TypeLayout layout;
+    NaturalAggregateLayout natural_layout;
     TypeId element = template_type.element;
     if (!has_owner_evaluated_argument) {
       element = substitute_type(
@@ -2857,20 +2956,36 @@ private:
       // layout exists until the defining package evaluates the argument.
       layout = {};
     } else if (template_type.kind == TypeKind::Struct) {
-      layout = retain_natural_layout(
-          data,
-          compute_struct_natural_layout(semantic_.types, data.types));
+      natural_layout =
+          compute_struct_natural_layout(semantic_.types, data.types);
+      layout = retain_natural_layout(data, natural_layout);
     } else if (template_type.kind == TypeKind::RawUnion) {
-      layout = retain_natural_layout(
-          data,
-          compute_raw_union_natural_layout(semantic_.types, data.types));
+      natural_layout =
+          compute_raw_union_natural_layout(semantic_.types, data.types);
+      layout = retain_natural_layout(data, natural_layout);
     } else if (template_type.kind == TypeKind::Enum) {
       layout = semantic_.types.type(element).layout;
+      if (!layout.known) {
+        natural_layout.status = NaturalLayoutStatus::Waiting;
+        natural_layout.dependencies.push_back(element);
+      }
     } else {
-      layout = retain_natural_layout(
-          data,
-          compute_tagged_union_natural_layout(
-              semantic_.types, element, data.types));
+      natural_layout = compute_tagged_union_natural_layout(semantic_.types,
+                                                           element, data.types);
+      layout = retain_natural_layout(data, natural_layout);
+    }
+    // A concrete application discovered while resolving a declaration is
+    // owned by that declaration task. If its physical shape depends on an
+    // authored nominal whose layout product is still waiting, report those
+    // exact prerequisites and discard this private instance. The retry then
+    // constructs the canonical application once from completed inputs. This is
+    // the transitional declaration-product behavior; step 4 gives the
+    // application itself a canonical demand product and removes this coupling.
+    if (product_root_.is_valid() && !has_owner_evaluated_argument &&
+        natural_layout.status == NaturalLayoutStatus::Waiting) {
+      for (TypeId dependency : natural_layout.dependencies) {
+        record_natural_layout_dependencies(dependency);
+      }
     }
     layout = apply_requested_alignment(
         layout, template_type.requested_alignment, use_range);
@@ -2951,7 +3066,8 @@ private:
           value = root.constant;
           supplied_type = integer_expression_type(root.type);
         } else {
-          value = integer_constant_expression(tree, argument_node, scope);
+          value =
+              integer_constant_expression(tree, argument_node, scope, required);
         }
       }
       if (!value.has_value()) {
@@ -3378,7 +3494,19 @@ private:
             "array length must be a nonzero compile-time usize");
         return invalid;
       }
-      return semantic_.types.array(element, *count);
+      const TypeId array = semantic_.types.array(element, *count);
+      // Structural identity is available immediately, but an inline array has
+      // no natural layout until its element does. In product mode retain that
+      // distinction as an explicit edge so the task snapshot is discarded and
+      // rebuilt once, after the element layout product publishes.
+      if (product_root_.is_valid() &&
+          semantic_.types.facet_state(array, TypeFacet::NaturalLayout) ==
+              TypeFacetState::Waiting &&
+          semantic_.types.facet_state(element, TypeFacet::NaturalLayout) ==
+              TypeFacetState::Waiting) {
+        record_natural_layout_dependencies(element);
+      }
+      return array;
     }
 
     case NodeKind::SimdType: {
@@ -3433,7 +3561,15 @@ private:
             "SIMD lane count must be a nonzero compile-time usize");
         return invalid;
       }
-      return semantic_.types.simd(element, *lanes, node.range);
+      const TypeId simd = semantic_.types.simd(element, *lanes, node.range);
+      if (product_root_.is_valid() &&
+          semantic_.types.facet_state(simd, TypeFacet::NaturalLayout) ==
+              TypeFacetState::Waiting &&
+          semantic_.types.facet_state(element, TypeFacet::NaturalLayout) ==
+              TypeFacetState::Waiting) {
+        record_natural_layout_dependencies(element);
+      }
+      return simd;
     }
 
     case NodeKind::TupleType: {
@@ -3447,7 +3583,18 @@ private:
         diagnostics_.error(node.range, "tuple type requires at least two members");
         return invalid;
       }
-      return semantic_.types.tuple(members);
+      const TypeId tuple = semantic_.types.tuple(members);
+      if (product_root_.is_valid() &&
+          semantic_.types.facet_state(tuple, TypeFacet::NaturalLayout) ==
+              TypeFacetState::Waiting) {
+        for (TypeId member : members) {
+          if (semantic_.types.facet_state(member, TypeFacet::NaturalLayout) ==
+              TypeFacetState::Waiting) {
+            record_natural_layout_dependencies(member);
+          }
+        }
+      }
+      return tuple;
     }
 
     case NodeKind::ProcedureType:
@@ -3623,10 +3770,14 @@ private:
   }
 
   // Enum values participate in layout before the general constant pass runs.
-  // This evaluator covers their exact integer vocabulary plus named constants,
-  // array/SIMD lengths, and @align without host-width arithmetic.
-  [[nodiscard]] std::optional<BigInteger> integer_constant_expression(
-      const SyntaxTree &tree, NodeId expression_id, ScopeId scope) {
+  // This narrow evaluator covers literals, enum members, named constants, and
+  // exact arithmetic without entering general procedure execution. It remains
+  // the inexpensive path for ordinary syntax and the aggregate compatibility
+  // path. A declaration graph product falls through to the full interpreter
+  // only when this vocabulary cannot represent the expression.
+  [[nodiscard]] std::optional<BigInteger>
+  narrow_integer_constant_expression(const SyntaxTree &tree,
+                                     NodeId expression_id, ScopeId scope) {
     if (const ResolvedIntegerExpression *resolved =
             resolved_integer(tree, expression_id)) {
       return resolved->value;
@@ -3653,7 +3804,8 @@ private:
     }
     if (expression.kind == NodeKind::GroupExpression &&
         !expression.children.empty()) {
-      return integer_constant_expression(tree, expression.children.front(), scope);
+      return narrow_integer_constant_expression(
+          tree, expression.children.front(), scope);
     }
     if (expression.kind == NodeKind::NameExpression) {
       const std::vector<SourceName> names = names_in_span(
@@ -3694,8 +3846,10 @@ private:
     if (expression.kind == NodeKind::UnaryExpression &&
         !expression.children.empty()) {
       const std::optional<BigInteger> operand =
-          integer_constant_expression(tree, expression.children.front(), scope);
-      if (!operand.has_value()) return std::nullopt;
+          narrow_integer_constant_expression(tree, expression.children.front(),
+                                             scope);
+      if (!operand.has_value())
+        return std::nullopt;
       const TokenKind operation = tree.token(expression.token_begin).kind;
       if (operation == TokenKind::Plus) return *operand;
       if (operation == TokenKind::Minus) return operand->negated();
@@ -3707,10 +3861,11 @@ private:
       return std::nullopt;
     }
     const std::optional<BigInteger> left =
-        integer_constant_expression(tree, expression.children[0], scope);
+        narrow_integer_constant_expression(tree, expression.children[0], scope);
     const std::optional<BigInteger> right =
-        integer_constant_expression(tree, expression.children[1], scope);
-    if (!left.has_value() || !right.has_value()) return std::nullopt;
+        narrow_integer_constant_expression(tree, expression.children[1], scope);
+    if (!left.has_value() || !right.has_value())
+      return std::nullopt;
     switch (expression_binary_operator(tree, expression)) {
     case TokenKind::Plus: return left->added(*right);
     case TokenKind::Minus: return left->subtracted(*right);
@@ -3742,6 +3897,70 @@ private:
     default:
       return std::nullopt;
     }
+  }
+
+  // Evaluates a declaration-owned integer recipe without introducing a graph
+  // node for the expression itself. The containing declaration product is the
+  // coherent scheduling unit. If the narrow evaluator cannot represent the
+  // source, the ordinary constant interpreter runs against the task snapshot
+  // and returns exact prerequisites rather than completing them recursively.
+  // Successful typed results are retained only for this attempt so the nearby
+  // contextual-type check observes precisely the value just computed.
+  [[nodiscard]] std::optional<BigInteger>
+  integer_constant_expression(const SyntaxTree &tree, NodeId expression_id,
+                              ScopeId scope, TypeId expected = {}) {
+    const std::optional<BigInteger> narrow =
+        narrow_integer_constant_expression(tree, expression_id, scope);
+    if (narrow.has_value() || !product_root_.is_valid())
+      return narrow;
+    // A symbolic template recipe is not ready work for the declaration
+    // product. Its exact expression is retained and evaluated by the canonical
+    // concrete generic instance. Running the full interpreter here would turn
+    // a legitimate N-dependent array count into a spurious pending-expression
+    // diagnostic before the caller reaches its dependent-expression path.
+    if (expression_references_parametric_parameter(tree, expression_id,
+                                                   scope)) {
+      return std::nullopt;
+    }
+    if (target_ == nullptr || active_constants_ == nullptr) {
+      diagnostics_.error(
+          tree.node(expression_id).range,
+          "declaration product has no compile-time evaluation inputs");
+      return std::nullopt;
+    }
+
+    IntegerExpressionProductAttempt attempt =
+        evaluate_integer_expression_product(
+            sources_, loaded_, semantic_, *target_, tree, expression_id, scope,
+            expected, product_root_, *active_constants_,
+            CompileTimeSynthesisMode::Reject, diagnostics_);
+    declaration_dependencies_.insert(declaration_dependencies_.end(),
+                                     attempt.declaration_dependencies.begin(),
+                                     attempt.declaration_dependencies.end());
+    constant_dependencies_.insert(constant_dependencies_.end(),
+                                  attempt.constant_dependencies.begin(),
+                                  attempt.constant_dependencies.end());
+    type_dependencies_.insert(type_dependencies_.end(),
+                              attempt.type_dependencies.begin(),
+                              attempt.type_dependencies.end());
+    if (attempt.status != CompileTimeProductStatus::Complete ||
+        !attempt.result.has_value()) {
+      return std::nullopt;
+    }
+
+    const EvaluatedConstant &evaluated = *attempt.result;
+    ResolvedIntegerExpression resolved;
+    resolved.syntax = {tree.file(), expression_id};
+    resolved.value = evaluated.value.integer;
+    if (evaluated.type.is_valid()) {
+      const TypeKind kind = semantic_.types.type(evaluated.type).kind;
+      if (kind == TypeKind::UntypedInteger || kind == TypeKind::SignedInteger ||
+          kind == TypeKind::UnsignedInteger) {
+        resolved.type = integer_expression_type(evaluated.type);
+      }
+    }
+    product_integers_.push_back(std::move(resolved));
+    return evaluated.value.integer;
   }
 
   // Validates the closed Draft 1 representation-attribute vocabulary. The
@@ -3818,7 +4037,8 @@ private:
           }
           const SyntaxNode &argument = tree.node(attribute.children.front());
           const std::optional<BigInteger> value = integer_constant_expression(
-              tree, attribute.children.front(), scope);
+              tree, attribute.children.front(), scope,
+              semantic_.types.builtins().usize_type);
           if (!value.has_value()) {
             require_integer_expression(
                 tree,
@@ -3911,7 +4131,8 @@ private:
           : data.enum_values.back().added(BigInteger::from_u64(1));
       if (!member.children.empty()) {
         const std::optional<BigInteger> explicit_value =
-            integer_constant_expression(tree, member.children.front(), scope);
+            integer_constant_expression(tree, member.children.front(), scope,
+                                        data.enum_value_expected_type);
         if (!explicit_value.has_value()) {
           require_integer_expression(
               tree,
@@ -4474,6 +4695,11 @@ private:
   SymbolId product_root_;
   std::vector<SymbolId> declaration_dependencies_;
   std::vector<SymbolId> constant_dependencies_;
+  std::vector<TypeFacetDependency> type_dependencies_;
+  // Full-interpreter results exist only for the lifetime of one declaration
+  // task. They bridge evaluation to the immediately following contextual type
+  // check; no command state or cache retains them after publication.
+  std::vector<ResolvedIntegerExpression> product_integers_;
 };
 
 } // namespace

@@ -175,10 +175,12 @@ public:
     const EvalResult evaluated = evaluate_binding(root, true);
     attempt.compile_time_procedures = compile_time_procedures_;
     canonicalize_product_dependencies();
+    attempt.declaration_dependencies = declaration_dependencies_;
     attempt.constant_dependencies = constant_dependencies_;
     attempt.type_dependencies = type_dependencies_;
 
-    if (!attempt.constant_dependencies.empty() ||
+    if (!attempt.declaration_dependencies.empty() ||
+        !attempt.constant_dependencies.empty() ||
         !attempt.type_dependencies.empty()) {
       attempt.status = CompileTimeProductStatus::Blocked;
       return attempt;
@@ -201,6 +203,52 @@ public:
           "constant '" + symbol.name + "' is not compile-time evaluable");
     }
     attempt.status = CompileTimeProductStatus::Error;
+    return attempt;
+  }
+
+  // Evaluates one integer recipe owned by a declaration-type product. This is
+  // not an independently scheduled expression product: the result becomes one
+  // field of the declaration's immutable member/type packet. Dependency
+  // discovery nevertheless uses the same product-only binding rules as a named
+  // constant, so a call such as `count_for(2)` blocks on count_for's resolved
+  // procedure declaration instead of entering unresolved procedure syntax.
+  [[nodiscard]] IntegerExpressionProductAttempt
+  run_integer_expression(const SyntaxTree &tree, NodeId expression,
+                         ScopeId scope, TypeId expected) {
+    IntegerExpressionProductAttempt attempt;
+    const EvalResult evaluated =
+        evaluate_expression(tree, expression, scope, true, expected);
+    attempt.compile_time_procedures = compile_time_procedures_;
+    canonicalize_product_dependencies();
+    attempt.declaration_dependencies = declaration_dependencies_;
+    attempt.constant_dependencies = constant_dependencies_;
+    attempt.type_dependencies = type_dependencies_;
+
+    if (!attempt.declaration_dependencies.empty() ||
+        !attempt.constant_dependencies.empty() ||
+        !attempt.type_dependencies.empty()) {
+      attempt.status = CompileTimeProductStatus::Blocked;
+      return attempt;
+    }
+    if (evaluated.status == EvalStatus::BlockedBySynthesis) {
+      attempt.status = CompileTimeProductStatus::WaitingForSynthesis;
+      return attempt;
+    }
+    if (evaluated.status == EvalStatus::Ready) {
+      if (evaluated.value.kind != ConstantKind::Integer) {
+        diagnostics_.error(
+            tree.node(expression).range,
+            "compile-time layout expression must produce an integer");
+        return attempt;
+      }
+      attempt.status = CompileTimeProductStatus::Complete;
+      attempt.result = EvaluatedConstant{evaluated.value, evaluated.type};
+      return attempt;
+    }
+    if (evaluated.status == EvalStatus::Pending) {
+      diagnostics_.error(tree.node(expression).range,
+                         "expression is not compile-time evaluable");
+    }
     return attempt;
   }
 
@@ -242,9 +290,11 @@ public:
         semantic_.types.builtins().bool_type);
     attempt.compile_time_procedures = compile_time_procedures_;
     canonicalize_product_dependencies();
+    attempt.declaration_dependencies = declaration_dependencies_;
     attempt.constant_dependencies = constant_dependencies_;
     attempt.type_dependencies = type_dependencies_;
-    if (!attempt.constant_dependencies.empty() ||
+    if (!attempt.declaration_dependencies.empty() ||
+        !attempt.constant_dependencies.empty() ||
         !attempt.type_dependencies.empty()) {
       attempt.status = CompileTimeProductStatus::Blocked;
       return attempt;
@@ -277,6 +327,13 @@ private:
   // deduplicate before returning so the coordinator sees one canonical blocker
   // packet regardless of repeated references in the condition or initializer.
   void canonicalize_product_dependencies() {
+    std::sort(
+        declaration_dependencies_.begin(), declaration_dependencies_.end(),
+        [](SymbolId left, SymbolId right) { return left.value < right.value; });
+    declaration_dependencies_.erase(
+        std::unique(declaration_dependencies_.begin(),
+                    declaration_dependencies_.end()),
+        declaration_dependencies_.end());
     std::sort(
         constant_dependencies_.begin(), constant_dependencies_.end(),
         [](SymbolId left, SymbolId right) { return left.value < right.value; });
@@ -2601,6 +2658,13 @@ private:
       const Symbol &symbol = semantic_.symbols.symbol(*imported);
       if (symbol.kind == SymbolKind::Type ||
           symbol.kind == SymbolKind::TypeParameter) {
+        if (!symbol.type.is_valid()) {
+          if (record_product_dependencies_ &&
+              symbol.scope == semantic_.package_scope) {
+            declaration_dependencies_.push_back(*imported);
+          }
+          return std::nullopt;
+        }
         return substitute_local_type(symbol.type);
       }
       const EvalResult evaluated = evaluate_binding(*imported, false);
@@ -2620,6 +2684,13 @@ private:
       const Symbol &symbol = semantic_.symbols.symbol(*found);
       if (symbol.kind == SymbolKind::Type ||
           symbol.kind == SymbolKind::TypeParameter) {
+        if (!symbol.type.is_valid()) {
+          if (record_product_dependencies_ &&
+              symbol.scope == semantic_.package_scope) {
+            declaration_dependencies_.push_back(*found);
+          }
+          return std::nullopt;
+        }
         return substitute_local_type(symbol.type);
       }
 
@@ -2920,8 +2991,9 @@ private:
     }
   }
 
-  [[nodiscard]] std::optional<TypeId> named_type_from_syntax(
-      const SyntaxTree &tree, NodeId type_node, ScopeId scope) const {
+  [[nodiscard]] std::optional<TypeId>
+  named_type_from_syntax(const SyntaxTree &tree, NodeId type_node,
+                         ScopeId scope) {
     const SyntaxNode &node = tree.node(type_node);
     if (node.kind == NodeKind::DistinctType && !node.children.empty()) {
       return named_type_from_syntax(tree, node.children.back(), scope);
@@ -2936,6 +3008,13 @@ private:
     if (!symbol.has_value()) return std::nullopt;
     const Symbol &found = semantic_.symbols.symbol(*symbol);
     if (found.kind != SymbolKind::Type && found.kind != SymbolKind::TypeParameter) {
+      return std::nullopt;
+    }
+    if (!found.type.is_valid()) {
+      if (record_product_dependencies_ &&
+          found.scope == semantic_.package_scope) {
+        declaration_dependencies_.push_back(*symbol);
+      }
       return std::nullopt;
     }
     return substitute_local_type(found.type);
@@ -5138,6 +5217,17 @@ private:
             semantic_.types.builtins().meta_type);
       }
       if (binding.kind == SymbolKind::Procedure) {
+        // A procedure identity is meaningful to the interpreter only after its
+        // declaration product has published the complete signature. Recording
+        // this edge here lets declaration-owned layout recipes call ordinary
+        // compile-time procedures without either entering their type syntax
+        // recursively or misdiagnosing the provisional invalid TypeId.
+        if (record_product_dependencies_ &&
+            binding.scope == semantic_.package_scope &&
+            !binding.type.is_valid() && *symbol != product_root_) {
+          declaration_dependencies_.push_back(*symbol);
+          return pending();
+        }
         return ready(procedure_value(*symbol), binding.type);
       }
       // Procedure value parameters are not package constants and therefore do
@@ -5390,6 +5480,19 @@ private:
             tree.node(node.children.front()).range,
             "constant composite literal requires a concrete type",
             required);
+      }
+      // Nominal identity is allocated during declaration collection, before
+      // its field table is published. A composite literal therefore cannot use
+      // a valid TypeId as proof that keyed member lookup is ready. Block on the
+      // exact MemberTypes facet; the declaration product publishes member names
+      // and declared types together, and the constant task will then evaluate
+      // once against the immutable completed packet.
+      if (record_product_dependencies_ &&
+          semantic_.types.facet_state(*composite_type,
+                                      TypeFacet::MemberTypes) ==
+              TypeFacetState::Waiting) {
+        type_dependencies_.push_back({*composite_type, TypeFacet::MemberTypes});
+        return pending();
       }
       const Type composite = semantic_.types.type(*composite_type);
       if (composite.kind != TypeKind::Array &&
@@ -5766,6 +5869,7 @@ private:
   // local constant is a dependency, as required by a conditional expression.
   bool record_product_dependencies_ = false;
   std::vector<SymbolId> constant_dependencies_;
+  std::vector<SymbolId> declaration_dependencies_;
   std::vector<TypeFacetDependency> type_dependencies_;
   std::vector<LocalFrame> local_frames_;
   // active_procedures_ mirrors local_frames_ only during procedure execution
@@ -5948,49 +6052,68 @@ ConstantProductAttempt evaluate_package_constant_product(
         "constant product root is outside its semantic package");
     return {};
   }
-  ConstantEvaluator evaluator(
-      sources,
-      loaded,
-      task_package,
-      target,
-      synthesis_mode,
-      true,
-      diagnostics,
-      &published_constants,
-      nullptr,
-      nullptr,
-      root,
-      &published_constants,
-      false,
-      true);
-  return evaluator.run_product(root);
+  DiagnosticSink task_diagnostics;
+  ConstantEvaluator evaluator(sources, loaded, task_package, target,
+                              synthesis_mode, true, task_diagnostics,
+                              &published_constants, nullptr, nullptr, root,
+                              &published_constants, false, true);
+  ConstantProductAttempt result = evaluator.run_product(root);
+  if (result.status != CompileTimeProductStatus::Blocked) {
+    for (const Diagnostic &diagnostic : task_diagnostics.diagnostics()) {
+      diagnostics.report(diagnostic.severity, diagnostic.range,
+                         diagnostic.message);
+    }
+  }
+  return result;
+}
+
+IntegerExpressionProductAttempt evaluate_integer_expression_product(
+    const SourceManager &sources, const LoadedPackage &loaded,
+    SemanticPackage &task_package, const TargetFacts &target,
+    const SyntaxTree &tree, NodeId expression, ScopeId scope, TypeId expected,
+    SymbolId root, const ConstantTable &published_constants,
+    CompileTimeSynthesisMode synthesis_mode, DiagnosticSink &diagnostics) {
+  if (!root.is_valid() || static_cast<std::size_t>(root.value) >=
+                              task_package.symbols.symbol_count()) {
+    diagnostics.error(
+        SourceRange::invalid(),
+        "integer expression product root is outside its semantic package");
+    return {};
+  }
+  DiagnosticSink task_diagnostics;
+  ConstantEvaluator evaluator(sources, loaded, task_package, target,
+                              synthesis_mode, true, task_diagnostics,
+                              &published_constants, nullptr, nullptr, root,
+                              &published_constants, false, true);
+  IntegerExpressionProductAttempt result =
+      evaluator.run_integer_expression(tree, expression, scope, expected);
+  if (result.status != CompileTimeProductStatus::Blocked) {
+    for (const Diagnostic &diagnostic : task_diagnostics.diagnostics()) {
+      diagnostics.report(diagnostic.severity, diagnostic.range,
+                         diagnostic.message);
+    }
+  }
+  return result;
 }
 
 ConditionalProductAttempt evaluate_conditional_product(
-    const SourceManager &sources,
-    const LoadedPackage &loaded,
-    SemanticPackage &task_package,
-    const TargetFacts &target,
-    const SemanticSite &site,
-    const ConstantTable &published_constants,
-    CompileTimeSynthesisMode synthesis_mode,
-    DiagnosticSink &diagnostics) {
-  ConstantEvaluator evaluator(
-      sources,
-      loaded,
-      task_package,
-      target,
-      synthesis_mode,
-      true,
-      diagnostics,
-      &published_constants,
-      nullptr,
-      nullptr,
-      {},
-      &published_constants,
-      false,
-      true);
-  return evaluator.run_condition(site);
+    const SourceManager &sources, const LoadedPackage &loaded,
+    SemanticPackage &task_package, const TargetFacts &target,
+    const SemanticSite &site, const ConstantTable &published_constants,
+    CompileTimeSynthesisMode synthesis_mode, DiagnosticSink &diagnostics) {
+  DiagnosticSink task_diagnostics;
+  ConstantEvaluator evaluator(sources, loaded, task_package, target,
+                              synthesis_mode, true, task_diagnostics,
+                              &published_constants, nullptr, nullptr, {},
+                              &published_constants, false, true);
+  ConditionalProductAttempt result = evaluator.run_condition(site);
+  if (result.status != CompileTimeProductStatus::Blocked) {
+    for (const Diagnostic &diagnostic : task_diagnostics.diagnostics()) {
+      diagnostics.report(diagnostic.severity, diagnostic.range,
+                         diagnostic.message);
+    }
+  }
+  return result;
 }
 
 std::optional<ConstantValue> evaluate_constant_expression(

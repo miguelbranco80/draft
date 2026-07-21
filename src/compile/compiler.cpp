@@ -9,13 +9,15 @@
 // source bytes through stable FileIds; callers therefore keep SourceManager
 // alive for the complete command.
 //
-// Target selection, source generations, parsed files, package imports, package
-// name completeness, opaque interface synthesis sets, and package interfaces
-// are explicit products in one dynamic command-local graph. The coordinator
-// freezes ready waves and publishes task-owned diagnostics and payloads in
-// stable product-ID order. Generic body demands still propagate consumer-first,
-// and completed effects still publish dependency-first; later implementation
-// slices move those remaining package loops into the same graph. Within an
+// Target selection, source generations, parsed files, package imports, authored
+// declaration types, nominal layouts, conditional choices, named constants,
+// package name completeness, opaque interface synthesis sets, and package
+// interfaces are explicit products in one dynamic command-local graph. The
+// coordinator freezes ready waves and publishes task-owned diagnostics and
+// payloads in stable product-ID order. Generic body demands still propagate
+// consumer-first, and completed effects still publish dependency-first; later
+// implementation slices move those remaining package loops into the same
+// graph. Within an
 // unchanged source generation, CompileWorkspaceProgress advances so native
 // lowering can continue checked state without reloading source. A checked
 // generated-source transition appends a successor generation and supersedes
@@ -1580,12 +1582,11 @@ void invalidate_package_closure(
   return !diagnostics.has_errors();
 }
 
-// Computes the package payload currently published by the PackageNameSet task.
-// Declaration analysis still contains the legacy intra-package conditional and
-// generic-layout fixed points; later plan steps split those facts into their
-// own products. This boundary is nevertheless real: package ordering, source
-// generation, synthesis suspension, diagnostics, and publication now belong to
-// the dynamic product coordinator rather than a bespoke topological loop.
+// Computes one PackageNameSet transition. Complete compilation first publishes
+// eager authored declarations and later re-enters only to close an already
+// completed product set. Interface-synthesis discovery retains the aggregate
+// compatibility path until opaque declaration/member waits move to the same
+// product representation.
 [[nodiscard]] std::optional<CompiledPackage> analyze_workspace_package_names(
     SourceManager &sources, const CompileWorkspaceOptions &options,
     const WorkspaceDependencyIndex &schedule, std::size_t package_index,
@@ -1614,32 +1615,45 @@ void invalidate_package_closure(
     });
   }
 
-  CompiledPackage package;
-  package.identity = workspace_package.identity;
-  package.declaration_generation = declaration_generation;
-  package.semantic_progress = PackageSemanticProgress::InterfaceReady;
-  package.validation_context = std::move(validation_context);
-  package.validation_context_is_typed = validation_context_is_typed;
-  TimingScope package_timing = time_package_phase(
-      options.timings, "package declarations: ", workspace_package.identity);
-  for (const LoadedPackageFile &file : workspace_package.loaded.files) {
-    if (file.kind != PackageFileKind::AssemblySource)
-      continue;
-    package.assembly_sources.push_back({
-        file.relative_name,
-        std::string(sources.text(file.source)),
-    });
-  }
   const bool schedule_constant_products =
       options.stage == CompileWorkspaceStage::Complete;
+  const bool resume_product_discovery =
+      schedule_constant_products &&
+      result.packages[package_index].has_value() &&
+      !result.packages[package_index]->declaration_discovery.terminal;
+  CompiledPackage package;
+  if (resume_product_discovery) {
+    package = *result.packages[package_index];
+  }
+  if (!resume_product_discovery) {
+    package.identity = workspace_package.identity;
+    package.declaration_generation = declaration_generation;
+    package.semantic_progress = PackageSemanticProgress::InterfaceReady;
+    package.validation_context = std::move(validation_context);
+    package.validation_context_is_typed = validation_context_is_typed;
+  }
+  TimingScope package_timing = time_package_phase(
+      options.timings, "package declarations: ", workspace_package.identity);
+  if (!resume_product_discovery) {
+    for (const LoadedPackageFile &file : workspace_package.loaded.files) {
+      if (file.kind != PackageFileKind::AssemblySource)
+        continue;
+      package.assembly_sources.push_back({
+          file.relative_name,
+          std::string(sources.text(file.source)),
+      });
+    }
+  }
   if (schedule_constant_products) {
-    package.declaration_discovery = discover_package_declarations(
-        sources,
-        workspace_package.loaded,
-        options.target.facts,
-        available,
-        CompileTimeSynthesisMode::Reject,
-        diagnostics);
+    if (resume_product_discovery) {
+      if (!finish_package_declaration_discovery(package.declaration_discovery,
+                                                diagnostics)) {
+        return std::nullopt;
+      }
+    } else {
+      package.declaration_discovery = begin_package_declaration_discovery(
+          sources, workspace_package.loaded, available, diagnostics);
+    }
     package.declarations.package = package.declaration_discovery.package;
     package.declarations.selections = package.declaration_discovery.selections;
     package.declarations.ok = package.declaration_discovery.terminal &&
@@ -1651,6 +1665,13 @@ void invalidate_package_closure(
   }
   if (options.timings != nullptr) {
     options.timings->add_counter("package semantic analyses", 1);
+  }
+
+  // The first PackageNameSet transition deliberately publishes a nonterminal
+  // payload. The coordinator appends declaration, constant, layout, and
+  // condition products from that exact table and blocks this barrier on them.
+  if (schedule_constant_products && !package.declaration_discovery.terminal) {
+    return package;
   }
 
   // Imported procedure-dependent layouts still form the legacy package-owner
@@ -1728,6 +1749,9 @@ void invalidate_package_closure(
 struct WorkspaceInterfaceTaskSlot {
   SemanticProductOutcome outcome;
   std::optional<CompiledPackage> package;
+  std::optional<DeclarationTypeProductAttempt> declaration_type;
+  std::optional<NaturalLayoutProductAttempt> natural_layout;
+  std::optional<ConditionalProductAttempt> condition;
   std::optional<ConstantProductAttempt> constant;
   std::optional<SemanticPackage> constant_package;
   std::size_t constant_shared_type_count = 0;
@@ -1902,19 +1926,140 @@ struct WorkspaceInterfaceTaskSlot {
   return true;
 }
 
-// Appends one ConstantValue row for every final package-scope constant. Symbol
-// order is the deterministic declaration identity order; dependencies between
-// constants are discovered by their evaluators and added as explicit blockers
-// rather than inferred from source order.
-[[nodiscard]] bool append_package_constant_products(
+// Returns whether a package vector already contains a product for one stable
+// symbol. Declaration branches append symbols monotonically, so a direct scan
+// keeps duplicate prevention explicit without another mutable index.
+[[nodiscard]] bool
+has_symbol_product(std::span<const SemanticProductId> products,
+                   std::span<const SymbolId> symbols, SymbolId wanted) {
+  for (SemanticProductId product : products) {
+    if (symbols[product.value] == wanted)
+      return true;
+  }
+  return false;
+}
+
+// Concrete parametric type instances are discoveries of the declaration task
+// that needed them. Their existing synchronous owner will be replaced by the
+// canonical generic-demand product in step 4; until then they must not be
+// mistaken for another authored declaration merely because their owner symbol
+// copies the template's SyntaxReference.
+[[nodiscard]] bool is_parametric_type_instance(const SemanticPackage &package,
+                                               SymbolId symbol) {
+  for (const ParametricTypeInstanceRecord &instance :
+       package.parametric_type_instances) {
+    if (instance.instance == symbol)
+      return true;
+  }
+  return false;
+}
+
+// Appends the declaration/type-facet products revealed by the current
+// append-only package declaration table. Nominal identity already exists after
+// collection and receives one completed TypeIdentity row; its independently
+// scheduled member-types and natural-layout rows consume that identity. Other
+// typed declarations receive one pending TypeIdentity row. All rows depend on
+// the same immutable inputs as PackageNameSet, never on the barrier itself.
+[[nodiscard]] bool append_package_type_products(
     CompileWorkspaceResult &result,
-    SemanticProductId name_set,
-    PackageId owner,
-    const CompiledPackage &package,
-    DiagnosticSink &diagnostics) {
+    std::span<const SemanticProductId> base_dependencies, PackageId owner,
+    const CompiledPackage &package, DiagnosticSink &diagnostics) {
   PackageSemanticProducts &products =
       result.semantic_products.packages[owner.value];
-  products.constants.clear();
+  const SemanticPackage &semantic = package.declaration_discovery.package;
+  const std::vector<SymbolId> package_symbols =
+      semantic.symbols.scope(semantic.package_scope).symbols;
+  for (SymbolId symbol : package_symbols) {
+    if (has_symbol_product(products.declaration_types,
+                           result.semantic_products.declaration_by_product,
+                           symbol)) {
+      continue;
+    }
+    const Symbol &declaration = semantic.symbols.symbol(symbol);
+    // Interface reconstruction may install a compiler-owned package-scope
+    // symbol solely to own the member scope of a nominal nested in an imported
+    // procedure signature. Its type graph, including layout, arrived as one
+    // already-complete immutable interface packet. Only source declarations
+    // have SyntaxReference identities and therefore become declaration work
+    // products in this package.
+    if (!declaration.syntax.file.is_valid() ||
+        !declaration.syntax.node.is_valid() ||
+        is_parametric_type_instance(semantic, symbol)) {
+      continue;
+    }
+    const bool nominal =
+        declaration.kind == SymbolKind::Type && declaration.type.is_valid() &&
+        (semantic.types.type(declaration.type).kind == TypeKind::Struct ||
+         semantic.types.type(declaration.type).kind == TypeKind::Enum ||
+         semantic.types.type(declaration.type).kind == TypeKind::TaggedUnion ||
+         semantic.types.type(declaration.type).kind == TypeKind::RawUnion);
+    const bool needs_declaration_type =
+        nominal || declaration.kind == SymbolKind::Type ||
+        declaration.kind == SymbolKind::Procedure ||
+        declaration.kind == SymbolKind::Variable ||
+        declaration.kind == SymbolKind::UnresolvedDeclaration;
+    if (!needs_declaration_type)
+      continue;
+
+    SemanticProductId declaration_product;
+    if (nominal) {
+      const SemanticProductId identity = append_workspace_semantic_product(
+          result, SemanticProductKind::TypeIdentity, base_dependencies, owner,
+          true, diagnostics);
+      if (!identity.is_valid())
+        return false;
+      result.semantic_products.type_by_product[identity.value] =
+          declaration.type;
+      const std::array dependencies{identity};
+      declaration_product = append_workspace_semantic_product(
+          result, SemanticProductKind::TypeMemberTypes, dependencies, owner,
+          false, diagnostics);
+    } else {
+      declaration_product = append_workspace_semantic_product(
+          result, SemanticProductKind::TypeIdentity, base_dependencies, owner,
+          false, diagnostics);
+    }
+    if (!declaration_product.is_valid())
+      return false;
+    result.semantic_products.declaration_by_product[declaration_product.value] =
+        symbol;
+    if (declaration.type.is_valid()) {
+      result.semantic_products.type_by_product[declaration_product.value] =
+          declaration.type;
+    }
+    products.declaration_types.push_back(declaration_product);
+
+    // A parametric nominal is a symbolic template, not a runtime-bearing type
+    // application. Its identity and member-type pattern must be checked now,
+    // but no target size exists until a canonical argument tuple creates a
+    // concrete instance. Step 4 gives that instance its own layout product;
+    // scheduling the template here would invent an impossible dependency on a
+    // TypeParameter natural layout.
+    if (!nominal || declaration.flags.parametric)
+      continue;
+    const std::array layout_dependencies{declaration_product};
+    const SemanticProductId layout = append_workspace_semantic_product(
+        result, SemanticProductKind::TypeNaturalLayout, layout_dependencies,
+        owner, false, diagnostics);
+    if (!layout.is_valid())
+      return false;
+    result.semantic_products.declaration_by_product[layout.value] = symbol;
+    result.semantic_products.type_by_product[layout.value] = declaration.type;
+    products.natural_layouts.push_back(layout);
+  }
+  return true;
+}
+
+// Appends one ConstantValue row for every currently visible package-scope
+// constant or still-ambiguous `::` declaration. Symbol order is deterministic;
+// later selected branches append only their new rows. Dependencies between
+// constants are discovered by evaluators, not inferred from source order.
+[[nodiscard]] bool append_package_constant_products(
+    CompileWorkspaceResult &result,
+    std::span<const SemanticProductId> base_dependencies, PackageId owner,
+    const CompiledPackage &package, DiagnosticSink &diagnostics) {
+  PackageSemanticProducts &products =
+      result.semantic_products.packages[owner.value];
   const SemanticPackage &semantic = package.declaration_discovery.package;
   const std::size_t symbol_count = semantic.symbols.symbol_count();
   for (std::size_t index = 0; index < symbol_count; ++index) {
@@ -1925,7 +2070,25 @@ struct WorkspaceInterfaceTaskSlot {
          declaration.kind != SymbolKind::UnresolvedDeclaration)) {
       continue;
     }
-    const std::array dependencies{name_set};
+    if (has_symbol_product(products.constants,
+                           result.semantic_products.constant_by_product,
+                           symbol)) {
+      continue;
+    }
+    // Collection cannot yet distinguish `Alias :: Some_Type` from an ordinary
+    // constant when its payload is name/bracket syntax. The declaration-type
+    // product owns that classification, so make it an explicit prerequisite
+    // of the provisional ConstantValue row. A classified type completes this
+    // row without evaluation; a classified constant proceeds normally.
+    std::vector<SemanticProductId> dependencies(base_dependencies.begin(),
+                                                base_dependencies.end());
+    for (SemanticProductId declaration_product : products.declaration_types) {
+      if (result.semantic_products
+              .declaration_by_product[declaration_product.value] == symbol) {
+        dependencies.push_back(declaration_product);
+        break;
+      }
+    }
     const SemanticProductId product = append_workspace_semantic_product(
         result,
         SemanticProductKind::ConstantValue,
@@ -1938,6 +2101,105 @@ struct WorkspaceInterfaceTaskSlot {
     products.constants.push_back(product);
   }
   return true;
+}
+
+// Appends one ConstantValue-shaped branch-choice product for every currently
+// discovered package/member `when`. SyntaxReference is the stable typed key;
+// conditions carry no Constant SymbolId and are dispatched through the
+// condition side table.
+[[nodiscard]] bool append_package_condition_products(
+    CompileWorkspaceResult &result,
+    std::span<const SemanticProductId> base_dependencies, PackageId owner,
+    const CompiledPackage &package, DiagnosticSink &diagnostics) {
+  PackageSemanticProducts &products =
+      result.semantic_products.packages[owner.value];
+  for (const SemanticSite &site : package.declaration_discovery.package.sites) {
+    if (site.kind != SemanticSiteKind::ConditionalDeclaration &&
+        site.kind != SemanticSiteKind::ConditionalMember) {
+      continue;
+    }
+    bool present = false;
+    for (SemanticProductId product : products.conditions) {
+      if (result.semantic_products.condition_by_product[product.value] ==
+          site.syntax) {
+        present = true;
+        break;
+      }
+    }
+    if (present)
+      continue;
+    const SemanticProductId product = append_workspace_semantic_product(
+        result, SemanticProductKind::ConstantValue, base_dependencies, owner,
+        false, diagnostics);
+    if (!product.is_valid())
+      return false;
+    result.semantic_products.condition_by_product[product.value] = site.syntax;
+    products.conditions.push_back(product);
+  }
+  return true;
+}
+
+// Detects source appended by a completed condition before PackageNameSet tries
+// to close. The coordinator must first append products for every new symbol and
+// nested condition, then block the barrier on those rows. This read-only check
+// keeps graph mutation between frozen waves.
+[[nodiscard]] bool
+package_has_unindexed_declaration_work(const CompileWorkspaceResult &result,
+                                       PackageId owner,
+                                       const CompiledPackage &package) {
+  const PackageSemanticProducts &products =
+      result.semantic_products.packages[owner.value];
+  const SemanticPackage &semantic = package.declaration_discovery.package;
+  const std::vector<SymbolId> package_symbols =
+      semantic.symbols.scope(semantic.package_scope).symbols;
+  for (SymbolId symbol : package_symbols) {
+    const Symbol &declaration = semantic.symbols.symbol(symbol);
+    // Keep this predicate identical to append_package_type_products. Imported
+    // interface nominals can own member scopes in the package scope, but they
+    // are complete interface inputs rather than unindexed authored work.
+    if (!declaration.syntax.file.is_valid() ||
+        !declaration.syntax.node.is_valid() ||
+        is_parametric_type_instance(semantic, symbol)) {
+      continue;
+    }
+    const bool needs_type =
+        declaration.kind == SymbolKind::Type ||
+        declaration.kind == SymbolKind::Procedure ||
+        declaration.kind == SymbolKind::Variable ||
+        declaration.kind == SymbolKind::UnresolvedDeclaration;
+    if (needs_type &&
+        !has_symbol_product(products.declaration_types,
+                            result.semantic_products.declaration_by_product,
+                            symbol)) {
+      return true;
+    }
+    const bool needs_constant =
+        declaration.kind == SymbolKind::Constant ||
+        declaration.kind == SymbolKind::UnresolvedDeclaration;
+    if (needs_constant &&
+        !has_symbol_product(products.constants,
+                            result.semantic_products.constant_by_product,
+                            symbol)) {
+      return true;
+    }
+  }
+  for (const SemanticSite &site : semantic.sites) {
+    if (site.kind != SemanticSiteKind::ConditionalDeclaration &&
+        site.kind != SemanticSiteKind::ConditionalMember) {
+      continue;
+    }
+    bool present = false;
+    for (SemanticProductId product : products.conditions) {
+      if (result.semantic_products.condition_by_product[product.value] ==
+          site.syntax) {
+        present = true;
+        break;
+      }
+    }
+    if (!present)
+      return true;
+  }
+  return false;
 }
 
 // Finds the typed product row for one local constant blocker. Products are few
@@ -1955,6 +2217,66 @@ struct WorkspaceInterfaceTaskSlot {
     }
   }
   return std::nullopt;
+}
+
+// Finds the owning declaration-type row for an explicit SymbolId blocker.
+[[nodiscard]] std::optional<SemanticProductId>
+package_declaration_product(const CompileWorkspaceResult &result,
+                            PackageId owner, SymbolId symbol) {
+  const PackageSemanticProducts &products =
+      result.semantic_products.packages[owner.value];
+  for (SemanticProductId product : products.declaration_types) {
+    if (result.semantic_products.declaration_by_product[product.value] ==
+        symbol) {
+      return product;
+    }
+  }
+  return std::nullopt;
+}
+
+// Maps one exact semantic type-facet blocker to its workspace product. Identity
+// is eager for nominal types and complete structural types never report it as a
+// blocker. MemberTypes is owned by the declaration row; NaturalLayout has its
+// own typed vector.
+[[nodiscard]] std::optional<SemanticProductId>
+package_type_facet_product(const CompileWorkspaceResult &result,
+                           PackageId owner, TypeFacetDependency dependency) {
+  const PackageSemanticProducts &products =
+      result.semantic_products.packages[owner.value];
+  const std::span<const SemanticProductId> candidates =
+      dependency.facet == TypeFacet::NaturalLayout
+          ? std::span<const SemanticProductId>(products.natural_layouts)
+          : std::span<const SemanticProductId>(products.declaration_types);
+  for (SemanticProductId product : candidates) {
+    if (result.semantic_products.type_by_product[product.value] ==
+        dependency.type) {
+      return product;
+    }
+  }
+  return std::nullopt;
+}
+
+// Returns the retained semantic site named by one condition product. Sites are
+// append-only and few; a direct source-identity scan avoids storing a pointer
+// across branch materialization.
+[[nodiscard]] const SemanticSite *
+find_semantic_site(const SemanticPackage &package, SyntaxReference syntax) {
+  for (const SemanticSite &site : package.sites) {
+    if (site.syntax == syntax)
+      return &site;
+  }
+  return nullptr;
+}
+
+[[nodiscard]] bool
+package_condition_needs_materialization(const SemanticPackage &package,
+                                        SyntaxReference syntax) {
+  for (const ConditionalDeclarationRegion &region :
+       package.conditional_declarations) {
+    if (region.syntax == syntax)
+      return !region.materialized;
+  }
+  return false;
 }
 
 // Builds declaration semantics and preliminary interfaces through the dynamic
@@ -2020,6 +2342,12 @@ struct WorkspaceInterfaceTaskSlot {
     }
 
     std::vector<WorkspaceInterfaceTaskSlot> slots(wave.products.size());
+    // Declaration products still publish through a sequential coordinator
+    // oracle. Each successful task advances this wave-local package snapshot in
+    // stable product order; blockers never expose their provisional mutation.
+    // Step 9 replaces this with task-local deltas plus canonical interning.
+    std::vector<std::optional<SemanticPackage>> declaration_wave_packages(
+        result.packages.size());
     for (std::size_t task_index = 0; task_index < wave.products.size();
          ++task_index) {
       const SemanticProductId product = wave.products[task_index];
@@ -2045,7 +2373,147 @@ struct WorkspaceInterfaceTaskSlot {
       const std::size_t package_index = owner.value;
       const SemanticProductKind kind =
           result.semantic_graph.products[product.value].kind;
+      if (kind == SemanticProductKind::TypeIdentity ||
+          kind == SemanticProductKind::TypeMemberTypes) {
+        if (!result.packages[package_index].has_value()) {
+          slot.outcome.kind = SemanticProductOutcomeKind::Error;
+          slot.outcome.failure =
+              "declaration type product ran before eager package discovery";
+          slot.outcome.diagnostics.error(SourceRange::invalid(),
+                                         slot.outcome.failure);
+          continue;
+        }
+        const SymbolId root =
+            result.semantic_products.declaration_by_product[product.value];
+        SemanticPackage task_package =
+            declaration_wave_packages[package_index].has_value()
+                ? *declaration_wave_packages[package_index]
+                : result.packages[package_index]->declaration_discovery.package;
+        std::vector<SymbolId> completed_declarations;
+        const PackageSemanticProducts &package_products =
+            result.semantic_products.packages[package_index];
+        for (SemanticProductId candidate : package_products.declaration_types) {
+          if (result.semantic_graph.products[candidate.value].state ==
+              SemanticProductState::Complete) {
+            completed_declarations.push_back(
+                result.semantic_products
+                    .declaration_by_product[candidate.value]);
+          }
+        }
+        slot.declaration_type = resolve_package_declaration_type_product(
+            sources, result.graph.packages[package_index].loaded, task_package,
+            result.packages[package_index]->declaration_discovery.selections,
+            root, completed_declarations,
+            result.packages[package_index]
+                ->declaration_discovery.published_constants,
+            result.packages[package_index]
+                ->declaration_discovery.resolved_integers,
+            options.target.facts, slot.outcome.diagnostics);
+        if (slot.declaration_type->status == TypeProductStatus::Complete) {
+          declaration_wave_packages[package_index] = std::move(task_package);
+          continue;
+        }
+        if (slot.declaration_type->status == TypeProductStatus::Error) {
+          slot.outcome.kind = SemanticProductOutcomeKind::Error;
+          slot.outcome.failure = "declaration type product failed";
+          continue;
+        }
+        for (SymbolId dependency :
+             slot.declaration_type->declaration_dependencies) {
+          const std::optional<SemanticProductId> blocker =
+              package_declaration_product(result, owner, dependency);
+          if (!blocker.has_value()) {
+            slot.outcome.kind = SemanticProductOutcomeKind::Error;
+            slot.outcome.failure = "declaration type dependency has no product";
+            slot.outcome.diagnostics.error(SourceRange::invalid(),
+                                           slot.outcome.failure);
+            break;
+          }
+          slot.outcome.dependencies.push_back(*blocker);
+        }
+        for (SymbolId dependency :
+             slot.declaration_type->constant_dependencies) {
+          const std::optional<SemanticProductId> blocker =
+              package_constant_product(result, owner, dependency);
+          if (!blocker.has_value()) {
+            slot.outcome.kind = SemanticProductOutcomeKind::Error;
+            slot.outcome.failure =
+                "declaration constant dependency has no product";
+            slot.outcome.diagnostics.error(SourceRange::invalid(),
+                                           slot.outcome.failure);
+            break;
+          }
+          slot.outcome.dependencies.push_back(*blocker);
+        }
+        for (TypeFacetDependency dependency :
+             slot.declaration_type->type_dependencies) {
+          const std::optional<SemanticProductId> blocker =
+              package_type_facet_product(result, owner, dependency);
+          if (!blocker.has_value()) {
+            slot.outcome.kind = SemanticProductOutcomeKind::Error;
+            slot.outcome.failure =
+                "declaration layout expression dependency has no type product";
+            slot.outcome.diagnostics.error(SourceRange::invalid(),
+                                           slot.outcome.failure);
+            break;
+          }
+          slot.outcome.dependencies.push_back(*blocker);
+        }
+        if (slot.outcome.kind != SemanticProductOutcomeKind::Error) {
+          slot.outcome.kind = SemanticProductOutcomeKind::Blocked;
+        }
+        continue;
+      }
+      if (kind == SemanticProductKind::TypeNaturalLayout) {
+        if (!result.packages[package_index].has_value()) {
+          slot.outcome.kind = SemanticProductOutcomeKind::Error;
+          slot.outcome.failure =
+              "natural-layout product ran before package discovery";
+          slot.outcome.diagnostics.error(SourceRange::invalid(),
+                                         slot.outcome.failure);
+          continue;
+        }
+        const TypeId nominal =
+            result.semantic_products.type_by_product[product.value];
+        slot.natural_layout = evaluate_natural_layout_product(
+            result.packages[package_index]->declaration_discovery.package.types,
+            nominal, slot.outcome.diagnostics);
+        if (slot.natural_layout->status == TypeProductStatus::Complete) {
+          continue;
+        }
+        if (slot.natural_layout->status == TypeProductStatus::Error) {
+          slot.outcome.kind = SemanticProductOutcomeKind::Error;
+          slot.outcome.failure = "natural-layout product failed";
+          continue;
+        }
+        for (TypeFacetDependency dependency :
+             slot.natural_layout->dependencies) {
+          const std::optional<SemanticProductId> blocker =
+              package_type_facet_product(result, owner, dependency);
+          if (!blocker.has_value()) {
+            slot.outcome.kind = SemanticProductOutcomeKind::Error;
+            slot.outcome.failure =
+                "natural-layout dependency has no type product";
+            slot.outcome.diagnostics.error(SourceRange::invalid(),
+                                           slot.outcome.failure);
+            break;
+          }
+          slot.outcome.dependencies.push_back(*blocker);
+        }
+        if (slot.outcome.kind != SemanticProductOutcomeKind::Error) {
+          slot.outcome.kind = SemanticProductOutcomeKind::Blocked;
+        }
+        continue;
+      }
       if (kind == SemanticProductKind::PackageNameSet) {
+        if (options.stage == CompileWorkspaceStage::Complete &&
+            result.packages[package_index].has_value() &&
+            !result.packages[package_index]->declaration_discovery.terminal &&
+            package_has_unindexed_declaration_work(
+                result, owner, *result.packages[package_index])) {
+          slot.package = *result.packages[package_index];
+          continue;
+        }
         slot.package = analyze_workspace_package_names(
             sources, options, schedule, package_index,
             next_declaration_generation[package_index],
@@ -2072,8 +2540,92 @@ struct WorkspaceInterfaceTaskSlot {
           continue;
         }
         CompiledPackage &package = *result.packages[package_index];
+        const SyntaxReference condition_syntax =
+            result.semantic_products.condition_by_product[product.value];
+        if (condition_syntax.node.is_valid()) {
+          const SemanticSite *site = find_semantic_site(
+              package.declaration_discovery.package, condition_syntax);
+          if (site == nullptr) {
+            slot.outcome.kind = SemanticProductOutcomeKind::Error;
+            slot.outcome.failure = "conditional product site is unavailable";
+            slot.outcome.diagnostics.error(SourceRange::invalid(),
+                                           slot.outcome.failure);
+            continue;
+          }
+          SemanticPackage task_package = package.declaration_discovery.package;
+          slot.condition = evaluate_conditional_product(
+              sources, result.graph.packages[package_index].loaded,
+              task_package, options.target.facts, *site,
+              package.declaration_discovery.published_constants,
+              CompileTimeSynthesisMode::Reject, slot.outcome.diagnostics);
+          if (slot.condition->status == CompileTimeProductStatus::Complete) {
+            continue;
+          }
+          if (slot.condition->status ==
+              CompileTimeProductStatus::WaitingForSynthesis) {
+            slot.outcome.kind = SemanticProductOutcomeKind::WaitingForSynthesis;
+            continue;
+          }
+          if (slot.condition->status == CompileTimeProductStatus::Error) {
+            slot.outcome.kind = SemanticProductOutcomeKind::Error;
+            slot.outcome.failure = "conditional product evaluation failed";
+            continue;
+          }
+          for (SymbolId dependency : slot.condition->declaration_dependencies) {
+            const std::optional<SemanticProductId> blocker =
+                package_declaration_product(result, owner, dependency);
+            if (!blocker.has_value()) {
+              slot.outcome.kind = SemanticProductOutcomeKind::Error;
+              slot.outcome.failure =
+                  "conditional declaration dependency has no product";
+              slot.outcome.diagnostics.error(SourceRange::invalid(),
+                                             slot.outcome.failure);
+              break;
+            }
+            slot.outcome.dependencies.push_back(*blocker);
+          }
+          for (SymbolId dependency : slot.condition->constant_dependencies) {
+            const std::optional<SemanticProductId> blocker =
+                package_constant_product(result, owner, dependency);
+            if (!blocker.has_value()) {
+              slot.outcome.kind = SemanticProductOutcomeKind::Error;
+              slot.outcome.failure =
+                  "conditional constant dependency has no product";
+              slot.outcome.diagnostics.error(SourceRange::invalid(),
+                                             slot.outcome.failure);
+              break;
+            }
+            slot.outcome.dependencies.push_back(*blocker);
+          }
+          for (TypeFacetDependency dependency :
+               slot.condition->type_dependencies) {
+            const std::optional<SemanticProductId> blocker =
+                package_type_facet_product(result, owner, dependency);
+            if (!blocker.has_value()) {
+              slot.outcome.kind = SemanticProductOutcomeKind::Error;
+              slot.outcome.failure =
+                  "conditional type dependency has no product";
+              slot.outcome.diagnostics.error(SourceRange::invalid(),
+                                             slot.outcome.failure);
+              break;
+            }
+            slot.outcome.dependencies.push_back(*blocker);
+          }
+          if (slot.outcome.kind != SemanticProductOutcomeKind::Error) {
+            slot.outcome.kind = SemanticProductOutcomeKind::Blocked;
+          }
+          continue;
+        }
         const SymbolId root =
             result.semantic_products.constant_by_product[product.value];
+        // The declaration prerequisite may have resolved an ambiguous `::`
+        // row as a type alias. The provisional ConstantValue product then has
+        // the terminal answer "not a constant" and publishes no value. This
+        // is classification, not a failed compile-time evaluation.
+        if (package.declaration_discovery.package.symbols.symbol(root).kind ==
+            SymbolKind::Type) {
+          continue;
+        }
         slot.constant_package = package.declaration_discovery.package;
         slot.constant_shared_type_count =
             slot.constant_package->types.size();
@@ -2104,8 +2656,20 @@ struct WorkspaceInterfaceTaskSlot {
           }
           continue;
         }
-        for (SymbolId dependency :
-             slot.constant->constant_dependencies) {
+        for (SymbolId dependency : slot.constant->declaration_dependencies) {
+          const std::optional<SemanticProductId> blocker =
+              package_declaration_product(result, owner, dependency);
+          if (!blocker.has_value()) {
+            slot.outcome.kind = SemanticProductOutcomeKind::Error;
+            slot.outcome.failure =
+                "constant declaration dependency has no product";
+            slot.outcome.diagnostics.error(SourceRange::invalid(),
+                                           slot.outcome.failure);
+            break;
+          }
+          slot.outcome.dependencies.push_back(*blocker);
+        }
+        for (SymbolId dependency : slot.constant->constant_dependencies) {
           const std::optional<SemanticProductId> blocker =
               package_constant_product(result, owner, dependency);
           if (!blocker.has_value()) {
@@ -2118,16 +2682,22 @@ struct WorkspaceInterfaceTaskSlot {
           }
           slot.outcome.dependencies.push_back(*blocker);
         }
-        if (slot.outcome.kind == SemanticProductOutcomeKind::Error) continue;
-        if (!slot.constant->type_dependencies.empty()) {
-          slot.outcome.kind = SemanticProductOutcomeKind::Error;
-          slot.outcome.failure =
-              "constant product is blocked on an unpublished type facet";
-          slot.outcome.diagnostics.error(
-              SourceRange::invalid(), slot.outcome.failure);
-          continue;
+        for (TypeFacetDependency dependency :
+             slot.constant->type_dependencies) {
+          const std::optional<SemanticProductId> blocker =
+              package_type_facet_product(result, owner, dependency);
+          if (!blocker.has_value()) {
+            slot.outcome.kind = SemanticProductOutcomeKind::Error;
+            slot.outcome.failure = "constant type dependency has no product";
+            slot.outcome.diagnostics.error(SourceRange::invalid(),
+                                           slot.outcome.failure);
+            break;
+          }
+          slot.outcome.dependencies.push_back(*blocker);
         }
-        slot.outcome.kind = SemanticProductOutcomeKind::Blocked;
+        if (slot.outcome.kind != SemanticProductOutcomeKind::Error) {
+          slot.outcome.kind = SemanticProductOutcomeKind::Blocked;
+        }
         continue;
       }
       if (kind == SemanticProductKind::OpaqueSynthesisSet) {
@@ -2223,6 +2793,58 @@ struct WorkspaceInterfaceTaskSlot {
     }
 
     if (options.stage == CompileWorkspaceStage::Complete) {
+      // The initial PackageNameSet task publishes only eager declarations.
+      // Append every product revealed by that stable table before allowing the
+      // barrier to close. Later selected branches use the same idempotent
+      // helpers, so only newly appended symbols/sites receive rows.
+      for (std::size_t task_index = 0; task_index < wave.products.size();
+           ++task_index) {
+        WorkspaceInterfaceTaskSlot &slot = slots[task_index];
+        if (!slot.package.has_value() ||
+            slot.outcome.kind != SemanticProductOutcomeKind::Complete ||
+            slot.package->declaration_discovery.terminal) {
+          continue;
+        }
+        const SemanticProductId name_set = wave.products[task_index];
+        if (result.semantic_graph.products[name_set.value].kind !=
+            SemanticProductKind::PackageNameSet) {
+          continue;
+        }
+        const PackageId owner =
+            result.semantic_products.package_by_product[name_set.value];
+        const std::vector<SemanticProductId> base_dependencies =
+            result.semantic_graph.products[name_set.value].dependencies;
+        const bool appended =
+            append_package_type_products(result, base_dependencies, owner,
+                                         *slot.package,
+                                         slot.outcome.diagnostics) &&
+            append_package_constant_products(result, base_dependencies, owner,
+                                             *slot.package,
+                                             slot.outcome.diagnostics) &&
+            append_package_condition_products(result, base_dependencies, owner,
+                                              *slot.package,
+                                              slot.outcome.diagnostics);
+        if (!appended) {
+          slot.outcome.kind = SemanticProductOutcomeKind::Error;
+          slot.outcome.failure = "cannot append package declaration products";
+          continue;
+        }
+        const PackageSemanticProducts &package_products =
+            result.semantic_products.packages[owner.value];
+        slot.outcome.kind = SemanticProductOutcomeKind::Blocked;
+        slot.outcome.dependencies = package_products.declaration_types;
+        slot.outcome.dependencies.insert(
+            slot.outcome.dependencies.end(),
+            package_products.natural_layouts.begin(),
+            package_products.natural_layouts.end());
+        slot.outcome.dependencies.insert(slot.outcome.dependencies.end(),
+                                         package_products.conditions.begin(),
+                                         package_products.conditions.end());
+        slot.outcome.dependencies.insert(slot.outcome.dependencies.end(),
+                                         package_products.constants.begin(),
+                                         package_products.constants.end());
+      }
+
       for (std::size_t task_index = 0; task_index < wave.products.size();
            ++task_index) {
         WorkspaceInterfaceTaskSlot &slot = slots[task_index];
@@ -2238,22 +2860,40 @@ struct WorkspaceInterfaceTaskSlot {
         }
         const PackageId owner =
             result.semantic_products.package_by_product[name_set.value];
-        if (!append_package_constant_products(
-                result,
-                name_set,
-                owner,
-                *slot.package,
-                slot.outcome.diagnostics)) {
+        const std::array constant_dependencies{name_set};
+        if (!append_package_constant_products(result, constant_dependencies,
+                                              owner, *slot.package,
+                                              slot.outcome.diagnostics)) {
           slot.outcome.kind = SemanticProductOutcomeKind::Error;
           slot.outcome.failure = "cannot append package constant products";
         }
       }
     }
 
+    // Fix the declaration prefix before publishing any task-local structural
+    // type. A frozen wave may contain both declaration and constant products.
+    // Declaration tasks currently advance one sequential package snapshot,
+    // whereas constant tasks retain the prefix they observed at wave start. If
+    // constants were interned first and this snapshot then replaced TypeStore,
+    // a returned tuple TypeId could silently become an unrelated nominal row.
+    // Step 9 replaces the whole-snapshot oracle with task deltas; until then,
+    // this coordinator order establishes the one canonical prefix for the wave.
+    for (std::size_t package_index = 0;
+         package_index < declaration_wave_packages.size(); ++package_index) {
+      if (!declaration_wave_packages[package_index].has_value() ||
+          !result.packages[package_index].has_value()) {
+        continue;
+      }
+      result.packages[package_index]->declaration_discovery.package =
+          std::move(*declaration_wave_packages[package_index]);
+      result.packages[package_index]->declarations.package =
+          result.packages[package_index]->declaration_discovery.package;
+    }
+
     // Canonical structural type interning is coordinator-owned and follows
-    // stable product order. Workers may have created equivalent task-local
-    // rows; each result is rewritten against the canonical package TypeStore
-    // before graph publication can mark the ConstantValue complete.
+    // stable product order after the declaration prefix is fixed. A task row
+    // below constant_shared_type_count still names the unchanged wave-start
+    // prefix; every later row is structurally rebuilt in the now-final store.
     for (std::size_t task_index = 0; task_index < wave.products.size();
          ++task_index) {
       WorkspaceInterfaceTaskSlot &slot = slots[task_index];
@@ -2307,6 +2947,90 @@ struct WorkspaceInterfaceTaskSlot {
                             publication_error);
       return false;
     }
+
+    // Publish the stable declaration-to-type side table after the graph states
+    // become Complete. The semantic payload itself was installed above so
+    // constant type interning could consume its final prefix.
+    for (SemanticProductId product : wave.products) {
+      const SemanticProductKind kind =
+          result.semantic_graph.products[product.value].kind;
+      if ((kind != SemanticProductKind::TypeIdentity &&
+           kind != SemanticProductKind::TypeMemberTypes) ||
+          result.semantic_graph.products[product.value].state !=
+              SemanticProductState::Complete) {
+        continue;
+      }
+      const PackageId owner =
+          result.semantic_products.package_by_product[product.value];
+      const SymbolId symbol =
+          result.semantic_products.declaration_by_product[product.value];
+      result.semantic_products.type_by_product[product.value] =
+          result.packages[owner.value]
+              ->declaration_discovery.package.symbols.symbol(symbol)
+              .type;
+    }
+
+    // Natural-layout packets mutate exactly one canonical facet after their
+    // graph state becomes Complete. The owner SymbolId side table preserves the
+    // source-order AggregateMember offset mapping.
+    for (std::size_t task_index = 0; task_index < wave.products.size();
+         ++task_index) {
+      const SemanticProductId product = wave.products[task_index];
+      if (result.semantic_graph.products[product.value].kind !=
+              SemanticProductKind::TypeNaturalLayout ||
+          result.semantic_graph.products[product.value].state !=
+              SemanticProductState::Complete ||
+          !slots[task_index].natural_layout.has_value()) {
+        continue;
+      }
+      const PackageId owner =
+          result.semantic_products.package_by_product[product.value];
+      CompiledPackage &package = *result.packages[owner.value];
+      if (!publish_natural_layout_product(
+              package.declaration_discovery.package,
+              result.semantic_products.declaration_by_product[product.value],
+              result.semantic_products.type_by_product[product.value],
+              std::move(*slots[task_index].natural_layout), diagnostics)) {
+        return false;
+      }
+      package.declarations.package = package.declaration_discovery.package;
+    }
+
+    // A completed package-level condition publishes its boolean selection and
+    // appends only the chosen branch to the retained declaration table. New
+    // symbols and nested `else when` sites receive products when PackageNameSet
+    // next re-enters; no authored declaration or earlier branch is rebuilt.
+    for (std::size_t task_index = 0; task_index < wave.products.size();
+         ++task_index) {
+      const SemanticProductId product = wave.products[task_index];
+      if (result.semantic_graph.products[product.value].kind !=
+              SemanticProductKind::ConstantValue ||
+          result.semantic_graph.products[product.value].state !=
+              SemanticProductState::Complete ||
+          !slots[task_index].condition.has_value()) {
+        continue;
+      }
+      const PackageId owner =
+          result.semantic_products.package_by_product[product.value];
+      CompiledPackage &package = *result.packages[owner.value];
+      const SyntaxReference site =
+          result.semantic_products.condition_by_product[product.value];
+      if (package.declaration_discovery.selections.find(site) == nullptr) {
+        package.declaration_discovery.selections.entries.push_back(
+            {site, slots[task_index].condition->selected_true});
+      }
+      if (package_condition_needs_materialization(
+              package.declaration_discovery.package, site) &&
+          !materialize_conditional_declaration(
+              sources, result.graph.packages[owner.value].loaded,
+              package.declaration_discovery.selections, site,
+              package.declaration_discovery.package, diagnostics)) {
+        return false;
+      }
+      package.declarations.package = package.declaration_discovery.package;
+      package.declarations.selections =
+          package.declaration_discovery.selections;
+    }
     for (std::size_t task_index = 0; task_index < wave.products.size();
          ++task_index) {
       const SemanticProductId product = wave.products[task_index];
@@ -2324,6 +3048,16 @@ struct WorkspaceInterfaceTaskSlot {
       const SymbolId symbol =
           result.semantic_products.constant_by_product[product.value];
       EvaluatedConstant &constant = *slots[task_index].constant->result;
+      // An eagerly ambiguous `Alias :: Existing_Type` has both a provisional
+      // ConstantValue row and a declaration TypeIdentity row. Once the latter
+      // classifies the symbol as Type, the value result was only classification
+      // evidence: publishing its meta-type over the represented alias type
+      // would corrupt semantic identity. Type lookup consumes the Type symbol
+      // directly, so no ConstantTable binding is needed.
+      if (package.declaration_discovery.package.symbols.symbol(symbol).kind ==
+          SymbolKind::Type) {
+        continue;
+      }
       package.declaration_discovery.package.symbols.symbol_mut(symbol).type =
           constant.type;
       ConstantTable &published =

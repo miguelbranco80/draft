@@ -93,12 +93,27 @@ void test_named_constants_are_semantic_products(TestState &state) {
 
   std::ofstream app(root / "app" / "package.draft", std::ios::binary);
   app << "package app\n"
+         "Pair :: struct {\n"
+         "    value: Duration,\n"
+         "}\n"
+         "Computed :: struct {\n"
+         "    values: [computed_count(2)]i64,\n"
+         "}\n"
+         "computed_count :: proc(value: usize) -> usize {\n"
+         "    return value + 1\n"
+         "}\n"
+         "Record :: struct {\n"
+         "    value: i64,\n"
+         "}\n"
          "Duration :: distinct i64\n"
          "Second :: cast[Duration](1000 * 1000 * 1000)\n"
          "Base :: 40\n"
          "Derived :: Base + 2\n"
+         "Untyped_Tuple :: (1, 2.5)\n"
+         "Compile_Record :: Record{value = 42}\n"
          "main :: proc() {\n"
          "    static_assert(Derived == 42)\n"
+         "    static_assert(size_of(Computed) == 24)\n"
          "}\n";
   app.close();
   EXPECT(state, app.good());
@@ -128,31 +143,51 @@ void test_named_constants_are_semantic_products(TestState &state) {
       semantic.symbols.lookup_direct(semantic.package_scope, "Derived");
   const std::optional<draft::SymbolId> second =
       semantic.symbols.lookup_direct(semantic.package_scope, "Second");
+  const std::optional<draft::SymbolId> duration =
+      semantic.symbols.lookup_direct(semantic.package_scope, "Duration");
+  const std::optional<draft::SymbolId> pair =
+      semantic.symbols.lookup_direct(semantic.package_scope, "Pair");
+  const std::optional<draft::SymbolId> untyped_tuple =
+      semantic.symbols.lookup_direct(semantic.package_scope, "Untyped_Tuple");
+  const std::optional<draft::SymbolId> computed =
+      semantic.symbols.lookup_direct(semantic.package_scope, "Computed");
+  const std::optional<draft::SymbolId> computed_count =
+      semantic.symbols.lookup_direct(semantic.package_scope, "computed_count");
+  const std::optional<draft::SymbolId> record =
+      semantic.symbols.lookup_direct(semantic.package_scope, "Record");
+  const std::optional<draft::SymbolId> compile_record =
+      semantic.symbols.lookup_direct(semantic.package_scope, "Compile_Record");
   EXPECT(state, base.has_value());
   EXPECT(state, derived.has_value());
   EXPECT(state, second.has_value());
-  if (!base || !derived || !second) return;
+  EXPECT(state, duration.has_value());
+  EXPECT(state, pair.has_value());
+  EXPECT(state, untyped_tuple.has_value());
+  EXPECT(state, computed.has_value());
+  EXPECT(state, computed_count.has_value());
+  EXPECT(state, record.has_value());
+  EXPECT(state, compile_record.has_value());
+  if (!base || !derived || !second || !duration || !pair || !untyped_tuple ||
+      !computed || !computed_count || !record || !compile_record) {
+    return;
+  }
 
   const draft::PackageSemanticProducts &products =
       compiled.semantic_products.packages.front();
-  EXPECT(state,
-      compiled.semantic_products.package_by_product.size() ==
-          compiled.semantic_graph.products.size());
-  EXPECT(state,
-      compiled.semantic_products.constant_by_product.size() ==
-          compiled.semantic_graph.products.size());
-  EXPECT(state,
-      compiled.semantic_products.declaration_by_product.size() ==
-          compiled.semantic_graph.products.size());
-  EXPECT(state,
-      compiled.semantic_products.type_by_product.size() ==
-          compiled.semantic_graph.products.size());
-  EXPECT(state,
-      compiled.semantic_products.condition_by_product.size() ==
-          compiled.semantic_graph.products.size());
-  EXPECT(state, products.constants.size() == 3);
+  EXPECT(state, compiled.semantic_products.package_by_product.size() ==
+                    compiled.semantic_graph.products.size());
+  EXPECT(state, compiled.semantic_products.constant_by_product.size() ==
+                    compiled.semantic_graph.products.size());
+  EXPECT(state, compiled.semantic_products.declaration_by_product.size() ==
+                    compiled.semantic_graph.products.size());
+  EXPECT(state, compiled.semantic_products.type_by_product.size() ==
+                    compiled.semantic_graph.products.size());
+  EXPECT(state, compiled.semantic_products.condition_by_product.size() ==
+                    compiled.semantic_graph.products.size());
+  EXPECT(state, products.constants.size() == 5);
   std::optional<draft::SemanticProductId> base_product;
   std::optional<draft::SemanticProductId> derived_product;
+  std::optional<draft::SemanticProductId> compile_record_product;
   for (draft::SemanticProductId product : products.constants) {
     EXPECT(state,
         compiled.semantic_graph.products[product.value].kind ==
@@ -162,8 +197,12 @@ void test_named_constants_are_semantic_products(TestState &state) {
             draft::SemanticProductState::Complete);
     const draft::SymbolId root_symbol =
         compiled.semantic_products.constant_by_product[product.value];
-    if (root_symbol == *base) base_product = product;
-    if (root_symbol == *derived) derived_product = product;
+    if (root_symbol == *base)
+      base_product = product;
+    if (root_symbol == *derived)
+      derived_product = product;
+    if (root_symbol == *compile_record)
+      compile_record_product = product;
   }
   EXPECT(state, base_product.has_value());
   EXPECT(state, derived_product.has_value());
@@ -174,8 +213,92 @@ void test_named_constants_are_semantic_products(TestState &state) {
         std::find(dependencies.begin(), dependencies.end(), *base_product) !=
             dependencies.end());
   }
-  const draft::ConstantValue *value = package.declarations.constants.find(
-      *derived);
+
+  // Pair is collected before Duration. Its MemberTypes product must acquire an
+  // exact dynamic edge to Duration's TypeIdentity product instead of asking a
+  // recursive resolver to complete the forward declaration. Natural layout is
+  // a second product consuming the completed member packet.
+  std::optional<draft::SemanticProductId> pair_type_product;
+  std::optional<draft::SemanticProductId> duration_type_product;
+  std::optional<draft::SemanticProductId> computed_type_product;
+  std::optional<draft::SemanticProductId> computed_count_type_product;
+  std::optional<draft::SemanticProductId> record_type_product;
+  for (draft::SemanticProductId product : products.declaration_types) {
+    const draft::SymbolId declaration =
+        compiled.semantic_products.declaration_by_product[product.value];
+    if (declaration == *pair)
+      pair_type_product = product;
+    if (declaration == *duration)
+      duration_type_product = product;
+    if (declaration == *computed)
+      computed_type_product = product;
+    if (declaration == *computed_count)
+      computed_count_type_product = product;
+    if (declaration == *record)
+      record_type_product = product;
+  }
+  EXPECT(state, pair_type_product.has_value());
+  EXPECT(state, duration_type_product.has_value());
+  if (pair_type_product && duration_type_product) {
+    EXPECT(state,
+           compiled.semantic_graph.products[pair_type_product->value].kind ==
+               draft::SemanticProductKind::TypeMemberTypes);
+    EXPECT(
+        state,
+        compiled.semantic_graph.products[duration_type_product->value].kind ==
+            draft::SemanticProductKind::TypeIdentity);
+    const std::vector<draft::SemanticProductId> &dependencies =
+        compiled.semantic_graph.products[pair_type_product->value].dependencies;
+    EXPECT(state, std::find(dependencies.begin(), dependencies.end(),
+                            *duration_type_product) != dependencies.end());
+  }
+  // The array count is a full Draft compile-time call, but the expression is
+  // still part of Computed's coherent member-type product. Its callee signature
+  // is an exact graph prerequisite; no semantic round or expression task is
+  // involved.
+  EXPECT(state, computed_type_product.has_value());
+  EXPECT(state, computed_count_type_product.has_value());
+  if (computed_type_product && computed_count_type_product) {
+    const std::vector<draft::SemanticProductId> &dependencies =
+        compiled.semantic_graph.products[computed_type_product->value]
+            .dependencies;
+    EXPECT(state,
+           std::find(dependencies.begin(), dependencies.end(),
+                     *computed_count_type_product) != dependencies.end());
+  }
+  // A composite constant may see Record's eager identity before its member
+  // packet. The evaluator must block on that packet instead of treating the
+  // temporarily empty field table as the completed aggregate definition.
+  EXPECT(state, record_type_product.has_value());
+  EXPECT(state, compile_record_product.has_value());
+  if (record_type_product && compile_record_product) {
+    const std::vector<draft::SemanticProductId> &dependencies =
+        compiled.semantic_graph.products[compile_record_product->value]
+            .dependencies;
+    EXPECT(state, std::find(dependencies.begin(), dependencies.end(),
+                            *record_type_product) != dependencies.end());
+  }
+  std::optional<draft::SemanticProductId> pair_layout_product;
+  for (draft::SemanticProductId product : products.natural_layouts) {
+    if (compiled.semantic_products.type_by_product[product.value] ==
+        semantic.symbols.symbol(*pair).type) {
+      pair_layout_product = product;
+      break;
+    }
+  }
+  EXPECT(state, pair_layout_product.has_value());
+  if (pair_layout_product && pair_type_product) {
+    EXPECT(state,
+           compiled.semantic_graph.products[pair_layout_product->value].kind ==
+               draft::SemanticProductKind::TypeNaturalLayout);
+    const std::vector<draft::SemanticProductId> &dependencies =
+        compiled.semantic_graph.products[pair_layout_product->value]
+            .dependencies;
+    EXPECT(state, std::find(dependencies.begin(), dependencies.end(),
+                            *pair_type_product) != dependencies.end());
+  }
+  const draft::ConstantValue *value =
+      package.declarations.constants.find(*derived);
   EXPECT(state, value != nullptr);
   if (value != nullptr) {
     EXPECT(state, value->kind == draft::ConstantKind::Integer);
@@ -190,6 +313,10 @@ void test_named_constants_are_semantic_products(TestState &state) {
         duration_value->integer ==
             draft::BigInteger::from_u64(1000ULL * 1000ULL * 1000ULL));
   }
+  const draft::Type &tuple_type =
+      semantic.types.type(semantic.symbols.symbol(*untyped_tuple).type);
+  EXPECT(state, tuple_type.kind == draft::TypeKind::Tuple);
+  EXPECT(state, tuple_type.members.size() == 2);
 
   std::filesystem::remove_all(root, error);
 }
@@ -900,6 +1027,9 @@ void test_target_lowering_continues_checked_graph(TestState &state) {
   draft::DiagnosticSink direct_diagnostics;
   const draft::CompileWorkspaceResult direct = draft::compile_workspace(
       direct_sources, root, lowering_options, direct_diagnostics);
+  if (direct_diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(direct_sources, direct_diagnostics);
+  }
   EXPECT(state, direct.ok);
   EXPECT(state,
       direct.progress == draft::CompileWorkspaceProgress::TargetLowering);

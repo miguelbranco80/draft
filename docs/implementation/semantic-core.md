@@ -4,8 +4,8 @@ This document records bootstrap representations and algorithms for lexical class
 
 ## Type completion facets
 
-Status: payload representation implemented; individual graph scheduling remains
-part of the semantic-work-graph replacement.
+Status: payload representation and ordinary complete-compilation declaration
+products implemented; synthesis, generic-demand, and ABI products remain.
 
 `TypeStore` retains one `TypeCompletion` row beside every canonical `Type` row.
 Allocation completes type identity. Member-name completeness, member-type
@@ -26,54 +26,63 @@ it never reads a partial member vector or reports a not-applicable error for a
 fact that later work can still publish. Final body checking instead diagnoses a
 still-incomplete query at its source call.
 
-The current package type resolver still publishes several facets during one
-aggregate resolution operation. The old bundled `complete_nominal` operation
-has been removed: member-name closure, member-type closure, and natural layout
-now have separate one-way publication operations. Source resolution, interface
-import, generic instantiation, and the compiler-owned runtime context all use
-those same boundaries. Target-natural struct, raw-union, and tagged-union layout
-is now a pure `sema/type_layout` operation over an immutable `TypeStore` and an
-ordered member-type list. It returns task-owned layout and offset data while
-distinguishing an incomplete dependency from checked arithmetic overflow; it
-does not re-enter syntax or mutate the canonical type row. The current package
-resolver still invokes that producer and several publications sequentially
-inside one aggregate task. The active replacement moves those calls into the
-individual products named by the target-state architecture.
+The old bundled `complete_nominal` operation is gone: member-name closure,
+member-type closure, and natural layout have separate one-way publication
+operations. Target-natural struct, raw-union, tagged-union, and enum layout is a
+pure producer over an immutable `TypeStore`; it returns a task-owned layout and
+offset packet or the exact incomplete type facets in first-use order.
 
-Package-level conditional discovery still uses whole-package task-local
-attempts while those individual producers are being installed. An attempt that
-discovers another branch or integer dependency is discarded; the first
-no-progress attempt is retained directly as the authoritative selected package.
-Its type diagnostics are published beside its exact IDs, and final constant
-validation runs on that same package. There is no longer a second final type
-resolution pass which reconstructs an equivalent package solely to obtain
-authoritative diagnostics.
+During ordinary complete workspace compilation, collection first allocates
+nominal identities. One declaration product then resolves each authored
+signature or member-type packet without recursively entering another unfinished
+package declaration. A separate `TypeNaturalLayout` product consumes the
+completed nominal member packet and publishes physical layout. Symbolic
+parametric templates deliberately stop after member types because their
+canonical concrete applications, not the template pattern, own runtime layout.
+Imported interface nominals are already-complete upstream inputs and never
+become local declaration work.
 
-Named-constant evaluation now also has a single-product entry point. It accepts
+Array counts, SIMD widths, enum values, `@align` arguments, and parametric value
+arguments remain fields of their owning declaration product; the graph does not
+create a node per expression. The resolver handles the small literal/arithmetic
+vocabulary directly, then uses the ordinary compile-time interpreter for full
+Draft expressions such as a procedure call. The interpreter may return exact
+declaration, constant, and type-facet prerequisites. A blocked attempt discards
+both its partially built structural types and provisional diagnostics. Derived
+array, tuple, distinct, and concrete-generic layout waits are reduced to the
+authored nominal layout products that can actually unblock them. The temporary
+exception is an imported owner-evaluated generic proxy, whose existing
+cross-package request/rebuild path remains until canonical generic demands
+replace it in the next implementation step.
+
+Package and member `when` conditions also have one-site producers. The
+coordinator publishes a completed package selection and appends only the chosen
+branch before extending the dynamic product graph. Conditional aggregate-member
+continuation is still incomplete: its member-name/member-type successor must be
+split from the declaration attempt. Interface-synthesis discovery likewise
+retains the aggregate compatibility path until opaque waits create source-
+generation successors.
+
+Named-constant evaluation has a single-product entry point. It accepts
 an immutable table of already published constants, evaluates only its named
-root, and returns canonical local-constant and exact type-facet blockers. A
-reference to another unpublished local constant is not evaluated recursively;
-the coordinator can add the corresponding `ConstantValue` edge. The attempt
-owns inferred root type, structural-type additions, synthesis discoveries, and
-diagnostics in its private package snapshot. Package scheduling has not yet
-replaced the conditional-discovery rounds with individual products. Complete
-workspace compilation does schedule every final package-scope constant as a
-real `ConstantValue` product, however. The semantic entry point exposes the
-terminal declaration/type discovery payload separately from final storage and
-target validation; its product-aware finalizer consumes the published constant
-table and rechecks required conditions without recursively recomputing a named
-constant. Interface-synthesis discovery retains aggregate constant evaluation
-until synthesis waits and conditional expressions are product outcomes too.
+root, and returns canonical unfinished-declaration, local-constant, and exact
+type-facet blockers. A reference to another unpublished declaration is not
+entered recursively; the coordinator adds the corresponding product edge. An
+ambiguous `Alias :: Name` value product explicitly depends on declaration
+classification and completes without publishing a value when the row is a type
+alias. Blocked attempts discard their private mutations and diagnostics.
+Complete workspace compilation schedules every final package-scope constant as
+a real `ConstantValue` product. The product-aware finalizer consumes the
+published constant table and rechecks required storage/target contracts without
+recursively recomputing named constants. Interface-synthesis discovery retains
+aggregate constant evaluation until provider waits use the same products.
 Ready constants imported through dependency interfaces are not duplicated as
 consumer products. The finalizer copies their already translated values under
 the consumer-local proxy IDs before body checking and validation context use.
-
-Declaration/member conditional evaluation has the corresponding single-product
-producer contract. It evaluates exactly one retained `when` site, never appends
-a selection, and returns either the boolean choice, canonical local-constant
-and type-facet blockers, an unresolved-synthesis wait, or a source diagnostic.
-The package fixed-point caller still owns branch scheduling until this producer
-is connected to the command graph.
+When one frozen wave completes declarations and constants together, the
+coordinator fixes the declaration TypeStore prefix before interning
+constant-task structural types. This publication order prevents equal numeric
+task-local TypeIds from being reinterpreted as unrelated declaration rows.
 
 ## Compile-time type values and inspection
 

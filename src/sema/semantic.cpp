@@ -1,4 +1,20 @@
-// Append-only declaration selection and deterministic semantic readiness probes.
+// Append-only package declaration discovery and semantic finalization.
+//
+// This module owns the direct compositions around the lower-level declaration,
+// constant, conditional, and type-product operations. Its inputs are parsed
+// package files, completed dependency interfaces, target facts, and published
+// product tables. Its outputs are either a retained PackageDeclarationDiscovery
+// payload for the command-level scheduler or one final SemanticAnalysisResult
+// for body checking. It owns no source buffers and performs no provider or
+// backend work.
+//
+// Complete workspace compilation calls begin once, publishes graph results into
+// that append-only payload, and calls finish once. Direct semantic clients and
+// interface-synthesis discovery temporarily retain the aggregate composition
+// below; those paths are explicitly migration code, not alternate semantic
+// authority. Package declaration order, diagnostic order, and imported constant
+// publication are deterministic. Relevant specification: compiler dependency
+// ordering and package `when` rules in sections 6 and 1.
 
 #include "sema/semantic.h"
 
@@ -466,6 +482,23 @@ bool finish_package_declaration_discovery(
       discovery.package.symbols.scope(discovery.package.package_scope).symbols;
   for (SymbolId symbol_id : package_symbols) {
     const Symbol &symbol = discovery.package.symbols.symbol(symbol_id);
+    // Interface import may add a compiler-owned package-scope nominal solely
+    // to own the member scope of a nested signature type. Its immutable facet
+    // packet is an upstream input, not an authored declaration governed by
+    // this package's terminal barrier.
+    if (!symbol.syntax.file.is_valid() || !symbol.syntax.node.is_valid()) {
+      continue;
+    }
+    bool is_type_instance = false;
+    for (const ParametricTypeInstanceRecord &instance :
+         discovery.package.parametric_type_instances) {
+      if (instance.instance == symbol_id) {
+        is_type_instance = true;
+        break;
+      }
+    }
+    if (is_type_instance)
+      continue;
     if ((symbol.kind == SymbolKind::Type ||
          symbol.kind == SymbolKind::Procedure) &&
         !symbol.type.is_valid()) {
@@ -481,16 +514,58 @@ bool finish_package_declaration_discovery(
         kind != TypeKind::TaggedUnion && kind != TypeKind::RawUnion) {
       continue;
     }
-    if (discovery.package.types.facet_state(
-            symbol.type, TypeFacet::MemberTypes) !=
-            TypeFacetState::Complete ||
+    const bool member_types_complete =
         discovery.package.types.facet_state(
-            symbol.type, TypeFacet::NaturalLayout) !=
-            TypeFacetState::Complete) {
-      diagnostics.error(
-          symbol.name_range,
-          "nominal type products are not complete for '" + symbol.name +
-              "'");
+            symbol.type, TypeFacet::MemberTypes) == TypeFacetState::Complete;
+    // A parametric nominal is the checked symbolic pattern from which
+    // canonical applications are formed. It has no one target-natural layout:
+    // `Result[i32, string]` and `Result[i128, u8]` own different concrete
+    // layouts. Closing the package name set therefore requires the template's
+    // member-type pattern but leaves layout to each instance product.
+    const bool natural_layout_complete =
+        symbol.flags.parametric ||
+        discovery.package.types.facet_state(
+            symbol.type, TypeFacet::NaturalLayout) == TypeFacetState::Complete;
+    bool waits_for_imported_owner = false;
+    if (!natural_layout_complete &&
+        !discovery.package.imported_type_instantiation_requests.empty()) {
+      for (const ImportedType &imported : discovery.package.imported_types) {
+        if (imported.type == symbol.type && !imported.arguments.empty()) {
+          waits_for_imported_owner = true;
+          break;
+        }
+      }
+      // Applying an imported template creates a consumer-local instance shell
+      // and an ImportedTypeInstantiationRequest. An authored alias names that
+      // shell, not the imported template marker retained in imported_types, so
+      // relate it through the instance's source proxy as well.
+      for (const ParametricTypeInstanceRecord &instance :
+           discovery.package.parametric_type_instances) {
+        if (discovery.package.symbols.symbol(instance.instance).type !=
+            symbol.type) {
+          continue;
+        }
+        for (const ImportedTypeInstantiationRequest &request :
+             discovery.package.imported_type_instantiation_requests) {
+          if (request.source_proxy == instance.source) {
+            waits_for_imported_owner = true;
+            break;
+          }
+        }
+        if (waits_for_imported_owner)
+          break;
+      }
+    }
+    // Cross-package procedure-dependent generic applications still leave one
+    // imported nominal shell pending until the defining package evaluates its
+    // private recipe. The command-level owner loop consumes the explicit
+    // ImportedTypeInstantiationRequest immediately after this barrier. Step 4
+    // replaces that temporary exception with a canonical generic-demand edge.
+    if (!member_types_complete ||
+        (!natural_layout_complete && !waits_for_imported_owner)) {
+      diagnostics.error(symbol.name_range,
+                        "nominal type products are not complete for '" +
+                            symbol.name + "'");
       return false;
     }
   }
