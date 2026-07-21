@@ -5965,6 +5965,12 @@ private:
   // the resulting product dependencies with its other blocker domains.
   std::vector<SymbolId> reached_procedures_;
   std::vector<SymbolId> compile_time_procedures_;
+  // These limits belong to this evaluator invocation. Product scheduling
+  // creates a fresh ConstantEvaluator for each condition or named-constant
+  // task, so an independently ready sibling cannot consume another task's
+  // steps or recursion allowance. Keeping the counters here, rather than in a
+  // package or compiler context, also makes one-worker and multi-worker failure
+  // selection identical.
   std::size_t execution_steps_remaining_ = kMaximumExecutionSteps;
   std::size_t binding_dependency_depth_ = 0;
   std::size_t procedure_call_depth_ = 0;

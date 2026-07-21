@@ -5244,6 +5244,10 @@ private:
   const ConditionalSelections &selections_;
   DiagnosticSink &diagnostics_;
   std::vector<ResolutionState> states_;
+  // One TypeResolver is constructed for one declaration product attempt. This
+  // is consequently a task-local recursion guard, not a package-wide budget:
+  // resolving one ready declaration cannot make a sibling fail merely because
+  // the scheduler happened to run it later.
   std::size_t declaration_resolution_depth_ = 0;
   std::vector<SymbolId> active_integer_constants_;
   std::vector<SymbolId> active_declaration_owners_;

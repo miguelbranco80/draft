@@ -1137,6 +1137,100 @@ void test_selective_regeneration_changes_only_selected_source(
           regenerated.manifest.resolved_program_digest);
 }
 
+// Semantic worker count is not part of synthesis identity. These two physical
+// workspaces have the same logical package and source bytes, but one compiler
+// uses a single semantic worker and the other uses four. Exact request
+// identities, committed pins, resolved-program bytes, diagnostics, and product
+// graph rows must all agree. This catches both completion-order leakage into
+// generated source and a subtler bug where the resolver commits deterministic
+// pins but returns a differently scheduled compiler graph to `resolve --build`.
+void test_semantic_worker_counts_preserve_generated_source_identity(
+    TestState &state) {
+  TemporaryWorkspace sequential_workspace;
+  sequential_workspace.write_two_expression_source();
+  FakeProviderState sequential_provider;
+  draft::ResolveWorkspaceOptions sequential_options =
+      resolve_options(sequential_workspace, sequential_provider);
+  sequential_options.compile.semantic_worker_count = 1;
+  sequential_options.provider.maximum_parallel_calls = 1;
+  draft::SourceManager sequential_sources;
+  draft::DiagnosticSink sequential_diagnostics;
+  const draft::ResolveWorkspaceResult sequential = draft::resolve_workspace(
+      sequential_sources,
+      sequential_workspace.package.string(),
+      std::move(sequential_options),
+      sequential_diagnostics);
+
+  TemporaryWorkspace parallel_workspace;
+  parallel_workspace.write_two_expression_source();
+  FakeProviderState parallel_provider;
+  draft::ResolveWorkspaceOptions parallel_options =
+      resolve_options(parallel_workspace, parallel_provider);
+  parallel_options.compile.semantic_worker_count = 4;
+  parallel_options.provider.maximum_parallel_calls = 1;
+  draft::SourceManager parallel_sources;
+  draft::DiagnosticSink parallel_diagnostics;
+  const draft::ResolveWorkspaceResult parallel = draft::resolve_workspace(
+      parallel_sources,
+      parallel_workspace.package.string(),
+      std::move(parallel_options),
+      parallel_diagnostics);
+
+  if (!sequential.ok) {
+    std::cerr << draft::render_diagnostics(
+        sequential_sources, sequential_diagnostics);
+  }
+  if (!parallel.ok) {
+    std::cerr << draft::render_diagnostics(
+        parallel_sources, parallel_diagnostics);
+  }
+  EXPECT(state, sequential.ok);
+  EXPECT(state, parallel.ok);
+  EXPECT(state, sequential.committed);
+  EXPECT(state, parallel.committed);
+  EXPECT(state, sequential_provider.calls == 2);
+  EXPECT(state, parallel_provider.calls == 2);
+  EXPECT(state,
+         sequential_provider.site_identities ==
+             parallel_provider.site_identities);
+  EXPECT(state, sequential_provider.prompts == parallel_provider.prompts);
+  EXPECT(state,
+         sequential_provider.occurrences == parallel_provider.occurrences);
+  EXPECT(state,
+         draft::serialize_resolution_manifest(sequential.manifest) ==
+             draft::serialize_resolution_manifest(parallel.manifest));
+  EXPECT(state,
+         draft::render_diagnostics(
+             sequential_sources, sequential_diagnostics) ==
+             draft::render_diagnostics(
+                 parallel_sources, parallel_diagnostics));
+  EXPECT(state, sequential.compiled_program.has_value());
+  EXPECT(state, parallel.compiled_program.has_value());
+  if (!sequential.compiled_program.has_value() ||
+      !parallel.compiled_program.has_value()) {
+    return;
+  }
+
+  const draft::CompileWorkspaceResult &left = *sequential.compiled_program;
+  const draft::CompileWorkspaceResult &right = *parallel.compiled_program;
+  EXPECT(state, left.resolved_program_digest == right.resolved_program_digest);
+  EXPECT(state,
+         left.semantic_graph.products.size() ==
+             right.semantic_graph.products.size());
+  const std::size_t compared_products = std::min(
+      left.semantic_graph.products.size(), right.semantic_graph.products.size());
+  for (std::size_t index = 0; index < compared_products; ++index) {
+    const draft::SemanticProduct &left_product =
+        left.semantic_graph.products[index];
+    const draft::SemanticProduct &right_product =
+        right.semantic_graph.products[index];
+    EXPECT(state, left_product.kind == right_product.kind);
+    EXPECT(state, left_product.state == right_product.state);
+    EXPECT(state, left_product.dependencies == right_product.dependencies);
+    EXPECT(state, left_product.failure == right_product.failure);
+  }
+}
+
 void test_compiler_rejection_retries_with_feedback(TestState &state) {
   TemporaryWorkspace workspace;
   workspace.write_source("correct the typed expression");
@@ -2477,6 +2571,7 @@ int main() {
   test_resolution_reuse_revalidation_and_failure(state);
   test_body_proposal_reuses_static_pack_dependency(state);
   test_selective_regeneration_changes_only_selected_source(state);
+  test_semantic_worker_counts_preserve_generated_source_identity(state);
   test_compiler_rejection_retries_with_feedback(state);
   test_provider_error_cannot_hide_behind_success(state);
   test_external_inputs_commit_without_synthesis(state);

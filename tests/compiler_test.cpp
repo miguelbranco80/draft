@@ -829,6 +829,89 @@ void test_parallel_body_diagnostics_are_canonical(TestState &state) {
                  parallel_sources, parallel_diagnostics));
 }
 
+// Declaration diagnostics exercise an earlier failure boundary than body
+// diagnostics. Every invalid signature below is independently ready after the
+// package name set, so a multi-worker execution may finish them in any order.
+// The coordinator must nevertheless replay diagnostics and publish terminal
+// graph states in product-ID order. Comparing the complete graph also checks
+// that the first reported failure is a property of source order rather than
+// worker completion order.
+void test_parallel_declaration_failures_are_canonical(TestState &state) {
+  draft::test::TemporaryDirectory temporary_directory{
+      "draft-bootstrap-declaration-diagnostic-determinism-test"};
+  const std::filesystem::path &root = temporary_directory.path();
+  std::error_code error;
+  std::filesystem::create_directories(root / "app", error);
+  EXPECT(state, !error);
+  if (error) return;
+
+  std::ofstream app(root / "app" / "package.draft", std::ios::binary);
+  app << "package app\n"
+         "bad_first :: proc(value: Missing_First) {}\n"
+         "bad_second :: proc(value: Missing_Second) {}\n"
+         "bad_third :: proc(value: Missing_Third) {}\n"
+         "bad_fourth :: proc(value: Missing_Fourth) {}\n"
+         "main :: proc() {}\n";
+  app.close();
+  EXPECT(state, app.good());
+
+  draft::SourceManager sequential_sources;
+  draft::DiagnosticSink sequential_diagnostics;
+  draft::TimingRecorder sequential_timings(draft::TimingOutput::Summary);
+  draft::CompileWorkspaceOptions sequential_options;
+  sequential_options.target = draft::make_aarch64_macos_profile();
+  sequential_options.workspace.workspace_directory = root.string();
+  sequential_options.semantic_worker_count = 1;
+  sequential_options.timings = &sequential_timings;
+  const draft::CompileWorkspaceResult sequential = draft::compile_workspace(
+      sequential_sources,
+      (root / "app").string(),
+      sequential_options,
+      sequential_diagnostics);
+
+  draft::SourceManager parallel_sources;
+  draft::DiagnosticSink parallel_diagnostics;
+  draft::TimingRecorder parallel_timings(draft::TimingOutput::Summary);
+  draft::CompileWorkspaceOptions parallel_options = sequential_options;
+  parallel_options.semantic_worker_count = 4;
+  parallel_options.timings = &parallel_timings;
+  const draft::CompileWorkspaceResult parallel = draft::compile_workspace(
+      parallel_sources,
+      (root / "app").string(),
+      parallel_options,
+      parallel_diagnostics);
+
+  EXPECT(state, !sequential.ok);
+  EXPECT(state, !parallel.ok);
+  EXPECT(state, sequential_diagnostics.error_count() == 4);
+  EXPECT(state, parallel_diagnostics.error_count() == 4);
+  EXPECT(state,
+         draft::render_diagnostics(
+             sequential_sources, sequential_diagnostics) ==
+             draft::render_diagnostics(
+                 parallel_sources, parallel_diagnostics));
+  EXPECT(state,
+         sequential.semantic_graph.products.size() ==
+             parallel.semantic_graph.products.size());
+  const std::size_t compared_products = std::min(
+      sequential.semantic_graph.products.size(),
+      parallel.semantic_graph.products.size());
+  for (std::size_t index = 0; index < compared_products; ++index) {
+    const draft::SemanticProduct &left =
+        sequential.semantic_graph.products[index];
+    const draft::SemanticProduct &right =
+        parallel.semantic_graph.products[index];
+    EXPECT(state, left.kind == right.kind);
+    EXPECT(state, left.state == right.state);
+    EXPECT(state, left.dependencies == right.dependencies);
+    EXPECT(state, left.failure == right.failure);
+  }
+  EXPECT(state,
+         parallel_timings.render().find(
+             "declaration tasks in shared ready waves:") !=
+             std::string::npos);
+}
+
 // A diagnosed body still owns recoverable HIR, so its product completes while
 // the package remains invalid. This lets the next independent authored body run
 // and preserves Draft's rule that unreachable source is checked.
@@ -1506,7 +1589,14 @@ void test_source_update_reuses_unaffected_semantics(TestState &state) {
              compiled.semantic_graph.products.size());
   EXPECT(state, compiled.semantic_graph
                         .products[compiled.semantic_products.target.value]
+                        .kind == draft::SemanticProductKind::TargetProfile);
+  EXPECT(state, compiled.semantic_graph
+                        .products[compiled.semantic_products.target.value]
                         .state == draft::SemanticProductState::Complete);
+  EXPECT(state,
+         compiled.semantic_graph.products[
+             compiled.semantic_products.source_generation.value].kind ==
+             draft::SemanticProductKind::SourceGeneration);
   EXPECT(state,
          draft::freeze_semantic_ready_wave(compiled.semantic_graph).status ==
              draft::SemanticReadyWaveStatus::Complete);
@@ -1524,9 +1614,34 @@ void test_source_update_reuses_unaffected_semantics(TestState &state) {
       changed_index = index;
     if (path == "stable")
       stable_index = index;
+    for (const draft::SemanticProductId parsed_file :
+         initial_products[index].parsed_files) {
+      EXPECT(state,
+             compiled.semantic_graph.products[parsed_file.value].kind ==
+                 draft::SemanticProductKind::ParsedFile);
+      EXPECT(state,
+             compiled.semantic_graph.products[parsed_file.value].state ==
+                 draft::SemanticProductState::Complete);
+    }
+    EXPECT(state,
+           compiled.semantic_graph
+                   .products[initial_products[index].imports.value].kind ==
+               draft::SemanticProductKind::PackageImports);
+    EXPECT(state,
+           compiled.semantic_graph
+                   .products[initial_products[index].imports.value].state ==
+               draft::SemanticProductState::Complete);
+    EXPECT(state,
+           compiled.semantic_graph
+                   .products[initial_products[index].name_set.value].kind ==
+               draft::SemanticProductKind::PackageNameSet);
     EXPECT(state, compiled.semantic_graph
                           .products[initial_products[index].name_set.value]
                           .state == draft::SemanticProductState::Complete);
+    EXPECT(state,
+           compiled.semantic_graph
+                   .products[initial_products[index].package_interface.value]
+                   .kind == draft::SemanticProductKind::PackageInterface);
     EXPECT(state,
            compiled.semantic_graph
                    .products[initial_products[index].package_interface.value]
@@ -4256,6 +4371,7 @@ int main() {
   test_procedure_body_worker_counts_are_deterministic(state);
   test_independent_packages_share_one_body_ready_wave(state);
   test_parallel_body_diagnostics_are_canonical(state);
+  test_parallel_declaration_failures_are_canonical(state);
   test_invalid_unused_body_products_do_not_stop_the_wave(state);
   test_named_constants_are_semantic_products(state);
   test_conditional_members_extend_the_semantic_graph(state);
