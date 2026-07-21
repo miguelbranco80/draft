@@ -543,9 +543,21 @@ Provider obligation context consumes this same exact payload, so the compiler
 does not describe a preliminary imported contract to Codex after closing a
 different one for denials.
 
-The remaining flow-closure migration seam is attaching direct summary,
-closed-SCC, and denial payloads to their live semantic-product rows. The
-algorithmic package-wide flow and effect replay paths are gone.
+The compiler attaches these retained payloads to live semantic-product rows.
+One `DirectEffectSummary` row maps to one selected HIR-bearing body product and
+runs in a bounded worker wave. `ClosedEffectScc` rows map one-for-one to the
+dependency-first components above; each row names its source direct products,
+its exact earlier component dependencies, the target, and completed imported
+component products. One independently checked `DenialResult` row then names its
+exact body and owning closed component. Diagnostics remain task-local until
+canonical graph publication, so a denial violation is the `Error` state of the
+specific procedure product rather than an unstructured package failure.
+
+A body or interface source transition supersedes the affected direct,
+closed-SCC, and denial rows transitively through package consumers while
+retaining reusable procedure-body products. The rebuilt payload vectors align
+with the successor product IDs. The algorithmic package-wide flow and effect
+replay paths are gone.
 
 External artifact summaries use the strict
 `draft-provider-denial-summary-v1` line format documented in section 12. The

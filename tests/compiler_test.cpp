@@ -13,6 +13,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <span>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -153,6 +154,104 @@ void test_procedure_bodies_are_dynamic_semantic_products(TestState &state) {
     }
   }
   EXPECT(state, published_type_count != 0);
+
+  // Closure products retain the same exact identity as their typed payloads.
+  // Direct and denial rows use the HIR-bearing selected-body projection; SCC
+  // rows use the dependency-first component order computed by effect closure.
+  // These parallel-array checks prevent the graph from degenerating into a
+  // phase marker which merely says that some package-wide work happened.
+  EXPECT(state, products.effect_body_work_indices.size() ==
+                    products.direct_effect_summaries.size());
+  EXPECT(state, products.effect_body_work_indices.size() ==
+                    products.denial_results.size());
+  EXPECT(state, products.direct_effect_summaries.size() ==
+                    package.direct_effects.procedures.size());
+  EXPECT(state, products.closed_effect_sccs.size() ==
+                    package.effects.components.size());
+  for (std::size_t position = 0;
+       position < products.direct_effect_summaries.size(); ++position) {
+    const std::size_t work_index =
+        products.effect_body_work_indices[position];
+    EXPECT(state, work_index < products.procedure_bodies.size());
+    if (work_index >= products.procedure_bodies.size()) continue;
+    const draft::SemanticProductId product =
+        products.direct_effect_summaries[position];
+    const draft::SemanticProduct &row =
+        compiled.semantic_graph.products[product.value];
+    EXPECT(state, row.kind ==
+                      draft::SemanticProductKind::DirectEffectSummary);
+    EXPECT(state, row.state == draft::SemanticProductState::Complete);
+    EXPECT(state,
+           compiled.semantic_products.procedure_by_product[product.value] ==
+               package.direct_effects.procedures[position].procedure);
+    EXPECT(state, std::find(row.dependencies.begin(), row.dependencies.end(),
+                            compiled.semantic_products.target) !=
+                      row.dependencies.end());
+    EXPECT(state, std::find(row.dependencies.begin(), row.dependencies.end(),
+                            products.procedure_bodies[work_index]) !=
+                      row.dependencies.end());
+  }
+  for (std::size_t component_index = 0;
+       component_index < products.closed_effect_sccs.size();
+       ++component_index) {
+    const draft::SemanticProductId product =
+        products.closed_effect_sccs[component_index];
+    const draft::SemanticProduct &row =
+        compiled.semantic_graph.products[product.value];
+    EXPECT(state, row.kind == draft::SemanticProductKind::ClosedEffectScc);
+    EXPECT(state, row.state == draft::SemanticProductState::Complete);
+    const draft::ClosedEffectComponent &component =
+        package.effects.components[component_index];
+    for (std::size_t procedure_index : component.procedure_indices) {
+      if (procedure_index >= products.direct_effect_summaries.size()) continue;
+      EXPECT(state,
+             std::find(row.dependencies.begin(), row.dependencies.end(),
+                       products.direct_effect_summaries[procedure_index]) !=
+                 row.dependencies.end());
+    }
+    for (std::size_t dependency : component.dependencies) {
+      EXPECT(state, dependency < component_index);
+      if (dependency >= component_index) continue;
+      EXPECT(state,
+             std::find(row.dependencies.begin(), row.dependencies.end(),
+                       products.closed_effect_sccs[dependency]) !=
+                 row.dependencies.end());
+    }
+  }
+  for (std::size_t position = 0;
+       position < products.denial_results.size(); ++position) {
+    const std::size_t work_index =
+        products.effect_body_work_indices[position];
+    const draft::SemanticProductId product = products.denial_results[position];
+    const draft::SemanticProduct &row =
+        compiled.semantic_graph.products[product.value];
+    EXPECT(state, row.kind == draft::SemanticProductKind::DenialResult);
+    EXPECT(state, row.state == draft::SemanticProductState::Complete);
+    EXPECT(state,
+           compiled.semantic_products.procedure_by_product[product.value] ==
+               package.direct_effects.procedures[position].procedure);
+    EXPECT(state, std::find(row.dependencies.begin(), row.dependencies.end(),
+                            products.procedure_bodies[work_index]) !=
+                      row.dependencies.end());
+    std::optional<std::size_t> owning_component;
+    for (std::size_t component_index = 0;
+         component_index < package.effects.components.size();
+         ++component_index) {
+      const std::vector<std::size_t> &members =
+          package.effects.components[component_index].procedure_indices;
+      if (std::find(members.begin(), members.end(), position) !=
+          members.end()) {
+        owning_component = component_index;
+        break;
+      }
+    }
+    EXPECT(state, owning_component.has_value());
+    if (!owning_component.has_value()) continue;
+    EXPECT(state,
+           std::find(row.dependencies.begin(), row.dependencies.end(),
+                     products.closed_effect_sccs[*owning_component]) !=
+               row.dependencies.end());
+  }
 
   // ABI classification is an exact per-TypeId graph facet. Types installed by
   // a body depend on that body product; declaration-baseline types depend on
@@ -388,6 +487,14 @@ void test_procedure_body_worker_counts_are_deterministic(TestState &state) {
   EXPECT(state, sequential_report.find("procedure body worker slots: 2") !=
                     std::string::npos);
   EXPECT(state, parallel_report.find("procedure body worker slots: 5") !=
+                    std::string::npos);
+  EXPECT(state, sequential_report.find("direct effect worker slots: 1") !=
+                    std::string::npos);
+  EXPECT(state, parallel_report.find("direct effect worker slots: 4") !=
+                    std::string::npos);
+  EXPECT(state, sequential_report.find("denial worker slots: 1") !=
+                    std::string::npos);
+  EXPECT(state, parallel_report.find("denial worker slots: 4") !=
                     std::string::npos);
 }
 
@@ -1491,10 +1598,42 @@ void test_body_source_update_reuses_closed_generic_dependency(
       compiled.semantic_products.packages[app_index].abi_classifications;
   const std::vector<draft::SemanticProductId> initial_formatting_abi_products =
       compiled.semantic_products.packages[*formatting_index].abi_classifications;
+  const std::vector<draft::SemanticProductId> initial_app_direct_effect_products =
+      compiled.semantic_products.packages[app_index].direct_effect_summaries;
+  const std::vector<draft::SemanticProductId>
+      initial_formatting_direct_effect_products =
+          compiled.semantic_products.packages[*formatting_index]
+              .direct_effect_summaries;
+  const std::vector<draft::SemanticProductId> initial_app_effect_scc_products =
+      compiled.semantic_products.packages[app_index].closed_effect_sccs;
+  const std::vector<draft::SemanticProductId>
+      initial_formatting_effect_scc_products =
+          compiled.semantic_products.packages[*formatting_index]
+              .closed_effect_sccs;
+  const std::vector<draft::SemanticProductId> initial_app_denial_products =
+      compiled.semantic_products.packages[app_index].denial_results;
+  const std::vector<draft::SemanticProductId> initial_formatting_denial_products =
+      compiled.semantic_products.packages[*formatting_index].denial_results;
   EXPECT(state, !initial_app_body_products.empty());
   EXPECT(state, !initial_formatting_body_products.empty());
   EXPECT(state, !initial_app_abi_products.empty());
   EXPECT(state, !initial_formatting_abi_products.empty());
+  EXPECT(state, !initial_app_direct_effect_products.empty());
+  EXPECT(state, !initial_formatting_direct_effect_products.empty());
+  EXPECT(state, !initial_app_effect_scc_products.empty());
+  EXPECT(state, !initial_formatting_effect_scc_products.empty());
+  EXPECT(state, !initial_app_denial_products.empty());
+  EXPECT(state, !initial_formatting_denial_products.empty());
+  for (draft::SemanticProductId product : initial_app_direct_effect_products) {
+    const std::vector<draft::SemanticProductId> &dependencies =
+        compiled.semantic_graph.products[product.value].dependencies;
+    for (draft::SemanticProductId imported :
+         initial_formatting_effect_scc_products) {
+      EXPECT(state,
+             std::find(dependencies.begin(), dependencies.end(), imported) !=
+                 dependencies.end());
+    }
+  }
   EXPECT(state,
          initial_formatting.declarations.package.parametric_instances.empty());
   EXPECT(state,
@@ -1547,6 +1686,27 @@ void test_body_source_update_reuses_closed_generic_dependency(
   EXPECT(state,
          compiled.semantic_products.packages[*formatting_index]
                  .abi_classifications == initial_formatting_abi_products);
+  EXPECT(state,
+         compiled.semantic_products.packages[app_index]
+                 .direct_effect_summaries !=
+             initial_app_direct_effect_products);
+  EXPECT(state,
+         compiled.semantic_products.packages[*formatting_index]
+                 .direct_effect_summaries ==
+             initial_formatting_direct_effect_products);
+  EXPECT(state,
+         compiled.semantic_products.packages[app_index].closed_effect_sccs !=
+             initial_app_effect_scc_products);
+  EXPECT(state,
+         compiled.semantic_products.packages[*formatting_index]
+                 .closed_effect_sccs ==
+             initial_formatting_effect_scc_products);
+  EXPECT(state,
+         compiled.semantic_products.packages[app_index].denial_results !=
+             initial_app_denial_products);
+  EXPECT(state,
+         compiled.semantic_products.packages[*formatting_index]
+                 .denial_results == initial_formatting_denial_products);
   EXPECT(state, updated_app.c_abi.complete_for(
                     updated_app.bodies.package.types, options.target.facts));
   EXPECT(state, updated_formatting.c_abi.complete_for(
@@ -1572,6 +1732,27 @@ void test_body_source_update_reuses_closed_generic_dependency(
            compiled.semantic_graph.products[product.value].state ==
                draft::SemanticProductState::Complete);
   }
+  const auto expect_product_state =
+      [&](std::span<const draft::SemanticProductId> product_ids,
+          draft::SemanticProductState expected) {
+        for (draft::SemanticProductId product : product_ids) {
+          EXPECT(state,
+                 compiled.semantic_graph.products[product.value].state ==
+                     expected);
+        }
+      };
+  expect_product_state(initial_app_direct_effect_products,
+                       draft::SemanticProductState::Superseded);
+  expect_product_state(initial_app_effect_scc_products,
+                       draft::SemanticProductState::Superseded);
+  expect_product_state(initial_app_denial_products,
+                       draft::SemanticProductState::Superseded);
+  expect_product_state(initial_formatting_direct_effect_products,
+                       draft::SemanticProductState::Complete);
+  expect_product_state(initial_formatting_effect_scc_products,
+                       draft::SemanticProductState::Complete);
+  expect_product_state(initial_formatting_denial_products,
+                       draft::SemanticProductState::Complete);
 
   // Two packages start body state for the surface graph. The body replacement
   // starts only app; formatting retains its immutable body products.
@@ -3414,7 +3595,30 @@ void test_cross_package_higher_order_effect(TestState &state) {
   }
   EXPECT(state, rendered.find("denied assert") != std::string::npos);
   EXPECT(state, rendered.find("unknown call") == std::string::npos);
-
+  const std::size_t app_index = result.graph.root_package.value;
+  EXPECT(state, app_index < result.semantic_products.packages.size());
+  if (app_index < result.semantic_products.packages.size()) {
+    const draft::PackageSemanticProducts &products =
+        result.semantic_products.packages[app_index];
+    bool found_denial_error = false;
+    for (draft::SemanticProductId product : products.denial_results) {
+      found_denial_error = found_denial_error ||
+          result.semantic_graph.products[product.value].state ==
+              draft::SemanticProductState::Error;
+    }
+    EXPECT(state, found_denial_error);
+    for (draft::SemanticProductId product :
+         products.direct_effect_summaries) {
+      EXPECT(state,
+             result.semantic_graph.products[product.value].state ==
+                 draft::SemanticProductState::Complete);
+    }
+    for (draft::SemanticProductId product : products.closed_effect_sccs) {
+      EXPECT(state,
+             result.semantic_graph.products[product.value].state ==
+                 draft::SemanticProductState::Complete);
+    }
+  }
   std::filesystem::remove_all(root, error);
 }
 

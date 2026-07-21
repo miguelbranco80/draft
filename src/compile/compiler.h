@@ -366,6 +366,18 @@ struct PackageSemanticProducts {
   // become Superseded only when this declaration generation is replaced.
   std::vector<SemanticProductId> procedure_bodies;
   std::vector<SemanticProductId> selected_procedure_bodies;
+  // One body-local DirectEffectSummary product per selected procedure, in the
+  // same projection order. ClosedEffectScc rows align exactly with
+  // CompiledPackage::effects.components. DenialResult rows again align with the
+  // selected HIR-bearing procedure projection. effect_body_work_indices is
+  // parallel to the direct and denial vectors and maps each row back to the
+  // retained PackageBodyWorkState tables. A selected work row which owns no HIR
+  // procedure has no effect/denial product. Replacing the projection supersedes
+  // and clears all three product slices without touching reusable body products.
+  std::vector<std::size_t> effect_body_work_indices;
+  std::vector<SemanticProductId> direct_effect_summaries;
+  std::vector<SemanticProductId> closed_effect_sccs;
+  std::vector<SemanticProductId> denial_results;
   // Parallel to the body generation's TypeStore after at least one body wave.
   // Declaration-baseline types contain an invalid product because their
   // package interface is the producer barrier. A body-appended TypeId names the
@@ -393,9 +405,10 @@ struct WorkspaceSemanticProducts {
   // Parallel to SemanticProductGraph. Declaration type rows name their stable
   // package symbol; other products contain an invalid SymbolId.
   std::vector<SymbolId> declaration_by_product;
-  // Parallel to SemanticProductGraph. ProcedureTemplateBody and
-  // ProcedureInstanceBody rows name their exact package-local procedure
-  // symbol; every other product contains an invalid SymbolId.
+  // Parallel to SemanticProductGraph. ProcedureTemplateBody,
+  // ProcedureInstanceBody, DirectEffectSummary, and DenialResult rows name
+  // their exact package-local procedure symbol; every other product contains an
+  // invalid SymbolId.
   std::vector<SymbolId> procedure_by_product;
   // Parallel to SemanticProductGraph. Type facet rows name their canonical
   // command-local TypeId; other products contain an invalid TypeId.

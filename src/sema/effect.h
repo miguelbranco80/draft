@@ -208,6 +208,11 @@ struct CallSiteEffectSummary {
 // acyclic procedures without a hidden second scheduling path.
 struct ClosedEffectComponent {
   std::vector<std::size_t> procedure_indices;
+  // Indices into EffectSummaryResult::components. Every dependency is smaller
+  // than this component's final index because publication order is
+  // dependency-first. Imported/native terminal components participate exactly
+  // like source components.
+  std::vector<std::size_t> dependencies;
 };
 
 // One independently discovered direct procedure contract. Every field is

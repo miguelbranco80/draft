@@ -185,23 +185,28 @@ void merge_value(
       component_by_procedure[procedure] = component;
     }
   }
+  std::vector<std::vector<std::size_t>> component_dependencies(
+      caller_first.size());
   std::vector<std::vector<std::size_t>> consumers(caller_first.size());
   std::vector<std::size_t> remaining_dependencies(caller_first.size(), 0);
   for (std::size_t caller = 0; caller < procedures.size(); ++caller) {
     const std::size_t caller_component = component_by_procedure[caller];
-    std::vector<std::size_t> dependencies;
     for (std::size_t callee : edges[caller]) {
       const std::size_t callee_component = component_by_procedure[callee];
       if (callee_component != caller_component) {
-        dependencies.push_back(callee_component);
+        component_dependencies[caller_component].push_back(callee_component);
       }
     }
+  }
+  for (std::size_t component = 0; component < caller_first.size(); ++component) {
+    std::vector<std::size_t> &dependencies =
+        component_dependencies[component];
     std::sort(dependencies.begin(), dependencies.end());
     dependencies.erase(
         std::unique(dependencies.begin(), dependencies.end()),
         dependencies.end());
     for (std::size_t dependency : dependencies) {
-      consumers[dependency].push_back(caller_component);
+      consumers[dependency].push_back(component);
     }
   }
   for (std::size_t dependency = 0; dependency < consumers.size(); ++dependency) {
@@ -231,9 +236,12 @@ void merge_value(
   }
   std::vector<ClosedEffectComponent> dependency_first;
   dependency_first.reserve(caller_first.size());
+  std::vector<std::size_t> final_index_by_component(
+      caller_first.size(), caller_first.size());
   while (!ready.empty()) {
     const std::size_t component = ready.top().second;
     ready.pop();
+    final_index_by_component[component] = dependency_first.size();
     dependency_first.push_back(std::move(caller_first[component]));
     for (std::size_t consumer : consumers[component]) {
       if (--remaining_dependencies[consumer] == 0) {
@@ -241,6 +249,21 @@ void merge_value(
             caller_first[consumer].procedure_indices.front(), consumer});
       }
     }
+  }
+  for (std::size_t component = 0;
+       component < component_dependencies.size(); ++component) {
+    const std::size_t final_component = final_index_by_component[component];
+    assert(final_component < dependency_first.size());
+    for (std::size_t dependency : component_dependencies[component]) {
+      const std::size_t final_dependency =
+          final_index_by_component[dependency];
+      assert(final_dependency < final_component);
+      dependency_first[final_component].dependencies.push_back(
+          final_dependency);
+    }
+    std::sort(
+        dependency_first[final_component].dependencies.begin(),
+        dependency_first[final_component].dependencies.end());
   }
   return dependency_first;
 }

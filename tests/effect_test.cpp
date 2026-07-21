@@ -166,6 +166,10 @@ entry :: proc() {
   EXPECT(state, *left_component == *right_component);
   EXPECT(state, *left_component < *entry_component);
   EXPECT(state, effects.components[*left_component].procedure_indices.size() == 2);
+  EXPECT(state, effects.components[*left_component].dependencies.empty());
+  EXPECT(state,
+      effects.components[*entry_component].dependencies ==
+          std::vector<std::size_t>{*left_component});
   EXPECT(state,
       has_effect(effects.procedures[*left_row], draft::EffectKind::RuntimeAssert));
   EXPECT(state,
@@ -293,6 +297,11 @@ danger :: proc() {
   if (!caller_component || !factory_component || !danger_component) return;
   EXPECT(state, *factory_component < *caller_component);
   EXPECT(state, *danger_component < *caller_component);
+  const std::vector<std::size_t> expected_dependencies{
+      *factory_component, *danger_component};
+  EXPECT(state,
+      effects.components[*caller_component].dependencies ==
+          expected_dependencies);
 
   const draft::ProcedureEffectSummary *caller_summary = effects.find(*caller);
   EXPECT(state, caller_summary != nullptr);

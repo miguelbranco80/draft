@@ -86,11 +86,13 @@ MIR lowering still interns address-only pointer types into the shared
 `TypeStore`. These form an unclassified suffix after the completed semantic ABI
 prefix and cannot appear in a source C signature. Removing that suffix mutation
 belongs to the per-procedure MIR migration; it is not a second ABI path.
-Effect closure, denials, and MIR still consume a package-wide HIR compatibility
-projection. Each operation builds and discards that view from authoritative
-procedure products; the compiler retains no package-wide HIR copy. Migrating
-those consumers away from the temporary projection is explicit remaining work
-in the
+Direct effects and denials consume authoritative procedure-owned HIR arenas and
+publish live procedure products; they no longer use a package-wide HIR
+compatibility projection. Agent metadata/obligation construction, native
+interop validation, validation discovery, assembly, and MIR still build and
+discard such a projection. The compiler retains no package-wide HIR copy.
+Migrating those remaining consumers away from the temporary projection is
+explicit remaining work in the
 [semantic work graph implementation plan](semantic-work-graph-implementation-plan.md),
 not alternate final architecture paths.
 

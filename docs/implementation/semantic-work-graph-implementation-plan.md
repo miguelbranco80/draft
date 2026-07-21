@@ -246,7 +246,7 @@ gate.
    and successor products complete the wait transition. Aggregate discovery,
    stopped-product replay, and compatibility state are deleted.
 
-7. **Flow closure and denials.** Publish direct procedure summaries separately,
+7. **Flow closure and denials — complete.** Publish direct procedure summaries separately,
    build the concrete direct-call and procedure-value-flow graph, identify SCCs,
    and close each SCC monotonically in condensation order. Check denials only
    against closed summaries. Delete the package-wide effect fixed point and
@@ -267,11 +267,18 @@ gate.
    targets refine the concrete graph monotonically; only a changed component is
    revisited, and SCCs are rebuilt only when a new edge appears. A final pass
    distinguishes a genuinely absent return contract from temporary lattice
-   bottom. Direct rows are now genuinely body-local products: every row is
+   bottom. Direct rows are genuinely body-local products: every row is
    discoverable independently against one shared bottom source domain, while
-   all derived return/write facts belong to later flow closure. The step remains
-   incomplete only until direct/SCC/denial payloads are attached to their live
-   semantic product rows.
+   all derived return/write facts belong to later flow closure. Each retained
+   direct payload is published by a bounded worker task whose product depends on
+   the exact body, target, and imported closed-component inputs. Closed SCC
+   products align one-for-one with the dependency-first component payloads and
+   name their direct rows and earlier component dependencies. Procedure-local
+   denial tasks depend on the exact body plus its owning closed component and
+   publish private diagnostics through the graph outcome. Source transitions
+   supersede precisely the affected closure products and retain reusable body
+   products. Public compiler tests prove payload identity, exact dependency
+   edges, denial error states, invalidation, and one-/four-worker determinism.
 
 8. **Per-procedure MIR.** Lower each checked concrete procedure into a private
    MIR result without mutating semantic type tables. Publish package static data
