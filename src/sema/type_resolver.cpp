@@ -188,6 +188,12 @@ public:
     if (!declaration_dependencies_.empty()) {
       result.status = TypeProductStatus::Blocked;
       result.declaration_dependencies = declaration_dependencies_;
+      result.constant_dependencies = constant_dependencies_;
+      return result;
+    }
+    if (!constant_dependencies_.empty()) {
+      result.status = TypeProductStatus::Blocked;
+      result.constant_dependencies = constant_dependencies_;
       return result;
     }
     result.status = diagnostics_.has_errors()
@@ -3045,6 +3051,24 @@ private:
       return std::nullopt;
     }
 
+    // A type-valued local constant is an ordinary ConstantValue product. Even
+    // when symbol_id is the current ambiguous declaration, classification must
+    // wait for that value rather than recursively running a second evaluator.
+    if (product_root_.is_valid()) {
+      const Symbol &candidate = semantic_.symbols.symbol(symbol_id);
+      if (candidate.scope == semantic_.package_scope &&
+          (candidate.kind == SymbolKind::Constant ||
+           candidate.kind == SymbolKind::UnresolvedDeclaration)) {
+        if (std::find(
+                constant_dependencies_.begin(),
+                constant_dependencies_.end(),
+                symbol_id) == constant_dependencies_.end()) {
+          constant_dependencies_.push_back(symbol_id);
+        }
+        return std::nullopt;
+      }
+    }
+
     const Symbol &symbol = semantic_.symbols.symbol(symbol_id);
     if ((symbol.kind != SymbolKind::Constant &&
          symbol.kind != SymbolKind::UnresolvedDeclaration) ||
@@ -3542,6 +3566,25 @@ private:
         continue;
       }
       return imported.constant.integer;
+    }
+
+    // Product attempts consume only published ConstantValue rows. The legacy
+    // package resolver below may still evaluate this narrow integer vocabulary
+    // recursively, but doing so here would hide an edge from the semantic graph
+    // and make scheduling order observable.
+    if (product_root_.is_valid()) {
+      const Symbol &candidate = semantic_.symbols.symbol(symbol_id);
+      if (candidate.scope == semantic_.package_scope &&
+          (candidate.kind == SymbolKind::Constant ||
+           candidate.kind == SymbolKind::UnresolvedDeclaration)) {
+        if (std::find(
+                constant_dependencies_.begin(),
+                constant_dependencies_.end(),
+                symbol_id) == constant_dependencies_.end()) {
+          constant_dependencies_.push_back(symbol_id);
+        }
+        return std::nullopt;
+      }
     }
 
     const Symbol &symbol = semantic_.symbols.symbol(symbol_id);
@@ -4430,6 +4473,7 @@ private:
   // and preserve the bootstrap resolver's legacy recursive declaration walk.
   SymbolId product_root_;
   std::vector<SymbolId> declaration_dependencies_;
+  std::vector<SymbolId> constant_dependencies_;
 };
 
 } // namespace

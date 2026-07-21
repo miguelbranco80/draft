@@ -98,6 +98,8 @@ package type_products
 
 First :: Second
 Second :: u32
+Count :: 4
+Buffer :: [Count]u8
 Cycle_A :: Cycle_B
 Cycle_B :: Cycle_A
 )draft");
@@ -111,12 +113,18 @@ Cycle_B :: Cycle_A
       find_symbol_id(source.semantic, "Cycle_A");
   const std::optional<draft::SymbolId> cycle_b =
       find_symbol_id(source.semantic, "Cycle_B");
+  const std::optional<draft::SymbolId> count =
+      find_symbol_id(source.semantic, "Count");
+  const std::optional<draft::SymbolId> buffer =
+      find_symbol_id(source.semantic, "Buffer");
   EXPECT(state, first.has_value());
   EXPECT(state, second.has_value());
   EXPECT(state, cycle_a.has_value());
   EXPECT(state, cycle_b.has_value());
+  EXPECT(state, count.has_value());
+  EXPECT(state, buffer.has_value());
   if (!first.has_value() || !second.has_value() || !cycle_a.has_value() ||
-      !cycle_b.has_value()) {
+      !cycle_b.has_value() || !count.has_value() || !buffer.has_value()) {
     return;
   }
 
@@ -145,6 +153,57 @@ Cycle_B :: Cycle_A
       blocked.declaration_dependencies ==
           std::vector<draft::SymbolId>({*second}));
   EXPECT(state, !blocked_diagnostics.has_errors());
+
+  draft::SemanticPackage buffer_blocked_package = source.semantic;
+  draft::DiagnosticSink buffer_blocked_diagnostics;
+  const draft::DeclarationTypeProductAttempt buffer_blocked =
+      draft::resolve_package_declaration_type_product(
+          source.sources,
+          source.loaded,
+          buffer_blocked_package,
+          selections,
+          *buffer,
+          {},
+          constants,
+          resolved_integers,
+          target,
+          buffer_blocked_diagnostics);
+  EXPECT(
+      state,
+      buffer_blocked.status == draft::TypeProductStatus::Blocked);
+  EXPECT(
+      state,
+      buffer_blocked.constant_dependencies ==
+          std::vector<draft::SymbolId>({*count}));
+  EXPECT(state, !buffer_blocked_diagnostics.has_errors());
+
+  draft::ConstantTable published_count;
+  published_count.bindings.push_back(
+      {*count, draft::ConstantValue::make_integer(4)});
+  draft::SemanticPackage buffer_package = source.semantic;
+  draft::DiagnosticSink buffer_diagnostics;
+  const draft::DeclarationTypeProductAttempt buffer_complete =
+      draft::resolve_package_declaration_type_product(
+          source.sources,
+          source.loaded,
+          buffer_package,
+          selections,
+          *buffer,
+          {},
+          published_count,
+          resolved_integers,
+          target,
+          buffer_diagnostics);
+  EXPECT(
+      state,
+      buffer_complete.status == draft::TypeProductStatus::Complete);
+  EXPECT(state, !buffer_diagnostics.has_errors());
+  if (buffer_complete.status == draft::TypeProductStatus::Complete) {
+    const draft::Type &buffer_type =
+        buffer_package.types.type(buffer_package.symbols.symbol(*buffer).type);
+    EXPECT(state, buffer_type.kind == draft::TypeKind::Array);
+    EXPECT(state, buffer_type.element_count == 4);
+  }
 
   draft::SemanticPackage second_package = source.semantic;
   draft::DiagnosticSink second_diagnostics;

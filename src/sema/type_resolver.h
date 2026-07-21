@@ -26,12 +26,14 @@ namespace draft {
 // DeclarationTypeProductAttempt is the task-owned scheduling result for one
 // package declaration's TypeIdentity work. Complete means task_package contains
 // the prospective mutation packet. Blocked names exact package SymbolIds whose
-// own declaration-type products must publish first. Error has already emitted
-// source diagnostics; callers must discard task_package for both non-complete
-// states.
+// own declaration-type products must publish first. constant_dependencies names
+// local ConstantValue products required by layout integers or type-valued
+// declarations. Error has already emitted source diagnostics; callers must
+// discard task_package for both non-complete states.
 struct DeclarationTypeProductAttempt {
   TypeProductStatus status = TypeProductStatus::Error;
   std::vector<SymbolId> declaration_dependencies;
+  std::vector<SymbolId> constant_dependencies;
 };
 
 // Resolves exactly root in task_package. completed_declarations are immutable
