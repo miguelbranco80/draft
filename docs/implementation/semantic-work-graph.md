@@ -65,7 +65,8 @@ expression, or name lookup.
 | Opaque `...` set | Ready sibling sites are frozen, checked privately, and merged transactionally; siblings cannot observe one another. |
 | Constant value | Evaluation is requested by dependants; a declaration cycle is an error. |
 | Type identity | The nominal or structural identity exists even when later facets are incomplete. |
-| Type members | Member names and declared types are complete. |
+| Type members | The selected source-order member names and stable identities are complete. |
+| Type member types | Every stable member identity has its declared type and associated compile-time member value where applicable. |
 | Natural layout | Size, alignment, and offsets are complete for the selected target; pointer recursion is allowed and inline recursion is rejected. |
 | ABI classification | Calling convention facts are separate from natural layout. |
 | Procedure template body | A symbolic parametric body is checked once under its declared constraints. |

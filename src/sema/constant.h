@@ -132,6 +132,11 @@ struct IntegerExpressionProductAttempt {
   std::vector<SymbolId> declaration_dependencies;
   std::vector<SymbolId> constant_dependencies;
   std::vector<TypeFacetDependency> type_dependencies;
+  // Every concrete procedure entered while evaluating the recipe, including
+  // calls which completed against a provisional task snapshot. The enclosing
+  // declaration resolver compares these IDs with its explicitly completed
+  // graph prerequisites so an already-populated signature cannot hide an edge.
+  std::vector<SymbolId> reached_procedures;
   std::vector<SymbolId> compile_time_procedures;
 };
 

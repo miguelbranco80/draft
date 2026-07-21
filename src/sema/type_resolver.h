@@ -46,6 +46,20 @@ struct DeclarationTypeProductAttempt {
   std::vector<ImportedTypeInstantiationRequest> generic_type_dependencies;
 };
 
+// Publishes only the selected member namespace of one authored nominal root.
+// The task creates or reuses the nominal's Type scope, declares member symbols
+// in source order, and advances TypeFacet::Members. It does not resolve member
+// types, enum values, representation attributes, or natural layout. Missing
+// member conditions are returned through condition_dependencies.
+[[nodiscard]] DeclarationTypeProductAttempt
+resolve_package_type_members_product(
+    const SourceManager &sources,
+    const LoadedPackage &loaded,
+    SemanticPackage &task_package,
+    const ConditionalSelections &selections,
+    SymbolId root,
+    DiagnosticSink &diagnostics);
+
 // Adds only member-level conditional sites reachable through the selections
 // already published for authored nominal declarations. Unselected branches are
 // not scanned. The operation declares no members and resolves no member types;
@@ -60,11 +74,12 @@ void discover_package_member_condition_sites(
 // Resolves exactly root in task_package. completed_declarations are immutable
 // products already present in that snapshot. Any other forward declaration is
 // recorded as a blocker rather than resolved recursively. A nominal root
-// publishes member names and member types but deliberately leaves NaturalLayout
-// Waiting for its separate product. The function keeps blocked-attempt
-// diagnostics private and publishes diagnostics only for a terminal Error.
-// task_package is suitable for coordinator publication only when the returned
-// status is Complete.
+// requires an already published member namespace, fills those symbols' declared
+// types, and advances TypeFacet::MemberTypes while deliberately leaving
+// NaturalLayout Waiting for its separate product. The function keeps blocked-
+// attempt diagnostics private and publishes diagnostics only for a terminal
+// Error. task_package is suitable for coordinator publication only when the
+// returned status is Complete.
 [[nodiscard]] DeclarationTypeProductAttempt
 resolve_package_declaration_type_product(
     const SourceManager &sources,

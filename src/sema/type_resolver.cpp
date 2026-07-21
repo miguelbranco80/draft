@@ -31,6 +31,15 @@ enum class ResolutionState {
   Failed,
 };
 
+// Product mode changes only the root nominal's completion boundary. Ordinary
+// declaration resolution remains the full signature/member-type operation;
+// NominalMembers stops after publishing the selected member namespace so the
+// graph can schedule member typing as a distinct consumer.
+enum class TypeResolutionGoal {
+  CompleteDeclaration,
+  NominalMembers,
+};
+
 // SourceName owns a copied spelling and retains the exact token range used for
 // duplicate and unknown-name diagnostics.
 struct SourceName {
@@ -138,7 +147,8 @@ public:
       const TargetFacts *target = nullptr,
       const std::vector<SyntaxReference> *blocked_integer_synthesis = nullptr,
       SymbolId product_root = {},
-      std::span<const SymbolId> completed_declarations = {})
+      std::span<const SymbolId> completed_declarations = {},
+      TypeResolutionGoal goal = TypeResolutionGoal::CompleteDeclaration)
       : sources_(sources), loaded_(loaded), semantic_(semantic), selections_(selections),
         diagnostics_(diagnostics),
         states_(semantic.symbols.symbol_count(), ResolutionState::Unvisited),
@@ -147,7 +157,8 @@ public:
         blocked_integer_synthesis_(blocked_integer_synthesis),
         product_root_(product_root),
         product_request_begin_(
-            semantic.imported_type_instantiation_requests.size()) {
+            semantic.imported_type_instantiation_requests.size()),
+        goal_(goal) {
     // A product attempt may consume only declarations that the coordinator has
     // already published. Their semantic payloads are present in this snapshot,
     // so mark those rows resolved without re-entering their syntax. Every other
@@ -203,6 +214,16 @@ public:
       result.type_dependencies = type_dependencies_;
       result.condition_dependencies = condition_dependencies_;
       return result;
+    }
+    if (goal_ == TypeResolutionGoal::NominalMembers) {
+      const Symbol &root = semantic_.symbols.symbol(product_root_);
+      if (!root.type.is_valid() ||
+          semantic_.types.facet_state(root.type, TypeFacet::Members) !=
+              TypeFacetState::Complete) {
+        diagnostics_.error(
+            root.name_range,
+            "type-member product did not publish a complete member namespace");
+      }
     }
     result.status = diagnostics_.has_errors()
         ? TypeProductStatus::Error
@@ -2749,6 +2770,7 @@ private:
              !owned_scope(*found, ScopeKind::Parametric).has_value())) {
           resolve_symbol(*found);
         }
+        record_unpublished_declaration_dependency(*found);
       }
       return found;
     }
@@ -3136,6 +3158,23 @@ private:
       diagnostics_.error(range, "type is not parametric");
       return semantic_.types.builtins().invalid;
     }
+    // TypeMembers deliberately creates the template's parametric and member
+    // scopes before its declared member types exist. An unrelated declaration
+    // must not mistake that scope for template readiness and cache an instance
+    // copied from invalid placeholder member types. Report the exact facet to
+    // the coordinator; the private attempt, including any provisional
+    // diagnostics produced after this return, is discarded and retried after
+    // TypeMemberTypes publishes. A self-application remains inside the active
+    // template task so legal recursive pointer patterns keep their existing
+    // identity construction path.
+    if (product_root_.is_valid() && *found != product_root_ &&
+        symbol.type.is_valid() &&
+        semantic_.types.facet_state(symbol.type, TypeFacet::MemberTypes) ==
+            TypeFacetState::Waiting) {
+      type_dependencies_.push_back(
+          {symbol.type, TypeFacet::MemberTypes});
+      return semantic_.types.builtins().invalid;
+    }
     const std::vector<ParametricParameterRecord> parameters =
         parameters_for(*found);
     if (parameters.size() != argument_nodes.size()) {
@@ -3358,6 +3397,7 @@ private:
          !semantic_.symbols.symbol(*found).type.is_valid())) {
       resolve_symbol(*found);
     }
+    record_unpublished_declaration_dependency(*found);
     const Symbol &symbol = semantic_.symbols.symbol(*found);
     if ((symbol.kind == SymbolKind::Type || symbol.kind == SymbolKind::TypeParameter) &&
         symbol.type.is_valid()) {
@@ -3747,6 +3787,27 @@ private:
       const SourceName &name,
       SymbolKind kind,
       TypeId type) {
+    if (reuse_published_members_) {
+      const std::optional<SymbolId> existing =
+          semantic_.symbols.lookup_direct(scope, name.text);
+      if (!existing.has_value()) {
+        diagnostics_.error(
+            name.range,
+            "published type member namespace is missing member '" +
+                name.text + "'");
+        return std::nullopt;
+      }
+      Symbol &symbol = semantic_.symbols.symbol_mut(*existing);
+      if (symbol.kind != kind ||
+          symbol.syntax != SyntaxReference{tree.file(), syntax}) {
+        diagnostics_.error(
+            name.range,
+            "published type member identity does not match selected syntax");
+        return std::nullopt;
+      }
+      symbol.type = type;
+      return existing;
+    }
     Symbol symbol;
     symbol.name = name.text;
     symbol.kind = kind;
@@ -3759,6 +3820,162 @@ private:
       return std::nullopt;
     }
     return id;
+  }
+
+  // Declares only the stable identities in one selected member region. This
+  // traversal deliberately does not call resolve_type or evaluate enum values:
+  // those operations belong to the later TypeMemberTypes product. The parallel
+  // MemberData vectors retain source order so AggregateMember rows can be
+  // published once at the member-namespace boundary.
+  void collect_field_member_names(
+      const SyntaxTree &tree,
+      NodeId member_id,
+      ScopeId scope,
+      MemberData &data) {
+    const SyntaxNode &member = tree.node(member_id);
+    if (member.children.empty()) {
+      data.incomplete = true;
+      return;
+    }
+    const SyntaxNode &type_node = tree.node(member.children.back());
+    const std::vector<SourceName> names = names_in_span(
+        tree, member.token_begin, type_node.token_begin);
+    for (const SourceName &name : names) {
+      if (name.text == "_") {
+        diagnostics_.error(
+            name.range, "aggregate member cannot use the discard name '_'");
+        continue;
+      }
+      const std::optional<SymbolId> symbol = declare_member(
+          tree,
+          member_id,
+          scope,
+          name,
+          SymbolKind::Field,
+          semantic_.types.builtins().invalid);
+      if (!symbol.has_value())
+        continue;
+      data.symbols.push_back(*symbol);
+      data.types.push_back(semantic_.types.builtins().invalid);
+      data.offsets.push_back(0);
+    }
+  }
+
+  // Declares the single source identity owned by an enum member or union
+  // alternative. The later typing traversal reuses this exact SymbolId and
+  // supplies its backing or payload type.
+  void collect_single_member_name(
+      const SyntaxTree &tree,
+      NodeId member_id,
+      ScopeId scope,
+      SymbolKind kind,
+      MemberData &data) {
+    const SyntaxNode &member = tree.node(member_id);
+    const std::vector<SourceName> names = names_in_span(
+        tree, member.token_begin, member.token_end);
+    if (names.empty()) {
+      data.incomplete = true;
+      return;
+    }
+    const std::optional<SymbolId> symbol = declare_member(
+        tree,
+        member_id,
+        scope,
+        names.front(),
+        kind,
+        semantic_.types.builtins().invalid);
+    if (!symbol.has_value())
+      return;
+    data.symbols.push_back(*symbol);
+    data.types.push_back(semantic_.types.builtins().invalid);
+    data.offsets.push_back(0);
+  }
+
+  // Follows only the branch selected by an already published condition. A
+  // newly reachable `else when` is returned as an exact condition dependency;
+  // no symbol from either opaque branch enters the member namespace.
+  void collect_conditional_member_names(
+      SymbolId owner,
+      const SyntaxTree &tree,
+      NodeId member_id,
+      ScopeId scope,
+      MemberData &data) {
+    const SyntaxNode &member = tree.node(member_id);
+    add_site(SemanticSiteKind::ConditionalMember, tree, member_id, scope, owner);
+    const ConditionalSelection *selection =
+        selections_.find({tree.file(), member_id});
+    if (selection == nullptr) {
+      if (product_root_.is_valid()) {
+        condition_dependencies_.push_back({tree.file(), member_id});
+      }
+      data.incomplete = true;
+      return;
+    }
+    if (selection->select_true) {
+      if (member.children.size() >= 2) {
+        collect_member_name_list(
+            owner, tree, member.children[1], scope, data);
+      }
+      return;
+    }
+    if (member.children.size() < 3)
+      return;
+    const NodeId alternative = member.children[2];
+    if (tree.node(alternative).kind == NodeKind::WhenMember) {
+      collect_conditional_member_names(
+          owner, tree, alternative, scope, data);
+    } else {
+      collect_member_name_list(owner, tree, alternative, scope, data);
+    }
+  }
+
+  // Walks one selected member list in source order and publishes only names and
+  // syntax identities. Documentation, denials, and synthesis sites retain the
+  // same semantic-site records as the later typed traversal.
+  void collect_member_name_list(
+      SymbolId owner,
+      const SyntaxTree &tree,
+      NodeId list_id,
+      ScopeId scope,
+      MemberData &data) {
+    for (NodeId member_id : tree.node(list_id).children) {
+      const SyntaxNode &member = tree.node(member_id);
+      switch (member.kind) {
+      case NodeKind::FieldMember:
+        collect_field_member_names(tree, member_id, scope, data);
+        break;
+      case NodeKind::EnumMember:
+        collect_single_member_name(
+            tree, member_id, scope, SymbolKind::EnumMember, data);
+        break;
+      case NodeKind::UnionAlternative:
+        collect_single_member_name(
+            tree, member_id, scope, SymbolKind::UnionAlternative, data);
+        break;
+      case NodeKind::Documentation:
+        add_site(SemanticSiteKind::Documentation, tree, member_id, scope, owner);
+        break;
+      case NodeKind::Judgment:
+        add_site(SemanticSiteKind::Judgment, tree, member_id, scope, owner);
+        break;
+      case NodeKind::SynthesisMember:
+        add_site(SemanticSiteKind::SynthesisMember, tree, member_id, scope, owner);
+        data.incomplete = true;
+        break;
+      case NodeKind::WhenMember:
+        collect_conditional_member_names(owner, tree, member_id, scope, data);
+        break;
+      case NodeKind::DenyMember:
+        add_site(SemanticSiteKind::DenialMember, tree, member_id, scope, owner);
+        if (!member.children.empty()) {
+          collect_member_name_list(
+              owner, tree, member.children.back(), scope, data);
+        }
+        break;
+      default:
+        break;
+      }
+    }
   }
 
   // Resolves a possibly grouped struct/raw-union field declaration. Every name
@@ -4048,6 +4265,9 @@ private:
             sources_, loaded_, semantic_, *target_, tree, expression_id, scope,
             expected, product_root_, *active_constants_,
             CompileTimeSynthesisMode::Reject, diagnostics_);
+    for (SymbolId procedure : attempt.reached_procedures) {
+      record_unpublished_declaration_dependency(procedure);
+    }
     declaration_dependencies_.insert(declaration_dependencies_.end(),
                                      attempt.declaration_dependencies.begin(),
                                      attempt.declaration_dependencies.end());
@@ -4527,13 +4747,6 @@ private:
     }
 
     const TypeKind kind = semantic_.types.type(nominal).kind;
-    const AggregateAttributes attributes = aggregate_attributes(
-        tree, aggregate, kind, parent);
-    semantic_.types.type_mut(nominal).c_representation =
-        attributes.c_representation;
-    semantic_.types.type_mut(nominal).requested_alignment =
-        attributes.requested_alignment;
-
     std::optional<NodeId> list;
     std::optional<NodeId> explicit_backing;
     for (NodeId child : aggregate.children) {
@@ -4548,6 +4761,43 @@ private:
       return;
     }
 
+    // The TypeMembers product owns only selected member identities. It does not
+    // evaluate representation attributes, backing types, enum values, or field
+    // types; those operations can discover declaration/constant/layout blockers
+    // and therefore belong to the dependent TypeMemberTypes product.
+    if (goal_ == TypeResolutionGoal::NominalMembers &&
+        owner == product_root_) {
+      MemberData data;
+      collect_member_name_list(owner, tree, *list, scope, data);
+      if (data.symbols.empty() && !data.incomplete) {
+        diagnostics_.error(
+            aggregate.range, "aggregate type requires at least one member");
+      }
+      if (!data.incomplete) {
+        semantic_.types.publish_nominal_members(nominal);
+        for (SymbolId member : data.symbols) {
+          semantic_.aggregate_members.push_back({owner, member, 0});
+        }
+      }
+      return;
+    }
+
+    if (product_root_.is_valid() && owner == product_root_ &&
+        semantic_.types.facet_state(nominal, TypeFacet::Members) !=
+            TypeFacetState::Complete) {
+      diagnostics_.error(
+          aggregate.range,
+          "type-member-types product ran before the member namespace completed");
+      return;
+    }
+
+    const AggregateAttributes attributes = aggregate_attributes(
+        tree, aggregate, kind, parent);
+    semantic_.types.type_mut(nominal).c_representation =
+        attributes.c_representation;
+    semantic_.types.type_mut(nominal).requested_alignment =
+        attributes.requested_alignment;
+
     TypeId explicit_backing_type;
     if (explicit_backing.has_value()) {
       explicit_backing_type = resolve_type(tree, *explicit_backing, parent);
@@ -4557,7 +4807,13 @@ private:
     if (kind == TypeKind::Enum) {
       data.enum_value_expected_type = explicit_backing_type;
     }
+    const bool members_were_complete =
+        semantic_.types.facet_state(nominal, TypeFacet::Members) ==
+        TypeFacetState::Complete;
+    const bool previous_reuse = reuse_published_members_;
+    reuse_published_members_ = members_were_complete;
     collect_member_list(owner, tree, *list, scope, data);
+    reuse_published_members_ = previous_reuse;
     if (data.symbols.empty() && !data.incomplete) {
       diagnostics_.error(aggregate.range, "aggregate type requires at least one member");
     }
@@ -4623,12 +4879,28 @@ private:
     }
 
     if (!data.incomplete) {
-      semantic_.types.publish_nominal_members(nominal);
+      if (!members_were_complete) {
+        semantic_.types.publish_nominal_members(nominal);
+      }
       semantic_.types.publish_nominal_member_types(nominal, data.types);
     }
-    for (std::size_t index = 0; index < data.symbols.size(); ++index) {
-      semantic_.aggregate_members.push_back(
-          {owner, data.symbols[index], 0});
+    if (!members_were_complete) {
+      for (std::size_t index = 0; index < data.symbols.size(); ++index) {
+        semantic_.aggregate_members.push_back(
+            {owner, data.symbols[index], 0});
+      }
+    } else {
+      std::vector<SymbolId> published_members;
+      for (const AggregateMember &member : semantic_.aggregate_members) {
+        if (member.owner == owner) {
+          published_members.push_back(member.member);
+        }
+      }
+      if (published_members != data.symbols) {
+        diagnostics_.error(
+            aggregate.range,
+            "published type member order does not match selected syntax");
+      }
     }
 
     // Natural layout is a distinct semantic product even while package type
@@ -4666,6 +4938,47 @@ private:
     }
   }
 
+  // Records a package declaration whose completed graph product is not an
+  // explicit prerequisite of the active task. Member and lexical symbols never
+  // enter this product domain, and the root owns its own work.
+  void record_unpublished_declaration_dependency(SymbolId id) {
+    if (!product_root_.is_valid() || id == product_root_ ||
+        static_cast<std::size_t>(id.value) >= states_.size()) {
+      return;
+    }
+    const Symbol &symbol = semantic_.symbols.symbol(id);
+    if (symbol.scope != semantic_.package_scope ||
+        states_[id.value] == ResolutionState::Resolved) {
+      return;
+    }
+    if (symbol.kind == SymbolKind::Type && symbol.type.is_valid()) {
+      const TypeKind kind = semantic_.types.type(symbol.type).kind;
+      if (kind == TypeKind::Struct || kind == TypeKind::Enum ||
+          kind == TypeKind::TaggedUnion || kind == TypeKind::RawUnion) {
+        // Authored nominal identity is allocated during declaration collection,
+        // before either member product runs. Merely naming or pointing to that
+        // identity must not acquire a dependency on the later MemberTypes row.
+        // Operations which inspect members or instantiate a parametric nominal
+        // report their exact TypeFacet dependency separately.
+        return;
+      }
+    }
+
+    // The sequential reference scheduler advances a private package snapshot
+    // after each successful task in a ready wave. That snapshot may therefore
+    // contain a valid TypeId before the producer's graph state is published.
+    // Product readiness is defined by the immutable completed-declaration set,
+    // never by observing that provisional payload. Retaining this exact edge
+    // makes the same task result valid when ready products eventually execute
+    // in parallel against independent snapshots.
+    if (std::find(
+            declaration_dependencies_.begin(),
+            declaration_dependencies_.end(),
+            id) == declaration_dependencies_.end()) {
+      declaration_dependencies_.push_back(id);
+    }
+  }
+
   // Resolves one package declaration with cycle detection. It copies the input
   // Symbol before creating child scopes because SymbolTable's vector may grow
   // and invalidate references; every mutation reacquires the symbol by ID.
@@ -4678,12 +4991,7 @@ private:
       return;
     }
     if (product_root_.is_valid() && id != product_root_) {
-      if (std::find(
-              declaration_dependencies_.begin(),
-              declaration_dependencies_.end(),
-              id) == declaration_dependencies_.end()) {
-        declaration_dependencies_.push_back(id);
-      }
+      record_unpublished_declaration_dependency(id);
       return;
     }
     const Symbol initial_symbol = semantic_.symbols.symbol(id);
@@ -4818,13 +5126,49 @@ private:
   std::vector<SymbolId> constant_dependencies_;
   std::vector<TypeFacetDependency> type_dependencies_;
   std::vector<SyntaxReference> condition_dependencies_;
+  // True only while a TypeMemberTypes attempt fills symbols published by the
+  // preceding TypeMembers product. The flag is saved/restored around aggregate
+  // traversal because resolving one member type may enter a nested aggregate.
+  bool reuse_published_members_ = false;
   // Full-interpreter results exist only for the lifetime of one declaration
   // task. They bridge evaluation to the immediately following contextual type
   // check; no command state or cache retains them after publication.
   std::vector<ResolvedIntegerExpression> product_integers_;
+  TypeResolutionGoal goal_ = TypeResolutionGoal::CompleteDeclaration;
 };
 
 } // namespace
+
+DeclarationTypeProductAttempt resolve_package_type_members_product(
+    const SourceManager &sources,
+    const LoadedPackage &loaded,
+    SemanticPackage &task_package,
+    const ConditionalSelections &selections,
+    SymbolId root,
+    DiagnosticSink &diagnostics) {
+  DiagnosticSink task_diagnostics;
+  TypeResolver resolver(
+      sources,
+      loaded,
+      task_package,
+      selections,
+      task_diagnostics,
+      nullptr,
+      nullptr,
+      nullptr,
+      nullptr,
+      nullptr,
+      root,
+      {},
+      TypeResolutionGoal::NominalMembers);
+  DeclarationTypeProductAttempt result = resolver.resolve_product();
+  if (result.status == TypeProductStatus::Blocked) return result;
+  for (const Diagnostic &diagnostic : task_diagnostics.diagnostics()) {
+    diagnostics.report(
+        diagnostic.severity, diagnostic.range, diagnostic.message);
+  }
+  return result;
+}
 
 DeclarationTypeProductAttempt resolve_package_declaration_type_product(
     const SourceManager &sources,

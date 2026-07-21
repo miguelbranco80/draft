@@ -95,6 +95,7 @@ void test_named_constants_are_semantic_products(TestState &state) {
   app << "package app\n"
          "Pair :: struct {\n"
          "    value: Duration,\n"
+         "    record: ^Record,\n"
          "}\n"
          "Computed :: struct {\n"
          "    values: [computed_count(2)]i64,\n"
@@ -221,11 +222,18 @@ void test_named_constants_are_semantic_products(TestState &state) {
   // exact dynamic edge to Duration's TypeIdentity product instead of asking a
   // recursive resolver to complete the forward declaration. Natural layout is
   // a second product consuming the completed member packet.
+  std::optional<draft::SemanticProductId> pair_members_product;
   std::optional<draft::SemanticProductId> pair_type_product;
   std::optional<draft::SemanticProductId> duration_type_product;
   std::optional<draft::SemanticProductId> computed_type_product;
   std::optional<draft::SemanticProductId> computed_count_type_product;
   std::optional<draft::SemanticProductId> record_type_product;
+  for (draft::SemanticProductId product : products.type_members) {
+    const draft::SymbolId declaration =
+        compiled.semantic_products.declaration_by_product[product.value];
+    if (declaration == *pair)
+      pair_members_product = product;
+  }
   for (draft::SemanticProductId product : products.declaration_types) {
     const draft::SymbolId declaration =
         compiled.semantic_products.declaration_by_product[product.value];
@@ -240,9 +248,13 @@ void test_named_constants_are_semantic_products(TestState &state) {
     if (declaration == *record)
       record_type_product = product;
   }
+  EXPECT(state, pair_members_product.has_value());
   EXPECT(state, pair_type_product.has_value());
   EXPECT(state, duration_type_product.has_value());
-  if (pair_type_product && duration_type_product) {
+  if (pair_members_product && pair_type_product && duration_type_product) {
+    EXPECT(state,
+           compiled.semantic_graph.products[pair_members_product->value].kind ==
+               draft::SemanticProductKind::TypeMembers);
     EXPECT(state,
            compiled.semantic_graph.products[pair_type_product->value].kind ==
                draft::SemanticProductKind::TypeMemberTypes);
@@ -253,7 +265,18 @@ void test_named_constants_are_semantic_products(TestState &state) {
     const std::vector<draft::SemanticProductId> &dependencies =
         compiled.semantic_graph.products[pair_type_product->value].dependencies;
     EXPECT(state, std::find(dependencies.begin(), dependencies.end(),
+                            *pair_members_product) != dependencies.end());
+    EXPECT(state, std::find(dependencies.begin(), dependencies.end(),
                             *duration_type_product) != dependencies.end());
+    EXPECT(state, record_type_product.has_value());
+    if (record_type_product.has_value()) {
+      // Record's nominal identity was allocated during collection. Merely
+      // naming it behind a pointer must not serialize Pair's member typing on
+      // Record's unrelated member-type completion.
+      EXPECT(state,
+             std::find(dependencies.begin(), dependencies.end(),
+                       *record_type_product) == dependencies.end());
+    }
   }
   // The array count is a full Draft compile-time call, but the expression is
   // still part of Computed's coherent member-type product. Its callee signature
@@ -405,18 +428,40 @@ void test_conditional_members_extend_the_semantic_graph(TestState &state) {
   const draft::PackageSemanticProducts &products =
       compiled.semantic_products.packages.front();
   EXPECT(state, products.conditions.size() == 2);
-  std::optional<draft::SemanticProductId> member_product;
-  for (draft::SemanticProductId product : products.declaration_types) {
+  std::optional<draft::SemanticProductId> members_product;
+  std::optional<draft::SemanticProductId> member_types_product;
+  for (draft::SemanticProductId product : products.type_members) {
     if (compiled.semantic_products.declaration_by_product[product.value] ==
         *selected) {
-      member_product = product;
+      members_product = product;
       break;
     }
   }
-  EXPECT(state, member_product.has_value());
-  if (member_product.has_value()) {
+  for (draft::SemanticProductId product : products.declaration_types) {
+    if (compiled.semantic_products.declaration_by_product[product.value] ==
+        *selected) {
+      member_types_product = product;
+      break;
+    }
+  }
+  EXPECT(state, members_product.has_value());
+  EXPECT(state, member_types_product.has_value());
+  if (members_product.has_value() && member_types_product.has_value()) {
+    EXPECT(state,
+           compiled.semantic_graph.products[members_product->value].kind ==
+               draft::SemanticProductKind::TypeMembers);
+    EXPECT(state,
+           compiled.semantic_graph.products[member_types_product->value].kind ==
+               draft::SemanticProductKind::TypeMemberTypes);
     const std::vector<draft::SemanticProductId> &dependencies =
-        compiled.semantic_graph.products[member_product->value].dependencies;
+        compiled.semantic_graph.products[members_product->value].dependencies;
+    const std::vector<draft::SemanticProductId> &member_type_dependencies =
+        compiled.semantic_graph.products[member_types_product->value]
+            .dependencies;
+    EXPECT(state,
+           std::find(member_type_dependencies.begin(),
+                     member_type_dependencies.end(), *members_product) !=
+               member_type_dependencies.end());
     for (draft::SemanticProductId condition : products.conditions) {
       EXPECT(state,
              compiled.semantic_graph.products[condition.value].state ==
@@ -431,7 +476,7 @@ void test_conditional_members_extend_the_semantic_graph(TestState &state) {
           compiled.semantic_graph.products[condition.value].dependencies;
       EXPECT(state,
              std::find(condition_dependencies.begin(),
-                       condition_dependencies.end(), *member_product) ==
+                       condition_dependencies.end(), *members_product) ==
                  condition_dependencies.end());
     }
   }

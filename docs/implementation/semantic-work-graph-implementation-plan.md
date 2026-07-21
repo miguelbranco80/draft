@@ -63,12 +63,17 @@ gate.
    Member-condition selection now has an explicit reachable frontier and exact
    continuation edges: a nested `else when` becomes a product only after its
    predecessor selects that syntax, and the owning member packet cannot publish
-   before every selected condition completes. This step remains open in three
-   places. Interface-synthesis discovery still uses the aggregate declaration
-   compatibility path until opaque waits produce graph successors. Member names
-   and member types still share one declaration attempt rather than separate
-   products. ABI classification still lacks its own product. Once those paths
-   move, delete
+   before every selected condition completes. Member identity and member typing
+   are now separate `TypeMembers` and `TypeMemberTypes` products: the first
+   publishes source-order symbols, and the second fills those exact symbols only
+   after the namespace is complete. Declaration-owned compile-time calls also
+   retain exact procedure-product edges even when a sequential task snapshot
+   already contains the completed signature.
+
+   This step remains open in two places. Interface-synthesis discovery still
+   uses the aggregate declaration compatibility path until opaque waits produce
+   graph successors. ABI classification still lacks its own product. Once those
+   paths move, delete
    `discover_package_declarations`, the aggregate conditional/readiness rounds,
    and the remaining private readiness copies.
 

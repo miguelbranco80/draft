@@ -1,9 +1,10 @@
 // Independently schedulable completion operations for semantic type facets.
 //
-// Declaration collection allocates nominal identity, and type resolution later
-// publishes member names and declared member types. This module consumes those
-// immutable earlier facets one product at a time. It does not inspect syntax,
-// resolve names, select `when`, classify ABI arguments, or run a package retry.
+// Declaration collection allocates nominal identity, and two independently
+// scheduled type-resolution products later publish member names and declared
+// member types. This module consumes those immutable earlier facets one product
+// at a time. It does not inspect syntax, resolve names, select `when`, classify
+// ABI arguments, or run a package retry.
 //
 // Natural-layout evaluation is read-only and task-owned. Publication is a
 // separate coordinator operation that mutates exactly one canonical TypeStore

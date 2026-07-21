@@ -218,6 +218,7 @@ public:
     IntegerExpressionProductAttempt attempt;
     const EvalResult evaluated =
         evaluate_expression(tree, expression, scope, true, expected);
+    attempt.reached_procedures = reached_procedures_;
     attempt.compile_time_procedures = compile_time_procedures_;
     canonicalize_product_dependencies();
     attempt.declaration_dependencies = declaration_dependencies_;
@@ -614,6 +615,21 @@ private:
             compile_time_procedures_.end(),
             procedure) == compile_time_procedures_.end()) {
       compile_time_procedures_.push_back(procedure);
+    }
+  }
+
+  // Retains every procedure whose body the interpreter actually enters while
+  // evaluating one graph-owned recipe. This is intentionally separate from
+  // compile_time_procedures_, which identifies bodies containing reached
+  // synthesis and is consumed by later elaboration/body validation. A normal
+  // completed call is still a semantic dependency even though it needs no
+  // synthesis treatment.
+  void remember_reached_procedure(SymbolId procedure) {
+    if (std::find(
+            reached_procedures_.begin(),
+            reached_procedures_.end(),
+            procedure) == reached_procedures_.end()) {
+      reached_procedures_.push_back(procedure);
     }
   }
 
@@ -3528,6 +3544,9 @@ private:
           "compile-time call target is not a concrete procedure identity",
           required);
     }
+    if (record_product_dependencies_) {
+      remember_reached_procedure(*found);
+    }
     const Symbol symbol = semantic_.symbols.symbol(*found);
     if (symbol.flags.foreign) {
       return fail(
@@ -5875,6 +5894,10 @@ private:
   // active_procedures_ mirrors local_frames_ only during procedure execution
   // and lets a reached `...` defer context construction to BodyChecker.
   std::vector<SymbolId> active_procedures_;
+  // Source-order first reachability for ordinary procedure calls made while a
+  // product evaluator is active. The owning declaration resolver canonicalizes
+  // the resulting product dependencies with its other blocker domains.
+  std::vector<SymbolId> reached_procedures_;
   std::vector<SymbolId> compile_time_procedures_;
   std::size_t execution_steps_remaining_ = kMaximumExecutionSteps;
   std::size_t binding_dependency_depth_ = 0;

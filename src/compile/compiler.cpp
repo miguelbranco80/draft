@@ -1031,6 +1031,9 @@ void invalidate_package_closure(
     if (products.name_set.is_valid())
       superseded.push_back(products.name_set);
     superseded.insert(
+        superseded.end(), products.type_members.begin(),
+        products.type_members.end());
+    superseded.insert(
         superseded.end(),
         products.declaration_types.begin(),
         products.declaration_types.end());
@@ -1071,6 +1074,7 @@ void invalidate_package_closure(
       continue;
     PackageSemanticProducts &products =
         result.semantic_products.packages[package_index];
+    products.type_members.clear();
     products.declaration_types.clear();
     products.natural_layouts.clear();
     products.generic_type_demands.clear();
@@ -1541,10 +1545,11 @@ has_symbol_product(std::span<const SemanticProductId> products,
 
 // Appends the declaration/type-facet products revealed by the current
 // append-only package declaration table. Nominal identity already exists after
-// collection and receives one completed TypeIdentity row; its independently
-// scheduled member-types and natural-layout rows consume that identity. Other
-// typed declarations receive one pending TypeIdentity row. All rows depend on
-// the same immutable inputs as PackageNameSet, never on the barrier itself.
+// collection and receives one completed TypeIdentity row. TypeMembers consumes
+// that identity plus branch choices, TypeMemberTypes consumes the stable member
+// namespace, and NaturalLayout consumes the declared types. Other typed
+// declarations receive one pending TypeIdentity row. All roots depend on the
+// same immutable inputs as PackageNameSet, never on the barrier itself.
 [[nodiscard]] bool append_package_type_products(
     CompileWorkspaceResult &result,
     std::span<const SemanticProductId> base_dependencies, PackageId owner,
@@ -1595,10 +1600,10 @@ has_symbol_product(std::span<const SemanticProductId> products,
         return false;
       result.semantic_products.type_by_product[identity.value] =
           declaration.type;
-      std::vector<SemanticProductId> dependencies{identity};
-      // A member task may inspect only the selected branch of each reachable
-      // `when`. Initial sites were discovered without declaring members, so
-      // their exact condition rows can precede the first member attempt.
+      std::vector<SemanticProductId> member_dependencies{identity};
+      // A member-name task may inspect only the selected branch of each
+      // reachable `when`. Initial sites were discovered without declaring
+      // members, so their exact condition rows can precede the first attempt.
       for (const SemanticSite &site : semantic.sites) {
         if (site.kind != SemanticSiteKind::ConditionalMember ||
             site.anchor != symbol) {
@@ -1612,11 +1617,20 @@ has_symbol_product(std::span<const SemanticProductId> products,
               "nominal member condition has no semantic product");
           return false;
         }
-        dependencies.push_back(*condition);
+        member_dependencies.push_back(*condition);
       }
-      declaration_product = append_workspace_semantic_product(
-          result, SemanticProductKind::TypeMemberTypes, dependencies, owner,
+      const SemanticProductId members = append_workspace_semantic_product(
+          result, SemanticProductKind::TypeMembers, member_dependencies, owner,
           false, diagnostics);
+      if (!members.is_valid())
+        return false;
+      result.semantic_products.declaration_by_product[members.value] = symbol;
+      result.semantic_products.type_by_product[members.value] = declaration.type;
+      products.type_members.push_back(members);
+      const std::array member_type_dependencies{members};
+      declaration_product = append_workspace_semantic_product(
+          result, SemanticProductKind::TypeMemberTypes,
+          member_type_dependencies, owner, false, diagnostics);
     } else {
       declaration_product = append_workspace_semantic_product(
           result, SemanticProductKind::TypeIdentity, base_dependencies, owner,
@@ -1840,17 +1854,25 @@ package_declaration_product(const CompileWorkspaceResult &result,
 
 // Maps one exact semantic type-facet blocker to its workspace product. Identity
 // is eager for nominal types and complete structural types never report it as a
-// blocker. MemberTypes is owned by the declaration row; NaturalLayout has its
-// own typed vector.
+// blocker. Members, MemberTypes, and NaturalLayout have separate typed vectors.
 [[nodiscard]] std::optional<SemanticProductId>
 package_type_facet_product(const CompileWorkspaceResult &result,
                            PackageId owner, TypeFacetDependency dependency) {
   const PackageSemanticProducts &products =
       result.semantic_products.packages[owner.value];
-  const std::span<const SemanticProductId> candidates =
-      dependency.facet == TypeFacet::NaturalLayout
-          ? std::span<const SemanticProductId>(products.natural_layouts)
-          : std::span<const SemanticProductId>(products.declaration_types);
+  std::span<const SemanticProductId> candidates;
+  switch (dependency.facet) {
+  case TypeFacet::Members:
+    candidates = products.type_members;
+    break;
+  case TypeFacet::NaturalLayout:
+    candidates = products.natural_layouts;
+    break;
+  case TypeFacet::Identity:
+  case TypeFacet::MemberTypes:
+    candidates = products.declaration_types;
+    break;
+  }
   for (SemanticProductId product : candidates) {
     if (result.semantic_products.type_by_product[product.value] ==
         dependency.type) {
@@ -2255,6 +2277,7 @@ package_condition_needs_materialization(const SemanticPackage &package,
       const SemanticProductKind kind =
           result.semantic_graph.products[product.value].kind;
       if (kind == SemanticProductKind::TypeIdentity ||
+          kind == SemanticProductKind::TypeMembers ||
           kind == SemanticProductKind::TypeMemberTypes) {
         if (!result.packages[package_index].has_value()) {
           slot.outcome.kind = SemanticProductOutcomeKind::Error;
@@ -2277,26 +2300,46 @@ package_condition_needs_materialization(const SemanticPackage &package,
               "declaration generic dependency import failed";
           continue;
         }
-        std::vector<SymbolId> completed_declarations;
-        const PackageSemanticProducts &package_products =
-            result.semantic_products.packages[package_index];
-        for (SemanticProductId candidate : package_products.declaration_types) {
-          if (result.semantic_graph.products[candidate.value].state ==
-              SemanticProductState::Complete) {
-            completed_declarations.push_back(
-                result.semantic_products
-                    .declaration_by_product[candidate.value]);
+        if (kind == SemanticProductKind::TypeMembers) {
+          slot.declaration_type = resolve_package_type_members_product(
+              sources, result.graph.packages[package_index].loaded, task_package,
+              result.packages[package_index]
+                  ->declaration_discovery.selections,
+              root, slot.outcome.diagnostics);
+        } else {
+          std::vector<SymbolId> completed_declarations;
+          const PackageSemanticProducts &package_products =
+              result.semantic_products.packages[package_index];
+          const std::vector<SemanticProductId> &product_dependencies =
+              result.semantic_graph.products[product.value].dependencies;
+          for (SemanticProductId candidate :
+               package_products.declaration_types) {
+            if (result.semantic_graph.products[candidate.value].state ==
+                    SemanticProductState::Complete &&
+                std::find(product_dependencies.begin(),
+                          product_dependencies.end(), candidate) !=
+                    product_dependencies.end()) {
+              // A valid payload in the sequential wave snapshot is not proof
+              // that this task owns the corresponding prerequisite. Only an
+              // explicit completed edge authorizes consumption. A previously
+              // unseen source reference therefore blocks once, records its
+              // exact product edge, and becomes available on the retry.
+              completed_declarations.push_back(
+                  result.semantic_products
+                      .declaration_by_product[candidate.value]);
+            }
           }
+          slot.declaration_type = resolve_package_declaration_type_product(
+              sources, result.graph.packages[package_index].loaded, task_package,
+              result.packages[package_index]
+                  ->declaration_discovery.selections,
+              root, completed_declarations,
+              result.packages[package_index]
+                  ->declaration_discovery.published_constants,
+              result.packages[package_index]
+                  ->declaration_discovery.resolved_integers,
+              options.target.facts, slot.outcome.diagnostics);
         }
-        slot.declaration_type = resolve_package_declaration_type_product(
-            sources, result.graph.packages[package_index].loaded, task_package,
-            result.packages[package_index]->declaration_discovery.selections,
-            root, completed_declarations,
-            result.packages[package_index]
-                ->declaration_discovery.published_constants,
-            result.packages[package_index]
-                ->declaration_discovery.resolved_integers,
-            options.target.facts, slot.outcome.diagnostics);
         if (slot.declaration_type->status == TypeProductStatus::Complete) {
           declaration_wave_packages[package_index] = std::move(task_package);
           continue;
@@ -2996,6 +3039,7 @@ package_condition_needs_materialization(const SemanticPackage &package,
       const SemanticProductKind kind =
           result.semantic_graph.products[product.value].kind;
       if ((kind != SemanticProductKind::TypeIdentity &&
+           kind != SemanticProductKind::TypeMembers &&
            kind != SemanticProductKind::TypeMemberTypes) ||
           result.semantic_graph.products[product.value].state !=
               SemanticProductState::Complete) {

@@ -287,14 +287,20 @@ struct PackageSemanticProducts {
   // downstream edges and manufacturing a dependency cycle.
   std::vector<SemanticProductId> declaration_inputs;
   SemanticProductId name_set;
+  // One TypeMembers row per authored nominal aggregate. The row owns the
+  // selected type scope, stable member SymbolIds, and source-order
+  // AggregateMember packet. Its dependent declaration_types row owns the
+  // declared member types.
+  std::vector<SemanticProductId> type_members;
   // One declaration-type row per authored package symbol whose signature or
-  // type must be completed. Nominal identities are eager; their row produces
-  // members and member types. Other rows produce TypeIdentity directly.
+  // type must be completed. Nominal identities are eager; a nominal row
+  // produces MemberTypes after its TypeMembers prerequisite. Other rows produce
+  // TypeIdentity directly.
   std::vector<SemanticProductId> declaration_types;
   // One TypeNaturalLayout row per non-parametric authored nominal aggregate.
   // Symbolic templates have no single layout; their concrete applications are
-  // owned by the generic-demand path. These products consume declaration_types
-  // and may add edges to other layout rows.
+  // owned by the generic-demand path. These products consume the nominal's
+  // declaration_types row and may add edges to other layout rows.
   std::vector<SemanticProductId> natural_layouts;
   // Canonical owner-evaluated concrete applications discovered anywhere in the
   // selected workspace. The vector belongs to the owner package and contains

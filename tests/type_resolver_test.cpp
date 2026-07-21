@@ -215,6 +215,42 @@ Cycle_B :: Cycle_A
 
   draft::SemanticPackage record_package = source.semantic;
   draft::DiagnosticSink record_diagnostics;
+  const draft::DeclarationTypeProductAttempt record_members =
+      draft::resolve_package_type_members_product(
+          source.sources,
+          source.loaded,
+          record_package,
+          selections,
+          *record,
+          record_diagnostics);
+  EXPECT(
+      state,
+      record_members.status == draft::TypeProductStatus::Complete);
+  const draft::TypeId record_type =
+      record_package.symbols.symbol(*record).type;
+  EXPECT(
+      state,
+      record_package.types.facet_state(record_type, draft::TypeFacet::Members) ==
+          draft::TypeFacetState::Complete);
+  EXPECT(
+      state,
+      record_package.types.facet_state(
+          record_type, draft::TypeFacet::MemberTypes) ==
+          draft::TypeFacetState::Waiting);
+  std::vector<draft::SymbolId> record_member_ids;
+  std::vector<std::string> record_member_names;
+  for (const draft::AggregateMember &member :
+       record_package.aggregate_members) {
+    if (member.owner == *record) {
+      record_member_ids.push_back(member.member);
+      record_member_names.push_back(
+          record_package.symbols.symbol(member.member).name);
+    }
+  }
+  EXPECT(
+      state,
+      record_member_names == std::vector<std::string>({"small", "large"}));
+
   const draft::DeclarationTypeProductAttempt record_complete =
       draft::resolve_package_declaration_type_product(
           source.sources,
@@ -230,13 +266,23 @@ Cycle_B :: Cycle_A
   EXPECT(
       state,
       record_complete.status == draft::TypeProductStatus::Complete);
-  const draft::TypeId record_type =
-      record_package.symbols.symbol(*record).type;
+  EXPECT(
+      state,
+      record_package.types.facet_state(record_type, draft::TypeFacet::Members) ==
+          draft::TypeFacetState::Complete);
   EXPECT(
       state,
       record_package.types.facet_state(
           record_type, draft::TypeFacet::MemberTypes) ==
           draft::TypeFacetState::Complete);
+  std::vector<draft::SymbolId> typed_record_member_ids;
+  for (const draft::AggregateMember &member :
+       record_package.aggregate_members) {
+    if (member.owner == *record) {
+      typed_record_member_ids.push_back(member.member);
+    }
+  }
+  EXPECT(state, typed_record_member_ids == record_member_ids);
   EXPECT(
       state,
       record_package.types.facet_state(

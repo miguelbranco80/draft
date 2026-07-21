@@ -5,7 +5,7 @@ This document records bootstrap representations and algorithms for lexical class
 ## Type completion facets
 
 Status: payload representation and ordinary complete-compilation declaration
-products implemented; synthesis, generic-demand, and ABI products remain.
+products implemented; interface-synthesis compatibility and ABI products remain.
 
 `TypeStore` retains one `TypeCompletion` row beside every canonical `Type` row.
 Allocation completes type identity. Member-name completeness, member-type
@@ -33,10 +33,13 @@ pure producer over an immutable `TypeStore`; it returns a task-owned layout and
 offset packet or the exact incomplete type facets in first-use order.
 
 During ordinary complete workspace compilation, collection first allocates
-nominal identities. One declaration product then resolves each authored
-signature or member-type packet without recursively entering another unfinished
-package declaration. A separate `TypeNaturalLayout` product consumes the
-completed nominal member packet and publishes physical layout. Symbolic
+nominal identities. One `TypeMembers` product publishes each nominal's selected
+source-order member symbols, and its dependent `TypeMemberTypes` product fills
+those stable symbols without redeclaring them. Non-nominal declaration products
+resolve authored signatures and type aliases. Every product consumes only its
+explicit completed graph prerequisites; a valid payload in a sequential task
+snapshot cannot stand in for a missing edge. A separate `TypeNaturalLayout`
+product consumes completed member types and publishes physical layout. Symbolic
 parametric templates deliberately stop after member types because their
 canonical concrete applications, not the template pattern, own runtime layout.
 Imported interface nominals are already-complete upstream inputs and never
@@ -62,9 +65,10 @@ syntax-only scan records the initially reachable condition frontier without
 declaring members. A member packet waits on those exact products; if a selected
 false branch reveals an `else when`, the private member attempt reports that
 site by `SyntaxReference`, the coordinator appends its condition product, and
-only then retries the packet. Unselected branches remain opaque. Member names
-and member types still share that one declaration product and must become
-separate facets. Interface-synthesis discovery likewise retains the aggregate
+only then retries the packet. Unselected branches remain opaque. The completed
+condition frontier feeds `TypeMembers`; `TypeMemberTypes` depends on that stable
+namespace and may add its own exact declaration, constant, generic-demand, or
+type-facet prerequisites. Interface-synthesis discovery retains the aggregate
 compatibility path until opaque waits create source-generation successors.
 
 Named-constant evaluation has a single-product entry point. It accepts
@@ -284,10 +288,11 @@ package. Initial collection and interface binding happen once. Each package
 `when` records the foreign/export/deny context needed to append its selected
 branch; when the condition becomes ready, only that branch is added to the same
 declaration table. Unconditional declarations and existing IDs are not
-recollected. Type, conditional-selection, member, and layout readiness still
-uses private copies until those facts move into individual semantic products.
-Complete workspace compilation publishes final named constants individually
-before the package-interface barrier; direct semantic tests and
+recollected. Complete workspace compilation publishes type identity, selected
+member names, member types, conditional choices, natural layout, and final named
+constants as individual semantic products before the package-interface barrier.
+Each ready task mutates only a private snapshot; deterministic publication moves
+its completed packet into the retained generation. Direct semantic tests and
 interface-synthesis discovery retain the aggregate compatibility composition
 during migration.
 
