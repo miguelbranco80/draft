@@ -33,7 +33,7 @@
 #include "elaborator/resolution.h"
 #include "interop/aarch64_abi.h"
 #include "interop/native.h"
-#include "mir/lower.h"
+#include "mir/mir.h"
 #include "sema/agent_metadata.h"
 #include "sema/body_checker.h"
 #include "sema/effect.h"
@@ -241,7 +241,6 @@ struct CompiledPackage {
   PackageInterface interface;
   NativeInteropResult native_interop;
   AssemblyProgram assembly;
-  MirLoweringResult mir;
   LlvmPackageEmission llvm;
   PackageArtifactLayout artifact_layout;
 };
@@ -420,9 +419,9 @@ struct PackageSemanticProducts {
   // emission; package_assembly owns the already captured package assembly
   // source bytes plus parsed inline-assembly metadata for the selected HIR set.
   // Each runtime HIR-bearing work row then maps one-to-one to a MirProcedure
-  // product and CompiledPackage::mir.program row through
-  // mir_body_work_indices. Symbolic and compile-time-only bodies intentionally
-  // have no runtime MIR product.
+  // product through mir_body_work_indices. The payload lives in
+  // WorkspaceSemanticProducts::mir_procedure_by_product; symbolic and
+  // compile-time-only bodies intentionally have no runtime MIR product.
   SemanticProductId package_static_data;
   SemanticProductId package_assembly;
   std::vector<std::size_t> mir_body_work_indices;
@@ -474,6 +473,11 @@ struct WorkspaceSemanticProducts {
   // name their GenericTypeDemand row; ordinary natural-layout products contain
   // an invalid ID.
   std::vector<GenericTypeDemandId> generic_type_demand_by_product;
+  // Parallel to SemanticProductGraph. A completed MirProcedure row owns one
+  // immutable procedure payload here; every other product has no value. This
+  // is the authoritative MIR storage--packages retain only ordered product IDs
+  // and never reconstruct a package-wide MirProgram.
+  std::vector<std::optional<MirProcedure>> mir_procedure_by_product;
   // Append-only canonical demand table. Rows from superseded source generations
   // remain inspectable, while each PackageSemanticProducts vector names only
   // the currently selected rows.

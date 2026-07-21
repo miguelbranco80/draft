@@ -300,10 +300,11 @@ gate.
    inline regions. It then appends one `MirProcedure` row per selected concrete
    runtime body, depending on that exact body, its denial result, and both
    package barriers. One bounded workspace wave lowers and verifies private MIR
-   tasks; the coordinator composes compatibility programs in product order.
-   Tests prove exact dependency/payload identity, unchanged semantic type
-   tables, identical one-/four-worker graphs and LLVM, and a single ready wave
-   spanning independent packages.
+   tasks; the coordinator publishes each immutable payload only into the
+   side-table row addressed by its product. Workspace package rows retain no
+   aggregate `MirProgram`. Tests prove exact dependency/payload identity,
+   unchanged semantic type tables, identical one-/four-worker graphs and LLVM,
+   and a single ready wave spanning independent packages.
 
 9. **Parallel semantic waves.** Run each frozen ready wave with bounded workers.
    Workers write only task slots; the coordinator sorts by stable product ID,

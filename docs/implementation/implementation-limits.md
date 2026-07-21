@@ -86,7 +86,9 @@ MIR lowering reads the shared `TypeStore` immutably. Compiler-only addresses
 use MIR-local addressed-type metadata, so there is no unclassified post-ABI
 type suffix. Direct effects, denials, parsed assembly, and MIR consume
 authoritative procedure-owned HIR arenas and publish live products; they no
-longer use a package-wide HIR compatibility projection. Agent
+longer use a package-wide HIR compatibility projection. Each completed MIR
+product owns its procedure payload directly in the workspace side table; the
+compiler does not retain or reconstruct a package-wide MIR program. Agent
 metadata/obligation construction, native interop validation, and validation
 discovery still build and discard such a projection. The compiler retains no
 package-wide HIR copy. Migrating those remaining consumers away from the

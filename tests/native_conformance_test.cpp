@@ -616,18 +616,27 @@ main :: proc() -> int {
   // write_text itself must contain exactly one such extraction.
   const draft::CompiledPackage *console_package = nullptr;
   const draft::CompiledPackage *os_package = nullptr;
-  for (const std::optional<draft::CompiledPackage> &package :
-       compiled.packages) {
+  std::optional<std::size_t> console_package_index;
+  std::optional<std::size_t> os_package_index;
+  for (std::size_t package_index = 0;
+       package_index < compiled.packages.size(); ++package_index) {
+    const std::optional<draft::CompiledPackage> &package =
+        compiled.packages[package_index];
     if (!package.has_value()) continue;
     if (package->identity.root_relative_path == "console") {
       console_package = &*package;
+      console_package_index = package_index;
     } else if (package->identity.root_relative_path == "os") {
       os_package = &*package;
+      os_package_index = package_index;
     }
   }
   EXPECT(state, name, console_package != nullptr);
   EXPECT(state, name, os_package != nullptr);
-  if (console_package == nullptr || os_package == nullptr) return;
+  if (console_package == nullptr || os_package == nullptr ||
+      !console_package_index.has_value() || !os_package_index.has_value()) {
+    return;
+  }
 
   const std::optional<draft::SymbolId> write_to =
       console_package->bodies.package.symbols.lookup_direct(
@@ -647,8 +656,21 @@ main :: proc() -> int {
           }));
 
   std::size_t console_raw_data = 0;
-  for (const draft::MirProcedure &procedure :
-       console_package->mir.program.procedures()) {
+  for (draft::SemanticProductId product :
+       compiled.semantic_products.packages[*console_package_index]
+           .mir_procedures) {
+    EXPECT(state, name,
+        product.value <
+            compiled.semantic_products.mir_procedure_by_product.size());
+    if (product.value >=
+        compiled.semantic_products.mir_procedure_by_product.size()) {
+      continue;
+    }
+    const std::optional<draft::MirProcedure> &payload =
+        compiled.semantic_products.mir_procedure_by_product[product.value];
+    EXPECT(state, name, payload.has_value());
+    if (!payload.has_value()) continue;
+    const draft::MirProcedure &procedure = *payload;
     console_raw_data += static_cast<std::size_t>(std::count_if(
         procedure.instructions.begin(),
         procedure.instructions.end(),
@@ -664,8 +686,20 @@ main :: proc() -> int {
   EXPECT(state, name, write_text.has_value());
   if (!write_text.has_value()) return;
   std::size_t write_text_raw_data = 0;
-  for (const draft::MirProcedure &procedure :
-       os_package->mir.program.procedures()) {
+  for (draft::SemanticProductId product :
+       compiled.semantic_products.packages[*os_package_index].mir_procedures) {
+    EXPECT(state, name,
+        product.value <
+            compiled.semantic_products.mir_procedure_by_product.size());
+    if (product.value >=
+        compiled.semantic_products.mir_procedure_by_product.size()) {
+      continue;
+    }
+    const std::optional<draft::MirProcedure> &payload =
+        compiled.semantic_products.mir_procedure_by_product[product.value];
+    EXPECT(state, name, payload.has_value());
+    if (!payload.has_value()) continue;
+    const draft::MirProcedure &procedure = *payload;
     if (procedure.symbol != *write_text) continue;
     write_text_raw_data += static_cast<std::size_t>(std::count_if(
         procedure.instructions.begin(),

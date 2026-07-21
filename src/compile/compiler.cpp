@@ -26,9 +26,9 @@
 // requested it. Direct effects and denials run as bounded procedure-owned
 // waves; legal flow/effect SCCs publish dependency-first with their exact
 // component edges. Package static data and assembly are explicit barriers, and
-// all concrete runtime procedures lower in one bounded workspace MIR wave.
-// Later implementation slices isolate native task payloads and move their
-// remaining package loops into the same graph. Within an unchanged source
+// all concrete runtime procedures lower in one bounded workspace MIR wave and
+// own product-indexed MIR payloads. Machine functions and artifact layouts then
+// publish in separate bounded native waves. Within an unchanged source
 // generation, CompileWorkspaceProgress advances so native lowering can continue
 // checked state without reloading source. A checked generated-source transition
 // appends a successor generation and supersedes only the affected interface
@@ -49,6 +49,7 @@
 #include "elaborator/resolution_overlay.h"
 #include "elaborator/resolution_store.h"
 #include "elaborator/resolved_program.h"
+#include "mir/lower.h"
 #include "sema/denial.h"
 #include "sema/runtime_context.h"
 #include "sema/type_resolver.h"
@@ -946,7 +947,6 @@ void bind_handwritten_program_identity(
     package.direct_effects = {};
     package.effects = {};
     package.assembly = {};
-    package.mir = {};
     package.llvm = {};
     package.artifact_layout = {};
     if (package.semantic_progress == PackageSemanticProgress::ClosureReady) {
@@ -977,6 +977,8 @@ void bind_handwritten_program_identity(
       result.semantic_products.condition_by_product.size() !=
           result.semantic_graph.products.size() ||
       result.semantic_products.generic_type_demand_by_product.size() !=
+          result.semantic_graph.products.size() ||
+      result.semantic_products.mir_procedure_by_product.size() !=
           result.semantic_graph.products.size()) {
     diagnostics.error(
         SourceRange::invalid(),
@@ -1003,6 +1005,7 @@ void bind_handwritten_program_identity(
   result.semantic_products.type_by_product.push_back({});
   result.semantic_products.condition_by_product.push_back({});
   result.semantic_products.generic_type_demand_by_product.push_back({});
+  result.semantic_products.mir_procedure_by_product.push_back(std::nullopt);
   return product;
 }
 
@@ -5601,9 +5604,9 @@ struct MirProcedureWaveExecution {
 
 // Appends and executes one MirProcedure product for every selected concrete
 // runtime body in the workspace. Tasks read immutable semantic/HIR/assembly
-// inputs and own one private MIR procedure plus diagnostics. The coordinator
-// rebuilds each compatibility MirProgram only after the complete global wave
-// joins, preserving the former source order without retaining package HIR.
+// inputs and own one private MIR procedure plus diagnostics. After the global
+// wave joins, the coordinator publishes each procedure directly into the side
+// table row addressed by its semantic product; no package MIR is composed.
 [[nodiscard]] bool run_workspace_mir_products(
     RuntimeAssertionMode runtime_assertions,
     std::size_t worker_count,
@@ -5617,15 +5620,12 @@ struct MirProcedureWaveExecution {
     CompiledPackage &package = *result.packages[package_index];
     PackageSemanticProducts &products =
         result.semantic_products.packages[package_index];
-    if (!products.mir_procedures.empty() ||
-        !package.mir.program.procedures().empty()) {
+    if (!products.mir_procedures.empty()) {
       diagnostics.error(
           SourceRange::invalid(),
           "MIR product slice is not empty before scheduling");
       return false;
     }
-    package.mir = {};
-    package.mir.ok = true;
     const PackageId owner{static_cast<std::uint32_t>(package_index)};
     for (std::size_t work_index : products.mir_body_work_indices) {
       if (work_index >= package.bodies.procedures.size()) {
@@ -5740,8 +5740,18 @@ struct MirProcedureWaveExecution {
     return false;
   }
   bool mir_ok = true;
-  for (const SemanticProductOutcome &outcome : outcomes) {
-    mir_ok = mir_ok && outcome.kind == SemanticProductOutcomeKind::Complete;
+  for (std::size_t index = 0; index < outcomes.size(); ++index) {
+    mir_ok = mir_ok &&
+        outcomes[index].kind == SemanticProductOutcomeKind::Complete;
+    if (slots[index].result.ok && slots[index].result.lowered &&
+        result.semantic_products
+            .mir_procedure_by_product[wave.products[index].value]
+            .has_value()) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "MIR product already owns a procedure payload");
+      return false;
+    }
   }
   std::string publication_error;
   if (!publish_semantic_ready_wave(
@@ -5756,23 +5766,14 @@ struct MirProcedureWaveExecution {
     return false;
   }
   for (std::size_t index = 0; index < wave.products.size(); ++index) {
-    const PackageId owner = result.semantic_products.package_by_product[
-        wave.products[index].value];
-    CompiledPackage &package = *result.packages[owner.value];
     if (slots[index].result.ok && slots[index].result.lowered) {
-      package.mir.program.add_procedure(
-          std::move(slots[index].result.procedure));
-      ++package.mir.lowered_procedures;
-    } else {
-      package.mir.ok = false;
+      result.semantic_products
+          .mir_procedure_by_product[wave.products[index].value] =
+          std::move(slots[index].result.procedure);
     }
   }
   if (timings != nullptr) {
-    for (const std::optional<CompiledPackage> &package : result.packages) {
-      if (package.has_value() && package->mir.ok) {
-        timings->add_counter("MIR packages lowered", 1);
-      }
-    }
+    timings->add_counter("MIR procedures lowered", wave.products.size());
   }
   return mir_ok;
 }
@@ -5937,16 +5938,28 @@ struct ArtifactLayoutWaveExecution {
           "native product slice is not empty before scheduling");
       return false;
     }
-    if (!package.llvm.static_data.ok ||
-        products.mir_procedures.size() !=
-            package.mir.program.procedures().size()) {
+    if (!package.llvm.static_data.ok) {
       diagnostics.error(
           SourceRange::invalid(),
           "native products require complete static data and MIR products");
       return false;
     }
-    for (const MirProcedure &procedure : package.mir.program.procedures()) {
-      runtime_procedures[package_index].push_back(procedure.symbol);
+    for (SemanticProductId mir_product : products.mir_procedures) {
+      if (!mir_product.is_valid() ||
+          mir_product.value >=
+              result.semantic_products.mir_procedure_by_product.size() ||
+          !result.semantic_products
+               .mir_procedure_by_product[mir_product.value]
+               .has_value()) {
+        diagnostics.error(
+            SourceRange::invalid(),
+            "native products require one payload per MIR product");
+        return false;
+      }
+      runtime_procedures[package_index].push_back(
+          result.semantic_products
+              .mir_procedure_by_product[mir_product.value]
+              ->symbol);
     }
     package.llvm.machine_functions.resize(products.mir_procedures.size());
     const PackageId owner{static_cast<std::uint32_t>(package_index)};
@@ -5965,7 +5978,10 @@ struct ArtifactLayoutWaveExecution {
           diagnostics);
       if (!product.is_valid()) return false;
       result.semantic_products.procedure_by_product[product.value] =
-          package.mir.program.procedures()[function_index].symbol;
+          result.semantic_products
+              .mir_procedure_by_product[
+                  products.mir_procedures[function_index].value]
+              ->symbol;
       products.machine_functions.push_back(product);
       expected_machine_wave.push_back(product);
     }
@@ -6016,7 +6032,9 @@ struct ArtifactLayoutWaveExecution {
       slot.semantic = &package.bodies.package;
       slot.abi = &package.c_abi;
       slot.runtime_procedures = &runtime_procedures[owner.value];
-      slot.procedure = &package.mir.program.procedures()[function_index];
+      slot.procedure = &*result.semantic_products
+          .mir_procedure_by_product[
+              products.mir_procedures[function_index].value];
       slot.options.package = result.graph.packages[owner.value].identity;
       slot.procedure_ordinal = function_index;
       slot.package_function_index = function_index;

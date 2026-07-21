@@ -541,8 +541,6 @@ void test_procedure_body_worker_counts_are_deterministic(TestState &state) {
     }
     EXPECT(state, left_products.mir_body_work_indices.size() ==
                       left_products.mir_procedures.size());
-    EXPECT(state, left_products.mir_procedures.size() ==
-                      left.mir.program.procedures().size());
     EXPECT(state, left_products.machine_functions.size() ==
                       left_products.mir_procedures.size());
     EXPECT(state, left.llvm.machine_functions.size() ==
@@ -555,11 +553,16 @@ void test_procedure_body_worker_counts_are_deterministic(TestState &state) {
           left_products.mir_procedures[mir_index];
       const draft::SemanticProduct &row =
           sequential.semantic_graph.products[product.value];
+      const std::optional<draft::MirProcedure> &mir =
+          sequential.semantic_products
+              .mir_procedure_by_product[product.value];
       EXPECT(state, row.kind == draft::SemanticProductKind::MirProcedure);
       EXPECT(state, row.state == draft::SemanticProductState::Complete);
+      EXPECT(state, mir.has_value());
       EXPECT(state,
-             sequential.semantic_products.procedure_by_product[product.value] ==
-                 left.mir.program.procedures()[mir_index].symbol);
+             mir.has_value() &&
+                 sequential.semantic_products
+                         .procedure_by_product[product.value] == mir->symbol);
       EXPECT(state,
              std::find(row.dependencies.begin(), row.dependencies.end(),
                        left_products.procedure_bodies[work_index]) !=
@@ -597,8 +600,9 @@ void test_procedure_body_worker_counts_are_deterministic(TestState &state) {
       EXPECT(state,
              machine_row.state == draft::SemanticProductState::Complete);
       EXPECT(state,
-             sequential.semantic_products.procedure_by_product[machine.value] ==
-                 left.mir.program.procedures()[mir_index].symbol);
+             mir.has_value() &&
+                 sequential.semantic_products
+                         .procedure_by_product[machine.value] == mir->symbol);
       EXPECT(state,
              std::find(machine_row.dependencies.begin(),
                        machine_row.dependencies.end(), product) !=

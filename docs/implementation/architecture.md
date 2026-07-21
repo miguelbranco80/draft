@@ -298,10 +298,12 @@ test convenience and is not a compiler or native-build path.
 - **Draft MIR:** a small non-optimizing IR with explicit loads, stores, checks,
   context arguments, calls, aggregate operations, and source locations. One
   checked runtime HIR procedure lowers to one privately verified MIR procedure;
-  the package API is a source-order composer over that operation. Workspace
-  compilation publishes package static-data and assembly barriers, then lowers
-  every independent runtime procedure in one bounded ready wave. LLVM is an
-  emission/optimization back end rather than Draft's semantic model.
+  workspace compilation stores that result only in the side-table row owned by
+  its `MirProcedure` product. Package rows retain ordered product IDs, not a
+  reconstructed `MirProgram`. Compilation publishes package static-data and
+  assembly barriers, then lowers every independent runtime procedure in one
+  bounded ready wave. LLVM is an emission/optimization back end rather than
+  Draft's semantic model.
 
 LLVM types stay behind numeric, target, ABI, and code-generation adapters. The
 front end must not depend on LLVM IR details.

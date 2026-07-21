@@ -251,9 +251,10 @@ do not add per-worker timing writes to the single-threaded recorder.
 
 Native lowering reports package-static, machine-function, and artifact-layout
 semantic waves separately. A machine-function task maps one-to-one to a
-concrete MIR procedure; native object tasks then follow the published
-static/function/assembly layout. Compare those counters across worker counts
-instead of assuming one LLVM or object task per package.
+concrete `MirProcedure` product, whose payload lives in its workspace product
+side-table row rather than a package MIR program. Native object tasks then
+follow the published static/function/assembly layout. Compare those counters
+across worker counts instead of assuming one LLVM or object task per package.
 
 For resolved programs, distinguish `workspace loads` from `workspace source
 transitions`. A checked `...` expansion is reparsed into the existing
