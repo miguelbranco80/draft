@@ -183,7 +183,9 @@ gate.
    bytes with one and four workers. Workspace packages now retain that live
    scheduler after finalization; later demands append to the exact work/product
    prefix instead of reconstructing extension state from `BodyCheckResult`.
-   The consumer-first external-demand loop, aggregate body work key, and
+   `PackageBodyWorkKey` and its redundant declaration generation are deleted;
+   a changed declaration already replaces the complete package row. The
+   consumer-first external-demand loop, aggregate demand-set comparison, and
    demand-removal rebuild remain as the deletion boundary for this step.
 
 6. **Synthesis as an explicit wait state.** A body or declaration task may

@@ -195,21 +195,23 @@ with an explicit eight-MiB stack per worker, matching the syntax-recursion
 budget available to the main compiler thread instead of inheriting macOS's
 smaller pthread default.
 
-The transitional body work key is the declaration generation plus the exact
-canonical set of concrete generic procedures demanded by consumer packages.
-Equal keys reuse the complete body result; added demands append and check only
-new specializations; a removed or changed demand rebuilds from declarations so
-stale executable procedures cannot survive. Compile-time type preflight and
-early synthesis discovery run on private copies and never become a hidden first
-body pass over the authoritative package. The procedure-local arena migration
-deletes this retained-package mechanism rather than preserving it as a cache.
+The transitional body selection is the exact canonical set of concrete generic
+procedures demanded by consumer packages. A changed declaration replaces its
+whole `CompiledPackage`, so no separate declaration-generation body key exists.
+An equal demand set retains the complete body result; additions append and check
+only new specializations; a removed or changed demand still rebuilds from
+declarations so stale executable procedures cannot survive. Compile-time type
+preflight and early synthesis discovery run on private copies and never become a
+hidden first body pass over the authoritative package. Individual dynamic
+demand products delete this aggregate comparison rather than preserving it as a
+cache.
 
 Workspace packages retain their live `PackageBodyWorkState` after finalization.
 Its work rows, procedure results, and semantic-product rows share one append-only
 index domain, so an added demand resumes the exact completed prefix. The
 compiler no longer reconstructs an extension scheduler from a reduced
 `BodyCheckResult`; that transfer object remains only for direct subsystem
-callers. Aggregate demand-key comparison and removal rebuild are still
+callers. Aggregate demand-set comparison and removal rebuild are still
 transitional and are deleted by the semantic-work-graph plan.
 
 After every selected package has reached target lowering, the backend derives a

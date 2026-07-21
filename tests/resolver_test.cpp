@@ -355,7 +355,7 @@ struct TemporaryWorkspace {
   // resolver form. The surface body and accepted replacement both request the
   // same cross-package static-pack specialization. Proposal checking copies
   // the current compiler graph, applies only the body overlay, and must reuse
-  // the dependency's equal body-work key instead of rechecking its already
+  // the dependency's equal external-demand set instead of rechecking its already
   // enriched semantic tables.
   void write_body_site_with_static_pack_dependency() const {
     std::error_code error;

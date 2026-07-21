@@ -1374,10 +1374,10 @@ void test_body_source_update_reuses_closed_generic_dependency(
       *compiled.packages[*formatting_index];
   const std::uint64_t formatting_declaration_generation =
       initial_formatting.declaration_generation;
-  const std::uint64_t formatting_body_generation =
-      initial_formatting.body_work_key.declaration_generation;
   const std::size_t formatting_symbol_count =
       initial_formatting.bodies.package.symbols.symbol_count();
+  const std::size_t formatting_work_count =
+      initial_formatting.bodies.work.size();
   const std::vector<draft::SemanticProductId> initial_app_body_products =
       compiled.semantic_products.packages[app_index].procedure_bodies;
   const std::vector<draft::SemanticProductId> initial_formatting_body_products =
@@ -1419,8 +1419,7 @@ void test_body_source_update_reuses_closed_generic_dependency(
   EXPECT(state, updated_app.declaration_generation == 2);
   EXPECT(state, updated_formatting.declaration_generation ==
                     formatting_declaration_generation);
-  EXPECT(state, updated_formatting.body_work_key.declaration_generation ==
-                    formatting_body_generation);
+  EXPECT(state, updated_formatting.bodies.work.size() == formatting_work_count);
   EXPECT(state, updated_formatting.bodies.package.symbols.symbol_count() ==
                     formatting_symbol_count);
   EXPECT(state,
@@ -1443,7 +1442,7 @@ void test_body_source_update_reuses_closed_generic_dependency(
   }
 
   // Two packages are checked for the surface graph. The body replacement
-  // checks only app; formatting's equal declaration+demand work key is reused.
+  // checks only app; formatting's equal external-demand selection is reused.
   const std::string report = timings.render();
   EXPECT(state, report.find("package body checks: 3") != std::string::npos);
   EXPECT(state, report.find("package body reuses: 1") != std::string::npos);
@@ -1541,7 +1540,7 @@ void test_body_work_graph_extends_and_removes_generic_demand(TestState &state) {
              sources, (root / "app").string(), options, compiled, diagnostics));
   const draft::CompiledPackage &extended =
       *compiled.packages[*formatting_index];
-  EXPECT(state, extended.body_work_key.procedure_demands.size() == 1);
+  EXPECT(state, extended.external_procedure_demands.size() == 1);
   EXPECT(state, extended.bodies.package.parametric_instances.size() == 1);
   EXPECT(state, extended.bodies.checked_procedures == initial_checked + 1);
   EXPECT(state, extended.bodies.finalized);
@@ -1580,7 +1579,7 @@ void test_body_work_graph_extends_and_removes_generic_demand(TestState &state) {
   }
   const draft::CompiledPackage &removed = *compiled.packages[*formatting_index];
   EXPECT(state, compiled.ok);
-  EXPECT(state, removed.body_work_key.procedure_demands.empty());
+  EXPECT(state, removed.external_procedure_demands.empty());
   EXPECT(state, removed.bodies.package.parametric_instances.empty());
   EXPECT(state, removed.bodies.package.symbols.symbol_count() ==
                     initial_body_symbol_count);

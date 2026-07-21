@@ -64,7 +64,8 @@ practical budget in sequential and parallel execution.
 Workspace packages retain the live body publication state after finalization,
 so a newly demanded external specialization appends to the existing work and
 product prefix rather than reconstructing an extension scheduler. Aggregate
-body work-key selection and the demand-removal rebuild remain temporary limits.
+external-demand selection and the demand-removal rebuild remain temporary
+limits. There is no declaration-generation body work key.
 Effect closure, denials, and MIR still consume a package-wide HIR compatibility
 projection. Each operation builds and discards that view from authoritative
 procedure products; the compiler retains no package-wide HIR copy. Migrating

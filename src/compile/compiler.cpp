@@ -3990,13 +3990,13 @@ bool continue_compiled_workspace_semantics(
   }
 
   // Phase 2: advance the deterministic body work graph from consumers toward
-  // dependencies. Each package work key is its declaration generation plus
-  // the canonical externally requested generic set. An equal key reuses the
-  // complete body-owned semantic graph and procedure-local HIR arenas. A
-  // changed key starts from the immutable declaration baseline; no checker ever
-  // re-enters retained body state. Portable demands cross package TypeStore
-  // boundaries and are materialized only inside the owner's new body
-  // generation.
+  // dependencies. A retained package already owns the current declaration
+  // generation, so only the canonical externally requested generic set needs
+  // comparison. An equal set retains the complete live body state; an added
+  // suffix resumes it. A removed demand still starts from the immutable
+  // declaration baseline until individual demand products replace this
+  // aggregate selection. Portable demands cross package TypeStore boundaries
+  // and are materialized only inside the owner's body generation.
   std::vector<std::vector<ProcedureInstantiationDemand>> demands(
       result.graph.packages.size());
   TimingScope body_timing = options.timings != nullptr
@@ -4009,17 +4009,15 @@ bool continue_compiled_workspace_semantics(
     const std::size_t package_error_count = diagnostics.error_count();
     if (!canonicalize_procedure_demands(
             demands[package_index], diagnostics)) {
-      package.body_work_key = {};
+      package.external_procedure_demands.clear();
       package.semantic_progress = PackageSemanticProgress::InterfaceReady;
       continue;
     }
     const bool stable_declarations =
-        package.body_work_key.declaration_generation ==
-            package.declaration_generation &&
         package.semantic_progress != PackageSemanticProgress::InterfaceReady &&
-        package.bodies.ok;
+        package.bodies.ok && package.bodies.finalized;
     const bool reusable = stable_declarations && same_procedure_demands(
-        package.body_work_key.procedure_demands, demands[package_index]);
+        package.external_procedure_demands, demands[package_index]);
     if (reusable) {
       if (options.timings != nullptr) {
         options.timings->add_counter("package body reuses", 1);
@@ -4040,7 +4038,7 @@ bool continue_compiled_workspace_semantics(
       std::vector<ProcedureInstantiationDemand> added_demands;
       const bool extendable = stable_declarations &&
           added_procedure_demands(
-              package.body_work_key.procedure_demands,
+              package.external_procedure_demands,
               demands[package_index],
               added_demands) &&
           !added_demands.empty();
@@ -4153,12 +4151,10 @@ bool continue_compiled_workspace_semantics(
         package.bodies.ok = false;
       }
       if (package.bodies.ok) {
-        package.body_work_key.declaration_generation =
-            package.declaration_generation;
-        package.body_work_key.procedure_demands = demands[package_index];
+        package.external_procedure_demands = demands[package_index];
         package.semantic_progress = PackageSemanticProgress::BodiesReady;
       } else {
-        package.body_work_key = {};
+        package.external_procedure_demands.clear();
       }
     }
     if (!package.bodies.ok) continue;

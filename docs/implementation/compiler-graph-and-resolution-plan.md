@@ -248,11 +248,13 @@ cache.
     one request directory per call.
 15. Semantic ownership was split into immutable declaration generations and
     body-owned semantic generations. Cross-package procedure
-    specializations now use canonical demand-set work keys: retained dependencies
+    specializations now use canonical demand-set selection: retained dependencies
     are reused during body proposals, new demands extend only missing bodies,
-    and removals rebuild exact state. This removed retained-table body replay,
-    including duplicate static-pack declarations, without introducing a
-    persistent cache or a second compiler graph. Exact body products now retain
+    and removals rebuild exact state. A changed declaration replaces its whole
+    package row, so there is no separate declaration-generation body key. This
+    removed retained-table body replay, including duplicate static-pack
+    declarations, without introducing a persistent cache or a second compiler
+    graph. Exact body products now retain
     their own HIR arenas. Package-wide consumers still awaiting migration build
     a short-lived compatibility projection; no aggregate HIR is retained in
     compiler state. Workspace packages retain the live body scheduler itself,
@@ -287,7 +289,7 @@ and tests as applicable.
   provider-free `build` of the committed source. Interface/body rounds never
   reconstruct the same workspace graph.
 - Rechecking a body proposal never re-enters an enriched semantic package. A
-  dependency with an equal declaration+demand work key retains its exact HIR;
+  dependency with an equal external-demand set retains its exact HIR;
   an added external specialization checks only that new body, and removing the
   demand leaves no stale concrete symbol or interface row.
 - The sorted sequential package-semantic scheduler produces stable manifests,

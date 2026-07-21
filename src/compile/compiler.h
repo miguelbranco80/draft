@@ -16,11 +16,11 @@
 // constants in product-ID order. An unchanged source
 // graph advances from interface discovery to semantic closure to target
 // lowering. A checked source overlay appends a successor source generation and
-// new declaration products only for affected packages, then reuses or extends
-// unaffected body generations by exact work key. The continuation API mutates
-// only this command-owned graph and creates no persistent cache. Lower layers
-// never call a provider or update pins. Relevant specification: sections 10
-// and 15.
+// new declaration products only for affected packages, then retains or extends
+// unaffected live body-product state by canonical external demand. The
+// continuation API mutates only this command-owned graph and creates no
+// persistent cache. Lower layers never call a provider or update pins. Relevant
+// specification: sections 10 and 15.
 
 #pragma once
 
@@ -129,17 +129,6 @@ enum class PackageSemanticProgress {
   ClosureReady,
 };
 
-// PackageBodyWorkKey names the complete inputs that make one retained body
-// result authoritative. declaration_generation identifies the immutable local
-// symbol/type baseline. procedure_demands is the canonical exact set of
-// cross-package generic specializations required by checked consumers. A zero
-// generation is the invalid sentinel; locally discovered specializations are a
-// deterministic consequence of these inputs and do not need a second key.
-struct PackageBodyWorkKey {
-  std::uint64_t declaration_generation = 0;
-  std::vector<ProcedureInstantiationDemand> procedure_demands;
-};
-
 // One row owns every representation of one package. Keeping phase products
 // together makes driver commands thin and gives later manifests a single place
 // to collect canonical inputs without rerunning semantic analysis.
@@ -161,10 +150,15 @@ struct CompiledPackage {
   // Live command-local body publication state. Completed roots, their exact
   // product-local HIR, and the work-to-result order remain available when a
   // later consumer discovers another concrete dependency instance.
-  PackageBodyWorkKey body_work_key;
+  PackageBodyWorkState bodies;
+  // Canonical exact set of cross-package generic specializations selected by
+  // the current consumer bodies. A changed declaration replaces this whole
+  // CompiledPackage, so the former declaration-generation work-key component
+  // was redundant. This aggregate set remains only until external demands are
+  // published as individual dynamic products.
+  std::vector<ProcedureInstantiationDemand> external_procedure_demands;
   PackageSemanticProgress semantic_progress =
       PackageSemanticProgress::InterfaceReady;
-  PackageBodyWorkState bodies;
   AgentMetadataResult metadata;
   AgentObligationResult obligations;
   std::vector<AgentValidationContext> validation_context;
@@ -183,9 +177,9 @@ struct CompiledPackage {
 
 // CompileWorkspaceProgress is the aggregate command boundary. It advances
 // monotonically while source bytes are unchanged. A checked source transition
-// deliberately returns it to InterfaceDiscovery; PackageSemanticProgress and
-// PackageBodyWorkKey then say exactly which unaffected rows still own valid
-// bodies or closure. Empty is a failed or not-yet-started result.
+// deliberately returns it to InterfaceDiscovery; PackageSemanticProgress says
+// exactly which unaffected rows still own valid bodies or closure. Empty is a
+// failed or not-yet-started result.
 // InterfaceDiscovery may intentionally omit packages blocked by
 // declaration/member synthesis. SemanticClosure owns complete checked
 // declarations, bodies, effects, denials, and native-interop facts but no MIR.

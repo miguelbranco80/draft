@@ -217,14 +217,14 @@ retains already typed validation context because it cannot change declarations.
 
 The semantic ownership boundary is explicit. A package's declaration generation
 is immutable. Each checked procedure owns its HIR arena beside a body-owned
-semantic copy and constant table under a work key consisting of the declaration
-generation and canonical external generic demand set. No package-wide HIR copy
-is retained; a package-wide consumer builds and discards an ID-rewritten view.
-Proposal checking can therefore copy the command graph without replaying
-BodyChecker over a dependency's already-enriched tables. Equal keys reuse the
-dependency result; added demands extend only new specializations; removal starts
-from declarations. Handwritten commands still load and analyze declarations
-once before later MIR/LLVM continuation.
+semantic copy and constant table. A changed declaration replaces that complete
+package row; otherwise the package compares only its canonical external generic
+demand set. No package-wide HIR copy is retained; a package-wide consumer builds
+and discards an ID-rewritten view. Proposal checking can therefore copy the
+command graph without replaying BodyChecker over a dependency's already-enriched
+tables. Equal demand sets retain the dependency result; additions extend only
+new specializations; removal starts from declarations. Handwritten commands
+still load and analyze declarations once before later MIR/LLVM continuation.
 
 Provider proposals need isolation because sibling sites in one opaque set may
 not observe each other. The resolver copies the current command-local semantic

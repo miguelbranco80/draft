@@ -403,9 +403,9 @@ native instance name. The owning package sorts and deduplicates the complete set
 before using it as work identity. No consumer-local TypeId crosses the boundary,
 and materialized owner TypeIds live only in the body generation.
 
-One body work key is `(declaration generation, canonical external demand set)`:
+Each retained package compares its canonical external demand set:
 
-- an equal key retains the existing semantic tables and HIR without invoking
+- an equal set retains the existing semantic tables and HIR without invoking
   BodyChecker;
 - a strict demand-set addition preserves existing IDs and checks only newly
   requested concrete procedures;
@@ -414,11 +414,12 @@ One body work key is `(declaration generation, canonical external demand set)`:
 - a matching package-local specialization is promoted in place to the canonical
   external name, retaining its SymbolId and HIR rather than creating a duplicate;
 - a source or dependency-interface change creates a new declaration generation
-  and therefore cannot reuse a body built against the old prefix.
+  and replaces the complete `CompiledPackage`, so no separate body-generation
+  key is needed.
 
 An added demand resumes the retained package's exact live scheduler state.
 Completed work, HIR, and product IDs remain in their original prefix; only seed
-materialization and the new suffix run. The aggregate work-key test and removal
+materialization and the new suffix run. The aggregate demand-set test and removal
 rebuild remain transitional scheduler policy, not a second retained body
 representation.
 
