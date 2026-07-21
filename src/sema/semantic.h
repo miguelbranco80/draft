@@ -62,6 +62,17 @@ struct PackageDeclarationDiscovery {
   std::size_t unresolved_conditionals = 0;
 };
 
+// Performs only eager, source-order discovery: collect authored declarations,
+// allocate nominal identities, install the consumer package identity, and bind
+// already completed import interfaces. The returned payload is nonterminal and
+// owns the authoritative append-only declaration table. It contains no member,
+// signature, constant, layout, or conditional-selection products yet.
+[[nodiscard]] PackageDeclarationDiscovery begin_package_declaration_discovery(
+    const SourceManager &sources,
+    const LoadedPackage &loaded,
+    const AvailablePackageImports &imports,
+    DiagnosticSink &diagnostics);
+
 // Performs collection, interface binding, append-only package `when`
 // materialization, and terminal type discovery. It deliberately stops before
 // final all-constant evaluation so the compiler coordinator can schedule each

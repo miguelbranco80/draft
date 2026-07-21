@@ -297,8 +297,9 @@ PackageDeclarationDiscovery discover_package_declarations(
     const AvailablePackageImports &imports,
     CompileTimeSynthesisMode synthesis_mode,
     DiagnosticSink &diagnostics) {
-  PackageDeclarationDiscovery result;
   const std::size_t initial_error_count = diagnostics.error_count();
+  PackageDeclarationDiscovery result = begin_package_declaration_discovery(
+      sources, loaded, imports, diagnostics);
   std::vector<ResolvedIntegerExpression> resolved_integers;
   std::vector<SyntaxReference> blocked_integer_synthesis;
 
@@ -307,10 +308,7 @@ PackageDeclarationDiscovery discover_package_declarations(
   // after its boolean product becomes ready. The authoritative declaration
   // table remains free of provisional type/member rows until the selections are
   // complete.
-  SemanticPackage declarations =
-      collect_package_declarations(sources, loaded, diagnostics);
-  declarations.identity = imports.consumer_identity;
-  bind_package_interfaces(declarations, imports, diagnostics);
+  SemanticPackage declarations = std::move(result.package);
 
   // The terminal discovery attempt is the authoritative type payload. Earlier
   // attempts may have observed an incomplete selected name set and are
@@ -427,6 +425,21 @@ PackageDeclarationDiscovery discover_package_declarations(
       diagnostics.error_count() == initial_error_count;
   result.resolved_integers = std::move(resolved_integers);
   result.blocked_integer_synthesis = std::move(blocked_integer_synthesis);
+  return result;
+}
+
+PackageDeclarationDiscovery begin_package_declaration_discovery(
+    const SourceManager &sources,
+    const LoadedPackage &loaded,
+    const AvailablePackageImports &imports,
+    DiagnosticSink &diagnostics) {
+  PackageDeclarationDiscovery result;
+  const std::size_t initial_error_count = diagnostics.error_count();
+  result.package = collect_package_declarations(sources, loaded, diagnostics);
+  result.package.identity = imports.consumer_identity;
+  bind_package_interfaces(result.package, imports, diagnostics);
+  result.discovery_ok =
+      diagnostics.error_count() == initial_error_count;
   return result;
 }
 

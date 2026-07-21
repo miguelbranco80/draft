@@ -310,6 +310,23 @@ when size_of(Header) == 16 {
       synthesis_diagnostics));
   synthesis_loaded.files.push_back(std::move(synthesis_file));
   draft::AvailablePackageImports no_imports;
+  draft::DiagnosticSink initial_diagnostics;
+  const draft::PackageDeclarationDiscovery initial =
+      draft::begin_package_declaration_discovery(
+          synthesis_sources,
+          synthesis_loaded,
+          no_imports,
+          initial_diagnostics);
+  EXPECT(state, !initial.terminal);
+  EXPECT(state, initial.discovery_ok);
+  EXPECT(state, initial.package.conditional_declarations.size() == 1);
+  EXPECT(
+      state,
+      !initial.package.symbols
+           .lookup_direct(initial.package.package_scope, "Selected")
+           .has_value());
+  EXPECT(state, !initial_diagnostics.has_errors());
+
   const draft::PackageDeclarationDiscovery discovery =
       draft::discover_package_declarations(
           synthesis_sources,
