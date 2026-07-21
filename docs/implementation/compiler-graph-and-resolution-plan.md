@@ -74,8 +74,9 @@ cache.
   validates an exact frozen prefix, and appends each packet rather than adopting
   a complete worker successor. TypeStore, SymbolTable, and ConstantTable
   prefixes are read-only overlays; declaration-closed semantic inputs are direct
-  immutable views. Owned scopes, parametric parameters, and static argument
-  packs use canonical-prefix/task-local-suffix views; other body-mutable side
+  immutable views. Owned scopes, aggregate members, enum values, parametric
+  parameters, and static argument packs use canonical-prefix/task-local-suffix
+  views; aggregate offset writes are local-suffix-only. Other body-mutable side
   tables are still copied. IDs are not yet remapped across independent results,
   so invocation remains a sequential oracle. Remaining local-suffix views and
   deterministic shared-wave publication are required before body waves become

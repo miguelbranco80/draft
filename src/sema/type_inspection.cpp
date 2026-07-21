@@ -181,7 +181,7 @@ constexpr std::array<std::string_view, 2> kTargetObjectFormatNames = {
   std::vector<SymbolId> result;
   const std::optional<SymbolId> owner = type_owner(package, type);
   if (!owner.has_value()) return result;
-  for (const AggregateMember &member : package.aggregate_members) {
+  for (const AggregateMember &member : package.aggregate_members_for_read()) {
     if (member.owner == *owner) result.push_back(member.member);
   }
   return result;
@@ -504,7 +504,7 @@ TypeInspectionAttempt inspect_type(
     if (*member >= members.size()) {
       return failure("type_member_value has no source member metadata");
     }
-    for (const EnumMemberValue &value : package.enum_member_values) {
+    for (const EnumMemberValue &value : package.enum_member_values_for_read()) {
       if (value.member == members[*member]) {
         return success(ConstantValue::make_integer(value.value), type.element);
       }

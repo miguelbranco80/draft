@@ -286,7 +286,8 @@ private:
     }
     const std::optional<SymbolId> owner = type_owner(type);
     if (!owner.has_value()) return result;
-    for (const AggregateMember &member : package_.aggregate_members) {
+    for (const AggregateMember &member :
+         package_.aggregate_members_for_read()) {
       if (member.owner != *owner) continue;
       const Symbol &symbol = package_.symbols.symbol(member.member);
       if (symbol.kind == SymbolKind::Field) {

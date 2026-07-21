@@ -176,8 +176,10 @@ bool publish_natural_layout_product(
     return false;
   }
 
+  const AppendOnlyTableView<AggregateMember> members =
+      package.aggregate_members_for_read();
   std::size_t member_count = 0;
-  for (const AggregateMember &member : package.aggregate_members) {
+  for (const AggregateMember &member : members) {
     if (member.owner == owner) ++member_count;
   }
   if (member_count != attempt.member_offsets.size()) {
@@ -187,10 +189,17 @@ bool publish_natural_layout_product(
     return false;
   }
 
+  // A body task may publish layout only for a nominal and member rows created
+  // in its own suffix. aggregate_member_mut enforces that retained declaration
+  // rows cannot be rewritten through the task view. Declaration scheduling
+  // calls this same operation on the canonical package before that boundary.
   std::size_t offset_index = 0;
-  for (AggregateMember &member : package.aggregate_members) {
+  for (std::size_t member_index = 0;
+       member_index < members.size(); ++member_index) {
+    const AggregateMember &member = members[member_index];
     if (member.owner != owner) continue;
-    member.offset = attempt.member_offsets[offset_index];
+    package.aggregate_member_mut(member_index).offset =
+        attempt.member_offsets[offset_index];
     ++offset_index;
   }
   package.types.publish_nominal_natural_layout(

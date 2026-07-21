@@ -162,6 +162,15 @@ void test_body_root_results_are_task_owned(TestState &state) {
   file.source = sources.add_source("package.draft", R"draft(
 package bodies
 
+Record :: struct {
+    value: i64,
+}
+
+Mode :: enum {
+    off,
+    on,
+}
+
 first :: proc() -> i64 {
     local: i64 = 20
     return local
@@ -192,6 +201,25 @@ second :: proc() -> i64 {
   EXPECT(state, work.next_work == 0);
   const std::size_t initial_symbols = work.package.symbols.symbol_count();
   const std::size_t initial_scopes = work.package.symbols.scope_count();
+  EXPECT(state, !work.package.aggregate_members.empty());
+  EXPECT(state, !work.package.enum_member_values.empty());
+
+  // Layout publication addresses the combined table by its global index, but
+  // a task may mutate only a row it appended. Prove that the explicit mapper
+  // reaches the local suffix without changing the retained prefix row.
+  draft::SemanticPackage member_view = work.package.fork_body_task_view();
+  const std::size_t retained_member_count = work.package.aggregate_members.size();
+  const std::uint64_t retained_offset =
+      work.package.aggregate_members.front().offset;
+  member_view.aggregate_members.push_back(
+      work.package.aggregate_members.front());
+  member_view.aggregate_member_mut(retained_member_count).offset =
+      retained_offset + 1;
+  EXPECT(state,
+         work.package.aggregate_members.front().offset == retained_offset);
+  EXPECT(state,
+         member_view.aggregate_members_for_read()[retained_member_count].offset ==
+             retained_offset + 1);
 
   draft::DiagnosticSink first_diagnostics;
   draft::ProcedureBodyTaskInput first_input =
@@ -206,6 +234,14 @@ second :: proc() -> i64 {
   EXPECT(state,
          first_input.package.owned_scopes_for_read().size() ==
              work.package.owned_scopes.size());
+  EXPECT(state, first_input.package.aggregate_members.empty());
+  EXPECT(state,
+         first_input.package.aggregate_members_for_read().size() ==
+             work.package.aggregate_members.size());
+  EXPECT(state, first_input.package.enum_member_values.empty());
+  EXPECT(state,
+         first_input.package.enum_member_values_for_read().size() ==
+             work.package.enum_member_values.size());
   EXPECT(state, first_input.package.parametric_parameters.empty());
   EXPECT(state,
          first_input.package.parametric_parameters_for_read().size() ==

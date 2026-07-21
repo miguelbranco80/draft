@@ -26,8 +26,6 @@ SemanticPackage::SemanticPackage(
       symbols(base.symbols.fork_append_only()),
       package_scope(base.package_scope),
       runtime_context_type(base.runtime_context_type),
-      aggregate_members(base.aggregate_members),
-      enum_member_values(base.enum_member_values),
       parametric_instances(base.parametric_instances),
       parametric_type_instances(base.parametric_type_instances),
       imported_symbols(base.imported_symbols),
@@ -87,6 +85,24 @@ SemanticPackage::owned_scopes_for_read() const {
       owned_scopes);
 }
 
+AppendOnlyTableView<AggregateMember>
+SemanticPackage::aggregate_members_for_read() const {
+  return AppendOnlyTableView<AggregateMember>(
+      body_read_prefix_ != nullptr
+          ? &body_read_prefix_->aggregate_members
+          : nullptr,
+      aggregate_members);
+}
+
+AppendOnlyTableView<EnumMemberValue>
+SemanticPackage::enum_member_values_for_read() const {
+  return AppendOnlyTableView<EnumMemberValue>(
+      body_read_prefix_ != nullptr
+          ? &body_read_prefix_->enum_member_values
+          : nullptr,
+      enum_member_values);
+}
+
 AppendOnlyTableView<ParametricParameterRecord>
 SemanticPackage::parametric_parameters_for_read() const {
   return AppendOnlyTableView<ParametricParameterRecord>(
@@ -103,6 +119,18 @@ SemanticPackage::static_argument_packs_for_read() const {
           ? &body_read_prefix_->static_argument_packs
           : nullptr,
       static_argument_packs);
+}
+
+AggregateMember &SemanticPackage::aggregate_member_mut(std::size_t index) {
+  if (body_read_prefix_ == nullptr) {
+    assert(index < aggregate_members.size());
+    return aggregate_members[index];
+  }
+
+  const std::size_t prefix_size = body_read_prefix_->aggregate_members.size();
+  assert(index >= prefix_size);
+  assert(index - prefix_size < aggregate_members.size());
+  return aggregate_members[index - prefix_size];
 }
 
 namespace {

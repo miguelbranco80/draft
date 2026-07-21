@@ -561,7 +561,8 @@ private:
   }
 
   [[nodiscard]] std::uint64_t member_offset(SymbolId member) const {
-    for (const AggregateMember &aggregate : package_.aggregate_members) {
+    for (const AggregateMember &aggregate :
+         package_.aggregate_members_for_read()) {
       if (aggregate.member == member) {
         return aggregate.offset;
       }
@@ -571,7 +572,8 @@ private:
 
   [[nodiscard]] const EnumMemberValue *enum_member_value(
       SymbolId member) const {
-    for (const EnumMemberValue &value : package_.enum_member_values) {
+    for (const EnumMemberValue &value :
+         package_.enum_member_values_for_read()) {
       if (value.member == member) return &value;
     }
     return nullptr;

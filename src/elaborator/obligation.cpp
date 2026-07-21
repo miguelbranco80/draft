@@ -1529,7 +1529,7 @@ imported_package_context(
   }
 
   std::vector<AggregateMember> members;
-  for (const AggregateMember &member : package.aggregate_members) {
+  for (const AggregateMember &member : package.aggregate_members_for_read()) {
     if (member.owner == record.anchor) members.push_back(member);
   }
   result.semantic_skeleton += "DECLARATION_MEMBERS ";
@@ -1945,7 +1945,7 @@ struct ActiveDenialContext {
       denies_all_context(denials)) {
     return result;
   }
-  for (const AggregateMember &member : package.aggregate_members) {
+  for (const AggregateMember &member : package.aggregate_members_for_read()) {
     const Symbol &owner = package.symbols.symbol(member.owner);
     if (owner.type != package.runtime_context_type) continue;
     const Symbol &field = package.symbols.symbol(member.member);

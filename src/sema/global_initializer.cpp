@@ -139,10 +139,12 @@ private:
 
   [[nodiscard]] std::optional<BigInteger> enum_value(
       TypeId type, std::string_view name) const {
-    for (const AggregateMember &member : package_.aggregate_members) {
+    for (const AggregateMember &member :
+         package_.aggregate_members_for_read()) {
       if (package_.symbols.symbol(member.owner).type != type) continue;
       if (package_.symbols.symbol(member.member).name != name) continue;
-      for (const EnumMemberValue &value : package_.enum_member_values) {
+      for (const EnumMemberValue &value :
+           package_.enum_member_values_for_read()) {
         if (value.member == member.member) return value.value;
       }
     }
@@ -161,7 +163,8 @@ private:
     }
     if (!owner.has_value()) return std::nullopt;
     std::size_t index = 0;
-    for (const AggregateMember &member : package_.aggregate_members) {
+    for (const AggregateMember &member :
+         package_.aggregate_members_for_read()) {
       if (member.owner != *owner) continue;
       if (package_.symbols.symbol(member.member).name == name) return index;
       ++index;

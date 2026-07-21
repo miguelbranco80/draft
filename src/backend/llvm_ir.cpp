@@ -2782,7 +2782,8 @@ private:
   }
 
   [[nodiscard]] std::string enum_value(SymbolId member) const {
-    for (const EnumMemberValue &entry : semantic_.enum_member_values) {
+    for (const EnumMemberValue &entry :
+         semantic_.enum_member_values_for_read()) {
       if (entry.member == member) return entry.value.to_decimal();
     }
     return "0";

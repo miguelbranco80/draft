@@ -504,12 +504,13 @@ private:
       // runtime storage, but it does not create a new enum value and the
       // wrapper owns no separate alternative table.
       MirValueId valid;
-      for (const AggregateMember &member : semantic_.aggregate_members) {
+      for (const AggregateMember &member :
+           semantic_.aggregate_members_for_read()) {
         const Symbol &owner = semantic_.symbols.symbol(member.owner);
         if (owner.type != target) continue;
         const EnumMemberValue *enum_value = nullptr;
         for (const EnumMemberValue &candidate :
-             semantic_.enum_member_values) {
+             semantic_.enum_member_values_for_read()) {
           if (candidate.member == member.member) {
             enum_value = &candidate;
             break;
@@ -678,7 +679,8 @@ private:
   [[nodiscard]] std::uint64_t member_offset(
       const HirExpression &expression) const {
     if (expression.symbol.is_valid()) {
-      for (const AggregateMember &member : semantic_.aggregate_members) {
+      for (const AggregateMember &member :
+           semantic_.aggregate_members_for_read()) {
         if (member.member == expression.symbol) return member.offset;
       }
     }
@@ -934,7 +936,8 @@ private:
     if (!alternative.is_valid()) return std::nullopt;
     const Symbol &member_symbol = semantic_.symbols.symbol(alternative);
     std::uint64_t discriminator = 0;
-    for (const AggregateMember &member : semantic_.aggregate_members) {
+    for (const AggregateMember &member :
+         semantic_.aggregate_members_for_read()) {
       const Symbol &candidate = semantic_.symbols.symbol(member.member);
       if (candidate.scope != member_symbol.scope) continue;
       if (member.member == alternative) return discriminator;
@@ -945,7 +948,8 @@ private:
 
   [[nodiscard]] std::optional<std::uint64_t> aggregate_member_offset(
       SymbolId member_id) const {
-    for (const AggregateMember &member : semantic_.aggregate_members) {
+    for (const AggregateMember &member :
+         semantic_.aggregate_members_for_read()) {
       if (member.member == member_id) return member.offset;
     }
     return std::nullopt;
@@ -971,7 +975,8 @@ private:
     const Type type = runtime_scalar_type(expression.type);
     if (index < expression.operand_members.size() &&
         expression.operand_members[index].is_valid()) {
-      for (const AggregateMember &member : semantic_.aggregate_members) {
+      for (const AggregateMember &member :
+           semantic_.aggregate_members_for_read()) {
         if (member.member == expression.operand_members[index]) return member.offset;
       }
     }

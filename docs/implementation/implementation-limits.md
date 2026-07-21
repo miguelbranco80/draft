@@ -44,10 +44,12 @@ edges; no package is rebuilt to publish their results.
 Procedure HIR and semantic append packets are now owned by exact live body
 products. Type, symbol, and constant prefixes use read-only overlays, and
 declaration-closed semantic inputs are direct immutable views. Owned scopes,
-parametric parameters, and static argument packs also use canonical-prefix and
-task-local-suffix views. Other body-mutable semantic side tables are still
-copied into each task view. Append IDs still require sequential exact-prefix
-publication rather than shared-wave remapping.
+aggregate members, enum values, parametric parameters, and static argument
+packs also use canonical-prefix and task-local-suffix views. Aggregate member
+offset mutation is explicitly restricted to a task's local suffix. Other
+body-mutable semantic side tables are still copied into each task view. Append
+IDs still require sequential exact-prefix publication rather than shared-wave
+remapping.
 Effect closure, denials, and MIR still consume a package-wide HIR compatibility
 projection. Those mechanisms are explicit remaining deletion work in the
 [semantic work graph implementation plan](semantic-work-graph-implementation-plan.md),

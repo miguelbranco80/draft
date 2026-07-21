@@ -157,11 +157,14 @@ scopes. `ConstantTable` likewise reads package constants through a canonical
 prefix and owns only lexical constants. Declaration-closed file scopes, imports,
 imported documentation, native bindings, and package conditional regions are
 also read directly from the retained prefix and have no body-output fields.
-Owned-scope, parametric-parameter, and static-argument-pack tables now expose
-the same canonical prefix followed by a task-owned suffix; their raw task
-vectors contain only rows created by that procedure. Other body-mutable
-semantic side tables remain value snapshots. The task returns only its appended
-types, scopes, symbols, body side-table rows, lexical constants, and local HIR.
+Owned-scope, aggregate-member, enum-value, parametric-parameter, and
+static-argument-pack tables now expose the same canonical prefix followed by a
+task-owned suffix; their raw task vectors contain only rows created by that
+procedure. Aggregate layout publication addresses the combined table by global
+index but has an explicit local-only mutable operation, so a task cannot rewrite
+a prefix member offset. Other body-mutable semantic side tables remain value
+snapshots. The task returns only its appended types, scopes, symbols, body
+side-table rows, lexical constants, and local HIR.
 Publication rejects a stale prefix and appends the packet in product order; it
 never replaces the package with a worker-owned successor. Existing type and
 symbol rows cannot be mutated through an overlay, which exposed and removed a

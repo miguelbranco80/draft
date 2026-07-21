@@ -2702,7 +2702,8 @@ private:
       data.offsets.push_back(0);
       if (pattern_type.kind == TypeKind::Enum) {
         std::optional<BigInteger> enum_value;
-        for (const EnumMemberValue &value : semantic_.enum_member_values) {
+        for (const EnumMemberValue &value :
+             semantic_.enum_member_values_for_read()) {
           if (value.member != template_member) continue;
           enum_value = value.value;
           break;
@@ -3035,7 +3036,8 @@ private:
     // append aggregate rows. Snapshot this template's stable IDs before that
     // recursive work so vector growth cannot invalidate the active row.
     std::vector<AggregateMember> template_members;
-    for (const AggregateMember &member : semantic_.aggregate_members) {
+    for (const AggregateMember &member :
+         semantic_.aggregate_members_for_read()) {
       if (member.owner == source) template_members.push_back(member);
     }
     for (const AggregateMember &member : template_members) {
@@ -3062,7 +3064,8 @@ private:
       data.offsets.push_back(0);
       if (template_type.kind == TypeKind::Enum) {
         std::optional<BigInteger> concrete_value;
-        for (const EnumMemberValue &value : semantic_.enum_member_values) {
+        for (const EnumMemberValue &value :
+             semantic_.enum_member_values_for_read()) {
           if (value.member == template_member) {
             concrete_value = value.value;
             break;
@@ -4173,7 +4176,8 @@ private:
       const std::optional<SymbolId> found =
           semantic_.symbols.lookup(scope, names.front().text);
       if (!found.has_value()) return std::nullopt;
-      for (const EnumMemberValue &value : semantic_.enum_member_values) {
+      for (const EnumMemberValue &value :
+           semantic_.enum_member_values_for_read()) {
         if (value.member == *found) return value.value;
       }
       return named_integer_constant(*found, names.front().range);
@@ -4953,7 +4957,8 @@ private:
       }
     } else {
       std::vector<SymbolId> published_members;
-      for (const AggregateMember &member : semantic_.aggregate_members) {
+      for (const AggregateMember &member :
+           semantic_.aggregate_members_for_read()) {
         if (member.owner == owner) {
           published_members.push_back(member.member);
         }
@@ -4986,9 +4991,10 @@ private:
           // exact offsets in both parallel representations.
           assert(layout.member_offsets.size() == data.symbols.size());
           const std::size_t first_member =
-              semantic_.aggregate_members.size() - data.symbols.size();
+              semantic_.aggregate_members_for_read().size() -
+              data.symbols.size();
           for (std::size_t index = 0; index < data.symbols.size(); ++index) {
-            semantic_.aggregate_members[first_member + index].offset =
+            semantic_.aggregate_member_mut(first_member + index).offset =
                 layout.member_offsets[index];
           }
           semantic_.types.publish_nominal_natural_layout(

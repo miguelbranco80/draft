@@ -1756,9 +1756,11 @@ private:
     }
     const std::optional<SymbolId> owner = aggregate_owner(type_id);
     if (!owner.has_value()) return false;
-    for (const AggregateMember &member : semantic_.aggregate_members) {
+    for (const AggregateMember &member :
+         semantic_.aggregate_members_for_read()) {
       if (member.owner != *owner) continue;
-      for (const EnumMemberValue &enumerator : semantic_.enum_member_values) {
+      for (const EnumMemberValue &enumerator :
+           semantic_.enum_member_values_for_read()) {
         if (enumerator.member == member.member &&
             enumerator.value.compare(value) == 0) {
           return true;
@@ -3087,7 +3089,8 @@ private:
     const std::optional<SymbolId> owner = aggregate_owner(type_id);
     if (!owner.has_value()) return std::nullopt;
     std::size_t index = 0;
-    for (const AggregateMember &member : semantic_.aggregate_members) {
+    for (const AggregateMember &member :
+         semantic_.aggregate_members_for_read()) {
       if (member.owner != *owner) continue;
       if (semantic_.symbols.symbol(member.member).name == name) return index;
       ++index;
@@ -3099,12 +3102,14 @@ private:
       TypeId type_id, std::string_view name) const {
     const std::optional<SymbolId> owner = aggregate_owner(type_id);
     if (!owner.has_value()) return std::nullopt;
-    for (const AggregateMember &member : semantic_.aggregate_members) {
+    for (const AggregateMember &member :
+         semantic_.aggregate_members_for_read()) {
       if (member.owner != *owner ||
           semantic_.symbols.symbol(member.member).name != name) {
         continue;
       }
-      for (const EnumMemberValue &value : semantic_.enum_member_values) {
+      for (const EnumMemberValue &value :
+           semantic_.enum_member_values_for_read()) {
         if (value.member == member.member) return value.value;
       }
     }

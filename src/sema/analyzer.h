@@ -748,10 +748,21 @@ struct SemanticPackage {
   // table in a canonical package.
   [[nodiscard]] AppendOnlyTableView<OwnedSemanticScope>
   owned_scopes_for_read() const;
+  [[nodiscard]] AppendOnlyTableView<AggregateMember>
+  aggregate_members_for_read() const;
+  [[nodiscard]] AppendOnlyTableView<EnumMemberValue>
+  enum_member_values_for_read() const;
   [[nodiscard]] AppendOnlyTableView<ParametricParameterRecord>
   parametric_parameters_for_read() const;
   [[nodiscard]] AppendOnlyTableView<StaticArgumentPack>
   static_argument_packs_for_read() const;
+
+  // Returns the aggregate-member row at one global table index for controlled
+  // layout publication. A canonical package may update any row whose layout is
+  // still waiting. A procedure task may update only its local suffix: touching
+  // a retained prefix row would violate the immutable body-input boundary and
+  // is therefore an internal invariant failure.
+  [[nodiscard]] AggregateMember &aggregate_member_mut(std::size_t index);
 
   std::string short_name;
   // Workspace identity is present for package-aware analysis and empty in

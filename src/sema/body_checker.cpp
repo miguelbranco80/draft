@@ -1809,9 +1809,11 @@ private:
     }
     const std::optional<SymbolId> owner = type_owner(target);
     if (!owner.has_value()) return false;
-    for (const AggregateMember &member : semantic_.aggregate_members) {
+    for (const AggregateMember &member :
+         semantic_.aggregate_members_for_read()) {
       if (member.owner != *owner) continue;
-      for (const EnumMemberValue &enum_value : semantic_.enum_member_values) {
+      for (const EnumMemberValue &enum_value :
+           semantic_.enum_member_values_for_read()) {
         if (enum_value.member == member.member &&
             value.compare(enum_value.value) == 0) {
           return true;
@@ -2456,7 +2458,8 @@ private:
       // Contextual enum syntax such as `.acquire` keeps its member identity in
       // HIR. Resolve that member's declared integer here; lowering never needs
       // to materialize the Order value because orders are compile-time only.
-      for (const EnumMemberValue &member : semantic_.enum_member_values) {
+      for (const EnumMemberValue &member :
+           semantic_.enum_member_values_for_read()) {
         if (member.member == expression.symbol) {
           integer = member.value;
           break;
@@ -2730,7 +2733,8 @@ private:
     const std::optional<SymbolId> owner = type_owner(union_type);
     if (!owner.has_value()) return std::nullopt;
     std::uint64_t discriminator = 0;
-    for (const AggregateMember &member : semantic_.aggregate_members) {
+    for (const AggregateMember &member :
+         semantic_.aggregate_members_for_read()) {
       if (member.owner != *owner) continue;
       if (member.member == alternative) return discriminator;
       ++discriminator;
@@ -2861,7 +2865,8 @@ private:
       TypeId enum_type, const ConstantValue &value) const {
     const std::optional<SymbolId> owner = type_owner(enum_type);
     if (!owner.has_value()) return std::nullopt;
-    for (const AggregateMember &member : semantic_.aggregate_members) {
+    for (const AggregateMember &member :
+         semantic_.aggregate_members_for_read()) {
       if (member.owner != *owner) continue;
       const ConstantValue *candidate = constants_.find(member.member);
       if (candidate != nullptr && *candidate == value) return member.member;
@@ -8069,7 +8074,8 @@ private:
           const std::optional<SymbolId> owner = type_owner(subject_type);
           if (owner.has_value()) {
             std::size_t alternative_count = 0;
-            for (const AggregateMember &member : semantic_.aggregate_members) {
+            for (const AggregateMember &member :
+                 semantic_.aggregate_members_for_read()) {
               if (member.owner == *owner) ++alternative_count;
             }
             statement.switch_is_exhaustive =
@@ -8404,8 +8410,9 @@ void append_body_root(
   prefix.scope_count = package.symbols.scope_count();
   prefix.symbol_count = package.symbols.symbol_count();
   prefix.owned_scope_count = package.owned_scopes_for_read().size();
-  prefix.aggregate_member_count = package.aggregate_members.size();
-  prefix.enum_member_value_count = package.enum_member_values.size();
+  prefix.aggregate_member_count = package.aggregate_members_for_read().size();
+  prefix.enum_member_value_count =
+      package.enum_member_values_for_read().size();
   prefix.parametric_parameter_count =
       package.parametric_parameters_for_read().size();
   prefix.static_argument_pack_count =
@@ -8466,14 +8473,12 @@ void append_body_suffix(
   appended.types = package.types.appended_since(prefix.type_count);
   appended.symbols = package.symbols.appended_since(
       prefix.scope_count, prefix.symbol_count);
-  // These three raw vectors already own only this task's suffix. Their
+  // These five raw vectors already own only this task's suffix. Their
   // canonical prefix is visible through AppendOnlyTableView and must not be
   // copied back into the append packet.
   appended.owned_scopes = package.owned_scopes;
-  appended.aggregate_members = copy_body_suffix(
-      package.aggregate_members, prefix.aggregate_member_count);
-  appended.enum_member_values = copy_body_suffix(
-      package.enum_member_values, prefix.enum_member_value_count);
+  appended.aggregate_members = package.aggregate_members;
+  appended.enum_member_values = package.enum_member_values;
   appended.parametric_parameters = package.parametric_parameters;
   appended.static_argument_packs = package.static_argument_packs;
   appended.parametric_instances = copy_body_suffix(

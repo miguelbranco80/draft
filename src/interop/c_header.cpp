@@ -163,7 +163,8 @@ private:
     std::vector<SymbolId> result;
     const std::optional<SymbolId> owner = owner_symbol(id);
     if (!owner.has_value()) return result;
-    for (const AggregateMember &member : semantic_.aggregate_members) {
+    for (const AggregateMember &member :
+         semantic_.aggregate_members_for_read()) {
       if (member.owner == *owner) result.push_back(member.member);
     }
     return result;
@@ -189,7 +190,8 @@ private:
   }
 
   [[nodiscard]] std::optional<BigInteger> enum_value(SymbolId member) const {
-    for (const EnumMemberValue &value : semantic_.enum_member_values) {
+    for (const EnumMemberValue &value :
+         semantic_.enum_member_values_for_read()) {
       if (value.member == member) return value.value;
     }
     return std::nullopt;

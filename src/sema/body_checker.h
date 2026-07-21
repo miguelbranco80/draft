@@ -181,12 +181,13 @@ struct ProcedureBodySemanticAppend {
 // non-owning bases live in PackageBodyWorkState. Declaration-closed files,
 // imports, imported documentation, native bindings, and conditional regions
 // are also read through that base and cannot appear in a body append packet.
-// Owned scopes, parametric-parameter metadata, and static argument packs expose
-// the same base followed by a task-owned suffix; other body-mutable semantic
-// side tables remain value snapshots until their product migrations remove
-// that transport. HIR is not an input: every task starts one new local arena.
-// work is the exact root, and next_instance partitions already published
-// concrete records from any suffix discovered by this task.
+// Owned scopes, aggregate/enum member metadata, parametric-parameter metadata,
+// and static argument packs expose the same base followed by a task-owned
+// suffix; other body-mutable semantic side tables remain value snapshots until
+// their product migrations remove that transport. HIR is not an input: every
+// task starts one new local arena. work is the exact root, and next_instance
+// partitions already published concrete records from any suffix discovered by
+// this task.
 struct ProcedureBodyTaskInput {
   bool valid = false;
   std::size_t work_index = 0;
