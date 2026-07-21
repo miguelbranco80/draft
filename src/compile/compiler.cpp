@@ -1302,6 +1302,12 @@ void invalidate_package_closure(
   if (result.semantic_products.package_by_product.size() !=
           result.semantic_graph.products.size() ||
       result.semantic_products.constant_by_product.size() !=
+          result.semantic_graph.products.size() ||
+      result.semantic_products.declaration_by_product.size() !=
+          result.semantic_graph.products.size() ||
+      result.semantic_products.type_by_product.size() !=
+          result.semantic_graph.products.size() ||
+      result.semantic_products.condition_by_product.size() !=
           result.semantic_graph.products.size()) {
     diagnostics.error(
         SourceRange::invalid(),
@@ -1323,6 +1329,9 @@ void invalidate_package_closure(
   }
   result.semantic_products.package_by_product.push_back(owner);
   result.semantic_products.constant_by_product.push_back({});
+  result.semantic_products.declaration_by_product.push_back({});
+  result.semantic_products.type_by_product.push_back({});
+  result.semantic_products.condition_by_product.push_back({});
   return product;
 }
 
@@ -1418,6 +1427,18 @@ void invalidate_package_closure(
     if (products.name_set.is_valid())
       superseded.push_back(products.name_set);
     superseded.insert(
+        superseded.end(),
+        products.declaration_types.begin(),
+        products.declaration_types.end());
+    superseded.insert(
+        superseded.end(),
+        products.natural_layouts.begin(),
+        products.natural_layouts.end());
+    superseded.insert(
+        superseded.end(),
+        products.conditions.begin(),
+        products.conditions.end());
+    superseded.insert(
         superseded.end(), products.constants.begin(), products.constants.end());
     if (products.opaque_synthesis_set.is_valid())
       superseded.push_back(products.opaque_synthesis_set);
@@ -1442,6 +1463,9 @@ void invalidate_package_closure(
       continue;
     PackageSemanticProducts &products =
         result.semantic_products.packages[package_index];
+    products.declaration_types.clear();
+    products.natural_layouts.clear();
+    products.conditions.clear();
     products.constants.clear();
     std::vector<SemanticProductId> dependencies;
     dependencies.push_back(result.semantic_products.target);

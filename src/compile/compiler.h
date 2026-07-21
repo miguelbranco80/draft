@@ -243,6 +243,16 @@ struct PackageSemanticProducts {
   std::vector<SemanticProductId> parsed_files;
   SemanticProductId imports;
   SemanticProductId name_set;
+  // One declaration-type row per package symbol whose signature or type must
+  // be completed. Nominal identities are eager; their row produces members and
+  // member types. Other rows produce TypeIdentity directly.
+  std::vector<SemanticProductId> declaration_types;
+  // One TypeNaturalLayout row per nominal aggregate identity. These products
+  // consume declaration_types and may add edges to other layout rows.
+  std::vector<SemanticProductId> natural_layouts;
+  // One compile-time branch-choice row per discovered package/member `when`.
+  // New selected syntax may append more rows before name_set closes.
+  std::vector<SemanticProductId> conditions;
   // One real ConstantValue product per final local Constant symbol, in stable
   // SymbolId order. Dependencies discovered by evaluation are graph edges;
   // this vector is only the typed package index used during publication.
@@ -270,6 +280,15 @@ struct WorkspaceSemanticProducts {
   // Parallel to SemanticProductGraph. Non-constant products contain an invalid
   // SymbolId; ConstantValue rows name their package-local root declaration.
   std::vector<SymbolId> constant_by_product;
+  // Parallel to SemanticProductGraph. Declaration type rows name their stable
+  // package symbol; other products contain an invalid SymbolId.
+  std::vector<SymbolId> declaration_by_product;
+  // Parallel to SemanticProductGraph. Type facet rows name their canonical
+  // command-local TypeId; other products contain an invalid TypeId.
+  std::vector<TypeId> type_by_product;
+  // Parallel to SemanticProductGraph. Conditional value rows name exact parsed
+  // syntax; other products contain an invalid SyntaxReference.
+  std::vector<SyntaxReference> condition_by_product;
 };
 
 struct CompileWorkspaceResult {

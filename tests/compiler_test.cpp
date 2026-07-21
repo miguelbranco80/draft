@@ -141,6 +141,15 @@ void test_named_constants_are_semantic_products(TestState &state) {
   EXPECT(state,
       compiled.semantic_products.constant_by_product.size() ==
           compiled.semantic_graph.products.size());
+  EXPECT(state,
+      compiled.semantic_products.declaration_by_product.size() ==
+          compiled.semantic_graph.products.size());
+  EXPECT(state,
+      compiled.semantic_products.type_by_product.size() ==
+          compiled.semantic_graph.products.size());
+  EXPECT(state,
+      compiled.semantic_products.condition_by_product.size() ==
+          compiled.semantic_graph.products.size());
   EXPECT(state, products.constants.size() == 3);
   std::optional<draft::SemanticProductId> base_product;
   std::optional<draft::SemanticProductId> derived_product;
