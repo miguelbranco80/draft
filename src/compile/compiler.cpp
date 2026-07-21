@@ -2062,16 +2062,16 @@ struct WorkspaceInterfaceTaskSlot {
             package.declaration_discovery.published_constants,
             CompileTimeSynthesisMode::Reject,
             slot.outcome.diagnostics);
-        if (slot.constant->status == ConstantProductStatus::Complete) {
+        if (slot.constant->status == CompileTimeProductStatus::Complete) {
           continue;
         }
         if (slot.constant->status ==
-            ConstantProductStatus::WaitingForSynthesis) {
+            CompileTimeProductStatus::WaitingForSynthesis) {
           slot.outcome.kind =
               SemanticProductOutcomeKind::WaitingForSynthesis;
           continue;
         }
-        if (slot.constant->status == ConstantProductStatus::Error) {
+        if (slot.constant->status == CompileTimeProductStatus::Error) {
           slot.outcome.kind = SemanticProductOutcomeKind::Error;
           slot.outcome.failure = "constant product evaluation failed";
           if (!slot.outcome.diagnostics.has_errors()) {
@@ -2234,7 +2234,7 @@ struct WorkspaceInterfaceTaskSlot {
          ++task_index) {
       WorkspaceInterfaceTaskSlot &slot = slots[task_index];
       if (!slot.constant.has_value() ||
-          slot.constant->status != ConstantProductStatus::Complete ||
+          slot.constant->status != CompileTimeProductStatus::Complete ||
           slot.outcome.kind != SemanticProductOutcomeKind::Complete ||
           !slot.constant->result.has_value() ||
           !slot.constant_package.has_value()) {

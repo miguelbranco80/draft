@@ -154,7 +154,8 @@ public:
       const std::vector<ConstantStaticPackBinding> *local_packs = nullptr,
       SymbolId product_root = {},
       const ConstantTable *published_constants = nullptr,
-      bool published_only = false)
+      bool published_only = false,
+      bool record_product_dependencies = false)
       : sources_(sources), loaded_(loaded), semantic_(semantic), target_(target),
         synthesis_mode_(synthesis_mode), diagnose_unready_(diagnose_unready),
         diagnostics_(diagnostics),
@@ -163,7 +164,8 @@ public:
         states_(semantic.symbols.symbol_count(), BindingState::Unvisited),
         values_(semantic.symbols.symbol_count()), product_root_(product_root),
         published_constants_(published_constants),
-        published_only_(published_only) {}
+        published_only_(published_only),
+        record_product_dependencies_(record_product_dependencies) {}
 
   // Runs one graph-owned constant without recursively claiming another local
   // constant's result. Dependency rows are canonicalized before returning so
@@ -172,6 +174,109 @@ public:
     ConstantProductAttempt attempt;
     const EvalResult evaluated = evaluate_binding(root, true);
     attempt.compile_time_procedures = compile_time_procedures_;
+    canonicalize_product_dependencies();
+    attempt.constant_dependencies = constant_dependencies_;
+    attempt.type_dependencies = type_dependencies_;
+
+    if (!attempt.constant_dependencies.empty() ||
+        !attempt.type_dependencies.empty()) {
+      attempt.status = CompileTimeProductStatus::Blocked;
+      return attempt;
+    }
+    if (evaluated.status == EvalStatus::BlockedBySynthesis) {
+      attempt.status = CompileTimeProductStatus::WaitingForSynthesis;
+      return attempt;
+    }
+    if (evaluated.status == EvalStatus::Ready) {
+      attempt.status = CompileTimeProductStatus::Complete;
+      attempt.result = EvaluatedConstant{evaluated.value, evaluated.type};
+      return attempt;
+    }
+    if (evaluated.status == EvalStatus::Pending && root.is_valid() &&
+        static_cast<std::size_t>(root.value) <
+            semantic_.symbols.symbol_count()) {
+      const Symbol &symbol = semantic_.symbols.symbol(root);
+      diagnostics_.error(
+          symbol.name_range,
+          "constant '" + symbol.name + "' is not compile-time evaluable");
+    }
+    attempt.status = CompileTimeProductStatus::Error;
+    return attempt;
+  }
+
+  // Runs one declaration/member condition without mutating the caller's
+  // ConditionalSelections. The site already owns the lexical scope established
+  // by declaration collection or aggregate-member discovery.
+  [[nodiscard]] ConditionalProductAttempt run_condition(
+      const SemanticSite &site) {
+    ConditionalProductAttempt attempt;
+    if (site.kind != SemanticSiteKind::ConditionalDeclaration &&
+        site.kind != SemanticSiteKind::ConditionalMember) {
+      diagnostics_.error(
+          SourceRange::invalid(),
+          "conditional product does not name a declaration or member 'when'");
+      return attempt;
+    }
+    const SyntaxTree *tree = find_tree(site.syntax.file);
+    if (tree == nullptr || !site.syntax.node.is_valid()) {
+      diagnostics_.error(
+          SourceRange::invalid(),
+          "conditional product has no parsed source site");
+      return attempt;
+    }
+    const SyntaxNode &when = tree->node(site.syntax.node);
+    if (when.children.empty()) {
+      diagnostics_.error(when.range, "compile-time 'when' has no condition");
+      return attempt;
+    }
+    const ScopeId condition_scope =
+        site.kind == SemanticSiteKind::ConditionalDeclaration &&
+            site.scope == semantic_.package_scope
+        ? file_scope(site.syntax.file)
+        : site.scope;
+    const EvalResult evaluated = evaluate_expression(
+        *tree,
+        when.children.front(),
+        condition_scope,
+        true,
+        semantic_.types.builtins().bool_type);
+    attempt.compile_time_procedures = compile_time_procedures_;
+    canonicalize_product_dependencies();
+    attempt.constant_dependencies = constant_dependencies_;
+    attempt.type_dependencies = type_dependencies_;
+    if (!attempt.constant_dependencies.empty() ||
+        !attempt.type_dependencies.empty()) {
+      attempt.status = CompileTimeProductStatus::Blocked;
+      return attempt;
+    }
+    if (evaluated.status == EvalStatus::BlockedBySynthesis) {
+      attempt.status = CompileTimeProductStatus::WaitingForSynthesis;
+      return attempt;
+    }
+    if (evaluated.status == EvalStatus::Ready &&
+        evaluated.value.kind == ConstantKind::Bool) {
+      attempt.status = CompileTimeProductStatus::Complete;
+      attempt.selected_true = evaluated.value.boolean;
+      return attempt;
+    }
+    if (evaluated.status == EvalStatus::Pending) {
+      diagnostics_.error(
+          tree->node(when.children.front()).range,
+          "compile-time 'when' condition is not a ready constant");
+    } else if (evaluated.status == EvalStatus::Ready) {
+      diagnostics_.error(
+          tree->node(when.children.front()).range,
+          "compile-time 'when' condition must have type bool");
+    }
+    attempt.status = CompileTimeProductStatus::Error;
+    return attempt;
+  }
+
+private:
+  // Product dependency discovery follows expression traversal order. Sort and
+  // deduplicate before returning so the coordinator sees one canonical blocker
+  // packet regardless of repeated references in the condition or initializer.
+  void canonicalize_product_dependencies() {
     std::sort(
         constant_dependencies_.begin(), constant_dependencies_.end(),
         [](SymbolId left, SymbolId right) { return left.value < right.value; });
@@ -189,35 +294,9 @@ public:
     type_dependencies_.erase(
         std::unique(type_dependencies_.begin(), type_dependencies_.end()),
         type_dependencies_.end());
-    attempt.constant_dependencies = constant_dependencies_;
-    attempt.type_dependencies = type_dependencies_;
-
-    if (!attempt.constant_dependencies.empty() ||
-        !attempt.type_dependencies.empty()) {
-      attempt.status = ConstantProductStatus::Blocked;
-      return attempt;
-    }
-    if (evaluated.status == EvalStatus::BlockedBySynthesis) {
-      attempt.status = ConstantProductStatus::WaitingForSynthesis;
-      return attempt;
-    }
-    if (evaluated.status == EvalStatus::Ready) {
-      attempt.status = ConstantProductStatus::Complete;
-      attempt.result = EvaluatedConstant{evaluated.value, evaluated.type};
-      return attempt;
-    }
-    if (evaluated.status == EvalStatus::Pending && root.is_valid() &&
-        static_cast<std::size_t>(root.value) <
-            semantic_.symbols.symbol_count()) {
-      const Symbol &symbol = semantic_.symbols.symbol(root);
-      diagnostics_.error(
-          symbol.name_range,
-          "constant '" + symbol.name + "' is not compile-time evaluable");
-    }
-    attempt.status = ConstantProductStatus::Error;
-    return attempt;
   }
 
+public:
   // Evaluates each pending declaration conditional in source/site order. A
   // newly selected false branch may reveal a nested `else when` only in the next
   // rebuilt semantic round, exactly matching staged declaration visibility.
@@ -4818,7 +4897,7 @@ private:
       state = BindingState::Pending;
       return pending();
     }
-    if (product_root_.is_valid() && id != product_root_ &&
+    if (record_product_dependencies_ && id != product_root_ &&
         (initial.kind == SymbolKind::Constant ||
          initial.kind == SymbolKind::UnresolvedDeclaration)) {
       if (published_constants_ != nullptr) {
@@ -5683,6 +5762,9 @@ private:
   SymbolId product_root_;
   const ConstantTable *published_constants_ = nullptr;
   bool published_only_ = false;
+  // True for single-product evaluation. An invalid product_root means every
+  // local constant is a dependency, as required by a conditional expression.
+  bool record_product_dependencies_ = false;
   std::vector<SymbolId> constant_dependencies_;
   std::vector<ConstantTypeFacetDependency> type_dependencies_;
   std::vector<LocalFrame> local_frames_;
@@ -5878,8 +5960,37 @@ ConstantProductAttempt evaluate_package_constant_product(
       nullptr,
       nullptr,
       root,
-      &published_constants);
+      &published_constants,
+      false,
+      true);
   return evaluator.run_product(root);
+}
+
+ConditionalProductAttempt evaluate_conditional_product(
+    const SourceManager &sources,
+    const LoadedPackage &loaded,
+    SemanticPackage &task_package,
+    const TargetFacts &target,
+    const SemanticSite &site,
+    const ConstantTable &published_constants,
+    CompileTimeSynthesisMode synthesis_mode,
+    DiagnosticSink &diagnostics) {
+  ConstantEvaluator evaluator(
+      sources,
+      loaded,
+      task_package,
+      target,
+      synthesis_mode,
+      true,
+      diagnostics,
+      &published_constants,
+      nullptr,
+      nullptr,
+      {},
+      &published_constants,
+      false,
+      true);
+  return evaluator.run_condition(site);
 }
 
 std::optional<ConstantValue> evaluate_constant_expression(

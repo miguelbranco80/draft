@@ -68,6 +68,13 @@ Ready constants imported through dependency interfaces are not duplicated as
 consumer products. The finalizer copies their already translated values under
 the consumer-local proxy IDs before body checking and validation context use.
 
+Declaration/member conditional evaluation has the corresponding single-product
+producer contract. It evaluates exactly one retained `when` site, never appends
+a selection, and returns either the boolean choice, canonical local-constant
+and type-facet blockers, an unresolved-synthesis wait, or a source diagnostic.
+The package fixed-point caller still owns branch scheduling until this producer
+is connected to the command graph.
+
 ## Compile-time type values and inspection
 
 Status: exact type values and the complete Draft 1 structural query vocabulary

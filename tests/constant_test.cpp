@@ -114,7 +114,7 @@ Header_Size :: size_of(Header)
           published,
           draft::CompileTimeSynthesisMode::Reject,
           blocked_diagnostics);
-  EXPECT(state, blocked.status == draft::ConstantProductStatus::Blocked);
+  EXPECT(state, blocked.status == draft::CompileTimeProductStatus::Blocked);
   EXPECT(state,
       blocked.constant_dependencies == std::vector<draft::SymbolId>({*base}));
   EXPECT(state, blocked.type_dependencies.empty());
@@ -132,7 +132,7 @@ Header_Size :: size_of(Header)
           published,
           draft::CompileTimeSynthesisMode::Reject,
           base_diagnostics);
-  EXPECT(state, base_result.status == draft::ConstantProductStatus::Complete);
+  EXPECT(state, base_result.status == draft::CompileTimeProductStatus::Complete);
   EXPECT(state, base_result.result.has_value());
   if (!base_result.result.has_value()) return;
   published.bindings.push_back({*base, base_result.result->value});
@@ -149,7 +149,7 @@ Header_Size :: size_of(Header)
           published,
           draft::CompileTimeSynthesisMode::Reject,
           ready_diagnostics);
-  EXPECT(state, ready.status == draft::ConstantProductStatus::Complete);
+  EXPECT(state, ready.status == draft::CompileTimeProductStatus::Complete);
   EXPECT(state, ready.result.has_value());
   if (ready.result.has_value()) {
     EXPECT(state,
@@ -176,7 +176,7 @@ Header_Size :: size_of(Header)
           published,
           draft::CompileTimeSynthesisMode::Reject,
           layout_diagnostics);
-  EXPECT(state, layout.status == draft::ConstantProductStatus::Blocked);
+  EXPECT(state, layout.status == draft::CompileTimeProductStatus::Blocked);
   EXPECT(state, layout.constant_dependencies.empty());
   EXPECT(state,
       layout.type_dependencies ==
@@ -184,6 +184,165 @@ Header_Size :: size_of(Header)
               {waiting_type, draft::TypeFacet::NaturalLayout},
           }));
   EXPECT(state, !layout_diagnostics.has_errors());
+}
+
+// One conditional producer must expose the same dependency vocabulary as a
+// named constant without selecting or materializing its branch. This covers a
+// local constant edge, an exact natural-layout facet, and a provider wait.
+void test_single_conditional_product_dependencies(TestState &state) {
+  AnalyzedSource source(R"draft(
+package conditions
+
+Gate :: true
+Header :: struct {
+    tag: u8,
+    value: u64,
+}
+
+when Gate {
+    Enabled :: 1
+}
+
+when size_of(Header) == 16 {
+    Sized :: 1
+}
+)draft");
+  EXPECT(state, source.analysis.ok);
+  const std::optional<draft::SymbolId> gate =
+      find_symbol(source.analysis.package, "Gate");
+  const std::optional<draft::SymbolId> header =
+      find_symbol(source.analysis.package, "Header");
+  EXPECT(state, gate.has_value());
+  EXPECT(state, header.has_value());
+  if (!gate || !header) return;
+
+  std::vector<draft::SemanticSite> conditions;
+  for (const draft::SemanticSite &site : source.analysis.package.sites) {
+    if (site.kind == draft::SemanticSiteKind::ConditionalDeclaration) {
+      conditions.push_back(site);
+    }
+  }
+  EXPECT(state, conditions.size() == 2);
+  if (conditions.size() != 2) return;
+
+  draft::ConstantTable published;
+  draft::SemanticPackage blocked_package = source.analysis.package;
+  draft::DiagnosticSink blocked_diagnostics;
+  const draft::ConditionalProductAttempt blocked =
+      draft::evaluate_conditional_product(
+          source.sources,
+          source.loaded,
+          blocked_package,
+          test_target(),
+          conditions[0],
+          published,
+          draft::CompileTimeSynthesisMode::Reject,
+          blocked_diagnostics);
+  EXPECT(state, blocked.status == draft::CompileTimeProductStatus::Blocked);
+  EXPECT(state,
+      blocked.constant_dependencies == std::vector<draft::SymbolId>({*gate}));
+  EXPECT(state, blocked.type_dependencies.empty());
+  EXPECT(state, !blocked_diagnostics.has_errors());
+
+  const draft::ConstantValue *gate_value =
+      source.analysis.constants.find(*gate);
+  EXPECT(state, gate_value != nullptr);
+  if (gate_value == nullptr) return;
+  published.bindings.push_back({*gate, *gate_value});
+  draft::SemanticPackage ready_package = source.analysis.package;
+  draft::DiagnosticSink ready_diagnostics;
+  const draft::ConditionalProductAttempt ready =
+      draft::evaluate_conditional_product(
+          source.sources,
+          source.loaded,
+          ready_package,
+          test_target(),
+          conditions[0],
+          published,
+          draft::CompileTimeSynthesisMode::Reject,
+          ready_diagnostics);
+  EXPECT(state, ready.status == draft::CompileTimeProductStatus::Complete);
+  EXPECT(state, ready.selected_true);
+  EXPECT(state, !ready_diagnostics.has_errors());
+
+  draft::SemanticPackage layout_package = source.analysis.package;
+  const draft::TypeId waiting_type = layout_package.types.begin_nominal(
+      draft::TypeKind::Struct,
+      "Waiting_Header",
+      draft::SourceRange::invalid());
+  layout_package.symbols.symbol_mut(*header).type = waiting_type;
+  draft::DiagnosticSink layout_diagnostics;
+  const draft::ConditionalProductAttempt layout =
+      draft::evaluate_conditional_product(
+          source.sources,
+          source.loaded,
+          layout_package,
+          test_target(),
+          conditions[1],
+          published,
+          draft::CompileTimeSynthesisMode::Reject,
+          layout_diagnostics);
+  EXPECT(state, layout.status == draft::CompileTimeProductStatus::Blocked);
+  EXPECT(state, layout.constant_dependencies.empty());
+  EXPECT(state,
+      layout.type_dependencies ==
+          std::vector<draft::ConstantTypeFacetDependency>({
+              {waiting_type, draft::TypeFacet::NaturalLayout},
+          }));
+  EXPECT(state, !layout_diagnostics.has_errors());
+
+  draft::SourceManager synthesis_sources;
+  draft::DiagnosticSink synthesis_diagnostics;
+  draft::LoadedPackage synthesis_loaded;
+  synthesis_loaded.short_name = "conditions";
+  draft::LoadedPackageFile synthesis_file;
+  synthesis_file.kind = draft::PackageFileKind::DraftSource;
+  synthesis_file.relative_name = "package.draft";
+  synthesis_file.source = synthesis_sources.add_source(
+      "package.draft",
+      "package conditions\n"
+      "when ... \"Select the true branch\" {\n"
+      "    Selected :: 1\n"
+      "}\n");
+  synthesis_file.syntax.emplace(draft::parse_source_file(
+      synthesis_sources,
+      synthesis_file.source,
+      synthesis_diagnostics));
+  synthesis_loaded.files.push_back(std::move(synthesis_file));
+  draft::AvailablePackageImports no_imports;
+  const draft::PackageDeclarationDiscovery discovery =
+      draft::discover_package_declarations(
+          synthesis_sources,
+          synthesis_loaded,
+          test_target(),
+          no_imports,
+          draft::CompileTimeSynthesisMode::Discover,
+          synthesis_diagnostics);
+  EXPECT(state, discovery.terminal);
+  const draft::SemanticSite *synthesis_condition = nullptr;
+  for (const draft::SemanticSite &site : discovery.package.sites) {
+    if (site.kind == draft::SemanticSiteKind::ConditionalDeclaration) {
+      synthesis_condition = &site;
+      break;
+    }
+  }
+  EXPECT(state, synthesis_condition != nullptr);
+  if (synthesis_condition == nullptr) return;
+  draft::SemanticPackage synthesis_package = discovery.package;
+  draft::DiagnosticSink task_diagnostics;
+  const draft::ConditionalProductAttempt waiting =
+      draft::evaluate_conditional_product(
+          synthesis_sources,
+          synthesis_loaded,
+          synthesis_package,
+          test_target(),
+          *synthesis_condition,
+          {},
+          draft::CompileTimeSynthesisMode::Discover,
+          task_diagnostics);
+  EXPECT(state,
+      waiting.status == draft::CompileTimeProductStatus::WaitingForSynthesis);
+  EXPECT(state, !task_diagnostics.has_errors());
 }
 
 void test_constants_and_conditional_rounds(TestState &state) {
@@ -2385,6 +2544,7 @@ when false && target.has_feature(42) &&
 int main() {
   TestState state;
   test_single_constant_product_dependencies(state);
+  test_single_conditional_product_dependencies(state);
   test_constants_and_conditional_rounds(state);
   test_invalid_required_constants(state);
   test_invalid_procedural_constants(state);

@@ -4,8 +4,9 @@
 // This module is the first executable part of Draft's staged semantic dependency
 // graph. It evaluates source expressions only when every referenced input is
 // available, records successfully computed constants by stable SymbolId, and
-// appends deterministic branch decisions without mutating syntax. The caller may
-// then rebuild declaration collection with those decisions and repeat.
+// appends deterministic branch decisions without mutating syntax. A
+// single-product entry point instead returns exact blockers and leaves branch
+// publication to the semantic graph coordinator.
 //
 // The current value representation covers booleans, arbitrary-precision
 // integers, exact decimal rationals, strings, typed categorical target values,
@@ -100,7 +101,10 @@ struct ConstantTypeFacetDependency {
   bool operator==(const ConstantTypeFacetDependency &) const = default;
 };
 
-enum class ConstantProductStatus {
+// The common terminal/wait vocabulary for one independently scheduled
+// compile-time value or branch choice. Blocked always carries explicit graph
+// prerequisites; WaitingForSynthesis is the sole provider suspension state.
+enum class CompileTimeProductStatus {
   Complete,
   Blocked,
   WaitingForSynthesis,
@@ -114,8 +118,21 @@ enum class ConstantProductStatus {
 // exact type facets; Error has already emitted a source diagnostic into the
 // caller-owned task sink.
 struct ConstantProductAttempt {
-  ConstantProductStatus status = ConstantProductStatus::Error;
+  CompileTimeProductStatus status = CompileTimeProductStatus::Error;
   std::optional<EvaluatedConstant> result;
+  std::vector<SymbolId> constant_dependencies;
+  std::vector<ConstantTypeFacetDependency> type_dependencies;
+  std::vector<SymbolId> compile_time_procedures;
+};
+
+// ConditionalProductAttempt is the task-owned result for one package or member
+// `when` site. Complete publishes selected_true. Blocked names every local
+// ConstantValue and exact type facet required by the condition. Waiting does
+// not select either branch, and Error has already emitted the source-located
+// condition diagnostic into the task sink.
+struct ConditionalProductAttempt {
+  CompileTimeProductStatus status = CompileTimeProductStatus::Error;
+  bool selected_true = false;
   std::vector<SymbolId> constant_dependencies;
   std::vector<ConstantTypeFacetDependency> type_dependencies;
   std::vector<SymbolId> compile_time_procedures;
@@ -213,6 +230,20 @@ struct CompileTimeExpressionDiscoveryResult {
     SemanticPackage &task_package,
     const TargetFacts &target,
     SymbolId root,
+    const ConstantTable &published_constants,
+    CompileTimeSynthesisMode synthesis_mode,
+    DiagnosticSink &diagnostics);
+
+// Evaluates exactly one declaration/member `when` condition against published
+// local constants and ready imported-interface values. It neither appends a
+// ConditionalSelection nor materializes a branch. Missing local constants and
+// type facets become explicit task blockers instead of recursive evaluation.
+[[nodiscard]] ConditionalProductAttempt evaluate_conditional_product(
+    const SourceManager &sources,
+    const LoadedPackage &loaded,
+    SemanticPackage &task_package,
+    const TargetFacts &target,
+    const SemanticSite &site,
     const ConstantTable &published_constants,
     CompileTimeSynthesisMode synthesis_mode,
     DiagnosticSink &diagnostics);

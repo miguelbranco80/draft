@@ -51,8 +51,10 @@ gate.
    coordinator-owned structural-type interning, and an interface barrier that
    consumes published local values without recomputation. Ready imported
    constants remain upstream interface inputs and are copied to consumer-local
-   proxy bindings at finalization. The remaining declaration
-   work is to productize conditional discovery and type/member/layout facets,
+   proxy bindings at finalization. A one-site conditional producer now returns
+   a boolean selection or exact constant/type-facet/synthesis blockers without
+   mutating the branch table. The remaining declaration work is to connect that
+   producer to dynamic branch discovery, productize type/member/layout facets,
    extend the same path through interface-synthesis waits, and then delete the
    private readiness attempts and aggregate compatibility composition.
 
