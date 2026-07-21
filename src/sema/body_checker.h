@@ -27,23 +27,34 @@
 
 namespace draft {
 
+// ProcedureBodyHirResult permanently owns the typed HIR arena produced by one
+// exact authored/template/instance root. HIR-local IDs begin at zero in every
+// row and never address another row. Semantic IDs address the package generation
+// in the containing BodyCheckResult. ok mirrors that root's recoverable validity;
+// an invalid row remains available for diagnostics but cannot reach lowering.
+struct ProcedureBodyHirResult {
+  bool ok = false;
+  SymbolId symbol;
+  HirProgram program;
+};
+
 // BodyCheckResult owns the complete body-derived semantic state for one
 // package. package and constants begin as copies of the declaration phase's
 // stable baseline, then receive lexical scopes, local symbols, concrete
 // procedure instances, body agent sites, denials, and lexical compile-time
-// values while program is constructed. Keeping those mutations beside HIR is
-// the phase boundary: declaration semantics remain immutable and may be reused
-// by another source generation or demand set without truncating append-only
-// tables or replaying a checker over already-enriched state.
+// values. Each exact root permanently owns its HIR in procedures.
 //
-// Every SymbolId and TypeId in program addresses package in this same result.
-// constants likewise addresses those body-owned symbols. The three values must
-// therefore move and live together; none may be paired with a declaration
-// baseline or a result from another body check.
+// program is a deterministic compatibility projection built once by offsetting
+// and concatenating those procedure-local arenas. Effects, denials, and MIR
+// consume it until their own product migrations complete; body workers never
+// append into it. Every SymbolId and TypeId in either representation addresses
+// package in this same result, and constants addresses those body-owned symbols.
+// These values must therefore move and live together.
 struct BodyCheckResult {
   bool ok = false;
   SemanticPackage package;
   ConstantTable constants;
+  std::vector<ProcedureBodyHirResult> procedures;
   HirProgram program;
   // Number of exact authored/template/instance roots which produced a
   // HirProcedure row. Nested procedures are roots in their own right; foreign
@@ -99,10 +110,11 @@ struct ProcedureBodyWorkItem {
 };
 
 // ProcedureBodyTaskInput transfers exclusive ownership of the current
-// sequential publication prefix to one worker. Moving rather than copying the
-// package, constants, and HIR keeps this transitional oracle linear in body
-// state size. work is the exact root and next_instance partitions already
-// published concrete records from any suffix discovered by this task.
+// sequential semantic publication prefix to one worker. Moving rather than
+// copying the package and constants keeps this transitional oracle linear in
+// semantic state size. HIR is not an input: every task starts one new local
+// arena. work is the exact root and next_instance partitions already published
+// concrete records from any suffix discovered by this task.
 struct ProcedureBodyTaskInput {
   bool valid = false;
   std::size_t work_index = 0;
@@ -110,21 +122,21 @@ struct ProcedureBodyTaskInput {
   std::size_t next_instance = 0;
   SemanticPackage package;
   ConstantTable constants;
-  HirProgram program;
 };
 
-// ProcedureBodyTaskResult is one worker-owned body attempt. package, constants,
-// and program are the successor to the exclusively owned prefix supplied in
-// ProcedureBodyTaskInput; the worker never aliases PackageBodyWorkState.
-// discovered_work contains nested procedures and concrete instances found by
-// this root. work_index ties the result to the exact state row it consumed,
-// while next_instance records the published ParametricInstanceRecord prefix.
+// ProcedureBodyTaskResult is one worker-owned body attempt. package and
+// constants are the successor to the exclusively owned prefix supplied in
+// ProcedureBodyTaskInput; program is this root's new local HIR arena. The
+// worker never aliases PackageBodyWorkState. discovered_work contains nested
+// procedures and concrete instances found by this root. work_index ties the
+// result to the exact state row it consumed, while next_instance records the
+// published ParametricInstanceRecord prefix.
 //
-// This full-successor representation is intentionally simple and correct. The
-// procedure-local arena migration will narrow the payload after its ID domains
-// and deterministic interning boundary are explicit; callers must not infer
-// that unrelated package state is semantically owned by the procedure merely
-// because it travels through this temporary ownership packet.
+// This full semantic successor is intentionally simple and correct. A later
+// procedure-local semantic arena will narrow package and constants after their
+// ID domains and deterministic interning boundary are explicit; callers must
+// not infer that unrelated package state is semantically owned by the
+// procedure merely because it travels through this temporary packet.
 struct ProcedureBodyTaskResult {
   bool ok = false;
   std::size_t work_index = 0;
@@ -133,15 +145,17 @@ struct ProcedureBodyTaskResult {
   std::size_t next_instance = 0;
   SemanticPackage package;
   ConstantTable constants;
+  // One local arena containing only this root's recoverable HIR.
   HirProgram program;
   std::vector<ProcedureBodyWorkItem> discovered_work;
 };
 
 // PackageBodyWorkState is the explicit sequential publication oracle for body
 // products. It owns the current append-only package prefix, lexical constants,
-// HIR, and the dynamic work list. `next_work` partitions completed work from the
-// current ready suffix. Publishing one task may append nested procedures and
-// concrete specializations to that suffix, but no task checks them recursively.
+// already published procedure-local HIR results, and the dynamic work list.
+// `next_work` partitions completed work from the current ready suffix.
+// Publishing one task may append nested procedures and concrete specializations
+// to that suffix, but no task checks them recursively.
 //
 // The state is deliberately public phase data rather than a callback-driven
 // executor: workspace orchestration freezes product waves, invokes one exact
@@ -155,7 +169,7 @@ struct PackageBodyWorkState {
   bool ok = false;
   SemanticPackage package;
   ConstantTable constants;
-  HirProgram program;
+  std::vector<ProcedureBodyHirResult> procedures;
   std::vector<ProcedureBodyWorkItem> work;
   std::size_t next_work = 0;
   std::size_t next_instance = 0;

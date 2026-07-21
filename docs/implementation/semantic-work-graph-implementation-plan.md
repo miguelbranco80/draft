@@ -147,15 +147,20 @@ gate.
    `PackageBodyWorkState` and returns a `ProcedureBodyTaskResult` which only the
    coordinator can validate and adopt. Moving the prefix avoids a full-package
    copy per root. A focused test proves the work cursor cannot advance before
-   publication and that one exact task owns the semantic/HIR payload in flight.
+   publication and that one exact task owns the semantic payload in flight.
+
+   HIR ownership is now product-local: every exact root starts an empty arena,
+   publishes one permanent `ProcedureBodyHirResult`, and never receives earlier
+   HIR as input. Package-wide consumers temporarily receive one deterministic
+   ID-rewritten projection built after all roots finish.
 
    The remaining split is substantive: each task-owned result is still a full
-   package/constants/HIR successor, and the sequential oracle adopts one before
-   invoking the next root. The consumer-first external-demand loop,
-   body work key, and extension/rebuild paths therefore remain. Replace that
-   transport snapshot with a procedure-local arena and deterministic canonical
-   publication, then delete those retained-package paths before this step can
-   close or parallel workers can begin.
+   package/constants successor, and the sequential oracle adopts one before
+   invoking the next root. The consumer-first external-demand loop, body work
+   key, and extension/rebuild paths therefore remain. Replace the semantic
+   transport snapshot with procedure-local discoveries and deterministic
+   canonical publication, then delete those retained-package paths before this
+   step can close or parallel workers can begin.
 
 6. **Synthesis as an explicit wait state.** A body or declaration task may
    report its exact ready `...` set after producing the typed constraint needed

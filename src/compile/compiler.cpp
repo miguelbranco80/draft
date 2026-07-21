@@ -3895,10 +3895,11 @@ bool continue_compiled_workspace_semantics(
   // Phase 2: advance the deterministic body work graph from consumers toward
   // dependencies. Each package work key is its declaration generation plus
   // the canonical externally requested generic set. An equal key reuses the
-  // complete body-owned semantic graph and HIR. A changed key starts from the
-  // immutable declaration baseline; no checker ever re-enters retained body
-  // state. Portable demands cross package TypeStore boundaries and are
-  // materialized only inside the owner's new body generation.
+  // complete body-owned semantic graph and procedure-local HIR arenas. A
+  // changed key starts from the immutable declaration baseline; no checker ever
+  // re-enters retained body state. Portable demands cross package TypeStore
+  // boundaries and are materialized only inside the owner's new body
+  // generation.
   std::vector<std::vector<ProcedureInstantiationDemand>> demands(
       result.graph.packages.size());
   TimingScope body_timing = options.timings != nullptr

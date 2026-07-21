@@ -312,10 +312,12 @@ direct Discover-mode entry point retains the aggregate compatibility
 composition during migration.
 
 Body checking never appends to that retained value. It copies the declaration
-prefix and returns the enriched SemanticPackage, body constants, and HIR as one
-`BodyCheckResult`. Every SymbolId, ScopeId, and TypeId in HIR belongs to that
-returned package; later effect, denial, interop, MIR, LLVM, metadata, and
-obligation passes consume the same body-owned tables.
+prefix and returns the enriched SemanticPackage, body constants, and one local
+HIR arena for each exact procedure root as one `BodyCheckResult`. Every
+SymbolId, ScopeId, and TypeId in those arenas belongs to that returned package.
+A deterministic compatibility projection rewrites HIR-local IDs and
+concatenates the arenas once for later package-wide effect, denial, interop,
+MIR, LLVM, metadata, and obligation passes.
 
 The sequential body oracle no longer retains one `BodyChecker` while walking a
 package and its growing instance vector. Seed materialization is separate, then
@@ -344,17 +346,18 @@ product order. Invalid recoverable HIR completes its scheduling row but leaves
 the containing body state invalid, allowing later authored roots to be checked
 without permitting effects or lowering to consume the package.
 
-The coordinator now moves exclusive ownership of the published
-package/constants/HIR prefix into one `ProcedureBodyTaskInput`; the worker
-returns its successor as `ProcedureBodyTaskResult` and never aliases
-`PackageBodyWorkState`. The coordinator validates the exact work index and root
-symbol, adopts the successor, and only then exposes its discovered roots. Moving
-the prefix avoids an accidental full-package copy per procedure, but this is not
-yet the final isolated result: the task transports one complete package/HIR
-successor, and the sequential oracle adopts it before invoking the next root.
-The next procedure-owned slice replaces that exclusive full successor with a
-local arena/result and deterministic canonical publication; only then can one
-package's body wave run on parallel workers.
+The coordinator now moves exclusive ownership of the published package and
+constant prefix into one `ProcedureBodyTaskInput`; the worker returns its
+semantic successor and one new procedure-local HIR arena as
+`ProcedureBodyTaskResult`, and never aliases `PackageBodyWorkState`. The
+coordinator validates the exact work index and root symbol, adopts the semantic
+successor, permanently stores the local HIR row, and only then exposes its
+discovered roots. Moving the prefix avoids an accidental full-package copy per
+procedure. The remaining isolation problem is semantic rather than HIR: each
+task still transports one complete package/constants successor, and the
+sequential oracle must adopt it before invoking the next root. Local semantic
+discovery plus deterministic canonical publication is required before one
+package's body wave can run on parallel workers.
 
 The compiler schedules package bodies consumer-first because checking a caller
 can demand a concrete public generic body from its dependency. A portable

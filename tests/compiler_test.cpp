@@ -135,6 +135,14 @@ void test_procedure_bodies_are_dynamic_semantic_products(TestState &state) {
                     compiled.semantic_graph.products.size());
   EXPECT(state, products.procedure_bodies.size() ==
                     package.bodies.program.procedures().size());
+  EXPECT(state, products.procedure_bodies.size() ==
+                    package.bodies.procedures.size());
+  for (const draft::ProcedureBodyHirResult &procedure :
+       package.bodies.procedures) {
+    EXPECT(state, procedure.ok);
+    EXPECT(state, procedure.symbol.is_valid());
+    EXPECT(state, procedure.program.procedures().size() == 1);
+  }
 
   const draft::SemanticPackage &semantic = package.bodies.package;
   const std::optional<draft::SymbolId> identity =

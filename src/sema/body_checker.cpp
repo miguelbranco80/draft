@@ -1,19 +1,21 @@
 // Runtime body checking and structured typed-HIR construction.
 //
 // This module consumes one immutable declaration SemanticPackage, its package
-// constants, selected `when` regions, and parsed source. The public entry point
-// copies that baseline, then BodyChecker appends lexical scopes, locals,
-// concrete generic procedure instances, body agent sites, lexical compile-time
-// constants, and typed HIR into one body-owned generation. Every HIR ID refers
-// to the semantic tables returned beside it. No ABI, storage, MIR, LLVM, or
-// provider operation belongs here.
+// constants, selected `when` regions, and parsed source. Body work owns an
+// enriched semantic generation containing lexical scopes, locals, concrete
+// generic procedure instances, body agent sites, and lexical compile-time
+// constants. Each exact procedure root owns a separate typed-HIR arena whose
+// semantic IDs refer to that enriched generation. No ABI, storage, MIR, LLVM,
+// or provider operation belongs here.
 //
 // A retained successful generation may be extended only with newly demanded
-// concrete generic instances. Existing authored and concrete HIR is not
-// revisited; demand removal starts again from declarations so no stale machine
-// procedure can survive. Diagnostic-only package expression validation and
-// early compile-time dependency checks use private copies and cannot mutate the
-// compiler's authoritative declaration baseline. Relevant rules are
+// concrete generic instances. Existing authored and concrete procedure arenas
+// are not revisited; demand removal starts again from declarations so no stale
+// machine procedure can survive. A package-wide HIR value is built once as a
+// compatibility projection for consumers not yet migrated to live products.
+// Diagnostic-only package expression validation and early compile-time
+// dependency checks use private copies and cannot mutate the compiler's
+// authoritative declaration baseline. Relevant rules are
 // specification section 1's procedure/compile-time semantics, section 3's
 // typed synthesis sites, and section 10's semantic dependency order.
 
@@ -8436,7 +8438,6 @@ PackageBodyWorkState begin_package_body_work(
       seeds);
   BodyCheckResult initialized = initializer.initialize();
   state.ok = initialized.ok;
-  state.program = std::move(initialized.program);
 
   // Only the declaration baseline identifies authored roots. Seed
   // materialization appends private concrete symbols to package scope; those
@@ -8474,7 +8475,7 @@ PackageBodyWorkState begin_additional_package_body_work(
   state.ok = previous.ok;
   state.package = std::move(previous.package);
   state.constants = std::move(previous.constants);
-  state.program = std::move(previous.program);
+  state.procedures = std::move(previous.procedures);
   state.checked_procedures = previous.checked_procedures;
   const std::size_t previous_instance_count =
       state.package.parametric_instances.size();
@@ -8487,11 +8488,9 @@ PackageBodyWorkState begin_additional_package_body_work(
       state.constants,
       target,
       diagnostics,
-      additional_seeds,
-      std::move(state.program));
+      additional_seeds);
   BodyCheckResult initialized = initializer.initialize();
   state.ok = state.ok && initialized.ok;
-  state.program = std::move(initialized.program);
   for (std::size_t index = previous_instance_count;
        index < state.package.parametric_instances.size();
        ++index) {
@@ -8529,7 +8528,6 @@ ProcedureBodyTaskInput take_next_procedure_body_work(
   input.next_instance = state.next_instance;
   input.package = std::move(state.package);
   input.constants = std::move(state.constants);
-  input.program = std::move(state.program);
   state.active_work = state.next_work;
   return input;
 }
@@ -8553,7 +8551,6 @@ ProcedureBodyTaskResult check_procedure_body_work(
   result.symbol = root.symbol;
   result.package = std::move(input.package);
   result.constants = std::move(input.constants);
-  result.program = std::move(input.program);
   const std::vector<ProcedureInstantiationSeed> no_seeds;
   BodyChecker checker(
       sources,
@@ -8563,8 +8560,7 @@ ProcedureBodyTaskResult check_procedure_body_work(
       result.constants,
       target,
       diagnostics,
-      no_seeds,
-      std::move(result.program));
+      no_seeds);
   ProcedureBodyRootResult checked = checker.run_one(root);
   result.ok = checked.checked.ok;
   result.checked_procedures = checked.checked.checked_procedures;
@@ -8611,7 +8607,11 @@ bool publish_procedure_body_work(
   state.checked_procedures += result.checked_procedures;
   state.package = std::move(result.package);
   state.constants = std::move(result.constants);
-  state.program = std::move(result.program);
+  ProcedureBodyHirResult procedure;
+  procedure.ok = result.ok;
+  procedure.symbol = result.symbol;
+  procedure.program = std::move(result.program);
+  state.procedures.push_back(std::move(procedure));
   state.next_instance = result.next_instance;
   for (ProcedureBodyRoot &discovered : result.discovered_work) {
     discovered.prerequisite = work_index;
@@ -8639,20 +8639,25 @@ BodyCheckResult finish_package_body_work(
         "procedure body work finalized before every discovered root ran");
     state.ok = false;
   }
+  HirProgram program;
+  for (const ProcedureBodyHirResult &procedure : state.procedures) {
+    append_hir_program(program, procedure.program);
+  }
   if (state.ok &&
       !validate_target_types(state.package.types, target, diagnostics)) {
     state.ok = false;
   }
   if (state.ok &&
       !check_definite_initialization(
-          state.package, state.program, diagnostics)) {
+          state.package, program, diagnostics)) {
     state.ok = false;
   }
-  infer_agent_loop_ranges(loaded, state.package, state.program);
+  infer_agent_loop_ranges(loaded, state.package, program);
   result.ok = state.ok;
   result.package = std::move(state.package);
   result.constants = std::move(state.constants);
-  result.program = std::move(state.program);
+  result.procedures = std::move(state.procedures);
+  result.program = std::move(program);
   result.checked_procedures = state.checked_procedures;
   return result;
 }

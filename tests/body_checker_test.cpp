@@ -214,7 +214,7 @@ second :: proc() -> i64 {
   EXPECT(state, first.ok);
   EXPECT(state, !first_diagnostics.has_errors());
   EXPECT(state, work.next_work == 0);
-  EXPECT(state, work.program.procedures().empty());
+  EXPECT(state, work.procedures.empty());
   EXPECT(state, first.program.procedures().size() == 1);
   EXPECT(state, first.package.symbols.symbol_count() > initial_symbols);
   EXPECT(state, first.package.symbols.scope_count() > initial_scopes);
@@ -223,7 +223,10 @@ second :: proc() -> i64 {
                     work, std::move(first), first_diagnostics));
   EXPECT(state, work.next_work == 1);
   EXPECT(state, !work.active_work.has_value());
-  EXPECT(state, work.program.procedures().size() == 1);
+  EXPECT(state, work.procedures.size() == 1);
+  if (work.procedures.size() == 1) {
+    EXPECT(state, work.procedures.front().program.procedures().size() == 1);
+  }
   const std::size_t published_symbols = work.package.symbols.symbol_count();
 
   draft::DiagnosticSink second_diagnostics;
@@ -233,7 +236,6 @@ second :: proc() -> i64 {
   EXPECT(state, work.active_work == std::optional<std::size_t>{1});
   EXPECT(state,
          second_input.package.symbols.symbol_count() == published_symbols);
-  EXPECT(state, second_input.program.procedures().size() == 1);
   draft::ProcedureBodyTaskResult second =
       draft::check_procedure_body_work(
           sources,
@@ -244,8 +246,8 @@ second :: proc() -> i64 {
           second_diagnostics);
   EXPECT(state, second.ok);
   EXPECT(state, work.next_work == 1);
-  EXPECT(state, work.program.procedures().empty());
-  EXPECT(state, second.program.procedures().size() == 2);
+  EXPECT(state, work.procedures.size() == 1);
+  EXPECT(state, second.program.procedures().size() == 1);
   EXPECT(state, draft::publish_procedure_body_work(
                     work, std::move(second), second_diagnostics));
 
@@ -256,7 +258,56 @@ second :: proc() -> i64 {
   }
   EXPECT(state, bodies.ok);
   EXPECT(state, bodies.checked_procedures == 2);
+  EXPECT(state, bodies.procedures.size() == 2);
   EXPECT(state, bodies.program.procedures().size() == 2);
+  if (bodies.procedures.size() == 2 &&
+      bodies.program.procedures().size() == 2) {
+    const draft::HirProgram &first_local = bodies.procedures[0].program;
+    const draft::HirProgram &second_local = bodies.procedures[1].program;
+    EXPECT(state, first_local.procedures().size() == 1);
+    EXPECT(state, second_local.procedures().size() == 1);
+    if (first_local.procedures().size() != 1 ||
+        second_local.procedures().size() != 1) {
+      return;
+    }
+    const draft::HirProcedure &second_local_procedure =
+        second_local.procedures().front();
+    const draft::HirProcedure &second_aggregate_procedure =
+        bodies.program.procedures()[1];
+    EXPECT(state,
+           second_aggregate_procedure.body.value ==
+               second_local_procedure.body.value + first_local.block_count());
+
+    // The second procedure's final return statement and its symbol expression
+    // prove that the projection rewrites all three HIR-local ID domains rather
+    // than only the procedure root block.
+    const draft::HirBlock &second_local_body =
+        second_local.block(second_local_procedure.body);
+    const draft::HirBlock &second_aggregate_body =
+        bodies.program.block(second_aggregate_procedure.body);
+    EXPECT(state, second_local_body.statements.size() == 2);
+    EXPECT(state, second_aggregate_body.statements.size() == 2);
+    if (second_local_body.statements.size() == 2 &&
+        second_aggregate_body.statements.size() == 2) {
+      EXPECT(state,
+             second_aggregate_body.statements.back().value ==
+                 second_local_body.statements.back().value +
+                     first_local.statement_count());
+      const draft::HirStatement &second_local_return =
+          second_local.statement(second_local_body.statements.back());
+      const draft::HirStatement &second_aggregate_return =
+          bodies.program.statement(second_aggregate_body.statements.back());
+      EXPECT(state, second_local_return.expressions.size() == 1);
+      EXPECT(state, second_aggregate_return.expressions.size() == 1);
+      if (second_local_return.expressions.size() == 1 &&
+          second_aggregate_return.expressions.size() == 1) {
+        EXPECT(state,
+               second_aggregate_return.expressions.front().value ==
+                   second_local_return.expressions.front().value +
+                       first_local.expression_count());
+      }
+    }
+  }
 }
 
 void test_common_typed_bodies(TestState &state) {

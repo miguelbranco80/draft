@@ -153,7 +153,8 @@ struct CompiledPackage {
   // an uninitialized row and is never a successful package generation.
   std::uint64_t declaration_generation = 0;
   // Installed only with a successful BodyCheckResult. Its generation and
-  // demands are compared together before any retained HIR is reused.
+  // demands are compared together before any retained procedure-owned HIR
+  // arenas are reused.
   PackageBodyWorkKey body_work_key;
   PackageSemanticProgress semantic_progress =
       PackageSemanticProgress::InterfaceReady;

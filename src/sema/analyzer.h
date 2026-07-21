@@ -620,10 +620,10 @@ struct ConditionalDeclarationRegion {
 // package. A declaration generation owns the stable prefix established by
 // interface analysis. A BodyCheckResult owns a copy of that prefix plus lexical
 // scopes, local symbols, concrete procedure instances, body sites, imported
-// effect closure, and any types interned while checking HIR. Code which owns HIR
-// must use the body-owned package from the same result; declaration semantics
-// are not a substitute even when a particular SymbolId happens to lie in the
-// shared prefix.
+// effect closure, and any types interned while checking HIR. Each procedure HIR
+// arena and the temporary aggregate projection must use the body-owned package
+// from the same result; declaration semantics are not a substitute even when a
+// particular SymbolId happens to lie in the shared prefix.
 //
 // Public fields are intentional: compiler passes operate on explicit table
 // rows and stable IDs rather than a deep accessor/object hierarchy. Tables are

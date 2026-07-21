@@ -59,7 +59,8 @@ cache.
   types, obligations, checked bodies, MIR, and LLVM products available at each
   state.
 - Each package has an immutable declaration generation and a separate
-  body-owned semantic/HIR generation. The body work key combines that
+  body-owned semantic generation plus procedure-owned HIR arenas. The body work
+  key combines that
   declaration generation with the exact canonical set of cross-package generic
   specializations demanded by consumers. Equal keys reuse bodies, monotonic
   additions check only new specializations, and removals rebuild from the clean
@@ -68,10 +69,11 @@ cache.
 - Each authored template or concrete procedure is an explicit live body
   product. Initial roots depend on the package interface; nested procedures and
   locally discovered specializations are added after the exposing frozen wave
-  and depend on that exact body row. The current worker invocation is still a
-  sequential oracle over one package-owned semantic/HIR publication state. The
-  procedure-owned migration must replace that payload before body waves become
-  parallel, then delete the preceding body-key retention mechanism.
+  and depend on that exact body row. Each product permanently owns its local HIR
+  arena. The current worker invocation is still a sequential oracle over one
+  package-owned semantic publication state; local semantic discoveries must
+  replace that payload before body waves become parallel, after which the
+  preceding body-key retention mechanism can be deleted.
 - A command-local adjacency index records imports by consumer and consumers by
   dependency. It is built once with each source-selection graph and retained
   through source transitions, semantic closure, and lowering. A sequential Kahn
@@ -229,12 +231,14 @@ cache.
     correction waves. The Codex runtime uses multithread-safe `posix_spawnp` and
     one request directory per call.
 15. Semantic ownership was split into immutable declaration generations and
-    body-owned semantic/HIR generations. Cross-package procedure
+    body-owned semantic generations. Cross-package procedure
     specializations now use canonical demand-set work keys: retained dependencies
     are reused during body proposals, new demands extend only missing bodies,
     and removals rebuild exact state. This removed retained-table body replay,
     including duplicate static-pack declarations, without introducing a
-    persistent cache or a second compiler graph.
+    persistent cache or a second compiler graph. Exact body products now retain
+    their own HIR arenas while a compatibility projection serves package-wide
+    consumers still awaiting migration.
 
 The qualifying timing counters were `compiler passes: 1`, `workspace loads: 1`
 for the handwritten hello build. The resolved agent-acceptance build, whose

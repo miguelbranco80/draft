@@ -137,22 +137,25 @@ discovery and I/O, lexing/parsing, import-graph resolution, and exclusive time;
 child process CPU is reported separately from parent wall time.
 
 Each package row separates an immutable declaration generation from its
-body-owned semantic tables, constants, and HIR. HIR IDs are valid only with the
-body package returned beside them. Every authored symbolic template and
-concrete procedure is now a live `ProcedureTemplateBody` or
+body-owned semantic tables and constants. Every authored symbolic template and
+concrete procedure owns a separate HIR arena and is a live
+`ProcedureTemplateBody` or
 `ProcedureInstanceBody` product appended before its checker is invoked. Nested
 procedures and locally discovered specializations are appended only after the
 frozen wave which exposed them joins, with an exact edge to that exposing body.
 Each root owns a task-local diagnostic sink, and graph publication merges those
-diagnostics in product order. The coordinator moves exclusive ownership of the
-current semantic/constants/HIR prefix into one root task, which returns a
-worker-owned successor for explicit adoption. This transfer avoids an
-accidental full-package copy per body, but the current sequential oracle still
-adopts one complete package successor before invoking the next root, so
-independent roots do not yet share one frozen immutable prefix.
-Replacing that full snapshot with a procedure-local arena and deterministic
-canonical publication is the remaining boundary before body waves may run in
-parallel.
+diagnostics in product order. HIR-local IDs begin at zero in each product; every
+semantic ID addresses the body package returned beside the product set. A
+deterministic compatibility projection rewrites local IDs and concatenates the
+arenas once for effect, denial, and MIR consumers which remain package-wide.
+
+The coordinator still moves exclusive ownership of the current semantic and
+constant prefix into one root task, which returns a worker-owned successor for
+explicit adoption. This transfer avoids an accidental full-package copy per
+body, but the current sequential oracle must adopt one complete semantic
+successor before invoking the next root. Replacing that successor with local
+semantic discoveries and deterministic canonical publication is the remaining
+boundary before body waves may run in parallel.
 
 The transitional body work key is the declaration generation plus the exact
 canonical set of concrete generic procedures demanded by consumer packages.
