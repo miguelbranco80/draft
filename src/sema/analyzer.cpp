@@ -30,8 +30,23 @@ SemanticPackage::SemanticPackage(
   assert(base.body_read_prefix_ == nullptr);
 }
 
+SemanticPackage::SemanticPackage(
+    DeclarationTaskViewTag, const SemanticPackage &base)
+    : short_name(base.short_name), identity(base.identity),
+      types(base.types.fork_with_prefix_patches()),
+      symbols(base.symbols.fork_with_prefix_patches()),
+      package_scope(base.package_scope),
+      runtime_context_type(base.runtime_context_type),
+      body_read_prefix_(&base) {
+  assert(base.body_read_prefix_ == nullptr);
+}
+
 SemanticPackage SemanticPackage::fork_body_task_view() const {
   return SemanticPackage(BodyTaskViewTag{}, *this);
+}
+
+SemanticPackage SemanticPackage::fork_declaration_task_view() const {
+  return SemanticPackage(DeclarationTaskViewTag{}, *this);
 }
 
 SemanticPackage SemanticPackage::materialize_task_view() const {
@@ -40,6 +55,15 @@ SemanticPackage SemanticPackage::materialize_task_view() const {
   result.types.append_exact(types.appended_since(result.types.size()));
   result.symbols.append_exact(symbols.appended_since(
       result.symbols.scope_count(), result.symbols.symbol_count()));
+  for (TypeStorePatch patch :
+       types.prefix_patches_since(body_read_prefix_->types.size())) {
+    result.types.apply_patch_exact(std::move(patch));
+  }
+  for (SymbolTablePatch patch : symbols.prefix_patches_since(
+           body_read_prefix_->symbols.scope_count(),
+           body_read_prefix_->symbols.symbol_count())) {
+    result.symbols.apply_patch_exact(std::move(patch));
+  }
 
   // Every raw vector in a task view owns only its suffix. Keep this list beside
   // fork_body_task_view and semantic-task extraction so adding a new mutable

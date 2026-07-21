@@ -172,9 +172,14 @@ TypeStore::TypeStore(std::uint32_t pointer_bits) : pointer_bits_(pointer_bits) {
       "Target_Object_Format", builtins_.u8_type, 2);
 }
 
-TypeStore::TypeStore(AppendOnlyOverlayTag, const TypeStore &base)
+TypeStore::TypeStore(
+    AppendOnlyOverlayTag,
+    const TypeStore &base,
+    bool permits_prefix_patches)
     : pointer_bits_(base.pointer_bits_), base_(&base),
-      base_size_(base.size()), builtins_(base.builtins_) {
+      base_size_(base.size()),
+      permits_prefix_patches_(permits_prefix_patches),
+      builtins_(base.builtins_) {
   assert(base.base_ == nullptr);
 }
 
@@ -188,6 +193,9 @@ const Type &TypeStore::type(TypeId id) const {
   assert(index < size());
   if (index < base_size_) {
     assert(base_ != nullptr);
+    if (const TypeStorePatch *patch = find_prefix_patch(id)) {
+      return patch->type;
+    }
     return base_->type(id);
   }
   return types_[index - base_size_];
@@ -197,7 +205,15 @@ Type &TypeStore::type_mut(TypeId id) {
   assert(id.is_valid());
   const std::size_t index = static_cast<std::size_t>(id.value);
   assert(index < size());
-  assert(index >= base_size_);
+  if (index < base_size_) {
+    assert(base_ != nullptr);
+    assert(permits_prefix_patches_);
+    if (TypeStorePatch *patch = find_prefix_patch(id)) {
+      return patch->type;
+    }
+    prefix_patches_.push_back({id, base_->type(id), base_->completion(id)});
+    return prefix_patches_.back().type;
+  }
   return types_[index - base_size_];
 }
 
@@ -207,6 +223,9 @@ const TypeCompletion &TypeStore::completion(TypeId id) const {
   assert(index < size());
   if (index < base_size_) {
     assert(base_ != nullptr);
+    if (const TypeStorePatch *patch = find_prefix_patch(id)) {
+      return patch->completion;
+    }
     return base_->completion(id);
   }
   return completion_[index - base_size_];
@@ -232,7 +251,11 @@ std::size_t TypeStore::size() const {
 }
 
 TypeStore TypeStore::fork_append_only() const {
-  return TypeStore(AppendOnlyOverlayTag{}, *this);
+  return TypeStore(AppendOnlyOverlayTag{}, *this, false);
+}
+
+TypeStore TypeStore::fork_with_prefix_patches() const {
+  return TypeStore(AppendOnlyOverlayTag{}, *this, true);
 }
 
 TypeStoreAppend TypeStore::appended_since(std::size_t base_size) const {
@@ -244,6 +267,13 @@ TypeStoreAppend TypeStore::appended_since(std::size_t base_size) const {
   appended.types = types_;
   appended.completions = completion_;
   return appended;
+}
+
+std::vector<TypeStorePatch> TypeStore::prefix_patches_since(
+    std::size_t base_size) const {
+  assert(base_ != nullptr);
+  assert(base_size == base_size_);
+  return prefix_patches_;
 }
 
 void TypeStore::append_exact(TypeStoreAppend appended) {
@@ -258,6 +288,43 @@ void TypeStore::append_exact(TypeStoreAppend appended) {
       completion_.end(),
       std::make_move_iterator(appended.completions.begin()),
       std::make_move_iterator(appended.completions.end()));
+}
+
+void TypeStore::apply_patch_exact(TypeStorePatch patch) {
+  assert(base_ == nullptr);
+  assert(patch.id.is_valid());
+  assert(static_cast<std::size_t>(patch.id.value) < size());
+  types_[patch.id.value] = std::move(patch.type);
+  completion_[patch.id.value] = patch.completion;
+}
+
+TypeStorePatch *TypeStore::find_prefix_patch(TypeId id) {
+  for (TypeStorePatch &patch : prefix_patches_) {
+    if (patch.id == id) return &patch;
+  }
+  return nullptr;
+}
+
+const TypeStorePatch *TypeStore::find_prefix_patch(TypeId id) const {
+  for (const TypeStorePatch &patch : prefix_patches_) {
+    if (patch.id == id) return &patch;
+  }
+  return nullptr;
+}
+
+TypeCompletion &TypeStore::completion_mut(TypeId id) {
+  assert(id.is_valid());
+  const std::size_t index = static_cast<std::size_t>(id.value);
+  assert(index < size());
+  if (index < base_size_) {
+    // type_mut owns patch creation so the Type and TypeCompletion copies can
+    // never diverge or acquire different first-mutation ordering.
+    (void)type_mut(id);
+    TypeStorePatch *patch = find_prefix_patch(id);
+    assert(patch != nullptr);
+    return patch->completion;
+  }
+  return completion_[index - base_size_];
 }
 
 std::optional<TypeId> TypeStore::find_builtin(std::string_view name) const {
@@ -739,7 +806,7 @@ void TypeStore::publish_nominal_members(TypeId id) {
   Type &nominal = type_mut(id);
   assert(nominal.kind == TypeKind::Struct || nominal.kind == TypeKind::Enum ||
          nominal.kind == TypeKind::TaggedUnion || nominal.kind == TypeKind::RawUnion);
-  TypeCompletion &facets = completion_[id.value - base_size_];
+  TypeCompletion &facets = completion_mut(id);
   assert(facets.members == TypeFacetState::Waiting);
   facets.members = TypeFacetState::Complete;
 }
@@ -749,7 +816,7 @@ void TypeStore::publish_nominal_member_types(
   Type &nominal = type_mut(id);
   assert(nominal.kind == TypeKind::Struct || nominal.kind == TypeKind::Enum ||
          nominal.kind == TypeKind::TaggedUnion || nominal.kind == TypeKind::RawUnion);
-  TypeCompletion &facets = completion_[id.value - base_size_];
+  TypeCompletion &facets = completion_mut(id);
   assert(facets.member_types == TypeFacetState::Waiting);
   nominal.members = std::move(members);
   facets.member_types = TypeFacetState::Complete;
@@ -763,7 +830,7 @@ void TypeStore::publish_nominal_natural_layout(
   assert(nominal.kind == TypeKind::Struct || nominal.kind == TypeKind::Enum ||
          nominal.kind == TypeKind::TaggedUnion || nominal.kind == TypeKind::RawUnion);
   assert(layout.known);
-  TypeCompletion &facets = completion_[id.value - base_size_];
+  TypeCompletion &facets = completion_mut(id);
   assert(facets.natural_layout == TypeFacetState::Waiting);
   assert(facets.member_types == TypeFacetState::Complete);
   nominal.layout = layout;

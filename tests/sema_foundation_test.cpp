@@ -539,6 +539,76 @@ void test_append_only_table_overlays(TestState &state) {
   EXPECT(state, diagnostics.error_count() == 0);
 }
 
+// Declaration products differ from procedure bodies in one narrow way: the
+// collector has already assigned the root TypeId and SymbolId, so the product
+// must refine those prefix rows without copying the complete tables. The task
+// sees its private replacement immediately, the canonical owner remains frozen
+// until publication, and repeated mutations coalesce into one stable patch.
+void test_prefix_patch_task_overlays(TestState &state) {
+  draft::TypeStore canonical_types;
+  const draft::TypeId nominal = canonical_types.begin_nominal(
+      draft::TypeKind::Struct, "Record", draft::SourceRange::invalid());
+  const std::size_t type_prefix = canonical_types.size();
+
+  draft::TypeStore task_types =
+      canonical_types.fork_with_prefix_patches();
+  task_types.publish_nominal_members(nominal);
+  task_types.type_mut(nominal).requested_alignment = 16;
+  EXPECT(state,
+         task_types.facet_state(nominal, draft::TypeFacet::Members) ==
+             draft::TypeFacetState::Complete);
+  EXPECT(state, task_types.type(nominal).requested_alignment == 16);
+  EXPECT(state,
+         canonical_types.facet_state(nominal, draft::TypeFacet::Members) ==
+             draft::TypeFacetState::Waiting);
+  EXPECT(state, canonical_types.type(nominal).requested_alignment == 0);
+
+  std::vector<draft::TypeStorePatch> type_patches =
+      task_types.prefix_patches_since(type_prefix);
+  EXPECT(state, type_patches.size() == 1);
+  canonical_types.apply_patch_exact(std::move(type_patches.front()));
+  EXPECT(state,
+         canonical_types.facet_state(nominal, draft::TypeFacet::Members) ==
+             draft::TypeFacetState::Complete);
+  EXPECT(state, canonical_types.type(nominal).requested_alignment == 16);
+
+  draft::SourceManager sources;
+  const draft::FileId file =
+      sources.add_source("patch.draft", "Record\n");
+  draft::DiagnosticSink diagnostics;
+  draft::SymbolTable canonical_symbols;
+  const draft::ScopeId package_scope = canonical_symbols.add_scope(
+      draft::ScopeKind::Package, {}, draft::SourceRange::at(file, 0));
+  draft::Symbol root;
+  root.name = "Record";
+  root.kind = draft::SymbolKind::UnresolvedDeclaration;
+  root.scope = package_scope;
+  root.name_range = {{file, 0}, {file, 6}};
+  const draft::SymbolId root_id =
+      canonical_symbols.declare(std::move(root), diagnostics);
+  const std::size_t scope_prefix = canonical_symbols.scope_count();
+  const std::size_t symbol_prefix = canonical_symbols.symbol_count();
+
+  draft::SymbolTable task_symbols =
+      canonical_symbols.fork_with_prefix_patches();
+  task_symbols.symbol_mut(root_id).kind = draft::SymbolKind::Type;
+  task_symbols.symbol_mut(root_id).type = nominal;
+  EXPECT(state,
+         task_symbols.symbol(root_id).kind == draft::SymbolKind::Type);
+  EXPECT(state,
+         canonical_symbols.symbol(root_id).kind ==
+             draft::SymbolKind::UnresolvedDeclaration);
+
+  std::vector<draft::SymbolTablePatch> symbol_patches =
+      task_symbols.prefix_patches_since(scope_prefix, symbol_prefix);
+  EXPECT(state, symbol_patches.size() == 1);
+  canonical_symbols.apply_patch_exact(std::move(symbol_patches.front()));
+  EXPECT(state,
+         canonical_symbols.symbol(root_id).kind == draft::SymbolKind::Type);
+  EXPECT(state, canonical_symbols.symbol(root_id).type == nominal);
+  EXPECT(state, diagnostics.error_count() == 0);
+}
+
 void test_scopes_and_duplicates(TestState &state) {
   draft::SourceManager sources;
   const draft::FileId file = sources.add_source("symbols.draft", "Value Value local\n");
@@ -590,6 +660,7 @@ int main() {
   test_natural_layout_product(state);
   test_type_inspection_waits_for_exact_facets(state);
   test_append_only_table_overlays(state);
+  test_prefix_patch_task_overlays(state);
   test_scopes_and_duplicates(state);
 
   if (state.failures != 0) {

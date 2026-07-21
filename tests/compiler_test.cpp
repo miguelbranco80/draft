@@ -368,10 +368,11 @@ void test_procedure_bodies_are_dynamic_semantic_products(TestState &state) {
 }
 
 // Parallel body execution is a scheduling choice, never a semantic input. This
-// program makes four sibling callers independently discover the same generic
-// procedure and nominal type instances, then compares the complete product
-// graph and final LLVM bytes against the one-worker oracle. Timing counters
-// prove the test actually selected more than one worker slot.
+// program also starts with several independent package declarations, then makes
+// four sibling callers independently discover the same generic procedure and
+// nominal type instances. It compares the complete product graph and final LLVM
+// bytes against the one-worker oracle. Timing counters prove both declaration
+// packets and body tasks formed shared ready waves.
 void test_procedure_body_worker_counts_are_deterministic(TestState &state) {
   draft::test::TemporaryDirectory temporary_directory{
       "draft-bootstrap-body-worker-determinism-test"};
@@ -646,6 +647,9 @@ void test_procedure_body_worker_counts_are_deterministic(TestState &state) {
   }
   const std::string sequential_report = sequential_timings.render();
   const std::string parallel_report = parallel_timings.render();
+  EXPECT(state,
+         parallel_report.find("declaration tasks in shared ready waves:") !=
+             std::string::npos);
   EXPECT(state, sequential_report.find("procedure body worker slots: 2") !=
                     std::string::npos);
   EXPECT(state, parallel_report.find("procedure body worker slots: 5") !=

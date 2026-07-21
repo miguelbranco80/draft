@@ -701,9 +701,11 @@ private:
 //
 // Public fields are intentional: compiler passes operate on explicit table
 // rows and stable IDs rather than a deep accessor/object hierarchy. Tables are
-// append-only within one generation. They are never truncated or re-entered by
-// another complete body pass; a source-generation change creates a new
-// declaration baseline instead.
+// append-only within one generation after declaration facets close. An isolated
+// declaration task may return an explicit patch for a collected type or symbol
+// row; the coordinator installs it once without changing that row's ID. Tables
+// are never truncated or re-entered by another complete body pass; a source-
+// generation change creates a new declaration baseline instead.
 struct SemanticPackage {
   SemanticPackage() = default;
 
@@ -715,6 +717,13 @@ struct SemanticPackage {
   // The source package must outlive the returned view and may not itself be a
   // task view.
   [[nodiscard]] SemanticPackage fork_body_task_view() const;
+
+  // Creates the interface-declaration variant of a task view. It shares every
+  // frozen prefix and owns ordinary suffix rows like a body view, but TypeStore
+  // and SymbolTable additionally permit row-granular prefix patches. This is
+  // the exact authority required by declaration products which retain a
+  // collected TypeId/SymbolId while completing its semantic payload.
+  [[nodiscard]] SemanticPackage fork_declaration_task_view() const;
 
   // Copies one task view into an ordinary self-contained package while the
   // frozen base is still unchanged. This is reserved for a blocked task whose
@@ -847,6 +856,8 @@ struct SemanticPackage {
 private:
   struct BodyTaskViewTag {};
   SemanticPackage(BodyTaskViewTag, const SemanticPackage &base);
+  struct DeclarationTaskViewTag {};
+  SemanticPackage(DeclarationTaskViewTag, const SemanticPackage &base);
 
   // A task view is non-owning and cannot outlive PackageBodyWorkState. The
   // pointer supplies every retained read-only prefix; body-produced rows remain

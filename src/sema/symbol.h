@@ -151,6 +151,16 @@ struct SymbolTableAppend {
   std::vector<ExistingScopeSymbolAppend> existing_scope_symbols;
 };
 
+// SymbolTablePatch is one declaration task's completed replacement for a
+// symbol below its frozen prefix. Declaration collection establishes names,
+// scopes, source identities, and flags; later TypeIdentity or TypeMemberTypes
+// products fill classification and TypeId without changing the SymbolId. The
+// coordinator remaps type before installing the full prospective row.
+struct SymbolTablePatch {
+  SymbolId id;
+  Symbol symbol;
+};
+
 class SymbolTable {
 public:
   SymbolTable() = default;
@@ -182,22 +192,42 @@ public:
   // the overlay and may not itself be an overlay.
   [[nodiscard]] SymbolTable fork_append_only() const;
 
+  // Creates an overlay which may copy individual prefix Symbol rows on first
+  // mutation. New scopes, symbols, and additions to existing scopes remain the
+  // same append-only suffix used by body tasks. Keeping this entry point
+  // separate makes prefix refinement an explicit declaration-phase authority.
+  [[nodiscard]] SymbolTable fork_with_prefix_patches() const;
+
   // Extracts one overlay's local rows, including explicit binding additions to
   // canonical prefix scopes, or publishes those rows to the canonical table.
   [[nodiscard]] SymbolTableAppend appended_since(
       std::size_t base_scope_count,
       std::size_t base_symbol_count) const;
+  [[nodiscard]] std::vector<SymbolTablePatch> prefix_patches_since(
+      std::size_t base_scope_count,
+      std::size_t base_symbol_count) const;
   void append_exact(SymbolTableAppend appended);
+  void apply_patch_exact(SymbolTablePatch patch);
 
 private:
   struct AppendOnlyOverlayTag {};
-  SymbolTable(AppendOnlyOverlayTag, const SymbolTable &base);
+  SymbolTable(
+      AppendOnlyOverlayTag,
+      const SymbolTable &base,
+      bool permits_prefix_patches);
 
   [[nodiscard]] ExistingScopeSymbolAppend *base_scope_append(ScopeId scope);
+  [[nodiscard]] SymbolTablePatch *find_prefix_patch(SymbolId id);
+  [[nodiscard]] const SymbolTablePatch *find_prefix_patch(SymbolId id) const;
 
   const SymbolTable *base_ = nullptr;
   std::size_t base_scope_count_ = 0;
   std::size_t base_symbol_count_ = 0;
+  bool permits_prefix_patches_ = false;
+  // One declaration product normally refines one root or a small member list.
+  // Preserve first-mutation order and use a direct scan instead of introducing
+  // a hash/index whose order would become another semantic invariant.
+  std::vector<SymbolTablePatch> prefix_patches_;
   std::vector<Scope> scopes_;
   std::vector<Symbol> symbols_;
   std::vector<ExistingScopeSymbolAppend> base_scope_symbols_;

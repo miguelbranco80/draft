@@ -5103,13 +5103,11 @@ private:
       }
     }
 
-    // The sequential reference scheduler advances a private package snapshot
-    // after each successful task in a ready wave. That snapshot may therefore
-    // contain a valid TypeId before the producer's graph state is published.
-    // Product readiness is defined by the immutable completed-declaration set,
-    // never by observing that provisional payload. Retaining this exact edge
-    // makes the same task result valid when ready products eventually execute
-    // in parallel against independent snapshots.
+    // The frozen package prefix may contain a valid TypeId whose producer is
+    // not an explicit prerequisite of this product. Product readiness is
+    // defined by the immutable completed-declaration set, never by observing
+    // that incidental payload. Retaining this exact edge keeps independent
+    // declaration tasks valid when they execute in the same ready wave.
     if (std::find(
             declaration_dependencies_.begin(),
             declaration_dependencies_.end(),

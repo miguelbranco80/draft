@@ -210,6 +210,20 @@ struct TypeStoreAppend {
   std::vector<TypeCompletion> completions;
 };
 
+// TypeStorePatch is one declaration task's completed replacement for a row
+// below its frozen TypeStore prefix. Nominal identities are allocated during
+// declaration collection, then separate products fill their members and member
+// types. Those products must retain the TypeId while refining the row, so an
+// append alone cannot represent their output. id always lies below the task's
+// recorded prefix; type and completion are the complete prospective row after
+// that one product. The coordinator remaps any task-local IDs in type before
+// applying the patch in stable product order.
+struct TypeStorePatch {
+  TypeId id;
+  Type type;
+  TypeCompletion completion;
+};
+
 // BuiltinTypes stores IDs used frequently by semantic code. Other builtin names,
 // including endian storage variants, are available through find_builtin.
 struct BuiltinTypes {
@@ -265,11 +279,21 @@ public:
   // retains the canonical package.
   [[nodiscard]] TypeStore fork_append_only() const;
 
+  // Creates the declaration-task variant of an overlay. Reads still share the
+  // immutable prefix, while the first mutation of a prefix row copies only that
+  // row into a private patch. Appended structural and nominal rows use the same
+  // suffix domain as fork_append_only. This operation is deliberately separate
+  // so procedure-body tasks cannot accidentally refine retained declarations.
+  [[nodiscard]] TypeStore fork_with_prefix_patches() const;
+
   // Extracts one overlay's local suffix or publishes it to the canonical
   // store. append requires the canonical store still to equal the producer's
   // base prefix; callers must remap before using it for a shared-prefix wave.
   [[nodiscard]] TypeStoreAppend appended_since(std::size_t base_size) const;
+  [[nodiscard]] std::vector<TypeStorePatch> prefix_patches_since(
+      std::size_t base_size) const;
   void append_exact(TypeStoreAppend appended);
+  void apply_patch_exact(TypeStorePatch patch);
 
   [[nodiscard]] std::optional<TypeId> find_builtin(std::string_view name) const;
 
@@ -335,9 +359,15 @@ public:
 
 private:
   struct AppendOnlyOverlayTag {};
-  TypeStore(AppendOnlyOverlayTag, const TypeStore &base);
+  TypeStore(
+      AppendOnlyOverlayTag,
+      const TypeStore &base,
+      bool permits_prefix_patches);
 
   [[nodiscard]] TypeId add(Type type);
+  [[nodiscard]] TypeCompletion &completion_mut(TypeId id);
+  [[nodiscard]] TypeStorePatch *find_prefix_patch(TypeId id);
+  [[nodiscard]] const TypeStorePatch *find_prefix_patch(TypeId id) const;
   void add_builtin_alias(std::string name, TypeId id);
   [[nodiscard]] TypeId add_scalar(
       std::string name, TypeKind kind, std::uint32_t bits, std::uint32_t alignment);
@@ -363,6 +393,12 @@ private:
   // body task lifetime guaranteed by PackageBodyWorkState.
   const TypeStore *base_ = nullptr;
   std::size_t base_size_ = 0;
+  bool permits_prefix_patches_ = false;
+  // Prefix patches are tiny and remain in first-mutation order. A declaration
+  // product normally changes one root type, so a direct scan is cheaper and
+  // clearer than maintaining another index whose iteration order would need a
+  // determinism contract.
+  std::vector<TypeStorePatch> prefix_patches_;
   std::vector<Type> types_;
   // completion_ has exactly one row per types_ entry and shares its TypeId
   // index domain. Keeping the facts parallel avoids enlarging the hot Type row

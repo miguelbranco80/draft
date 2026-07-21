@@ -311,7 +311,7 @@ gate.
    unchanged semantic type tables, identical one-/four-worker graphs and LLVM,
    and a single ready wave spanning independent packages.
 
-9. **Parallel semantic waves.** Run each frozen ready wave with bounded workers.
+9. **Parallel semantic waves — implementation complete; final qualification remains.** Run each frozen ready wave with bounded workers.
    Workers write only task slots; the coordinator sorts by stable product ID,
    interns canonical discoveries, publishes diagnostics, and adds graph work.
    Make compile-time resource accounting task-local. Qualify one-worker and
@@ -323,12 +323,13 @@ gate.
    `SemanticTaskAppend` representation, publish through the same canonical
    type/instance interner as bodies, and no longer share a package successor;
    one-/four-worker public-pipeline tests cover sibling owner demands. Authored
-   declaration-type products retain a deterministic dependency chain over one
-   private package snapshot. Name-set and interface barriers run after read-only
-   tasks in one stable chain because validation loading may extend
-   `SourceManager`. The remaining gate is to replace that declaration snapshot
-   with exact append/patch packets; only then may every same-package product
-   write solely to its own task slot.
+   declaration-type products use the same suffix plus row-granular patches for
+   collected type/symbol identities. Same-package siblings therefore write only
+   independent task slots and publish in stable product order; the private
+   package-snapshot chain is deleted. Name-set and interface barriers run after
+   read-only tasks in one stable chain because validation loading may extend
+   `SourceManager`. Final qualification still audits task-local resource limits,
+   generated-source identity, canonical diagnostics, and failure selection.
 
 10. **Native product consumption — complete.** Emit independent machine functions from MIR
     products, keep package static data and assembly explicit, and perform symbol,
@@ -363,8 +364,8 @@ gate.
     Workspace MIR payloads likewise live only at their `MirProcedure` product
     IDs. The HIR projection, `MirProgram`, package MIR lowering, and
     complete-package LLVM compatibility paths are deleted. Sequential
-    declaration snapshots and the final qualification gates remain in this
-    step.
+    declaration snapshots are also deleted; only the final qualification and
+    stale-state audit remain in this step.
 
 ## Completion evidence
 

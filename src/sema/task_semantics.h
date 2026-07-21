@@ -9,8 +9,11 @@
 // complete package snapshot.
 //
 // The source package and constants must outlive every view created from them.
-// Workers may not mutate a retained prefix row. This module owns no syntax,
-// product graph, HIR, provider, target, or backend policy.
+// Body and generic workers may not mutate a retained prefix row. Declaration
+// workers can refine only TypeStore/SymbolTable rows through an explicit
+// patch-enabled view; the canonical prefix itself always remains immutable
+// during the wave. This module owns no syntax, product graph, HIR, provider,
+// target, or backend policy.
 
 #pragma once
 
@@ -55,14 +58,19 @@ struct SemanticTaskPrefix {
   bool operator==(const SemanticTaskPrefix &) const = default;
 };
 
-// SemanticTaskAppend owns exactly the semantic rows created by one task. IDs
-// below prefix already name the canonical input; IDs at or above a count belong
-// to this private suffix and require deterministic translation at publication.
-// No complete predecessor or successor package is retained in this value.
+// SemanticTaskAppend owns exactly the semantic rows created or refined by one
+// task. IDs below prefix already name the canonical input; IDs at or above a
+// count belong to this private suffix and require deterministic translation at
+// publication. Declaration tasks may additionally replace individual prefix
+// type/symbol rows while retaining their stable IDs. Body and generic-owner
+// tasks cannot create such patches because their task views are append-only. No
+// complete predecessor or successor package is retained in this value.
 struct SemanticTaskAppend {
   SemanticTaskPrefix prefix;
   TypeStoreAppend types;
+  std::vector<TypeStorePatch> type_patches;
   SymbolTableAppend symbols;
+  std::vector<SymbolTablePatch> symbol_patches;
   std::vector<OwnedSemanticScope> owned_scopes;
   std::vector<AggregateMember> aggregate_members;
   std::vector<EnumMemberValue> enum_member_values;
@@ -96,8 +104,9 @@ struct SemanticTaskAppend {
 
 // Extracts a worker view's owned suffix. package and constants must be overlays
 // forked from the exact prefix; their overlay implementations enforce that a
-// worker could not mutate a retained TypeStore, SymbolTable, or ConstantTable
-// row. Other mutable vectors own only their task-local suffix by construction.
+// worker could mutate retained TypeStore or SymbolTable rows only through
+// explicit declaration patches. ConstantTable and every other mutable vector
+// remain suffix-only by construction.
 [[nodiscard]] SemanticTaskAppend extract_semantic_task_append(
     const SemanticTaskPrefix &prefix,
     const SemanticPackage &package,

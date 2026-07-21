@@ -113,13 +113,13 @@ constant consumes already published values or reports exact constant/type-facet
 blockers; task-local structural type values are interned by the coordinator.
 Products owned by different packages execute concurrently through the bounded
 wave executor. Generic-owner products use the same frozen-prefix/task-append
-representation as body products, so sibling owner demands may execute
-independently even when they target one package. Authored declaration-type
-products still advance one private package snapshot in product order until
-their prefix mutations become explicit append/patch packets. Name-set and
-interface tasks are placed after read-only work and
-serialized because validation-context loading can extend the command-owned
-source table; no worker reads that table while another worker changes it.
+representation as body products. Authored declaration-type products add only
+row-granular patches for collected type and symbol identities. Sibling products
+may therefore execute independently even when they target one package; the
+coordinator publishes every packet in product-ID order. Name-set and interface
+tasks are placed after read-only work and serialized because validation-context
+loading can extend the command-owned source table; no worker reads that table
+while another worker changes it.
 Ready imported constants remain dependency-interface inputs and are installed
 under consumer-local proxy IDs rather than duplicated as consumer products.
 The package interface waits for every constant product and validates storage

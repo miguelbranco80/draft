@@ -21,9 +21,13 @@
 
 namespace draft {
 
-SymbolTable::SymbolTable(AppendOnlyOverlayTag, const SymbolTable &base)
+SymbolTable::SymbolTable(
+    AppendOnlyOverlayTag,
+    const SymbolTable &base,
+    bool permits_prefix_patches)
     : base_(&base), base_scope_count_(base.scope_count()),
-      base_symbol_count_(base.symbol_count()) {
+      base_symbol_count_(base.symbol_count()),
+      permits_prefix_patches_(permits_prefix_patches) {
   assert(base.base_ == nullptr);
 }
 
@@ -149,6 +153,9 @@ const Symbol &SymbolTable::symbol(SymbolId id) const {
   assert(index < symbol_count());
   if (index < base_symbol_count_) {
     assert(base_ != nullptr);
+    if (const SymbolTablePatch *patch = find_prefix_patch(id)) {
+      return patch->symbol;
+    }
     return base_->symbol(id);
   }
   return symbols_[index - base_symbol_count_];
@@ -158,7 +165,15 @@ Symbol &SymbolTable::symbol_mut(SymbolId id) {
   assert(id.is_valid());
   const std::size_t index = static_cast<std::size_t>(id.value);
   assert(index < symbol_count());
-  assert(index >= base_symbol_count_);
+  if (index < base_symbol_count_) {
+    assert(base_ != nullptr);
+    assert(permits_prefix_patches_);
+    if (SymbolTablePatch *patch = find_prefix_patch(id)) {
+      return patch->symbol;
+    }
+    prefix_patches_.push_back({id, base_->symbol(id)});
+    return prefix_patches_.back().symbol;
+  }
   return symbols_[index - base_symbol_count_];
 }
 
@@ -171,7 +186,11 @@ std::size_t SymbolTable::symbol_count() const {
 }
 
 SymbolTable SymbolTable::fork_append_only() const {
-  return SymbolTable(AppendOnlyOverlayTag{}, *this);
+  return SymbolTable(AppendOnlyOverlayTag{}, *this, false);
+}
+
+SymbolTable SymbolTable::fork_with_prefix_patches() const {
+  return SymbolTable(AppendOnlyOverlayTag{}, *this, true);
 }
 
 SymbolTableAppend SymbolTable::appended_since(
@@ -187,6 +206,15 @@ SymbolTableAppend SymbolTable::appended_since(
   appended.symbols = symbols_;
   appended.existing_scope_symbols = base_scope_symbols_;
   return appended;
+}
+
+std::vector<SymbolTablePatch> SymbolTable::prefix_patches_since(
+    std::size_t base_scope_count,
+    std::size_t base_symbol_count) const {
+  assert(base_ != nullptr);
+  assert(base_scope_count == base_scope_count_);
+  assert(base_symbol_count == base_symbol_count_);
+  return prefix_patches_;
 }
 
 void SymbolTable::append_exact(SymbolTableAppend appended) {
@@ -212,6 +240,27 @@ void SymbolTable::append_exact(SymbolTableAppend appended) {
         std::make_move_iterator(scope_append.symbols.begin()),
         std::make_move_iterator(scope_append.symbols.end()));
   }
+}
+
+void SymbolTable::apply_patch_exact(SymbolTablePatch patch) {
+  assert(base_ == nullptr);
+  assert(patch.id.is_valid());
+  assert(static_cast<std::size_t>(patch.id.value) < symbol_count());
+  symbols_[patch.id.value] = std::move(patch.symbol);
+}
+
+SymbolTablePatch *SymbolTable::find_prefix_patch(SymbolId id) {
+  for (SymbolTablePatch &patch : prefix_patches_) {
+    if (patch.id == id) return &patch;
+  }
+  return nullptr;
+}
+
+const SymbolTablePatch *SymbolTable::find_prefix_patch(SymbolId id) const {
+  for (const SymbolTablePatch &patch : prefix_patches_) {
+    if (patch.id == id) return &patch;
+  }
+  return nullptr;
 }
 
 std::string_view scope_kind_name(ScopeKind kind) {

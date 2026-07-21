@@ -352,6 +352,12 @@ void remap_symbol_append(
   }
 }
 
+void remap_symbol_row(
+    Symbol &symbol, const SemanticTaskPublication &maps) {
+  symbol.scope = remap_scope(symbol.scope, maps);
+  symbol.type = remap_type(symbol.type, maps);
+}
+
 [[nodiscard]] ParametricInstanceRecord remapped_instance_identity(
     const ParametricInstanceRecord &source,
     const SemanticTaskPublication &maps) {
@@ -1060,6 +1066,45 @@ bool publish_semantic_task_append(
     return false;
   }
 
+  // Prefix patches are allowed only for stable rows visible when the worker
+  // forked. Validate the complete patch identity set before publishing any
+  // appended type. Duplicate IDs would make packet order observable and
+  // indicate that the task overlay failed to coalesce repeated mutations.
+  for (std::size_t index = 0; index < semantic.type_patches.size(); ++index) {
+    const TypeId id = semantic.type_patches[index].id;
+    if (!id.is_valid() || id.value >= semantic.prefix.type_count) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "semantic task type patch lies outside its frozen prefix");
+      return false;
+    }
+    for (std::size_t previous = 0; previous < index; ++previous) {
+      if (semantic.type_patches[previous].id == id) {
+        diagnostics.error(
+            SourceRange::invalid(),
+            "semantic task contains duplicate type patches");
+        return false;
+      }
+    }
+  }
+  for (std::size_t index = 0; index < semantic.symbol_patches.size(); ++index) {
+    const SymbolId id = semantic.symbol_patches[index].id;
+    if (!id.is_valid() || id.value >= semantic.prefix.symbol_count) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "semantic task symbol patch lies outside its frozen prefix");
+      return false;
+    }
+    for (std::size_t previous = 0; previous < index; ++previous) {
+      if (semantic.symbol_patches[previous].id == id) {
+        diagnostics.error(
+            SourceRange::invalid(),
+            "semantic task contains duplicate symbol patches");
+        return false;
+      }
+    }
+  }
+
   publication = {};
   SemanticTaskPublication &maps = publication;
   maps.prefix = semantic.prefix;
@@ -1154,6 +1199,20 @@ bool publish_semantic_task_append(
   semantic.symbols.base_scope_count = scope_base;
   semantic.symbols.base_symbol_count = symbol_base;
   package.symbols.append_exact(std::move(semantic.symbols));
+
+  // Declaration products retain collected TypeIds and SymbolIds while filling
+  // their payloads. Translate references inside those private rows only after
+  // every suffix map is final, then install the exact replacements. Independent
+  // ready products patch disjoint rows by graph construction; dependent facets
+  // cannot occur in the same ready wave.
+  for (TypeStorePatch &patch : semantic.type_patches) {
+    remap_type_row(patch.type, maps);
+    package.types.apply_patch_exact(std::move(patch));
+  }
+  for (SymbolTablePatch &patch : semantic.symbol_patches) {
+    remap_symbol_row(patch.symbol, maps);
+    package.symbols.apply_patch_exact(std::move(patch));
+  }
 
   remap_side_tables(semantic, maps);
   // Preserve exact outbound work and canonical agent-site indices on the body

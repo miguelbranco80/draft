@@ -322,7 +322,10 @@ returns an exact semantic append packet and one local HIR arena; the coordinator
 publishes those packets into its canonical append-only package tables. Workspace
 generic-owner workers use the same `SemanticTaskAppend` packet without HIR;
 blocked attempts materialize only their private requester context, while
-successful attempts publish no complete package successor. Workspace
+successful attempts publish no complete package successor. Declaration workers
+use a patch-enabled view of the same frozen prefix: appended rows remain ordinary
+packet suffixes, while a collected nominal or symbol identity becomes one exact
+row replacement. Workspace
 compilation retains that live `PackageBodyWorkState` after finalization: its
 work rows, procedure results, and semantic products preserve one append-only
 index domain for later discoveries. Direct subsystem entry points return that

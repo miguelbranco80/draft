@@ -58,7 +58,11 @@ SemanticTaskAppend extract_semantic_task_append(
   SemanticTaskAppend appended;
   appended.prefix = prefix;
   appended.types = package.types.appended_since(prefix.type_count);
+  appended.type_patches =
+      package.types.prefix_patches_since(prefix.type_count);
   appended.symbols = package.symbols.appended_since(
+      prefix.scope_count, prefix.symbol_count);
+  appended.symbol_patches = package.symbols.prefix_patches_since(
       prefix.scope_count, prefix.symbol_count);
   appended.owned_scopes = package.owned_scopes;
   appended.aggregate_members = package.aggregate_members;
