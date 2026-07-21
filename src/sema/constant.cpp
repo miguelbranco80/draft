@@ -477,8 +477,6 @@ public:
       }
     }
 
-    result.compile_time_procedures = compile_time_procedures_;
-
     // Export ready constants in SymbolId order rather than dependency traversal
     // order. This is the deterministic order used by semantic dumps and hashing.
     for (std::uint32_t index = 0; index < states_.size(); ++index) {
@@ -508,24 +506,6 @@ public:
     }
     if (result.status != EvalStatus::Ready) return std::nullopt;
     return EvaluatedConstant{result.value, result.type};
-  }
-
-  [[nodiscard]] CompileTimeExpressionDiscoveryResult
-  discover_required_expression(
-      const SyntaxTree &tree,
-      NodeId expression,
-      ScopeId scope,
-      TypeId expected = {}) {
-    CompileTimeExpressionDiscoveryResult discovered;
-    const EvalResult result =
-        evaluate_expression(tree, expression, scope, false, expected);
-    discovered.blocked_by_synthesis =
-        result.status == EvalStatus::BlockedBySynthesis;
-    discovered.compile_time_procedures = compile_time_procedures_;
-    if (result.status == EvalStatus::Ready) {
-      discovered.value = EvaluatedConstant{result.value, result.type};
-    }
-    return discovered;
   }
 
 private:
@@ -6145,26 +6125,6 @@ void ConstantTable::append_missing_bindings_to(
   }
 }
 
-CompileTimeRoundResult evaluate_compile_time_round(
-    const SourceManager &sources,
-    const LoadedPackage &loaded,
-    SemanticPackage &package,
-    const TargetFacts &target,
-    ConditionalSelections &selections,
-    CompileTimeSynthesisMode synthesis_mode,
-    bool diagnose_unready,
-    DiagnosticSink &diagnostics) {
-  ConstantEvaluator evaluator(
-      sources,
-      loaded,
-      package,
-      target,
-      synthesis_mode,
-      diagnose_unready,
-      diagnostics);
-  return evaluator.run(selections);
-}
-
 CompileTimeRoundResult validate_compile_time_products(
     const SourceManager &sources,
     const LoadedPackage &loaded,
@@ -6329,34 +6289,6 @@ std::optional<EvaluatedConstant> evaluate_typed_constant_expression(
       local_types,
       local_packs);
   return evaluator.evaluate_required_expression(
-      tree, expression, scope, expected);
-}
-
-CompileTimeExpressionDiscoveryResult discover_typed_constant_expression(
-    const SourceManager &sources,
-    const LoadedPackage &loaded,
-    SemanticPackage &package,
-    const TargetFacts &target,
-    const SyntaxTree &tree,
-    NodeId expression,
-    ScopeId scope,
-    const ConstantTable *local_constants,
-    const std::vector<ConstantTypeBinding> *local_types,
-    TypeId expected,
-    const std::vector<ConstantStaticPackBinding> *local_packs) {
-  DiagnosticSink ignored_diagnostics;
-  ConstantEvaluator evaluator(
-      sources,
-      loaded,
-      package,
-      target,
-      CompileTimeSynthesisMode::Discover,
-      false,
-      ignored_diagnostics,
-      local_constants,
-      local_types,
-      local_packs);
-  return evaluator.discover_required_expression(
       tree, expression, scope, expected);
 }
 

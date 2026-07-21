@@ -1,4 +1,17 @@
 // Source type and signature resolution for the bootstrap semantic graph.
+//
+// The resolver consumes one parsed package, its collected symbol identities,
+// selected compile-time branches, published constant/type prerequisites, and
+// target facts. Standalone operations may resolve one local syntax node; graph
+// product operations resolve exactly one declaration facet into a task-private
+// SemanticPackage and return explicit dependency or synthesis waits. The class
+// owns only per-call traversal states, dependency vectors, and immediate
+// full-interpreter integer results. It never owns source, publishes canonical
+// package state, invokes providers, or lowers target IR. Product attempts may
+// inspect only dependencies named complete by the coordinator, and incomplete
+// member synthesis packets never publish a nominal facet. Relevant Draft rules
+// are the type, layout, parametric, `when`, and synthesis ordering sections of
+// specifications 01, 02, 03, and 06.
 
 #include "sema/type_resolver.h"
 
@@ -58,6 +71,18 @@ struct MemberData {
   std::vector<BigInteger> enum_values;
   TypeId enum_value_expected_type;
   bool incomplete = false;
+};
+
+// One full-interpreter integer result retained only inside its declaration
+// product attempt. SyntaxReference lets repeated consumers in that same attempt
+// find the value without depending on a task-local TypeId. The value remains
+// arbitrary precision until its surrounding type syntax checks range, and the
+// optional descriptor preserves the exact integer identity for contextual type
+// checking. No row crosses a product boundary or semantic generation.
+struct ResolvedIntegerExpression {
+  SyntaxReference syntax;
+  BigInteger value;
+  std::optional<IntegerExpressionType> type;
 };
 
 struct ResolverTypeSubstitution {
@@ -143,9 +168,7 @@ public:
       DiagnosticSink &diagnostics,
       const ConstantTable *active_constants = nullptr,
       const std::vector<ConstantTypeBinding> *active_types = nullptr,
-      const std::vector<ResolvedIntegerExpression> *resolved_integers = nullptr,
       const TargetFacts *target = nullptr,
-      const std::vector<SyntaxReference> *blocked_integer_synthesis = nullptr,
       SymbolId product_root = {},
       std::span<const SymbolId> completed_declarations = {},
       TypeResolutionGoal goal = TypeResolutionGoal::CompleteDeclaration,
@@ -155,8 +178,7 @@ public:
         diagnostics_(diagnostics),
         states_(semantic.symbols.symbol_count(), ResolutionState::Unvisited),
         active_constants_(active_constants), active_types_(active_types),
-        resolved_integers_(resolved_integers), target_(target),
-        blocked_integer_synthesis_(blocked_integer_synthesis),
+        target_(target),
         product_root_(product_root),
         product_request_begin_(
             semantic.imported_type_instantiation_requests_for_read().size()),
@@ -998,20 +1020,12 @@ private:
     return value.has_value() ? value->to_u64() : std::nullopt;
   }
 
-  // Looks up a full-interpreter integer result retained either by the legacy
-  // aggregate discovery composition or by this declaration-product attempt.
-  // Returning a pointer is safe only until another product result is appended;
-  // callers consume it immediately, while the supplied compatibility vector is
-  // immutable for the entire resolver call.
+  // Looks up a full-interpreter integer result retained by this declaration
+  // product attempt. Returning a pointer is safe only until another result is
+  // appended; callers consume it immediately and no task boundary exposes it.
   [[nodiscard]] const ResolvedIntegerExpression *
   resolved_integer(const SyntaxTree &tree, NodeId expression) const {
     const SyntaxReference wanted{tree.file(), expression};
-    if (resolved_integers_ != nullptr) {
-      for (const ResolvedIntegerExpression &entry : *resolved_integers_) {
-        if (entry.syntax == wanted)
-          return &entry;
-      }
-    }
     for (const ResolvedIntegerExpression &entry : product_integers_) {
       if (entry.syntax == wanted)
         return &entry;
@@ -1107,16 +1121,6 @@ private:
         : active_declaration_owners_.back();
     semantic_.required_integer_expressions.push_back(
         {syntax, scope, anchor, expected_type});
-  }
-
-  [[nodiscard]] bool integer_synthesis_is_blocked(
-      const SyntaxTree &tree, NodeId expression) const {
-    if (blocked_integer_synthesis_ == nullptr) return false;
-    const SyntaxReference syntax{tree.file(), expression};
-    return std::find(
-               blocked_integer_synthesis_->begin(),
-               blocked_integer_synthesis_->end(),
-               syntax) != blocked_integer_synthesis_->end();
   }
 
   // The compact dependent-integer builder intentionally rejects calls and
@@ -3266,9 +3270,6 @@ private:
             continue;
           }
           require_integer_expression(tree, argument_node, scope, required);
-          if (integer_synthesis_is_blocked(tree, argument_node)) {
-            return semantic_.types.builtins().invalid;
-          }
           diagnostics_.error(
               tree.node(argument_node).range,
               "value parameter argument must be a compile-time integer expression");
@@ -3670,9 +3671,6 @@ private:
             node.children.front(),
             scope,
             semantic_.types.builtins().usize_type);
-        if (integer_synthesis_is_blocked(tree, node.children.front())) {
-          return invalid;
-        }
       }
       if (!count.has_value() || *count == 0) {
         diagnostics_.error(
@@ -3737,9 +3735,6 @@ private:
             node.children.front(),
             scope,
             semantic_.types.builtins().usize_type);
-        if (integer_synthesis_is_blocked(tree, node.children.front())) {
-          return invalid;
-        }
       }
       if (!lanes.has_value() || *lanes == 0) {
         diagnostics_.error(
@@ -3961,6 +3956,41 @@ private:
     }
   }
 
+  // Reports whether the already selected member frontier reaches structural
+  // synthesis. This is a syntax walk, not name or type publication: it follows
+  // exactly the branch choices which the member product may consume and treats
+  // an unresolved condition as a prerequisite rather than speculating about
+  // either branch. The answer selects the richer task-local constraint path
+  // below; ordinary member products retain their strict identities-then-types
+  // phase split.
+  [[nodiscard]] bool selected_member_region_contains_synthesis(
+      const SyntaxTree &tree, NodeId region) const {
+    const SyntaxNode &node = tree.node(region);
+    if (node.kind == NodeKind::SynthesisMember) return true;
+    if (node.kind == NodeKind::MemberList) {
+      for (NodeId child : node.children) {
+        if (selected_member_region_contains_synthesis(tree, child)) return true;
+      }
+      return false;
+    }
+    if (node.kind == NodeKind::DenyMember) {
+      return !node.children.empty() &&
+          selected_member_region_contains_synthesis(
+              tree, node.children.back());
+    }
+    if (node.kind != NodeKind::WhenMember) return false;
+
+    const ConditionalSelection *selection =
+        selections_.find({tree.file(), region});
+    if (selection == nullptr) return false;
+    if (selection->select_true) {
+      return node.children.size() >= 2 &&
+          selected_member_region_contains_synthesis(tree, node.children[1]);
+    }
+    return node.children.size() >= 3 &&
+        selected_member_region_contains_synthesis(tree, node.children[2]);
+  }
+
   // Walks one selected member list in source order and publishes only names and
   // syntax identities. Documentation, denials, and synthesis sites retain the
   // same semantic-site records as the later typed traversal.
@@ -3995,6 +4025,12 @@ private:
         if (product_root_.is_valid()) {
           if (synthesis_mode_ == CompileTimeSynthesisMode::Discover) {
             blocked_by_synthesis_ = true;
+            // Members after this opaque structural hole may depend on names the
+            // provider has not supplied. Retain the fully checked authored
+            // prefix and exact site, then let a clean successor generation
+            // check the merged member list from source.
+            data.incomplete = true;
+            return;
           } else {
             diagnostics_.error(
                 member.range,
@@ -4088,8 +4124,8 @@ private:
       return imported.constant.integer;
     }
 
-    // Product attempts consume only published ConstantValue rows. The legacy
-    // package resolver below may still evaluate this narrow integer vocabulary
+    // Product attempts consume only published ConstantValue rows. A standalone
+    // package/local resolver may still evaluate this narrow integer vocabulary
     // recursively, but doing so here would hide an edge from the semantic graph
     // and make scheduling order observable.
     if (product_root_.is_valid()) {
@@ -4448,10 +4484,6 @@ private:
                 attribute.children.front(),
                 scope,
                 semantic_.types.builtins().usize_type);
-            if (integer_synthesis_is_blocked(
-                    tree, attribute.children.front())) {
-              continue;
-            }
           }
           const std::optional<std::uint64_t> alignment =
               value.has_value() ? value->to_u64() : std::nullopt;
@@ -4542,12 +4574,9 @@ private:
               member.children.front(),
               scope,
               data.enum_value_expected_type);
-          if (!integer_synthesis_is_blocked(
-                  tree, member.children.front())) {
-            diagnostics_.error(
-                tree.node(member.children.front()).range,
-                "enum value must be a compile-time integer expression");
-          }
+          diagnostics_.error(
+              tree.node(member.children.front()).range,
+              "enum value must be a compile-time integer expression");
           data.incomplete = true;
         } else {
           value = *explicit_value;
@@ -4669,6 +4698,11 @@ private:
         if (product_root_.is_valid()) {
           if (synthesis_mode_ == CompileTimeSynthesisMode::Discover) {
             blocked_by_synthesis_ = true;
+            // The constraint owns only facts preceding this source position.
+            // Continuing could resolve a later field through a generated name
+            // which is intentionally absent from the opaque sibling request.
+            data.incomplete = true;
+            return;
           } else {
             diagnostics_.error(
                 member.range,
@@ -4846,16 +4880,34 @@ private:
     if (goal_ == TypeResolutionGoal::NominalMembers &&
         owner == product_root_) {
       MemberData data;
-      collect_member_name_list(owner, tree, *list, scope, data);
+      const bool builds_synthesis_constraint =
+          synthesis_mode_ == CompileTimeSynthesisMode::Discover &&
+          selected_member_region_contains_synthesis(tree, *list);
+      if (builds_synthesis_constraint) {
+        // A member-site provider needs checked facts which precede the hole,
+        // not merely invalid name placeholders. Resolve that source prefix in
+        // this exact TypeMembers task. It remains private because synthesis
+        // marks the attempt WaitingForSynthesis, so no MemberTypes facet leaks
+        // through the identities barrier. Any ordinary dependency found before
+        // the site is returned first and the task is rebuilt after that product
+        // publishes.
+        collect_member_list(owner, tree, *list, scope, data);
+      } else {
+        collect_member_name_list(owner, tree, *list, scope, data);
+      }
       if (data.symbols.empty() && !data.incomplete) {
         diagnostics_.error(
             aggregate.range, "aggregate type requires at least one member");
       }
       if (!data.incomplete) {
         semantic_.types.publish_nominal_members(nominal);
-        for (SymbolId member : data.symbols) {
-          semantic_.aggregate_members.push_back({owner, member, 0});
-        }
+      }
+      // A stopped synthesis constraint owns its checked prefix rows even though
+      // it publishes no nominal facet. Obligation construction reads these rows
+      // only from the retained task package; canonical package state never sees
+      // an incomplete member namespace.
+      for (SymbolId member : data.symbols) {
+        semantic_.aggregate_members.push_back({owner, member, 0});
       }
       return;
     }
@@ -4983,7 +5035,7 @@ private:
     }
 
     // Natural layout is a distinct semantic product even while package type
-    // scheduling remains sequential. Route the legacy synchronous caller
+    // scheduling remains sequential. Route the standalone synchronous caller
     // through the exact task contract now, so layout arithmetic, blockers, and
     // publication have one authority. A blocked result simply leaves the facet
     // Waiting; the workspace graph will attach its explicit dependencies when
@@ -5199,11 +5251,10 @@ private:
   std::vector<SymbolId> active_declaration_owners_;
   const ConstantTable *active_constants_ = nullptr;
   const std::vector<ConstantTypeBinding> *active_types_ = nullptr;
-  const std::vector<ResolvedIntegerExpression> *resolved_integers_ = nullptr;
   const TargetFacts *target_ = nullptr;
-  const std::vector<SyntaxReference> *blocked_integer_synthesis_ = nullptr;
-  // Valid only for resolve_product(). Other entry points keep the invalid ID
-  // and preserve the bootstrap resolver's legacy recursive declaration walk.
+  // Valid only for resolve_product(). Standalone local syntax operations keep
+  // the invalid ID and may use the resolver's direct recursive declaration
+  // walk.
   SymbolId product_root_;
   // imported_type_instantiation_requests is append-only within an attempt. Only
   // the suffix created while resolving product_root_ belongs to this product;
@@ -5250,8 +5301,6 @@ DeclarationTypeProductAttempt resolve_package_type_members_product(
       nullptr,
       nullptr,
       nullptr,
-      nullptr,
-      nullptr,
       root,
       {},
       TypeResolutionGoal::NominalMembers,
@@ -5276,7 +5325,6 @@ DeclarationTypeProductAttempt resolve_package_declaration_type_product(
     SymbolId root,
     std::span<const SymbolId> completed_declarations,
     const ConstantTable &published_constants,
-    const std::vector<ResolvedIntegerExpression> &resolved_integers,
     const TargetFacts &target,
     CompileTimeSynthesisMode synthesis_mode,
     DiagnosticSink &diagnostics) {
@@ -5292,9 +5340,7 @@ DeclarationTypeProductAttempt resolve_package_declaration_type_product(
       task_diagnostics,
       &published_constants,
       nullptr,
-      &resolved_integers,
       &target,
-      nullptr,
       root,
       completed_declarations,
       TypeResolutionGoal::CompleteDeclaration,
@@ -5326,50 +5372,6 @@ void resolve_package_types(
     const LoadedPackage &loaded,
     SemanticPackage &package,
     const ConditionalSelections &selections,
-    const std::vector<ResolvedIntegerExpression> &resolved_integers,
-    const TargetFacts &target,
-    const std::vector<SyntaxReference> &blocked_synthesis,
-    DiagnosticSink &diagnostics) {
-  TypeResolver resolver(
-      sources,
-      loaded,
-      package,
-      selections,
-      diagnostics,
-      nullptr,
-      nullptr,
-      &resolved_integers,
-      &target,
-      &blocked_synthesis);
-  resolver.resolve();
-}
-
-void resolve_package_types(
-    const SourceManager &sources,
-    const LoadedPackage &loaded,
-    SemanticPackage &package,
-    const ConditionalSelections &selections,
-    const std::vector<ResolvedIntegerExpression> &resolved_integers,
-    const TargetFacts &target,
-    DiagnosticSink &diagnostics) {
-  TypeResolver resolver(
-      sources,
-      loaded,
-      package,
-      selections,
-      diagnostics,
-      nullptr,
-      nullptr,
-      &resolved_integers,
-      &target);
-  resolver.resolve();
-}
-
-void resolve_package_types(
-    const SourceManager &sources,
-    const LoadedPackage &loaded,
-    SemanticPackage &package,
-    const ConditionalSelections &selections,
     DiagnosticSink &diagnostics) {
   TypeResolver resolver(sources, loaded, package, selections, diagnostics);
   resolver.resolve();
@@ -5389,7 +5391,7 @@ TypeId resolve_type_syntax(
     DiagnosticSink &diagnostics) {
   TypeResolver resolver(
       sources, loaded, package, selections, diagnostics,
-      &active_constants, &active_types, nullptr, &target);
+      &active_constants, &active_types, &target);
   return resolver.resolve_one_type(tree, type, scope);
 }
 
@@ -5432,7 +5434,7 @@ TypeId resolve_local_procedure_signature(
     DiagnosticSink &diagnostics) {
   TypeResolver resolver(
       sources, loaded, package, selections, diagnostics,
-      &active_constants, &active_types, nullptr, &target);
+      &active_constants, &active_types, &target);
   return resolver.resolve_one_procedure(
       tree, declaration, procedure, scope, owner);
 }
@@ -5459,7 +5461,6 @@ TypeId resolve_local_type_declaration(
       diagnostics,
       &active_constants,
       &active_types,
-      nullptr,
       &target);
   return resolver.resolve_one_local_type(
       tree, declaration, type, scope, owner);
@@ -5478,7 +5479,7 @@ TypeId instantiate_parametric_type_application(
     DiagnosticSink &diagnostics) {
   TypeResolver resolver(
       sources, loaded, package, selections, diagnostics,
-      active_constants, nullptr, nullptr, &target);
+      active_constants, nullptr, &target);
   return resolver.instantiate_one_type(
       source, std::move(arguments), use_range);
 }
@@ -5518,7 +5519,6 @@ TypeId instantiate_owner_evaluated_type_application(
       diagnostics,
       &active_constants,
       &active_types,
-      nullptr,
       &target);
   return resolver.instantiate_one_owner_evaluated_type(
       source, type_bindings, value_bindings, use_range);

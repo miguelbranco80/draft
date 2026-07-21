@@ -29,7 +29,7 @@ gate.
    source transitions append successor products, supersede only the affected
    interface slice, and retain unrelated current products.
 
-3. **Declaration completion without rounds.** Parse once and retain stable
+3. **Declaration completion without rounds — complete.** Parse once and retain stable
    syntax identities. Replace `analyze_package_semantics` reconstruction with
    explicit products for conditional selection, constant values, type identity,
    type members, member types, natural layout, and ABI classification. Selected
@@ -78,9 +78,9 @@ gate.
    independent ready work, and withholds PackageInterface. Product-driven tests
    prove source-order sibling discovery, dependency-delayed sites, declaration
    anchors, typed integer boundaries, and the explicit graph edge. The current
-   sequential provider-context oracle replays only the stopped products over
-   their completed published prerequisites; step 6 replaces that composition
-   with task-owned typed constraint results.
+   coordinator retains the exact private package/constant packet of every
+   stopped product. Step 6 consumes those packets directly as typed provider
+   constraints.
 
    Rejecting direct semantic test and subsystem entry points now use a small
    package-local sequential product coordinator. This migration exposed and
@@ -91,10 +91,9 @@ gate.
    chain now completes through product edges instead of tripping the legacy
    recursive evaluator-depth limit.
 
-   This step remains open in one narrower place. The explicit direct Discover-
-   mode overload and its early metadata tests still use
-   `discover_package_declarations`; step 6 replaces that provider-surface
-   compatibility composition with task-owned synthesis constraints.
+   The aggregate direct Discover-mode composition, cross-round resolved-integer
+   table, and blocked-synthesis type-resolver overload are deleted. Lower-level
+   discovery tests now exercise the public workspace product graph.
 
    ABI classification is now an explicit post-body type facet. One product is
    appended for every TypeId in the completed source-semantic prefix. Each row
@@ -228,12 +227,24 @@ gate.
    projections belong to the downstream flow-closure and MIR migrations in
    steps 7 and 8 rather than to the body scheduler.
 
-6. **Synthesis as an explicit wait state.** A body or declaration task may
+6. **Synthesis as an explicit wait state — complete.** A body or declaration task may
    report its exact ready `...` set after producing the typed constraint needed
    by the provider. Freeze opaque siblings, run providers independently, check
    proposals privately, merge accepted ordinary source canonically, and create
    the successor source-generation products. Delete speculative enriched
    package copies and any retained-package recheck path.
+
+   Each declaration, condition, constant, or declaration-owned integer task now
+   retains its private semantic package and constants when it reports
+   `WaitingForSynthesis`. Reached compile-time procedures are checked once into
+   that packet. A structural member task checks only the authored prefix before
+   its opaque hole, while package/member holes may defer dependent body sites to
+   the successor source generation. Provider-surface composition source-orders
+   and deduplicates records but builds every obligation against its exact owning
+   packet; task-local semantic IDs are never merged. Existing bounded provider
+   waves, private proposal checks, transactional accepted-source publication,
+   and successor products complete the wait transition. Aggregate discovery,
+   stopped-product replay, and compatibility state are deleted.
 
 7. **Flow closure and denials.** Publish direct procedure summaries separately,
    build the concrete direct-call and procedure-value-flow graph, identify SCCs,

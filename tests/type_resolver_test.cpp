@@ -143,7 +143,6 @@ Cycle_B :: Cycle_A
 
   const draft::ConditionalSelections selections;
   const draft::ConstantTable constants;
-  const std::vector<draft::ResolvedIntegerExpression> resolved_integers;
   const draft::TargetFacts target;
 
   draft::SemanticPackage blocked_package = source.semantic;
@@ -157,7 +156,6 @@ Cycle_B :: Cycle_A
           *first,
           {},
           constants,
-          resolved_integers,
           target,
           draft::CompileTimeSynthesisMode::Reject,
           blocked_diagnostics);
@@ -179,7 +177,6 @@ Cycle_B :: Cycle_A
           *buffer,
           {},
           constants,
-          resolved_integers,
           target,
           draft::CompileTimeSynthesisMode::Reject,
           buffer_blocked_diagnostics);
@@ -206,7 +203,6 @@ Cycle_B :: Cycle_A
           *buffer,
           {},
           published_count,
-          resolved_integers,
           target,
           draft::CompileTimeSynthesisMode::Reject,
           buffer_diagnostics);
@@ -269,7 +265,6 @@ Cycle_B :: Cycle_A
           *record,
           {},
           constants,
-          resolved_integers,
           target,
           draft::CompileTimeSynthesisMode::Reject,
           record_diagnostics);
@@ -358,7 +353,6 @@ Cycle_B :: Cycle_A
           *second,
           {},
           constants,
-          resolved_integers,
           target,
           draft::CompileTimeSynthesisMode::Reject,
           second_diagnostics);
@@ -379,7 +373,6 @@ Cycle_B :: Cycle_A
           *first,
           completed,
           constants,
-          resolved_integers,
           target,
           draft::CompileTimeSynthesisMode::Reject,
           first_diagnostics);
@@ -404,7 +397,6 @@ Cycle_B :: Cycle_A
           *cycle_a,
           {},
           constants,
-          resolved_integers,
           target,
           draft::CompileTimeSynthesisMode::Reject,
           cycle_a_diagnostics);
@@ -419,7 +411,6 @@ Cycle_B :: Cycle_A
           *cycle_b,
           {},
           constants,
-          resolved_integers,
           target,
           draft::CompileTimeSynthesisMode::Reject,
           cycle_b_diagnostics);

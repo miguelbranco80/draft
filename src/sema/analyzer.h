@@ -511,21 +511,6 @@ struct RequiredIntegerExpression {
   TypeId expected_type;
 };
 
-// One interpreter result carried between semantic rebuilds. SyntaxReference is
-// the stable key because every rebuild reassigns semantic IDs but reuses the
-// immutable parsed trees. value remains arbitrary precision until the ordinary
-// consumer checks its required range. type retains the exact concrete Draft
-// integer identity—usize and u64 are not interchangeable merely because the
-// first target gives both 64 unsigned bits. A missing type means the interpreter
-// produced an integer-shaped value such as an enum whose language type is not
-// a Draft integer and lets the consuming context issue the precise diagnostic.
-// Entries are discovery state, not a returned package-interface table.
-struct ResolvedIntegerExpression {
-  SyntaxReference syntax;
-  BigInteger value;
-  std::optional<IntegerExpressionType> type;
-};
-
 // One captured type/value environment for an owner-evaluated layout recipe.
 // The bindings compose when one generic template is used inside another. They
 // remain package-local because their keys are the defining declaration's exact

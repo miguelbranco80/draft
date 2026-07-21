@@ -95,7 +95,6 @@ resolve_package_declaration_type_product(
     SymbolId root,
     std::span<const SymbolId> completed_declarations,
     const ConstantTable &published_constants,
-    const std::vector<ResolvedIntegerExpression> &resolved_integers,
     const TargetFacts &target,
     CompileTimeSynthesisMode synthesis_mode,
     DiagnosticSink &diagnostics);
@@ -234,32 +233,6 @@ void resolve_package_types(
     const LoadedPackage &loaded,
     SemanticPackage &package,
     const ConditionalSelections &selections,
-    DiagnosticSink &diagnostics);
-
-// Fixed-point form. Values were evaluated by the full compile-time interpreter
-// against a prior deterministic semantic graph and are keyed only by stable
-// source syntax; this clean rebuild consumes them before computing layouts.
-void resolve_package_types(
-    const SourceManager &sources,
-    const LoadedPackage &loaded,
-    SemanticPackage &package,
-    const ConditionalSelections &selections,
-    const std::vector<ResolvedIntegerExpression> &resolved_integers,
-    const TargetFacts &target,
-    DiagnosticSink &diagnostics);
-
-// Interface-discovery form. blocked_synthesis contains exact integer-recipe
-// syntax sites where the full interpreter reached unresolved synthesis in a
-// prior clean graph. Only their generic not-compile-time diagnostics are
-// deferred; every unrelated type error remains authoritative.
-void resolve_package_types(
-    const SourceManager &sources,
-    const LoadedPackage &loaded,
-    SemanticPackage &package,
-    const ConditionalSelections &selections,
-    const std::vector<ResolvedIntegerExpression> &resolved_integers,
-    const TargetFacts &target,
-    const std::vector<SyntaxReference> &blocked_synthesis,
     DiagnosticSink &diagnostics);
 
 } // namespace draft

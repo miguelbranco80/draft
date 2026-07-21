@@ -372,6 +372,29 @@ collect_agent_validation_context(
     std::span<const AgentValidationContext> validation_context = {},
     const HirProgram *hir = nullptr);
 
+// Appends the one provider obligation named by metadata.records[record_index]
+// to an existing result. This is the deterministic publication form used when
+// an opaque synthesis set contains task-owned semantic contexts which cannot be
+// merged: the coordinator orders the records by source position, then asks each
+// owning context to materialize only its own immutable obligation. Earlier rows
+// in result reserve occurrence/site identities exactly as they do in the
+// ordinary whole-package builder. Documentation records are valid inputs and
+// append no obligation. The caller must initialize result.ok to true; any
+// diagnostic or invalid index clears it and returns false.
+[[nodiscard]] bool append_agent_obligation(
+    const PackageIdentity &identity,
+    const SourceManager &sources,
+    const LoadedPackage &loaded,
+    const SemanticPackage &package,
+    const ConstantTable &constants,
+    const AgentMetadataResult &metadata,
+    std::size_t record_index,
+    const TargetProfile &target,
+    AgentObligationResult &result,
+    DiagnosticSink &diagnostics,
+    std::span<const AgentValidationContext> validation_context = {},
+    const HirProgram *hir = nullptr);
+
 [[nodiscard]] std::string_view agent_construct_kind_name(
     AgentConstructKind kind);
 

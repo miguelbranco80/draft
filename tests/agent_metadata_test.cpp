@@ -654,43 +654,27 @@ Packet :: struct {
   draft::SourceManager sources;
   draft::DiagnosticSink diagnostics;
   const draft::TargetProfile target = draft::make_aarch64_macos_profile();
-  draft::PackageLoadOptions load_options;
-  load_options.file_tag = target.facts.file_tag;
-  const draft::PackageLoadResult loaded = draft::load_package(
-      sources, temporary.path.string(), load_options, diagnostics);
-  const draft::AvailablePackageImports no_imports;
-  draft::SemanticAnalysisResult semantics = draft::analyze_package_semantics(
-      sources,
-      loaded.package,
-      target.facts,
-      no_imports,
-      draft::CompileTimeSynthesisMode::Discover,
-      diagnostics);
-  const draft::AgentMetadataResult metadata = draft::collect_agent_metadata(
-      sources,
-      loaded.package,
-      semantics.package,
-      {},
-      diagnostics);
-  const draft::AgentObligationResult obligations =
-      draft::build_agent_obligations(
-          {"workspace", "member_guidance"},
-          sources,
-          loaded.package,
-          semantics.package,
-          semantics.constants,
-          metadata,
-          target,
-          diagnostics);
+  draft::CompileWorkspaceOptions options;
+  options.target = target;
+  options.workspace.workspace_directory = temporary.path.string();
+  options.stage = draft::CompileWorkspaceStage::DiscoverInterfaceSynthesis;
+  const draft::CompileWorkspaceResult compiled = draft::compile_workspace(
+      sources, temporary.path.string(), std::move(options), diagnostics);
 
   if (diagnostics.has_errors()) {
     std::cerr << draft::render_diagnostics(sources, diagnostics);
   }
-  EXPECT(state, loaded.ok);
-  EXPECT(state, semantics.ok);
-  EXPECT(state, metadata.ok);
-  EXPECT(state, obligations.ok);
+  EXPECT(state, compiled.ok);
   EXPECT(state, !diagnostics.has_errors());
+  EXPECT(state, compiled.graph.root_package.is_valid());
+  if (!compiled.ok || !compiled.graph.root_package.is_valid() ||
+      compiled.graph.root_package.value >= compiled.packages.size() ||
+      !compiled.packages[compiled.graph.root_package.value].has_value()) {
+    return;
+  }
+  const draft::AgentObligationResult &obligations =
+      compiled.packages[compiled.graph.root_package.value]->obligations;
+  EXPECT(state, obligations.ok);
 
   const draft::AgentObligation *member_synthesis = nullptr;
   for (const draft::AgentObligation &obligation : obligations.obligations) {
@@ -1717,58 +1701,35 @@ void test_early_synthesis_receives_permitted_context(TestState &state) {
       "        ... \"declare fields\"\n"
       "    }\n"
       "}\n");
+  write_file(
+      temporary.path / "context_test.draft",
+      "package early_context\n"
+      "test_context :: proc() {\n"
+      "}\n");
 
   draft::SourceManager sources;
   draft::DiagnosticSink diagnostics;
   const draft::TargetProfile target = draft::make_aarch64_macos_profile();
-  draft::PackageLoadOptions load_options;
-  load_options.file_tag = target.facts.file_tag;
-  const draft::PackageLoadResult loaded = draft::load_package(
-      sources, temporary.path.string(), load_options, diagnostics);
-  const draft::AvailablePackageImports no_imports;
-  draft::SemanticAnalysisResult semantics = draft::analyze_package_semantics(
-      sources,
-      loaded.package,
-      target.facts,
-      no_imports,
-      draft::CompileTimeSynthesisMode::Discover,
-      diagnostics);
-  const draft::AgentMetadataResult metadata = draft::collect_agent_metadata(
-      sources,
-      loaded.package,
-      semantics.package,
-      {},
-      diagnostics);
-  draft::AgentValidationContext typed_validation;
-  typed_validation.kind = "test";
-  typed_validation.source_relative_path = "generated_test.draft";
-  typed_validation.source = "package early_context";
-  typed_validation.source_digest = draft::sha256(typed_validation.source);
-  typed_validation.typing_complete = true;
-  draft::AgentValidationProcedureContext validation_procedure;
-  validation_procedure.name = "test_generated";
-  typed_validation.procedures.push_back(std::move(validation_procedure));
-  const std::vector<draft::AgentValidationContext> validation_context{
-      std::move(typed_validation)};
-  const draft::AgentObligationResult obligations =
-      draft::build_agent_obligations(
-          {"workspace", "early_context"},
-          sources,
-          loaded.package,
-          semantics.package,
-          semantics.constants,
-          metadata,
-          target,
-          diagnostics,
-          validation_context);
+  draft::CompileWorkspaceOptions options;
+  options.target = target;
+  options.workspace.workspace_directory = temporary.path.string();
+  options.stage = draft::CompileWorkspaceStage::DiscoverInterfaceSynthesis;
+  const draft::CompileWorkspaceResult compiled = draft::compile_workspace(
+      sources, temporary.path.string(), std::move(options), diagnostics);
   if (diagnostics.has_errors()) {
     std::cerr << draft::render_diagnostics(sources, diagnostics);
   }
-  EXPECT(state, loaded.ok);
-  EXPECT(state, semantics.ok);
-  EXPECT(state, metadata.ok);
-  EXPECT(state, obligations.ok);
+  EXPECT(state, compiled.ok);
   EXPECT(state, !diagnostics.has_errors());
+  EXPECT(state, compiled.graph.root_package.is_valid());
+  if (!compiled.ok || !compiled.graph.root_package.is_valid() ||
+      compiled.graph.root_package.value >= compiled.packages.size() ||
+      !compiled.packages[compiled.graph.root_package.value].has_value()) {
+    return;
+  }
+  const draft::AgentObligationResult &obligations =
+      compiled.packages[compiled.graph.root_package.value]->obligations;
+  EXPECT(state, obligations.ok);
   EXPECT(state, obligations.obligations.size() == 2);
   bool saw_declaration = false;
   bool saw_member = false;

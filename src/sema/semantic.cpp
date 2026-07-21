@@ -10,12 +10,12 @@
 //
 // Workspace compilation calls begin once, publishes graph results into that
 // append-only payload, and calls finish once. Ordinary direct clients use the
-// sequential package-local product coordinator in this file. The explicit
-// Discover-mode overload alone retains the aggregate composition below; it is
-// migration code for lower-level synthesis tests, not alternate semantic
-// authority. Package declaration order, diagnostic order, and imported constant
-// publication are deterministic. Relevant specification: compiler dependency
-// ordering and package `when` rules in sections 6 and 1.
+// sequential package-local product coordinator in this file. Interface
+// synthesis is intentionally absent: command-graph product tasks retain their
+// own stopped semantic packets, and this module has no aggregate discovery or
+// replay entry point. Package declaration order, diagnostic order, and imported
+// constant publication are deterministic. Relevant specification: compiler
+// dependency ordering and package `when` rules in sections 6 and 1.
 
 #include "sema/semantic.h"
 
@@ -90,58 +90,6 @@ void append_imported_constant_bindings(
   }
 }
 
-// Source syntax, rather than a private probe's SymbolId or TypeId, is the
-// equality key for interpreter progress. The vector is deliberately scanned in
-// insertion order: required layout sites are normally few, and preserving the
-// direct deterministic representation is more valuable than a second index.
-[[nodiscard]] bool already_resolved(
-    const std::vector<ResolvedIntegerExpression> &resolved,
-    SyntaxReference syntax) {
-  for (const ResolvedIntegerExpression &entry : resolved) {
-    if (entry.syntax == syntax) return true;
-  }
-  return false;
-}
-
-// Converts the interpreter's concrete result TypeId into the round-independent
-// descriptor used at a later value-parameter boundary. An untyped integer has
-// a present default descriptor so contextual conversion remains legal; a
-// non-integer TypeId returns no descriptor and is rejected by the consumer.
-[[nodiscard]] std::optional<IntegerExpressionType> integer_expression_type(
-    const SemanticPackage &package, TypeId type_id) {
-  if (!type_id.is_valid()) return std::nullopt;
-  const Type &type = package.types.type(type_id);
-  IntegerExpressionType result;
-  if (type.kind == TypeKind::UntypedInteger) return result;
-  result.bit_width = type.bit_width;
-  if (type.kind == TypeKind::SignedInteger) {
-    result.representation = IntegerExpressionRepresentation::Signed;
-    result.identity = type.name;
-  } else if (type.kind == TypeKind::UnsignedInteger) {
-    result.representation = IntegerExpressionRepresentation::Unsigned;
-    result.identity = type.name;
-  } else {
-    return std::nullopt;
-  }
-  return result;
-}
-
-// A pending constant or `when` condition may name declarations or members
-// supplied by the package's current opaque interface set. Discovery must return
-// that structural set without diagnosing the dependent expression yet. Once
-// the set is overlaid, the successor source generation either makes progress or
-// emits the ordinary precise unready diagnostic.
-[[nodiscard]] bool has_structural_synthesis_site(
-    const SemanticPackage &package) {
-  for (const SemanticSite &site : package.sites_for_read()) {
-    if (site.kind == SemanticSiteKind::SynthesisDeclaration ||
-        site.kind == SemanticSiteKind::SynthesisMember) {
-      return true;
-    }
-  }
-  return false;
-}
-
 // Returns true only for a package-level conditional branch recorded by the
 // append-only declaration collector and not yet merged into the authoritative
 // declaration generation. Conditional member and statement selections share
@@ -153,133 +101,6 @@ void append_imported_constant_bindings(
     if (region.syntax == site) return !region.materialized;
   }
   return false;
-}
-
-// Runs only after one complete declaration/signature/type pass. The full
-// interpreter can now execute calls and conditionals which the intentionally
-// small early layout evaluator cannot. Successful values are source-keyed and
-// consumed only by the next task-local attempt; no partially laid-out Type row
-// from a blocked attempt is published.
-struct RequiredIntegerResolutionResult {
-  std::size_t resolved = 0;
-  std::size_t newly_blocked = 0;
-  std::vector<SymbolId> compile_time_procedures;
-};
-
-void remember_blocked_integer(
-    std::vector<SyntaxReference> &blocked,
-    SyntaxReference syntax,
-    std::size_t &newly_blocked) {
-  if (std::find(blocked.begin(), blocked.end(), syntax) != blocked.end()) {
-    return;
-  }
-  blocked.push_back(syntax);
-  ++newly_blocked;
-}
-
-void remember_compile_time_procedures(
-    std::vector<SymbolId> &destination,
-    const std::vector<SymbolId> &source) {
-  for (SymbolId procedure : source) {
-    if (std::find(destination.begin(), destination.end(), procedure) ==
-        destination.end()) {
-      destination.push_back(procedure);
-    }
-  }
-}
-
-[[nodiscard]] RequiredIntegerResolutionResult
-resolve_required_integer_expressions(
-    const SourceManager &sources,
-    const LoadedPackage &loaded,
-    SemanticPackage &package,
-    const TargetFacts &target,
-    const ConstantTable &constants,
-    std::vector<ResolvedIntegerExpression> &resolved,
-    CompileTimeSynthesisMode synthesis_mode,
-    std::vector<SyntaxReference> &blocked_synthesis,
-    DiagnosticSink &diagnostics) {
-  RequiredIntegerResolutionResult result;
-  // Copy each row before invoking the interpreter. Constant evaluation is
-  // allowed to append semantic tables, so no reference into an append-only
-  // vector may survive that call. Re-reading size also lets a newly discovered
-  // required site run later in this same deterministic source-order pass.
-  const AppendOnlyTableView<RequiredIntegerExpression> required_expressions =
-      package.required_integer_expressions_for_read();
-  for (std::size_t index = 0;
-       index < required_expressions.size();
-       ++index) {
-    const RequiredIntegerExpression required =
-        required_expressions[index];
-    if (already_resolved(resolved, required.syntax)) continue;
-    const SyntaxTree *tree = find_tree(loaded, required.syntax.file);
-    if (tree == nullptr || !required.syntax.node.is_valid()) continue;
-    std::optional<EvaluatedConstant> value;
-    if (synthesis_mode == CompileTimeSynthesisMode::Discover) {
-      const std::size_t original_site_count =
-          package.sites_for_read().size();
-      CompileTimeExpressionDiscoveryResult discovery =
-          discover_typed_constant_expression(
-              sources,
-              loaded,
-              package,
-              target,
-              *tree,
-              required.syntax.node,
-              required.scope,
-              &constants,
-              nullptr,
-              required.expected_type);
-      value = std::move(discovery.value);
-      if (discovery.blocked_by_synthesis) {
-        // Direct recipe synthesis is usually lexically in package scope (for
-        // example `[... ]u8`), but semantically belongs to the declaration
-        // whose type is incomplete. Procedure-body sites already carry their
-        // own procedure anchor and are not changed here.
-        for (std::size_t site_index = original_site_count;
-             site_index < package.sites_for_read().size();
-             ++site_index) {
-          SemanticSite &site = package.semantic_site_mut(site_index);
-          if (site.kind == SemanticSiteKind::SynthesisExpression &&
-              !site.anchor.is_valid() && required.anchor.is_valid()) {
-            site.anchor = required.anchor;
-          }
-        }
-        remember_blocked_integer(
-            blocked_synthesis,
-            required.syntax,
-            result.newly_blocked);
-        remember_compile_time_procedures(
-            result.compile_time_procedures,
-            discovery.compile_time_procedures);
-        continue;
-      }
-    } else {
-      value = evaluate_typed_constant_expression(
-          sources,
-          loaded,
-          package,
-          target,
-          *tree,
-          required.syntax.node,
-          required.scope,
-          diagnostics,
-          &constants,
-          nullptr,
-          required.expected_type);
-    }
-    if (!value.has_value() ||
-        value->value.kind != ConstantKind::Integer) {
-      continue;
-    }
-    resolved.push_back({
-        required.syntax,
-        value->value.integer,
-        integer_expression_type(package, value->type),
-    });
-    ++result.resolved;
-  }
-  return result;
 }
 
 // DirectProductKind names the independently publishable fact owned by one local
@@ -380,8 +201,7 @@ public:
       return failed_result();
     }
     return finish_package_semantics_from_products(
-        sources_, loaded_, target_, CompileTimeSynthesisMode::Reject,
-        std::move(discovery_), diagnostics_);
+        sources_, loaded_, target_, std::move(discovery_), diagnostics_);
   }
 
 private:
@@ -798,9 +618,8 @@ private:
         const std::vector<SymbolId> completed =
             completed_declarations(product);
         attempt = resolve_package_declaration_type_product(
-            sources_, loaded_, task_package, discovery_.selections, product.root,
-            completed, discovery_.published_constants,
-            discovery_.resolved_integers, target_,
+            sources_, loaded_, task_package, discovery_.selections,
+            product.root, completed, discovery_.published_constants, target_,
             CompileTimeSynthesisMode::Reject, task_diagnostics);
       }
       if (attempt.status == TypeProductStatus::Complete) {
@@ -1013,144 +832,6 @@ SemanticAnalysisResult analyze_package_semantics(
       sources, loaded, target, imports, diagnostics);
 }
 
-PackageDeclarationDiscovery discover_package_declarations(
-    const SourceManager &sources,
-    const LoadedPackage &loaded,
-    const TargetFacts &target,
-    const AvailablePackageImports &imports,
-    CompileTimeSynthesisMode synthesis_mode,
-    DiagnosticSink &diagnostics) {
-  const std::size_t initial_error_count = diagnostics.error_count();
-  PackageDeclarationDiscovery result = begin_package_declaration_discovery(
-      sources, loaded, imports, diagnostics);
-  std::vector<ResolvedIntegerExpression> resolved_integers;
-  std::vector<SyntaxReference> blocked_integer_synthesis;
-
-  // Collect and bind unconditional declarations exactly once. Conditional
-  // declaration regions retain the lexical context required to append a branch
-  // after its boolean product becomes ready. The authoritative declaration
-  // table remains free of provisional type/member rows until the selections are
-  // complete.
-  SemanticPackage declarations = std::move(result.package);
-
-  // The terminal discovery attempt is the authoritative type payload. Earlier
-  // attempts may have observed an incomplete selected name set and are
-  // discarded whole. Keeping the package and its type diagnostics together is
-  // essential: publishing diagnostics from one attempt beside IDs from another
-  // would make source ranges look correct while semantic anchors were stale.
-  std::optional<SemanticPackage> terminal_package;
-  DiagnosticSink terminal_type_diagnostics;
-  bool materialization_failed = false;
-
-  // Type and constant discovery still uses a private copy until those facts
-  // become individual semantic products. Crucially, the copy begins from the
-  // one authoritative declaration table: unconditional source is never
-  // recollected, and each newly selected declaration branch is appended once.
-  // Each progress wave adds a selection, a resolved integer recipe, or a new
-  // synthesis blocker, so finite syntax guarantees termination without an
-  // arbitrary iteration limit.
-  while (true) {
-    DiagnosticSink provisional_type_diagnostics;
-    SemanticPackage provisional = declarations;
-    if (synthesis_mode == CompileTimeSynthesisMode::Discover) {
-      resolve_package_types(
-          sources,
-          loaded,
-          provisional,
-          result.selections,
-          resolved_integers,
-          target,
-          blocked_integer_synthesis,
-          provisional_type_diagnostics);
-    } else {
-      resolve_package_types(
-          sources,
-          loaded,
-          provisional,
-          result.selections,
-          resolved_integers,
-          target,
-          provisional_type_diagnostics);
-    }
-    DiagnosticSink provisional_discovery_diagnostics;
-    const std::size_t previous_selection_count =
-        result.selections.entries.size();
-    const CompileTimeRoundResult round = evaluate_compile_time_round(
-        sources,
-        loaded,
-        provisional,
-        target,
-        result.selections,
-        synthesis_mode,
-        false,
-        provisional_discovery_diagnostics);
-    const RequiredIntegerResolutionResult integer_round =
-        resolve_required_integer_expressions(
-            sources,
-            loaded,
-            provisional,
-            target,
-            round.constants,
-            resolved_integers,
-            synthesis_mode,
-            blocked_integer_synthesis,
-            provisional_discovery_diagnostics);
-    bool materialization_ok = true;
-    for (std::size_t selection_index = previous_selection_count;
-         selection_index < result.selections.entries.size();
-         ++selection_index) {
-      const ConditionalSelection &selection =
-          result.selections.entries[selection_index];
-      if (!conditional_declaration_needs_materialization(
-              declarations, selection.site)) {
-        continue;
-      }
-      materialization_ok = materialize_conditional_declaration(
-          sources,
-          loaded,
-          result.selections,
-          selection.site,
-          declarations,
-          diagnostics) && materialization_ok;
-    }
-    if (!materialization_ok) {
-      materialization_failed = true;
-      break;
-    }
-    if (round.new_selections == 0 && integer_round.resolved == 0 &&
-        integer_round.newly_blocked == 0) {
-      terminal_package = std::move(provisional);
-      terminal_type_diagnostics = std::move(provisional_type_diagnostics);
-      result.unresolved_conditionals = round.unresolved_conditionals;
-      result.compile_time_synthesis_procedures =
-          round.compile_time_procedures;
-      break;
-    }
-  }
-
-  if (materialization_failed || !terminal_package.has_value()) {
-    // A failed append means no coherent selected name set exists. Preserve the
-    // authoritative declarations for diagnostic inspection, but do not invent
-    // a resolved type payload by replaying a pass after the structural error.
-    result.package = std::move(declarations);
-    result.discovery_ok = false;
-    return result;
-  }
-  result.package = std::move(*terminal_package);
-  publish_diagnostics(terminal_type_diagnostics, diagnostics);
-
-  // Declaration/member synthesis runs before bodies. Install the built-in
-  // Context now so those early requests receive the same typed field set as
-  // later statement/expression synthesis.
-  ensure_runtime_context_type(result.package, diagnostics);
-  result.terminal = true;
-  result.discovery_ok =
-      diagnostics.error_count() == initial_error_count;
-  result.resolved_integers = std::move(resolved_integers);
-  result.blocked_integer_synthesis = std::move(blocked_integer_synthesis);
-  return result;
-}
-
 PackageDeclarationDiscovery begin_package_declaration_discovery(
     const SourceManager &sources,
     const LoadedPackage &loaded,
@@ -1248,8 +929,8 @@ bool finish_package_declaration_discovery(
   }
 
   ensure_runtime_context_type(discovery.package, diagnostics);
-  if (diagnostics.error_count() != initial_error_count) return false;
-  discovery.unresolved_conditionals = 0;
+  if (diagnostics.error_count() != initial_error_count)
+    return false;
   discovery.terminal = true;
   return true;
 }
@@ -1262,13 +943,9 @@ ConstantTable package_product_constant_inputs(
   return result;
 }
 
-[[nodiscard]] static SemanticAnalysisResult finish_package_semantics_impl(
-    const SourceManager &sources,
-    const LoadedPackage &loaded,
-    const TargetFacts &target,
-    CompileTimeSynthesisMode synthesis_mode,
-    PackageDeclarationDiscovery discovery,
-    bool constants_are_products,
+SemanticAnalysisResult finish_package_semantics_from_products(
+    const SourceManager &sources, const LoadedPackage &loaded,
+    const TargetFacts &target, PackageDeclarationDiscovery discovery,
     DiagnosticSink &diagnostics) {
   SemanticAnalysisResult result;
   result.package = std::move(discovery.package);
@@ -1276,77 +953,29 @@ ConstantTable package_product_constant_inputs(
   if (!discovery.terminal) return result;
 
   const std::size_t initial_error_count = diagnostics.error_count();
-  const bool defer_unready_compile_time_dependencies =
-      synthesis_mode == CompileTimeSynthesisMode::Discover &&
-      (has_structural_synthesis_site(result.package) ||
-       !discovery.blocked_integer_synthesis.empty());
-  CompileTimeRoundResult final_round;
-  if (constants_are_products) {
-    result.constants = package_product_constant_inputs(
-        result.package, discovery.published_constants);
-    // ConstantValue products own both the immutable value and its checked
-    // static type. A private package snapshot produced by another ready task
-    // may predate that publication, so the package-interface barrier installs
-    // the type payload explicitly before any validation or body task consumes
-    // the declaration generation. This is product publication, not
-    // reevaluation of the constant source.
-    for (const ConstantBinding &binding : result.constants.bindings) {
-      if (!binding.type.is_valid() ||
-          static_cast<std::size_t>(binding.symbol.value) >=
-              result.package.symbols.symbol_count()) {
-        continue;
-      }
-      Symbol &symbol = result.package.symbols.symbol_mut(binding.symbol);
-      if (symbol.kind != SymbolKind::Type) symbol.type = binding.type;
+  result.constants = package_product_constant_inputs(
+      result.package, discovery.published_constants);
+  // ConstantValue products own both the immutable value and its checked static
+  // type. A private package snapshot produced by another ready task may predate
+  // that publication, so the package-interface barrier installs the type
+  // payload explicitly before validation or body work consumes the declaration
+  // generation. This is product publication, not reevaluation of source.
+  for (const ConstantBinding &binding : result.constants.bindings) {
+    if (!binding.type.is_valid() ||
+        static_cast<std::size_t>(binding.symbol.value) >=
+            result.package.symbols.symbol_count()) {
+      continue;
     }
-    final_round = validate_compile_time_products(
-        sources,
-        loaded,
-        result.package,
-        target,
-        result.selections,
-        result.constants,
-        synthesis_mode,
-        !defer_unready_compile_time_dependencies,
-        diagnostics);
-  } else {
-    final_round = evaluate_compile_time_round(
-        sources,
-        loaded,
-        result.package,
-        target,
-        result.selections,
-        synthesis_mode,
-        !defer_unready_compile_time_dependencies,
-        diagnostics);
-    result.constants = std::move(final_round.constants);
+    Symbol &symbol = result.package.symbols.symbol_mut(binding.symbol);
+    if (symbol.kind != SymbolKind::Type)
+      symbol.type = binding.type;
   }
-  if (synthesis_mode == CompileTimeSynthesisMode::Discover) {
-    result.compile_time_synthesis_procedures =
-        std::move(final_round.compile_time_procedures);
-    RequiredIntegerResolutionResult integer_dependencies =
-        resolve_required_integer_expressions(
-            sources,
-            loaded,
-            result.package,
-            target,
-            result.constants,
-            discovery.resolved_integers,
-            synthesis_mode,
-            discovery.blocked_integer_synthesis,
-            diagnostics);
-    remember_compile_time_procedures(
-        result.compile_time_synthesis_procedures,
-        integer_dependencies.compile_time_procedures);
-  }
-  (void)check_global_initializers(
-      sources,
-      loaded,
-      result.package,
-      target,
-      result.constants,
-      result.global_initializers,
-      diagnostics);
+  const CompileTimeRoundResult final_round = validate_compile_time_products(
+      sources, loaded, result.package, target, result.selections,
+      result.constants, CompileTimeSynthesisMode::Reject, true, diagnostics);
+  (void)check_global_initializers(sources, loaded, result.package, target,
+                                  result.constants, result.global_initializers,
+                                  diagnostics);
   (void)validate_package_compile_time_expression_types(
       sources,
       loaded,
@@ -1357,67 +986,9 @@ ConstantTable package_product_constant_inputs(
       diagnostics);
   (void)validate_target_types(result.package.types, target, diagnostics);
   result.ok = discovery.discovery_ok &&
-      diagnostics.error_count() == initial_error_count &&
-      (final_round.unresolved_conditionals == 0 ||
-       defer_unready_compile_time_dependencies);
+              diagnostics.error_count() == initial_error_count &&
+              final_round.unresolved_conditionals == 0;
   return result;
-}
-
-SemanticAnalysisResult finish_package_semantics(
-    const SourceManager &sources,
-    const LoadedPackage &loaded,
-    const TargetFacts &target,
-    CompileTimeSynthesisMode synthesis_mode,
-    PackageDeclarationDiscovery discovery,
-    DiagnosticSink &diagnostics) {
-  return finish_package_semantics_impl(
-      sources,
-      loaded,
-      target,
-      synthesis_mode,
-      std::move(discovery),
-      false,
-      diagnostics);
-}
-
-SemanticAnalysisResult finish_package_semantics_from_products(
-    const SourceManager &sources,
-    const LoadedPackage &loaded,
-    const TargetFacts &target,
-    CompileTimeSynthesisMode synthesis_mode,
-    PackageDeclarationDiscovery discovery,
-    DiagnosticSink &diagnostics) {
-  return finish_package_semantics_impl(
-      sources,
-      loaded,
-      target,
-      synthesis_mode,
-      std::move(discovery),
-      true,
-      diagnostics);
-}
-
-SemanticAnalysisResult analyze_package_semantics(
-    const SourceManager &sources,
-    const LoadedPackage &loaded,
-    const TargetFacts &target,
-    const AvailablePackageImports &imports,
-    CompileTimeSynthesisMode synthesis_mode,
-    DiagnosticSink &diagnostics) {
-  PackageDeclarationDiscovery discovery = discover_package_declarations(
-      sources,
-      loaded,
-      target,
-      imports,
-      synthesis_mode,
-      diagnostics);
-  return finish_package_semantics(
-      sources,
-      loaded,
-      target,
-      synthesis_mode,
-      std::move(discovery),
-      diagnostics);
 }
 
 } // namespace draft

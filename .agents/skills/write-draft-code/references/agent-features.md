@@ -246,6 +246,13 @@ parallel waves. The compiler joins the wave, checks proposals sequentially in
 canonical package/obligation order, and sends only rejected sites through a
 correction wave. Never assume another same-wave expansion is visible merely
 because its provider call finished first.
+An early interface `...` obligation is built from the exact declaration,
+condition, constant, or declaration-owned integer product which stopped at that
+site. Its task-private semantic package is not merged with sibling packets and
+the product is not rerun to reconstruct context. Compile-time procedures reached
+by that product are checked once inside the retained packet. A member site sees
+the checked authored prefix before its hole; a body site which cannot type until
+a structural sibling exists waits for the clean successor source generation.
 Proposal checking applies the generated fragment as an in-memory source
 transition on a private copy of the current compiler graph. Body proposals
 retain completed dependency body products and update their explicit current

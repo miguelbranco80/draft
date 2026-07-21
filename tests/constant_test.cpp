@@ -394,17 +394,11 @@ when size_of(Header) == 16 {
   EXPECT(state, barrier_ready.terminal);
   EXPECT(state, !barrier_diagnostics.has_errors());
 
-  const draft::PackageDeclarationDiscovery discovery =
-      draft::discover_package_declarations(
-          synthesis_sources,
-          synthesis_loaded,
-          test_target(),
-          no_imports,
-          draft::CompileTimeSynthesisMode::Discover,
-          synthesis_diagnostics);
-  EXPECT(state, discovery.terminal);
+  // The condition task consumes the eager declaration-generation site directly.
+  // Interface discovery must not run a separate aggregate semantic fixed point
+  // merely to recreate this task input.
   const draft::SemanticSite *synthesis_condition = nullptr;
-  for (const draft::SemanticSite &site : discovery.package.sites) {
+  for (const draft::SemanticSite &site : initial.package.sites) {
     if (site.kind == draft::SemanticSiteKind::ConditionalDeclaration) {
       synthesis_condition = &site;
       break;
@@ -412,7 +406,7 @@ when size_of(Header) == 16 {
   }
   EXPECT(state, synthesis_condition != nullptr);
   if (synthesis_condition == nullptr) return;
-  draft::SemanticPackage synthesis_package = discovery.package;
+  draft::SemanticPackage synthesis_package = initial.package;
   draft::DiagnosticSink task_diagnostics;
   const draft::ConditionalProductAttempt waiting =
       draft::evaluate_conditional_product(

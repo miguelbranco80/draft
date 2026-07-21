@@ -421,9 +421,10 @@ take_ready_procedure_body_wave(
 // Checks only package procedures reached by compile-time constant evaluation.
 // The selection uses stable SymbolIds from the same SemanticPackage and is
 // applied in package declaration order, independent of evaluator call order.
-// The returned HIR is disposable during interface discovery; callers consume
-// the returned package and constants only while constructing early typed agent
-// obligations. The declaration inputs remain a clean reusable baseline.
+// During interface discovery the exact stopped product owns the returned
+// package/constants long enough to construct its provider constraint; its HIR
+// is disposable and no sibling packet is merged or replayed. The declaration
+// inputs remain a clean reusable baseline.
 [[nodiscard]] BodyCheckResult check_compile_time_procedure_bodies(
     const SourceManager &sources,
     const LoadedPackage &loaded,

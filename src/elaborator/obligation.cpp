@@ -2547,22 +2547,30 @@ std::string_view agent_loop_range_kind_name(AgentLoopRangeKind kind) {
   return "invalid";
 }
 
-AgentObligationResult build_agent_obligations(
+bool append_agent_obligation(
     const PackageIdentity &identity,
     const SourceManager &sources,
     const LoadedPackage &loaded,
     const SemanticPackage &package,
     const ConstantTable &constants,
     const AgentMetadataResult &metadata,
+    std::size_t record_index,
     const TargetProfile &target,
+    AgentObligationResult &result,
     DiagnosticSink &diagnostics,
     std::span<const AgentValidationContext> validation_context,
     const HirProgram *hir) {
-  AgentObligationResult result;
   const std::size_t initial_errors = diagnostics.error_count();
-  for (std::size_t index = 0; index < metadata.records.size(); ++index) {
-    const AgentRecord &record = metadata.records[index];
-    if (!is_obligation_kind(record.kind)) continue;
+  if (record_index >= metadata.records.size()) {
+    diagnostics.error(
+        SourceRange::invalid(),
+        "agent obligation record index is outside its metadata table");
+    result.ok = false;
+    return false;
+  }
+
+  const AgentRecord &record = metadata.records[record_index];
+  if (is_obligation_kind(record.kind)) {
     AgentObligation obligation;
     obligation.kind = record.kind;
     obligation.syntax = record.syntax;
@@ -2571,12 +2579,13 @@ AgentObligationResult build_agent_obligations(
     obligation.source_relative_path =
         source_relative_path(loaded, record.syntax.file);
     obligation.anchor_name = anchor_name(package, record.anchor);
-    obligation.occurrence = occurrence_for(metadata, index, record);
+    obligation.occurrence = occurrence_for(metadata, record_index, record);
     obligation.record_digest = record.record_digest;
     if (obligation.source_relative_path.empty()) {
       diagnostics.error(
           SourceRange::invalid(), "agent obligation has no package-relative source");
-      continue;
+      result.ok = false;
+      return false;
     }
     if (record.expected_type.is_valid()) {
       const InterfaceTypeGraph expected = export_interface_type(
@@ -2683,7 +2692,39 @@ AgentObligationResult build_agent_obligations(
     obligation.input_digest = input_digest(obligation, target);
     result.obligations.push_back(std::move(obligation));
   }
-  result.ok = diagnostics.error_count() == initial_errors;
+  const bool ok = diagnostics.error_count() == initial_errors;
+  result.ok = result.ok && ok;
+  return ok;
+}
+
+AgentObligationResult build_agent_obligations(
+    const PackageIdentity &identity,
+    const SourceManager &sources,
+    const LoadedPackage &loaded,
+    const SemanticPackage &package,
+    const ConstantTable &constants,
+    const AgentMetadataResult &metadata,
+    const TargetProfile &target,
+    DiagnosticSink &diagnostics,
+    std::span<const AgentValidationContext> validation_context,
+    const HirProgram *hir) {
+  AgentObligationResult result;
+  result.ok = true;
+  for (std::size_t index = 0; index < metadata.records.size(); ++index) {
+    (void)append_agent_obligation(
+        identity,
+        sources,
+        loaded,
+        package,
+        constants,
+        metadata,
+        index,
+        target,
+        result,
+        diagnostics,
+        validation_context,
+        hir);
+  }
   return result;
 }
 

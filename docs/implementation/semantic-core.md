@@ -303,13 +303,19 @@ Each ready task mutates only a private snapshot; deterministic publication moves
 its completed packet into the retained generation. Interface-synthesis discovery
 uses those same products: a ready declaration/member/condition/constant stop is
 blocked on one package `OpaqueSynthesisSet`, and no incomplete facet enters the
-retained generation. The current sequential oracle replays only those stopped
-products over completed canonical inputs to compose their shared provider
-context. Step 6 moves that constraint context into the task results themselves.
-Rejecting direct semantic test and subsystem entry points use the same product
-operations through a package-local sequential coordinator. Only the explicit
-direct Discover-mode entry point retains the aggregate compatibility
-composition during migration.
+retained generation. Every stopped product retains its exact private semantic
+package and constant inputs. A reached compile-time procedure is body-checked
+once into that same packet so lexical bindings, expected types, and branch facts
+are available to its provider site. A `TypeMembers` task with structural
+synthesis additionally checks and retains the authored member prefix up to the
+hole, but publishes neither that prefix nor a nominal member facet. The
+coordinator source-orders and deduplicates metadata rows, then builds each
+obligation against its owning packet; it never merges task-local IDs or reruns a
+declaration, condition, constant, or body product. A declaration/member hole may
+defer an otherwise untypeable reached body until accepted source creates the
+successor generation. Rejecting direct semantic test and subsystem entry points
+use the same product operations through a package-local sequential coordinator;
+there is no aggregate interface-discovery compatibility path.
 
 Body workers never append directly to the coordinator's retained value. Each
 returns an exact semantic append packet and one local HIR arena; the coordinator

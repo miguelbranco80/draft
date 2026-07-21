@@ -93,8 +93,8 @@ struct ConstantBinding {
 // A procedure task instead uses an append-only overlay: it reads the immutable
 // package prefix through base_ and owns only lexical `::` constants in bindings.
 // The coordinator publishes that exact suffix after accepting the task result.
-// A missing entry means not requested, not yet ready, or invalid; diagnostics
-// and CompileTimeRoundResult distinguish those cases.
+// A missing entry means not requested, not yet ready, or invalid; the product
+// status and final validator diagnostics distinguish those cases.
 struct ConstantTable {
   ConstantTable() = default;
 
@@ -226,38 +226,7 @@ struct CompileTimeRoundResult {
   ConstantTable constants;
   std::size_t new_selections = 0;
   std::size_t unresolved_conditionals = 0;
-  // Package procedure bodies reached while evaluating constants and `when`
-  // conditions. In Discover mode, the compiler body-checks exactly this set to
-  // obtain typed synthesis obligations before dependent interface work
-  // continues. IDs belong to the returned SemanticPackage round and must not
-  // survive a clean semantic rebuild.
-  std::vector<SymbolId> compile_time_procedures;
 };
-
-// Discovery result for one type/layout integer recipe. A blocked expression is
-// not a failed constant: interface resolution must replace the direct site or
-// the recorded procedure-body site before the recipe can be evaluated. The
-// procedure IDs belong to the supplied SemanticPackage round.
-struct CompileTimeExpressionDiscoveryResult {
-  std::optional<EvaluatedConstant> value;
-  bool blocked_by_synthesis = false;
-  std::vector<SymbolId> compile_time_procedures;
-};
-
-// Evaluates package constants needed by visible declaration-level `when` sites.
-// Ready boolean conditions append to selections; already selected sites are
-// skipped. When diagnose_unready is false, missing dependencies remain pending
-// for another semantic round. When true, every still-pending condition receives
-// a source-located diagnostic, which terminates a no-progress fixed point.
-[[nodiscard]] CompileTimeRoundResult evaluate_compile_time_round(
-    const SourceManager &sources,
-    const LoadedPackage &loaded,
-    SemanticPackage &package,
-    const TargetFacts &target,
-    ConditionalSelections &selections,
-    CompileTimeSynthesisMode synthesis_mode,
-    bool diagnose_unready,
-    DiagnosticSink &diagnostics);
 
 // Rechecks package `when` conditions and the complete named-constant set using
 // only already published ConstantValue products. Missing local constants stay
@@ -348,24 +317,6 @@ evaluate_integer_expression_product(
     NodeId expression,
     ScopeId scope,
     DiagnosticSink &diagnostics,
-    const ConstantTable *local_constants = nullptr,
-    const std::vector<ConstantTypeBinding> *local_types = nullptr,
-    TypeId expected = {},
-    const std::vector<ConstantStaticPackBinding> *local_packs = nullptr);
-
-// Non-diagnosing interface-discovery form for a required scalar expression.
-// It uses the same interpreter as the rejecting API above, but returns the
-// synthesis dependency instead of treating unresolved source as a constant
-// evaluation error.
-[[nodiscard]] CompileTimeExpressionDiscoveryResult
-discover_typed_constant_expression(
-    const SourceManager &sources,
-    const LoadedPackage &loaded,
-    SemanticPackage &package,
-    const TargetFacts &target,
-    const SyntaxTree &tree,
-    NodeId expression,
-    ScopeId scope,
     const ConstantTable *local_constants = nullptr,
     const std::vector<ConstantTypeBinding> *local_types = nullptr,
     TypeId expected = {},

@@ -233,10 +233,16 @@ not observe each other. The resolver copies the current command-local semantic
 state for each private proposal check, applies only that proposal through the
 same in-memory transition, and discards the candidate afterward. Accepted
 siblings are then installed together in the authoritative graph. This copy is
-not a persistent cache and performs no repeated filesystem discovery. Private
-compile-time body discovery also checks copied declaration tables, so a rejected
-proposal or speculative member round cannot append lexical rows to the retained
-surface graph.
+not a persistent cache and performs no repeated filesystem discovery. Before
+provider execution, the semantic product which first reaches a site retains its
+exact private package and constants as the typed constraint. Reached compile-
+time procedures are checked once into that packet; member synthesis retains the
+checked authored prefix before the hole. Sibling packets are source-ordered and
+deduplicated at the obligation boundary but never merged or semantically
+replayed. If a package/member hole prevents a reached body from typing, that
+body site waits for the successor source generation instead of speculating over
+an enriched package. Rejected proposals therefore cannot append lexical rows to
+the retained surface graph.
 
 The compiler treats the saved fragment as source inserted at its exact `...`
 site while retaining the original surface buffer and a composed source map.
