@@ -55,8 +55,8 @@ generation, native object/link/debug-symbol work, and validation work when those
 phases run.
 Body continuation reports `package body starts`, `procedure bodies checked`,
 `procedure body ready waves`, and `external procedure bodies materialized`.
-They distinguish a new package body generation, exact body tasks actually run,
-workspace-wide frozen worker waves, and previously unseen cross-package
+They distinguish package body-work initialization, exact body tasks actually
+run, workspace-wide frozen worker waves, and previously unseen cross-package
 specializations.
 The following `ABI classification` phase reports `ABI classification ready
 waves`, `ABI classifications`, and `ABI classification worker slots`. These are

@@ -105,7 +105,7 @@ struct AgentMetadataResult {
 
 // Workspace body selection supplies the exact declaration and selected-body
 // sites explicitly. This prevents an unselected completed specialization in an
-// append-only package generation from creating provider work. Every site's IDs
+// append-only package tables from creating provider work. Every site's IDs
 // still address package, which must outlive this synchronous call.
 [[nodiscard]] AgentMetadataResult collect_agent_metadata(
     const SourceManager &sources,

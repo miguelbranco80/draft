@@ -1,11 +1,11 @@
-# Semantic work graph target state
+# Semantic work graph
 
-Status: desired end-state architecture, not a description of the current
-implementation and not normative language semantics. The specification remains
-authoritative, especially the dependency-ordered elaboration rules in
+Status: implemented bootstrap architecture, not normative language semantics.
+The specification remains authoritative, especially the dependency-ordered
+elaboration rules in
 [Compiler architecture](../specification/06-compiler.md#dependency-ordered-elaboration).
-The active replacement and deletion sequence is tracked in the
-[implementation plan](semantic-work-graph-implementation-plan.md).
+The completed replacement and deletion sequence is retained in the
+[implementation record](semantic-work-graph-implementation-plan.md).
 
 ## Objective
 
@@ -59,9 +59,12 @@ expression, or name lookup.
 
 | Product or barrier | Required meaning |
 | --- | --- |
+| Target profile | One immutable set of semantic target facts precedes every target-dependent type, ABI, MIR, and native product. |
+| Source generation | One selected authored/generated source set owns the product slice derived from those exact bytes. |
 | Parsed file | Loading, lexing, and parsing are eager and independent per file. |
 | Package imports | The acyclic package graph orders interface dependencies. |
 | Package name set | All authored declarations plus accepted declaration/member expansions are known before dependent lookup proceeds. |
+| Package interface | The package's exported names, concrete generic results, and closed effect/return/write contracts are immutable consumer inputs. |
 | Opaque `...` set | Ready sibling sites are frozen, checked privately, and merged transactionally; siblings cannot observe one another. |
 | Constant value | Evaluation is requested by dependants; a declaration cycle is an error. |
 | Type identity | The nominal or structural identity exists even when later facets are incomplete. |
@@ -133,20 +136,22 @@ becomes demand-only, its conservative roots must include:
 An uncertain target is emitted, not silently discarded. This optimization must
 never weaken whole-program checking.
 
-## Completion criteria
+## Implemented boundary
 
-The target state is reached when package retry rounds and retained-package
-rechecking are gone; generic instance and type-layout demand are explicit graph
-products; procedure workers publish isolated immutable bodies; effects and
-denials close through explicit SCCs; MIR is produced per concrete procedure;
-and deterministic parallel scheduling is qualified at multiple worker counts.
+Package retry rounds and retained-package rechecking are gone. Generic instance
+and type-layout demand are explicit graph products; procedure workers publish
+isolated immutable bodies; effects and denials close through explicit SCCs; MIR
+is produced per concrete procedure; and deterministic parallel scheduling is
+qualified at one and four semantic workers.
 
-The existing package-wide semantic tables, body work-key retention,
-declaration fixed-point reconstruction, package-wide HIR/MIR passes, and closed
-immutable work-graph executor are migration constraints, not parts of the final
-design. The executor remains useful for already frozen provider, procedure-body,
-and native ready sets, but the semantic coordinator owns deterministic dynamic
-discovery and publication between those runs.
+The bootstrap retains package-owned canonical semantic tables because stable
+SymbolId, ScopeId, and TypeId values need one publication domain. Workers never
+mutate those tables concurrently: each ready task reads a frozen prefix and
+returns a task-owned suffix and exact row patches, which the coordinator
+publishes in product order. The bounded executor runs only a frozen ready set;
+the semantic coordinator owns dynamic discovery and publication between waves.
+There is no body work-key retention, declaration snapshot chain, aggregate HIR
+or MIR owner, or closed immutable semantic DAG.
 
 The intentionally rejected endpoints are equally important: no node per
 expression, no universal incremental-query engine, no callback or future maze,

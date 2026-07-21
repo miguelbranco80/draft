@@ -1,8 +1,8 @@
 # Semantic work graph implementation plan
 
-Status: active implementation sequence for reaching the
-[semantic work graph target state](semantic-work-graph.md). This document tracks
-replacement and deletion work; it does not define Draft semantics.
+Status: completed implementation record for the
+[semantic work graph](semantic-work-graph.md). This document preserves the
+replacement and deletion sequence; it does not define Draft semantics.
 
 ## Rule for every step
 
@@ -43,9 +43,12 @@ gate.
    individual products. Forward type aliases and type-valued constant uses add
    exact `SymbolId` edges; aggregate layout adds exact type-facet edges; a
    selected package branch appends only its new declarations and conditions.
-   Blocked attempts own disposable package copies and diagnostics, while the
-   coordinator publishes successful snapshots, structural constant types,
-   layouts, selections, and values in `SemanticProductId` order. The
+   Every declaration task reads one frozen patch-enabled semantic prefix and
+   owns only appended rows, exact replacements of collected type/symbol rows,
+   and private diagnostics. Blocked attempts discard that task output; complete
+   tasks return append/patch packets which the coordinator publishes with
+   structural constant types, layouts, selections, and values in
+   `SemanticProductId` order. The
    `PackageNameSet` barrier closes only after those indexed products complete.
    Imported interface nominals are immutable upstream inputs, and symbolic
    parametric templates intentionally receive member-type products but no
@@ -68,8 +71,8 @@ gate.
    are now separate `TypeMembers` and `TypeMemberTypes` products: the first
    publishes source-order symbols, and the second fills those exact symbols only
    after the namespace is complete. Declaration-owned compile-time calls also
-   retain exact procedure-product edges even when a sequential task snapshot
-   already contains the completed signature.
+   retain exact procedure-product edges even when the frozen task view already
+   contains the completed signature.
 
    Interface-synthesis discovery now uses the same declaration products as
    complete compilation. A declaration, member, condition, named constant, or
@@ -77,10 +80,10 @@ gate.
    blocks that exact product on one package `OpaqueSynthesisSet`, exhausts
    independent ready work, and withholds PackageInterface. Product-driven tests
    prove source-order sibling discovery, dependency-delayed sites, declaration
-   anchors, typed integer boundaries, and the explicit graph edge. The current
-   coordinator retains the exact private package/constant packet of every
-   stopped product. Step 6 consumes those packets directly as typed provider
-   constraints.
+   anchors, typed integer boundaries, and the explicit graph edge. The
+   coordinator materializes the exact private task view only when a stopped
+   product must become typed provider context. Step 6 consumes that context
+   directly.
 
    Rejecting direct semantic test and subsystem entry points now use a small
    package-local sequential product coordinator. This migration exposed and
@@ -235,19 +238,20 @@ gate.
    report its exact ready `...` set after producing the typed constraint needed
    by the provider. Freeze opaque siblings, run providers independently, check
    proposals privately, merge accepted ordinary source canonically, and create
-   the successor source-generation products. Delete speculative enriched
-   package copies and any retained-package recheck path.
+   the successor source-generation products. No speculative semantic successor
+   can become canonical, and there is no retained-package recheck path.
 
-   Each declaration, condition, constant, or declaration-owned integer task now
-   retains its private semantic package and constants when it reports
-   `WaitingForSynthesis`. Reached compile-time procedures are checked once into
-   that packet. A structural member task checks only the authored prefix before
-   its opaque hole, while package/member holes may defer dependent body sites to
-   the successor source generation. Provider-surface composition source-orders
-   and deduplicates records but builds every obligation against its exact owning
-   packet; task-local semantic IDs are never merged. Existing bounded provider
-   waves, private proposal checks, transactional accepted-source publication,
-   and successor products complete the wait transition. Aggregate discovery,
+   A declaration, condition, constant, or declaration-owned integer task
+   materializes its exact frozen view only when it reports
+   `WaitingForSynthesis`; successful ordinary products publish append packets
+   instead. Reached compile-time procedures are checked once into that private
+   context. A structural member task checks only the authored prefix before its
+   opaque hole, while package/member holes may defer dependent body sites to the
+   successor source generation. Provider-surface composition source-orders and
+   deduplicates records but builds every obligation against its exact owning
+   context; task-local semantic IDs are never merged. Bounded provider waves,
+   private proposal checks, transactional accepted-source publication, and
+   successor products complete the wait transition. Aggregate discovery,
    stopped-product replay, and compatibility state are deleted.
 
 7. **Flow closure and denials — complete.** Publish direct procedure summaries separately,
@@ -311,7 +315,7 @@ gate.
    unchanged semantic type tables, identical one-/four-worker graphs and LLVM,
    and a single ready wave spanning independent packages.
 
-9. **Parallel semantic waves — implementation complete; final qualification remains.** Run each frozen ready wave with bounded workers.
+9. **Parallel semantic waves — complete.** Run each frozen ready wave with bounded workers.
    Workers write only task slots; the coordinator sorts by stable product ID,
    interns canonical discoveries, publishes diagnostics, and adds graph work.
    Make compile-time resource accounting task-local. Qualify one-worker and
@@ -328,15 +332,17 @@ gate.
    independent task slots and publish in stable product order; the private
    package-snapshot chain is deleted. Name-set and interface barriers run after
    read-only tasks in one stable chain because validation loading may extend
-   `SourceManager`. Final qualification still audits task-local resource limits,
-   generated-source identity, canonical diagnostics, and failure selection.
+   `SourceManager`. Compile-time evaluator and declaration recursion limits live
+   on their individual task objects. One-/four-worker tests compare exact
+   synthesis requests, manifest bytes, resolved-program identity, product graph
+   rows, declaration/body diagnostics, and failure selection.
 
 10. **Native product consumption — complete.** Emit independent machine functions from MIR
     products, keep package static data and assembly explicit, and perform symbol,
     section, relocation, and linker-input layout as deterministic publication
     barriers. Start conservatively by emitting every concrete procedure; any
-    later demand-only emission must use the roots defined by the target-state
-    document.
+    later demand-only emission must use the roots defined by the semantic work
+    graph document.
 
     `PackageStaticData` emits the complete non-function LLVM unit in its own
     task. Every concrete `MirProcedure` row produces one live `MachineFunction`
@@ -350,7 +356,7 @@ gate.
    split-module verification, artifact ordering, native parity, and
    byte-for-byte artifact determinism.
 
-11. **Final-state deletion and qualification.** Remove `PackageSemanticProgress`,
+11. **Final-state deletion and qualification — complete.** Remove `PackageSemanticProgress`,
     declaration/body generations, semantic retry counters, package-wide HIR/MIR
     ownership, closed-graph assumptions in semantic code, and stale docs/tests.
     Update the Draft coding skill to teach only the final compiler behavior.
@@ -364,14 +370,23 @@ gate.
     Workspace MIR payloads likewise live only at their `MirProcedure` product
     IDs. The HIR projection, `MirProgram`, package MIR lowering, and
     complete-package LLVM compatibility paths are deleted. Sequential
-    declaration snapshots are also deleted; only the final qualification and
-    stale-state audit remain in this step.
+    declaration snapshots are also deleted. The current implementation docs
+    and embedded Draft coding skill describe only frozen semantic prefixes,
+    task-owned outputs, and deterministic publication; the superseded compiler
+    graph plan is retained under `docs/history/`.
+
+    Final qualification on 2026-07-21 passed all 72 tests in the normal LLVM 22
+    build and all 72 tests under LLVM 22 ASan/UBSan. That closure includes both
+    target checks, native determinism and backend parity, provider-free and
+    deterministic fake-provider resolution fixtures, explicit transitions for
+    every product kind, and a generated 256-procedure package compiled with one
+    and four semantic workers.
 
 ## Completion evidence
 
-Completion requires both positive proof and absence checks:
+Completion evidence consists of both positive proof and absence checks:
 
-- every product and barrier named by the target-state table has an owning row,
+- every product and barrier named by the semantic-work-graph table has an owning row,
   transition test, and real compiler consumer;
 - no semantic package retry, retained-package recheck, hidden on-demand
   recursion, shared worker mutation, or package-wide MIR loop remains;

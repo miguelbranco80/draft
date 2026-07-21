@@ -83,8 +83,8 @@ struct ConstantBinding {
   SymbolId symbol;
   ConstantValue value;
   // The checked static type travels with the immutable value product. Relying
-  // only on Symbol::type would let a stale private declaration snapshot erase
-  // this fact before body checking consumes the constant.
+  // only on Symbol::type would let declaration task state which predates
+  // publication hide this fact before body checking consumes the constant.
   TypeId type;
 };
 
@@ -140,8 +140,8 @@ enum class CompileTimeProductStatus {
   Error,
 };
 
-// ConstantProductAttempt is task-owned. The caller supplies a private semantic
-// package snapshot because successful evaluation may infer the root Symbol's
+// ConstantProductAttempt is task-owned. The caller supplies private semantic
+// task state because successful evaluation may infer the root Symbol's
 // type, intern an exact structural type value, or discover synthesis metadata.
 // Only Complete may be published. Blocked separately names unfinished
 // declaration classifications, constant values, and exact type facets. Its
@@ -172,7 +172,7 @@ struct IntegerExpressionProductAttempt {
   std::vector<SymbolId> constant_dependencies;
   std::vector<TypeFacetDependency> type_dependencies;
   // Every concrete procedure entered while evaluating the recipe, including
-  // calls which completed against a provisional task snapshot. The enclosing
+  // calls which completed against provisional task state. The enclosing
   // declaration resolver compares these IDs with its explicitly completed
   // graph prerequisites so an already-populated signature cannot hide an edge.
   std::vector<SymbolId> reached_procedures;
@@ -263,7 +263,7 @@ struct CompileTimeRoundResult {
 // constants, or incomplete type facets are returned as explicit blockers. The
 // function never recursively completes another graph product and publishes no
 // mutation by itself. A blocked attempt contributes no diagnostics because its
-// private evaluation may have observed only a provisional semantic snapshot.
+// private evaluation may have observed only provisional semantic task state.
 [[nodiscard]] IntegerExpressionProductAttempt
 evaluate_integer_expression_product(
     const SourceManager &sources, const LoadedPackage &loaded,

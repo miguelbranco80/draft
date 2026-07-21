@@ -6,7 +6,7 @@
 // suffix numbers are not canonical positions. This module translates every
 // process-local reference, interns equal structural types, appends the owned
 // rows. Procedure publication additionally rewrites local HIR and discovered
-// work roots to the resulting canonical package generation.
+// work roots to the resulting canonical package tables.
 //
 // The operation is deliberately a plain deterministic publisher, not a query
 // system or a concurrent mutation layer. Workers never call it. The package
@@ -58,9 +58,9 @@ struct SemanticTaskPublication {
 
 // Publishes task.semantic into package/constants and rewrites every semantic ID
 // retained by task.program and task.discovered_work. The packet may have been
-// produced from an earlier prefix of the same package generation. A malformed
-// or non-prefix packet is diagnosed and leaves the caller with an invalid
-// compilation result; source errors are not reported at this layer.
+// produced from an earlier prefix of the same package publication domain. A
+// malformed or non-prefix packet is diagnosed and leaves the caller with an
+// invalid compilation result; source errors are not reported at this layer.
 [[nodiscard]] bool publish_body_task_semantics(
     SemanticPackage &package,
     ConstantTable &constants,

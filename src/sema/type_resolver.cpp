@@ -184,9 +184,10 @@ public:
             semantic.imported_type_instantiation_requests_for_read().size()),
         goal_(goal), synthesis_mode_(synthesis_mode) {
     // A product attempt may consume only declarations that the coordinator has
-    // already published. Their semantic payloads are present in this snapshot,
-    // so mark those rows resolved without re-entering their syntax. Every other
-    // declaration stays Unvisited and becomes an explicit blocker if reached.
+    // already published. Their semantic payloads are present in this frozen
+    // task view, so mark those rows resolved without re-entering their syntax.
+    // Every other declaration stays Unvisited and becomes an explicit blocker
+    // if reached.
     if (product_root_.is_valid()) {
       for (SymbolId completed : completed_declarations) {
         if (completed.is_valid() && completed != product_root_ &&
@@ -210,7 +211,7 @@ public:
   }
 
   // Resolves one declaration without recursively scheduling another package
-  // declaration. The caller owns a private SemanticPackage snapshot; partial
+  // declaration. The caller owns a private SemanticPackage task view; partial
   // mutations are intentionally left there for disposal when a blocker is
   // found, avoiding rollback machinery in the resolver's direct algorithms.
   [[nodiscard]] DeclarationTypeProductAttempt resolve_product() {
@@ -3681,8 +3682,8 @@ private:
       const TypeId array = semantic_.types.array(element, *count);
       // Structural identity is available immediately, but an inline array has
       // no natural layout until its element does. In product mode retain that
-      // distinction as an explicit edge so the task snapshot is discarded and
-      // rebuilt once, after the element layout product publishes.
+      // distinction as an explicit edge so this task view is discarded and
+      // attempted again after the element layout product publishes.
       if (product_root_.is_valid() &&
           semantic_.types.facet_state(array, TypeFacet::NaturalLayout) ==
               TypeFacetState::Waiting &&
@@ -4312,7 +4313,7 @@ private:
   // Evaluates a declaration-owned integer recipe without introducing a graph
   // node for the expression itself. The containing declaration product is the
   // coherent scheduling unit. If the narrow evaluator cannot represent the
-  // source, the ordinary constant interpreter runs against the task snapshot
+  // source, the ordinary constant interpreter runs against the task view
   // and returns exact prerequisites rather than completing them recursively.
   // Successful typed results are retained only for this attempt so the nearby
   // contextual-type check observes precisely the value just computed.

@@ -144,7 +144,7 @@ struct ExplicitProcedureArguments {
 // durable ParametricInstanceRecord. A fresh checker reconstructs exactly the
 // instance it is about to check; instances discovered by that body are retained
 // in SemanticPackage for later roots. All referenced symbols and types live for
-// the complete body-owned SemanticPackage generation.
+// the complete canonical SemanticPackage tables owned by its body work state.
 struct ProcedureInstance {
   SymbolId source;
   SymbolId symbol;
@@ -4300,7 +4300,7 @@ private:
           instance.arguments == requested_arguments &&
           instance.pack_types == pack_types) {
         if (!preferred_name.empty() && !instance.externally_requested) {
-          // A retained body generation may already contain the same
+          // Retained body work may already contain the same
           // specialization because the defining package calls its own public
           // template. A later consumer demand does not require another body:
           // give the existing private symbol the canonical native linkage name

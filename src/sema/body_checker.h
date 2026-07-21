@@ -30,16 +30,16 @@ namespace draft {
 
 // ProcedureBodyHirResult permanently owns the typed HIR arena produced by one
 // exact authored/template/instance root. HIR-local IDs begin at zero in every
-// row and never address another row. Semantic IDs address the package generation
-// in the containing PackageBodyWorkState. ok mirrors that root's recoverable
-// validity; an invalid row remains available for diagnostics but cannot reach
-// lowering.
+// row and never address another row. Semantic IDs address the canonical package
+// tables in the containing PackageBodyWorkState. ok mirrors that root's
+// recoverable validity; an invalid row remains available for diagnostics but
+// cannot reach lowering.
 struct ProcedureBodyHirResult {
   bool ok = false;
   SymbolId symbol;
   HirProgram program;
   // Outbound requests are copied after deterministic publication has
-  // translated every task-local ID into the canonical package generation.
+  // translated every task-local ID into the canonical package tables.
   // Site indices address the containing PackageBodyWorkState's append-only
   // semantic-site table, whose rows may later receive loop-range enrichment.
   // Together these fields record exactly which body discovered each item, so
@@ -193,7 +193,7 @@ struct PackageBodyWorkState {
   std::optional<std::size_t> active_wave_end;
 };
 
-// Starts a clean body generation from immutable declaration inputs. Runtime
+// Starts a clean body work state from immutable declaration inputs. Runtime
 // context construction and externally requested seed materialization happen
 // once here; no procedure body is checked. Authored roots precede seed roots in
 // stable declaration/seed order.

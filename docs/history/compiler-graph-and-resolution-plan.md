@@ -1,10 +1,11 @@
-# Compiler graph and resolution simplification plan
+# Historical compiler graph and resolution simplification plan
 
-Status: implemented on 2026-07-19. This is a non-normative architecture and
-completion record; the language specification and command reference remain
-authoritative for behavior. Its package-interface scheduling record describes
-the completed v140 foundation; current replacement work is tracked by the
-[semantic work graph implementation plan](semantic-work-graph-implementation-plan.md).
+Status: implemented on 2026-07-19 and subsequently superseded by the completed
+semantic work graph. This is a chronological, non-normative record; the
+language specification and command reference remain authoritative for behavior.
+The current compiler architecture is described by the
+[semantic work graph](../implementation/semantic-work-graph.md) and its
+[completion record](../implementation/semantic-work-graph-implementation-plan.md).
 
 ## Purpose
 

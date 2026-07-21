@@ -2104,7 +2104,7 @@ package_type_facet_product(const CompileWorkspaceResult &result,
 
 // Imports every completed canonical generic result named by product's current
 // dependency set. A declaration or outer generic task receives a fresh private
-// package snapshot; importing here makes the result available through the
+// package task view; importing here makes the result available through the
 // ordinary ImportedType provenance lookup without mutating shared state or
 // teaching the type resolver about command-level product IDs.
 [[nodiscard]] bool import_completed_generic_dependencies(
@@ -2151,7 +2151,7 @@ package_type_facet_product(const CompileWorkspaceResult &result,
 // it contains no symbolic parameters: every runtime-bearing row exported to the
 // owner must also have its natural layout. Structural rows reduce recursively
 // to the nominal layout products that can make progress. requester_package is
-// the exact task snapshot which produced the request; consulting a retained
+// the exact task view which produced the request; consulting a retained
 // package by phase would make TypeIds depend on hidden coordinator state.
 [[nodiscard]] bool collect_generic_argument_layout_dependencies(
     const CompileWorkspaceResult &result, PackageId requester,
@@ -2502,7 +2502,7 @@ completed_declaration_dependencies(const CompileWorkspaceResult &result,
         });
 
     // The same authored package docs and eager agent sites occur in several
-    // task snapshots. Keep their first source-ordered owner; equal syntax and
+    // task views. Keep their first source-ordered owner; equal syntax and
     // kind are one semantic site, while different kinds remain distinct even if
     // malformed recovery assigned the same syntax node.
     std::vector<SurfaceRecord> unique_records;

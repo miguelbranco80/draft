@@ -6,7 +6,7 @@
 // The coordinator later translates those task-local IDs and publishes the
 // suffix in stable product order. Procedure bodies and interface-level generic
 // owner products use this same representation; neither returns or replaces a
-// complete package snapshot.
+// complete package successor.
 //
 // The source package and constants must outlive every view created from them.
 // Body and generic workers may not mutate a retained prefix row. Declaration
@@ -28,7 +28,7 @@ namespace draft {
 // SemanticTaskPrefix records every append-only table boundary visible to one
 // task. Counts are table-domain sizes, not byte offsets. Publication accepts an
 // older prefix after earlier siblings have appended canonical rows, but rejects
-// a prefix which is not present in the current package generation.
+// a prefix which is not present in the current canonical package tables.
 struct SemanticTaskPrefix {
   std::size_t type_count = 0;
   std::size_t scope_count = 0;

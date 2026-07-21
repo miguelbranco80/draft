@@ -4,9 +4,9 @@ This document records bootstrap representations and algorithms for lexical class
 
 ## Type completion facets
 
-Status: payload representation, declaration products, and the post-body ABI
-facet are implemented for workspace compilation and rejecting direct clients;
-the discovery-only direct compatibility composition remains.
+Status: implemented for workspace compilation and rejecting direct clients,
+including declaration products and the post-body ABI facet. There is no
+aggregate discovery compatibility path.
 
 `TypeStore` retains one `TypeCompletion` row beside every canonical `Type` row.
 Allocation completes type identity. Member-name completeness, member-type
@@ -38,8 +38,8 @@ nominal identities. One `TypeMembers` product publishes each nominal's selected
 source-order member symbols, and its dependent `TypeMemberTypes` product fills
 those stable symbols without redeclaring them. Non-nominal declaration products
 resolve authored signatures and type aliases. Every product consumes only its
-explicit completed graph prerequisites; a valid payload in a sequential task
-snapshot cannot stand in for a missing edge. A separate `TypeNaturalLayout`
+explicit completed graph prerequisites; a valid payload in a frozen task view
+cannot stand in for a missing edge. A separate `TypeNaturalLayout`
 product consumes completed member types and publishes physical layout. Symbolic
 parametric templates deliberately stop after member types because their
 canonical concrete applications, not the template pattern, own runtime layout.
@@ -70,9 +70,9 @@ only then retries the packet. Unselected branches remain opaque. The completed
 condition frontier feeds `TypeMembers`; `TypeMemberTypes` depends on that stable
 namespace and may add its own exact declaration, constant, generic-demand, or
 type-facet prerequisites. Workspace interface-synthesis discovery uses these
-same products and suspends exact producers on the package opaque set. Only the
-lower-level direct Discover-mode API retains aggregate compatibility until step
-6 gives it task-owned synthesis constraints.
+same products and suspends exact producers on the package opaque set. Rejecting
+direct clients use the package-local product coordinator; there is no aggregate
+Discover-mode compatibility path.
 
 Named-constant evaluation has a single-product entry point. It accepts
 an immutable table of already published constants, evaluates only its named
@@ -84,14 +84,14 @@ classification and completes without publishing a value when the row is a type
 alias. Blocked attempts discard their private mutations and diagnostics.
 Complete workspace compilation and rejecting direct analysis schedule every
 final package-scope constant as a real `ConstantValue` product. The
-product-aware finalizer consumes the published constant table and rechecks
+product-aware finalizer consumes the published constant table and validates
 required storage/target contracts without recursively recomputing named
 constants. The direct sequential coordinator also exhausts independent products
 after a source error, then runs only the diagnostic validation closure; it does
 not manufacture values for failed or blocked products. A long acyclic constant
 chain therefore advances through graph edges rather than consuming recursive
-constant-evaluator depth. The discovery-only direct compatibility API retains
-aggregate constant evaluation until step 6.
+constant-evaluator depth. The deleted aggregate discovery API is not a second
+way to compute these values.
 Ready constants imported through dependency interfaces are not duplicated as
 consumer products. The finalizer copies their already translated values under
 the consumer-local proxy IDs before body checking and validation context use.
@@ -299,16 +299,18 @@ declaration table. Unconditional declarations and existing IDs are not
 recollected. Complete workspace compilation publishes type identity, selected
 member names, member types, conditional choices, natural layout, and final named
 constants as individual semantic products before the package-interface barrier.
-Each ready task mutates only a private snapshot; deterministic publication moves
-its completed packet into retained package state. Interface-synthesis discovery
+Each ready task mutates only a private task view; deterministic publication
+moves its completed append/patch packet into retained package state.
+Interface-synthesis discovery
 uses those same products: a ready declaration/member/condition/constant stop is
 blocked on one package `OpaqueSynthesisSet`, and no incomplete facet enters the
-retained package state. Every stopped product retains its exact private semantic
-package and constant inputs. A reached compile-time procedure is body-checked
-once into that same packet so lexical bindings, expected types, and branch facts
-are available to its provider site. A `TypeMembers` task with structural
-synthesis additionally checks and retains the authored member prefix up to the
-hole, but publishes neither that prefix nor a nominal member facet. The
+retained package state. Every stopped product materializes its exact private
+semantic and constant inputs for provider context. A reached compile-time
+procedure is body-checked once into that context so lexical bindings, expected
+types, and branch facts are available to its provider site. A `TypeMembers`
+task with structural synthesis additionally checks and retains the authored
+member prefix up to the hole, but publishes neither that prefix nor a nominal
+member facet. The
 coordinator source-orders and deduplicates metadata rows, then builds each
 obligation against its owning packet; it never merges task-local IDs or reruns a
 declaration, condition, constant, or body product. A declaration/member hole may
@@ -460,6 +462,12 @@ between waves. The fixed point is complete when no body is pending and neither
 the selected program nor its canonical demand sets change. This makes worker
 count a scheduling choice while retaining direct, deterministic package-local
 ID interning.
+
+Compile-time resource accounting follows the same ownership rule. A constant
+or condition evaluator owns its step, dependency-depth, and procedure-recursion
+counters; a declaration resolver owns its declaration-depth guard. No package
+or scheduler counter is consumed by independently ready siblings, so changing
+worker count cannot change which task reaches a limit.
 
 That fixed point exposes the complete source-semantic TypeId prefix. The
 coordinator appends one `TypeAbiClassification` product per TypeId and evaluates
@@ -712,7 +720,7 @@ a concrete type from B and B's resulting layout requests a private recipe from
 C, B's product reports the portable nested request. The coordinator interns
 that request into C's exact canonical key and adds the resulting product as a
 dependency of B's product. Once C publishes its graph, B retries from its
-private owner snapshot with that graph imported. Product states and graph cycle
+private owner task view with that graph imported. Product states and graph cycle
 diagnostics replace request digests, progress sets, owner recursion, and package
 rebuilds.
 

@@ -92,7 +92,7 @@ void append_imported_constant_bindings(
 
 // Returns true only for a package-level conditional branch recorded by the
 // append-only declaration collector and not yet merged into the authoritative
-// declaration generation. Conditional member and statement selections share
+// declaration tables. Conditional member and statement selections share
 // ConditionalSelections but are consumed by their later owning phases.
 [[nodiscard]] bool conditional_declaration_needs_materialization(
     const SemanticPackage &package, SyntaxReference site) {
@@ -131,7 +131,7 @@ enum class DirectProductState {
 // append-only products_ vector. root is valid for declaration, layout, and
 // constant facts; condition is valid only for a condition fact. type is the
 // nominal TypeId captured when a layout row is created and belongs to the
-// coordinator's canonical SemanticPackage generation. Dependency indices name
+// coordinator's canonical SemanticPackage tables. Dependency indices name
 // earlier or later rows in the same vector and are sorted after dynamic edges
 // are added; they never escape the call or enter a content hash.
 struct DirectSemanticProduct {
@@ -602,7 +602,7 @@ private:
     DirectSemanticProduct &product = products_[index];
     // Product routines receive a private sink for the same reason they receive
     // a private SemanticPackage: a blocked attempt may have observed an
-    // incomplete prerequisite snapshot. Only a terminal attempt publishes its
+    // incomplete prerequisite state. Only a terminal attempt publishes its
     // diagnostics. Coordinator integration failures continue to use the outer
     // sink directly because they are not speculative source diagnostics.
     DiagnosticSink task_diagnostics;
@@ -956,10 +956,11 @@ SemanticAnalysisResult finish_package_semantics_from_products(
   result.constants = package_product_constant_inputs(
       result.package, discovery.published_constants);
   // ConstantValue products own both the immutable value and its checked static
-  // type. A private package snapshot produced by another ready task may predate
+  // type. Private condition or constant task state may predate
   // that publication, so the package-interface barrier installs the type
   // payload explicitly before validation or body work consumes the declaration
-  // generation. This is product publication, not reevaluation of source.
+  // publication into the canonical declaration tables. This is product
+  // publication, not reevaluation of source.
   for (const ConstantBinding &binding : result.constants.bindings) {
     if (!binding.type.is_valid() ||
         static_cast<std::size_t>(binding.symbol.value) >=

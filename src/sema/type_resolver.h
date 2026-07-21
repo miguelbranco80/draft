@@ -78,11 +78,11 @@ void discover_package_member_condition_sites(
     DiagnosticSink &diagnostics);
 
 // Resolves exactly root in task_package. completed_declarations are immutable
-// products already present in that snapshot. Any other forward declaration is
-// recorded as a blocker rather than resolved recursively. A nominal root
-// requires an already published member namespace, fills those symbols' declared
-// types, and advances TypeFacet::MemberTypes while deliberately leaving
-// NaturalLayout Waiting for its separate product. The function keeps blocked-
+// products already present in that frozen task view. Any other forward
+// declaration is recorded as a blocker rather than resolved recursively. A
+// nominal root requires an already published member namespace, fills those
+// symbols' declared types, and advances TypeFacet::MemberTypes while
+// deliberately leaving NaturalLayout Waiting for its separate product. The function keeps blocked-
 // attempt diagnostics private and publishes diagnostics only for a terminal
 // Error. task_package is suitable for coordinator publication only when the
 // returned status is Complete.

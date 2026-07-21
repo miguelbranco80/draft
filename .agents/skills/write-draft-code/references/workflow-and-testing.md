@@ -262,13 +262,13 @@ command-local graph. A declaration/member expansion reanalyzes its package and
 transitive import consumers. A body expansion reanalyzes only its containing
 package, retains completed dependency and consumer bodies, and recomputes
 affected selection and closure. It is not another workspace load and creates no
-persistent cache. The body counters distinguish new package generations, exact
-procedure checks, workspace-wide frozen ready waves, and newly materialized
-cross-package specializations. Selection-only reuse performs no BodyChecker
-work and has no separate reuse counter. Effect, denial, metadata, or obligation
-closure may still be recomputed after a selected dependency changes. Counts are
-command totals and include separately selected validation-context graphs when
-those are needed.
+persistent cache. The semantic counters distinguish successor source
+transitions, exact procedure checks, workspace-wide frozen ready waves, and
+newly materialized cross-package specializations. Selection-only reuse performs
+no BodyChecker work and has no separate reuse counter. Effect, denial, metadata,
+or obligation closure may still be recomputed after a selected dependency
+changes. Counts are command totals and include separately selected
+validation-context graphs when those are needed.
 An additional compiler pass is expected only for a genuinely different source
 selection, such as the typed test or benchmark graph used as synthesis context.
 

@@ -11,9 +11,10 @@
 // nominal and canonical generic layout, conditional choice, named-constant,
 // synthesis, and package-interface facts; dependencies publish before
 // consumers. Declaration, generic-owner, and constant workers evaluate one root
-// against immutable published prerequisites; the coordinator publishes accepted
-// package snapshots, structural type values, layouts, branch selections, and
-// constants in product-ID order. An unchanged source
+// against immutable published prerequisites; declaration and generic workers
+// return append-only suffixes plus exact collected-row patches, while constant
+// workers return task-owned values or selections. The coordinator publishes
+// accepted results in product-ID order. An unchanged source
 // graph advances from interface discovery to semantic closure to target
 // lowering. A checked source overlay appends a successor source generation and
 // new declaration products only for affected packages, then changes the

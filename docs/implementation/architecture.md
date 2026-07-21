@@ -6,10 +6,10 @@ implementation plan. Language semantics remain owned by the specification.
 This document describes the durable phase boundaries and representations. The
 original sequencing and acceptance criteria remain intact in
 [the historical first implementation plan](../history/first-implementation-plan.md).
-The desired endpoint for demand-driven semantic completion and deterministic
-parallel scheduling is specified separately in the
-[semantic work graph target state](semantic-work-graph.md); that document is a
-target architecture rather than a claim about the current bootstrap.
+Demand-driven semantic completion and deterministic parallel scheduling are
+specified in the implemented
+[semantic work graph](semantic-work-graph.md); its product boundaries are the
+current bootstrap architecture rather than a future migration target.
 
 ## Goal
 
@@ -258,12 +258,11 @@ cannot drift between front end and backend. MIR reads the table immutably:
 compiler-only storage addresses use `rawptr` plus an explicit addressed TypeId,
 while actual source pointers retain their canonical semantic type.
 
-The LLVM adapter has direct operations for three explicit ownership units. Its
-compatibility operation emits one complete package module. Its static-data
-operation emits a complete module containing globals, relocatable initializer
-storage, runtime support, and any hosted entry point but no Draft procedure
-definition. Its machine-function operation emits a complete module defining
-exactly one MIR procedure while declaring package globals and sibling
+The LLVM adapter has direct operations for two explicit ownership units. Its
+static-data operation emits a complete module containing globals, relocatable
+initializer storage, runtime support, and any hosted entry point but no Draft
+procedure definition. Its machine-function operation emits a complete module
+defining exactly one MIR procedure while declaring package globals and sibling
 procedures. Each split unit can therefore enter a private LLVM context and
 produce an object independently; no textual fragment linker or shared LLVM
 module is required.

@@ -288,7 +288,7 @@ struct ImportedProcedureInstance {
 // here. Workspace orchestration transfers its arguments into one canonical
 // owner-local natural-layout product. The blocked declaration task then imports
 // that product's immutable interface graph and retries against its private
-// package snapshot. No placeholder is allowed to reach body lowering.
+// package task view. No placeholder is allowed to reach body lowering.
 struct ImportedTypeInstantiationRequest {
   SymbolId source_proxy;
   std::string root_identity;
@@ -591,9 +591,9 @@ struct NativeBinding {
 //
 // flags, foreign_provider, and denials are the value-owned snapshot of the
 // enclosing foreign/export/deny context. scope is a stable package or nested
-// declaration scope in this SemanticPackage generation. materialized changes
-// once, from false to true, after the selected branch has been appended; trying
-// to materialize it again is an internal scheduling error rather than an
+// declaration scope in this SemanticPackage publication domain. materialized
+// changes once, from false to true, after the selected branch has been appended;
+// trying to materialize it again is an internal scheduling error rather than an
 // idempotent recheck.
 struct ConditionalDeclarationRegion {
   SyntaxReference syntax;
@@ -689,23 +689,23 @@ private:
 };
 
 // SemanticPackage is the append-only semantic table set for one folder
-// package. A declaration generation owns the stable prefix established by
-// interface analysis. The body coordinator starts a canonical body generation
-// from that prefix, then publishes exact task append packets into it. The live
-// PackageBodyWorkState owns that generation in workspace compilation and direct
-// subsystem calls alike. The generation contains lexical scopes, local symbols,
-// concrete procedure instances, body sites, imported effect closure, and any
-// types interned while checking HIR. Each procedure HIR arena must use its
-// accompanying body-owned package; declaration semantics are not a substitute
-// even when a particular SymbolId lies in the shared prefix.
+// package. Interface analysis establishes a stable declaration prefix. The body
+// coordinator starts canonical working tables from that prefix, then publishes
+// exact task append packets into them. The live PackageBodyWorkState owns those
+// tables in workspace compilation and direct subsystem calls alike. They
+// contain lexical scopes, local symbols, concrete procedure instances, body
+// sites, imported effect closure, and any types interned while checking HIR.
+// Each procedure HIR arena must use its accompanying body-owned package;
+// declaration semantics are not a substitute even when a particular SymbolId
+// lies in the shared prefix.
 //
 // Public fields are intentional: compiler passes operate on explicit table
 // rows and stable IDs rather than a deep accessor/object hierarchy. Tables are
-// append-only within one generation after declaration facets close. An isolated
-// declaration task may return an explicit patch for a collected type or symbol
-// row; the coordinator installs it once without changing that row's ID. Tables
-// are never truncated or re-entered by another complete body pass; a source-
-// generation change creates a new declaration baseline instead.
+// append-only within one publication domain after declaration facets close. An
+// isolated declaration task may return an explicit patch for a collected type
+// or symbol row; the coordinator installs it once without changing that row's
+// ID. Tables are never truncated or re-entered by another complete body pass;
+// a source-generation change creates a new declaration baseline instead.
 struct SemanticPackage {
   SemanticPackage() = default;
 
@@ -899,7 +899,7 @@ struct ConditionalSelections {
     DiagnosticSink &diagnostics);
 
 // Appends the already selected branch of one recorded package-level `when` to
-// the existing declaration generation. The supplied selections must contain
+// the existing declaration tables. The supplied selections must contain
 // site. Nested `else when` nodes discovered in the chosen branch are recorded
 // as new, unmaterialized regions. Returns false with a diagnostic for a missing,
 // duplicate, malformed, or source-mismatched region; it never rebuilds or

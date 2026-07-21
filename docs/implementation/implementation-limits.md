@@ -22,19 +22,21 @@ walks over HIR, MIR, interface types, effects, and constants either follow the
 already bounded syntax/type shape or install a visited/cycle row before
 following children.
 
-## Semantic product migration limit
+## Semantic product scheduling boundary
 
-Status: temporary bootstrap architecture limit; not a Draft language limit.
+Status: implemented bootstrap architecture; not a Draft language limit.
 
-The command-local semantic product graph currently owns target/source/parsed
-inputs, package name and interface barriers, opaque interface synthesis waits,
-authored declaration types, non-parametric nominal layouts, conditional
-choices, named constants during complete compilation, and their
-source-generation transitions. Collection and import binding happen once per
-source generation; selected package branches append into that retained table.
-Ready tasks use private package copies and the coordinator publishes their
-results deterministically. Interface-synthesis discovery still uses the
-aggregate declaration/constant path. Aggregate-member conditions now have
+The command-local semantic product graph owns target/source/parsed inputs,
+package name and interface barriers, opaque synthesis waits, declarations,
+constants, faceted type completion, procedure HIR, effect closure, denials,
+per-procedure MIR and machine functions, package static/assembly data, artifact
+layout, and source-generation transitions. Collection and import binding happen
+once per source generation; selected package branches append into the retained
+canonical tables. Declaration tasks use frozen patch-enabled views, generic and
+body tasks return append packets, and constant/condition tasks return isolated
+values or selections. The coordinator publishes every result in stable product
+order. Interface-synthesis discovery uses these same products; there is no
+aggregate declaration/constant discovery path. Aggregate-member conditions have
 independent products and exact dynamically discovered continuation edges.
 Member-name and member-type readiness are separate products with stable member
 identities between them. After the workspace body fixed point, every canonical

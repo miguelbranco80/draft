@@ -30,9 +30,8 @@ generalize those facts to every future Draft target.
 ## Bootstrap implementation
 
 - [Architecture](implementation/architecture.md)
-- [Semantic work graph target state](implementation/semantic-work-graph.md)
-- [Semantic work graph implementation plan](implementation/semantic-work-graph-implementation-plan.md)
-- [Compiler graph and resolution simplification plan](implementation/compiler-graph-and-resolution-plan.md)
+- [Semantic work graph](implementation/semantic-work-graph.md)
+- [Semantic work graph completion record](implementation/semantic-work-graph-implementation-plan.md)
 - [Front end and semantic core](implementation/semantic-core.md)
 - [Elaboration, semantic context, and pins](implementation/elaboration-and-pins.md)
 - [Native backend and artifacts](implementation/native-backend-and-artifacts.md)
@@ -59,6 +58,7 @@ have been exercised. They are evidence, not additional language semantics.
 ## Decisions and history
 
 - [Open language questions](decisions/language-questions.md)
+- [Compiler graph and resolution simplification plan](history/compiler-graph-and-resolution-plan.md)
 - [First implementation plan](history/first-implementation-plan.md)
 - [Bootstrap implementation decision archive](history/bootstrap-implementation-decisions.md)
 - [Parsed assembly staging](history/assembly-staging.md)
