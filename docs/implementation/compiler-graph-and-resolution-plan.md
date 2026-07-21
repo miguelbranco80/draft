@@ -72,9 +72,9 @@ cache.
   and depend on that exact body row. Each product permanently owns its local HIR
   arena and semantic append packet. The coordinator retains canonical state,
   validates an exact frozen prefix, and appends each packet rather than adopting
-  a complete worker successor. TypeStore and SymbolTable prefixes are read-only
-  overlays; semantic side tables and constants are still copied, and IDs are
-  not yet remapped across independent results, so invocation remains a
+  a complete worker successor. TypeStore, SymbolTable, and ConstantTable
+  prefixes are read-only overlays; semantic side tables are still copied, and
+  IDs are not yet remapped across independent results, so invocation remains a
   sequential oracle. Remaining read-only views and deterministic shared-wave
   publication are required before body waves become parallel, after which the
   preceding body-key retention mechanism can be deleted.

@@ -9,8 +9,10 @@
 #include "syntax/token.h"
 
 #include <algorithm>
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <iterator>
 #include <limits>
 #include <optional>
 #include <string>
@@ -6076,10 +6078,55 @@ const ConstantValue *ConstantTable::find(SymbolId symbol) const {
 }
 
 const ConstantBinding *ConstantTable::find_binding(SymbolId symbol) const {
+  if (base_ != nullptr) {
+    if (const ConstantBinding *binding = base_->find_binding(symbol)) {
+      return binding;
+    }
+  }
   for (const ConstantBinding &binding : bindings) {
     if (binding.symbol == symbol) return &binding;
   }
   return nullptr;
+}
+
+std::size_t ConstantTable::size() const {
+  return (base_ != nullptr ? base_->size() : 0) + bindings.size();
+}
+
+ConstantTable::ConstantTable(
+    AppendOnlyOverlayTag, const ConstantTable &base) : base_(&base) {
+  assert(base.base_ == nullptr);
+}
+
+ConstantTable ConstantTable::fork_append_only() const {
+  return ConstantTable(AppendOnlyOverlayTag{}, *this);
+}
+
+std::vector<ConstantBinding> ConstantTable::appended_since(
+    std::size_t base_size) const {
+  assert(base_ != nullptr);
+  assert(base_size == base_->size());
+  return bindings;
+}
+
+void ConstantTable::append_exact(
+    std::size_t base_size, std::vector<ConstantBinding> appended) {
+  assert(base_ == nullptr);
+  assert(size() == base_size);
+  bindings.insert(
+      bindings.end(),
+      std::make_move_iterator(appended.begin()),
+      std::make_move_iterator(appended.end()));
+}
+
+void ConstantTable::append_missing_bindings_to(
+    ConstantTable &destination) const {
+  if (base_ != nullptr) base_->append_missing_bindings_to(destination);
+  for (const ConstantBinding &binding : bindings) {
+    if (destination.find(binding.symbol) == nullptr) {
+      destination.bindings.push_back(binding);
+    }
+  }
 }
 
 CompileTimeRoundResult evaluate_compile_time_round(

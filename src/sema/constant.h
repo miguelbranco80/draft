@@ -89,16 +89,40 @@ struct ConstantBinding {
 };
 
 // ConstantTable contains successfully evaluated values and their checked static
-// types in stable SymbolId order. Package constants are installed by semantic
-// products; body checking later appends lexical `::` constants in deterministic
-// procedure and statement order. A missing entry means not requested, not yet
-// ready, or invalid; diagnostics and CompileTimeRoundResult distinguish those
-// cases.
+// types in stable SymbolId order. A canonical table owns every row in bindings.
+// A procedure task instead uses an append-only overlay: it reads the immutable
+// package prefix through base_ and owns only lexical `::` constants in bindings.
+// The coordinator publishes that exact suffix after accepting the task result.
+// A missing entry means not requested, not yet ready, or invalid; diagnostics
+// and CompileTimeRoundResult distinguish those cases.
 struct ConstantTable {
+  ConstantTable() = default;
+
   std::vector<ConstantBinding> bindings;
 
   [[nodiscard]] const ConstantValue *find(SymbolId symbol) const;
   [[nodiscard]] const ConstantBinding *find_binding(SymbolId symbol) const;
+  [[nodiscard]] std::size_t size() const;
+
+  // Creates an empty append-only overlay over this canonical table. base must
+  // outlive the overlay and may not itself be an overlay.
+  [[nodiscard]] ConstantTable fork_append_only() const;
+  [[nodiscard]] std::vector<ConstantBinding> appended_since(
+      std::size_t base_size) const;
+  void append_exact(
+      std::size_t base_size, std::vector<ConstantBinding> appended);
+
+  // Copies this complete visible sequence into destination while preserving
+  // any binding already supplied there. Deferred generic recipes use this only
+  // when they must materialize a temporary evaluator input; ordinary lookup
+  // remains zero-copy through find_binding.
+  void append_missing_bindings_to(ConstantTable &destination) const;
+
+private:
+  struct AppendOnlyOverlayTag {};
+  ConstantTable(AppendOnlyOverlayTag, const ConstantTable &base);
+
+  const ConstantTable *base_ = nullptr;
 };
 
 struct EvaluatedConstant {

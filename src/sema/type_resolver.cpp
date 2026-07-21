@@ -2077,11 +2077,7 @@ private:
       constants.bindings.push_back({binding.parameter, binding.value});
     }
     if (active_constants_ != nullptr) {
-      for (const ConstantBinding &binding : active_constants_->bindings) {
-        if (constants.find(binding.symbol) == nullptr) {
-          constants.bindings.push_back(binding);
-        }
-      }
+      active_constants_->append_missing_bindings_to(constants);
     }
     std::vector<ConstantTypeBinding> types;
     for (const DeferredElementCountTypeBinding &binding : type_bindings) {
@@ -2365,11 +2361,7 @@ private:
       constants.bindings.push_back({binding.parameter, binding.value});
     }
     if (active_constants_ != nullptr) {
-      for (const ConstantBinding &binding : active_constants_->bindings) {
-        if (constants.find(binding.symbol) == nullptr) {
-          constants.bindings.push_back(binding);
-        }
-      }
+      active_constants_->append_missing_bindings_to(constants);
     }
     std::vector<ConstantTypeBinding> types;
     for (const DeferredElementCountTypeBinding &binding : type_bindings) {

@@ -8394,10 +8394,12 @@ void append_body_root(
 // largest identity tables remain in the coordinator and are exposed through
 // append-only overlays: prefix TypeIds, ScopeIds, and SymbolIds therefore keep
 // their exact values without copying rows or permitting worker mutation. The
-// remaining side tables are value snapshots for now because BodyChecker still
-// performs direct indexed reads over them and can append task-local rows. They
-// are listed explicitly so adding a SemanticPackage field forces this phase
-// boundary to be reviewed instead of silently omitting task-visible state.
+// remaining semantic side tables are value snapshots for now because
+// BodyChecker still performs direct indexed reads over them and can append
+// task-local rows. ConstantTable uses the same read-only-prefix/local-suffix
+// representation independently. The fields below are listed explicitly so
+// adding a SemanticPackage field forces this phase boundary to be reviewed
+// instead of silently omitting task-visible state.
 //
 // PackageBodyWorkState permits only one active task and does not publish while
 // that task runs. Its canonical package consequently outlives both overlay
@@ -8484,7 +8486,7 @@ void append_body_root(
   prefix.native_binding_count = package.native_bindings.size();
   prefix.conditional_declaration_count =
       package.conditional_declarations.size();
-  prefix.constant_count = constants.bindings.size();
+  prefix.constant_count = constants.size();
   return prefix;
 }
 
@@ -8573,8 +8575,7 @@ void append_body_suffix(
   appended.conditional_declarations = copy_body_suffix(
       package.conditional_declarations,
       prefix.conditional_declaration_count);
-  appended.constants = copy_body_suffix(
-      constants.bindings, prefix.constant_count);
+  appended.constants = constants.appended_since(prefix.constant_count);
   return appended;
 }
 
@@ -8644,7 +8645,8 @@ void publish_body_semantic_append(
   append_body_suffix(
       package.conditional_declarations,
       std::move(appended.conditional_declarations));
-  append_body_suffix(constants.bindings, std::move(appended.constants));
+  constants.append_exact(
+      appended.prefix.constant_count, std::move(appended.constants));
 }
 
 } // namespace
@@ -8792,7 +8794,7 @@ ProcedureBodyTaskInput take_next_procedure_body_work(
   input.next_instance = state.next_instance;
   input.prefix = capture_body_semantic_prefix(state.package, state.constants);
   input.package = fork_body_semantic_view(state.package);
-  input.constants = state.constants;
+  input.constants = state.constants.fork_append_only();
   state.active_work = state.next_work;
   return input;
 }

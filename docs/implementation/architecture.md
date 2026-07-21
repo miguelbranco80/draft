@@ -153,21 +153,22 @@ The coordinator retains the canonical semantic and constant prefix while one
 root checks a private view frozen at exact table counts. `TypeStore` and
 `SymbolTable` expose that prefix through non-owning read-only overlays; the task
 owns only their newly interned rows and explicit binding additions to canonical
-scopes. Other semantic side tables and constants are still value snapshots. The
-task returns only its appended types, scopes, symbols, side-table rows, lexical
-constants, and local HIR. Publication rejects a stale prefix and appends the
-packet in product order; it never replaces the package with a worker-owned
-successor. Existing type and symbol rows cannot be mutated through an overlay,
-which exposed and removed a former constant-evaluation write into retained
-declarations.
+scopes. `ConstantTable` likewise reads package constants through a canonical
+prefix and owns only lexical constants. Other semantic side tables are still
+value snapshots. The task returns only its appended types, scopes, symbols,
+side-table rows, lexical constants, and local HIR. Publication rejects a stale
+prefix and appends the packet in product order; it never replaces the package
+with a worker-owned successor. Existing type and symbol rows cannot be mutated
+through an overlay, which exposed and removed a former constant-evaluation
+write into retained declarations.
 Constant products now carry their checked static type beside the immutable
 value, and the package-interface barrier installs that payload explicitly.
 
 This is still a sequential publication oracle. The private task view copies its
-semantic side-table and constant prefixes, and its suffix IDs assume no other
-result was published after dispatch. Replacing those remaining copies with
-read-only views, then remapping equal canonical discoveries from a shared ready
-wave, is the remaining boundary before body workers may run in parallel.
+semantic side-table prefixes, and its suffix IDs assume no other result was
+published after dispatch. Replacing those remaining copies with read-only
+views, then remapping equal canonical discoveries from a shared ready wave, is
+the remaining boundary before body workers may run in parallel.
 
 The transitional body work key is the declaration generation plus the exact
 canonical set of concrete generic procedures demanded by consumer packages.

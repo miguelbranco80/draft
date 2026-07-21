@@ -73,6 +73,51 @@ struct AnalyzedSource {
   return package.symbols.lookup_direct(package.package_scope, name);
 }
 
+void test_append_only_constant_overlay(TestState &state) {
+  draft::ConstantTable canonical;
+  canonical.bindings.push_back(
+      {draft::SymbolId{1}, draft::ConstantValue::make_integer(10)});
+  canonical.bindings.push_back(
+      {draft::SymbolId{3}, draft::ConstantValue::make_bool(true)});
+  const std::size_t prefix = canonical.size();
+
+  draft::ConstantTable task = canonical.fork_append_only();
+  EXPECT(state, task.size() == prefix);
+  EXPECT(state, task.find(draft::SymbolId{1}) != nullptr);
+  EXPECT(state, task.find(draft::SymbolId{3}) != nullptr);
+  task.bindings.push_back(
+      {draft::SymbolId{7}, draft::ConstantValue::make_integer(42)});
+  EXPECT(state, task.size() == prefix + 1);
+  EXPECT(state, task.find(draft::SymbolId{7}) != nullptr);
+  EXPECT(state, canonical.find(draft::SymbolId{7}) == nullptr);
+  EXPECT(state, canonical.size() == prefix);
+
+  // Materialization preserves caller-supplied bindings. Generic recipe
+  // substitution relies on this precedence before filling the remaining
+  // visible package and lexical constants from the overlay.
+  draft::ConstantTable materialized;
+  materialized.bindings.push_back(
+      {draft::SymbolId{1}, draft::ConstantValue::make_integer(99)});
+  task.append_missing_bindings_to(materialized);
+  EXPECT(state, materialized.size() == 3);
+  const draft::ConstantValue *overridden =
+      materialized.find(draft::SymbolId{1});
+  EXPECT(state, overridden != nullptr);
+  if (overridden != nullptr) {
+    EXPECT(state,
+           overridden->integer == draft::BigInteger::from_u64(99));
+  }
+  EXPECT(state, materialized.find(draft::SymbolId{3}) != nullptr);
+  EXPECT(state, materialized.find(draft::SymbolId{7}) != nullptr);
+
+  std::vector<draft::ConstantBinding> appended =
+      task.appended_since(prefix);
+  EXPECT(state, appended.size() == 1);
+  canonical.append_exact(prefix, std::move(appended));
+  EXPECT(state, canonical.size() == prefix + 1);
+  EXPECT(state, canonical.find(draft::SymbolId{7}) != nullptr);
+}
+
 void test_single_constant_product_dependencies(TestState &state) {
   AnalyzedSource source(R"draft(
 package conditions
@@ -2601,6 +2646,7 @@ when false && target.has_feature(42) &&
 
 int main() {
   TestState state;
+  test_append_only_constant_overlay(state);
   test_single_constant_product_dependencies(state);
   test_single_conditional_product_dependencies(state);
   test_constants_and_conditional_rounds(state);
