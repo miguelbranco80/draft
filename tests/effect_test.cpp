@@ -38,6 +38,17 @@ std::optional<draft::SymbolId> symbol(
   return package.symbols.lookup_direct(package.package_scope, name);
 }
 
+draft::EffectSummaryResult close_effects(
+    const draft::BodyCheckResult &bodies,
+    const draft::TargetProfile *target,
+    std::span<const draft::ForeignProviderAudit> provider_audits = {}) {
+  const draft::DirectEffectSummaryResult direct =
+      draft::collect_direct_procedure_effects(
+          bodies.package, bodies.procedures, target, provider_audits);
+  return draft::close_procedure_effects(
+      bodies.package, direct, target, provider_audits);
+}
+
 bool has_effect(
     const draft::ProcedureEffectSummary &summary, draft::EffectKind kind) {
   return std::any_of(
@@ -108,11 +119,7 @@ entry :: proc() {
       semantics.constants,
       target.facts,
       diagnostics);
-  const draft::EffectSummaryResult effects =
-      draft::summarize_package_effects(
-          bodies.package,
-          draft::project_package_body_hir(bodies.procedures),
-          &target);
+  const draft::EffectSummaryResult effects = close_effects(bodies, &target);
   if (diagnostics.has_errors()) {
     std::cerr << draft::render_diagnostics(sources, diagnostics);
   }
@@ -205,10 +212,11 @@ flow_caller :: proc() {
       semantics.constants,
       target.facts,
       diagnostics);
+  const draft::DirectEffectSummaryResult direct =
+      draft::collect_direct_procedure_effects(
+          bodies.package, bodies.procedures);
   const draft::EffectSummaryResult effects =
-      draft::summarize_package_effects(
-          bodies.package,
-          draft::project_package_body_hir(bodies.procedures));
+      draft::close_procedure_effects(bodies.package, direct);
   const draft::AgentMetadataResult empty_metadata;
   const draft::PackageInterface package_interface = draft::build_package_interface(
       {"workspace", "effects"},
@@ -236,22 +244,26 @@ flow_caller :: proc() {
   if (!leaf || !caller || !invoke || !flow_caller) return;
   const draft::ProcedureEffectSummary *leaf_summary = effects.find(*leaf);
   const draft::ProcedureEffectSummary *caller_summary = effects.find(*caller);
+  const draft::DirectProcedureEffectSummary *direct_caller =
+      direct.find(*caller);
   const draft::ProcedureEffectSummary *invoke_summary = effects.find(*invoke);
   const draft::ProcedureEffectSummary *flow_caller_summary =
       effects.find(*flow_caller);
   EXPECT(state, leaf_summary != nullptr);
   EXPECT(state, caller_summary != nullptr);
+  EXPECT(state, direct_caller != nullptr);
   EXPECT(state, invoke_summary != nullptr);
   EXPECT(state, flow_caller_summary != nullptr);
   if (leaf_summary == nullptr || caller_summary == nullptr ||
-      invoke_summary == nullptr || flow_caller_summary == nullptr) {
+      invoke_summary == nullptr || flow_caller_summary == nullptr ||
+      direct_caller == nullptr) {
     return;
   }
   EXPECT(state, has_effect(*leaf_summary, draft::EffectKind::PackageGlobal));
   EXPECT(state, has_effect(*leaf_summary, draft::EffectKind::Unchecked));
   EXPECT(state, has_effect(*leaf_summary, draft::EffectKind::RuntimeAssert));
   EXPECT(state, has_effect(*leaf_summary, draft::EffectKind::ContextField));
-  EXPECT(state, caller_summary->direct_calls.size() == 1);
+  EXPECT(state, direct_caller->direct_calls.size() == 1);
   EXPECT(state, has_effect(*caller_summary, draft::EffectKind::RuntimeAssert));
   EXPECT(state, has_effect(*caller_summary, draft::EffectKind::Unchecked));
   EXPECT(state, has_effect(*invoke_summary, draft::EffectKind::FlowCall));
@@ -315,10 +327,11 @@ pub forward :: proc(text: string) -> [^]u8 {
       semantics.constants,
       target.facts,
       diagnostics);
+  const draft::DirectEffectSummaryResult direct =
+      draft::collect_direct_procedure_effects(
+          bodies.package, bodies.procedures);
   const draft::EffectSummaryResult effects =
-      draft::summarize_package_effects(
-          bodies.package,
-          draft::project_package_body_hir(bodies.procedures));
+      draft::close_procedure_effects(bodies.package, direct);
   const draft::AgentMetadataResult empty_metadata;
   const draft::PackageInterface package_interface = draft::build_package_interface(
       {"workspace", "raw_string_effects"},
@@ -343,13 +356,20 @@ pub forward :: proc(text: string) -> [^]u8 {
 
   const draft::ProcedureEffectSummary *expose_summary = effects.find(*expose);
   const draft::ProcedureEffectSummary *forward_summary = effects.find(*forward);
+  const draft::DirectProcedureEffectSummary *direct_expose = direct.find(*expose);
+  const draft::DirectProcedureEffectSummary *direct_forward = direct.find(*forward);
   EXPECT(state, expose_summary != nullptr);
   EXPECT(state, forward_summary != nullptr);
-  if (expose_summary == nullptr || forward_summary == nullptr) return;
+  EXPECT(state, direct_expose != nullptr);
+  EXPECT(state, direct_forward != nullptr);
+  if (expose_summary == nullptr || forward_summary == nullptr ||
+      direct_expose == nullptr || direct_forward == nullptr) {
+    return;
+  }
 
   const bool expose_has_direct_raw_data = std::any_of(
-      expose_summary->direct_effects.begin(),
-      expose_summary->direct_effects.end(),
+      direct_expose->direct_effects.begin(),
+      direct_expose->direct_effects.end(),
       [](const draft::SemanticEffect &effect) {
         return effect.kind == draft::EffectKind::RawStringData;
       });
@@ -358,7 +378,7 @@ pub forward :: proc(text: string) -> [^]u8 {
       has_effect(*expose_summary, draft::EffectKind::RawStringData));
   EXPECT(state,
       !has_effect(*expose_summary, draft::EffectKind::UnknownCall));
-  EXPECT(state, forward_summary->direct_calls.size() == 1);
+  EXPECT(state, direct_forward->direct_calls.size() == 1);
   EXPECT(state,
       has_effect(*forward_summary, draft::EffectKind::RawStringData));
   EXPECT(state,
@@ -467,11 +487,7 @@ through_audit :: proc() {
   audit.symbols.push_back(std::move(audited_symbol));
   const std::vector<draft::ForeignProviderAudit> audits{audit};
   const draft::EffectSummaryResult effects =
-      draft::summarize_package_effects(
-          bodies.package,
-          draft::project_package_body_hir(bodies.procedures),
-          &target,
-          audits);
+      close_effects(bodies, &target, audits);
   if (diagnostics.has_errors()) {
     std::cerr << draft::render_diagnostics(sources, diagnostics);
   }
@@ -582,11 +598,7 @@ through_context :: proc() {
       semantics.constants,
       target.facts,
       diagnostics);
-  const draft::EffectSummaryResult effects =
-      draft::summarize_package_effects(
-          bodies.package,
-          draft::project_package_body_hir(bodies.procedures),
-          &target);
+  const draft::EffectSummaryResult effects = close_effects(bodies, &target);
   if (diagnostics.has_errors()) {
     std::cerr << draft::render_diagnostics(sources, diagnostics);
   }
@@ -709,11 +721,7 @@ through_return :: proc() {
       semantics.constants,
       target.facts,
       diagnostics);
-  const draft::EffectSummaryResult effects =
-      draft::summarize_package_effects(
-          bodies.package,
-          draft::project_package_body_hir(bodies.procedures),
-          &target);
+  const draft::EffectSummaryResult effects = close_effects(bodies, &target);
   if (diagnostics.has_errors()) {
     std::cerr << draft::render_diagnostics(sources, diagnostics);
   }
@@ -856,11 +864,7 @@ through_install :: proc() {
       semantics.constants,
       target.facts,
       diagnostics);
-  const draft::EffectSummaryResult effects =
-      draft::summarize_package_effects(
-          bodies.package,
-          draft::project_package_body_hir(bodies.procedures),
-          &target);
+  const draft::EffectSummaryResult effects = close_effects(bodies, &target);
   if (diagnostics.has_errors()) {
     std::cerr << draft::render_diagnostics(sources, diagnostics);
   }
@@ -1087,11 +1091,7 @@ tuple_assignment_caller :: proc() {
       semantics.constants,
       target.facts,
       diagnostics);
-  const draft::EffectSummaryResult effects =
-      draft::summarize_package_effects(
-          bodies.package,
-          draft::project_package_body_hir(bodies.procedures),
-          &target);
+  const draft::EffectSummaryResult effects = close_effects(bodies, &target);
   if (diagnostics.has_errors()) {
     std::cerr << draft::render_diagnostics(sources, diagnostics);
   }

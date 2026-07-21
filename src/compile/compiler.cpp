@@ -5327,9 +5327,10 @@ bool continue_compiled_workspace_semantics(
     }
     TimingScope package_timing = time_package_phase(
         options.timings, "package closure: ", package.identity);
-    // These package-wide consumers are transitional. The checked procedure
-    // products remain authoritative; one local projection is shared across
-    // this closure operation and discarded before the next package.
+    // Agent-obligation and native-interop construction have not yet moved to
+    // procedure products, so they share one temporary local projection which
+    // is discarded before the next package. Direct effects and denials consume
+    // the selected procedure-owned arenas below and never observe this view.
     HirProgram package_hir = project_package_body_hir(
         package.bodies.procedures, package.selected_procedure_work);
     const std::vector<SymbolId> active_imported_instances =
@@ -5354,9 +5355,15 @@ bool continue_compiled_workspace_semantics(
         diagnostics,
         package.validation_context,
         &package_hir);
-    package.effects = summarize_package_effects(
+    package.direct_effects = collect_direct_procedure_effects(
         package.bodies.package,
-        package_hir,
+        package.bodies.procedures,
+        package.selected_procedure_work,
+        &options.target,
+        options.foreign_provider_audits);
+    package.effects = close_procedure_effects(
+        package.bodies.package,
+        package.direct_effects,
         &options.target,
         options.foreign_provider_audits);
     package.native_interop = validate_native_interop(
@@ -5365,11 +5372,12 @@ bool continue_compiled_workspace_semantics(
         package.c_abi,
         options.target.facts,
         diagnostics);
-    const bool denials_ok = check_package_denials(
+    const bool denials_ok = check_procedure_denials(
         sources,
         workspace_package.loaded,
         package.bodies.package,
-        package_hir,
+        package.bodies.procedures,
+        package.selected_procedure_work,
         package.effects,
         diagnostics);
     package.interface = build_package_interface(

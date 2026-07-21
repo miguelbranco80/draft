@@ -511,12 +511,19 @@ smallest member as the deterministic tie-break. Exact call-site summaries are
 derived only after every component is closed and are the summaries consumed by
 lexical denial checking.
 
-Direct procedure summaries are not yet separate semantic-graph payloads: the
-current effect collector still discovers them through one temporary selected
-package HIR projection, and procedure-value return/write discovery still uses
-a preliminary body replay. Moving those direct rows onto body-product inputs
-and replacing imported-contract refresh are the remaining flow-closure
-migration seams; neither is part of the intended final architecture.
+Direct and closed procedure contracts have distinct immutable payload types.
+Discovery reads the selected procedure-owned HIR arenas directly; each
+HIR-local expression ID remains paired with its owning procedure, including in
+the call-site table consumed by denials. Denial traversal reads the same selected
+procedure products and never reconstructs a package HIR. The compiler retains
+the direct payload separately from the closed SCC result so downstream code
+cannot accidentally treat a local fact as transitive.
+
+Procedure-value return/write discovery still replays the selected body set
+before those direct rows become immutable, and imported contracts still refresh
+retained package tables. Moving that flow replay into explicit SCC products and
+replacing imported-contract refresh are the remaining flow-closure migration
+seams; neither is part of the intended final architecture.
 
 External artifact summaries use the strict
 `draft-provider-denial-summary-v1` line format documented in section 12. The

@@ -192,6 +192,10 @@ struct CompiledPackage {
   // cannot change declarations, so this command-local fact survives that
   // transition and prevents a duplicate validation compilation.
   bool validation_context_is_typed = false;
+  // Immutable body-local facts published before transitive call/value-flow
+  // closure. This payload is kept separate so DirectEffectSummary products can
+  // be inspected without confusing them with ClosedEffectScc results.
+  DirectEffectSummaryResult direct_effects;
   EffectSummaryResult effects;
   PackageInterface interface;
   NativeInteropResult native_interop;

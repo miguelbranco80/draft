@@ -256,11 +256,14 @@ gate.
    dependency-first condensation order; the former scan over every package
    procedure until a global fixed point is deleted. Recursive members iterate
    only inside their component, and call-site denial summaries are derived
-   after closure. Direct summaries are still discovered through the temporary
-   package HIR projection, procedure return/write discovery still replays that
-   projection, and imported contracts still refresh retained package tables.
-   The step remains incomplete until those three transitional seams and the
-   package-wide denial projection are removed.
+   after closure. Direct and closed summaries now have distinct retained
+   payloads. Effect discovery and denial enforcement consume selected
+   procedure-owned HIR arenas directly; procedure-qualified call-site IDs remove
+   the last package-HIR identity dependency in those phases. Procedure
+   return/write discovery still replays the selected body set, and imported
+   contracts still refresh retained package tables. The step remains incomplete
+   until those two transitional seams are removed and the direct/SCC/denial
+   payloads are attached to their live semantic product rows.
 
 8. **Per-procedure MIR.** Lower each checked concrete procedure into a private
    MIR result without mutating semantic type tables. Publish package static data

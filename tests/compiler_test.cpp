@@ -2511,13 +2511,19 @@ void test_compiler_distributed_core(TestState &state) {
             root_package->effects.find(*read_from_c);
         const draft::ProcedureEffectSummary *main_summary =
             root_package->effects.find(*main);
+        const draft::DirectProcedureEffectSummary *direct_c_summary =
+            root_package->direct_effects.find(*read_from_c);
+        const draft::DirectProcedureEffectSummary *direct_main_summary =
+            root_package->direct_effects.find(*main);
         EXPECT(state, c_summary != nullptr);
         EXPECT(state, main_summary != nullptr);
-        if (c_summary != nullptr) {
+        EXPECT(state, direct_c_summary != nullptr);
+        EXPECT(state, direct_main_summary != nullptr);
+        if (c_summary != nullptr && direct_c_summary != nullptr) {
           EXPECT(state, std::find(
-              c_summary->direct_calls.begin(),
-              c_summary->direct_calls.end(),
-              *observe) != c_summary->direct_calls.end());
+              direct_c_summary->direct_calls.begin(),
+              direct_c_summary->direct_calls.end(),
+              *observe) != direct_c_summary->direct_calls.end());
           EXPECT(state, std::none_of(
               c_summary->effects.begin(),
               c_summary->effects.end(),
@@ -2525,11 +2531,11 @@ void test_compiler_distributed_core(TestState &state) {
                 return effect.kind == draft::EffectKind::UnknownCall;
               }));
         }
-        if (main_summary != nullptr) {
+        if (direct_main_summary != nullptr) {
           EXPECT(state, std::find(
-              main_summary->direct_calls.begin(),
-              main_summary->direct_calls.end(),
-              *add_index) != main_summary->direct_calls.end());
+              direct_main_summary->direct_calls.begin(),
+              direct_main_summary->direct_calls.end(),
+              *add_index) != direct_main_summary->direct_calls.end());
         }
       }
     }

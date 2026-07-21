@@ -5,6 +5,7 @@
 #include "syntax/token.h"
 
 #include <algorithm>
+#include <cassert>
 #include <cstddef>
 #include <iterator>
 #include <optional>
@@ -208,24 +209,32 @@ public:
       const SourceManager &sources,
       const LoadedPackage &loaded,
       const SemanticPackage &package,
-      const HirProgram &hir,
+      std::span<const HirProgram *const> programs,
       const EffectSummaryResult &effects,
       DiagnosticSink &diagnostics)
-      : sources_(sources), loaded_(loaded), package_(package), hir_(hir),
+      : sources_(sources), loaded_(loaded), package_(package),
+        programs_(programs),
         effects_(effects), diagnostics_(diagnostics) {}
 
   [[nodiscard]] bool run() {
     const std::size_t initial_errors = diagnostics_.error_count();
-    for (const HirProcedure &procedure : hir_.procedures()) {
-      std::vector<ResolvedDenialSelector> active;
-      for (const DeclarationDenial &contract :
-           package_.declaration_denials_for_read()) {
-        if (contract.declaration == declaration_source(procedure.symbol)) {
-          append_denial(contract.denial, file_scope(contract.denial.file), active);
+    for (const HirProgram *program : programs_) {
+      hir_ = program;
+      for (const HirProcedure &procedure : program->procedures()) {
+        current_procedure_ = procedure.symbol;
+        std::vector<ResolvedDenialSelector> active;
+        for (const DeclarationDenial &contract :
+             package_.declaration_denials_for_read()) {
+          if (contract.declaration == declaration_source(procedure.symbol)) {
+            append_denial(
+                contract.denial, file_scope(contract.denial.file), active);
+          }
         }
+        visit_block(procedure.body, active);
       }
-      visit_block(procedure.body, active);
     }
+    hir_ = nullptr;
+    current_procedure_ = {};
     return diagnostics_.error_count() == initial_errors;
   }
 
@@ -339,7 +348,7 @@ private:
       SourceRange range,
       const std::vector<ResolvedDenialSelector> &active) {
     const CallSiteEffectSummary *summary =
-        effects_.find_call_site(expression);
+        effects_.find_call_site(current_procedure_, expression);
     if (summary == nullptr) {
       check_effect(
           {EffectKind::UnknownCall,
@@ -363,7 +372,7 @@ private:
   [[nodiscard]] std::optional<std::string> context_field(
       HirExpressionId id) const {
     if (!id.is_valid()) return std::nullopt;
-    const HirExpression &expression = hir_.expression(id);
+    const HirExpression &expression = hir_->expression(id);
     if (expression.kind == HirExpressionKind::Context) return std::string("*");
     if (expression.kind != HirExpressionKind::Member ||
         expression.operands.empty()) {
@@ -381,7 +390,7 @@ private:
   void visit_expression(
       HirExpressionId id,
       const std::vector<ResolvedDenialSelector> &active) {
-    const HirExpression &expression = hir_.expression(id);
+    const HirExpression &expression = hir_->expression(id);
     if (expression.kind == HirExpressionKind::Denial) {
       std::vector<ResolvedDenialSelector> nested = active;
       append_denial(expression.syntax, expression.scope, nested);
@@ -451,7 +460,7 @@ private:
           {EffectKind::Assembly, {}, "asm", {}, {}, {}}, expression.range, active);
     } else if (expression.kind == HirExpressionKind::Index &&
                !expression.operands.empty()) {
-      const TypeId base = hir_.expression(expression.operands.front()).type;
+      const TypeId base = hir_->expression(expression.operands.front()).type;
       if (base.is_valid() && package_.types.type(base).kind == TypeKind::MultiPointer) {
         check_effect(
             {EffectKind::Unchecked, {}, "multi-pointer index", {}, {}, {}},
@@ -465,13 +474,13 @@ private:
   void visit_statement(
       HirStatementId id,
       const std::vector<ResolvedDenialSelector> &active) {
-    const HirStatement &statement = hir_.statement(id);
+    const HirStatement &statement = hir_->statement(id);
     if (statement.kind == HirStatementKind::Denial) {
       std::vector<ResolvedDenialSelector> nested = active;
       // The governed block owns a fresh scope. Selectors precede that block and
       // resolve in its parent, so a same-named local inside the block cannot
       // retarget the denial.
-      const ScopeId block_scope = hir_.block(statement.blocks.front()).scope;
+      const ScopeId block_scope = hir_->block(statement.blocks.front()).scope;
       append_denial(
           statement.syntax, package_.symbols.scope(block_scope).parent, nested);
       for (HirBlockId block : statement.blocks) visit_block(block, nested);
@@ -492,7 +501,7 @@ private:
   void visit_block(
       HirBlockId id,
       const std::vector<ResolvedDenialSelector> &active) {
-    for (HirStatementId statement : hir_.block(id).statements) {
+    for (HirStatementId statement : hir_->block(id).statements) {
       visit_statement(statement, active);
     }
   }
@@ -500,7 +509,9 @@ private:
   const SourceManager &sources_;
   const LoadedPackage &loaded_;
   const SemanticPackage &package_;
-  const HirProgram &hir_;
+  std::span<const HirProgram *const> programs_;
+  const HirProgram *hir_ = nullptr;
+  SymbolId current_procedure_;
   const EffectSummaryResult &effects_;
   DiagnosticSink &diagnostics_;
 };
@@ -518,14 +529,42 @@ std::vector<ResolvedDenialSelector> resolve_denial_selectors(
   return resolver.resolve(denial, scope);
 }
 
-bool check_package_denials(
+bool check_procedure_denials(
     const SourceManager &sources,
     const LoadedPackage &loaded,
     const SemanticPackage &package,
-    const HirProgram &hir,
+    std::span<const ProcedureBodyHirResult> procedures,
+    std::span<const std::size_t> selected_indices,
     const EffectSummaryResult &effects,
     DiagnosticSink &diagnostics) {
-  DenialChecker checker(sources, loaded, package, hir, effects, diagnostics);
+  std::vector<const HirProgram *> programs;
+  programs.reserve(selected_indices.size());
+  std::size_t previous = 0;
+  bool has_previous = false;
+  for (std::size_t index : selected_indices) {
+    assert(index < procedures.size());
+    assert(!has_previous || previous < index);
+    previous = index;
+    has_previous = true;
+    programs.push_back(&procedures[index].program);
+  }
+  DenialChecker checker(sources, loaded, package, programs, effects, diagnostics);
+  return checker.run();
+}
+
+bool check_procedure_denials(
+    const SourceManager &sources,
+    const LoadedPackage &loaded,
+    const SemanticPackage &package,
+    std::span<const ProcedureBodyHirResult> procedures,
+    const EffectSummaryResult &effects,
+    DiagnosticSink &diagnostics) {
+  std::vector<const HirProgram *> programs;
+  programs.reserve(procedures.size());
+  for (const ProcedureBodyHirResult &procedure : procedures) {
+    programs.push_back(&procedure.program);
+  }
+  DenialChecker checker(sources, loaded, package, programs, effects, diagnostics);
   return checker.run();
 }
 

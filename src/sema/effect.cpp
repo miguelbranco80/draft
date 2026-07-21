@@ -5,6 +5,7 @@
 #include "syntax/literal.h"
 
 #include <algorithm>
+#include <cassert>
 #include <cstddef>
 #include <functional>
 #include <limits>
@@ -85,9 +86,9 @@ void merge_value(
 // stack. Sorting each component by procedure-row index makes publication
 // independent from the exact DFS path used to discover the same SCC.
 [[nodiscard]] std::vector<ClosedEffectComponent> build_effect_components(
-    const std::vector<ProcedureEffectSummary> &procedures) {
+    const std::vector<DirectProcedureEffectSummary> &procedures) {
   std::size_t symbol_domain = 0;
-  for (const ProcedureEffectSummary &procedure : procedures) {
+  for (const DirectProcedureEffectSummary &procedure : procedures) {
     if (procedure.procedure.is_valid()) {
       symbol_domain = std::max(
           symbol_domain,
@@ -248,20 +249,22 @@ class EffectCollector {
 public:
   EffectCollector(
       const SemanticPackage &package,
-      const HirProgram &hir,
+      std::span<const HirProgram *const> programs,
       const TargetProfile *target,
       std::span<const ForeignProviderAudit> provider_audits)
-      : package_(package), hir_(hir), target_(target),
+      : package_(package), programs_(programs), target_(target),
         provider_audits_(provider_audits) {}
 
-  [[nodiscard]] EffectSummaryResult run() {
+  [[nodiscard]] DirectEffectSummaryResult collect_direct() {
     // Install every local row before discovering bodies. Returned procedure
     // values can then refer forward or recursively without source order
     // changing their meaning.
-    for (const HirProcedure &procedure : hir_.procedures()) {
-      ProcedureEffectSummary summary;
-      summary.procedure = procedure.symbol;
-      result_.procedures.push_back(std::move(summary));
+    for (const HirProgram *program : programs_) {
+      for (const HirProcedure &procedure : program->procedures()) {
+        DirectProcedureEffectSummary summary;
+        summary.procedure = procedure.symbol;
+        direct_.procedures.push_back(std::move(summary));
+      }
     }
 
     // Foreign declarations have no HIR body, but a lexical denial may enclose
@@ -272,8 +275,8 @@ public:
     // substitutes the actual callback just like a Draft procedure does.
     for (const NativeBinding &binding : package_.native_bindings) {
       if (binding.kind != NativeBindingKind::ForeignImport) continue;
-      ProcedureEffectSummary summary;
-      summary.procedure = binding.symbol;
+      ProcedureEffectSummary composed;
+      composed.procedure = binding.symbol;
       const Symbol &symbol = package_.symbols.symbol(binding.symbol);
       std::vector<ProcedureArgumentSummary> arguments;
       if (symbol.type.is_valid()) {
@@ -297,9 +300,11 @@ public:
         }
       }
       [[maybe_unused]] const bool added =
-          compose_native_call(summary, binding.symbol, binding, arguments);
-      summary.direct_effects = summary.effects;
-      result_.procedures.push_back(std::move(summary));
+          compose_native_call(composed, binding.symbol, binding, arguments);
+      DirectProcedureEffectSummary direct;
+      direct.procedure = binding.symbol;
+      direct.direct_effects = std::move(composed.effects);
+      direct_.procedures.push_back(std::move(direct));
     }
 
     // Replay source bodies until every returned procedure leaf is stable.
@@ -310,64 +315,81 @@ public:
     bool returns_changed = false;
     do {
       returns_changed = false;
-      for (std::size_t index = 0; index < hir_.procedures().size(); ++index) {
-        const HirProcedure &procedure = hir_.procedures()[index];
-        ProcedureEffectSummary discovered;
-        discovered.procedure = procedure.symbol;
-        current_ = &discovered;
-        current_procedure_ = procedure.symbol;
-        current_result_type_ = {};
-        const Symbol &symbol = package_.symbols.symbol(procedure.symbol);
-        if (symbol.type.is_valid()) {
-          const Type &type = package_.types.type(symbol.type);
-          if (type.kind == TypeKind::Procedure && !type.members.empty()) {
-            current_result_type_ = type.members.back();
+      std::size_t procedure_index = 0;
+      for (const HirProgram *program : programs_) {
+        hir_ = program;
+        for (const HirProcedure &procedure : program->procedures()) {
+          DirectProcedureEffectSummary discovered;
+          discovered.procedure = procedure.symbol;
+          current_ = &discovered;
+          current_procedure_ = procedure.symbol;
+          current_result_type_ = {};
+          const Symbol &symbol = package_.symbols.symbol(procedure.symbol);
+          if (symbol.type.is_valid()) {
+            const Type &type = package_.types.type(symbol.type);
+            if (type.kind == TypeKind::Procedure && !type.members.empty()) {
+              current_result_type_ = type.members.back();
+            }
           }
+          procedure_values_.clear();
+          storage_origins_.clear();
+          seed_parameter_slots(procedure.symbol);
+          visit_block(procedure.body);
+          if (direct_.procedures[procedure_index].return_values !=
+                  discovered.return_values ||
+              direct_.procedures[procedure_index].field_writes !=
+                  discovered.field_writes) {
+            returns_changed = true;
+          }
+          direct_.procedures[procedure_index] = std::move(discovered);
+          ++procedure_index;
         }
-        procedure_values_.clear();
-        storage_origins_.clear();
-        seed_parameter_slots(procedure.symbol);
-        visit_block(procedure.body);
-        if (result_.procedures[index].return_values !=
-                discovered.return_values ||
-            result_.procedures[index].field_writes !=
-                discovered.field_writes) {
-          returns_changed = true;
-        }
-        result_.procedures[index] = std::move(discovered);
       }
     } while (returns_changed);
 
-    for (std::size_t index = 0; index < hir_.procedures().size(); ++index) {
-      result_.procedures[index].effects =
-          result_.procedures[index].direct_effects;
-    }
+    hir_ = nullptr;
     current_ = nullptr;
     current_procedure_ = {};
     current_result_type_ = {};
     procedure_values_.clear();
     storage_origins_.clear();
+    return std::move(direct_);
+  }
+
+  [[nodiscard]] EffectSummaryResult close(
+      const DirectEffectSummaryResult &direct) {
+    closed_.procedures.reserve(direct.procedures.size());
+    for (const DirectProcedureEffectSummary &source : direct.procedures) {
+      ProcedureEffectSummary summary;
+      summary.procedure = source.procedure;
+      summary.return_values = source.return_values;
+      summary.field_writes = source.field_writes;
+      summary.effects = source.direct_effects;
+      closed_.procedures.push_back(std::move(summary));
+    }
 
     // The direct summary graph is now immutable. Collapse legal recursive
     // call/value-flow cycles explicitly, then close the condensation graph from
     // callees to callers. An acyclic singleton executes once. A recursive SCC
     // repeats only its own rows; each changing pass adds one member of a finite
     // source-derived effect set, so no arbitrary iteration bound is required.
-    result_.components = build_effect_components(result_.procedures);
-    for (const ClosedEffectComponent &component : result_.components) {
+    closed_.components = build_effect_components(direct.procedures);
+    for (const ClosedEffectComponent &component : closed_.components) {
       bool changed = false;
       do {
         changed = false;
         for (std::size_t procedure_index : component.procedure_indices) {
           ProcedureEffectSummary &summary =
-              result_.procedures[procedure_index];
+              closed_.procedures[procedure_index];
+          const DirectProcedureEffectSummary &source =
+              direct.procedures[procedure_index];
           for (const ProcedureInvocationSummary &invocation :
-               summary.direct_invocations) {
+               source.direct_invocations) {
             changed = compose_named_call(
                 summary, invocation.callee, invocation.arguments) || changed;
           }
           for (const ProcedureFlowInvocationSummary &invocation :
-               summary.direct_flow_calls) {
+               source.direct_flow_calls) {
             changed = compose_value_call(
                 summary, invocation.callee, invocation.arguments) || changed;
           }
@@ -379,25 +401,25 @@ public:
     // The denial walker consumes these exact rows, so a typed field selected at
     // one call site cannot degrade back into an unknown edge during its second
     // lexical-policy check.
-    for (const ProcedureEffectSummary &summary : result_.procedures) {
+    for (const DirectProcedureEffectSummary &summary : direct.procedures) {
       for (const ProcedureInvocationSummary &invocation :
            summary.direct_invocations) {
         ProcedureEffectSummary site;
         [[maybe_unused]] const bool added = compose_named_call(
             site, invocation.callee, invocation.arguments);
-        result_.call_sites.push_back(
-            {invocation.expression, std::move(site.effects)});
+        closed_.call_sites.push_back(
+            {summary.procedure, invocation.expression, std::move(site.effects)});
       }
       for (const ProcedureFlowInvocationSummary &invocation :
            summary.direct_flow_calls) {
         ProcedureEffectSummary site;
         [[maybe_unused]] const bool added = compose_value_call(
             site, invocation.callee, invocation.arguments);
-        result_.call_sites.push_back(
-            {invocation.expression, std::move(site.effects)});
+        closed_.call_sites.push_back(
+            {summary.procedure, invocation.expression, std::move(site.effects)});
       }
     }
-    return std::move(result_);
+    return std::move(closed_);
   }
 
 private:
@@ -534,7 +556,7 @@ private:
   [[nodiscard]] std::optional<StoragePath> storage_path(
       HirExpressionId id) const {
     if (!id.is_valid()) return std::nullopt;
-    const HirExpression &expression = hir_.expression(id);
+    const HirExpression &expression = hir_->expression(id);
     if (expression.kind == HirExpressionKind::Context) {
       StoragePath result;
       result.context = true;
@@ -587,7 +609,7 @@ private:
   [[nodiscard]] std::vector<StoragePath> pointer_value_origins(
       HirExpressionId id) const {
     if (!id.is_valid()) return {};
-    const HirExpression &expression = hir_.expression(id);
+    const HirExpression &expression = hir_->expression(id);
 
     // A local pointer symbol denotes the pointer stored in its slot, not the
     // slot itself. Recover every address that may have been assigned to it.
@@ -781,8 +803,10 @@ private:
   }
 
   [[nodiscard]] bool has_local_body(SymbolId symbol) const {
-    for (const HirProcedure &procedure : hir_.procedures()) {
-      if (procedure.symbol == symbol) return true;
+    for (const HirProgram *program : programs_) {
+      for (const HirProcedure &procedure : program->procedures()) {
+        if (procedure.symbol == symbol) return true;
+      }
     }
     return false;
   }
@@ -824,7 +848,7 @@ private:
   [[nodiscard]] std::optional<std::string_view> context_field(
       HirExpressionId id) const {
     if (!id.is_valid()) return std::nullopt;
-    const HirExpression &expression = hir_.expression(id);
+    const HirExpression &expression = hir_->expression(id);
     if (expression.kind == HirExpressionKind::Context) return "*";
     if (expression.kind != HirExpressionKind::Member ||
         expression.operands.empty()) {
@@ -1037,7 +1061,7 @@ private:
       }
     };
 
-    if (const ProcedureEffectSummary *summary = result_.find(callee)) {
+    if (const DirectProcedureEffectSummary *summary = direct_.find(callee)) {
       for (const ProcedureFieldWriteSummary &write : summary->field_writes) {
         apply(
             write.parameter,
@@ -1076,7 +1100,7 @@ private:
       result.unknown = true;
       return result;
     }
-    const HirExpression &callee = hir_.expression(call.operands.front());
+    const HirExpression &callee = hir_->expression(call.operands.front());
     // record_call captured source-ordered arguments before the call's own
     // write-back became visible. Reuse that immutable snapshot when deriving a
     // returned callback instead of rereading possibly mutated storage here.
@@ -1101,7 +1125,8 @@ private:
       result.unknown = true;
       return result;
     }
-    if (const ProcedureEffectSummary *summary = result_.find(callee.symbol)) {
+    if (const DirectProcedureEffectSummary *summary =
+            direct_.find(callee.symbol)) {
       for (const ProcedureFieldValueSummary &returned :
            summary->return_values) {
         if (returned.path == path) {
@@ -1140,7 +1165,7 @@ private:
       value.unknown = true;
       return value;
     }
-    const HirExpression &expression = hir_.expression(id);
+    const HirExpression &expression = hir_->expression(id);
 
     if (std::optional<StoragePath> location = storage_path(id)) {
       for (StoragePath resolved :
@@ -1362,7 +1387,7 @@ private:
       HirExpressionId id) const {
     ProcedureArgumentSummary result;
     if (!id.is_valid()) return result;
-    const HirExpression &expression = hir_.expression(id);
+    const HirExpression &expression = hir_->expression(id);
     const Type &type = package_.types.type(expression.type);
     const bool follow_pointer = type.kind == TypeKind::Pointer ||
         type.kind == TypeKind::MultiPointer;
@@ -1388,7 +1413,7 @@ private:
       ProcedureValueSummary callee_value,
       std::vector<ProcedureArgumentSummary> arguments) {
     if (call.operands.empty()) return;
-    const HirExpression &callee = hir_.expression(call.operands.front());
+    const HirExpression &callee = hir_->expression(call.operands.front());
     if (callee.kind == HirExpressionKind::Symbol &&
         callee.symbol.is_valid() &&
         package_.symbols.symbol(callee.symbol).kind == SymbolKind::Procedure) {
@@ -1611,7 +1636,7 @@ private:
            {}}) || changed;
     }
     composition_stack_.push_back({callee, arguments});
-    if (const ProcedureEffectSummary *summary = result_.find(callee)) {
+    if (const ProcedureEffectSummary *summary = closed_.find(callee)) {
       // Copy the row before adding to destination: recursive calls may make
       // summary and destination the same vector.
       const std::vector<SemanticEffect> effects = summary->effects;
@@ -1678,7 +1703,7 @@ private:
 
   void visit_expression(HirExpressionId id) {
     if (!id.is_valid()) return;
-    const HirExpression &expression = hir_.expression(id);
+    const HirExpression &expression = hir_->expression(id);
 
     // Calls evaluate the callee and then each argument in source order. Capture
     // each procedure value immediately after its own evaluation: a later
@@ -1773,7 +1798,7 @@ private:
           {EffectKind::Assembly, {}, "asm", {}, {}, {}});
     } else if (expression.kind == HirExpressionKind::Index &&
                !expression.operands.empty()) {
-      const TypeId base_type = hir_.expression(expression.operands.front()).type;
+      const TypeId base_type = hir_->expression(expression.operands.front()).type;
       if (base_type.is_valid() &&
           package_.types.type(base_type).kind == TypeKind::MultiPointer) {
         add_effect(
@@ -1793,7 +1818,7 @@ private:
   }
 
   void visit_statement(HirStatementId id) {
-    const HirStatement &statement = hir_.statement(id);
+    const HirStatement &statement = hir_->statement(id);
     if (statement.kind == HirStatementKind::Unchecked) {
       add_effect(
           current_->direct_effects,
@@ -1836,7 +1861,7 @@ private:
         const HirExpressionId source = statement.expressions[left_count];
         for (std::size_t index = 0; index < left_count; ++index) {
           const HirExpression &left =
-              hir_.expression(statement.expressions[index]);
+              hir_->expression(statement.expressions[index]);
           std::optional<StoragePath> destination =
               storage_path(statement.expressions[index]);
           if (!destination.has_value()) continue;
@@ -1854,7 +1879,7 @@ private:
       const std::size_t right_count = statement.expressions.size() - left_count;
       const std::size_t paired = std::min(left_count, right_count);
       for (std::size_t index = 0; index < paired; ++index) {
-        const HirExpression &left = hir_.expression(statement.expressions[index]);
+        const HirExpression &left = hir_->expression(statement.expressions[index]);
         std::optional<StoragePath> destination =
             storage_path(statement.expressions[index]);
         if (!destination.has_value()) continue;
@@ -1882,17 +1907,19 @@ private:
 
   void visit_block(HirBlockId id) {
     if (!id.is_valid()) return;
-    for (HirStatementId statement : hir_.block(id).statements) {
+    for (HirStatementId statement : hir_->block(id).statements) {
       visit_statement(statement);
     }
   }
 
   const SemanticPackage &package_;
-  const HirProgram &hir_;
+  std::span<const HirProgram *const> programs_;
+  const HirProgram *hir_ = nullptr;
   const TargetProfile *target_ = nullptr;
   std::span<const ForeignProviderAudit> provider_audits_;
-  EffectSummaryResult result_;
-  ProcedureEffectSummary *current_ = nullptr;
+  DirectEffectSummaryResult direct_;
+  EffectSummaryResult closed_;
+  DirectProcedureEffectSummary *current_ = nullptr;
   SymbolId current_procedure_;
   TypeId current_result_type_;
   std::vector<StoredProcedureValue> procedure_values_;
@@ -1901,6 +1928,14 @@ private:
 };
 
 } // namespace
+
+const DirectProcedureEffectSummary *DirectEffectSummaryResult::find(
+    SymbolId procedure) const {
+  for (const DirectProcedureEffectSummary &summary : procedures) {
+    if (summary.procedure == procedure) return &summary;
+  }
+  return nullptr;
+}
 
 const ProcedureEffectSummary *EffectSummaryResult::find(
     SymbolId procedure) const {
@@ -1911,20 +1946,58 @@ const ProcedureEffectSummary *EffectSummaryResult::find(
 }
 
 const CallSiteEffectSummary *EffectSummaryResult::find_call_site(
-    HirExpressionId expression) const {
+    SymbolId procedure, HirExpressionId expression) const {
   for (const CallSiteEffectSummary &summary : call_sites) {
-    if (summary.expression == expression) return &summary;
+    if (summary.procedure == procedure && summary.expression == expression) {
+      return &summary;
+    }
   }
   return nullptr;
 }
 
-EffectSummaryResult summarize_package_effects(
+DirectEffectSummaryResult collect_direct_procedure_effects(
     const SemanticPackage &package,
-    const HirProgram &hir,
+    std::span<const ProcedureBodyHirResult> procedures,
+    std::span<const std::size_t> selected_indices,
     const TargetProfile *target,
     std::span<const ForeignProviderAudit> provider_audits) {
-  EffectCollector collector(package, hir, target, provider_audits);
-  return collector.run();
+  std::vector<const HirProgram *> programs;
+  programs.reserve(selected_indices.size());
+  std::size_t previous = 0;
+  bool has_previous = false;
+  for (std::size_t index : selected_indices) {
+    assert(index < procedures.size());
+    assert(!has_previous || previous < index);
+    previous = index;
+    has_previous = true;
+    programs.push_back(&procedures[index].program);
+  }
+  EffectCollector collector(package, programs, target, provider_audits);
+  return collector.collect_direct();
+}
+
+DirectEffectSummaryResult collect_direct_procedure_effects(
+    const SemanticPackage &package,
+    std::span<const ProcedureBodyHirResult> procedures,
+    const TargetProfile *target,
+    std::span<const ForeignProviderAudit> provider_audits) {
+  std::vector<const HirProgram *> programs;
+  programs.reserve(procedures.size());
+  for (const ProcedureBodyHirResult &procedure : procedures) {
+    programs.push_back(&procedure.program);
+  }
+  EffectCollector collector(package, programs, target, provider_audits);
+  return collector.collect_direct();
+}
+
+EffectSummaryResult close_procedure_effects(
+    const SemanticPackage &package,
+    const DirectEffectSummaryResult &direct,
+    const TargetProfile *target,
+    std::span<const ForeignProviderAudit> provider_audits) {
+  const std::span<const HirProgram *const> no_programs;
+  EffectCollector collector(package, no_programs, target, provider_audits);
+  return collector.close(direct);
 }
 
 std::string_view effect_kind_name(EffectKind kind) {

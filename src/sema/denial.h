@@ -22,6 +22,8 @@
 #include "source/source.h"
 #include "workspace/package.h"
 
+#include <cstddef>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -62,13 +64,24 @@ struct ResolvedDenialSelector {
     ScopeId scope,
     DiagnosticSink &diagnostics);
 
-// Returns true when no new denial error was emitted. HIR and summaries must
-// belong to package and must remain alive only for the duration of the call.
-[[nodiscard]] bool check_package_denials(
+// Returns true when no new denial error was emitted. selected_indices names the
+// exact canonical procedure-product projection whose direct summaries were
+// closed into effects. HIR-local IDs never cross procedure arenas.
+[[nodiscard]] bool check_procedure_denials(
     const SourceManager &sources,
     const LoadedPackage &loaded,
     const SemanticPackage &package,
-    const HirProgram &hir,
+    std::span<const ProcedureBodyHirResult> procedures,
+    std::span<const std::size_t> selected_indices,
+    const EffectSummaryResult &effects,
+    DiagnosticSink &diagnostics);
+
+// Standalone subsystem form which checks every supplied procedure product.
+[[nodiscard]] bool check_procedure_denials(
+    const SourceManager &sources,
+    const LoadedPackage &loaded,
+    const SemanticPackage &package,
+    std::span<const ProcedureBodyHirResult> procedures,
     const EffectSummaryResult &effects,
     DiagnosticSink &diagnostics);
 

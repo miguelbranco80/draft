@@ -808,11 +808,12 @@ pub make_assert :: proc() -> proc() {
       dependency_semantics.constants,
       target.facts,
       diagnostics);
-  const draft::HirProgram dependency_hir =
-      draft::project_package_body_hir(dependency_bodies.procedures);
+  const draft::DirectEffectSummaryResult dependency_direct_effects =
+      draft::collect_direct_procedure_effects(
+          dependency_bodies.package, dependency_bodies.procedures, &target);
   const draft::EffectSummaryResult dependency_effects =
-      draft::summarize_package_effects(
-          dependency_bodies.package, dependency_hir, &target);
+      draft::close_procedure_effects(
+          dependency_bodies.package, dependency_direct_effects, &target);
   const draft::AgentMetadataResult empty_metadata;
   draft::PackageInterface dependency_interface =
       draft::build_package_interface(
@@ -962,11 +963,12 @@ caller :: proc() {
       consumer_semantics.constants,
       target.facts,
       diagnostics);
-  const draft::HirProgram consumer_hir =
-      draft::project_package_body_hir(consumer_bodies.procedures);
+  const draft::DirectEffectSummaryResult consumer_direct_effects =
+      draft::collect_direct_procedure_effects(
+          consumer_bodies.package, consumer_bodies.procedures, &target);
   const draft::EffectSummaryResult consumer_effects =
-      draft::summarize_package_effects(
-          consumer_bodies.package, consumer_hir, &target);
+      draft::close_procedure_effects(
+          consumer_bodies.package, consumer_direct_effects, &target);
 
   if (diagnostics.has_errors()) {
     std::cerr << draft::render_diagnostics(sources, diagnostics);
