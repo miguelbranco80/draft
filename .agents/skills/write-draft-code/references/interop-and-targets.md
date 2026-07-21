@@ -360,8 +360,10 @@ The source-level `foreign` and `export` declarations do not change between
 static and dynamic linking. Artifact kind selects how resolved symbols are
 packaged.
 
-The bootstrap emits package-static and single-procedure objects through its
-linked LLVM 22 C-API adapter.
+For non-assembly native builds, the bootstrap emits one internal linker-input
+object per semantic package through its linked LLVM 22 C-API adapter.
+`--kind object` still publishes one relocatably linked whole-graph object, while
+`--kind assembly` publishes the package `.s` files instead.
 macOS additionally requires the Apple linker/SDK, `libtool`, and the matching
 LLVM `dsymutil`; applicable executable/shared outputs publish a verified
 `.dSYM`. Linux uses the matching Clang/LLVM tools, `ld.lld`, `llvm-ar`, and the
@@ -370,18 +372,20 @@ emitted. These are compiler build/host requirements, not Draft package
 dependencies or resolution-manifest inputs.
 
 After complete lowering, one explicit artifact layout orders each package's
-static-data unit, concrete machine-function units, and package-assembly inputs.
-Every row becomes an independent native work-graph task. Workers own isolated
-LLVM contexts or private assembler paths and return task-indexed bytes.
+complete LLVM module followed by its package-assembly inputs. Every row becomes
+an independent native work-graph task. Workers own isolated LLVM contexts or
+private assembler paths and return task-indexed bytes.
 Diagnostics and artifact publication occur only after the join, in stable
 task-ID order. Native changes must preserve the one-worker/four-worker
 determinism gate and the real embedded LLVM/external-Clang parity gate for all
 artifact kinds.
 
-Assembly output is a directory bundle, not concatenated text. Native builds
-also emit source-correlation metadata. Deterministic output must not contain
-physical checkout paths, nondeterministic archive metadata, or filesystem
-enumeration order.
+Assembly output is a directory bundle, not concatenated text. It contains
+`package-<package-index>-module.s` for each semantic package and
+`package-<package-index>-assembly-<input-index><source-extension>` for each
+selected package-assembly input. Native builds also emit source-correlation
+metadata. Deterministic output must not contain physical checkout paths,
+nondeterministic archive metadata, or filesystem enumeration order.
 
 ## Portability checklist
 

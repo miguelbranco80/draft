@@ -1,15 +1,16 @@
 # Native host qualification
 
 This report records the native-host qualification performed on 2026-07-19 for
-the compiler implementation through commit `c0638e1`, plus the completed
-semantic-work-graph qualification run on 2026-07-21 through commit `10ab54a`.
-This report commit changes documentation only.
+the compiler implementation through commit `c0638e1`, the completed semantic-
+work-graph qualification run on 2026-07-21 through commit `10ab54a`, and the
+package-module qualification through commit `80768cc` later that day. This
+report commit changes documentation only.
 
-The bootstrap links LLVM 22.1.8 and emits independently compilable
-package-static and machine-function units in process. Matching Clang, linker,
-archiver, debug, system-library, and SDK or sysroot tools remain ordinary build
-configuration. Their locations do not enter Draft program identity, and
-ordinary compilation does not launch a version probe.
+The bootstrap links LLVM 22.1.8 and emits one complete module/object per
+semantic package in process. Matching Clang, linker, archiver, debug,
+system-library, and SDK or sysroot tools remain ordinary build configuration.
+Their locations do not enter Draft program identity, and ordinary compilation
+does not launch a version probe.
 
 ## Qualified configurations
 
@@ -42,6 +43,25 @@ and native artifacts. A generated 256-procedure package additionally proves a
 wide declaration/body ready set and exact deterministic timing counters without
 asserting host-dependent wall time. Every `SemanticProductKind` has an explicit
 transition assertion and real compiler consumer.
+
+## Package-module addendum
+
+On 2026-07-21, commit `80768cc` passed 72/72 tests in the normal macOS AArch64
+LLVM 22 build. The run included native determinism, embedded-LLVM/external-Clang
+parity, native conformance, C-client integration, provider-free and fake-
+provider resolution, both target front-end checks, and every example gate.
+
+The refactor retains one immutable `MirProcedure` product per concrete runtime
+procedure, then publishes exactly one `PackageLlvmModule` per semantic package
+in a workspace-wide ready wave. Artifact layouts contain that module followed
+by package assembly inputs; native planning therefore creates one internal
+module-object task per package rather than one LLVM task per procedure. A direct
+`emit-llvm` qualification of `examples/language-tour` processed eight semantic
+packages and 43 MIR procedures, emitted exactly eight package modules, and
+published eight artifact layouts. The structurally validated Draft coding skill
+was also forward-tested by fresh agents against the CLI and current compiler
+product graph; no granularity flag or obsolete per-function LLVM route was
+reported.
 
 ## What the gates establish
 

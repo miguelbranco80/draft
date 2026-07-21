@@ -72,7 +72,7 @@ ctest --test-dir build -L examples --output-on-failure
 On Linux, use `-DLLVM_DIR=/usr/lib/llvm-22/lib/cmake/llvm`. That LLVM
 installation must include Clang, lld, and the utilities even when GCC is
 selected as `CMAKE_CXX_COMPILER`: GCC compiles the bootstrap, LLVM's linked C
-API emits package-static and single-procedure objects, and matching tools
+API emits one complete object per semantic package, and matching tools
 provide qualification, assembly, linking, archiving, and debug operations.
 
 The sanitizer job's local equivalent on an x86-64 Linux host is:

@@ -97,10 +97,9 @@ The events reflect the implementation's real orchestration rather than the
 conceptual diagram alone. An ordinary handwritten `check` constructs one graph:
 interface discovery installs declarations and types, then semantic continuation
 checks bodies, effects, denials, and completed interfaces on those same package
-rows. A native `build` continues that graph directly through MIR/LLVM, emits
-independent package-static and single-procedure objects through embedded LLVM,
-then invokes only the remaining platform tools; it does not reload or recheck
-handwritten source.
+rows. A native `build` continues that graph directly through procedure-owned
+MIR and one complete LLVM module/object per semantic package, then invokes only
+the remaining platform tools; it does not reload or recheck handwritten source.
 `--timings` exposes resolution rounds as in-memory source transitions. A
 checked complete-file overlay is parsed into the existing workspace graph;
 package/root/import IDs remain stable. Target selection, source generations,
@@ -258,26 +257,25 @@ cannot drift between front end and backend. MIR reads the table immutably:
 compiler-only storage addresses use `rawptr` plus an explicit addressed TypeId,
 while actual source pointers retain their canonical semantic type.
 
-The LLVM adapter has direct operations for two explicit ownership units. Its
-static-data operation emits a complete module containing globals, relocatable
-initializer storage, runtime support, and any hosted entry point but no Draft
-procedure definition. Its machine-function operation emits a complete module
-defining exactly one MIR procedure while declaring package globals and sibling
-procedures. Each split unit can therefore enter a private LLVM context and
-produce an object independently; no textual fragment linker or shared LLVM
-module is required.
+The LLVM adapter has one direct ownership operation: emit one complete module
+for one semantic package. The module contains package globals, relocatable
+initializer storage, every concrete MIR procedure, runtime support when the
+package owns it, and any requested hosted entry point. Procedure MIR is not
+reassembled into an owning `MirProgram`; the emitter borrows the immutable
+payloads from their product side-table rows in canonical package order. This
+gives LLVM the natural package optimization scope while retaining procedure-
+granular semantic checking and MIR lowering.
 
-Compiler orchestration consumes only the split operations. `PackageStaticData`
-owns the static unit, every concrete `MirProcedure` produces one
-`MachineFunction`, and one `ArtifactLayout` product per package publishes the
-canonical static/function/assembly input sequence. After every selected package
-reaches target lowering, those layout rows form one closed native ready set.
-Each worker owns an isolated LLVM context or private assembler paths and writes
-one result slot. The main thread joins the set, selects diagnostics by lowest
-stable task ID, and only then publishes files and linker inputs in task-ID
-order. Parallel scheduling changes elapsed time, never artifacts or
-diagnostics. The former complete-package LLVM test operation is deleted; direct
-subsystem tests exercise the same split emitters.
+Compiler orchestration publishes one `PackageLlvmModule` after all of that
+package's `MirProcedure` products complete. One `ArtifactLayout` product per
+package then publishes the canonical module/assembly input sequence. After
+every selected package reaches target lowering, those layout rows form one
+closed native ready set. Each worker owns an isolated LLVM context or private
+assembler paths and writes one result slot. The main thread joins the set,
+selects diagnostics by lowest stable task ID, and only then publishes files and
+linker inputs in task-ID order. Parallel scheduling changes elapsed time, never
+artifacts or diagnostics. Direct subsystem tests call the same complete-package
+emitter as compiler orchestration.
 
 ### Internal representations
 
@@ -307,10 +305,10 @@ subsystem tests exercise the same split emitters.
   checked runtime HIR procedure lowers to one privately verified MIR procedure;
   workspace compilation stores that result only in the side-table row owned by
   its `MirProcedure` product. Package rows retain ordered product IDs, not a
-  reconstructed `MirProgram`. Compilation publishes package static-data and
-  assembly barriers, then lowers every independent runtime procedure in one
-  bounded ready wave. LLVM is an emission/optimization back end rather than
-  Draft's semantic model.
+  reconstructed `MirProgram`. Compilation publishes package assembly, then
+  lowers every independent runtime procedure in one bounded ready wave. A
+  package module borrows that completed ordered set only at LLVM emission time.
+  LLVM is an emission/optimization back end rather than Draft's semantic model.
 
 LLVM types stay behind numeric, target, ABI, and code-generation adapters. The
 front end must not depend on LLVM IR details.

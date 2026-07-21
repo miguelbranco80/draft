@@ -29,8 +29,8 @@ Status: implemented bootstrap architecture; not a Draft language limit.
 The command-local semantic product graph owns target/source/parsed inputs,
 package name and interface barriers, opaque synthesis waits, declarations,
 constants, faceted type completion, procedure HIR, effect closure, denials,
-per-procedure MIR and machine functions, package static/assembly data, artifact
-layout, and source-generation transitions. Collection and import binding happen
+per-procedure MIR, package assembly, package LLVM modules, artifact layout, and
+source-generation transitions. Collection and import binding happen
 once per source generation; selected package branches append into the retained
 canonical tables. Declaration tasks use frozen patch-enabled views, generic and
 body tasks return append packets, and constant/condition tasks return isolated
@@ -104,19 +104,20 @@ context, native interop, and validation discovery also resolve only the exact
 selected procedure products. Each completed MIR product owns its procedure
 payload directly in the workspace side table; the compiler retains neither a
 package-wide HIR copy nor a reconstructed package MIR program. The standalone
-HIR projection, package MIR container/lowering pass, and complete-package LLVM
-emitter have been deleted; direct subsystem tests use the same split product
-operations as compiler orchestration.
+HIR projection and package MIR container/lowering pass have been deleted; direct
+subsystem tests use the same procedure-product lowering and package LLVM emitter
+as compiler orchestration.
 Definite-initialization diagnostics and agent loop-range facts are produced by
 the isolated body task before its semantic suffix is published; package
 finalization no longer needs a temporary HIR projection.
 
-LLVM and native lowering now follow live semantic products. Package static data
-owns one independently compilable unit; each concrete MIR procedure owns one
-`MachineFunction` unit; and each package publishes a deterministic
-`ArtifactLayout` over static data, functions, and assembly. The object planner
-consumes only that layout. No concatenated package LLVM module or package object
-remains in compiler state.
+LLVM and native lowering now follow live semantic products. Each concrete MIR
+procedure retains its independently owned product payload. Once the complete
+package set is ready, one `PackageLlvmModule` borrows those payloads in canonical
+order and emits package globals plus all concrete definitions. Each package then
+publishes a deterministic `ArtifactLayout` over that module and its assembly.
+The object planner consumes only that layout; no per-function LLVM units or
+parallel package-module representation remain in compiler state.
 
 ## Native host and instrumentation limits
 
@@ -124,7 +125,7 @@ Status: explicit two-target bootstrap boundary.
 
 The bootstrap compiler runs and executes its complete native integration suite
 on both AArch64 macOS and AArch64 GNU/Linux. It links a selected LLVM 22 library
-for ordinary split-unit object emission. Matching Clang/`ld.lld`/`llvm-ar`/
+for ordinary package-module object emission. Matching Clang/`ld.lld`/`llvm-ar`/
 `dsymutil`, the Apple linker, `libtool`, SDK, and system runtime remain ordinary
 tooling prerequisites rather than Draft program inputs. Draft currently emits
 only AArch64 machine code; x86-64 hosts can build and sanitize the bootstrap

@@ -7,7 +7,8 @@ This document records the bootstrap compiler's target-independent MIR to LLVM re
 Status: LLVM 22 C-API object and assembly emission implemented and qualified.
 
 The bootstrap links the shared LLVM 22 distribution selected at CMake time.
-Each package-static or single-procedure LLVM unit is parsed and verified in a
+Each semantic package produces one complete LLVM module containing its globals
+and all concrete runtime procedures. That module is parsed and verified in a
 fresh `LLVMContext`, checked against the selected Draft target triple and fixed
 data-layout string, and emitted through a task-owned target machine into an
 in-memory object or assembly buffer. A disagreement between LLVM's computed
@@ -17,7 +18,7 @@ supplies missing language or ABI facts.
 The adapter exposes no LLVM reference outside its module. Its process-global
 AArch64 registry is initialized once, while contexts, modules, target machines,
 pass options, messages, and output buffers have one explicit call lifetime. The
-linked distribution must report thread support so isolated native-unit calls
+linked distribution must report thread support so isolated package-module calls
 can be scheduled concurrently without sharing an LLVM context.
 
 The former external Clang IR compilation path remains only as a low-level
@@ -49,13 +50,13 @@ checking.
 
 Status: bounded parallel emission and ordered publication implemented.
 
-Once semantic closure and MIR/LLVM lowering have completed, each package owns an
-explicit `ArtifactLayout` product. Its canonical order is package static data,
-one `MachineFunction` unit per concrete MIR procedure, then selected package
+Once semantic closure and MIR lowering have completed, each package owns one
+`PackageLlvmModule` product and an explicit `ArtifactLayout` product. Its
+canonical order is the complete package module followed by selected package
 assembly. The backend freezes one task for every row in those package layouts.
-The native graph is intentionally edgeless: each LLVM unit declares the package
-storage, sibling procedures, and imports it does not define, and final
-linking—not object emission—combines the units.
+The native graph is intentionally edgeless: each package module defines its own
+storage and procedures, declares dependency imports, and can be emitted without
+another package module. Final linking combines package and assembly objects.
 The layout row retains the exact semantic producer for every native input.
 LLVM owns section and relocation placement inside one isolated object; its
 verified object bytes are the task result. The coordinator owns only the
@@ -108,8 +109,8 @@ literals cannot carry the initializer-specific packed type.
 
 Status: AArch64 Mach-O and ELF artifact contracts implemented.
 
-The root package-static unit owns runtime support for every final native
-artifact, but only executable compilation adds the hosted C `main`. This lets
+The root package module owns runtime support for every final native artifact,
+but only executable compilation adds the hosted C `main`. This lets
 an exported C wrapper use `runtime.default_context` from an object, archive, or
 dylib without requiring a fake Draft entry procedure. Ordinary Draft procedures
 and globals have hidden native visibility; only explicit C exports retain
@@ -124,9 +125,8 @@ the host system's startup objects, loader, glibc, and GCC runtime through the
 selected LLVM Clang driver and lld. Relocatable ELF output disables Clang's PIE
 default before `-r`; final links retain a deterministic SHA-1 GNU build ID.
 Assembly output is a directory bundle with one compiler-produced source for
-each package-static and machine-function unit plus exact copied external
-assembly inputs, avoiding local-label collisions that concatenation could
-create.
+each semantic package module plus exact copied external assembly inputs,
+avoiding local-label collisions that concatenation could create.
 Generated C headers cover root-package exports and transitively required C
 records, raw unions, enums, fixed-array fields, and callback types. Layout
 assertions make size, alignment, and field-offset disagreement a C compile error.
@@ -165,14 +165,13 @@ includes result-less Draft calls: a void call still receives the source
 location of its MIR row. LLVM therefore never has to discard an otherwise
 valid function's debug information because an inlinable call lacks `!dbg`.
 
-The native adapter writes the canonical JSON only after every native-unit
-object task succeeds and returns its SHA-256 digest beside the native output. A
+The native adapter writes the canonical JSON only after every native-object
+task succeeds and returns its SHA-256 digest beside the native output. A
 normal resolved build binds the map to the resolved-program digest. The lower
 level backend API can deliberately compile a checked graph before resolution;
-that form binds the map to a digest of the exact, canonically ordered LLVM unit
-set
-instead of inventing a resolved-program identity. The sidecar remains derived
-output in both cases, avoiding a circular program identity.
+that form binds the map to a digest of the exact, canonically ordered package
+module set instead of inventing a resolved-program identity. The sidecar
+remains derived output in both cases, avoiding a circular program identity.
 
 The sidecar is the common join boundary for future counter-based coverage and
 sampling profiles. Sanitizer, race, allocator-poisoning, and coverage runtimes

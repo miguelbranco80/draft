@@ -289,9 +289,9 @@ gate.
    edges, denial error states, invalidation, and one-/four-worker determinism.
 
 8. **Per-procedure MIR — complete.** Lower each checked concrete procedure into a private
-   MIR result without mutating semantic type tables. Publish package static data
-   and parsed assembly separately. Delete package-wide MIR lowering and semantic
-   type interning from the lowering phase.
+   MIR result without mutating semantic type tables. Publish parsed package
+   assembly separately. Delete package-wide MIR lowering and semantic type
+   interning from the lowering phase.
 
    Semantic type interning in MIR is deleted. Compiler-created storage
    addresses use the canonical `rawptr` representation plus explicit
@@ -303,12 +303,11 @@ gate.
    symbolic and compile-time-only procedures return an explicit successful
    non-runtime result. The package-wide MIR API and container are deleted;
    direct subsystem tests perform an explicit source-order loop over the same
-   product operation. Compiler orchestration publishes one
-   `PackageStaticData` barrier over the immutable global/constants payload and
-   one `PackageAssembly` barrier over captured standalone assembly plus parsed
-   inline regions. It then appends one `MirProcedure` row per selected concrete
-   runtime body, depending on that exact body, its denial result, and both
-   package barriers. One bounded workspace wave lowers and verifies private MIR
+   product operation. Compiler orchestration publishes one `PackageAssembly`
+   product over captured standalone assembly plus parsed inline regions. It then
+   appends one `MirProcedure` row per selected concrete runtime body, depending
+   on that exact body, its denial result, and package assembly. One bounded
+   workspace wave lowers and verifies private MIR
    tasks; the coordinator publishes each immutable payload only into the
    side-table row addressed by its product. Workspace package rows retain no
    aggregate `MirProgram`. Tests prove exact dependency/payload identity,
@@ -337,24 +336,25 @@ gate.
    synthesis requests, manifest bytes, resolved-program identity, product graph
    rows, declaration/body diagnostics, and failure selection.
 
-10. **Native product consumption — complete.** Emit independent machine functions from MIR
-    products, keep package static data and assembly explicit, and perform symbol,
-    section, relocation, and linker-input layout as deterministic publication
-    barriers. Start conservatively by emitting every concrete procedure; any
-    later demand-only emission must use the roots defined by the semantic work
-    graph document.
+10. **Native product consumption — complete.** Preserve procedure-owned MIR while
+    emitting one LLVM module per semantic package, keep package assembly
+    explicit, and publish linker inputs through deterministic artifact barriers.
+    Start conservatively by emitting every concrete procedure; any later
+    demand-only emission must use the roots defined by the semantic work graph
+    document.
 
-    `PackageStaticData` emits the complete non-function LLVM unit in its own
-    task. Every concrete `MirProcedure` row produces one live `MachineFunction`
-    row and isolated single-definition LLVM unit in a workspace-wide wave. One
-    `ArtifactLayout` row per package then publishes static data, functions, and
-   selected assembly in canonical order. Native object planning consumes only
-   those layouts and runs every LLVM unit or assembly source as one independent
-   task. The compiler retains no concatenated package LLVM module, and the old
-   complete-package LLVM emitter is deleted. Tests prove exact product
-   dependencies, one-/four-worker IR identity, cross-package ready sets,
-   split-module verification, artifact ordering, native parity, and
-   byte-for-byte artifact determinism.
+    Every concrete `MirProcedure` remains a live product with an immutable
+    side-table payload. One `PackageLlvmModule` per package depends on the exact
+    ordered MIR set together with the target, interface, selected bodies, ABI
+    classifications, and denials. Its worker borrows those payloads and emits
+    globals, relocatable constants, runtime/entry support when owned, and all
+    concrete definitions in one module. One `ArtifactLayout` row per package
+    then publishes that module followed by selected assembly in canonical order.
+    Native object planning consumes only those layouts and runs every package
+    module or assembly source as one independent task. Tests prove exact product
+    dependencies, one-/four-worker IR identity, cross-package ready sets,
+    complete-module verification, artifact ordering, native parity, and
+    byte-for-byte artifact determinism.
 
 11. **Final-state deletion and qualification — complete.** Remove `PackageSemanticProgress`,
     declaration/body generations, semantic retry counters, package-wide HIR/MIR
@@ -368,12 +368,13 @@ gate.
     are deleted. Body initialization now follows the live body state; closure
     reuse is derived from exact completed product slices and terminal payloads.
     Workspace MIR payloads likewise live only at their `MirProcedure` product
-    IDs. The HIR projection, `MirProgram`, package MIR lowering, and
-    complete-package LLVM compatibility paths are deleted. Sequential
-    declaration snapshots are also deleted. The current implementation docs
-    and embedded Draft coding skill describe only frozen semantic prefixes,
-    task-owned outputs, and deterministic publication; the superseded compiler
-    graph plan is retained under `docs/history/`.
+    IDs. The HIR projection, `MirProgram`, package MIR lowering, and old package-
+    MIR-to-LLVM compatibility API are deleted. The current package LLVM emitter
+    instead borrows the ordered procedure-product payloads. Sequential
+    declaration snapshots are also deleted. The current implementation docs and
+    embedded Draft coding skill describe only frozen semantic prefixes, task-
+    owned outputs, and deterministic publication; the superseded compiler graph
+    plan is retained under `docs/history/`.
 
     Final qualification on 2026-07-21 passed all 72 tests in the normal LLVM 22
     build and all 72 tests under LLVM 22 ASan/UBSan. That closure includes both

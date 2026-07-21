@@ -173,9 +173,10 @@ build/draftc emit-c-header path/to/workspace --root package -o /tmp/package.h \
   --target aarch64-macos
 ```
 
-`emit-llvm` prints one complete package-static module followed by one complete
-module per concrete procedure. The blocks are independent compiler inputs, not
-fragments of one concatenated package module.
+`emit-llvm` prints one complete module per semantic package. Each block contains
+that package's globals and all concrete runtime procedure definitions and is an
+independent compiler input. Module granularity is an internal compiler
+invariant; there is no CLI option to change it.
 
 Pass an explicit target for target-sensitive work. A default-macOS check alone
 does not establish portability.
@@ -249,12 +250,15 @@ counts both `synthesis provider ready waves` and actual provider calls. Calls in
 one wave may overlap, so compare the enclosing wall time with the call count;
 do not add per-worker timing writes to the single-threaded recorder.
 
-Native lowering reports package-static, machine-function, and artifact-layout
-semantic waves separately. A machine-function task maps one-to-one to a
-concrete `MirProcedure` product, whose payload lives in its workspace product
-side-table row rather than a package MIR program. Native object tasks then
-follow the published static/function/assembly layout. Compare those counters
-across worker counts instead of assuming one LLVM or object task per package.
+Native lowering reports package-assembly, MIR, package-LLVM, and artifact-layout
+semantic waves separately. Each concrete `MirProcedure` payload lives in its
+workspace product side-table row rather than a package MIR program. After every
+selected package's MIR is ready, one workspace-wide wave runs one package-LLVM
+task per package; each task borrows its package's procedures in canonical order
+and emits the complete module. A later native ready set contains one module-
+object task per package plus any selected package-assembly tasks. Worker counts
+are internal/test options, not CLI flags. Repository determinism tests compare
+those counters across worker counts; do not invent `--workers` or `-j`.
 
 For resolved programs, distinguish `workspace loads` from `workspace source
 transitions`. A checked `...` expansion is reparsed into the existing
@@ -378,6 +382,11 @@ Native/interop work commonly needs:
 
 ```sh
 cmake --build build --target \
+  draft_mir_tests \
+  draft_llvm_ir_tests \
+  draft_llvm_object_emitter_tests \
+  draft_native_object_tasks_tests \
+  draft_compiler_tests \
   draft_native_interop_tests \
   draft_aarch64_abi_tests \
   draft_c_header_tests \
@@ -385,7 +394,7 @@ cmake --build build --target \
   --parallel
 
 ctest --test-dir build --output-on-failure \
-  -R '^(draft_native_interop_tests|draft_aarch64_abi_tests|draft_c_header_tests|draft_toolchain_tests|draft_target_profile_tests|draft_assembly_tests|draft_llvm_ir_tests|draft_llvm_object_emitter_tests|draft_native_object_tasks_tests|draft_compiler_tests)$'
+  -R '^(draft_mir_tests|draft_native_interop_tests|draft_aarch64_abi_tests|draft_c_header_tests|draft_toolchain_tests|draft_target_profile_tests|draft_assembly_tests|draft_llvm_ir_tests|draft_llvm_object_emitter_tests|draft_native_object_tasks_tests|draft_compiler_tests)$'
 ```
 
 On a native AArch64 macOS/Linux host, artifact closure also includes

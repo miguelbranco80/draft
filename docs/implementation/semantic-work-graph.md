@@ -78,9 +78,9 @@ expression, or name lookup.
 | Closed effect SCC | Monotonic closure over one concrete call/flow strongly connected component. |
 | Denial result | Checked only after the summaries on which the denial depends are closed. |
 | MIR procedure | Lowering is owned by one checked concrete procedure and does not mutate semantic type tables. |
-| Machine function | Native emission is independent per concrete function when the target backend permits it. |
-| Package static data and assembly | Non-function package output is explicit and separate from function emission. |
-| Artifact layout | Symbols, sections, relocations, and link inputs are published in canonical order after independent fragments complete. |
+| Package assembly | Captured and parsed assembly is an explicit package product consumed by MIR and native layout. |
+| Package LLVM module | One complete module consumes the package's ordered MIR products and owns its globals plus concrete definitions. |
+| Artifact layout | The package module and assembly link inputs are published in canonical order after their products complete. |
 
 Type readiness is deliberately faceted: identity, members, member types, natural
 layout, and ABI classification are distinct facts. A pointer often needs only
@@ -117,7 +117,7 @@ hashes belong only where bytes cross a persistent trust or identity boundary.
 
 Procedure-flow and denial analysis use two visible stages: independently
 computed direct summaries, followed by SCC discovery and monotonic closure over
-the concrete call and procedure-pointer-flow graph. MIR and machine emission
+the concrete call and procedure-pointer-flow graph. MIR and package emission
 start only from closed semantic products, so lowering never feeds facts back
 into type checking.
 
@@ -141,7 +141,8 @@ never weaken whole-program checking.
 Package retry rounds and retained-package rechecking are gone. Generic instance
 and type-layout demand are explicit graph products; procedure workers publish
 isolated immutable bodies; effects and denials close through explicit SCCs; MIR
-is produced per concrete procedure; and deterministic parallel scheduling is
+is produced per concrete procedure; LLVM emission consumes one completed
+ordered MIR set per semantic package; and deterministic parallel scheduling is
 qualified at one and four semantic workers.
 
 The bootstrap retains package-owned canonical semantic tables because stable
