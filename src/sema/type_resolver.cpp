@@ -2987,9 +2987,10 @@ private:
     // owned by that declaration task. If its physical shape depends on an
     // authored nominal whose layout product is still waiting, report those
     // exact prerequisites and discard this private instance. The retry then
-    // constructs the canonical application once from completed inputs. This is
-    // the transitional declaration-product behavior; step 4 gives the
-    // application itself a canonical demand product and removes this coupling.
+    // constructs the canonical local application once from completed inputs.
+    // Cross-package owner-evaluated applications use command-level demand
+    // products instead; this branch is the remaining local declaration-task
+    // path until canonical instance publication moves between worker waves.
     if (product_root_.is_valid() && !has_owner_evaluated_argument &&
         natural_layout.status == NaturalLayoutStatus::Waiting) {
       for (TypeId dependency : natural_layout.dependencies) {

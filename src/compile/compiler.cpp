@@ -1504,11 +1504,11 @@ has_symbol_product(std::span<const SemanticProductId> products,
   return false;
 }
 
-// Concrete parametric type instances are discoveries of the declaration task
-// that needed them. Their existing synchronous owner will be replaced by the
-// canonical generic-demand product in step 4; until then they must not be
-// mistaken for another authored declaration merely because their owner symbol
-// copies the template's SyntaxReference.
+// Ordinary local parametric type instances remain discoveries of the
+// declaration task that needs them; cross-package owner-evaluated applications
+// use the separate canonical demand table. Neither kind is another authored
+// declaration merely because its owner symbol copies the template's
+// SyntaxReference.
 [[nodiscard]] bool is_parametric_type_instance(const SemanticPackage &package,
                                                SymbolId symbol) {
   for (const ParametricTypeInstanceRecord &instance :
@@ -1597,9 +1597,10 @@ has_symbol_product(std::span<const SemanticProductId> products,
     // A parametric nominal is a symbolic template, not a runtime-bearing type
     // application. Its identity and member-type pattern must be checked now,
     // but no target size exists until a canonical argument tuple creates a
-    // concrete instance. Step 4 gives that instance its own layout product;
-    // scheduling the template here would invent an impossible dependency on a
-    // TypeParameter natural layout.
+    // concrete instance. A cross-package owner-evaluated application receives
+    // its own canonical layout product when demanded; scheduling the symbolic
+    // template here would invent an impossible dependency on a TypeParameter
+    // natural layout.
     if (!nominal || declaration.flags.parametric)
       continue;
     const std::array layout_dependencies{declaration_product};
