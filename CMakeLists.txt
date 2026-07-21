@@ -871,6 +871,24 @@ if(BUILD_TESTING)
       PROPERTIES LABELS "examples;integration"
     )
 
+    # core/terminal owns target-specific libc layouts but its unit tests avoid
+    # changing the CTest process terminal. Run them from an isolated copied
+    # workspace so evidence and native objects never enter the source checkout.
+    add_test(
+      NAME draft_core_terminal_tests
+      COMMAND
+        "${CMAKE_COMMAND}"
+        "-DDRAFTC=$<TARGET_FILE:draftc>"
+        "-DSOURCE_ROOT=${CMAKE_CURRENT_SOURCE_DIR}"
+        "-DTEST_ROOT=${CMAKE_CURRENT_BINARY_DIR}/core-terminal-test"
+        "-DTARGET_SELECTOR=${DRAFT_NATIVE_TEST_TARGET}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/driver_core_terminal_test.cmake"
+    )
+    set_tests_properties(
+      draft_core_terminal_tests
+      PROPERTIES LABELS "integration"
+    )
+
     # Build the logical custom_math provider independently as C, then map its
     # exact object into the public Draft build and launch the checked example.
     add_library(

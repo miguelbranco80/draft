@@ -25,6 +25,7 @@ from another standard library is not evidence that Draft provides it.
 - [`core/os`](#coreos)
 - [`core/runtime`](#coreruntime)
 - [`core/testing`](#coretesting)
+- [`core/terminal`](#coreterminal)
 - [`core/thread`](#corethread)
 - [`core/time`](#coretime)
 - [`core/utf8`](#coreutf8)
@@ -458,6 +459,32 @@ Expectations record failures rather than trap. `expect_message` currently does
 not persist or render its message. There are no equality helpers, fixtures,
 skip, fatal expectation, reporter callback, or expected-failure mechanism.
 
+## `core/terminal`
+
+Interactive byte-input surface:
+
+```draft
+terminal.Session
+terminal.begin_raw(&session, input: os.File) -> io.Error
+terminal.read(&session, destination, timeout: time.Duration)
+    -> (usize, io.Error)
+terminal.restore(&session) -> bool
+```
+
+Session owns a saved native input mode but borrows the descriptor. Keep an
+active Session at one stable address, pair successful `begin_raw` with
+`restore`, and keep the descriptor open through restoration. `read` rounds the
+supplied duration upward to poll's millisecond resolution; a timeout is
+`(0, .none)`, hangup is `.end_of_input`, and native failures are `.unavailable`.
+Raw mode makes control keys ordinary bytes, so applications can handle Ctrl-C
+and leave through normal cleanup.
+
+The package deliberately has no output or screen abstraction, ANSI builder,
+key enum/decoder, terminal-size query, signal recovery, mouse protocol, event
+loop, or ncurses dependency. Applications own those policies. The current
+implementation exists for AArch64 macOS and AArch64 GNU/Linux through exact
+target-qualified termios and poll layouts.
+
 ## `core/thread`
 
 Public surface:
@@ -548,7 +575,8 @@ The current core does not yet supply several facilities a larger application
 may need:
 
 - path manipulation, directories, metadata, random-access files, or rename;
-- terminal modes, cursor control, key decoding, or window-size queries;
+- cursor control, key decoding, window-size queries, or signal-safe terminal
+  recovery;
 - sockets, subprocesses, signals, dynamic libraries, or event loops;
 - Unicode normalization, properties, case mapping, and grapheme algorithms;
 - general formatting/parsing and string builders;

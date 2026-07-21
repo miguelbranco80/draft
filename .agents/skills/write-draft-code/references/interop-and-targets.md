@@ -33,8 +33,8 @@ The compiler currently emits native code for exactly two target profiles:
 
 Both are 64-bit little-endian AArch64 with baseline NEON, but they are not one
 generic platform. C aggregate rules, narrow scalar extension, enum ABI,
-pthread layouts, open flags, object/linker behavior, page size, and assembly
-profile identity differ.
+pthread and termios layouts, poll count types, open flags, object/linker
+behavior, page size, and assembly profile identity differ.
 
 macOS is the CLI compatibility default. Portable code should be checked
 explicitly against both profiles. x86-64 hosts can build and sanitize the C++

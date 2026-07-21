@@ -1,0 +1,172 @@
+// The terminal package is the small interactive-console boundary shared by
+// full-screen applications. It turns one existing input descriptor into an
+// immediate byte stream, waits for input with a bounded timeout, and restores
+// the exact native terminal mode saved at entry. The package owns no descriptor
+// and performs no output: callers retain descriptor lifetime, key decoding,
+// ANSI rendering, cursor policy, and application event-loop policy.
+//
+// Session is an explicit move-by-convention resource. A successful begin_raw
+// must be paired with restore while the input descriptor remains open. The
+// selected target file owns the native termios layout and poll ABI; this common
+// file owns target-independent lifetime, timeout, and error policy. It depends
+// only on core/c, core/io, core/os, and core/time. Draft specification:
+// sections 5-7 and 12, plus the selected target profile.
+package terminal
+
+import core/c as c
+import core/io
+import core/os
+import core/time
+
+// Poll_Descriptor is the common C layout of one pollfd on both selected POSIX
+// profiles. Only native_poll writes revents. The package requests readable
+// input and interprets hangup as end-of-input; all remaining error events become
+// io.Error.unavailable because core/io does not yet expose native errno detail.
+Poll_Descriptor :: @repr(C) struct {
+    descriptor: c.int,
+    events: c.short,
+    returned_events: c.short,
+}
+
+Poll_Input :: cast[c.short](0x0001)
+Poll_Error :: cast[c.short](0x0008)
+Poll_Hangup :: cast[c.short](0x0010)
+Poll_Invalid :: cast[c.short](0x0020)
+
+Nanoseconds_Per_Millisecond :: 1000 * 1000
+Maximum_Poll_Milliseconds :: 2147483647
+
+// Session owns one saved native input mode but not the input descriptor. Its
+// zero value is inactive and may be passed to begin_raw. Once active, copying
+// the value would create two apparent owners of one restoration obligation, so
+// callers keep it at one stable address and pass ^Session to every operation.
+// A failed restore leaves active set, allowing the same owner to retry.
+pub Session :: struct {
+    input: os.File,
+    saved_mode: Native_Mode,
+    active: bool,
+}
+
+// timeout_milliseconds converts the nanosecond Duration contract to poll's
+// signed-millisecond ABI. Positive fractional milliseconds round upward so the
+// native wait never expires earlier than requested. Large durations saturate
+// instead of narrowing into a negative timeout, which poll would interpret as
+// an unbounded wait. Nonpositive values are immediate polls.
+timeout_milliseconds :: proc(timeout: time.Duration) -> c.int {
+    static_assert(size_of(Poll_Descriptor) == 8)
+    static_assert(align_of(Poll_Descriptor) == 4)
+
+    if timeout <= 0 {
+        return 0
+    }
+
+    nanoseconds := cast[i64](timeout)
+    milliseconds := nanoseconds / Nanoseconds_Per_Millisecond
+    if nanoseconds % Nanoseconds_Per_Millisecond != 0 {
+        milliseconds += 1
+    }
+    if milliseconds > Maximum_Poll_Milliseconds {
+        return cast[c.int](Maximum_Poll_Milliseconds)
+    }
+    return cast[c.int](milliseconds)
+}
+
+// begin_raw saves input's complete native terminal mode, derives the platform's
+// conventional raw mode through cfmakeraw, and applies it immediately. Raw mode
+// disables canonical line buffering, echo, signal-generating control keys, and
+// byte transformations; Ctrl-C therefore arrives as byte 3 for application
+// policy rather than terminating before normal cleanup can run.
+//
+// session must be non-nil, inactive, and kept at a stable address until a
+// successful restore. input is borrowed and must remain open. No Session field
+// changes unless both native mode operations succeed. An invalid descriptor or
+// repeated begin returns io.Error.invalid; native failure returns unavailable.
+pub begin_raw :: proc(session: ^Session, input: os.File) -> io.Error {
+    if session^.active || input.descriptor < 0 {
+        return .invalid
+    }
+
+    saved_mode: Native_Mode = ---
+    if native_get_mode(input.descriptor, &saved_mode) != 0 {
+        return .unavailable
+    }
+
+    raw_mode := saved_mode
+    native_make_raw(&raw_mode)
+    if native_set_mode(input.descriptor, Native_Apply_Now, &raw_mode) != 0 {
+        return .unavailable
+    }
+
+    session^.input = input
+    session^.saved_mode = saved_mode
+    session^.active = true
+    return .none
+}
+
+// restore reapplies the exact mode saved by begin_raw. It is idempotent for an
+// inactive Session. A native failure keeps the Session active and its saved
+// mode intact so the owner can report the error or retry; success ends the
+// restoration obligation without closing the borrowed descriptor.
+pub restore :: proc(session: ^Session) -> bool {
+    if !session^.active {
+        return true
+    }
+    if native_set_mode(
+        session^.input.descriptor,
+        Native_Apply_Now,
+        &session^.saved_mode,
+    ) != 0 {
+        return false
+    }
+    session^.active = false
+    return true
+}
+
+// read waits for input using timeout rounded upward to poll's millisecond
+// resolution, then performs one ordinary os.read into caller-owned storage. A
+// zero timeout polls immediately; any positive sub-millisecond duration waits
+// one millisecond. A clean timeout returns (0, .none), while terminal hangup
+// returns .end_of_input. The call neither allocates nor retains destination. It
+// requires an active Session and returns .invalid otherwise. Empty destination
+// succeeds immediately after validating that resource state.
+pub read :: proc(
+    session: ^Session,
+    destination: []u8,
+    timeout: time.Duration,
+) -> (usize, io.Error) {
+    if !session^.active {
+        return (0, .invalid)
+    }
+    if len(destination) == 0 {
+        return (0, .none)
+    }
+
+    descriptor := Poll_Descriptor{
+        descriptor = session^.input.descriptor,
+        events = Poll_Input,
+    }
+    ready := native_poll_one(&descriptor, timeout_milliseconds(timeout))
+    if ready < 0 {
+        return (0, .unavailable)
+    }
+    if ready == 0 {
+        return (0, .none)
+    }
+
+    // A peer may close after poll reports readability. os.read remains the
+    // authority for that race and translates a zero-byte native read to EOF.
+    if descriptor.returned_events & Poll_Input != 0 {
+        return os.read(session^.input, destination)
+    }
+    if descriptor.returned_events & Poll_Hangup != 0 {
+        return (0, .end_of_input)
+    }
+    if descriptor.returned_events & (Poll_Error | Poll_Invalid) != 0 {
+        return (0, .unavailable)
+    }
+
+    // poll promised one ready descriptor but supplied no event understood by
+    // the selected contract. Treat that mismatch as native unavailability
+    // rather than spinning the application event loop without progress.
+    return (0, .unavailable)
+}

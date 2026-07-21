@@ -48,6 +48,13 @@ eight bytes for integer values, plus pointer-sized pointer objects. C11 memory
 semantics remain defined by the runtime specification; the supported object
 widths are facts of this target and core distribution.
 
+Darwin interactive terminal state uses the macOS 14 arm64 `termios` contract:
+four 64-bit flag words, twenty one-byte control characters, padding to two
+64-bit speed fields, 72-byte total size, and eight-byte alignment. `pollfd` is
+eight bytes with four-byte alignment, while Darwin `nfds_t` is a 32-bit
+unsigned integer. `core/terminal` keeps these layouts target-selected and uses
+the fixed `tcgetattr`, `tcsetattr`, `cfmakeraw`, and `poll` libc signatures.
+
 ## C enum ABI
 
 An `@repr(C)` enum without an explicit backing follows Apple Clang's default

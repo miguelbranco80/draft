@@ -1,0 +1,59 @@
+// These tests exercise the platform-independent contracts of core/terminal
+// without borrowing or modifying the test runner's real terminal. They verify
+// timeout conversion at its rounding and saturation boundaries plus inactive
+// Session behavior. The native validation driver copies this package to a
+// private workspace, selects the host AArch64 target, and links the real libc
+// symbols. Actual mode changes require an application or pseudo-terminal
+// integration test and are deliberately not attempted against CTest's stdin.
+package terminal
+
+import core/c as c
+import core/os
+import core/testing
+import core/time
+
+// test_timeout_milliseconds fixes the conversion rules that keep poll from
+// expiring early or accidentally interpreting an overflowing duration as an
+// infinite wait. It calls the private helper because this is a same-package
+// test; applications consume only Duration through terminal.read.
+test_timeout_milliseconds :: proc(test: ^testing.Test) {
+    testing.expect(test, timeout_milliseconds(0 * time.nanosecond) == 0)
+    testing.expect(test, timeout_milliseconds(-1 * time.nanosecond) == 0)
+    testing.expect(test, timeout_milliseconds(1 * time.nanosecond) == 1)
+    testing.expect(test, timeout_milliseconds(1 * time.millisecond) == 1)
+    testing.expect(
+        test,
+        timeout_milliseconds(time.millisecond + time.nanosecond) == 2,
+    )
+    maximum := cast[c.int](Maximum_Poll_Milliseconds)
+    testing.expect(
+        test,
+        timeout_milliseconds(
+            Maximum_Poll_Milliseconds * time.millisecond,
+        ) == maximum,
+    )
+    testing.expect(
+        test,
+        timeout_milliseconds(
+            Maximum_Poll_Milliseconds * time.millisecond + time.nanosecond,
+        ) == maximum,
+    )
+}
+
+// test_inactive_session proves that a zero Session has no hidden descriptor or
+// cleanup side effect. Invalid operations return explicit errors, and restore
+// remains safe for cleanup paths that did not complete acquisition.
+test_inactive_session :: proc(test: ^testing.Test) {
+    session: Session
+    storage: [1]u8
+
+    (count, error) := read(&session, storage[:], 0 * time.nanosecond)
+    testing.expect(test, count == 0)
+    testing.expect(test, error == .invalid)
+    testing.expect(test, restore(&session))
+
+    invalid_input := os.File{descriptor = -1}
+    begin_error := begin_raw(&session, invalid_input)
+    testing.expect(test, begin_error == .invalid)
+    testing.expect(test, !session.active)
+}

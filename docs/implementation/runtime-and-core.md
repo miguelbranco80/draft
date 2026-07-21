@@ -146,6 +146,36 @@ a failed write changes no bytes. The package performs no allocation,
 normalization, grapheme segmentation, display-width calculation, or locale
 handling.
 
+## Interactive terminal sessions
+
+Status: ordinary Draft library policy over target-selected Darwin/glibc C
+layouts and fixed libc calls; no ncurses, event framework, or compiler
+intrinsic.
+
+`core/terminal.Session` is a move-by-convention owner of one restoration
+obligation, not of the underlying `os.File`. `begin_raw` first obtains the
+complete native terminal mode, derives the platform's conventional raw mode
+through `cfmakeraw`, applies it immediately, and publishes Session state only
+after both native operations succeed. Raw mode makes control bytes—including
+Ctrl-C—application input, allowing normal application cleanup to restore the
+terminal. `restore` is idempotent when inactive and deliberately retains an
+active failed session so the owner can report or retry restoration.
+
+`terminal.read` combines one `poll` with one ordinary `os.read`. Durations are
+rounded upward to poll's millisecond resolution and saturated at the largest
+positive C `int`, preventing a large finite timeout from narrowing into poll's
+negative infinite-wait convention. Timeout is the successful `(0, .none)`
+case, hangup is `.end_of_input`, and the initial core error vocabulary collapses
+other native failures to `.unavailable`. Key decoding, ANSI screen policy,
+window-size queries, signals, and event-loop composition remain outside this
+narrow substrate.
+
+Darwin stores a 72-byte, eight-aligned termios record and uses 32-bit `nfds_t`;
+the selected glibc contract stores a 60-byte, four-aligned record and uses
+64-bit `nfds_t`. Both use the common eight-byte `pollfd` layout. Target source
+contains compile-time size/alignment assertions, while native package
+validation links every fixed symbol against the selected libc boundary.
+
 The virtual-memory seam uses target-qualified source with fixed signatures for
 `mmap`, `mprotect`, and `munmap`. Reserve creates inaccessible private anonymous
 address space, commit/protect change whole-region permissions, and release

@@ -60,6 +60,13 @@ PIE executables using the host glibc development files and `ld.lld`. Final ELF
 artifacts retain DWARF and a content-derived GNU build ID; they correctly omit
 a Mach-O dSYM companion.
 
+The selected glibc 2.39 AArch64 terminal contract gives `struct termios` four
+32-bit flag words, one line-discipline byte, thirty-two control bytes, padding,
+and two 32-bit speed fields: 60 bytes total with four-byte alignment. `pollfd`
+is eight bytes with four-byte alignment, and glibc `nfds_t` is `unsigned long`.
+`core/terminal` isolates those facts in target-qualified source while sharing
+its raw-session lifetime and timeout policy with macOS.
+
 The initial cross-target qualification used LLVM/LLD 22.1.8 and an Ubuntu
 24.04 arm64 sysroot containing glibc 2.39, Linux 6.8 UAPI headers, and the GCC
 13 runtime. That run is preserved in the

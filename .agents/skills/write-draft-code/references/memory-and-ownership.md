@@ -43,6 +43,7 @@ Treat these live values as non-copyable by convention:
 - `array.Dynamic`, `map.Map`, `memory.Buffer`, `memory.Owned_String`, and
   `memory.Arena`;
 - `memory.Virtual_Region` and an opened `os.File`;
+- an active `terminal.Session`;
 - `thread.Thread`, `thread.Mutex`, and `thread.Condition`.
 
 Pass a pointer to one stable owner. If an intentional transfer is necessary,
@@ -245,6 +246,12 @@ membership. Copy keys into stable owned storage if input buffers are transient.
 `os.File` is a descriptor handle. Copies alias one native descriptor, and
 `close(^File)` clears only the passed copy after successful close. Pick one
 owner; pass `File` by value only to operations that borrow the descriptor.
+
+`terminal.Session` borrows its input `os.File` and owns the exact native mode
+that must be restored. Keep the Session at one stable address, restore before
+closing the descriptor, and do not copy an active value. A failed restore keeps
+the obligation active so the same owner may report or retry it. Runtime traps
+and external process termination do not run deferred restoration.
 
 `memory.Virtual_Region` is move-by-convention. Reserve returns inaccessible
 address space; commit/protect applies to the complete region; release unmaps
