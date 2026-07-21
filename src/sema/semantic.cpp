@@ -8,13 +8,12 @@
 // for body checking. It owns no source buffers and performs no provider or
 // backend work.
 //
-// Complete workspace compilation calls begin once, publishes graph results into
-// that append-only payload, and calls finish once. Direct semantic clients and
-// interface-synthesis discovery temporarily retain the aggregate composition
-// below; those paths are explicitly migration code, not alternate semantic
-// authority. Package declaration order, diagnostic order, and imported constant
-// publication are deterministic. Relevant specification: compiler dependency
-// ordering and package `when` rules in sections 6 and 1.
+// Workspace compilation calls begin once, publishes graph results into that
+// append-only payload, and calls finish once. Direct semantic clients temporarily
+// retain the aggregate composition below; it is migration code, not alternate
+// semantic authority. Package declaration order, diagnostic order, and imported
+// constant publication are deterministic. Relevant specification: compiler
+// dependency ordering and package `when` rules in sections 6 and 1.
 
 #include "sema/semantic.h"
 
@@ -547,6 +546,14 @@ bool finish_package_declaration_discovery(
   return true;
 }
 
+ConstantTable package_product_constant_inputs(
+    const SemanticPackage &package,
+    const ConstantTable &published_constants) {
+  ConstantTable result = published_constants;
+  append_imported_constant_bindings(package, result);
+  return result;
+}
+
 [[nodiscard]] static SemanticAnalysisResult finish_package_semantics_impl(
     const SourceManager &sources,
     const LoadedPackage &loaded,
@@ -567,8 +574,8 @@ bool finish_package_declaration_discovery(
        !discovery.blocked_integer_synthesis.empty());
   CompileTimeRoundResult final_round;
   if (constants_are_products) {
-    result.constants = std::move(discovery.published_constants);
-    append_imported_constant_bindings(result.package, result.constants);
+    result.constants = package_product_constant_inputs(
+        result.package, discovery.published_constants);
     final_round = validate_compile_time_products(
         sources,
         loaded,

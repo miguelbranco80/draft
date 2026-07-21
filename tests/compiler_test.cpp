@@ -788,6 +788,76 @@ void test_interface_synthesis_is_an_explicit_graph_wait(TestState &state) {
   std::filesystem::remove_all(root, error);
 }
 
+void test_layout_synthesis_waits_on_declaration_product(TestState &state) {
+  draft::test::TemporaryDirectory temporary_directory{
+      "draft-bootstrap-layout-product-synthesis-wait-test"};
+  const std::filesystem::path &root = temporary_directory.path();
+  std::error_code error;
+  std::filesystem::create_directories(root / "app", error);
+  EXPECT(state, !error);
+  if (error)
+    return;
+
+  std::ofstream app(root / "app" / "package.draft", std::ios::binary);
+  app << "package app\n"
+         "Buffer :: [... \"Choose the buffer length\"]u8\n";
+  app.close();
+  EXPECT(state, app.good());
+
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  draft::CompileWorkspaceOptions options;
+  options.target = draft::make_aarch64_macos_profile();
+  options.workspace.workspace_directory = root.string();
+  options.stage = draft::CompileWorkspaceStage::DiscoverInterfaceSynthesis;
+  const draft::CompileWorkspaceResult compiled = draft::compile_workspace(
+      sources, (root / "app").string(), options, diagnostics);
+  if (diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+  }
+  EXPECT(state, compiled.ok);
+  EXPECT(state, compiled.packages.size() == 1);
+  if (!compiled.ok || compiled.packages.size() != 1 ||
+      !compiled.packages.front().has_value()) {
+    return;
+  }
+
+  const draft::CompiledPackage &package = *compiled.packages.front();
+  const draft::PackageSemanticProducts &products =
+      compiled.semantic_products.packages.front();
+  EXPECT(state, products.opaque_synthesis_set.is_valid());
+  std::optional<draft::SemanticProductId> buffer_product;
+  for (draft::SemanticProductId product : products.declaration_types) {
+    const draft::SymbolId symbol =
+        compiled.semantic_products.declaration_by_product[product.value];
+    if (package.declaration_discovery.package.symbols.symbol(symbol).name ==
+        "Buffer") {
+      buffer_product = product;
+      break;
+    }
+  }
+  EXPECT(state, buffer_product.has_value());
+  if (buffer_product.has_value()) {
+    const draft::SemanticProduct &row =
+        compiled.semantic_graph.products[buffer_product->value];
+    EXPECT(state, row.state == draft::SemanticProductState::Waiting);
+    EXPECT(state,
+        std::find(row.dependencies.begin(), row.dependencies.end(),
+                  products.opaque_synthesis_set) != row.dependencies.end());
+  }
+  EXPECT(state, package.obligations.obligations.size() == 1);
+  if (package.obligations.obligations.size() == 1) {
+    const draft::AgentObligation &obligation =
+        package.obligations.obligations.front();
+    EXPECT(state,
+        obligation.kind == draft::AgentConstructKind::SynthesisExpression);
+    EXPECT(state, obligation.anchor_name == "Buffer");
+    EXPECT(state, obligation.expected_type_text == "usize");
+  }
+
+  std::filesystem::remove_all(root, error);
+}
+
 void test_body_source_update_reuses_closed_generic_dependency(
     TestState &state) {
   draft::test::TemporaryDirectory temporary_directory{
@@ -2708,6 +2778,7 @@ int main() {
   test_imported_constant_products_enter_consumer_table(state);
   test_source_update_reuses_unaffected_semantics(state);
   test_interface_synthesis_is_an_explicit_graph_wait(state);
+  test_layout_synthesis_waits_on_declaration_product(state);
   test_body_source_update_reuses_closed_generic_dependency(state);
   test_body_work_graph_extends_and_removes_generic_demand(state);
   test_body_work_graph_promotes_matching_local_instance(state);

@@ -38,6 +38,7 @@
 #include "elaborator/resolution_store.h"
 #include "elaborator/resolved_program.h"
 #include "sema/denial.h"
+#include "sema/runtime_context.h"
 #include "sema/type_resolver.h"
 #include "workspace/selection.h"
 
@@ -47,6 +48,7 @@
 #include <cstdint>
 #include <functional>
 #include <iterator>
+#include <limits>
 #include <optional>
 #include <queue>
 #include <span>
@@ -277,8 +279,9 @@ void hash_field(Sha256 &hash, std::string_view value) {
 // A package with a ready interface-stage synthesis obligation cannot yet
 // publish public declaration types. In particular, a synthesized array count
 // leaves its public alias temporarily invalid. Consumers are suspended by
-// has_interface_synthesis(), so retain only package identity until the overlay
-// is installed and a clean round can build the complete canonical interface.
+// the OpaqueSynthesisSet graph row, so retain only package identity until the
+// overlay is installed and a clean successor generation can build the complete
+// canonical interface.
 [[nodiscard]] PackageInterface withheld_package_interface(
     const PackageIdentity &identity,
     const SemanticPackage &package) {
@@ -304,6 +307,36 @@ void hash_field(Sha256 &hash, std::string_view value) {
     if (site.kind == kind) return true;
   }
   return false;
+}
+
+// Graph products discover semantic sites in dependency-ready order, which is
+// deliberately unrelated to source order. Provider occurrence identity and
+// opaque sibling presentation are source constructs, so restore the package's
+// canonical filename/byte order before metadata assigns occurrences. The sort
+// is stable for malformed or equal locations, preserving deterministic task
+// publication order as the recovery tiebreaker.
+void sort_semantic_sites_in_source_order(
+    const LoadedPackage &loaded, SemanticPackage &package) {
+  const auto source_position = [&](const SemanticSite &site) {
+    std::size_t file_index = loaded.files.size();
+    std::uint32_t byte_offset = std::numeric_limits<std::uint32_t>::max();
+    for (std::size_t index = 0; index < loaded.files.size(); ++index) {
+      const LoadedPackageFile &file = loaded.files[index];
+      if (file.source != site.syntax.file) continue;
+      file_index = index;
+      if (file.syntax.has_value() && site.syntax.node.is_valid() &&
+          site.syntax.node.value < file.syntax->nodes().size()) {
+        byte_offset = file.syntax->node(site.syntax.node).range.begin.offset;
+      }
+      break;
+    }
+    return std::pair{file_index, byte_offset};
+  };
+  std::stable_sort(
+      package.sites.begin(), package.sites.end(),
+      [&](const SemanticSite &left, const SemanticSite &right) {
+        return source_position(left) < source_position(right);
+      });
 }
 
 // Package declarations may introduce any name used by a compile-time body, so
@@ -418,19 +451,6 @@ void hash_field(Sha256 &hash, std::string_view value) {
     }
   }
   return true;
-}
-
-// A dependency with any obligation emitted by interface discovery cannot yet
-// publish a complete interface to consumers. Besides declarations and members,
-// this includes a statement/expression site in a procedure required by a
-// constant, layout, or `when` decision. Discovery conservatively suspends every
-// consumer until the dependency is overlaid and recompiled; readiness must not
-// depend on which absent generated name or conditional branch a consumer uses.
-[[nodiscard]] bool has_interface_synthesis(const CompiledPackage &package) {
-  for (const AgentObligation &obligation : package.obligations.obligations) {
-    if (is_synthesis_obligation(obligation.kind)) return true;
-  }
-  return false;
 }
 
 // Recovers the diagnostic range for a process-local obligation after either
@@ -1119,9 +1139,11 @@ void invalidate_package_closure(
 }
 
 // Completes the package-interface payload after every named constant product
-// has published. Interface-discovery commands reach this helper with aggregate
-// declaration semantics already complete; ordinary complete compilation first
-// consumes the staged discovery payload without reevaluating its constants.
+// has published, or builds the withheld provider surface for an explicit
+// synthesis wait. A terminal declaration payload is consumed exactly once.
+// A nonterminal payload already carries a private task-composed provider
+// context in declarations and must remain in declaration_discovery so the graph
+// continues to describe the incomplete canonical facts accurately.
 [[nodiscard]] bool finalize_workspace_package_interface(
     SourceManager &sources,
     const CompileWorkspaceOptions &options,
@@ -1133,7 +1155,7 @@ void invalidate_package_closure(
         sources,
         workspace_package.loaded,
         options.target.facts,
-        CompileTimeSynthesisMode::Reject,
+        compile_time_synthesis_mode(options.stage),
         std::move(package.declaration_discovery),
         diagnostics);
     PackageDeclarationDiscovery empty_discovery;
@@ -1153,6 +1175,8 @@ void invalidate_package_closure(
           diagnostics)) {
     return false;
   }
+  sort_semantic_sites_in_source_order(
+      workspace_package.loaded, interface_context_package);
   package.metadata = collect_agent_metadata(
       sources,
       workspace_package.loaded,
@@ -1194,11 +1218,10 @@ void invalidate_package_closure(
   return !diagnostics.has_errors();
 }
 
-// Computes one PackageNameSet transition. Complete compilation first publishes
-// eager authored declarations and later re-enters only to close an already
-// completed product set. Interface-synthesis discovery retains the aggregate
-// compatibility path until opaque declaration/member waits move to the same
-// product representation.
+// Computes one PackageNameSet transition. Every compiler stage publishes eager
+// authored declarations first and later re-enters only to close an already
+// completed product set. Synthesis discovery and complete compilation therefore
+// share one declaration graph; only task evaluation's synthesis mode differs.
 [[nodiscard]] std::optional<CompiledPackage> analyze_workspace_package_names(
     SourceManager &sources, const CompileWorkspaceOptions &options,
     const WorkspaceDependencyIndex &schedule, std::size_t package_index,
@@ -1227,10 +1250,7 @@ void invalidate_package_closure(
     });
   }
 
-  const bool schedule_constant_products =
-      options.stage == CompileWorkspaceStage::Complete;
   const bool resume_product_discovery =
-      schedule_constant_products &&
       result.packages[package_index].has_value() &&
       !result.packages[package_index]->declaration_discovery.terminal;
   CompiledPackage package;
@@ -1256,47 +1276,34 @@ void invalidate_package_closure(
       });
     }
   }
-  if (schedule_constant_products) {
-    if (resume_product_discovery) {
-      if (!finish_package_declaration_discovery(package.declaration_discovery,
-                                                diagnostics)) {
-        return std::nullopt;
-      }
-    } else {
-      package.declaration_discovery = begin_package_declaration_discovery(
-          sources, workspace_package.loaded, available, diagnostics);
+  if (resume_product_discovery) {
+    if (!finish_package_declaration_discovery(package.declaration_discovery,
+                                              diagnostics)) {
+      return std::nullopt;
     }
-    package.declarations.package = package.declaration_discovery.package;
-    package.declarations.selections = package.declaration_discovery.selections;
-    package.declarations.ok = package.declaration_discovery.terminal &&
-        package.declaration_discovery.discovery_ok;
   } else {
-    package.declarations = analyze_package_semantics(
-        sources, workspace_package.loaded, options.target.facts, available,
-        compile_time_synthesis_mode(options.stage), diagnostics);
+    package.declaration_discovery = begin_package_declaration_discovery(
+        sources, workspace_package.loaded, available, diagnostics);
   }
-  if (options.timings != nullptr) {
+  package.declarations.package = package.declaration_discovery.package;
+  package.declarations.selections = package.declaration_discovery.selections;
+  package.declarations.ok = package.declaration_discovery.terminal &&
+      package.declaration_discovery.discovery_ok;
+  if (!resume_product_discovery && options.timings != nullptr) {
     options.timings->add_counter("package semantic analyses", 1);
   }
 
   // The first PackageNameSet transition deliberately publishes a nonterminal
   // payload. The coordinator appends declaration, constant, layout, and
   // condition products from that exact table and blocks this barrier on them.
-  if (schedule_constant_products && !package.declaration_discovery.terminal) {
+  if (!package.declaration_discovery.terminal) {
     return package;
   }
 
   if (!package.declarations.ok)
     return std::nullopt;
 
-  // Complete compilation now lets the workspace graph own every named
-  // ConstantValue. Interface discovery retains the aggregate evaluator until
-  // synthesis waits themselves move to product outcomes in the next slice.
-  if (schedule_constant_products) return package;
-  return finalize_workspace_package_interface(
-             sources, options, workspace_package, package, diagnostics)
-      ? std::optional<CompiledPackage>(std::move(package))
-      : std::nullopt;
+  return package;
 }
 
 // One private worker result for a frozen interface-scheduling wave. package is
@@ -2177,6 +2184,201 @@ package_condition_needs_materialization(const SemanticPackage &package,
   return false;
 }
 
+// Returns the package declaration products which are both explicit
+// prerequisites of product and already published. A wave-local semantic
+// snapshot can contain other completed signatures because tasks are evaluated
+// sequentially today; those incidental rows are not dependencies and must not
+// authorize name or type consumption during either the real attempt or provider
+// context composition.
+[[nodiscard]] std::vector<SymbolId> completed_declaration_dependencies(
+    const CompileWorkspaceResult &result, PackageId owner,
+    SemanticProductId product) {
+  std::vector<SymbolId> completed;
+  const PackageSemanticProducts &package_products =
+      result.semantic_products.packages[owner.value];
+  const std::vector<SemanticProductId> &dependencies =
+      result.semantic_graph.products[product.value].dependencies;
+  for (SemanticProductId candidate : package_products.declaration_types) {
+    if (result.semantic_graph.products[candidate.value].state ==
+            SemanticProductState::Complete &&
+        std::find(dependencies.begin(), dependencies.end(), candidate) !=
+            dependencies.end()) {
+      completed.push_back(
+          result.semantic_products.declaration_by_product[candidate.value]);
+    }
+  }
+  return completed;
+}
+
+// Composes one package-private provider surface from declaration products which
+// stopped at ready synthesis sites. The products already ran once to establish
+// graph state; this deterministic replay is the current sequential oracle for
+// joining several task-local semantic contexts without publishing any partial
+// facet. Replaying only the recorded wait products in SemanticProductId order is
+// materially narrower than the deleted aggregate package fixed point: completed
+// declarations, constants, selections, and layouts remain canonical inputs and
+// are never rechecked. Step 6 replaces this context composition with provider
+// constraints owned directly by each declaration/procedure task.
+[[nodiscard]] bool compose_interface_synthesis_surfaces(
+    SourceManager &sources, const CompileWorkspaceOptions &options,
+    std::span<const SemanticProductId> wait_products,
+    CompileWorkspaceResult &result, DiagnosticSink &diagnostics) {
+  for (std::size_t package_index = 0; package_index < result.packages.size();
+       ++package_index) {
+    std::vector<SemanticProductId> package_waits;
+    for (SemanticProductId product : wait_products) {
+      if (result.semantic_products.package_by_product[product.value].value ==
+          package_index) {
+        package_waits.push_back(product);
+      }
+    }
+    if (package_waits.empty())
+      continue;
+    if (!result.packages[package_index].has_value()) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "synthesis wait has no retained package declaration context");
+      return false;
+    }
+
+    const PackageId owner{static_cast<std::uint32_t>(package_index)};
+    CompiledPackage &compiled = *result.packages[package_index];
+    SemanticPackage context = compiled.declaration_discovery.package;
+    ConstantTable constants = package_product_constant_inputs(
+        context, compiled.declaration_discovery.published_constants);
+    std::vector<SymbolId> compile_time_procedures;
+
+    for (SemanticProductId product : package_waits) {
+      const SemanticProductKind kind =
+          result.semantic_graph.products[product.value].kind;
+      if (kind == SemanticProductKind::PackageNameSet) {
+        // Package-level synthesis sites were collected eagerly and are already
+        // present in context. Their opaque set deliberately precedes any name
+        // or type facts the generated declarations might introduce.
+        continue;
+      }
+      if (kind == SemanticProductKind::TypeIdentity ||
+          kind == SemanticProductKind::TypeMembers ||
+          kind == SemanticProductKind::TypeMemberTypes) {
+        if (!import_completed_generic_dependencies(
+                result, product, context, diagnostics)) {
+          return false;
+        }
+        const SymbolId root =
+            result.semantic_products.declaration_by_product[product.value];
+        DeclarationTypeProductAttempt attempt;
+        if (kind == SemanticProductKind::TypeMembers) {
+          attempt = resolve_package_type_members_product(
+              sources, result.graph.packages[package_index].loaded, context,
+              compiled.declaration_discovery.selections, root,
+              CompileTimeSynthesisMode::Discover, diagnostics);
+        } else {
+          const std::vector<SymbolId> completed =
+              completed_declaration_dependencies(result, owner, product);
+          attempt = resolve_package_declaration_type_product(
+              sources, result.graph.packages[package_index].loaded, context,
+              compiled.declaration_discovery.selections, root, completed,
+              compiled.declaration_discovery.published_constants,
+              compiled.declaration_discovery.resolved_integers,
+              options.target.facts, CompileTimeSynthesisMode::Discover,
+              diagnostics);
+        }
+        if (attempt.status != TypeProductStatus::WaitingForSynthesis) {
+          diagnostics.error(
+              SourceRange::invalid(),
+              "declaration synthesis wait did not reproduce from its published prerequisites");
+          return false;
+        }
+        append_unique_symbols(
+            compile_time_procedures, attempt.compile_time_procedures);
+        continue;
+      }
+      if (kind == SemanticProductKind::ConstantValue) {
+        const SyntaxReference condition =
+            result.semantic_products.condition_by_product[product.value];
+        if (condition.node.is_valid()) {
+          const SemanticSite *site = find_semantic_site(context, condition);
+          if (site == nullptr) {
+            diagnostics.error(
+                SourceRange::invalid(),
+                "synthesis condition lost its retained semantic site");
+            return false;
+          }
+          const ConditionalProductAttempt attempt =
+              evaluate_conditional_product(
+                  sources, result.graph.packages[package_index].loaded, context,
+                  options.target.facts, *site,
+                  compiled.declaration_discovery.published_constants,
+                  CompileTimeSynthesisMode::Discover, diagnostics);
+          if (attempt.status !=
+              CompileTimeProductStatus::WaitingForSynthesis) {
+            diagnostics.error(
+                SourceRange::invalid(),
+                "conditional synthesis wait did not reproduce from its published prerequisites");
+            return false;
+          }
+          append_unique_symbols(
+              compile_time_procedures, attempt.compile_time_procedures);
+          continue;
+        }
+        const SymbolId root =
+            result.semantic_products.constant_by_product[product.value];
+        const ConstantProductAttempt attempt =
+            evaluate_package_constant_product(
+                sources, result.graph.packages[package_index].loaded, context,
+                options.target.facts, root,
+                compiled.declaration_discovery.published_constants,
+                CompileTimeSynthesisMode::Discover, diagnostics);
+        if (attempt.status != CompileTimeProductStatus::WaitingForSynthesis) {
+          diagnostics.error(
+              SourceRange::invalid(),
+              "constant synthesis wait did not reproduce from its published prerequisites");
+          return false;
+        }
+        append_unique_symbols(
+            compile_time_procedures, attempt.compile_time_procedures);
+        continue;
+      }
+      diagnostics.error(
+          SourceRange::invalid(),
+          "opaque synthesis set contains a non-declaration semantic product");
+      return false;
+    }
+
+    // Provider-visible Context is a compiler-defined declaration input even
+    // when an authored declaration/member set prevents PackageNameSet from
+    // closing. Install it only in this private surface; the canonical payload
+    // receives the same type once every declaration product completes.
+    ensure_runtime_context_type(context, diagnostics);
+    if (diagnostics.has_errors()) return false;
+    SemanticAnalysisResult surface;
+    surface.ok = true;
+    surface.package = std::move(context);
+    surface.selections = compiled.declaration_discovery.selections;
+    surface.constants = std::move(constants);
+    surface.compile_time_synthesis_procedures =
+        std::move(compile_time_procedures);
+    compiled.declarations = std::move(surface);
+    if (!finalize_workspace_package_interface(
+            sources, options, result.graph.packages[package_index], compiled,
+            diagnostics)) {
+      return false;
+    }
+    bool has_synthesis = false;
+    for (const AgentObligation &obligation :
+         compiled.obligations.obligations) {
+      has_synthesis = has_synthesis || is_synthesis_obligation(obligation.kind);
+    }
+    if (!has_synthesis) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "opaque synthesis set produced no provider obligation");
+      return false;
+    }
+  }
+  return true;
+}
+
 // Builds declaration semantics and preliminary interfaces through the dynamic
 // product graph. Workers are deliberately sequential until package tasks stop
 // mutating shared generic-layout owner state. Even in this oracle mode, every
@@ -2213,6 +2415,12 @@ package_condition_needs_materialization(const SemanticPackage &package,
     return false;
   }
 
+  // Product IDs are appended and waves are published in ascending order. Keep
+  // only the exact declaration products which reached synthesis during this
+  // source generation; when the graph exhausts ordinary ready work, these IDs
+  // compose the one opaque provider surface for each suspended package.
+  std::vector<SemanticProductId> synthesis_wait_products;
+
   TimingScope declaration_timing =
       options.timings != nullptr
           ? options.timings->scope("declaration semantics")
@@ -2224,7 +2432,8 @@ package_condition_needs_materialization(const SemanticPackage &package,
       return true;
     if (wave.status == SemanticReadyWaveStatus::WaitingForSynthesis) {
       if (options.stage == CompileWorkspaceStage::DiscoverInterfaceSynthesis) {
-        return true;
+        return compose_interface_synthesis_surfaces(
+            sources, options, synthesis_wait_products, result, diagnostics);
       }
       diagnostics.error(
           SourceRange::invalid(),
@@ -2308,28 +2517,13 @@ package_condition_needs_materialization(const SemanticPackage &package,
               root, compile_time_synthesis_mode(options.stage),
               slot.outcome.diagnostics);
         } else {
-          std::vector<SymbolId> completed_declarations;
-          const PackageSemanticProducts &package_products =
-              result.semantic_products.packages[package_index];
-          const std::vector<SemanticProductId> &product_dependencies =
-              result.semantic_graph.products[product.value].dependencies;
-          for (SemanticProductId candidate :
-               package_products.declaration_types) {
-            if (result.semantic_graph.products[candidate.value].state ==
-                    SemanticProductState::Complete &&
-                std::find(product_dependencies.begin(),
-                          product_dependencies.end(), candidate) !=
-                    product_dependencies.end()) {
-              // A valid payload in the sequential wave snapshot is not proof
-              // that this task owns the corresponding prerequisite. Only an
-              // explicit completed edge authorizes consumption. A previously
-              // unseen source reference therefore blocks once, records its
-              // exact product edge, and becomes available on the retry.
-              completed_declarations.push_back(
-                  result.semantic_products
-                      .declaration_by_product[candidate.value]);
-            }
-          }
+          // A valid payload in the sequential wave snapshot is not proof that
+          // this task owns the corresponding prerequisite. Only an explicit
+          // completed edge authorizes consumption. A previously unseen source
+          // reference therefore blocks once, records its exact product edge,
+          // and becomes available on the retry.
+          const std::vector<SymbolId> completed_declarations =
+              completed_declaration_dependencies(result, owner, product);
           slot.declaration_type = resolve_package_declaration_type_product(
               sources, result.graph.packages[package_index].loaded, task_package,
               result.packages[package_index]
@@ -2349,6 +2543,12 @@ package_condition_needs_materialization(const SemanticPackage &package,
         if (slot.declaration_type->status == TypeProductStatus::Error) {
           slot.outcome.kind = SemanticProductOutcomeKind::Error;
           slot.outcome.failure = "declaration type product failed";
+          continue;
+        }
+        if (slot.declaration_type->status ==
+            TypeProductStatus::WaitingForSynthesis) {
+          slot.outcome.kind =
+              SemanticProductOutcomeKind::WaitingForSynthesis;
           continue;
         }
         if (!slot.declaration_type->generic_type_dependencies.empty()) {
@@ -2524,8 +2724,7 @@ package_condition_needs_materialization(const SemanticPackage &package,
         continue;
       }
       if (kind == SemanticProductKind::PackageNameSet) {
-        if (options.stage == CompileWorkspaceStage::Complete &&
-            result.packages[package_index].has_value() &&
+        if (result.packages[package_index].has_value() &&
             !result.packages[package_index]->declaration_discovery.terminal &&
             package_has_unindexed_declaration_work(
                 result, owner, *result.packages[package_index])) {
@@ -2575,7 +2774,8 @@ package_condition_needs_materialization(const SemanticPackage &package,
               sources, result.graph.packages[package_index].loaded,
               task_package, options.target.facts, *site,
               package.declaration_discovery.published_constants,
-              CompileTimeSynthesisMode::Reject, slot.outcome.diagnostics);
+              compile_time_synthesis_mode(options.stage),
+              slot.outcome.diagnostics);
           if (slot.condition->status == CompileTimeProductStatus::Complete) {
             continue;
           }
@@ -2654,7 +2854,7 @@ package_condition_needs_materialization(const SemanticPackage &package,
             options.target.facts,
             root,
             package.declaration_discovery.published_constants,
-            CompileTimeSynthesisMode::Reject,
+            compile_time_synthesis_mode(options.stage),
             slot.outcome.diagnostics);
         if (slot.constant->status == CompileTimeProductStatus::Complete) {
           continue;
@@ -2770,47 +2970,7 @@ package_condition_needs_materialization(const SemanticPackage &package,
                                      slot.outcome.failure);
     }
 
-    // A successful name-set task may discover an opaque declaration/member
-    // synthesis set. Append those set products only after every task in the
-    // frozen wave has produced its private payload, and do so in wave order.
-    // The name-set outcome then names the exact new blocker; the package
-    // payload remains available to the resolver while neither its name barrier
-    // nor its interface is falsely marked complete.
-    if (options.stage == CompileWorkspaceStage::DiscoverInterfaceSynthesis) {
-      for (std::size_t task_index = 0; task_index < wave.products.size();
-           ++task_index) {
-        WorkspaceInterfaceTaskSlot &slot = slots[task_index];
-        if (!slot.package.has_value() ||
-            !has_interface_synthesis(*slot.package)) {
-          continue;
-        }
-        const SemanticProductId name_set = wave.products[task_index];
-        if (result.semantic_graph.products[name_set.value].kind !=
-            SemanticProductKind::PackageNameSet) {
-          continue;
-        }
-        const PackageId owner =
-            result.semantic_products.package_by_product[name_set.value];
-        PackageSemanticProducts &package_products =
-            result.semantic_products.packages[owner.value];
-        package_products.opaque_synthesis_set =
-            append_workspace_semantic_product(
-                result, SemanticProductKind::OpaqueSynthesisSet,
-                package_products.declaration_inputs, owner, false,
-                slot.outcome.diagnostics);
-        if (!package_products.opaque_synthesis_set.is_valid()) {
-          slot.outcome.kind = SemanticProductOutcomeKind::Error;
-          slot.outcome.failure = "cannot publish opaque package synthesis set";
-          continue;
-        }
-        slot.outcome.kind = SemanticProductOutcomeKind::Blocked;
-        slot.outcome.dependencies = {
-            package_products.opaque_synthesis_set,
-        };
-      }
-    }
-
-    if (options.stage == CompileWorkspaceStage::Complete) {
+    {
       // The initial PackageNameSet task publishes only eager declarations.
       // Append every product revealed by that stable table before allowing the
       // barrier to close. Later selected branches use the same idempotent
@@ -2887,6 +3047,64 @@ package_condition_needs_materialization(const SemanticPackage &package,
                                               slot.outcome.diagnostics)) {
           slot.outcome.kind = SemanticProductOutcomeKind::Error;
           slot.outcome.failure = "cannot append package constant products";
+        }
+      }
+    }
+
+    // A declaration, member, condition, constant, or declaration-owned integer
+    // task can discover one package-wide opaque synthesis set. Append the set
+    // only after every task in the frozen wave has produced its private result,
+    // then block each discovering product on that shared row. PackageNameSet
+    // already depends on all indexed declaration work, so consumers remain
+    // suspended transitively without publishing a partial package interface.
+    if (options.stage == CompileWorkspaceStage::DiscoverInterfaceSynthesis) {
+      for (std::size_t task_index = 0; task_index < wave.products.size();
+           ++task_index) {
+        WorkspaceInterfaceTaskSlot &slot = slots[task_index];
+        const SemanticProductId product = wave.products[task_index];
+        const SemanticProductKind kind =
+            result.semantic_graph.products[product.value].kind;
+        bool waits = slot.outcome.kind ==
+                SemanticProductOutcomeKind::WaitingForSynthesis &&
+            kind != SemanticProductKind::OpaqueSynthesisSet;
+        if (kind == SemanticProductKind::PackageNameSet &&
+            slot.package.has_value() &&
+            has_semantic_site(
+                slot.package->declaration_discovery.package,
+                SemanticSiteKind::SynthesisDeclaration)) {
+          waits = true;
+        }
+        if (!waits)
+          continue;
+
+        const PackageId owner =
+            result.semantic_products.package_by_product[product.value];
+        PackageSemanticProducts &package_products =
+            result.semantic_products.packages[owner.value];
+        if (!package_products.opaque_synthesis_set.is_valid()) {
+          package_products.opaque_synthesis_set =
+              append_workspace_semantic_product(
+                  result, SemanticProductKind::OpaqueSynthesisSet,
+                  package_products.declaration_inputs, owner, false,
+                  slot.outcome.diagnostics);
+        }
+        if (!package_products.opaque_synthesis_set.is_valid()) {
+          slot.outcome.kind = SemanticProductOutcomeKind::Error;
+          slot.outcome.failure = "cannot publish opaque package synthesis set";
+          continue;
+        }
+        slot.outcome.kind = SemanticProductOutcomeKind::Blocked;
+        if (std::find(slot.outcome.dependencies.begin(),
+                      slot.outcome.dependencies.end(),
+                      package_products.opaque_synthesis_set) ==
+            slot.outcome.dependencies.end()) {
+          slot.outcome.dependencies.push_back(
+              package_products.opaque_synthesis_set);
+        }
+        if (std::find(synthesis_wait_products.begin(),
+                      synthesis_wait_products.end(), product) ==
+            synthesis_wait_products.end()) {
+          synthesis_wait_products.push_back(product);
         }
       }
     }

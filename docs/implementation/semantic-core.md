@@ -292,9 +292,14 @@ recollected. Complete workspace compilation publishes type identity, selected
 member names, member types, conditional choices, natural layout, and final named
 constants as individual semantic products before the package-interface barrier.
 Each ready task mutates only a private snapshot; deterministic publication moves
-its completed packet into the retained generation. Direct semantic tests and
-interface-synthesis discovery retain the aggregate compatibility composition
-during migration.
+its completed packet into the retained generation. Interface-synthesis discovery
+uses those same products: a ready declaration/member/condition/constant stop is
+blocked on one package `OpaqueSynthesisSet`, and no incomplete facet enters the
+retained generation. The current sequential oracle replays only those stopped
+products over completed canonical inputs to compose their shared provider
+context. Step 6 moves that constraint context into the task results themselves.
+Direct semantic test and subsystem entry points still retain the aggregate
+compatibility composition during migration.
 
 Body checking never appends to that retained value. It copies the declaration
 prefix and returns the enriched SemanticPackage, body constants, and HIR as one

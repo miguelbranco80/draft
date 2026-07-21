@@ -4276,6 +4276,7 @@ private:
       return std::nullopt;
     }
 
+    const std::size_t original_site_count = semantic_.sites.size();
     IntegerExpressionProductAttempt attempt =
         evaluate_integer_expression_product(
             sources_, loaded_, semantic_, *target_, tree, expression_id, scope,
@@ -4301,6 +4302,19 @@ private:
       }
     }
     if (attempt.status == CompileTimeProductStatus::WaitingForSynthesis) {
+      // A declaration-owned integer recipe is often lexically in file scope,
+      // so the constant evaluator cannot infer its semantic owner by walking
+      // scopes. Product resolution already has that exact stable SymbolId. Apply
+      // it to only the sites appended by this evaluation, matching the direct
+      // required-integer discovery contract without a second package round.
+      for (std::size_t site_index = original_site_count;
+           site_index < semantic_.sites.size(); ++site_index) {
+        SemanticSite &site = semantic_.sites[site_index];
+        if (site.kind == SemanticSiteKind::SynthesisExpression &&
+            !site.anchor.is_valid()) {
+          site.anchor = product_root_;
+        }
+      }
       blocked_by_synthesis_ = true;
       return std::nullopt;
     }

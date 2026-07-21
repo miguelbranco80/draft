@@ -1,13 +1,12 @@
 // Append-only declaration selection plus terminal type/constant discovery.
 //
-// Initial collection and interface binding run once. In complete workspace
-// compilation, package-level `when` selections append only their chosen branch
-// and declaration, constant, and nominal-layout products publish into that
-// authoritative generation before its one terminal close operation. Direct
-// semantic clients and interface-synthesis discovery still use the aggregate
-// compatibility composition declared below; it evaluates readiness on private
-// copies and retains only the terminal package. Neither path owns source bytes,
-// invokes providers, or lowers target IR.
+// Initial collection and interface binding run once. Workspace compilation in
+// both complete and interface-synthesis modes appends selected package `when`
+// branches and publishes declaration, constant, and nominal-layout products into
+// that authoritative generation before its one terminal close operation. Direct
+// semantic clients still use the aggregate compatibility composition declared
+// below while they migrate onto a command-local coordinator. Neither path owns
+// source bytes, invokes providers, or lowers target IR.
 
 #pragma once
 
@@ -43,9 +42,9 @@ struct SemanticAnalysisResult {
 // PackageDeclarationDiscovery owns the selected declaration/type graph before
 // final constant validation, storage initialization, and target checks. It is
 // the payload of PackageNameSet while ConstantValue products are scheduled.
-// terminal is false while graph products or aggregate discovery are incomplete.
-// blocked_integer_synthesis is phase-private dependency evidence retained for
-// the final discovery-mode check; it is never serialized.
+// terminal is false while graph products or direct-client aggregate discovery
+// are incomplete. blocked_integer_synthesis is compatibility evidence retained
+// only by the latter path; it is never serialized.
 struct PackageDeclarationDiscovery {
   bool terminal = false;
   bool discovery_ok = false;
@@ -83,6 +82,16 @@ struct PackageDeclarationDiscovery {
 [[nodiscard]] bool
 finish_package_declaration_discovery(PackageDeclarationDiscovery &discovery,
                                      DiagnosticSink &diagnostics);
+
+// Returns the complete read-only constant environment visible to a declaration
+// or synthesis product after local ConstantValue publication. Local values keep
+// their canonical SymbolIds; ready dependency-interface values are inserted
+// under the consumer-local proxy IDs created during interface binding. The
+// operation evaluates nothing and preserves SymbolId order, so task-owned body
+// checks can consume exactly the same environment as final semantic closure.
+[[nodiscard]] ConstantTable package_product_constant_inputs(
+    const SemanticPackage &package,
+    const ConstantTable &published_constants);
 
 // Performs collection, interface binding, append-only package `when`
 // materialization, and terminal type discovery. It deliberately stops before

@@ -70,12 +70,23 @@ gate.
    retain exact procedure-product edges even when a sequential task snapshot
    already contains the completed signature.
 
-   This step remains open in two places. Interface-synthesis discovery still
-   uses the aggregate declaration compatibility path until opaque waits produce
-   graph successors. ABI classification still lacks its own product. Once those
-   paths move, delete
-   `discover_package_declarations`, the aggregate conditional/readiness rounds,
-   and the remaining private readiness copies.
+   Interface-synthesis discovery now uses the same declaration products as
+   complete compilation. A declaration, member, condition, named constant, or
+   declaration-owned integer recipe reports a synthesis wait; the coordinator
+   blocks that exact product on one package `OpaqueSynthesisSet`, exhausts
+   independent ready work, and withholds PackageInterface. Product-driven tests
+   prove source-order sibling discovery, dependency-delayed sites, declaration
+   anchors, typed integer boundaries, and the explicit graph edge. The current
+   sequential provider-context oracle replays only the stopped products over
+   their completed published prerequisites; step 6 replaces that composition
+   with task-owned typed constraint results.
+
+   This step remains open in two narrower places. ABI classification still lacks
+   its own product. Direct semantic test and subsystem entry points still use
+   `discover_package_declarations` as a convenience composition outside the
+   workspace compiler. Move those clients onto a small product coordinator, then
+   delete the aggregate conditional/readiness rounds and their private readiness
+   copies.
 
 4. **Canonical generic type demand — complete.** Every concrete cross-package
    owner-evaluated type application has one command-local key formed from its
