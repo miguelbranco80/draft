@@ -10,6 +10,7 @@
 #include "sema/type.h"
 #include "sema/type_inspection.h"
 #include "sema/type_layout.h"
+#include "sema/type_product.h"
 #include "source/diagnostic.h"
 #include "source/source.h"
 
@@ -273,6 +274,113 @@ void test_pure_natural_aggregate_layout(TestState &state) {
   EXPECT(state, overflow.member_offsets.empty());
 }
 
+void test_natural_layout_product(TestState &state) {
+  draft::SemanticPackage package;
+  draft::DiagnosticSink diagnostics;
+  package.package_scope = package.symbols.add_scope(
+      draft::ScopeKind::Package, {}, draft::SourceRange::invalid());
+
+  const std::optional<draft::TypeId> u8 = package.types.find_builtin("u8");
+  const std::optional<draft::TypeId> u64 = package.types.find_builtin("u64");
+  EXPECT(state, u8.has_value());
+  EXPECT(state, u64.has_value());
+  if (!u8.has_value() || !u64.has_value()) return;
+
+  const draft::TypeId record = package.types.begin_nominal(
+      draft::TypeKind::Struct, "Record", draft::SourceRange::invalid());
+  draft::Symbol owner_symbol;
+  owner_symbol.name = "Record";
+  owner_symbol.kind = draft::SymbolKind::Type;
+  owner_symbol.scope = package.package_scope;
+  owner_symbol.type = record;
+  const draft::SymbolId owner =
+      package.symbols.declare(std::move(owner_symbol), diagnostics);
+  EXPECT(state, owner.is_valid());
+
+  const draft::NaturalLayoutProductAttempt missing_members =
+      draft::evaluate_natural_layout_product(
+          package.types, record, diagnostics);
+  EXPECT(
+      state,
+      missing_members.status == draft::TypeProductStatus::Blocked);
+  EXPECT(
+      state,
+      missing_members.dependencies ==
+          std::vector<draft::TypeFacetDependency>({
+              {record, draft::TypeFacet::MemberTypes},
+          }));
+
+  package.types.publish_nominal_members(record);
+  package.types.publish_nominal_member_types(record, {*u8, *u64});
+  for (std::size_t index = 0; index < 2; ++index) {
+    draft::Symbol member;
+    member.name = index == 0 ? "small" : "large";
+    member.kind = draft::SymbolKind::Field;
+    member.scope = package.package_scope;
+    member.type = index == 0 ? *u8 : *u64;
+    const draft::SymbolId member_id =
+        package.symbols.declare(std::move(member), diagnostics);
+    EXPECT(state, member_id.is_valid());
+    package.aggregate_members.push_back({owner, member_id, 0});
+  }
+
+  draft::NaturalLayoutProductAttempt complete =
+      draft::evaluate_natural_layout_product(
+          package.types, record, diagnostics);
+  EXPECT(state, complete.status == draft::TypeProductStatus::Complete);
+  EXPECT(state, complete.layout == draft::TypeLayout({true, 16, 8}));
+  EXPECT(
+      state,
+      complete.member_offsets == std::vector<std::uint64_t>({0, 8}));
+  EXPECT(
+      state,
+      draft::publish_natural_layout_product(
+          package,
+          owner,
+          record,
+          std::move(complete),
+          diagnostics));
+  EXPECT(
+      state,
+      package.types.facet_state(record, draft::TypeFacet::NaturalLayout) ==
+          draft::TypeFacetState::Complete);
+  EXPECT(state, package.aggregate_members[0].offset == 0);
+  EXPECT(state, package.aggregate_members[1].offset == 8);
+
+  const draft::TypeId recursive = package.types.begin_nominal(
+      draft::TypeKind::Struct,
+      "Recursive",
+      draft::SourceRange::invalid());
+  package.types.publish_nominal_members(recursive);
+  package.types.publish_nominal_member_types(recursive, {recursive});
+  const draft::NaturalLayoutProductAttempt inline_cycle =
+      draft::evaluate_natural_layout_product(
+          package.types, recursive, diagnostics);
+  EXPECT(state, inline_cycle.status == draft::TypeProductStatus::Blocked);
+  EXPECT(
+      state,
+      inline_cycle.dependencies ==
+          std::vector<draft::TypeFacetDependency>({
+              {recursive, draft::TypeFacet::NaturalLayout},
+          }));
+
+  const draft::TypeId pointer_recursive = package.types.begin_nominal(
+      draft::TypeKind::Struct,
+      "Pointer_Recursive",
+      draft::SourceRange::invalid());
+  package.types.publish_nominal_members(pointer_recursive);
+  package.types.publish_nominal_member_types(
+      pointer_recursive, {package.types.pointer(pointer_recursive)});
+  const draft::NaturalLayoutProductAttempt pointer_layout =
+      draft::evaluate_natural_layout_product(
+          package.types, pointer_recursive, diagnostics);
+  EXPECT(
+      state,
+      pointer_layout.status == draft::TypeProductStatus::Complete);
+  EXPECT(state, pointer_layout.layout == draft::TypeLayout({true, 8, 8}));
+  EXPECT(state, diagnostics.error_count() == 0);
+}
+
 void test_type_inspection_waits_for_exact_facets(TestState &state) {
   draft::SemanticPackage package;
   const std::optional<draft::TypeId> u32 = package.types.find_builtin("u32");
@@ -373,6 +481,7 @@ int main() {
   test_builtin_and_structural_types(state);
   test_nominal_identity(state);
   test_pure_natural_aggregate_layout(state);
+  test_natural_layout_product(state);
   test_type_inspection_waits_for_exact_facets(state);
   test_scopes_and_duplicates(state);
 

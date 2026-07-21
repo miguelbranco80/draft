@@ -3,6 +3,7 @@
 #include "sema/type_resolver.h"
 
 #include "sema/type_layout.h"
+#include "sema/type_product.h"
 #include "syntax/token.h"
 
 #include <algorithm>
@@ -4136,17 +4137,8 @@ private:
       diagnostics_.error(aggregate.range, "aggregate type requires at least one member");
     }
 
-    TypeLayout layout;
     if (!data.incomplete) {
-      if (kind == TypeKind::Struct) {
-        layout = retain_natural_layout(
-            data,
-            compute_struct_natural_layout(semantic_.types, data.types));
-      } else if (kind == TypeKind::RawUnion) {
-        layout = retain_natural_layout(
-            data,
-            compute_raw_union_natural_layout(semantic_.types, data.types));
-      } else if (kind == TypeKind::Enum) {
+      if (kind == TypeKind::Enum) {
         const bool has_zero_member = std::any_of(
             data.enum_values.begin(),
             data.enum_values.end(),
@@ -4178,7 +4170,6 @@ private:
           }
         }
         semantic_.types.type_mut(nominal).element = backing;
-        layout = semantic_.types.type(backing).layout;
         for (std::size_t index = 0; index < data.symbols.size(); ++index) {
           data.types[index] = backing;
           semantic_.symbols.symbol_mut(data.symbols[index]).type = backing;
@@ -4203,27 +4194,50 @@ private:
           }
         }
         semantic_.types.type_mut(nominal).element = discriminator;
-        layout = retain_natural_layout(
-            data,
-            compute_tagged_union_natural_layout(
-                semantic_.types, discriminator, data.types));
       }
     }
-
-    layout = apply_requested_alignment(
-        layout, attributes.requested_alignment, aggregate.range);
 
     if (!data.incomplete) {
       semantic_.types.publish_nominal_members(nominal);
       semantic_.types.publish_nominal_member_types(nominal, data.types);
-      if (layout.known) {
-        semantic_.types.publish_nominal_natural_layout(
-            nominal, layout, data.offsets);
-      }
     }
     for (std::size_t index = 0; index < data.symbols.size(); ++index) {
       semantic_.aggregate_members.push_back(
-          {owner, data.symbols[index], data.offsets[index]});
+          {owner, data.symbols[index], 0});
+    }
+
+    // Natural layout is a distinct semantic product even while package type
+    // scheduling remains sequential. Route the legacy synchronous caller
+    // through the exact task contract now, so layout arithmetic, blockers, and
+    // publication have one authority. A blocked result simply leaves the facet
+    // Waiting; the workspace graph will attach its explicit dependencies when
+    // it takes ownership of this task.
+    if (!data.incomplete) {
+      NaturalLayoutProductAttempt layout = evaluate_natural_layout_product(
+          semantic_.types, nominal, diagnostics_);
+      if (layout.status == TypeProductStatus::Complete) {
+        if (owner.is_valid()) {
+          (void)publish_natural_layout_product(
+              semantic_, owner, nominal, std::move(layout), diagnostics_);
+        } else {
+          // Anonymous aggregate syntax has no SymbolId that can key the
+          // coordinator publication helper. Its member rows were appended
+          // immediately above and are therefore one contiguous source-order
+          // suffix. Publish the same task packet directly while preserving the
+          // exact offsets in both parallel representations.
+          assert(layout.member_offsets.size() == data.symbols.size());
+          const std::size_t first_member =
+              semantic_.aggregate_members.size() - data.symbols.size();
+          for (std::size_t index = 0; index < data.symbols.size(); ++index) {
+            semantic_.aggregate_members[first_member + index].offset =
+                layout.member_offsets[index];
+          }
+          semantic_.types.publish_nominal_natural_layout(
+              nominal,
+              layout.layout,
+              std::move(layout.member_offsets));
+        }
+      }
     }
   }
 

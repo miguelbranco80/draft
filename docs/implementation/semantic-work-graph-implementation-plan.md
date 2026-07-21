@@ -43,8 +43,13 @@ gate.
    publication are separate one-way operations. Aggregate natural layout is a
    pure producer that distinguishes dependency waits from arithmetic overflow
    and returns the exact incomplete input types in first-use order, ready to
-   become graph edges; it no longer belongs to declaration resolution. The
-   terminal discovery
+   become graph edges; its arithmetic no longer belongs to declaration
+   resolution. The
+   nominal NaturalLayout task now evaluates one type into a task-owned packet,
+   names exact MemberTypes or NaturalLayout blockers, and publishes through a
+   separate one-way coordinator operation. Ordinary aggregate resolution uses
+   that same task contract synchronously; wiring those attempts to workspace
+   TypeNaturalLayout rows remains. The terminal discovery
    package is now published directly, so the redundant final aggregate type
    replay is gone. The remaining work is to make those producers individual
    graph tasks and replace the private type/constant/layout readiness copies.
