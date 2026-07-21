@@ -142,13 +142,20 @@ gate.
    `check_additional_package_instances`; both clean and extension work now use
    the same explicit item-at-a-time body state and live product publisher.
 
-   The remaining split is substantive: workers still append lexical symbols,
-   constants, types, sites, and HIR into one sequential package-owned
-   `BodyCheckResult`. The consumer-first external-demand loop, body work key,
-   and extension/rebuild paths therefore remain. Replace that shared payload
-   with task-owned procedure arenas and coordinator publication, then delete
-   those retained-package paths before this step can close or parallel workers
-   can begin.
+   Root invocation is worker-owned as well. The coordinator moves the published
+   body prefix into a `ProcedureBodyTaskInput`; the worker has no alias to
+   `PackageBodyWorkState` and returns a `ProcedureBodyTaskResult` which only the
+   coordinator can validate and adopt. Moving the prefix avoids a full-package
+   copy per root. A focused test proves the work cursor cannot advance before
+   publication and that one exact task owns the semantic/HIR payload in flight.
+
+   The remaining split is substantive: each task-owned result is still a full
+   package/constants/HIR successor, and the sequential oracle adopts one before
+   invoking the next root. The consumer-first external-demand loop,
+   body work key, and extension/rebuild paths therefore remain. Replace that
+   transport snapshot with a procedure-local arena and deterministic canonical
+   publication, then delete those retained-package paths before this step can
+   close or parallel workers can begin.
 
 6. **Synthesis as an explicit wait state.** A body or declaration task may
    report its exact ready `...` set after producing the typed constraint needed

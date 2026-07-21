@@ -8506,57 +8506,120 @@ PackageBodyWorkState begin_additional_package_body_work(
   return state;
 }
 
-bool check_next_procedure_body_work(
-    const SourceManager &sources,
-    const LoadedPackage &loaded,
-    const ConditionalSelections &selections,
-    const TargetFacts &target,
+ProcedureBodyTaskInput take_next_procedure_body_work(
     PackageBodyWorkState &state,
     DiagnosticSink &diagnostics) {
+  ProcedureBodyTaskInput input;
+  if (state.active_work.has_value()) {
+    diagnostics.error(
+        SourceRange::invalid(),
+        "procedure body scheduler dispatched a second task before publication");
+    return input;
+  }
   if (state.next_work >= state.work.size()) {
     diagnostics.error(
         SourceRange::invalid(),
         "procedure body scheduler invoked without a ready work item");
-    state.ok = false;
-    return false;
+    return input;
   }
 
-  const std::size_t work_index = state.next_work;
-  const ProcedureBodyRoot root = state.work[work_index];
+  input.work_index = state.next_work;
+  input.valid = true;
+  input.work = state.work[state.next_work];
+  input.next_instance = state.next_instance;
+  input.package = std::move(state.package);
+  input.constants = std::move(state.constants);
+  input.program = std::move(state.program);
+  state.active_work = state.next_work;
+  return input;
+}
+
+ProcedureBodyTaskResult check_procedure_body_work(
+    const SourceManager &sources,
+    const LoadedPackage &loaded,
+    const ConditionalSelections &selections,
+    const TargetFacts &target,
+    ProcedureBodyTaskInput input,
+    DiagnosticSink &diagnostics) {
+  ProcedureBodyTaskResult result;
+  if (!input.valid || !input.work.symbol.is_valid()) {
+    diagnostics.error(
+        SourceRange::invalid(),
+        "procedure body worker received an invalid task input");
+    return result;
+  }
+  const ProcedureBodyRoot root = input.work;
+  result.work_index = input.work_index;
+  result.symbol = root.symbol;
+  result.package = std::move(input.package);
+  result.constants = std::move(input.constants);
+  result.program = std::move(input.program);
   const std::vector<ProcedureInstantiationSeed> no_seeds;
   BodyChecker checker(
       sources,
       loaded,
       selections,
-      state.package,
-      state.constants,
+      result.package,
+      result.constants,
       target,
       diagnostics,
       no_seeds,
-      std::move(state.program));
+      std::move(result.program));
   ProcedureBodyRootResult checked = checker.run_one(root);
-  state.ok = state.ok && checked.checked.ok;
-  state.checked_procedures += checked.checked.checked_procedures;
-  state.program = std::move(checked.checked.program);
+  result.ok = checked.checked.ok;
+  result.checked_procedures = checked.checked.checked_procedures;
+  result.program = std::move(checked.checked.program);
 
   // Nested roots and newly discovered concrete instances consume the semantic
-  // publication of the root which exposed them. Retain that exact index so the
-  // workspace coordinator can add the corresponding product edge after the
-  // current frozen wave joins.
+  // publication of the root which exposed them. The worker retains only the
+  // discovered packet; the coordinator adds the exact work-index prerequisite
+  // when it adopts this result.
   for (ProcedureBodyRoot &nested : checked.discovered_roots) {
-    nested.prerequisite = work_index;
-    append_body_root(state.work, std::move(nested));
+    append_body_root(result.discovered_work, std::move(nested));
   }
-  while (state.next_instance < state.package.parametric_instances.size()) {
+  std::size_t next_instance = input.next_instance;
+  while (next_instance < result.package.parametric_instances.size()) {
     ProcedureBodyRoot instance_root;
     instance_root.symbol =
-        state.package.parametric_instances[state.next_instance].instance;
-    instance_root.prerequisite = work_index;
-    append_body_root(state.work, std::move(instance_root));
-    ++state.next_instance;
+        result.package.parametric_instances[next_instance].instance;
+    append_body_root(result.discovered_work, std::move(instance_root));
+    ++next_instance;
   }
+  result.next_instance = next_instance;
+  return result;
+}
+
+bool publish_procedure_body_work(
+    PackageBodyWorkState &state,
+    ProcedureBodyTaskResult result,
+    DiagnosticSink &diagnostics) {
+  if (state.next_work >= state.work.size() ||
+      !state.active_work.has_value() ||
+      *state.active_work != state.next_work ||
+      result.work_index != state.next_work ||
+      result.symbol != state.work[state.next_work].symbol ||
+      result.next_instance < state.next_instance ||
+      result.next_instance != result.package.parametric_instances.size()) {
+    diagnostics.error(
+        SourceRange::invalid(),
+        "procedure body task result does not match the next published root");
+    return false;
+  }
+
+  const std::size_t work_index = state.next_work;
+  state.ok = state.ok && result.ok;
+  state.checked_procedures += result.checked_procedures;
+  state.package = std::move(result.package);
+  state.constants = std::move(result.constants);
+  state.program = std::move(result.program);
+  state.next_instance = result.next_instance;
+  for (ProcedureBodyRoot &discovered : result.discovered_work) {
+    discovered.prerequisite = work_index;
+    append_body_root(state.work, std::move(discovered));
+  }
+  state.active_work.reset();
   ++state.next_work;
-  return checked.checked.ok;
+  return true;
 }
 
 BodyCheckResult finish_package_body_work(
@@ -8565,7 +8628,12 @@ BodyCheckResult finish_package_body_work(
     PackageBodyWorkState state,
     DiagnosticSink &diagnostics) {
   BodyCheckResult result;
-  if (state.next_work != state.work.size()) {
+  if (state.active_work.has_value()) {
+    diagnostics.error(
+        SourceRange::invalid(),
+        "procedure body work finalized while a task still owned its prefix");
+    state.ok = false;
+  } else if (state.next_work != state.work.size()) {
     diagnostics.error(
         SourceRange::invalid(),
         "procedure body work finalized before every discovered root ran");
@@ -8608,8 +8676,19 @@ BodyCheckResult check_package_bodies(
       diagnostics,
       seeds);
   while (state.next_work < state.work.size()) {
-    (void)check_next_procedure_body_work(
-        sources, loaded, selections, target, state, diagnostics);
+    ProcedureBodyTaskInput input =
+        take_next_procedure_body_work(state, diagnostics);
+    ProcedureBodyTaskResult task = check_procedure_body_work(
+        sources,
+        loaded,
+        selections,
+        target,
+        std::move(input),
+        diagnostics);
+    if (!publish_procedure_body_work(
+            state, std::move(task), diagnostics)) {
+      break;
+    }
   }
   return finish_package_body_work(
       loaded, target, std::move(state), diagnostics);
@@ -8650,8 +8729,19 @@ BodyCheckResult check_compile_time_procedure_bodies(
     }
   }
   while (state.next_work < state.work.size()) {
-    (void)check_next_procedure_body_work(
-        sources, loaded, selections, target, state, diagnostics);
+    ProcedureBodyTaskInput input =
+        take_next_procedure_body_work(state, diagnostics);
+    ProcedureBodyTaskResult task = check_procedure_body_work(
+        sources,
+        loaded,
+        selections,
+        target,
+        std::move(input),
+        diagnostics);
+    if (!publish_procedure_body_work(
+            state, std::move(task), diagnostics)) {
+      break;
+    }
   }
   // finish_package_body_work applies the same target and definite-
   // initialization validation to the disposable early HIR as to final bodies.

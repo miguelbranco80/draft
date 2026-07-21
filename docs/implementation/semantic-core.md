@@ -344,11 +344,17 @@ product order. Invalid recoverable HIR completes its scheduling row but leaves
 the containing body state invalid, allowing later authored roots to be checked
 without permitting effects or lowering to consume the package.
 
-This is not yet the final isolated result: the sequential product oracle still
-appends lexical symbols, constants, sites, types, and HIR into one package-wide
-`BodyCheckResult`. The next procedure-owned slice replaces that shared payload
-with a local arena/result per product; only then can one package's body wave run
-on parallel workers.
+The coordinator now moves exclusive ownership of the published
+package/constants/HIR prefix into one `ProcedureBodyTaskInput`; the worker
+returns its successor as `ProcedureBodyTaskResult` and never aliases
+`PackageBodyWorkState`. The coordinator validates the exact work index and root
+symbol, adopts the successor, and only then exposes its discovered roots. Moving
+the prefix avoids an accidental full-package copy per procedure, but this is not
+yet the final isolated result: the task transports one complete package/HIR
+successor, and the sequential oracle adopts it before invoking the next root.
+The next procedure-owned slice replaces that exclusive full successor with a
+local arena/result and deterministic canonical publication; only then can one
+package's body wave run on parallel workers.
 
 The compiler schedules package bodies consumer-first because checking a caller
 can demand a concrete public generic body from its dependency. A portable

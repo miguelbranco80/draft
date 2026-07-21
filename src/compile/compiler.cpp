@@ -18,7 +18,8 @@
 // template and instance bodies are live dynamic products: authored roots are
 // appended before checking, and nested or locally instantiated roots are
 // appended between frozen waves with exact discovery edges. Their current
-// payload still publishes through one sequential package-owned body state;
+// worker-owned payload is a private full successor snapshot which the
+// coordinator adopts through one sequential package-owned body state;
 // generic demands still propagate consumer-first, and completed effects still
 // publish dependency-first. Later implementation slices isolate those task
 // payloads and move the remaining package loops into the same graph. Within an
@@ -3550,13 +3551,19 @@ package_condition_needs_materialization(const SemanticPackage &package,
         return false;
       }
       SemanticProductOutcome outcome;
-      (void)check_next_procedure_body_work(
+      ProcedureBodyTaskInput input = take_next_procedure_body_work(
+          state, outcome.diagnostics);
+      ProcedureBodyTaskResult task = check_procedure_body_work(
           sources,
           loaded,
           selections,
           target,
-          state,
+          std::move(input),
           outcome.diagnostics);
+      if (!publish_procedure_body_work(
+              state, std::move(task), outcome.diagnostics)) {
+        return false;
+      }
       outcome.kind = SemanticProductOutcomeKind::Complete;
       outcomes.push_back(std::move(outcome));
     }

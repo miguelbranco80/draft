@@ -146,6 +146,119 @@ main :: proc() {
   EXPECT(state, source.semantics.package.parametric_instances.empty());
 }
 
+// One root check must write only its returned task slot. The coordinator then
+// adopts that successor explicitly. This is the ownership seam required before
+// several body tasks can eventually share one immutable prefix and run in
+// parallel; mutating PackageBodyWorkState from the worker would make result
+// order observable even with task-local diagnostics.
+void test_body_root_results_are_task_owned(TestState &state) {
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  draft::LoadedPackage loaded;
+  loaded.short_name = "bodies";
+  draft::LoadedPackageFile file;
+  file.kind = draft::PackageFileKind::DraftSource;
+  file.relative_name = "package.draft";
+  file.source = sources.add_source("package.draft", R"draft(
+package bodies
+
+first :: proc() -> i64 {
+    local: i64 = 20
+    return local
+}
+
+second :: proc() -> i64 {
+    local: i64 = 22
+    return local
+}
+)draft");
+  file.syntax.emplace(
+      draft::parse_source_file(sources, file.source, diagnostics));
+  loaded.files.push_back(std::move(file));
+  const draft::TargetProfile target = draft::make_aarch64_macos_profile();
+  const draft::SemanticAnalysisResult semantics =
+      draft::analyze_package_semantics(
+          sources, loaded, target.facts, diagnostics);
+  draft::PackageBodyWorkState work = draft::begin_package_body_work(
+      sources,
+      loaded,
+      semantics.selections,
+      semantics.package,
+      semantics.constants,
+      target.facts,
+      diagnostics);
+  EXPECT(state, work.ok);
+  EXPECT(state, work.work.size() == 2);
+  EXPECT(state, work.next_work == 0);
+  const std::size_t initial_symbols = work.package.symbols.symbol_count();
+  const std::size_t initial_scopes = work.package.symbols.scope_count();
+
+  draft::DiagnosticSink first_diagnostics;
+  draft::ProcedureBodyTaskInput first_input =
+      draft::take_next_procedure_body_work(work, first_diagnostics);
+  EXPECT(state, first_input.valid);
+  EXPECT(state, work.active_work == std::optional<std::size_t>{0});
+  EXPECT(state, first_input.package.symbols.symbol_count() == initial_symbols);
+  EXPECT(state, first_input.package.symbols.scope_count() == initial_scopes);
+  draft::ProcedureBodyTaskResult first =
+      draft::check_procedure_body_work(
+          sources,
+          loaded,
+          semantics.selections,
+          target.facts,
+          std::move(first_input),
+          first_diagnostics);
+  if (first_diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(sources, first_diagnostics);
+  }
+  EXPECT(state, first.ok);
+  EXPECT(state, !first_diagnostics.has_errors());
+  EXPECT(state, work.next_work == 0);
+  EXPECT(state, work.program.procedures().empty());
+  EXPECT(state, first.program.procedures().size() == 1);
+  EXPECT(state, first.package.symbols.symbol_count() > initial_symbols);
+  EXPECT(state, first.package.symbols.scope_count() > initial_scopes);
+
+  EXPECT(state, draft::publish_procedure_body_work(
+                    work, std::move(first), first_diagnostics));
+  EXPECT(state, work.next_work == 1);
+  EXPECT(state, !work.active_work.has_value());
+  EXPECT(state, work.program.procedures().size() == 1);
+  const std::size_t published_symbols = work.package.symbols.symbol_count();
+
+  draft::DiagnosticSink second_diagnostics;
+  draft::ProcedureBodyTaskInput second_input =
+      draft::take_next_procedure_body_work(work, second_diagnostics);
+  EXPECT(state, second_input.valid);
+  EXPECT(state, work.active_work == std::optional<std::size_t>{1});
+  EXPECT(state,
+         second_input.package.symbols.symbol_count() == published_symbols);
+  EXPECT(state, second_input.program.procedures().size() == 1);
+  draft::ProcedureBodyTaskResult second =
+      draft::check_procedure_body_work(
+          sources,
+          loaded,
+          semantics.selections,
+          target.facts,
+          std::move(second_input),
+          second_diagnostics);
+  EXPECT(state, second.ok);
+  EXPECT(state, work.next_work == 1);
+  EXPECT(state, work.program.procedures().empty());
+  EXPECT(state, second.program.procedures().size() == 2);
+  EXPECT(state, draft::publish_procedure_body_work(
+                    work, std::move(second), second_diagnostics));
+
+  const draft::BodyCheckResult bodies = draft::finish_package_body_work(
+      loaded, target.facts, std::move(work), diagnostics);
+  if (diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+  }
+  EXPECT(state, bodies.ok);
+  EXPECT(state, bodies.checked_procedures == 2);
+  EXPECT(state, bodies.program.procedures().size() == 2);
+}
+
 void test_common_typed_bodies(TestState &state) {
   CheckedSource source(R"draft(
 package bodies
@@ -3204,6 +3317,7 @@ ordinary :: proc(condition: bool) {
 int main() {
   TestState state;
   test_body_results_do_not_mutate_or_reenter_declarations(state);
+  test_body_root_results_are_task_owned(state);
   test_common_typed_bodies(state);
   test_body_diagnostics(state);
   test_parametric_procedure_instances(state);

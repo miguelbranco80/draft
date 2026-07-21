@@ -98,18 +98,59 @@ struct ProcedureBodyWorkItem {
   std::optional<std::size_t> prerequisite;
 };
 
+// ProcedureBodyTaskInput transfers exclusive ownership of the current
+// sequential publication prefix to one worker. Moving rather than copying the
+// package, constants, and HIR keeps this transitional oracle linear in body
+// state size. work is the exact root and next_instance partitions already
+// published concrete records from any suffix discovered by this task.
+struct ProcedureBodyTaskInput {
+  bool valid = false;
+  std::size_t work_index = 0;
+  ProcedureBodyWorkItem work;
+  std::size_t next_instance = 0;
+  SemanticPackage package;
+  ConstantTable constants;
+  HirProgram program;
+};
+
+// ProcedureBodyTaskResult is one worker-owned body attempt. package, constants,
+// and program are the successor to the exclusively owned prefix supplied in
+// ProcedureBodyTaskInput; the worker never aliases PackageBodyWorkState.
+// discovered_work contains nested procedures and concrete instances found by
+// this root. work_index ties the result to the exact state row it consumed,
+// while next_instance records the published ParametricInstanceRecord prefix.
+//
+// This full-successor representation is intentionally simple and correct. The
+// procedure-local arena migration will narrow the payload after its ID domains
+// and deterministic interning boundary are explicit; callers must not infer
+// that unrelated package state is semantically owned by the procedure merely
+// because it travels through this temporary ownership packet.
+struct ProcedureBodyTaskResult {
+  bool ok = false;
+  std::size_t work_index = 0;
+  SymbolId symbol;
+  std::size_t checked_procedures = 0;
+  std::size_t next_instance = 0;
+  SemanticPackage package;
+  ConstantTable constants;
+  HirProgram program;
+  std::vector<ProcedureBodyWorkItem> discovered_work;
+};
+
 // PackageBodyWorkState is the explicit sequential publication oracle for body
 // products. It owns the current append-only package prefix, lexical constants,
 // HIR, and the dynamic work list. `next_work` partitions completed work from the
-// current ready suffix. Checking one item may append nested procedures and
-// concrete specializations to that suffix, but never checks them recursively.
+// current ready suffix. Publishing one task may append nested procedures and
+// concrete specializations to that suffix, but no task checks them recursively.
 //
 // The state is deliberately public phase data rather than a callback-driven
 // executor: workspace orchestration freezes product waves, invokes one exact
 // item at a time, then creates product rows for the newly appended suffix.
-// Today this state is also the deterministic shared-publication oracle while
-// procedure-local arenas are introduced; parallel workers must not mutate one
-// state concurrently.
+// Today this state is the deterministic full-successor publication oracle while
+// procedure-local arenas are introduced. The coordinator moves its payload
+// into one task, and only the matching publication operation moves a successor
+// back. Independent tasks cannot yet share one frozen prefix because that
+// prefix still has one exclusive owner.
 struct PackageBodyWorkState {
   bool ok = false;
   SemanticPackage package;
@@ -119,6 +160,10 @@ struct PackageBodyWorkState {
   std::size_t next_work = 0;
   std::size_t next_instance = 0;
   std::size_t checked_procedures = 0;
+  // Present only after the coordinator transfers the package prefix into a
+  // ProcedureBodyTaskInput and before it adopts the matching result. No second
+  // task may be dispatched while this row is present.
+  std::optional<std::size_t> active_work;
 };
 
 // Starts a clean body generation from immutable declaration inputs. Runtime
@@ -149,17 +194,32 @@ struct PackageBodyWorkState {
     DiagnosticSink &diagnostics,
     const std::vector<ProcedureInstantiationSeed> &additional_seeds);
 
-// Checks exactly state.work[state.next_work] and advances the partition by one.
-// The caller owns diagnostics for this task. The return value describes only
-// that root; state.ok retains the conjunction for final package validation.
-// Newly discovered roots are appended with prerequisite equal to the completed
-// work index and become visible only to a later scheduler wave.
-[[nodiscard]] bool check_next_procedure_body_work(
+// Transfers the current package prefix and exact next root into a task-owned
+// input. This is a coordinator operation: it marks one active work index and
+// leaves no semantic payload available for another dispatch until publication.
+[[nodiscard]] ProcedureBodyTaskInput take_next_procedure_body_work(
+    PackageBodyWorkState &state,
+    DiagnosticSink &diagnostics);
+
+// Checks exactly input.work and returns its successor. The worker owns every
+// mutable input and the caller owns diagnostics; no coordinator state is
+// reachable through this contract.
+[[nodiscard]] ProcedureBodyTaskResult check_procedure_body_work(
     const SourceManager &sources,
     const LoadedPackage &loaded,
     const ConditionalSelections &selections,
     const TargetFacts &target,
+    ProcedureBodyTaskInput input,
+    DiagnosticSink &diagnostics);
+
+// Adopts one task-owned successor into the sequential publication state. The
+// work index and root symbol must match the next pending item. Discovered roots
+// receive a prerequisite on that item and become visible only after adoption.
+// A contract mismatch diagnoses an internal scheduling error and leaves state
+// unchanged.
+[[nodiscard]] bool publish_procedure_body_work(
     PackageBodyWorkState &state,
+    ProcedureBodyTaskResult result,
     DiagnosticSink &diagnostics);
 
 // Completes package-wide invariants after every dynamic root has run, then

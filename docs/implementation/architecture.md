@@ -144,9 +144,14 @@ concrete procedure is now a live `ProcedureTemplateBody` or
 procedures and locally discovered specializations are appended only after the
 frozen wave which exposed them joins, with an exact edge to that exposing body.
 Each root owns a task-local diagnostic sink, and graph publication merges those
-diagnostics in product order. The current sequential oracle still appends every
-root's semantic/HIR payload into one package body state; isolating that payload
-is the remaining procedure-owned-checking boundary before body waves may run in
+diagnostics in product order. The coordinator moves exclusive ownership of the
+current semantic/constants/HIR prefix into one root task, which returns a
+worker-owned successor for explicit adoption. This transfer avoids an
+accidental full-package copy per body, but the current sequential oracle still
+adopts one complete package successor before invoking the next root, so
+independent roots do not yet share one frozen immutable prefix.
+Replacing that full snapshot with a procedure-local arena and deterministic
+canonical publication is the remaining boundary before body waves may run in
 parallel.
 
 The transitional body work key is the declaration generation plus the exact
