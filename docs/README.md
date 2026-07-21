@@ -5,6 +5,9 @@ point. This directory separates normative language meaning from target
 contracts, implementation mechanics, operational commands, release evidence,
 open decisions, and historical records.
 
+The small [project checklist](../TODO.md) records intended work without making
+those items part of the language specification or current implementation state.
+
 ## Specification
 
 - [Core language](specification/01-core-language.md)
