@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <limits>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -135,13 +136,29 @@ public:
       const std::vector<ConstantTypeBinding> *active_types = nullptr,
       const std::vector<ResolvedIntegerExpression> *resolved_integers = nullptr,
       const TargetFacts *target = nullptr,
-      const std::vector<SyntaxReference> *blocked_integer_synthesis = nullptr)
+      const std::vector<SyntaxReference> *blocked_integer_synthesis = nullptr,
+      SymbolId product_root = {},
+      std::span<const SymbolId> completed_declarations = {})
       : sources_(sources), loaded_(loaded), semantic_(semantic), selections_(selections),
         diagnostics_(diagnostics),
         states_(semantic.symbols.symbol_count(), ResolutionState::Unvisited),
         active_constants_(active_constants), active_types_(active_types),
         resolved_integers_(resolved_integers), target_(target),
-        blocked_integer_synthesis_(blocked_integer_synthesis) {}
+        blocked_integer_synthesis_(blocked_integer_synthesis),
+        product_root_(product_root) {
+    // A product attempt may consume only declarations that the coordinator has
+    // already published. Their semantic payloads are present in this snapshot,
+    // so mark those rows resolved without re-entering their syntax. Every other
+    // declaration stays Unvisited and becomes an explicit blocker if reached.
+    if (product_root_.is_valid()) {
+      for (SymbolId completed : completed_declarations) {
+        if (completed.is_valid() && completed != product_root_ &&
+            completed.value < states_.size()) {
+          states_[completed.value] = ResolutionState::Resolved;
+        }
+      }
+    }
+  }
 
   // Resolves only the symbols originally installed in the package scope.
   // Nested symbols are resolved synchronously as their owner is processed.
@@ -153,6 +170,30 @@ public:
     for (SymbolId symbol : package_symbols) {
       resolve_symbol(symbol);
     }
+  }
+
+  // Resolves one declaration without recursively scheduling another package
+  // declaration. The caller owns a private SemanticPackage snapshot; partial
+  // mutations are intentionally left there for disposal when a blocker is
+  // found, avoiding rollback machinery in the resolver's direct algorithms.
+  [[nodiscard]] DeclarationTypeProductAttempt resolve_product() {
+    DeclarationTypeProductAttempt result;
+    if (!product_root_.is_valid() || product_root_.value >= states_.size()) {
+      diagnostics_.error(
+          SourceRange::invalid(),
+          "declaration-type product root is outside its semantic package");
+      return result;
+    }
+    resolve_symbol(product_root_);
+    if (!declaration_dependencies_.empty()) {
+      result.status = TypeProductStatus::Blocked;
+      result.declaration_dependencies = declaration_dependencies_;
+      return result;
+    }
+    result.status = diagnostics_.has_errors()
+        ? TypeProductStatus::Error
+        : TypeProductStatus::Complete;
+    return result;
   }
 
   // Public single-node entry used by body checking after package declarations
@@ -3057,7 +3098,10 @@ private:
     if (!found.has_value()) {
       return std::nullopt;
     }
-    if (semantic_.symbols.symbol(*found).kind == SymbolKind::UnresolvedDeclaration) {
+    if (semantic_.symbols.symbol(*found).kind ==
+            SymbolKind::UnresolvedDeclaration ||
+        (semantic_.symbols.symbol(*found).kind == SymbolKind::Type &&
+         !semantic_.symbols.symbol(*found).type.is_valid())) {
       resolve_symbol(*found);
     }
     const Symbol &symbol = semantic_.symbols.symbol(*found);
@@ -4252,6 +4296,15 @@ private:
     if (state == ResolutionState::Resolved || state == ResolutionState::Failed) {
       return;
     }
+    if (product_root_.is_valid() && id != product_root_) {
+      if (std::find(
+              declaration_dependencies_.begin(),
+              declaration_dependencies_.end(),
+              id) == declaration_dependencies_.end()) {
+        declaration_dependencies_.push_back(id);
+      }
+      return;
+    }
     const Symbol initial_symbol = semantic_.symbols.symbol(id);
     if (state == ResolutionState::Resolving) {
       diagnostics_.error(
@@ -4373,9 +4426,50 @@ private:
   const std::vector<ResolvedIntegerExpression> *resolved_integers_ = nullptr;
   const TargetFacts *target_ = nullptr;
   const std::vector<SyntaxReference> *blocked_integer_synthesis_ = nullptr;
+  // Valid only for resolve_product(). Other entry points keep the invalid ID
+  // and preserve the bootstrap resolver's legacy recursive declaration walk.
+  SymbolId product_root_;
+  std::vector<SymbolId> declaration_dependencies_;
 };
 
 } // namespace
+
+DeclarationTypeProductAttempt resolve_package_declaration_type_product(
+    const SourceManager &sources,
+    const LoadedPackage &loaded,
+    SemanticPackage &task_package,
+    const ConditionalSelections &selections,
+    SymbolId root,
+    std::span<const SymbolId> completed_declarations,
+    const ConstantTable &published_constants,
+    const std::vector<ResolvedIntegerExpression> &resolved_integers,
+    const TargetFacts &target,
+    DiagnosticSink &diagnostics) {
+  // Blocked attempts commonly walk far enough to encounter provisional errors
+  // after discovering their first missing declaration. Keep those diagnostics
+  // task-private and publish them only when the attempt is terminal.
+  DiagnosticSink task_diagnostics;
+  TypeResolver resolver(
+      sources,
+      loaded,
+      task_package,
+      selections,
+      task_diagnostics,
+      &published_constants,
+      nullptr,
+      &resolved_integers,
+      &target,
+      nullptr,
+      root,
+      completed_declarations);
+  DeclarationTypeProductAttempt result = resolver.resolve_product();
+  if (result.status == TypeProductStatus::Blocked) return result;
+  for (const Diagnostic &diagnostic : task_diagnostics.diagnostics()) {
+    diagnostics.report(
+        diagnostic.severity, diagnostic.range, diagnostic.message);
+  }
+  return result;
+}
 
 void resolve_package_types(
     const SourceManager &sources,

@@ -7,6 +7,7 @@
 #include "syntax/parser.h"
 #include "workspace/package.h"
 
+#include <array>
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
@@ -52,6 +53,30 @@ struct SemanticSource {
   }
 };
 
+// ProductSemanticSource stops after eager declaration collection. Individual
+// tests can then publish declaration-type attempts explicitly without the
+// legacy package resolver having already supplied those facts.
+struct ProductSemanticSource {
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  draft::LoadedPackage loaded;
+  draft::SemanticPackage semantic;
+
+  explicit ProductSemanticSource(std::string text) {
+    loaded.short_name = "type_products";
+    loaded.physical_directory = "/virtual/type_products";
+    draft::LoadedPackageFile file;
+    file.kind = draft::PackageFileKind::DraftSource;
+    file.relative_name = "package.draft";
+    file.source = sources.add_source("package.draft", std::move(text));
+    file.syntax.emplace(
+        draft::parse_source_file(sources, file.source, diagnostics));
+    loaded.files.push_back(std::move(file));
+    semantic =
+        draft::collect_package_declarations(sources, loaded, diagnostics);
+  }
+};
+
 [[nodiscard]] const draft::Symbol *find_symbol(
     const draft::SemanticPackage &package, std::string_view name) {
   const std::optional<draft::SymbolId> id =
@@ -60,6 +85,149 @@ struct SemanticSource {
     return nullptr;
   }
   return &package.symbols.symbol(*id);
+}
+
+[[nodiscard]] std::optional<draft::SymbolId> find_symbol_id(
+    const draft::SemanticPackage &package, std::string_view name) {
+  return package.symbols.lookup_direct(package.package_scope, name);
+}
+
+void test_declaration_type_products(TestState &state) {
+  ProductSemanticSource source(R"draft(
+package type_products
+
+First :: Second
+Second :: u32
+Cycle_A :: Cycle_B
+Cycle_B :: Cycle_A
+)draft");
+  EXPECT(state, !source.diagnostics.has_errors());
+
+  const std::optional<draft::SymbolId> first =
+      find_symbol_id(source.semantic, "First");
+  const std::optional<draft::SymbolId> second =
+      find_symbol_id(source.semantic, "Second");
+  const std::optional<draft::SymbolId> cycle_a =
+      find_symbol_id(source.semantic, "Cycle_A");
+  const std::optional<draft::SymbolId> cycle_b =
+      find_symbol_id(source.semantic, "Cycle_B");
+  EXPECT(state, first.has_value());
+  EXPECT(state, second.has_value());
+  EXPECT(state, cycle_a.has_value());
+  EXPECT(state, cycle_b.has_value());
+  if (!first.has_value() || !second.has_value() || !cycle_a.has_value() ||
+      !cycle_b.has_value()) {
+    return;
+  }
+
+  const draft::ConditionalSelections selections;
+  const draft::ConstantTable constants;
+  const std::vector<draft::ResolvedIntegerExpression> resolved_integers;
+  const draft::TargetFacts target;
+
+  draft::SemanticPackage blocked_package = source.semantic;
+  draft::DiagnosticSink blocked_diagnostics;
+  const draft::DeclarationTypeProductAttempt blocked =
+      draft::resolve_package_declaration_type_product(
+          source.sources,
+          source.loaded,
+          blocked_package,
+          selections,
+          *first,
+          {},
+          constants,
+          resolved_integers,
+          target,
+          blocked_diagnostics);
+  EXPECT(state, blocked.status == draft::TypeProductStatus::Blocked);
+  EXPECT(
+      state,
+      blocked.declaration_dependencies ==
+          std::vector<draft::SymbolId>({*second}));
+  EXPECT(state, !blocked_diagnostics.has_errors());
+
+  draft::SemanticPackage second_package = source.semantic;
+  draft::DiagnosticSink second_diagnostics;
+  const draft::DeclarationTypeProductAttempt second_attempt =
+      draft::resolve_package_declaration_type_product(
+          source.sources,
+          source.loaded,
+          second_package,
+          selections,
+          *second,
+          {},
+          constants,
+          resolved_integers,
+          target,
+          second_diagnostics);
+  EXPECT(state, second_attempt.status == draft::TypeProductStatus::Complete);
+  EXPECT(state, !second_diagnostics.has_errors());
+  if (second_attempt.status != draft::TypeProductStatus::Complete) return;
+  source.semantic = std::move(second_package);
+
+  draft::SemanticPackage first_package = source.semantic;
+  draft::DiagnosticSink first_diagnostics;
+  const std::array completed{*second};
+  const draft::DeclarationTypeProductAttempt first_attempt =
+      draft::resolve_package_declaration_type_product(
+          source.sources,
+          source.loaded,
+          first_package,
+          selections,
+          *first,
+          completed,
+          constants,
+          resolved_integers,
+          target,
+          first_diagnostics);
+  EXPECT(state, first_attempt.status == draft::TypeProductStatus::Complete);
+  EXPECT(state, !first_diagnostics.has_errors());
+  const std::optional<draft::TypeId> u32 =
+      first_package.types.find_builtin("u32");
+  EXPECT(state, u32.has_value());
+  if (u32.has_value()) {
+    EXPECT(state, first_package.symbols.symbol(*first).type == *u32);
+    EXPECT(state, first_package.symbols.symbol(*second).type == *u32);
+  }
+
+  draft::SemanticPackage cycle_a_package = source.semantic;
+  draft::DiagnosticSink cycle_a_diagnostics;
+  const draft::DeclarationTypeProductAttempt cycle_a_attempt =
+      draft::resolve_package_declaration_type_product(
+          source.sources,
+          source.loaded,
+          cycle_a_package,
+          selections,
+          *cycle_a,
+          {},
+          constants,
+          resolved_integers,
+          target,
+          cycle_a_diagnostics);
+  draft::SemanticPackage cycle_b_package = source.semantic;
+  draft::DiagnosticSink cycle_b_diagnostics;
+  const draft::DeclarationTypeProductAttempt cycle_b_attempt =
+      draft::resolve_package_declaration_type_product(
+          source.sources,
+          source.loaded,
+          cycle_b_package,
+          selections,
+          *cycle_b,
+          {},
+          constants,
+          resolved_integers,
+          target,
+          cycle_b_diagnostics);
+  EXPECT(
+      state,
+      cycle_a_attempt.declaration_dependencies ==
+          std::vector<draft::SymbolId>({*cycle_b}));
+  EXPECT(
+      state,
+      cycle_b_attempt.declaration_dependencies ==
+          std::vector<draft::SymbolId>({*cycle_a}));
+  EXPECT(state, !cycle_a_diagnostics.has_errors());
+  EXPECT(state, !cycle_b_diagnostics.has_errors());
 }
 
 void test_types_signatures_and_layouts(TestState &state) {
@@ -852,6 +1020,7 @@ void test_type_declaration_depth_is_bounded(TestState &state) {
 
 int main() {
   TestState state;
+  test_declaration_type_products(state);
   test_types_signatures_and_layouts(state);
   test_invalid_lengths_and_unknown_types(state);
   test_dependent_integer_expressions(state);

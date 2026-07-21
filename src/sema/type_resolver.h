@@ -16,11 +16,42 @@
 
 #include "sema/analyzer.h"
 #include "sema/constant.h"
+#include "sema/type_product.h"
 #include "source/diagnostic.h"
 #include "source/source.h"
 #include "workspace/package.h"
 
 namespace draft {
+
+// DeclarationTypeProductAttempt is the task-owned scheduling result for one
+// package declaration's TypeIdentity work. Complete means task_package contains
+// the prospective mutation packet. Blocked names exact package SymbolIds whose
+// own declaration-type products must publish first. Error has already emitted
+// source diagnostics; callers must discard task_package for both non-complete
+// states.
+struct DeclarationTypeProductAttempt {
+  TypeProductStatus status = TypeProductStatus::Error;
+  std::vector<SymbolId> declaration_dependencies;
+};
+
+// Resolves exactly root in task_package. completed_declarations are immutable
+// products already present in that snapshot. Any other forward declaration is
+// recorded as a blocker rather than resolved recursively. The function keeps
+// blocked-attempt diagnostics private and publishes diagnostics only for a
+// terminal Error. task_package is suitable for coordinator publication only
+// when the returned status is Complete.
+[[nodiscard]] DeclarationTypeProductAttempt
+resolve_package_declaration_type_product(
+    const SourceManager &sources,
+    const LoadedPackage &loaded,
+    SemanticPackage &task_package,
+    const ConditionalSelections &selections,
+    SymbolId root,
+    std::span<const SymbolId> completed_declarations,
+    const ConstantTable &published_constants,
+    const std::vector<ResolvedIntegerExpression> &resolved_integers,
+    const TargetFacts &target,
+    DiagnosticSink &diagnostics);
 
 // Mutates the collected SemanticPackage in place. New member/parameter symbols
 // and scopes append to existing tables, preserving all IDs assigned by the

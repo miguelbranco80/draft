@@ -53,6 +53,11 @@ gate.
    package is now published directly, so the redundant final aggregate type
    replay is gone. The remaining work is to make those producers individual
    graph tasks and replace the private type/constant/layout readiness copies.
+   A single-declaration TypeIdentity attempt now consumes only explicitly
+   completed declaration products, returns forward aliases as stable SymbolId
+   blockers, and keeps blocked mutations and diagnostics task-local. The
+   workspace still needs typed product indices and deterministic publication
+   before this path can replace the recursive package resolver.
    Complete workspace compilation now schedules every final package-scope
    constant as an individual product with explicit constant dependencies,
    coordinator-owned structural-type interning, and an interface barrier that
