@@ -43,6 +43,7 @@ Decoder_State :: enum u8 {
     escape,
     csi,
     csi_parameter,
+    ss3,
 }
 
 // Decoder persists partial ANSI sequence state across read boundaries. The
@@ -50,6 +51,7 @@ Decoder_State :: enum u8 {
 pub Decoder :: struct {
     state: Decoder_State,
     parameter: u16,
+    ignore_parameter_digits: bool,
 }
 
 // byte_key constructs the exact ordinary-byte result at one obvious point.
@@ -103,6 +105,20 @@ parameter_key :: proc(parameter: u16) -> Key {
 // parameter accumulator saturates at 999, preventing hostile input from
 // wrapping while still covering every recognized value.
 pub decode_key :: proc(decoder: ^Decoder, byte: u8) -> Key {
+    // Escape restarts a damaged or incomplete sequence. Two consecutive Escape
+    // bytes complete the first key while leaving the second pending.
+    if byte == 27 && decoder^.state != .plain {
+        repeated := decoder^.state == .escape
+        decoder^.state = .escape
+        decoder^.parameter = 0
+        decoder^.ignore_parameter_digits = false
+        if repeated {
+            return Key{kind = .escape}
+        }
+        empty: Key
+        return empty
+    }
+
     switch decoder^.state {
     case .plain:
         if byte == 27 {
@@ -117,15 +133,27 @@ pub decode_key :: proc(decoder: ^Decoder, byte: u8) -> Key {
             empty: Key
             return empty
         }
-        decoder^.state = .plain
-        if byte == 27 {
-            decoder^.state = .escape
-            return Key{kind = .escape}
+        if byte == cast[u8]('O') {
+            decoder^.state = .ss3
+            empty: Key
+            return empty
         }
+        decoder^.state = .plain
         return byte_key(byte)
     case .csi:
         if byte >= cast[u8]('0') && byte <= cast[u8]('9') {
             decoder^.parameter = cast[u16](byte - cast[u8]('0'))
+            decoder^.ignore_parameter_digits = false
+            decoder^.state = .csi_parameter
+            empty: Key
+            return empty
+        }
+        // CSI parameter/intermediate bytes occupy 0x20-0x3f. Retain the
+        // sequence until its final byte instead of leaking modifier digits as
+        // ordinary application input.
+        if byte >= 0x20 && byte <= 0x3f {
+            decoder^.parameter = 0
+            decoder^.ignore_parameter_digits = true
             decoder^.state = .csi_parameter
             empty: Key
             return empty
@@ -135,22 +163,35 @@ pub decode_key :: proc(decoder: ^Decoder, byte: u8) -> Key {
     case .csi_parameter:
         if byte >= cast[u8]('0') && byte <= cast[u8]('9') {
             digit := cast[u16](byte - cast[u8]('0'))
-            if decoder^.parameter <= 99 {
-                decoder^.parameter = decoder^.parameter * 10 + digit
-            } else {
-                decoder^.parameter = 999
+            if !decoder^.ignore_parameter_digits {
+                if decoder^.parameter <= 99 {
+                    decoder^.parameter = decoder^.parameter * 10 + digit
+                } else {
+                    decoder^.parameter = 999
+                }
             }
+            empty: Key
+            return empty
+        }
+        if byte >= 0x20 && byte <= 0x3f {
+            decoder^.ignore_parameter_digits = true
             empty: Key
             return empty
         }
         parameter := decoder^.parameter
         decoder^.parameter = 0
+        decoder^.ignore_parameter_digits = false
         decoder^.state = .plain
         if byte == cast[u8]('~') {
             return parameter_key(parameter)
         }
-        empty: Key
-        return empty
+        return navigation_key(byte)
+    case .ss3:
+        // SS3 is the other common prefix for cursor/home/end keys. P/Q/R/S are
+        // function keys, which the current Key_Kind cannot represent; consuming
+        // their final byte as none prevents it from becoming text or a command.
+        decoder^.state = .plain
+        return navigation_key(byte)
     }
     empty: Key
     return empty
@@ -163,6 +204,7 @@ pub flush_key :: proc(decoder: ^Decoder) -> Key {
     was_escape := decoder^.state == .escape
     decoder^.state = .plain
     decoder^.parameter = 0
+    decoder^.ignore_parameter_digits = false
     if was_escape {
         return Key{kind = .escape}
     }

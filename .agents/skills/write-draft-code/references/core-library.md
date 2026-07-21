@@ -508,8 +508,10 @@ Decoder preserves ordinary input as `.byte` keys and recognizes common ANSI
 arrow, home/end, delete, and page sequences across fragmented reads. Escape
 alone is emitted only by `flush_key`, after the caller's chosen timeout. It does
 not decode UTF-8: each source byte remains an ordinary byte for the application
-or `core/utf8` to interpret. Modified-key CSI parameters and function keys are
-not part of the initial decoder.
+or `core/utf8` to interpret. Modified navigation CSI forms collapse to the base
+navigation kind. Function keys have no Key_Kind; common SS3 function-key
+sequences are consumed as unsupported input rather than leaking their final byte
+as an ordinary command.
 
 The package deliberately has no frame/layout builder, terminal-size query,
 signal recovery, mouse protocol, event loop, terminfo, or ncurses dependency.

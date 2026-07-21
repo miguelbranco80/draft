@@ -83,6 +83,30 @@ test_key_decoder :: proc(test: ^testing.Test) {
     testing.expect(test,
         decode_key(&decoder, cast[u8]('~')).kind == .delete)
 
+    // Modified CSI arrows collapse to their base direction. Every parameter
+    // byte is consumed by the sequence rather than leaking as ordinary input.
+    testing.expect(test, decode_key(&decoder, 27).kind == .none)
+    testing.expect(test,
+        decode_key(&decoder, cast[u8]('[')).kind == .none)
+    testing.expect(test,
+        decode_key(&decoder, cast[u8]('1')).kind == .none)
+    testing.expect(test,
+        decode_key(&decoder, cast[u8](';')).kind == .none)
+    testing.expect(test,
+        decode_key(&decoder, cast[u8]('5')).kind == .none)
+    testing.expect(test,
+        decode_key(&decoder, cast[u8]('D')).kind == .left)
+
+    // Unsupported SS3 function keys are consumed as a unit, then ordinary
+    // bytes resume immediately.
+    testing.expect(test, decode_key(&decoder, 27).kind == .none)
+    testing.expect(test,
+        decode_key(&decoder, cast[u8]('O')).kind == .none)
+    testing.expect(test,
+        decode_key(&decoder, cast[u8]('P')).kind == .none)
+    testing.expect(test,
+        decode_key(&decoder, cast[u8]('q')).kind == .byte)
+
     testing.expect(test, decode_key(&decoder, 27).kind == .none)
     testing.expect(test, flush_key(&decoder).kind == .escape)
     testing.expect(test, flush_key(&decoder).kind == .none)

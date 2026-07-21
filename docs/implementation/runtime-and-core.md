@@ -180,9 +180,11 @@ The allocation-free `Decoder` preserves ordinary input—including control and
 UTF-8 bytes—as byte keys and recognizes common cursor, home/end, delete, and
 page CSI sequences across arbitrary read boundaries. A lone Escape remains
 pending until the application calls `flush_key` after its own timeout, keeping
-ambiguity and event-loop timing policy explicit. Styling, terminal-size queries,
-signals, mouse input, Unicode text interpretation, and event-loop composition
-remain application or future-library concerns.
+ambiguity and event-loop timing policy explicit. Modified navigation sequences
+collapse to the base navigation key, while unsupported SS3 function keys are
+consumed without leaking their final byte as ordinary input. Styling,
+terminal-size queries, signals, mouse input, Unicode text interpretation, and
+event-loop composition remain application or future-library concerns.
 
 Darwin stores a 72-byte, eight-aligned termios record and uses 32-bit `nfds_t`;
 the selected glibc contract stores a 60-byte, four-aligned record and uses
