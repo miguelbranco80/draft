@@ -181,8 +181,10 @@ export echo_rune :: c "draft_echo_rune" proc(value: rune) -> rune {
       semantics.constants,
       target.facts,
       diagnostics);
+  const draft::HirProgram hir =
+      draft::project_package_body_hir(bodies.procedures);
   const draft::NativeInteropResult native = draft::validate_native_interop(
-      semantics.package, bodies.program, target.facts, diagnostics);
+      semantics.package, hir, target.facts, diagnostics);
   const draft::CHeaderResult header = draft::emit_c_header(
       semantics.package, target, {}, diagnostics);
   const draft::CHeaderResult linux_header = draft::emit_c_header(

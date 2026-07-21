@@ -147,7 +147,9 @@ Each root owns a task-local diagnostic sink, and graph publication merges those
 diagnostics in product order. HIR-local IDs begin at zero in each product; every
 semantic ID addresses the body package returned beside the product set. A
 deterministic compatibility projection rewrites local IDs and concatenates the
-arenas once for effect, denial, and MIR consumers which remain package-wide.
+arenas for effect, denial, and MIR consumers which remain package-wide. The
+projection is a short-lived value owned by the invoking operation; it is never
+stored in `BodyCheckResult`, so procedure products remain the only retained HIR.
 
 The coordinator retains the canonical semantic and constant prefix while one
 root checks a private view frozen at exact table counts. `TypeStore` and

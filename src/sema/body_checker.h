@@ -42,25 +42,36 @@ struct ProcedureBodyHirResult {
 // package. package and constants begin as copies of the declaration phase's
 // stable baseline, then receive lexical scopes, local symbols, concrete
 // procedure instances, body agent sites, denials, and lexical compile-time
-// values. Each exact root permanently owns its HIR in procedures.
+// values. Each exact root permanently owns its only HIR arena in procedures.
+// Every SymbolId and TypeId in those arenas addresses package in this same
+// result, and constants addresses those body-owned symbols. These values must
+// therefore move and live together.
 //
-// program is a deterministic compatibility projection built once by offsetting
-// and concatenating those procedure-local arenas. Effects, denials, and MIR
-// consume it until their own product migrations complete; body workers never
-// append into it. Every SymbolId and TypeId in either representation addresses
-// package in this same result, and constants addresses those body-owned symbols.
-// These values must therefore move and live together.
+// Package-wide consumers have not all migrated to procedure products yet. They
+// must request a temporary deterministic projection with
+// project_package_body_hir instead of retaining a second authoritative HIR
+// representation here.
 struct BodyCheckResult {
   bool ok = false;
   SemanticPackage package;
   ConstantTable constants;
   std::vector<ProcedureBodyHirResult> procedures;
-  HirProgram program;
   // Number of exact authored/template/instance roots which produced a
   // HirProcedure row. Nested procedures are roots in their own right; foreign
   // declarations and procedure types have no body and do not contribute.
   std::size_t checked_procedures = 0;
 };
+
+// Builds the temporary package-wide HIR view required by consumers which have
+// not yet moved to procedure products. Procedure arenas are concatenated in
+// their canonical publication order and every HIR-local expression, statement,
+// and block ID is rewritten into the returned arena. Semantic IDs are not
+// changed. The caller owns the returned value and should keep it only for the
+// duration of the package-wide operation; the SemanticPackage addressed by the
+// arenas' semantic IDs must outlive that operation.
+[[nodiscard]] HirProgram
+project_package_body_hir(
+    std::span<const ProcedureBodyHirResult> procedures);
 
 // Compiler orchestration creates these rows from imported generic calls found
 // in packages earlier in the acyclic consumer-to-dependency order. arguments
@@ -302,9 +313,11 @@ take_ready_procedure_body_wave(
     DiagnosticSink &diagnostics);
 
 // Completes package-wide invariants after every dynamic root has run, then
-// transfers the state into the compatibility aggregate consumed by later
-// phases. Calling this with unfinished work is a compiler contract error and
-// produces an invalid result rather than silently discarding body products.
+// transfers the canonical semantic state and procedure products into their
+// retained result. The operation builds one temporary projection for the
+// invariants which have not yet migrated to procedure products. Calling this
+// with unfinished work is a compiler contract error and produces an invalid
+// result rather than silently discarding body products.
 [[nodiscard]] BodyCheckResult finish_package_body_work(
     const LoadedPackage &loaded,
     const TargetFacts &target,

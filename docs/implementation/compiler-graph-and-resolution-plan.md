@@ -253,8 +253,9 @@ cache.
     and removals rebuild exact state. This removed retained-table body replay,
     including duplicate static-pack declarations, without introducing a
     persistent cache or a second compiler graph. Exact body products now retain
-    their own HIR arenas while a compatibility projection serves package-wide
-    consumers still awaiting migration.
+    their own HIR arenas. Package-wide consumers still awaiting migration build
+    a short-lived compatibility projection; no aggregate HIR is retained in
+    compiler state.
 
 The qualifying timing counters were `compiler passes: 1`, `workspace loads: 1`
 for the handwritten hello build. The resolved agent-acceptance build, whose

@@ -38,6 +38,7 @@ struct LoweredSource {
   draft::LoadedPackage loaded;
   draft::SemanticAnalysisResult semantics;
   draft::BodyCheckResult bodies;
+  draft::HirProgram hir;
   draft::MirLoweringResult mir;
 
   explicit LoweredSource(
@@ -62,8 +63,9 @@ struct LoweredSource {
         semantics.constants,
         target.facts,
         diagnostics);
+    hir = draft::project_package_body_hir(bodies.procedures);
     mir = draft::lower_package_to_mir(
-        bodies.package, bodies.program, runtime_assertions, diagnostics);
+        bodies.package, hir, runtime_assertions, diagnostics);
   }
 };
 
@@ -469,7 +471,7 @@ main :: proc() -> int {
   EXPECT(state, source.bodies.ok);
   EXPECT(state, source.mir.ok);
   EXPECT(state, !source.diagnostics.has_errors());
-  EXPECT(state, source.bodies.program.procedures().size() == 3);
+  EXPECT(state, source.hir.procedures().size() == 3);
   EXPECT(state, source.mir.program.procedures().size() == 1);
   if (source.mir.program.procedures().size() == 1) {
     const draft::Symbol &symbol = source.bodies.package.symbols.symbol(

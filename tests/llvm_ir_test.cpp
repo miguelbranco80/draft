@@ -70,8 +70,10 @@ struct EmittedFixture {
       semantics.constants,
       target.facts,
       diagnostics);
+  const draft::HirProgram hir =
+      draft::project_package_body_hir(bodies.procedures);
   draft::MirLoweringResult mir = draft::lower_package_to_mir(
-      bodies.package, bodies.program, diagnostics);
+      bodies.package, hir, diagnostics);
   draft::LlvmIrOptions options;
   options.package = {"workspace", "agent-noop"};
   draft::LlvmIrResult module = draft::emit_llvm_ir(
@@ -735,8 +737,10 @@ main :: proc() -> int {
       semantics.constants,
       target.facts,
       diagnostics);
+  const draft::HirProgram hir =
+      draft::project_package_body_hir(bodies.procedures);
   draft::MirLoweringResult mir = draft::lower_package_to_mir(
-      bodies.package, bodies.program, diagnostics);
+      bodies.package, hir, diagnostics);
   draft::LlvmIrOptions options;
   options.package = {"workspace", "native"};
   options.emit_program_entry = true;

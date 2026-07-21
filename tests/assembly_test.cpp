@@ -40,6 +40,7 @@ struct CheckedAssembly {
   draft::TargetProfile target = draft::make_aarch64_macos_profile();
   draft::SemanticAnalysisResult semantics;
   draft::BodyCheckResult bodies;
+  draft::HirProgram hir;
   draft::AssemblyProgram assembly;
 
   explicit CheckedAssembly(std::string text) {
@@ -60,13 +61,14 @@ struct CheckedAssembly {
         semantics.constants,
         target.facts,
         diagnostics);
+    hir = draft::project_package_body_hir(bodies.procedures);
     if (bodies.ok) {
       assembly = draft::analyze_aarch64_assembly(
           sources,
           loaded,
           target,
           semantics.package,
-          bodies.program,
+          hir,
           diagnostics);
     }
   }
@@ -209,7 +211,7 @@ main :: proc() -> int {
 
   const draft::MirLoweringResult mir = draft::lower_package_to_mir(
       source.semantics.package,
-      source.bodies.program,
+      source.hir,
       source.assembly,
       source.diagnostics);
   draft::LlvmIrOptions options;

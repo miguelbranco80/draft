@@ -62,7 +62,9 @@ runs avoid thread creation; larger pools on the supported POSIX hosts use an
 explicit eight-MiB worker stack so authored syntax recursion has the same
 practical budget in sequential and parallel execution.
 Effect closure, denials, and MIR still consume a package-wide HIR compatibility
-projection. Those mechanisms are explicit remaining deletion work in the
+projection. Each operation builds and discards that view from authoritative
+procedure products; the compiler retains no package-wide HIR copy. Migrating
+those consumers away from the temporary projection is explicit remaining work in the
 [semantic work graph implementation plan](semantic-work-graph-implementation-plan.md),
 not alternate final architecture paths.
 

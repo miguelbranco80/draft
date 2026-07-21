@@ -39,6 +39,7 @@ struct CheckedSource {
   draft::TargetProfile target = draft::make_aarch64_macos_profile();
   draft::SemanticAnalysisResult semantics;
   draft::BodyCheckResult bodies;
+  draft::HirProgram hir;
 
   explicit CheckedSource(
       std::string text,
@@ -62,6 +63,7 @@ struct CheckedSource {
         semantics.constants,
         target.facts,
         diagnostics);
+    hir = draft::project_package_body_hir(bodies.procedures);
   }
 };
 
@@ -80,11 +82,11 @@ export increment :: c "draft_increment" proc(value: i32) -> i32 {
 
   const draft::NativeInteropResult native = draft::validate_native_interop(
       source.semantics.package,
-      source.bodies.program,
+      source.hir,
       source.target.facts,
       source.diagnostics);
   const draft::MirLoweringResult mir = draft::lower_package_to_mir(
-      source.semantics.package, source.bodies.program, source.diagnostics);
+      source.semantics.package, source.hir, source.diagnostics);
   draft::LlvmIrOptions options;
   options.package = {"workspace", "native"};
   const draft::LlvmIrResult llvm = draft::emit_llvm_ir(
@@ -131,11 +133,11 @@ export wrap_narrow :: c "wrap_narrow" proc(
 
   const draft::NativeInteropResult native = draft::validate_native_interop(
       source.semantics.package,
-      source.bodies.program,
+      source.hir,
       source.target.facts,
       source.diagnostics);
   const draft::MirLoweringResult mir = draft::lower_package_to_mir(
-      source.semantics.package, source.bodies.program, source.diagnostics);
+      source.semantics.package, source.hir, source.diagnostics);
   draft::LlvmIrOptions options;
   options.package = {"workspace", "native"};
   const draft::LlvmIrResult llvm = draft::emit_llvm_ir(
@@ -175,7 +177,7 @@ foreign provider {
 )draft");
   const draft::NativeInteropResult native = draft::validate_native_interop(
       source.semantics.package,
-      source.bodies.program,
+      source.hir,
       source.target.facts,
       source.diagnostics);
   EXPECT(state, !native.ok);
@@ -288,11 +290,11 @@ export wrap_large :: c "wrap_large" proc(value: C24) -> C24 {
 
   const draft::NativeInteropResult native = draft::validate_native_interop(
       source.semantics.package,
-      source.bodies.program,
+      source.hir,
       source.target.facts,
       source.diagnostics);
   const draft::MirLoweringResult mir = draft::lower_package_to_mir(
-      source.semantics.package, source.bodies.program, source.diagnostics);
+      source.semantics.package, source.hir, source.diagnostics);
   draft::LlvmIrOptions options;
   options.package = {"workspace", "native"};
   const draft::LlvmIrResult llvm = draft::emit_llvm_ir(
@@ -372,7 +374,7 @@ foreign provider {
 )draft");
   const draft::NativeInteropResult native = draft::validate_native_interop(
       source.semantics.package,
-      source.bodies.program,
+      source.hir,
       source.target.facts,
       source.diagnostics);
   EXPECT(state, !native.ok);
@@ -394,7 +396,7 @@ callback_slot: Bad_Callback
 )draft");
   const draft::NativeInteropResult native = draft::validate_native_interop(
       source.semantics.package,
-      source.bodies.program,
+      source.hir,
       source.target.facts,
       source.diagnostics);
   EXPECT(state, !native.ok);

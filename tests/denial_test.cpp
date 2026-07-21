@@ -38,6 +38,7 @@ struct DenialSource {
   draft::LoadedPackage loaded;
   draft::SemanticAnalysisResult semantics;
   draft::BodyCheckResult bodies;
+  draft::HirProgram hir;
   draft::EffectSummaryResult effects;
   bool denials_ok = false;
 
@@ -62,13 +63,14 @@ struct DenialSource {
         semantics.constants,
         target.facts,
         diagnostics);
+    hir = draft::project_package_body_hir(bodies.procedures);
     effects = draft::summarize_package_effects(
-        bodies.package, bodies.program, &target, provider_audits);
+        bodies.package, hir, &target, provider_audits);
     denials_ok = draft::check_package_denials(
         sources,
         loaded,
         bodies.package,
-        bodies.program,
+        hir,
         effects,
         diagnostics);
   }

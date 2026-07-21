@@ -96,7 +96,9 @@ flow_caller :: proc() {
       target.facts,
       diagnostics);
   const draft::EffectSummaryResult effects =
-      draft::summarize_package_effects(bodies.package, bodies.program);
+      draft::summarize_package_effects(
+          bodies.package,
+          draft::project_package_body_hir(bodies.procedures));
   const draft::AgentMetadataResult empty_metadata;
   const draft::PackageInterface package_interface = draft::build_package_interface(
       {"workspace", "effects"},
@@ -204,7 +206,9 @@ pub forward :: proc(text: string) -> [^]u8 {
       target.facts,
       diagnostics);
   const draft::EffectSummaryResult effects =
-      draft::summarize_package_effects(bodies.package, bodies.program);
+      draft::summarize_package_effects(
+          bodies.package,
+          draft::project_package_body_hir(bodies.procedures));
   const draft::AgentMetadataResult empty_metadata;
   const draft::PackageInterface package_interface = draft::build_package_interface(
       {"workspace", "raw_string_effects"},
@@ -354,7 +358,10 @@ through_audit :: proc() {
   const std::vector<draft::ForeignProviderAudit> audits{audit};
   const draft::EffectSummaryResult effects =
       draft::summarize_package_effects(
-          bodies.package, bodies.program, &target, audits);
+          bodies.package,
+          draft::project_package_body_hir(bodies.procedures),
+          &target,
+          audits);
   if (diagnostics.has_errors()) {
     std::cerr << draft::render_diagnostics(sources, diagnostics);
   }
@@ -467,7 +474,9 @@ through_context :: proc() {
       diagnostics);
   const draft::EffectSummaryResult effects =
       draft::summarize_package_effects(
-          bodies.package, bodies.program, &target);
+          bodies.package,
+          draft::project_package_body_hir(bodies.procedures),
+          &target);
   if (diagnostics.has_errors()) {
     std::cerr << draft::render_diagnostics(sources, diagnostics);
   }
@@ -592,7 +601,9 @@ through_return :: proc() {
       diagnostics);
   const draft::EffectSummaryResult effects =
       draft::summarize_package_effects(
-          bodies.package, bodies.program, &target);
+          bodies.package,
+          draft::project_package_body_hir(bodies.procedures),
+          &target);
   if (diagnostics.has_errors()) {
     std::cerr << draft::render_diagnostics(sources, diagnostics);
   }
@@ -737,7 +748,9 @@ through_install :: proc() {
       diagnostics);
   const draft::EffectSummaryResult effects =
       draft::summarize_package_effects(
-          bodies.package, bodies.program, &target);
+          bodies.package,
+          draft::project_package_body_hir(bodies.procedures),
+          &target);
   if (diagnostics.has_errors()) {
     std::cerr << draft::render_diagnostics(sources, diagnostics);
   }
@@ -966,7 +979,9 @@ tuple_assignment_caller :: proc() {
       diagnostics);
   const draft::EffectSummaryResult effects =
       draft::summarize_package_effects(
-          bodies.package, bodies.program, &target);
+          bodies.package,
+          draft::project_package_body_hir(bodies.procedures),
+          &target);
   if (diagnostics.has_errors()) {
     std::cerr << draft::render_diagnostics(sources, diagnostics);
   }

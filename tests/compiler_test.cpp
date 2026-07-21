@@ -135,8 +135,6 @@ void test_procedure_bodies_are_dynamic_semantic_products(TestState &state) {
   EXPECT(state, compiled.semantic_products.procedure_by_product.size() ==
                     compiled.semantic_graph.products.size());
   EXPECT(state, products.procedure_bodies.size() ==
-                    package.bodies.program.procedures().size());
-  EXPECT(state, products.procedure_bodies.size() ==
                     package.bodies.procedures.size());
   for (const draft::ProcedureBodyHirResult &procedure :
        package.bodies.procedures) {
@@ -1637,7 +1635,7 @@ void test_body_work_graph_promotes_matching_local_instance(TestState &state) {
   const std::size_t initial_symbols =
       initial.bodies.package.symbols.symbol_count();
   const std::size_t initial_procedures =
-      initial.bodies.program.procedures().size();
+      initial.bodies.procedures.size();
   const std::size_t initial_checked = initial.bodies.checked_procedures;
   const draft::SymbolId initial_instance =
       initial.bodies.package.parametric_instances.front().instance;
@@ -1668,7 +1666,7 @@ void test_body_work_graph_promotes_matching_local_instance(TestState &state) {
   EXPECT(state,
          promoted.bodies.package.symbols.symbol_count() == initial_symbols);
   EXPECT(state,
-         promoted.bodies.program.procedures().size() == initial_procedures);
+         promoted.bodies.procedures.size() == initial_procedures);
   EXPECT(state, promoted.bodies.checked_procedures == initial_checked);
   EXPECT(state, promoted.interface.procedure_instances.size() == 1);
   const draft::Symbol &promoted_symbol =

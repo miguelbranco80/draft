@@ -317,9 +317,11 @@ publishes those packets into its canonical body generation. Once all roots are
 complete, `BodyCheckResult` receives that final SemanticPackage, body constants,
 and the procedure-owned arenas. Every SymbolId, ScopeId, and TypeId in those
 arenas belongs to that returned package. A deterministic compatibility
-projection rewrites HIR-local IDs and concatenates the arenas once for later
-package-wide effect, denial, interop, MIR, LLVM, metadata, and obligation
-passes.
+projection rewrites HIR-local IDs and concatenates the arenas only at a
+package-wide consumer boundary. The operation owns and discards that temporary
+view; `BodyCheckResult` retains no second HIR representation. Effect, denial,
+interop, MIR, metadata, and obligation passes still require this projection
+until their own product migrations complete.
 
 The body coordinator no longer retains one `BodyChecker` while walking a
 package and its growing instance vector. Seed materialization is separate, then

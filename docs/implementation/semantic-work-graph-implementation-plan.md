@@ -159,8 +159,9 @@ gate.
 
    HIR ownership is now product-local: every exact root starts an empty arena,
    publishes one permanent `ProcedureBodyHirResult`, and never receives earlier
-   HIR as input. Package-wide consumers temporarily receive one deterministic
-   ID-rewritten projection built after all roots finish.
+   HIR as input. `BodyCheckResult` no longer stores a package-wide copy;
+   remaining package-wide consumers explicitly build, use, and discard one
+   deterministic ID-rewritten projection.
 
    Constant products now retain their checked static TypeId beside the value;
    package-interface finalization installs the immutable pair and no body task

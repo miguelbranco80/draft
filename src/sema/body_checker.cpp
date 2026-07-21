@@ -11,8 +11,8 @@
 // A retained successful generation may be extended only with newly demanded
 // concrete generic instances. Existing authored and concrete procedure arenas
 // are not revisited; demand removal starts again from declarations so no stale
-// machine procedure can survive. A package-wide HIR value is built once as a
-// compatibility projection for consumers not yet migrated to live products.
+// machine procedure can survive. Package-wide consumers explicitly build a
+// short-lived compatibility projection from the authoritative procedure arenas.
 // Diagnostic-only package expression validation and early compile-time
 // dependency checks use private copies and cannot mutate the compiler's
 // authoritative declaration baseline. Relevant rules are
@@ -233,7 +233,9 @@ using ProcedureBodyRoot = ProcedureBodyWorkItem;
 // coordinator publishes them after this result, which makes nested procedure
 // bodies visible work rather than hidden recursion inside check_procedure.
 struct ProcedureBodyRootResult {
-  BodyCheckResult checked;
+  bool ok = false;
+  std::size_t checked_procedures = 0;
+  HirProgram program;
   std::vector<ProcedureBodyRoot> discovered_roots;
 };
 
@@ -294,12 +296,10 @@ public:
       ConstantTable &constants,
       const TargetFacts &target,
       DiagnosticSink &diagnostics,
-      const std::vector<ProcedureInstantiationSeed> &seeds,
-      HirProgram initial_program = {})
+      const std::vector<ProcedureInstantiationSeed> &seeds)
       : sources_(sources), loaded_(loaded), selections_(selections),
         semantic_(semantic), constants_(constants), target_(target),
-        diagnostics_(diagnostics), seeds_(seeds),
-        hir_(std::move(initial_program)) {}
+        diagnostics_(diagnostics), seeds_(seeds) {}
 
   // Establishes the body-owned runtime context and materializes external
   // specialization seeds without checking any procedure. The public package
@@ -307,14 +307,11 @@ public:
   // instance records as work roots, and then gives every root a fresh
   // BodyChecker. Keeping seed materialization separate prevents the first
   // authored procedure from accidentally owning unrelated external work.
-  [[nodiscard]] BodyCheckResult initialize() {
-    BodyCheckResult result;
+  [[nodiscard]] bool initialize() {
     const std::size_t initial_errors = diagnostics_.error_count();
     ensure_runtime_context_type(semantic_, diagnostics_);
     instantiate_seeded_procedures();
-    result.ok = diagnostics_.error_count() == initial_errors;
-    result.program = std::move(hir_);
-    return result;
+    return diagnostics_.error_count() == initial_errors;
   }
 
   // Checks one package-level authored procedure or one retained concrete
@@ -341,11 +338,11 @@ public:
     if ((!instance.concrete || instance.index.has_value()) &&
         symbol.kind == SymbolKind::Procedure && symbol.type.is_valid() &&
         check_procedure(root.symbol, root.parametric_template)) {
-      ++result.checked.checked_procedures;
+      ++result.checked_procedures;
     }
     current_instance_index_.reset();
-    result.checked.ok = diagnostics_.error_count() == initial_errors;
-    result.checked.program = std::move(hir_);
+    result.ok = diagnostics_.error_count() == initial_errors;
+    result.program = std::move(hir_);
     result.discovered_roots = std::move(discovered_body_roots_);
     return result;
   }
@@ -8520,6 +8517,15 @@ void append_body_root(
 
 } // namespace
 
+HirProgram project_package_body_hir(
+    std::span<const ProcedureBodyHirResult> procedures) {
+  HirProgram program;
+  for (const ProcedureBodyHirResult &procedure : procedures) {
+    append_hir_program(program, procedure.program);
+  }
+  return program;
+}
+
 bool validate_package_compile_time_expression_types(
     const SourceManager &sources,
     const LoadedPackage &loaded,
@@ -8571,8 +8577,7 @@ PackageBodyWorkState begin_package_body_work(
       target,
       diagnostics,
       seeds);
-  BodyCheckResult initialized = initializer.initialize();
-  state.ok = initialized.ok;
+  state.ok = initializer.initialize();
 
   // Only the declaration baseline identifies authored roots. Seed
   // materialization appends private concrete symbols to package scope; those
@@ -8623,8 +8628,7 @@ PackageBodyWorkState begin_additional_package_body_work(
       target,
       diagnostics,
       additional_seeds);
-  BodyCheckResult initialized = initializer.initialize();
-  state.ok = state.ok && initialized.ok;
+  state.ok = state.ok && initializer.initialize();
   const AppendOnlyTableView<ParametricInstanceRecord> instances =
       state.package.parametric_instances_for_read();
   for (std::size_t index = previous_instance_count;
@@ -8704,9 +8708,9 @@ ProcedureBodyTaskResult check_procedure_body_work(
       diagnostics,
       no_seeds);
   ProcedureBodyRootResult checked = checker.run_one(root);
-  result.ok = checked.checked.ok;
-  result.checked_procedures = checked.checked.checked_procedures;
-  result.program = std::move(checked.checked.program);
+  result.ok = checked.ok;
+  result.checked_procedures = checked.checked_procedures;
+  result.program = std::move(checked.program);
 
   // Nested roots and newly discovered concrete instances consume the semantic
   // publication of the root which exposed them. The worker retains only the
@@ -8796,10 +8800,11 @@ BodyCheckResult finish_package_body_work(
         "procedure body work finalized before every discovered root ran");
     state.ok = false;
   }
-  HirProgram program;
-  for (const ProcedureBodyHirResult &procedure : state.procedures) {
-    append_hir_program(program, procedure.program);
-  }
+  // Definite initialization and loop-range inference still operate package at
+  // a time. Build their shared HIR view once, use it while the canonical
+  // semantic package is available, and discard it before returning. The
+  // procedure-owned arenas remain the only HIR stored in BodyCheckResult.
+  HirProgram program = project_package_body_hir(state.procedures);
   if (state.ok &&
       !validate_target_types(state.package.types, target, diagnostics)) {
     state.ok = false;
@@ -8814,7 +8819,6 @@ BodyCheckResult finish_package_body_work(
   result.package = std::move(state.package);
   result.constants = std::move(state.constants);
   result.procedures = std::move(state.procedures);
-  result.program = std::move(program);
   result.checked_procedures = state.checked_procedures;
   return result;
 }

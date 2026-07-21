@@ -4314,12 +4314,14 @@ bool continue_compiled_workspace_semantics(
       }
       const CompiledPackage &typed_package =
           *validation.packages[*validation_index];
+      const HirProgram typed_hir =
+          project_package_body_hir(typed_package.bodies.procedures);
       if (!enrich_agent_validation_context(
               typed_package.identity,
               validation.graph.packages[*validation_index].loaded,
               typed_package.bodies.package,
               typed_package.bodies.constants,
-              typed_package.bodies.program,
+              typed_hir,
               kind,
               validation.validation_entries,
               package.validation_context,
@@ -4356,6 +4358,11 @@ bool continue_compiled_workspace_semantics(
     }
     TimingScope package_timing = time_package_phase(
         options.timings, "package closure: ", package.identity);
+    // These package-wide consumers are transitional. The checked procedure
+    // products remain authoritative; one local projection is shared across
+    // this closure operation and discarded before the next package.
+    HirProgram package_hir =
+        project_package_body_hir(package.bodies.procedures);
 
     refresh_imported_effects(
         package.bodies.package, result, schedule, diagnostics);
@@ -4369,22 +4376,22 @@ bool continue_compiled_workspace_semantics(
         options.target,
         diagnostics,
         package.validation_context,
-        &package.bodies.program);
+        &package_hir);
     package.effects = summarize_package_effects(
         package.bodies.package,
-        package.bodies.program,
+        package_hir,
         &options.target,
         options.foreign_provider_audits);
     package.native_interop = validate_native_interop(
         package.bodies.package,
-        package.bodies.program,
+        package_hir,
         options.target.facts,
         diagnostics);
     const bool denials_ok = check_package_denials(
         sources,
         workspace_package.loaded,
         package.bodies.package,
-        package.bodies.program,
+        package_hir,
         package.effects,
         diagnostics);
     package.interface = build_package_interface(
@@ -4474,13 +4481,15 @@ bool continue_compiled_workspace(
           !package.obligations.ok || !package.native_interop.ok) {
         continue;
       }
+      const HirProgram package_hir =
+          project_package_body_hir(package.bodies.procedures);
       std::vector<ValidationEntry> discovered = discover_validation_entries(
           options.validation_kind,
           options.workspace.core_content_identity,
           package.identity,
           compiled.graph.packages[package_index].loaded,
           package.bodies.package,
-          package.bodies.program,
+          package_hir,
           diagnostics);
       compiled.validation_entries.insert(
           compiled.validation_entries.end(),
@@ -4507,17 +4516,19 @@ bool continue_compiled_workspace(
         : TimingScope{};
 
     if (options.lower_mir || options.emit_llvm) {
+      const HirProgram package_hir =
+          project_package_body_hir(package.bodies.procedures);
       package.assembly = analyze_aarch64_assembly(
           sources,
           workspace_package.loaded,
           options.target,
           package.bodies.package,
-          package.bodies.program,
+          package_hir,
           diagnostics);
       if (!package.assembly.ok) continue;
       package.mir = lower_package_to_mir(
           package.bodies.package,
-          package.bodies.program,
+          package_hir,
           package.assembly,
           options.configuration.runtime_assertions,
           diagnostics);
