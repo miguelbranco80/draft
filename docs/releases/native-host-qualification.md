@@ -1,13 +1,15 @@
 # Native host qualification
 
 This report records the native-host qualification performed on 2026-07-19 for
-the compiler implementation through commit `c0638e1`. This report commit changes
-documentation only.
+the compiler implementation through commit `c0638e1`, plus the completed
+semantic-work-graph qualification run on 2026-07-21 through commit `10ab54a`.
+This report commit changes documentation only.
 
-The bootstrap links LLVM 22.1.8 and emits ordinary package objects in process.
-Matching Clang, linker, archiver, debug, system-library, and SDK or sysroot tools
-remain ordinary build configuration. Their locations do not enter Draft program
-identity, and ordinary compilation does not launch a version probe.
+The bootstrap links LLVM 22.1.8 and emits independently compilable
+package-static and machine-function units in process. Matching Clang, linker,
+archiver, debug, system-library, and SDK or sysroot tools remain ordinary build
+configuration. Their locations do not enter Draft program identity, and
+ordinary compilation does not launch a version probe.
 
 ## Qualified configurations
 
@@ -23,6 +25,23 @@ All five suites completed with no test failures. Linux tool installation happene
 in source-free containers. Qualification then ran in separate containers with
 networking disabled and the source tree mounted read-only. The macOS suites ran
 directly on the AArch64 development host.
+
+## Semantic work graph addendum
+
+On 2026-07-21, commit `10ab54a` passed 72/72 tests in the normal macOS AArch64
+LLVM 22 build and 72/72 tests in the LLVM 22 ASan/UBSan build. This run includes
+the macOS native determinism, embedded-LLVM/Clang parity, native conformance,
+C-client, provider-free resolution, fake-provider resolution, and complete
+example gates. It also runs both AArch64 target front-end checks; it is not a
+new native Linux-host qualification and does not replace the Linux rows above.
+
+The semantic scheduler portion compares one and four workers for complete
+product graphs, ordered diagnostics, declaration failure selection, synthesis
+request and manifest identity, resolved-program identity, HIR/MIR/LLVM payloads,
+and native artifacts. A generated 256-procedure package additionally proves a
+wide declaration/body ready set and exact deterministic timing counters without
+asserting host-dependent wall time. Every `SemanticProductKind` has an explicit
+transition assertion and real compiler consumer.
 
 ## What the gates establish
 
