@@ -3558,8 +3558,8 @@ void test_cross_package_dependent_generic_effect(TestState &state) {
           app_package->bodies.package.types.type(
               instance.arguments.front().type).kind;
       const bool has_assert = std::any_of(
-          app_package->bodies.package.imported_effects.begin(),
-          app_package->bodies.package.imported_effects.end(),
+          app_package->imported_contracts.effects.begin(),
+          app_package->imported_contracts.effects.end(),
           [&](const draft::ImportedEffect &effect) {
             return effect.procedure_proxy == instance.instance_proxy &&
                 effect.kind == draft::EffectKind::RuntimeAssert;
@@ -3716,8 +3716,8 @@ void test_cross_package_static_argument_pack_effects(TestState &state) {
       EXPECT(state, instance.public_template_name == "inspect_all");
       EXPECT(state, instance.arguments.empty());
       const bool has_assert = std::any_of(
-          app_package->bodies.package.imported_effects.begin(),
-          app_package->bodies.package.imported_effects.end(),
+          app_package->imported_contracts.effects.begin(),
+          app_package->imported_contracts.effects.end(),
           [&](const draft::ImportedEffect &effect) {
             return effect.procedure_proxy == instance.instance_proxy &&
                 effect.kind == draft::EffectKind::RuntimeAssert;

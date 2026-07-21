@@ -38,6 +38,7 @@ struct DenialSource {
   draft::LoadedPackage loaded;
   draft::SemanticAnalysisResult semantics;
   draft::BodyCheckResult bodies;
+  draft::ImportedProcedureContracts imported_contracts;
   draft::DirectEffectSummaryResult direct_effects;
   draft::EffectSummaryResult effects;
   bool denials_ok = false;
@@ -63,10 +64,19 @@ struct DenialSource {
         semantics.constants,
         target.facts,
         diagnostics);
+    imported_contracts = draft::imported_procedure_contracts(bodies.package);
     direct_effects = draft::collect_direct_procedure_effects(
-        bodies.package, bodies.procedures, &target, provider_audits);
+        bodies.package,
+        bodies.procedures,
+        imported_contracts,
+        &target,
+        provider_audits);
     effects = draft::close_procedure_effects(
-        bodies.package, direct_effects, &target, provider_audits);
+        bodies.package,
+        direct_effects,
+        imported_contracts,
+        &target,
+        provider_audits);
     denials_ok = draft::check_procedure_denials(
         sources,
         loaded,

@@ -519,11 +519,20 @@ procedure products and never reconstructs a package HIR. The compiler retains
 the direct payload separately from the closed SCC result so downstream code
 cannot accidentally treat a local fact as transitive.
 
+Final imported effect/return/write contracts are a separate immutable closure
+input built from already-closed dependency interfaces. Imported procedures are
+terminal direct-summary rows in the consumer graph, including an explicit
+unknown row when no audit exists. They therefore participate in the same
+dependency-first condensation order as local and native procedures, while no
+post-body pass clears, repopulates, or changes `SemanticPackage` tables.
+Provider obligation context consumes this same exact payload, so the compiler
+does not describe a preliminary imported contract to Codex after closing a
+different one for denials.
+
 Procedure-value return/write discovery still replays the selected body set
-before those direct rows become immutable, and imported contracts still refresh
-retained package tables. Moving that flow replay into explicit SCC products and
-replacing imported-contract refresh are the remaining flow-closure migration
-seams; neither is part of the intended final architecture.
+before direct rows become immutable. Moving that flow replay into explicit SCC
+products and attaching direct/SCC/denial payloads to live semantic-product rows
+are the remaining flow-closure migration seams.
 
 External artifact summaries use the strict
 `draft-provider-denial-summary-v1` line format documented in section 12. The

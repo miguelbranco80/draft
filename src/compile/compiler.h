@@ -192,6 +192,11 @@ struct CompiledPackage {
   // cannot change declarations, so this command-local fact survives that
   // transition and prevents a duplicate validation compilation.
   bool validation_context_is_typed = false;
+  // Final consumer-local dependency contracts rebuilt from dependency
+  // interfaces after their closure. This is separate from bodies.package:
+  // procedure products keep addressing their original semantic generation and
+  // no post-body pass clears or repopulates its imported contract tables.
+  ImportedProcedureContracts imported_contracts;
   // Immutable body-local facts published before transitive call/value-flow
   // closure. This payload is kept separate so DirectEffectSummary products can
   // be inspected without confusing them with ClosedEffectScc results.

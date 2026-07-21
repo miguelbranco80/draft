@@ -4,6 +4,7 @@
 
 #include "base/sha256.h"
 #include "sema/denial.h"
+#include "sema/effect.h"
 #include "sema/hir.h"
 #include "sema/interface.h"
 #include "validation/discovery.h"
@@ -918,6 +919,7 @@ void append_imported_effect_context(
 [[nodiscard]] std::string imported_package_definition(
     const PackageIdentity &identity,
     const SemanticPackage &package,
+    const ImportedProcedureContracts &imported_contracts,
     const ImportBinding &binding,
     std::span<const ResolvedDenialSelector> denials,
     std::vector<AgentTypeContext> &type_contexts,
@@ -1021,30 +1023,30 @@ void append_imported_effect_context(
         "DECLARATION_NATIVE_LINKER_NAME",
         imported.native_linker_name_spelling,
         output);
+    const ImportedProcedureContractStatus *contract =
+        imported_contracts.find(imported.proxy);
     append_context_field(
         "DECLARATION_HAS_EFFECT_SUMMARY",
-        imported.has_effect_summary ? "true" : "false",
+        contract != nullptr && contract->has_effect_summary ? "true" : "false",
         output);
     std::size_t effect_count = 0;
-    for (const ImportedEffect &effect : package.imported_effects_for_read()) {
+    for (const ImportedEffect &effect : imported_contracts.effects) {
       if (effect.procedure_proxy == imported.proxy) ++effect_count;
     }
     output += "DECLARATION_EFFECTS ";
     append_context_u64(static_cast<std::uint64_t>(effect_count), output);
-    for (const ImportedEffect &effect : package.imported_effects_for_read()) {
+    for (const ImportedEffect &effect : imported_contracts.effects) {
       if (effect.procedure_proxy == imported.proxy) {
         append_imported_effect_context(effect, output);
       }
     }
     std::size_t return_count = 0;
-    for (const ImportedProcedureReturn &returned :
-         package.imported_returns_for_read()) {
+    for (const ImportedProcedureReturn &returned : imported_contracts.returns) {
       if (returned.procedure_proxy == imported.proxy) ++return_count;
     }
     output += "DECLARATION_RETURNS ";
     append_context_u64(static_cast<std::uint64_t>(return_count), output);
-    for (const ImportedProcedureReturn &returned :
-         package.imported_returns_for_read()) {
+    for (const ImportedProcedureReturn &returned : imported_contracts.returns) {
       if (returned.procedure_proxy != imported.proxy) continue;
       append_path_context(
           "RETURN_PATH", "RETURN_PATH_FIELD", returned.path, output);
@@ -1055,14 +1057,12 @@ void append_imported_effect_context(
       append_imported_flow_value_context(value, output);
     }
     std::size_t write_count = 0;
-    for (const ImportedProcedureWrite &write :
-         package.imported_writes_for_read()) {
+    for (const ImportedProcedureWrite &write : imported_contracts.writes) {
       if (write.procedure_proxy == imported.proxy) ++write_count;
     }
     output += "DECLARATION_WRITES ";
     append_context_u64(static_cast<std::uint64_t>(write_count), output);
-    for (const ImportedProcedureWrite &write :
-         package.imported_writes_for_read()) {
+    for (const ImportedProcedureWrite &write : imported_contracts.writes) {
       if (write.procedure_proxy != imported.proxy) continue;
       append_context_field(
           "WRITE_PARAMETER", std::to_string(write.parameter), output);
@@ -1084,6 +1084,7 @@ imported_package_context(
     const PackageIdentity &identity,
     const LoadedPackage &loaded,
     const SemanticPackage &package,
+    const ImportedProcedureContracts &imported_contracts,
     const AgentRecord &record,
     std::span<const ResolvedDenialSelector> denials,
     std::vector<AgentTypeContext> &type_contexts,
@@ -1121,6 +1122,7 @@ imported_package_context(
       context.definition = imported_package_definition(
           identity,
           package,
+          imported_contracts,
           *binding,
           denials,
           type_contexts,
@@ -2555,6 +2557,7 @@ bool append_agent_obligation(
     const ConstantTable &constants,
     const AgentMetadataResult &metadata,
     std::size_t record_index,
+    const ImportedProcedureContracts &imported_contracts,
     const TargetProfile &target,
     AgentObligationResult &result,
     DiagnosticSink &diagnostics,
@@ -2634,6 +2637,7 @@ bool append_agent_obligation(
         identity,
         loaded,
         package,
+        imported_contracts,
         record,
         denials.resolved,
         obligation.type_contexts,
@@ -2704,6 +2708,7 @@ AgentObligationResult build_agent_obligations(
     const SemanticPackage &package,
     const ConstantTable &constants,
     const AgentMetadataResult &metadata,
+    const ImportedProcedureContracts &imported_contracts,
     const TargetProfile &target,
     DiagnosticSink &diagnostics,
     std::span<const AgentValidationContext> validation_context,
@@ -2719,6 +2724,7 @@ AgentObligationResult build_agent_obligations(
         constants,
         metadata,
         index,
+        imported_contracts,
         target,
         result,
         diagnostics,

@@ -42,11 +42,17 @@ draft::EffectSummaryResult close_effects(
     const draft::BodyCheckResult &bodies,
     const draft::TargetProfile *target,
     std::span<const draft::ForeignProviderAudit> provider_audits = {}) {
+  const draft::ImportedProcedureContracts imported =
+      draft::imported_procedure_contracts(bodies.package);
   const draft::DirectEffectSummaryResult direct =
       draft::collect_direct_procedure_effects(
-          bodies.package, bodies.procedures, target, provider_audits);
+          bodies.package,
+          bodies.procedures,
+          imported,
+          target,
+          provider_audits);
   return draft::close_procedure_effects(
-      bodies.package, direct, target, provider_audits);
+      bodies.package, direct, imported, target, provider_audits);
 }
 
 bool has_effect(
@@ -212,11 +218,13 @@ flow_caller :: proc() {
       semantics.constants,
       target.facts,
       diagnostics);
+  const draft::ImportedProcedureContracts imported =
+      draft::imported_procedure_contracts(bodies.package);
   const draft::DirectEffectSummaryResult direct =
       draft::collect_direct_procedure_effects(
-          bodies.package, bodies.procedures);
+          bodies.package, bodies.procedures, imported);
   const draft::EffectSummaryResult effects =
-      draft::close_procedure_effects(bodies.package, direct);
+      draft::close_procedure_effects(bodies.package, direct, imported);
   const draft::AgentMetadataResult empty_metadata;
   const draft::PackageInterface package_interface = draft::build_package_interface(
       {"workspace", "effects"},
@@ -327,11 +335,13 @@ pub forward :: proc(text: string) -> [^]u8 {
       semantics.constants,
       target.facts,
       diagnostics);
+  const draft::ImportedProcedureContracts imported =
+      draft::imported_procedure_contracts(bodies.package);
   const draft::DirectEffectSummaryResult direct =
       draft::collect_direct_procedure_effects(
-          bodies.package, bodies.procedures);
+          bodies.package, bodies.procedures, imported);
   const draft::EffectSummaryResult effects =
-      draft::close_procedure_effects(bodies.package, direct);
+      draft::close_procedure_effects(bodies.package, direct, imported);
   const draft::AgentMetadataResult empty_metadata;
   const draft::PackageInterface package_interface = draft::build_package_interface(
       {"workspace", "raw_string_effects"},

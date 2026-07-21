@@ -250,9 +250,11 @@ public:
   EffectCollector(
       const SemanticPackage &package,
       std::span<const HirProgram *const> programs,
+      const ImportedProcedureContracts &imported,
       const TargetProfile *target,
       std::span<const ForeignProviderAudit> provider_audits)
-      : package_(package), programs_(programs), target_(target),
+      : package_(package), programs_(programs), imported_(imported),
+        target_(target),
         provider_audits_(provider_audits) {}
 
   [[nodiscard]] DirectEffectSummaryResult collect_direct() {
@@ -304,6 +306,64 @@ public:
       DirectProcedureEffectSummary direct;
       direct.procedure = binding.symbol;
       direct.direct_effects = std::move(composed.effects);
+      direct_.procedures.push_back(std::move(direct));
+    }
+
+    // Final dependency contracts are already closed in their owning packages.
+    // Install them as immutable leaf rows before replaying local bodies so a
+    // returned imported callback or imported pointer write uses the same direct
+    // lookup as a local callee. These rows have no consumer-local call edges;
+    // FlowCall effects inside their portable contracts are substituted only at
+    // an actual local call site.
+    for (const ImportedProcedureContractStatus &status :
+         imported_.procedures) {
+      DirectProcedureEffectSummary direct;
+      direct.procedure = status.proxy;
+      if (!status.has_effect_summary) {
+        direct.direct_effects.push_back({
+            EffectKind::UnknownCall,
+            status.proxy,
+            "imported callee has no audited summary",
+            {},
+            {},
+            {}});
+      } else {
+        for (const ImportedEffect &effect : imported_.effects) {
+          if (effect.procedure_proxy == status.proxy) {
+            add_effect(direct.direct_effects, semantic_effect(effect));
+          }
+        }
+      }
+      for (const ImportedProcedureReturn &returned : imported_.returns) {
+        if (returned.procedure_proxy != status.proxy) continue;
+        ProcedureValueSummary value;
+        value.unknown = returned.unknown;
+        for (const ImportedReturnFlowSlot &slot : returned.flow_slots) {
+          value.flow_slots.push_back(
+              {slot.parameter, slot.path, slot.context});
+        }
+        for (const ImportedEffect &effect : returned.contract_effects) {
+          add_effect(value.contract_effects, semantic_effect(effect));
+        }
+        direct.return_values.push_back({returned.path, std::move(value)});
+      }
+      for (const ImportedProcedureWrite &write : imported_.writes) {
+        if (write.procedure_proxy != status.proxy) continue;
+        ProcedureValueSummary value;
+        value.unknown = write.value_unknown;
+        for (const ImportedReturnFlowSlot &slot : write.value_flow_slots) {
+          value.flow_slots.push_back(
+              {slot.parameter, slot.path, slot.context});
+        }
+        for (const ImportedEffect &effect : write.value_contract_effects) {
+          add_effect(value.contract_effects, semantic_effect(effect));
+        }
+        direct.field_writes.push_back({
+            write.parameter,
+            write.indirection,
+            write.path,
+            std::move(value)});
+      }
       direct_.procedures.push_back(std::move(direct));
     }
 
@@ -802,13 +862,8 @@ private:
     return nullptr;
   }
 
-  [[nodiscard]] bool has_local_body(SymbolId symbol) const {
-    for (const HirProgram *program : programs_) {
-      for (const HirProcedure &procedure : program->procedures()) {
-        if (procedure.symbol == symbol) return true;
-      }
-    }
-    return false;
+  [[nodiscard]] bool has_direct_summary(SymbolId symbol) const {
+    return direct_.find(symbol) != nullptr;
   }
 
   [[nodiscard]] const NativeBinding *native_binding(SymbolId symbol) const {
@@ -958,8 +1013,7 @@ private:
       const std::vector<ProcedureArgumentSummary> &arguments) const {
     ProcedureValueSummary canonical;
     bool found = false;
-    for (const ImportedProcedureReturn &returned :
-         package_.imported_returns_for_read()) {
+    for (const ImportedProcedureReturn &returned : imported_.returns) {
       if (returned.procedure_proxy != callee || returned.path != path) continue;
       found = true;
       canonical.unknown = returned.unknown;
@@ -1071,8 +1125,7 @@ private:
       }
       return;
     }
-    for (const ImportedProcedureWrite &write :
-         package_.imported_writes_for_read()) {
+    for (const ImportedProcedureWrite &write : imported_.writes) {
       if (write.procedure_proxy != callee) continue;
       if (call.operands.empty() ||
           write.parameter >= call.operands.size() - 1U) {
@@ -1417,7 +1470,7 @@ private:
     if (callee.kind == HirExpressionKind::Symbol &&
         callee.symbol.is_valid() &&
         package_.symbols.symbol(callee.symbol).kind == SymbolKind::Procedure) {
-      if (has_local_body(callee.symbol)) {
+      if (has_direct_summary(callee.symbol)) {
         add_call(current_->direct_calls, callee.symbol);
       }
       current_->direct_invocations.push_back(
@@ -1428,7 +1481,7 @@ private:
     ProcedureFlowInvocationSummary invocation{
         call_id, std::move(callee_value), std::move(arguments)};
     for (SymbolId target : invocation.callee.targets) {
-      if (has_local_body(target)) add_call(current_->direct_calls, target);
+      if (has_direct_summary(target)) add_call(current_->direct_calls, target);
     }
     current_->direct_flow_calls.push_back(std::move(invocation));
   }
@@ -1445,7 +1498,7 @@ private:
     invocation.callee = std::move(callee);
     invocation.arguments = std::move(arguments);
     for (SymbolId target : invocation.callee.targets) {
-      if (has_local_body(target)) add_call(current_->direct_calls, target);
+      if (has_direct_summary(target)) add_call(current_->direct_calls, target);
     }
     current_->direct_flow_calls.push_back(std::move(invocation));
   }
@@ -1504,9 +1557,9 @@ private:
   [[nodiscard]] bool compose_imported_call(
       ProcedureEffectSummary &destination,
       SymbolId callee,
-      const ImportedSymbol &imported,
+      const ImportedProcedureContractStatus *imported,
       const std::vector<ProcedureArgumentSummary> &arguments) {
-    if (!imported.has_effect_summary) {
+    if (imported == nullptr || !imported->has_effect_summary) {
       return add_composed_effect(
           destination,
           {EffectKind::UnknownCall,
@@ -1517,7 +1570,7 @@ private:
            {}});
     }
     bool changed = false;
-    for (const ImportedEffect &effect : package_.imported_effects_for_read()) {
+    for (const ImportedEffect &effect : imported_.effects) {
       if (effect.procedure_proxy != callee) continue;
       changed = compose_effect(
           destination, semantic_effect(effect),
@@ -1643,9 +1696,9 @@ private:
       for (const SemanticEffect &effect : effects) {
         changed = compose_effect(destination, effect, arguments) || changed;
       }
-    } else if (const ImportedSymbol *imported = imported_symbol(callee)) {
+    } else if (imported_symbol(callee) != nullptr) {
       changed = compose_imported_call(
-          destination, callee, *imported, arguments) || changed;
+          destination, callee, imported_.find(callee), arguments) || changed;
     } else if (const NativeBinding *binding = native_binding(callee)) {
       changed = compose_native_call(
           destination, callee, *binding, arguments) || changed;
@@ -1914,6 +1967,7 @@ private:
 
   const SemanticPackage &package_;
   std::span<const HirProgram *const> programs_;
+  const ImportedProcedureContracts &imported_;
   const HirProgram *hir_ = nullptr;
   const TargetProfile *target_ = nullptr;
   std::span<const ForeignProviderAudit> provider_audits_;
@@ -1928,6 +1982,39 @@ private:
 };
 
 } // namespace
+
+const ImportedProcedureContractStatus *ImportedProcedureContracts::find(
+    SymbolId procedure) const {
+  for (const ImportedProcedureContractStatus &status : procedures) {
+    if (status.proxy == procedure) return &status;
+  }
+  return nullptr;
+}
+
+ImportedProcedureContracts imported_procedure_contracts(
+    const SemanticPackage &package) {
+  ImportedProcedureContracts result;
+  for (const ImportedSymbol &imported : package.imported_symbols_for_read()) {
+    if (!imported.proxy.is_valid() ||
+        package.symbols.symbol(imported.proxy).kind != SymbolKind::Procedure) {
+      continue;
+    }
+    result.procedures.push_back(
+        {imported.proxy, imported.has_effect_summary});
+  }
+  for (const ImportedEffect &effect : package.imported_effects_for_read()) {
+    result.effects.push_back(effect);
+  }
+  for (const ImportedProcedureReturn &returned :
+       package.imported_returns_for_read()) {
+    result.returns.push_back(returned);
+  }
+  for (const ImportedProcedureWrite &write :
+       package.imported_writes_for_read()) {
+    result.writes.push_back(write);
+  }
+  return result;
+}
 
 const DirectProcedureEffectSummary *DirectEffectSummaryResult::find(
     SymbolId procedure) const {
@@ -1959,6 +2046,7 @@ DirectEffectSummaryResult collect_direct_procedure_effects(
     const SemanticPackage &package,
     std::span<const ProcedureBodyHirResult> procedures,
     std::span<const std::size_t> selected_indices,
+    const ImportedProcedureContracts &imported,
     const TargetProfile *target,
     std::span<const ForeignProviderAudit> provider_audits) {
   std::vector<const HirProgram *> programs;
@@ -1972,13 +2060,15 @@ DirectEffectSummaryResult collect_direct_procedure_effects(
     has_previous = true;
     programs.push_back(&procedures[index].program);
   }
-  EffectCollector collector(package, programs, target, provider_audits);
+  EffectCollector collector(
+      package, programs, imported, target, provider_audits);
   return collector.collect_direct();
 }
 
 DirectEffectSummaryResult collect_direct_procedure_effects(
     const SemanticPackage &package,
     std::span<const ProcedureBodyHirResult> procedures,
+    const ImportedProcedureContracts &imported,
     const TargetProfile *target,
     std::span<const ForeignProviderAudit> provider_audits) {
   std::vector<const HirProgram *> programs;
@@ -1986,17 +2076,20 @@ DirectEffectSummaryResult collect_direct_procedure_effects(
   for (const ProcedureBodyHirResult &procedure : procedures) {
     programs.push_back(&procedure.program);
   }
-  EffectCollector collector(package, programs, target, provider_audits);
+  EffectCollector collector(
+      package, programs, imported, target, provider_audits);
   return collector.collect_direct();
 }
 
 EffectSummaryResult close_procedure_effects(
     const SemanticPackage &package,
     const DirectEffectSummaryResult &direct,
+    const ImportedProcedureContracts &imported,
     const TargetProfile *target,
     std::span<const ForeignProviderAudit> provider_audits) {
   const std::span<const HirProgram *const> no_programs;
-  EffectCollector collector(package, no_programs, target, provider_audits);
+  EffectCollector collector(
+      package, no_programs, imported, target, provider_audits);
   return collector.close(direct);
 }
 

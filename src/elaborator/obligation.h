@@ -31,6 +31,7 @@ namespace draft {
 class HirProgram;
 enum class ValidationKind;
 struct ValidationEntry;
+struct ImportedProcedureContracts;
 
 // One binding visible at a synthesis/judgment program point. type_digest is the
 // complete canonical type graph rather than a package-local TypeId. kind stays
@@ -367,6 +368,7 @@ collect_agent_validation_context(
     const SemanticPackage &package,
     const ConstantTable &constants,
     const AgentMetadataResult &metadata,
+    const ImportedProcedureContracts &imported_contracts,
     const TargetProfile &target,
     DiagnosticSink &diagnostics,
     std::span<const AgentValidationContext> validation_context = {},
@@ -389,6 +391,7 @@ collect_agent_validation_context(
     const ConstantTable &constants,
     const AgentMetadataResult &metadata,
     std::size_t record_index,
+    const ImportedProcedureContracts &imported_contracts,
     const TargetProfile &target,
     AgentObligationResult &result,
     DiagnosticSink &diagnostics,

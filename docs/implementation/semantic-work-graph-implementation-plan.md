@@ -259,10 +259,12 @@ gate.
    after closure. Direct and closed summaries now have distinct retained
    payloads. Effect discovery and denial enforcement consume selected
    procedure-owned HIR arenas directly; procedure-qualified call-site IDs remove
-   the last package-HIR identity dependency in those phases. Procedure
-   return/write discovery still replays the selected body set, and imported
-   contracts still refresh retained package tables. The step remains incomplete
-   until those two transitional seams are removed and the direct/SCC/denial
+   the last package-HIR identity dependency in those phases. Final imported
+   contracts now form a separate immutable payload built from dependency
+   interfaces; effect closure and provider context consume it without mutating
+   retained package semantic tables. Procedure return/write discovery still
+   replays the selected body set. The step remains incomplete until that replay
+   is expressed through the concrete flow SCCs and the direct/SCC/denial
    payloads are attached to their live semantic product rows.
 
 8. **Per-procedure MIR.** Lower each checked concrete procedure into a private

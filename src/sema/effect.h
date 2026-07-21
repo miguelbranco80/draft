@@ -127,6 +127,37 @@ struct SemanticEffect {
 inline bool ProcedureValueSummary::operator==(
     const ProcedureValueSummary &) const = default;
 
+// One consumer-local imported procedure's audit status. proxy is the SymbolId
+// already installed by interface binding. has_effect_summary distinguishes an
+// audited empty contract from an unavailable contract, which must close as an
+// UnknownCall rather than being treated as harmless.
+struct ImportedProcedureContractStatus {
+  SymbolId proxy;
+  bool has_effect_summary = false;
+};
+
+// ImportedProcedureContracts is the immutable dependency-interface input to
+// local procedure-flow discovery and effect closure. Rows use the existing
+// consumer-local imported representations, but live outside SemanticPackage:
+// final dependency effects arrive after body checking and must not clear or
+// rewrite the semantic generation retained by procedure products.
+struct ImportedProcedureContracts {
+  std::vector<ImportedProcedureContractStatus> procedures;
+  std::vector<ImportedEffect> effects;
+  std::vector<ImportedProcedureReturn> returns;
+  std::vector<ImportedProcedureWrite> writes;
+
+  [[nodiscard]] const ImportedProcedureContractStatus *find(
+      SymbolId procedure) const;
+};
+
+// Copies the contracts already present in a standalone SemanticPackage. This
+// is used by direct subsystem callers which bind a completed interface before
+// body checking. Workspace compilation instead constructs this payload from
+// the current final dependency interfaces and never mutates the package.
+[[nodiscard]] ImportedProcedureContracts imported_procedure_contracts(
+    const SemanticPackage &package);
+
 // One procedure leaf written through a typed pointer parameter. indirection is
 // the number of dereferences from that parameter and path is relative to the
 // reached object. Value origins use the writing procedure's formal parameters
@@ -177,11 +208,13 @@ struct ClosedEffectComponent {
 
 // One independently discovered direct procedure contract. Every field is
 // local to this body before transitive call/value-flow effect propagation.
-// direct_calls are concrete local SymbolIds and form the SCC graph. Invocation
-// rows retain exact source-ordered argument value sets so closure can substitute
-// callback contracts without revisiting HIR. Return and pointer-write rows are
-// the closed local procedure-flow transfer contract discovered before effect
-// SCC closure; they remain unchanged while effects propagate.
+// direct_calls are concrete consumer-local SymbolIds with a known direct row
+// and form the SCC/condensation graph; imported/native rows are terminal leaves.
+// Invocation rows retain exact source-ordered argument value sets so closure
+// can substitute callback contracts without revisiting HIR. Return and
+// pointer-write rows are the closed local procedure-flow transfer contract
+// discovered before effect SCC closure; they remain unchanged while effects
+// propagate.
 struct DirectProcedureEffectSummary {
   SymbolId procedure;
   std::vector<SemanticEffect> direct_effects;
@@ -234,6 +267,7 @@ struct EffectSummaryResult {
     const SemanticPackage &package,
     std::span<const ProcedureBodyHirResult> procedures,
     std::span<const std::size_t> selected_indices,
+    const ImportedProcedureContracts &imported,
     const TargetProfile *target = nullptr,
     std::span<const ForeignProviderAudit> provider_audits = {});
 
@@ -241,6 +275,7 @@ struct EffectSummaryResult {
 [[nodiscard]] DirectEffectSummaryResult collect_direct_procedure_effects(
     const SemanticPackage &package,
     std::span<const ProcedureBodyHirResult> procedures,
+    const ImportedProcedureContracts &imported,
     const TargetProfile *target = nullptr,
     std::span<const ForeignProviderAudit> provider_audits = {});
 
@@ -249,6 +284,7 @@ struct EffectSummaryResult {
 [[nodiscard]] EffectSummaryResult close_procedure_effects(
     const SemanticPackage &package,
     const DirectEffectSummaryResult &direct,
+    const ImportedProcedureContracts &imported,
     const TargetProfile *target = nullptr,
     std::span<const ForeignProviderAudit> provider_audits = {});
 

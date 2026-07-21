@@ -563,21 +563,25 @@ void sort_semantic_sites_in_source_order(
   return result;
 }
 
-// Preliminary interfaces intentionally contain no body-derived effects. Once
-// dependency bodies are checked, refresh each already-bound proxy from the
-// final dependency interface. A concrete generic proxy must use its exact
-// specialization row: dependent `when` can deliberately make two instances of
-// the same source template expose different effects.
-void refresh_imported_effects(
-    SemanticPackage &package,
+// Builds the immutable final dependency contracts consumed by effect closure.
+// Preliminary interface binding deliberately leaves body-derived contracts out
+// of SemanticPackage. Once dependency bodies close, this operation reads their
+// final interfaces and returns a separate payload; it never clears or rewrites
+// the semantic generation already addressed by procedure products. A concrete
+// generic proxy uses its exact specialization row because dependent `when` can
+// make two instances of the same source template expose different effects.
+[[nodiscard]] ImportedProcedureContracts build_imported_procedure_contracts(
+    const SemanticPackage &package,
     const CompileWorkspaceResult &result,
     const WorkspaceDependencyIndex &schedule,
     std::span<const SymbolId> active_instance_proxies,
     DiagnosticSink &diagnostics) {
-  package.imported_effects.clear();
-  package.imported_returns.clear();
-  package.imported_writes.clear();
-  for (ImportedSymbol &imported : package.imported_symbols) {
+  ImportedProcedureContracts contracts;
+  for (const ImportedSymbol &imported : package.imported_symbols_for_read()) {
+    if (!imported.proxy.is_valid() ||
+        package.symbols.symbol(imported.proxy).kind != SymbolKind::Procedure) {
+      continue;
+    }
     const ImportedProcedureInstance *requested_instance = nullptr;
     for (const ImportedProcedureInstance &instance :
          package.imported_procedure_instances_for_read()) {
@@ -655,9 +659,10 @@ void refresh_imported_effects(
       interface_returns = &declaration->return_values;
       interface_writes = &declaration->field_writes;
     }
-    imported.has_effect_summary = has_effect_summary;
+    contracts.procedures.push_back(
+        {imported.proxy, has_effect_summary});
     for (const InterfaceDeclaration::Effect &effect : *interface_effects) {
-      package.imported_effects.push_back(
+      contracts.effects.push_back(
           import_interface_effect(imported.proxy, effect));
     }
     for (const InterfaceDeclaration::ReturnValue &returned :
@@ -676,7 +681,7 @@ void refresh_imported_effects(
         imported_return.contract_effects.push_back(
             import_interface_effect(imported.proxy, effect));
       }
-      package.imported_returns.push_back(std::move(imported_return));
+      contracts.returns.push_back(std::move(imported_return));
     }
     for (const InterfaceDeclaration::FieldWrite &write :
          *interface_writes) {
@@ -696,9 +701,10 @@ void refresh_imported_effects(
         imported_write.value_contract_effects.push_back(
             import_interface_effect(imported.proxy, effect));
       }
-      package.imported_writes.push_back(std::move(imported_write));
+      contracts.writes.push_back(std::move(imported_write));
     }
   }
+  return contracts;
 }
 
 // Builds the borrowed package view required by the byte-overlay layer. The
@@ -1168,6 +1174,8 @@ void invalidate_package_closure(
       workspace_package.identity, package.declarations.package,
       package.declarations.constants, package.metadata, diagnostics);
   if (options.stage == CompileWorkspaceStage::DiscoverInterfaceSynthesis) {
+    const ImportedProcedureContracts imported_contracts =
+        imported_procedure_contracts(interface_context_package);
     package.obligations = build_agent_obligations(
         workspace_package.identity,
         sources,
@@ -1175,6 +1183,7 @@ void invalidate_package_closure(
         interface_context_package,
         interface_context_constants,
         package.metadata,
+        imported_contracts,
         options.target,
         diagnostics,
         package.validation_context);
@@ -2380,9 +2389,12 @@ completed_declaration_dependencies(const CompileWorkspaceResult &result,
     compiled.obligations.ok = true;
     for (SurfaceRecord selected : unique_records) {
       InterfaceSynthesisSurface &surface = surfaces[selected.surface];
+      const ImportedProcedureContracts imported_contracts =
+          imported_procedure_contracts(surface.package);
       if (!append_agent_obligation(compiled.identity, sources, loaded,
                                    surface.package, surface.constants,
                                    surface.metadata, selected.record,
+                                   imported_contracts,
                                    options.target, compiled.obligations,
                                    diagnostics, compiled.validation_context)) {
         return false;
@@ -5338,7 +5350,7 @@ bool continue_compiled_workspace_semantics(
     const std::vector<SymbolId> active_external_instances =
         selected_external_instance_symbols(package);
 
-    refresh_imported_effects(
+    package.imported_contracts = build_imported_procedure_contracts(
         package.bodies.package,
         result,
         schedule,
@@ -5351,6 +5363,7 @@ bool continue_compiled_workspace_semantics(
         package.bodies.package,
         package.bodies.constants,
         package.metadata,
+        package.imported_contracts,
         options.target,
         diagnostics,
         package.validation_context,
@@ -5359,11 +5372,13 @@ bool continue_compiled_workspace_semantics(
         package.bodies.package,
         package.bodies.procedures,
         package.selected_procedure_work,
+        package.imported_contracts,
         &options.target,
         options.foreign_provider_audits);
     package.effects = close_procedure_effects(
         package.bodies.package,
         package.direct_effects,
+        package.imported_contracts,
         &options.target,
         options.foreign_provider_audits);
     package.native_interop = validate_native_interop(

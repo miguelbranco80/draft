@@ -144,6 +144,7 @@ void test_agent_records(TestState &state) {
           bodies.package,
           bodies.constants,
           metadata,
+          draft::imported_procedure_contracts(bodies.package),
           target,
           diagnostics,
           {},
@@ -408,6 +409,7 @@ void test_agent_records(TestState &state) {
             bodies.package,
             bodies.constants,
             changed_metadata,
+            draft::imported_procedure_contracts(bodies.package),
             target,
             diagnostics);
     EXPECT(state, changed_metadata.ok);
@@ -469,6 +471,7 @@ void test_agent_records(TestState &state) {
                 member_bodies.package,
                 member_bodies.constants,
                 member_metadata,
+                draft::imported_procedure_contracts(member_bodies.package),
                 target,
                 member_diagnostics);
         EXPECT(state, member_loaded.ok);
@@ -598,6 +601,7 @@ work :: proc() -> i64 {
           bodies.package,
           bodies.constants,
           metadata,
+          draft::imported_procedure_contracts(bodies.package),
           target,
           diagnostics);
 
@@ -769,6 +773,7 @@ main :: proc() -> int {
           bodies.package,
           bodies.constants,
           metadata,
+          draft::imported_procedure_contracts(bodies.package),
           target,
           diagnostics,
           {},
@@ -934,6 +939,7 @@ work :: proc(flag: bool, value: i64, values: []i64) {
           bodies.package,
           bodies.constants,
           metadata,
+          draft::imported_procedure_contracts(bodies.package),
           target,
           diagnostics);
 
@@ -1489,6 +1495,7 @@ work :: proc() -> i64 {
           bodies.package,
           bodies.constants,
           metadata,
+          draft::imported_procedure_contracts(bodies.package),
           target,
           diagnostics,
           {},
@@ -1635,6 +1642,7 @@ work :: proc() -> i64 {
             rebuilt_bodies.package,
             rebuilt_bodies.constants,
             rebuilt_metadata,
+            draft::imported_procedure_contracts(rebuilt_bodies.package),
             target,
             rebuilt_diagnostics,
             {},
@@ -1824,6 +1832,7 @@ main :: proc() {
           bodies.package,
           bodies.constants,
           metadata,
+          draft::imported_procedure_contracts(bodies.package),
           target,
           diagnostics,
           {},
