@@ -117,7 +117,6 @@ struct ProcedureBodySemanticPrefix {
   std::size_t type_count = 0;
   std::size_t scope_count = 0;
   std::size_t symbol_count = 0;
-  std::size_t file_count = 0;
   std::size_t owned_scope_count = 0;
   std::size_t aggregate_member_count = 0;
   std::size_t enum_member_value_count = 0;
@@ -125,9 +124,7 @@ struct ProcedureBodySemanticPrefix {
   std::size_t static_argument_pack_count = 0;
   std::size_t parametric_instance_count = 0;
   std::size_t parametric_type_instance_count = 0;
-  std::size_t import_count = 0;
   std::size_t imported_symbol_count = 0;
-  std::size_t imported_documentation_count = 0;
   std::size_t imported_procedure_instance_count = 0;
   std::size_t imported_type_instantiation_request_count = 0;
   std::size_t imported_type_count = 0;
@@ -140,8 +137,6 @@ struct ProcedureBodySemanticPrefix {
   std::size_t deferred_element_count_count = 0;
   std::size_t deferred_value_expression_count = 0;
   std::size_t deferred_type_application_count = 0;
-  std::size_t native_binding_count = 0;
-  std::size_t conditional_declaration_count = 0;
   std::size_t constant_count = 0;
 
   bool operator==(const ProcedureBodySemanticPrefix &) const = default;
@@ -157,7 +152,6 @@ struct ProcedureBodySemanticAppend {
   ProcedureBodySemanticPrefix prefix;
   TypeStoreAppend types;
   SymbolTableAppend symbols;
-  std::vector<FileSemanticScope> files;
   std::vector<OwnedSemanticScope> owned_scopes;
   std::vector<AggregateMember> aggregate_members;
   std::vector<EnumMemberValue> enum_member_values;
@@ -165,9 +159,7 @@ struct ProcedureBodySemanticAppend {
   std::vector<StaticArgumentPack> static_argument_packs;
   std::vector<ParametricInstanceRecord> parametric_instances;
   std::vector<ParametricTypeInstanceRecord> parametric_type_instances;
-  std::vector<ImportBinding> imports;
   std::vector<ImportedSymbol> imported_symbols;
-  std::vector<ImportedDocumentation> imported_documentation;
   std::vector<ImportedProcedureInstance> imported_procedure_instances;
   std::vector<ImportedTypeInstantiationRequest>
       imported_type_instantiation_requests;
@@ -181,18 +173,18 @@ struct ProcedureBodySemanticAppend {
   std::vector<DeferredElementCount> deferred_element_counts;
   std::vector<DeferredValueExpression> deferred_value_expressions;
   std::vector<DeferredTypeApplication> deferred_type_applications;
-  std::vector<NativeBinding> native_bindings;
-  std::vector<ConditionalDeclarationRegion> conditional_declarations;
   std::vector<ConstantBinding> constants;
 };
 
 // ProcedureBodyTaskInput owns the private semantic view frozen at prefix.
 // TypeStore, SymbolTable, and ConstantTable are append-only overlays whose
-// non-owning bases live in PackageBodyWorkState; the other semantic side tables
-// remain value snapshots until their product migrations remove that transport.
-// HIR is not an input: every task starts one new local arena. work is the exact
-// root, and next_instance partitions already published concrete records from
-// any suffix discovered by this task.
+// non-owning bases live in PackageBodyWorkState. Declaration-closed files,
+// imports, imported documentation, native bindings, and conditional regions
+// are also read through that base and cannot appear in a body append packet.
+// Body-mutable semantic side tables remain value snapshots until their product
+// migrations remove that transport. HIR is not an input: every task starts one
+// new local arena. work is the exact root, and next_instance partitions already
+// published concrete records from any suffix discovered by this task.
 struct ProcedureBodyTaskInput {
   bool valid = false;
   std::size_t work_index = 0;

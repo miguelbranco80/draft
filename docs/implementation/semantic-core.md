@@ -354,8 +354,11 @@ every append-only table. Its TypeStore and SymbolTable are append-only overlays:
 existing rows are read directly from the canonical tables, new rows remain
 task-owned, and bindings added to an existing scope are recorded separately
 without mutating that scope. ConstantTable uses the same prefix-overlay model
-for immutable package constants and task-local lexical constants. Semantic side
-tables remain value snapshots. The worker returns only a
+for immutable package constants and task-local lexical constants.
+Declaration-closed file scopes, imports, imported documentation, native
+bindings, and package conditional regions are direct immutable views and are no
+longer represented in the body append packet. Body-mutable semantic side tables
+remain value snapshots. The worker returns only a
 `ProcedureBodySemanticAppend`, one procedure-local HIR arena, diagnostics, and
 discovered roots; it never aliases or returns a replacement for
 `PackageBodyWorkState`. The coordinator validates the work index, root symbol,
@@ -364,10 +367,10 @@ in product order before exposing discovered roots.
 
 The result boundary is therefore procedure-local, but execution is not yet the
 final parallel implementation. Constructing the private view still copies
-semantic side-table prefixes, and suffix IDs are valid only while one task is
-in flight. Read-only views for those remaining inputs plus deterministic
-remapping and canonical interning will permit every independent root in one
-frozen wave to check concurrently.
+body-mutable semantic side-table prefixes, and suffix IDs are valid only while
+one task is in flight. Read-only-prefix/local-suffix views for those remaining
+tables plus deterministic remapping and canonical interning will permit every
+independent root in one frozen wave to check concurrently.
 
 Named constant products carry both `ConstantValue` and checked `TypeId`.
 Package-interface finalization installs that type payload into its retained

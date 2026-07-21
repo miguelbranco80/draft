@@ -18,6 +18,71 @@
 #include <vector>
 
 namespace draft {
+
+SemanticPackage::SemanticPackage(
+    BodyTaskViewTag, const SemanticPackage &base)
+    : short_name(base.short_name), identity(base.identity),
+      types(base.types.fork_append_only()),
+      symbols(base.symbols.fork_append_only()),
+      package_scope(base.package_scope),
+      runtime_context_type(base.runtime_context_type),
+      owned_scopes(base.owned_scopes),
+      aggregate_members(base.aggregate_members),
+      enum_member_values(base.enum_member_values),
+      parametric_parameters(base.parametric_parameters),
+      static_argument_packs(base.static_argument_packs),
+      parametric_instances(base.parametric_instances),
+      parametric_type_instances(base.parametric_type_instances),
+      imported_symbols(base.imported_symbols),
+      imported_procedure_instances(base.imported_procedure_instances),
+      imported_type_instantiation_requests(
+          base.imported_type_instantiation_requests),
+      imported_types(base.imported_types),
+      imported_effects(base.imported_effects),
+      imported_returns(base.imported_returns),
+      imported_writes(base.imported_writes),
+      declaration_denials(base.declaration_denials), sites(base.sites),
+      required_integer_expressions(base.required_integer_expressions),
+      deferred_element_counts(base.deferred_element_counts),
+      deferred_value_expressions(base.deferred_value_expressions),
+      deferred_type_applications(base.deferred_type_applications),
+      body_read_prefix_(&base) {
+  assert(base.body_read_prefix_ == nullptr);
+}
+
+SemanticPackage SemanticPackage::fork_body_task_view() const {
+  return SemanticPackage(BodyTaskViewTag{}, *this);
+}
+
+const std::vector<FileSemanticScope> &SemanticPackage::files_for_read() const {
+  return body_read_prefix_ != nullptr ? body_read_prefix_->files : files;
+}
+
+const std::vector<ImportBinding> &SemanticPackage::imports_for_read() const {
+  return body_read_prefix_ != nullptr ? body_read_prefix_->imports : imports;
+}
+
+const std::vector<ImportedDocumentation> &
+SemanticPackage::imported_documentation_for_read() const {
+  return body_read_prefix_ != nullptr
+      ? body_read_prefix_->imported_documentation
+      : imported_documentation;
+}
+
+const std::vector<NativeBinding> &
+SemanticPackage::native_bindings_for_read() const {
+  return body_read_prefix_ != nullptr
+      ? body_read_prefix_->native_bindings
+      : native_bindings;
+}
+
+const std::vector<ConditionalDeclarationRegion> &
+SemanticPackage::conditional_declarations_for_read() const {
+  return body_read_prefix_ != nullptr
+      ? body_read_prefix_->conditional_declarations
+      : conditional_declarations;
+}
+
 namespace {
 
 struct SourceName {

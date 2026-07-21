@@ -198,6 +198,10 @@ second :: proc() -> i64 {
       draft::take_next_procedure_body_work(work, first_diagnostics);
   EXPECT(state, first_input.valid);
   EXPECT(state, work.active_work == std::optional<std::size_t>{0});
+  EXPECT(state, first_input.package.files.empty());
+  EXPECT(state,
+         first_input.package.files_for_read().size() ==
+             work.package.files.size());
   EXPECT(state, first_input.package.symbols.symbol_count() == initial_symbols);
   EXPECT(state, first_input.package.symbols.scope_count() == initial_scopes);
   draft::ProcedureBodyTaskResult first =

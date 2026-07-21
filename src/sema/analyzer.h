@@ -633,6 +633,28 @@ struct ConditionalDeclarationRegion {
 // another complete body pass; a source-generation change creates a new
 // declaration baseline instead.
 struct SemanticPackage {
+  SemanticPackage() = default;
+
+  // Creates the semantic view used by one procedure task. Declaration-only
+  // tables are read through this package without copying, TypeStore and
+  // SymbolTable become append-only overlays, and body-mutable side tables are
+  // currently copied until they receive local-suffix views of their own. The
+  // source package must outlive the returned view and may not itself be a task
+  // view.
+  [[nodiscard]] SemanticPackage fork_body_task_view() const;
+
+  // These five tables close before procedure products become ready and cannot
+  // be extended by body checking. Readers must use these operations because a
+  // task view deliberately leaves its local vectors empty.
+  [[nodiscard]] const std::vector<FileSemanticScope> &files_for_read() const;
+  [[nodiscard]] const std::vector<ImportBinding> &imports_for_read() const;
+  [[nodiscard]] const std::vector<ImportedDocumentation> &
+  imported_documentation_for_read() const;
+  [[nodiscard]] const std::vector<NativeBinding> &
+  native_bindings_for_read() const;
+  [[nodiscard]] const std::vector<ConditionalDeclarationRegion> &
+  conditional_declarations_for_read() const;
+
   std::string short_name;
   // Workspace identity is present for package-aware analysis and empty in
   // isolated semantic unit tests. Interface import uses it to recognize a
@@ -671,6 +693,15 @@ struct SemanticPackage {
   std::vector<DeferredTypeApplication> deferred_type_applications;
   std::vector<NativeBinding> native_bindings;
   std::vector<ConditionalDeclarationRegion> conditional_declarations;
+
+private:
+  struct BodyTaskViewTag {};
+  SemanticPackage(BodyTaskViewTag, const SemanticPackage &base);
+
+  // A task view is non-owning and cannot outlive PackageBodyWorkState. The
+  // pointer supplies only declaration-closed inputs; body-produced rows remain
+  // owned by this package until their append packet is extracted.
+  const SemanticPackage *body_read_prefix_ = nullptr;
 };
 
 // One selection chooses the true or false branch of a particular parsed `when`.

@@ -525,7 +525,7 @@ private:
   // Returns the file-local import scope for a source file. The package fallback
   // is recovery for malformed manually assembled inputs, not normal behavior.
   [[nodiscard]] ScopeId file_scope(FileId file) const {
-    for (const FileSemanticScope &entry : semantic_.files) {
+    for (const FileSemanticScope &entry : semantic_.files_for_read()) {
       if (entry.file == file) {
         return entry.scope;
       }

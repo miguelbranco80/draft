@@ -737,7 +737,7 @@ private:
   }
 
   [[nodiscard]] std::optional<ScopeId> source_file_scope(FileId file) const {
-    for (const FileSemanticScope &entry : semantic_.files) {
+    for (const FileSemanticScope &entry : semantic_.files_for_read()) {
       if (entry.file == file) return entry.scope;
     }
     return std::nullopt;
@@ -2291,7 +2291,7 @@ private:
           imported.root_relative_path != "runtime") {
         continue;
       }
-      for (const ImportBinding &binding : semantic_.imports) {
+      for (const ImportBinding &binding : semantic_.imports_for_read()) {
         if (binding.symbol == imported.import_symbol &&
             binding.package_path == "core/runtime") {
           return true;
@@ -2407,7 +2407,7 @@ private:
           imported.public_name == "compare_exchange" ||
           imported.public_name == "fence";
       if (!known) continue;
-      for (const ImportBinding &binding : semantic_.imports) {
+      for (const ImportBinding &binding : semantic_.imports_for_read()) {
         if (binding.symbol == imported.import_symbol &&
             binding.package_path == "core/atomic") {
           return imported;
@@ -8390,58 +8390,6 @@ void append_body_root(
   }
 }
 
-// Creates the private semantic view consumed by one procedure task. The two
-// largest identity tables remain in the coordinator and are exposed through
-// append-only overlays: prefix TypeIds, ScopeIds, and SymbolIds therefore keep
-// their exact values without copying rows or permitting worker mutation. The
-// remaining semantic side tables are value snapshots for now because
-// BodyChecker still performs direct indexed reads over them and can append
-// task-local rows. ConstantTable uses the same read-only-prefix/local-suffix
-// representation independently. The fields below are listed explicitly so
-// adding a SemanticPackage field forces this phase boundary to be reviewed
-// instead of silently omitting task-visible state.
-//
-// PackageBodyWorkState permits only one active task and does not publish while
-// that task runs. Its canonical package consequently outlives both overlay
-// pointers and cannot reallocate either base table before extraction finishes.
-[[nodiscard]] SemanticPackage fork_body_semantic_view(
-    const SemanticPackage &package) {
-  return SemanticPackage{
-      .short_name = package.short_name,
-      .identity = package.identity,
-      .types = package.types.fork_append_only(),
-      .symbols = package.symbols.fork_append_only(),
-      .package_scope = package.package_scope,
-      .runtime_context_type = package.runtime_context_type,
-      .files = package.files,
-      .owned_scopes = package.owned_scopes,
-      .aggregate_members = package.aggregate_members,
-      .enum_member_values = package.enum_member_values,
-      .parametric_parameters = package.parametric_parameters,
-      .static_argument_packs = package.static_argument_packs,
-      .parametric_instances = package.parametric_instances,
-      .parametric_type_instances = package.parametric_type_instances,
-      .imports = package.imports,
-      .imported_symbols = package.imported_symbols,
-      .imported_documentation = package.imported_documentation,
-      .imported_procedure_instances = package.imported_procedure_instances,
-      .imported_type_instantiation_requests =
-          package.imported_type_instantiation_requests,
-      .imported_types = package.imported_types,
-      .imported_effects = package.imported_effects,
-      .imported_returns = package.imported_returns,
-      .imported_writes = package.imported_writes,
-      .declaration_denials = package.declaration_denials,
-      .sites = package.sites,
-      .required_integer_expressions = package.required_integer_expressions,
-      .deferred_element_counts = package.deferred_element_counts,
-      .deferred_value_expressions = package.deferred_value_expressions,
-      .deferred_type_applications = package.deferred_type_applications,
-      .native_bindings = package.native_bindings,
-      .conditional_declarations = package.conditional_declarations,
-  };
-}
-
 // Captures every append-only boundary which body checking is allowed to extend.
 // Keeping this list explicit makes a newly mutable SemanticPackage table a
 // compile-time review point: it must be added both here and to extraction and
@@ -8453,7 +8401,6 @@ void append_body_root(
   prefix.type_count = package.types.size();
   prefix.scope_count = package.symbols.scope_count();
   prefix.symbol_count = package.symbols.symbol_count();
-  prefix.file_count = package.files.size();
   prefix.owned_scope_count = package.owned_scopes.size();
   prefix.aggregate_member_count = package.aggregate_members.size();
   prefix.enum_member_value_count = package.enum_member_values.size();
@@ -8462,10 +8409,7 @@ void append_body_root(
   prefix.parametric_instance_count = package.parametric_instances.size();
   prefix.parametric_type_instance_count =
       package.parametric_type_instances.size();
-  prefix.import_count = package.imports.size();
   prefix.imported_symbol_count = package.imported_symbols.size();
-  prefix.imported_documentation_count =
-      package.imported_documentation.size();
   prefix.imported_procedure_instance_count =
       package.imported_procedure_instances.size();
   prefix.imported_type_instantiation_request_count =
@@ -8483,9 +8427,6 @@ void append_body_root(
       package.deferred_value_expressions.size();
   prefix.deferred_type_application_count =
       package.deferred_type_applications.size();
-  prefix.native_binding_count = package.native_bindings.size();
-  prefix.conditional_declaration_count =
-      package.conditional_declarations.size();
   prefix.constant_count = constants.size();
   return prefix;
 }
@@ -8521,7 +8462,6 @@ void append_body_suffix(
   appended.types = package.types.appended_since(prefix.type_count);
   appended.symbols = package.symbols.appended_since(
       prefix.scope_count, prefix.symbol_count);
-  appended.files = copy_body_suffix(package.files, prefix.file_count);
   appended.owned_scopes = copy_body_suffix(
       package.owned_scopes, prefix.owned_scope_count);
   appended.aggregate_members = copy_body_suffix(
@@ -8537,11 +8477,8 @@ void append_body_suffix(
   appended.parametric_type_instances = copy_body_suffix(
       package.parametric_type_instances,
       prefix.parametric_type_instance_count);
-  appended.imports = copy_body_suffix(package.imports, prefix.import_count);
   appended.imported_symbols = copy_body_suffix(
       package.imported_symbols, prefix.imported_symbol_count);
-  appended.imported_documentation = copy_body_suffix(
-      package.imported_documentation, prefix.imported_documentation_count);
   appended.imported_procedure_instances = copy_body_suffix(
       package.imported_procedure_instances,
       prefix.imported_procedure_instance_count);
@@ -8570,11 +8507,6 @@ void append_body_suffix(
   appended.deferred_type_applications = copy_body_suffix(
       package.deferred_type_applications,
       prefix.deferred_type_application_count);
-  appended.native_bindings = copy_body_suffix(
-      package.native_bindings, prefix.native_binding_count);
-  appended.conditional_declarations = copy_body_suffix(
-      package.conditional_declarations,
-      prefix.conditional_declaration_count);
   appended.constants = constants.appended_since(prefix.constant_count);
   return appended;
 }
@@ -8588,7 +8520,6 @@ void publish_body_semantic_append(
     ProcedureBodySemanticAppend appended) {
   package.types.append_exact(std::move(appended.types));
   package.symbols.append_exact(std::move(appended.symbols));
-  append_body_suffix(package.files, std::move(appended.files));
   append_body_suffix(package.owned_scopes, std::move(appended.owned_scopes));
   append_body_suffix(
       package.aggregate_members, std::move(appended.aggregate_members));
@@ -8605,12 +8536,8 @@ void publish_body_semantic_append(
   append_body_suffix(
       package.parametric_type_instances,
       std::move(appended.parametric_type_instances));
-  append_body_suffix(package.imports, std::move(appended.imports));
   append_body_suffix(
       package.imported_symbols, std::move(appended.imported_symbols));
-  append_body_suffix(
-      package.imported_documentation,
-      std::move(appended.imported_documentation));
   append_body_suffix(
       package.imported_procedure_instances,
       std::move(appended.imported_procedure_instances));
@@ -8640,11 +8567,6 @@ void publish_body_semantic_append(
   append_body_suffix(
       package.deferred_type_applications,
       std::move(appended.deferred_type_applications));
-  append_body_suffix(
-      package.native_bindings, std::move(appended.native_bindings));
-  append_body_suffix(
-      package.conditional_declarations,
-      std::move(appended.conditional_declarations));
   constants.append_exact(
       appended.prefix.constant_count, std::move(appended.constants));
 }
@@ -8793,7 +8715,7 @@ ProcedureBodyTaskInput take_next_procedure_body_work(
   input.work = state.work[state.next_work];
   input.next_instance = state.next_instance;
   input.prefix = capture_body_semantic_prefix(state.package, state.constants);
-  input.package = fork_body_semantic_view(state.package);
+  input.package = state.package.fork_body_task_view();
   input.constants = state.constants.fork_append_only();
   state.active_work = state.next_work;
   return input;

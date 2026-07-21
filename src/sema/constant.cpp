@@ -540,7 +540,7 @@ private:
   // Returns the scope containing this file's imports; malformed in-memory test
   // packages recover to the package scope.
   [[nodiscard]] ScopeId file_scope(FileId file) const {
-    for (const FileSemanticScope &entry : semantic_.files) {
+    for (const FileSemanticScope &entry : semantic_.files_for_read()) {
       if (entry.file == file) {
         return entry.scope;
       }

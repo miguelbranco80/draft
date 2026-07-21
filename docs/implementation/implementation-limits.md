@@ -42,7 +42,8 @@ Concrete cross-package owner-evaluated type applications now use canonical
 command-local demand products with exact requester-layout and transitive-owner
 edges; no package is rebuilt to publish their results.
 Procedure HIR and semantic append packets are now owned by exact live body
-products. Type, symbol, and constant prefixes use read-only overlays, but
+products. Type, symbol, and constant prefixes use read-only overlays, and
+declaration-closed semantic inputs are direct immutable views. Body-mutable
 semantic side tables are still copied into each task view. Append IDs still
 require sequential exact-prefix publication rather than shared-wave remapping.
 Effect closure, denials, and MIR still consume a package-wide HIR compatibility
