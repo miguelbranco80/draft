@@ -1132,6 +1132,7 @@ void invalidate_package_closure(
     products.constants.clear();
     products.procedure_bodies.clear();
     products.selected_procedure_bodies.clear();
+    products.body_type_producer.clear();
     products.declaration_inputs.clear();
     products.declaration_inputs.push_back(result.semantic_products.target);
     products.declaration_inputs.push_back(products.imports);
@@ -4056,6 +4057,7 @@ struct ProcedureBodyWaveExecution {
 // arrays. Rows are retained only until the wave joins and are never serialized.
 struct PackageBodyWavePublication {
   std::size_t package_index = 0;
+  std::size_t first_work = 0;
   std::vector<std::size_t> task_slots;
 };
 
@@ -4122,6 +4124,7 @@ struct PackageBodyWavePublication {
         take_ready_procedure_body_wave(state, diagnostics);
     PackageBodyWavePublication publication;
     publication.package_index = package_index;
+    publication.first_work = first_work;
     publication.task_slots.reserve(inputs.size());
     const std::vector<SemanticProductId> &products =
         result.semantic_products.packages[package_index].procedure_bodies;
@@ -4203,9 +4206,43 @@ struct PackageBodyWavePublication {
     }
     PackageBodyWorkState &state =
         result.packages[publication.package_index]->bodies;
+    PackageSemanticProducts &products =
+        result.semantic_products.packages[publication.package_index];
+    if (products.body_type_producer.size() > state.package.types.size()) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "body type-producer table is longer than its TypeStore");
+      return false;
+    }
+    products.body_type_producer.resize(state.package.types.size());
     if (!publish_procedure_body_wave(
             state, std::move(package_results), diagnostics)) {
       return false;
+    }
+    products.body_type_producer.resize(state.package.types.size());
+    for (std::size_t offset = 0; offset < publication.task_slots.size();
+         ++offset) {
+      const std::size_t work_index = publication.first_work + offset;
+      if (work_index >= state.procedures.size() ||
+          work_index >= products.procedure_bodies.size()) {
+        diagnostics.error(
+            SourceRange::invalid(),
+            "published body types have no procedure product");
+        return false;
+      }
+      const SemanticProductId producer =
+          products.procedure_bodies[work_index];
+      for (TypeId type : state.procedures[work_index].published_types) {
+        if (!type.is_valid() ||
+            type.value >= products.body_type_producer.size() ||
+            products.body_type_producer[type.value].is_valid()) {
+          diagnostics.error(
+              SourceRange::invalid(),
+              "published body type has an invalid or duplicate producer");
+          return false;
+        }
+        products.body_type_producer[type.value] = producer;
+      }
     }
   }
 

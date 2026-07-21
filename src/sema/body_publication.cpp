@@ -1133,7 +1133,20 @@ bool publish_body_task_semantics(
           diagnostics)) {
     return false;
   }
+  const std::size_t published_type_begin = package.types.size();
   publish_planned_types(package, std::move(type_plan), maps);
+  task.published_types.reserve(package.types.size() - published_type_begin);
+  for (std::size_t index = published_type_begin; index < package.types.size();
+       ++index) {
+    if (!fits_u32(index)) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "procedure body published a type outside the TypeId domain");
+      return false;
+    }
+    task.published_types.push_back(
+        TypeId{static_cast<std::uint32_t>(index)});
+  }
 
   remap_symbol_append(semantic.symbols, maps);
   semantic.symbols.base_scope_count = scope_base;

@@ -44,6 +44,11 @@ struct ProcedureBodyHirResult {
   // workspace selection can ignore a completed but currently unselected body.
   std::vector<ImportedProcedureInstance> imported_procedure_instances;
   std::vector<std::size_t> semantic_site_indices;
+  // Canonical TypeIds first appended while this product's semantic suffix was
+  // published. Equal structural or nominal types which reuse an earlier ID do
+  // not appear. The workspace graph uses these rows to attach later type facets
+  // to their exact producing body rather than a package-wide body barrier.
+  std::vector<TypeId> published_types;
 };
 
 // BodyCheckResult owns the complete body-derived semantic state for one
@@ -259,6 +264,7 @@ struct ProcedureBodyTaskResult {
   // IDs. Workers leave these empty because their IDs are not yet canonical.
   std::vector<ImportedProcedureInstance> imported_procedure_instances;
   std::vector<std::size_t> semantic_site_indices;
+  std::vector<TypeId> published_types;
 };
 
 // PackageBodyWorkState is the explicit deterministic publication state for

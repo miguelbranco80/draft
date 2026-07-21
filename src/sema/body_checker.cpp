@@ -8807,6 +8807,7 @@ bool publish_procedure_body_wave(
         std::move(result.imported_procedure_instances);
     procedure.semantic_site_indices =
         std::move(result.semantic_site_indices);
+    procedure.published_types = std::move(result.published_types);
     state.procedures.push_back(std::move(procedure));
     for (ProcedureBodyRoot &discovered : result.discovered_work) {
       discovered.prerequisite = work_index;

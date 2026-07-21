@@ -127,12 +127,28 @@ void test_procedure_bodies_are_dynamic_semantic_products(TestState &state) {
                     package.bodies.procedures.size());
   EXPECT(state,
          products.selected_procedure_bodies == products.procedure_bodies);
-  for (const draft::ProcedureBodyHirResult &procedure :
-       package.bodies.procedures) {
+  EXPECT(state, products.body_type_producer.size() ==
+                    package.bodies.package.types.size());
+  std::size_t published_type_count = 0;
+  for (std::size_t work_index = 0;
+       work_index < package.bodies.procedures.size(); ++work_index) {
+    const draft::ProcedureBodyHirResult &procedure =
+        package.bodies.procedures[work_index];
     EXPECT(state, procedure.ok);
     EXPECT(state, procedure.symbol.is_valid());
     EXPECT(state, procedure.program.procedures().size() == 1);
+    for (draft::TypeId type : procedure.published_types) {
+      ++published_type_count;
+      EXPECT(state, type.is_valid());
+      EXPECT(state, type.value < products.body_type_producer.size());
+      if (type.is_valid() &&
+          type.value < products.body_type_producer.size()) {
+        EXPECT(state, products.body_type_producer[type.value] ==
+                          products.procedure_bodies[work_index]);
+      }
+    }
   }
+  EXPECT(state, published_type_count != 0);
 
   const draft::SemanticPackage &semantic = package.bodies.package;
   const std::optional<draft::SymbolId> identity =

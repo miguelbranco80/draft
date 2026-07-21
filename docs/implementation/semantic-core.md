@@ -377,7 +377,11 @@ immutable. The worker returns only a
 discovered roots; it never aliases or returns a replacement for
 `PackageBodyWorkState`. The coordinator validates the work index, root symbol,
 and complete prefix, then appends type/symbol rows and every semantic side table
-in product order before exposing discovered roots.
+in product order before exposing discovered roots. It also records every
+canonical TypeId first appended by that publication against the exact procedure
+product. Declaration-baseline types use the package-interface barrier instead.
+This producer table lets later type facets depend on one body product without a
+coarse all-package-body edge.
 
 The result boundary is procedure-local and every currently ready root receives
 the same frozen prefix. Suffix IDs remain private to each task. After the whole

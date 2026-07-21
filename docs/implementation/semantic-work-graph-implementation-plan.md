@@ -161,7 +161,10 @@ gate.
    publishes one permanent `ProcedureBodyHirResult`, and never receives earlier
    HIR as input. `BodyCheckResult` no longer stores a package-wide copy;
    remaining package-wide consumers explicitly build, use, and discard one
-   deterministic ID-rewritten projection.
+   deterministic ID-rewritten projection. Each result also records the
+   canonical TypeIds first installed by its semantic append. A package side
+   table maps those IDs back to the exact procedure product, establishing the
+   dependency seam for ABI and other later type facets.
 
    Constant products now retain their checked static TypeId beside the value;
    package-interface finalization installs the immutable pair and no body task

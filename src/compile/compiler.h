@@ -346,6 +346,12 @@ struct PackageSemanticProducts {
   // become Superseded only when this declaration generation is replaced.
   std::vector<SemanticProductId> procedure_bodies;
   std::vector<SemanticProductId> selected_procedure_bodies;
+  // Parallel to the body generation's TypeStore after at least one body wave.
+  // Declaration-baseline types contain an invalid product because their
+  // package interface is the producer barrier. A body-appended TypeId names the
+  // exact procedure product whose deterministic publication first installed
+  // it. Equal types reused by a later body keep the original producer.
+  std::vector<SemanticProductId> body_type_producer;
 };
 
 // WorkspaceSemanticProducts is the typed index from the general product graph
