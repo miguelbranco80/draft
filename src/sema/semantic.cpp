@@ -83,7 +83,10 @@ void append_imported_constant_bindings(
       continue;
     }
     constants.bindings.insert(
-        position, {imported.proxy, imported.constant});
+        position,
+        {imported.proxy,
+         imported.constant,
+         package.symbols.symbol(imported.proxy).type});
   }
 }
 
@@ -922,7 +925,7 @@ private:
             return binding.symbol.value < value;
           });
       discovery_.published_constants.bindings.insert(
-          position, {product.root, std::move(value.value)});
+          position, {product.root, std::move(value.value), value.type});
       publish_diagnostics(task_diagnostics, diagnostics_);
       product.state = DirectProductState::Complete;
       return true;
@@ -1277,6 +1280,21 @@ ConstantTable package_product_constant_inputs(
   if (constants_are_products) {
     result.constants = package_product_constant_inputs(
         result.package, discovery.published_constants);
+    // ConstantValue products own both the immutable value and its checked
+    // static type. A private package snapshot produced by another ready task
+    // may predate that publication, so the package-interface barrier installs
+    // the type payload explicitly before any validation or body task consumes
+    // the declaration generation. This is product publication, not
+    // reevaluation of the constant source.
+    for (const ConstantBinding &binding : result.constants.bindings) {
+      if (!binding.type.is_valid() ||
+          static_cast<std::size_t>(binding.symbol.value) >=
+              result.package.symbols.symbol_count()) {
+        continue;
+      }
+      Symbol &symbol = result.package.symbols.symbol_mut(binding.symbol);
+      if (symbol.kind != SymbolKind::Type) symbol.type = binding.type;
+    }
     final_round = validate_compile_time_products(
         sources,
         loaded,

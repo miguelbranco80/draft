@@ -346,18 +346,28 @@ product order. Invalid recoverable HIR completes its scheduling row but leaves
 the containing body state invalid, allowing later authored roots to be checked
 without permitting effects or lowering to consume the package.
 
-The coordinator now moves exclusive ownership of the published package and
-constant prefix into one `ProcedureBodyTaskInput`; the worker returns its
-semantic successor and one new procedure-local HIR arena as
-`ProcedureBodyTaskResult`, and never aliases `PackageBodyWorkState`. The
-coordinator validates the exact work index and root symbol, adopts the semantic
-successor, permanently stores the local HIR row, and only then exposes its
-discovered roots. Moving the prefix avoids an accidental full-package copy per
-procedure. The remaining isolation problem is semantic rather than HIR: each
-task still transports one complete package/constants successor, and the
-sequential oracle must adopt it before invoking the next root. Local semantic
-discovery plus deterministic canonical publication is required before one
-package's body wave can run on parallel workers.
+The coordinator retains the published package and constants while a
+`ProcedureBodyTaskInput` owns one private snapshot frozen at explicit counts for
+every append-only table. Existing TypeStore and SymbolTable rows are immutable
+inside that snapshot. The worker returns only a
+`ProcedureBodySemanticAppend`, one procedure-local HIR arena, diagnostics, and
+discovered roots; it never aliases or returns a replacement for
+`PackageBodyWorkState`. The coordinator validates the work index, root symbol,
+and complete prefix, then appends type/symbol rows and every semantic side table
+in product order before exposing discovered roots.
+
+The result boundary is therefore procedure-local, but execution is not yet the
+final parallel implementation. Constructing the private snapshot still copies
+its read-only package and constant prefix, and suffix IDs are valid only while
+one task is in flight. Read-only table overlays remove the copy; deterministic
+remapping and canonical interning then permit every independent root in one
+frozen wave to check concurrently.
+
+Named constant products carry both `ConstantValue` and checked `TypeId`.
+Package-interface finalization installs that type payload into its retained
+declaration symbol before validation. Constant evaluation also retains a ready
+value's type in evaluator-owned state, so reading an immutable published
+constant never rewrites a declaration merely to recover an inferred type.
 
 The compiler schedules package bodies consumer-first because checking a caller
 can demand a concrete public generic body from its dependency. A portable

@@ -34,6 +34,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace draft {
@@ -71,19 +72,33 @@ struct TargetFacts {
 };
 
 struct ConstantBinding {
+  ConstantBinding() = default;
+  ConstantBinding(
+      SymbolId symbol_value,
+      ConstantValue constant_value,
+      TypeId type_value = {})
+      : symbol(symbol_value), value(std::move(constant_value)),
+        type(type_value) {}
+
   SymbolId symbol;
   ConstantValue value;
+  // The checked static type travels with the immutable value product. Relying
+  // only on Symbol::type would let a stale private declaration snapshot erase
+  // this fact before body checking consumes the constant.
+  TypeId type;
 };
 
-// ConstantTable contains successfully evaluated constants in stable SymbolId
-// order. Package constants are installed by semantic fixed-point evaluation;
-// body checking later appends lexical `::` constants in deterministic procedure
-// and statement order. A missing entry means not requested, not yet ready, or
-// invalid; diagnostics and CompileTimeRoundResult distinguish those cases.
+// ConstantTable contains successfully evaluated values and their checked static
+// types in stable SymbolId order. Package constants are installed by semantic
+// products; body checking later appends lexical `::` constants in deterministic
+// procedure and statement order. A missing entry means not requested, not yet
+// ready, or invalid; diagnostics and CompileTimeRoundResult distinguish those
+// cases.
 struct ConstantTable {
   std::vector<ConstantBinding> bindings;
 
   [[nodiscard]] const ConstantValue *find(SymbolId symbol) const;
+  [[nodiscard]] const ConstantBinding *find_binding(SymbolId symbol) const;
 };
 
 struct EvaluatedConstant {

@@ -376,6 +376,16 @@ void test_named_constants_are_semantic_products(TestState &state) {
       !vector_value || !callback_identity || !signature_selected) {
     return;
   }
+  const draft::ConstantBinding *derived_constant =
+      package.declarations.constants.find_binding(*derived);
+  EXPECT(state, derived_constant != nullptr);
+  if (derived_constant != nullptr) {
+    EXPECT(state, derived_constant->type.is_valid());
+    EXPECT(state, semantic.symbols.symbol(*derived).type ==
+                      derived_constant->type);
+    EXPECT(state, package.bodies.package.symbols.symbol(*derived).type ==
+                      derived_constant->type);
+  }
 
   const draft::PackageSemanticProducts &products =
       compiled.semantic_products.packages.front();

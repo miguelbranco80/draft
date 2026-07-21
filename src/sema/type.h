@@ -22,6 +22,7 @@
 #include "sema/integer_expression.h"
 #include "source/source.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <optional>
@@ -197,6 +198,18 @@ struct Type {
   SourceRange declaration;
 };
 
+// TypeStoreAppend is the exact append-only suffix produced from one frozen
+// TypeStore prefix. base_size identifies that prefix. types and completions are
+// parallel and retain their final process-local TypeIds: row zero in these
+// vectors has ID base_size. Procedure workers use this packet to return local
+// type discoveries without returning or replacing the package's canonical
+// TypeStore. It is command-local and never serialized.
+struct TypeStoreAppend {
+  std::size_t base_size = 0;
+  std::vector<Type> types;
+  std::vector<TypeCompletion> completions;
+};
+
 // BuiltinTypes stores IDs used frequently by semantic code. Other builtin names,
 // including endian storage variants, are available through find_builtin.
 struct BuiltinTypes {
@@ -244,6 +257,18 @@ public:
   [[nodiscard]] const TypeCompletion &completion(TypeId id) const;
   [[nodiscard]] TypeFacetState facet_state(TypeId id, TypeFacet facet) const;
   [[nodiscard]] std::size_t size() const;
+
+  // Prevents a task-local checker from enriching an existing canonical row.
+  // Structural constructors may still reuse prefix IDs and append new rows;
+  // type_mut and completion publication are restricted to the suffix. The
+  // frozen marker belongs only to a private task snapshot.
+  void freeze_existing_rows();
+
+  // Extracts or publishes one exact suffix. append requires this store still to
+  // equal the producer's frozen prefix; callers publish task results in stable
+  // order and must remap before using this operation for a shared-prefix wave.
+  [[nodiscard]] TypeStoreAppend appended_since(std::size_t base_size) const;
+  void append_exact(TypeStoreAppend appended);
 
   [[nodiscard]] std::optional<TypeId> find_builtin(std::string_view name) const;
 
@@ -336,6 +361,9 @@ private:
   std::vector<TypeCompletion> completion_;
   std::vector<BuiltinName> builtin_names_;
   BuiltinTypes builtins_;
+  // Rows below this limit are immutable in a private procedure task snapshot.
+  // Ordinary declaration stores leave the limit at zero.
+  std::size_t immutable_prefix_size_ = 0;
 };
 
 [[nodiscard]] std::string_view type_kind_name(TypeKind kind);

@@ -216,13 +216,34 @@ second :: proc() -> i64 {
   EXPECT(state, work.next_work == 0);
   EXPECT(state, work.procedures.empty());
   EXPECT(state, first.program.procedures().size() == 1);
-  EXPECT(state, first.package.symbols.symbol_count() > initial_symbols);
-  EXPECT(state, first.package.symbols.scope_count() > initial_scopes);
+  EXPECT(state, work.package.symbols.symbol_count() == initial_symbols);
+  EXPECT(state, work.package.symbols.scope_count() == initial_scopes);
+  EXPECT(state,
+         first.semantic.prefix.symbol_count == initial_symbols);
+  EXPECT(state,
+         first.semantic.prefix.scope_count == initial_scopes);
+  EXPECT(state, !first.semantic.symbols.symbols.empty());
+  EXPECT(state, !first.semantic.symbols.scopes.empty());
+
+  // A result may publish only against the exact canonical prefix it read.
+  // Simulate an intervening coordinator publication on a copy and prove the
+  // stale packet is rejected without disturbing the real state/result used by
+  // the remainder of this test.
+  draft::PackageBodyWorkState stale_work = work;
+  stale_work.constants.bindings.push_back(
+      {draft::SymbolId{}, draft::ConstantValue{}});
+  draft::ProcedureBodyTaskResult stale_first = first;
+  draft::DiagnosticSink stale_diagnostics;
+  EXPECT(state, !draft::publish_procedure_body_work(
+                    stale_work, std::move(stale_first), stale_diagnostics));
+  EXPECT(state, stale_diagnostics.has_errors());
 
   EXPECT(state, draft::publish_procedure_body_work(
                     work, std::move(first), first_diagnostics));
   EXPECT(state, work.next_work == 1);
   EXPECT(state, !work.active_work.has_value());
+  EXPECT(state, work.package.symbols.symbol_count() > initial_symbols);
+  EXPECT(state, work.package.symbols.scope_count() > initial_scopes);
   EXPECT(state, work.procedures.size() == 1);
   if (work.procedures.size() == 1) {
     EXPECT(state, work.procedures.front().program.procedures().size() == 1);
@@ -248,6 +269,8 @@ second :: proc() -> i64 {
   EXPECT(state, work.next_work == 1);
   EXPECT(state, work.procedures.size() == 1);
   EXPECT(state, second.program.procedures().size() == 1);
+  EXPECT(state,
+         work.package.symbols.symbol_count() == published_symbols);
   EXPECT(state, draft::publish_procedure_body_work(
                     work, std::move(second), second_diagnostics));
 

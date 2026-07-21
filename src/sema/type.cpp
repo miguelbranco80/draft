@@ -1,10 +1,12 @@
-// Canonical Draft type construction and natural aggregate layout.
+// Canonical Draft type construction, frozen task suffixes, and natural layout.
 //
 // Builtins are inserted in one fixed order so dumps and early diagnostics are
 // stable, although no persistent format may rely on their numeric IDs. Structural
 // interning uses direct linear scans. This is intentionally simple and correct
 // for the bootstrap's early scale; a measured need may later add a deterministic
-// key table without changing type identity semantics.
+// key table without changing type identity semantics. Procedure tasks freeze a
+// private copy's existing rows and return only its exact append packet; the
+// coordinator publishes that packet after validating its canonical prefix.
 
 #include "sema/type.h"
 
@@ -12,6 +14,7 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <iterator>
 #include <limits>
 #include <utility>
 
@@ -182,6 +185,7 @@ const Type &TypeStore::type(TypeId id) const {
 Type &TypeStore::type_mut(TypeId id) {
   assert(id.is_valid());
   assert(static_cast<std::size_t>(id.value) < types_.size());
+  assert(static_cast<std::size_t>(id.value) >= immutable_prefix_size_);
   return types_[id.value];
 }
 
@@ -208,6 +212,36 @@ TypeFacetState TypeStore::facet_state(TypeId id, TypeFacet facet) const {
 
 std::size_t TypeStore::size() const {
   return types_.size();
+}
+
+void TypeStore::freeze_existing_rows() {
+  immutable_prefix_size_ = types_.size();
+}
+
+TypeStoreAppend TypeStore::appended_since(std::size_t base_size) const {
+  assert(base_size <= types_.size());
+  assert(types_.size() == completion_.size());
+  TypeStoreAppend appended;
+  appended.base_size = base_size;
+  appended.types.assign(types_.begin() + static_cast<std::ptrdiff_t>(base_size),
+                        types_.end());
+  appended.completions.assign(
+      completion_.begin() + static_cast<std::ptrdiff_t>(base_size),
+      completion_.end());
+  return appended;
+}
+
+void TypeStore::append_exact(TypeStoreAppend appended) {
+  assert(types_.size() == appended.base_size);
+  assert(appended.types.size() == appended.completions.size());
+  types_.insert(
+      types_.end(),
+      std::make_move_iterator(appended.types.begin()),
+      std::make_move_iterator(appended.types.end()));
+  completion_.insert(
+      completion_.end(),
+      std::make_move_iterator(appended.completions.begin()),
+      std::make_move_iterator(appended.completions.end()));
 }
 
 std::optional<TypeId> TypeStore::find_builtin(std::string_view name) const {
@@ -403,15 +437,16 @@ TypeId TypeStore::simd(
     std::uint64_t lanes,
     SourceRange declaration) {
   for (std::uint32_t index = 0; index < types_.size(); ++index) {
-    Type &candidate = types_[index];
+    const Type &candidate = types_[index];
     if (candidate.kind == TypeKind::Simd && candidate.element == element &&
         candidate.element_count == lanes &&
         !candidate.owner_evaluated_type_application) {
       // Structural interning may first see a type through an imported graph,
       // which has no local source location. Preserve the first useful local use
       // so a target-profile rejection points at source instead of file zero.
-      if (!candidate.declaration.is_valid() && declaration.is_valid()) {
-        candidate.declaration = declaration;
+      if (static_cast<std::size_t>(index) >= immutable_prefix_size_ &&
+          !candidate.declaration.is_valid() && declaration.is_valid()) {
+        types_[index].declaration = declaration;
       }
       return TypeId{index};
     }
@@ -534,7 +569,8 @@ void TypeStore::complete_pending_tuple_layouts() {
   bool made_progress = true;
   while (made_progress) {
     made_progress = false;
-    for (std::size_t pending_index = 0; pending_index < types_.size();
+    for (std::size_t pending_index = immutable_prefix_size_;
+         pending_index < types_.size();
          ++pending_index) {
       Type &pending = types_[pending_index];
       if (pending.kind != TypeKind::Tuple || pending.layout.known ||

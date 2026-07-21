@@ -109,42 +109,113 @@ struct ProcedureBodyWorkItem {
   std::optional<std::size_t> prerequisite;
 };
 
-// ProcedureBodyTaskInput transfers exclusive ownership of the current
-// sequential semantic publication prefix to one worker. Moving rather than
-// copying the package and constants keeps this transitional oracle linear in
-// semantic state size. HIR is not an input: every task starts one new local
-// arena. work is the exact root and next_instance partitions already published
-// concrete records from any suffix discovered by this task.
+// ProcedureBodySemanticPrefix records every append-only table boundary seen by
+// one dispatched body task. The worker checks a private copy frozen at these
+// counts. Publication succeeds only if the canonical package still has exactly
+// this prefix, making stale or out-of-order task results explicit.
+struct ProcedureBodySemanticPrefix {
+  std::size_t type_count = 0;
+  std::size_t scope_count = 0;
+  std::size_t symbol_count = 0;
+  std::size_t file_count = 0;
+  std::size_t owned_scope_count = 0;
+  std::size_t aggregate_member_count = 0;
+  std::size_t enum_member_value_count = 0;
+  std::size_t parametric_parameter_count = 0;
+  std::size_t static_argument_pack_count = 0;
+  std::size_t parametric_instance_count = 0;
+  std::size_t parametric_type_instance_count = 0;
+  std::size_t import_count = 0;
+  std::size_t imported_symbol_count = 0;
+  std::size_t imported_documentation_count = 0;
+  std::size_t imported_procedure_instance_count = 0;
+  std::size_t imported_type_instantiation_request_count = 0;
+  std::size_t imported_type_count = 0;
+  std::size_t imported_effect_count = 0;
+  std::size_t imported_return_count = 0;
+  std::size_t imported_write_count = 0;
+  std::size_t declaration_denial_count = 0;
+  std::size_t site_count = 0;
+  std::size_t required_integer_expression_count = 0;
+  std::size_t deferred_element_count_count = 0;
+  std::size_t deferred_value_expression_count = 0;
+  std::size_t deferred_type_application_count = 0;
+  std::size_t native_binding_count = 0;
+  std::size_t conditional_declaration_count = 0;
+  std::size_t constant_count = 0;
+
+  bool operator==(const ProcedureBodySemanticPrefix &) const = default;
+};
+
+// ProcedureBodySemanticAppend is the semantic output owned by one exact body
+// task. It contains only rows appended after prefix; no complete package or
+// ConstantTable successor travels through the work graph. IDs already name
+// their final positions for the current sequential publisher. A later frozen-
+// wave publisher will remap these packets when independent tasks discover
+// equal canonical types or instances from one shared prefix.
+struct ProcedureBodySemanticAppend {
+  ProcedureBodySemanticPrefix prefix;
+  TypeStoreAppend types;
+  SymbolTableAppend symbols;
+  std::vector<FileSemanticScope> files;
+  std::vector<OwnedSemanticScope> owned_scopes;
+  std::vector<AggregateMember> aggregate_members;
+  std::vector<EnumMemberValue> enum_member_values;
+  std::vector<ParametricParameterRecord> parametric_parameters;
+  std::vector<StaticArgumentPack> static_argument_packs;
+  std::vector<ParametricInstanceRecord> parametric_instances;
+  std::vector<ParametricTypeInstanceRecord> parametric_type_instances;
+  std::vector<ImportBinding> imports;
+  std::vector<ImportedSymbol> imported_symbols;
+  std::vector<ImportedDocumentation> imported_documentation;
+  std::vector<ImportedProcedureInstance> imported_procedure_instances;
+  std::vector<ImportedTypeInstantiationRequest>
+      imported_type_instantiation_requests;
+  std::vector<ImportedType> imported_types;
+  std::vector<ImportedEffect> imported_effects;
+  std::vector<ImportedProcedureReturn> imported_returns;
+  std::vector<ImportedProcedureWrite> imported_writes;
+  std::vector<DeclarationDenial> declaration_denials;
+  std::vector<SemanticSite> sites;
+  std::vector<RequiredIntegerExpression> required_integer_expressions;
+  std::vector<DeferredElementCount> deferred_element_counts;
+  std::vector<DeferredValueExpression> deferred_value_expressions;
+  std::vector<DeferredTypeApplication> deferred_type_applications;
+  std::vector<NativeBinding> native_bindings;
+  std::vector<ConditionalDeclarationRegion> conditional_declarations;
+  std::vector<ConstantBinding> constants;
+};
+
+// ProcedureBodyTaskInput owns a private semantic snapshot frozen at prefix.
+// PackageBodyWorkState retains the canonical package while the task is in
+// flight. HIR is not an input: every task starts one new local arena. work is
+// the exact root and next_instance partitions already published concrete
+// records from any suffix discovered by this task. The snapshot currently
+// copies its immutable prefix; read-only overlays will remove that transport
+// cost without changing this ownership contract.
 struct ProcedureBodyTaskInput {
   bool valid = false;
   std::size_t work_index = 0;
   ProcedureBodyWorkItem work;
   std::size_t next_instance = 0;
+  ProcedureBodySemanticPrefix prefix;
   SemanticPackage package;
   ConstantTable constants;
 };
 
-// ProcedureBodyTaskResult is one worker-owned body attempt. package and
-// constants are the successor to the exclusively owned prefix supplied in
-// ProcedureBodyTaskInput; program is this root's new local HIR arena. The
-// worker never aliases PackageBodyWorkState. discovered_work contains nested
-// procedures and concrete instances found by this root. work_index ties the
-// result to the exact state row it consumed, while next_instance records the
-// published ParametricInstanceRecord prefix.
-//
-// This full semantic successor is intentionally simple and correct. A later
-// procedure-local semantic arena will narrow package and constants after their
-// ID domains and deterministic interning boundary are explicit; callers must
-// not infer that unrelated package state is semantically owned by the
-// procedure merely because it travels through this temporary packet.
+// ProcedureBodyTaskResult is one worker-owned body attempt. semantic contains
+// only this task's append packet; program is this root's local HIR arena. The
+// worker never aliases or replaces PackageBodyWorkState. discovered_work
+// contains nested procedures and concrete instances found by this root.
+// work_index ties the result to the exact state row it consumed, while
+// next_instance records the resulting ParametricInstanceRecord boundary.
 struct ProcedureBodyTaskResult {
   bool ok = false;
   std::size_t work_index = 0;
   SymbolId symbol;
   std::size_t checked_procedures = 0;
   std::size_t next_instance = 0;
-  SemanticPackage package;
-  ConstantTable constants;
+  ProcedureBodySemanticAppend semantic;
   // One local arena containing only this root's recoverable HIR.
   HirProgram program;
   std::vector<ProcedureBodyWorkItem> discovered_work;
@@ -160,11 +231,11 @@ struct ProcedureBodyTaskResult {
 // The state is deliberately public phase data rather than a callback-driven
 // executor: workspace orchestration freezes product waves, invokes one exact
 // item at a time, then creates product rows for the newly appended suffix.
-// Today this state is the deterministic full-successor publication oracle while
-// procedure-local arenas are introduced. The coordinator moves its payload
-// into one task, and only the matching publication operation moves a successor
-// back. Independent tasks cannot yet share one frozen prefix because that
-// prefix still has one exclusive owner.
+// Today this state is the deterministic exact-prefix publication oracle while
+// shared-prefix remapping is introduced. It retains canonical state while one
+// private snapshot is checked, then appends only the matching task packet.
+// Independent tasks cannot yet share one frozen prefix because task-local IDs
+// do not yet have a publication remap.
 struct PackageBodyWorkState {
   bool ok = false;
   SemanticPackage package;
@@ -174,9 +245,9 @@ struct PackageBodyWorkState {
   std::size_t next_work = 0;
   std::size_t next_instance = 0;
   std::size_t checked_procedures = 0;
-  // Present only after the coordinator transfers the package prefix into a
-  // ProcedureBodyTaskInput and before it adopts the matching result. No second
-  // task may be dispatched while this row is present.
+  // Present after the coordinator dispatches one frozen-prefix snapshot and
+  // before it publishes the matching append packet. No second task may be
+  // dispatched while this row is present until ID remapping supports waves.
   std::optional<std::size_t> active_work;
 };
 

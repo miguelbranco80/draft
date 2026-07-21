@@ -3431,7 +3431,8 @@ package_condition_needs_materialization(const SemanticPackage &package,
           [](const ConstantBinding &binding, std::uint32_t value) {
             return binding.symbol.value < value;
           });
-      published.bindings.insert(position, {symbol, std::move(constant.value)});
+      published.bindings.insert(
+          position, {symbol, std::move(constant.value), constant.type});
       append_unique_symbols(
           package.declaration_discovery.compile_time_synthesis_procedures,
           slots[task_index].constant->compile_time_procedures);

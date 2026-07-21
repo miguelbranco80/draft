@@ -41,10 +41,11 @@ identities between them. ABI classification is not yet a product.
 Concrete cross-package owner-evaluated type applications now use canonical
 command-local demand products with exact requester-layout and transitive-owner
 edges; no package is rebuilt to publish their results.
-Procedure HIR is now owned by exact live body products, but their semantic table
-successors still publish sequentially through one package state. Effect closure,
-denials, and MIR still consume a package-wide HIR compatibility projection.
-Those mechanisms are explicit remaining deletion work in the
+Procedure HIR and semantic append packets are now owned by exact live body
+products. Their private read prefix is still copied, and append IDs still
+require sequential exact-prefix publication rather than shared-wave remapping.
+Effect closure, denials, and MIR still consume a package-wide HIR compatibility
+projection. Those mechanisms are explicit remaining deletion work in the
 [semantic work graph implementation plan](semantic-work-graph-implementation-plan.md),
 not alternate final architecture paths.
 

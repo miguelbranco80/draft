@@ -23,6 +23,7 @@
 #include "source/source.h"
 #include "syntax/syntax_tree.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <optional>
@@ -127,6 +128,26 @@ struct Scope {
   std::vector<SymbolId> symbols;
 };
 
+// ExistingScopeSymbolAppend records bindings added to a scope which belongs to
+// a frozen package prefix. New scopes carry their own complete symbol vectors;
+// only pre-existing package/procedure/block scopes need these explicit rows.
+struct ExistingScopeSymbolAppend {
+  ScopeId scope;
+  std::vector<SymbolId> symbols;
+};
+
+// SymbolTableAppend is one exact task-local append over a frozen symbol-table
+// prefix. New scope and symbol rows retain their final IDs. Existing scope
+// additions are separate because declaring a nested procedure or concrete
+// instance can add a new symbol to a scope whose row predates the task.
+struct SymbolTableAppend {
+  std::size_t base_scope_count = 0;
+  std::size_t base_symbol_count = 0;
+  std::vector<Scope> scopes;
+  std::vector<Symbol> symbols;
+  std::vector<ExistingScopeSymbolAppend> existing_scope_symbols;
+};
+
 class SymbolTable {
 public:
   [[nodiscard]] ScopeId add_scope(ScopeKind kind, ScopeId parent, SourceRange range);
@@ -147,9 +168,19 @@ public:
   [[nodiscard]] std::size_t scope_count() const;
   [[nodiscard]] std::size_t symbol_count() const;
 
+  // Existing symbols become immutable inside one task snapshot. New bindings
+  // may still be declared in an existing scope; appended_since represents that
+  // change explicitly rather than treating the complete scope row as output.
+  void freeze_existing_rows();
+  [[nodiscard]] SymbolTableAppend appended_since(
+      std::size_t base_scope_count,
+      std::size_t base_symbol_count) const;
+  void append_exact(SymbolTableAppend appended);
+
 private:
   std::vector<Scope> scopes_;
   std::vector<Symbol> symbols_;
+  std::size_t immutable_symbol_prefix_size_ = 0;
 };
 
 [[nodiscard]] std::string_view scope_kind_name(ScopeKind kind);

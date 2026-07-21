@@ -36,6 +36,7 @@
 #include <bit>
 #include <cstddef>
 #include <cstdint>
+#include <iterator>
 #include <limits>
 #include <optional>
 #include <string>
@@ -1370,7 +1371,11 @@ private:
     for (const ValueSubstitution &substitution :
          instances_[*current_instance_index_].value_substitutions) {
       if (substitution.value.kind != ConstantKind::Integer) continue;
-      result.bindings.push_back({substitution.parameter, substitution.value});
+      result.bindings.push_back({
+          substitution.parameter,
+          substitution.value,
+          semantic_.symbols.symbol(substitution.parameter).type,
+      });
     }
     return result;
   }
@@ -6859,7 +6864,7 @@ private:
     // The final obligation pass receives this same table. Appending here makes
     // the lexical constant value available to synthesis/docs/judgment context
     // as well as ordinary expression substitution.
-    constants_.bindings.push_back({id, evaluated->value});
+    constants_.bindings.push_back({id, evaluated->value, type});
     return hir_.add_statement(std::move(statement));
   }
 
@@ -7359,6 +7364,7 @@ private:
           constants_.bindings.push_back({
               index_binding,
               ConstantValue::make_integer(BigInteger::from_u64(index)),
+              semantic_.types.builtins().usize_type,
           });
         }
       }
@@ -8383,6 +8389,213 @@ void append_body_root(
   }
 }
 
+// Captures every append-only boundary which body checking is allowed to extend.
+// Keeping this list explicit makes a newly mutable SemanticPackage table a
+// compile-time review point: it must be added both here and to extraction and
+// publication below before a task can return it.
+[[nodiscard]] ProcedureBodySemanticPrefix capture_body_semantic_prefix(
+    const SemanticPackage &package,
+    const ConstantTable &constants) {
+  ProcedureBodySemanticPrefix prefix;
+  prefix.type_count = package.types.size();
+  prefix.scope_count = package.symbols.scope_count();
+  prefix.symbol_count = package.symbols.symbol_count();
+  prefix.file_count = package.files.size();
+  prefix.owned_scope_count = package.owned_scopes.size();
+  prefix.aggregate_member_count = package.aggregate_members.size();
+  prefix.enum_member_value_count = package.enum_member_values.size();
+  prefix.parametric_parameter_count = package.parametric_parameters.size();
+  prefix.static_argument_pack_count = package.static_argument_packs.size();
+  prefix.parametric_instance_count = package.parametric_instances.size();
+  prefix.parametric_type_instance_count =
+      package.parametric_type_instances.size();
+  prefix.import_count = package.imports.size();
+  prefix.imported_symbol_count = package.imported_symbols.size();
+  prefix.imported_documentation_count =
+      package.imported_documentation.size();
+  prefix.imported_procedure_instance_count =
+      package.imported_procedure_instances.size();
+  prefix.imported_type_instantiation_request_count =
+      package.imported_type_instantiation_requests.size();
+  prefix.imported_type_count = package.imported_types.size();
+  prefix.imported_effect_count = package.imported_effects.size();
+  prefix.imported_return_count = package.imported_returns.size();
+  prefix.imported_write_count = package.imported_writes.size();
+  prefix.declaration_denial_count = package.declaration_denials.size();
+  prefix.site_count = package.sites.size();
+  prefix.required_integer_expression_count =
+      package.required_integer_expressions.size();
+  prefix.deferred_element_count_count = package.deferred_element_counts.size();
+  prefix.deferred_value_expression_count =
+      package.deferred_value_expressions.size();
+  prefix.deferred_type_application_count =
+      package.deferred_type_applications.size();
+  prefix.native_binding_count = package.native_bindings.size();
+  prefix.conditional_declaration_count =
+      package.conditional_declarations.size();
+  prefix.constant_count = constants.bindings.size();
+  return prefix;
+}
+
+template <typename Value>
+[[nodiscard]] std::vector<Value> copy_body_suffix(
+    const std::vector<Value> &values,
+    std::size_t begin) {
+  assert(begin <= values.size());
+  return std::vector<Value>(
+      values.begin() + static_cast<std::ptrdiff_t>(begin), values.end());
+}
+
+template <typename Value>
+void append_body_suffix(
+    std::vector<Value> &destination,
+    std::vector<Value> source) {
+  destination.insert(
+      destination.end(),
+      std::make_move_iterator(source.begin()),
+      std::make_move_iterator(source.end()));
+}
+
+// Extracts only the rows created by one frozen-prefix task. TypeStore and
+// SymbolTable enforce that pre-existing rows were not mutated; every remaining
+// SemanticPackage field is append-only and therefore needs only its boundary.
+[[nodiscard]] ProcedureBodySemanticAppend extract_body_semantic_append(
+    const ProcedureBodySemanticPrefix &prefix,
+    const SemanticPackage &package,
+    const ConstantTable &constants) {
+  ProcedureBodySemanticAppend appended;
+  appended.prefix = prefix;
+  appended.types = package.types.appended_since(prefix.type_count);
+  appended.symbols = package.symbols.appended_since(
+      prefix.scope_count, prefix.symbol_count);
+  appended.files = copy_body_suffix(package.files, prefix.file_count);
+  appended.owned_scopes = copy_body_suffix(
+      package.owned_scopes, prefix.owned_scope_count);
+  appended.aggregate_members = copy_body_suffix(
+      package.aggregate_members, prefix.aggregate_member_count);
+  appended.enum_member_values = copy_body_suffix(
+      package.enum_member_values, prefix.enum_member_value_count);
+  appended.parametric_parameters = copy_body_suffix(
+      package.parametric_parameters, prefix.parametric_parameter_count);
+  appended.static_argument_packs = copy_body_suffix(
+      package.static_argument_packs, prefix.static_argument_pack_count);
+  appended.parametric_instances = copy_body_suffix(
+      package.parametric_instances, prefix.parametric_instance_count);
+  appended.parametric_type_instances = copy_body_suffix(
+      package.parametric_type_instances,
+      prefix.parametric_type_instance_count);
+  appended.imports = copy_body_suffix(package.imports, prefix.import_count);
+  appended.imported_symbols = copy_body_suffix(
+      package.imported_symbols, prefix.imported_symbol_count);
+  appended.imported_documentation = copy_body_suffix(
+      package.imported_documentation, prefix.imported_documentation_count);
+  appended.imported_procedure_instances = copy_body_suffix(
+      package.imported_procedure_instances,
+      prefix.imported_procedure_instance_count);
+  appended.imported_type_instantiation_requests = copy_body_suffix(
+      package.imported_type_instantiation_requests,
+      prefix.imported_type_instantiation_request_count);
+  appended.imported_types = copy_body_suffix(
+      package.imported_types, prefix.imported_type_count);
+  appended.imported_effects = copy_body_suffix(
+      package.imported_effects, prefix.imported_effect_count);
+  appended.imported_returns = copy_body_suffix(
+      package.imported_returns, prefix.imported_return_count);
+  appended.imported_writes = copy_body_suffix(
+      package.imported_writes, prefix.imported_write_count);
+  appended.declaration_denials = copy_body_suffix(
+      package.declaration_denials, prefix.declaration_denial_count);
+  appended.sites = copy_body_suffix(package.sites, prefix.site_count);
+  appended.required_integer_expressions = copy_body_suffix(
+      package.required_integer_expressions,
+      prefix.required_integer_expression_count);
+  appended.deferred_element_counts = copy_body_suffix(
+      package.deferred_element_counts, prefix.deferred_element_count_count);
+  appended.deferred_value_expressions = copy_body_suffix(
+      package.deferred_value_expressions,
+      prefix.deferred_value_expression_count);
+  appended.deferred_type_applications = copy_body_suffix(
+      package.deferred_type_applications,
+      prefix.deferred_type_application_count);
+  appended.native_bindings = copy_body_suffix(
+      package.native_bindings, prefix.native_binding_count);
+  appended.conditional_declarations = copy_body_suffix(
+      package.conditional_declarations,
+      prefix.conditional_declaration_count);
+  appended.constants = copy_body_suffix(
+      constants.bindings, prefix.constant_count);
+  return appended;
+}
+
+// Publishes one exact semantic append after the scheduler validates its prefix.
+// Type and symbol rows come first because all side tables refer to their final
+// IDs. Source order within every packet is preserved exactly.
+void publish_body_semantic_append(
+    SemanticPackage &package,
+    ConstantTable &constants,
+    ProcedureBodySemanticAppend appended) {
+  package.types.append_exact(std::move(appended.types));
+  package.symbols.append_exact(std::move(appended.symbols));
+  append_body_suffix(package.files, std::move(appended.files));
+  append_body_suffix(package.owned_scopes, std::move(appended.owned_scopes));
+  append_body_suffix(
+      package.aggregate_members, std::move(appended.aggregate_members));
+  append_body_suffix(
+      package.enum_member_values, std::move(appended.enum_member_values));
+  append_body_suffix(
+      package.parametric_parameters,
+      std::move(appended.parametric_parameters));
+  append_body_suffix(
+      package.static_argument_packs,
+      std::move(appended.static_argument_packs));
+  append_body_suffix(
+      package.parametric_instances, std::move(appended.parametric_instances));
+  append_body_suffix(
+      package.parametric_type_instances,
+      std::move(appended.parametric_type_instances));
+  append_body_suffix(package.imports, std::move(appended.imports));
+  append_body_suffix(
+      package.imported_symbols, std::move(appended.imported_symbols));
+  append_body_suffix(
+      package.imported_documentation,
+      std::move(appended.imported_documentation));
+  append_body_suffix(
+      package.imported_procedure_instances,
+      std::move(appended.imported_procedure_instances));
+  append_body_suffix(
+      package.imported_type_instantiation_requests,
+      std::move(appended.imported_type_instantiation_requests));
+  append_body_suffix(
+      package.imported_types, std::move(appended.imported_types));
+  append_body_suffix(
+      package.imported_effects, std::move(appended.imported_effects));
+  append_body_suffix(
+      package.imported_returns, std::move(appended.imported_returns));
+  append_body_suffix(
+      package.imported_writes, std::move(appended.imported_writes));
+  append_body_suffix(
+      package.declaration_denials, std::move(appended.declaration_denials));
+  append_body_suffix(package.sites, std::move(appended.sites));
+  append_body_suffix(
+      package.required_integer_expressions,
+      std::move(appended.required_integer_expressions));
+  append_body_suffix(
+      package.deferred_element_counts,
+      std::move(appended.deferred_element_counts));
+  append_body_suffix(
+      package.deferred_value_expressions,
+      std::move(appended.deferred_value_expressions));
+  append_body_suffix(
+      package.deferred_type_applications,
+      std::move(appended.deferred_type_applications));
+  append_body_suffix(
+      package.native_bindings, std::move(appended.native_bindings));
+  append_body_suffix(
+      package.conditional_declarations,
+      std::move(appended.conditional_declarations));
+  append_body_suffix(constants.bindings, std::move(appended.constants));
+}
+
 } // namespace
 
 bool validate_package_compile_time_expression_types(
@@ -8526,8 +8739,11 @@ ProcedureBodyTaskInput take_next_procedure_body_work(
   input.valid = true;
   input.work = state.work[state.next_work];
   input.next_instance = state.next_instance;
-  input.package = std::move(state.package);
-  input.constants = std::move(state.constants);
+  input.prefix = capture_body_semantic_prefix(state.package, state.constants);
+  input.package = state.package;
+  input.constants = state.constants;
+  input.package.types.freeze_existing_rows();
+  input.package.symbols.freeze_existing_rows();
   state.active_work = state.next_work;
   return input;
 }
@@ -8549,15 +8765,15 @@ ProcedureBodyTaskResult check_procedure_body_work(
   const ProcedureBodyRoot root = input.work;
   result.work_index = input.work_index;
   result.symbol = root.symbol;
-  result.package = std::move(input.package);
-  result.constants = std::move(input.constants);
+  SemanticPackage package = std::move(input.package);
+  ConstantTable constants = std::move(input.constants);
   const std::vector<ProcedureInstantiationSeed> no_seeds;
   BodyChecker checker(
       sources,
       loaded,
       selections,
-      result.package,
-      result.constants,
+      package,
+      constants,
       target,
       diagnostics,
       no_seeds);
@@ -8574,14 +8790,16 @@ ProcedureBodyTaskResult check_procedure_body_work(
     append_body_root(result.discovered_work, std::move(nested));
   }
   std::size_t next_instance = input.next_instance;
-  while (next_instance < result.package.parametric_instances.size()) {
+  while (next_instance < package.parametric_instances.size()) {
     ProcedureBodyRoot instance_root;
     instance_root.symbol =
-        result.package.parametric_instances[next_instance].instance;
+        package.parametric_instances[next_instance].instance;
     append_body_root(result.discovered_work, std::move(instance_root));
     ++next_instance;
   }
   result.next_instance = next_instance;
+  result.semantic = extract_body_semantic_append(
+      input.prefix, package, constants);
   return result;
 }
 
@@ -8589,13 +8807,19 @@ bool publish_procedure_body_work(
     PackageBodyWorkState &state,
     ProcedureBodyTaskResult result,
     DiagnosticSink &diagnostics) {
+  const ProcedureBodySemanticPrefix current_prefix =
+      capture_body_semantic_prefix(state.package, state.constants);
+  const std::size_t result_instance_count =
+      result.semantic.prefix.parametric_instance_count +
+      result.semantic.parametric_instances.size();
   if (state.next_work >= state.work.size() ||
       !state.active_work.has_value() ||
       *state.active_work != state.next_work ||
       result.work_index != state.next_work ||
       result.symbol != state.work[state.next_work].symbol ||
+      result.semantic.prefix != current_prefix ||
       result.next_instance < state.next_instance ||
-      result.next_instance != result.package.parametric_instances.size()) {
+      result.next_instance != result_instance_count) {
     diagnostics.error(
         SourceRange::invalid(),
         "procedure body task result does not match the next published root");
@@ -8605,8 +8829,8 @@ bool publish_procedure_body_work(
   const std::size_t work_index = state.next_work;
   state.ok = state.ok && result.ok;
   state.checked_procedures += result.checked_procedures;
-  state.package = std::move(result.package);
-  state.constants = std::move(result.constants);
+  publish_body_semantic_append(
+      state.package, state.constants, std::move(result.semantic));
   ProcedureBodyHirResult procedure;
   procedure.ok = result.ok;
   procedure.symbol = result.symbol;

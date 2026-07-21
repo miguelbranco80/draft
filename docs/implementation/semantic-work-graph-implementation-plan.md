@@ -142,25 +142,30 @@ gate.
    `check_additional_package_instances`; both clean and extension work now use
    the same explicit item-at-a-time body state and live product publisher.
 
-   Root invocation is worker-owned as well. The coordinator moves the published
-   body prefix into a `ProcedureBodyTaskInput`; the worker has no alias to
-   `PackageBodyWorkState` and returns a `ProcedureBodyTaskResult` which only the
-   coordinator can validate and adopt. Moving the prefix avoids a full-package
-   copy per root. A focused test proves the work cursor cannot advance before
-   publication and that one exact task owns the semantic payload in flight.
+   Root invocation is worker-owned as well. The coordinator retains the
+   canonical package and gives the worker a private snapshot frozen at explicit
+   TypeStore, SymbolTable, side-table, and ConstantTable counts. The worker has
+   no alias to `PackageBodyWorkState` and returns only a
+   `ProcedureBodySemanticAppend`, not a complete successor. The coordinator
+   rejects a stale prefix and appends the packet in product order. A focused
+   test proves the work cursor cannot advance before publication and canonical
+   state remains unchanged while the task is in flight.
 
    HIR ownership is now product-local: every exact root starts an empty arena,
    publishes one permanent `ProcedureBodyHirResult`, and never receives earlier
    HIR as input. Package-wide consumers temporarily receive one deterministic
    ID-rewritten projection built after all roots finish.
 
-   The remaining split is substantive: each task-owned result is still a full
-   package/constants successor, and the sequential oracle adopts one before
-   invoking the next root. The consumer-first external-demand loop, body work
-   key, and extension/rebuild paths therefore remain. Replace the semantic
-   transport snapshot with procedure-local discoveries and deterministic
-   canonical publication, then delete those retained-package paths before this
-   step can close or parallel workers can begin.
+   Constant products now retain their checked static TypeId beside the value;
+   package-interface finalization installs the immutable pair and no body task
+   may repair a retained declaration symbol as a side effect.
+
+   The remaining split is substantive but narrower. The task result is local,
+   while its private read prefix is still a full package/constants copy and its
+   suffix IDs assume sequential publication. Replace the copied prefix with
+   read-only overlays and add deterministic remapping/canonical interning for a
+   shared ready wave. The consumer-first external-demand loop, body work key,
+   and extension/rebuild paths remain until that publication model closes.
 
 6. **Synthesis as an explicit wait state.** A body or declaration task may
    report its exact ready `...` set after producing the typed constraint needed

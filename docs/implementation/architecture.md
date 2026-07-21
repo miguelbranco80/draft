@@ -149,13 +149,21 @@ semantic ID addresses the body package returned beside the product set. A
 deterministic compatibility projection rewrites local IDs and concatenates the
 arenas once for effect, denial, and MIR consumers which remain package-wide.
 
-The coordinator still moves exclusive ownership of the current semantic and
-constant prefix into one root task, which returns a worker-owned successor for
-explicit adoption. This transfer avoids an accidental full-package copy per
-body, but the current sequential oracle must adopt one complete semantic
-successor before invoking the next root. Replacing that successor with local
-semantic discoveries and deterministic canonical publication is the remaining
-boundary before body waves may run in parallel.
+The coordinator retains the canonical semantic and constant prefix while one
+root checks a private snapshot frozen at exact table counts. The task returns
+only its appended types, scopes, symbols, side-table rows, lexical constants,
+and local HIR. Publication rejects a stale prefix and appends the packet in
+product order; it never replaces the package with a worker-owned successor.
+Existing type and symbol rows are frozen in the task snapshot, which exposed
+and removed a former constant-evaluation write into retained declarations.
+Constant products now carry their checked static type beside the immutable
+value, and the package-interface barrier installs that payload explicitly.
+
+This is still a sequential publication oracle. The private task snapshot copies
+its read-only package/constant prefix, and its suffix IDs assume no other result
+was published after dispatch. Replacing those copies with read-only overlays,
+then remapping equal canonical discoveries from a shared ready wave, is the
+remaining boundary before body workers may run in parallel.
 
 The transitional body work key is the declaration generation plus the exact
 canonical set of concrete generic procedures demanded by consumer packages.

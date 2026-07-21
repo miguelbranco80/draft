@@ -1,15 +1,18 @@
-// Direct append-only implementation of Draft scopes and symbol lookup.
+// Direct append-only Draft scopes, symbol lookup, and frozen task suffixes.
 //
 // Direct scope lookup is currently linear in declarations in that scope. This
 // preserves declaration order and keeps duplicate behavior obvious. Large real
 // packages may justify a secondary deterministic index later; the vector remains
-// canonical and lookup semantics do not change.
+// canonical and lookup semantics do not change. A procedure task freezes
+// existing Symbol rows in its private snapshot, records new rows plus additions
+// to old scopes, and lets the coordinator publish only that append packet.
 
 #include "sema/symbol.h"
 
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <iterator>
 #include <limits>
 #include <optional>
 #include <string>
@@ -99,6 +102,8 @@ const Symbol &SymbolTable::symbol(SymbolId id) const {
 Symbol &SymbolTable::symbol_mut(SymbolId id) {
   assert(id.is_valid());
   assert(static_cast<std::size_t>(id.value) < symbols_.size());
+  assert(static_cast<std::size_t>(id.value) >=
+         immutable_symbol_prefix_size_);
   return symbols_[id.value];
 }
 
@@ -108,6 +113,67 @@ std::size_t SymbolTable::scope_count() const {
 
 std::size_t SymbolTable::symbol_count() const {
   return symbols_.size();
+}
+
+void SymbolTable::freeze_existing_rows() {
+  immutable_symbol_prefix_size_ = symbols_.size();
+}
+
+SymbolTableAppend SymbolTable::appended_since(
+    std::size_t base_scope_count,
+    std::size_t base_symbol_count) const {
+  assert(base_scope_count <= scopes_.size());
+  assert(base_symbol_count <= symbols_.size());
+  SymbolTableAppend appended;
+  appended.base_scope_count = base_scope_count;
+  appended.base_symbol_count = base_symbol_count;
+  appended.scopes.assign(
+      scopes_.begin() + static_cast<std::ptrdiff_t>(base_scope_count),
+      scopes_.end());
+  appended.symbols.assign(
+      symbols_.begin() + static_cast<std::ptrdiff_t>(base_symbol_count),
+      symbols_.end());
+
+  // A new binding always receives a suffix SymbolId. Scanning only the
+  // pre-existing scopes therefore isolates exactly the additions without
+  // storing or comparing their complete prior symbol vectors.
+  for (std::size_t index = 0; index < base_scope_count; ++index) {
+    ExistingScopeSymbolAppend scope_append;
+    scope_append.scope = ScopeId{static_cast<std::uint32_t>(index)};
+    for (SymbolId symbol : scopes_[index].symbols) {
+      if (static_cast<std::size_t>(symbol.value) >= base_symbol_count) {
+        scope_append.symbols.push_back(symbol);
+      }
+    }
+    if (!scope_append.symbols.empty()) {
+      appended.existing_scope_symbols.push_back(std::move(scope_append));
+    }
+  }
+  return appended;
+}
+
+void SymbolTable::append_exact(SymbolTableAppend appended) {
+  assert(scopes_.size() == appended.base_scope_count);
+  assert(symbols_.size() == appended.base_symbol_count);
+  scopes_.insert(
+      scopes_.end(),
+      std::make_move_iterator(appended.scopes.begin()),
+      std::make_move_iterator(appended.scopes.end()));
+  symbols_.insert(
+      symbols_.end(),
+      std::make_move_iterator(appended.symbols.begin()),
+      std::make_move_iterator(appended.symbols.end()));
+  for (ExistingScopeSymbolAppend &scope_append :
+       appended.existing_scope_symbols) {
+    assert(scope_append.scope.is_valid());
+    assert(static_cast<std::size_t>(scope_append.scope.value) <
+           appended.base_scope_count);
+    Scope &owner = scopes_[scope_append.scope.value];
+    owner.symbols.insert(
+        owner.symbols.end(),
+        std::make_move_iterator(scope_append.symbols.begin()),
+        std::make_move_iterator(scope_append.symbols.end()));
+  }
 }
 
 std::string_view scope_kind_name(ScopeKind kind) {

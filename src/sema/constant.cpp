@@ -135,10 +135,12 @@ struct LocalTargetResult {
   return {EvalStatus::Error, {}, {}};
 }
 
-// ConstantEvaluator is a phase-local view over immutable syntax and mutable
-// symbol types. Its per-symbol arrays cover the symbol table size at round start;
-// constant evaluation never appends symbols, so indices and references remain
-// stable during the traversal.
+// ConstantEvaluator is a phase-local view over immutable syntax and semantic
+// symbol types. Declaration tasks may publish a newly inferred Symbol::type;
+// body tasks instead consume ConstantBinding::type from a frozen prefix and
+// retain any ready type in evaluator-owned arrays. Those arrays cover the symbol
+// table size at round start. Constant evaluation never appends symbols, so IDs
+// and references remain stable during the traversal.
 class ConstantEvaluator {
 public:
   ConstantEvaluator(
@@ -162,7 +164,9 @@ public:
         local_constants_(local_constants), local_types_(local_types),
         local_packs_(local_packs),
         states_(semantic.symbols.symbol_count(), BindingState::Unvisited),
-        values_(semantic.symbols.symbol_count()), product_root_(product_root),
+        values_(semantic.symbols.symbol_count()),
+        value_types_(semantic.symbols.symbol_count()),
+        product_root_(product_root),
         published_constants_(published_constants),
         published_only_(published_only),
         record_product_dependencies_(record_product_dependencies) {}
@@ -474,7 +478,8 @@ public:
     // order. This is the deterministic order used by semantic dumps and hashing.
     for (std::uint32_t index = 0; index < states_.size(); ++index) {
       if (states_[index] == BindingState::Ready) {
-        result.constants.bindings.push_back({SymbolId{index}, values_[index]});
+        result.constants.bindings.push_back(
+            {SymbolId{index}, values_[index], value_types_[index]});
       }
     }
     return result;
@@ -4986,7 +4991,7 @@ private:
     if (static_cast<std::size_t>(id.value) >= states_.size()) return pending();
     BindingState &state = states_[id.value];
     if (state == BindingState::Ready) {
-      return ready(values_[id.value], semantic_.symbols.symbol(id).type);
+      return ready(values_[id.value], value_types_[id.value]);
     }
     if (state == BindingState::Pending) return pending();
     if (state == BindingState::BlockedBySynthesis) {
@@ -4994,6 +4999,17 @@ private:
     }
     if (state == BindingState::Error) return error_result();
     const Symbol initial = semantic_.symbols.symbol(id);
+    if (local_constants_ != nullptr) {
+      if (const ConstantBinding *published =
+              local_constants_->find_binding(id)) {
+        state = BindingState::Ready;
+        values_[id.value] = published->value;
+        value_types_[id.value] = published->type.is_valid()
+            ? published->type
+            : initial.type;
+        return ready(values_[id.value], value_types_[id.value]);
+      }
+    }
     for (const ImportedSymbol &imported : semantic_.imported_symbols) {
       if (imported.proxy != id) {
         continue;
@@ -5007,17 +5023,21 @@ private:
       }
       state = BindingState::Ready;
       values_[id.value] = imported.constant;
-      return ready(imported.constant, initial.type);
+      value_types_[id.value] = initial.type;
+      return ready(imported.constant, value_types_[id.value]);
     }
     if (published_only_ &&
         (initial.kind == SymbolKind::Constant ||
          initial.kind == SymbolKind::UnresolvedDeclaration)) {
       if (published_constants_ != nullptr) {
-        if (const ConstantValue *published =
-                published_constants_->find(id)) {
+        if (const ConstantBinding *published =
+                published_constants_->find_binding(id)) {
           state = BindingState::Ready;
-          values_[id.value] = *published;
-          return ready(*published, initial.type);
+          values_[id.value] = published->value;
+          value_types_[id.value] = published->type.is_valid()
+              ? published->type
+              : initial.type;
+          return ready(published->value, value_types_[id.value]);
         }
       }
       state = BindingState::Pending;
@@ -5027,11 +5047,14 @@ private:
         (initial.kind == SymbolKind::Constant ||
          initial.kind == SymbolKind::UnresolvedDeclaration)) {
       if (published_constants_ != nullptr) {
-        if (const ConstantValue *published =
-                published_constants_->find(id)) {
+        if (const ConstantBinding *published =
+                published_constants_->find_binding(id)) {
           state = BindingState::Ready;
-          values_[id.value] = *published;
-          return ready(*published, initial.type);
+          values_[id.value] = published->value;
+          value_types_[id.value] = published->type.is_valid()
+              ? published->type
+              : initial.type;
+          return ready(published->value, value_types_[id.value]);
         }
       }
       constant_dependencies_.push_back(id);
@@ -5084,7 +5107,7 @@ private:
     const ScopeId evaluation_scope = owner_kind == ScopeKind::Block
         ? initial.scope
         : file_scope(tree->file());
-    const EvalResult result = evaluate_expression(
+    EvalResult result = evaluate_expression(
         *tree, expression, evaluation_scope, required);
     --binding_dependency_depth_;
     if (result.status == EvalStatus::Ready) {
@@ -5108,7 +5131,20 @@ private:
       } else if (!type.is_valid() && result.value.kind == ConstantKind::Type) {
         type = semantic_.types.builtins().meta_type;
       }
-      if (type.is_valid()) semantic_.symbols.symbol_mut(id).type = type;
+      value_types_[id.value] = type;
+      // The binding's inferred fallback type is part of the product result,
+      // not merely a side effect on SymbolTable. Without this assignment a
+      // value such as `Derived :: Base + 2` published an invalid type even
+      // though the evaluator had already inferred untyped_integer locally.
+      result.type = type;
+      // Body checking can reevaluate a package constant through a lexical
+      // expression helper after declaration products have already published
+      // its type. Do not turn that read into a mutation of the frozen package
+      // prefix. A genuinely new inference still updates the task-local symbol
+      // which owns the declaration attempt.
+      if (type.is_valid() && semantic_.symbols.symbol(id).type != type) {
+        semantic_.symbols.symbol_mut(id).type = type;
+      }
       return result;
     }
     if (result.status == EvalStatus::Error) {
@@ -5907,6 +5943,10 @@ private:
   const std::vector<ConstantStaticPackBinding> *local_packs_ = nullptr;
   std::vector<BindingState> states_;
   std::vector<ConstantValue> values_;
+  // A ready value's static type is evaluator state in its own right. Keeping
+  // it parallel prevents a task which reads an immutable published constant
+  // from having to rewrite the declaration Symbol merely to remember type.
+  std::vector<TypeId> value_types_;
   // Valid only for the single-product entry point. Ordinary round/expression
   // evaluation leaves product_root invalid and retains recursive lazy binding.
   SymbolId product_root_;
@@ -6031,10 +6071,13 @@ ConstantValue ConstantValue::make_target() {
 }
 
 const ConstantValue *ConstantTable::find(SymbolId symbol) const {
+  const ConstantBinding *binding = find_binding(symbol);
+  return binding != nullptr ? &binding->value : nullptr;
+}
+
+const ConstantBinding *ConstantTable::find_binding(SymbolId symbol) const {
   for (const ConstantBinding &binding : bindings) {
-    if (binding.symbol == symbol) {
-      return &binding.value;
-    }
+    if (binding.symbol == symbol) return &binding;
   }
   return nullptr;
 }
