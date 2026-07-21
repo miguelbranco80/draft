@@ -100,8 +100,8 @@ struct CompileWorkspaceOptions {
   // Bounds independent semantic work in one frozen ready wave. Zero selects
   // host hardware concurrency with a one-worker fallback; the executor caps it
   // to the wave size. This is scheduling policy only and must not alter semantic
-  // identity, diagnostics, HIR, MIR, or emitted bytes. Procedure bodies are the
-  // first semantic product kind to use the bound.
+  // identity, diagnostics, HIR, MIR, or emitted bytes. Interface products,
+  // procedure bodies, and every later frozen semantic wave use the same bound.
   std::size_t semantic_worker_count = 0;
 };
 

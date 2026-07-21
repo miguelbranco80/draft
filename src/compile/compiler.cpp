@@ -1292,7 +1292,7 @@ void bind_handwritten_program_identity(
 [[nodiscard]] bool finalize_workspace_package_interface(
     SourceManager &sources,
     const CompileWorkspaceOptions &options,
-    WorkspacePackage &workspace_package,
+    const WorkspacePackage &workspace_package,
     CompiledPackage &package,
     DiagnosticSink &diagnostics) {
   if (!package.declaration_discovery.terminal) {
@@ -1355,9 +1355,10 @@ void bind_handwritten_program_identity(
     SourceManager &sources, const CompileWorkspaceOptions &options,
     const WorkspaceDependencyIndex &schedule, std::size_t package_index,
     std::vector<AgentValidationContext> validation_context,
-    bool validation_context_is_typed, CompileWorkspaceResult &result,
+    bool validation_context_is_typed, const CompileWorkspaceResult &result,
     DiagnosticSink &diagnostics) {
-  WorkspacePackage &workspace_package = result.graph.packages[package_index];
+  const WorkspacePackage &workspace_package =
+      result.graph.packages[package_index];
   AvailablePackageImports available;
   available.consumer_identity = workspace_package.identity;
   for (std::size_t edge_index :
@@ -2646,8 +2647,62 @@ completed_declaration_dependencies(const CompileWorkspaceResult &result,
     // template. A blocked nested demand never enters this vector.
     std::vector<std::optional<SemanticPackage>> generic_wave_packages(
         result.packages.size());
-    for (std::size_t task_index = 0; task_index < wave.products.size();
-         ++task_index) {
+    // One frozen interface wave may contain several products from one package.
+    // Until declaration publication becomes an explicit append packet, those
+    // products must advance one private package snapshot in ProductId order.
+    // The executor therefore chains only siblings with the same PackageId;
+    // tasks owned by different packages remain independent. PackageNameSet and
+    // PackageInterface can load validation source into SourceManager, so those
+    // tasks run after every read-only product and in one stable global chain.
+    // This keeps workers away from canonical package state while allowing the
+    // already-isolated package work to execute concurrently.
+    struct InterfaceWaveExecution {
+      SourceManager *sources = nullptr;
+      const CompileWorkspaceOptions *options = nullptr;
+      const WorkspaceDependencyIndex *schedule = nullptr;
+      const SemanticReadyWave *wave = nullptr;
+      const CompileWorkspaceResult *result = nullptr;
+      std::vector<std::vector<AgentValidationContext>> *retained_validation =
+          nullptr;
+      std::vector<bool> *retained_validation_is_typed = nullptr;
+      std::vector<WorkspaceInterfaceTaskSlot> *slots = nullptr;
+      std::vector<std::optional<SemanticPackage>> *declaration_packages =
+          nullptr;
+      std::vector<std::optional<SemanticPackage>> *generic_packages = nullptr;
+      const std::vector<std::size_t> *task_indices = nullptr;
+    };
+    InterfaceWaveExecution execution{
+        &sources,
+        &options,
+        &schedule,
+        &wave,
+        &result,
+        &retained_validation,
+        &retained_validation_is_typed,
+        &slots,
+        &declaration_wave_packages,
+        &generic_wave_packages,
+        nullptr,
+    };
+    const auto execute_interface_task = [](
+        void *opaque, WorkTaskId scheduled_task,
+        std::string &failure) -> bool {
+      (void)failure;
+      auto &execution = *static_cast<InterfaceWaveExecution *>(opaque);
+      SourceManager &sources = *execution.sources;
+      const CompileWorkspaceOptions &options = *execution.options;
+      const WorkspaceDependencyIndex &schedule = *execution.schedule;
+      const SemanticReadyWave &wave = *execution.wave;
+      const CompileWorkspaceResult &result = *execution.result;
+      auto &retained_validation = *execution.retained_validation;
+      auto &retained_validation_is_typed =
+          *execution.retained_validation_is_typed;
+      auto &slots = *execution.slots;
+      auto &declaration_wave_packages = *execution.declaration_packages;
+      auto &generic_wave_packages = *execution.generic_packages;
+      const std::size_t task_index =
+          (*execution.task_indices)[static_cast<std::size_t>(scheduled_task)];
+      do {
       const SemanticProductId product = wave.products[task_index];
       WorkspaceInterfaceTaskSlot &slot = slots[task_index];
       if (static_cast<std::size_t>(product.value) >=
@@ -2941,7 +2996,7 @@ completed_declaration_dependencies(const CompileWorkspaceResult &result,
               SourceRange::invalid(), slot.outcome.failure);
           continue;
         }
-        CompiledPackage &package = *result.packages[package_index];
+        const CompiledPackage &package = *result.packages[package_index];
         const SyntaxReference condition_syntax =
             result.semantic_products.condition_by_product[product.value];
         if (condition_syntax.node.is_valid()) {
@@ -3154,6 +3209,84 @@ completed_declaration_dependencies(const CompileWorkspaceResult &result,
           "interface scheduler received an unexpected product kind";
       slot.outcome.diagnostics.error(SourceRange::invalid(),
                                      slot.outcome.failure);
+      } while (false);
+      return true;
+    };
+
+    std::vector<std::size_t> safe_tasks;
+    std::vector<std::size_t> source_mutating_tasks;
+    for (std::size_t task_index = 0; task_index < wave.products.size();
+         ++task_index) {
+      const SemanticProductId product = wave.products[task_index];
+      const SemanticProductKind kind =
+          result.semantic_graph.products[product.value].kind;
+      const bool may_mutate_sources =
+          kind == SemanticProductKind::PackageNameSet ||
+          kind == SemanticProductKind::PackageInterface;
+      if (may_mutate_sources) {
+        source_mutating_tasks.push_back(task_index);
+        continue;
+      }
+      safe_tasks.push_back(task_index);
+    }
+    std::vector<std::size_t> task_indices = safe_tasks;
+    task_indices.insert(task_indices.end(), source_mutating_tasks.begin(),
+                        source_mutating_tasks.end());
+    execution.task_indices = &task_indices;
+
+    WorkGraph execution_graph;
+    execution_graph.tasks.resize(task_indices.size());
+    std::vector<std::optional<WorkTaskId>> last_safe_by_package(
+        result.packages.size());
+    for (std::size_t execution_index = 0;
+         execution_index < safe_tasks.size(); ++execution_index) {
+      const SemanticProductId product =
+          wave.products[safe_tasks[execution_index]];
+      const PackageId owner =
+          result.semantic_products.package_by_product[product.value];
+      const WorkTaskId task = static_cast<WorkTaskId>(execution_index);
+      if (last_safe_by_package[owner.value].has_value()) {
+        execution_graph.tasks[task].dependencies.push_back(
+            *last_safe_by_package[owner.value]);
+      }
+      last_safe_by_package[owner.value] = task;
+    }
+    for (std::size_t index = 0; index < source_mutating_tasks.size(); ++index) {
+      const WorkTaskId task =
+          static_cast<WorkTaskId>(safe_tasks.size() + index);
+      execution_graph.tasks[task].dependencies.reserve(
+          safe_tasks.size() + (index == 0 ? 0 : 1));
+      for (std::size_t safe_index = 0; safe_index < safe_tasks.size();
+           ++safe_index) {
+        execution_graph.tasks[task].dependencies.push_back(
+            static_cast<WorkTaskId>(safe_index));
+      }
+      if (index != 0) {
+        execution_graph.tasks[task].dependencies.push_back(task - 1);
+      }
+    }
+    const WorkGraphRunResult scheduled = run_work_graph(
+        execution_graph,
+        WorkGraphRunOptions{options.semantic_worker_count},
+        execute_interface_task,
+        &execution);
+    if (options.timings != nullptr) {
+      options.timings->add_counter("interface semantic ready waves", 1);
+      options.timings->add_counter(
+          "interface semantic tasks scheduled", wave.products.size());
+      options.timings->add_counter(
+          "interface semantic worker slots", scheduled.workers_used);
+    }
+    if (!scheduled.ok) {
+      std::string failure = "interface semantic worker scheduling failed";
+      for (std::size_t index = 0; index < scheduled.tasks.size(); ++index) {
+        if (scheduled.tasks[index].state != WorkTaskState::Failed) continue;
+        failure += " at task " + std::to_string(index) + ": " +
+            scheduled.tasks[index].failure;
+        break;
+      }
+      diagnostics.error(SourceRange::invalid(), std::move(failure));
+      return false;
     }
 
     {

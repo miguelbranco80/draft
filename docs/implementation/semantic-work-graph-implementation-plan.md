@@ -318,6 +318,14 @@ gate.
    multi-worker output, diagnostics, generated source, and failure selection as
    identical.
 
+   Interface waves now enter the bounded executor. Products owned by different
+   packages run concurrently, while products owned by one package retain a
+   deterministic dependency chain over that package's private wave snapshot.
+   Name-set and interface barriers run after read-only tasks in one stable chain
+   because validation loading may extend `SourceManager`. The remaining gate is
+   to replace the package snapshot with exact declaration/generic append packets;
+   only then may same-package products write solely to independent task slots.
+
 10. **Native product consumption — complete.** Emit independent machine functions from MIR
     products, keep package static data and assembly explicit, and perform symbol,
     section, relocation, and linker-input layout as deterministic publication

@@ -62,8 +62,12 @@ copied into a body task. Ready body tasks share one frozen prefix; deterministic
 publication remaps task suffix IDs, interns structural types, and canonicalizes
 equal procedure and nominal type specializations. The bootstrap driver invokes
 the isolated tasks through its bounded closed-wave executor; task-indexed
-diagnostics and products publish only after join. Other package semantic waves
-remain sequential where their payloads still use package snapshots. One-worker
+diagnostics and products publish only after join. Interface waves also use that
+executor: different package owners run concurrently, while products from one
+package remain ordered over one private snapshot. Name-set and interface tasks
+are isolated after read-only work because validation loading may extend the
+shared source table. Declaration append packets are still required before
+same-package interface products can run independently. One-worker
 runs avoid thread creation; larger pools on the supported POSIX hosts use an
 explicit eight-MiB worker stack so authored syntax recursion has the same
 practical budget in sequential and parallel execution.
@@ -80,8 +84,8 @@ rebuild, or declaration-generation body work key. All packages now contribute
 their pending procedure products to one workspace-wide frozen ready set. New
 external owner bodies depend on the exact completed consumer product which
 requested them; package-local semantic suffixes still publish in PackageId/work
-order after the whole worker set joins. Package loops whose payloads still use
-package snapshots remain sequential.
+order after the whole worker set joins. Interface package snapshots remain the
+only semantic-wave payload that imposes a package-local execution chain.
 Per-package phase and declaration-generation counters are deleted. Source
 transitions supersede exact product rows; body initialization and closure reuse
 are derived from retained product/payload invariants rather than a parallel
