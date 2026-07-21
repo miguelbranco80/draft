@@ -165,13 +165,15 @@ gate.
    package-interface finalization installs the immutable pair and no body task
    may repair a retained declaration symbol as a side effect.
 
-   The remaining split is substantive but narrower. The task result is local,
-   while body-mutable semantic side tables are still copied into its private
-   view and suffix IDs assume sequential publication. Replace those remaining
-   copies with read-only-prefix/local-suffix views and add deterministic
-   remapping/canonical interning for a shared ready wave. The consumer-first
-   external-demand loop, body work key, and extension/rebuild paths remain until
-   that publication model closes.
+   The remaining split is substantive but narrower. Owned-scope,
+   parametric-parameter, and static-argument-pack tables now expose a canonical
+   prefix plus task-local suffix; their prefix rows are no longer copied.
+   Unmigrated body-mutable semantic side tables are still copied into the
+   private view, and all suffix IDs assume sequential publication. Replace
+   those remaining copies with read-only-prefix/local-suffix views and add
+   deterministic remapping/canonical interning for a shared ready wave. The
+   consumer-first external-demand loop, body work key, and extension/rebuild
+   paths remain until that publication model closes.
 
 6. **Synthesis as an explicit wait state.** A body or declaration task may
    report its exact ready `...` set after producing the typed constraint needed

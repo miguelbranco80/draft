@@ -81,7 +81,7 @@ private:
 
   [[nodiscard]] std::optional<SymbolId> imported_member(
       SymbolId import, std::string_view name) const {
-    for (const OwnedSemanticScope &owned : package_.owned_scopes) {
+    for (const OwnedSemanticScope &owned : package_.owned_scopes_for_read()) {
       if (owned.owner == import &&
           package_.symbols.scope(owned.scope).kind == ScopeKind::ImportedPackage) {
         return package_.symbols.lookup_direct(owned.scope, name);

@@ -357,20 +357,22 @@ without mutating that scope. ConstantTable uses the same prefix-overlay model
 for immutable package constants and task-local lexical constants.
 Declaration-closed file scopes, imports, imported documentation, native
 bindings, and package conditional regions are direct immutable views and are no
-longer represented in the body append packet. Body-mutable semantic side tables
-remain value snapshots. The worker returns only a
-`ProcedureBodySemanticAppend`, one procedure-local HIR arena, diagnostics, and
-discovered roots; it never aliases or returns a replacement for
-`PackageBodyWorkState`. The coordinator validates the work index, root symbol,
-and complete prefix, then appends type/symbol rows and every semantic side table
-in product order before exposing discovered roots.
+longer represented in the body append packet. Owned scopes, parametric
+parameter records, and static argument packs use read-only-prefix/local-suffix
+views as well: a task's raw vectors own only its new rows. The remaining
+body-mutable semantic side tables remain value snapshots. The worker returns
+only a `ProcedureBodySemanticAppend`, one procedure-local HIR arena,
+diagnostics, and discovered roots; it never aliases or returns a replacement
+for `PackageBodyWorkState`. The coordinator validates the work index, root
+symbol, and complete prefix, then appends type/symbol rows and every semantic
+side table in product order before exposing discovered roots.
 
 The result boundary is therefore procedure-local, but execution is not yet the
-final parallel implementation. Constructing the private view still copies
-body-mutable semantic side-table prefixes, and suffix IDs are valid only while
-one task is in flight. Read-only-prefix/local-suffix views for those remaining
-tables plus deterministic remapping and canonical interning will permit every
-independent root in one frozen wave to check concurrently.
+final parallel implementation. Constructing the private view still copies the
+unmigrated body-mutable semantic side-table prefixes, and suffix IDs are valid
+only while one task is in flight. Read-only-prefix/local-suffix views for those
+remaining tables plus deterministic remapping and canonical interning will
+permit every independent root in one frozen wave to check concurrently.
 
 Named constant products carry both `ConstantValue` and checked `TypeId`.
 Package-interface finalization installs that type payload into its retained

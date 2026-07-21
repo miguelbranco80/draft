@@ -26,11 +26,8 @@ SemanticPackage::SemanticPackage(
       symbols(base.symbols.fork_append_only()),
       package_scope(base.package_scope),
       runtime_context_type(base.runtime_context_type),
-      owned_scopes(base.owned_scopes),
       aggregate_members(base.aggregate_members),
       enum_member_values(base.enum_member_values),
-      parametric_parameters(base.parametric_parameters),
-      static_argument_packs(base.static_argument_packs),
       parametric_instances(base.parametric_instances),
       parametric_type_instances(base.parametric_type_instances),
       imported_symbols(base.imported_symbols),
@@ -81,6 +78,31 @@ SemanticPackage::conditional_declarations_for_read() const {
   return body_read_prefix_ != nullptr
       ? body_read_prefix_->conditional_declarations
       : conditional_declarations;
+}
+
+AppendOnlyTableView<OwnedSemanticScope>
+SemanticPackage::owned_scopes_for_read() const {
+  return AppendOnlyTableView<OwnedSemanticScope>(
+      body_read_prefix_ != nullptr ? &body_read_prefix_->owned_scopes : nullptr,
+      owned_scopes);
+}
+
+AppendOnlyTableView<ParametricParameterRecord>
+SemanticPackage::parametric_parameters_for_read() const {
+  return AppendOnlyTableView<ParametricParameterRecord>(
+      body_read_prefix_ != nullptr
+          ? &body_read_prefix_->parametric_parameters
+          : nullptr,
+      parametric_parameters);
+}
+
+AppendOnlyTableView<StaticArgumentPack>
+SemanticPackage::static_argument_packs_for_read() const {
+  return AppendOnlyTableView<StaticArgumentPack>(
+      body_read_prefix_ != nullptr
+          ? &body_read_prefix_->static_argument_packs
+          : nullptr,
+      static_argument_packs);
 }
 
 namespace {

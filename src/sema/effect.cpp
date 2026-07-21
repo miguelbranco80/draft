@@ -264,7 +264,7 @@ private:
   }
 
   [[nodiscard]] std::optional<SymbolId> type_owner(TypeId type) const {
-    for (const OwnedSemanticScope &owned : package_.owned_scopes) {
+    for (const OwnedSemanticScope &owned : package_.owned_scopes_for_read()) {
       if (package_.symbols.scope(owned.scope).kind == ScopeKind::Type &&
           package_.symbols.symbol(owned.owner).type == type) {
         return owned.owner;
@@ -506,7 +506,7 @@ private:
 
   [[nodiscard]] std::optional<std::uint32_t> parameter_ordinal(
       SymbolId parameter) const {
-    for (const OwnedSemanticScope &owned : package_.owned_scopes) {
+    for (const OwnedSemanticScope &owned : package_.owned_scopes_for_read()) {
       if (owned.owner != current_procedure_ ||
           package_.symbols.scope(owned.scope).kind != ScopeKind::Procedure) {
         continue;
@@ -565,7 +565,7 @@ private:
   // procedure-typed parameter begins as one symbolic slot; ordinary parameters
   // occupy their ordinal but need no value row.
   void seed_parameter_slots(SymbolId procedure) {
-    for (const OwnedSemanticScope &owned : package_.owned_scopes) {
+    for (const OwnedSemanticScope &owned : package_.owned_scopes_for_read()) {
       if (owned.owner != procedure ||
           package_.symbols.scope(owned.scope).kind != ScopeKind::Procedure) {
         continue;

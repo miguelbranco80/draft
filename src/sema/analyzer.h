@@ -5,10 +5,11 @@
 // creates file-local import scopes, assigns nominal type identities, and keeps
 // the source sites needed by later target selection, denial checking, judging,
 // and synthesis. The compiler retains the completed declaration result as an
-// immutable generation. Body checking starts from a copy and enriches that
-// body-owned generation with lexical and specialization rows, preserving one
-// ID prefix without allowing a later continuation to replay over old body
-// mutations.
+// immutable generation. Body checking reads that canonical generation through
+// append-only task views and owns only the lexical and specialization suffixes
+// discovered by one exact procedure. The coordinator publishes those suffixes
+// in deterministic order, preserving one ID prefix without allowing a later
+// continuation to replay over old body mutations.
 //
 // `when` branches are parsed but not collected here because selecting both
 // branches would create false duplicate declarations. Constant evaluation will
@@ -30,7 +31,9 @@
 #include "workspace/package.h"
 #include "workspace/workspace.h"
 
+#include <cstddef>
 #include <cstdint>
+#include <iterator>
 #include <limits>
 #include <optional>
 #include <string>
@@ -616,6 +619,90 @@ struct ConditionalDeclarationRegion {
   bool materialized = false;
 };
 
+// AppendOnlyTableView is a non-owning read sequence over one immutable
+// canonical prefix followed by one task-owned suffix. It exists only to make
+// the already-flat SemanticPackage tables readable without copying them into
+// every procedure task. The iterator carries both vector addresses rather than
+// pointing back at the temporary view, so ordinary range-for and algorithms
+// remain safe. No mutating operation is exposed: task code appends visibly to
+// the corresponding local std::vector and the coordinator alone publishes it.
+template <typename Value>
+class AppendOnlyTableView {
+public:
+  class ConstIterator {
+  public:
+    using iterator_category = std::forward_iterator_tag;
+    using value_type = Value;
+    using difference_type = std::ptrdiff_t;
+    using pointer = const Value *;
+    using reference = const Value &;
+
+    [[nodiscard]] reference operator*() const {
+      const std::size_t prefix_size =
+          prefix_ != nullptr ? prefix_->size() : 0;
+      return index_ < prefix_size
+          ? (*prefix_)[index_]
+          : (*suffix_)[index_ - prefix_size];
+    }
+
+    [[nodiscard]] pointer operator->() const { return &**this; }
+
+    ConstIterator &operator++() {
+      ++index_;
+      return *this;
+    }
+
+    ConstIterator operator++(int) {
+      ConstIterator previous = *this;
+      ++*this;
+      return previous;
+    }
+
+    bool operator==(const ConstIterator &) const = default;
+
+  private:
+    friend class AppendOnlyTableView<Value>;
+    ConstIterator(
+        const std::vector<Value> *prefix,
+        const std::vector<Value> *suffix,
+        std::size_t index)
+        : prefix_(prefix), suffix_(suffix), index_(index) {}
+
+    const std::vector<Value> *prefix_ = nullptr;
+    const std::vector<Value> *suffix_ = nullptr;
+    std::size_t index_ = 0;
+  };
+
+  AppendOnlyTableView(
+      const std::vector<Value> *prefix,
+      const std::vector<Value> &suffix)
+      : prefix_(prefix), suffix_(&suffix) {}
+
+  [[nodiscard]] std::size_t size() const {
+    return (prefix_ != nullptr ? prefix_->size() : 0) + suffix_->size();
+  }
+  [[nodiscard]] bool empty() const { return size() == 0; }
+
+  [[nodiscard]] const Value &operator[](std::size_t index) const {
+    const std::size_t prefix_size =
+        prefix_ != nullptr ? prefix_->size() : 0;
+    return index < prefix_size
+        ? (*prefix_)[index]
+        : (*suffix_)[index - prefix_size];
+  }
+
+  [[nodiscard]] ConstIterator begin() const {
+    return ConstIterator(prefix_, suffix_, 0);
+  }
+  [[nodiscard]] ConstIterator end() const {
+    return ConstIterator(prefix_, suffix_, size());
+  }
+
+private:
+  const std::vector<Value> *prefix_ = nullptr;
+  const std::vector<Value> *suffix_ = nullptr;
+};
+
 // SemanticPackage is the append-only semantic table set for one folder
 // package. A declaration generation owns the stable prefix established by
 // interface analysis. The body coordinator starts a canonical body generation
@@ -637,10 +724,11 @@ struct SemanticPackage {
 
   // Creates the semantic view used by one procedure task. Declaration-only
   // tables are read through this package without copying, TypeStore and
-  // SymbolTable become append-only overlays, and body-mutable side tables are
-  // currently copied until they receive local-suffix views of their own. The
-  // source package must outlive the returned view and may not itself be a task
-  // view.
+  // SymbolTable become append-only overlays, and migrated body-mutable tables
+  // expose the source prefix followed by their task-local suffix. Other
+  // body-mutable tables remain snapshots until their own product migration.
+  // The source package must outlive the returned view and may not itself be a
+  // task view.
   [[nodiscard]] SemanticPackage fork_body_task_view() const;
 
   // These five tables close before procedure products become ready and cannot
@@ -654,6 +742,16 @@ struct SemanticPackage {
   native_bindings_for_read() const;
   [[nodiscard]] const std::vector<ConditionalDeclarationRegion> &
   conditional_declarations_for_read() const;
+
+  // Body-mutable tables use a canonical-prefix/local-suffix view. The raw
+  // vectors below remain the owning suffix in a task view and the complete
+  // table in a canonical package.
+  [[nodiscard]] AppendOnlyTableView<OwnedSemanticScope>
+  owned_scopes_for_read() const;
+  [[nodiscard]] AppendOnlyTableView<ParametricParameterRecord>
+  parametric_parameters_for_read() const;
+  [[nodiscard]] AppendOnlyTableView<StaticArgumentPack>
+  static_argument_packs_for_read() const;
 
   std::string short_name;
   // Workspace identity is present for package-aware analysis and empty in

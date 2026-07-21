@@ -167,7 +167,7 @@ constexpr std::array<std::string_view, 2> kTargetObjectFormatNames = {
 
 [[nodiscard]] std::optional<SymbolId> type_owner(
     const SemanticPackage &package, TypeId type) {
-  for (const OwnedSemanticScope &owned : package.owned_scopes) {
+  for (const OwnedSemanticScope &owned : package.owned_scopes_for_read()) {
     if (package.symbols.scope(owned.scope).kind == ScopeKind::Type &&
         package.symbols.symbol(owned.owner).type == type) {
       return owned.owner;

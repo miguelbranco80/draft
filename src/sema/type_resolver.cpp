@@ -659,7 +659,7 @@ private:
   // Reuse is required when aliases recursively request the same declaration.
   [[nodiscard]] std::optional<ScopeId> owned_scope(
       SymbolId owner, ScopeKind kind) const {
-    for (const OwnedSemanticScope &entry : semantic_.owned_scopes) {
+    for (const OwnedSemanticScope &entry : semantic_.owned_scopes_for_read()) {
       if (entry.owner == owner && semantic_.symbols.scope(entry.scope).kind == kind) {
         return entry.scope;
       }
@@ -810,7 +810,7 @@ private:
           const std::optional<SymbolId> binding =
               semantic_.symbols.lookup(scope, iterable_names.front().text);
           for (const StaticArgumentPack &pack :
-               semantic_.static_argument_packs) {
+               semantic_.static_argument_packs_for_read()) {
             if (pack.owner == owner && binding.has_value() &&
                 *binding == pack.binding) {
               // The iteration introduces its value/index bindings only during
@@ -1177,7 +1177,7 @@ private:
       ScopeId scope,
       TypeId wanted) const {
     for (const ParametricParameterRecord &parameter :
-         semantic_.parametric_parameters) {
+         semantic_.parametric_parameters_for_read()) {
       const Symbol &symbol = semantic_.symbols.symbol(parameter.parameter);
       if (symbol.kind == SymbolKind::TypeParameter &&
           symbol.type == wanted &&
@@ -1196,7 +1196,7 @@ private:
       const std::vector<DeferredElementCountTypeBinding> &type_bindings,
       const std::vector<DeferredElementCountValueBinding> &value_bindings) const {
     for (const ParametricParameterRecord &parameter :
-         semantic_.parametric_parameters) {
+         semantic_.parametric_parameters_for_read()) {
       const Symbol &symbol = semantic_.symbols.symbol(parameter.parameter);
       if (!expression_references_symbol(
               tree, expression, scope, parameter.parameter)) {
@@ -1320,7 +1320,7 @@ private:
         semantic_.symbols.symbol(*import).kind != SymbolKind::Import) {
       return std::nullopt;
     }
-    for (const OwnedSemanticScope &owned : semantic_.owned_scopes) {
+    for (const OwnedSemanticScope &owned : semantic_.owned_scopes_for_read()) {
       if (owned.owner == *import &&
           semantic_.symbols.scope(owned.scope).kind ==
               ScopeKind::ImportedPackage) {
@@ -1734,7 +1734,7 @@ private:
       SymbolId owner) const {
     std::vector<ParametricParameterRecord> result;
     for (const ParametricParameterRecord &parameter :
-         semantic_.parametric_parameters) {
+         semantic_.parametric_parameters_for_read()) {
       if (parameter.owner == owner) result.push_back(parameter);
     }
     return result;
@@ -1747,7 +1747,7 @@ private:
       return std::nullopt;
     }
     for (const ParametricParameterRecord &parameter :
-         semantic_.parametric_parameters) {
+         semantic_.parametric_parameters_for_read()) {
       if (semantic_.symbols.symbol(parameter.parameter).type == type) {
         return parameter.constraint;
       }
@@ -2675,7 +2675,7 @@ private:
     });
 
     std::vector<SymbolId> template_members;
-    for (const OwnedSemanticScope &owned : semantic_.owned_scopes) {
+    for (const OwnedSemanticScope &owned : semantic_.owned_scopes_for_read()) {
       if (owned.owner == owner_id ||
           semantic_.symbols.scope(owned.scope).kind != ScopeKind::Type ||
           semantic_.symbols.symbol(owned.owner).type != pattern) {
@@ -2782,7 +2782,7 @@ private:
         semantic_.symbols.symbol(*import).kind != SymbolKind::Import) {
       return std::nullopt;
     }
-    for (const OwnedSemanticScope &owned : semantic_.owned_scopes) {
+    for (const OwnedSemanticScope &owned : semantic_.owned_scopes_for_read()) {
       if (owned.owner == *import &&
           semantic_.symbols.scope(owned.scope).kind ==
               ScopeKind::ImportedPackage) {
@@ -3440,7 +3440,7 @@ private:
         semantic_.symbols.symbol(*first).kind != SymbolKind::Import) {
       return std::nullopt;
     }
-    for (const OwnedSemanticScope &owned : semantic_.owned_scopes) {
+    for (const OwnedSemanticScope &owned : semantic_.owned_scopes_for_read()) {
       if (owned.owner != *first ||
           semantic_.symbols.scope(owned.scope).kind != ScopeKind::ImportedPackage) {
         continue;
@@ -4188,7 +4188,7 @@ private:
           semantic_.symbols.symbol(*package).kind != SymbolKind::Import) {
         return std::nullopt;
       }
-      for (const OwnedSemanticScope &owned : semantic_.owned_scopes) {
+      for (const OwnedSemanticScope &owned : semantic_.owned_scopes_for_read()) {
         if (owned.owner != *package ||
             semantic_.symbols.scope(owned.scope).kind !=
                 ScopeKind::ImportedPackage) {

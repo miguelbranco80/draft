@@ -152,7 +152,7 @@ private:
   [[nodiscard]] std::optional<std::size_t> aggregate_member_index(
       TypeId type, std::string_view name) const {
     std::optional<SymbolId> owner;
-    for (const OwnedSemanticScope &owned : package_.owned_scopes) {
+    for (const OwnedSemanticScope &owned : package_.owned_scopes_for_read()) {
       if (package_.symbols.scope(owned.scope).kind == ScopeKind::Type &&
           package_.symbols.symbol(owned.owner).type == type) {
         owner = owned.owner;

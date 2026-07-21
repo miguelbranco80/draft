@@ -599,7 +599,8 @@ private:
     // Package/file scopes intentionally retain the invalid package anchor.
     ScopeId candidate = scope;
     while (candidate.is_valid()) {
-      for (const OwnedSemanticScope &owned : semantic_.owned_scopes) {
+      for (const OwnedSemanticScope &owned :
+           semantic_.owned_scopes_for_read()) {
         if (owned.scope == candidate &&
             semantic_.symbols.scope(candidate).kind == ScopeKind::Type) {
           site.anchor = owned.owner;
@@ -808,7 +809,7 @@ private:
         semantic_.symbols.symbol(*import).kind != SymbolKind::Import) {
       return std::nullopt;
     }
-    for (const OwnedSemanticScope &owned : semantic_.owned_scopes) {
+    for (const OwnedSemanticScope &owned : semantic_.owned_scopes_for_read()) {
       if (owned.owner == *import &&
           semantic_.symbols.scope(owned.scope).kind == ScopeKind::ImportedPackage) {
         return semantic_.symbols.lookup_direct(owned.scope, *member);
@@ -3072,7 +3073,7 @@ private:
   }
 
   [[nodiscard]] std::optional<SymbolId> aggregate_owner(TypeId type_id) const {
-    for (const OwnedSemanticScope &owned : semantic_.owned_scopes) {
+    for (const OwnedSemanticScope &owned : semantic_.owned_scopes_for_read()) {
       if (semantic_.symbols.scope(owned.scope).kind == ScopeKind::Type &&
           semantic_.symbols.symbol(owned.owner).type == type_id) {
         return owned.owner;
@@ -3268,7 +3269,7 @@ private:
   }
 
   [[nodiscard]] std::optional<ScopeId> procedure_scope(SymbolId owner) const {
-    for (const OwnedSemanticScope &owned : semantic_.owned_scopes) {
+    for (const OwnedSemanticScope &owned : semantic_.owned_scopes_for_read()) {
       if (owned.owner == owner &&
           semantic_.symbols.scope(owned.scope).kind == ScopeKind::Procedure) {
         return owned.scope;
@@ -3321,7 +3322,7 @@ private:
       SymbolId owner) const {
     std::vector<ParametricParameterRecord> result;
     for (const ParametricParameterRecord &parameter :
-         semantic_.parametric_parameters) {
+         semantic_.parametric_parameters_for_read()) {
       if (parameter.owner == owner) result.push_back(parameter);
     }
     return result;

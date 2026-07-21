@@ -746,7 +746,7 @@ private:
   // Locates a scope already owned by a declaration during signature resolution.
   [[nodiscard]] std::optional<ScopeId> owned_scope(
       SymbolId owner, ScopeKind kind) const {
-    for (const OwnedSemanticScope &entry : semantic_.owned_scopes) {
+    for (const OwnedSemanticScope &entry : semantic_.owned_scopes_for_read()) {
       if (entry.owner == owner && semantic_.symbols.scope(entry.scope).kind == kind) {
         return entry.scope;
       }
@@ -966,7 +966,7 @@ private:
       if (all_number) return TypeConstraintKind::Number;
     }
     for (const ParametricParameterRecord &parameter :
-         semantic_.parametric_parameters) {
+         semantic_.parametric_parameters_for_read()) {
       const Symbol &symbol = semantic_.symbols.symbol(parameter.parameter);
       if (symbol.type == type) return parameter.constraint;
     }
@@ -2230,7 +2230,7 @@ private:
     // vocabulary. Member selection is one of those operators: the wrapper is
     // the base operand, while the selected field keeps its declared type.
     base = underlying_type_id(base);
-    for (const OwnedSemanticScope &owned : semantic_.owned_scopes) {
+    for (const OwnedSemanticScope &owned : semantic_.owned_scopes_for_read()) {
       if (semantic_.symbols.scope(owned.scope).kind != ScopeKind::Type) continue;
       const Symbol &owner = semantic_.symbols.symbol(owned.owner);
       if (owner.type == base) {
@@ -2266,7 +2266,7 @@ private:
         semantic_.symbols.symbol(*import).kind != SymbolKind::Import) {
       return std::nullopt;
     }
-    for (const OwnedSemanticScope &owned : semantic_.owned_scopes) {
+    for (const OwnedSemanticScope &owned : semantic_.owned_scopes_for_read()) {
       if (owned.owner == *import &&
           semantic_.symbols.scope(owned.scope).kind == ScopeKind::ImportedPackage) {
         return semantic_.symbols.lookup_direct(owned.scope, all_names.back().text);
@@ -2422,7 +2422,7 @@ private:
   // an alias, and avoids treating another five-member enum as a memory order.
   [[nodiscard]] std::optional<TypeId> atomic_order_type(
       const ImportedSymbol &intrinsic) const {
-    for (const OwnedSemanticScope &owned : semantic_.owned_scopes) {
+    for (const OwnedSemanticScope &owned : semantic_.owned_scopes_for_read()) {
       if (owned.owner != intrinsic.import_symbol ||
           semantic_.symbols.scope(owned.scope).kind !=
               ScopeKind::ImportedPackage) {
@@ -2712,7 +2712,7 @@ private:
     // Enum and tagged-union switches over a distinct wrapper still use the
     // alternative set owned by the underlying nominal declaration.
     type = underlying_type_id(type);
-    for (const OwnedSemanticScope &owned : semantic_.owned_scopes) {
+    for (const OwnedSemanticScope &owned : semantic_.owned_scopes_for_read()) {
       if (semantic_.symbols.scope(owned.scope).kind == ScopeKind::Type &&
           semantic_.symbols.symbol(owned.owner).type == type) {
         return owned.owner;
@@ -3343,7 +3343,7 @@ private:
       SymbolId owner) const {
     std::vector<ParametricParameterRecord> result;
     for (const ParametricParameterRecord &parameter :
-         semantic_.parametric_parameters) {
+         semantic_.parametric_parameters_for_read()) {
       if (parameter.owner == owner) result.push_back(parameter);
     }
     return result;
@@ -3355,7 +3355,8 @@ private:
   // nested declaration discovery. Ordinary procedures return null.
   [[nodiscard]] const StaticArgumentPack *static_argument_pack(
       SymbolId owner) const {
-    for (const StaticArgumentPack &pack : semantic_.static_argument_packs) {
+    for (const StaticArgumentPack &pack :
+         semantic_.static_argument_packs_for_read()) {
       if (pack.owner == owner) return &pack;
     }
     return nullptr;
@@ -3371,7 +3372,8 @@ private:
     if (!current_procedure_.is_valid()) return false;
     const SymbolId current_source =
         procedure_declaration_source(current_procedure_);
-    for (const StaticArgumentPack &pack : semantic_.static_argument_packs) {
+    for (const StaticArgumentPack &pack :
+         semantic_.static_argument_packs_for_read()) {
       if (pack.binding == binding && pack.owner != current_source) return true;
     }
     if (current_instance_index_.has_value()) {
@@ -6950,7 +6952,7 @@ private:
     // specialization is known to TypeResolver. Apply that specialization to
     // the runtime-bearing parameter rows and compile-time value parameter
     // types now. Type-parameter identities themselves must remain symbolic.
-    for (const OwnedSemanticScope &owned : semantic_.owned_scopes) {
+    for (const OwnedSemanticScope &owned : semantic_.owned_scopes_for_read()) {
       if (owned.owner != id) continue;
       for (SymbolId child :
            semantic_.symbols.symbols_in_scope(owned.scope)) {
@@ -8401,11 +8403,13 @@ void append_body_root(
   prefix.type_count = package.types.size();
   prefix.scope_count = package.symbols.scope_count();
   prefix.symbol_count = package.symbols.symbol_count();
-  prefix.owned_scope_count = package.owned_scopes.size();
+  prefix.owned_scope_count = package.owned_scopes_for_read().size();
   prefix.aggregate_member_count = package.aggregate_members.size();
   prefix.enum_member_value_count = package.enum_member_values.size();
-  prefix.parametric_parameter_count = package.parametric_parameters.size();
-  prefix.static_argument_pack_count = package.static_argument_packs.size();
+  prefix.parametric_parameter_count =
+      package.parametric_parameters_for_read().size();
+  prefix.static_argument_pack_count =
+      package.static_argument_packs_for_read().size();
   prefix.parametric_instance_count = package.parametric_instances.size();
   prefix.parametric_type_instance_count =
       package.parametric_type_instances.size();
@@ -8462,16 +8466,16 @@ void append_body_suffix(
   appended.types = package.types.appended_since(prefix.type_count);
   appended.symbols = package.symbols.appended_since(
       prefix.scope_count, prefix.symbol_count);
-  appended.owned_scopes = copy_body_suffix(
-      package.owned_scopes, prefix.owned_scope_count);
+  // These three raw vectors already own only this task's suffix. Their
+  // canonical prefix is visible through AppendOnlyTableView and must not be
+  // copied back into the append packet.
+  appended.owned_scopes = package.owned_scopes;
   appended.aggregate_members = copy_body_suffix(
       package.aggregate_members, prefix.aggregate_member_count);
   appended.enum_member_values = copy_body_suffix(
       package.enum_member_values, prefix.enum_member_value_count);
-  appended.parametric_parameters = copy_body_suffix(
-      package.parametric_parameters, prefix.parametric_parameter_count);
-  appended.static_argument_packs = copy_body_suffix(
-      package.static_argument_packs, prefix.static_argument_pack_count);
+  appended.parametric_parameters = package.parametric_parameters;
+  appended.static_argument_packs = package.static_argument_packs;
   appended.parametric_instances = copy_body_suffix(
       package.parametric_instances, prefix.parametric_instance_count);
   appended.parametric_type_instances = copy_body_suffix(

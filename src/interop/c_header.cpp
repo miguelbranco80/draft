@@ -173,7 +173,7 @@ private:
     std::vector<SymbolId> result;
     const std::optional<SymbolId> owner = owner_symbol(id);
     if (!owner.has_value()) return result;
-    for (const OwnedSemanticScope &scope : semantic_.owned_scopes) {
+    for (const OwnedSemanticScope &scope : semantic_.owned_scopes_for_read()) {
       if (scope.owner != *owner ||
           semantic_.symbols.scope(scope.scope).kind != ScopeKind::Type) {
         continue;

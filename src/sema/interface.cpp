@@ -171,7 +171,7 @@ public:
       declaration.flags = symbol.flags;
       declaration.type = translate_type(symbol.type);
       for (const ParametricParameterRecord &parameter :
-           package_.parametric_parameters) {
+           package_.parametric_parameters_for_read()) {
         if (parameter.owner != id) {
           continue;
         }
@@ -191,7 +191,8 @@ public:
             translate_type(parameter_symbol.type),
         });
       }
-      for (const StaticArgumentPack &pack : package_.static_argument_packs) {
+      for (const StaticArgumentPack &pack :
+           package_.static_argument_packs_for_read()) {
         if (pack.owner != id) continue;
         declaration.has_static_argument_pack = true;
         declaration.static_argument_pack_name =
@@ -550,7 +551,7 @@ private:
   // several package symbols share a TypeId; member contents are identical, so
   // the first declaration-order owner is canonical for interface extraction.
   [[nodiscard]] std::optional<ScopeId> nominal_scope(TypeId type) const {
-    for (const OwnedSemanticScope &owned : package_.owned_scopes) {
+    for (const OwnedSemanticScope &owned : package_.owned_scopes_for_read()) {
       if (package_.symbols.scope(owned.scope).kind == ScopeKind::Type &&
           package_.symbols.symbol(owned.owner).type == type) {
         return owned.scope;
@@ -583,7 +584,7 @@ private:
       std::uint32_t parameter_value) const {
     std::optional<SymbolId> owner;
     for (const ParametricParameterRecord &parameter :
-         package_.parametric_parameters) {
+         package_.parametric_parameters_for_read()) {
       if (parameter.parameter.value == parameter_value) {
         owner = parameter.owner;
         break;
@@ -593,7 +594,7 @@ private:
 
     std::uint32_t ordinal = 0;
     for (const ParametricParameterRecord &parameter :
-         package_.parametric_parameters) {
+         package_.parametric_parameters_for_read()) {
       if (parameter.owner != *owner) continue;
       if (parameter.parameter.value == parameter_value) return ordinal;
       ++ordinal;
@@ -670,7 +671,8 @@ private:
     translated.nominal_root_relative_path = identity_.root_relative_path;
     translated.nominal_public_name = package_.types.type(source).name;
     if (kind == TypeKind::TypeParameter) {
-      for (const ParametricParameterRecord &parameter : package_.parametric_parameters) {
+      for (const ParametricParameterRecord &parameter :
+           package_.parametric_parameters_for_read()) {
         const Symbol &parameter_symbol = package_.symbols.symbol(parameter.parameter);
         if (parameter_symbol.type != source) {
           continue;

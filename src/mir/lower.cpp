@@ -115,7 +115,7 @@ private:
 
   void add_parameters() {
     std::optional<ScopeId> parameter_scope;
-    for (const OwnedSemanticScope &owned : semantic_.owned_scopes) {
+    for (const OwnedSemanticScope &owned : semantic_.owned_scopes_for_read()) {
       if (owned.owner == source_.symbol &&
           semantic_.symbols.scope(owned.scope).kind == ScopeKind::Procedure) {
         parameter_scope = owned.scope;

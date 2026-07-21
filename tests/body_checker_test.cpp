@@ -202,6 +202,18 @@ second :: proc() -> i64 {
   EXPECT(state,
          first_input.package.files_for_read().size() ==
              work.package.files.size());
+  EXPECT(state, first_input.package.owned_scopes.empty());
+  EXPECT(state,
+         first_input.package.owned_scopes_for_read().size() ==
+             work.package.owned_scopes.size());
+  EXPECT(state, first_input.package.parametric_parameters.empty());
+  EXPECT(state,
+         first_input.package.parametric_parameters_for_read().size() ==
+             work.package.parametric_parameters.size());
+  EXPECT(state, first_input.package.static_argument_packs.empty());
+  EXPECT(state,
+         first_input.package.static_argument_packs_for_read().size() ==
+             work.package.static_argument_packs.size());
   EXPECT(state, first_input.package.symbols.symbol_count() == initial_symbols);
   EXPECT(state, first_input.package.symbols.scope_count() == initial_scopes);
   draft::ProcedureBodyTaskResult first =

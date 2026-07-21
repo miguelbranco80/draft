@@ -975,13 +975,13 @@ void append_imported_effect_context(
     }
     std::size_t parameter_count = 0;
     for (const ParametricParameterRecord &parameter :
-         package.parametric_parameters) {
+         package.parametric_parameters_for_read()) {
       if (parameter.owner == imported.proxy) ++parameter_count;
     }
     output += "DECLARATION_PARAMETERS ";
     append_context_u64(static_cast<std::uint64_t>(parameter_count), output);
     for (const ParametricParameterRecord &parameter :
-         package.parametric_parameters) {
+         package.parametric_parameters_for_read()) {
       if (parameter.owner != imported.proxy) continue;
       const Symbol &parameter_symbol =
           package.symbols.symbol(parameter.parameter);
@@ -1501,7 +1501,7 @@ imported_package_context(
   }
 
   std::vector<SymbolId> parameters;
-  for (const OwnedSemanticScope &owned : package.owned_scopes) {
+  for (const OwnedSemanticScope &owned : package.owned_scopes_for_read()) {
     if (owned.owner == record.anchor &&
         package.symbols.scope(owned.scope).kind == ScopeKind::Procedure) {
       parameters = package.symbols.scope(owned.scope).symbols;
@@ -1692,7 +1692,7 @@ struct ActiveDenialContext {
     }
   }
   for (const ParametricParameterRecord &parameter :
-       package.parametric_parameters) {
+       package.parametric_parameters_for_read()) {
     if (parameter.owner != owner) continue;
     const Symbol &symbol = package.symbols.symbol(parameter.parameter);
     if (!symbol.type.is_valid() ||
