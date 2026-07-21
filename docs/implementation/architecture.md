@@ -138,13 +138,25 @@ child process CPU is reported separately from parent wall time.
 
 Each package row separates an immutable declaration generation from its
 body-owned semantic tables, constants, and HIR. HIR IDs are valid only with the
-body package returned beside them. The body work key is the declaration
-generation plus the exact canonical set of concrete generic procedures demanded
-by consumer packages. Equal keys reuse the complete body result; added demands
-append and check only new specializations; a removed or changed demand rebuilds
-from declarations so stale executable procedures cannot survive. Compile-time
-type preflight and early synthesis discovery run on private copies and never
-become a hidden first body pass over the authoritative package.
+body package returned beside them. Every authored symbolic template and
+concrete procedure is now a live `ProcedureTemplateBody` or
+`ProcedureInstanceBody` product appended before its checker is invoked. Nested
+procedures and locally discovered specializations are appended only after the
+frozen wave which exposed them joins, with an exact edge to that exposing body.
+Each root owns a task-local diagnostic sink, and graph publication merges those
+diagnostics in product order. The current sequential oracle still appends every
+root's semantic/HIR payload into one package body state; isolating that payload
+is the remaining procedure-owned-checking boundary before body waves may run in
+parallel.
+
+The transitional body work key is the declaration generation plus the exact
+canonical set of concrete generic procedures demanded by consumer packages.
+Equal keys reuse the complete body result; added demands append and check only
+new specializations; a removed or changed demand rebuilds from declarations so
+stale executable procedures cannot survive. Compile-time type preflight and
+early synthesis discovery run on private copies and never become a hidden first
+body pass over the authoritative package. The procedure-local arena migration
+deletes this retained-package mechanism rather than preserving it as a cache.
 
 After every selected package has reached target lowering, the backend derives a
 closed native work graph in canonical package/module/assembly order. Package

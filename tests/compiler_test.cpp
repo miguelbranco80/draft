@@ -79,6 +79,177 @@ void test_procedure_demand_sets_are_canonical_and_exact(TestState &state) {
   EXPECT(state, collision_diagnostics.has_errors());
 }
 
+// Proves that procedure bodies are live graph work rather than rows inferred
+// after a package-wide checker returns. Authored roots exist immediately;
+// checking outer discovers both a lexical procedure and a concrete identity
+// specialization, and those later products retain an exact dependency on the
+// outer body product which published their semantic environment.
+void test_procedure_bodies_are_dynamic_semantic_products(TestState &state) {
+  draft::test::TemporaryDirectory temporary_directory{
+      "draft-bootstrap-procedure-product-test"};
+  const std::filesystem::path &root = temporary_directory.path();
+  std::error_code error;
+  std::filesystem::create_directories(root / "app", error);
+  EXPECT(state, !error);
+  if (error) return;
+
+  std::ofstream app(root / "app" / "package.draft", std::ios::binary);
+  app << "package app\n"
+         "identity[T: type] :: proc(value: T) -> T {\n"
+         "    return value\n"
+         "}\n"
+         "outer :: proc() {\n"
+         "    nested :: proc(value: i64) -> i64 {\n"
+         "        return value\n"
+         "    }\n"
+         "    nested_value := nested(1)\n"
+         "    identity_value := identity[i64](42)\n"
+         "}\n"
+         "main :: proc() {\n"
+         "    outer()\n"
+         "}\n";
+  app.close();
+  EXPECT(state, app.good());
+
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  draft::CompileWorkspaceOptions options;
+  options.target = draft::make_aarch64_macos_profile();
+  options.workspace.workspace_directory = root.string();
+  draft::CompileWorkspaceResult compiled = draft::compile_workspace(
+      sources, (root / "app").string(), options, diagnostics);
+  if (diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+  }
+  EXPECT(state, compiled.ok);
+  EXPECT(state, compiled.packages.size() == 1);
+  if (!compiled.ok || compiled.packages.size() != 1 ||
+      !compiled.packages.front().has_value()) {
+    return;
+  }
+
+  const draft::CompiledPackage &package = *compiled.packages.front();
+  const draft::PackageSemanticProducts &products =
+      compiled.semantic_products.packages.front();
+  EXPECT(state, compiled.semantic_products.procedure_by_product.size() ==
+                    compiled.semantic_graph.products.size());
+  EXPECT(state, products.procedure_bodies.size() ==
+                    package.bodies.program.procedures().size());
+
+  const draft::SemanticPackage &semantic = package.bodies.package;
+  const std::optional<draft::SymbolId> identity =
+      semantic.symbols.lookup_direct(semantic.package_scope, "identity");
+  const std::optional<draft::SymbolId> outer =
+      semantic.symbols.lookup_direct(semantic.package_scope, "outer");
+  EXPECT(state, identity.has_value());
+  EXPECT(state, outer.has_value());
+  if (!identity.has_value() || !outer.has_value()) return;
+
+  std::optional<draft::SemanticProductId> identity_product;
+  std::optional<draft::SemanticProductId> outer_product;
+  std::optional<draft::SemanticProductId> nested_product;
+  for (draft::SemanticProductId product : products.procedure_bodies) {
+    const draft::SemanticProduct &row =
+        compiled.semantic_graph.products[product.value];
+    EXPECT(state, row.state == draft::SemanticProductState::Complete);
+    const draft::SymbolId symbol =
+        compiled.semantic_products.procedure_by_product[product.value];
+    EXPECT(state, symbol.is_valid());
+    if (symbol == *identity) identity_product = product;
+    if (symbol == *outer) outer_product = product;
+    if (symbol.is_valid() &&
+        semantic.symbols.symbol(symbol).name == "nested") {
+      nested_product = product;
+    }
+  }
+  EXPECT(state, identity_product.has_value());
+  EXPECT(state, outer_product.has_value());
+  EXPECT(state, nested_product.has_value());
+  if (identity_product.has_value()) {
+    EXPECT(state,
+           compiled.semantic_graph.products[identity_product->value].kind ==
+               draft::SemanticProductKind::ProcedureTemplateBody);
+  }
+  if (outer_product.has_value() && nested_product.has_value()) {
+    const std::vector<draft::SemanticProductId> &dependencies =
+        compiled.semantic_graph.products[nested_product->value].dependencies;
+    EXPECT(state, std::find(dependencies.begin(), dependencies.end(),
+                            *outer_product) != dependencies.end());
+  }
+
+  EXPECT(state, semantic.parametric_instances.size() == 1);
+  if (semantic.parametric_instances.size() == 1 &&
+      outer_product.has_value()) {
+    const draft::SymbolId concrete =
+        semantic.parametric_instances.front().instance;
+    std::optional<draft::SemanticProductId> concrete_product;
+    for (draft::SemanticProductId product : products.procedure_bodies) {
+      if (compiled.semantic_products.procedure_by_product[product.value] ==
+          concrete) {
+        concrete_product = product;
+        break;
+      }
+    }
+    EXPECT(state, concrete_product.has_value());
+    if (concrete_product.has_value()) {
+      const draft::SemanticProduct &row =
+          compiled.semantic_graph.products[concrete_product->value];
+      EXPECT(state, row.kind ==
+                        draft::SemanticProductKind::ProcedureInstanceBody);
+      EXPECT(state, std::find(row.dependencies.begin(), row.dependencies.end(),
+                              *outer_product) != row.dependencies.end());
+    }
+  }
+}
+
+// A diagnosed body still owns recoverable HIR, so its product completes while
+// the package remains invalid. This lets the next independent authored body run
+// and preserves Draft's rule that unreachable source is checked.
+void test_invalid_unused_body_products_do_not_stop_the_wave(TestState &state) {
+  draft::test::TemporaryDirectory temporary_directory{
+      "draft-bootstrap-invalid-body-product-test"};
+  const std::filesystem::path &root = temporary_directory.path();
+  std::error_code error;
+  std::filesystem::create_directories(root / "app", error);
+  EXPECT(state, !error);
+  if (error) return;
+
+  std::ofstream app(root / "app" / "package.draft", std::ios::binary);
+  app << "package app\n"
+         "bad_first :: proc() {\n"
+         "    value: i64 = true\n"
+         "}\n"
+         "bad_second :: proc() {\n"
+         "    value: bool = 1\n"
+         "}\n"
+         "main :: proc() {}\n";
+  app.close();
+  EXPECT(state, app.good());
+
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  draft::CompileWorkspaceOptions options;
+  options.target = draft::make_aarch64_macos_profile();
+  options.workspace.workspace_directory = root.string();
+  const draft::CompileWorkspaceResult compiled = draft::compile_workspace(
+      sources, (root / "app").string(), options, diagnostics);
+  EXPECT(state, !compiled.ok);
+  EXPECT(state, diagnostics.error_count() >= 2);
+  EXPECT(state, compiled.packages.size() == 1);
+  if (compiled.packages.size() != 1 ||
+      !compiled.packages.front().has_value()) {
+    return;
+  }
+  const draft::PackageSemanticProducts &products =
+      compiled.semantic_products.packages.front();
+  EXPECT(state, products.procedure_bodies.size() == 3);
+  for (draft::SemanticProductId product : products.procedure_bodies) {
+    EXPECT(state,
+           compiled.semantic_graph.products[product.value].state ==
+               draft::SemanticProductState::Complete);
+  }
+}
+
 // Proves that local named constants have independent graph rows, exact dynamic
 // edges, deterministic owner tables, and published values including a distinct
 // result type.
@@ -205,6 +376,8 @@ void test_named_constants_are_semantic_products(TestState &state) {
   EXPECT(state, compiled.semantic_products.constant_by_product.size() ==
                     compiled.semantic_graph.products.size());
   EXPECT(state, compiled.semantic_products.declaration_by_product.size() ==
+                    compiled.semantic_graph.products.size());
+  EXPECT(state, compiled.semantic_products.procedure_by_product.size() ==
                     compiled.semantic_graph.products.size());
   EXPECT(state, compiled.semantic_products.type_by_product.size() ==
                     compiled.semantic_graph.products.size());
@@ -989,6 +1162,12 @@ void test_body_source_update_reuses_closed_generic_dependency(
       initial_formatting.body_work_key.declaration_generation;
   const std::size_t formatting_symbol_count =
       initial_formatting.bodies.package.symbols.symbol_count();
+  const std::vector<draft::SemanticProductId> initial_app_body_products =
+      compiled.semantic_products.packages[app_index].procedure_bodies;
+  const std::vector<draft::SemanticProductId> initial_formatting_body_products =
+      compiled.semantic_products.packages[*formatting_index].procedure_bodies;
+  EXPECT(state, !initial_app_body_products.empty());
+  EXPECT(state, !initial_formatting_body_products.empty());
   EXPECT(state,
          initial_formatting.declarations.package.parametric_instances.empty());
   EXPECT(state,
@@ -1030,6 +1209,22 @@ void test_body_source_update_reuses_closed_generic_dependency(
                     formatting_symbol_count);
   EXPECT(state,
          updated_formatting.bodies.package.parametric_instances.size() == 1);
+  EXPECT(state,
+         compiled.semantic_products.packages[app_index].procedure_bodies !=
+             initial_app_body_products);
+  EXPECT(state,
+         compiled.semantic_products.packages[*formatting_index]
+                 .procedure_bodies == initial_formatting_body_products);
+  for (draft::SemanticProductId product : initial_app_body_products) {
+    EXPECT(state,
+           compiled.semantic_graph.products[product.value].state ==
+               draft::SemanticProductState::Superseded);
+  }
+  for (draft::SemanticProductId product : initial_formatting_body_products) {
+    EXPECT(state,
+           compiled.semantic_graph.products[product.value].state ==
+               draft::SemanticProductState::Complete);
+  }
 
   // Two packages are checked for the surface graph. The body replacement
   // checks only app; formatting's equal declaration+demand work key is reused.
@@ -2830,6 +3025,8 @@ void test_cross_package_static_argument_pack_effects(TestState &state) {
 int main() {
   TestState state;
   test_procedure_demand_sets_are_canonical_and_exact(state);
+  test_procedure_bodies_are_dynamic_semantic_products(state);
+  test_invalid_unused_body_products_do_not_stop_the_wave(state);
   test_named_constants_are_semantic_products(state);
   test_conditional_members_extend_the_semantic_graph(state);
   test_imported_constant_products_enter_consumer_table(state);

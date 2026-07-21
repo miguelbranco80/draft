@@ -65,6 +65,13 @@ cache.
   additions check only new specializations, and removals rebuild from the clean
   declaration baseline. Diagnostic preflight and early compile-time synthesis
   checks use disposable copies rather than enriching authoritative state.
+- Each authored template or concrete procedure is an explicit live body
+  product. Initial roots depend on the package interface; nested procedures and
+  locally discovered specializations are added after the exposing frozen wave
+  and depend on that exact body row. The current worker invocation is still a
+  sequential oracle over one package-owned semantic/HIR publication state. The
+  procedure-owned migration must replace that payload before body waves become
+  parallel, then delete the preceding body-key retention mechanism.
 - A command-local adjacency index records imports by consumer and consumers by
   dependency. It is built once with each source-selection graph and retained
   through source transitions, semantic closure, and lowering. A sequential Kahn

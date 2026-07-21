@@ -20,6 +20,7 @@
 #include "workspace/package.h"
 
 #include <cstddef>
+#include <optional>
 #include <span>
 #include <string>
 #include <vector>
@@ -64,6 +65,113 @@ struct ProcedureInstantiationSeed {
   std::vector<TypeId> pack_types;
 };
 
+// ProcedureBodyEnvironment is the exact concrete outer environment retained
+// by a lexically nested procedure body. Package-level roots and roots nested in
+// a symbolic template have no environment. A root discovered while checking a
+// concrete outer instance copies its type/value substitutions and static-pack
+// binding here so a later checker can reproduce the same compile-time names
+// and capture boundary without retaining the discovering BodyChecker.
+//
+// Every ID addresses the PackageBodyWorkState which owns this value. The value
+// is command-local, is never serialized, and is not specialization identity;
+// ParametricInstanceRecord owns canonical concrete instance identity.
+struct ProcedureBodyEnvironment {
+  SymbolId source;
+  SymbolId symbol;
+  std::vector<ConcreteProcedureTypeSubstitution> type_substitutions;
+  std::vector<ConcreteProcedureValueSubstitution> value_substitutions;
+  std::vector<TypeId> pack_types;
+  std::vector<SymbolId> pack_parameters;
+  SymbolId pack_binding;
+};
+
+// One ProcedureBodyWorkItem names one exact independently scheduled body.
+// parametric_template distinguishes symbolic checking from executable concrete
+// checking. prerequisite is the index of the enclosing or discovering work
+// item when this row was found dynamically; initial authored roots and
+// externally materialized seeds have no procedure prerequisite and depend only
+// on the package interface at workspace scheduling time.
+struct ProcedureBodyWorkItem {
+  SymbolId symbol;
+  bool parametric_template = false;
+  std::optional<ProcedureBodyEnvironment> enclosing_environment;
+  std::optional<std::size_t> prerequisite;
+};
+
+// PackageBodyWorkState is the explicit sequential publication oracle for body
+// products. It owns the current append-only package prefix, lexical constants,
+// HIR, and the dynamic work list. `next_work` partitions completed work from the
+// current ready suffix. Checking one item may append nested procedures and
+// concrete specializations to that suffix, but never checks them recursively.
+//
+// The state is deliberately public phase data rather than a callback-driven
+// executor: workspace orchestration freezes product waves, invokes one exact
+// item at a time, then creates product rows for the newly appended suffix.
+// Today this state is also the deterministic shared-publication oracle while
+// procedure-local arenas are introduced; parallel workers must not mutate one
+// state concurrently.
+struct PackageBodyWorkState {
+  bool ok = false;
+  SemanticPackage package;
+  ConstantTable constants;
+  HirProgram program;
+  std::vector<ProcedureBodyWorkItem> work;
+  std::size_t next_work = 0;
+  std::size_t next_instance = 0;
+  std::size_t checked_procedures = 0;
+};
+
+// Starts a clean body generation from immutable declaration inputs. Runtime
+// context construction and externally requested seed materialization happen
+// once here; no procedure body is checked. Authored roots precede seed roots in
+// stable declaration/seed order.
+[[nodiscard]] PackageBodyWorkState begin_package_body_work(
+    const SourceManager &sources,
+    const LoadedPackage &loaded,
+    const ConditionalSelections &selections,
+    const SemanticPackage &package,
+    const ConstantTable &constants,
+    const TargetFacts &target,
+    DiagnosticSink &diagnostics,
+    const std::vector<ProcedureInstantiationSeed> &seeds = {});
+
+// Starts an append-only extension from one successful body generation. This is
+// the temporary source-transition bridge while procedure products replace the
+// retained package body generation. Only roots introduced by additional_seeds
+// enter the new work suffix; already checked HIR is never placed on the work
+// list by this operation.
+[[nodiscard]] PackageBodyWorkState begin_additional_package_body_work(
+    const SourceManager &sources,
+    const LoadedPackage &loaded,
+    const ConditionalSelections &selections,
+    BodyCheckResult previous,
+    const TargetFacts &target,
+    DiagnosticSink &diagnostics,
+    const std::vector<ProcedureInstantiationSeed> &additional_seeds);
+
+// Checks exactly state.work[state.next_work] and advances the partition by one.
+// The caller owns diagnostics for this task. The return value describes only
+// that root; state.ok retains the conjunction for final package validation.
+// Newly discovered roots are appended with prerequisite equal to the completed
+// work index and become visible only to a later scheduler wave.
+[[nodiscard]] bool check_next_procedure_body_work(
+    const SourceManager &sources,
+    const LoadedPackage &loaded,
+    const ConditionalSelections &selections,
+    const TargetFacts &target,
+    PackageBodyWorkState &state,
+    DiagnosticSink &diagnostics);
+
+// Completes package-wide invariants after every dynamic root has run, then
+// transfers the state into the compatibility aggregate consumed by later
+// phases. Calling this with unfinished work is a compiler contract error and
+// produces an invalid result rather than silently discarding body products.
+[[nodiscard]] BodyCheckResult finish_package_body_work(
+    const LoadedPackage &loaded,
+    const TargetFacts &target,
+    PackageBodyWorkState state,
+    DiagnosticSink &diagnostics);
+
 // Validates package constant/global initializers and selected structural
 // `when` conditions which contain a non-evaluating or value-selecting form,
 // using the same expression checker as procedure bodies. This catches operands
@@ -103,23 +211,6 @@ struct ProcedureInstantiationSeed {
     const TargetFacts &target,
     DiagnosticSink &diagnostics,
     const std::vector<ProcedureInstantiationSeed> &seeds = {});
-
-// Adds only newly requested concrete generic instances to a successful body
-// generation whose declaration source is unchanged. previous is consumed and
-// returned with stable existing SymbolIds/HIR IDs plus append-only rows for the
-// new instances. Every added specialization is reconstructed from its durable
-// instance record in a fresh checker, including substitutions inherited by a
-// nested generic procedure. Callers must supply only demands absent from the
-// generation's recorded work key; removing a demand requires a clean check from
-// the declaration baseline so stale executable bodies cannot survive.
-[[nodiscard]] BodyCheckResult check_additional_package_instances(
-    const SourceManager &sources,
-    const LoadedPackage &loaded,
-    const ConditionalSelections &selections,
-    BodyCheckResult previous,
-    const TargetFacts &target,
-    DiagnosticSink &diagnostics,
-    const std::vector<ProcedureInstantiationSeed> &additional_seeds);
 
 // Checks only package procedures reached by compile-time constant evaluation.
 // The selection uses stable SymbolIds from the same SemanticPackage and is

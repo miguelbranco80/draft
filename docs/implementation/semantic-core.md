@@ -333,10 +333,22 @@ also publish later roots instead of recursively checking their bodies. A nested
 root snapshots the enclosing concrete environment, including the pack marker
 which must remain an illegal capture, while its lexical symbol and signature
 remain in the completed enclosing root. Each authored or concrete HIR procedure
-is therefore produced by one root invocation. This is not yet the final isolated
-result: roots still append lexical symbols, constants, sites, types, and HIR into
-one package-wide `BodyCheckResult` until deterministic task-local publication
-replaces those shared tables.
+is therefore produced by one root invocation.
+
+Those roots are live rows in the command's semantic product graph rather than
+facts recorded after package checking. Initial authored rows depend on the
+completed package interface. A nested procedure or locally discovered concrete
+specialization is appended between frozen waves and depends on the exact root
+which published its environment. Root diagnostics are task-local and merge in
+product order. Invalid recoverable HIR completes its scheduling row but leaves
+the containing body state invalid, allowing later authored roots to be checked
+without permitting effects or lowering to consume the package.
+
+This is not yet the final isolated result: the sequential product oracle still
+appends lexical symbols, constants, sites, types, and HIR into one package-wide
+`BodyCheckResult`. The next procedure-owned slice replaces that shared payload
+with a local arena/result per product; only then can one package's body wave run
+on parallel workers.
 
 The compiler schedules package bodies consumer-first because checking a caller
 can demand a concrete public generic body from its dependency. A portable

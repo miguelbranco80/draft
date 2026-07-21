@@ -318,6 +318,12 @@ struct PackageSemanticProducts {
   // package_interface therefore cannot publish to consumers.
   SemanticProductId opaque_synthesis_set;
   SemanticProductId package_interface;
+  // Authored, nested, and concrete procedure body products for the selected
+  // source generation. Rows are appended in deterministic discovery order;
+  // nested and locally instantiated bodies may therefore appear after initial
+  // interface completion. Earlier-generation rows remain in the graph as
+  // Superseded when this current index is replaced.
+  std::vector<SemanticProductId> procedure_bodies;
 };
 
 // WorkspaceSemanticProducts is the typed index from the general product graph
@@ -339,6 +345,10 @@ struct WorkspaceSemanticProducts {
   // Parallel to SemanticProductGraph. Declaration type rows name their stable
   // package symbol; other products contain an invalid SymbolId.
   std::vector<SymbolId> declaration_by_product;
+  // Parallel to SemanticProductGraph. ProcedureTemplateBody and
+  // ProcedureInstanceBody rows name their exact package-local procedure
+  // symbol; every other product contains an invalid SymbolId.
+  std::vector<SymbolId> procedure_by_product;
   // Parallel to SemanticProductGraph. Type facet rows name their canonical
   // command-local TypeId; other products contain an invalid TypeId.
   std::vector<TypeId> type_by_product;

@@ -169,18 +169,59 @@ struct ProcedureInstanceActivation {
   std::optional<std::size_t> index;
 };
 
-// ProcedureBodyRoot is the sequential oracle's complete request for one source
-// body. Package roots need only their symbol and template bit. A lexically
-// nested root additionally snapshots the active concrete outer environment so
-// its later checker sees the same type/value substitutions and the same pack-
-// capture boundary as the checker which declared it. The environment is a
-// command-local view over stable body-owned IDs; it is never serialized or used
-// as specialization identity.
-struct ProcedureBodyRoot {
-  SymbolId symbol;
-  bool parametric_template = false;
-  std::optional<ProcedureInstance> enclosing_environment;
-};
+using ProcedureBodyRoot = ProcedureBodyWorkItem;
+
+// Converts the checker-local active form into the durable work packet exposed
+// at the phase boundary. Symbolic/deferred value substitutions cannot appear in
+// a concrete active environment; instantiate_procedure resolves them before a
+// concrete instance is created. Copying only exact values makes that invariant
+// visible in the public work representation.
+[[nodiscard]] ProcedureBodyEnvironment retain_body_environment(
+    const ProcedureInstance &instance) {
+  ProcedureBodyEnvironment result;
+  result.source = instance.source;
+  result.symbol = instance.symbol;
+  result.pack_types = instance.pack_types;
+  result.pack_parameters = instance.pack_parameters;
+  result.pack_binding = instance.pack_binding;
+  result.type_substitutions.reserve(instance.type_substitutions.size());
+  for (const TypeSubstitution &substitution : instance.type_substitutions) {
+    result.type_substitutions.push_back(
+        {substitution.parameter, substitution.replacement});
+  }
+  result.value_substitutions.reserve(instance.value_substitutions.size());
+  for (const ValueSubstitution &substitution : instance.value_substitutions) {
+    result.value_substitutions.push_back(
+        {substitution.parameter, substitution.value});
+  }
+  return result;
+}
+
+// Reconstructs the small checker-local view from a retained nested-root
+// packet. All IDs still address the PackageBodyWorkState which owns the root;
+// no lookup, interning, or semantic mutation occurs during this conversion.
+[[nodiscard]] ProcedureInstance activate_body_environment(
+    const ProcedureBodyEnvironment &environment) {
+  ProcedureInstance result;
+  result.source = environment.source;
+  result.symbol = environment.symbol;
+  result.pack_types = environment.pack_types;
+  result.pack_parameters = environment.pack_parameters;
+  result.pack_binding = environment.pack_binding;
+  result.type_substitutions.reserve(environment.type_substitutions.size());
+  for (const ConcreteProcedureTypeSubstitution &substitution :
+       environment.type_substitutions) {
+    result.type_substitutions.push_back(
+        {substitution.parameter, substitution.replacement});
+  }
+  result.value_substitutions.reserve(environment.value_substitutions.size());
+  for (const ConcreteProcedureValueSubstitution &substitution :
+       environment.value_substitutions) {
+    result.value_substitutions.push_back(
+        {substitution.parameter, substitution.value, {}});
+  }
+  return result;
+}
 
 // One exact root returns ordinary append-only HIR plus later lexical roots. It
 // deliberately does not run the discovered roots itself. The package
@@ -287,7 +328,8 @@ public:
     const ProcedureInstanceActivation instance = restore_instance(root.symbol);
     if (instance.index.has_value()) current_instance_index_ = *instance.index;
     if (!instance.concrete && root.enclosing_environment.has_value()) {
-      instances_.push_back(*root.enclosing_environment);
+      instances_.push_back(
+          activate_body_environment(*root.enclosing_environment));
       current_instance_index_ = instances_.size() - 1;
     }
     const Symbol symbol = semantic_.symbols.symbol(root.symbol);
@@ -6926,8 +6968,8 @@ private:
     nested_root.parametric_template =
         current_procedure_is_template_ || parametric;
     if (current_instance_index_.has_value()) {
-      nested_root.enclosing_environment =
-          instances_[*current_instance_index_];
+      nested_root.enclosing_environment = retain_body_environment(
+          instances_[*current_instance_index_]);
     }
     discovered_body_roots_.push_back(std::move(nested_root));
     return hir_.add_statement(std::move(statement));
@@ -8339,77 +8381,6 @@ void append_body_root(
   }
 }
 
-// Checks a dynamic list of exact procedure roots. Every iteration constructs a
-// fresh BodyChecker around the retained append-only package, constants, and HIR
-// prefix. The checker therefore cannot rely on transient state from the root
-// which discovered a concrete instance. New ParametricInstanceRecord rows are
-// appended to the work list only after the current root has finished, which is
-// the sequential publication oracle for the later procedure product graph.
-//
-// first_unscheduled_instance is the first retained instance not already named
-// by roots or represented in initial_program. Fresh package checks place every
-// seed on roots and pass the resulting retained count. Body-generation
-// extensions likewise place new seeds on roots while the earlier prefix already
-// has HIR. Instances discovered after checking begins form the unscheduled
-// suffix consumed below.
-[[nodiscard]] BodyCheckResult check_body_roots(
-    const SourceManager &sources,
-    const LoadedPackage &loaded,
-    const ConditionalSelections &selections,
-    SemanticPackage &semantic,
-    ConstantTable &constants,
-    const TargetFacts &target,
-    DiagnosticSink &diagnostics,
-    std::vector<ProcedureBodyRoot> roots,
-    std::size_t first_unscheduled_instance,
-    HirProgram initial_program) {
-  BodyCheckResult result;
-  result.ok = true;
-  result.program = std::move(initial_program);
-
-  std::size_t next_instance = first_unscheduled_instance;
-  for (std::size_t root_index = 0; root_index < roots.size(); ++root_index) {
-    const std::vector<ProcedureInstantiationSeed> no_seeds;
-    BodyChecker checker(
-        sources,
-        loaded,
-        selections,
-        semantic,
-        constants,
-        target,
-        diagnostics,
-        no_seeds,
-        std::move(result.program));
-    ProcedureBodyRootResult checked = checker.run_one(roots[root_index]);
-    result.ok = result.ok && checked.checked.ok;
-    result.checked_procedures += checked.checked.checked_procedures;
-    result.program = std::move(checked.checked.program);
-
-    // Nested declarations use lexical source order within this root. Publish
-    // that stable list before the retained instance suffix. This ordering is an
-    // explicit sequential policy; semantics do not depend on whether an
-    // instance call text appeared before or after a nested declaration because
-    // both work categories consume the completed enclosing root.
-    for (ProcedureBodyRoot &nested : checked.discovered_roots) {
-      append_body_root(roots, std::move(nested));
-    }
-
-    // A direct call may discover several specializations, and checking one
-    // concrete body may discover more. Their retained order is deterministic
-    // expression/source order. Publish that complete suffix before advancing
-    // to the next root; duplicate semantic identities were already collapsed
-    // by instantiate_procedure.
-    while (next_instance < semantic.parametric_instances.size()) {
-      ProcedureBodyRoot instance_root;
-      instance_root.symbol =
-          semantic.parametric_instances[next_instance].instance;
-      append_body_root(roots, std::move(instance_root));
-      ++next_instance;
-    }
-  }
-  return result;
-}
-
 } // namespace
 
 bool validate_package_compile_time_expression_types(
@@ -8438,6 +8409,186 @@ bool validate_package_compile_time_expression_types(
   return checker.validate_package_compile_time_expression_types();
 }
 
+PackageBodyWorkState begin_package_body_work(
+    const SourceManager &sources,
+    const LoadedPackage &loaded,
+    const ConditionalSelections &selections,
+    const SemanticPackage &package,
+    const ConstantTable &constants,
+    const TargetFacts &target,
+    DiagnosticSink &diagnostics,
+    const std::vector<ProcedureInstantiationSeed> &seeds) {
+  PackageBodyWorkState state;
+  state.package = package;
+  state.constants = constants;
+
+  // Runtime context and externally requested concrete instances are package
+  // publication facts. Establish them before body products are exposed so no
+  // procedure task accidentally owns an unrelated seed's symbol creation.
+  BodyChecker initializer(
+      sources,
+      loaded,
+      selections,
+      state.package,
+      state.constants,
+      target,
+      diagnostics,
+      seeds);
+  BodyCheckResult initialized = initializer.initialize();
+  state.ok = initialized.ok;
+  state.program = std::move(initialized.program);
+
+  // Only the declaration baseline identifies authored roots. Seed
+  // materialization appends private concrete symbols to package scope; those
+  // receive their own instance roots below and must not masquerade as authored
+  // source procedures.
+  const std::vector<SymbolId> package_symbols =
+      package.symbols.scope(package.package_scope).symbols;
+  for (SymbolId id : package_symbols) {
+    const Symbol &symbol = package.symbols.symbol(id);
+    if (symbol.kind == SymbolKind::Procedure && symbol.type.is_valid()) {
+      append_body_root(
+          state.work,
+          {id, symbol.flags.parametric, std::nullopt, std::nullopt});
+    }
+  }
+  for (const ParametricInstanceRecord &instance :
+       state.package.parametric_instances) {
+    append_body_root(
+        state.work,
+        {instance.instance, false, std::nullopt, std::nullopt});
+  }
+  state.next_instance = state.package.parametric_instances.size();
+  return state;
+}
+
+PackageBodyWorkState begin_additional_package_body_work(
+    const SourceManager &sources,
+    const LoadedPackage &loaded,
+    const ConditionalSelections &selections,
+    BodyCheckResult previous,
+    const TargetFacts &target,
+    DiagnosticSink &diagnostics,
+    const std::vector<ProcedureInstantiationSeed> &additional_seeds) {
+  PackageBodyWorkState state;
+  state.ok = previous.ok;
+  state.package = std::move(previous.package);
+  state.constants = std::move(previous.constants);
+  state.program = std::move(previous.program);
+  state.checked_procedures = previous.checked_procedures;
+  const std::size_t previous_instance_count =
+      state.package.parametric_instances.size();
+
+  BodyChecker initializer(
+      sources,
+      loaded,
+      selections,
+      state.package,
+      state.constants,
+      target,
+      diagnostics,
+      additional_seeds,
+      std::move(state.program));
+  BodyCheckResult initialized = initializer.initialize();
+  state.ok = state.ok && initialized.ok;
+  state.program = std::move(initialized.program);
+  for (std::size_t index = previous_instance_count;
+       index < state.package.parametric_instances.size();
+       ++index) {
+    append_body_root(
+        state.work,
+        {state.package.parametric_instances[index].instance,
+         false,
+         std::nullopt,
+         std::nullopt});
+  }
+  state.next_instance = state.package.parametric_instances.size();
+  return state;
+}
+
+bool check_next_procedure_body_work(
+    const SourceManager &sources,
+    const LoadedPackage &loaded,
+    const ConditionalSelections &selections,
+    const TargetFacts &target,
+    PackageBodyWorkState &state,
+    DiagnosticSink &diagnostics) {
+  if (state.next_work >= state.work.size()) {
+    diagnostics.error(
+        SourceRange::invalid(),
+        "procedure body scheduler invoked without a ready work item");
+    state.ok = false;
+    return false;
+  }
+
+  const std::size_t work_index = state.next_work;
+  const ProcedureBodyRoot root = state.work[work_index];
+  const std::vector<ProcedureInstantiationSeed> no_seeds;
+  BodyChecker checker(
+      sources,
+      loaded,
+      selections,
+      state.package,
+      state.constants,
+      target,
+      diagnostics,
+      no_seeds,
+      std::move(state.program));
+  ProcedureBodyRootResult checked = checker.run_one(root);
+  state.ok = state.ok && checked.checked.ok;
+  state.checked_procedures += checked.checked.checked_procedures;
+  state.program = std::move(checked.checked.program);
+
+  // Nested roots and newly discovered concrete instances consume the semantic
+  // publication of the root which exposed them. Retain that exact index so the
+  // workspace coordinator can add the corresponding product edge after the
+  // current frozen wave joins.
+  for (ProcedureBodyRoot &nested : checked.discovered_roots) {
+    nested.prerequisite = work_index;
+    append_body_root(state.work, std::move(nested));
+  }
+  while (state.next_instance < state.package.parametric_instances.size()) {
+    ProcedureBodyRoot instance_root;
+    instance_root.symbol =
+        state.package.parametric_instances[state.next_instance].instance;
+    instance_root.prerequisite = work_index;
+    append_body_root(state.work, std::move(instance_root));
+    ++state.next_instance;
+  }
+  ++state.next_work;
+  return checked.checked.ok;
+}
+
+BodyCheckResult finish_package_body_work(
+    const LoadedPackage &loaded,
+    const TargetFacts &target,
+    PackageBodyWorkState state,
+    DiagnosticSink &diagnostics) {
+  BodyCheckResult result;
+  if (state.next_work != state.work.size()) {
+    diagnostics.error(
+        SourceRange::invalid(),
+        "procedure body work finalized before every discovered root ran");
+    state.ok = false;
+  }
+  if (state.ok &&
+      !validate_target_types(state.package.types, target, diagnostics)) {
+    state.ok = false;
+  }
+  if (state.ok &&
+      !check_definite_initialization(
+          state.package, state.program, diagnostics)) {
+    state.ok = false;
+  }
+  infer_agent_loop_ranges(loaded, state.package, state.program);
+  result.ok = state.ok;
+  result.package = std::move(state.package);
+  result.constants = std::move(state.constants);
+  result.program = std::move(state.program);
+  result.checked_procedures = state.checked_procedures;
+  return result;
+}
+
 BodyCheckResult check_package_bodies(
     const SourceManager &sources,
     const LoadedPackage &loaded,
@@ -8447,130 +8598,21 @@ BodyCheckResult check_package_bodies(
     const TargetFacts &target,
     DiagnosticSink &diagnostics,
     const std::vector<ProcedureInstantiationSeed> &seeds) {
-  // A body check is a replaceable phase product, not an in-place enrichment of
-  // its declaration input. Copying here gives every invocation the same clean
-  // starting invariant and lets compiler orchestration retain or discard a
-  // complete body generation atomically.
-  SemanticPackage checked_package = package;
-  ConstantTable checked_constants = constants;
-  BodyChecker initializer(
+  PackageBodyWorkState state = begin_package_body_work(
       sources,
       loaded,
       selections,
-      checked_package,
-      checked_constants,
+      package,
+      constants,
       target,
       diagnostics,
       seeds);
-  BodyCheckResult initialized = initializer.initialize();
-
-  // Capture authored roots from the declaration prefix. Seed materialization
-  // appends private concrete symbols to package scope, but those receive their
-  // own roots below and must not masquerade as authored procedures.
-  std::vector<ProcedureBodyRoot> roots;
-  const std::vector<SymbolId> package_symbols =
-      package.symbols.scope(package.package_scope).symbols;
-  for (SymbolId id : package_symbols) {
-    const Symbol &symbol = package.symbols.symbol(id);
-    if (symbol.kind == SymbolKind::Procedure && symbol.type.is_valid()) {
-      append_body_root(roots, {id, symbol.flags.parametric, std::nullopt});
-    }
+  while (state.next_work < state.work.size()) {
+    (void)check_next_procedure_body_work(
+        sources, loaded, selections, target, state, diagnostics);
   }
-  for (const ParametricInstanceRecord &instance :
-       checked_package.parametric_instances) {
-    append_body_root(roots, {instance.instance, false, std::nullopt});
-  }
-  const std::size_t published_instances =
-      checked_package.parametric_instances.size();
-  BodyCheckResult result = check_body_roots(
-      sources,
-      loaded,
-      selections,
-      checked_package,
-      checked_constants,
-      target,
-      diagnostics,
-      std::move(roots),
-      published_instances,
-      std::move(initialized.program));
-  result.ok = initialized.ok && result.ok;
-  if (result.ok &&
-      !validate_target_types(checked_package.types, target, diagnostics)) {
-    result.ok = false;
-  }
-  if (result.ok &&
-      !check_definite_initialization(
-          checked_package, result.program, diagnostics)) {
-    result.ok = false;
-  }
-  infer_agent_loop_ranges(loaded, checked_package, result.program);
-  result.package = std::move(checked_package);
-  result.constants = std::move(checked_constants);
-  return result;
-}
-
-BodyCheckResult check_additional_package_instances(
-    const SourceManager &sources,
-    const LoadedPackage &loaded,
-    const ConditionalSelections &selections,
-    BodyCheckResult previous,
-    const TargetFacts &target,
-    DiagnosticSink &diagnostics,
-    const std::vector<ProcedureInstantiationSeed> &additional_seeds) {
-  const std::size_t previous_instance_count =
-      previous.package.parametric_instances.size();
-  BodyChecker initializer(
-      sources,
-      loaded,
-      selections,
-      previous.package,
-      previous.constants,
-      target,
-      diagnostics,
-      additional_seeds,
-      std::move(previous.program));
-  BodyCheckResult initialized = initializer.initialize();
-  std::vector<ProcedureBodyRoot> roots;
-  for (std::size_t index = previous_instance_count;
-       index < previous.package.parametric_instances.size();
-       ++index) {
-    append_body_root(
-        roots,
-        {previous.package.parametric_instances[index].instance,
-         false,
-         std::nullopt});
-  }
-  const std::size_t published_instances =
-      previous.package.parametric_instances.size();
-  BodyCheckResult added = check_body_roots(
-      sources,
-      loaded,
-      selections,
-      previous.package,
-      previous.constants,
-      target,
-      diagnostics,
-      std::move(roots),
-      published_instances,
-      std::move(initialized.program));
-  added.ok = initialized.ok && added.ok;
-  if (added.ok &&
-      !validate_target_types(previous.package.types, target, diagnostics)) {
-    added.ok = false;
-  }
-  if (added.ok &&
-      !check_definite_initialization(
-          previous.package, added.program, diagnostics)) {
-    added.ok = false;
-  }
-  infer_agent_loop_ranges(loaded, previous.package, added.program);
-  added.package = std::move(previous.package);
-  added.constants = std::move(previous.constants);
-  // The completed generation's count is cumulative. Timing callers can
-  // subtract the incoming count before moving previous when they need only the
-  // newly checked work.
-  added.checked_procedures += previous.checked_procedures;
-  return added;
+  return finish_package_body_work(
+      loaded, target, std::move(state), diagnostics);
 }
 
 BodyCheckResult check_compile_time_procedure_bodies(
@@ -8582,61 +8624,41 @@ BodyCheckResult check_compile_time_procedure_bodies(
     const TargetFacts &target,
     std::span<const SymbolId> procedures,
     DiagnosticSink &diagnostics) {
-  SemanticPackage checked_package = package;
-  ConstantTable checked_constants = constants;
-  const std::vector<ProcedureInstantiationSeed> no_seeds;
-  BodyChecker initializer(
+  PackageBodyWorkState state = begin_package_body_work(
       sources,
       loaded,
       selections,
-      checked_package,
-      checked_constants,
+      package,
+      constants,
       target,
       diagnostics,
-      no_seeds);
-  BodyCheckResult initialized = initializer.initialize();
-  std::vector<ProcedureBodyRoot> roots;
+      {});
+  state.work.clear();
+  state.next_work = 0;
   const std::vector<SymbolId> package_symbols =
-      checked_package.symbols.scope(checked_package.package_scope).symbols;
+      state.package.symbols.scope(state.package.package_scope).symbols;
   for (SymbolId id : package_symbols) {
     if (std::find(procedures.begin(), procedures.end(), id) ==
         procedures.end()) {
       continue;
     }
-    const Symbol &symbol = checked_package.symbols.symbol(id);
+    const Symbol &symbol = state.package.symbols.symbol(id);
     if (symbol.kind == SymbolKind::Procedure && symbol.type.is_valid()) {
-      append_body_root(roots, {id, symbol.flags.parametric, std::nullopt});
+      append_body_root(
+          state.work,
+          {id, symbol.flags.parametric, std::nullopt, std::nullopt});
     }
   }
-  BodyCheckResult result = check_body_roots(
-      sources,
-      loaded,
-      selections,
-      checked_package,
-      checked_constants,
-      target,
-      diagnostics,
-      std::move(roots),
-      checked_package.parametric_instances.size(),
-      std::move(initialized.program));
-  result.ok = initialized.ok && result.ok;
-  if (result.ok &&
-      !validate_target_types(checked_package.types, target, diagnostics)) {
-    result.ok = false;
+  while (state.next_work < state.work.size()) {
+    (void)check_next_procedure_body_work(
+        sources, loaded, selections, target, state, diagnostics);
   }
-  // The early HIR is intentionally discarded and cannot reach MIR, but its
-  // lexical reads still must obey the same initialization rules as the final
-  // body. This prevents discovery from accepting a synthesis obligation whose
+  // finish_package_body_work applies the same target and definite-
+  // initialization validation to the disposable early HIR as to final bodies.
+  // This prevents discovery from accepting a synthesis obligation whose
   // surrounding compile-time procedure is already invalid.
-  if (result.ok &&
-      !check_definite_initialization(
-          checked_package, result.program, diagnostics)) {
-    result.ok = false;
-  }
-  infer_agent_loop_ranges(loaded, checked_package, result.program);
-  result.package = std::move(checked_package);
-  result.constants = std::move(checked_constants);
-  return result;
+  return finish_package_body_work(
+      loaded, target, std::move(state), diagnostics);
 }
 
 } // namespace draft

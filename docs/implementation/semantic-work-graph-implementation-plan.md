@@ -128,11 +128,27 @@ gate.
    root can therefore be checked without the transient checker which discovered
    it. Nested procedure declarations now publish their own later roots as well;
    each retains the enclosing concrete environment and pack-capture boundary,
-   so no `check_procedure` recursion hides another body. The remaining split is
-   substantive: roots still append lexical symbols/constants/HIR into one
-   package-wide result, and compiler body work is not yet represented by live
-   `ProcedureTemplateBody`/`ProcedureInstanceBody` rows. Those two facts must be
-   removed together before this step can close or parallel workers can begin.
+   so no `check_procedure` recursion hides another body.
+
+   Compiler body work is now represented by live `ProcedureTemplateBody` and
+   `ProcedureInstanceBody` rows. Authored roots are appended before invocation;
+   nested and locally instantiated roots are appended only after the exposing
+   frozen wave joins and carry an exact parent-product dependency. Each root
+   receives a private diagnostic sink and publication preserves product order.
+   Recoverable invalid HIR completes its scheduling row while invalidating the
+   package result, so another invalid unused body is still checked.
+
+   Compiler orchestration no longer calls or exposes
+   `check_additional_package_instances`; both clean and extension work now use
+   the same explicit item-at-a-time body state and live product publisher.
+
+   The remaining split is substantive: workers still append lexical symbols,
+   constants, types, sites, and HIR into one sequential package-owned
+   `BodyCheckResult`. The consumer-first external-demand loop, body work key,
+   and extension/rebuild paths therefore remain. Replace that shared payload
+   with task-owned procedure arenas and coordinator publication, then delete
+   those retained-package paths before this step can close or parallel workers
+   can begin.
 
 6. **Synthesis as an explicit wait state.** A body or declaration task may
    report its exact ready `...` set after producing the typed constraint needed
