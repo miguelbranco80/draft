@@ -873,9 +873,56 @@ void bind_handwritten_program_identity(
   return affected;
 }
 
+// Returns whether one package's exact current-program closure products and
+// non-product payloads are complete. This is deliberately derived state: the
+// product graph remains the lifecycle authority, so source invalidation cannot
+// leave a second package phase enum disagreeing with superseded rows.
+[[nodiscard]] bool package_semantic_closure_is_current(
+    const CompileWorkspaceResult &result,
+    std::size_t package_index) {
+  if (package_index >= result.packages.size() ||
+      package_index >= result.semantic_products.packages.size() ||
+      !result.packages[package_index].has_value()) {
+    return false;
+  }
+  const CompiledPackage &package = *result.packages[package_index];
+  const PackageSemanticProducts &products =
+      result.semantic_products.packages[package_index];
+  if (!package.bodies.ok || !package.metadata.ok || !package.obligations.ok ||
+      !package.native_interop.ok ||
+      products.effect_body_work_indices.size() !=
+          products.direct_effect_summaries.size() ||
+      products.effect_body_work_indices.size() !=
+          products.denial_results.size() ||
+      package.direct_effects.procedures.size() !=
+          products.direct_effect_summaries.size() ||
+      package.effects.components.size() !=
+          products.closed_effect_sccs.size()) {
+    return false;
+  }
+  const auto complete = [&](SemanticProductId product) {
+    return product.is_valid() &&
+        product.value < result.semantic_graph.products.size() &&
+        result.semantic_graph.products[product.value].state ==
+            SemanticProductState::Complete;
+  };
+  return std::all_of(
+             products.direct_effect_summaries.begin(),
+             products.direct_effect_summaries.end(), complete) &&
+      std::all_of(
+          products.closed_effect_sccs.begin(),
+          products.closed_effect_sccs.end(), complete) &&
+      std::all_of(
+          products.denial_results.begin(),
+          products.denial_results.end(), complete);
+}
+
 // Invalidates effect/obligation closure for one changed package and every
-// transitive consumer without discarding reusable body HIR. InterfaceReady rows
-// already need body work and therefore remain at their earlier phase.
+// transitive consumer without discarding reusable body HIR. Exact product rows
+// are superseded and the native-interop completion payload is cleared. The
+// preliminary interface obligation payload remains available while the
+// aggregate result is intentionally back at InterfaceDiscovery; semantic
+// continuation deterministically replaces it before closure can become current.
 [[nodiscard]] bool invalidate_package_closure(
     const WorkspaceDependencyIndex &schedule,
     std::span<const PackageId> changed_packages,
@@ -946,12 +993,10 @@ void bind_handwritten_program_identity(
     products.artifact_layout = {};
     package.direct_effects = {};
     package.effects = {};
+    package.native_interop = {};
     package.assembly = {};
     package.llvm = {};
     package.artifact_layout = {};
-    if (package.semantic_progress == PackageSemanticProgress::ClosureReady) {
-      package.semantic_progress = PackageSemanticProgress::BodiesReady;
-    }
   }
   return true;
 }
@@ -1242,7 +1287,7 @@ void bind_handwritten_program_identity(
 // constant product has published. An opaque synthesis wait never reaches this
 // operation: the scheduler joins its retained task packets directly and returns
 // an intentionally withheld interface. Reaching the barrier with a nonterminal
-// declaration generation is therefore an integration error, not an alternate
+// declaration product set is therefore an integration error, not an alternate
 // provider-context path.
 [[nodiscard]] bool finalize_workspace_package_interface(
     SourceManager &sources,
@@ -1253,7 +1298,7 @@ void bind_handwritten_program_identity(
   if (!package.declaration_discovery.terminal) {
     diagnostics.error(
         SourceRange::invalid(),
-        "package interface reached a nonterminal declaration generation");
+        "package interface reached nonterminal declaration discovery");
     return false;
   }
   package.declarations = finish_package_semantics_from_products(
@@ -1309,7 +1354,6 @@ void bind_handwritten_program_identity(
 [[nodiscard]] std::optional<CompiledPackage> analyze_workspace_package_names(
     SourceManager &sources, const CompileWorkspaceOptions &options,
     const WorkspaceDependencyIndex &schedule, std::size_t package_index,
-    std::uint64_t declaration_generation,
     std::vector<AgentValidationContext> validation_context,
     bool validation_context_is_typed, CompileWorkspaceResult &result,
     DiagnosticSink &diagnostics) {
@@ -1343,8 +1387,6 @@ void bind_handwritten_program_identity(
   }
   if (!resume_product_discovery) {
     package.identity = workspace_package.identity;
-    package.declaration_generation = declaration_generation;
-    package.semantic_progress = PackageSemanticProgress::InterfaceReady;
     package.validation_context = std::move(validation_context);
     package.validation_context_is_typed = validation_context_is_typed;
   }
@@ -2540,14 +2582,10 @@ completed_declaration_dependencies(const CompileWorkspaceResult &result,
   std::vector<std::vector<AgentValidationContext>> retained_validation(
       result.packages.size());
   std::vector<bool> retained_validation_is_typed(result.packages.size(), false);
-  std::vector<std::uint64_t> next_declaration_generation(result.packages.size(),
-                                                         1);
   for (std::size_t index = 0; index < result.packages.size(); ++index) {
     if (!selected[index])
       continue;
     if (result.packages[index].has_value()) {
-      next_declaration_generation[index] =
-          result.packages[index]->declaration_generation + 1;
       retained_validation[index] =
           std::move(result.packages[index]->validation_context);
       retained_validation_is_typed[index] =
@@ -2881,7 +2919,6 @@ completed_declaration_dependencies(const CompileWorkspaceResult &result,
         }
         slot.package = analyze_workspace_package_names(
             sources, options, schedule, package_index,
-            next_declaration_generation[package_index],
             std::move(retained_validation[package_index]),
             retained_validation_is_typed[package_index], result,
             slot.outcome.diagnostics);
@@ -6555,8 +6592,7 @@ bool continue_compiled_workspace_semantics(
     previous_external[package_index] =
         package.selected_external_procedure_work;
     previous_checked[package_index] = package.bodies.checked_procedures;
-    const bool fresh_bodies =
-        package.semantic_progress == PackageSemanticProgress::InterfaceReady;
+    const bool fresh_bodies = !package.bodies.ok;
 
     if (fresh_bodies) {
       package.external_procedure_products.clear();
@@ -6809,7 +6845,6 @@ bool continue_compiled_workspace_semantics(
     if (current_program_changed) {
       changed_packages.push_back(
           PackageId{static_cast<std::uint32_t>(package_index)});
-      package.semantic_progress = PackageSemanticProgress::BodiesReady;
     }
   }
   if (!changed_packages.empty()) {
@@ -6850,7 +6885,7 @@ bool continue_compiled_workspace_semantics(
     if (!result.packages[package_index].has_value()) continue;
     CompiledPackage &package = *result.packages[package_index];
     if (!package.bodies.ok) continue;
-    if (package.semantic_progress == PackageSemanticProgress::ClosureReady) {
+    if (package_semantic_closure_is_current(result, package_index)) {
       continue;
     }
     WorkspacePackage &workspace_package = result.graph.packages[package_index];
@@ -6962,7 +6997,7 @@ bool continue_compiled_workspace_semantics(
     CompiledPackage &package = *result.packages[package_index];
     WorkspacePackage &workspace_package = result.graph.packages[package_index];
     if (!package.bodies.ok) continue;
-    if (package.semantic_progress == PackageSemanticProgress::ClosureReady) {
+    if (package_semantic_closure_is_current(result, package_index)) {
       continue;
     }
     TimingScope package_timing = time_package_phase(
@@ -7055,14 +7090,14 @@ bool continue_compiled_workspace_semantics(
         !package.native_interop.ok) {
       continue;
     }
-    package.semantic_progress = PackageSemanticProgress::ClosureReady;
   }
   closure_timing.finish();
 
   bool every_package_closed = true;
-  for (const std::optional<CompiledPackage> &package : result.packages) {
-    every_package_closed = every_package_closed && package.has_value() &&
-        package->semantic_progress == PackageSemanticProgress::ClosureReady;
+  for (std::size_t package_index = 0;
+       package_index < result.packages.size(); ++package_index) {
+    every_package_closed = every_package_closed &&
+        package_semantic_closure_is_current(result, package_index);
   }
   result.ok = every_package_closed &&
       diagnostics.error_count() == initial_errors;

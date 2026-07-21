@@ -209,16 +209,20 @@ Without a source transition, interface discovery, semantic closure, and target
 lowering advance monotonically on one result rather than forming separate
 workspace compilations. A checked complete-file expansion deliberately returns
 the aggregate result to interface discovery while retaining exact per-package
-progress. Package/import IDs remain stable. Declaration/member replacement
+products. Package/import IDs remain stable. Declaration/member replacement
 rebuilds the changed package and transitive consumers; body-category replacement
 rebuilds declarations only for its containing package, retains consumer HIR,
 and invalidates effect/obligation closure through those consumers. It also
 retains already typed validation context because it cannot change declarations.
+There is no per-package phase enum or declaration-generation counter: body
+initialization follows the live body state, while closure reuse is derived from
+the exact completed effect/denial products and terminal payloads.
 
-The semantic ownership boundary is explicit. A package's declaration generation
-is immutable. Each checked procedure owns its HIR arena beside a body-owned
-semantic generation and constant table. A changed declaration replaces that
-complete package row. Otherwise every completed procedure product remains
+The semantic ownership boundary is explicit. A package-interface payload is
+immutable. Each checked procedure owns its HIR arena beside the append-only
+package semantic tables and constant table. A changed declaration replaces that
+complete package row; no generation counter participates in identity.
+Otherwise every completed procedure product remains
 immutable while an explicit current selection follows authored roots, external
 demands, and discovered prerequisites. No package-wide HIR copy is retained; a
 package-wide consumer builds and discards an ID-rewritten view. Proposal

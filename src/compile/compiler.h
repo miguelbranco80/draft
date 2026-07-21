@@ -116,25 +116,11 @@ struct CompiledAssemblySource {
   std::string contents;
 };
 
-// PackageSemanticProgress is the authoritative per-package phase state. A
-// source transition may leave one dependency at ClosureReady while rebuilding
-// a changed consumer from InterfaceReady, so one workspace-wide progress enum
-// cannot describe the rows accurately. InterfaceReady owns only declarations
-// and the preliminary public interface. BodiesReady additionally owns one
-// checked body result for the current declaration generation and exact external
-// generic demand set. ClosureReady additionally owns effects, denials, agent
-// obligations, native facts, and the completed public interface.
-enum class PackageSemanticProgress {
-  InterfaceReady,
-  BodiesReady,
-  ClosureReady,
-};
-
 // One retained cross-package procedure demand and the exact owner-local body
 // product which satisfies it. The portable demand remains the stable lookup
 // key across later source selections in the same command. work_index addresses
 // CompiledPackage::bodies.work/procedures and never changes while that package
-// declaration generation remains alive. requester is the first completed body
+// package interface remains selected. requester is the first completed body
 // product which discovered this demand and becomes the new product's explicit
 // graph prerequisite when materialization creates a new owner body. A row may
 // be unselected; completed products remain immutable and become active again
@@ -190,14 +176,10 @@ struct CompiledPackage {
   // named constants are ready. ConstantValue tasks fill published_constants;
   // PackageInterface consumes the record into declarations and clears it.
   PackageDeclarationDiscovery declaration_discovery;
-  // declarations is the immutable baseline for declaration_generation. Body
-  // checking receives it by const reference and owns all later semantic rows in
-  // bodies; no continuation may append into this value.
+  // declarations is the immutable baseline published by package_interface.
+  // Body checking receives it by const reference and owns all later semantic
+  // rows in bodies; no continuation may append into this value.
   SemanticAnalysisResult declarations;
-  // Incremented whenever this package's declaration baseline is rebuilt from a
-  // new parsed source generation or changed dependency interface. Zero denotes
-  // an uninitialized row and is never a successful package generation.
-  std::uint64_t declaration_generation = 0;
   // Live command-local body publication state. Completed roots, their exact
   // product-local HIR, and the work-to-result order remain available when a
   // later consumer discovers another concrete dependency instance.
@@ -218,8 +200,6 @@ struct CompiledPackage {
   // MIR reads this prefix immutably; compiler-only addresses carry their
   // pointee as MIR metadata instead of appending synthetic pointer TypeIds.
   Aarch64CAbiTable c_abi;
-  PackageSemanticProgress semantic_progress =
-      PackageSemanticProgress::InterfaceReady;
   AgentMetadataResult metadata;
   AgentObligationResult obligations;
   std::vector<AgentValidationContext> validation_context;
@@ -247,9 +227,9 @@ struct CompiledPackage {
 
 // CompileWorkspaceProgress is the aggregate command boundary. It advances
 // monotonically while source bytes are unchanged. A checked source transition
-// deliberately returns it to InterfaceDiscovery; PackageSemanticProgress says
-// exactly which unaffected rows still own valid bodies or closure. Empty is a
-// failed or not-yet-started result.
+// deliberately returns it to InterfaceDiscovery; exact per-package product IDs
+// and payloads say which unaffected rows still own valid bodies or closure.
+// Empty is a failed or not-yet-started result.
 // InterfaceDiscovery may intentionally omit packages blocked by
 // declaration/member synthesis. SemanticClosure owns complete checked
 // declarations, bodies, effects, denials, and native-interop facts but no MIR.
@@ -373,10 +353,10 @@ struct PackageSemanticProducts {
   // owned by the generic-demand path. These products consume the nominal's
   // declaration_types row and may add edges to other layout rows.
   std::vector<SemanticProductId> natural_layouts;
-  // One TypeAbiClassification row for every TypeId in the body generation.
+  // One TypeAbiClassification row for every TypeId in the package TypeStore.
   // Declaration-baseline rows depend on package_interface; body-appended rows
   // depend on body_type_producer. The vector is TypeId-indexed and append-only
-  // while the declaration generation remains alive.
+  // while the current package-interface product remains selected.
   std::vector<SemanticProductId> abi_classifications;
   // Canonical owner-evaluated concrete applications discovered anywhere in the
   // selected workspace. The vector belongs to the owner package and contains
@@ -399,7 +379,7 @@ struct PackageSemanticProducts {
   // order. selected_procedure_bodies is the current program projection in the
   // same order; removing an external demand changes that projection but leaves
   // the completed row here inspectable and reusable. Earlier-generation rows
-  // become Superseded only when this declaration generation is replaced.
+  // become Superseded only when this package interface is replaced.
   std::vector<SemanticProductId> procedure_bodies;
   std::vector<SemanticProductId> selected_procedure_bodies;
   // One body-local DirectEffectSummary product per selected procedure, in the
@@ -431,7 +411,7 @@ struct PackageSemanticProducts {
   // over package_static_data, package_assembly, and every machine function.
   std::vector<SemanticProductId> machine_functions;
   SemanticProductId artifact_layout;
-  // Parallel to the body generation's TypeStore after at least one body wave.
+  // Parallel to the package TypeStore after at least one body wave.
   // Declaration-baseline types contain an invalid product because their
   // package interface is the producer barrier. A body-appended TypeId names the
   // exact procedure product whose deterministic publication first installed

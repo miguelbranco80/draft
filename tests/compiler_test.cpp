@@ -1789,8 +1789,6 @@ void test_body_source_update_reuses_closed_generic_dependency(
 
   const draft::CompiledPackage &initial_formatting =
       *compiled.packages[*formatting_index];
-  const std::uint64_t formatting_declaration_generation =
-      initial_formatting.declaration_generation;
   const std::size_t formatting_symbol_count =
       initial_formatting.bodies.package.symbols.symbol_count();
   const std::size_t formatting_work_count =
@@ -1871,9 +1869,6 @@ void test_body_source_update_reuses_closed_generic_dependency(
   const draft::CompiledPackage &updated_app = *compiled.packages[app_index];
   const draft::CompiledPackage &updated_formatting =
       *compiled.packages[*formatting_index];
-  EXPECT(state, updated_app.declaration_generation == 2);
-  EXPECT(state, updated_formatting.declaration_generation ==
-                    formatting_declaration_generation);
   EXPECT(state, updated_formatting.bodies.work.size() == formatting_work_count);
   EXPECT(state, updated_formatting.bodies.package.symbols.symbol_count() ==
                     formatting_symbol_count);

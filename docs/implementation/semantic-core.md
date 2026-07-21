@@ -287,11 +287,11 @@ arguments followed by a domain-separated pack count and those graphs. Final
 instance interface rows retain the same pack-type graphs beside the exact
 effect, return, and write contracts.
 
-## Declaration generations and demand-driven body work
+## Declaration products and demand-driven body work
 
 Status: bootstrap phase ownership and incremental command-local scheduling.
 
-Semantic analysis publishes an immutable declaration generation for each
+Semantic analysis publishes an immutable package-interface payload for each
 package. Initial collection and interface binding happen once. Each package
 `when` records the foreign/export/deny context needed to append its selected
 branch; when the condition becomes ready, only that branch is added to the same
@@ -300,10 +300,10 @@ recollected. Complete workspace compilation publishes type identity, selected
 member names, member types, conditional choices, natural layout, and final named
 constants as individual semantic products before the package-interface barrier.
 Each ready task mutates only a private snapshot; deterministic publication moves
-its completed packet into the retained generation. Interface-synthesis discovery
+its completed packet into retained package state. Interface-synthesis discovery
 uses those same products: a ready declaration/member/condition/constant stop is
 blocked on one package `OpaqueSynthesisSet`, and no incomplete facet enters the
-retained generation. Every stopped product retains its exact private semantic
+retained package state. Every stopped product retains its exact private semantic
 package and constant inputs. A reached compile-time procedure is body-checked
 once into that same packet so lexical bindings, expected types, and branch facts
 are available to its provider site. A `TypeMembers` task with structural
@@ -319,7 +319,7 @@ there is no aggregate interface-discovery compatibility path.
 
 Body workers never append directly to the coordinator's retained value. Each
 returns an exact semantic append packet and one local HIR arena; the coordinator
-publishes those packets into its canonical body generation. Workspace
+publishes those packets into its canonical append-only package tables. Workspace
 compilation retains that live `PackageBodyWorkState` after finalization: its
 work rows, procedure results, and semantic products preserve one append-only
 index domain for later discoveries. Direct subsystem entry points transfer the
@@ -416,18 +416,19 @@ digest, and the stable native instance name. The owning package sorts and
 deduplicates each current ready set before looking up individual products. A
 new owner body has an explicit graph edge to the exact completed consumer body
 which exposed it. No consumer-local TypeId crosses the boundary, and
-materialized owner TypeIds live only in the body generation.
+materialized owner TypeIds live only in append-only package semantic tables.
 
-Each retained package owns one append-only row for every external demand seen in
-its current declaration generation. Authored roots are always selected; current
-demands select their exact owner rows; and dynamically discovered children
-follow their earlier prerequisite. An unseen demand checks one new product. A
-removed demand only changes this selected projection, so completed semantic
+Each retained package owns one append-only row for every external demand seen
+while its package interface remains selected. Authored roots are always
+selected; current demands select their exact owner rows; and dynamically
+discovered children follow their earlier prerequisite. An unseen demand checks
+one new product. A removed demand only changes this selected projection, so
+completed semantic
 rows, HIR, product IDs, and diagnostics remain immutable and can be selected
 again without rechecking. A matching package-local specialization is promoted
 in place to the canonical external name while retaining its SymbolId and HIR.
-A source or dependency-interface change still creates a new declaration
-generation and replaces the complete `CompiledPackage`; no separate body key is
+A source or dependency-interface change replaces the complete
+`CompiledPackage`; no generation counter or separate body key is
 needed.
 
 Only selected procedures publish transitive requests and enter metadata,

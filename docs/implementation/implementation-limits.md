@@ -82,6 +82,10 @@ external owner bodies depend on the exact completed consumer product which
 requested them; package-local semantic suffixes still publish in PackageId/work
 order after the whole worker set joins. Package loops whose payloads still use
 package snapshots remain sequential.
+Per-package phase and declaration-generation counters are deleted. Source
+transitions supersede exact product rows; body initialization and closure reuse
+are derived from retained product/payload invariants rather than a parallel
+phase label.
 MIR lowering reads the shared `TypeStore` immutably. Compiler-only addresses
 use MIR-local addressed-type metadata, so there is no unclassified post-ABI
 type suffix. Direct effects, denials, parsed assembly, and MIR consume

@@ -1041,8 +1041,12 @@ void test_body_proposal_reuses_static_pack_dependency(TestState &state) {
     return;
   EXPECT(state, formatting->declarations.package.parametric_instances.empty());
   EXPECT(state, formatting->bodies.package.parametric_instances.size() == 1);
-  EXPECT(state, formatting->semantic_progress ==
-                    draft::PackageSemanticProgress::ClosureReady);
+  EXPECT(state, formatting->metadata.ok);
+  EXPECT(state, formatting->obligations.ok);
+  EXPECT(state, formatting->native_interop.ok);
+  EXPECT(state,
+      resolved.compiled_program->progress ==
+          draft::CompileWorkspaceProgress::SemanticClosure);
 }
 
 void test_selective_regeneration_changes_only_selected_source(

@@ -339,6 +339,14 @@ gate.
     parity/determinism, resolved-provider fixtures, and a large-source timing
     qualification at several worker counts.
 
+    `PackageSemanticProgress` and the numeric declaration-generation counter
+    are deleted. Body initialization now follows the live body state; closure
+    reuse is derived from exact completed product slices and terminal payloads.
+    Workspace MIR payloads likewise live only at their `MirProcedure` product
+    IDs. Package-wide HIR compatibility consumers, standalone package-wide MIR
+    composition, sequential declaration snapshots, and the final qualification
+    gates remain in this step.
+
 ## Completion evidence
 
 Completion requires both positive proof and absence checks:

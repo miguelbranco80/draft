@@ -138,7 +138,7 @@ visible. `--timings=all` adds package/tool scopes, file
 discovery and I/O, lexing/parsing, import-graph resolution, and exclusive time;
 child process CPU is reported separately from parent wall time.
 
-Each package row separates an immutable declaration generation from its
+Each package row separates its immutable package-interface payload from its
 body-owned semantic tables and constants. Every authored symbolic template and
 concrete procedure owns a separate HIR arena and is a live
 `ProcedureTemplateBody` or
@@ -213,12 +213,12 @@ Authored roots are always selected; a current external demand selects its exact
 retained owner product; and discovered nested or concrete roots follow their
 earlier prerequisite. An unseen external demand appends and checks one product.
 Removing a demand changes only the projection: HIR, semantic rows, product IDs,
-and diagnostics already published for that declaration generation remain
+and diagnostics already published for that package interface remain
 inspectable and can be selected again without rechecking. Only selected HIR
 feeds transitive demand discovery, metadata, effects, denials, validation,
 assembly, MIR, and LLVM, and only selected external instances enter the public
 package interface. A changed declaration still replaces its complete
-`CompiledPackage`; there is no declaration-generation body work key or
+`CompiledPackage`; there is no generation counter, body work key, or
 aggregate demand comparison.
 
 Compile-time type preflight and early synthesis discovery run on private copies
