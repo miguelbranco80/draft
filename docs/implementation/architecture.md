@@ -112,9 +112,12 @@ task-local diagnostics and package payloads in product-ID order. Each named
 constant consumes already published values or reports exact constant/type-facet
 blockers; task-local structural type values are interned by the coordinator.
 Products owned by different packages execute concurrently through the bounded
-wave executor. Products from one package still advance a private package
-snapshot in product order until declaration results become explicit append
-packets. Name-set and interface tasks are placed after read-only work and
+wave executor. Generic-owner products use the same frozen-prefix/task-append
+representation as body products, so sibling owner demands may execute
+independently even when they target one package. Authored declaration-type
+products still advance one private package snapshot in product order until
+their prefix mutations become explicit append/patch packets. Name-set and
+interface tasks are placed after read-only work and
 serialized because validation-context loading can extend the command-owned
 source table; no worker reads that table while another worker changes it.
 Ready imported constants remain dependency-interface inputs and are installed

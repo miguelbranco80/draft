@@ -34,6 +34,45 @@ SemanticPackage SemanticPackage::fork_body_task_view() const {
   return SemanticPackage(BodyTaskViewTag{}, *this);
 }
 
+SemanticPackage SemanticPackage::materialize_task_view() const {
+  assert(body_read_prefix_ != nullptr);
+  SemanticPackage result = *body_read_prefix_;
+  result.types.append_exact(types.appended_since(result.types.size()));
+  result.symbols.append_exact(symbols.appended_since(
+      result.symbols.scope_count(), result.symbols.symbol_count()));
+
+  // Every raw vector in a task view owns only its suffix. Keep this list beside
+  // fork_body_task_view and semantic-task extraction so adding a new mutable
+  // table cannot silently disappear from a retained blocker packet.
+  const auto append = []<typename Value>(
+                          std::vector<Value> &destination,
+                          const std::vector<Value> &source) {
+    destination.insert(destination.end(), source.begin(), source.end());
+  };
+  append(result.owned_scopes, owned_scopes);
+  append(result.aggregate_members, aggregate_members);
+  append(result.enum_member_values, enum_member_values);
+  append(result.parametric_parameters, parametric_parameters);
+  append(result.static_argument_packs, static_argument_packs);
+  append(result.parametric_instances, parametric_instances);
+  append(result.parametric_type_instances, parametric_type_instances);
+  append(result.imported_symbols, imported_symbols);
+  append(result.imported_procedure_instances, imported_procedure_instances);
+  append(result.imported_type_instantiation_requests,
+         imported_type_instantiation_requests);
+  append(result.imported_types, imported_types);
+  append(result.imported_effects, imported_effects);
+  append(result.imported_returns, imported_returns);
+  append(result.imported_writes, imported_writes);
+  append(result.declaration_denials, declaration_denials);
+  append(result.sites, sites);
+  append(result.required_integer_expressions, required_integer_expressions);
+  append(result.deferred_element_counts, deferred_element_counts);
+  append(result.deferred_value_expressions, deferred_value_expressions);
+  append(result.deferred_type_applications, deferred_type_applications);
+  return result;
+}
+
 const std::vector<FileSemanticScope> &SemanticPackage::files_for_read() const {
   return body_read_prefix_ != nullptr ? body_read_prefix_->files : files;
 }

@@ -320,6 +320,9 @@ there is no aggregate interface-discovery compatibility path.
 Body workers never append directly to the coordinator's retained value. Each
 returns an exact semantic append packet and one local HIR arena; the coordinator
 publishes those packets into its canonical append-only package tables. Workspace
+generic-owner workers use the same `SemanticTaskAppend` packet without HIR;
+blocked attempts materialize only their private requester context, while
+successful attempts publish no complete package successor. Workspace
 compilation retains that live `PackageBodyWorkState` after finalization: its
 work rows, procedure results, and semantic products preserve one append-only
 index domain for later discoveries. Direct subsystem entry points return that

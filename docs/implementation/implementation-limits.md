@@ -63,11 +63,13 @@ publication remaps task suffix IDs, interns structural types, and canonicalizes
 equal procedure and nominal type specializations. The bootstrap driver invokes
 the isolated tasks through its bounded closed-wave executor; task-indexed
 diagnostics and products publish only after join. Interface waves also use that
-executor: different package owners run concurrently, while products from one
-package remain ordered over one private snapshot. Name-set and interface tasks
-are isolated after read-only work because validation loading may extend the
-shared source table. Declaration append packets are still required before
-same-package interface products can run independently. One-worker
+executor: different package owners run concurrently, and generic-owner tasks
+return `SemanticTaskAppend` packets so same-package demands are independent.
+Authored declaration-type products remain ordered over one private snapshot.
+Name-set and interface tasks are isolated after read-only work because
+validation loading may extend the shared source table. Declaration patch
+packets are still required before those last same-package products can run
+independently. One-worker
 runs avoid thread creation; larger pools on the supported POSIX hosts use an
 explicit eight-MiB worker stack so authored syntax recursion has the same
 practical budget in sequential and parallel execution.
@@ -84,8 +86,9 @@ rebuild, or declaration-generation body work key. All packages now contribute
 their pending procedure products to one workspace-wide frozen ready set. New
 external owner bodies depend on the exact completed consumer product which
 requested them; package-local semantic suffixes still publish in PackageId/work
-order after the whole worker set joins. Interface package snapshots remain the
-only semantic-wave payload that imposes a package-local execution chain.
+order after the whole worker set joins. Authored declaration-type snapshots
+remain the only semantic-wave payload that imposes a package-local execution
+chain.
 Per-package phase and declaration-generation counters are deleted. Source
 transitions supersede exact product rows; body initialization and closure reuse
 are derived from retained product/payload invariants rather than a parallel

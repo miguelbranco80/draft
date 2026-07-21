@@ -716,6 +716,13 @@ struct SemanticPackage {
   // task view.
   [[nodiscard]] SemanticPackage fork_body_task_view() const;
 
+  // Copies one task view into an ordinary self-contained package while the
+  // frozen base is still unchanged. This is reserved for a blocked task whose
+  // requester-local IDs must survive the worker join; successful tasks return
+  // only SemanticTaskAppend. The result preserves the task's exact combined ID
+  // domain and has no pointer back to the canonical package.
+  [[nodiscard]] SemanticPackage materialize_task_view() const;
+
   // These five tables close before procedure products become ready and cannot
   // be extended by body checking. Readers must use these operations because a
   // task view deliberately leaves its local vectors empty.

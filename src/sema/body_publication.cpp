@@ -1,11 +1,11 @@
-// Deterministic ID remapping and canonical publication for procedure products.
+// Deterministic ID remapping and canonical publication for semantic tasks.
 //
 // Inputs are one canonical SemanticPackage/ConstantTable generation and one
-// worker-owned ProcedureBodyTaskResult produced from a frozen prefix of that
+// worker-owned SemanticTaskAppend produced from a frozen prefix of that
 // generation. The worker packet owns only suffix rows. This file maps those
-// rows into the package's current canonical domains, interns structural types,
-// appends every table in dependency order, and rewrites HIR/discovered roots.
-// The package and task are mutated only after the prefix contract is validated.
+// rows into the package's current canonical domains and interns structural
+// types. Its body-specific wrapper then rewrites HIR/discovered roots. The
+// package and task are mutated only after the prefix contract is validated.
 //
 // The central invariant is simple: an ID below the worker's recorded prefix is
 // already canonical; an ID at or above that prefix must be translated through
@@ -30,22 +30,6 @@
 namespace draft {
 namespace {
 
-// PublicationMaps owns the translation from one worker's combined ID domains
-// to the canonical package after earlier results in the wave. Scope and symbol
-// rows are identity-bearing and therefore receive fresh canonical positions.
-// Type rows are filled later because structural interning may map several local
-// rows to one canonical TypeId.
-struct PublicationMaps {
-  SemanticTaskPrefix prefix;
-  std::vector<TypeId> types;
-  std::vector<ScopeId> scopes;
-  std::vector<SymbolId> symbols;
-
-  std::size_t deferred_element_count_base = 0;
-  std::size_t deferred_value_expression_base = 0;
-  std::size_t deferred_type_application_base = 0;
-};
-
 // TypePublicationPlan separates canonical TypeId selection from mutation of
 // TypeStore. Procedure-instance canonicalization needs those TypeIds to compare
 // argument keys, but may then compact provisional symbols before symbolic
@@ -62,7 +46,8 @@ struct TypePublicationPlan {
       static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max());
 }
 
-[[nodiscard]] TypeId remap_type(TypeId id, const PublicationMaps &maps) {
+[[nodiscard]] TypeId remap_type(
+    TypeId id, const SemanticTaskPublication &maps) {
   if (!id.is_valid() || id.value < maps.prefix.type_count) return id;
   const std::size_t local = id.value - maps.prefix.type_count;
   assert(local < maps.types.size());
@@ -70,14 +55,16 @@ struct TypePublicationPlan {
   return maps.types[local];
 }
 
-[[nodiscard]] ScopeId remap_scope(ScopeId id, const PublicationMaps &maps) {
+[[nodiscard]] ScopeId remap_scope(
+    ScopeId id, const SemanticTaskPublication &maps) {
   if (!id.is_valid() || id.value < maps.prefix.scope_count) return id;
   const std::size_t local = id.value - maps.prefix.scope_count;
   assert(local < maps.scopes.size());
   return maps.scopes[local];
 }
 
-[[nodiscard]] SymbolId remap_symbol(SymbolId id, const PublicationMaps &maps) {
+[[nodiscard]] SymbolId remap_symbol(
+    SymbolId id, const SemanticTaskPublication &maps) {
   if (!id.is_valid() || id.value < maps.prefix.symbol_count) return id;
   const std::size_t local = id.value - maps.prefix.symbol_count;
   assert(local < maps.symbols.size());
@@ -96,7 +83,8 @@ struct TypePublicationPlan {
   return static_cast<std::uint32_t>(mapped);
 }
 
-void remap_constant(ConstantValue &value, const PublicationMaps &maps) {
+void remap_constant(
+    ConstantValue &value, const SemanticTaskPublication &maps) {
   if (value.kind == ConstantKind::Procedure &&
       value.symbol_index != std::numeric_limits<std::uint32_t>::max()) {
     const SymbolId mapped = remap_symbol({value.symbol_index}, maps);
@@ -113,7 +101,7 @@ void remap_constant(ConstantValue &value, const PublicationMaps &maps) {
 }
 
 void remap_integer_expression(
-    IntegerExpression &expression, const PublicationMaps &maps) {
+    IntegerExpression &expression, const SemanticTaskPublication &maps) {
   for (IntegerExpressionNode &node : expression.nodes) {
     if (node.operation != IntegerExpressionOperation::Parameter ||
         node.parameter == std::numeric_limits<std::uint32_t>::max()) {
@@ -123,7 +111,8 @@ void remap_integer_expression(
   }
 }
 
-void remap_argument(ParametricArgument &argument, const PublicationMaps &maps) {
+void remap_argument(
+    ParametricArgument &argument, const SemanticTaskPublication &maps) {
   argument.type = remap_type(argument.type, maps);
   argument.value_type = remap_type(argument.value_type, maps);
   remap_constant(argument.value, maps);
@@ -136,14 +125,14 @@ void remap_argument(ParametricArgument &argument, const PublicationMaps &maps) {
 
 void remap_arguments(
     std::vector<ParametricArgument> &arguments,
-    const PublicationMaps &maps) {
+    const SemanticTaskPublication &maps) {
   for (ParametricArgument &argument : arguments) {
     remap_argument(argument, maps);
   }
 }
 
 [[nodiscard]] bool type_references_are_ready(
-    const Type &type, const PublicationMaps &maps) {
+    const Type &type, const SemanticTaskPublication &maps) {
   const auto ready = [&](TypeId id) {
     if (!id.is_valid() || id.value < maps.prefix.type_count) return true;
     const std::size_t local = id.value - maps.prefix.type_count;
@@ -176,7 +165,7 @@ void remap_arguments(
   }
 }
 
-void remap_type_row(Type &type, const PublicationMaps &maps) {
+void remap_type_row(Type &type, const SemanticTaskPublication &maps) {
   type.element = remap_type(type.element, maps);
   for (TypeId &member : type.members) member = remap_type(member, maps);
   remap_integer_expression(type.element_count_expression, maps);
@@ -247,7 +236,7 @@ void remap_type_row(Type &type, const PublicationMaps &maps) {
 [[nodiscard]] bool plan_type_publication(
     SemanticPackage &package,
     SemanticTaskAppend &semantic,
-    PublicationMaps &maps,
+    SemanticTaskPublication &maps,
     TypePublicationPlan &plan,
     DiagnosticSink &diagnostics,
     const std::vector<TypeId> *forced_types = nullptr) {
@@ -256,7 +245,7 @@ void remap_type_row(Type &type, const PublicationMaps &maps) {
   if (plan.source_types.size() != plan.source_completions.size()) {
     diagnostics.error(
         SourceRange::invalid(),
-        "procedure body type append has mismatched row and completion counts");
+        "semantic task type append has mismatched row and completion counts");
     return false;
   }
 
@@ -318,7 +307,7 @@ void remap_type_row(Type &type, const PublicationMaps &maps) {
     if (!made_progress) {
       diagnostics.error(
           SourceRange::invalid(),
-          "procedure body type append contains an unresolved structural cycle");
+          "semantic task type append contains an unresolved structural cycle");
       return false;
     }
   }
@@ -329,7 +318,7 @@ void remap_type_row(Type &type, const PublicationMaps &maps) {
 void publish_planned_types(
     SemanticPackage &package,
     TypePublicationPlan plan,
-    const PublicationMaps &maps) {
+    const SemanticTaskPublication &maps) {
   // Identity rows were assigned before every dependency was translated, and
   // procedure-instance merging may have compacted SymbolIds since structural
   // matching. Rebuild every selected row from its worker source now that all
@@ -343,7 +332,7 @@ void publish_planned_types(
 }
 
 void remap_symbol_append(
-    SymbolTableAppend &symbols, const PublicationMaps &maps) {
+    SymbolTableAppend &symbols, const SemanticTaskPublication &maps) {
   for (Scope &scope : symbols.scopes) {
     scope.parent = remap_scope(scope.parent, maps);
     for (SymbolId &symbol : scope.symbols) {
@@ -365,7 +354,7 @@ void remap_symbol_append(
 
 [[nodiscard]] ParametricInstanceRecord remapped_instance_identity(
     const ParametricInstanceRecord &source,
-    const PublicationMaps &maps) {
+    const SemanticTaskPublication &maps) {
   ParametricInstanceRecord identity;
   identity.source = remap_symbol(source.source, maps);
   identity.instance = remap_symbol(source.instance, maps);
@@ -379,7 +368,7 @@ void remap_symbol_append(
 
 [[nodiscard]] ParametricTypeInstanceRecord remapped_type_instance_identity(
     const ParametricTypeInstanceRecord &source,
-    const PublicationMaps &maps) {
+    const SemanticTaskPublication &maps) {
   ParametricTypeInstanceRecord identity;
   identity.source = remap_symbol(source.source, maps);
   identity.instance = remap_symbol(source.instance, maps);
@@ -407,7 +396,7 @@ struct InstanceMerge {
 [[nodiscard]] bool discover_type_instance_merges(
     const SemanticPackage &package,
     const SemanticTaskAppend &semantic,
-    PublicationMaps &maps,
+    SemanticTaskPublication &maps,
     std::vector<TypeId> &forced_types,
     std::vector<InstanceMerge> &merges,
     bool &discovered,
@@ -486,7 +475,7 @@ struct InstanceMerge {
 [[nodiscard]] bool canonicalize_instances(
     SemanticPackage &package,
     SemanticTaskAppend &semantic,
-    PublicationMaps &maps,
+    SemanticTaskPublication &maps,
     std::vector<InstanceMerge> merges,
     DiagnosticSink &diagnostics) {
   for (std::size_t row_index = 0;
@@ -746,7 +735,7 @@ struct InstanceMerge {
 }
 
 void remap_imported_effect(
-    ImportedEffect &effect, const PublicationMaps &maps) {
+    ImportedEffect &effect, const SemanticTaskPublication &maps) {
   effect.procedure_proxy = remap_symbol(effect.procedure_proxy, maps);
   for (ImportedFlowArgument &argument : effect.flow_arguments) {
     for (ImportedFlowField &field : argument.fields) {
@@ -759,14 +748,14 @@ void remap_imported_effect(
 
 void remap_type_binding(
     DeferredElementCountTypeBinding &binding,
-    const PublicationMaps &maps) {
+    const SemanticTaskPublication &maps) {
   binding.parameter = remap_type(binding.parameter, maps);
   binding.replacement = remap_type(binding.replacement, maps);
 }
 
 void remap_value_binding(
     DeferredElementCountValueBinding &binding,
-    const PublicationMaps &maps) {
+    const SemanticTaskPublication &maps) {
   binding.parameter = remap_symbol(binding.parameter, maps);
   remap_constant(binding.value, maps);
   remap_integer_expression(binding.symbolic_expression, maps);
@@ -774,7 +763,7 @@ void remap_value_binding(
 
 void remap_side_tables(
     SemanticTaskAppend &semantic,
-    const PublicationMaps &maps) {
+    const SemanticTaskPublication &maps) {
   for (OwnedSemanticScope &row : semantic.owned_scopes) {
     row.owner = remap_symbol(row.owner, maps);
     row.scope = remap_scope(row.scope, maps);
@@ -911,7 +900,7 @@ void remap_side_tables(
 }
 
 void remap_hir(
-    HirProgram &program, const PublicationMaps &maps) {
+    HirProgram &program, const SemanticTaskPublication &maps) {
   HirProgram remapped;
   for (std::size_t index = 0; index < program.expression_count(); ++index) {
     HirExpression expression = program.expression(
@@ -954,7 +943,7 @@ void remap_hir(
 
 void remap_environment(
     ProcedureBodyEnvironment &environment,
-    const PublicationMaps &maps) {
+    const SemanticTaskPublication &maps) {
   environment.source = remap_symbol(environment.source, maps);
   environment.symbol = remap_symbol(environment.symbol, maps);
   for (ConcreteProcedureTypeSubstitution &binding :
@@ -978,7 +967,7 @@ void remap_environment(
 
 void remap_discovered_work(
     std::vector<ProcedureBodyWorkItem> &work,
-    const PublicationMaps &maps) {
+    const SemanticTaskPublication &maps) {
   for (ProcedureBodyWorkItem &item : work) {
     item.symbol = remap_symbol(item.symbol, maps);
     if (item.enclosing_environment.has_value()) {
@@ -1043,23 +1032,36 @@ void append_rows(std::vector<Value> &destination, std::vector<Value> source) {
 
 } // namespace
 
-bool publish_body_task_semantics(
+TypeId SemanticTaskPublication::canonical_type(TypeId id) const {
+  return remap_type(id, *this);
+}
+
+ScopeId SemanticTaskPublication::canonical_scope(ScopeId id) const {
+  return remap_scope(id, *this);
+}
+
+SymbolId SemanticTaskPublication::canonical_symbol(SymbolId id) const {
+  return remap_symbol(id, *this);
+}
+
+bool publish_semantic_task_append(
     SemanticPackage &package,
     ConstantTable &constants,
-    ProcedureBodyTaskResult &task,
+    SemanticTaskAppend &semantic,
+    SemanticTaskPublication &publication,
     DiagnosticSink &diagnostics) {
-  SemanticTaskAppend &semantic = task.semantic;
   if (!prefix_is_available(package, constants, semantic.prefix) ||
       semantic.types.base_size != semantic.prefix.type_count ||
       semantic.symbols.base_scope_count != semantic.prefix.scope_count ||
       semantic.symbols.base_symbol_count != semantic.prefix.symbol_count) {
     diagnostics.error(
         SourceRange::invalid(),
-        "procedure body task result does not belong to this semantic prefix");
+        "semantic task result does not belong to this semantic prefix");
     return false;
   }
 
-  PublicationMaps maps;
+  publication = {};
+  SemanticTaskPublication &maps = publication;
   maps.prefix = semantic.prefix;
   maps.deferred_element_count_base =
       package.deferred_element_counts_for_read().size();
@@ -1073,7 +1075,7 @@ bool publish_body_task_semantics(
   for (std::size_t index = 0; index < semantic.symbols.scopes.size(); ++index) {
     const std::size_t canonical = scope_base + index;
     if (!fits_u32(canonical)) {
-      diagnostics.error(SourceRange::invalid(), "procedure body scope table overflow");
+      diagnostics.error(SourceRange::invalid(), "semantic task scope table overflow");
       return false;
     }
     maps.scopes.push_back({static_cast<std::uint32_t>(canonical)});
@@ -1083,7 +1085,7 @@ bool publish_body_task_semantics(
   for (std::size_t index = 0; index < semantic.symbols.symbols.size(); ++index) {
     const std::size_t canonical = symbol_base + index;
     if (!fits_u32(canonical)) {
-      diagnostics.error(SourceRange::invalid(), "procedure body symbol table overflow");
+      diagnostics.error(SourceRange::invalid(), "semantic task symbol table overflow");
       return false;
     }
     maps.symbols.push_back({static_cast<std::uint32_t>(canonical)});
@@ -1135,7 +1137,7 @@ bool publish_body_task_semantics(
   }
   const std::size_t published_type_begin = package.types.size();
   publish_planned_types(package, std::move(type_plan), maps);
-  task.published_types.reserve(package.types.size() - published_type_begin);
+  maps.published_types.reserve(package.types.size() - published_type_begin);
   for (std::size_t index = published_type_begin; index < package.types.size();
        ++index) {
     if (!fits_u32(index)) {
@@ -1144,7 +1146,7 @@ bool publish_body_task_semantics(
           "procedure body published a type outside the TypeId domain");
       return false;
     }
-    task.published_types.push_back(
+    maps.published_types.push_back(
         TypeId{static_cast<std::uint32_t>(index)});
   }
 
@@ -1158,12 +1160,12 @@ bool publish_body_task_semantics(
   // product after IDs have become canonical but before the append packet is
   // consumed. The package tables remain an append-only interning/publication
   // substrate; current workspace selection follows these product-owned routes.
-  task.imported_procedure_instances =
+  maps.imported_procedure_instances =
       semantic.imported_procedure_instances;
   const std::size_t site_base = package.sites_for_read().size();
-  task.semantic_site_indices.reserve(semantic.sites.size());
+  maps.semantic_site_indices.reserve(semantic.sites.size());
   for (std::size_t index = 0; index < semantic.sites.size(); ++index) {
-    task.semantic_site_indices.push_back(site_base + index);
+    maps.semantic_site_indices.push_back(site_base + index);
   }
   append_rows(package.owned_scopes, std::move(semantic.owned_scopes));
   append_rows(package.aggregate_members, std::move(semantic.aggregate_members));
@@ -1208,9 +1210,28 @@ bool publish_body_task_semantics(
       std::move(semantic.deferred_type_applications));
   constants.append_exact(constants.size(), std::move(semantic.constants));
 
-  task.symbol = remap_symbol(task.symbol, maps);
-  remap_hir(task.program, maps);
-  remap_discovered_work(task.discovered_work, maps);
+  return true;
+}
+
+bool publish_body_task_semantics(
+    SemanticPackage &package,
+    ConstantTable &constants,
+    ProcedureBodyTaskResult &task,
+    DiagnosticSink &diagnostics) {
+  SemanticTaskPublication publication;
+  if (!publish_semantic_task_append(
+          package, constants, task.semantic, publication, diagnostics)) {
+    return false;
+  }
+
+  task.published_types = std::move(publication.published_types);
+  task.imported_procedure_instances =
+      std::move(publication.imported_procedure_instances);
+  task.semantic_site_indices =
+      std::move(publication.semantic_site_indices);
+  task.symbol = publication.canonical_symbol(task.symbol);
+  remap_hir(task.program, publication);
+  remap_discovered_work(task.discovered_work, publication);
   return true;
 }
 

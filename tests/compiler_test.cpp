@@ -3700,6 +3700,99 @@ void test_cross_package_generic_procedures(TestState &state) {
   EXPECT(state, package_llvm_text(*generic).find("_24mono_24") != std::string::npos);
 }
 
+// Canonical generic owner tasks are independent semantic products, including
+// when several requests target the same defining package. This public-pipeline
+// comparison guards the task-local append publisher: worker count may change
+// elapsed time, but never product identity, semantic table sizes, diagnostics,
+// or final LLVM bytes. The timing fact proves the fixture formed at least one
+// ready wave containing sibling generic-owner tasks.
+void test_generic_owner_worker_counts_are_deterministic(TestState &state) {
+  const std::string workspace =
+      std::string(DRAFT_SOURCE_DIRECTORY) + "/examples/packages-generic";
+  const std::string root = workspace + "/app";
+
+  draft::SourceManager sequential_sources;
+  draft::DiagnosticSink sequential_diagnostics;
+  draft::TimingRecorder sequential_timings(draft::TimingOutput::Summary);
+  draft::CompileWorkspaceOptions sequential_options;
+  sequential_options.target = draft::make_aarch64_macos_profile();
+  sequential_options.workspace.workspace_directory = workspace;
+  sequential_options.lower_mir = true;
+  sequential_options.emit_llvm = true;
+  sequential_options.semantic_worker_count = 1;
+  sequential_options.timings = &sequential_timings;
+  const draft::CompileWorkspaceResult sequential = draft::compile_workspace(
+      sequential_sources,
+      root,
+      sequential_options,
+      sequential_diagnostics);
+
+  draft::SourceManager parallel_sources;
+  draft::DiagnosticSink parallel_diagnostics;
+  draft::TimingRecorder parallel_timings(draft::TimingOutput::Summary);
+  draft::CompileWorkspaceOptions parallel_options = sequential_options;
+  parallel_options.semantic_worker_count = 4;
+  parallel_options.timings = &parallel_timings;
+  const draft::CompileWorkspaceResult parallel = draft::compile_workspace(
+      parallel_sources, root, parallel_options, parallel_diagnostics);
+
+  if (sequential_diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(
+        sequential_sources, sequential_diagnostics);
+  }
+  if (parallel_diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(
+        parallel_sources, parallel_diagnostics);
+  }
+  EXPECT(state, sequential.ok);
+  EXPECT(state, parallel.ok);
+  EXPECT(state,
+         draft::render_diagnostics(
+             sequential_sources, sequential_diagnostics) ==
+             draft::render_diagnostics(
+                 parallel_sources, parallel_diagnostics));
+  EXPECT(state,
+         sequential.semantic_graph.products.size() ==
+             parallel.semantic_graph.products.size());
+  const std::size_t product_count = std::min(
+      sequential.semantic_graph.products.size(),
+      parallel.semantic_graph.products.size());
+  for (std::size_t index = 0; index < product_count; ++index) {
+    const draft::SemanticProduct &left =
+        sequential.semantic_graph.products[index];
+    const draft::SemanticProduct &right =
+        parallel.semantic_graph.products[index];
+    EXPECT(state, left.kind == right.kind);
+    EXPECT(state, left.state == right.state);
+    EXPECT(state, left.dependencies == right.dependencies);
+  }
+  EXPECT(state, sequential.packages.size() == parallel.packages.size());
+  const std::size_t package_count =
+      std::min(sequential.packages.size(), parallel.packages.size());
+  for (std::size_t index = 0; index < package_count; ++index) {
+    EXPECT(state,
+           sequential.packages[index].has_value() ==
+               parallel.packages[index].has_value());
+    if (!sequential.packages[index].has_value() ||
+        !parallel.packages[index].has_value()) {
+      continue;
+    }
+    const draft::CompiledPackage &left = *sequential.packages[index];
+    const draft::CompiledPackage &right = *parallel.packages[index];
+    EXPECT(state,
+           left.bodies.package.types.size() ==
+               right.bodies.package.types.size());
+    EXPECT(state,
+           left.bodies.package.symbols.symbol_count() ==
+               right.bodies.package.symbols.symbol_count());
+    EXPECT(state, package_llvm_text(left) == package_llvm_text(right));
+  }
+  EXPECT(state,
+         parallel_timings.render().find(
+             "generic owner tasks in shared ready waves:") !=
+             std::string::npos);
+}
+
 void test_runtime_context_bridge_diagnostics(TestState &state) {
   draft::test::TemporaryDirectory temporary_directory{
       "draft-bootstrap-context-bridge-test"};
@@ -4185,6 +4278,7 @@ int main() {
   test_compiler_distributed_atomic(state);
   test_atomic_diagnostics(state);
   test_cross_package_generic_procedures(state);
+  test_generic_owner_worker_counts_are_deterministic(state);
   test_runtime_context_bridge_diagnostics(state);
   test_cross_package_higher_order_effect(state);
   test_cross_package_raw_string_data_denial(state);

@@ -50,6 +50,7 @@
 #include "elaborator/resolution_store.h"
 #include "elaborator/resolved_program.h"
 #include "mir/lower.h"
+#include "sema/body_publication.h"
 #include "sema/denial.h"
 #include "sema/runtime_context.h"
 #include "sema/type_resolver.h"
@@ -1454,6 +1455,7 @@ struct WorkspaceInterfaceTaskSlot {
   // generic_package instead supplies the local TypeIds needed to create the
   // dependency's canonical key; no mutation from that attempt is published.
   std::optional<SemanticPackage> generic_package;
+  std::optional<SemanticTaskAppend> generic_semantic;
   std::optional<TypeId> generic_type;
   std::optional<InterfaceTypeGraph> generic_result;
   std::vector<ImportedTypeInstantiationRequest> generic_dependencies;
@@ -2642,17 +2644,13 @@ completed_declaration_dependencies(const CompileWorkspaceResult &result,
     // Step 9 replaces this with task-local deltas plus canonical interning.
     std::vector<std::optional<SemanticPackage>> declaration_wave_packages(
         result.packages.size());
-    // Generic owner tasks use the same deterministic sequential oracle, but
-    // advance the already-finalized declaration package owned by their source
-    // template. A blocked nested demand never enters this vector.
-    std::vector<std::optional<SemanticPackage>> generic_wave_packages(
-        result.packages.size());
     // One frozen interface wave may contain several products from one package.
     // Until declaration publication becomes an explicit append packet, those
-    // products must advance one private package snapshot in ProductId order.
-    // The executor therefore chains only siblings with the same PackageId;
-    // tasks owned by different packages remain independent. PackageNameSet and
-    // PackageInterface can load validation source into SourceManager, so those
+    // declaration products must advance one private package snapshot in
+    // ProductId order. Generic owner products now return exact semantic append
+    // packets and are independent even when they share that PackageId.
+    // PackageNameSet and PackageInterface can load validation source into
+    // SourceManager, so those
     // tasks run after every read-only product and in one stable global chain.
     // This keeps workers away from canonical package state while allowing the
     // already-isolated package work to execute concurrently.
@@ -2668,7 +2666,6 @@ completed_declaration_dependencies(const CompileWorkspaceResult &result,
       std::vector<WorkspaceInterfaceTaskSlot> *slots = nullptr;
       std::vector<std::optional<SemanticPackage>> *declaration_packages =
           nullptr;
-      std::vector<std::optional<SemanticPackage>> *generic_packages = nullptr;
       const std::vector<std::size_t> *task_indices = nullptr;
     };
     InterfaceWaveExecution execution{
@@ -2681,7 +2678,6 @@ completed_declaration_dependencies(const CompileWorkspaceResult &result,
         &retained_validation_is_typed,
         &slots,
         &declaration_wave_packages,
-        &generic_wave_packages,
         nullptr,
     };
     const auto execute_interface_task = [](
@@ -2699,7 +2695,6 @@ completed_declaration_dependencies(const CompileWorkspaceResult &result,
           *execution.retained_validation_is_typed;
       auto &slots = *execution.slots;
       auto &declaration_wave_packages = *execution.declaration_packages;
-      auto &generic_wave_packages = *execution.generic_packages;
       const std::size_t task_index =
           (*execution.task_indices)[static_cast<std::size_t>(scheduled_task)];
       do {
@@ -2877,10 +2872,16 @@ completed_declaration_dependencies(const CompileWorkspaceResult &result,
           }
           const GenericTypeDemand &demand =
               result.semantic_products.generic_type_demands[demand_id.value];
+          const SemanticPackage &canonical_package =
+              result.packages[package_index]->declarations.package;
+          const ConstantTable &canonical_constants =
+              result.packages[package_index]->declarations.constants;
+          const SemanticTaskPrefix prefix = capture_semantic_task_prefix(
+              canonical_package, canonical_constants);
           SemanticPackage task_package =
-              generic_wave_packages[package_index].has_value()
-                  ? *generic_wave_packages[package_index]
-                  : result.packages[package_index]->declarations.package;
+              canonical_package.fork_body_task_view();
+          ConstantTable task_constants =
+              canonical_constants.fork_append_only();
           if (!import_completed_generic_dependencies(
                   result, product, task_package, slot.outcome.diagnostics)) {
             slot.outcome.kind = SemanticProductOutcomeKind::Error;
@@ -2897,7 +2898,7 @@ completed_declaration_dependencies(const CompileWorkspaceResult &result,
               task_package,
               result.packages[package_index]->declarations.selections,
               demand.source, demand.arguments, source_symbol.name_range,
-              &result.packages[package_index]->declarations.constants,
+              &task_constants,
               options.target.facts, slot.outcome.diagnostics);
           if (!concrete.is_valid() ||
               task_package.types.type(concrete).kind == TypeKind::Invalid) {
@@ -2917,7 +2918,7 @@ completed_declaration_dependencies(const CompileWorkspaceResult &result,
                 requests[index]);
           }
           if (!slot.generic_dependencies.empty()) {
-            slot.generic_package = std::move(task_package);
+            slot.generic_package = task_package.materialize_task_view();
             slot.outcome.kind = SemanticProductOutcomeKind::Blocked;
             continue;
           }
@@ -2929,7 +2930,8 @@ completed_declaration_dependencies(const CompileWorkspaceResult &result,
                                            slot.outcome.failure);
             continue;
           }
-          generic_wave_packages[package_index] = std::move(task_package);
+          slot.generic_semantic = extract_semantic_task_append(
+              prefix, task_package, task_constants);
           continue;
         }
         const TypeId nominal =
@@ -3236,7 +3238,7 @@ completed_declaration_dependencies(const CompileWorkspaceResult &result,
 
     WorkGraph execution_graph;
     execution_graph.tasks.resize(task_indices.size());
-    std::vector<std::optional<WorkTaskId>> last_safe_by_package(
+    std::vector<std::optional<WorkTaskId>> last_declaration_by_package(
         result.packages.size());
     for (std::size_t execution_index = 0;
          execution_index < safe_tasks.size(); ++execution_index) {
@@ -3245,11 +3247,18 @@ completed_declaration_dependencies(const CompileWorkspaceResult &result,
       const PackageId owner =
           result.semantic_products.package_by_product[product.value];
       const WorkTaskId task = static_cast<WorkTaskId>(execution_index);
-      if (last_safe_by_package[owner.value].has_value()) {
+      const SemanticProductKind kind =
+          result.semantic_graph.products[product.value].kind;
+      const bool uses_declaration_snapshot =
+          kind == SemanticProductKind::TypeIdentity ||
+          kind == SemanticProductKind::TypeMembers ||
+          kind == SemanticProductKind::TypeMemberTypes;
+      if (!uses_declaration_snapshot) continue;
+      if (last_declaration_by_package[owner.value].has_value()) {
         execution_graph.tasks[task].dependencies.push_back(
-            *last_safe_by_package[owner.value]);
+            *last_declaration_by_package[owner.value]);
       }
-      last_safe_by_package[owner.value] = task;
+      last_declaration_by_package[owner.value] = task;
     }
     for (std::size_t index = 0; index < source_mutating_tasks.size(); ++index) {
       const WorkTaskId task =
@@ -3271,11 +3280,24 @@ completed_declaration_dependencies(const CompileWorkspaceResult &result,
         execute_interface_task,
         &execution);
     if (options.timings != nullptr) {
+      std::size_t generic_owner_tasks = 0;
+      for (SemanticProductId product : wave.products) {
+        if (result.semantic_products
+                .generic_type_demand_by_product[product.value]
+                .is_valid()) {
+          ++generic_owner_tasks;
+        }
+      }
       options.timings->add_counter("interface semantic ready waves", 1);
       options.timings->add_counter(
           "interface semantic tasks scheduled", wave.products.size());
       options.timings->add_counter(
           "interface semantic worker slots", scheduled.workers_used);
+      if (generic_owner_tasks > 1) {
+        options.timings->add_counter(
+            "generic owner tasks in shared ready waves",
+            generic_owner_tasks);
+      }
     }
     if (!scheduled.ok) {
       std::string failure = "interface semantic worker scheduling failed";
@@ -3545,21 +3567,11 @@ completed_declaration_dependencies(const CompileWorkspaceResult &result,
       }
     }
 
-    // Fix successful generic-owner and declaration prefixes before importing
-    // any newly discovered generic argument graphs or publishing task-local
-    // structural constants. All three operations append canonical TypeStore
-    // rows, so replacing a package snapshot after another operation would let
-    // equal numeric TypeIds silently change meaning. Step 9 replaces these
-    // sequential whole-snapshot oracles with coordinator-applied task deltas.
-    for (std::size_t package_index = 0;
-         package_index < generic_wave_packages.size(); ++package_index) {
-      if (!generic_wave_packages[package_index].has_value() ||
-          !result.packages[package_index].has_value()) {
-        continue;
-      }
-      result.packages[package_index]->declarations.package =
-          std::move(*generic_wave_packages[package_index]);
-    }
+    // Fix the remaining successful declaration snapshot before publishing
+    // generic-owner task appends. Both can originate from the same frozen
+    // package prefix; installing the declaration successor first lets the
+    // generic publisher translate its suffix against every earlier canonical
+    // row rather than allowing a later snapshot replacement to erase it.
     for (std::size_t package_index = 0;
          package_index < declaration_wave_packages.size(); ++package_index) {
       if (!declaration_wave_packages[package_index].has_value() ||
@@ -3570,6 +3582,36 @@ completed_declaration_dependencies(const CompileWorkspaceResult &result,
           std::move(*declaration_wave_packages[package_index]);
       result.packages[package_index]->declarations.package =
           result.packages[package_index]->declaration_discovery.package;
+    }
+
+    // Generic owners contain only appended semantic rows. Publish each packet
+    // in ProductId order, intern equal types/instances against earlier packets,
+    // and translate the task-local concrete TypeId retained by its product.
+    for (std::size_t task_index = 0; task_index < wave.products.size();
+         ++task_index) {
+      WorkspaceInterfaceTaskSlot &slot = slots[task_index];
+      if (!slot.generic_semantic.has_value() ||
+          !slot.generic_type.has_value() ||
+          slot.outcome.kind != SemanticProductOutcomeKind::Complete) {
+        continue;
+      }
+      const SemanticProductId product = wave.products[task_index];
+      const PackageId owner =
+          result.semantic_products.package_by_product[product.value];
+      CompiledPackage &package = *result.packages[owner.value];
+      const TypeId task_type = *slot.generic_type;
+      SemanticTaskPublication publication;
+      if (!publish_semantic_task_append(
+              package.declarations.package,
+              package.declarations.constants,
+              *slot.generic_semantic,
+              publication,
+              slot.outcome.diagnostics)) {
+        slot.outcome.kind = SemanticProductOutcomeKind::Error;
+        slot.outcome.failure = "generic layout publication failed";
+        continue;
+      }
+      slot.generic_type = publication.canonical_type(task_type);
     }
 
     // Turn every requester-local owner row into a canonical command product in

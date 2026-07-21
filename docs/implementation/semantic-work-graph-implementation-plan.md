@@ -319,12 +319,16 @@ gate.
    identical.
 
    Interface waves now enter the bounded executor. Products owned by different
-   packages run concurrently, while products owned by one package retain a
-   deterministic dependency chain over that package's private wave snapshot.
-   Name-set and interface barriers run after read-only tasks in one stable chain
-   because validation loading may extend `SourceManager`. The remaining gate is
-   to replace the package snapshot with exact declaration/generic append packets;
-   only then may same-package products write solely to independent task slots.
+   packages run concurrently. Generic-owner tasks use the shared frozen-prefix
+   `SemanticTaskAppend` representation, publish through the same canonical
+   type/instance interner as bodies, and no longer share a package successor;
+   one-/four-worker public-pipeline tests cover sibling owner demands. Authored
+   declaration-type products retain a deterministic dependency chain over one
+   private package snapshot. Name-set and interface barriers run after read-only
+   tasks in one stable chain because validation loading may extend
+   `SourceManager`. The remaining gate is to replace that declaration snapshot
+   with exact append/patch packets; only then may every same-package product
+   write solely to its own task slot.
 
 10. **Native product consumption — complete.** Emit independent machine functions from MIR
     products, keep package static data and assembly explicit, and perform symbol,
