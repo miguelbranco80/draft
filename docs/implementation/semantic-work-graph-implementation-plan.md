@@ -319,6 +319,12 @@ gate.
     later demand-only emission must use the roots defined by the target-state
     document.
 
+    The LLVM adapter boundary is prepared: it can emit one complete package
+    static-data module and one complete single-procedure module with exact
+    definition/declaration ownership. Focused tests compile every split unit in
+    an isolated LLVM context. Compiler graph publication, native task planning,
+    and canonical artifact layout still need to consume those operations.
+
 11. **Final-state deletion and qualification.** Remove `PackageSemanticProgress`,
     declaration/body generations, semantic retry counters, package-wide HIR/MIR
     ownership, closed-graph assumptions in semantic code, and stale docs/tests.

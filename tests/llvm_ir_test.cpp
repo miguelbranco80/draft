@@ -1,6 +1,7 @@
 // Deterministic target-profiled LLVM IR emission tests.
 
 #include "backend/llvm_ir.h"
+#include "backend/llvm_object_emitter.h"
 #include "mir/lower.h"
 #include "sema/body_checker.h"
 #include "sema/semantic.h"
@@ -40,6 +41,17 @@ struct EmittedFixture {
   std::vector<draft::SourceCorrelationEntry> source_correlations;
   std::string diagnostics;
 };
+
+[[nodiscard]] std::size_t count_occurrences(
+    std::string_view text, std::string_view needle) {
+  std::size_t count = 0;
+  std::size_t position = 0;
+  while ((position = text.find(needle, position)) != std::string_view::npos) {
+    ++count;
+    position += needle.size();
+  }
+  return count;
+}
 
 // Runs the complete agent-free semantic/MIR/LLVM path for one in-memory file.
 // Keeping this helper local makes byte-for-byte comparisons independent from
@@ -183,6 +195,130 @@ generated :: proc() -> i64 {
         map, correlation_error));
     EXPECT(state, correlation_error.find("duplicated") != std::string::npos);
   }
+}
+
+// A split package has one non-function module and one independently valid
+// module per concrete procedure. Compiling every unit through LLVM catches
+// missing declarations which a textual substring test would miss, while the
+// ownership assertions prevent a future refactor from silently returning to
+// duplicate package-wide definitions.
+void test_split_native_units_are_independently_compilable(TestState &state) {
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  draft::LoadedPackage loaded;
+  loaded.short_name = "split_native";
+  draft::LoadedPackageFile file;
+  file.kind = draft::PackageFileKind::DraftSource;
+  file.relative_name = "package.draft";
+  file.source = sources.add_source("package.draft", R"draft(
+package split_native
+
+answer: i64 = 41
+
+add_answer :: proc(value: i64) -> i64 {
+    return value + answer
+}
+
+main :: proc() -> int {
+    return cast[int](add_answer(1))
+}
+)draft");
+  file.syntax.emplace(draft::parse_source_file(
+      sources, file.source, diagnostics));
+  loaded.files.push_back(std::move(file));
+
+  const draft::TargetProfile target = draft::make_aarch64_macos_profile();
+  draft::SemanticAnalysisResult semantics = draft::analyze_package_semantics(
+      sources, loaded, target.facts, diagnostics);
+  draft::BodyCheckResult bodies = draft::check_package_bodies(
+      sources,
+      loaded,
+      semantics.selections,
+      semantics.package,
+      semantics.constants,
+      target.facts,
+      diagnostics);
+  const draft::HirProgram hir =
+      draft::project_package_body_hir(bodies.procedures);
+  draft::MirLoweringResult mir = draft::lower_package_to_mir(
+      bodies.package, hir, diagnostics);
+  const draft::Aarch64CAbiTable abi =
+      draft::classify_aarch64_c_types(bodies.package.types, target.facts);
+  std::vector<draft::SymbolId> procedures;
+  for (const draft::MirProcedure &procedure : mir.program.procedures()) {
+    procedures.push_back(procedure.symbol);
+  }
+
+  draft::LlvmIrOptions options;
+  options.package = {"workspace", "split-native"};
+  options.emit_runtime_support = true;
+  options.emit_program_entry = true;
+  const draft::LlvmIrResult package_data =
+      draft::emit_llvm_package_static_data(
+          target,
+          sources,
+          options,
+          bodies.package,
+          abi,
+          semantics.global_initializers,
+          procedures,
+          diagnostics);
+  EXPECT(state, package_data.ok);
+  EXPECT(state, package_data.text.find(
+      "@\"draft.workspace.split_2Dnative.answer\" = hidden global i64 41") !=
+      std::string::npos);
+  EXPECT(state, package_data.text.find(
+      "declare i64 @\"draft.workspace.split_2Dnative.add_5Fanswer\"") !=
+      std::string::npos);
+  EXPECT(state, package_data.text.find("define i32 @main") !=
+      std::string::npos);
+  const draft::LlvmObjectEmissionResult package_object =
+      draft::emit_llvm_object_in_process(
+          target, "split package data", package_data.text, {});
+  EXPECT(state, package_object.ok);
+
+  for (std::size_t index = 0;
+       index < mir.program.procedures().size(); ++index) {
+    draft::DiagnosticSink function_diagnostics;
+    const draft::LlvmIrResult function = draft::emit_llvm_machine_function(
+        target,
+        sources,
+        options,
+        bodies.package,
+        abi,
+        procedures,
+        index,
+        mir.program.procedures()[index],
+        function_diagnostics);
+    EXPECT(state, function.ok);
+    EXPECT(state, !function_diagnostics.has_errors());
+    EXPECT(state, count_occurrences(function.text, "define ") == 1);
+    EXPECT(state, function.text.find(
+        "@\"draft.workspace.split_2Dnative.answer\" = external hidden global i64") !=
+        std::string::npos);
+    EXPECT(state, function.text.find("define i32 @main") ==
+        std::string::npos);
+    for (const draft::SourceCorrelationEntry &entry :
+         function.source_correlations) {
+      EXPECT(state, entry.procedure_ordinal == index);
+    }
+    const draft::LlvmObjectEmissionResult function_object =
+        draft::emit_llvm_object_in_process(
+            target,
+            "split function " + std::to_string(index),
+            function.text,
+            {});
+    if (!function_object.ok) std::cerr << function_object.failure << '\n';
+    EXPECT(state, function_object.ok);
+  }
+
+  if (diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+  }
+  EXPECT(state, semantics.ok);
+  EXPECT(state, bodies.ok);
+  EXPECT(state, mir.ok);
+  EXPECT(state, !diagnostics.has_errors());
 }
 
 // The native backend extracts the pointer field from a checked string value;
@@ -938,6 +1074,7 @@ int main() {
   TestState state;
   test_agent_constructs_have_no_runtime_footprint(state);
   test_generated_debug_locations_are_hermetic(state);
+  test_split_native_units_are_independently_compilable(state);
   test_raw_string_data_is_direct_pointer_extraction(state);
   test_multistep_call_lowering_keeps_debug_locations(state);
   test_static_argument_pack_emits_fixed_signature(state);

@@ -248,14 +248,27 @@ cannot drift between front end and backend. MIR reads the table immutably:
 compiler-only storage addresses use `rawptr` plus an explicit addressed TypeId,
 while actual source pointers retain their canonical semantic type.
 
-After every selected package has reached target lowering, the backend derives a
-closed native work graph in canonical package/module/assembly order. Package
-modules have already expressed imported symbols as external declarations, so
-their object tasks are independent and form one bounded ready set. Each worker
-owns an isolated LLVM context or private assembler paths and writes one result
-slot. The main thread joins the set, selects diagnostics by lowest stable task
-ID, and only then publishes files and linker inputs in task-ID order. Thus
-parallel scheduling changes elapsed time, never artifacts or diagnostics.
+The LLVM adapter has direct operations for three explicit ownership units. Its
+compatibility operation emits one complete package module. Its static-data
+operation emits a complete module containing globals, relocatable initializer
+storage, runtime support, and any hosted entry point but no Draft procedure
+definition. Its machine-function operation emits a complete module defining
+exactly one MIR procedure while declaring package globals and sibling
+procedures. Each split unit can therefore enter a private LLVM context and
+produce an object independently; no textual fragment linker or shared LLVM
+module is required.
+
+After every selected package has reached target lowering, the current backend
+derives a closed native work graph in canonical package/module/assembly order.
+Package modules have already expressed imported symbols as external
+declarations, so their object tasks are independent and form one bounded ready
+set. Each worker owns an isolated LLVM context or private assembler paths and
+writes one result slot. The main thread joins the set, selects diagnostics by
+lowest stable task ID, and only then publishes files and linker inputs in
+task-ID order. Moving compiler orchestration and artifact layout from the
+compatibility package operation to the split static/function operations is the
+remaining native-product migration. In both forms, parallel scheduling changes
+elapsed time, never artifacts or diagnostics.
 
 ### Internal representations
 

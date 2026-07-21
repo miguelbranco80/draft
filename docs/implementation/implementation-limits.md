@@ -94,6 +94,15 @@ temporary projection is explicit remaining work in the
 [semantic work graph implementation plan](semantic-work-graph-implementation-plan.md),
 not alternate final architecture paths.
 
+The LLVM adapter can now emit one independently compilable module for package
+static data and one for each concrete MIR procedure. Function units define one
+Draft symbol and declare package storage and sibling functions; the static unit
+owns globals, runtime definitions, and the hosted entry. Compiler orchestration
+and the native object planner still consume the compatibility package-wide
+module, so live `MachineFunction` and `ArtifactLayout` products have not yet
+replaced package object tasks. That final native migration is step 10 of the
+same plan.
+
 ## Native host and instrumentation limits
 
 Status: explicit two-target bootstrap boundary.

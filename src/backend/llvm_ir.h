@@ -12,6 +12,7 @@
 #include "validation/discovery.h"
 #include "workspace/workspace.h"
 
+#include <span>
 #include <string>
 #include <vector>
 
@@ -50,6 +51,38 @@ struct LlvmIrResult {
     const Aarch64CAbiTable &abi,
     const ConstantTable &global_initializers,
     const MirProgram &mir,
+    DiagnosticSink &diagnostics);
+
+// Emits the one complete LLVM module which owns package-level storage and
+// process support but no Draft procedure definition. package_procedures is the
+// complete canonical runtime procedure set for this package. It lets the
+// static module declare procedure-valued constants and construct the hosted
+// entry point without borrowing a package-wide MirProgram. Every listed symbol
+// must name a checked, concrete procedure in semantic.
+[[nodiscard]] LlvmIrResult emit_llvm_package_static_data(
+    const TargetProfile &target,
+    const SourceManager &sources,
+    const LlvmIrOptions &options,
+    const SemanticPackage &semantic,
+    const Aarch64CAbiTable &abi,
+    const ConstantTable &global_initializers,
+    std::span<const SymbolId> package_procedures,
+    DiagnosticSink &diagnostics);
+
+// Emits one independently compilable LLVM module for one verified MIR
+// procedure. The module defines only procedure and uses external declarations
+// for package globals and every other concrete procedure. procedure_ordinal is
+// the stable package-local MIR product order recorded in source-correlation
+// rows and private constant names; it must not depend on worker scheduling.
+[[nodiscard]] LlvmIrResult emit_llvm_machine_function(
+    const TargetProfile &target,
+    const SourceManager &sources,
+    const LlvmIrOptions &options,
+    const SemanticPackage &semantic,
+    const Aarch64CAbiTable &abi,
+    std::span<const SymbolId> package_procedures,
+    std::size_t procedure_ordinal,
+    const MirProcedure &procedure,
     DiagnosticSink &diagnostics);
 
 } // namespace draft
