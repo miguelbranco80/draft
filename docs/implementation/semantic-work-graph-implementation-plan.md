@@ -180,9 +180,11 @@ gate.
    specializations in stable work order after the wave joins. The isolated
    workers run through the bounded executor, and public compiler tests qualify
    identical product graphs, diagnostic order, semantic table sizes, and LLVM
-   bytes with one and four workers. The consumer-first external-demand loop,
-   body work key, and extension/rebuild paths remain as the deletion boundary
-   for this step.
+   bytes with one and four workers. Workspace packages now retain that live
+   scheduler after finalization; later demands append to the exact work/product
+   prefix instead of reconstructing extension state from `BodyCheckResult`.
+   The consumer-first external-demand loop, aggregate body work key, and
+   demand-removal rebuild remain as the deletion boundary for this step.
 
 6. **Synthesis as an explicit wait state.** A body or declaration task may
    report its exact ready `...` set after producing the typed constraint needed

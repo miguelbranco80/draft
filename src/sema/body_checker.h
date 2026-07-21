@@ -244,6 +244,10 @@ struct ProcedureBodyTaskResult {
 // publication remaps task-local IDs and interns types in stable work order.
 struct PackageBodyWorkState {
   bool ok = false;
+  // True only after every current root has published and package-wide body
+  // invariants have run over the resulting procedure products. Appending an
+  // external seed clears this bit without invalidating earlier products.
+  bool finalized = false;
   SemanticPackage package;
   ConstantTable constants;
   std::vector<ProcedureBodyHirResult> procedures;
@@ -269,16 +273,17 @@ struct PackageBodyWorkState {
     DiagnosticSink &diagnostics,
     const std::vector<ProcedureInstantiationSeed> &seeds = {});
 
-// Starts an append-only extension from one successful body generation. This is
-// the temporary source-transition bridge while procedure products replace the
-// retained package body generation. Only roots introduced by additional_seeds
-// enter the new work suffix; already checked HIR is never placed on the work
-// list by this operation.
-[[nodiscard]] PackageBodyWorkState begin_additional_package_body_work(
+// Materializes additional external procedure instances directly into one live
+// command-local package body state. Only newly created concrete instances are
+// appended to the work suffix; completed roots and their procedure-owned HIR
+// remain untouched. The operation is invalid during an active worker wave.
+// Even when a seed promotes an already local instance rather than creating a
+// root, finalization is cleared because public instance metadata may change.
+[[nodiscard]] bool append_package_body_seeds(
     const SourceManager &sources,
     const LoadedPackage &loaded,
     const ConditionalSelections &selections,
-    BodyCheckResult previous,
+    PackageBodyWorkState &state,
     const TargetFacts &target,
     DiagnosticSink &diagnostics,
     const std::vector<ProcedureInstantiationSeed> &additional_seeds);
@@ -312,12 +317,22 @@ take_ready_procedure_body_wave(
     std::vector<ProcedureBodyTaskResult> results,
     DiagnosticSink &diagnostics);
 
-// Completes package-wide invariants after every dynamic root has run, then
-// transfers the canonical semantic state and procedure products into their
-// retained result. The operation builds one temporary projection for the
-// invariants which have not yet migrated to procedure products. Calling this
-// with unfinished work is a compiler contract error and produces an invalid
-// result rather than silently discarding body products.
+// Completes package-wide invariants after every dynamic root has run while
+// retaining the live scheduler state for later command-local discoveries. The
+// operation builds one temporary projection for invariants which have not yet
+// migrated to procedure products. Calling this with unfinished work is a
+// compiler contract error and leaves the state invalid rather than silently
+// discarding body products.
+[[nodiscard]] bool finalize_package_body_work(
+    const LoadedPackage &loaded,
+    const TargetFacts &target,
+    PackageBodyWorkState &state,
+    DiagnosticSink &diagnostics);
+
+// Finalizes a standalone package check and transfers its semantic state and
+// procedure products into the smaller public result used by direct subsystem
+// callers. Workspace compilation retains PackageBodyWorkState instead so a
+// newly discovered product never requires reconstructing scheduler state.
 [[nodiscard]] BodyCheckResult finish_package_body_work(
     const LoadedPackage &loaded,
     const TargetFacts &target,

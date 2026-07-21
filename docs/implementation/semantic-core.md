@@ -313,10 +313,13 @@ composition during migration.
 
 Body workers never append directly to the coordinator's retained value. Each
 returns an exact semantic append packet and one local HIR arena; the coordinator
-publishes those packets into its canonical body generation. Once all roots are
-complete, `BodyCheckResult` receives that final SemanticPackage, body constants,
-and the procedure-owned arenas. Every SymbolId, ScopeId, and TypeId in those
-arenas belongs to that returned package. A deterministic compatibility
+publishes those packets into its canonical body generation. Workspace
+compilation retains that live `PackageBodyWorkState` after finalization: its
+work rows, procedure results, and semantic products preserve one append-only
+index domain for later discoveries. Direct subsystem entry points transfer the
+same final SemanticPackage, body constants, and procedure-owned arenas into a
+smaller `BodyCheckResult`. Every SymbolId, ScopeId, and TypeId in those arenas
+belongs to that accompanying package. A deterministic compatibility
 projection rewrites HIR-local IDs and concatenates the arenas only at a
 package-wide consumer boundary. The operation owns and discards that temporary
 view; `BodyCheckResult` retains no second HIR representation. Effect, denial,
@@ -412,6 +415,12 @@ One body work key is `(declaration generation, canonical external demand set)`:
   external name, retaining its SymbolId and HIR rather than creating a duplicate;
 - a source or dependency-interface change creates a new declaration generation
   and therefore cannot reuse a body built against the old prefix.
+
+An added demand resumes the retained package's exact live scheduler state.
+Completed work, HIR, and product IDs remain in their original prefix; only seed
+materialization and the new suffix run. The aggregate work-key test and removal
+rebuild remain transitional scheduler policy, not a second retained body
+representation.
 
 Compile-time expression type preflight and early compile-time procedure checks
 operate on private copies. Their HIR is disposable and their only permitted

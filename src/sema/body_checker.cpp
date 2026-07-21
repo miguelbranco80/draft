@@ -8602,20 +8602,21 @@ PackageBodyWorkState begin_package_body_work(
   return state;
 }
 
-PackageBodyWorkState begin_additional_package_body_work(
+bool append_package_body_seeds(
     const SourceManager &sources,
     const LoadedPackage &loaded,
     const ConditionalSelections &selections,
-    BodyCheckResult previous,
+    PackageBodyWorkState &state,
     const TargetFacts &target,
     DiagnosticSink &diagnostics,
     const std::vector<ProcedureInstantiationSeed> &additional_seeds) {
-  PackageBodyWorkState state;
-  state.ok = previous.ok;
-  state.package = std::move(previous.package);
-  state.constants = std::move(previous.constants);
-  state.procedures = std::move(previous.procedures);
-  state.checked_procedures = previous.checked_procedures;
+  if (state.active_wave_end.has_value()) {
+    diagnostics.error(
+        SourceRange::invalid(),
+        "procedure instances cannot be appended during an active body wave");
+    state.ok = false;
+    return false;
+  }
   const std::size_t previous_instance_count =
       state.package.parametric_instances_for_read().size();
 
@@ -8629,6 +8630,7 @@ PackageBodyWorkState begin_additional_package_body_work(
       diagnostics,
       additional_seeds);
   state.ok = state.ok && initializer.initialize();
+  state.finalized = false;
   const AppendOnlyTableView<ParametricInstanceRecord> instances =
       state.package.parametric_instances_for_read();
   for (std::size_t index = previous_instance_count;
@@ -8640,7 +8642,7 @@ PackageBodyWorkState begin_additional_package_body_work(
          std::nullopt,
          std::nullopt});
   }
-  return state;
+  return state.ok;
 }
 
 std::vector<ProcedureBodyTaskInput> take_ready_procedure_body_wave(
@@ -8783,12 +8785,11 @@ bool publish_procedure_body_wave(
   return true;
 }
 
-BodyCheckResult finish_package_body_work(
+bool finalize_package_body_work(
     const LoadedPackage &loaded,
     const TargetFacts &target,
-    PackageBodyWorkState state,
+    PackageBodyWorkState &state,
     DiagnosticSink &diagnostics) {
-  BodyCheckResult result;
   if (state.active_wave_end.has_value()) {
     diagnostics.error(
         SourceRange::invalid(),
@@ -8815,6 +8816,17 @@ BodyCheckResult finish_package_body_work(
     state.ok = false;
   }
   infer_agent_loop_ranges(loaded, state.package, program);
+  state.finalized = state.ok;
+  return state.ok;
+}
+
+BodyCheckResult finish_package_body_work(
+    const LoadedPackage &loaded,
+    const TargetFacts &target,
+    PackageBodyWorkState state,
+    DiagnosticSink &diagnostics) {
+  (void)finalize_package_body_work(loaded, target, state, diagnostics);
+  BodyCheckResult result;
   result.ok = state.ok;
   result.package = std::move(state.package);
   result.constants = std::move(state.constants);

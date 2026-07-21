@@ -158,13 +158,13 @@ struct CompiledPackage {
   // new parsed source generation or changed dependency interface. Zero denotes
   // an uninitialized row and is never a successful package generation.
   std::uint64_t declaration_generation = 0;
-  // Installed only with a successful BodyCheckResult. Its generation and
-  // demands are compared together before any retained procedure-owned HIR
-  // arenas are reused.
+  // Live command-local body publication state. Completed roots, their exact
+  // product-local HIR, and the work-to-result order remain available when a
+  // later consumer discovers another concrete dependency instance.
   PackageBodyWorkKey body_work_key;
   PackageSemanticProgress semantic_progress =
       PackageSemanticProgress::InterfaceReady;
-  BodyCheckResult bodies;
+  PackageBodyWorkState bodies;
   AgentMetadataResult metadata;
   AgentObligationResult obligations;
   std::vector<AgentValidationContext> validation_context;

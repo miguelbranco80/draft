@@ -204,6 +204,14 @@ early synthesis discovery run on private copies and never become a hidden first
 body pass over the authoritative package. The procedure-local arena migration
 deletes this retained-package mechanism rather than preserving it as a cache.
 
+Workspace packages retain their live `PackageBodyWorkState` after finalization.
+Its work rows, procedure results, and semantic-product rows share one append-only
+index domain, so an added demand resumes the exact completed prefix. The
+compiler no longer reconstructs an extension scheduler from a reduced
+`BodyCheckResult`; that transfer object remains only for direct subsystem
+callers. Aggregate demand-key comparison and removal rebuild are still
+transitional and are deleted by the semantic-work-graph plan.
+
 After every selected package has reached target lowering, the backend derives a
 closed native work graph in canonical package/module/assembly order. Package
 modules have already expressed imported symbols as external declarations, so

@@ -1516,6 +1516,14 @@ void test_body_work_graph_extends_and_removes_generic_demand(TestState &state) {
           ->bodies.package.symbols.symbol_count();
   const std::size_t initial_checked =
       compiled.packages[*formatting_index]->bodies.checked_procedures;
+  const std::size_t initial_work =
+      compiled.packages[*formatting_index]->bodies.work.size();
+  const std::vector<draft::SemanticProductId> initial_body_products =
+      compiled.semantic_products.packages[*formatting_index].procedure_bodies;
+  EXPECT(state, compiled.packages[*formatting_index]->bodies.finalized);
+  EXPECT(state,
+         compiled.packages[*formatting_index]->bodies.next_work == initial_work);
+  EXPECT(state, initial_body_products.size() == initial_work);
 
   draft::WorkspaceSourceOverride add_demand;
   add_demand.identity = {"workspace", "app"};
@@ -1536,6 +1544,17 @@ void test_body_work_graph_extends_and_removes_generic_demand(TestState &state) {
   EXPECT(state, extended.body_work_key.procedure_demands.size() == 1);
   EXPECT(state, extended.bodies.package.parametric_instances.size() == 1);
   EXPECT(state, extended.bodies.checked_procedures == initial_checked + 1);
+  EXPECT(state, extended.bodies.finalized);
+  EXPECT(state, extended.bodies.work.size() == initial_work + 1);
+  EXPECT(state, extended.bodies.next_work == extended.bodies.work.size());
+  const std::vector<draft::SemanticProductId> &extended_body_products =
+      compiled.semantic_products.packages[*formatting_index].procedure_bodies;
+  EXPECT(state,
+         extended_body_products.size() == initial_body_products.size() + 1);
+  EXPECT(state,
+         std::equal(initial_body_products.begin(),
+                    initial_body_products.end(),
+                    extended_body_products.begin()));
   EXPECT(state, extended.declarations.package.symbols.symbol_count() ==
                     declaration_symbol_count);
 

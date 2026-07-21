@@ -61,10 +61,15 @@ remain sequential where their payloads still use package snapshots. One-worker
 runs avoid thread creation; larger pools on the supported POSIX hosts use an
 explicit eight-MiB worker stack so authored syntax recursion has the same
 practical budget in sequential and parallel execution.
+Workspace packages retain the live body publication state after finalization,
+so a newly demanded external specialization appends to the existing work and
+product prefix rather than reconstructing an extension scheduler. Aggregate
+body work-key selection and the demand-removal rebuild remain temporary limits.
 Effect closure, denials, and MIR still consume a package-wide HIR compatibility
 projection. Each operation builds and discards that view from authoritative
 procedure products; the compiler retains no package-wide HIR copy. Migrating
-those consumers away from the temporary projection is explicit remaining work in the
+those consumers away from the temporary projection is explicit remaining work
+in the
 [semantic work graph implementation plan](semantic-work-graph-implementation-plan.md),
 not alternate final architecture paths.
 

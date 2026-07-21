@@ -3543,11 +3543,19 @@ struct ProcedureBodyWaveExecution {
     return false;
   }
 
-  // product_by_work covers only the new work owned by this state. An extension
-  // state retains earlier completed package products in procedure_bodies, but
-  // its local work indices begin at zero and can depend only on roots appended
-  // during this extension.
-  std::vector<SemanticProductId> product_by_work;
+  // Work rows and product rows share one append-only index domain for the
+  // package's selected declaration generation. A later external discovery
+  // resumes at next_work with the exact completed prefix instead of rebuilding
+  // a temporary extension scheduler around retained HIR.
+  std::vector<SemanticProductId> product_by_work =
+      package_products.procedure_bodies;
+  if (product_by_work.size() != state.next_work ||
+      state.procedures.size() != state.next_work) {
+    diagnostics.error(
+        SourceRange::invalid(),
+        "procedure body work and product prefixes have different sizes");
+    return false;
+  }
   while (state.next_work < state.work.size()) {
     while (product_by_work.size() < state.work.size()) {
       const std::size_t work_index = product_by_work.size();
@@ -4018,7 +4026,7 @@ bool continue_compiled_workspace_semantics(
       }
     } else {
       // Until a complete replacement succeeds, the package owns only an
-      // authoritative declaration baseline. Any partial BodyCheckResult is
+      // authoritative declaration baseline. Any partial body work state is
       // diagnostic recovery state and must never satisfy a later reuse key.
       package.semantic_progress = PackageSemanticProgress::InterfaceReady;
       // A changed body can alter package effects and the completed interface
@@ -4044,18 +4052,19 @@ bool continue_compiled_workspace_semantics(
         const std::vector<ProcedureInstantiationSeed> additional_seeds =
             materialize_procedure_demands(
                 added_demands, package.bodies.package, diagnostics);
-        PackageBodyWorkState body_work =
-            begin_additional_package_body_work(
+        if (!append_package_body_seeds(
                 sources,
                 workspace_package.loaded,
                 package.declarations.selections,
-                std::move(package.bodies),
+                package.bodies,
                 options.target.facts,
                 diagnostics,
-                additional_seeds);
+                additional_seeds)) {
+          package.bodies.ok = false;
+        }
         const PackageId owner{
             static_cast<std::uint32_t>(package_index)};
-        if (!run_package_body_products(
+        if (package.bodies.ok && !run_package_body_products(
                 sources,
                 workspace_package.loaded,
                 package.declarations.selections,
@@ -4063,16 +4072,18 @@ bool continue_compiled_workspace_semantics(
                 options.semantic_worker_count,
                 options.timings,
                 owner,
-                body_work,
+                package.bodies,
                 result,
                 diagnostics)) {
           return false;
         }
-        package.bodies = finish_package_body_work(
-            workspace_package.loaded,
-            options.target.facts,
-            std::move(body_work),
-            diagnostics);
+        if (package.bodies.ok) {
+          (void)finalize_package_body_work(
+              workspace_package.loaded,
+              options.target.facts,
+              package.bodies,
+              diagnostics);
+        }
         if (options.timings != nullptr) {
           options.timings->add_counter("package body extensions", 1);
           options.timings->add_counter(
@@ -4102,7 +4113,7 @@ bool continue_compiled_workspace_semantics(
         const std::vector<ProcedureInstantiationSeed> seeds =
             materialize_procedure_demands(
                 demands[package_index], body_input, diagnostics);
-        PackageBodyWorkState body_work = begin_package_body_work(
+        package.bodies = begin_package_body_work(
             sources,
             workspace_package.loaded,
             package.declarations.selections,
@@ -4121,15 +4132,15 @@ bool continue_compiled_workspace_semantics(
                 options.semantic_worker_count,
                 options.timings,
                 owner,
-                body_work,
+                package.bodies,
                 result,
                 diagnostics)) {
           return false;
         }
-        package.bodies = finish_package_body_work(
+        (void)finalize_package_body_work(
             workspace_package.loaded,
             options.target.facts,
-            std::move(body_work),
+            package.bodies,
             diagnostics);
         if (options.timings != nullptr) {
           options.timings->add_counter("package body checks", 1);
