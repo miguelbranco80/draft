@@ -2067,6 +2067,36 @@ private:
 
 } // namespace
 
+MirProcedureLoweringResult lower_procedure_to_mir(
+    const SemanticPackage &semantic,
+    const HirProgram &hir,
+    const HirProcedure &procedure,
+    const AssemblyProgram *assembly,
+    RuntimeAssertionMode runtime_assertions,
+    DiagnosticSink &diagnostics) {
+  MirProcedureLoweringResult result;
+  if (procedure.parametric_template || procedure.compile_time_only) {
+    result.ok = true;
+    return result;
+  }
+  const std::size_t initial_errors = diagnostics.error_count();
+  result.procedure = ProcedureLowerer(
+      semantic,
+      hir,
+      procedure,
+      assembly,
+      runtime_assertions,
+      diagnostics).run();
+  result.lowered = true;
+  result.ok = result.procedure.valid &&
+      diagnostics.error_count() == initial_errors;
+  if (result.ok) {
+    result.ok = verify_mir_procedure(
+        result.procedure, semantic.types, diagnostics);
+  }
+  return result;
+}
+
 MirLoweringResult lower_package_to_mir(
     const SemanticPackage &semantic,
     const HirProgram &hir,
@@ -2076,21 +2106,19 @@ MirLoweringResult lower_package_to_mir(
   MirLoweringResult result;
   const std::size_t initial_errors = diagnostics.error_count();
   for (const HirProcedure &procedure : hir.procedures()) {
-    if (procedure.parametric_template || procedure.compile_time_only) continue;
-    MirProcedure lowered =
-        ProcedureLowerer(
-            semantic,
-            hir,
-            procedure,
-            assembly,
-            runtime_assertions,
-            diagnostics).run();
-    if (lowered.valid) ++result.lowered_procedures;
-    result.program.add_procedure(std::move(lowered));
+    MirProcedureLoweringResult lowered = lower_procedure_to_mir(
+        semantic,
+        hir,
+        procedure,
+        assembly,
+        runtime_assertions,
+        diagnostics);
+    if (!lowered.lowered) continue;
+    if (lowered.ok) ++result.lowered_procedures;
+    result.program.add_procedure(std::move(lowered.procedure));
   }
-  if (diagnostics.error_count() == initial_errors) {
-    result.ok = verify_mir_program(result.program, semantic.types, diagnostics);
-  }
+  result.ok = diagnostics.error_count() == initial_errors &&
+      result.lowered_procedures == result.program.procedures().size();
   return result;
 }
 

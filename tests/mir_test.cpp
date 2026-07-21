@@ -156,6 +156,25 @@ compute :: proc(values: []i64, flag: bool) -> i64 {
   EXPECT(state, source.mir.program.procedures().size() == 5);
   EXPECT(state, source.bodies.package.types.size() ==
                     source.semantic_type_count_before_mir);
+  draft::DiagnosticSink procedure_diagnostics;
+  std::size_t independently_lowered = 0;
+  for (const draft::HirProcedure &procedure : source.hir.procedures()) {
+    const draft::MirProcedureLoweringResult lowered =
+        draft::lower_procedure_to_mir(
+            source.bodies.package,
+            source.hir,
+            procedure,
+            nullptr,
+            draft::RuntimeAssertionMode::On,
+            procedure_diagnostics);
+    EXPECT(state, lowered.ok);
+    if (lowered.lowered) {
+      ++independently_lowered;
+      EXPECT(state, lowered.procedure.symbol == procedure.symbol);
+    }
+  }
+  EXPECT(state, independently_lowered == source.mir.lowered_procedures);
+  EXPECT(state, !procedure_diagnostics.has_errors());
 
   std::size_t conditional_branches = 0;
   std::size_t switches = 0;
@@ -477,6 +496,22 @@ main :: proc() -> int {
   EXPECT(state, !source.diagnostics.has_errors());
   EXPECT(state, source.hir.procedures().size() == 3);
   EXPECT(state, source.mir.program.procedures().size() == 1);
+  draft::DiagnosticSink procedure_diagnostics;
+  std::size_t runtime_procedures = 0;
+  for (const draft::HirProcedure &procedure : source.hir.procedures()) {
+    const draft::MirProcedureLoweringResult lowered =
+        draft::lower_procedure_to_mir(
+            source.bodies.package,
+            source.hir,
+            procedure,
+            nullptr,
+            draft::RuntimeAssertionMode::On,
+            procedure_diagnostics);
+    EXPECT(state, lowered.ok);
+    if (lowered.lowered) ++runtime_procedures;
+  }
+  EXPECT(state, runtime_procedures == 1);
+  EXPECT(state, !procedure_diagnostics.has_errors());
   if (source.mir.program.procedures().size() == 1) {
     const draft::Symbol &symbol = source.bodies.package.symbols.symbol(
         source.mir.program.procedures().front().symbol);

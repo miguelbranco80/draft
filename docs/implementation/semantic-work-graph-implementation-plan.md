@@ -290,8 +290,13 @@ gate.
    `addressed_type` metadata; real source pointers retain their checked Pointer
    TypeId. Lowering and verification now accept the complete semantic package
    by const reference, and focused tests prove its TypeStore size is unchanged.
-   Package-wide projection/lowering and missing live MIR/static-data/assembly
-   products remain in this step.
+   The lowering boundary is now procedure-local as well: one immutable HIR
+   procedure produces one independently verified `MirProcedure`, while
+   symbolic and compile-time-only procedures return an explicit successful
+   non-runtime result. The package API is only a source-order compatibility
+   composer over that operation. Compiler orchestration still invokes the
+   package projection and the live MIR/static-data/assembly products remain in
+   this step.
 
 9. **Parallel semantic waves.** Run each frozen ready wave with bounded workers.
    Workers write only task slots; the coordinator sorts by stable product ID,

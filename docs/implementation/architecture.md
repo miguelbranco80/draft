@@ -282,8 +282,10 @@ parallel scheduling changes elapsed time, never artifacts or diagnostics.
 - **Procedure CFG:** explicit branches and scopes, used for return analysis,
   `defer`, branch facts, judgments, and denial summaries.
 - **Draft MIR:** a small non-optimizing IR with explicit loads, stores, checks,
-  context arguments, calls, aggregate operations, and source locations. LLVM is
-  an emission/optimization back end rather than Draft's semantic model.
+  context arguments, calls, aggregate operations, and source locations. One
+  checked runtime HIR procedure lowers to one privately verified MIR procedure;
+  the package API is a source-order composer over that operation. LLVM is an
+  emission/optimization back end rather than Draft's semantic model.
 
 LLVM types stay behind numeric, target, ABI, and code-generation adapters. The
 front end must not depend on LLVM IR details.

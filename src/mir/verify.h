@@ -12,6 +12,11 @@ namespace draft {
 // diagnostics instead of aborting so a malformed lowering is observable in
 // tests and in release builds. It checks table references, block termination,
 // result definitions, basic instruction arity, and procedure return shape.
+[[nodiscard]] bool verify_mir_procedure(
+    const MirProcedure &procedure,
+    const TypeStore &types,
+    DiagnosticSink &diagnostics);
+
 [[nodiscard]] bool verify_mir_program(
     const MirProgram &program,
     const TypeStore &types,
