@@ -283,7 +283,7 @@ main :: proc() {
   draft::SemanticAnalysisResult consumer_semantics =
       draft::analyze_package_semantics(
           sources, consumer, target.facts, available, diagnostics);
-  draft::BodyCheckResult bodies = draft::check_package_bodies(
+  draft::PackageBodyWorkState bodies = draft::check_package_bodies(
       sources,
       consumer,
       consumer_semantics.selections,
@@ -513,7 +513,7 @@ pub unwrap :: proc(value: option.Maybe[i64]) -> i64 {
   draft::SemanticAnalysisResult consumer_semantics =
       draft::analyze_package_semantics(
           sources, consumer, target.facts, available, diagnostics);
-  draft::BodyCheckResult bodies = draft::check_package_bodies(
+  draft::PackageBodyWorkState bodies = draft::check_package_bodies(
       sources,
       consumer,
       consumer_semantics.selections,
@@ -549,7 +549,7 @@ pub relay :: proc(holder: middle.Holder) -> i64 {
   draft::SemanticAnalysisResult final_semantics =
       draft::analyze_package_semantics(
           sources, final_consumer, target.facts, final_available, diagnostics);
-  draft::BodyCheckResult final_bodies = draft::check_package_bodies(
+  draft::PackageBodyWorkState final_bodies = draft::check_package_bodies(
       sources,
       final_consumer,
       final_semantics.selections,
@@ -800,14 +800,15 @@ pub make_assert :: proc() -> proc() {
   draft::SemanticAnalysisResult dependency_semantics =
       draft::analyze_package_semantics(
           sources, dependency, target.facts, diagnostics);
-  draft::BodyCheckResult dependency_bodies = draft::check_package_bodies(
-      sources,
-      dependency,
-      dependency_semantics.selections,
-      dependency_semantics.package,
-      dependency_semantics.constants,
-      target.facts,
-      diagnostics);
+  draft::PackageBodyWorkState dependency_bodies =
+      draft::check_package_bodies(
+          sources,
+          dependency,
+          dependency_semantics.selections,
+          dependency_semantics.package,
+          dependency_semantics.constants,
+          target.facts,
+          diagnostics);
   const draft::ImportedProcedureContracts dependency_imported_contracts =
       draft::imported_procedure_contracts(dependency_bodies.package);
   const draft::DirectEffectSummaryResult dependency_direct_effects =
@@ -964,7 +965,7 @@ caller :: proc() {
   draft::SemanticAnalysisResult consumer_semantics =
       draft::analyze_package_semantics(
           sources, consumer, target.facts, available, diagnostics);
-  draft::BodyCheckResult consumer_bodies = draft::check_package_bodies(
+  draft::PackageBodyWorkState consumer_bodies = draft::check_package_bodies(
       sources,
       consumer,
       consumer_semantics.selections,

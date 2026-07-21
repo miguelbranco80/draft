@@ -39,7 +39,7 @@ std::optional<draft::SymbolId> symbol(
 }
 
 draft::EffectSummaryResult close_effects(
-    const draft::BodyCheckResult &bodies,
+    const draft::PackageBodyWorkState &bodies,
     const draft::TargetProfile *target,
     std::span<const draft::ForeignProviderAudit> provider_audits = {}) {
   const draft::ImportedProcedureContracts imported =
@@ -122,7 +122,7 @@ entry :: proc() {
   const draft::TargetProfile target = draft::make_aarch64_macos_profile();
   draft::SemanticAnalysisResult semantics = draft::analyze_package_semantics(
       sources, loaded, target.facts, diagnostics);
-  draft::BodyCheckResult bodies = draft::check_package_bodies(
+  draft::PackageBodyWorkState bodies = draft::check_package_bodies(
       sources,
       loaded,
       semantics.selections,
@@ -214,7 +214,7 @@ danger :: proc() {
   const draft::TargetProfile target = draft::make_aarch64_macos_profile();
   draft::SemanticAnalysisResult semantics = draft::analyze_package_semantics(
       sources, loaded, target.facts, diagnostics);
-  draft::BodyCheckResult bodies = draft::check_package_bodies(
+  draft::PackageBodyWorkState bodies = draft::check_package_bodies(
       sources,
       loaded,
       semantics.selections,
@@ -354,7 +354,7 @@ flow_caller :: proc() {
   const draft::TargetProfile target = draft::make_aarch64_macos_profile();
   draft::SemanticAnalysisResult semantics = draft::analyze_package_semantics(
       sources, loaded, target.facts, diagnostics);
-  draft::BodyCheckResult bodies = draft::check_package_bodies(
+  draft::PackageBodyWorkState bodies = draft::check_package_bodies(
       sources,
       loaded,
       semantics.selections,
@@ -472,7 +472,7 @@ pub forward :: proc(text: string) -> [^]u8 {
   const draft::TargetProfile target = draft::make_aarch64_macos_profile();
   draft::SemanticAnalysisResult semantics = draft::analyze_package_semantics(
       sources, loaded, target.facts, diagnostics);
-  draft::BodyCheckResult bodies = draft::check_package_bodies(
+  draft::PackageBodyWorkState bodies = draft::check_package_bodies(
       sources,
       loaded,
       semantics.selections,
@@ -619,7 +619,7 @@ through_audit :: proc() {
   const draft::TargetProfile target = draft::make_aarch64_macos_profile();
   draft::SemanticAnalysisResult semantics = draft::analyze_package_semantics(
       sources, loaded, target.facts, diagnostics);
-  draft::BodyCheckResult bodies = draft::check_package_bodies(
+  draft::PackageBodyWorkState bodies = draft::check_package_bodies(
       sources,
       loaded,
       semantics.selections,
@@ -746,7 +746,7 @@ through_context :: proc() {
   const draft::TargetProfile target = draft::make_aarch64_macos_profile();
   draft::SemanticAnalysisResult semantics = draft::analyze_package_semantics(
       sources, loaded, target.facts, diagnostics);
-  draft::BodyCheckResult bodies = draft::check_package_bodies(
+  draft::PackageBodyWorkState bodies = draft::check_package_bodies(
       sources,
       loaded,
       semantics.selections,
@@ -869,7 +869,7 @@ through_return :: proc() {
   const draft::TargetProfile target = draft::make_aarch64_macos_profile();
   draft::SemanticAnalysisResult semantics = draft::analyze_package_semantics(
       sources, loaded, target.facts, diagnostics);
-  draft::BodyCheckResult bodies = draft::check_package_bodies(
+  draft::PackageBodyWorkState bodies = draft::check_package_bodies(
       sources,
       loaded,
       semantics.selections,
@@ -1012,7 +1012,7 @@ through_install :: proc() {
   const draft::TargetProfile target = draft::make_aarch64_macos_profile();
   draft::SemanticAnalysisResult semantics = draft::analyze_package_semantics(
       sources, loaded, target.facts, diagnostics);
-  draft::BodyCheckResult bodies = draft::check_package_bodies(
+  draft::PackageBodyWorkState bodies = draft::check_package_bodies(
       sources,
       loaded,
       semantics.selections,
@@ -1239,7 +1239,7 @@ tuple_assignment_caller :: proc() {
   const draft::TargetProfile target = draft::make_aarch64_macos_profile();
   draft::SemanticAnalysisResult semantics = draft::analyze_package_semantics(
       sources, loaded, target.facts, diagnostics);
-  draft::BodyCheckResult bodies = draft::check_package_bodies(
+  draft::PackageBodyWorkState bodies = draft::check_package_bodies(
       sources,
       loaded,
       semantics.selections,

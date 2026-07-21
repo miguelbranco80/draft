@@ -54,7 +54,7 @@ struct CheckedAssembly {
   draft::LoadedPackage loaded;
   draft::TargetProfile target = draft::make_aarch64_macos_profile();
   draft::SemanticAnalysisResult semantics;
-  draft::BodyCheckResult bodies;
+  draft::PackageBodyWorkState bodies;
   draft::Aarch64CAbiTable abi;
   draft::AssemblyProgram assembly;
 

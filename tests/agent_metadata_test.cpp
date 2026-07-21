@@ -123,7 +123,7 @@ void test_agent_records(TestState &state) {
       sources, temporary.path.string(), load_options, diagnostics);
   draft::SemanticAnalysisResult semantics = draft::analyze_package_semantics(
       sources, loaded.package, target.facts, diagnostics);
-  draft::BodyCheckResult bodies = draft::check_package_bodies(
+  draft::PackageBodyWorkState bodies = draft::check_package_bodies(
       sources,
       loaded.package,
       semantics.selections,
@@ -445,7 +445,7 @@ void test_agent_records(TestState &state) {
                 member_loaded.package,
                 target.facts,
                 member_diagnostics);
-        const draft::BodyCheckResult member_bodies =
+        const draft::PackageBodyWorkState member_bodies =
             draft::check_package_bodies(
                 member_sources,
                 member_loaded.package,
@@ -581,7 +581,7 @@ work :: proc() -> i64 {
       sources, temporary.path.string(), load_options, diagnostics);
   draft::SemanticAnalysisResult semantics = draft::analyze_package_semantics(
       sources, loaded.package, target.facts, diagnostics);
-  const draft::BodyCheckResult bodies = draft::check_package_bodies(
+  const draft::PackageBodyWorkState bodies = draft::check_package_bodies(
       sources,
       loaded.package,
       semantics.selections,
@@ -747,7 +747,7 @@ main :: proc() -> int {
       sources, temporary.path.string(), load_options, diagnostics);
   draft::SemanticAnalysisResult semantics = draft::analyze_package_semantics(
       sources, loaded.package, target.facts, diagnostics);
-  const draft::BodyCheckResult bodies = draft::check_package_bodies(
+  const draft::PackageBodyWorkState bodies = draft::check_package_bodies(
       sources,
       loaded.package,
       semantics.selections,
@@ -917,7 +917,7 @@ work :: proc(flag: bool, value: i64, values: []i64) {
       sources, temporary.path.string(), load_options, diagnostics);
   draft::SemanticAnalysisResult semantics = draft::analyze_package_semantics(
       sources, loaded.package, target.facts, diagnostics);
-  const draft::BodyCheckResult bodies = draft::check_package_bodies(
+  const draft::PackageBodyWorkState bodies = draft::check_package_bodies(
       sources,
       loaded.package,
       semantics.selections,
@@ -1471,7 +1471,7 @@ work :: proc() -> i64 {
       sources, temporary.path.string(), load_options, diagnostics);
   draft::SemanticAnalysisResult semantics = draft::analyze_package_semantics(
       sources, loaded.package, target.facts, diagnostics);
-  const draft::BodyCheckResult bodies = draft::check_package_bodies(
+  const draft::PackageBodyWorkState bodies = draft::check_package_bodies(
       sources,
       loaded.package,
       semantics.selections,
@@ -1611,14 +1611,15 @@ work :: proc() -> i64 {
             rebuilt_loaded.package,
             target.facts,
             rebuilt_diagnostics);
-    const draft::BodyCheckResult rebuilt_bodies = draft::check_package_bodies(
-        rebuilt_sources,
-        rebuilt_loaded.package,
-        rebuilt_semantics.selections,
-        rebuilt_semantics.package,
-        rebuilt_semantics.constants,
-        target.facts,
-        rebuilt_diagnostics);
+    const draft::PackageBodyWorkState rebuilt_bodies =
+        draft::check_package_bodies(
+            rebuilt_sources,
+            rebuilt_loaded.package,
+            rebuilt_semantics.selections,
+            rebuilt_semantics.package,
+            rebuilt_semantics.constants,
+            target.facts,
+            rebuilt_diagnostics);
     const draft::AgentMetadataResult rebuilt_metadata =
         draft::collect_agent_metadata(
             rebuilt_sources,
@@ -1804,7 +1805,7 @@ main :: proc() {
       sources, temporary.path.string(), load_options, diagnostics);
   draft::SemanticAnalysisResult semantics = draft::analyze_package_semantics(
       sources, loaded.package, target.facts, diagnostics);
-  const draft::BodyCheckResult bodies = draft::check_package_bodies(
+  const draft::PackageBodyWorkState bodies = draft::check_package_bodies(
       sources,
       loaded.package,
       semantics.selections,

@@ -38,7 +38,7 @@ struct LoweredSource {
   draft::DiagnosticSink diagnostics;
   draft::LoadedPackage loaded;
   draft::SemanticAnalysisResult semantics;
-  draft::BodyCheckResult bodies;
+  draft::PackageBodyWorkState bodies;
   draft::test_support::LoweredProcedureProducts mir;
   std::size_t semantic_type_count_before_mir = 0;
 

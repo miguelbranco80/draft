@@ -116,7 +116,7 @@ gate.
    owner publication, declaration rebuild retries, progress hashes, and the
    `PackageInterface::instantiated_types` side path are deleted.
 
-5. **Procedure-owned checking.** Split package body checking into immutable
+5. **Procedure-owned checking — complete.** Split package body checking into immutable
    package inputs plus one task-owned result for each authored template or
    concrete procedure instance. A result owns its local semantic arena, typed
    HIR, lexical constants, diagnostics, direct effects, and discovered demands.
@@ -165,8 +165,9 @@ gate.
 
    HIR ownership is now product-local: every exact root starts an empty arena,
    publishes one permanent `ProcedureBodyHirResult`, and never receives earlier
-   HIR as input. `BodyCheckResult` no longer stores a package-wide copy. Each
-   result also records the
+   HIR as input. The live `PackageBodyWorkState` is the only carrier of the
+   canonical semantic tables, scheduler rows, and procedure products; the
+   reduced `BodyCheckResult` transfer is deleted. Each result also records the
    canonical TypeIds first installed by its semantic append. A package side
    table maps those IDs back to the exact procedure product, establishing the
    dependency seam for ABI and other later type facets.
@@ -190,7 +191,7 @@ gate.
    identical product graphs, diagnostic order, semantic table sizes, and LLVM
    bytes with one and four workers. Workspace packages now retain that live
    scheduler after finalization; later demands append to the exact work/product
-   prefix instead of reconstructing extension state from `BodyCheckResult`.
+   prefix instead of reconstructing extension state from a reduced result.
    `PackageBodyWorkKey` and its redundant declaration generation are deleted;
    a changed declaration already replaces the complete package row.
 
@@ -227,8 +228,8 @@ gate.
    every HIR-local ID. Definite-initialization and agent loop-range inference
    run inside each isolated body task and publish diagnostics/facts with that
    product; package finalization no longer constructs aggregate HIR. The
-   remaining step-5 cleanup is `BodyCheckResult`'s package-wide semantic
-   transfer/composer form in direct non-workspace APIs.
+   standalone transfer object is deleted, and direct subsystem calls return the
+   same live `PackageBodyWorkState` representation as workspace compilation.
 
 6. **Synthesis as an explicit wait state — complete.** A body or declaration task may
    report its exact ready `...` set after producing the typed constraint needed
@@ -349,9 +350,9 @@ gate.
     reuse is derived from exact completed product slices and terminal payloads.
     Workspace MIR payloads likewise live only at their `MirProcedure` product
     IDs. The HIR projection, `MirProgram`, package MIR lowering, and
-    complete-package LLVM compatibility paths are deleted. The standalone
-    `BodyCheckResult` transfer, sequential declaration snapshots, and final
-    qualification gates remain in this step.
+    complete-package LLVM compatibility paths are deleted. Sequential
+    declaration snapshots and the final qualification gates remain in this
+    step.
 
 ## Completion evidence
 

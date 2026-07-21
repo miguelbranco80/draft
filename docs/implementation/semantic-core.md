@@ -322,17 +322,17 @@ returns an exact semantic append packet and one local HIR arena; the coordinator
 publishes those packets into its canonical append-only package tables. Workspace
 compilation retains that live `PackageBodyWorkState` after finalization: its
 work rows, procedure results, and semantic products preserve one append-only
-index domain for later discoveries. Direct subsystem entry points transfer the
-same final SemanticPackage, body constants, and procedure-owned arenas into a
-smaller `BodyCheckResult`. Every SymbolId, ScopeId, and TypeId in those arenas
-belongs to that accompanying package. Workspace consumers retain HIR-local IDs:
+index domain for later discoveries. Direct subsystem entry points return that
+same state rather than transferring its semantic tables and products into a
+reduced carrier. Every SymbolId, ScopeId, and TypeId in those arenas belongs to
+the accompanying package. Workspace consumers retain HIR-local IDs:
 effects, denials, metadata/obligation context, native interop, validation,
 parsed assembly, and MIR all select procedure arenas directly. A transitive
 agent-context walk carries the owning arena beside each found procedure, so an
-expression ID is never interpreted in a sibling product. `BodyCheckResult`
-retains no second HIR representation. The former HIR projection and package MIR
-container are deleted; direct subsystem tests traverse the same product-owned
-arenas and lowering operations as workspace compilation.
+expression ID is never interpreted in a sibling product. The former reduced
+body result, HIR projection, and package MIR container are deleted; direct
+subsystem tests traverse the same product-owned arenas and lowering operations
+as workspace compilation.
 
 Definite-initialization and agent loop-range inference complete inside the
 isolated procedure task before publication. Initialization diagnostics

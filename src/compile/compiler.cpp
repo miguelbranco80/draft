@@ -1503,7 +1503,7 @@ struct InterfaceSynthesisSurface {
     DiagnosticSink &diagnostics) {
   if (!compile_time_procedures.empty()) {
     DiagnosticSink body_diagnostics;
-    BodyCheckResult checked = check_compile_time_procedure_bodies(
+    PackageBodyWorkState checked = check_compile_time_procedure_bodies(
         sources, loaded, selections, task_package, task_constants, target,
         compile_time_procedures, body_diagnostics);
     if (checked.ok) {

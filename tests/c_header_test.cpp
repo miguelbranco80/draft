@@ -173,7 +173,7 @@ export echo_rune :: c "draft_echo_rune" proc(value: rune) -> rune {
   const draft::TargetProfile target = draft::make_aarch64_macos_profile();
   draft::SemanticAnalysisResult semantics = draft::analyze_package_semantics(
       sources, loaded, target.facts, diagnostics);
-  draft::BodyCheckResult bodies = draft::check_package_bodies(
+  draft::PackageBodyWorkState bodies = draft::check_package_bodies(
       sources,
       loaded,
       semantics.selections,

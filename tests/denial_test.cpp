@@ -37,7 +37,7 @@ struct DenialSource {
   draft::DiagnosticSink diagnostics;
   draft::LoadedPackage loaded;
   draft::SemanticAnalysisResult semantics;
-  draft::BodyCheckResult bodies;
+  draft::PackageBodyWorkState bodies;
   draft::ImportedProcedureContracts imported_contracts;
   draft::DirectEffectSummaryResult direct_effects;
   draft::EffectSummaryResult effects;

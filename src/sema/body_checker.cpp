@@ -8830,21 +8830,7 @@ bool finalize_package_body_work(
   return state.ok;
 }
 
-BodyCheckResult finish_package_body_work(
-    const TargetFacts &target,
-    PackageBodyWorkState state,
-    DiagnosticSink &diagnostics) {
-  (void)finalize_package_body_work(target, state, diagnostics);
-  BodyCheckResult result;
-  result.ok = state.ok;
-  result.package = std::move(state.package);
-  result.constants = std::move(state.constants);
-  result.procedures = std::move(state.procedures);
-  result.checked_procedures = state.checked_procedures;
-  return result;
-}
-
-BodyCheckResult check_package_bodies(
+PackageBodyWorkState check_package_bodies(
     const SourceManager &sources,
     const LoadedPackage &loaded,
     const ConditionalSelections &selections,
@@ -8881,10 +8867,11 @@ BodyCheckResult check_package_bodies(
       break;
     }
   }
-  return finish_package_body_work(target, std::move(state), diagnostics);
+  (void)finalize_package_body_work(target, state, diagnostics);
+  return state;
 }
 
-BodyCheckResult check_compile_time_procedure_bodies(
+PackageBodyWorkState check_compile_time_procedure_bodies(
     const SourceManager &sources,
     const LoadedPackage &loaded,
     const ConditionalSelections &selections,
@@ -8944,7 +8931,8 @@ BodyCheckResult check_compile_time_procedure_bodies(
   // Procedure tasks already applied definite-initialization validation to the
   // disposable early HIR. Finalization applies the remaining target-wide type
   // constraints before this packet can become provider context.
-  return finish_package_body_work(target, std::move(state), diagnostics);
+  (void)finalize_package_body_work(target, state, diagnostics);
+  return state;
 }
 
 } // namespace draft

@@ -75,7 +75,7 @@ struct EmittedFixture {
   const draft::TargetProfile target = draft::make_aarch64_macos_profile();
   draft::SemanticAnalysisResult semantics = draft::analyze_package_semantics(
       sources, loaded, target.facts, diagnostics);
-  draft::BodyCheckResult bodies = draft::check_package_bodies(
+  draft::PackageBodyWorkState bodies = draft::check_package_bodies(
       sources,
       loaded,
       semantics.selections,
@@ -231,7 +231,7 @@ main :: proc() -> int {
   const draft::TargetProfile target = draft::make_aarch64_macos_profile();
   draft::SemanticAnalysisResult semantics = draft::analyze_package_semantics(
       sources, loaded, target.facts, diagnostics);
-  draft::BodyCheckResult bodies = draft::check_package_bodies(
+  draft::PackageBodyWorkState bodies = draft::check_package_bodies(
       sources,
       loaded,
       semantics.selections,
@@ -868,7 +868,7 @@ main :: proc() -> int {
   loaded.files.push_back(std::move(file));
   draft::SemanticAnalysisResult semantics = draft::analyze_package_semantics(
       sources, loaded, target.facts, diagnostics);
-  draft::BodyCheckResult bodies = draft::check_package_bodies(
+  draft::PackageBodyWorkState bodies = draft::check_package_bodies(
       sources,
       loaded,
       semantics.selections,

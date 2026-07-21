@@ -30,8 +30,9 @@ namespace draft {
 // ProcedureBodyHirResult permanently owns the typed HIR arena produced by one
 // exact authored/template/instance root. HIR-local IDs begin at zero in every
 // row and never address another row. Semantic IDs address the package generation
-// in the containing BodyCheckResult. ok mirrors that root's recoverable validity;
-// an invalid row remains available for diagnostics but cannot reach lowering.
+// in the containing PackageBodyWorkState. ok mirrors that root's recoverable
+// validity; an invalid row remains available for diagnostics but cannot reach
+// lowering.
 struct ProcedureBodyHirResult {
   bool ok = false;
   SymbolId symbol;
@@ -49,28 +50,6 @@ struct ProcedureBodyHirResult {
   // not appear. The workspace graph uses these rows to attach later type facets
   // to their exact producing body rather than a package-wide body barrier.
   std::vector<TypeId> published_types;
-};
-
-// BodyCheckResult owns the complete body-derived semantic state for one
-// package. package and constants begin as copies of the declaration phase's
-// stable baseline, then receive lexical scopes, local symbols, concrete
-// procedure instances, body agent sites, denials, and lexical compile-time
-// values. Each exact root permanently owns its only HIR arena in procedures.
-// Every SymbolId and TypeId in those arenas addresses package in this same
-// result, and constants addresses those body-owned symbols. These values must
-// therefore move and live together.
-//
-// No phase concatenates these arenas. Direct subsystem tests use the same
-// procedure-owned APIs as workspace compilation.
-struct BodyCheckResult {
-  bool ok = false;
-  SemanticPackage package;
-  ConstantTable constants;
-  std::vector<ProcedureBodyHirResult> procedures;
-  // Number of exact authored/template/instance roots which produced a
-  // HirProcedure row. Nested procedures are roots in their own right; foreign
-  // declarations and procedure types have no body and do not contribute.
-  std::size_t checked_procedures = 0;
 };
 
 // Compiler orchestration creates these rows from imported generic calls found
@@ -246,8 +225,12 @@ struct ProcedureBodyTaskResult {
 };
 
 // PackageBodyWorkState is the explicit deterministic publication state for
-// body products. It owns the current append-only package prefix, lexical constants,
-// already published procedure-local HIR results, and the dynamic work list.
+// body products. It owns the current append-only package prefix, lexical
+// constants, already published procedure-local HIR results, and the dynamic
+// work list. Every semantic ID in procedures addresses package in this same
+// value, and constants may address body-owned symbols, so those fields must
+// move and live together. This is the sole body-phase result for workspace and
+// direct subsystem compilation; there is no reduced transfer representation.
 // `next_work` partitions completed work from the current ready suffix. One
 // dispatch freezes that complete suffix as a wave; publication happens only
 // after every worker has returned. Publishing the wave may append nested
@@ -261,15 +244,18 @@ struct ProcedureBodyTaskResult {
 // publication remaps task-local IDs and interns types in stable work order.
 struct PackageBodyWorkState {
   bool ok = false;
-  // True only after every current root has published and package-wide body
-  // invariants have run over the resulting procedure products. Appending an
-  // external seed clears this bit without invalidating earlier products.
+  // True only after every current root has published and target-wide type
+  // invariants have run over the canonical package. Appending an external seed
+  // clears this bit without invalidating earlier products.
   bool finalized = false;
   SemanticPackage package;
   ConstantTable constants;
   std::vector<ProcedureBodyHirResult> procedures;
   std::vector<ProcedureBodyWorkItem> work;
   std::size_t next_work = 0;
+  // Number of exact authored/template/instance roots which produced a
+  // HirProcedure row. Nested procedures are roots in their own right; foreign
+  // declarations and procedure types have no body and do not contribute.
   std::size_t checked_procedures = 0;
   // Present after dispatch and before the complete matching result vector is
   // published. It is the exclusive end of the frozen [next_work, end) wave.
@@ -345,15 +331,6 @@ take_ready_procedure_body_wave(
     PackageBodyWorkState &state,
     DiagnosticSink &diagnostics);
 
-// Finalizes a standalone package check and transfers its semantic state and
-// procedure products into the smaller public result used by direct subsystem
-// callers. Workspace compilation retains PackageBodyWorkState instead so a
-// newly discovered product never requires reconstructing scheduler state.
-[[nodiscard]] BodyCheckResult finish_package_body_work(
-    const TargetFacts &target,
-    PackageBodyWorkState state,
-    DiagnosticSink &diagnostics);
-
 // Validates package constant/global initializers and selected structural
 // `when` conditions which contain a non-evaluating or value-selecting form,
 // using the same expression checker as procedure bodies. This catches operands
@@ -384,7 +361,7 @@ take_ready_procedure_body_wave(
 // agent obligations observe the same values as body expressions without
 // contaminating a reusable declaration graph. Errors in one body do not prevent
 // independent bodies from producing recoverable HIR.
-[[nodiscard]] BodyCheckResult check_package_bodies(
+[[nodiscard]] PackageBodyWorkState check_package_bodies(
     const SourceManager &sources,
     const LoadedPackage &loaded,
     const ConditionalSelections &selections,
@@ -401,7 +378,7 @@ take_ready_procedure_body_wave(
 // package/constants long enough to construct its provider constraint; its HIR
 // is disposable and no sibling packet is merged or replayed. The declaration
 // inputs remain a clean reusable baseline.
-[[nodiscard]] BodyCheckResult check_compile_time_procedure_bodies(
+[[nodiscard]] PackageBodyWorkState check_compile_time_procedure_bodies(
     const SourceManager &sources,
     const LoadedPackage &loaded,
     const ConditionalSelections &selections,

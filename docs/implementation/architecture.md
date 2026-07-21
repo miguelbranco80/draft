@@ -227,13 +227,14 @@ Workspace packages retain their live `PackageBodyWorkState` after finalization.
 Its work rows, procedure results, and semantic-product rows share one append-only
 index domain, so an added demand resumes the exact completed prefix. The
 compiler no longer reconstructs an extension scheduler from a reduced
-`BodyCheckResult`; that transfer object remains only for direct subsystem
-callers. Pending roots from every package now enter one workspace-wide frozen
-ready set. Product IDs are appended in PackageId/work order, workers may execute
-the complete independent set concurrently, and package-local semantic suffixes
-publish in that same canonical order after join. A newly materialized external
-root carries an explicit edge to the completed consumer body which exposed its
-demand. Cross-package demand discovery and retained-product selection repeat
+result. Direct subsystem callers return the same live `PackageBodyWorkState`;
+there is no second body-state carrier. Pending roots from every package now
+enter one workspace-wide frozen ready set. Product IDs are appended in
+PackageId/work order, workers may execute the complete independent set
+concurrently, and package-local semantic suffixes publish in that same canonical
+order after join. A newly materialized external root carries an explicit edge
+to the completed consumer body which exposed its demand. Cross-package demand
+discovery and retained-product selection repeat
 until the current program reaches a fixed point; there is no consumer-first
 body executor outside the graph.
 
@@ -267,8 +268,8 @@ Each worker owns an isolated LLVM context or private assembler paths and writes
 one result slot. The main thread joins the set, selects diagnostics by lowest
 stable task ID, and only then publishes files and linker inputs in task-ID
 order. Parallel scheduling changes elapsed time, never artifacts or
-diagnostics. The complete-package LLVM operation remains a direct subsystem
-test convenience and is not a compiler or native-build path.
+diagnostics. The former complete-package LLVM test operation is deleted; direct
+subsystem tests exercise the same split emitters.
 
 ### Internal representations
 

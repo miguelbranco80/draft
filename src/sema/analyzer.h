@@ -692,13 +692,12 @@ private:
 // package. A declaration generation owns the stable prefix established by
 // interface analysis. The body coordinator starts a canonical body generation
 // from that prefix, then publishes exact task append packets into it. The live
-// PackageBodyWorkState owns that generation during workspace compilation; a
-// direct subsystem call transfers it into BodyCheckResult after finalization.
-// The generation contains lexical scopes, local symbols, concrete procedure
-// instances, body sites, imported effect closure, and any types interned while
-// checking HIR. Each procedure HIR arena must use its accompanying body-owned
-// package; declaration semantics are not a substitute even when a particular
-// SymbolId lies in the shared prefix.
+// PackageBodyWorkState owns that generation in workspace compilation and direct
+// subsystem calls alike. The generation contains lexical scopes, local symbols,
+// concrete procedure instances, body sites, imported effect closure, and any
+// types interned while checking HIR. Each procedure HIR arena must use its
+// accompanying body-owned package; declaration semantics are not a substitute
+// even when a particular SymbolId lies in the shared prefix.
 //
 // Public fields are intentional: compiler passes operate on explicit table
 // rows and stable IDs rather than a deep accessor/object hierarchy. Tables are

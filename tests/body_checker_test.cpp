@@ -36,7 +36,7 @@ struct CheckedSource {
   draft::DiagnosticSink diagnostics;
   draft::LoadedPackage loaded;
   draft::SemanticAnalysisResult semantics;
-  draft::BodyCheckResult bodies;
+  draft::PackageBodyWorkState bodies;
 
   explicit CheckedSource(std::string text) {
     loaded.short_name = "bodies";
@@ -61,7 +61,7 @@ struct CheckedSource {
 };
 
 [[nodiscard]] std::size_t hir_procedure_count(
-    const draft::BodyCheckResult &bodies) {
+    const draft::PackageBodyWorkState &bodies) {
   std::size_t count = 0;
   for (const draft::ProcedureBodyHirResult &product : bodies.procedures) {
     count += product.program.procedures().size();
@@ -70,7 +70,7 @@ struct CheckedSource {
 }
 
 [[nodiscard]] std::size_t hir_expression_count(
-    const draft::BodyCheckResult &bodies) {
+    const draft::PackageBodyWorkState &bodies) {
   std::size_t count = 0;
   for (const draft::ProcedureBodyHirResult &product : bodies.procedures) {
     count += product.program.expression_count();
@@ -79,7 +79,7 @@ struct CheckedSource {
 }
 
 [[nodiscard]] std::size_t hir_statement_count(
-    const draft::BodyCheckResult &bodies) {
+    const draft::PackageBodyWorkState &bodies) {
   std::size_t count = 0;
   for (const draft::ProcedureBodyHirResult &product : bodies.procedures) {
     count += product.program.statement_count();
@@ -88,7 +88,7 @@ struct CheckedSource {
 }
 
 [[nodiscard]] std::size_t hir_block_count(
-    const draft::BodyCheckResult &bodies) {
+    const draft::PackageBodyWorkState &bodies) {
   std::size_t count = 0;
   for (const draft::ProcedureBodyHirResult &product : bodies.procedures) {
     count += product.program.block_count();
@@ -149,7 +149,7 @@ main :: proc() {
 
   draft::DiagnosticSink repeated_diagnostics;
   const draft::TargetProfile target = draft::make_aarch64_macos_profile();
-  const draft::BodyCheckResult repeated = draft::check_package_bodies(
+  const draft::PackageBodyWorkState repeated = draft::check_package_bodies(
       source.sources, source.loaded, source.semantics.selections,
       source.semantics.package, source.semantics.constants, target.facts,
       repeated_diagnostics);
@@ -468,8 +468,9 @@ second :: proc() -> i64 {
     EXPECT(state, work.procedures.back().program.procedures().size() == 1);
   }
 
-  const draft::BodyCheckResult bodies = draft::finish_package_body_work(
-      target.facts, std::move(work), diagnostics);
+  EXPECT(state, draft::finalize_package_body_work(
+                    target.facts, work, diagnostics));
+  const draft::PackageBodyWorkState &bodies = work;
   if (diagnostics.has_errors()) {
     std::cerr << draft::render_diagnostics(sources, diagnostics);
   }
