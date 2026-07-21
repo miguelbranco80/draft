@@ -1,7 +1,7 @@
 // Native artifact adapter for AArch64 objects, archives, and final links.
 //
 // This module receives a completely lowered Draft program, schedules its
-// independent package-static, machine-function, and assembly objects, and
+// independent semantic-package modules and package-assembly objects, and
 // invokes the remaining selected platform tools to materialize the requested
 // artifact. Tool paths are operational configuration: they do not enter
 // resolution manifests or synthesis identities. The adapter owns the exact
@@ -134,7 +134,7 @@ struct NativeBuildResult {
   std::vector<VerifiedRuntimeAssetInput> runtime_assets;
 };
 
-// Emits each package-static and machine-function unit in-process and
+// Emits each complete semantic-package module in-process and
 // materializes the requested native artifact. Object mode performs a
 // relocatable link over every layout object; archive and dynamic-library modes
 // retain every LLVM and package-assembly object; assembly mode produces a

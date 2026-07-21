@@ -37,27 +37,22 @@ draft::CompileWorkspaceResult make_compiled_fixture() {
 
   draft::CompiledPackage root;
   root.identity = {"workspace", "app"};
-  root.llvm.ok = true;
-  root.llvm.static_data.ok = true;
-  root.llvm.static_data.text = "; root static data\n";
+  root.llvm_module.ok = true;
+  root.llvm_module.text = "; root module\n";
   root.artifact_layout.ok = true;
   root.artifact_layout.inputs.push_back({
-      draft::PackageArtifactInputKind::PackageStaticData, 0, {0}});
+      draft::PackageArtifactInputKind::PackageLlvmModule, 0, {0}});
   compiled.packages[0] = std::move(root);
 
   draft::CompiledPackage dependency;
   dependency.identity = {"draft-core-test", "os"};
-  dependency.llvm.ok = true;
-  dependency.llvm.static_data.ok = true;
-  dependency.llvm.static_data.text = "; dependency static data\n";
-  dependency.llvm.machine_functions.push_back(
-      {true, "; dependency function\n", {}});
+  dependency.llvm_module.ok = true;
+  dependency.llvm_module.text = "; dependency module\n";
   dependency.assembly_sources.push_back({"first.s", "first:\n  ret\n"});
   dependency.assembly_sources.push_back({"second.S", "second:\n  ret\n"});
   dependency.artifact_layout.ok = true;
   dependency.artifact_layout.inputs = {
-      {draft::PackageArtifactInputKind::PackageStaticData, 0, {1}},
-      {draft::PackageArtifactInputKind::MachineFunction, 0, {2}},
+      {draft::PackageArtifactInputKind::PackageLlvmModule, 0, {1}},
       {draft::PackageArtifactInputKind::PackageAssembly, 0, {3}},
       {draft::PackageArtifactInputKind::PackageAssembly, 1, {3}},
   };
@@ -66,8 +61,8 @@ draft::CompileWorkspaceResult make_compiled_fixture() {
 }
 
 // Planning must preserve one simple, inspectable order regardless of future
-// completion order: package static data, its machine functions, and then its
-// selected assembly sources before advancing to the next package.
+// completion order: the package module and then its selected assembly sources
+// before advancing to the next package.
 void test_canonical_task_order(TestState &state) {
   const draft::CompileWorkspaceResult compiled = make_compiled_fixture();
   draft::NativeObjectPlan plan;
@@ -75,39 +70,34 @@ void test_canonical_task_order(TestState &state) {
   EXPECT(state, draft::prepare_native_object_plan(
       draft::make_aarch64_macos_profile(), compiled, plan, reason));
   EXPECT(state, reason.empty());
-  EXPECT(state, plan.tasks.size() == 5);
+  EXPECT(state, plan.tasks.size() == 4);
   EXPECT(state, plan.graph.tasks.size() == plan.tasks.size());
   for (const draft::WorkTask &task : plan.graph.tasks) {
     EXPECT(state, task.dependencies.empty());
   }
 
   EXPECT(state,
-      plan.tasks[0].kind == draft::NativeObjectTaskKind::PackageStaticData);
+      plan.tasks[0].kind == draft::NativeObjectTaskKind::PackageLlvmModule);
   EXPECT(state, plan.tasks[0].package_index == 0);
   EXPECT(state, plan.tasks[0].producer == draft::SemanticProductId{0});
-  EXPECT(state, plan.tasks[0].display_name == "workspace:app static data");
-  EXPECT(state, plan.tasks[0].output_stem == "package-0-static");
-  EXPECT(state, plan.tasks[0].input_bytes == "; root static data\n");
+  EXPECT(state, plan.tasks[0].display_name == "workspace:app LLVM module");
+  EXPECT(state, plan.tasks[0].output_stem == "package-0-module");
+  EXPECT(state, plan.tasks[0].input_bytes == "; root module\n");
 
   EXPECT(state,
-      plan.tasks[1].kind == draft::NativeObjectTaskKind::PackageStaticData);
+      plan.tasks[1].kind == draft::NativeObjectTaskKind::PackageLlvmModule);
   EXPECT(state, plan.tasks[1].package_index == 1);
-  EXPECT(state, plan.tasks[1].output_stem == "package-1-static");
+  EXPECT(state, plan.tasks[1].output_stem == "package-1-module");
   EXPECT(state,
-      plan.tasks[2].kind == draft::NativeObjectTaskKind::MachineFunction);
+      plan.tasks[2].kind == draft::NativeObjectTaskKind::PackageAssembly);
   EXPECT(state, plan.tasks[2].package_index == 1);
   EXPECT(state, plan.tasks[2].input_index == 0);
-  EXPECT(state, plan.tasks[2].producer == draft::SemanticProductId{2});
-  EXPECT(state, plan.tasks[2].output_stem == "package-1-function-0");
-  EXPECT(state, plan.tasks[2].source_extension == ".ll");
-  EXPECT(state,
-      plan.tasks[3].kind == draft::NativeObjectTaskKind::PackageAssembly);
-  EXPECT(state, plan.tasks[3].input_index == 0);
-  EXPECT(state, plan.tasks[3].output_stem == "package-1-assembly-0");
-  EXPECT(state, plan.tasks[3].source_extension == ".s");
-  EXPECT(state, plan.tasks[4].input_index == 1);
-  EXPECT(state, plan.tasks[4].output_stem == "package-1-assembly-1");
-  EXPECT(state, plan.tasks[4].source_extension == ".S");
+  EXPECT(state, plan.tasks[2].producer == draft::SemanticProductId{3});
+  EXPECT(state, plan.tasks[2].output_stem == "package-1-assembly-0");
+  EXPECT(state, plan.tasks[2].source_extension == ".s");
+  EXPECT(state, plan.tasks[3].input_index == 1);
+  EXPECT(state, plan.tasks[3].output_stem == "package-1-assembly-1");
+  EXPECT(state, plan.tasks[3].source_extension == ".S");
 }
 
 // A missing lowered package and an extension outside the selected target
@@ -125,8 +115,7 @@ void test_plan_rejects_incomplete_or_unknown_input(TestState &state) {
   EXPECT(state, plan.tasks.empty());
 
   draft::CompileWorkspaceResult incomplete_layout = make_compiled_fixture();
-  incomplete_layout.packages[1]->artifact_layout.inputs.erase(
-      incomplete_layout.packages[1]->artifact_layout.inputs.begin() + 1);
+  incomplete_layout.packages[1]->artifact_layout.inputs.pop_back();
   EXPECT(state, !draft::prepare_native_object_plan(
       draft::make_aarch64_macos_profile(),
       incomplete_layout,

@@ -43,17 +43,6 @@ struct EmittedFixture {
   std::string diagnostics;
 };
 
-[[nodiscard]] std::size_t count_occurrences(
-    std::string_view text, std::string_view needle) {
-  std::size_t count = 0;
-  std::size_t position = 0;
-  while ((position = text.find(needle, position)) != std::string_view::npos) {
-    ++count;
-    position += needle.size();
-  }
-  return count;
-}
-
 // Runs the complete agent-free semantic/MIR/LLVM path for one in-memory file.
 // Keeping this helper local makes byte-for-byte comparisons independent from
 // filesystem order and from the native toolchain adapter.
@@ -90,8 +79,8 @@ struct EmittedFixture {
       draft::classify_aarch64_c_types(bodies.package.types, target.facts);
   draft::LlvmIrOptions options;
   options.package = {"workspace", "agent-noop"};
-  draft::test_support::EmittedLlvmProducts module =
-      draft::test_support::emit_llvm_products(
+  draft::LlvmIrResult module =
+      draft::test_support::emit_package_llvm_module(
       target,
       sources,
       options,
@@ -198,12 +187,11 @@ generated :: proc() -> i64 {
   }
 }
 
-// A split package has one non-function module and one independently valid
-// module per concrete procedure. Compiling every unit through LLVM catches
-// missing declarations which a textual substring test would miss, while the
-// ownership assertions prevent a future refactor from silently returning to
-// duplicate package-wide definitions.
-void test_split_native_units_are_independently_compilable(TestState &state) {
+// A semantic package lowers to one independently valid LLVM module containing
+// its package storage and every concrete procedure definition. Compiling that
+// complete unit through LLVM catches missing or conflicting definitions which
+// textual substring checks alone would miss.
+void test_package_module_is_independently_compilable(TestState &state) {
   draft::SourceManager sources;
   draft::DiagnosticSink diagnostics;
   draft::LoadedPackage loaded;
@@ -244,17 +232,17 @@ main :: proc() -> int {
           bodies.package, bodies.procedures, diagnostics);
   const draft::Aarch64CAbiTable abi =
       draft::classify_aarch64_c_types(bodies.package.types, target.facts);
-  std::vector<draft::SymbolId> procedures;
+  std::vector<const draft::MirProcedure *> procedures;
   for (const draft::MirProcedure &procedure : mir.procedures) {
-    procedures.push_back(procedure.symbol);
+    procedures.push_back(&procedure);
   }
 
   draft::LlvmIrOptions options;
   options.package = {"workspace", "split-native"};
   options.emit_runtime_support = true;
   options.emit_program_entry = true;
-  const draft::LlvmIrResult package_data =
-      draft::emit_llvm_package_static_data(
+  const draft::LlvmIrResult package_module =
+      draft::emit_llvm_package_module(
           target,
           sources,
           options,
@@ -263,53 +251,27 @@ main :: proc() -> int {
           semantics.global_initializers,
           procedures,
           diagnostics);
-  EXPECT(state, package_data.ok);
-  EXPECT(state, package_data.text.find(
+  EXPECT(state, package_module.ok);
+  EXPECT(state, package_module.text.find(
       "@\"draft.workspace.split_2Dnative.answer\" = hidden global i64 41") !=
       std::string::npos);
-  EXPECT(state, package_data.text.find(
-      "declare i64 @\"draft.workspace.split_2Dnative.add_5Fanswer\"") !=
+  EXPECT(state, package_module.text.find(
+      "define hidden i64 @\"draft.workspace.split_2Dnative.add_5Fanswer\"") !=
       std::string::npos);
-  EXPECT(state, package_data.text.find("define i32 @main") !=
+  EXPECT(state, package_module.text.find(
+      "define hidden i64 @\"draft.workspace.split_2Dnative.main\"") !=
+      std::string::npos);
+  EXPECT(state, package_module.text.find("define i32 @main") !=
       std::string::npos);
   const draft::LlvmObjectEmissionResult package_object =
       draft::emit_llvm_object_in_process(
-          target, "split package data", package_data.text, {});
+          target, "semantic package module", package_module.text, {});
+  if (!package_object.ok) std::cerr << package_object.failure << '\n';
   EXPECT(state, package_object.ok);
 
-  for (std::size_t index = 0;
-       index < mir.procedures.size(); ++index) {
-    draft::DiagnosticSink function_diagnostics;
-    const draft::LlvmIrResult function = draft::emit_llvm_machine_function(
-        target,
-        sources,
-        options,
-        bodies.package,
-        abi,
-        procedures,
-        index,
-        mir.procedures[index],
-        function_diagnostics);
-    EXPECT(state, function.ok);
-    EXPECT(state, !function_diagnostics.has_errors());
-    EXPECT(state, count_occurrences(function.text, "define ") == 1);
-    EXPECT(state, function.text.find(
-        "@\"draft.workspace.split_2Dnative.answer\" = external hidden global i64") !=
-        std::string::npos);
-    EXPECT(state, function.text.find("define i32 @main") ==
-        std::string::npos);
-    for (const draft::SourceCorrelationEntry &entry :
-         function.source_correlations) {
-      EXPECT(state, entry.procedure_ordinal == index);
-    }
-    const draft::LlvmObjectEmissionResult function_object =
-        draft::emit_llvm_object_in_process(
-            target,
-            "split function " + std::to_string(index),
-            function.text,
-            {});
-    if (!function_object.ok) std::cerr << function_object.failure << '\n';
-    EXPECT(state, function_object.ok);
+  for (const draft::SourceCorrelationEntry &entry :
+       package_module.source_correlations) {
+    EXPECT(state, entry.procedure_ordinal < mir.procedures.size());
   }
 
   if (diagnostics.has_errors()) {
@@ -884,8 +846,8 @@ main :: proc() -> int {
   draft::LlvmIrOptions options;
   options.package = {"workspace", "native"};
   options.emit_program_entry = true;
-  const draft::test_support::EmittedLlvmProducts module =
-      draft::test_support::emit_llvm_products(
+  const draft::LlvmIrResult module =
+      draft::test_support::emit_package_llvm_module(
       target,
       sources,
       options,
@@ -1074,7 +1036,7 @@ int main() {
   TestState state;
   test_agent_constructs_have_no_runtime_footprint(state);
   test_generated_debug_locations_are_hermetic(state);
-  test_split_native_units_are_independently_compilable(state);
+  test_package_module_is_independently_compilable(state);
   test_raw_string_data_is_direct_pointer_extraction(state);
   test_multistep_call_lowering_keeps_debug_locations(state);
   test_static_argument_pack_emits_fixed_signature(state);

@@ -134,20 +134,18 @@ struct ExternalProcedureBodyProduct {
 };
 
 // One compiler-owned native input in the exact order eventually presented to
-// object emission and the platform linker. index addresses the field selected
-// by kind: zero for PackageStaticData, CompiledPackage::llvm.machine_functions
-// for MachineFunction, or CompiledPackage::assembly_sources for
-// PackageAssembly. producer is the immutable semantic product which made the
-// bytes ready. Rows contain no physical paths and may be serialized or compared
-// for command-local determinism.
+// object emission and the platform linker. index is zero for the package LLVM
+// module and addresses CompiledPackage::assembly_sources for PackageAssembly.
+// producer is the immutable semantic product which made the bytes ready. Rows
+// contain no physical paths and may be serialized or compared for command-local
+// determinism.
 enum class PackageArtifactInputKind {
-  PackageStaticData,
-  MachineFunction,
+  PackageLlvmModule,
   PackageAssembly,
 };
 
 struct PackageArtifactInput {
-  PackageArtifactInputKind kind = PackageArtifactInputKind::PackageStaticData;
+  PackageArtifactInputKind kind = PackageArtifactInputKind::PackageLlvmModule;
   std::size_t index = 0;
   SemanticProductId producer;
 };
@@ -155,17 +153,6 @@ struct PackageArtifactInput {
 struct PackageArtifactLayout {
   bool ok = false;
   std::vector<PackageArtifactInput> inputs;
-};
-
-// LLVM emission remains split at the same ownership boundary as the semantic
-// graph. static_data defines package globals, runtime support, and any hosted
-// entry. machine_functions aligns one-for-one with
-// PackageSemanticProducts::machine_functions and each row defines exactly one
-// Draft procedure. No concatenated package module is retained.
-struct LlvmPackageEmission {
-  bool ok = false;
-  LlvmIrResult static_data;
-  std::vector<LlvmIrResult> machine_functions;
 };
 
 // One row owns every representation of one package. Keeping phase products
@@ -223,7 +210,11 @@ struct CompiledPackage {
   PackageInterface interface;
   NativeInteropResult native_interop;
   AssemblyProgram assembly;
-  LlvmPackageEmission llvm;
+  // One complete LLVM module owns this semantic package's globals and every
+  // concrete runtime procedure. Procedure MIR remains independently owned by
+  // semantic-product side-table rows; this result is the package-level native
+  // lowering product consumed by LLVM verification and object emission.
+  LlvmIrResult llvm_module;
   PackageArtifactLayout artifact_layout;
 };
 
@@ -237,7 +228,7 @@ struct CompiledPackage {
 // declarations, bodies, effects, denials, and native-interop facts but no MIR.
 // ValidationDiscovery additionally owns the canonical test or benchmark entry
 // set but still has no target IR. TargetLowering owns every requested assembly
-// program, procedure-owned MIR, split LLVM units, and artifact layout. The
+// program, procedure-owned MIR, package LLVM module, and artifact layout. The
 // state is never serialized or cached; it exists so later command stages can
 // continue the exact checked graph without guessing from empty output vectors.
 enum class CompileWorkspaceProgress {
@@ -396,22 +387,21 @@ struct PackageSemanticProducts {
   std::vector<SemanticProductId> direct_effect_summaries;
   std::vector<SemanticProductId> closed_effect_sccs;
   std::vector<SemanticProductId> denial_results;
-  // Target lowering begins with two explicit package barriers. Static data
-  // names the immutable global/constant semantic payload consumed by native
-  // emission; package_assembly owns the already captured package assembly
-  // source bytes plus parsed inline-assembly metadata for the selected HIR set.
-  // Each runtime HIR-bearing work row then maps one-to-one to a MirProcedure
-  // product through mir_body_work_indices. The payload lives in
+  // Target lowering begins with the package_assembly product, which owns the
+  // already captured package assembly source bytes plus parsed inline-assembly
+  // metadata for the selected HIR set. Each runtime HIR-bearing work row then
+  // maps one-to-one to a MirProcedure product through mir_body_work_indices.
+  // The payload lives in
   // WorkspaceSemanticProducts::mir_procedure_by_product; symbolic and
   // compile-time-only bodies intentionally have no runtime MIR product.
-  SemanticProductId package_static_data;
   SemanticProductId package_assembly;
   std::vector<std::size_t> mir_body_work_indices;
   std::vector<SemanticProductId> mir_procedures;
-  // machine_functions aligns one-for-one with mir_procedures and the emitted
-  // LLVM function units. artifact_layout is the package publication barrier
-  // over package_static_data, package_assembly, and every machine function.
-  std::vector<SemanticProductId> machine_functions;
+  // package_llvm_module depends on every selected procedure's MIR together
+  // with package declarations, target ABI classifications, and denial facts.
+  // artifact_layout is the publication barrier over that complete module and
+  // the package assembly input.
+  SemanticProductId package_llvm_module;
   SemanticProductId artifact_layout;
   // Parallel to the package TypeStore after at least one body wave.
   // Declaration-baseline types contain an invalid product because their
@@ -441,9 +431,9 @@ struct WorkspaceSemanticProducts {
   // package symbol; other products contain an invalid SymbolId.
   std::vector<SymbolId> declaration_by_product;
   // Parallel to SemanticProductGraph. ProcedureTemplateBody,
-  // ProcedureInstanceBody, DirectEffectSummary, DenialResult, MirProcedure,
-  // and MachineFunction rows name their exact package-local procedure symbol;
-  // every other product contains an invalid SymbolId.
+  // ProcedureInstanceBody, DirectEffectSummary, DenialResult, and MirProcedure
+  // rows name their exact package-local procedure symbol; every other product
+  // contains an invalid SymbolId.
   std::vector<SymbolId> procedure_by_product;
   // Parallel to SemanticProductGraph. Type facet rows name their canonical
   // command-local TypeId; other products contain an invalid TypeId.

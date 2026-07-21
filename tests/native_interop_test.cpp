@@ -95,8 +95,8 @@ export increment :: c "draft_increment" proc(value: i32) -> i32 {
           source.diagnostics);
   draft::LlvmIrOptions options;
   options.package = {"workspace", "native"};
-  const draft::test_support::EmittedLlvmProducts llvm =
-      draft::test_support::emit_llvm_products(
+  const draft::LlvmIrResult llvm =
+      draft::test_support::emit_package_llvm_module(
       source.target,
       source.sources,
       options,
@@ -152,8 +152,8 @@ export wrap_narrow :: c "wrap_narrow" proc(
           source.diagnostics);
   draft::LlvmIrOptions options;
   options.package = {"workspace", "native"};
-  const draft::test_support::EmittedLlvmProducts llvm =
-      draft::test_support::emit_llvm_products(
+  const draft::LlvmIrResult llvm =
+      draft::test_support::emit_package_llvm_module(
       source.target,
       source.sources,
       options,
@@ -316,8 +316,8 @@ export wrap_large :: c "wrap_large" proc(value: C24) -> C24 {
           source.diagnostics);
   draft::LlvmIrOptions options;
   options.package = {"workspace", "native"};
-  const draft::test_support::EmittedLlvmProducts llvm =
-      draft::test_support::emit_llvm_products(
+  const draft::LlvmIrResult llvm =
+      draft::test_support::emit_package_llvm_module(
       source.target,
       source.sources,
       options,

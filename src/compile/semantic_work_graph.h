@@ -75,9 +75,8 @@ enum class SemanticProductKind {
   ClosedEffectScc,
   DenialResult,
   MirProcedure,
-  MachineFunction,
-  PackageStaticData,
   PackageAssembly,
+  PackageLlvmModule,
   ArtifactLayout,
 };
 

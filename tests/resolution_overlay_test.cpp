@@ -283,12 +283,9 @@ void test_pinned_expression_reenters_compiler(TestState &state) {
   if (resolved.packages.size() == 1 && resolved.packages[0].has_value()) {
     EXPECT(state,
         resolved.packages[0]->obligations.obligations.empty());
-    bool found_generated_result = false;
-    for (const draft::LlvmIrResult &function :
-         resolved.packages[0]->llvm.machine_functions) {
-      found_generated_result = found_generated_result ||
-          function.text.find("ret i64 42") != std::string::npos;
-    }
+    const bool found_generated_result =
+        resolved.packages[0]->llvm_module.text.find("ret i64 42") !=
+        std::string::npos;
     EXPECT(state, found_generated_result);
   }
 

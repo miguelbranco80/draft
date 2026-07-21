@@ -856,7 +856,9 @@ void test_resolution_reuse_revalidation_and_failure(TestState &state) {
     EXPECT(state, root_index < first.compiled_program->packages.size());
     if (root_index < first.compiled_program->packages.size() &&
         first.compiled_program->packages[root_index].has_value()) {
-      EXPECT(state, first.compiled_program->packages[root_index]->llvm.ok);
+      EXPECT(
+          state,
+          first.compiled_program->packages[root_index]->llvm_module.ok);
     }
   }
   EXPECT(state, provider.calls == 1);

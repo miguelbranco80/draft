@@ -446,8 +446,9 @@ int print_target(const draft::TargetProfile &profile) {
 
 // Runs one dependency-ordered provider-free pipeline for an explicit package
 // inside the requested workspace. `check` stops after typed HIR/interfaces;
-// `emit-llvm` additionally lowers MIR and prints every independently compilable
-// package-static and single-procedure unit without invoking LLVM or a linker.
+// `emit-llvm` additionally lowers MIR and prints one independently compilable
+// complete LLVM module per semantic package without invoking object emission or
+// a linker.
 int compile_package(
     const std::string &workspace_spelling,
     std::string_view root_selector,
@@ -495,16 +496,8 @@ int compile_package(
       if (emit_llvm) {
         std::cout << "; ----- package "
                   << draft::display_package_identity(package.identity)
-                  << " static data -----\n"
-                  << package.llvm.static_data.text;
-        for (std::size_t function_index = 0;
-             function_index < package.llvm.machine_functions.size();
-             ++function_index) {
-          std::cout << "; ----- package "
-                    << draft::display_package_identity(package.identity)
-                    << " function " << function_index << " -----\n"
-                    << package.llvm.machine_functions[function_index].text;
-        }
+                  << " LLVM module -----\n"
+                  << package.llvm_module.text;
       }
     }
     if (!emit_llvm) {

@@ -36,18 +36,11 @@ struct TestState {
 
 #define EXPECT(state, expression) (state).expect((expression), #expression, __LINE__)
 
-// Compiler integration assertions often need to locate a definition without
-// caring which explicit native unit owns it. Build that inspection-only view
-// on demand; production compiler state deliberately retains no concatenated
-// LLVM module.
+// Compiler integration assertions search the one complete LLVM module retained
+// for each semantic package.
 [[nodiscard]] std::string package_llvm_text(
     const draft::CompiledPackage &package) {
-  std::string text = package.llvm.static_data.text;
-  for (const draft::LlvmIrResult &function :
-       package.llvm.machine_functions) {
-    text += function.text;
-  }
-  return text;
+  return package.llvm_module.text;
 }
 
 void test_procedure_demands_are_canonical_and_exact(TestState &state) {
@@ -482,18 +475,9 @@ void test_procedure_body_worker_counts_are_deterministic(TestState &state) {
     const draft::CompiledPackage &left = *sequential.packages.front();
     const draft::CompiledPackage &right = *parallel.packages.front();
     EXPECT(state, package_llvm_text(left) == package_llvm_text(right));
-    EXPECT(state, left.llvm.static_data.text == right.llvm.static_data.text);
-    EXPECT(state, left.llvm.machine_functions.size() ==
-                      right.llvm.machine_functions.size());
-    const std::size_t compared_functions = std::min(
-        left.llvm.machine_functions.size(),
-        right.llvm.machine_functions.size());
-    for (std::size_t index = 0; index < compared_functions; ++index) {
-      EXPECT(state, left.llvm.machine_functions[index].text ==
-                        right.llvm.machine_functions[index].text);
-      EXPECT(state, left.llvm.machine_functions[index].source_correlations ==
-                        right.llvm.machine_functions[index].source_correlations);
-    }
+    EXPECT(state, left.llvm_module.text == right.llvm_module.text);
+    EXPECT(state, left.llvm_module.source_correlations ==
+                      right.llvm_module.source_correlations);
     EXPECT(state, left.artifact_layout.ok == right.artifact_layout.ok);
     EXPECT(state, left.artifact_layout.inputs.size() ==
                       right.artifact_layout.inputs.size());
@@ -526,14 +510,7 @@ void test_procedure_body_worker_counts_are_deterministic(TestState &state) {
     EXPECT(state, right.bodies.package.types.size() == right.c_abi.rows.size());
     const draft::PackageSemanticProducts &left_products =
         sequential.semantic_products.packages.front();
-    EXPECT(state, left_products.package_static_data.is_valid());
     EXPECT(state, left_products.package_assembly.is_valid());
-    if (left_products.package_static_data.is_valid()) {
-      const draft::SemanticProduct &row = sequential.semantic_graph.products[
-          left_products.package_static_data.value];
-      EXPECT(state, row.kind == draft::SemanticProductKind::PackageStaticData);
-      EXPECT(state, row.state == draft::SemanticProductState::Complete);
-    }
     if (left_products.package_assembly.is_valid()) {
       const draft::SemanticProduct &row = sequential.semantic_graph.products[
           left_products.package_assembly.value];
@@ -542,10 +519,8 @@ void test_procedure_body_worker_counts_are_deterministic(TestState &state) {
     }
     EXPECT(state, left_products.mir_body_work_indices.size() ==
                       left_products.mir_procedures.size());
-    EXPECT(state, left_products.machine_functions.size() ==
-                      left_products.mir_procedures.size());
-    EXPECT(state, left.llvm.machine_functions.size() ==
-                      left_products.machine_functions.size());
+    EXPECT(state, left_products.package_llvm_module.is_valid());
+    EXPECT(state, left.llvm_module.ok);
     for (std::size_t mir_index = 0;
          mir_index < left_products.mir_procedures.size(); ++mir_index) {
       const std::size_t work_index =
@@ -570,10 +545,6 @@ void test_procedure_body_worker_counts_are_deterministic(TestState &state) {
                  row.dependencies.end());
       EXPECT(state,
              std::find(row.dependencies.begin(), row.dependencies.end(),
-                       left_products.package_static_data) !=
-                 row.dependencies.end());
-      EXPECT(state,
-             std::find(row.dependencies.begin(), row.dependencies.end(),
                        left_products.package_assembly) !=
                  row.dependencies.end());
       std::optional<draft::SemanticProductId> denial;
@@ -591,28 +562,22 @@ void test_procedure_body_worker_counts_are_deterministic(TestState &state) {
                std::find(row.dependencies.begin(), row.dependencies.end(),
                          *denial) != row.dependencies.end());
       }
-      if (mir_index >= left_products.machine_functions.size()) continue;
-      const draft::SemanticProductId machine =
-          left_products.machine_functions[mir_index];
-      const draft::SemanticProduct &machine_row =
-          sequential.semantic_graph.products[machine.value];
+    }
+    if (left_products.package_llvm_module.is_valid()) {
+      const draft::SemanticProduct &module_row =
+          sequential.semantic_graph.products[
+              left_products.package_llvm_module.value];
       EXPECT(state,
-             machine_row.kind == draft::SemanticProductKind::MachineFunction);
+             module_row.kind == draft::SemanticProductKind::PackageLlvmModule);
       EXPECT(state,
-             machine_row.state == draft::SemanticProductState::Complete);
-      EXPECT(state,
-             mir.has_value() &&
-                 sequential.semantic_products
-                         .procedure_by_product[machine.value] == mir->symbol);
-      EXPECT(state,
-             std::find(machine_row.dependencies.begin(),
-                       machine_row.dependencies.end(), product) !=
-                 machine_row.dependencies.end());
-      EXPECT(state,
-             std::find(machine_row.dependencies.begin(),
-                       machine_row.dependencies.end(),
-                       left_products.package_static_data) !=
-                 machine_row.dependencies.end());
+             module_row.state == draft::SemanticProductState::Complete);
+      for (const draft::SemanticProductId mir :
+           left_products.mir_procedures) {
+        EXPECT(state,
+               std::find(module_row.dependencies.begin(),
+                         module_row.dependencies.end(), mir) !=
+                   module_row.dependencies.end());
+      }
     }
     EXPECT(state, left_products.artifact_layout.is_valid());
     if (left_products.artifact_layout.is_valid()) {
@@ -625,24 +590,21 @@ void test_procedure_body_worker_counts_are_deterministic(TestState &state) {
              layout_row.state == draft::SemanticProductState::Complete);
       EXPECT(state, left.artifact_layout.ok);
       EXPECT(state, left.artifact_layout.inputs.size() ==
-                        1 + left_products.machine_functions.size() +
-                            left.assembly_sources.size());
+                        1 + left.assembly_sources.size());
       EXPECT(state, !left.artifact_layout.inputs.empty());
       if (!left.artifact_layout.inputs.empty()) {
         EXPECT(state,
                left.artifact_layout.inputs.front().kind ==
-                   draft::PackageArtifactInputKind::PackageStaticData);
+                   draft::PackageArtifactInputKind::PackageLlvmModule);
         EXPECT(state,
                left.artifact_layout.inputs.front().producer ==
-                   left_products.package_static_data);
+                   left_products.package_llvm_module);
       }
-      for (const draft::SemanticProductId machine :
-           left_products.machine_functions) {
-        EXPECT(state,
-               std::find(layout_row.dependencies.begin(),
-                         layout_row.dependencies.end(), machine) !=
-                   layout_row.dependencies.end());
-      }
+      EXPECT(state,
+             std::find(layout_row.dependencies.begin(),
+                       layout_row.dependencies.end(),
+                       left_products.package_llvm_module) !=
+                 layout_row.dependencies.end());
     }
   }
   const std::string sequential_report = sequential_timings.render();
@@ -663,20 +625,20 @@ void test_procedure_body_worker_counts_are_deterministic(TestState &state) {
   EXPECT(state, parallel_report.find("denial worker slots: 4") !=
                     std::string::npos);
   EXPECT(state,
-         sequential_report.find("package lowering barrier worker slots: 1") !=
+         sequential_report.find("package assembly worker slots: 1") !=
              std::string::npos);
   EXPECT(state,
-         parallel_report.find("package lowering barrier worker slots: 2") !=
+         parallel_report.find("package assembly worker slots: 1") !=
              std::string::npos);
   EXPECT(state, sequential_report.find("MIR worker slots: 1") !=
                     std::string::npos);
   EXPECT(state, parallel_report.find("MIR worker slots: 4") !=
                     std::string::npos);
   EXPECT(state,
-         sequential_report.find("machine-function worker slots: 1") !=
+         sequential_report.find("package LLVM worker slots: 1") !=
              std::string::npos);
   EXPECT(state,
-         parallel_report.find("machine-function worker slots: 4") !=
+         parallel_report.find("package LLVM worker slots: 1") !=
              std::string::npos);
   EXPECT(state,
          sequential_report.find("artifact-layout worker slots: 1") !=
@@ -858,18 +820,18 @@ void test_independent_packages_share_one_body_ready_wave(TestState &state) {
                     std::string::npos);
   EXPECT(state, report.find("ABI classification ready waves: 1") !=
                     std::string::npos);
-  EXPECT(state, report.find("package lowering barrier ready waves: 1") !=
+  EXPECT(state, report.find("package assembly ready waves: 1") !=
                     std::string::npos);
-  EXPECT(state, report.find("package lowering barrier worker slots: 4") !=
+  EXPECT(state, report.find("package assembly worker slots: 2") !=
                     std::string::npos);
   EXPECT(state, report.find("MIR ready waves: 1") != std::string::npos);
   EXPECT(state, report.find("MIR procedure tasks: 2") != std::string::npos);
   EXPECT(state, report.find("MIR worker slots: 2") != std::string::npos);
-  EXPECT(state, report.find("machine-function ready waves: 1") !=
+  EXPECT(state, report.find("package LLVM ready waves: 1") !=
                     std::string::npos);
-  EXPECT(state, report.find("machine-function tasks: 2") !=
+  EXPECT(state, report.find("package LLVM module tasks: 2") !=
                     std::string::npos);
-  EXPECT(state, report.find("machine-function worker slots: 2") !=
+  EXPECT(state, report.find("package LLVM worker slots: 2") !=
                     std::string::npos);
   EXPECT(state, report.find("artifact-layout ready waves: 1") !=
                     std::string::npos);
@@ -2900,8 +2862,8 @@ void test_multi_package_native_pipeline(TestState &state) {
   EXPECT(state, result.packages[0].has_value());
   EXPECT(state, result.packages[1].has_value());
   if (result.packages[0].has_value() && result.packages[1].has_value()) {
-    EXPECT(state, result.packages[0]->llvm.ok);
-    EXPECT(state, result.packages[1]->llvm.ok);
+    EXPECT(state, result.packages[0]->llvm_module.ok);
+    EXPECT(state, result.packages[1]->llvm_module.ok);
     EXPECT(state, package_llvm_text(*result.packages[0]).find("define i32 @main") !=
         std::string::npos);
     EXPECT(state, package_llvm_text(*result.packages[1]).find("define i32 @main") ==
@@ -3024,12 +2986,7 @@ void test_file_local_imports_share_one_llvm_declaration(TestState &state) {
       const std::string_view declaration =
           "declare i64 @\"draft.workspace.lib.base\"(ptr)\n";
       EXPECT(state,
-          occurrence_count(
-              package->llvm.static_data.text, declaration) == 1);
-      for (const draft::LlvmIrResult &function :
-           package->llvm.machine_functions) {
-        EXPECT(state, occurrence_count(function.text, declaration) == 1);
-      }
+          occurrence_count(package->llvm_module.text, declaration) == 1);
       EXPECT(state,
           occurrence_count(
               package_llvm_text(*package),
@@ -3342,7 +3299,7 @@ void test_compiler_distributed_array_and_support(TestState &state) {
       result.packages[result.graph.root_package.value];
   EXPECT(state, root.has_value());
   if (!root.has_value()) return;
-  EXPECT(state, root->llvm.ok);
+  EXPECT(state, root->llvm_module.ok);
   EXPECT(state, package_llvm_text(*root).find(".array.append_24mono_24") !=
       std::string::npos);
   EXPECT(state, package_llvm_text(*root).find(".heap.allocator\"") !=
@@ -3360,7 +3317,7 @@ void test_compiler_distributed_array_and_support(TestState &state) {
   }
   EXPECT(state, array != nullptr);
   if (array != nullptr) {
-    EXPECT(state, array->llvm.ok);
+    EXPECT(state, array->llvm_module.ok);
     EXPECT(state, array->bodies.package.parametric_instances.size() >= 5);
   }
 }
@@ -3394,7 +3351,7 @@ void test_compiler_distributed_map(TestState &state) {
       result.packages[result.graph.root_package.value];
   EXPECT(state, root.has_value());
   if (!root.has_value()) return;
-  EXPECT(state, root->llvm.ok);
+  EXPECT(state, root->llvm_module.ok);
   EXPECT(state, package_llvm_text(*root).find(".map.set_24mono_24") !=
       std::string::npos);
   EXPECT(state, package_llvm_text(*root).find(".map.string_5Fkeys") !=
@@ -3411,7 +3368,7 @@ void test_compiler_distributed_map(TestState &state) {
   }
   EXPECT(state, map != nullptr);
   if (map != nullptr) {
-    EXPECT(state, map->llvm.ok);
+    EXPECT(state, map->llvm_module.ok);
     EXPECT(state, package_llvm_text(*map).find("hash_5Fstring") != std::string::npos);
     EXPECT(state, map->bodies.package.parametric_instances.size() >= 10);
   }
@@ -3447,7 +3404,7 @@ void test_compiler_distributed_os(TestState &state) {
       result.packages[result.graph.root_package.value];
   EXPECT(state, root.has_value());
   if (!root.has_value()) return;
-  EXPECT(state, root->llvm.ok);
+  EXPECT(state, root->llvm_module.ok);
   EXPECT(state, package_llvm_text(*root).find(
       "define i32 @main(i32 %argc, ptr %argv, ptr %envp)") !=
       std::string::npos);
@@ -3465,7 +3422,7 @@ void test_compiler_distributed_os(TestState &state) {
   }
   EXPECT(state, os != nullptr);
   if (os != nullptr) {
-    EXPECT(state, os->llvm.ok);
+    EXPECT(state, os->llvm_module.ok);
     EXPECT(state, package_llvm_text(*os).find("@\"__draft.os.args_data\"") !=
         std::string::npos);
     EXPECT(state, package_llvm_text(*os).find("@\"getpid\"") != std::string::npos);
@@ -3511,7 +3468,7 @@ void test_compiler_distributed_thread(TestState &state) {
       result.packages[result.graph.root_package.value];
   EXPECT(state, root.has_value());
   if (!root.has_value()) return;
-  EXPECT(state, root->llvm.ok);
+  EXPECT(state, root->llvm_module.ok);
   EXPECT(state, package_llvm_text(*root).find(
       "define hidden void @\"__draft.runtime.install_thread_context\"") !=
       std::string::npos);
@@ -3526,7 +3483,7 @@ void test_compiler_distributed_thread(TestState &state) {
   }
   EXPECT(state, thread != nullptr);
   if (thread != nullptr) {
-    EXPECT(state, thread->llvm.ok);
+    EXPECT(state, thread->llvm_module.ok);
     EXPECT(state, package_llvm_text(*thread).find("@\"pthread_create\"") !=
         std::string::npos);
     EXPECT(state, package_llvm_text(*thread).find(
@@ -3622,7 +3579,7 @@ void test_compiler_distributed_atomic(TestState &state) {
   EXPECT(state, root.has_value());
   if (!root.has_value()) return;
   const std::string &llvm = package_llvm_text(*root);
-  EXPECT(state, root->llvm.ok);
+  EXPECT(state, root->llvm_module.ok);
   EXPECT(state, llvm.find("store atomic i64 2") != std::string::npos);
   EXPECT(state, llvm.find("load atomic i64") != std::string::npos);
   EXPECT(state, llvm.find("atomicrmw add") != std::string::npos);

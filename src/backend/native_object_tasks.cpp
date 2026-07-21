@@ -44,7 +44,7 @@ bool prepare_native_object_plan(
 
   // WorkTaskId must represent every eventual vector index. Check before
   // appending so no narrowing conversion can produce an aliased task ID. The
-  // artifact layouts already contain the exact static/function/assembly count.
+  // artifact layouts already contain the exact module/assembly count.
   const std::size_t maximum_task_count =
       static_cast<std::size_t>(std::numeric_limits<WorkTaskId>::max()) + 1U;
   std::size_t task_count = 0;
@@ -69,7 +69,7 @@ bool prepare_native_object_plan(
        ++package_index) {
     const std::optional<CompiledPackage> &package =
         compiled.packages[package_index];
-    if (!package.has_value() || !package->llvm.ok ||
+    if (!package.has_value() || !package->llvm_module.ok ||
         !package->artifact_layout.ok) {
       reason = "compiled package " + std::to_string(package_index) +
           " has no valid native artifact layout";
@@ -79,9 +79,8 @@ bool prepare_native_object_plan(
 
     const std::string package_stem =
         "package-" + std::to_string(package_index);
-    bool saw_static_data = false;
+    bool saw_module = false;
     bool saw_assembly = false;
-    std::size_t next_function = 0;
     std::size_t next_assembly = 0;
     for (const PackageArtifactInput &layout :
          package->artifact_layout.inputs) {
@@ -90,54 +89,29 @@ bool prepare_native_object_plan(
         plan = NativeObjectPlan{};
         return false;
       }
-      if (layout.kind == PackageArtifactInputKind::PackageStaticData) {
-        if (saw_static_data || next_function != 0 || saw_assembly ||
-            layout.index != 0 || !package->llvm.static_data.ok) {
-          reason = "package static-data layout is malformed";
+      if (layout.kind == PackageArtifactInputKind::PackageLlvmModule) {
+        if (saw_module || saw_assembly || layout.index != 0 ||
+            !package->llvm_module.ok) {
+          reason = "package LLVM module layout is malformed";
           plan = NativeObjectPlan{};
           return false;
         }
         NativeObjectTask task;
-        task.kind = NativeObjectTaskKind::PackageStaticData;
+        task.kind = NativeObjectTaskKind::PackageLlvmModule;
         task.package_index = package_index;
         task.producer = layout.producer;
         task.display_name =
-            display_package_identity(package->identity) + " static data";
-        task.output_stem = package_stem + "-static";
+            display_package_identity(package->identity) + " LLVM module";
+        task.output_stem = package_stem + "-module";
         task.source_extension = ".ll";
-        task.input_bytes = package->llvm.static_data.text;
+        task.input_bytes = package->llvm_module.text;
         plan.tasks.push_back(std::move(task));
         plan.graph.tasks.emplace_back();
-        saw_static_data = true;
-        continue;
-      }
-      if (layout.kind == PackageArtifactInputKind::MachineFunction) {
-        if (!saw_static_data || saw_assembly ||
-            layout.index != next_function ||
-            layout.index >= package->llvm.machine_functions.size() ||
-            !package->llvm.machine_functions[layout.index].ok) {
-          reason = "package machine-function layout is malformed";
-          plan = NativeObjectPlan{};
-          return false;
-        }
-        NativeObjectTask task;
-        task.kind = NativeObjectTaskKind::MachineFunction;
-        task.package_index = package_index;
-        task.input_index = layout.index;
-        task.producer = layout.producer;
-        task.display_name = display_package_identity(package->identity) +
-            " function " + std::to_string(layout.index);
-        task.output_stem = package_stem + "-function-" +
-            std::to_string(layout.index);
-        task.source_extension = ".ll";
-        task.input_bytes = package->llvm.machine_functions[layout.index].text;
-        plan.tasks.push_back(std::move(task));
-        plan.graph.tasks.emplace_back();
-        ++next_function;
+        saw_module = true;
         continue;
       }
       saw_assembly = true;
-      if (!saw_static_data || layout.index != next_assembly ||
+      if (!saw_module || layout.index != next_assembly ||
           layout.index >= package->assembly_sources.size()) {
         reason = "package assembly layout is malformed";
         plan = NativeObjectPlan{};
@@ -168,8 +142,7 @@ bool prepare_native_object_plan(
       plan.graph.tasks.emplace_back();
       ++next_assembly;
     }
-    if (!saw_static_data ||
-        next_function != package->llvm.machine_functions.size() ||
+    if (!saw_module ||
         next_assembly != package->assembly_sources.size()) {
       reason = "package artifact layout does not cover every native input";
       plan = NativeObjectPlan{};

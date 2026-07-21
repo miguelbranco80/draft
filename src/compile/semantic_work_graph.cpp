@@ -424,12 +424,10 @@ std::string_view semantic_product_kind_name(SemanticProductKind kind) {
     return "denial result";
   case SemanticProductKind::MirProcedure:
     return "MIR procedure";
-  case SemanticProductKind::MachineFunction:
-    return "machine function";
-  case SemanticProductKind::PackageStaticData:
-    return "package static data";
   case SemanticProductKind::PackageAssembly:
     return "package assembly";
+  case SemanticProductKind::PackageLlvmModule:
+    return "package LLVM module";
   case SemanticProductKind::ArtifactLayout:
     return "artifact layout";
   }

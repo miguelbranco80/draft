@@ -1,13 +1,11 @@
 // Procedure-product helpers for direct MIR and LLVM subsystem tests.
 //
-// Production compilation schedules each HIR product, MIR procedure, package
-// static-data unit, and machine-function unit through the semantic graph. A
-// unit test often starts below that coordinator and still needs to exercise all
-// products from one in-memory package. These helpers perform only that visible
-// source-order loop. They never concatenate HIR arenas, build a MirProgram, or
-// manufacture a package LLVM module. The combined LLVM text is an observation
-// buffer for substring assertions; every appended fragment remains a complete,
-// independently emitted module and is also validated by focused object tests.
+// Production compilation schedules each HIR product and MIR procedure through
+// the semantic graph, then emits one complete LLVM module for their semantic
+// package. A unit test often starts below that coordinator and still needs to
+// exercise the same ownership boundary from one in-memory package. These
+// helpers perform only that visible source-order lowering. They never
+// concatenate HIR arenas or build a package-wide MirProgram.
 
 #pragma once
 
@@ -78,21 +76,10 @@ struct LoweredProcedureProducts {
       semantic, products, nullptr, runtime_assertions, diagnostics);
 }
 
-// Test observation of the split LLVM units. text is deliberately not submitted
-// to LLVM as one module: it merely lets existing assertions search across the
-// static-data and function fragments. Source correlations are appended in
-// stable procedure ordinal order, matching artifact publication.
-struct EmittedLlvmProducts {
-  bool ok = false;
-  std::string text;
-  std::vector<SourceCorrelationEntry> source_correlations;
-};
-
-// Emits one package static-data unit and one unit for each supplied MIR product.
-// The procedure symbol list is frozen before emission because every unit must
-// declare the same canonical package function set. Diagnostics and success are
-// accumulated without hiding which production emitter produced a failure.
-[[nodiscard]] inline EmittedLlvmProducts emit_llvm_products(
+// Emits the same complete semantic-package module as production. The temporary
+// pointer vector borrows the caller-owned procedure products only for the
+// synchronous emitter call and preserves their canonical source order.
+[[nodiscard]] inline LlvmIrResult emit_package_llvm_module(
     const TargetProfile &target,
     const SourceManager &sources,
     const LlvmIrOptions &options,
@@ -101,50 +88,20 @@ struct EmittedLlvmProducts {
     const ConstantTable &global_initializers,
     std::span<const MirProcedure> procedures,
     DiagnosticSink &diagnostics) {
-  EmittedLlvmProducts result;
-  result.ok = true;
-  std::vector<SymbolId> symbols;
-  symbols.reserve(procedures.size());
+  std::vector<const MirProcedure *> procedure_pointers;
+  procedure_pointers.reserve(procedures.size());
   for (const MirProcedure &procedure : procedures) {
-    symbols.push_back(procedure.symbol);
+    procedure_pointers.push_back(&procedure);
   }
-
-  LlvmIrResult static_data = emit_llvm_package_static_data(
+  return emit_llvm_package_module(
       target,
       sources,
       options,
       semantic,
       abi,
       global_initializers,
-      symbols,
+      procedure_pointers,
       diagnostics);
-  result.ok = result.ok && static_data.ok;
-  result.text += static_data.text;
-  result.source_correlations.insert(
-      result.source_correlations.end(),
-      std::make_move_iterator(static_data.source_correlations.begin()),
-      std::make_move_iterator(static_data.source_correlations.end()));
-
-  for (std::size_t index = 0; index < procedures.size(); ++index) {
-    LlvmIrResult function = emit_llvm_machine_function(
-        target,
-        sources,
-        options,
-        semantic,
-        abi,
-        symbols,
-        index,
-        procedures[index],
-        diagnostics);
-    result.ok = result.ok && function.ok;
-    result.text.push_back('\n');
-    result.text += function.text;
-    result.source_correlations.insert(
-        result.source_correlations.end(),
-        std::make_move_iterator(function.source_correlations.begin()),
-        std::make_move_iterator(function.source_correlations.end()));
-  }
-  return result;
 }
 
 } // namespace draft::test_support

@@ -269,8 +269,8 @@ main :: proc() -> int {
   draft::LlvmIrOptions options;
   options.package = {"workspace", "assembly"};
   options.emit_program_entry = true;
-  const draft::test_support::EmittedLlvmProducts llvm =
-      draft::test_support::emit_llvm_products(
+  const draft::LlvmIrResult llvm =
+      draft::test_support::emit_package_llvm_module(
       source.target,
       source.sources,
       options,

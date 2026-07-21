@@ -39,36 +39,24 @@ struct LlvmIrResult {
   std::vector<SourceCorrelationEntry> source_correlations;
 };
 
-// Emits the one complete LLVM module which owns package-level storage and
-// process support but no Draft procedure definition. package_procedures is the
-// complete canonical runtime procedure set for this package. It lets the
-// static module declare procedure-valued constants and construct the hosted
-// entry point without borrowing procedure MIR payloads. Every listed symbol
-// must name a checked, concrete procedure in semantic.
-[[nodiscard]] LlvmIrResult emit_llvm_package_static_data(
+// Emits one complete LLVM module for one semantic package. procedures is the
+// canonical package-local MIR product order: the module defines every listed
+// concrete procedure together with the package's globals, relocatable
+// constants, and (when requested) its process support and hosted entry point.
+//
+// The span borrows procedure-owned MIR payloads. Keeping those payloads in
+// their semantic-product side-table slots preserves the compiler's fine-grain
+// lowering graph; LLVM emission merely observes the completed package set and
+// does not reconstruct an owning package-wide MIR program. Every pointer must
+// remain valid until this synchronous call returns.
+[[nodiscard]] LlvmIrResult emit_llvm_package_module(
     const TargetProfile &target,
     const SourceManager &sources,
     const LlvmIrOptions &options,
     const SemanticPackage &semantic,
     const Aarch64CAbiTable &abi,
     const ConstantTable &global_initializers,
-    std::span<const SymbolId> package_procedures,
-    DiagnosticSink &diagnostics);
-
-// Emits one independently compilable LLVM module for one verified MIR
-// procedure. The module defines only procedure and uses external declarations
-// for package globals and every other concrete procedure. procedure_ordinal is
-// the stable package-local MIR product order recorded in source-correlation
-// rows and private constant names; it must not depend on worker scheduling.
-[[nodiscard]] LlvmIrResult emit_llvm_machine_function(
-    const TargetProfile &target,
-    const SourceManager &sources,
-    const LlvmIrOptions &options,
-    const SemanticPackage &semantic,
-    const Aarch64CAbiTable &abi,
-    std::span<const SymbolId> package_procedures,
-    std::size_t procedure_ordinal,
-    const MirProcedure &procedure,
+    std::span<const MirProcedure *const> procedures,
     DiagnosticSink &diagnostics);
 
 } // namespace draft

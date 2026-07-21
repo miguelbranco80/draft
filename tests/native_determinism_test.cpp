@@ -263,7 +263,7 @@ void test_repeated_native_link_is_byte_identical(TestState &state) {
         artifact.kind);
   }
 
-  // Corrupt two independent package-static units after planning facts have
+  // Corrupt two independent package modules after planning facts have
   // been produced. Workers may fail in either order, but only the lowest task
   // ID's reason is diagnosed and no canonical object or complete-looking
   // correlation map may be published from the failed ready set.
@@ -271,13 +271,13 @@ void test_repeated_native_link_is_byte_identical(TestState &state) {
       executable.packages[0].has_value() &&
       executable.packages[1].has_value()) {
     draft::CompileWorkspaceResult broken = executable;
-    broken.packages[0]->llvm.static_data.text =
+    broken.packages[0]->llvm_module.text =
         "not an LLVM module for task zero\n";
-    broken.packages[1]->llvm.static_data.text =
+    broken.packages[1]->llvm_module.text =
         "not an LLVM module for a later task\n";
     const std::string first_identity =
         draft::display_package_identity(broken.packages[0]->identity) +
-        " static data";
+        " LLVM module";
     const std::filesystem::path failed_directory = temporary / "failed-ready-set";
     draft::NativeBuildOptions failed_options;
     failed_options.build_directory = (failed_directory / "build").string();
@@ -294,7 +294,7 @@ void test_repeated_native_link_is_byte_identical(TestState &state) {
           std::string::npos);
     }
     EXPECT(state, !std::filesystem::exists(
-        failed_directory / "build" / "package-0-static.o"));
+        failed_directory / "build" / "package-0-module.o"));
     EXPECT(state, !std::filesystem::exists(
         failed_directory / "build" / "draft-source-correlation.json"));
   } else {

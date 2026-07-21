@@ -206,7 +206,7 @@ void test_all_native_artifact_kinds(TestState &state) {
     std::filesystem::remove_all(temporary, error);
     return;
   }
-  const std::string &llvm = compiled.packages.front()->llvm.static_data.text;
+  const std::string &llvm = compiled.packages.front()->llvm_module.text;
   EXPECT(state, llvm.find("define i32 @main(") == std::string::npos);
   EXPECT(state, llvm.find(
       "define hidden void @\"__draft.runtime.default_context\"") !=
@@ -288,9 +288,7 @@ void test_all_native_artifact_kinds(TestState &state) {
   EXPECT(state, std::filesystem::exists(temporary / "library.dylib"));
   EXPECT(state, std::filesystem::exists(temporary / "library.dylib.dSYM"));
   EXPECT(state, std::filesystem::exists(
-      temporary / "assembly" / "package-0-static.s"));
-  EXPECT(state, std::filesystem::exists(
-      temporary / "assembly" / "package-0-function-0.s"));
+      temporary / "assembly" / "package-0-module.s"));
   EXPECT(state, read_file(
       temporary / "assembly" / "package-0-assembly-0.s") ==
       compiled.packages.front()->assembly_sources.front().contents);

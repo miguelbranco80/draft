@@ -849,7 +849,7 @@ NativeBuildResult build_native_artifact(
       return result;
     }
   }
-  // Freeze every artifact-layout LLVM unit and package-assembly input into
+  // Freeze every artifact-layout package module and assembly input into
   // stable work slots before invoking a tool. This validation boundary ensures
   // later execution can change scheduling without changing task identity,
   // output names, diagnostic order, or linker order.
@@ -875,20 +875,10 @@ NativeBuildResult build_native_artifact(
     // identity independent of how object tasks are eventually scheduled.
     source_correlation.entries.insert(
         source_correlation.entries.end(),
-        package->llvm.static_data.source_correlations.begin(),
-        package->llvm.static_data.source_correlations.end());
+        package->llvm_module.source_correlations.begin(),
+        package->llvm_module.source_correlations.end());
     direct_module_identity.update(
-        sha256(package->llvm.static_data.text).bytes);
-    for (const LlvmIrResult &function : package->llvm.machine_functions) {
-      source_correlation.entries.insert(
-          source_correlation.entries.end(),
-          function.source_correlations.begin(),
-          function.source_correlations.end());
-      // Hash every complete module separately before combining fixed-width
-      // digests. This preserves static/function boundaries without an ad-hoc
-      // framing format and gives direct backend users an exact identity.
-      direct_module_identity.update(sha256(function.text).bytes);
-    }
+        sha256(package->llvm_module.text).bytes);
   }
 
   TimingScope object_emission_timing = options.timings != nullptr
@@ -969,7 +959,7 @@ NativeBuildResult build_native_artifact(
   }
 
   // Publication is deliberately sequential and uses each package layout's
-  // canonical static/function/assembly order. Worker completion order therefore
+  // canonical module/assembly order. Worker completion order therefore
   // cannot affect directory contents, archive member order, or final linking.
   for (std::size_t task_index = 0;
        task_index < object_plan.tasks.size();

@@ -27,15 +27,6 @@
 namespace draft {
 namespace {
 
-// LLVM accepts and optimizes a complete module at a time, but a module need
-// not own a whole Draft package. The package unit owns non-function definitions
-// and each machine-function unit owns exactly one Draft procedure definition.
-// Every unit is valid standalone LLVM IR.
-enum class LlvmIrUnitKind {
-  PackageStaticData,
-  MachineFunction,
-};
-
 struct StringConstant {
   std::size_t procedure = 0;
   std::size_t instruction = 0;
@@ -276,17 +267,11 @@ public:
       const SemanticPackage &semantic,
       const Aarch64CAbiTable &abi,
       const ConstantTable &global_initializers,
-      std::span<const MirProcedure> procedures,
-      std::span<const SymbolId> package_procedures,
-      LlvmIrUnitKind unit_kind,
-      std::size_t first_procedure_ordinal,
+      std::span<const MirProcedure *const> procedures,
       DiagnosticSink &diagnostics)
       : target_(target), sources_(sources), options_(options), semantic_(semantic),
         abi_(abi), global_initializers_(global_initializers),
-        procedures_(procedures), package_procedures_(package_procedures),
-        unit_kind_(unit_kind),
-        first_procedure_ordinal_(first_procedure_ordinal),
-        diagnostics_(diagnostics) {}
+        procedures_(procedures), diagnostics_(diagnostics) {}
 
   [[nodiscard]] LlvmIrResult run() {
     LlvmIrResult result;
@@ -309,19 +294,11 @@ public:
     emit_nominal_types();
     emit_strings();
     emit_runtime_declarations();
-    if (unit_kind_ == LlvmIrUnitKind::MachineFunction) {
-      emit_package_global_declarations();
-    } else {
-      emit_globals();
-    }
-    if (unit_kind_ != LlvmIrUnitKind::PackageStaticData) {
-      emit_relocatable_constants();
-    }
+    emit_globals();
+    emit_relocatable_constants();
     emit_external_declarations();
     emit_validation_declarations();
-    if (unit_kind_ != LlvmIrUnitKind::PackageStaticData) {
-      emit_procedures();
-    }
+    emit_procedures();
     if (options_.emit_program_entry) {
       if (options_.validation_kind == ValidationKind::None) {
         emit_entry();
@@ -348,11 +325,6 @@ private:
 
   [[nodiscard]] bool owns_runtime_support() const {
     return options_.emit_runtime_support || options_.emit_program_entry;
-  }
-
-  [[nodiscard]] std::size_t procedure_ordinal(
-      std::size_t local_index) const {
-    return first_procedure_ordinal_ + local_index;
   }
 
   [[nodiscard]] std::string debug_directory() const {
@@ -750,26 +722,24 @@ private:
   }
 
   void collect_strings() {
-    if (unit_kind_ != LlvmIrUnitKind::MachineFunction) {
-      for (const ConstantBinding &binding : global_initializers_.bindings) {
-        const Symbol &symbol = semantic_.symbols.symbol(binding.symbol);
-        if (symbol.kind != SymbolKind::Variable || symbol.flags.foreign) {
-          continue;
-        }
-        std::vector<std::size_t> path;
-        collect_constant_strings(
-            binding.value,
-            std::numeric_limits<std::size_t>::max(),
-            std::numeric_limits<std::size_t>::max(),
-            binding.symbol,
-            path);
+    for (const ConstantBinding &binding : global_initializers_.bindings) {
+      const Symbol &symbol = semantic_.symbols.symbol(binding.symbol);
+      if (symbol.kind != SymbolKind::Variable || symbol.flags.foreign) {
+        continue;
       }
+      std::vector<std::size_t> path;
+      collect_constant_strings(
+          binding.value,
+          std::numeric_limits<std::size_t>::max(),
+          std::numeric_limits<std::size_t>::max(),
+          binding.symbol,
+          path);
     }
     for (std::size_t procedure_index = 0;
          procedure_index < procedures_.size();
          ++procedure_index) {
-      const MirProcedure &procedure = procedures_[procedure_index];
-      const std::size_t stable_ordinal = procedure_ordinal(procedure_index);
+      const MirProcedure &procedure = *procedures_[procedure_index];
+      const std::size_t stable_ordinal = procedure_index;
       for (std::size_t instruction_index = 0;
            instruction_index < procedure.instructions.size();
            ++instruction_index) {
@@ -864,10 +834,10 @@ private:
   }
 
   void emit_runtime_declarations() {
-    // LLVM intrinsics are declared in every native unit that may use them. The
-    // Draft runtime helpers below are different: machine-function and
-    // dependency static-data units only declare them, while the root static
-    // unit owns their single definitions and the process-wide root context.
+    // LLVM intrinsics are declared in every package module that may use them.
+    // The Draft runtime helpers below are different: dependency packages only
+    // declare them, while the root package owns their single definitions and
+    // the process-wide root context.
     output_ << "declare void @llvm.trap() cold noreturn nounwind\n"
             << "declare void @llvm.dbg.label(metadata)\n"
             << "declare i16 @llvm.bswap.i16(i16)\n"
@@ -1860,25 +1830,17 @@ private:
         : signature.members.back();
   }
 
-  // A definition belongs to this LLVM unit only when its MIR is in the unit's
-  // private procedure span. Package membership is different: the static-data
-  // unit needs to know that `main` exists even though it deliberately owns no
-  // Draft function definitions.
-  [[nodiscard]] bool has_unit_body(SymbolId symbol) const {
-    for (const MirProcedure &procedure : procedures_) {
-      if (procedure.symbol == symbol && procedure.valid) return true;
+  // The procedure span is the complete concrete runtime definition set for
+  // this semantic package. Symbolic templates and compile-time-only procedures
+  // are absent by construction and therefore remain declaration-only facts.
+  [[nodiscard]] bool has_body(SymbolId symbol) const {
+    for (const MirProcedure *procedure : procedures_) {
+      if (procedure != nullptr && procedure->symbol == symbol &&
+          procedure->valid) {
+        return true;
+      }
     }
     return false;
-  }
-
-  [[nodiscard]] bool has_package_body(SymbolId symbol) const {
-    if (!package_procedures_.empty()) {
-      return std::find(
-                 package_procedures_.begin(),
-                 package_procedures_.end(),
-                 symbol) != package_procedures_.end();
-    }
-    return has_unit_body(symbol);
   }
 
   [[nodiscard]] bool is_c_export(SymbolId symbol) const {
@@ -1924,28 +1886,6 @@ private:
         output_ << llvm_type(symbol.type) << " zeroinitializer";
       }
       output_ << ", align " << type(symbol.type).layout.alignment << "\n";
-    }
-    output_ << '\n';
-  }
-
-  // Machine-function modules borrow every package global through an external
-  // declaration. LLVM opaque pointers allow a relocatable aggregate's owning
-  // static-data module to use its initializer-specific packed storage while a
-  // function continues to load the canonical Draft value type.
-  void emit_package_global_declarations() {
-    const Scope &package_scope =
-        semantic_.symbols.scope(semantic_.package_scope);
-    for (SymbolId symbol_id : package_scope.symbols) {
-      const Symbol &symbol = semantic_.symbols.symbol(symbol_id);
-      if (symbol.kind != SymbolKind::Variable || symbol.flags.foreign ||
-          !symbol.type.is_valid()) {
-        continue;
-      }
-      std::string declaration = symbol_name(symbol_id) + " = external hidden ";
-      if (symbol.flags.is_thread_local) declaration += "thread_local ";
-      declaration += "global " + llvm_type(symbol.type) + "\n";
-      emit_external_declaration(
-          symbol_name(symbol_id), std::move(declaration), symbol.name_range);
     }
     output_ << '\n';
   }
@@ -2006,7 +1946,7 @@ private:
       // declaring the template would leak TypeParameter pseudo-types into LLVM.
       if (symbol.kind == SymbolKind::Procedure &&
           !symbol.flags.parametric &&
-          !has_unit_body(symbol_id) &&
+          !has_body(symbol_id) &&
           !is_imported_symbol(symbol_id) &&
           !root_runtime_defines(symbol_id)) {
         const std::string name = symbol_name(symbol_id);
@@ -2025,27 +1965,6 @@ private:
       }
     }
 
-    // Concrete specializations and nested procedures need not be direct
-    // package-scope members. The canonical runtime procedure set is therefore
-    // the authoritative declaration source for split modules. The helper
-    // above deduplicates ordinary package-scope procedures encountered twice.
-    for (SymbolId symbol_id : package_procedures_) {
-      if (has_unit_body(symbol_id) || is_imported_symbol(symbol_id) ||
-          root_runtime_defines(symbol_id)) {
-        continue;
-      }
-      const Symbol &symbol = semantic_.symbols.symbol(symbol_id);
-      if (symbol.kind != SymbolKind::Procedure || symbol.flags.parametric ||
-          !symbol.type.is_valid()) {
-        continue;
-      }
-      const std::string name = symbol_name(symbol_id);
-      emit_external_declaration(
-          name,
-          "declare " + llvm_function_result(symbol.type) + " " + name +
-              function_signature(symbol.type, false) + "\n",
-          symbol.name_range);
-    }
     output_ << '\n';
   }
 
@@ -2664,8 +2583,8 @@ private:
     for (std::size_t procedure_index = 0;
          procedure_index < procedures_.size();
          ++procedure_index) {
-      const MirProcedure &procedure = procedures_[procedure_index];
-      const std::size_t stable_ordinal = procedure_ordinal(procedure_index);
+      const MirProcedure &procedure = *procedures_[procedure_index];
+      const std::size_t stable_ordinal = procedure_index;
       for (std::size_t instruction_index = 0;
            instruction_index < procedure.instructions.size();
            ++instruction_index) {
@@ -4203,7 +4122,7 @@ private:
 
   void emit_procedures() {
     for (std::size_t index = 0; index < procedures_.size(); ++index) {
-      emit_procedure(procedure_ordinal(index), procedures_[index]);
+      emit_procedure(index, *procedures_[index]);
     }
   }
 
@@ -4212,7 +4131,7 @@ private:
         semantic_.symbols.lookup_direct(semantic_.package_scope, "main");
     if (!found.has_value()) return std::nullopt;
     const Symbol &symbol = semantic_.symbols.symbol(*found);
-    if (symbol.kind != SymbolKind::Procedure || !has_package_body(*found)) {
+    if (symbol.kind != SymbolKind::Procedure || !has_body(*found)) {
       return std::nullopt;
     }
     return found;
@@ -4324,10 +4243,7 @@ private:
   const SemanticPackage &semantic_;
   const Aarch64CAbiTable &abi_;
   const ConstantTable &global_initializers_;
-  std::span<const MirProcedure> procedures_;
-  std::span<const SymbolId> package_procedures_;
-  LlvmIrUnitKind unit_kind_;
-  std::size_t first_procedure_ordinal_ = 0;
+  std::span<const MirProcedure *const> procedures_;
   DiagnosticSink &diagnostics_;
   std::ostringstream output_;
   std::vector<StringConstant> strings_;
@@ -4353,14 +4269,14 @@ private:
 
 } // namespace
 
-LlvmIrResult emit_llvm_package_static_data(
+LlvmIrResult emit_llvm_package_module(
     const TargetProfile &target,
     const SourceManager &sources,
     const LlvmIrOptions &options,
     const SemanticPackage &semantic,
     const Aarch64CAbiTable &abi,
     const ConstantTable &global_initializers,
-    std::span<const SymbolId> package_procedures,
+    std::span<const MirProcedure *const> procedures,
     DiagnosticSink &diagnostics) {
   return Emitter(
       target,
@@ -4369,42 +4285,7 @@ LlvmIrResult emit_llvm_package_static_data(
       semantic,
       abi,
       global_initializers,
-      {},
-      package_procedures,
-      LlvmIrUnitKind::PackageStaticData,
-      0,
-      diagnostics).run();
-}
-
-LlvmIrResult emit_llvm_machine_function(
-    const TargetProfile &target,
-    const SourceManager &sources,
-    const LlvmIrOptions &options,
-    const SemanticPackage &semantic,
-    const Aarch64CAbiTable &abi,
-    std::span<const SymbolId> package_procedures,
-    std::size_t procedure_ordinal,
-    const MirProcedure &procedure,
-    DiagnosticSink &diagnostics) {
-  // Function modules must never duplicate process-wide runtime or hosted entry
-  // definitions. Their calls resolve against the package static-data object.
-  LlvmIrOptions function_options = options;
-  function_options.emit_runtime_support = false;
-  function_options.emit_program_entry = false;
-  function_options.validation_kind = ValidationKind::None;
-  function_options.validation_entries.clear();
-  const ConstantTable no_global_initializers;
-  return Emitter(
-      target,
-      sources,
-      function_options,
-      semantic,
-      abi,
-      no_global_initializers,
-      std::span<const MirProcedure>(&procedure, 1),
-      package_procedures,
-      LlvmIrUnitKind::MachineFunction,
-      procedure_ordinal,
+      procedures,
       diagnostics).run();
 }
 

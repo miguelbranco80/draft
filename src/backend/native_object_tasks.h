@@ -1,17 +1,16 @@
 // Stable native object work derived from a completely lowered package graph.
 //
 // This module is the boundary between compiler-owned package products and an
-// object emitter. It converts every package-static LLVM unit, independently
-// emitted machine-function unit, and selected package-assembly input into one
-// explicit task. Task IDs, stems, and diagnostic names are fixed before
-// execution; emitters may run tasks concurrently but must place products back
-// into the corresponding task-indexed result slots.
+// object emitter. It converts every complete package LLVM module and selected
+// package-assembly input into one explicit task. Task IDs, stems, and diagnostic
+// names are fixed before execution; emitters may run tasks concurrently but
+// must place products back into corresponding task-indexed result slots.
 //
 // Input byte views borrow CompileWorkspaceResult storage for the synchronous
 // native build and retain nothing afterward. The plan owns only small metadata
 // and an edgeless WorkGraph: after semantic closure and target lowering, every
-// native unit contains external declarations for symbols it does not define and
-// can be emitted independently. Linking is a later ordered publication phase.
+// package module contains external declarations for dependency symbols and can
+// be emitted independently. Linking is a later ordered publication phase.
 //
 // This module depends on compile products, target profiles, and the base work
 // graph. It deliberately knows nothing about LLVM APIs, subprocesses, object
@@ -36,21 +35,20 @@ namespace draft {
 // The value affects execution and output naming inside one command but is not a
 // persistent semantic identity or content-hash field.
 enum class NativeObjectTaskKind {
-  PackageStaticData,
-  MachineFunction,
+  PackageLlvmModule,
   PackageAssembly,
 };
 
 // One task names one independently emittable native input. package_index is in
-// CompileWorkspaceResult::packages. input_index addresses the package's LLVM
-// machine-function vector or assembly-source vector and is zero for static
-// data. output_stem is collision-free within one native build directory and
-// contains no physical source path. source_extension is ".ll" for an LLVM unit
+// CompileWorkspaceResult::packages. input_index addresses the package's
+// assembly-source vector and is zero for its LLVM module. output_stem is
+// collision-free within one native build directory and contains no physical
+// source path. source_extension is ".ll" for an LLVM unit
 // or the exact selected assembly extension for a package source. producer is
 // the exact semantic product copied from PackageArtifactLayout; this preserves
 // graph-to-object identity without making workers inspect compiler side tables.
 struct NativeObjectTask {
-  NativeObjectTaskKind kind = NativeObjectTaskKind::PackageStaticData;
+  NativeObjectTaskKind kind = NativeObjectTaskKind::PackageLlvmModule;
   std::size_t package_index = 0;
   std::size_t input_index = 0;
   SemanticProductId producer;
@@ -71,7 +69,7 @@ struct NativeObjectPlan {
 };
 
 // Copies each package's already published ArtifactLayout in ascending package
-// order. It validates every selected LLVM unit and assembly rule before
+// order. It validates every selected package module and assembly rule before
 // publishing a partial plan. On failure plan is empty and reason names the
 // first package/input in stable order.
 [[nodiscard]] bool prepare_native_object_plan(
