@@ -166,14 +166,17 @@ gate.
    may repair a retained declaration symbol as a side effect.
 
    The remaining split is substantive but narrower. Owned-scope,
-   aggregate/enum, parametric, specialization, and imported semantic tables now
-   expose a canonical prefix plus task-local suffix; their prefix rows are no
-   longer copied. Imported rows cover symbols, types, concrete procedures,
-   outbound type requests, and effect/return/write contracts. Aggregate offset
-   publication and procedure-specialization promotion have explicit local-only
-   mutable operations. Unmigrated body-mutable semantic side tables are still
-   copied into the private view, and all suffix IDs assume sequential
-   publication. Replace those remaining copies with
+   aggregate/enum, parametric, specialization, imported semantic, and
+   dependent-type recipe tables now expose a canonical prefix plus task-local
+   suffix; their prefix rows are no longer copied. Imported rows cover symbols,
+   types, concrete procedures, outbound type requests, and
+   effect/return/write contracts. Recipe rows cover required integer
+   expressions and deferred element counts, value expressions, and type
+   applications. Aggregate offset publication, procedure-specialization
+   promotion, and required-integer refinement have explicit local-only mutable
+   operations. Only semantic sites and declaration denials are still copied
+   into the private view, and all suffix IDs assume sequential publication.
+   Replace those final copies with
    read-only-prefix/local-suffix views and add deterministic
    remapping/canonical interning for a shared ready wave. The consumer-first
    external-demand loop, body work key, and extension/rebuild paths remain until

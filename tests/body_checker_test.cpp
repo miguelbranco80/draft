@@ -273,6 +273,34 @@ second :: proc() -> i64 {
   EXPECT(state, import_view.imported_writes.empty());
   EXPECT(state, import_view.imported_writes_for_read().size() == 1);
 
+  draft::SemanticPackage recipe_prefix;
+  recipe_prefix.required_integer_expressions.push_back({});
+  recipe_prefix.deferred_element_counts.push_back({});
+  recipe_prefix.deferred_value_expressions.push_back({});
+  recipe_prefix.deferred_type_applications.push_back({});
+  draft::SemanticPackage recipe_view = recipe_prefix.fork_body_task_view();
+  EXPECT(state, recipe_view.required_integer_expressions.empty());
+  EXPECT(state,
+         recipe_view.required_integer_expressions_for_read().size() == 1);
+  EXPECT(state, recipe_view.deferred_element_counts.empty());
+  EXPECT(state, recipe_view.deferred_element_counts_for_read().size() == 1);
+  EXPECT(state, recipe_view.deferred_value_expressions.empty());
+  EXPECT(state,
+         recipe_view.deferred_value_expressions_for_read().size() == 1);
+  EXPECT(state, recipe_view.deferred_type_applications.empty());
+  EXPECT(state,
+         recipe_view.deferred_type_applications_for_read().size() == 1);
+  recipe_view.required_integer_expressions.push_back({});
+  recipe_view.required_integer_expression_mut(1).expected_type =
+      draft::TypeId{1};
+  EXPECT(state,
+         !recipe_prefix.required_integer_expressions.front()
+              .expected_type.is_valid());
+  EXPECT(state,
+         recipe_view.required_integer_expressions_for_read()[1]
+                 .expected_type ==
+             draft::TypeId{1});
+
   draft::DiagnosticSink first_diagnostics;
   draft::ProcedureBodyTaskInput first_input =
       draft::take_next_procedure_body_work(work, first_diagnostics);

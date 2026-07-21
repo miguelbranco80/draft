@@ -157,16 +157,18 @@ scopes. `ConstantTable` likewise reads package constants through a canonical
 prefix and owns only lexical constants. Declaration-closed file scopes, imports,
 imported documentation, native bindings, and package conditional regions are
 also read directly from the retained prefix and have no body-output fields.
-Owned-scope, aggregate/enum, parametric, specialization, and imported semantic
-tables now expose the same canonical prefix followed by a task-owned suffix;
-their raw task vectors contain only rows created by that procedure. Imported
-semantic tables include symbols, types, concrete procedures, outbound type
-requests, and effect/return/write contracts. Aggregate layout publication and
-procedure-specialization promotion address combined tables by global index but
-have explicit local-only mutable operations, so a task cannot rewrite a prefix
-row. Other body-mutable semantic side tables remain value snapshots. The task
-returns only its appended types, scopes, symbols, body side-table rows, lexical
-constants, and local HIR.
+Owned-scope, aggregate/enum, parametric, specialization, imported semantic, and
+dependent-type recipe tables now expose the same canonical prefix followed by a
+task-owned suffix; their raw task vectors contain only rows created by that
+procedure. Imported semantic tables include symbols, types, concrete
+procedures, outbound type requests, and effect/return/write contracts. Recipe
+tables retain required integer expressions and deferred element counts, value
+expressions, and type applications. Aggregate layout publication,
+procedure-specialization promotion, and required-integer refinement address
+combined tables by global index but have explicit local-only mutable operations,
+so a task cannot rewrite a prefix row. Only semantic sites and declaration
+denials remain value snapshots. The task returns only its appended types,
+scopes, symbols, body side-table rows, lexical constants, and local HIR.
 Publication rejects a stale prefix and appends the packet in product order; it
 never replaces the package with a worker-owned successor. Existing type and
 symbol rows cannot be mutated through an overlay, which exposed and removed a
@@ -175,11 +177,11 @@ Constant products now carry their checked static type beside the immutable
 value, and the package-interface barrier installs that payload explicitly.
 
 This is still a sequential publication oracle. The private task view copies the
-prefixes of its remaining body-mutable semantic side tables, and every suffix ID
-assumes no other result was published after dispatch. Extending the
-read-only-prefix/local-suffix model to those remaining tables, then remapping
-equal canonical discoveries from a shared ready wave, is the remaining boundary
-before body workers may run in parallel.
+site and declaration-denial prefixes, and every suffix ID assumes no other
+result was published after dispatch. Extending the read-only-prefix/local-suffix
+model to those final tables, then remapping equal canonical discoveries from a
+shared ready wave, is the remaining boundary before body workers may run in
+parallel.
 
 The transitional body work key is the declaration generation plus the exact
 canonical set of concrete generic procedures demanded by consumer packages.

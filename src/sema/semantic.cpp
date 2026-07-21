@@ -204,11 +204,13 @@ resolve_required_integer_expressions(
   // allowed to append semantic tables, so no reference into an append-only
   // vector may survive that call. Re-reading size also lets a newly discovered
   // required site run later in this same deterministic source-order pass.
+  const AppendOnlyTableView<RequiredIntegerExpression> required_expressions =
+      package.required_integer_expressions_for_read();
   for (std::size_t index = 0;
-       index < package.required_integer_expressions.size();
+       index < required_expressions.size();
        ++index) {
     const RequiredIntegerExpression required =
-        package.required_integer_expressions[index];
+        required_expressions[index];
     if (already_resolved(resolved, required.syntax)) continue;
     const SyntaxTree *tree = find_tree(loaded, required.syntax.file);
     if (tree == nullptr || !required.syntax.node.is_valid()) continue;

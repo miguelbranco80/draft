@@ -27,10 +27,6 @@ SemanticPackage::SemanticPackage(
       package_scope(base.package_scope),
       runtime_context_type(base.runtime_context_type),
       declaration_denials(base.declaration_denials), sites(base.sites),
-      required_integer_expressions(base.required_integer_expressions),
-      deferred_element_counts(base.deferred_element_counts),
-      deferred_value_expressions(base.deferred_value_expressions),
-      deferred_type_applications(base.deferred_type_applications),
       body_read_prefix_(&base) {
   assert(base.body_read_prefix_ == nullptr);
 }
@@ -192,6 +188,42 @@ SemanticPackage::imported_writes_for_read() const {
       imported_writes);
 }
 
+AppendOnlyTableView<RequiredIntegerExpression>
+SemanticPackage::required_integer_expressions_for_read() const {
+  return AppendOnlyTableView<RequiredIntegerExpression>(
+      body_read_prefix_ != nullptr
+          ? &body_read_prefix_->required_integer_expressions
+          : nullptr,
+      required_integer_expressions);
+}
+
+AppendOnlyTableView<DeferredElementCount>
+SemanticPackage::deferred_element_counts_for_read() const {
+  return AppendOnlyTableView<DeferredElementCount>(
+      body_read_prefix_ != nullptr
+          ? &body_read_prefix_->deferred_element_counts
+          : nullptr,
+      deferred_element_counts);
+}
+
+AppendOnlyTableView<DeferredValueExpression>
+SemanticPackage::deferred_value_expressions_for_read() const {
+  return AppendOnlyTableView<DeferredValueExpression>(
+      body_read_prefix_ != nullptr
+          ? &body_read_prefix_->deferred_value_expressions
+          : nullptr,
+      deferred_value_expressions);
+}
+
+AppendOnlyTableView<DeferredTypeApplication>
+SemanticPackage::deferred_type_applications_for_read() const {
+  return AppendOnlyTableView<DeferredTypeApplication>(
+      body_read_prefix_ != nullptr
+          ? &body_read_prefix_->deferred_type_applications
+          : nullptr,
+      deferred_type_applications);
+}
+
 AggregateMember &SemanticPackage::aggregate_member_mut(std::size_t index) {
   if (body_read_prefix_ == nullptr) {
     assert(index < aggregate_members.size());
@@ -216,6 +248,20 @@ SemanticPackage::parametric_instance_mut(std::size_t index) {
   assert(index >= prefix_size);
   assert(index - prefix_size < parametric_instances.size());
   return parametric_instances[index - prefix_size];
+}
+
+RequiredIntegerExpression &
+SemanticPackage::required_integer_expression_mut(std::size_t index) {
+  if (body_read_prefix_ == nullptr) {
+    assert(index < required_integer_expressions.size());
+    return required_integer_expressions[index];
+  }
+
+  const std::size_t prefix_size =
+      body_read_prefix_->required_integer_expressions.size();
+  assert(index >= prefix_size);
+  assert(index - prefix_size < required_integer_expressions.size());
+  return required_integer_expressions[index - prefix_size];
 }
 
 namespace {

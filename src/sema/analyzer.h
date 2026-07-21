@@ -774,6 +774,14 @@ struct SemanticPackage {
   imported_returns_for_read() const;
   [[nodiscard]] AppendOnlyTableView<ImportedProcedureWrite>
   imported_writes_for_read() const;
+  [[nodiscard]] AppendOnlyTableView<RequiredIntegerExpression>
+  required_integer_expressions_for_read() const;
+  [[nodiscard]] AppendOnlyTableView<DeferredElementCount>
+  deferred_element_counts_for_read() const;
+  [[nodiscard]] AppendOnlyTableView<DeferredValueExpression>
+  deferred_value_expressions_for_read() const;
+  [[nodiscard]] AppendOnlyTableView<DeferredTypeApplication>
+  deferred_type_applications_for_read() const;
 
   // Returns the aggregate-member row at one global table index for controlled
   // layout publication. A canonical package may update any row whose layout is
@@ -788,6 +796,12 @@ struct SemanticPackage {
   // identity stable while this operation enforces the local-suffix boundary.
   [[nodiscard]] ParametricInstanceRecord &
   parametric_instance_mut(std::size_t index);
+
+  // Expected-type refinement may fill a recipe which the same task discovered
+  // earlier. Canonical declaration scheduling may update its own table before
+  // body dispatch; a body task may update only its local recipe suffix.
+  [[nodiscard]] RequiredIntegerExpression &
+  required_integer_expression_mut(std::size_t index);
 
   std::string short_name;
   // Workspace identity is present for package-aware analysis and empty in

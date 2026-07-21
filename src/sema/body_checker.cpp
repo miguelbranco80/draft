@@ -8458,12 +8458,13 @@ void append_body_root(
   prefix.declaration_denial_count = package.declaration_denials.size();
   prefix.site_count = package.sites.size();
   prefix.required_integer_expression_count =
-      package.required_integer_expressions.size();
-  prefix.deferred_element_count_count = package.deferred_element_counts.size();
+      package.required_integer_expressions_for_read().size();
+  prefix.deferred_element_count_count =
+      package.deferred_element_counts_for_read().size();
   prefix.deferred_value_expression_count =
-      package.deferred_value_expressions.size();
+      package.deferred_value_expressions_for_read().size();
   prefix.deferred_type_application_count =
-      package.deferred_type_applications.size();
+      package.deferred_type_applications_for_read().size();
   prefix.constant_count = constants.size();
   return prefix;
 }
@@ -8499,7 +8500,7 @@ void append_body_suffix(
   appended.types = package.types.appended_since(prefix.type_count);
   appended.symbols = package.symbols.appended_since(
       prefix.scope_count, prefix.symbol_count);
-  // These fourteen raw vectors already own only this task's suffix. Their
+  // These eighteen raw vectors already own only this task's suffix. Their
   // canonical prefix is visible through AppendOnlyTableView and must not be
   // copied back into the append packet.
   appended.owned_scopes = package.owned_scopes;
@@ -8521,17 +8522,11 @@ void append_body_suffix(
   appended.declaration_denials = copy_body_suffix(
       package.declaration_denials, prefix.declaration_denial_count);
   appended.sites = copy_body_suffix(package.sites, prefix.site_count);
-  appended.required_integer_expressions = copy_body_suffix(
-      package.required_integer_expressions,
-      prefix.required_integer_expression_count);
-  appended.deferred_element_counts = copy_body_suffix(
-      package.deferred_element_counts, prefix.deferred_element_count_count);
-  appended.deferred_value_expressions = copy_body_suffix(
-      package.deferred_value_expressions,
-      prefix.deferred_value_expression_count);
-  appended.deferred_type_applications = copy_body_suffix(
-      package.deferred_type_applications,
-      prefix.deferred_type_application_count);
+  appended.required_integer_expressions =
+      package.required_integer_expressions;
+  appended.deferred_element_counts = package.deferred_element_counts;
+  appended.deferred_value_expressions = package.deferred_value_expressions;
+  appended.deferred_type_applications = package.deferred_type_applications;
   appended.constants = constants.appended_since(prefix.constant_count);
   return appended;
 }

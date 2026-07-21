@@ -74,16 +74,18 @@ cache.
   validates an exact frozen prefix, and appends each packet rather than adopting
   a complete worker successor. TypeStore, SymbolTable, and ConstantTable
   prefixes are read-only overlays; declaration-closed semantic inputs are direct
-  immutable views. Owned-scope, aggregate/enum, parametric, specialization, and
-  imported semantic records use canonical-prefix/task-local-suffix views;
-  imported rows cover symbols, types, concrete procedures, outbound type
-  requests, and effect/return/write contracts. Aggregate offset and
-  specialization-promotion writes are local-suffix-only. Other body-mutable
-  side tables are still copied. IDs are not yet remapped across independent
-  results, so invocation remains a sequential oracle. Remaining local-suffix
-  views and deterministic shared-wave publication are required before body
-  waves become parallel, after which the preceding body-key retention mechanism
-  can be deleted.
+  immutable views. Owned-scope, aggregate/enum, parametric, specialization,
+  imported semantic, and dependent-type recipe records use
+  canonical-prefix/task-local-suffix views; imported rows cover symbols, types,
+  concrete procedures, outbound type requests, and effect/return/write
+  contracts, while recipe rows cover required integer expressions and deferred
+  element counts, value expressions, and type applications. Aggregate offset,
+  specialization-promotion, and required-integer writes are local-suffix-only.
+  Only semantic sites and declaration denials are still copied. IDs are not yet
+  remapped across independent results, so invocation remains a sequential
+  oracle. Final local-suffix views and deterministic shared-wave publication are
+  required before body waves become parallel, after which the preceding
+  body-key retention mechanism can be deleted.
 - A command-local adjacency index records imports by consumer and consumers by
   dependency. It is built once with each source-selection graph and retained
   through source transitions, semantic closure, and lowering. A sequential Kahn

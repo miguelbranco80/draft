@@ -1082,11 +1082,14 @@ private:
       ScopeId scope,
       TypeId expected_type) {
     const SyntaxReference syntax{tree.file(), expression};
-    for (RequiredIntegerExpression &entry :
-         semantic_.required_integer_expressions) {
+    const AppendOnlyTableView<RequiredIntegerExpression> required =
+        semantic_.required_integer_expressions_for_read();
+    for (std::size_t index = 0; index < required.size(); ++index) {
+      const RequiredIntegerExpression &entry = required[index];
       if (entry.syntax != syntax) continue;
       if (!entry.expected_type.is_valid() && expected_type.is_valid()) {
-        entry.expected_type = expected_type;
+        semantic_.required_integer_expression_mut(index).expected_type =
+            expected_type;
       } else if (entry.expected_type.is_valid() && expected_type.is_valid() &&
                  entry.expected_type != expected_type) {
         diagnostics_.error(
@@ -1094,7 +1097,8 @@ private:
             "integer expression is required with inconsistent types");
       }
       if (!entry.anchor.is_valid() && !active_declaration_owners_.empty()) {
-        entry.anchor = active_declaration_owners_.back();
+        semantic_.required_integer_expression_mut(index).anchor =
+            active_declaration_owners_.back();
       }
       return;
     }
@@ -1233,7 +1237,7 @@ private:
       std::vector<DeferredElementCountTypeBinding> type_bindings = {},
       std::vector<DeferredElementCountValueBinding> value_bindings = {}) {
     const std::uint32_t index = static_cast<std::uint32_t>(
-        semantic_.deferred_element_counts.size());
+        semantic_.deferred_element_counts_for_read().size());
     const TypeId type = kind == TypeKind::Array
         ? semantic_.types.owner_evaluated_array(element, index)
         : semantic_.types.owner_evaluated_simd(element, index);
@@ -1259,7 +1263,7 @@ private:
     argument.value_type = expected_type;
     argument.owner_evaluated_value = true;
     argument.deferred_value_index = static_cast<std::uint32_t>(
-        semantic_.deferred_value_expressions.size());
+        semantic_.deferred_value_expressions_for_read().size());
     semantic_.deferred_value_expressions.push_back({
         {tree.file(), expression},
         scope,
@@ -1938,16 +1942,16 @@ private:
       const std::vector<ResolverValueSubstitution> &value_substitutions,
       SourceRange use_range) {
     if (!source.owner_evaluated_value) return source;
-    if (source.deferred_value_index >=
-        semantic_.deferred_value_expressions.size()) {
+    const AppendOnlyTableView<DeferredValueExpression> recipes =
+        semantic_.deferred_value_expressions_for_read();
+    if (source.deferred_value_index >= recipes.size()) {
       // Imported templates carry only the owner marker. The enclosing public
       // type request is sent back to its defining package before this
       // provisional consumer graph is used for body checking.
       return source;
     }
 
-    const DeferredValueExpression recipe =
-        semantic_.deferred_value_expressions[source.deferred_value_index];
+    const DeferredValueExpression recipe = recipes[source.deferred_value_index];
     const SyntaxTree *tree = find_tree(recipe.syntax.file);
     if (tree == nullptr || !recipe.syntax.node.is_valid()) {
       diagnostics_.error(
@@ -2202,7 +2206,7 @@ private:
       SymbolId source,
       std::vector<ParametricArgument> arguments) {
     const std::uint32_t index = static_cast<std::uint32_t>(
-        semantic_.deferred_type_applications.size());
+        semantic_.deferred_type_applications_for_read().size());
     const TypeId placeholder =
         semantic_.types.owner_evaluated_application(shape, index);
     semantic_.deferred_type_applications.push_back(
@@ -2216,16 +2220,16 @@ private:
       const std::vector<ResolverTypeSubstitution> &substitutions,
       const std::vector<ResolverValueSubstitution> &value_substitutions,
       SourceRange use_range) {
-    if (value.deferred_type_application_index >=
-        semantic_.deferred_type_applications.size()) {
+    const AppendOnlyTableView<DeferredTypeApplication> recipes =
+        semantic_.deferred_type_applications_for_read();
+    if (value.deferred_type_application_index >= recipes.size()) {
       // Imported interfaces retain only the marker. The declaration product
       // reports the enclosing public application to the command graph, then a
       // retry imports the canonical owner result before this path runs again.
       return source;
     }
     const DeferredTypeApplication recipe =
-        semantic_.deferred_type_applications[
-            value.deferred_type_application_index];
+        recipes[value.deferred_type_application_index];
     std::vector<ParametricArgument> arguments = recipe.arguments;
     const std::optional<bool> changed = substitute_parametric_arguments(
         arguments, substitutions, value_substitutions, use_range);
@@ -2241,8 +2245,9 @@ private:
       const std::vector<ResolverTypeSubstitution> &substitutions,
       const std::vector<ResolverValueSubstitution> &value_substitutions,
       SourceRange use_range) {
-    if (source.deferred_element_count_index >=
-        semantic_.deferred_element_counts.size()) {
+    const AppendOnlyTableView<DeferredElementCount> recipes =
+        semantic_.deferred_element_counts_for_read();
+    if (source.deferred_element_count_index >= recipes.size()) {
       // An imported marker has no defining-package recipe. The declaration
       // product reports its enclosing application and later imports the
       // canonical owner result before a consumer may enter body checking.
@@ -2257,8 +2262,7 @@ private:
     // Copy before recursive substitution or interpretation: both operations may
     // append semantic rows and therefore invalidate vector element references.
     const DeferredElementCount recipe =
-        semantic_.deferred_element_counts[
-            source.deferred_element_count_index];
+        recipes[source.deferred_element_count_index];
     std::vector<DeferredElementCountTypeBinding> type_bindings =
         recipe.type_bindings;
     std::vector<DeferredElementCountValueBinding> value_bindings =
