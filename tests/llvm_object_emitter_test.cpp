@@ -81,6 +81,58 @@ void test_target_object_and_assembly(TestState &state) {
   }
 }
 
+// O2 must be a real module pipeline, not only a more aggressive instruction
+// selector setting. An unreferenced internal definition is intentionally
+// observable in O0 assembly and must disappear under LLVM's default O2 global
+// cleanup. Repeating O2 also proves the selected pass pipeline remains
+// deterministic for both supported object formats.
+void test_o0_and_o2_pipelines(TestState &state) {
+  for (const draft::TargetProfile &target : {
+           draft::make_aarch64_macos_profile(),
+           draft::make_aarch64_linux_profile()}) {
+    const std::string module =
+        "target triple = \"" + target.llvm_triple + "\"\n"
+        "target datalayout = \"" + target.llvm_data_layout + "\"\n"
+        "define i64 @draft_optimized_value(i64 %input) {\n"
+        "entry:\n"
+        "  %slot = alloca i64, align 8\n"
+        "  store i64 %input, ptr %slot, align 8\n"
+        "  %loaded = load i64, ptr %slot, align 8\n"
+        "  %same = add i64 %loaded, 0\n"
+        "  ret i64 %same\n"
+        "}\n"
+        "define internal i64 @draft_unused_value() {\n"
+        "entry:\n"
+        "  ret i64 99\n"
+        "}\n";
+
+    draft::LlvmObjectEmissionOptions o0;
+    o0.output_kind = draft::LlvmNativeOutputKind::Assembly;
+    const draft::LlvmObjectEmissionResult unoptimized =
+        draft::emit_llvm_object_in_process(target, "o0", module, o0);
+    EXPECT(state, unoptimized.ok);
+    EXPECT(state, unoptimized.bytes.find("draft_optimized_value") !=
+        std::string::npos);
+    EXPECT(state, unoptimized.bytes.find("draft_unused_value") !=
+        std::string::npos);
+
+    draft::LlvmObjectEmissionOptions o2 = o0;
+    o2.optimization = draft::NativeOptimizationLevel::O2;
+    const draft::LlvmObjectEmissionResult optimized =
+        draft::emit_llvm_object_in_process(target, "o2", module, o2);
+    const draft::LlvmObjectEmissionResult optimized_again =
+        draft::emit_llvm_object_in_process(target, "o2", module, o2);
+    EXPECT(state, optimized.ok);
+    EXPECT(state, optimized.failure.empty());
+    EXPECT(state, optimized.bytes == optimized_again.bytes);
+    EXPECT(state, optimized.bytes != unoptimized.bytes);
+    EXPECT(state, optimized.bytes.find("draft_optimized_value") !=
+        std::string::npos);
+    EXPECT(state, optimized.bytes.find("draft_unused_value") ==
+        std::string::npos);
+  }
+}
+
 // Parse and profile failures must remain explicit result values. Invalid input
 // is treated as a compiler/backend boundary error and never reaches an LLVM
 // assertion or host process.
@@ -123,6 +175,16 @@ void test_address_sanitizer_pipeline(TestState &state) {
   EXPECT(state, emitted.ok);
   EXPECT(state, emitted.failure.empty());
   EXPECT(state, emitted.bytes.find("asan_report_load8") != std::string::npos);
+
+  // Optimization precedes instrumentation, so the combined pipeline must
+  // retain the checked load and instrument the final operation as well.
+  options.optimization = draft::NativeOptimizationLevel::O2;
+  const draft::LlvmObjectEmissionResult optimized =
+      draft::emit_llvm_object_in_process(
+          target, "asan-load-o2", module, options);
+  EXPECT(state, optimized.ok);
+  EXPECT(state, optimized.failure.empty());
+  EXPECT(state, optimized.bytes.find("asan_report_load8") != std::string::npos);
 }
 
 struct ParallelEmissionContext {
@@ -139,11 +201,13 @@ bool emit_parallel_module(
     draft::WorkTaskId task,
     std::string &failure) {
   auto &context = *static_cast<ParallelEmissionContext *>(opaque);
+  draft::LlvmObjectEmissionOptions options;
+  options.optimization = draft::NativeOptimizationLevel::O2;
   context.results[task] = draft::emit_llvm_object_in_process(
       *context.target,
       "parallel-module",
       context.module,
-      {});
+      options);
   if (!context.results[task].ok) {
     failure = context.results[task].failure;
     return false;
@@ -151,9 +215,10 @@ bool emit_parallel_module(
   return true;
 }
 
-// This is a focused thread-safety qualification, not the native scheduler
-// integration itself. It proves the LLVM adapter obeys the scheduler operation
-// contract before the toolchain begins using it.
+// This is a focused O2 thread-safety qualification, not the native scheduler
+// integration itself. It proves separate pass managers, contexts, and target
+// machines obey the scheduler operation contract before the toolchain uses
+// them for concurrent semantic-package modules.
 void test_parallel_emission_isolated_contexts(TestState &state) {
   const draft::TargetProfile target = draft::make_aarch64_macos_profile();
   ParallelEmissionContext context;
@@ -178,6 +243,7 @@ int main() {
   TestState state;
   EXPECT(state, !draft::linked_llvm_version().empty());
   test_target_object_and_assembly(state);
+  test_o0_and_o2_pipelines(state);
   test_invalid_ir_and_target_mismatch(state);
   test_address_sanitizer_pipeline(state);
   test_parallel_emission_isolated_contexts(state);

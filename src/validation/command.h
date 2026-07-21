@@ -24,6 +24,10 @@ struct ValidationCommandOptions {
   TargetProfile target;
   WorkspaceLoadOptions workspace;
   ValidationKind kind = ValidationKind::None;
+  // The harness is a derived native executable. Optimization therefore does
+  // not alter the compiled program identity, but it does enter the validation
+  // policy identity so evidence from O0 and O2 executions cannot alias.
+  NativeOptimizationLevel optimization = NativeOptimizationLevel::O0;
   // Requests are checked before semantic compilation or native tool probing.
   // When a target first supports one, its complete selection identity must
   // also enter ValidationEvidence before this boundary may accept it.

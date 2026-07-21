@@ -28,6 +28,38 @@ qualification oracle. Ordinary commands never select it and never run
 `dsymutil` default to tools from that same selected LLVM installation. Platform
 SDKs, startup objects, and system libraries remain operational host inputs.
 
+## Native optimization boundary
+
+Status: explicit O0 and O2 package-module pipelines implemented.
+
+Optimization begins only after the compiler has emitted and verified one
+complete LLVM module per semantic package. O0 performs no LLVM middle-end
+transformation and creates the target machine with `LLVMCodeGenLevelNone`. O2
+runs LLVM's version-selected `default<O2>` pipeline over that complete module,
+then creates code using `LLVMCodeGenLevelDefault`. AddressSanitizer, when
+selected by validation, runs after optimization so it instruments the memory
+operations which survive into code generation.
+
+Each native worker owns the module, target machine, pass options, and output
+buffer for the complete operation. Different packages therefore remain safe to
+optimize concurrently while procedures inside one package are visible to the
+same LLVM pipeline. There is no cross-package LTO and no user-supplied pass
+string. The external Clang qualification route receives the corresponding
+`-O0` or `-O2` spelling so parity tests compare equivalent optimization modes.
+
+Optimization is artifact configuration rather than Draft program meaning. It
+does not enter the semantic product graph, source/resolved-program identity,
+synthesis context, target profile, or package granularity. The canonical LLVM
+module retained by the compiler and printed by `emit-llvm` is pre-optimization;
+object and assembly bytes are derived from a task-private parsed copy. This
+keeps the inspectable lowering stable while allowing repeated O0 and O2 builds
+from the same checked graph.
+
+Test and benchmark harnesses use the same native option. Because their evidence
+asserts facts about an executed binary, the validation policy identity records
+O0 or O2 and prevents runs at different levels from sharing one evidence key.
+This derived-execution distinction does not enter the resolved-program digest.
+
 ## Raw string-data lowering
 
 Status: explicit zero-copy MIR and LLVM lowering implemented.

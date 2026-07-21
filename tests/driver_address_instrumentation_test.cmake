@@ -17,7 +17,7 @@ get_filename_component(package_name "${SOURCE_PACKAGE}" NAME)
 
 execute_process(
   COMMAND "${DRAFTC}" test "${TEST_ROOT}/${package_name}"
-    --instrument address
+    --instrument address -O2
   RESULT_VARIABLE test_status
   OUTPUT_VARIABLE test_stdout
   ERROR_VARIABLE test_stderr
@@ -45,6 +45,10 @@ foreach(evidence_file IN LISTS evidence_files)
       "\"toolchain\": \"linked-llvm-version:22\\.")
     message(FATAL_ERROR
       "address evidence does not identify linked LLVM 22: ${evidence}")
+  endif()
+  if(NOT evidence MATCHES "native-optimization=O2")
+    message(FATAL_ERROR
+      "address evidence does not bind the O2 validation policy: ${evidence}")
   endif()
 endforeach()
 

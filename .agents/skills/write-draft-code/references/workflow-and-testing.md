@@ -207,6 +207,7 @@ On a matching AArch64 host:
 ```sh
 build/draftc build path/to/workspace --root package \
   --target aarch64-macos \
+  -O0 \
   -o /tmp/draft-program
 /tmp/draft-program
 ```
@@ -214,6 +215,16 @@ build/draftc build path/to/workspace --root package \
 Use `--target aarch64-linux` on matching Linux. Cross-checking can prove the
 front end and lowering contract, but current native execution requires the
 matching AArch64 host toolchain and runtime.
+
+Native `build`, `resolve --build`, `test`, and `bench` default to `-O0`; pass
+`-O2` when the task requires optimized code. O2 runs within each complete
+semantic-package LLVM module, while packages remain independently emitted. It
+may change derived object or assembly bytes, not Draft semantics, assertions,
+resolution pins, or module granularity. Validation evidence distinguishes O0
+and O2 policy, so use `bench -O2` when measuring optimized code. `emit-llvm`
+remains the canonical pre-optimization inspection; use
+`build --kind assembly -O2` to inspect optimized native output. Do not invent
+O1, O3, size optimization, LTO, arbitrary pass, or granularity flags.
 
 For a library or artifact-specific task, select the actual kind:
 
@@ -297,20 +308,23 @@ with a `test_` prefix, exactly one `^testing.Test` argument, and no result.
 Run:
 
 ```sh
-build/draftc test path/to/workspace --root package --target aarch64-macos
+build/draftc test path/to/workspace --root package --target aarch64-macos -O0
 ```
 
 Use `*_bench.draft`, a `bench_` prefix, and exactly one
 `^benchmark.Benchmark` for benchmarks:
 
 ```sh
-build/draftc bench path/to/workspace --root package --verify --target aarch64-macos
+build/draftc bench path/to/workspace --root package --verify \
+  --target aarch64-macos -O2
 ```
 
 Tests and benchmarks form a coherent resolved validation graph. They are not
 ordinary build prerequisites, and build never reruns their evidence. Their
 content-addressed evidence belongs to the selected workspace, while its key
-binds the executable root, validation procedure, target, and resolved program.
+binds the executable root, validation procedure, target, resolved program, and
+native optimization policy. Omitted optimization is O0; benchmark optimized
+code explicitly with O2.
 
 ## Compiler regression tests
 

@@ -541,6 +541,7 @@ struct NativeObjectExecutionContext {
   const TargetProfile *target = nullptr;
   const NativeObjectPlan *plan = nullptr;
   NativeObjectEmitter emitter = NativeObjectEmitter::InProcessLlvm;
+  NativeOptimizationLevel optimization = NativeOptimizationLevel::O0;
   NativeInstrumentationProfile instrumentation =
       NativeInstrumentationProfile::None;
   bool assembly_output = false;
@@ -612,6 +613,7 @@ void capture_child_usage(
       emission_options.output_kind = context.assembly_output
           ? LlvmNativeOutputKind::Assembly
           : LlvmNativeOutputKind::Object;
+      emission_options.optimization = context.optimization;
       emission_options.instrumentation = context.instrumentation ==
               NativeInstrumentationProfile::AddressSanitizer
           ? LlvmNativeInstrumentation::AddressSanitizer
@@ -653,6 +655,9 @@ void capture_child_usage(
     append_target_arguments(*context.target, arguments);
     arguments.push_back("-x");
     arguments.push_back("ir");
+    arguments.push_back(
+        "-" + std::string(native_optimization_level_name(
+            context.optimization)));
     if (context.instrumentation ==
         NativeInstrumentationProfile::AddressSanitizer) {
       arguments.push_back("-fsanitize=address");
@@ -891,6 +896,7 @@ NativeBuildResult build_native_artifact(
   execution.target = &target;
   execution.plan = &object_plan;
   execution.emitter = options.object_emitter;
+  execution.optimization = options.optimization;
   execution.instrumentation = options.instrumentation;
   execution.assembly_output = assembly_output;
   execution.clang_path = clang_path;

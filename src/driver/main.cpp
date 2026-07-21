@@ -222,6 +222,33 @@ parse_native_artifact_kind(std::string_view spelling) {
   return std::nullopt;
 }
 
+// Parses one argument already known to begin with `-O`. Draft exposes only two
+// levels, so every other spelling receives a specific usage error instead of
+// falling through to the full command synopsis. `seen` enforces one explicit
+// choice even when duplicate spellings agree, keeping command provenance
+// unambiguous.
+[[nodiscard]] bool parse_native_optimization_argument(
+    std::string_view argument,
+    bool &seen,
+    draft::NativeOptimizationLevel &optimization) {
+  if (seen) {
+    std::cerr << "error: optimization level may be specified only once\n";
+    return false;
+  }
+  seen = true;
+  if (argument == "-O0") {
+    optimization = draft::NativeOptimizationLevel::O0;
+    return true;
+  }
+  if (argument == "-O2") {
+    optimization = draft::NativeOptimizationLevel::O2;
+    return true;
+  }
+  std::cerr << "error: unsupported optimization level '" << argument
+            << "'; expected -O0 or -O2\n";
+  return false;
+}
+
 [[nodiscard]] bool parse_foreign_provider(
     std::string_view spelling,
     draft::ForeignProviderInput &input,
@@ -631,6 +658,7 @@ int expand_package(
     const draft::TargetProfile &target,
     const std::optional<std::string> &requested_output,
     draft::NativeArtifactKind artifact_kind,
+    draft::NativeOptimizationLevel optimization,
     const std::vector<draft::ForeignProviderInput> &foreign_providers,
     const std::vector<draft::RuntimeAssetInput> &runtime_assets,
     draft::TimingRecorder *timings,
@@ -696,6 +724,7 @@ int expand_package(
   native_options.build_directory = build_directory.string();
   native_options.output_path = output.string();
   native_options.artifact_kind = artifact_kind;
+  native_options.optimization = optimization;
   native_options.foreign_providers = foreign_providers;
   native_options.runtime_assets = runtime_assets;
   native_options.timings = timings;
@@ -719,6 +748,7 @@ int build_selected_package(
     const draft::TargetProfile &target,
     const std::optional<std::string> &requested_output,
     draft::NativeArtifactKind artifact_kind,
+    draft::NativeOptimizationLevel optimization,
     draft::RuntimeAssertionMode runtime_assertions,
     const std::vector<draft::ForeignProviderInput> &foreign_providers,
     const std::vector<draft::ForeignProviderSummaryInput> &provider_summaries,
@@ -758,6 +788,7 @@ int build_selected_package(
       target,
       requested_output,
       artifact_kind,
+      optimization,
       foreign_providers,
       runtime_assets,
       timings,
@@ -781,6 +812,7 @@ int build_workspace(
     const draft::TargetProfile &target,
     const std::optional<std::string> &requested_output,
     draft::NativeArtifactKind artifact_kind,
+    draft::NativeOptimizationLevel optimization,
     draft::RuntimeAssertionMode runtime_assertions,
     const std::vector<draft::ForeignProviderInput> &foreign_providers,
     const std::vector<draft::ForeignProviderSummaryInput> &provider_summaries,
@@ -859,6 +891,7 @@ int build_workspace(
         target,
         requested_output,
         artifact_kind,
+        optimization,
         runtime_assertions,
         foreign_providers,
         provider_summaries,
@@ -874,6 +907,7 @@ int validate_package(
     std::string_view root_selector,
     const draft::TargetProfile &target,
     draft::ValidationKind kind,
+    draft::NativeOptimizationLevel optimization,
     const std::vector<draft::ValidationInstrumentationKind> &instrumentation,
     const std::vector<draft::ForeignProviderInput> &foreign_providers,
     const std::vector<draft::ForeignProviderSummaryInput> &provider_summaries,
@@ -909,6 +943,7 @@ int validate_package(
     return 1;
   }
   options.kind = kind;
+  options.optimization = optimization;
   options.instrumentation = instrumentation;
   options.foreign_providers = foreign_providers;
   options.runtime_assets = runtime_assets;
@@ -1068,6 +1103,8 @@ struct ResolveBuildRequest {
   std::optional<std::string> output;
   draft::NativeArtifactKind artifact_kind =
       draft::NativeArtifactKind::Executable;
+  draft::NativeOptimizationLevel optimization =
+      draft::NativeOptimizationLevel::O0;
 };
 
 // Resolve and judge first run the complete provider-independent front end, so
@@ -1245,6 +1282,7 @@ int run_agent_command(
                 target,
                 resolve_build->output,
                 resolve_build->artifact_kind,
+                resolve_build->optimization,
                 foreign_providers,
                 runtime_assets,
                 timings,
@@ -1373,6 +1411,7 @@ void print_usage() {
             << "  draftc build <workspace> [--root <package>]... [-o <output>]\n"
             << "      [--target aarch64-macos|aarch64-linux]\n"
             << "      [--kind executable|object|static-library|dynamic-library|assembly]\n"
+            << "      [-O0|-O2]\n"
             << "      [--assertions=off]\n"
             << "      [--provider name=object|archive|shared-library:<path>]...\n"
             << "      [--provider-summary name:<path>]...\n"
@@ -1380,6 +1419,7 @@ void print_usage() {
             << "      [--timings|--timings=all]\n"
             << "  draftc test <workspace> [--root <package>]\n"
             << "      [--target aarch64-macos|aarch64-linux]\n"
+            << "      [-O0|-O2]\n"
             << "      [--instrument address|lifetime|undefined-operation|allocator-poisoning|race]...\n"
             << "      [--provider name=object|archive|shared-library:<path>]...\n"
             << "      [--provider-summary name:<path>]...\n"
@@ -1387,6 +1427,7 @@ void print_usage() {
             << "      [--timings|--timings=all]\n"
             << "  draftc bench <workspace> [--root <package>] [--verify]\n"
             << "      [--target aarch64-macos|aarch64-linux]\n"
+            << "      [-O0|-O2]\n"
             << "      [--instrument address|lifetime|undefined-operation|allocator-poisoning|race]...\n"
             << "      [--provider name=object|archive|shared-library:<path>]...\n"
             << "      [--provider-summary name:<path>]...\n"
@@ -1396,6 +1437,7 @@ void print_usage() {
             << "      [--regenerate [site-id]]\n"
             << "      [-o <output>]\n"
             << "      [--kind executable|object|static-library|dynamic-library|assembly]\n"
+            << "      [-O0|-O2] (with --build)\n"
             << "      [--target aarch64-macos|aarch64-linux]\n"
             << "      [--assertions=off]\n"
             << "      [--model <model>]\n"
@@ -1570,11 +1612,14 @@ int main(int argc, char **argv) {
     bool target_set = false;
     bool root_set = false;
     bool artifact_kind_set = false;
+    bool optimization_set = false;
     std::string root_selector = ".";
     std::optional<std::string> codex_model;
     std::optional<std::string> output;
     draft::NativeArtifactKind artifact_kind =
         draft::NativeArtifactKind::Executable;
+    draft::NativeOptimizationLevel optimization =
+        draft::NativeOptimizationLevel::O0;
     std::vector<std::string> regeneration_site_identities;
     std::vector<draft::ForeignProviderInput> foreign_providers;
     std::vector<draft::ForeignProviderSummaryInput> provider_summaries;
@@ -1613,6 +1658,11 @@ int main(int argc, char **argv) {
         }
         artifact_kind = *parsed;
         artifact_kind_set = true;
+      } else if (argument.starts_with("-O")) {
+        if (!parse_native_optimization_argument(
+                argument, optimization_set, optimization)) {
+          return 2;
+        }
       } else if (argument == "--model" &&
                  !codex_model.has_value() && index + 1 < argc) {
         codex_model = argv[++index];
@@ -1648,6 +1698,10 @@ int main(int argc, char **argv) {
         return 2;
       }
     }
+    if (!build_after_resolution && optimization_set) {
+      std::cerr << "error: -O0 and -O2 require resolve --build\n";
+      return 2;
+    }
     if ((revalidate && codex_model.has_value()) ||
         (revalidate && regenerate) ||
         (!build_after_resolution &&
@@ -1668,6 +1722,7 @@ int main(int argc, char **argv) {
       resolve_build.emplace();
       resolve_build->output = output;
       resolve_build->artifact_kind = artifact_kind;
+      resolve_build->optimization = optimization;
     }
     return run_agent_command(
         argv[2],
@@ -1832,6 +1887,9 @@ int main(int argc, char **argv) {
     std::vector<draft::ForeignProviderSummaryInput> provider_summaries;
     std::vector<draft::RuntimeAssetInput> runtime_assets;
     std::vector<draft::ValidationInstrumentationKind> instrumentation;
+    draft::NativeOptimizationLevel optimization =
+        draft::NativeOptimizationLevel::O0;
+    bool optimization_set = false;
     for (int index = 3; index < argc; ++index) {
       const std::string_view argument(argv[index]);
       if (argument == "--target" && !target_set &&
@@ -1881,6 +1939,11 @@ int main(int argc, char **argv) {
           return 2;
         }
         instrumentation.push_back(*parsed);
+      } else if (argument.starts_with("-O")) {
+        if (!parse_native_optimization_argument(
+                argument, optimization_set, optimization)) {
+          return 2;
+        }
       } else if (is_timing_argument(argument)) {
         continue;
       } else {
@@ -1893,6 +1956,7 @@ int main(int argc, char **argv) {
         root_selector,
         target,
         validation_kind,
+        optimization,
         instrumentation,
         foreign_providers,
         provider_summaries,
@@ -1904,6 +1968,9 @@ int main(int argc, char **argv) {
     draft::NativeArtifactKind artifact_kind =
         draft::NativeArtifactKind::Executable;
     bool artifact_kind_set = false;
+    draft::NativeOptimizationLevel optimization =
+        draft::NativeOptimizationLevel::O0;
+    bool optimization_set = false;
     bool assertions_off = false;
     bool target_set = false;
     std::vector<std::string> root_selectors;
@@ -1930,6 +1997,11 @@ int main(int argc, char **argv) {
         }
         artifact_kind = *parsed;
         artifact_kind_set = true;
+      } else if (argument.starts_with("-O")) {
+        if (!parse_native_optimization_argument(
+                argument, optimization_set, optimization)) {
+          return 2;
+        }
       } else if (argument == "-o" && !output.has_value() &&
                  index + 1 < argc) {
         output = argv[++index];
@@ -1971,6 +2043,7 @@ int main(int argc, char **argv) {
         target,
         output,
         artifact_kind,
+        optimization,
         assertions_off
             ? draft::RuntimeAssertionMode::Off
             : draft::RuntimeAssertionMode::On,

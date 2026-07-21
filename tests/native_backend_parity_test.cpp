@@ -172,6 +172,7 @@ struct ArtifactCase {
     const std::filesystem::path &root,
     const ArtifactCase &artifact,
     draft::NativeObjectEmitter emitter,
+    draft::NativeOptimizationLevel optimization,
     draft::DiagnosticSink &diagnostics) {
   draft::NativeBuildOptions options;
   options.build_directory = (root / "build").string();
@@ -180,6 +181,7 @@ struct ArtifactCase {
       : (root / "artifact").string();
   options.artifact_kind = artifact.kind;
   options.object_emitter = emitter;
+  options.optimization = optimization;
   options.object_worker_count = 4;
   return draft::build_native_artifact(
       target, compiled, options, diagnostics);
@@ -239,6 +241,7 @@ void test_backend_routes(TestState &state) {
         embedded_root,
         artifact,
         draft::NativeObjectEmitter::InProcessLlvm,
+        draft::NativeOptimizationLevel::O0,
         embedded_diagnostics);
     const draft::NativeBuildResult oracle = build_route(
         target,
@@ -246,6 +249,7 @@ void test_backend_routes(TestState &state) {
         oracle_root,
         artifact,
         draft::NativeObjectEmitter::ExternalClangOracle,
+        draft::NativeOptimizationLevel::O0,
         oracle_diagnostics);
     if (!embedded.ok || !oracle.ok) {
       for (const draft::Diagnostic &diagnostic :
@@ -314,6 +318,64 @@ void test_backend_routes(TestState &state) {
         EXPECT(state, artifact.name, WEXITSTATUS(oracle_status) == 0);
       }
     }
+  }
+
+  // One launched O2 executable is sufficient to qualify optimization
+  // propagation through both object emitters: later artifact kinds package the
+  // same produced object bytes through already-covered linker/archive paths.
+  // The source-correlation identity remains source-based and must therefore
+  // agree even though incidental embedded/oracle encodings may differ.
+  const ArtifactCase optimized_artifact{
+      "o2-executable", draft::NativeArtifactKind::Executable, true};
+  const std::filesystem::path embedded_o2_root =
+      temporary / optimized_artifact.name / "embedded";
+  const std::filesystem::path oracle_o2_root =
+      temporary / optimized_artifact.name / "oracle";
+  draft::DiagnosticSink embedded_o2_diagnostics;
+  draft::DiagnosticSink oracle_o2_diagnostics;
+  const draft::NativeBuildResult embedded_o2 = build_route(
+      target,
+      executable,
+      embedded_o2_root,
+      optimized_artifact,
+      draft::NativeObjectEmitter::InProcessLlvm,
+      draft::NativeOptimizationLevel::O2,
+      embedded_o2_diagnostics);
+  const draft::NativeBuildResult oracle_o2 = build_route(
+      target,
+      executable,
+      oracle_o2_root,
+      optimized_artifact,
+      draft::NativeObjectEmitter::ExternalClangOracle,
+      draft::NativeOptimizationLevel::O2,
+      oracle_o2_diagnostics);
+  if (!embedded_o2.ok || !oracle_o2.ok) {
+    for (const draft::Diagnostic &diagnostic :
+         embedded_o2_diagnostics.diagnostics()) {
+      std::cerr << "embedded O2: " << diagnostic.message << '\n';
+    }
+    for (const draft::Diagnostic &diagnostic :
+         oracle_o2_diagnostics.diagnostics()) {
+      std::cerr << "oracle O2: " << diagnostic.message << '\n';
+    }
+  }
+  EXPECT(state, optimized_artifact.name, embedded_o2.ok);
+  EXPECT(state, optimized_artifact.name, oracle_o2.ok);
+  if (embedded_o2.ok && oracle_o2.ok) {
+    EXPECT(state, optimized_artifact.name,
+        embedded_o2.source_correlation_digest ==
+            oracle_o2.source_correlation_digest);
+    int embedded_status = 0;
+    int oracle_status = 0;
+    EXPECT(state, optimized_artifact.name,
+        run_executable(
+            embedded_o2.output_path, embedded_o2_root, embedded_status));
+    EXPECT(state, optimized_artifact.name,
+        run_executable(oracle_o2.output_path, oracle_o2_root, oracle_status));
+    EXPECT(state, optimized_artifact.name,
+        WIFEXITED(embedded_status) && WEXITSTATUS(embedded_status) == 0);
+    EXPECT(state, optimized_artifact.name,
+        WIFEXITED(oracle_status) && WEXITSTATUS(oracle_status) == 0);
   }
 
 }

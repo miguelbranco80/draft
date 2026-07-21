@@ -166,10 +166,16 @@ namespace {
   return kind == ValidationKind::Benchmark ? 10 : 1;
 }
 
-[[nodiscard]] std::string policy_identity(ValidationKind kind) {
+[[nodiscard]] std::string policy_identity(
+    ValidationKind kind,
+    NativeOptimizationLevel optimization) {
+  const std::string optimization_field =
+      ":native-optimization=" +
+      std::string(native_optimization_level_name(optimization));
   return kind == ValidationKind::Benchmark
-      ? "draft-benchmark-policy-v1:warmup=1:samples=10:process-isolated"
-      : "draft-test-policy-v1:single-process";
+      ? "draft-benchmark-policy-v1:warmup=1:samples=10:process-isolated" +
+          optimization_field
+      : "draft-test-policy-v1:single-process" + optimization_field;
 }
 
 void initialize_claim(
@@ -177,6 +183,7 @@ void initialize_claim(
     const CompileWorkspaceResult &compiled,
     const TargetProfile &target,
     ValidationKind kind,
+    NativeOptimizationLevel optimization,
     std::span<const ValidationInstrumentationKind> instrumentation,
     std::string selected_toolchain,
     std::string selected_environment) {
@@ -187,7 +194,7 @@ void initialize_claim(
   evidence.toolchain_identity = std::move(selected_toolchain);
   evidence.environment_identity = std::move(selected_environment);
   evidence.runner_identity = "draft-native-validation-runner-v2-fd3";
-  evidence.policy_identity = policy_identity(kind);
+  evidence.policy_identity = policy_identity(kind, optimization);
   evidence.instrumentation_identity =
       validation_instrumentation_identity(instrumentation);
   evidence.artifact_identity =
@@ -270,6 +277,7 @@ void initialize_claim(
       (artifact_directory /
        (selected_root.loaded.short_name + "-" + command)).string();
   native.artifact_kind = NativeArtifactKind::Executable;
+  native.optimization = options.optimization;
   if (!options.instrumentation.empty()) {
     native.instrumentation = NativeInstrumentationProfile::AddressSanitizer;
   }
@@ -384,6 +392,7 @@ void initialize_claim(
       compiled,
       options.target,
       options.kind,
+      options.optimization,
       options.instrumentation,
       *selected_toolchain,
       *selected_environment);

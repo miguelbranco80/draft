@@ -20,6 +20,7 @@
 #pragma once
 
 #include "backend/foreign_inputs.h"
+#include "backend/llvm_object_emitter.h"
 #include "backend/runtime_assets.h"
 #include "base/sha256.h"
 #include "compile/compiler.h"
@@ -84,6 +85,10 @@ struct NativeBuildOptions {
   std::string build_directory;
   std::string output_path;
   NativeArtifactKind artifact_kind = NativeArtifactKind::Executable;
+  // O0 is the fast-build default. O2 optimizes each complete semantic-package
+  // module independently before native emission; it never changes semantic
+  // scheduling, package granularity, source identity, or resolution pins.
+  NativeOptimizationLevel optimization = NativeOptimizationLevel::O0;
   NativeInstrumentationProfile instrumentation =
       NativeInstrumentationProfile::None;
   NativeObjectEmitter object_emitter = NativeObjectEmitter::InProcessLlvm;

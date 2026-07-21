@@ -148,6 +148,20 @@ void initialize_aarch64_llvm() {
   return false;
 }
 
+// LLVM exposes separate middle-end and target-machine optimization controls.
+// Keeping their pairing in this adapter prevents a caller from accidentally
+// running O2 IR passes while asking the instruction selector for O0 behavior,
+// or vice versa. The pass spelling is selected below only for O2; O0 performs
+// no middle-end transformation at all.
+[[nodiscard]] LLVMCodeGenOptLevel select_code_generation_level(
+    NativeOptimizationLevel optimization) {
+  switch (optimization) {
+  case NativeOptimizationLevel::O0: return LLVMCodeGenLevelNone;
+  case NativeOptimizationLevel::O2: return LLVMCodeGenLevelDefault;
+  }
+  return LLVMCodeGenLevelNone;
+}
+
 // Prefixes an LLVM-owned reason with the logical module label while keeping
 // physical build paths out of diagnostics and deterministic test output.
 [[nodiscard]] LlvmObjectEmissionResult emission_failure(
@@ -162,6 +176,15 @@ void initialize_aarch64_llvm() {
 }
 
 } // namespace
+
+std::string_view native_optimization_level_name(
+    NativeOptimizationLevel level) {
+  switch (level) {
+  case NativeOptimizationLevel::O0: return "O0";
+  case NativeOptimizationLevel::O2: return "O2";
+  }
+  return "unknown";
+}
 
 std::string_view linked_llvm_version() {
   return DRAFT_LLVM_VERSION;
@@ -266,7 +289,7 @@ LlvmObjectEmissionResult emit_llvm_object_in_process(
       target.llvm_triple.c_str(),
       target.llvm_cpu.c_str(),
       target.llvm_feature_string.c_str(),
-      LLVMCodeGenLevelNone,
+      select_code_generation_level(options.optimization),
       relocation_model,
       code_model);
   if (machine.value == nullptr) {
@@ -294,17 +317,45 @@ LlvmObjectEmissionResult emit_llvm_object_in_process(
             "' but profile requires '" + target.llvm_data_layout + "'");
   }
 
-  if (options.instrumentation == LlvmNativeInstrumentation::AddressSanitizer) {
+  // O2 is one stable compiler-owned pipeline over the complete semantic-package
+  // module. Run it before instrumentation so sanitizer checks describe the
+  // optimized memory operations which will actually reach code generation.
+  // O0 intentionally creates no pass manager and leaves the verified module
+  // byte-for-byte in its lowered form.
+  if (options.optimization == NativeOptimizationLevel::O2 ||
+      options.instrumentation == LlvmNativeInstrumentation::AddressSanitizer) {
     PassOptionsOwner pass_options;
     pass_options.value = LLVMCreatePassBuilderOptions();
     if (pass_options.value == nullptr) {
-      return emission_failure(module_name, "ASan option creation", {});
+      return emission_failure(module_name, "pass option creation", {});
     }
     LLVMPassBuilderOptionsSetVerifyEach(pass_options.value, 1);
-    const std::string pass_failure = take_llvm_error(
-        LLVMRunPasses(module.value, "asan", machine.value, pass_options.value));
-    if (!pass_failure.empty()) {
-      return emission_failure(module_name, "ASan instrumentation", pass_failure);
+
+    if (options.optimization == NativeOptimizationLevel::O2) {
+      const std::string optimization_failure = take_llvm_error(LLVMRunPasses(
+          module.value,
+          "default<O2>",
+          machine.value,
+          pass_options.value));
+      if (!optimization_failure.empty()) {
+        return emission_failure(
+            module_name, "O2 optimization", optimization_failure);
+      }
+    }
+
+    if (options.instrumentation ==
+        LlvmNativeInstrumentation::AddressSanitizer) {
+      const std::string instrumentation_failure = take_llvm_error(LLVMRunPasses(
+          module.value,
+          "asan",
+          machine.value,
+          pass_options.value));
+      if (!instrumentation_failure.empty()) {
+        return emission_failure(
+            module_name,
+            "ASan instrumentation",
+            instrumentation_failure);
+      }
     }
   }
 

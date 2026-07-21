@@ -131,6 +131,7 @@ a separate reason to version that derived view.
 build/draftc build path/to/workspace [--root package/path]... [-o output] \
   [--target aarch64-macos|aarch64-linux] \
   [--kind executable|object|static-library|dynamic-library|assembly] \
+  [-O0|-O2] \
   [--assertions=off] \
   [--provider name=object|archive|shared-library:/absolute/path]... \
   [--provider-summary name:/absolute/path]... \
@@ -143,6 +144,20 @@ resolved programs from their saved generated Draft source. It rechecks source,
 generated expansions, foreign artifacts, summaries, and runtime assets, but it
 does not contact Codex, execute judgments, require validation evidence, or
 modify the resolution manifest.
+
+Native builds default to `-O0`, which skips LLVM middle-end optimization and
+selects LLVM's fastest no-optimization target-machine level. `-O2` runs LLVM's
+default O2 pipeline independently over each complete semantic-package module,
+then uses the matching default target-machine optimization level. The choice
+applies equally to object and compiler-produced assembly output. Authored
+package assembly is copied or assembled exactly as written.
+
+Optimization may change only derived native bytes. It does not change source
+semantics, assertions, package-module granularity, resolution pins, synthesis
+context, or resolved-program identity. `emit-llvm` deliberately prints the
+canonical pre-optimization package modules; use `build --kind assembly -O2` to
+inspect optimized native assembly. Draft currently exposes only `-O0` and
+`-O2`, and performs no cross-package LTO.
 
 Without `--root`, `build` recursively discovers every ordinary surface package
 under the workspace that contains a package-level procedure named `main` and
@@ -205,6 +220,7 @@ build/draftc resolve path/to/workspace [--root package/path] [--revalidate] [--b
   [--regenerate [site-id]] \
   [-o output] \
   [--kind executable|object|static-library|dynamic-library|assembly] \
+  [-O0|-O2] \
   [--target aarch64-macos|aarch64-linux] [--assertions=off] \
   [--model model] \
   [--provider name=object|archive|shared-library:/absolute/path]... \
@@ -226,11 +242,12 @@ and call counters.
 
 `--build` continues the final checked graph through MIR, LLVM, and the native
 adapter after a successful resolution commit. It accepts the same `-o` and
-`--kind` artifact choices as `build`; those options are rejected without
-`--build`. The compiler does not rerun its front end between resolving and
-emitting the artifact. A later ordinary build of the committed source produces
-the same native program. If native emission fails, the already checked source
-transaction remains committed.
+`--kind` artifact choices and `-O0`/`-O2` optimization selection as `build`;
+those options are rejected without `--build`. The compiler does not rerun its
+front end between resolving and emitting the artifact. A later ordinary build
+of the committed source at the same optimization level produces the same native
+program. If native emission fails, the already checked source transaction
+remains committed.
 
 `--regenerate` forces a provider proposal even for fresh pins. With no following
 value it selects every current synthesis site; with one exact `site-...`
@@ -266,14 +283,16 @@ cache; `.draft/generated` is source, not cached compiler state.
 
 ```sh
 build/draftc test path/to/workspace [--root package/path] \
-  [--target aarch64-macos|aarch64-linux] [--instrument address|...] \
+  [--target aarch64-macos|aarch64-linux] [-O0|-O2] \
+  [--instrument address|...] \
   [--provider name=object|archive|shared-library:/absolute/path]... \
   [--provider-summary name:/absolute/path]... \
   [--runtime-asset name:/absolute/file-or-directory]... \
   [--timings|--timings=all]
 
 build/draftc bench path/to/workspace [--root package/path] [--verify] \
-  [--target aarch64-macos|aarch64-linux] [--instrument address|...] \
+  [--target aarch64-macos|aarch64-linux] [-O0|-O2] \
+  [--instrument address|...] \
   [--provider name=object|archive|shared-library:/absolute/path]... \
   [--provider-summary name:/absolute/path]... \
   [--runtime-asset name:/absolute/file-or-directory]... \
@@ -286,10 +305,17 @@ failure revokes that exact key. Benchmark validation uses one warmup and ten
 process-isolated samples. `--verify` is a readable CI/release spelling; the
 benchmark still executes and records fresh evidence.
 
+Both commands default to `-O0` and accept the same compiler-owned `-O2`
+package-module pipeline as `build`. The selected level is part of the
+validation policy identity, so O0 and O2 runs produce distinct evidence keys;
+it remains absent from resolved-program identity. In particular, pass `-O2`
+when the recorded benchmark should measure optimized code.
+
 Evidence is stored only below the explicit workspace's `.draft/evidence`
 directory. Its content-addressed object and state keys bind the selected root,
-resolved program, target, toolchain, environment, and policy; selecting a child
-package never creates a second `.draft` directory below that package.
+resolved program, target, toolchain, environment, native optimization level,
+and policy; selecting a child package never creates a second `.draft`
+directory below that package.
 
 The macOS target currently supports `--instrument address`. The compiler owns
 the AddressSanitizer IR attributes and in-process LLVM pass, then lets the

@@ -39,6 +39,28 @@ enum class LlvmNativeOutputKind {
   Assembly,
 };
 
+// NativeOptimizationLevel selects one complete compiler-owned LLVM pipeline.
+// O0 preserves the canonical lowered module and asks the target machine for its
+// fastest no-optimization code generation. O2 runs LLVM's default O2 module
+// pipeline and selects its matching default code-generation level. The enum is
+// deliberately closed: arbitrary pass strings and the accidental optimization
+// menus of individual LLVM releases are not part of Draft's command contract.
+//
+// Optimization changes derived native bytes only. It does not enter source,
+// target, resolved-program, synthesis, or semantic-product identity, and it
+// cannot change package-module granularity.
+enum class NativeOptimizationLevel {
+  O0,
+  O2,
+};
+
+// Returns the exact public command spelling without the leading dash. The
+// result is process-lifetime static storage and is also suitable for derived-
+// artifact and validation-policy identities; callers must not treat it as a
+// semantic program or target fact.
+[[nodiscard]] std::string_view native_optimization_level_name(
+    NativeOptimizationLevel level);
+
 // Selects a compiler-owned LLVM transformation bundle before emission. It is
 // deliberately closed: callers cannot smuggle arbitrary pass pipelines across
 // the semantic/backend boundary.
@@ -48,11 +70,12 @@ enum class LlvmNativeInstrumentation {
 };
 
 // Options contain only choices already authorized by a compiler command. They
-// are not ambient LLVM flags. Object emission uses LLVM's no-optimization code
-// generation level to match Draft's current unoptimized bootstrap contract;
-// language-level release assertions remain a separate MIR configuration.
+// are not ambient LLVM flags. Optimization transforms a complete package module
+// immediately before object or assembly emission; language-level assertion
+// removal remains a separate MIR configuration.
 struct LlvmObjectEmissionOptions {
   LlvmNativeOutputKind output_kind = LlvmNativeOutputKind::Object;
+  NativeOptimizationLevel optimization = NativeOptimizationLevel::O0;
   LlvmNativeInstrumentation instrumentation =
       LlvmNativeInstrumentation::None;
 };
