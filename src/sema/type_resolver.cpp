@@ -145,7 +145,9 @@ public:
         active_constants_(active_constants), active_types_(active_types),
         resolved_integers_(resolved_integers), target_(target),
         blocked_integer_synthesis_(blocked_integer_synthesis),
-        product_root_(product_root) {
+        product_root_(product_root),
+        product_request_begin_(
+            semantic.imported_type_instantiation_requests.size()) {
     // A product attempt may consume only declarations that the coordinator has
     // already published. Their semantic payloads are present in this snapshot,
     // so mark those rows resolved without re-entering their syntax. Every other
@@ -186,8 +188,15 @@ public:
     }
     resolve_symbol(product_root_);
     canonicalize_product_dependencies();
+    for (std::size_t index = product_request_begin_;
+         index < semantic_.imported_type_instantiation_requests.size();
+         ++index) {
+      result.generic_type_dependencies.push_back(
+          semantic_.imported_type_instantiation_requests[index]);
+    }
     if (!declaration_dependencies_.empty() || !constant_dependencies_.empty() ||
-        !type_dependencies_.empty()) {
+        !type_dependencies_.empty() ||
+        !result.generic_type_dependencies.empty()) {
       result.status = TypeProductStatus::Blocked;
       result.declaration_dependencies = declaration_dependencies_;
       result.constant_dependencies = constant_dependencies_;
@@ -255,11 +264,10 @@ private:
     bool concrete_instance = false;
     if (nominal) {
       // A waiting imported nominal with concrete owner-evaluated arguments is
-      // represented by ImportedTypeInstantiationRequest, not by a product in
-      // this consumer package. The package-owner publication seam consumes that
-      // request after the name barrier. Step 4 replaces the seam with a
-      // cross-package canonical generic-demand edge; until then, do not invent
-      // an unresolvable local NaturalLayout dependency for the proxy TypeId.
+      // represented by ImportedTypeInstantiationRequest rather than by a local
+      // NaturalLayout product. resolve_product returns that request separately;
+      // the command coordinator turns it into a canonical owner-product edge.
+      // Do not also invent an unresolvable local edge for the proxy TypeId.
       for (const ImportedType &imported : semantic_.imported_types) {
         if (imported.type == type) {
           active.pop_back();
@@ -2077,9 +2085,9 @@ private:
       SourceRange use_range) {
     if (value.deferred_type_application_index >=
         semantic_.deferred_type_applications.size()) {
-      // Imported interfaces retain only the marker. Workspace orchestration
-      // requests the enclosing public application from its owner and replaces
-      // this provisional shape on the next clean consumer rebuild.
+      // Imported interfaces retain only the marker. The declaration product
+      // reports the enclosing public application to the command graph, then a
+      // retry imports the canonical owner result before this path runs again.
       return source;
     }
     const DeferredTypeApplication recipe =
@@ -2102,11 +2110,12 @@ private:
       SourceRange use_range) {
     if (source.deferred_element_count_index >=
         semantic_.deferred_element_counts.size()) {
-      // An imported marker has no defining-package recipe. Workspace
-      // orchestration replaces it with an owner-produced concrete graph before
-      // a consumer may enter body checking. Preserve an explicitly unknown
-      // placeholder in the provisional graph so the request can be collected
-      // without inventing a zero-length layout or producing a user diagnostic.
+      // An imported marker has no defining-package recipe. The declaration
+      // product reports its enclosing application and later imports the
+      // canonical owner result before a consumer may enter body checking.
+      // Preserve an explicitly unknown placeholder in the provisional graph so
+      // the request can be collected without inventing a zero-length layout or
+      // producing a user diagnostic.
       return source.kind == TypeKind::Array
           ? semantic_.types.owner_evaluated_array(element)
           : semantic_.types.owner_evaluated_simd(element);
@@ -4693,6 +4702,10 @@ private:
   // Valid only for resolve_product(). Other entry points keep the invalid ID
   // and preserve the bootstrap resolver's legacy recursive declaration walk.
   SymbolId product_root_;
+  // imported_type_instantiation_requests is append-only within an attempt. Only
+  // the suffix created while resolving product_root_ belongs to this product;
+  // an embedding caller may have installed earlier requests in its snapshot.
+  std::size_t product_request_begin_ = 0;
   std::vector<SymbolId> declaration_dependencies_;
   std::vector<SymbolId> constant_dependencies_;
   std::vector<TypeFacetDependency> type_dependencies_;
@@ -4903,11 +4916,12 @@ TypeId instantiate_parametric_type_application(
     SymbolId source,
     std::vector<ParametricArgument> arguments,
     SourceRange use_range,
+    const ConstantTable *active_constants,
     const TargetFacts &target,
     DiagnosticSink &diagnostics) {
   TypeResolver resolver(
       sources, loaded, package, selections, diagnostics,
-      nullptr, nullptr, nullptr, &target);
+      active_constants, nullptr, nullptr, &target);
   return resolver.instantiate_one_type(
       source, std::move(arguments), use_range);
 }

@@ -969,9 +969,6 @@ public:
             proxy_id, imported_scope, package, cache, declaration.type);
       }
     }
-    for (const InterfaceTypeGraph &instance : package.instantiated_types) {
-      (void)import_graph(instance);
-    }
     for (const InterfaceDocumentation &documentation :
          package.documentation) {
       ImportedDocumentation imported;

@@ -184,6 +184,9 @@ void test_named_constants_are_semantic_products(TestState &state) {
                     compiled.semantic_graph.products.size());
   EXPECT(state, compiled.semantic_products.condition_by_product.size() ==
                     compiled.semantic_graph.products.size());
+  EXPECT(state,
+         compiled.semantic_products.generic_type_demand_by_product.size() ==
+             compiled.semantic_graph.products.size());
   EXPECT(state, products.constants.size() == 5);
   std::optional<draft::SemanticProductId> base_product;
   std::optional<draft::SemanticProductId> derived_product;
@@ -471,6 +474,9 @@ void test_source_update_reuses_unaffected_semantics(TestState &state) {
   EXPECT(state, compiled.graph.packages.size() == 4);
   EXPECT(state, compiled.semantic_products.package_by_product.size() ==
                     compiled.semantic_graph.products.size());
+  EXPECT(state,
+         compiled.semantic_products.generic_type_demand_by_product.size() ==
+             compiled.semantic_graph.products.size());
   EXPECT(state, compiled.semantic_graph
                         .products[compiled.semantic_products.target.value]
                         .state == draft::SemanticProductState::Complete);
@@ -1896,9 +1902,16 @@ void test_cross_package_generic_procedures(TestState &state) {
   const draft::CompiledPackage *right = nullptr;
   const draft::CompiledPackage *generic = nullptr;
   const draft::CompiledPackage *layout = nullptr;
-  for (const std::optional<draft::CompiledPackage> &package : result.packages) {
+  std::optional<draft::PackageId> app_id;
+  for (std::size_t package_index = 0; package_index < result.packages.size();
+       ++package_index) {
+    const std::optional<draft::CompiledPackage> &package =
+        result.packages[package_index];
     if (!package.has_value()) continue;
-    if (package->identity.root_relative_path == "app") app = &*package;
+    if (package->identity.root_relative_path == "app") {
+      app = &*package;
+      app_id = draft::PackageId{static_cast<std::uint32_t>(package_index)};
+    }
     if (package->identity.root_relative_path == "lib/left") left = &*package;
     if (package->identity.root_relative_path == "lib/right") right = &*package;
     if (package->identity.root_relative_path == "lib/generic") generic = &*package;
@@ -1909,19 +1922,20 @@ void test_cross_package_generic_procedures(TestState &state) {
   EXPECT(state, right != nullptr);
   EXPECT(state, generic != nullptr);
   EXPECT(state, layout != nullptr);
+  EXPECT(state, app_id.has_value());
   if (app == nullptr || left == nullptr || right == nullptr ||
-      generic == nullptr || layout == nullptr) {
+      generic == nullptr || layout == nullptr || !app_id.has_value()) {
     return;
   }
 
   // The app requests private-nominal, u64, byte-size, and inferred N + 1
   // specializations from generic, plus composed type/value work through left.
-  // One concrete generic type recursively requests Buffer[2] from lib/layout,
-  // then rebuilds generic against that
-  // owner-produced graph. The concrete left bodies publish transitive
-  // identity[Private_Value] and exact_count[increment_count(4)] requests to
-  // generic. The latter keeps left's private compile-time helper on its owner
-  // side while publishing only the concrete value 5.
+  // One concrete generic type explicitly depends on Buffer[2] from lib/layout,
+  // then retries against that owner-produced graph. The concrete left bodies
+  // publish transitive identity[Private_Value] and
+  // exact_count[increment_count(4)] requests to generic. The latter keeps
+  // left's private compile-time helper on its owner side while publishing only
+  // the concrete value 5.
   // Both sibling packages also request identity[u64] and identity[Shared_Value].
   // The latter is local in left and imported in right, so both local display
   // spellings must hash to one canonical nominal identity. All sibling requests
@@ -1943,26 +1957,151 @@ void test_cross_package_generic_procedures(TestState &state) {
   EXPECT(state,
       layout->bodies.package
           .imported_type_instantiation_requests.empty());
-  // Resolving Transitive_Procedural_Bytes rebuilds generic after lib/layout
-  // publishes its inner array. That clean rebuild intentionally discards
-  // transient owner-local instance rows, while the completed interface keeps
-  // every previously published application graph. Test both representations:
-  // local rows are an implementation detail, published graphs are the durable
-  // cross-package result.
+  // Canonical owner products append concrete instances without rebuilding any
+  // declaration package. The product side table, not the already-complete
+  // public PackageInterface, owns each package-independent result graph. All
+  // six owner-local nominal instances therefore remain in the append-only
+  // package rather than being discarded by an owner retry.
   EXPECT(state,
-      generic->bodies.package.parametric_type_instances.size() == 5);
+      generic->bodies.package.parametric_type_instances.size() == 6);
   EXPECT(state,
       layout->bodies.package.parametric_type_instances.size() == 1);
+
+  // Private_Procedural_Buffer cannot be exported to lib/generic until the
+  // app's Private_Value natural layout is complete. Its declaration product
+  // must therefore name both that exact requester-local layout product and the
+  // canonical owner demand. This edge prevents an incomplete private nominal
+  // graph from crossing the package boundary merely because its identity was
+  // already known.
+  const draft::SemanticPackage &app_declarations = app->declarations.package;
+  const std::optional<draft::SymbolId> private_value =
+      app_declarations.symbols.lookup_direct(
+          app_declarations.package_scope, "Private_Value");
+  const std::optional<draft::SymbolId> private_buffer =
+      app_declarations.symbols.lookup_direct(
+          app_declarations.package_scope, "Private_Procedural_Buffer");
+  EXPECT(state, private_value.has_value());
+  EXPECT(state, private_buffer.has_value());
+  std::optional<draft::SemanticProductId> private_value_layout;
+  std::optional<draft::SemanticProductId> private_buffer_declaration;
+  const draft::PackageSemanticProducts &app_products =
+      result.semantic_products.packages[app_id->value];
+  if (private_value.has_value()) {
+    const draft::TypeId private_value_type =
+        app_declarations.symbols.symbol(*private_value).type;
+    for (draft::SemanticProductId product : app_products.natural_layouts) {
+      if (result.semantic_products.type_by_product[product.value] ==
+          private_value_type) {
+        private_value_layout = product;
+        break;
+      }
+    }
+  }
+  if (private_buffer.has_value()) {
+    for (draft::SemanticProductId product : app_products.declaration_types) {
+      if (result.semantic_products.declaration_by_product[product.value] ==
+          *private_buffer) {
+        private_buffer_declaration = product;
+        break;
+      }
+    }
+  }
+  EXPECT(state, private_value_layout.has_value());
+  EXPECT(state, private_buffer_declaration.has_value());
+  if (private_value_layout.has_value() &&
+      private_buffer_declaration.has_value()) {
+    const std::vector<draft::SemanticProductId> &dependencies =
+        result.semantic_graph
+            .products[private_buffer_declaration->value]
+            .dependencies;
+    EXPECT(state,
+           std::find(dependencies.begin(), dependencies.end(),
+                     *private_value_layout) != dependencies.end());
+    bool has_generic_demand = false;
+    for (draft::SemanticProductId dependency : dependencies) {
+      if (result.semantic_products
+              .generic_type_demand_by_product[dependency.value]
+              .is_valid()) {
+        has_generic_demand = true;
+        break;
+      }
+    }
+    EXPECT(state, has_generic_demand);
+  }
   const auto has_published_type = [&](std::string_view public_name) {
-    return std::any_of(
-        generic->interface.instantiated_types.begin(),
-        generic->interface.instantiated_types.end(),
-        [&](const draft::InterfaceTypeGraph &graph) {
-          return graph.root.is_valid() &&
-              graph.root.value < graph.types.size() &&
-              graph.types[graph.root.value].nominal_public_name == public_name;
-        });
+    for (const draft::GenericTypeDemand &demand :
+         result.semantic_products.generic_type_demands) {
+      if (demand.owner.value >= result.packages.size() ||
+          !result.packages[demand.owner.value].has_value() ||
+          result.packages[demand.owner.value]->identity.root_relative_path !=
+              "lib/generic" ||
+          !demand.result.has_value()) {
+        continue;
+      }
+      const draft::InterfaceTypeGraph &graph = *demand.result;
+      if (graph.root.is_valid() && graph.root.value < graph.types.size() &&
+          graph.types[graph.root.value].nominal_public_name == public_name) {
+        EXPECT(state,
+               result.semantic_graph.products[demand.product.value].state ==
+                   draft::SemanticProductState::Complete);
+        return true;
+      }
+    }
+    return false;
   };
+  EXPECT(state, result.semantic_products.generic_type_demands.size() == 7);
+  for (std::size_t index = 0;
+       index < result.semantic_products.generic_type_demands.size(); ++index) {
+    const draft::GenericTypeDemand &demand =
+        result.semantic_products.generic_type_demands[index];
+    EXPECT(state, demand.product.is_valid());
+    if (!demand.product.is_valid())
+      continue;
+    EXPECT(state,
+           result.semantic_graph.products[demand.product.value].kind ==
+               draft::SemanticProductKind::TypeNaturalLayout);
+    EXPECT(state,
+           result.semantic_graph.products[demand.product.value].state ==
+               draft::SemanticProductState::Complete);
+    EXPECT(state, demand.result.has_value());
+    EXPECT(state,
+           result.semantic_products
+                   .generic_type_demand_by_product[demand.product.value] ==
+               draft::GenericTypeDemandId{
+                   static_cast<std::uint32_t>(index)});
+  }
+  const auto find_demand = [&](std::string_view owner_path,
+                               std::string_view public_name)
+      -> const draft::GenericTypeDemand * {
+    for (const draft::GenericTypeDemand &demand :
+         result.semantic_products.generic_type_demands) {
+      if (demand.owner.value >= result.packages.size() ||
+          !result.packages[demand.owner.value].has_value() ||
+          result.packages[demand.owner.value]->identity.root_relative_path !=
+              owner_path ||
+          !demand.result.has_value()) {
+        continue;
+      }
+      const draft::InterfaceTypeGraph &graph = *demand.result;
+      if (graph.root.is_valid() && graph.root.value < graph.types.size() &&
+          graph.types[graph.root.value].nominal_public_name == public_name) {
+        return &demand;
+      }
+    }
+    return nullptr;
+  };
+  const draft::GenericTypeDemand *transitive = find_demand(
+      "lib/generic", "Transitive_Procedural_Wrapper");
+  const draft::GenericTypeDemand *buffer =
+      find_demand("lib/layout", "Buffer");
+  EXPECT(state, transitive != nullptr);
+  EXPECT(state, buffer != nullptr);
+  if (transitive != nullptr && buffer != nullptr) {
+    const std::vector<draft::SemanticProductId> &dependencies =
+        result.semantic_graph.products[transitive->product.value].dependencies;
+    EXPECT(state, std::find(dependencies.begin(), dependencies.end(),
+                            buffer->product) != dependencies.end());
+  }
   EXPECT(state, has_published_type("Transitive_Procedural_Wrapper"));
   EXPECT(state, has_published_type("Transitive_Procedural_Bytes"));
   EXPECT(state, app->llvm.text.find("_24mono_24") != std::string::npos);

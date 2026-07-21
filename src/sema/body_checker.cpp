@@ -1194,6 +1194,7 @@ private:
             *template_source,
             std::move(arguments),
             use_range,
+            &constants_,
             target_,
             diagnostics_);
       }

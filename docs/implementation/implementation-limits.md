@@ -35,9 +35,10 @@ source generation; selected package branches append into that retained table.
 Ready tasks use private package copies and the coordinator publishes their
 results deterministically. Interface-synthesis discovery still uses the
 aggregate declaration/constant path, conditional aggregate-member continuation
-is not yet independently scheduled, ABI classification is not a product, and
-cross-package procedure-dependent generic layout still uses an owner retry and
-declaration rebuild.
+is not yet independently scheduled, and ABI classification is not a product.
+Concrete cross-package owner-evaluated type applications now use canonical
+command-local demand products with exact requester-layout and transitive-owner
+edges; no package is rebuilt to publish their results.
 Procedure bodies, effect closure, denials, and MIR are still package-wide
 phases. Those mechanisms are explicit remaining deletion work in the
 [semantic work graph implementation plan](semantic-work-graph-implementation-plan.md),

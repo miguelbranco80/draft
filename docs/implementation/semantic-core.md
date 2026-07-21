@@ -50,10 +50,10 @@ Draft expressions such as a procedure call. The interpreter may return exact
 declaration, constant, and type-facet prerequisites. A blocked attempt discards
 both its partially built structural types and provisional diagnostics. Derived
 array, tuple, distinct, and concrete-generic layout waits are reduced to the
-authored nominal layout products that can actually unblock them. The temporary
-exception is an imported owner-evaluated generic proxy, whose existing
-cross-package request/rebuild path remains until canonical generic demands
-replace it in the next implementation step.
+authored nominal layout products that can actually unblock them. An imported
+owner-evaluated generic proxy instead reports its portable owner request; the
+coordinator attaches the declaration to the canonical command-local generic
+demand described below.
 
 Package and member `when` conditions also have one-site producers. The
 coordinator publishes a completed package selection and appends only the chosen
@@ -433,18 +433,25 @@ SemanticPackage retains the source recipe in a package-local side table. A
 canonical package interface exports only the marker. It never exports FileId,
 NodeId, ScopeId, a private procedure SymbolId, or an ambient source pointer.
 
-A consumer which later supplies concrete generic arguments forms a stable
-instantiation request. Compiler orchestration sends that request to the package
-which owns the template and procedure bodies. The owner evaluates the recipe
-with the normal compile-time interpreter and returns a complete concrete
-InterfaceTypeGraph; the consumer imports that graph exactly like any other
-owner-produced generic result. A clean consumer rebuild removes the provisional
-unknown-layout marker before body checking. Requests and results are ordered and
-keyed by package identity, public template identity, and canonical argument
-graphs. Private requester nominals returning through the owner graph resolve to
-their original local TypeId. This mirrors cross-package generic procedure
-instantiation and preserves private implementation details without making
-consumer semantics read dependency source.
+A consumer which later supplies concrete generic arguments reports a portable
+owner request from its private declaration attempt. Before the request can
+become work, every runtime-bearing argument graph blocks on its exact requester
+natural-layout products. The coordinator then imports the argument graphs into
+the defining package and canonicalizes one command-local key from the owner
+PackageId, template SymbolId, and ordered owner-local ParametricArguments. Equal
+requests from unrelated consumers therefore share one `TypeNaturalLayout`
+product without a digest or requester-local identity.
+
+The owner task evaluates the recipe with the normal compile-time interpreter
+and publishes one complete package-independent `InterfaceTypeGraph`. If that
+attempt reaches another package-owned recipe, it reports another portable
+request and gains an explicit edge to the nested canonical demand. The consumer
+retries only its blocked declaration product and imports completed dependency
+graphs into that task-local package; no package declaration table is rebuilt.
+The result is not appended to an already-complete `PackageInterface`.
+Private requester nominals returning through the owner graph resolve to their
+original local TypeId. This preserves private implementation details without
+making consumer semantics read dependency source.
 
 The same boundary applies when a nominal application itself supplies a full
 procedure-dependent value such as `Buffer[increment(N)]`. Its ParametricArgument
@@ -469,20 +476,21 @@ invented.
 Concrete cross-package structural results need a durable lookup key even though
 the resulting Type row has no provenance. The owner annotates only the root of
 the published InterfaceTypeGraph with the public template identity and canonical
-arguments. A consumer records that application key beside the imported
-canonical TypeId. Later rebuilds therefore reuse the exact array/tuple/etc.
-without changing structural identity. Pending whole-application markers and
-their package-local recipe indices never cross this boundary. Completed body
-interfaces retain all self-contained application graphs published during the
-layout fixed point instead of discarding them when effects are refreshed.
+arguments. Import records that application key beside the canonical structural
+TypeId in the retried task-local package, so ordinary type lookup consumes the
+exact array/tuple/etc. without changing structural identity. Pending whole-
+application markers and their package-local recipe indices never cross this
+boundary. The completed graph remains the immutable result of its canonical
+natural-layout demand rather than becoming mutable package-interface state.
 
 Owner requests close transitively across package imports. If package A requests
 a concrete type from B and B's resulting layout requests a private recipe from
-C, the workspace publishes C's graph first, cleanly rebuilds B against the
-enriched C interface, and retries the original request. Canonical request
-digests detect a repeated non-progressing set, while an explicit owner stack
-guards the acyclic package invariant. Previously published type graphs are
-self-contained and remain attached to B's interface across the rebuild.
+C, B's product reports the portable nested request. The coordinator interns
+that request into C's exact canonical key and adds the resulting product as a
+dependency of B's product. Once C publishes its graph, B retries from its
+private owner snapshot with that graph imported. Product states and graph cycle
+diagnostics replace request digests, progress sets, owner recursion, and package
+rebuilds.
 
 ## Procedure-dependent generic procedure arguments
 

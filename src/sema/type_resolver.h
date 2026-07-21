@@ -29,13 +29,17 @@ namespace draft {
 // own declaration-type products must publish first. constant_dependencies names
 // local ConstantValue products required by layout integers or type-valued
 // declarations; type_dependencies names exact facets queried by compile-time
-// layout recipes. Error has already emitted source diagnostics; callers must
-// discard task_package for both non-complete states.
+// layout recipes. generic_type_dependencies contains owner-evaluated imported
+// applications discovered by this attempt; their TypeIds remain local to
+// task_package until the command coordinator exports the arguments. Error has
+// already emitted source diagnostics; callers must discard task_package for
+// both non-complete states.
 struct DeclarationTypeProductAttempt {
   TypeProductStatus status = TypeProductStatus::Error;
   std::vector<SymbolId> declaration_dependencies;
   std::vector<SymbolId> constant_dependencies;
   std::vector<TypeFacetDependency> type_dependencies;
+  std::vector<ImportedTypeInstantiationRequest> generic_type_dependencies;
 };
 
 // Resolves exactly root in task_package. completed_declarations are immutable
@@ -163,6 +167,7 @@ resolve_dependent_integer_expression_syntax(
     SymbolId source,
     std::vector<ParametricArgument> arguments,
     SourceRange use_range,
+    const ConstantTable *active_constants,
     const TargetFacts &target,
     DiagnosticSink &diagnostics);
 

@@ -264,11 +264,6 @@ struct PackageInterface {
   // canonical ordered arguments, and the shared stable instance name.
   std::vector<InterfaceProcedureInstance> procedure_instances;
   std::vector<InterfaceDocumentation> documentation;
-  // Concrete public generic applications whose layout had to execute in this
-  // defining package. Consumers import these self-contained graphs before
-  // resolving their own applications; public template origin plus canonical
-  // arguments inside each root row form the cache key.
-  std::vector<InterfaceTypeGraph> instantiated_types;
 };
 
 // AvailablePackageImport binds one exact source import clause to the already
@@ -326,8 +321,8 @@ struct AvailablePackageImports {
 
 // Publication form for a concrete structural generic application. Structural
 // TypeIds intentionally have no nominal identity, so the explicit template and
-// arguments annotate the root row with the cache key needed by a clean
-// consumer rebuild.
+// arguments annotate the root row with the exact application key consumed by a
+// retried declaration or enclosing generic-layout product.
 [[nodiscard]] InterfaceTypeGraph export_interface_type_application(
     const PackageIdentity &identity,
     const SemanticPackage &package,

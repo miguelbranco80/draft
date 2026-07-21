@@ -254,9 +254,10 @@ struct ImportedProcedureInstance {
 // A consumer cannot execute a procedure-dependent layout recipe imported from
 // another package: only the defining package owns that syntax and the private
 // helper bodies it may call. Type resolution records the concrete application
-// here. Workspace orchestration transfers its arguments, asks the owner to
-// instantiate the public template, publishes the returned interface graph, and
-// rebuilds the consumer. No placeholder is allowed to reach body lowering.
+// here. Workspace orchestration transfers its arguments into one canonical
+// owner-local natural-layout product. The blocked declaration task then imports
+// that product's immutable interface graph and retries against its private
+// package snapshot. No placeholder is allowed to reach body lowering.
 struct ImportedTypeInstantiationRequest {
   SymbolId source_proxy;
   std::string root_identity;

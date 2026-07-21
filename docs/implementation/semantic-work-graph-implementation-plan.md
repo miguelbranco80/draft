@@ -64,19 +64,21 @@ gate.
    uses the aggregate declaration compatibility path until opaque waits produce
    graph successors. Conditional aggregate members need an explicit
    member-name/member-type continuation rather than sharing the declaration
-   attempt. ABI classification still lacks its own product. The terminal
-   barrier also carries one narrow exception for an imported owner-evaluated
-   generic shell; step 4 replaces that owner retry and declaration rebuild with
-   canonical generic-demand products. Once those paths move, delete
+   attempt. ABI classification still lacks its own product. Once those paths
+   move, delete
    `discover_package_declarations`, the aggregate conditional/readiness rounds,
    and the remaining private readiness copies.
 
-4. **Canonical generic type demand.** Give every concrete type application one
-   canonical command-local key and owner task. Cross-package owner evaluation
-   appends explicit layout/value dependencies and publishes one immutable result.
-   Delete `TypeInstantiationPublisher`, declaration rebuild retries, request-set
-   hashes used only to detect progress, and retained instantiated-interface
-   side paths.
+4. **Canonical generic type demand — complete.** Every concrete cross-package
+   owner-evaluated type application has one command-local key formed from its
+   owner package, owner template SymbolId, and ordered owner-local canonical
+   arguments. Requester natural layouts are explicit prerequisites. Each owner
+   task either publishes one immutable `InterfaceTypeGraph` or adds exact edges
+   to nested owner demands; a consumer imports completed results into only its
+   retried private declaration attempt. The coordinator appends owner semantic
+   state and results in product order. `TypeInstantiationPublisher`, recursive
+   owner publication, declaration rebuild retries, progress hashes, and the
+   `PackageInterface::instantiated_types` side path are deleted.
 
 5. **Procedure-owned checking.** Split package body checking into immutable
    package inputs plus one task-owned result for each authored template or

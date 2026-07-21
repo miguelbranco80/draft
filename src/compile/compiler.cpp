@@ -10,18 +10,18 @@
 // alive for the complete command.
 //
 // Target selection, source generations, parsed files, package imports, authored
-// declaration types, nominal layouts, conditional choices, named constants,
-// package name completeness, opaque interface synthesis sets, and package
-// interfaces are explicit products in one dynamic command-local graph. The
-// coordinator freezes ready waves and publishes task-owned diagnostics and
-// payloads in stable product-ID order. Generic body demands still propagate
-// consumer-first, and completed effects still publish dependency-first; later
-// implementation slices move those remaining package loops into the same
-// graph. Within an
-// unchanged source generation, CompileWorkspaceProgress advances so native
-// lowering can continue checked state without reloading source. A checked
-// generated-source transition appends a successor generation and supersedes
-// only the affected interface products while retaining unrelated products.
+// declaration types, nominal and canonical generic layouts, conditional
+// choices, named constants, package name completeness, opaque interface
+// synthesis sets, and package interfaces are explicit products in one dynamic
+// command-local graph. The coordinator freezes ready waves and publishes
+// task-owned diagnostics and payloads in stable product-ID order. Generic body
+// demands still propagate consumer-first, and completed effects still publish
+// dependency-first; later implementation slices move those remaining package
+// loops into the same graph. Within an unchanged source generation,
+// CompileWorkspaceProgress advances so native lowering can continue checked
+// state without reloading source. A checked generated-source transition appends
+// a successor generation and supersedes only the affected interface products
+// while retaining unrelated products.
 //
 // No state is process-global or persisted as a compiler cache. Resolution
 // orchestration consumes generated Draft only through ordinary source
@@ -418,407 +418,6 @@ void hash_field(Sha256 &hash, std::string_view value) {
     }
   }
   return true;
-}
-
-// Requests are process-local rows, so progress cannot be judged by TypeId or
-// vector length across a semantic rebuild. This digest uses the same canonical
-// interface graphs which cross package boundaries and therefore remains stable
-// when a clean analysis assigns different local IDs.
-[[nodiscard]] Sha256Digest hash_type_instantiation_requests(
-    const CompiledPackage &requester,
-    DiagnosticSink &diagnostics) {
-  Sha256 hash;
-  hash_field(hash, "draft.type-instantiation-requests.v1");
-  for (const ImportedTypeInstantiationRequest &request :
-       requester.declarations.package.imported_type_instantiation_requests) {
-    hash_field(hash, request.root_identity);
-    hash_field(hash, request.root_relative_path);
-    hash_field(hash, request.public_template_name);
-    hash_u64(hash, static_cast<std::uint64_t>(request.arguments.size()));
-    for (const ParametricArgument &argument : request.arguments) {
-      hash_u64(hash, argument.is_type ? 1 : 0);
-      const TypeId type = argument.is_type
-          ? argument.type
-          : argument.value_type;
-      const InterfaceTypeGraph graph = export_interface_type(
-          requester.identity,
-          requester.declarations.package,
-          type,
-          diagnostics);
-      hash.update(hash_interface_type_graph(graph).bytes);
-      if (argument.is_type) continue;
-      hash_u64(hash, static_cast<std::uint64_t>(argument.value.kind));
-      hash_field(hash, argument.value.integer.to_decimal());
-      hash_u64(hash, argument.owner_evaluated_value ? 1 : 0);
-      hash_u64(hash, argument.value_expression.is_valid() ? 1 : 0);
-    }
-  }
-  return hash.finalize();
-}
-
-[[nodiscard]] bool collect_package_imports(
-    const CompileWorkspaceResult &result,
-    const WorkspaceDependencyIndex &schedule,
-    std::size_t package_index,
-    AvailablePackageImports &available,
-    DiagnosticSink &diagnostics) {
-  if (package_index >= result.graph.packages.size() ||
-      package_index >= schedule.import_edges_by_consumer.size()) {
-    return false;
-  }
-  available.consumer_identity =
-      result.graph.packages[package_index].identity;
-  for (std::size_t edge_index :
-       schedule.import_edges_by_consumer[package_index]) {
-    const PackageImport &import = result.graph.imports[edge_index];
-    const std::size_t dependency_index =
-        static_cast<std::size_t>(import.imported_package.value);
-    if (dependency_index >= result.packages.size() ||
-        !result.packages[dependency_index].has_value()) {
-      diagnostics.error(
-          SourceRange::invalid(),
-          "generic type owner dependency is unavailable during "
-          "semantic rebuild");
-      return false;
-    }
-    available.entries.push_back({
-        {import.file, import.syntax},
-        &result.packages[dependency_index]->interface,
-    });
-  }
-  return true;
-}
-
-void append_instantiated_type(
-    PackageInterface &interface,
-    const InterfaceTypeGraph &graph) {
-  const Sha256Digest digest = hash_interface_type_graph(graph);
-  for (const InterfaceTypeGraph &existing : interface.instantiated_types) {
-    if (hash_interface_type_graph(existing) == digest) return;
-  }
-  interface.instantiated_types.push_back(graph);
-}
-
-// A package imports a snapshot of each dependency interface into package-local
-// semantic IDs. When a deeper owner publishes a new concrete type graph, the
-// intermediate package must be rebuilt before retrying its outer request. The
-// public graphs already produced for earlier consumers are self-contained, so
-// they are retained across that clean declaration rebuild.
-[[nodiscard]] bool rebuild_declaration_package(
-    SourceManager &sources,
-    CompileWorkspaceResult &result,
-    const WorkspaceDependencyIndex &schedule,
-    std::size_t package_index,
-    const CompileWorkspaceOptions &options,
-    DiagnosticSink &diagnostics) {
-  if (package_index >= result.packages.size() ||
-      !result.packages[package_index].has_value()) {
-    return false;
-  }
-  AvailablePackageImports available;
-  if (!collect_package_imports(
-          result, schedule, package_index, available, diagnostics)) {
-    return false;
-  }
-
-  WorkspacePackage &workspace_package = result.graph.packages[package_index];
-  CompiledPackage &package = *result.packages[package_index];
-  std::vector<InterfaceTypeGraph> retained_instances =
-      package.interface.instantiated_types;
-  SemanticAnalysisResult semantics = analyze_package_semantics(
-      sources,
-      workspace_package.loaded,
-      options.target.facts,
-      available,
-      compile_time_synthesis_mode(options.stage),
-      diagnostics);
-  if (!semantics.ok) return false;
-  SemanticPackage interface_context_package;
-  ConstantTable interface_context_constants;
-  if (!append_compile_time_body_synthesis_sites(
-          sources,
-          workspace_package.loaded,
-          options.target.facts,
-          semantics,
-          interface_context_package,
-          interface_context_constants,
-          diagnostics)) {
-    return false;
-  }
-  AgentMetadataResult metadata = collect_agent_metadata(
-      sources,
-      workspace_package.loaded,
-      interface_context_package,
-      options.attachments,
-      diagnostics);
-  if (!metadata.ok) return false;
-
-  std::vector<AgentValidationContext> validation_context =
-      package.validation_context;
-  if (options.validation_kind == ValidationKind::None &&
-      validation_context.empty() && has_agent_obligation_record(metadata)) {
-    validation_context = load_validation_context(
-        sources, workspace_package, options.workspace, diagnostics);
-  }
-  PackageInterface interface =
-      options.stage == CompileWorkspaceStage::DiscoverInterfaceSynthesis &&
-          has_synthesis_record(metadata)
-      ? withheld_package_interface(
-            workspace_package.identity, semantics.package)
-      : build_package_interface(
-            workspace_package.identity,
-            semantics.package,
-            semantics.constants,
-            metadata,
-            diagnostics);
-  for (const InterfaceTypeGraph &graph : retained_instances) {
-    append_instantiated_type(interface, graph);
-  }
-
-  AgentObligationResult obligations;
-  if (options.stage == CompileWorkspaceStage::DiscoverInterfaceSynthesis) {
-    obligations = build_agent_obligations(
-        workspace_package.identity,
-        sources,
-        workspace_package.loaded,
-        interface_context_package,
-        interface_context_constants,
-        metadata,
-        options.target,
-        diagnostics,
-        validation_context);
-    if (!obligations.ok) return false;
-  }
-
-  package.declarations = std::move(semantics);
-  ++package.declaration_generation;
-  package.body_work_key = {};
-  BodyCheckResult empty_bodies;
-  package.bodies = std::move(empty_bodies);
-  package.semantic_progress = PackageSemanticProgress::InterfaceReady;
-  package.metadata = std::move(metadata);
-  package.validation_context = std::move(validation_context);
-  package.interface = std::move(interface);
-  if (options.stage == CompileWorkspaceStage::DiscoverInterfaceSynthesis) {
-    package.obligations = std::move(obligations);
-  }
-  return true;
-}
-
-// Executes concrete generic-type requests in the package which owns the
-// template source and its private compile-time procedures. A concrete owner may
-// itself request a deeper owner. Because package imports form an acyclic graph,
-// recursively publishing those requests and rebuilding the intermediate
-// declaration graph reaches a deterministic fixed point.
-class TypeInstantiationPublisher {
-public:
-  TypeInstantiationPublisher(
-      SourceManager &sources,
-      CompileWorkspaceResult &result,
-      const WorkspaceDependencyIndex &schedule,
-      const CompileWorkspaceOptions &options,
-      DiagnosticSink &diagnostics)
-      : sources_(sources),
-        result_(result),
-        schedule_(schedule),
-        options_(options),
-        diagnostics_(diagnostics) {}
-
-  [[nodiscard]] bool publish(const CompiledPackage &requester) {
-    std::vector<std::size_t> owner_stack;
-    return publish_requests(requester, owner_stack);
-  }
-
-private:
-  [[nodiscard]] bool publish_requests(
-      const CompiledPackage &requester,
-      std::vector<std::size_t> &owner_stack) {
-    bool ok = true;
-    for (const ImportedTypeInstantiationRequest &request :
-         requester.declarations.package.imported_type_instantiation_requests) {
-      ok = publish_request(requester, request, owner_stack) && ok;
-    }
-    return ok;
-  }
-
-  [[nodiscard]] bool publish_request(
-      const CompiledPackage &requester,
-      const ImportedTypeInstantiationRequest &request,
-      std::vector<std::size_t> &owner_stack) {
-    const std::optional<std::size_t> owner_index = package_index_for(
-        result_.graph,
-        schedule_,
-        request.root_identity,
-        request.root_relative_path);
-    if (!owner_index.has_value() ||
-        !result_.packages[*owner_index].has_value()) {
-      diagnostics_.error(
-          SourceRange::invalid(),
-          "generic type owner is unavailable during layout instantiation");
-      return false;
-    }
-    if (std::find(
-            owner_stack.begin(), owner_stack.end(), *owner_index) !=
-        owner_stack.end()) {
-      diagnostics_.error(
-          SourceRange::invalid(),
-          "generic type layout ownership forms a package cycle");
-      return false;
-    }
-    owner_stack.push_back(*owner_index);
-
-    std::vector<Sha256Digest> attempted_nested_requests;
-    for (;;) {
-      CompiledPackage &owner = *result_.packages[*owner_index];
-      const std::optional<SymbolId> source =
-          owner.declarations.package.symbols.lookup_direct(
-              owner.declarations.package.package_scope,
-              request.public_template_name);
-      if (!source.has_value()) {
-        diagnostics_.error(
-            SourceRange::invalid(),
-            "generic type request names no public declaration '" +
-                request.public_template_name + "'");
-        owner_stack.pop_back();
-        return false;
-      }
-      const Symbol source_symbol =
-          owner.declarations.package.symbols.symbol(*source);
-      if (source_symbol.kind != SymbolKind::Type ||
-          !source_symbol.flags.parametric ||
-          source_symbol.visibility != Visibility::Public) {
-        diagnostics_.error(
-            source_symbol.name_range,
-            "generic type layout request does not name a public parametric type");
-        owner_stack.pop_back();
-        return false;
-      }
-
-      std::vector<ParametricArgument> transferred_arguments;
-      transferred_arguments.reserve(request.arguments.size());
-      for (const ParametricArgument &argument : request.arguments) {
-        ParametricArgument transferred;
-        transferred.is_type = argument.is_type;
-        if (!argument.is_type &&
-            (argument.value.kind != ConstantKind::Integer ||
-             argument.owner_evaluated_value ||
-             argument.value_expression.is_valid())) {
-          diagnostics_.error(
-              source_symbol.name_range,
-              "generic type owner request contains a symbolic value argument");
-          owner_stack.pop_back();
-          return false;
-        }
-        const TypeId argument_type = argument.is_type
-            ? argument.type
-            : argument.value_type;
-        const InterfaceTypeGraph graph = export_interface_type(
-            requester.identity,
-            requester.declarations.package,
-            argument_type,
-            diagnostics_);
-        if (!owner_result_is_concrete(graph)) {
-          diagnostics_.error(
-              source_symbol.name_range,
-              "generic type owner request contains a symbolic type argument");
-          owner_stack.pop_back();
-          return false;
-        }
-        const TypeId imported = import_interface_type(
-            graph, owner.declarations.package, diagnostics_);
-        if (argument.is_type) {
-          transferred.type = imported;
-        } else {
-          transferred.value_type = imported;
-          transferred.value = argument.value;
-        }
-        transferred_arguments.push_back(std::move(transferred));
-      }
-      const std::vector<ParametricArgument> publication_arguments =
-          transferred_arguments;
-
-      const TypeId concrete = instantiate_parametric_type_application(
-          sources_,
-          result_.graph.packages[*owner_index].loaded,
-          owner.declarations.package,
-          owner.declarations.selections,
-          *source,
-          std::move(transferred_arguments),
-          source_symbol.name_range,
-          options_.target.facts,
-          diagnostics_);
-      if (!concrete.is_valid() ||
-          owner.declarations.package.types.type(concrete).kind ==
-              TypeKind::Invalid) {
-        owner_stack.pop_back();
-        return false;
-      }
-      const InterfaceTypeGraph graph = export_interface_type_application(
-          owner.identity,
-          owner.declarations.package,
-          concrete,
-          *source,
-          publication_arguments,
-          diagnostics_);
-      if (owner_result_is_concrete(graph)) {
-        append_instantiated_type(owner.interface, graph);
-        owner_stack.pop_back();
-        return true;
-      }
-
-      if (owner.declarations.package
-              .imported_type_instantiation_requests.empty()) {
-        diagnostics_.error(
-            source_symbol.name_range,
-            "generic type layout request did not produce a concrete owner result");
-        owner_stack.pop_back();
-        return false;
-      }
-      const Sha256Digest nested_digest =
-          hash_type_instantiation_requests(owner, diagnostics_);
-      if (std::find(
-              attempted_nested_requests.begin(),
-              attempted_nested_requests.end(),
-              nested_digest) != attempted_nested_requests.end()) {
-        diagnostics_.error(
-            source_symbol.name_range,
-            "transitive generic type layout requests made no semantic progress");
-        owner_stack.pop_back();
-        return false;
-      }
-      attempted_nested_requests.push_back(nested_digest);
-
-      if (!publish_requests(owner, owner_stack) ||
-          !rebuild_declaration_package(
-              sources_,
-              result_,
-              schedule_,
-              *owner_index,
-              options_,
-              diagnostics_)) {
-        owner_stack.pop_back();
-        return false;
-      }
-    }
-  }
-
-  SourceManager &sources_;
-  CompileWorkspaceResult &result_;
-  const WorkspaceDependencyIndex &schedule_;
-  const CompileWorkspaceOptions &options_;
-  DiagnosticSink &diagnostics_;
-};
-
-[[nodiscard]] bool publish_type_instantiation_requests(
-    SourceManager &sources,
-    CompileWorkspaceResult &result,
-    const WorkspaceDependencyIndex &schedule,
-    const CompiledPackage &requester,
-    const CompileWorkspaceOptions &options,
-    DiagnosticSink &diagnostics) {
-  TypeInstantiationPublisher publisher(
-      sources, result, schedule, options, diagnostics);
-  return publisher.publish(requester);
 }
 
 // A dependency with any obligation emitted by interface discovery cannot yet
@@ -1310,6 +909,8 @@ void invalidate_package_closure(
       result.semantic_products.type_by_product.size() !=
           result.semantic_graph.products.size() ||
       result.semantic_products.condition_by_product.size() !=
+          result.semantic_graph.products.size() ||
+      result.semantic_products.generic_type_demand_by_product.size() !=
           result.semantic_graph.products.size()) {
     diagnostics.error(
         SourceRange::invalid(),
@@ -1334,6 +935,7 @@ void invalidate_package_closure(
   result.semantic_products.declaration_by_product.push_back({});
   result.semantic_products.type_by_product.push_back({});
   result.semantic_products.condition_by_product.push_back({});
+  result.semantic_products.generic_type_demand_by_product.push_back({});
   return product;
 }
 
@@ -1438,6 +1040,10 @@ void invalidate_package_closure(
         products.natural_layouts.end());
     superseded.insert(
         superseded.end(),
+        products.generic_type_demands.begin(),
+        products.generic_type_demands.end());
+    superseded.insert(
+        superseded.end(),
         products.conditions.begin(),
         products.conditions.end());
     superseded.insert(
@@ -1467,6 +1073,7 @@ void invalidate_package_closure(
         result.semantic_products.packages[package_index];
     products.declaration_types.clear();
     products.natural_layouts.clear();
+    products.generic_type_demands.clear();
     products.conditions.clear();
     products.constants.clear();
     std::vector<SemanticProductId> dependencies;
@@ -1674,60 +1281,6 @@ void invalidate_package_closure(
     return package;
   }
 
-  // Imported procedure-dependent layouts still form the legacy package-owner
-  // retry. Its deletion gate is plan step 4. Keeping it visibly inside this
-  // transitional task prevents the new coordinator from pretending that the
-  // resulting dependency mutation is already safe to execute concurrently.
-  std::vector<Sha256Digest> attempted_type_request_sets;
-  while (package.declarations.ok &&
-         !package.declarations.package.imported_type_instantiation_requests
-              .empty()) {
-    const Sha256Digest request_digest =
-        hash_type_instantiation_requests(package, diagnostics);
-    if (std::find(attempted_type_request_sets.begin(),
-                  attempted_type_request_sets.end(),
-                  request_digest) != attempted_type_request_sets.end()) {
-      break;
-    }
-    attempted_type_request_sets.push_back(request_digest);
-    if (!publish_type_instantiation_requests(sources, result, schedule, package,
-                                             options, diagnostics)) {
-      break;
-    }
-    if (schedule_constant_products) {
-      package.declaration_discovery = discover_package_declarations(
-          sources,
-          workspace_package.loaded,
-          options.target.facts,
-          available,
-          CompileTimeSynthesisMode::Reject,
-          diagnostics);
-      SemanticAnalysisResult empty_semantics;
-      package.declarations = std::move(empty_semantics);
-      package.declarations.package = package.declaration_discovery.package;
-      package.declarations.selections =
-          package.declaration_discovery.selections;
-      package.declarations.ok = package.declaration_discovery.terminal &&
-          package.declaration_discovery.discovery_ok;
-    } else {
-      package.declarations = analyze_package_semantics(
-          sources,
-          workspace_package.loaded,
-          options.target.facts,
-          available,
-          diagnostics);
-    }
-    if (options.timings != nullptr) {
-      options.timings->add_counter("package semantic analyses", 1);
-    }
-  }
-  if (package.declarations.ok &&
-      !package.declarations.package.imported_type_instantiation_requests
-           .empty()) {
-    diagnostics.error(SourceRange::invalid(),
-                      "generic type layout requests made no semantic progress");
-    package.declarations.ok = false;
-  }
   if (!package.declarations.ok)
     return std::nullopt;
 
@@ -1750,7 +1303,19 @@ struct WorkspaceInterfaceTaskSlot {
   SemanticProductOutcome outcome;
   std::optional<CompiledPackage> package;
   std::optional<DeclarationTypeProductAttempt> declaration_type;
+  // Blocked declaration attempts retain their private package only until the
+  // coordinator exports requester-local generic arguments. Complete attempts
+  // move their package into the wave-local publication prefix instead.
+  std::optional<SemanticPackage> declaration_package;
   std::optional<NaturalLayoutProductAttempt> natural_layout;
+  // A generic owner task produces both the owner-local semantic append and the
+  // package-independent graph consumed by requesters. On a nested owner wait,
+  // generic_package instead supplies the local TypeIds needed to create the
+  // dependency's canonical key; no mutation from that attempt is published.
+  std::optional<SemanticPackage> generic_package;
+  std::optional<TypeId> generic_type;
+  std::optional<InterfaceTypeGraph> generic_result;
+  std::vector<ImportedTypeInstantiationRequest> generic_dependencies;
   std::optional<ConditionalProductAttempt> condition;
   std::optional<ConstantProductAttempt> constant;
   std::optional<SemanticPackage> constant_package;
@@ -2256,6 +1821,278 @@ package_type_facet_product(const CompileWorkspaceResult &result,
   return std::nullopt;
 }
 
+// Imports every completed canonical generic result named by product's current
+// dependency set. A declaration or outer generic task receives a fresh private
+// package snapshot; importing here makes the result available through the
+// ordinary ImportedType provenance lookup without mutating shared state or
+// teaching the type resolver about command-level product IDs.
+[[nodiscard]] bool import_completed_generic_dependencies(
+    const CompileWorkspaceResult &result, SemanticProductId product,
+    SemanticPackage &task_package, DiagnosticSink &diagnostics) {
+  for (SemanticProductId dependency :
+       result.semantic_graph.products[product.value].dependencies) {
+    if (dependency.value >=
+        result.semantic_products.generic_type_demand_by_product.size()) {
+      diagnostics.error(SourceRange::invalid(),
+                        "generic dependency has no typed product index");
+      return false;
+    }
+    const GenericTypeDemandId demand_id =
+        result.semantic_products
+            .generic_type_demand_by_product[dependency.value];
+    if (!demand_id.is_valid())
+      continue;
+    if (demand_id.value >=
+        result.semantic_products.generic_type_demands.size()) {
+      diagnostics.error(SourceRange::invalid(),
+                        "generic dependency names an invalid demand row");
+      return false;
+    }
+    const GenericTypeDemand &demand =
+        result.semantic_products.generic_type_demands[demand_id.value];
+    if (!demand.result.has_value()) {
+      diagnostics.error(SourceRange::invalid(),
+                        "completed generic dependency has no result graph");
+      return false;
+    }
+    const TypeId imported =
+        import_interface_type(*demand.result, task_package, diagnostics);
+    if (!imported.is_valid() ||
+        task_package.types.type(imported).kind == TypeKind::Invalid) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// Collects the authored requester products needed before a concrete argument
+// can cross into a generic owner. A type graph is not concrete merely because
+// it contains no symbolic parameters: every runtime-bearing row exported to the
+// owner must also have its natural layout. Structural rows reduce recursively
+// to the nominal layout products that can make progress. requester_package is
+// the exact task snapshot which produced the request; consulting a retained
+// package by phase would make TypeIds depend on hidden coordinator state.
+[[nodiscard]] bool collect_generic_argument_layout_dependencies(
+    const CompileWorkspaceResult &result, PackageId requester,
+    const SemanticPackage &requester_package, TypeId type,
+    std::vector<TypeId> &active,
+    std::vector<SemanticProductId> &dependencies,
+    DiagnosticSink &diagnostics) {
+  if (!type.is_valid() ||
+      std::find(active.begin(), active.end(), type) != active.end()) {
+    return true;
+  }
+  const TypeFacetState state =
+      requester_package.types.facet_state(type, TypeFacet::NaturalLayout);
+  if (state == TypeFacetState::Complete)
+    return true;
+  if (state != TypeFacetState::Waiting) {
+    diagnostics.error(SourceRange::invalid(),
+                      "generic type argument has no runtime natural layout");
+    return false;
+  }
+  const std::optional<SemanticProductId> direct =
+      package_type_facet_product(
+          result, requester, {type, TypeFacet::NaturalLayout});
+  if (direct.has_value()) {
+    dependencies.push_back(*direct);
+    return true;
+  }
+
+  const std::size_t dependency_begin = dependencies.size();
+  active.push_back(type);
+  const Type value = requester_package.types.type(type);
+  bool ok = true;
+  if (value.element.is_valid()) {
+    ok = collect_generic_argument_layout_dependencies(
+             result, requester, requester_package, value.element, active,
+             dependencies, diagnostics) && ok;
+  }
+  for (TypeId member : value.members) {
+    ok = collect_generic_argument_layout_dependencies(
+             result, requester, requester_package, member, active,
+             dependencies, diagnostics) && ok;
+  }
+  active.pop_back();
+  if (ok && dependencies.size() == dependency_begin) {
+    diagnostics.error(
+        SourceRange::invalid(),
+        "waiting generic type argument has no producing layout product");
+    return false;
+  }
+  return ok;
+}
+
+struct GenericTypeDemandAppendResult {
+  bool ok = false;
+  std::optional<SemanticProductId> product;
+  std::vector<SemanticProductId> dependencies;
+};
+
+// Converts one requester-local owner-evaluation row into the canonical key used
+// by the defining package. Every argument type crosses the package boundary as
+// an InterfaceTypeGraph, then interns into the owner's append-only TypeStore.
+// Equal requests therefore converge through exact owner-local ParametricArgument
+// equality; no digest, progress set, or requester TypeId is part of identity.
+//
+// Graph mutation occurs only between frozen waves. A new TypeNaturalLayout row
+// depends on the owner's completed package interface, which proves that its
+// public template declaration and private evaluation bodies are available.
+[[nodiscard]] GenericTypeDemandAppendResult append_generic_type_demand(
+    CompileWorkspaceResult &result,
+    const WorkspaceDependencyIndex &schedule,
+    PackageId requester,
+    const SemanticPackage &requester_package,
+    const ImportedTypeInstantiationRequest &request,
+    DiagnosticSink &diagnostics) {
+  GenericTypeDemandAppendResult appended;
+  const std::optional<std::size_t> owner_index = package_index_for(
+      result.graph, schedule, request.root_identity,
+      request.root_relative_path);
+  if (!owner_index.has_value() ||
+      !result.packages[*owner_index].has_value()) {
+    diagnostics.error(
+        SourceRange::invalid(),
+        "generic type owner is unavailable during layout demand creation");
+    return appended;
+  }
+  CompiledPackage &owner_package = *result.packages[*owner_index];
+  SemanticPackage &owner_semantic = owner_package.declarations.package;
+  const std::optional<SymbolId> source = owner_semantic.symbols.lookup_direct(
+      owner_semantic.package_scope, request.public_template_name);
+  if (!source.has_value()) {
+    diagnostics.error(
+        SourceRange::invalid(),
+        "generic type demand names no public declaration '" +
+            request.public_template_name + "'");
+    return appended;
+  }
+  const Symbol &source_symbol = owner_semantic.symbols.symbol(*source);
+  if (source_symbol.kind != SymbolKind::Type ||
+      !source_symbol.flags.parametric ||
+      source_symbol.visibility != Visibility::Public) {
+    diagnostics.error(
+        source_symbol.name_range,
+        "generic type demand does not name a public parametric type");
+    return appended;
+  }
+
+  for (const ParametricArgument &argument : request.arguments) {
+    const TypeId requester_type =
+        argument.is_type ? argument.type : argument.value_type;
+    std::vector<TypeId> active;
+    if (!collect_generic_argument_layout_dependencies(
+            result, requester, requester_package, requester_type, active,
+            appended.dependencies, diagnostics)) {
+      return appended;
+    }
+  }
+  if (!appended.dependencies.empty()) {
+    appended.ok = true;
+    return appended;
+  }
+
+  std::vector<ParametricArgument> arguments;
+  arguments.reserve(request.arguments.size());
+  for (const ParametricArgument &argument : request.arguments) {
+    if (!argument.is_type &&
+        (argument.value.kind != ConstantKind::Integer ||
+         argument.owner_evaluated_value ||
+         argument.value_expression.is_valid())) {
+      diagnostics.error(
+          source_symbol.name_range,
+          "generic type demand contains a symbolic value argument");
+      return appended;
+    }
+    const TypeId requester_type =
+        argument.is_type ? argument.type : argument.value_type;
+    const InterfaceTypeGraph graph = export_interface_type(
+        result.packages[requester.value]->identity, requester_package,
+        requester_type, diagnostics);
+    if (!owner_result_is_concrete(graph)) {
+      diagnostics.error(
+          source_symbol.name_range,
+          "generic type demand contains a symbolic type argument");
+      return appended;
+    }
+    const TypeId owner_type =
+        import_interface_type(graph, owner_semantic, diagnostics);
+    if (!owner_type.is_valid() ||
+        owner_semantic.types.type(owner_type).kind == TypeKind::Invalid) {
+      return appended;
+    }
+    ParametricArgument transferred;
+    transferred.is_type = argument.is_type;
+    if (argument.is_type) {
+      transferred.type = owner_type;
+    } else {
+      transferred.value_type = owner_type;
+      transferred.value = argument.value;
+    }
+    arguments.push_back(std::move(transferred));
+  }
+
+  const PackageId owner{static_cast<std::uint32_t>(*owner_index)};
+  const PackageSemanticProducts &owner_products =
+      result.semantic_products.packages[*owner_index];
+  for (SemanticProductId existing_product :
+       owner_products.generic_type_demands) {
+    const GenericTypeDemandId existing_id =
+        result.semantic_products
+            .generic_type_demand_by_product[existing_product.value];
+    if (!existing_id.is_valid() ||
+        existing_id.value >=
+            result.semantic_products.generic_type_demands.size()) {
+      diagnostics.error(SourceRange::invalid(),
+                        "generic type demand index is inconsistent");
+      return appended;
+    }
+    const GenericTypeDemand &existing =
+        result.semantic_products.generic_type_demands[existing_id.value];
+    if (existing.owner == owner && existing.source == *source &&
+        existing.arguments == arguments) {
+      appended.ok = true;
+      appended.product = existing.product;
+      return appended;
+    }
+  }
+
+  if (result.semantic_products.generic_type_demands.size() >=
+      std::numeric_limits<std::uint32_t>::max()) {
+    diagnostics.error(SourceRange::invalid(),
+                      "too many command-local generic type demands");
+    return appended;
+  }
+  const SemanticProductId owner_interface =
+      result.semantic_products.packages[*owner_index].package_interface;
+  if (!owner_interface.is_valid() ||
+      result.semantic_graph.products[owner_interface.value].state !=
+          SemanticProductState::Complete) {
+    diagnostics.error(
+        SourceRange::invalid(),
+        "generic type demand ran before its owner interface completed");
+    return appended;
+  }
+  const std::array dependencies{owner_interface};
+  const SemanticProductId product = append_workspace_semantic_product(
+      result, SemanticProductKind::TypeNaturalLayout, dependencies, owner,
+      false, diagnostics);
+  if (!product.is_valid())
+    return appended;
+  const GenericTypeDemandId demand_id{
+      static_cast<std::uint32_t>(
+          result.semantic_products.generic_type_demands.size())};
+  result.semantic_products.generic_type_demands.push_back(
+      {owner, *source, std::move(arguments), product, std::nullopt});
+  result.semantic_products.generic_type_demand_by_product[product.value] =
+      demand_id;
+  result.semantic_products.packages[*owner_index]
+      .generic_type_demands.push_back(product);
+  appended.ok = true;
+  appended.product = product;
+  return appended;
+}
+
 // Returns the retained semantic site named by one condition product. Sites are
 // append-only and few; a direct source-identity scan avoids storing a pointer
 // across branch materialization.
@@ -2348,6 +2185,11 @@ package_condition_needs_materialization(const SemanticPackage &package,
     // Step 9 replaces this with task-local deltas plus canonical interning.
     std::vector<std::optional<SemanticPackage>> declaration_wave_packages(
         result.packages.size());
+    // Generic owner tasks use the same deterministic sequential oracle, but
+    // advance the already-finalized declaration package owned by their source
+    // template. A blocked nested demand never enters this vector.
+    std::vector<std::optional<SemanticPackage>> generic_wave_packages(
+        result.packages.size());
     for (std::size_t task_index = 0; task_index < wave.products.size();
          ++task_index) {
       const SemanticProductId product = wave.products[task_index];
@@ -2389,6 +2231,13 @@ package_condition_needs_materialization(const SemanticPackage &package,
             declaration_wave_packages[package_index].has_value()
                 ? *declaration_wave_packages[package_index]
                 : result.packages[package_index]->declaration_discovery.package;
+        if (!import_completed_generic_dependencies(
+                result, product, task_package, slot.outcome.diagnostics)) {
+          slot.outcome.kind = SemanticProductOutcomeKind::Error;
+          slot.outcome.failure =
+              "declaration generic dependency import failed";
+          continue;
+        }
         std::vector<SymbolId> completed_declarations;
         const PackageSemanticProducts &package_products =
             result.semantic_products.packages[package_index];
@@ -2417,6 +2266,9 @@ package_condition_needs_materialization(const SemanticPackage &package,
           slot.outcome.kind = SemanticProductOutcomeKind::Error;
           slot.outcome.failure = "declaration type product failed";
           continue;
+        }
+        if (!slot.declaration_type->generic_type_dependencies.empty()) {
+          slot.declaration_package = task_package;
         }
         for (SymbolId dependency :
              slot.declaration_type->declaration_dependencies) {
@@ -2471,6 +2323,74 @@ package_condition_needs_materialization(const SemanticPackage &package,
               "natural-layout product ran before package discovery";
           slot.outcome.diagnostics.error(SourceRange::invalid(),
                                          slot.outcome.failure);
+          continue;
+        }
+        const GenericTypeDemandId demand_id =
+            result.semantic_products
+                .generic_type_demand_by_product[product.value];
+        if (demand_id.is_valid()) {
+          if (demand_id.value >=
+              result.semantic_products.generic_type_demands.size()) {
+            slot.outcome.kind = SemanticProductOutcomeKind::Error;
+            slot.outcome.failure =
+                "generic layout product names an invalid demand";
+            slot.outcome.diagnostics.error(SourceRange::invalid(),
+                                           slot.outcome.failure);
+            continue;
+          }
+          const GenericTypeDemand &demand =
+              result.semantic_products.generic_type_demands[demand_id.value];
+          SemanticPackage task_package =
+              generic_wave_packages[package_index].has_value()
+                  ? *generic_wave_packages[package_index]
+                  : result.packages[package_index]->declarations.package;
+          if (!import_completed_generic_dependencies(
+                  result, product, task_package, slot.outcome.diagnostics)) {
+            slot.outcome.kind = SemanticProductOutcomeKind::Error;
+            slot.outcome.failure = "generic layout dependency import failed";
+            continue;
+          }
+          const Symbol source_symbol =
+              task_package.symbols.symbol(demand.source);
+          const std::size_t request_begin =
+              task_package.imported_type_instantiation_requests.size();
+          const TypeId concrete = instantiate_parametric_type_application(
+              sources, result.graph.packages[package_index].loaded,
+              task_package,
+              result.packages[package_index]->declarations.selections,
+              demand.source, demand.arguments, source_symbol.name_range,
+              &result.packages[package_index]->declarations.constants,
+              options.target.facts, slot.outcome.diagnostics);
+          if (!concrete.is_valid() ||
+              task_package.types.type(concrete).kind == TypeKind::Invalid) {
+            slot.outcome.kind = SemanticProductOutcomeKind::Error;
+            slot.outcome.failure = "generic layout product failed";
+            continue;
+          }
+          slot.generic_type = concrete;
+          slot.generic_result = export_interface_type_application(
+              result.packages[package_index]->identity, task_package, concrete,
+              demand.source, demand.arguments, slot.outcome.diagnostics);
+          for (std::size_t index = request_begin;
+               index < task_package.imported_type_instantiation_requests.size();
+               ++index) {
+            slot.generic_dependencies.push_back(
+                task_package.imported_type_instantiation_requests[index]);
+          }
+          if (!slot.generic_dependencies.empty()) {
+            slot.generic_package = std::move(task_package);
+            slot.outcome.kind = SemanticProductOutcomeKind::Blocked;
+            continue;
+          }
+          if (!owner_result_is_concrete(*slot.generic_result)) {
+            slot.outcome.kind = SemanticProductOutcomeKind::Error;
+            slot.outcome.failure =
+                "generic layout product produced no concrete owner result";
+            slot.outcome.diagnostics.error(source_symbol.name_range,
+                                           slot.outcome.failure);
+            continue;
+          }
+          generic_wave_packages[package_index] = std::move(task_package);
           continue;
         }
         const TypeId nominal =
@@ -2870,14 +2790,21 @@ package_condition_needs_materialization(const SemanticPackage &package,
       }
     }
 
-    // Fix the declaration prefix before publishing any task-local structural
-    // type. A frozen wave may contain both declaration and constant products.
-    // Declaration tasks currently advance one sequential package snapshot,
-    // whereas constant tasks retain the prefix they observed at wave start. If
-    // constants were interned first and this snapshot then replaced TypeStore,
-    // a returned tuple TypeId could silently become an unrelated nominal row.
-    // Step 9 replaces the whole-snapshot oracle with task deltas; until then,
-    // this coordinator order establishes the one canonical prefix for the wave.
+    // Fix successful generic-owner and declaration prefixes before importing
+    // any newly discovered generic argument graphs or publishing task-local
+    // structural constants. All three operations append canonical TypeStore
+    // rows, so replacing a package snapshot after another operation would let
+    // equal numeric TypeIds silently change meaning. Step 9 replaces these
+    // sequential whole-snapshot oracles with coordinator-applied task deltas.
+    for (std::size_t package_index = 0;
+         package_index < generic_wave_packages.size(); ++package_index) {
+      if (!generic_wave_packages[package_index].has_value() ||
+          !result.packages[package_index].has_value()) {
+        continue;
+      }
+      result.packages[package_index]->declarations.package =
+          std::move(*generic_wave_packages[package_index]);
+    }
     for (std::size_t package_index = 0;
          package_index < declaration_wave_packages.size(); ++package_index) {
       if (!declaration_wave_packages[package_index].has_value() ||
@@ -2888,6 +2815,64 @@ package_condition_needs_materialization(const SemanticPackage &package,
           std::move(*declaration_wave_packages[package_index]);
       result.packages[package_index]->declarations.package =
           result.packages[package_index]->declaration_discovery.package;
+    }
+
+    // Turn every requester-local owner row into a canonical command product in
+    // stable task and request order. The blocked attempt itself is disposable;
+    // only exported argument graphs cross into the owner's canonical tables.
+    // An existing equal key is reused directly, including when its product is
+    // already complete from an earlier requester.
+    for (std::size_t task_index = 0; task_index < wave.products.size();
+         ++task_index) {
+      WorkspaceInterfaceTaskSlot &slot = slots[task_index];
+      if (slot.outcome.kind == SemanticProductOutcomeKind::Error)
+        continue;
+      const std::vector<ImportedTypeInstantiationRequest> *requests = nullptr;
+      const SemanticPackage *requester_package = nullptr;
+      if (slot.declaration_type.has_value() &&
+          !slot.declaration_type->generic_type_dependencies.empty()) {
+        requests = &slot.declaration_type->generic_type_dependencies;
+        requester_package = slot.declaration_package.has_value()
+            ? &*slot.declaration_package
+            : nullptr;
+      } else if (!slot.generic_dependencies.empty()) {
+        requests = &slot.generic_dependencies;
+        requester_package = slot.generic_package.has_value()
+            ? &*slot.generic_package
+            : nullptr;
+      }
+      if (requests == nullptr)
+        continue;
+      if (requester_package == nullptr) {
+        slot.outcome.kind = SemanticProductOutcomeKind::Error;
+        slot.outcome.failure =
+            "generic dependency lost its requester-local package";
+        slot.outcome.diagnostics.error(SourceRange::invalid(),
+                                       slot.outcome.failure);
+        continue;
+      }
+      const PackageId requester =
+          result.semantic_products
+              .package_by_product[wave.products[task_index].value];
+      for (const ImportedTypeInstantiationRequest &request : *requests) {
+        GenericTypeDemandAppendResult appended = append_generic_type_demand(
+            result, schedule, requester, *requester_package, request,
+            slot.outcome.diagnostics);
+        if (!appended.ok) {
+          slot.outcome.kind = SemanticProductOutcomeKind::Error;
+          slot.outcome.failure = "cannot append generic type demand";
+          break;
+        }
+        slot.outcome.dependencies.insert(
+            slot.outcome.dependencies.end(), appended.dependencies.begin(),
+            appended.dependencies.end());
+        if (appended.product.has_value()) {
+          slot.outcome.dependencies.push_back(*appended.product);
+        }
+      }
+      if (slot.outcome.kind != SemanticProductOutcomeKind::Error) {
+        slot.outcome.kind = SemanticProductOutcomeKind::Blocked;
+      }
     }
 
     // Canonical structural type interning is coordinator-owned and follows
@@ -2968,6 +2953,35 @@ package_condition_needs_materialization(const SemanticPackage &package,
           result.packages[owner.value]
               ->declaration_discovery.package.symbols.symbol(symbol)
               .type;
+    }
+
+    // A completed generic owner task publishes one immutable transport graph
+    // beside the TypeNaturalLayout product. The owner-local instance rows were
+    // installed in the canonical declaration package before graph publication;
+    // requesters consume only this package-independent result on their retry.
+    for (std::size_t task_index = 0; task_index < wave.products.size();
+         ++task_index) {
+      const SemanticProductId product = wave.products[task_index];
+      const GenericTypeDemandId demand_id =
+          result.semantic_products
+              .generic_type_demand_by_product[product.value];
+      if (!demand_id.is_valid() ||
+          result.semantic_graph.products[product.value].state !=
+              SemanticProductState::Complete ||
+          !slots[task_index].generic_result.has_value() ||
+          !slots[task_index].generic_type.has_value()) {
+        continue;
+      }
+      GenericTypeDemand &demand =
+          result.semantic_products.generic_type_demands[demand_id.value];
+      if (demand.result.has_value()) {
+        diagnostics.error(SourceRange::invalid(),
+                          "generic type demand was published more than once");
+        return false;
+      }
+      demand.result = std::move(*slots[task_index].generic_result);
+      result.semantic_products.type_by_product[product.value] =
+          *slots[task_index].generic_type;
     }
 
     // Natural-layout packets mutate exactly one canonical facet after their
@@ -3743,24 +3757,13 @@ bool continue_compiled_workspace_semantics(
         package.bodies.program,
         package.effects,
         diagnostics);
-    // Body effects replace the preliminary declaration interface, but concrete
-    // type applications published during the owner fixed point are independent
-    // self-contained graphs. Keep them available to tooling and any later
-    // consumer of this completed compilation result; rebuilding the ordinary
-    // declarations must not silently erase generic layout products.
-    std::vector<InterfaceTypeGraph> retained_type_instances =
-        package.interface.instantiated_types;
-    PackageInterface completed_interface = build_package_interface(
+    package.interface = build_package_interface(
         workspace_package.identity,
         package.bodies.package,
         package.bodies.constants,
         package.metadata,
         package.effects,
         diagnostics);
-    for (const InterfaceTypeGraph &graph : retained_type_instances) {
-      append_instantiated_type(completed_interface, graph);
-    }
-    package.interface = std::move(completed_interface);
     if (!package.metadata.ok || !package.obligations.ok || !denials_ok ||
         !package.native_interop.ok) {
       continue;

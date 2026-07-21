@@ -8,12 +8,12 @@
 //
 // Compilation is deterministic and provider-free. A dynamic semantic product
 // graph orders target, source, parsed-file, package-name, declaration type,
-// nominal layout, conditional choice, named-constant, synthesis, and
-// package-interface facts; dependencies publish before consumers. Declaration
-// and constant workers evaluate one root against immutable published
-// prerequisites; the coordinator publishes accepted package snapshots,
-// structural type values, layouts, branch selections, and constants in
-// product-ID order. An unchanged source
+// nominal and canonical generic layout, conditional choice, named-constant,
+// synthesis, and package-interface facts; dependencies publish before
+// consumers. Declaration, generic-owner, and constant workers evaluate one root
+// against immutable published prerequisites; the coordinator publishes accepted
+// package snapshots, structural type values, layouts, branch selections, and
+// constants in product-ID order. An unchanged source
 // graph advances from interface discovery to semantic closure to target
 // lowering. A checked source overlay appends a successor source generation and
 // new declaration products only for affected packages, then reuses or extends
@@ -47,6 +47,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <string>
 #include <vector>
@@ -230,6 +231,38 @@ struct WorkspaceDependencyIndex {
   std::vector<std::size_t> consumer_first_order;
 };
 
+// GenericTypeDemandId is the stable command-local index into
+// WorkspaceSemanticProducts::generic_type_demands. The invalid sentinel marks
+// ordinary semantic products in the parallel product-to-demand table. It is
+// never serialized and has no meaning in another compiler invocation.
+struct GenericTypeDemandId {
+  std::uint32_t value = std::numeric_limits<std::uint32_t>::max();
+
+  [[nodiscard]] bool is_valid() const {
+    return value != std::numeric_limits<std::uint32_t>::max();
+  }
+  bool operator==(const GenericTypeDemandId &) const = default;
+};
+
+// GenericTypeDemand is one canonical concrete application owned by the package
+// which defines its public parametric type. source and every TypeId inside
+// arguments use that owner's append-only SemanticPackage tables. Equality of
+// owner, source, and arguments is the complete command-local key; no digest or
+// requester-local ID participates. product is a TypeNaturalLayout row because
+// owner evaluation exists precisely to publish the concrete runtime shape.
+//
+// result is absent while the product is waiting and becomes one immutable,
+// package-independent type graph at publication. Consumers import that graph
+// into their private declaration attempts after the product completes. This
+// avoids mutating a PackageInterface which was already published complete.
+struct GenericTypeDemand {
+  PackageId owner;
+  SymbolId source;
+  std::vector<ParametricArgument> arguments;
+  SemanticProductId product;
+  std::optional<InterfaceTypeGraph> result;
+};
+
 // PackageSemanticProducts names the current source generation's eager file and
 // import facts, declaration products, and two interface-stage barriers for one
 // package.
@@ -255,6 +288,10 @@ struct PackageSemanticProducts {
   // owned by the generic-demand path. These products consume declaration_types
   // and may add edges to other layout rows.
   std::vector<SemanticProductId> natural_layouts;
+  // Canonical owner-evaluated concrete applications discovered anywhere in the
+  // selected workspace. The vector belongs to the owner package and contains
+  // each command-local key once; requester products depend on these rows.
+  std::vector<SemanticProductId> generic_type_demands;
   // One compile-time branch-choice row per discovered package/member `when`.
   // New selected syntax may append more rows before name_set closes.
   std::vector<SemanticProductId> conditions;
@@ -294,6 +331,14 @@ struct WorkspaceSemanticProducts {
   // Parallel to SemanticProductGraph. Conditional value rows name exact parsed
   // syntax; other products contain an invalid SyntaxReference.
   std::vector<SyntaxReference> condition_by_product;
+  // Parallel to SemanticProductGraph. Canonical owner-evaluated type products
+  // name their GenericTypeDemand row; ordinary natural-layout products contain
+  // an invalid ID.
+  std::vector<GenericTypeDemandId> generic_type_demand_by_product;
+  // Append-only canonical demand table. Rows from superseded source generations
+  // remain inspectable, while each PackageSemanticProducts vector names only
+  // the currently selected rows.
+  std::vector<GenericTypeDemand> generic_type_demands;
 };
 
 struct CompileWorkspaceResult {

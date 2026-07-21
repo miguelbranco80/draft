@@ -526,43 +526,7 @@ bool finish_package_declaration_discovery(
         symbol.flags.parametric ||
         discovery.package.types.facet_state(
             symbol.type, TypeFacet::NaturalLayout) == TypeFacetState::Complete;
-    bool waits_for_imported_owner = false;
-    if (!natural_layout_complete &&
-        !discovery.package.imported_type_instantiation_requests.empty()) {
-      for (const ImportedType &imported : discovery.package.imported_types) {
-        if (imported.type == symbol.type && !imported.arguments.empty()) {
-          waits_for_imported_owner = true;
-          break;
-        }
-      }
-      // Applying an imported template creates a consumer-local instance shell
-      // and an ImportedTypeInstantiationRequest. An authored alias names that
-      // shell, not the imported template marker retained in imported_types, so
-      // relate it through the instance's source proxy as well.
-      for (const ParametricTypeInstanceRecord &instance :
-           discovery.package.parametric_type_instances) {
-        if (discovery.package.symbols.symbol(instance.instance).type !=
-            symbol.type) {
-          continue;
-        }
-        for (const ImportedTypeInstantiationRequest &request :
-             discovery.package.imported_type_instantiation_requests) {
-          if (request.source_proxy == instance.source) {
-            waits_for_imported_owner = true;
-            break;
-          }
-        }
-        if (waits_for_imported_owner)
-          break;
-      }
-    }
-    // Cross-package procedure-dependent generic applications still leave one
-    // imported nominal shell pending until the defining package evaluates its
-    // private recipe. The command-level owner loop consumes the explicit
-    // ImportedTypeInstantiationRequest immediately after this barrier. Step 4
-    // replaces that temporary exception with a canonical generic-demand edge.
-    if (!member_types_complete ||
-        (!natural_layout_complete && !waits_for_imported_owner)) {
+    if (!member_types_complete || !natural_layout_complete) {
       diagnostics.error(symbol.name_range,
                         "nominal type products are not complete for '" +
                             symbol.name + "'");
