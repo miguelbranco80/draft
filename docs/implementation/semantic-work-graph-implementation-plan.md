@@ -184,9 +184,26 @@ gate.
    scheduler after finalization; later demands append to the exact work/product
    prefix instead of reconstructing extension state from `BodyCheckResult`.
    `PackageBodyWorkKey` and its redundant declaration generation are deleted;
-   a changed declaration already replaces the complete package row. The
-   consumer-first external-demand loop, aggregate demand-set comparison, and
-   demand-removal rebuild remain as the deletion boundary for this step.
+   a changed declaration already replaces the complete package row.
+
+   Aggregate external-demand comparison and demand-removal reconstruction are
+   now deleted. Every unseen portable demand names one retained owner body
+   product. Authored roots, current external roots, and prerequisite-reachable
+   descendants form an explicit selected projection; removal changes that
+   projection without mutating or superseding completed products. Procedure
+   results retain exact outbound request routes and semantic-site indices, while
+   selected HIR symbol references preserve a reused imported proxy's transitive
+   demand after its first discovering product becomes inactive. Metadata,
+   effects, denials, interfaces, validation, assembly, MIR, and LLVM consume
+   only selected bodies. Regression tests prove direct removal, local-instance
+   promotion, transitive removal, proxy reuse, stable product IDs, and zero
+   rechecking of retained owner bodies.
+
+   The remaining step-5 deletion boundary is the package-by-package
+   consumer-first outer scheduler and package-wide canonical semantic table.
+   Replace it with one workspace body ready-set coordinator whose package-local
+   publishers remain deterministic, then remove `BodyCheckResult`'s remaining
+   package-wide semantic transfer form from non-workspace APIs.
 
 6. **Synthesis as an explicit wait state.** A body or declaration task may
    report its exact ready `...` set after producing the typed constraint needed

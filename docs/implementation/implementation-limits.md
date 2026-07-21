@@ -63,9 +63,16 @@ explicit eight-MiB worker stack so authored syntax recursion has the same
 practical budget in sequential and parallel execution.
 Workspace packages retain the live body publication state after finalization,
 so a newly demanded external specialization appends to the existing work and
-product prefix rather than reconstructing an extension scheduler. Aggregate
-external-demand selection and the demand-removal rebuild remain temporary
-limits. There is no declaration-generation body work key.
+product prefix rather than reconstructing an extension scheduler. Authored,
+current external, and prerequisite-reachable bodies form an explicit selected
+projection. Removed demands leave completed products immutable but exclude them
+from transitive discovery, metadata, effects, interfaces, lowering, and native
+emission. Exact product-owned outbound requests and a selected-HIR proxy scan
+keep transitive demands live even when their original discovering product is no
+longer selected. There is no aggregate demand-set comparison, demand-removal
+rebuild, or declaration-generation body work key. Package body scheduling is
+still consumer-first and sequential between package-local parallel waves;
+workspace-wide body ready waves remain planned work.
 Effect closure, denials, and MIR still consume a package-wide HIR compatibility
 projection. Each operation builds and discards that view from authoritative
 procedure products; the compiler retains no package-wide HIR copy. Migrating

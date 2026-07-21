@@ -143,9 +143,14 @@ public:
       const ConstantTable &constants,
       const AgentMetadataResult *metadata,
       const EffectSummaryResult *effects,
+      std::span<const SymbolId> active_external_instances,
+      bool filter_external_instances,
       DiagnosticSink &diagnostics)
       : identity_(identity), package_(package), constants_(constants),
-        metadata_(metadata), effects_(effects), diagnostics_(diagnostics) {
+        metadata_(metadata), effects_(effects),
+        active_external_instances_(active_external_instances),
+        filter_external_instances_(filter_external_instances),
+        diagnostics_(diagnostics) {
     result_.identity = identity;
     result_.short_name = package.short_name;
     translated_.resize(package.types.size());
@@ -228,6 +233,13 @@ public:
       for (const ParametricInstanceRecord &instance :
            package_.parametric_instances_for_read()) {
         if (!instance.externally_requested) continue;
+        if (filter_external_instances_ &&
+            std::find(
+                active_external_instances_.begin(),
+                active_external_instances_.end(),
+                instance.instance) == active_external_instances_.end()) {
+          continue;
+        }
         const Symbol &source = package_.symbols.symbol(instance.source);
         if (source.visibility != Visibility::Public ||
             source.kind != SymbolKind::Procedure) {
@@ -806,6 +818,8 @@ private:
   const ConstantTable &constants_;
   const AgentMetadataResult *metadata_ = nullptr;
   const EffectSummaryResult *effects_ = nullptr;
+  std::span<const SymbolId> active_external_instances_;
+  bool filter_external_instances_ = false;
   DiagnosticSink &diagnostics_;
   PackageInterface result_;
   std::vector<InterfaceTypeId> translated_;
@@ -1522,7 +1536,8 @@ PackageInterface build_package_interface(
     const SemanticPackage &package,
     const ConstantTable &constants,
     DiagnosticSink &diagnostics) {
-  InterfaceBuilder builder(identity, package, constants, nullptr, nullptr, diagnostics);
+  InterfaceBuilder builder(
+      identity, package, constants, nullptr, nullptr, {}, false, diagnostics);
   return builder.run();
 }
 
@@ -1532,7 +1547,9 @@ PackageInterface build_package_interface(
     const ConstantTable &constants,
     const AgentMetadataResult &metadata,
     DiagnosticSink &diagnostics) {
-  InterfaceBuilder builder(identity, package, constants, &metadata, nullptr, diagnostics);
+  InterfaceBuilder builder(
+      identity, package, constants, &metadata, nullptr, {}, false,
+      diagnostics);
   return builder.run();
 }
 
@@ -1544,7 +1561,22 @@ PackageInterface build_package_interface(
     const EffectSummaryResult &effects,
     DiagnosticSink &diagnostics) {
   InterfaceBuilder builder(
-      identity, package, constants, &metadata, &effects, diagnostics);
+      identity, package, constants, &metadata, &effects, {}, false,
+      diagnostics);
+  return builder.run();
+}
+
+PackageInterface build_package_interface(
+    const PackageIdentity &identity,
+    const SemanticPackage &package,
+    const ConstantTable &constants,
+    const AgentMetadataResult &metadata,
+    const EffectSummaryResult &effects,
+    std::span<const SymbolId> active_external_instances,
+    DiagnosticSink &diagnostics) {
+  InterfaceBuilder builder(
+      identity, package, constants, &metadata, &effects,
+      active_external_instances, true, diagnostics);
   return builder.run();
 }
 
@@ -1555,7 +1587,8 @@ InterfaceTypeGraph export_interface_type(
     DiagnosticSink &diagnostics) {
   const ConstantTable no_constants;
   InterfaceBuilder builder(
-      identity, package, no_constants, nullptr, nullptr, diagnostics);
+      identity, package, no_constants, nullptr, nullptr, {}, false,
+      diagnostics);
   return builder.run_type(type);
 }
 
@@ -1568,7 +1601,8 @@ InterfaceTypeGraph export_interface_type_application(
     DiagnosticSink &diagnostics) {
   const ConstantTable no_constants;
   InterfaceBuilder builder(
-      identity, package, no_constants, nullptr, nullptr, diagnostics);
+      identity, package, no_constants, nullptr, nullptr, {}, false,
+      diagnostics);
   return builder.run_type_application(type, source, arguments);
 }
 

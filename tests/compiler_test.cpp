@@ -35,7 +35,7 @@ struct TestState {
 
 #define EXPECT(state, expression) (state).expect((expression), #expression, __LINE__)
 
-void test_procedure_demand_sets_are_canonical_and_exact(TestState &state) {
+void test_procedure_demands_are_canonical_and_exact(TestState &state) {
   draft::ProcedureInstantiationDemand first;
   first.public_template_name = "render";
   first.instance_name = "render$mono$first";
@@ -55,17 +55,6 @@ void test_procedure_demand_sets_are_canonical_and_exact(TestState &state) {
     EXPECT(state, duplicated[1].instance_name == second.instance_name);
   }
   EXPECT(state, !diagnostics.has_errors());
-
-  std::vector<draft::ProcedureInstantiationDemand> previous{first};
-  std::vector<draft::ProcedureInstantiationDemand> current{first, second};
-  std::vector<draft::ProcedureInstantiationDemand> added;
-  EXPECT(state, draft::added_procedure_demands(previous, current, added));
-  EXPECT(state, added.size() == 1);
-  if (added.size() == 1) {
-    EXPECT(state, added.front().digest == second.digest);
-  }
-  added.clear();
-  EXPECT(state, !draft::added_procedure_demands(current, previous, added));
 
   // Native names contain a shortened digest for inspectability. The complete
   // digest remains the semantic key, so two different packets with the same
@@ -136,6 +125,8 @@ void test_procedure_bodies_are_dynamic_semantic_products(TestState &state) {
                     compiled.semantic_graph.products.size());
   EXPECT(state, products.procedure_bodies.size() ==
                     package.bodies.procedures.size());
+  EXPECT(state,
+         products.selected_procedure_bodies == products.procedure_bodies);
   for (const draft::ProcedureBodyHirResult &procedure :
        package.bodies.procedures) {
     EXPECT(state, procedure.ok);
@@ -1441,14 +1432,13 @@ void test_body_source_update_reuses_closed_generic_dependency(
                draft::SemanticProductState::Complete);
   }
 
-  // Two packages are checked for the surface graph. The body replacement
-  // checks only app; formatting's equal external-demand selection is reused.
+  // Two packages start body state for the surface graph. The body replacement
+  // starts only app; formatting retains its immutable body products.
   const std::string report = timings.render();
-  EXPECT(state, report.find("package body checks: 3") != std::string::npos);
-  EXPECT(state, report.find("package body reuses: 1") != std::string::npos);
+  EXPECT(state, report.find("package body starts: 3") != std::string::npos);
 }
 
-void test_body_work_graph_extends_and_removes_generic_demand(TestState &state) {
+void test_body_products_survive_external_demand_removal(TestState &state) {
   draft::test::TemporaryDirectory temporary_directory{
       "draft-bootstrap-body-demand-transition-test"};
   const std::filesystem::path &root = temporary_directory.path();
@@ -1510,9 +1500,6 @@ void test_body_work_graph_extends_and_removes_generic_demand(TestState &state) {
   const std::size_t declaration_symbol_count =
       compiled.packages[*formatting_index]
           ->declarations.package.symbols.symbol_count();
-  const std::size_t initial_body_symbol_count =
-      compiled.packages[*formatting_index]
-          ->bodies.package.symbols.symbol_count();
   const std::size_t initial_checked =
       compiled.packages[*formatting_index]->bodies.checked_procedures;
   const std::size_t initial_work =
@@ -1540,7 +1527,7 @@ void test_body_work_graph_extends_and_removes_generic_demand(TestState &state) {
              sources, (root / "app").string(), options, compiled, diagnostics));
   const draft::CompiledPackage &extended =
       *compiled.packages[*formatting_index];
-  EXPECT(state, extended.external_procedure_demands.size() == 1);
+  EXPECT(state, extended.external_procedure_products.size() == 1);
   EXPECT(state, extended.bodies.package.parametric_instances.size() == 1);
   EXPECT(state, extended.bodies.checked_procedures == initial_checked + 1);
   EXPECT(state, extended.bodies.finalized);
@@ -1556,10 +1543,17 @@ void test_body_work_graph_extends_and_removes_generic_demand(TestState &state) {
                     extended_body_products.begin()));
   EXPECT(state, extended.declarations.package.symbols.symbol_count() ==
                     declaration_symbol_count);
+  const std::size_t extended_body_symbol_count =
+      extended.bodies.package.symbols.symbol_count();
+  const std::size_t extended_checked = extended.bodies.checked_procedures;
+  const std::size_t extended_work = extended.bodies.work.size();
+  const std::vector<draft::SemanticProductId> retained_body_products =
+      extended_body_products;
 
-  // Removing the only demand cannot leave the old executable specialization
-  // in the final package. The scheduler falls back to the immutable
-  // declaration baseline and reconstructs the exact empty-demand body result.
+  // Removing the only demand changes the selected program, not the immutable
+  // product history. The concrete body and its canonical semantic rows remain
+  // inspectable for command-local reuse, while the selected product set and
+  // public interface exclude it.
   draft::WorkspaceSourceOverride remove_demand;
   remove_demand.identity = {"workspace", "app"};
   remove_demand.source.relative_name = "package.draft";
@@ -1579,14 +1573,291 @@ void test_body_work_graph_extends_and_removes_generic_demand(TestState &state) {
   }
   const draft::CompiledPackage &removed = *compiled.packages[*formatting_index];
   EXPECT(state, compiled.ok);
-  EXPECT(state, removed.external_procedure_demands.empty());
-  EXPECT(state, removed.bodies.package.parametric_instances.empty());
+  EXPECT(state, removed.external_procedure_products.size() == 1);
+  EXPECT(state, removed.bodies.package.parametric_instances.size() == 1);
   EXPECT(state, removed.bodies.package.symbols.symbol_count() ==
-                    initial_body_symbol_count);
+                    extended_body_symbol_count);
+  EXPECT(state, removed.bodies.checked_procedures == extended_checked);
+  EXPECT(state, removed.bodies.work.size() == extended_work);
+  EXPECT(state, removed.interface.procedure_instances.empty());
+  EXPECT(state,
+         compiled.semantic_products.packages[*formatting_index]
+                 .procedure_bodies == retained_body_products);
+  EXPECT(state,
+         compiled.semantic_products.packages[*formatting_index]
+                 .selected_procedure_bodies.size() ==
+             initial_body_products.size());
+  EXPECT(state,
+         std::equal(
+             initial_body_products.begin(),
+             initial_body_products.end(),
+             compiled.semantic_products.packages[*formatting_index]
+                 .selected_procedure_bodies.begin()));
+  for (draft::SemanticProductId product : retained_body_products) {
+    EXPECT(state,
+           compiled.semantic_graph.products[product.value].state ==
+               draft::SemanticProductState::Complete);
+  }
+
+  // The same demand can return later in the command. It reselects the exact
+  // retained product and interface row without running BodyChecker again.
+  EXPECT(state,
+         draft::apply_compiled_workspace_source_overrides(
+             sources,
+             {add_demand},
+             draft::WorkspaceSemanticChange::Body,
+             options,
+             compiled,
+             diagnostics));
+  EXPECT(state,
+         draft::continue_compiled_workspace_semantics(
+             sources, (root / "app").string(), options, compiled, diagnostics));
+  if (diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+  }
+  const draft::CompiledPackage &reselected =
+      *compiled.packages[*formatting_index];
+  EXPECT(state, compiled.ok);
+  EXPECT(state, reselected.bodies.checked_procedures == extended_checked);
+  EXPECT(state,
+         compiled.semantic_products.packages[*formatting_index]
+                 .procedure_bodies == retained_body_products);
+  EXPECT(state,
+         compiled.semantic_products.packages[*formatting_index]
+                 .selected_procedure_bodies == retained_body_products);
+  EXPECT(state, reselected.interface.procedure_instances.size() == 1);
 
   const std::string report = timings.render();
-  EXPECT(state, report.find("package body extensions: 1") != std::string::npos);
-  EXPECT(state, report.find("package body checks: 5") != std::string::npos);
+  EXPECT(state,
+         report.find("external procedure bodies materialized: 1") !=
+             std::string::npos);
+  EXPECT(state, report.find("package body starts: 5") != std::string::npos);
+}
+
+void test_body_selection_removes_transitive_generic_demand(TestState &state) {
+  draft::test::TemporaryDirectory temporary_directory{
+      "draft-bootstrap-transitive-body-selection-test"};
+  const std::filesystem::path &root = temporary_directory.path();
+  std::error_code error;
+  std::filesystem::create_directories(root / "app", error);
+  std::filesystem::create_directories(root / "middle", error);
+  std::filesystem::create_directories(root / "leaf", error);
+  EXPECT(state, !error);
+  if (error) return;
+
+  std::ofstream app(root / "app" / "package.draft", std::ios::binary);
+  app << "package app\n"
+         "import middle\n"
+         "main :: proc() {\n"
+         "}\n";
+  app.close();
+  std::ofstream middle(root / "middle" / "package.draft", std::ios::binary);
+  middle << "package middle\n"
+            "import leaf\n"
+            "pub forward[T: type] :: proc(value: T) -> T {\n"
+            "    return leaf.identity[T](value)\n"
+            "}\n"
+            "pub forward_again[T: type] :: proc(value: T) -> T {\n"
+            "    return leaf.identity[T](value)\n"
+            "}\n";
+  middle.close();
+  std::ofstream leaf(root / "leaf" / "package.draft", std::ios::binary);
+  leaf << "package leaf\n"
+          "pub identity[T: type] :: proc(value: T) -> T {\n"
+          "    return value\n"
+          "}\n";
+  leaf.close();
+
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  draft::CompileWorkspaceOptions options;
+  options.target = draft::make_aarch64_macos_profile();
+  options.workspace.workspace_directory = root.string();
+  draft::CompileWorkspaceResult compiled = draft::compile_workspace(
+      sources, (root / "app").string(), options, diagnostics);
+  EXPECT(state, compiled.ok);
+  if (!compiled.ok) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+    return;
+  }
+
+  std::optional<std::size_t> middle_index;
+  std::optional<std::size_t> leaf_index;
+  for (std::size_t index = 0; index < compiled.packages.size(); ++index) {
+    if (!compiled.packages[index].has_value()) continue;
+    const std::string &path =
+        compiled.packages[index]->identity.root_relative_path;
+    if (path == "middle") middle_index = index;
+    if (path == "leaf") leaf_index = index;
+  }
+  EXPECT(state, middle_index.has_value());
+  EXPECT(state, leaf_index.has_value());
+  if (!middle_index.has_value() || !leaf_index.has_value()) return;
+  EXPECT(state,
+         compiled.packages[*middle_index]
+             ->external_procedure_products.empty());
+  EXPECT(state,
+         compiled.packages[*leaf_index]->external_procedure_products.empty());
+  const std::size_t initial_middle_selection =
+      compiled.semantic_products.packages[*middle_index]
+          .selected_procedure_bodies.size();
+  const std::size_t initial_leaf_selection =
+      compiled.semantic_products.packages[*leaf_index]
+          .selected_procedure_bodies.size();
+
+  draft::WorkspaceSourceOverride add_demand;
+  add_demand.identity = {"workspace", "app"};
+  add_demand.source.relative_name = "package.draft";
+  add_demand.source.contents = "package app\n"
+                               "import middle\n"
+                               "main :: proc() {\n"
+                               "    value := middle.forward[i64](42)\n"
+                               "    assert(value == 42)\n"
+                               "}\n";
+  EXPECT(state,
+         draft::apply_compiled_workspace_source_overrides(
+             sources,
+             {add_demand},
+             draft::WorkspaceSemanticChange::Body,
+             options,
+             compiled,
+             diagnostics));
+  EXPECT(state,
+         draft::continue_compiled_workspace_semantics(
+             sources, (root / "app").string(), options, compiled, diagnostics));
+  if (diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+  }
+  EXPECT(state,
+         compiled.packages[*middle_index]
+                 ->external_procedure_products.size() == 1);
+  EXPECT(state,
+         compiled.packages[*leaf_index]
+                 ->external_procedure_products.size() == 1);
+  const std::size_t middle_checked =
+      compiled.packages[*middle_index]->bodies.checked_procedures;
+  const std::size_t leaf_checked =
+      compiled.packages[*leaf_index]->bodies.checked_procedures;
+
+  // Switch to a second middle specialization which reuses the concrete leaf
+  // proxy created by the first. The first middle product becomes unselected,
+  // but the selected second HIR still names that proxy and must keep the leaf
+  // body selected without checking it again.
+  draft::WorkspaceSourceOverride switch_demand;
+  switch_demand.identity = {"workspace", "app"};
+  switch_demand.source.relative_name = "package.draft";
+  switch_demand.source.contents = "package app\n"
+                                  "import middle\n"
+                                  "main :: proc() {\n"
+                                  "    value := middle.forward_again[i64](42)\n"
+                                  "    assert(value == 42)\n"
+                                  "}\n";
+  EXPECT(state,
+         draft::apply_compiled_workspace_source_overrides(
+             sources,
+             {switch_demand},
+             draft::WorkspaceSemanticChange::Body,
+             options,
+             compiled,
+             diagnostics));
+  EXPECT(state,
+         draft::continue_compiled_workspace_semantics(
+             sources, (root / "app").string(), options, compiled, diagnostics));
+  if (diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+  }
+  EXPECT(state, compiled.ok);
+  EXPECT(state,
+         compiled.packages[*middle_index]
+                 ->external_procedure_products.size() == 2);
+  EXPECT(state,
+         compiled.packages[*leaf_index]
+                 ->external_procedure_products.size() == 1);
+  EXPECT(state,
+         compiled.packages[*middle_index]->bodies.checked_procedures ==
+             middle_checked + 1);
+  EXPECT(state,
+         compiled.packages[*leaf_index]->bodies.checked_procedures ==
+             leaf_checked);
+  EXPECT(state,
+         compiled.packages[*middle_index]
+                 ->interface.procedure_instances.size() == 1);
+  EXPECT(state,
+         compiled.packages[*leaf_index]
+                 ->interface.procedure_instances.size() == 1);
+  const std::size_t final_middle_checked =
+      compiled.packages[*middle_index]->bodies.checked_procedures;
+  const std::size_t final_leaf_checked =
+      compiled.packages[*leaf_index]->bodies.checked_procedures;
+  const std::vector<draft::SemanticProductId> middle_products =
+      compiled.semantic_products.packages[*middle_index].procedure_bodies;
+  const std::vector<draft::SemanticProductId> leaf_products =
+      compiled.semantic_products.packages[*leaf_index].procedure_bodies;
+
+  draft::WorkspaceSourceOverride remove_demand;
+  remove_demand.identity = {"workspace", "app"};
+  remove_demand.source.relative_name = "package.draft";
+  remove_demand.source.contents = "package app\n"
+                                  "import middle\n"
+                                  "main :: proc() {\n"
+                                  "}\n";
+  EXPECT(state,
+         draft::apply_compiled_workspace_source_overrides(
+             sources,
+             {remove_demand},
+             draft::WorkspaceSemanticChange::Body,
+             options,
+             compiled,
+             diagnostics));
+  EXPECT(state,
+         draft::continue_compiled_workspace_semantics(
+             sources, (root / "app").string(), options, compiled, diagnostics));
+  if (diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+  }
+  EXPECT(state, compiled.ok);
+  EXPECT(state,
+         compiled.packages[*middle_index]->bodies.checked_procedures ==
+             final_middle_checked);
+  EXPECT(state,
+         compiled.packages[*leaf_index]->bodies.checked_procedures ==
+             final_leaf_checked);
+  EXPECT(state,
+         compiled.semantic_products.packages[*middle_index].procedure_bodies ==
+             middle_products);
+  EXPECT(state,
+         compiled.semantic_products.packages[*leaf_index].procedure_bodies ==
+             leaf_products);
+  EXPECT(state,
+         compiled.packages[*middle_index]->interface.procedure_instances.empty());
+  EXPECT(state,
+         compiled.packages[*leaf_index]->interface.procedure_instances.empty());
+  EXPECT(state,
+         compiled.semantic_products.packages[*middle_index]
+                 .selected_procedure_bodies.size() ==
+             initial_middle_selection);
+  EXPECT(state,
+         compiled.semantic_products.packages[*middle_index]
+                 .selected_procedure_bodies.size() + 2 ==
+             middle_products.size());
+  EXPECT(state,
+         compiled.semantic_products.packages[*leaf_index]
+                 .selected_procedure_bodies.size() ==
+             initial_leaf_selection);
+  EXPECT(state,
+         compiled.semantic_products.packages[*leaf_index]
+                 .selected_procedure_bodies.size() + 1 ==
+             leaf_products.size());
+  for (draft::SemanticProductId product : middle_products) {
+    EXPECT(state,
+           compiled.semantic_graph.products[product.value].state ==
+               draft::SemanticProductState::Complete);
+  }
+  for (draft::SemanticProductId product : leaf_products) {
+    EXPECT(state,
+           compiled.semantic_graph.products[product.value].state ==
+               draft::SemanticProductState::Complete);
+  }
 }
 
 void test_body_work_graph_promotes_matching_local_instance(TestState &state) {
@@ -1696,6 +1967,54 @@ void test_body_work_graph_promotes_matching_local_instance(TestState &state) {
     EXPECT(state,
            promoted.interface.procedure_instances.front().instance_name.find(
                "$mono$") != std::string::npos);
+  }
+
+  // Removing the external request must stop exporting the specialization, but
+  // its package-local call still selects the already checked body through the
+  // self_check prerequisite.
+  draft::WorkspaceSourceOverride remove_external_demand;
+  remove_external_demand.identity = {"workspace", "app"};
+  remove_external_demand.source.relative_name = "package.draft";
+  remove_external_demand.source.contents = "package app\n"
+                                             "import formatting\n"
+                                             "main :: proc() {\n"
+                                             "}\n";
+  EXPECT(state,
+         draft::apply_compiled_workspace_source_overrides(
+             sources,
+             {remove_external_demand},
+             draft::WorkspaceSemanticChange::Body,
+             options,
+             compiled,
+             diagnostics));
+  EXPECT(state,
+         draft::continue_compiled_workspace_semantics(
+             sources, (root / "app").string(), options, compiled, diagnostics));
+  if (diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+  }
+  const draft::CompiledPackage &local_only =
+      *compiled.packages[*formatting_index];
+  EXPECT(state, compiled.ok);
+  EXPECT(state, local_only.bodies.procedures.size() == initial_procedures);
+  EXPECT(state, local_only.bodies.checked_procedures == initial_checked);
+  EXPECT(state, local_only.external_procedure_products.size() == 1);
+  EXPECT(state, local_only.selected_external_procedure_work.empty());
+  EXPECT(state, local_only.interface.procedure_instances.empty());
+  std::optional<std::size_t> local_instance_work;
+  for (std::size_t index = 0; index < local_only.bodies.work.size(); ++index) {
+    if (local_only.bodies.work[index].symbol == initial_instance) {
+      local_instance_work = index;
+      break;
+    }
+  }
+  EXPECT(state, local_instance_work.has_value());
+  if (local_instance_work.has_value()) {
+    EXPECT(state,
+           std::binary_search(
+               local_only.selected_procedure_work.begin(),
+               local_only.selected_procedure_work.end(),
+               *local_instance_work));
   }
 }
 
@@ -3258,7 +3577,7 @@ void test_cross_package_static_argument_pack_effects(TestState &state) {
 
 int main() {
   TestState state;
-  test_procedure_demand_sets_are_canonical_and_exact(state);
+  test_procedure_demands_are_canonical_and_exact(state);
   test_procedure_bodies_are_dynamic_semantic_products(state);
   test_procedure_body_worker_counts_are_deterministic(state);
   test_parallel_body_diagnostics_are_canonical(state);
@@ -3270,7 +3589,8 @@ int main() {
   test_interface_synthesis_is_an_explicit_graph_wait(state);
   test_layout_synthesis_waits_on_declaration_product(state);
   test_body_source_update_reuses_closed_generic_dependency(state);
-  test_body_work_graph_extends_and_removes_generic_demand(state);
+  test_body_products_survive_external_demand_removal(state);
+  test_body_selection_removes_transitive_generic_demand(state);
   test_body_work_graph_promotes_matching_local_instance(state);
   test_target_lowering_continues_checked_graph(state);
   test_multi_package_native_pipeline(state);

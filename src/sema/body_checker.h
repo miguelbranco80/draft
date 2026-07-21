@@ -36,6 +36,14 @@ struct ProcedureBodyHirResult {
   bool ok = false;
   SymbolId symbol;
   HirProgram program;
+  // Outbound requests are copied after deterministic publication has
+  // translated every task-local ID into the canonical package generation.
+  // Site indices address the containing PackageBodyWorkState's append-only
+  // semantic-site table, whose rows may later receive loop-range enrichment.
+  // Together these fields record exactly which body discovered each item, so
+  // workspace selection can ignore a completed but currently unselected body.
+  std::vector<ImportedProcedureInstance> imported_procedure_instances;
+  std::vector<std::size_t> semantic_site_indices;
 };
 
 // BodyCheckResult owns the complete body-derived semantic state for one
@@ -73,6 +81,15 @@ struct BodyCheckResult {
 project_package_body_hir(
     std::span<const ProcedureBodyHirResult> procedures);
 
+// Builds the same temporary HIR projection for an explicit selected subset.
+// selected_indices are indices into procedures, must be strictly increasing,
+// and preserve canonical body-product order. This is the workspace form: old
+// completed demand products may remain inspectable in procedures while later
+// semantic phases consume only the currently selected program.
+[[nodiscard]] HirProgram project_package_body_hir(
+    std::span<const ProcedureBodyHirResult> procedures,
+    std::span<const std::size_t> selected_indices);
+
 // Compiler orchestration creates these rows from imported generic calls found
 // in packages earlier in the acyclic consumer-to-dependency order. arguments
 // and pack_types have already been translated into the defining package's
@@ -107,6 +124,17 @@ struct ProcedureBodyEnvironment {
   SymbolId pack_binding;
 };
 
+// ProcedureBodyWorkOrigin records why the scheduler first created one body
+// row. Authored roots are always selected. Discovered roots are selected with
+// their prerequisite. ExternalDemand roots are selected only while a current
+// cross-package demand names them. A later external demand may reuse a locally
+// discovered row; in that case the original Discovered origin remains correct.
+enum class ProcedureBodyWorkOrigin {
+  Authored,
+  Discovered,
+  ExternalDemand,
+};
+
 // One ProcedureBodyWorkItem names one exact independently scheduled body.
 // parametric_template distinguishes symbolic checking from executable concrete
 // checking. prerequisite is the index of the enclosing or discovering work
@@ -118,6 +146,7 @@ struct ProcedureBodyWorkItem {
   bool parametric_template = false;
   std::optional<ProcedureBodyEnvironment> enclosing_environment;
   std::optional<std::size_t> prerequisite;
+  ProcedureBodyWorkOrigin origin = ProcedureBodyWorkOrigin::Discovered;
 };
 
 // ProcedureBodySemanticPrefix records every append-only table boundary seen by
@@ -226,6 +255,10 @@ struct ProcedureBodyTaskResult {
   // One local arena containing only this root's recoverable HIR.
   HirProgram program;
   std::vector<ProcedureBodyWorkItem> discovered_work;
+  // Filled by deterministic publication after remapping task-local semantic
+  // IDs. Workers leave these empty because their IDs are not yet canonical.
+  std::vector<ImportedProcedureInstance> imported_procedure_instances;
+  std::vector<std::size_t> semantic_site_indices;
 };
 
 // PackageBodyWorkState is the explicit deterministic publication state for

@@ -3,8 +3,7 @@
 // See body_work.h for the ownership and phase contract. This implementation is
 // deliberately a set of direct vector operations: demand sets are normally
 // small, already content-addressed, and traversed once per affected package.
-// Sorting gives deterministic identity without a hash-table iteration contract;
-// the merge walk distinguishes append-only work from removal in linear time.
+// Sorting gives deterministic identity without a hash-table iteration contract.
 
 #include "compile/body_work.h"
 
@@ -49,50 +48,6 @@ bool canonicalize_procedure_demands(
     canonical.push_back(std::move(demand));
   }
   demands = std::move(canonical);
-  return true;
-}
-
-bool same_procedure_demands(
-    const std::vector<ProcedureInstantiationDemand> &left,
-    const std::vector<ProcedureInstantiationDemand> &right) {
-  if (left.size() != right.size())
-    return false;
-  for (std::size_t index = 0; index < left.size(); ++index) {
-    if (left[index].instance_name != right[index].instance_name ||
-        left[index].digest != right[index].digest) {
-      return false;
-    }
-  }
-  return true;
-}
-
-bool added_procedure_demands(
-    const std::vector<ProcedureInstantiationDemand> &previous,
-    const std::vector<ProcedureInstantiationDemand> &current,
-    std::vector<ProcedureInstantiationDemand> &added) {
-  std::size_t previous_index = 0;
-  std::size_t current_index = 0;
-  while (previous_index < previous.size() && current_index < current.size()) {
-    const ProcedureInstantiationDemand &old = previous[previous_index];
-    const ProcedureInstantiationDemand &now = current[current_index];
-    if (old.instance_name == now.instance_name && old.digest == now.digest) {
-      ++previous_index;
-      ++current_index;
-      continue;
-    }
-    if (procedure_demand_less(now, old)) {
-      added.push_back(now);
-      ++current_index;
-      continue;
-    }
-    return false;
-  }
-  if (previous_index != previous.size())
-    return false;
-  while (current_index < current.size()) {
-    added.push_back(current[current_index]);
-    ++current_index;
-  }
   return true;
 }
 

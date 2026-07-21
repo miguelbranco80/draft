@@ -162,10 +162,11 @@ public:
       const SourceManager &sources,
       const LoadedPackage &loaded,
       const SemanticPackage &package,
+      std::span<const SemanticSite> selected_sites,
       const AttachmentPolicy &policy,
       DiagnosticSink &diagnostics)
       : sources_(sources), loaded_(loaded), package_(package), policy_(policy),
-        diagnostics_(diagnostics) {}
+        diagnostics_(diagnostics), selected_sites_(selected_sites) {}
 
   [[nodiscard]] AgentMetadataResult run() {
     AgentMetadataResult result;
@@ -179,7 +180,7 @@ public:
       return result;
     }
 
-    for (const SemanticSite &site : package_.sites_for_read()) {
+    for (const SemanticSite &site : selected_sites_) {
       const std::optional<AgentConstructKind> kind = agent_kind(site.kind);
       if (!kind.has_value()) continue;
       const SyntaxTree *tree = find_tree(site.syntax.file);
@@ -489,6 +490,7 @@ private:
   const SemanticPackage &package_;
   const AttachmentPolicy &policy_;
   DiagnosticSink &diagnostics_;
+  std::span<const SemanticSite> selected_sites_;
   std::filesystem::path package_root_;
   std::uint64_t total_bytes_ = 0;
 };
@@ -501,7 +503,25 @@ AgentMetadataResult collect_agent_metadata(
     const SemanticPackage &package,
     const AttachmentPolicy &policy,
     DiagnosticSink &diagnostics) {
-  MetadataCollector collector(sources, loaded, package, policy, diagnostics);
+  std::vector<SemanticSite> sites;
+  const AppendOnlyTableView<SemanticSite> package_sites =
+      package.sites_for_read();
+  sites.reserve(package_sites.size());
+  for (const SemanticSite &site : package_sites) sites.push_back(site);
+  MetadataCollector collector(
+      sources, loaded, package, sites, policy, diagnostics);
+  return collector.run();
+}
+
+AgentMetadataResult collect_agent_metadata(
+    const SourceManager &sources,
+    const LoadedPackage &loaded,
+    const SemanticPackage &package,
+    std::span<const SemanticSite> selected_sites,
+    const AttachmentPolicy &policy,
+    DiagnosticSink &diagnostics) {
+  MetadataCollector collector(
+      sources, loaded, package, selected_sites, policy, diagnostics);
   return collector.run();
 }
 

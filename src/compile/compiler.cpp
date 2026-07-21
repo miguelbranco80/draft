@@ -625,6 +625,7 @@ void refresh_imported_effects(
     SemanticPackage &package,
     const CompileWorkspaceResult &result,
     const WorkspaceDependencyIndex &schedule,
+    std::span<const SymbolId> active_instance_proxies,
     DiagnosticSink &diagnostics) {
   package.imported_effects.clear();
   package.imported_returns.clear();
@@ -637,6 +638,20 @@ void refresh_imported_effects(
         requested_instance = &instance;
         break;
       }
+    }
+    if (requested_instance != nullptr &&
+        !std::binary_search(
+            active_instance_proxies.begin(),
+            active_instance_proxies.end(),
+            imported.proxy,
+            [](SymbolId left, SymbolId right) {
+              return left.value < right.value;
+            })) {
+      // The proxy belongs to a completed body product which is no longer in
+      // the selected program. Its dependency specialization is intentionally
+      // absent from the current interface, so refreshing it would manufacture
+      // either a false missing-instance diagnostic or stale effect rows.
+      continue;
     }
     const std::optional<std::size_t> dependency = package_index_for(
         result.graph,
@@ -1115,6 +1130,7 @@ void invalidate_package_closure(
     products.conditions.clear();
     products.constants.clear();
     products.procedure_bodies.clear();
+    products.selected_procedure_bodies.clear();
     products.declaration_inputs.clear();
     products.declaration_inputs.push_back(result.semantic_products.target);
     products.declaration_inputs.push_back(products.imports);
@@ -3454,6 +3470,223 @@ package_condition_needs_materialization(const SemanticPackage &package,
   }
 }
 
+// External procedure keys are already canonicalized before this comparison.
+// The full digest is semantic identity; the native name remains in the check so
+// an inconsistent shortened spelling cannot silently reuse a completed body.
+[[nodiscard]] bool same_external_procedure_demand(
+    const ProcedureInstantiationDemand &left,
+    const ProcedureInstantiationDemand &right) {
+  return left.instance_name == right.instance_name &&
+      left.digest == right.digest;
+}
+
+[[nodiscard]] std::optional<std::size_t> body_work_index_for_symbol(
+    const PackageBodyWorkState &state,
+    SymbolId symbol) {
+  for (std::size_t index = 0; index < state.work.size(); ++index) {
+    if (state.work[index].symbol == symbol) return index;
+  }
+  return std::nullopt;
+}
+
+// Finds the body row named by one external seed after the body initializer has
+// either created a new instance or promoted an equal locally discovered one.
+// ParametricInstanceRecord is canonical semantic identity; linkage_name is the
+// exact cross-package spelling installed by promotion.
+[[nodiscard]] std::optional<std::size_t> external_body_work_index(
+    const PackageBodyWorkState &state,
+    const ProcedureInstantiationDemand &demand) {
+  for (const ParametricInstanceRecord &instance :
+       state.package.parametric_instances_for_read()) {
+    if (!instance.externally_requested) continue;
+    const Symbol &symbol = state.package.symbols.symbol(instance.instance);
+    const std::string_view linkage =
+        symbol.linkage_name.empty() ? std::string_view(symbol.name)
+                                    : std::string_view(symbol.linkage_name);
+    if (linkage != demand.instance_name) continue;
+    return body_work_index_for_symbol(state, instance.instance);
+  }
+  return std::nullopt;
+}
+
+// SelectedPackageBodyWork separates semantic checking reachability from public
+// cross-package demand. A specialization called by its own package can remain
+// in procedures after its last external consumer disappears, while external
+// roots must become empty so the completed private body is not re-exported.
+struct SelectedPackageBodyWork {
+  std::vector<std::size_t> procedures;
+  std::vector<std::size_t> external_roots;
+};
+
+// Computes the current program selection over one append-only body work table.
+// Authored roots are unconditional. Current external demands name additional
+// roots. Every discovered child has a smaller prerequisite index, so one
+// source-order pass computes the complete transitive closure deterministically.
+[[nodiscard]] SelectedPackageBodyWork select_package_body_work(
+    const CompiledPackage &package,
+    std::span<const ProcedureInstantiationDemand> current_demands,
+    DiagnosticSink &diagnostics) {
+  SelectedPackageBodyWork result;
+  std::vector<bool> selected(package.bodies.work.size(), false);
+  for (std::size_t index = 0; index < package.bodies.work.size(); ++index) {
+    if (package.bodies.work[index].origin ==
+        ProcedureBodyWorkOrigin::Authored) {
+      selected[index] = true;
+    }
+  }
+
+  for (const ProcedureInstantiationDemand &demand : current_demands) {
+    const auto product = std::find_if(
+        package.external_procedure_products.begin(),
+        package.external_procedure_products.end(),
+        [&](const ExternalProcedureBodyProduct &candidate) {
+          return same_external_procedure_demand(candidate.demand, demand);
+        });
+    if (product == package.external_procedure_products.end() ||
+        product->work_index >= selected.size()) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "selected external procedure demand has no completed body product");
+      continue;
+    }
+    selected[product->work_index] = true;
+    result.external_roots.push_back(product->work_index);
+  }
+
+  std::sort(result.external_roots.begin(), result.external_roots.end());
+  result.external_roots.erase(
+      std::unique(
+          result.external_roots.begin(), result.external_roots.end()),
+      result.external_roots.end());
+  result.procedures.reserve(selected.size());
+  for (std::size_t index = 0; index < selected.size(); ++index) {
+    const std::optional<std::size_t> prerequisite =
+        package.bodies.work[index].prerequisite;
+    if (prerequisite.has_value()) {
+      if (*prerequisite >= index) {
+        diagnostics.error(
+            SourceRange::invalid(),
+            "procedure body prerequisite is not an earlier product");
+        continue;
+      }
+      selected[index] = selected[index] || selected[*prerequisite];
+    }
+    if (selected[index]) result.procedures.push_back(index);
+  }
+  return result;
+}
+
+[[nodiscard]] std::vector<SemanticSite> selected_package_semantic_sites(
+    const CompiledPackage &package) {
+  std::vector<SemanticSite> result;
+  const AppendOnlyTableView<SemanticSite> declaration_sites =
+      package.declarations.package.sites_for_read();
+  const AppendOnlyTableView<SemanticSite> body_sites =
+      package.bodies.package.sites_for_read();
+  result.reserve(declaration_sites.size());
+  for (const SemanticSite &site : declaration_sites) result.push_back(site);
+  for (std::size_t index : package.selected_procedure_work) {
+    if (index >= package.bodies.procedures.size()) continue;
+    for (std::size_t site_index :
+         package.bodies.procedures[index].semantic_site_indices) {
+      if (site_index < body_sites.size()) result.push_back(body_sites[site_index]);
+    }
+  }
+  return result;
+}
+
+[[nodiscard]] std::vector<SymbolId> selected_external_instance_symbols(
+    const CompiledPackage &package) {
+  std::vector<SymbolId> result;
+  for (std::size_t work_index : package.selected_external_procedure_work) {
+    if (work_index < package.bodies.work.size()) {
+      result.push_back(package.bodies.work[work_index].symbol);
+    }
+  }
+  std::sort(result.begin(), result.end(), [](SymbolId left, SymbolId right) {
+    return left.value < right.value;
+  });
+  result.erase(std::unique(result.begin(), result.end()), result.end());
+  return result;
+}
+
+// Returns every cross-package concrete call required by the selected HIR.
+// Product-owned discovery rows cover work first created by that body. The HIR
+// scan additionally covers reuse of a proxy created by an earlier product: if
+// the earlier product later becomes unselected, the still-selected reference
+// must continue selecting the owner body. Results preserve selected body and
+// expression order; instance-proxy identity removes duplicates directly.
+[[nodiscard]] std::vector<ImportedProcedureInstance>
+selected_imported_procedure_requests(const CompiledPackage &package) {
+  std::vector<ImportedProcedureInstance> result;
+  std::vector<bool> seen(
+      package.bodies.package.symbols.symbol_count(), false);
+  const auto append_request = [&](const ImportedProcedureInstance &request) {
+    if (!request.instance_proxy.is_valid() ||
+        request.instance_proxy.value >= seen.size() ||
+        seen[request.instance_proxy.value]) {
+      return;
+    }
+    seen[request.instance_proxy.value] = true;
+    result.push_back(request);
+  };
+  const AppendOnlyTableView<ImportedProcedureInstance> package_requests =
+      package.bodies.package.imported_procedure_instances_for_read();
+  std::vector<const ImportedProcedureInstance *> request_by_proxy;
+  request_by_proxy.reserve(package_requests.size());
+  for (const ImportedProcedureInstance &request : package_requests) {
+    request_by_proxy.push_back(&request);
+  }
+  std::sort(
+      request_by_proxy.begin(),
+      request_by_proxy.end(),
+      [](const ImportedProcedureInstance *left,
+         const ImportedProcedureInstance *right) {
+        return left->instance_proxy.value < right->instance_proxy.value;
+      });
+  for (std::size_t index : package.selected_procedure_work) {
+    if (index >= package.bodies.procedures.size()) continue;
+    const ProcedureBodyHirResult &procedure = package.bodies.procedures[index];
+    for (const ImportedProcedureInstance &request :
+         procedure.imported_procedure_instances) {
+      append_request(request);
+    }
+    for (std::size_t expression_index = 0;
+         expression_index < procedure.program.expression_count();
+         ++expression_index) {
+      const HirExpression &expression = procedure.program.expression(
+          HirExpressionId{static_cast<std::uint32_t>(expression_index)});
+      if (!expression.symbol.is_valid()) continue;
+      const auto request = std::lower_bound(
+          request_by_proxy.begin(),
+          request_by_proxy.end(),
+          expression.symbol.value,
+          [](const ImportedProcedureInstance *candidate, std::uint32_t value) {
+            return candidate->instance_proxy.value < value;
+          });
+      if (request != request_by_proxy.end() &&
+          (*request)->instance_proxy == expression.symbol) {
+        append_request(**request);
+      }
+    }
+  }
+  return result;
+}
+
+[[nodiscard]] std::vector<SymbolId> selected_imported_instance_proxies(
+    const CompiledPackage &package) {
+  std::vector<SymbolId> result;
+  for (const ImportedProcedureInstance &request :
+       selected_imported_procedure_requests(package)) {
+    result.push_back(request.instance_proxy);
+  }
+  std::sort(result.begin(), result.end(), [](SymbolId left, SymbolId right) {
+    return left.value < right.value;
+  });
+  result.erase(std::unique(result.begin(), result.end()), result.end());
+  return result;
+}
+
 // Runs one package's explicit ProcedureTemplateBody/ProcedureInstanceBody
 // products against the body checker's deterministic shared-wave publisher.
 // Product rows are appended before invocation. Roots discovered while
@@ -3544,9 +3777,9 @@ struct ProcedureBodyWaveExecution {
   }
 
   // Work rows and product rows share one append-only index domain for the
-  // package's selected declaration generation. A later external discovery
-  // resumes at next_work with the exact completed prefix instead of rebuilding
-  // a temporary extension scheduler around retained HIR.
+  // package's declaration generation. A later external discovery resumes at
+  // next_work with the exact completed prefix. Selection is a separate index
+  // projection and never requires reconstructing this publisher state.
   std::vector<SemanticProductId> product_by_work =
       package_products.procedure_bodies;
   if (product_by_work.size() != state.next_work ||
@@ -3989,14 +4222,17 @@ bool continue_compiled_workspace_semantics(
     return false;
   }
 
-  // Phase 2: advance the deterministic body work graph from consumers toward
-  // dependencies. A retained package already owns the current declaration
-  // generation, so only the canonical externally requested generic set needs
-  // comparison. An equal set retains the complete live body state; an added
-  // suffix resumes it. A removed demand still starts from the immutable
-  // declaration baseline until individual demand products replace this
-  // aggregate selection. Portable demands cross package TypeStore boundaries
-  // and are materialized only inside the owner's body generation.
+  // Phase 2: advance exact body products from consumers toward dependencies.
+  // Every fresh package checks its authored closure first. Current external
+  // demands then select retained products or append only genuinely new owner
+  // instances. This ordering means an authored call always discovers its local
+  // instance before an equal external seed can promote it, so later demand
+  // removal cannot accidentally deactivate locally required code.
+  //
+  // Completed products are never rebuilt when selection changes. The current
+  // selected work indices drive outbound demand discovery and every later HIR
+  // consumer. Portable demand packets cross TypeStore boundaries only while a
+  // previously unseen owner product is materialized.
   std::vector<std::vector<ProcedureInstantiationDemand>> demands(
       result.graph.packages.size());
   TimingScope body_timing = options.timings != nullptr
@@ -4009,158 +4245,177 @@ bool continue_compiled_workspace_semantics(
     const std::size_t package_error_count = diagnostics.error_count();
     if (!canonicalize_procedure_demands(
             demands[package_index], diagnostics)) {
-      package.external_procedure_demands.clear();
       package.semantic_progress = PackageSemanticProgress::InterfaceReady;
       continue;
     }
-    const bool stable_declarations =
-        package.semantic_progress != PackageSemanticProgress::InterfaceReady &&
-        package.bodies.ok && package.bodies.finalized;
-    const bool reusable = stable_declarations && same_procedure_demands(
-        package.external_procedure_demands, demands[package_index]);
-    if (reusable) {
-      if (options.timings != nullptr) {
-        options.timings->add_counter("package body reuses", 1);
-      }
-    } else {
-      // Until a complete replacement succeeds, the package owns only an
-      // authoritative declaration baseline. Any partial body work state is
-      // diagnostic recovery state and must never satisfy a later reuse key.
-      package.semantic_progress = PackageSemanticProgress::InterfaceReady;
-      // A changed body can alter package effects and the completed interface
-      // seen by every importer, even when signatures are unchanged. Retain
-      // consumer HIR but mark its closure products stale before publishing the
-      // replacement below.
-      const PackageId changed{static_cast<std::uint32_t>(package_index)};
-      invalidate_package_closure(
-          schedule, std::span<const PackageId>(&changed, 1), result);
+    const bool fresh_bodies =
+        package.semantic_progress == PackageSemanticProgress::InterfaceReady;
+    const std::size_t previous_checked = package.bodies.checked_procedures;
+    bool appended_body_work = false;
+    TimingScope package_timing = fresh_bodies
+        ? time_package_phase(
+              options.timings, "package bodies: ", package.identity)
+        : TimingScope{};
 
-      std::vector<ProcedureInstantiationDemand> added_demands;
-      const bool extendable = stable_declarations &&
-          added_procedure_demands(
-              package.external_procedure_demands,
-              demands[package_index],
-              added_demands) &&
-          !added_demands.empty();
-      if (extendable) {
-        TimingScope package_timing = time_package_phase(
-            options.timings, "package body extensions: ", package.identity);
-        const std::size_t previous_checked =
-            package.bodies.checked_procedures;
-        const std::vector<ProcedureInstantiationSeed> additional_seeds =
-            materialize_procedure_demands(
-                added_demands, package.bodies.package, diagnostics);
-        if (!append_package_body_seeds(
-                sources,
-                workspace_package.loaded,
-                package.declarations.selections,
-                package.bodies,
-                options.target.facts,
-                diagnostics,
-                additional_seeds)) {
-          package.bodies.ok = false;
-        }
-        const PackageId owner{
-            static_cast<std::uint32_t>(package_index)};
-        if (package.bodies.ok && !run_package_body_products(
-                sources,
-                workspace_package.loaded,
-                package.declarations.selections,
-                options.target.facts,
-                options.semantic_worker_count,
-                options.timings,
-                owner,
-                package.bodies,
-                result,
-                diagnostics)) {
-          return false;
-        }
-        if (package.bodies.ok) {
-          (void)finalize_package_body_work(
+    if (fresh_bodies) {
+      package.external_procedure_products.clear();
+      package.selected_procedure_work.clear();
+      package.selected_external_procedure_work.clear();
+      package.bodies = begin_package_body_work(
+          sources,
+          workspace_package.loaded,
+          package.declarations.selections,
+          package.declarations.package,
+          package.declarations.constants,
+          options.target.facts,
+          diagnostics);
+      appended_body_work = !package.bodies.work.empty();
+      const PackageId owner{static_cast<std::uint32_t>(package_index)};
+      if (package.bodies.ok && package.bodies.next_work <
+              package.bodies.work.size() &&
+          !run_package_body_products(
+              sources,
               workspace_package.loaded,
+              package.declarations.selections,
               options.target.facts,
+              options.semantic_worker_count,
+              options.timings,
+              owner,
               package.bodies,
-              diagnostics);
-        }
-        if (options.timings != nullptr) {
-          options.timings->add_counter("package body extensions", 1);
-          options.timings->add_counter(
-              "procedure bodies checked",
-              static_cast<std::uint64_t>(
-                  package.bodies.checked_procedures - previous_checked));
-        }
-      } else {
-        TimingScope package_timing = time_package_phase(
-            options.timings, "package bodies: ", package.identity);
-        PackageSemanticProducts &package_products =
-            result.semantic_products.packages[package_index];
-        if (!package_products.procedure_bodies.empty()) {
-          std::string reason;
-          if (!supersede_semantic_products(
-                  result.semantic_graph,
-                  package_products.procedure_bodies,
-                  reason)) {
-            diagnostics.error(
-                SourceRange::invalid(),
-                "cannot replace procedure body products: " + reason);
-            return false;
-          }
-          package_products.procedure_bodies.clear();
-        }
-        SemanticPackage body_input = package.declarations.package;
-        const std::vector<ProcedureInstantiationSeed> seeds =
-            materialize_procedure_demands(
-                demands[package_index], body_input, diagnostics);
-        package.bodies = begin_package_body_work(
-            sources,
-            workspace_package.loaded,
-            package.declarations.selections,
-            body_input,
-            package.declarations.constants,
-            options.target.facts,
-            diagnostics,
-            seeds);
-        const PackageId owner{
-            static_cast<std::uint32_t>(package_index)};
-        if (!run_package_body_products(
-                sources,
-                workspace_package.loaded,
-                package.declarations.selections,
-                options.target.facts,
-                options.semantic_worker_count,
-                options.timings,
-                owner,
-                package.bodies,
-                result,
-                diagnostics)) {
-          return false;
-        }
-        (void)finalize_package_body_work(
-            workspace_package.loaded,
-            options.target.facts,
-            package.bodies,
-            diagnostics);
-        if (options.timings != nullptr) {
-          options.timings->add_counter("package body checks", 1);
-          options.timings->add_counter(
-              "procedure bodies checked",
-              static_cast<std::uint64_t>(package.bodies.checked_procedures));
-        }
+              result,
+              diagnostics)) {
+        return false;
       }
-      if (diagnostics.error_count() != package_error_count) {
+      if (options.timings != nullptr) {
+        options.timings->add_counter("package body starts", 1);
+      }
+    }
+
+    std::vector<ProcedureInstantiationDemand> missing_demands;
+    for (const ProcedureInstantiationDemand &demand : demands[package_index]) {
+      const auto retained = std::find_if(
+          package.external_procedure_products.begin(),
+          package.external_procedure_products.end(),
+          [&](const ExternalProcedureBodyProduct &candidate) {
+            return same_external_procedure_demand(candidate.demand, demand);
+          });
+      if (retained == package.external_procedure_products.end()) {
+        missing_demands.push_back(demand);
+      }
+    }
+    if (package.bodies.ok && !missing_demands.empty()) {
+      TimingScope demand_timing = time_package_phase(
+          options.timings, "external procedure bodies: ", package.identity);
+      const std::vector<ProcedureInstantiationSeed> seeds =
+          materialize_procedure_demands(
+              missing_demands, package.bodies.package, diagnostics);
+      if (!append_package_body_seeds(
+              sources,
+              workspace_package.loaded,
+              package.declarations.selections,
+              package.bodies,
+              options.target.facts,
+              diagnostics,
+              seeds)) {
         package.bodies.ok = false;
       }
-      if (package.bodies.ok) {
-        package.external_procedure_demands = demands[package_index];
-        package.semantic_progress = PackageSemanticProgress::BodiesReady;
-      } else {
-        package.external_procedure_demands.clear();
+      for (const ProcedureInstantiationDemand &demand : missing_demands) {
+        const std::optional<std::size_t> work_index =
+            external_body_work_index(package.bodies, demand);
+        if (!work_index.has_value()) {
+          diagnostics.error(
+              SourceRange::invalid(),
+              "external procedure demand did not materialize a body product");
+          package.bodies.ok = false;
+          continue;
+        }
+        package.external_procedure_products.push_back({demand, *work_index});
       }
+      appended_body_work = appended_body_work ||
+          package.bodies.next_work < package.bodies.work.size();
+      const PackageId owner{static_cast<std::uint32_t>(package_index)};
+      if (package.bodies.ok && package.bodies.next_work <
+              package.bodies.work.size() &&
+          !run_package_body_products(
+              sources,
+              workspace_package.loaded,
+              package.declarations.selections,
+              options.target.facts,
+              options.semantic_worker_count,
+              options.timings,
+              owner,
+              package.bodies,
+              result,
+              diagnostics)) {
+        return false;
+      }
+      if (options.timings != nullptr) {
+        options.timings->add_counter(
+            "external procedure bodies materialized",
+            missing_demands.size());
+      }
+    }
+
+    if (package.bodies.ok &&
+        (appended_body_work || !package.bodies.finalized)) {
+      (void)finalize_package_body_work(
+          workspace_package.loaded,
+          options.target.facts,
+          package.bodies,
+          diagnostics);
+    }
+    if (options.timings != nullptr &&
+        package.bodies.checked_procedures > previous_checked) {
+      options.timings->add_counter(
+          "procedure bodies checked",
+          static_cast<std::uint64_t>(
+              package.bodies.checked_procedures - previous_checked));
+    }
+    if (diagnostics.error_count() != package_error_count) {
+      package.bodies.ok = false;
     }
     if (!package.bodies.ok) continue;
 
-    for (const ImportedProcedureInstance &request :
-         package.bodies.package.imported_procedure_instances_for_read()) {
+    const std::size_t selection_error_count = diagnostics.error_count();
+    const SelectedPackageBodyWork selected = select_package_body_work(
+        package, demands[package_index], diagnostics);
+    if (diagnostics.error_count() != selection_error_count) {
+      package.bodies.ok = false;
+      continue;
+    }
+    const bool selection_changed =
+        selected.procedures != package.selected_procedure_work ||
+        selected.external_roots != package.selected_external_procedure_work;
+    package.selected_procedure_work = selected.procedures;
+    package.selected_external_procedure_work = selected.external_roots;
+    PackageSemanticProducts &package_products =
+        result.semantic_products.packages[package_index];
+    package_products.selected_procedure_bodies.clear();
+    package_products.selected_procedure_bodies.reserve(
+        selected.procedures.size());
+    for (std::size_t work_index : selected.procedures) {
+      if (work_index >= package_products.procedure_bodies.size()) {
+        diagnostics.error(
+            SourceRange::invalid(),
+            "selected procedure has no semantic product row");
+        package.bodies.ok = false;
+        break;
+      }
+      package_products.selected_procedure_bodies.push_back(
+          package_products.procedure_bodies[work_index]);
+    }
+    if (!package.bodies.ok) continue;
+    if (fresh_bodies || appended_body_work || !missing_demands.empty() ||
+        selection_changed) {
+      const PackageId changed{static_cast<std::uint32_t>(package_index)};
+      invalidate_package_closure(
+          schedule, std::span<const PackageId>(&changed, 1), result);
+      package.semantic_progress = PackageSemanticProgress::BodiesReady;
+    }
+
+    const std::vector<ImportedProcedureInstance> selected_requests =
+        selected_imported_procedure_requests(package);
+    for (const ImportedProcedureInstance &request : selected_requests) {
       const std::optional<std::size_t> owner_index = package_index_for(
           result.graph,
           schedule,
@@ -4256,10 +4511,13 @@ bool continue_compiled_workspace_semantics(
       continue;
     }
     WorkspacePackage &workspace_package = result.graph.packages[package_index];
+    const std::vector<SemanticSite> selected_sites =
+        selected_package_semantic_sites(package);
     package.metadata = collect_agent_metadata(
         sources,
         workspace_package.loaded,
         package.bodies.package,
+        selected_sites,
         options.attachments,
         diagnostics);
     if (!package.metadata.ok ||
@@ -4321,8 +4579,9 @@ bool continue_compiled_workspace_semantics(
       }
       const CompiledPackage &typed_package =
           *validation.packages[*validation_index];
-      const HirProgram typed_hir =
-          project_package_body_hir(typed_package.bodies.procedures);
+      const HirProgram typed_hir = project_package_body_hir(
+          typed_package.bodies.procedures,
+          typed_package.selected_procedure_work);
       if (!enrich_agent_validation_context(
               typed_package.identity,
               validation.graph.packages[*validation_index].loaded,
@@ -4368,11 +4627,19 @@ bool continue_compiled_workspace_semantics(
     // These package-wide consumers are transitional. The checked procedure
     // products remain authoritative; one local projection is shared across
     // this closure operation and discarded before the next package.
-    HirProgram package_hir =
-        project_package_body_hir(package.bodies.procedures);
+    HirProgram package_hir = project_package_body_hir(
+        package.bodies.procedures, package.selected_procedure_work);
+    const std::vector<SymbolId> active_imported_instances =
+        selected_imported_instance_proxies(package);
+    const std::vector<SymbolId> active_external_instances =
+        selected_external_instance_symbols(package);
 
     refresh_imported_effects(
-        package.bodies.package, result, schedule, diagnostics);
+        package.bodies.package,
+        result,
+        schedule,
+        active_imported_instances,
+        diagnostics);
     package.obligations = build_agent_obligations(
         workspace_package.identity,
         sources,
@@ -4407,6 +4674,7 @@ bool continue_compiled_workspace_semantics(
         package.bodies.constants,
         package.metadata,
         package.effects,
+        active_external_instances,
         diagnostics);
     if (!package.metadata.ok || !package.obligations.ok || !denials_ok ||
         !package.native_interop.ok) {
@@ -4488,8 +4756,8 @@ bool continue_compiled_workspace(
           !package.obligations.ok || !package.native_interop.ok) {
         continue;
       }
-      const HirProgram package_hir =
-          project_package_body_hir(package.bodies.procedures);
+      const HirProgram package_hir = project_package_body_hir(
+          package.bodies.procedures, package.selected_procedure_work);
       std::vector<ValidationEntry> discovered = discover_validation_entries(
           options.validation_kind,
           options.workspace.core_content_identity,
@@ -4523,8 +4791,8 @@ bool continue_compiled_workspace(
         : TimingScope{};
 
     if (options.lower_mir || options.emit_llvm) {
-      const HirProgram package_hir =
-          project_package_body_hir(package.bodies.procedures);
+      const HirProgram package_hir = project_package_body_hir(
+          package.bodies.procedures, package.selected_procedure_work);
       package.assembly = analyze_aarch64_assembly(
           sources,
           workspace_package.loaded,

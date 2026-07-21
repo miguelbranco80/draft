@@ -28,6 +28,7 @@
 
 #include <cstdint>
 #include <limits>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -306,6 +307,20 @@ struct AvailablePackageImports {
     const ConstantTable &constants,
     const AgentMetadataResult &metadata,
     const EffectSummaryResult &effects,
+    DiagnosticSink &diagnostics);
+
+// Complete workspace publication form. active_external_instances contains the
+// package-local symbols of exactly those concrete public specializations still
+// selected by current consumer bodies. Completed but unselected body products
+// remain in the append-only SemanticPackage and must not leak into its public
+// interface.
+[[nodiscard]] PackageInterface build_package_interface(
+    const PackageIdentity &identity,
+    const SemanticPackage &package,
+    const ConstantTable &constants,
+    const AgentMetadataResult &metadata,
+    const EffectSummaryResult &effects,
+    std::span<const SymbolId> active_external_instances,
     DiagnosticSink &diagnostics);
 
 // Moves one concrete TypeId between package-local TypeStores through the same

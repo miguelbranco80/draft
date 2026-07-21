@@ -130,9 +130,9 @@ invalidation, canonical initial product construction, and the body/closure
 traversals not yet migrated to semantic products. Building its sorted views
 costs O((packages + imports) log(packages + imports)); invalidation costs
 O(packages + imports), without a persistent cache. The `compiler passes`,
-`workspace loads`, `workspace source transitions`, `package body checks`,
-`package body extensions`, and `package body reuses` counters make those
-distinct operations visible. `--timings=all` adds package/tool scopes, file
+`workspace loads`, `workspace source transitions`, `package body starts`,
+`procedure bodies checked`, and `external procedure bodies materialized`
+counters make those distinct operations visible. `--timings=all` adds package/tool scopes, file
 discovery and I/O, lexing/parsing, import-graph resolution, and exclusive time;
 child process CPU is reported separately from parent wall time.
 
@@ -184,6 +184,15 @@ retained declarations.
 Constant products now carry their checked static type beside the immutable
 value, and the package-interface barrier installs that payload explicitly.
 
+Each published procedure result also retains the exact cross-package procedure
+requests it created and canonical indices for its body-level semantic sites.
+Current selection follows those product-owned routes rather than scanning all
+rows ever appended to the package. A selected HIR symbol scan additionally
+recognizes reuse of a concrete import proxy first created by another product;
+deactivating that earlier product therefore cannot drop a still-live transitive
+demand. Site indices continue to observe package-level loop-range enrichment
+without copying or mutating the procedure's immutable HIR.
+
 Every currently ready root is now dispatched from one shared prefix and all
 workers run through the bounded closed-wave executor. Results join before
 deterministic publication. Worker count is scheduling policy only: one-worker
@@ -195,24 +204,30 @@ with an explicit eight-MiB stack per worker, matching the syntax-recursion
 budget available to the main compiler thread instead of inheriting macOS's
 smaller pthread default.
 
-The transitional body selection is the exact canonical set of concrete generic
-procedures demanded by consumer packages. A changed declaration replaces its
-whole `CompiledPackage`, so no separate declaration-generation body key exists.
-An equal demand set retains the complete body result; additions append and check
-only new specializations; a removed or changed demand still rebuilds from
-declarations so stale executable procedures cannot survive. Compile-time type
-preflight and early synthesis discovery run on private copies and never become a
-hidden first body pass over the authoritative package. Individual dynamic
-demand products delete this aggregate comparison rather than preserving it as a
-cache.
+Body selection is an explicit projection over immutable procedure products.
+Authored roots are always selected; a current external demand selects its exact
+retained owner product; and discovered nested or concrete roots follow their
+earlier prerequisite. An unseen external demand appends and checks one product.
+Removing a demand changes only the projection: HIR, semantic rows, product IDs,
+and diagnostics already published for that declaration generation remain
+inspectable and can be selected again without rechecking. Only selected HIR
+feeds transitive demand discovery, metadata, effects, denials, validation,
+assembly, MIR, and LLVM, and only selected external instances enter the public
+package interface. A changed declaration still replaces its complete
+`CompiledPackage`; there is no declaration-generation body work key or
+aggregate demand comparison.
+
+Compile-time type preflight and early synthesis discovery run on private copies
+and never become a hidden first body pass over the authoritative package.
 
 Workspace packages retain their live `PackageBodyWorkState` after finalization.
 Its work rows, procedure results, and semantic-product rows share one append-only
 index domain, so an added demand resumes the exact completed prefix. The
 compiler no longer reconstructs an extension scheduler from a reduced
 `BodyCheckResult`; that transfer object remains only for direct subsystem
-callers. Aggregate demand-set comparison and removal rebuild are still
-transitional and are deleted by the semantic-work-graph plan.
+callers. The remaining scheduling limit is that packages are still visited in
+consumer-first order; one workspace-wide frozen body ready set will replace
+that outer traversal.
 
 After every selected package has reached target lowering, the backend derives a
 closed native work graph in canonical package/module/assembly order. Package

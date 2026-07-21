@@ -1141,6 +1141,17 @@ bool publish_body_task_semantics(
   package.symbols.append_exact(std::move(semantic.symbols));
 
   remap_side_tables(semantic, maps);
+  // Preserve exact outbound work and canonical agent-site indices on the body
+  // product after IDs have become canonical but before the append packet is
+  // consumed. The package tables remain an append-only interning/publication
+  // substrate; current workspace selection follows these product-owned routes.
+  task.imported_procedure_instances =
+      semantic.imported_procedure_instances;
+  const std::size_t site_base = package.sites_for_read().size();
+  task.semantic_site_indices.reserve(semantic.sites.size());
+  for (std::size_t index = 0; index < semantic.sites.size(); ++index) {
+    task.semantic_site_indices.push_back(site_base + index);
+  }
   append_rows(package.owned_scopes, std::move(semantic.owned_scopes));
   append_rows(package.aggregate_members, std::move(semantic.aggregate_members));
   append_rows(

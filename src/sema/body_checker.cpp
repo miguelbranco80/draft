@@ -8526,6 +8526,26 @@ HirProgram project_package_body_hir(
   return program;
 }
 
+HirProgram project_package_body_hir(
+    std::span<const ProcedureBodyHirResult> procedures,
+    std::span<const std::size_t> selected_indices) {
+  HirProgram program;
+  std::optional<std::size_t> previous;
+  for (std::size_t index : selected_indices) {
+    // The workspace coordinator constructs this ordered selection from the
+    // package work table. Treat a malformed internal index as an absent row;
+    // its own invariant check reports the scheduling failure before any
+    // lowering consumer can observe this projection.
+    if (index >= procedures.size() ||
+        (previous.has_value() && index <= *previous)) {
+      continue;
+    }
+    append_hir_program(program, procedures[index].program);
+    previous = index;
+  }
+  return program;
+}
+
 bool validate_package_compile_time_expression_types(
     const SourceManager &sources,
     const LoadedPackage &loaded,
@@ -8590,14 +8610,22 @@ PackageBodyWorkState begin_package_body_work(
     if (symbol.kind == SymbolKind::Procedure && symbol.type.is_valid()) {
       append_body_root(
           state.work,
-          {id, symbol.flags.parametric, std::nullopt, std::nullopt});
+          {id,
+           symbol.flags.parametric,
+           std::nullopt,
+           std::nullopt,
+           ProcedureBodyWorkOrigin::Authored});
     }
   }
   for (const ParametricInstanceRecord &instance :
        state.package.parametric_instances_for_read()) {
     append_body_root(
         state.work,
-        {instance.instance, false, std::nullopt, std::nullopt});
+        {instance.instance,
+         false,
+         std::nullopt,
+         std::nullopt,
+         ProcedureBodyWorkOrigin::ExternalDemand});
   }
   return state;
 }
@@ -8640,7 +8668,8 @@ bool append_package_body_seeds(
         {instances[index].instance,
          false,
          std::nullopt,
-         std::nullopt});
+         std::nullopt,
+         ProcedureBodyWorkOrigin::ExternalDemand});
   }
   return state.ok;
 }
@@ -8774,6 +8803,10 @@ bool publish_procedure_body_wave(
     procedure.ok = result.ok;
     procedure.symbol = result.symbol;
     procedure.program = std::move(result.program);
+    procedure.imported_procedure_instances =
+        std::move(result.imported_procedure_instances);
+    procedure.semantic_site_indices =
+        std::move(result.semantic_site_indices);
     state.procedures.push_back(std::move(procedure));
     for (ProcedureBodyRoot &discovered : result.discovered_work) {
       discovered.prerequisite = work_index;
@@ -8907,7 +8940,11 @@ BodyCheckResult check_compile_time_procedure_bodies(
     if (symbol.kind == SymbolKind::Procedure && symbol.type.is_valid()) {
       append_body_root(
           state.work,
-          {id, symbol.flags.parametric, std::nullopt, std::nullopt});
+          {id,
+           symbol.flags.parametric,
+           std::nullopt,
+           std::nullopt,
+           ProcedureBodyWorkOrigin::Authored});
     }
   }
   while (state.next_work < state.work.size()) {

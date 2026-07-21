@@ -24,6 +24,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -99,6 +100,18 @@ struct AgentMetadataResult {
     const SourceManager &sources,
     const LoadedPackage &loaded,
     const SemanticPackage &package,
+    const AttachmentPolicy &policy,
+    DiagnosticSink &diagnostics);
+
+// Workspace body selection supplies the exact declaration and selected-body
+// sites explicitly. This prevents an unselected completed specialization in an
+// append-only package generation from creating provider work. Every site's IDs
+// still address package, which must outlive this synchronous call.
+[[nodiscard]] AgentMetadataResult collect_agent_metadata(
+    const SourceManager &sources,
+    const LoadedPackage &loaded,
+    const SemanticPackage &package,
+    std::span<const SemanticSite> selected_sites,
     const AttachmentPolicy &policy,
     DiagnosticSink &diagnostics);
 

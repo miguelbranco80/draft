@@ -399,28 +399,29 @@ The compiler schedules package bodies consumer-first because checking a caller
 can demand a concrete public generic body from its dependency. A portable
 procedure-demand packet contains canonical interface type graphs, exact value
 arguments, ordered static-pack types, the full semantic digest, and the stable
-native instance name. The owning package sorts and deduplicates the complete set
-before using it as work identity. No consumer-local TypeId crosses the boundary,
-and materialized owner TypeIds live only in the body generation.
+native instance name. The owning package sorts and deduplicates each current
+ready set before looking up individual products. No consumer-local TypeId
+crosses the boundary, and materialized owner TypeIds live only in the body
+generation.
 
-Each retained package compares its canonical external demand set:
+Each retained package owns one append-only row for every external demand seen in
+its current declaration generation. Authored roots are always selected; current
+demands select their exact owner rows; and dynamically discovered children
+follow their earlier prerequisite. An unseen demand checks one new product. A
+removed demand only changes this selected projection, so completed semantic
+rows, HIR, product IDs, and diagnostics remain immutable and can be selected
+again without rechecking. A matching package-local specialization is promoted
+in place to the canonical external name while retaining its SymbolId and HIR.
+A source or dependency-interface change still creates a new declaration
+generation and replaces the complete `CompiledPackage`; no separate body key is
+needed.
 
-- an equal set retains the existing semantic tables and HIR without invoking
-  BodyChecker;
-- a strict demand-set addition preserves existing IDs and checks only newly
-  requested concrete procedures;
-- a removed or changed demand rebuilds from the declaration generation, which
-  removes stale concrete bodies and interface rows;
-- a matching package-local specialization is promoted in place to the canonical
-  external name, retaining its SymbolId and HIR rather than creating a duplicate;
-- a source or dependency-interface change creates a new declaration generation
-  and replaces the complete `CompiledPackage`, so no separate body-generation
-  key is needed.
-
-An added demand resumes the retained package's exact live scheduler state.
-Completed work, HIR, and product IDs remain in their original prefix; only seed
-materialization and the new suffix run. The aggregate demand-set test and removal
-rebuild remain transitional scheduler policy, not a second retained body
+Only selected procedures publish transitive requests and enter metadata,
+effects, interfaces, validation, or lowering. Each result retains the outbound
+requests it created. A selected-HIR symbol scan also finds reuse of a concrete
+import proxy created by another product, so deactivating the first product does
+not lose a still-live transitive owner demand. This is direct semantic
+selection, not an aggregate reuse/rebuild policy or a second body
 representation.
 
 Compile-time expression type preflight and early compile-time procedure checks

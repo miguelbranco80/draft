@@ -16,8 +16,8 @@
 // constants in product-ID order. An unchanged source
 // graph advances from interface discovery to semantic closure to target
 // lowering. A checked source overlay appends a successor source generation and
-// new declaration products only for affected packages, then retains or extends
-// unaffected live body-product state by canonical external demand. The
+// new declaration products only for affected packages, then changes the
+// selected set of immutable body products without rechecking completed work. The
 // continuation API mutates only this command-owned graph and creates no
 // persistent cache. Lower layers never call a provider or update pins. Relevant
 // specification: sections 10 and 15.
@@ -129,6 +129,18 @@ enum class PackageSemanticProgress {
   ClosureReady,
 };
 
+// One retained cross-package procedure demand and the exact owner-local body
+// product which satisfies it. The portable demand remains the stable lookup
+// key across later source selections in the same command. work_index addresses
+// CompiledPackage::bodies.work/procedures and never changes while that package
+// declaration generation remains alive. A row may be unselected; completed
+// products remain immutable and become active again without rechecking if an
+// equivalent demand returns.
+struct ExternalProcedureBodyProduct {
+  ProcedureInstantiationDemand demand;
+  std::size_t work_index = 0;
+};
+
 // One row owns every representation of one package. Keeping phase products
 // together makes driver commands thin and gives later manifests a single place
 // to collect canonical inputs without rerunning semantic analysis.
@@ -151,12 +163,16 @@ struct CompiledPackage {
   // product-local HIR, and the work-to-result order remain available when a
   // later consumer discovers another concrete dependency instance.
   PackageBodyWorkState bodies;
-  // Canonical exact set of cross-package generic specializations selected by
-  // the current consumer bodies. A changed declaration replaces this whole
-  // CompiledPackage, so the former declaration-generation work-key component
-  // was redundant. This aggregate set remains only until external demands are
-  // published as individual dynamic products.
-  std::vector<ProcedureInstantiationDemand> external_procedure_demands;
+  // Every external procedure specialization completed for this declaration
+  // generation. Selection is separate: selected_procedure_work contains the
+  // canonical source-order closure of authored roots, current external roots,
+  // and their discovered descendants. selected_external_procedure_work names
+  // only roots requested by current consumers; a locally live specialization
+  // need not be exported. Removing a consumer demand changes only these
+  // selections and never reconstructs or mutates a completed body.
+  std::vector<ExternalProcedureBodyProduct> external_procedure_products;
+  std::vector<std::size_t> selected_procedure_work;
+  std::vector<std::size_t> selected_external_procedure_work;
   PackageSemanticProgress semantic_progress =
       PackageSemanticProgress::InterfaceReady;
   AgentMetadataResult metadata;
@@ -319,12 +335,14 @@ struct PackageSemanticProducts {
   // package_interface therefore cannot publish to consumers.
   SemanticProductId opaque_synthesis_set;
   SemanticProductId package_interface;
-  // Authored, nested, and concrete procedure body products for the selected
-  // source generation. Rows are appended in deterministic discovery order;
-  // nested and locally instantiated bodies may therefore appear after initial
-  // interface completion. Earlier-generation rows remain in the graph as
-  // Superseded when this current index is replaced.
+  // Every authored, nested, and concrete procedure body product materialized
+  // for this source generation. Rows are append-only in deterministic discovery
+  // order. selected_procedure_bodies is the current program projection in the
+  // same order; removing an external demand changes that projection but leaves
+  // the completed row here inspectable and reusable. Earlier-generation rows
+  // become Superseded only when this declaration generation is replaced.
   std::vector<SemanticProductId> procedure_bodies;
+  std::vector<SemanticProductId> selected_procedure_bodies;
 };
 
 // WorkspaceSemanticProducts is the typed index from the general product graph
