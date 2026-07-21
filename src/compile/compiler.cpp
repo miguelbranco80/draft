@@ -6818,7 +6818,6 @@ bool continue_compiled_workspace_semantics(
     CompiledPackage &package = *result.packages[package_index];
     if (!package.bodies.finalized) {
       (void)finalize_package_body_work(
-          result.graph.packages[package_index].loaded,
           options.target.facts,
           package.bodies,
           diagnostics);

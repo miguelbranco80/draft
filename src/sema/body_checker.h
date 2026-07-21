@@ -60,10 +60,9 @@ struct ProcedureBodyHirResult {
 // result, and constants addresses those body-owned symbols. These values must
 // therefore move and live together.
 //
-// Package-wide consumers have not all migrated to procedure products yet. They
-// must request a temporary deterministic projection with
-// project_package_body_hir instead of retaining a second authoritative HIR
-// representation here.
+// No workspace phase concatenates these arenas. The temporary projection below
+// remains only for direct subsystem tests while those callers move to the
+// procedure-owned APIs.
 struct BodyCheckResult {
   bool ok = false;
   SemanticPackage package;
@@ -356,14 +355,13 @@ take_ready_procedure_body_wave(
     std::vector<ProcedureBodyTaskResult> results,
     DiagnosticSink &diagnostics);
 
-// Completes package-wide invariants after every dynamic root has run while
-// retaining the live scheduler state for later command-local discoveries. The
-// operation builds one temporary projection for invariants which have not yet
-// migrated to procedure products. Calling this with unfinished work is a
-// compiler contract error and leaves the state invalid rather than silently
-// discarding body products.
+// Completes target-wide type invariants after every dynamic root has run while
+// retaining the live scheduler state for later command-local discoveries.
+// Procedure-local initialization and agent-flow checks have already completed
+// in their worker-owned arenas. Calling this with unfinished work is a compiler
+// contract error and leaves the state invalid rather than silently discarding
+// body products.
 [[nodiscard]] bool finalize_package_body_work(
-    const LoadedPackage &loaded,
     const TargetFacts &target,
     PackageBodyWorkState &state,
     DiagnosticSink &diagnostics);
@@ -373,7 +371,6 @@ take_ready_procedure_body_wave(
 // callers. Workspace compilation retains PackageBodyWorkState instead so a
 // newly discovered product never requires reconstructing scheduler state.
 [[nodiscard]] BodyCheckResult finish_package_body_work(
-    const LoadedPackage &loaded,
     const TargetFacts &target,
     PackageBodyWorkState state,
     DiagnosticSink &diagnostics);

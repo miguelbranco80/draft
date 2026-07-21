@@ -224,8 +224,11 @@ gate.
    Workspace metadata/obligation context, native interop, and validation now
    join effects, denials, assembly, and MIR in consuming exact selected
    procedure arenas. Transitive procedure lookup retains the owning arena for
-   every HIR-local ID. The remaining step-5 cleanup is `BodyCheckResult`'s
-   package-wide semantic transfer/composer form in direct non-workspace APIs.
+   every HIR-local ID. Definite-initialization and agent loop-range inference
+   run inside each isolated body task and publish diagnostics/facts with that
+   product; package finalization no longer constructs aggregate HIR. The
+   remaining step-5 cleanup is `BodyCheckResult`'s package-wide semantic
+   transfer/composer form in direct non-workspace APIs.
 
 6. **Synthesis as an explicit wait state — complete.** A body or declaration task may
    report its exact ready `...` set after producing the typed constraint needed

@@ -97,6 +97,9 @@ payload directly in the workspace side table; the compiler retains neither a
 package-wide HIR copy nor a reconstructed package MIR program. Standalone
 subsystem compatibility composers remain explicit final cleanup in the
 [semantic work graph implementation plan](semantic-work-graph-implementation-plan.md).
+Definite-initialization diagnostics and agent loop-range facts are produced by
+the isolated body task before its semantic suffix is published; package
+finalization no longer needs a temporary HIR projection.
 
 LLVM and native lowering now follow live semantic products. Package static data
 owns one independently compilable unit; each concrete MIR procedure owns one

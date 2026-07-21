@@ -437,7 +437,7 @@ second :: proc() -> i64 {
   }
 
   const draft::BodyCheckResult bodies = draft::finish_package_body_work(
-      loaded, target.facts, std::move(work), diagnostics);
+      target.facts, std::move(work), diagnostics);
   const draft::HirProgram hir =
       draft::project_package_body_hir(bodies.procedures);
   if (diagnostics.has_errors()) {

@@ -333,6 +333,13 @@ expression ID is never interpreted in a sibling product. `BodyCheckResult`
 retains no second HIR representation; its compatibility composer is now only a
 standalone subsystem migration seam.
 
+Definite-initialization and agent loop-range inference complete inside the
+isolated procedure task before publication. Initialization diagnostics
+therefore belong to the exact body product, while derived loop facts travel in
+the same task-local semantic-site suffix and are remapped once during canonical
+publication. Package finalization checks only target-wide type constraints and
+never reconstructs HIR.
+
 The body coordinator no longer retains one `BodyChecker` while walking a
 package and its growing instance vector. Seed materialization is separate, then
 each package-level procedure or concrete specialization is checked by a fresh

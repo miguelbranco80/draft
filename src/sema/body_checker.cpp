@@ -10,12 +10,12 @@
 //
 // A retained successful generation may be extended only with newly demanded
 // concrete generic instances. Existing authored and concrete procedure arenas
-// are not revisited; demand removal starts again from declarations so no stale
-// machine procedure can survive. Package-wide consumers explicitly build a
-// short-lived compatibility projection from the authoritative procedure arenas.
-// Diagnostic-only package expression validation and early compile-time
-// dependency checks use private copies and cannot mutate the compiler's
-// authoritative declaration baseline. Relevant rules are
+// are not revisited; current-program selection decides which immutable products
+// reach later phases. Definite-initialization and agent loop-range analyses run
+// inside the procedure task while its local HIR IDs and semantic suffix are
+// still paired. Diagnostic-only package expression validation and early
+// compile-time dependency checks use private copies and cannot mutate the
+// compiler's authoritative declaration baseline. Relevant rules are
 // specification section 1's procedure/compile-time semantics, section 3's
 // typed synthesis sites, and section 10's semantic dependency order.
 
@@ -8739,6 +8739,19 @@ ProcedureBodyTaskResult check_procedure_body_work(
       diagnostics,
       no_seeds);
   ProcedureBodyRootResult checked = checker.run_one(root);
+
+  // Both analyses are local to this exact body. Running them before extraction
+  // keeps HIR IDs in their owning arena and lets loop-range facts be remapped
+  // with the same task-local semantic-site suffix during publication. A bad
+  // body invalidates only this result; independent roots in the frozen wave
+  // still publish their own diagnostics and recoverable products.
+  if (checked.ok &&
+      !check_definite_initialization(
+          package, checked.program, diagnostics)) {
+    checked.ok = false;
+  }
+  infer_agent_loop_ranges(loaded, package, checked.program);
+
   result.ok = checked.ok;
   result.checked_procedures = checked.checked_procedures;
   result.program = std::move(checked.program);
@@ -8820,7 +8833,6 @@ bool publish_procedure_body_wave(
 }
 
 bool finalize_package_body_work(
-    const LoadedPackage &loaded,
     const TargetFacts &target,
     PackageBodyWorkState &state,
     DiagnosticSink &diagnostics) {
@@ -8835,31 +8847,23 @@ bool finalize_package_body_work(
         "procedure body work finalized before every discovered root ran");
     state.ok = false;
   }
-  // Definite initialization and loop-range inference still operate package at
-  // a time. Build their shared HIR view once, use it while the canonical
-  // semantic package is available, and discard it before returning. The
-  // procedure-owned arenas remain the only HIR stored in BodyCheckResult.
-  HirProgram program = project_package_body_hir(state.procedures);
+  // Natural target constraints apply to the canonical type table after every
+  // body suffix has published. Procedure-local definite initialization and
+  // agent-flow facts were already completed inside their isolated tasks, so
+  // finalization neither reconstructs HIR nor re-enters a body product.
   if (state.ok &&
       !validate_target_types(state.package.types, target, diagnostics)) {
     state.ok = false;
   }
-  if (state.ok &&
-      !check_definite_initialization(
-          state.package, program, diagnostics)) {
-    state.ok = false;
-  }
-  infer_agent_loop_ranges(loaded, state.package, program);
   state.finalized = state.ok;
   return state.ok;
 }
 
 BodyCheckResult finish_package_body_work(
-    const LoadedPackage &loaded,
     const TargetFacts &target,
     PackageBodyWorkState state,
     DiagnosticSink &diagnostics) {
-  (void)finalize_package_body_work(loaded, target, state, diagnostics);
+  (void)finalize_package_body_work(target, state, diagnostics);
   BodyCheckResult result;
   result.ok = state.ok;
   result.package = std::move(state.package);
@@ -8906,8 +8910,7 @@ BodyCheckResult check_package_bodies(
       break;
     }
   }
-  return finish_package_body_work(
-      loaded, target, std::move(state), diagnostics);
+  return finish_package_body_work(target, std::move(state), diagnostics);
 }
 
 BodyCheckResult check_compile_time_procedure_bodies(
@@ -8967,12 +8970,10 @@ BodyCheckResult check_compile_time_procedure_bodies(
       break;
     }
   }
-  // finish_package_body_work applies the same target and definite-
-  // initialization validation to the disposable early HIR as to final bodies.
-  // This prevents discovery from accepting a synthesis obligation whose
-  // surrounding compile-time procedure is already invalid.
-  return finish_package_body_work(
-      loaded, target, std::move(state), diagnostics);
+  // Procedure tasks already applied definite-initialization validation to the
+  // disposable early HIR. Finalization applies the remaining target-wide type
+  // constraints before this packet can become provider context.
+  return finish_package_body_work(target, std::move(state), diagnostics);
 }
 
 } // namespace draft
