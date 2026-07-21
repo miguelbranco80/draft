@@ -1,0 +1,176 @@
+// These tests cover the Tetris example's deterministic seams: tetromino data,
+// bag permutation, board compaction, locking, game-over detection, fragmented
+// key decoding, and bounded frame construction. They require no terminal and
+// perform no I/O, so `draftc test examples/tetris` is stable in CI and on both
+// selected targets.
+package tetris
+
+import core/testing
+
+// count_mask_cells provides an intentionally independent bit-counting oracle
+// for the compact shape table. It does not call piece_has_cell, so an indexing
+// mistake there cannot make both producer and test agree accidentally.
+count_mask_cells :: proc(mask: u16) -> u32 {
+    remaining := mask
+    count: u32
+    for remaining != 0 {
+        count += cast[u32](remaining & 1)
+        remaining >>= 1
+    }
+    return count
+}
+
+test_every_tetromino_rotation_has_four_cells :: proc(test: ^testing.Test) {
+    kinds := [Bag_Size]Piece_Kind{.i, .o, .t, .s, .z, .j, .l}
+    for kind in kinds {
+        for rotation: u8 = 0; rotation < 4; rotation += 1 {
+            testing.expect_message(
+                test,
+                count_mask_cells(piece_mask(kind, rotation)) == 4,
+                "every tetromino rotation must contain four cells",
+            )
+        }
+    }
+}
+
+// test_bag_is_one_complete_permutation fixes the fairness invariant without
+// fixing one incidental shuffled order. Each identity must occur once.
+test_bag_is_one_complete_permutation :: proc(test: ^testing.Test) {
+    game: Game
+    game.random_state = 42
+    fill_bag(&game)
+
+    seen: [Bag_Size]u8
+    for kind in game.bag {
+        seen[cast[usize](cast[u8](kind))] += 1
+    }
+    for count in seen {
+        testing.expect_message(
+            test,
+            count == 1,
+            "a seven-piece bag must contain every kind exactly once",
+        )
+    }
+}
+
+// test_line_clear_compacts_in_place constructs two full bottom rows and one
+// marker immediately above them. Clearing must move the marker to the bottom
+// and zero every vacated row without a secondary board.
+test_line_clear_compacts_in_place :: proc(test: ^testing.Test) {
+    game: Game
+    for row: i32 = Board_Height - 2; row < Board_Height; row += 1 {
+        for column: i32 = 0; column < Board_Width; column += 1 {
+            game.board[board_index(column, row)] = 1
+        }
+    }
+    game.board[board_index(3, Board_Height - 3)] = 2
+
+    cleared := clear_complete_lines(&game)
+    testing.expect_message(test, cleared == 2, "two complete rows must clear")
+    testing.expect_message(
+        test,
+        game.board[board_index(3, Board_Height - 1)] == 2,
+        "the incomplete source row must compact to the bottom",
+    )
+    testing.expect_message(
+        test,
+        game.board[board_index(3, Board_Height - 2)] == 0,
+        "vacated rows must be cleared",
+    )
+}
+
+// test_hard_drop_locks_four_cells proves the action crosses from active-only
+// geometry to settled board storage exactly once and awards distance points.
+test_hard_drop_locks_four_cells :: proc(test: ^testing.Test) {
+    game: Game
+    game_init(&game, 7)
+    result := game_hard_drop(&game)
+
+    settled: u32
+    for value in game.board {
+        if value != 0 {
+            settled += 1
+        }
+    }
+    testing.expect_message(test, result == .locked,
+        "an empty-board hard drop must lock and continue")
+    testing.expect_message(test, settled == 4,
+        "one locked tetromino must publish four cells")
+    testing.expect_message(test, game.score != 0,
+        "a hard drop must award distance points")
+}
+
+// test_blocked_spawn_ends_game covers the top boundary independently of the
+// interactive loop. Four occupied rows block every kind's spawn mask.
+test_blocked_spawn_ends_game :: proc(test: ^testing.Test) {
+    game: Game
+    game_init(&game, 9)
+    for row: i32 = 0; row < Piece_Box_Size; row += 1 {
+        for column: i32 = 0; column < Board_Width; column += 1 {
+            game.board[board_index(column, row)] = 1
+        }
+    }
+    spawn_next(&game)
+    testing.expect_message(test, game.game_over,
+        "a piece that cannot occupy its spawn position must end the game")
+}
+
+// test_fragmented_input_sequences feeds one byte at a time, matching the most
+// fragmented read the event loop can observe. Invalid escape content resets the
+// decoder and still interprets the final byte as an ordinary command.
+test_fragmented_input_sequences :: proc(test: ^testing.Test) {
+    decoder: Input_Decoder
+    testing.expect(test,
+        decode_input(&decoder, cast[u8]('a')) == .move_left)
+    testing.expect(test, decode_input(&decoder, 27) == .none)
+    testing.expect(test, decode_input(&decoder, cast[u8]('[')) == .none)
+    testing.expect(test,
+        decode_input(&decoder, cast[u8]('C')) == .move_right)
+    testing.expect(test, decode_input(&decoder, 27) == .none)
+    testing.expect(test, decode_input(&decoder, cast[u8]('q')) == .quit)
+    testing.expect(test, decode_input(&decoder, 3) == .quit)
+}
+
+// frame_contains_text is a byte-wise test helper. It searches only initialized
+// frame storage and treats an empty needle as found.
+frame_contains_text :: proc(frame: ^Frame_Buffer, needle: string) -> bool {
+    if len(needle) == 0 {
+        return true
+    }
+    if len(needle) > frame^.length {
+        return false
+    }
+    last := frame^.length - len(needle)
+    for start: usize = 0; start <= last; start += 1 {
+        matches := true
+        for index: usize = 0; index < len(needle); index += 1 {
+            if frame^.bytes[start + index] != needle[index] {
+                matches = false
+                break
+            }
+        }
+        if matches {
+            return true
+        }
+    }
+    return false
+}
+
+// test_frame_is_complete_and_bounded checks semantic landmarks rather than an
+// ANSI snapshot so deliberate color or spacing refinements remain local.
+test_frame_is_complete_and_bounded :: proc(test: ^testing.Test) {
+    game: Game
+    game_init(&game, 11)
+    frame: Frame_Buffer
+    built := build_frame(&frame, &game)
+
+    testing.expect_message(test, built, "a normal frame must fit its buffer")
+    testing.expect_message(test, frame.length < Frame_Capacity,
+        "the frame must leave capacity rather than truncate")
+    testing.expect_message(test, frame_contains_text(&frame, "DRAFT TETRIS"),
+        "the frame must include its title")
+    testing.expect_message(test, frame_contains_text(&frame, "SCORE"),
+        "the frame must include the score panel")
+    testing.expect_message(test, frame_contains_text(&frame, "\r\n"),
+        "raw-mode line transitions must use CRLF")
+}

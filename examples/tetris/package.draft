@@ -1,0 +1,276 @@
+// This file is the executable shell around the deterministic Tetris game. It
+// acquires one raw terminal session, enters the terminal's alternate screen,
+// interleaves timed input with gravity, renders only changed states, and then
+// restores both screen and input mode on every ordinary exit path. Simulation,
+// byte decoding, and painting remain in separate files with no callbacks or
+// framework between them.
+//
+// The program intentionally uses only Draft core packages and ANSI/VT output:
+// there is no ncurses, event library, heap allocation, background thread, or
+// platform code in the example. Current target support follows core/terminal:
+// AArch64 macOS and AArch64 GNU/Linux.
+package tetris
+
+import core/io
+import core/os
+import core/terminal
+import core/time
+
+Input_Buffer_Size :: 64
+
+// Run_Result keeps interactive failure policy out of the event loop. The main
+// owner restores terminal state first, then reports a readable diagnostic on
+// the normal screen. completed includes explicit quit and clean input hangup.
+Run_Result :: enum u8 {
+    completed,
+    input_failed,
+    output_failed,
+}
+
+// Action_Outcome describes exactly which event-loop state an action changed.
+// reset_fall requests a fresh interval after a lock, restart, or pause change;
+// quit never requires another render.
+Action_Outcome :: struct {
+    quit: bool,
+    changed: bool,
+    reset_fall: bool,
+}
+
+// text_equal performs the one argument comparison needed by the smoke mode. It
+// compares exact UTF-8 bytes and retains neither input.
+text_equal :: proc(left: string, right: string) -> bool {
+    if len(left) != len(right) {
+        return false
+    }
+    for index: usize = 0; index < len(left); index += 1 {
+        if left[index] != right[index] {
+            return false
+        }
+    }
+    return true
+}
+
+// has_smoke_argument recognizes `--smoke` anywhere in the process arguments.
+// Native conformance uses this deterministic noninteractive path because its
+// stdin is a pipe rather than a terminal.
+has_smoke_argument :: proc() -> bool {
+    for argument in os.args() {
+        if text_equal(argument, "--smoke") {
+            return true
+        }
+    }
+    return false
+}
+
+// next_fall_deadline converts the simulation's millisecond policy into the
+// core time unit at the scheduling boundary. It is called after each lock so a
+// newly reached level affects the immediately following piece.
+next_fall_deadline :: proc(game: ^Game, now: time.Duration) -> time.Duration {
+    interval := cast[time.Duration](
+        fall_interval_milliseconds(game) * cast[i64](time.millisecond),
+    )
+    return now + interval
+}
+
+// apply_action is the sole mapping from decoded user intent to simulation
+// operations. Commands that cannot affect a paused or completed game remain
+// no-ops. Restart is accepted only after game over, preventing an accidental R
+// from destroying a live session without confirmation.
+apply_action :: proc(game: ^Game, action: Action) -> Action_Outcome {
+    outcome: Action_Outcome
+    switch action {
+    case .none:
+        return outcome
+    case .quit:
+        outcome.quit = true
+        return outcome
+    case .toggle_pause:
+        if !game^.game_over {
+            game^.paused = !game^.paused
+            outcome.changed = true
+            outcome.reset_fall = true
+        }
+        return outcome
+    case .restart:
+        if game^.game_over {
+            restart_seed := random_next(&game^.random_state)
+            game_init(game, restart_seed)
+            outcome.changed = true
+            outcome.reset_fall = true
+        }
+        return outcome
+    case .move_left:
+        outcome.changed = game_move_left(game)
+    case .move_right:
+        outcome.changed = game_move_right(game)
+    case .rotate_clockwise:
+        outcome.changed = game_rotate_clockwise(game)
+    case .rotate_counterclockwise:
+        outcome.changed = game_rotate_counterclockwise(game)
+    case .soft_drop:
+        if !game^.paused && !game^.game_over {
+            result := game_soft_drop(game)
+            outcome.changed = true
+            outcome.reset_fall = result != .moved
+        }
+    case .hard_drop:
+        if !game^.paused && !game^.game_over {
+            result := game_hard_drop(game)
+            outcome.changed = true
+            outcome.reset_fall = result != .moved
+        }
+    }
+    return outcome
+}
+
+// run_interactive owns ordinary gameplay state but not the terminal resource.
+// It waits until either a byte arrives or gravity is due. At most one automatic
+// drop occurs per iteration; a process delayed for a long time therefore does
+// not apply a burst of invisible catch-up drops. Input decoder state persists
+// across reads, and all bytes returned by one read are handled in order.
+run_interactive :: proc(
+    session: ^terminal.Session,
+    screen: ^terminal.Screen,
+) -> Run_Result {
+    seed := cast[u64](cast[i64](time.monotonic_now())) ^ os.process_id()
+    game: Game
+    game_init(&game, seed)
+
+    decoder: Input_Decoder
+    input: [Input_Buffer_Size]u8
+    now := time.monotonic_now()
+    fall_deadline := next_fall_deadline(&game, now)
+    needs_render := true
+
+    for {
+        if needs_render {
+            if render_game(screen, &game) != .none {
+                return .output_failed
+            }
+            needs_render = false
+        }
+
+        now = time.monotonic_now()
+        wait := 250 * time.millisecond
+        if !game.paused && !game.game_over {
+            if now >= fall_deadline {
+                wait = 0 * time.nanosecond
+            } else {
+                wait = fall_deadline - now
+            }
+        }
+
+        (count, error) := terminal.read(session, input[:], wait)
+        if error == .end_of_input {
+            return .completed
+        }
+        if error != .none {
+            return .input_failed
+        }
+
+        for index: usize = 0; index < count; index += 1 {
+            action := decode_input(&decoder, input[index])
+            outcome := apply_action(&game, action)
+            if outcome.quit {
+                return .completed
+            }
+            if outcome.changed {
+                needs_render = true
+            }
+            if outcome.reset_fall {
+                now = time.monotonic_now()
+                fall_deadline = next_fall_deadline(&game, now)
+            }
+        }
+
+        now = time.monotonic_now()
+        if !game.paused && !game.game_over && now >= fall_deadline {
+            tick_result := game_tick(&game)
+            needs_render = true
+            fall_deadline = next_fall_deadline(&game, now)
+            if tick_result == .game_over {
+                // The next frame owns the visible game-over transition. The
+                // explicit branch records that the result was considered; no
+                // additional scheduling state is needed once game_over is set.
+                continue
+            }
+        }
+    }
+    return .completed
+}
+
+// run_smoke exercises game state transitions and complete frame construction
+// without requiring a terminal. It is intentionally deterministic and emits a
+// short stable line for cross-target native conformance.
+run_smoke :: proc() -> int {
+    game: Game
+    game_init(&game, 0x4452414654)
+    for index: usize = 0; index < 8; index += 1 {
+        result := game_hard_drop(&game)
+        if result == .game_over {
+            return 1
+        }
+    }
+
+    frame: Frame_Buffer
+    if !build_frame(&frame, &game) || frame.length == 0 {
+        return 1
+    }
+    if os.write_text_all(os.standard_output, "tetris smoke ok\n") != .none {
+        return 1
+    }
+    return 0
+}
+
+// report_error is used only after cleanup on a failing exit path. There is no
+// reliable secondary channel if stderr itself fails, so the result is inspected
+// and deliberately converted to the already selected process failure status.
+report_error :: proc(message: string) {
+    reported := os.write_text_all(os.standard_error, message)
+    if reported != .none {
+        return
+    }
+}
+
+// main is the unique owner of terminal cleanup. After begin_raw succeeds there
+// are no early returns until alternate-screen leave and raw-mode restoration
+// have both been attempted. This covers Q, raw Ctrl-C, EOF, and ordinary I/O
+// failures. Uncatchable process termination remains an operating-system limit.
+main :: proc() -> int {
+    if has_smoke_argument() {
+        return run_smoke()
+    }
+
+    session: terminal.Session
+    begin_error := terminal.begin_raw(&session, os.standard_input)
+    if begin_error != .none {
+        report_error(
+            "tetris: standard input is not an available terminal; use --smoke for a noninteractive check\n",
+        )
+        return 1
+    }
+
+    screen: terminal.Screen
+    screen_error := terminal.begin_screen(&screen, os.standard_output)
+    result: Run_Result = .output_failed
+    if screen_error == .none {
+        result = run_interactive(&session, &screen)
+    }
+
+    left_screen := terminal.restore_screen(&screen)
+    restored := terminal.restore(&session)
+
+    if !left_screen || !restored {
+        report_error("tetris: terminal cleanup failed\n")
+        return 1
+    }
+    if result == .input_failed {
+        report_error("tetris: terminal input failed\n")
+        return 1
+    }
+    if result == .output_failed {
+        report_error("tetris: terminal output failed\n")
+        return 1
+    }
+    return 0
+}

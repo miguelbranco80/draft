@@ -1,0 +1,76 @@
+// This file maps core/terminal's reusable streaming keys into the small action
+// vocabulary consumed by the Tetris simulation. It performs no I/O and retains
+// no input storage. The underlying Decoder persists across terminal reads, so
+// an ANSI arrow sequence remains correct even when each byte arrives alone.
+package tetris
+
+import core/terminal
+
+// Action is the complete user-command boundary between terminal input and game
+// policy. none means the key is unsupported or its sequence is incomplete.
+// Values own no storage and have no target-specific meaning.
+Action :: enum u8 {
+    none,
+    move_left,
+    move_right,
+    soft_drop,
+    rotate_clockwise,
+    rotate_counterclockwise,
+    hard_drop,
+    toggle_pause,
+    restart,
+    quit,
+}
+
+// Input_Decoder gives the application-owned terminal decoder a domain name
+// without wrapping or copying it. Its zero value is ready for use.
+Input_Decoder :: terminal.Decoder
+
+// plain_action maps one independent byte. ASCII letters accept both cases so
+// Caps Lock never changes controls. In raw mode Ctrl-C is byte 3 rather than a
+// signal, allowing the application to restore the terminal before exiting.
+plain_action :: proc(byte: u8) -> Action {
+    switch byte {
+    case cast[u8]('a'), cast[u8]('A'):
+        return .move_left
+    case cast[u8]('d'), cast[u8]('D'):
+        return .move_right
+    case cast[u8]('s'), cast[u8]('S'):
+        return .soft_drop
+    case cast[u8]('w'), cast[u8]('W'):
+        return .rotate_clockwise
+    case cast[u8]('z'), cast[u8]('Z'):
+        return .rotate_counterclockwise
+    case cast[u8](' '):
+        return .hard_drop
+    case cast[u8]('p'), cast[u8]('P'):
+        return .toggle_pause
+    case cast[u8]('r'), cast[u8]('R'):
+        return .restart
+    case cast[u8]('q'), cast[u8]('Q'), 3:
+        return .quit
+    }
+    return .none
+}
+
+// decode_input consumes one byte and returns at most one action. Core terminal
+// owns ANSI sequence recognition; this layer owns only Tetris bindings. Home,
+// end, delete, page, Escape, and arbitrary text bytes are harmless no-ops unless
+// their byte spelling is one of the explicit letter controls above.
+decode_input :: proc(decoder: ^Input_Decoder, byte: u8) -> Action {
+    key := terminal.decode_key(decoder, byte)
+    switch key.kind {
+    case .byte:
+        return plain_action(key.byte_value)
+    case .up:
+        return .rotate_clockwise
+    case .down:
+        return .soft_drop
+    case .right:
+        return .move_right
+    case .left:
+        return .move_left
+    case:
+        return .none
+    }
+}

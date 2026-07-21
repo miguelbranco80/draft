@@ -41,4 +41,5 @@ examples/packages	lib/math	pass	dependency	none
 examples	runtime-checks	pass	run	none
 examples	runtime-traps	pass	run	none
 examples	simple-editor	pass	run	test
+examples	tetris	pass	run	test
 examples	validation	pass	run	test-bench

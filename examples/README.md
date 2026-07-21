@@ -61,6 +61,7 @@ tests instead of reporting false skips.
 | [`console`](console/) | Static heterogeneous `console.println` packs, allocation-free `core/format`, standard output, process arguments, booleans, mixed integer widths, and exact 64/128-bit boundary spellings. |
 | [`file-io`](file-io/) | Owned C path storage, explicit file handles, a zero-copy immutable-text write, byte reads, `defer` cleanup, and a complete create/read/remove round trip. |
 | [`simple-editor`](simple-editor/) | A useful but deliberately disposable ed-like application: line storage, byte input, numbered navigation, insertion, deletion, dirty-buffer protection, file load/save, command parsing, and focused Draft tests. |
+| [`tetris`](tetris/) | A full-screen terminal game with raw timed input, fragmented arrow-key decoding, fixed-buffer ANSI rendering, seven-bag pieces, collision and wall kicks, scoring, levels, clean terminal restoration, and deterministic tests. |
 | [`denials`](denials/) | A runnable positive `deny` example whose transitive call graph is compiler-checked to avoid console access, assertions, assembly, unchecked access, and context access. Negative denial cases live in `tests/denial_test.cpp`. |
 | [`hello`](hello/) | The smallest provider-free compiler and native-backend smoke program: a fixed array, slice, loop, procedure call, and assertion. |
 
@@ -120,7 +121,7 @@ policy rather than missing backend features.
 | Declarations, expressions, literals, arrays, slices, control flow, tuples, pointers, aggregates, enums, tagged unions, and distinct types | `language-tour`, `runtime-checks` |
 | Compile-time evaluation, target facts, layout, `when`, parametrics, structural type inspection, and static heterogeneous argument packs | `language-tour`, `console`, `packages`, `packages-generic`, `nested-procedures` |
 | Globals, TLS, context, allocation, collections, atomics, and threads | `core-runtime`, `core-memory`, `core-array`, `core-map`, `core-atomic`, `core-thread`, `runtime-checks` |
-| Console, formatting, files, arguments, environment, and a complete line-oriented application | `console`, `file-io`, `core-os`, `simple-editor` |
+| Console, formatting, files, arguments, environment, raw timed terminal input, and complete interactive applications | `console`, `file-io`, `core-os`, `simple-editor`, `tetris` |
 | Explicit UTF-8 validation, scalar traversal, and encoding over byte strings | `core-utf8` |
 | Parsed and external assembly, SIMD, C imports, C exports, and foreign providers | `assembly`, `external-assembly`, `c-interop`, `c-library`, `foreign-provider` |
 | `docs`, `judge`, synthesis, deterministic resolution, and provider-free builds | `language-tour`, `judgment-tour`, `agent-judgment-mix`, `agent-acceptance`, `agent-pending` |

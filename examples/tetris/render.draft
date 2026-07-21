@@ -1,0 +1,277 @@
+// This file paints one complete Tetris frame into a fixed stack buffer and
+// publishes it with one complete stdout write. Rendering a whole frame off
+// screen prevents dozens of tiny system calls and ensures a capacity failure
+// cannot leave half of a newly constructed frame on the terminal. ANSI/VT
+// cursor and color sequences are ordinary output bytes; no terminal library,
+// allocation, retained slice, or native ABI is involved.
+//
+// The renderer derives active and ghost cells from Game without mutating it.
+// It assumes the application has already entered an alternate screen and
+// hidden the cursor. The 24-line layout fits a conventional 80x24 terminal,
+// while end-of-line and end-of-screen erasure remove remnants after resizes.
+package tetris
+
+import core/format
+import core/io
+import core/terminal
+
+Frame_Capacity :: 8192
+
+Ghost_Style :: "\x1b[2m"
+
+// Frame_Buffer owns initialized bytes in bytes[:length]. failed is sticky: an
+// attempted append beyond capacity records failure and every later append is a
+// no-op. No slice escapes the render operation, so the stack owner remains
+// obvious and there is no allocation failure policy hidden inside painting.
+Frame_Buffer :: struct {
+    bytes: [Frame_Capacity]u8,
+    length: usize,
+    failed: bool,
+}
+
+// frame_append_byte adds one initialized byte unless capacity has already been
+// exhausted. The length invariant is always `length <= Frame_Capacity`.
+frame_append_byte :: proc(frame: ^Frame_Buffer, byte: u8) {
+    if frame^.failed {
+        return
+    }
+    if frame^.length == Frame_Capacity {
+        frame^.failed = true
+        return
+    }
+    frame^.bytes[frame^.length] = byte
+    frame^.length += 1
+}
+
+// frame_append_text copies immutable source bytes into frame-owned mutable
+// storage. Capacity is proved before the copy, so failure never installs a
+// partial logical token such as half of an ANSI escape sequence.
+frame_append_text :: proc(frame: ^Frame_Buffer, text: string) {
+    if frame^.failed {
+        return
+    }
+    if len(text) > Frame_Capacity - frame^.length {
+        frame^.failed = true
+        return
+    }
+    for index: usize = 0; index < len(text); index += 1 {
+        frame^.bytes[frame^.length] = text[index]
+        frame^.length += 1
+    }
+}
+
+// frame_append_bytes is the mutable-slice counterpart used by numeric
+// formatting. The source is borrowed only for the duration of the copy.
+frame_append_bytes :: proc(frame: ^Frame_Buffer, bytes: []u8) {
+    if frame^.failed {
+        return
+    }
+    if len(bytes) > Frame_Capacity - frame^.length {
+        frame^.failed = true
+        return
+    }
+    for byte in bytes {
+        frame^.bytes[frame^.length] = byte
+        frame^.length += 1
+    }
+}
+
+// frame_append_unsigned formats without allocation into a complete-width
+// scratch buffer, then copies the initialized digits into the frame. The
+// formatting failure is retained even though twenty bytes prove all u64 values
+// fit; checking it keeps this layer correct if that local proof later changes.
+frame_append_unsigned :: proc(frame: ^Frame_Buffer, value: u64) {
+    storage: [20]u8
+    (digits, formatted) := format.unsigned_decimal(storage[:], value)
+    if !formatted {
+        frame^.failed = true
+        return
+    }
+    frame_append_bytes(frame, digits)
+}
+
+// piece_color maps nonzero board identities to ANSI 256-color foregrounds.
+// The chosen colors remain distinguishable on light and dark backgrounds. An
+// invalid identity returns reset style rather than indexing another table.
+piece_color :: proc(value: u8) -> string {
+    switch value {
+    case 1:
+        return "\x1b[38;5;51m"
+    case 2:
+        return "\x1b[38;5;226m"
+    case 3:
+        return "\x1b[38;5;201m"
+    case 4:
+        return "\x1b[38;5;46m"
+    case 5:
+        return "\x1b[38;5;196m"
+    case 6:
+        return "\x1b[38;5;27m"
+    case 7:
+        return "\x1b[38;5;208m"
+    }
+    return terminal.reset_style
+}
+
+// piece_contains_world translates a visible board coordinate into one piece's
+// local mask. It is a pure geometry query used for active, ghost, and preview
+// rendering; collision remains authoritative in game.draft.
+piece_contains_world :: proc(piece: Piece, column: i32, row: i32) -> bool {
+    return piece_has_cell(
+        piece.kind,
+        piece.rotation,
+        column - piece.column,
+        row - piece.row,
+    )
+}
+
+// frame_append_board_cell paints exactly two terminal columns. Settled and
+// active cells share their kind color and use `[]`; ghost cells use dim dots;
+// empty cells are two spaces. Every styled cell resets immediately so borders
+// and the information panel never inherit a piece color.
+frame_append_board_cell :: proc(
+    frame: ^Frame_Buffer,
+    game: ^Game,
+    column: i32,
+    row: i32,
+    projected_row: i32,
+) {
+    active := piece_contains_world(game^.current, column, row)
+    value := game^.board[board_index(column, row)]
+    if active {
+        value = piece_value(game^.current.kind)
+    }
+
+    if value != 0 {
+        frame_append_text(frame, piece_color(value))
+        frame_append_text(frame, "[]")
+        frame_append_text(frame, terminal.reset_style)
+        return
+    }
+
+    ghost := game^.current
+    ghost.row = projected_row
+    if !game^.game_over && piece_contains_world(ghost, column, row) {
+        frame_append_text(frame, Ghost_Style)
+        frame_append_text(frame, "..")
+        frame_append_text(frame, terminal.reset_style)
+        return
+    }
+    frame_append_text(frame, "  ")
+}
+
+// frame_append_preview_row renders one of the next piece's four mask rows.
+// Preview cells have the same two-column geometry as the playfield, keeping
+// layout independent of Unicode width rules.
+frame_append_preview_row :: proc(
+    frame: ^Frame_Buffer,
+    kind: Piece_Kind,
+    row: i32,
+) {
+    value := piece_value(kind)
+    for column: i32 = 0; column < Piece_Box_Size; column += 1 {
+        if piece_has_cell(kind, 0, column, row) {
+            frame_append_text(frame, piece_color(value))
+            frame_append_text(frame, "[]")
+            frame_append_text(frame, terminal.reset_style)
+        } else {
+            frame_append_text(frame, "  ")
+        }
+    }
+}
+
+// frame_append_sidebar owns the fixed information-panel row mapping. It emits
+// content only; the caller prefixes spacing and clears the remaining terminal
+// line. Keeping this as an explicit switch makes the 20-row layout inspectable.
+frame_append_sidebar :: proc(frame: ^Frame_Buffer, game: ^Game, row: i32) {
+    switch row {
+    case 0:
+        frame_append_text(frame, "NEXT")
+    case 1, 2, 3, 4:
+        frame_append_preview_row(frame, game^.next, row - 1)
+    case 6:
+        frame_append_text(frame, "SCORE  ")
+        frame_append_unsigned(frame, game^.score)
+    case 7:
+        frame_append_text(frame, "LINES  ")
+        frame_append_unsigned(frame, game^.lines)
+    case 8:
+        frame_append_text(frame, "LEVEL  ")
+        frame_append_unsigned(frame, cast[u64](game^.level))
+    case 10:
+        frame_append_text(frame, "A/D or arrows  move")
+    case 11:
+        frame_append_text(frame, "W/up           rotate")
+    case 12:
+        frame_append_text(frame, "Z              rotate back")
+    case 13:
+        frame_append_text(frame, "S/down         soft drop")
+    case 14:
+        frame_append_text(frame, "Space          hard drop")
+    case 15:
+        frame_append_text(frame, "P pause   Q quit")
+    case 17:
+        if game^.game_over {
+            frame_append_text(frame, "GAME OVER")
+        } else if game^.paused {
+            frame_append_text(frame, "PAUSED")
+        } else {
+            frame_append_text(frame, "PLAYING")
+        }
+    case 18:
+        if game^.game_over {
+            frame_append_text(frame, "Press R to restart")
+        }
+    }
+}
+
+// build_frame replaces frame with one complete home-positioned image. Raw
+// terminal mode disables output post-processing on supported targets, so line
+// transitions explicitly use CRLF rather than relying on LF-to-CRLF mapping.
+// The result remains in caller-owned storage for tests or one immediate write.
+build_frame :: proc(frame: ^Frame_Buffer, game: ^Game) -> bool {
+    // Only the initialized prefix belongs to a frame. Resetting metadata rather
+    // than zeroing all 8 KiB avoids touching bytes that the renderer will never
+    // publish; every byte below the new length is still assigned before use.
+    frame^.length = 0
+    frame^.failed = false
+
+    frame_append_text(frame, terminal.cursor_home)
+    frame_append_text(frame, "DRAFT TETRIS")
+    frame_append_text(frame, terminal.erase_line_tail)
+    frame_append_text(frame, "\r\n")
+    frame_append_text(frame, "+--------------------+")
+    frame_append_text(frame, terminal.erase_line_tail)
+    frame_append_text(frame, "\r\n")
+
+    projected_row := ghost_row(game)
+    for row: i32 = 0; row < Board_Height; row += 1 {
+        frame_append_byte(frame, cast[u8]('|'))
+        for column: i32 = 0; column < Board_Width; column += 1 {
+            frame_append_board_cell(frame, game, column, row, projected_row)
+        }
+        frame_append_text(frame, "|")
+        frame_append_text(frame, "  ")
+        frame_append_sidebar(frame, game, row)
+        frame_append_text(frame, terminal.erase_line_tail)
+        frame_append_text(frame, "\r\n")
+    }
+
+    frame_append_text(frame, "+--------------------+")
+    frame_append_text(frame, terminal.erase_line_tail)
+    frame_append_text(frame, "\r\n")
+    frame_append_text(frame, "Seven-bag pieces. Compact wall kicks.")
+    frame_append_text(frame, terminal.erase_line_tail)
+    frame_append_text(frame, terminal.erase_screen_tail)
+    return !frame^.failed
+}
+
+// render_game builds and publishes one frame. A capacity failure is reported as
+// unavailable and writes nothing; native output errors propagate unchanged.
+render_game :: proc(screen: ^terminal.Screen, game: ^Game) -> io.Error {
+    frame: Frame_Buffer
+    if !build_frame(&frame, game) {
+        return .unavailable
+    }
+    return terminal.write_screen(screen, frame.bytes[:frame.length])
+}

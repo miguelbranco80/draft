@@ -1,0 +1,533 @@
+// This file owns the complete deterministic Tetris simulation: the 10x20
+// settled board, seven tetromino masks, shuffled seven-piece bag, active/next
+// pieces, collision, compact wall kicks, locking, line clearing, scoring, and
+// level speed. It performs no allocation, I/O, timing, or terminal work. A
+// caller supplies one seed and explicit actions, so tests can reproduce every
+// state transition exactly and the interactive shell remains a thin adapter.
+//
+// Board cells are zero for empty or one plus Piece_Kind's backing value for a
+// settled block. Active and ghost pieces are derived views and never written to
+// the board until locking. Signed piece coordinates permit spawn cells above
+// visible row zero; any such cell still above the board when a piece locks ends
+// the game. The file depends only on Draft sections 4-6.
+package tetris
+
+Board_Width :: 10
+Board_Height :: 20
+Board_Cell_Count :: Board_Width * Board_Height
+Piece_Box_Size :: 4
+Bag_Size :: 7
+Spawn_Column :: 3
+Spawn_Row :: -1
+
+// Piece_Kind's source order is also the board color identity and bag inventory
+// order. Zero is a valid I piece, while settled board storage adds one so zero
+// remains the unambiguous empty-cell representation.
+Piece_Kind :: enum u8 {
+    i,
+    o,
+    t,
+    s,
+    z,
+    j,
+    l,
+}
+
+// Piece is one falling tetromino in board coordinates. rotation is always in
+// [0, 4); column and row address the top-left corner of its 4x4 mask. Negative
+// rows are valid only while the occupied cells remain above the visible board.
+Piece :: struct {
+    kind: Piece_Kind,
+    rotation: u8,
+    column: i32,
+    row: i32,
+}
+
+// Drop_Result exposes the state transition relevant to scheduling. moved keeps
+// the current piece; locked publishes it and spawns another; game_over means
+// locking overflowed the top or the next piece could not spawn.
+Drop_Result :: enum u8 {
+    moved,
+    locked,
+    game_over,
+}
+
+// Game is one complete simulation owner. board, bag, and random_state are
+// inline values and require no cleanup. The structure is intentionally copied
+// only in focused tests; the interactive program keeps one stable owner and
+// mutates it through ^Game. score and lines are monotonic within one game;
+// level is one plus lines / 10.
+Game :: struct {
+    board: [Board_Cell_Count]u8,
+    current: Piece,
+    next: Piece_Kind,
+    bag: [Bag_Size]Piece_Kind,
+    bag_index: usize,
+    random_state: u64,
+    score: u64,
+    lines: u64,
+    level: u32,
+    game_over: bool,
+    paused: bool,
+}
+
+// piece_mask returns one row-major 4x4 bit mask. Bit y*4+x represents local
+// cell (x,y). The masks use a common three-cell rotation box except I and O,
+// whose conventional four/two-cell boxes remain centered for predictable
+// spawning and compact kicks. Every returned mask contains exactly four bits.
+piece_mask :: proc(kind: Piece_Kind, rotation: u8) -> u16 {
+    selected := rotation & 3
+    switch kind {
+    case .i:
+        switch selected {
+        case 0:
+            return 0x00f0
+        case 1:
+            return 0x4444
+        case 2:
+            return 0x0f00
+        case:
+            return 0x2222
+        }
+    case .o:
+        return 0x0066
+    case .t:
+        switch selected {
+        case 0:
+            return 0x0072
+        case 1:
+            return 0x0262
+        case 2:
+            return 0x0270
+        case:
+            return 0x0232
+        }
+    case .s:
+        switch selected {
+        case 0:
+            return 0x0036
+        case 1:
+            return 0x0462
+        case 2:
+            return 0x0360
+        case:
+            return 0x0231
+        }
+    case .z:
+        switch selected {
+        case 0:
+            return 0x0063
+        case 1:
+            return 0x0264
+        case 2:
+            return 0x0630
+        case:
+            return 0x0132
+        }
+    case .j:
+        switch selected {
+        case 0:
+            return 0x0071
+        case 1:
+            return 0x0226
+        case 2:
+            return 0x0470
+        case:
+            return 0x0322
+        }
+    case .l:
+        switch selected {
+        case 0:
+            return 0x0074
+        case 1:
+            return 0x0622
+        case 2:
+            return 0x0170
+        case:
+            return 0x0223
+        }
+    }
+    return 0
+}
+
+// piece_has_cell tests one local coordinate without exposing bit ordering to
+// collision, rendering, or tests. Coordinates outside the 4x4 box are empty.
+piece_has_cell :: proc(
+    kind: Piece_Kind,
+    rotation: u8,
+    column: i32,
+    row: i32,
+) -> bool {
+    if column < 0 || column >= Piece_Box_Size ||
+        row < 0 || row >= Piece_Box_Size {
+        return false
+    }
+    bit_index := row * Piece_Box_Size + column
+    bit := cast[u16](1) << bit_index
+    return piece_mask(kind, rotation) & bit != 0
+}
+
+// board_index converts already validated visible coordinates into the flat
+// row-major board index. Keeping the proof at callers avoids hiding bounds
+// policy in an unchecked access helper.
+board_index :: proc(column: i32, row: i32) -> usize {
+    return cast[usize](row) * Board_Width + cast[usize](column)
+}
+
+// piece_fits validates every occupied mask cell against horizontal walls, the
+// floor, and settled blocks. Cells above row zero are permitted during spawn;
+// they have no board storage to inspect. The procedure is deterministic and
+// reads but never mutates Game.
+piece_fits :: proc(game: ^Game, piece: Piece) -> bool {
+    for local_row: i32 = 0; local_row < Piece_Box_Size; local_row += 1 {
+        for local_column: i32 = 0;
+            local_column < Piece_Box_Size;
+            local_column += 1 {
+            if !piece_has_cell(
+                piece.kind,
+                piece.rotation,
+                local_column,
+                local_row,
+            ) {
+                continue
+            }
+
+            column := piece.column + local_column
+            row := piece.row + local_row
+            if column < 0 || column >= Board_Width || row >= Board_Height {
+                return false
+            }
+            if row >= 0 && game^.board[board_index(column, row)] != 0 {
+                return false
+            }
+        }
+    }
+    return true
+}
+
+// piece_value converts a Piece_Kind to the nonzero settled-board identity used
+// by rendering. The backing conversion is explicit because enums do not
+// implicitly mix with integers.
+piece_value :: proc(kind: Piece_Kind) -> u8 {
+    return cast[u8](kind) + 1
+}
+
+// random_next advances a local xorshift64* generator. Game initialization
+// replaces seed zero, the one absorbing xorshift state, with a fixed nonzero
+// value. This is gameplay randomness, not cryptography or a core random API.
+random_next :: proc(state: ^u64) -> u64 {
+    value := state^
+    value ^= value >> 12
+    value ^= value << 25
+    value ^= value >> 27
+    state^ = value
+    return value * 2685821657736338717
+}
+
+// fill_bag installs each kind exactly once and Fisher-Yates shuffles in place.
+// Iterating downward makes the modulo bound explicit and avoids allocation or
+// rejection sampling. bag_index is reset only after the complete bag exists.
+fill_bag :: proc(game: ^Game) {
+    game^.bag = [Bag_Size]Piece_Kind{
+        .i, .o, .t, .s, .z, .j, .l,
+    }
+
+    index: usize = Bag_Size - 1
+    for index != 0 {
+        upper_bound := index + 1
+        selected := cast[usize](
+            random_next(&game^.random_state) % cast[u64](upper_bound),
+        )
+        game^.bag[index], game^.bag[selected] =
+            game^.bag[selected], game^.bag[index]
+        index -= 1
+    }
+    game^.bag_index = 0
+}
+
+// take_bag_piece returns the next kind in source-independent shuffled order.
+// Exhaustion creates the next seven-piece permutation before reading it.
+take_bag_piece :: proc(game: ^Game) -> Piece_Kind {
+    if game^.bag_index == Bag_Size {
+        fill_bag(game)
+    }
+    kind := game^.bag[game^.bag_index]
+    game^.bag_index += 1
+    return kind
+}
+
+// spawn_next promotes the preview piece, replenishes preview from the bag, and
+// checks the spawn position immediately. Failure preserves the attempted piece
+// for rendering/debugging but marks the game terminal.
+spawn_next :: proc(game: ^Game) {
+    game^.current = Piece{
+        kind = game^.next,
+        rotation = 0,
+        column = Spawn_Column,
+        row = Spawn_Row,
+    }
+    game^.next = take_bag_piece(game)
+    if !piece_fits(game, game^.current) {
+        game^.game_over = true
+    }
+}
+
+// game_init replaces all prior state, normalizes the RNG seed, fills the first
+// bag, and establishes current/preview pieces. It is also the restart operation;
+// Game owns no resources whose cleanup could be skipped by replacement.
+game_init :: proc(game: ^Game, seed: u64) {
+    empty: Game
+    game^ = empty
+    game^.random_state = seed
+    if game^.random_state == 0 {
+        game^.random_state = 0x9e3779b97f4a7c15
+    }
+    game^.level = 1
+    fill_bag(game)
+    game^.next = take_bag_piece(game)
+    spawn_next(game)
+}
+
+// try_horizontal_move applies one candidate column only when it fits. Callers
+// use the named left/right wrappers so no call site must decode a direction
+// integer.
+try_horizontal_move :: proc(game: ^Game, delta: i32) -> bool {
+    if game^.game_over || game^.paused {
+        return false
+    }
+    candidate := game^.current
+    candidate.column += delta
+    if !piece_fits(game, candidate) {
+        return false
+    }
+    game^.current = candidate
+    return true
+}
+
+game_move_left :: proc(game: ^Game) -> bool {
+    return try_horizontal_move(game, -1)
+}
+
+game_move_right :: proc(game: ^Game) -> bool {
+    return try_horizontal_move(game, 1)
+}
+
+// try_rotation tests the rotated piece at its current position, then a compact
+// deterministic kick list: one/two columns left or right, finally one row up.
+// This is intentionally not the larger guideline SRS table; it preserves the
+// direct first implementation while making rotations near walls and stacks
+// pleasant. The first fitting candidate wins in listed order.
+try_rotation :: proc(game: ^Game, next_rotation: u8) -> bool {
+    if game^.game_over || game^.paused {
+        return false
+    }
+
+    column_kicks := [6]i32{0, -1, 1, -2, 2, 0}
+    row_kicks := [6]i32{0, 0, 0, 0, 0, -1}
+    for column_kick, index in column_kicks {
+        candidate := game^.current
+        candidate.rotation = next_rotation & 3
+        candidate.column += column_kick
+        candidate.row += row_kicks[index]
+        if piece_fits(game, candidate) {
+            game^.current = candidate
+            return true
+        }
+    }
+    return false
+}
+
+game_rotate_clockwise :: proc(game: ^Game) -> bool {
+    return try_rotation(game, game^.current.rotation + 1)
+}
+
+game_rotate_counterclockwise :: proc(game: ^Game) -> bool {
+    return try_rotation(game, game^.current.rotation + 3)
+}
+
+// row_is_complete is called only for a visible row and reads all ten settled
+// cells. Active pieces never participate because they have not locked yet.
+row_is_complete :: proc(game: ^Game, row: i32) -> bool {
+    for column: i32 = 0; column < Board_Width; column += 1 {
+        if game^.board[board_index(column, row)] == 0 {
+            return false
+        }
+    }
+    return true
+}
+
+// clear_complete_lines compacts incomplete rows downward in one bottom-up pass
+// and zeroes the vacated prefix. A source row is copied only after every lower
+// destination has already consumed its old contents, so no secondary board or
+// allocation is required. The return count is in [0, 4] after a legal lock.
+clear_complete_lines :: proc(game: ^Game) -> u32 {
+    write_row: i32 = Board_Height - 1
+    cleared: u32
+
+    read_row: i32 = Board_Height - 1
+    for read_row >= 0 {
+        if row_is_complete(game, read_row) {
+            cleared += 1
+        } else {
+            if write_row != read_row {
+                for column: i32 = 0; column < Board_Width; column += 1 {
+                    game^.board[board_index(column, write_row)] =
+                        game^.board[board_index(column, read_row)]
+                }
+            }
+            write_row -= 1
+        }
+        read_row -= 1
+    }
+
+    for write_row >= 0 {
+        for column: i32 = 0; column < Board_Width; column += 1 {
+            game^.board[board_index(column, write_row)] = 0
+        }
+        write_row -= 1
+    }
+    return cleared
+}
+
+// line_clear_score applies the familiar 100/300/500/800 single-through-Tetris
+// table at the level active before the clear. Counts above four cannot arise
+// from one legal tetromino lock and return zero defensively.
+line_clear_score :: proc(cleared: u32, level: u32) -> u64 {
+    base: u64
+    switch cleared {
+    case 1:
+        base = 100
+    case 2:
+        base = 300
+    case 3:
+        base = 500
+    case 4:
+        base = 800
+    case:
+        return 0
+    }
+    return base * cast[u64](level)
+}
+
+// lock_current publishes all visible active cells, detects top overflow, clears
+// rows, updates score/level, and spawns the preview. The operation is the only
+// path that writes an active piece into board storage.
+lock_current :: proc(game: ^Game) -> Drop_Result {
+    overflowed := false
+    for local_row: i32 = 0; local_row < Piece_Box_Size; local_row += 1 {
+        for local_column: i32 = 0;
+            local_column < Piece_Box_Size;
+            local_column += 1 {
+            if !piece_has_cell(
+                game^.current.kind,
+                game^.current.rotation,
+                local_column,
+                local_row,
+            ) {
+                continue
+            }
+            column := game^.current.column + local_column
+            row := game^.current.row + local_row
+            if row < 0 {
+                overflowed = true
+            } else {
+                game^.board[board_index(column, row)] =
+                    piece_value(game^.current.kind)
+            }
+        }
+    }
+
+    if overflowed {
+        game^.game_over = true
+        return .game_over
+    }
+
+    cleared := clear_complete_lines(game)
+    game^.score += line_clear_score(cleared, game^.level)
+    game^.lines += cast[u64](cleared)
+    game^.level = cast[u32](game^.lines / 10) + 1
+    spawn_next(game)
+    if game^.game_over {
+        return .game_over
+    }
+    return .locked
+}
+
+// drop_one advances one row when possible and awards the caller-selected score
+// per manual row. A blocked move locks immediately. Named public-to-package
+// wrappers below make automatic and soft-drop policy explicit at call sites.
+drop_one :: proc(game: ^Game, score_per_row: u64) -> Drop_Result {
+    if game^.game_over {
+        return .game_over
+    }
+    if game^.paused {
+        return .moved
+    }
+
+    candidate := game^.current
+    candidate.row += 1
+    if piece_fits(game, candidate) {
+        game^.current = candidate
+        game^.score += score_per_row
+        return .moved
+    }
+    return lock_current(game)
+}
+
+game_tick :: proc(game: ^Game) -> Drop_Result {
+    return drop_one(game, 0)
+}
+
+game_soft_drop :: proc(game: ^Game) -> Drop_Result {
+    return drop_one(game, 1)
+}
+
+// game_hard_drop moves to the lowest valid row, awards two points per row, and
+// locks once. The loop is bounded by Board_Height plus the small spawn prefix.
+game_hard_drop :: proc(game: ^Game) -> Drop_Result {
+    if game^.game_over {
+        return .game_over
+    }
+    if game^.paused {
+        return .moved
+    }
+
+    distance: u64
+    for {
+        candidate := game^.current
+        candidate.row += 1
+        if !piece_fits(game, candidate) {
+            break
+        }
+        game^.current = candidate
+        distance += 1
+    }
+    game^.score += distance * 2
+    return lock_current(game)
+}
+
+// ghost_row returns the lowest row at which the active piece still fits. It is
+// a derived rendering query and never mutates simulation state.
+ghost_row :: proc(game: ^Game) -> i32 {
+    candidate := game^.current
+    for {
+        next := candidate
+        next.row += 1
+        if !piece_fits(game, next) {
+            return candidate.row
+        }
+        candidate = next
+    }
+    return candidate.row
+}
+
+// fall_interval_milliseconds uses eleven bounded speed steps, from 800 ms at
+// level one to 150 ms at level eleven and above. Clamping before multiplication
+// keeps even an extremely long game's arithmetic small and deterministic.
+fall_interval_milliseconds :: proc(game: ^Game) -> i64 {
+    speed_step := game^.level - 1
+    if speed_step > 10 {
+        speed_step = 10
+    }
+    return 800 - cast[i64](speed_step) * 65
+}
