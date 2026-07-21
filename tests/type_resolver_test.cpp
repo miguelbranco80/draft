@@ -104,6 +104,9 @@ Record :: struct {
     small: u8,
     large: u64,
 }
+Generated_Record :: struct {
+    ... "add generated fields"
+}
 Cycle_A :: Cycle_B
 Cycle_B :: Cycle_A
 )draft");
@@ -123,6 +126,8 @@ Cycle_B :: Cycle_A
       find_symbol_id(source.semantic, "Buffer");
   const std::optional<draft::SymbolId> record =
       find_symbol_id(source.semantic, "Record");
+  const std::optional<draft::SymbolId> generated_record =
+      find_symbol_id(source.semantic, "Generated_Record");
   EXPECT(state, first.has_value());
   EXPECT(state, second.has_value());
   EXPECT(state, cycle_a.has_value());
@@ -132,7 +137,7 @@ Cycle_B :: Cycle_A
   EXPECT(state, record.has_value());
   if (!first.has_value() || !second.has_value() || !cycle_a.has_value() ||
       !cycle_b.has_value() || !count.has_value() || !buffer.has_value() ||
-      !record.has_value()) {
+      !record.has_value() || !generated_record.has_value()) {
     return;
   }
 
@@ -154,6 +159,7 @@ Cycle_B :: Cycle_A
           constants,
           resolved_integers,
           target,
+          draft::CompileTimeSynthesisMode::Reject,
           blocked_diagnostics);
   EXPECT(state, blocked.status == draft::TypeProductStatus::Blocked);
   EXPECT(
@@ -175,6 +181,7 @@ Cycle_B :: Cycle_A
           constants,
           resolved_integers,
           target,
+          draft::CompileTimeSynthesisMode::Reject,
           buffer_blocked_diagnostics);
   EXPECT(
       state,
@@ -201,6 +208,7 @@ Cycle_B :: Cycle_A
           published_count,
           resolved_integers,
           target,
+          draft::CompileTimeSynthesisMode::Reject,
           buffer_diagnostics);
   EXPECT(
       state,
@@ -222,6 +230,7 @@ Cycle_B :: Cycle_A
           record_package,
           selections,
           *record,
+          draft::CompileTimeSynthesisMode::Reject,
           record_diagnostics);
   EXPECT(
       state,
@@ -262,6 +271,7 @@ Cycle_B :: Cycle_A
           constants,
           resolved_integers,
           target,
+          draft::CompileTimeSynthesisMode::Reject,
           record_diagnostics);
   EXPECT(
       state,
@@ -308,6 +318,35 @@ Cycle_B :: Cycle_A
           draft::TypeLayout({true, 16, 8}));
   EXPECT(state, !record_diagnostics.has_errors());
 
+  // A member product may discover the package's opaque synthesis frontier, but
+  // its incomplete member namespace is provider context rather than canonical
+  // semantic state. The explicit status lets the workspace graph block this
+  // exact product while retaining the source site needed to form an obligation.
+  draft::SemanticPackage generated_package = source.semantic;
+  draft::DiagnosticSink generated_diagnostics;
+  const draft::DeclarationTypeProductAttempt generated_wait =
+      draft::resolve_package_type_members_product(
+          source.sources,
+          source.loaded,
+          generated_package,
+          selections,
+          *generated_record,
+          draft::CompileTimeSynthesisMode::Discover,
+          generated_diagnostics);
+  EXPECT(
+      state,
+      generated_wait.status ==
+          draft::TypeProductStatus::WaitingForSynthesis);
+  EXPECT(state, !generated_diagnostics.has_errors());
+  bool found_synthesis_member = false;
+  for (const draft::SemanticSite &site : generated_package.sites) {
+    if (site.kind == draft::SemanticSiteKind::SynthesisMember &&
+        site.anchor == *generated_record) {
+      found_synthesis_member = true;
+    }
+  }
+  EXPECT(state, found_synthesis_member);
+
   draft::SemanticPackage second_package = source.semantic;
   draft::DiagnosticSink second_diagnostics;
   const draft::DeclarationTypeProductAttempt second_attempt =
@@ -321,6 +360,7 @@ Cycle_B :: Cycle_A
           constants,
           resolved_integers,
           target,
+          draft::CompileTimeSynthesisMode::Reject,
           second_diagnostics);
   EXPECT(state, second_attempt.status == draft::TypeProductStatus::Complete);
   EXPECT(state, !second_diagnostics.has_errors());
@@ -341,6 +381,7 @@ Cycle_B :: Cycle_A
           constants,
           resolved_integers,
           target,
+          draft::CompileTimeSynthesisMode::Reject,
           first_diagnostics);
   EXPECT(state, first_attempt.status == draft::TypeProductStatus::Complete);
   EXPECT(state, !first_diagnostics.has_errors());
@@ -365,6 +406,7 @@ Cycle_B :: Cycle_A
           constants,
           resolved_integers,
           target,
+          draft::CompileTimeSynthesisMode::Reject,
           cycle_a_diagnostics);
   draft::SemanticPackage cycle_b_package = source.semantic;
   draft::DiagnosticSink cycle_b_diagnostics;
@@ -379,6 +421,7 @@ Cycle_B :: Cycle_A
           constants,
           resolved_integers,
           target,
+          draft::CompileTimeSynthesisMode::Reject,
           cycle_b_diagnostics);
   EXPECT(
       state,

@@ -2305,7 +2305,8 @@ package_condition_needs_materialization(const SemanticPackage &package,
               sources, result.graph.packages[package_index].loaded, task_package,
               result.packages[package_index]
                   ->declaration_discovery.selections,
-              root, slot.outcome.diagnostics);
+              root, compile_time_synthesis_mode(options.stage),
+              slot.outcome.diagnostics);
         } else {
           std::vector<SymbolId> completed_declarations;
           const PackageSemanticProducts &package_products =
@@ -2338,7 +2339,8 @@ package_condition_needs_materialization(const SemanticPackage &package,
                   ->declaration_discovery.published_constants,
               result.packages[package_index]
                   ->declaration_discovery.resolved_integers,
-              options.target.facts, slot.outcome.diagnostics);
+              options.target.facts, compile_time_synthesis_mode(options.stage),
+              slot.outcome.diagnostics);
         }
         if (slot.declaration_type->status == TypeProductStatus::Complete) {
           declaration_wave_packages[package_index] = std::move(task_package);

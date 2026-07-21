@@ -31,9 +31,13 @@ namespace draft {
 // declarations; type_dependencies names exact facets queried by compile-time
 // layout recipes. generic_type_dependencies contains owner-evaluated imported
 // applications discovered by this attempt; their TypeIds remain local to
-// task_package until the command coordinator exports the arguments. Error has
-// already emitted source diagnostics; callers must discard task_package for
-// both non-complete states.
+// task_package until the command coordinator exports the arguments.
+// WaitingForSynthesis means the private task_package contains the semantic site
+// and typed context required to construct an opaque provider obligation;
+// compile_time_procedures names any procedure entered before that stop. Error
+// has already emitted source diagnostics. A caller publishes task_package only
+// for Complete; it may inspect but never publish the package for a synthesis
+// wait.
 struct DeclarationTypeProductAttempt {
   TypeProductStatus status = TypeProductStatus::Error;
   std::vector<SymbolId> declaration_dependencies;
@@ -44,6 +48,7 @@ struct DeclarationTypeProductAttempt {
   // condition product; no provisional member SymbolId crosses the task seam.
   std::vector<SyntaxReference> condition_dependencies;
   std::vector<ImportedTypeInstantiationRequest> generic_type_dependencies;
+  std::vector<SymbolId> compile_time_procedures;
 };
 
 // Publishes only the selected member namespace of one authored nominal root.
@@ -58,6 +63,7 @@ resolve_package_type_members_product(
     SemanticPackage &task_package,
     const ConditionalSelections &selections,
     SymbolId root,
+    CompileTimeSynthesisMode synthesis_mode,
     DiagnosticSink &diagnostics);
 
 // Adds only member-level conditional sites reachable through the selections
@@ -91,6 +97,7 @@ resolve_package_declaration_type_product(
     const ConstantTable &published_constants,
     const std::vector<ResolvedIntegerExpression> &resolved_integers,
     const TargetFacts &target,
+    CompileTimeSynthesisMode synthesis_mode,
     DiagnosticSink &diagnostics);
 
 // Mutates the collected SemanticPackage in place. New member/parameter symbols

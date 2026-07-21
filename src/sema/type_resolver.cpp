@@ -148,7 +148,9 @@ public:
       const std::vector<SyntaxReference> *blocked_integer_synthesis = nullptr,
       SymbolId product_root = {},
       std::span<const SymbolId> completed_declarations = {},
-      TypeResolutionGoal goal = TypeResolutionGoal::CompleteDeclaration)
+      TypeResolutionGoal goal = TypeResolutionGoal::CompleteDeclaration,
+      CompileTimeSynthesisMode synthesis_mode =
+          CompileTimeSynthesisMode::Reject)
       : sources_(sources), loaded_(loaded), semantic_(semantic), selections_(selections),
         diagnostics_(diagnostics),
         states_(semantic.symbols.symbol_count(), ResolutionState::Unvisited),
@@ -158,7 +160,7 @@ public:
         product_root_(product_root),
         product_request_begin_(
             semantic.imported_type_instantiation_requests.size()),
-        goal_(goal) {
+        goal_(goal), synthesis_mode_(synthesis_mode) {
     // A product attempt may consume only declarations that the coordinator has
     // already published. Their semantic payloads are present in this snapshot,
     // so mark those rows resolved without re-entering their syntax. Every other
@@ -205,6 +207,7 @@ public:
       result.generic_type_dependencies.push_back(
           semantic_.imported_type_instantiation_requests[index]);
     }
+    result.compile_time_procedures = compile_time_procedures_;
     if (!declaration_dependencies_.empty() || !constant_dependencies_.empty() ||
         !type_dependencies_.empty() || !condition_dependencies_.empty() ||
         !result.generic_type_dependencies.empty()) {
@@ -213,6 +216,10 @@ public:
       result.constant_dependencies = constant_dependencies_;
       result.type_dependencies = type_dependencies_;
       result.condition_dependencies = condition_dependencies_;
+      return result;
+    }
+    if (blocked_by_synthesis_) {
+      result.status = TypeProductStatus::WaitingForSynthesis;
       return result;
     }
     if (goal_ == TypeResolutionGoal::NominalMembers) {
@@ -3960,6 +3967,15 @@ private:
         break;
       case NodeKind::SynthesisMember:
         add_site(SemanticSiteKind::SynthesisMember, tree, member_id, scope, owner);
+        if (product_root_.is_valid()) {
+          if (synthesis_mode_ == CompileTimeSynthesisMode::Discover) {
+            blocked_by_synthesis_ = true;
+          } else {
+            diagnostics_.error(
+                member.range,
+                "unresolved synthesis is unavailable during type member resolution");
+          }
+        }
         data.incomplete = true;
         break;
       case NodeKind::WhenMember:
@@ -4264,7 +4280,7 @@ private:
         evaluate_integer_expression_product(
             sources_, loaded_, semantic_, *target_, tree, expression_id, scope,
             expected, product_root_, *active_constants_,
-            CompileTimeSynthesisMode::Reject, diagnostics_);
+            synthesis_mode_, diagnostics_);
     for (SymbolId procedure : attempt.reached_procedures) {
       record_unpublished_declaration_dependency(procedure);
     }
@@ -4277,6 +4293,17 @@ private:
     type_dependencies_.insert(type_dependencies_.end(),
                               attempt.type_dependencies.begin(),
                               attempt.type_dependencies.end());
+    for (SymbolId procedure : attempt.compile_time_procedures) {
+      if (std::find(compile_time_procedures_.begin(),
+                    compile_time_procedures_.end(), procedure) ==
+          compile_time_procedures_.end()) {
+        compile_time_procedures_.push_back(procedure);
+      }
+    }
+    if (attempt.status == CompileTimeProductStatus::WaitingForSynthesis) {
+      blocked_by_synthesis_ = true;
+      return std::nullopt;
+    }
     if (attempt.status != CompileTimeProductStatus::Complete ||
         !attempt.result.has_value()) {
       return std::nullopt;
@@ -4597,6 +4624,15 @@ private:
         break;
       case NodeKind::SynthesisMember:
         add_site(SemanticSiteKind::SynthesisMember, tree, member_id, scope, owner);
+        if (product_root_.is_valid()) {
+          if (synthesis_mode_ == CompileTimeSynthesisMode::Discover) {
+            blocked_by_synthesis_ = true;
+          } else {
+            diagnostics_.error(
+                member.range,
+                "unresolved synthesis is unavailable during type member resolution");
+          }
+        }
         data.incomplete = true;
         break;
       case NodeKind::WhenMember:
@@ -5126,6 +5162,11 @@ private:
   std::vector<SymbolId> constant_dependencies_;
   std::vector<TypeFacetDependency> type_dependencies_;
   std::vector<SyntaxReference> condition_dependencies_;
+  // Product discovery records a ready `...` stop separately from ordinary
+  // semantic blockers. The coordinator may retain this task package solely as
+  // provider context, but it must never publish its incomplete type facets.
+  bool blocked_by_synthesis_ = false;
+  std::vector<SymbolId> compile_time_procedures_;
   // True only while a TypeMemberTypes attempt fills symbols published by the
   // preceding TypeMembers product. The flag is saved/restored around aggregate
   // traversal because resolving one member type may enter a nested aggregate.
@@ -5135,6 +5176,7 @@ private:
   // check; no command state or cache retains them after publication.
   std::vector<ResolvedIntegerExpression> product_integers_;
   TypeResolutionGoal goal_ = TypeResolutionGoal::CompleteDeclaration;
+  CompileTimeSynthesisMode synthesis_mode_ = CompileTimeSynthesisMode::Reject;
 };
 
 } // namespace
@@ -5145,6 +5187,7 @@ DeclarationTypeProductAttempt resolve_package_type_members_product(
     SemanticPackage &task_package,
     const ConditionalSelections &selections,
     SymbolId root,
+    CompileTimeSynthesisMode synthesis_mode,
     DiagnosticSink &diagnostics) {
   DiagnosticSink task_diagnostics;
   TypeResolver resolver(
@@ -5160,9 +5203,13 @@ DeclarationTypeProductAttempt resolve_package_type_members_product(
       nullptr,
       root,
       {},
-      TypeResolutionGoal::NominalMembers);
+      TypeResolutionGoal::NominalMembers,
+      synthesis_mode);
   DeclarationTypeProductAttempt result = resolver.resolve_product();
-  if (result.status == TypeProductStatus::Blocked) return result;
+  if (result.status == TypeProductStatus::Blocked ||
+      result.status == TypeProductStatus::WaitingForSynthesis) {
+    return result;
+  }
   for (const Diagnostic &diagnostic : task_diagnostics.diagnostics()) {
     diagnostics.report(
         diagnostic.severity, diagnostic.range, diagnostic.message);
@@ -5180,6 +5227,7 @@ DeclarationTypeProductAttempt resolve_package_declaration_type_product(
     const ConstantTable &published_constants,
     const std::vector<ResolvedIntegerExpression> &resolved_integers,
     const TargetFacts &target,
+    CompileTimeSynthesisMode synthesis_mode,
     DiagnosticSink &diagnostics) {
   // Blocked attempts commonly walk far enough to encounter provisional errors
   // after discovering their first missing declaration. Keep those diagnostics
@@ -5197,9 +5245,14 @@ DeclarationTypeProductAttempt resolve_package_declaration_type_product(
       &target,
       nullptr,
       root,
-      completed_declarations);
+      completed_declarations,
+      TypeResolutionGoal::CompleteDeclaration,
+      synthesis_mode);
   DeclarationTypeProductAttempt result = resolver.resolve_product();
-  if (result.status == TypeProductStatus::Blocked) return result;
+  if (result.status == TypeProductStatus::Blocked ||
+      result.status == TypeProductStatus::WaitingForSynthesis) {
+    return result;
+  }
   for (const Diagnostic &diagnostic : task_diagnostics.diagnostics()) {
     diagnostics.report(
         diagnostic.severity, diagnostic.range, diagnostic.message);

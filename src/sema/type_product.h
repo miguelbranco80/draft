@@ -26,11 +26,16 @@
 namespace draft {
 
 // TypeProductStatus is the terminal/wait vocabulary for one type-facet task.
-// Blocked always carries explicit TypeFacetDependency rows. Error means the
-// task already emitted a source-located diagnostic to its private sink.
+// Blocked always carries explicit semantic-product prerequisites. A declaration
+// task in WaitingForSynthesis has reached a ready source `...` site and carries
+// its private provider context through DeclarationTypeProductAttempt; natural
+// layout never produces that state because layout reads only completed type
+// facets. Error means the task already emitted a source-located diagnostic to
+// its private sink.
 enum class TypeProductStatus {
   Complete,
   Blocked,
+  WaitingForSynthesis,
   Error,
 };
 
