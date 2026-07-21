@@ -151,6 +151,7 @@ add_library(
   src/sema/agent_metadata.cpp
   src/sema/big_integer.cpp
   src/sema/body_checker.cpp
+  src/sema/body_publication.cpp
   src/sema/constant.cpp
   src/sema/denial.cpp
   src/sema/effect.cpp

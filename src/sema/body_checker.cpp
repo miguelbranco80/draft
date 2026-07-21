@@ -21,6 +21,8 @@
 
 #include "sema/body_checker.h"
 
+#include "sema/body_publication.h"
+
 #include "sema/agent_flow.h"
 #include "sema/ieee_float.h"
 #include "sema/initialization.h"
@@ -8474,16 +8476,6 @@ void append_body_root(
   return prefix;
 }
 
-template <typename Value>
-void append_body_suffix(
-    std::vector<Value> &destination,
-    std::vector<Value> source) {
-  destination.insert(
-      destination.end(),
-      std::make_move_iterator(source.begin()),
-      std::make_move_iterator(source.end()));
-}
-
 // Extracts only the rows created by one frozen-prefix task. TypeStore and
 // SymbolTable enforce that pre-existing rows were not mutated; every remaining
 // SemanticPackage field is append-only and therefore needs only its boundary.
@@ -8524,66 +8516,6 @@ void append_body_suffix(
   appended.deferred_type_applications = package.deferred_type_applications;
   appended.constants = constants.appended_since(prefix.constant_count);
   return appended;
-}
-
-// Publishes one exact semantic append after the scheduler validates its prefix.
-// Type and symbol rows come first because all side tables refer to their final
-// IDs. Source order within every packet is preserved exactly.
-void publish_body_semantic_append(
-    SemanticPackage &package,
-    ConstantTable &constants,
-    ProcedureBodySemanticAppend appended) {
-  package.types.append_exact(std::move(appended.types));
-  package.symbols.append_exact(std::move(appended.symbols));
-  append_body_suffix(package.owned_scopes, std::move(appended.owned_scopes));
-  append_body_suffix(
-      package.aggregate_members, std::move(appended.aggregate_members));
-  append_body_suffix(
-      package.enum_member_values, std::move(appended.enum_member_values));
-  append_body_suffix(
-      package.parametric_parameters,
-      std::move(appended.parametric_parameters));
-  append_body_suffix(
-      package.static_argument_packs,
-      std::move(appended.static_argument_packs));
-  append_body_suffix(
-      package.parametric_instances, std::move(appended.parametric_instances));
-  append_body_suffix(
-      package.parametric_type_instances,
-      std::move(appended.parametric_type_instances));
-  append_body_suffix(
-      package.imported_symbols, std::move(appended.imported_symbols));
-  append_body_suffix(
-      package.imported_procedure_instances,
-      std::move(appended.imported_procedure_instances));
-  append_body_suffix(
-      package.imported_type_instantiation_requests,
-      std::move(appended.imported_type_instantiation_requests));
-  append_body_suffix(
-      package.imported_types, std::move(appended.imported_types));
-  append_body_suffix(
-      package.imported_effects, std::move(appended.imported_effects));
-  append_body_suffix(
-      package.imported_returns, std::move(appended.imported_returns));
-  append_body_suffix(
-      package.imported_writes, std::move(appended.imported_writes));
-  append_body_suffix(
-      package.declaration_denials, std::move(appended.declaration_denials));
-  append_body_suffix(package.sites, std::move(appended.sites));
-  append_body_suffix(
-      package.required_integer_expressions,
-      std::move(appended.required_integer_expressions));
-  append_body_suffix(
-      package.deferred_element_counts,
-      std::move(appended.deferred_element_counts));
-  append_body_suffix(
-      package.deferred_value_expressions,
-      std::move(appended.deferred_value_expressions));
-  append_body_suffix(
-      package.deferred_type_applications,
-      std::move(appended.deferred_type_applications));
-  constants.append_exact(
-      appended.prefix.constant_count, std::move(appended.constants));
 }
 
 } // namespace
@@ -8662,7 +8594,6 @@ PackageBodyWorkState begin_package_body_work(
         state.work,
         {instance.instance, false, std::nullopt, std::nullopt});
   }
-  state.next_instance = state.package.parametric_instances_for_read().size();
   return state;
 }
 
@@ -8705,36 +8636,42 @@ PackageBodyWorkState begin_additional_package_body_work(
          std::nullopt,
          std::nullopt});
   }
-  state.next_instance = instances.size();
   return state;
 }
 
-ProcedureBodyTaskInput take_next_procedure_body_work(
+std::vector<ProcedureBodyTaskInput> take_ready_procedure_body_wave(
     PackageBodyWorkState &state,
     DiagnosticSink &diagnostics) {
-  ProcedureBodyTaskInput input;
-  if (state.active_work.has_value()) {
+  std::vector<ProcedureBodyTaskInput> inputs;
+  if (state.active_wave_end.has_value()) {
     diagnostics.error(
         SourceRange::invalid(),
-        "procedure body scheduler dispatched a second task before publication");
-    return input;
+        "procedure body scheduler dispatched a second wave before publication");
+    return inputs;
   }
   if (state.next_work >= state.work.size()) {
     diagnostics.error(
         SourceRange::invalid(),
-        "procedure body scheduler invoked without a ready work item");
-    return input;
+        "procedure body scheduler invoked without a ready work wave");
+    return inputs;
   }
 
-  input.work_index = state.next_work;
-  input.valid = true;
-  input.work = state.work[state.next_work];
-  input.next_instance = state.next_instance;
-  input.prefix = capture_body_semantic_prefix(state.package, state.constants);
-  input.package = state.package.fork_body_task_view();
-  input.constants = state.constants.fork_append_only();
-  state.active_work = state.next_work;
-  return input;
+  const std::size_t wave_end = state.work.size();
+  const ProcedureBodySemanticPrefix prefix =
+      capture_body_semantic_prefix(state.package, state.constants);
+  inputs.reserve(wave_end - state.next_work);
+  for (std::size_t index = state.next_work; index < wave_end; ++index) {
+    ProcedureBodyTaskInput input;
+    input.work_index = index;
+    input.valid = true;
+    input.work = state.work[index];
+    input.prefix = prefix;
+    input.package = state.package.fork_body_task_view();
+    input.constants = state.constants.fork_append_only();
+    inputs.push_back(std::move(input));
+  }
+  state.active_wave_end = wave_end;
+  return inputs;
 }
 
 ProcedureBodyTaskResult check_procedure_body_work(
@@ -8778,62 +8715,67 @@ ProcedureBodyTaskResult check_procedure_body_work(
   for (ProcedureBodyRoot &nested : checked.discovered_roots) {
     append_body_root(result.discovered_work, std::move(nested));
   }
-  std::size_t next_instance = input.next_instance;
-  const AppendOnlyTableView<ParametricInstanceRecord> instances =
-      package.parametric_instances_for_read();
-  while (next_instance < instances.size()) {
+  for (const ParametricInstanceRecord &instance :
+       package.parametric_instances) {
     ProcedureBodyRoot instance_root;
-    instance_root.symbol =
-        instances[next_instance].instance;
+    instance_root.symbol = instance.instance;
     append_body_root(result.discovered_work, std::move(instance_root));
-    ++next_instance;
   }
-  result.next_instance = next_instance;
   result.semantic = extract_body_semantic_append(
       input.prefix, package, constants);
   return result;
 }
 
-bool publish_procedure_body_work(
+bool publish_procedure_body_wave(
     PackageBodyWorkState &state,
-    ProcedureBodyTaskResult result,
+    std::vector<ProcedureBodyTaskResult> results,
     DiagnosticSink &diagnostics) {
-  const ProcedureBodySemanticPrefix current_prefix =
-      capture_body_semantic_prefix(state.package, state.constants);
-  const std::size_t result_instance_count =
-      result.semantic.prefix.parametric_instance_count +
-      result.semantic.parametric_instances.size();
-  if (state.next_work >= state.work.size() ||
-      !state.active_work.has_value() ||
-      *state.active_work != state.next_work ||
-      result.work_index != state.next_work ||
-      result.symbol != state.work[state.next_work].symbol ||
-      result.semantic.prefix != current_prefix ||
-      result.next_instance < state.next_instance ||
-      result.next_instance != result_instance_count) {
+  if (!state.active_wave_end.has_value() ||
+      *state.active_wave_end < state.next_work ||
+      results.size() != *state.active_wave_end - state.next_work) {
     diagnostics.error(
         SourceRange::invalid(),
-        "procedure body task result does not match the next published root");
+        "procedure body result vector does not match the active wave");
     return false;
   }
 
-  const std::size_t work_index = state.next_work;
-  state.ok = state.ok && result.ok;
-  state.checked_procedures += result.checked_procedures;
-  publish_body_semantic_append(
-      state.package, state.constants, std::move(result.semantic));
-  ProcedureBodyHirResult procedure;
-  procedure.ok = result.ok;
-  procedure.symbol = result.symbol;
-  procedure.program = std::move(result.program);
-  state.procedures.push_back(std::move(procedure));
-  state.next_instance = result.next_instance;
-  for (ProcedureBodyRoot &discovered : result.discovered_work) {
-    discovered.prerequisite = work_index;
-    append_body_root(state.work, std::move(discovered));
+  const ProcedureBodySemanticPrefix frozen_prefix =
+      results.empty() ? ProcedureBodySemanticPrefix{}
+                      : results.front().semantic.prefix;
+  for (std::size_t offset = 0; offset < results.size(); ++offset) {
+    const std::size_t work_index = state.next_work + offset;
+    const ProcedureBodyTaskResult &result = results[offset];
+    if (result.work_index != work_index ||
+        result.symbol != state.work[work_index].symbol ||
+        result.semantic.prefix != frozen_prefix) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "procedure body task result does not match its frozen wave root");
+      return false;
+    }
   }
-  state.active_work.reset();
-  ++state.next_work;
+
+  for (ProcedureBodyTaskResult &result : results) {
+    const std::size_t work_index = result.work_index;
+    state.ok = state.ok && result.ok;
+    state.checked_procedures += result.checked_procedures;
+    if (!publish_body_task_semantics(
+            state.package, state.constants, result, diagnostics)) {
+      state.ok = false;
+      return false;
+    }
+    ProcedureBodyHirResult procedure;
+    procedure.ok = result.ok;
+    procedure.symbol = result.symbol;
+    procedure.program = std::move(result.program);
+    state.procedures.push_back(std::move(procedure));
+    for (ProcedureBodyRoot &discovered : result.discovered_work) {
+      discovered.prerequisite = work_index;
+      append_body_root(state.work, std::move(discovered));
+    }
+  }
+  state.next_work = *state.active_wave_end;
+  state.active_wave_end.reset();
   return true;
 }
 
@@ -8843,7 +8785,7 @@ BodyCheckResult finish_package_body_work(
     PackageBodyWorkState state,
     DiagnosticSink &diagnostics) {
   BodyCheckResult result;
-  if (state.active_work.has_value()) {
+  if (state.active_wave_end.has_value()) {
     diagnostics.error(
         SourceRange::invalid(),
         "procedure body work finalized while a task still owned its prefix");
@@ -8896,17 +8838,21 @@ BodyCheckResult check_package_bodies(
       diagnostics,
       seeds);
   while (state.next_work < state.work.size()) {
-    ProcedureBodyTaskInput input =
-        take_next_procedure_body_work(state, diagnostics);
-    ProcedureBodyTaskResult task = check_procedure_body_work(
-        sources,
-        loaded,
-        selections,
-        target,
-        std::move(input),
-        diagnostics);
-    if (!publish_procedure_body_work(
-            state, std::move(task), diagnostics)) {
+    std::vector<ProcedureBodyTaskInput> inputs =
+        take_ready_procedure_body_wave(state, diagnostics);
+    std::vector<ProcedureBodyTaskResult> results;
+    results.reserve(inputs.size());
+    for (ProcedureBodyTaskInput &input : inputs) {
+      results.push_back(check_procedure_body_work(
+          sources,
+          loaded,
+          selections,
+          target,
+          std::move(input),
+          diagnostics));
+    }
+    if (!publish_procedure_body_wave(
+            state, std::move(results), diagnostics)) {
       break;
     }
   }
@@ -8949,17 +8895,21 @@ BodyCheckResult check_compile_time_procedure_bodies(
     }
   }
   while (state.next_work < state.work.size()) {
-    ProcedureBodyTaskInput input =
-        take_next_procedure_body_work(state, diagnostics);
-    ProcedureBodyTaskResult task = check_procedure_body_work(
-        sources,
-        loaded,
-        selections,
-        target,
-        std::move(input),
-        diagnostics);
-    if (!publish_procedure_body_work(
-            state, std::move(task), diagnostics)) {
+    std::vector<ProcedureBodyTaskInput> inputs =
+        take_ready_procedure_body_wave(state, diagnostics);
+    std::vector<ProcedureBodyTaskResult> results;
+    results.reserve(inputs.size());
+    for (ProcedureBodyTaskInput &input : inputs) {
+      results.push_back(check_procedure_body_work(
+          sources,
+          loaded,
+          selections,
+          target,
+          std::move(input),
+          diagnostics));
+    }
+    if (!publish_procedure_body_wave(
+            state, std::move(results), diagnostics)) {
       break;
     }
   }

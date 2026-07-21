@@ -3453,8 +3453,8 @@ package_condition_needs_materialization(const SemanticPackage &package,
 }
 
 // Runs one package's explicit ProcedureTemplateBody/ProcedureInstanceBody
-// products against the body checker's deterministic sequential publication
-// oracle. Product rows are appended before invocation. Roots discovered while
+// products against the body checker's deterministic shared-wave publisher.
+// Product rows are appended before invocation. Roots discovered while
 // a frozen wave runs remain only in PackageBodyWorkState until that wave has
 // joined; the next loop iteration then appends them with an exact dependency on
 // the body which discovered their semantic environment.
@@ -3465,7 +3465,9 @@ package_condition_needs_materialization(const SemanticPackage &package,
 // PackageBodyWorkState::ok prevents effects/lowering from consuming it. Graph
 // Error is reserved here for scheduler/publication failure which produced no
 // usable body result. This distinction lets independent and lexically nested
-// authored bodies continue checking after an earlier source diagnostic.
+// authored bodies continue checking after an earlier source diagnostic. Task
+// invocation remains sequential here; the inputs and result packets already
+// have the ownership and remapping boundary required for bounded parallel work.
 [[nodiscard]] bool run_package_body_products(
     const SourceManager &sources,
     const LoadedPackage &loaded,
@@ -3545,31 +3547,40 @@ package_condition_needs_materialization(const SemanticPackage &package,
     }
 
     std::vector<SemanticProductOutcome> outcomes;
+    std::vector<ProcedureBodyTaskResult> tasks;
     outcomes.reserve(wave.products.size());
-    for (SemanticProductId product : wave.products) {
-      if (state.next_work >= frozen_end ||
-          product_by_work[state.next_work] != product) {
+    tasks.reserve(wave.products.size());
+    std::vector<ProcedureBodyTaskInput> inputs =
+        take_ready_procedure_body_wave(state, diagnostics);
+    if (inputs.size() != wave.products.size()) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "procedure body semantic wave and task wave have different sizes");
+      return false;
+    }
+    for (std::size_t index = 0; index < wave.products.size(); ++index) {
+      const SemanticProductId product = wave.products[index];
+      const std::size_t work_index = state.next_work + index;
+      if (work_index >= frozen_end || product_by_work[work_index] != product) {
         diagnostics.error(
             SourceRange::invalid(),
             "procedure body wave is not in canonical work order");
         return false;
       }
       SemanticProductOutcome outcome;
-      ProcedureBodyTaskInput input = take_next_procedure_body_work(
-          state, outcome.diagnostics);
-      ProcedureBodyTaskResult task = check_procedure_body_work(
+      tasks.push_back(check_procedure_body_work(
           sources,
           loaded,
           selections,
           target,
-          std::move(input),
-          outcome.diagnostics);
-      if (!publish_procedure_body_work(
-              state, std::move(task), outcome.diagnostics)) {
-        return false;
-      }
+          std::move(inputs[index]),
+          outcome.diagnostics));
       outcome.kind = SemanticProductOutcomeKind::Complete;
       outcomes.push_back(std::move(outcome));
+    }
+    if (!publish_procedure_body_wave(
+            state, std::move(tasks), diagnostics)) {
+      return false;
     }
 
     std::string publication_error;

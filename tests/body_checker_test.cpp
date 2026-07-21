@@ -172,13 +172,13 @@ Mode :: enum {
 }
 
 first :: proc() -> i64 {
-    local: i64 = 20
-    return local
+    values := [3]i64{20, 21, 22}
+    return values[0]
 }
 
 second :: proc() -> i64 {
-    local: i64 = 22
-    return local
+    values := [3]i64{22, 23, 24}
+    return values[0]
 }
 )draft");
   file.syntax.emplace(
@@ -201,6 +201,7 @@ second :: proc() -> i64 {
   EXPECT(state, work.next_work == 0);
   const std::size_t initial_symbols = work.package.symbols.symbol_count();
   const std::size_t initial_scopes = work.package.symbols.scope_count();
+  const std::size_t initial_types = work.package.types.size();
   EXPECT(state, !work.package.aggregate_members.empty());
   EXPECT(state, !work.package.enum_member_values.empty());
 
@@ -322,10 +323,15 @@ second :: proc() -> i64 {
          metadata_view.sites_for_read()[1].expected_type == draft::TypeId{1});
 
   draft::DiagnosticSink first_diagnostics;
-  draft::ProcedureBodyTaskInput first_input =
-      draft::take_next_procedure_body_work(work, first_diagnostics);
+  std::vector<draft::ProcedureBodyTaskInput> inputs =
+      draft::take_ready_procedure_body_wave(work, first_diagnostics);
+  EXPECT(state, inputs.size() == 2);
+  EXPECT(state, work.active_wave_end == std::optional<std::size_t>{2});
+  draft::ProcedureBodyTaskInput first_input = std::move(inputs[0]);
+  draft::ProcedureBodyTaskInput second_input = std::move(inputs[1]);
   EXPECT(state, first_input.valid);
-  EXPECT(state, work.active_work == std::optional<std::size_t>{0});
+  EXPECT(state, second_input.valid);
+  EXPECT(state, first_input.prefix == second_input.prefix);
   EXPECT(state, first_input.package.files.empty());
   EXPECT(state,
          first_input.package.files_for_read().size() ==
@@ -377,38 +383,9 @@ second :: proc() -> i64 {
   EXPECT(state, !first.semantic.symbols.symbols.empty());
   EXPECT(state, !first.semantic.symbols.scopes.empty());
 
-  // A result may publish only against the exact canonical prefix it read.
-  // Simulate an intervening coordinator publication on a copy and prove the
-  // stale packet is rejected without disturbing the real state/result used by
-  // the remainder of this test.
-  draft::PackageBodyWorkState stale_work = work;
-  stale_work.constants.bindings.push_back(
-      {draft::SymbolId{}, draft::ConstantValue{}});
-  draft::ProcedureBodyTaskResult stale_first = first;
-  draft::DiagnosticSink stale_diagnostics;
-  EXPECT(state, !draft::publish_procedure_body_work(
-                    stale_work, std::move(stale_first), stale_diagnostics));
-  EXPECT(state, stale_diagnostics.has_errors());
-
-  EXPECT(state, draft::publish_procedure_body_work(
-                    work, std::move(first), first_diagnostics));
-  EXPECT(state, work.next_work == 1);
-  EXPECT(state, !work.active_work.has_value());
-  EXPECT(state, work.package.symbols.symbol_count() > initial_symbols);
-  EXPECT(state, work.package.symbols.scope_count() > initial_scopes);
-  EXPECT(state, work.procedures.size() == 1);
-  if (work.procedures.size() == 1) {
-    EXPECT(state, work.procedures.front().program.procedures().size() == 1);
-  }
-  const std::size_t published_symbols = work.package.symbols.symbol_count();
-
   draft::DiagnosticSink second_diagnostics;
-  draft::ProcedureBodyTaskInput second_input =
-      draft::take_next_procedure_body_work(work, second_diagnostics);
-  EXPECT(state, second_input.valid);
-  EXPECT(state, work.active_work == std::optional<std::size_t>{1});
   EXPECT(state,
-         second_input.package.symbols.symbol_count() == published_symbols);
+         second_input.package.symbols.symbol_count() == initial_symbols);
   draft::ProcedureBodyTaskResult second =
       draft::check_procedure_body_work(
           sources,
@@ -418,13 +395,42 @@ second :: proc() -> i64 {
           std::move(second_input),
           second_diagnostics);
   EXPECT(state, second.ok);
-  EXPECT(state, work.next_work == 1);
-  EXPECT(state, work.procedures.size() == 1);
+  EXPECT(state, work.next_work == 0);
+  EXPECT(state, work.procedures.empty());
   EXPECT(state, second.program.procedures().size() == 1);
-  EXPECT(state,
-         work.package.symbols.symbol_count() == published_symbols);
-  EXPECT(state, draft::publish_procedure_body_work(
-                    work, std::move(second), second_diagnostics));
+  EXPECT(state, work.package.symbols.symbol_count() == initial_symbols);
+
+  // A shared-prefix result is valid after an earlier wave sibling grows the
+  // canonical tables, but its work identity and vector position remain exact.
+  // Corrupt that identity on a copy and prove the whole wave is rejected before
+  // the real state/result vector is published.
+  draft::PackageBodyWorkState stale_work = work;
+  std::vector<draft::ProcedureBodyTaskResult> stale_results{first, second};
+  stale_results.front().work_index = 1;
+  draft::DiagnosticSink stale_diagnostics;
+  EXPECT(state, !draft::publish_procedure_body_wave(
+                    stale_work,
+                    std::move(stale_results),
+                    stale_diagnostics));
+  EXPECT(state, stale_diagnostics.has_errors());
+
+  std::vector<draft::ProcedureBodyTaskResult> results;
+  results.push_back(std::move(first));
+  results.push_back(std::move(second));
+  EXPECT(state, draft::publish_procedure_body_wave(
+                    work, std::move(results), first_diagnostics));
+  EXPECT(state, work.next_work == 2);
+  EXPECT(state, !work.active_wave_end.has_value());
+  EXPECT(state, work.package.symbols.symbol_count() > initial_symbols);
+  EXPECT(state, work.package.symbols.scope_count() > initial_scopes);
+  // Both workers discovered the same array type from the shared prefix. The
+  // publisher interns it once while remapping the second packet's HIR/symbols.
+  EXPECT(state, work.package.types.size() == initial_types + 1);
+  EXPECT(state, work.procedures.size() == 2);
+  if (work.procedures.size() == 2) {
+    EXPECT(state, work.procedures.front().program.procedures().size() == 1);
+    EXPECT(state, work.procedures.back().program.procedures().size() == 1);
+  }
 
   const draft::BodyCheckResult bodies = draft::finish_package_body_work(
       loaded, target.facts, std::move(work), diagnostics);
@@ -482,6 +488,88 @@ second :: proc() -> i64 {
                        first_local.expression_count());
       }
     }
+  }
+}
+
+// Two independent callers in one frozen wave can discover the same generic
+// specialization. Publication must retain one canonical instance identity and
+// schedule its concrete body once, regardless of worker completion order.
+void test_body_wave_canonicalizes_equal_instances(TestState &state) {
+  CheckedSource source(R"draft(
+package bodies
+
+identity[T: type] :: proc(value: T) -> T {
+    return value
+}
+
+first :: proc() -> i64 {
+    return identity[i64](20)
+}
+
+second :: proc() -> i64 {
+    return identity[i64](22)
+}
+)draft");
+  if (source.diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(source.sources, source.diagnostics);
+  }
+  EXPECT(state, source.semantics.ok);
+  EXPECT(state, source.bodies.ok);
+  EXPECT(state, !source.diagnostics.has_errors());
+  EXPECT(state, source.bodies.package.parametric_instances.size() == 1);
+  EXPECT(state, source.bodies.checked_procedures == 4);
+  EXPECT(state, source.bodies.procedures.size() == 4);
+  // The canonical instance and its one runtime parameter are the only new
+  // symbols. A discarded second provisional instance must not leave orphan
+  // symbol rows merely because its worker allocated the same local IDs.
+  EXPECT(state,
+         source.bodies.package.symbols.symbol_count() ==
+             source.semantics.package.symbols.symbol_count() + 2);
+}
+
+void test_body_wave_canonicalizes_equal_type_instances(TestState &state) {
+  CheckedSource source(R"draft(
+package bodies
+
+Box[T: type] :: struct {
+    value: T,
+}
+
+first :: proc() -> i64 {
+    box: Box[i64] = Box[i64]{value = 20}
+    return box.value
+}
+
+second :: proc() -> i64 {
+    box: Box[i64] = Box[i64]{value = 22}
+    return box.value
+}
+)draft");
+  if (source.diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(source.sources, source.diagnostics);
+  }
+  EXPECT(state, source.semantics.ok);
+  EXPECT(state, source.bodies.ok);
+  EXPECT(state, !source.diagnostics.has_errors());
+  EXPECT(state, source.bodies.package.parametric_type_instances.size() == 1);
+  if (source.bodies.package.parametric_type_instances.size() == 1) {
+    const draft::SymbolId instance =
+        source.bodies.package.parametric_type_instances.front().instance;
+    std::size_t owned_scopes = 0;
+    std::size_t owned_members = 0;
+    for (const draft::OwnedSemanticScope &owned :
+         source.bodies.package.owned_scopes) {
+      if (owned.owner == instance) ++owned_scopes;
+    }
+    for (const draft::AggregateMember &member :
+         source.bodies.package.aggregate_members) {
+      if (member.owner == instance) ++owned_members;
+    }
+    // The later worker's private nominal row, Type scope, and member symbol
+    // must all redirect to the first result. Counting only the cache record
+    // would miss an orphan object graph left behind by incomplete compaction.
+    EXPECT(state, owned_scopes == 1);
+    EXPECT(state, owned_members == 1);
   }
 }
 
@@ -3544,6 +3632,8 @@ int main() {
   TestState state;
   test_body_results_do_not_mutate_or_reenter_declarations(state);
   test_body_root_results_are_task_owned(state);
+  test_body_wave_canonicalizes_equal_instances(state);
+  test_body_wave_canonicalizes_equal_type_instances(state);
   test_common_typed_bodies(state);
   test_body_diagnostics(state);
   test_parametric_procedure_instances(state);

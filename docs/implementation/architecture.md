@@ -170,18 +170,22 @@ global index but have explicit local-only mutable operations, so a task cannot
 rewrite a prefix row. The task returns only its appended types, scopes, symbols,
 body side-table rows, lexical constants, and local HIR; no retained table prefix
 is copied into it.
-Publication rejects a stale prefix and appends the packet in product order; it
-never replaces the package with a worker-owned successor. Existing type and
-symbol rows cannot be mutated through an overlay, which exposed and removed a
-former constant-evaluation write into retained declarations.
+Publication rejects a packet whose frozen prefix is not present in the current
+generation and adopts packets in product order; it never replaces the package
+with a worker-owned successor. Each packet's private suffix IDs are translated
+to current canonical IDs. Structural types are interned, while equal procedure
+and nominal type specializations discovered by sibling workers redirect their
+root, owned scopes, parameters or members, and nominal TypeId to the first
+canonical result. Existing type and symbol rows cannot be mutated through an
+overlay, which exposed and removed a former constant-evaluation write into
+retained declarations.
 Constant products now carry their checked static type beside the immutable
 value, and the package-interface barrier installs that payload explicitly.
 
-This is still a sequential publication oracle because every suffix ID assumes
-no other result was published after dispatch. Deterministically remapping those
-IDs and canonicalizing equal discoveries from a shared ready wave is the
-remaining boundary before body workers may run in parallel; copying retained
-semantic inputs is no longer part of that boundary.
+Every currently ready root is now dispatched from one shared prefix and all
+results join before deterministic publication. Worker invocation remains
+sequential in the bootstrap compiler; bounded parallel execution is the next
+scheduler step, not a remaining semantic ownership or ID-stability problem.
 
 The transitional body work key is the declaration generation plus the exact
 canonical set of concrete generic procedures demanded by consumer packages.

@@ -82,11 +82,13 @@ cache.
   contracts, while recipe rows cover required integer expressions and deferred
   element counts, value expressions, and type applications. Aggregate offset,
   specialization-promotion, required-integer, and semantic-site writes are
-  local-suffix-only. No retained semantic table is copied into a body task. IDs
-  are not yet remapped across independent results, so invocation remains a
-  sequential oracle. Deterministic shared-wave publication is required before
-  body waves become parallel, after which the preceding body-key retention
-  mechanism can be deleted.
+  local-suffix-only. No retained semantic table is copied into a body task.
+  Every ready body wave now reads one frozen prefix, and ordered publication
+  remaps private suffix IDs, interns equal structural types, and canonicalizes
+  equal procedure and nominal type specializations. Invocation remains
+  sequential only at the scheduler call site; move the isolated workers to the
+  bounded executor and qualify identical outputs across worker counts, after
+  which the preceding body-key retention mechanism can be deleted.
 - A command-local adjacency index records imports by consumer and consumers by
   dependency. It is built once with each source-selection graph and retained
   through source transitions, semantic closure, and lowering. A sequential Kahn

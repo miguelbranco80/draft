@@ -374,11 +374,14 @@ discovered roots; it never aliases or returns a replacement for
 and complete prefix, then appends type/symbol rows and every semantic side table
 in product order before exposing discovered roots.
 
-The result boundary is therefore procedure-local, but execution is not yet the
-final parallel implementation. No retained semantic table is copied into the
-private view, but suffix IDs are valid only while one task is in flight.
-Deterministic remapping and canonical interning will permit every independent
-root in one frozen wave to check concurrently.
+The result boundary is procedure-local and every currently ready root receives
+the same frozen prefix. Suffix IDs remain private to each task. After the whole
+wave joins, the publisher translates them into the grown canonical tables,
+interns equal structural types, and merges equal procedure and nominal type
+specializations without retaining duplicate roots, scopes, parameters,
+members, or nominal TypeIds. Worker invocation remains sequential in the
+bootstrap driver; the remaining parallelization step changes execution only,
+not result ownership or publication semantics.
 
 Named constant products carry both `ConstantValue` and checked `TypeId`.
 Package-interface finalization installs that type payload into its retained

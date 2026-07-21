@@ -111,8 +111,10 @@ struct ProcedureBodyWorkItem {
 
 // ProcedureBodySemanticPrefix records every append-only table boundary seen by
 // one dispatched body task. The worker checks a private view frozen at these
-// counts. Publication succeeds only if the canonical package still has exactly
-// this prefix, making stale or out-of-order task results explicit.
+// counts. Publication succeeds only if the canonical package still contains
+// this complete prefix; earlier siblings from the same wave may already have
+// extended it. The packet's work identity and frozen counts make a result from
+// another generation or wave explicit.
 struct ProcedureBodySemanticPrefix {
   std::size_t type_count = 0;
   std::size_t scope_count = 0;
@@ -144,10 +146,11 @@ struct ProcedureBodySemanticPrefix {
 
 // ProcedureBodySemanticAppend is the semantic output owned by one exact body
 // task. It contains only rows appended after prefix; no complete package or
-// ConstantTable successor travels through the work graph. IDs already name
-// their final positions for the current sequential publisher. A later frozen-
-// wave publisher will remap these packets when independent tasks discover
-// equal canonical types or instances from one shared prefix.
+// ConstantTable successor travels through the work graph. IDs at or above a
+// prefix count are private task-domain IDs, not assumed canonical positions.
+// Frozen-wave publication translates every retained reference, interns equal
+// structural types, and canonicalizes equal procedure and nominal type
+// specializations in stable work order.
 struct ProcedureBodySemanticAppend {
   ProcedureBodySemanticPrefix prefix;
   TypeStoreAppend types;
@@ -188,13 +191,11 @@ struct ProcedureBodySemanticAppend {
 // same boundary, as do required-integer and deferred dependent-type recipes,
 // semantic sites, and declaration denials. No body-mutable table prefix is
 // copied into the task. HIR is not an input: every task starts one new local
-// arena. work is the exact root, and next_instance partitions already published
-// concrete records from any suffix discovered by this task.
+// arena. work is the exact root.
 struct ProcedureBodyTaskInput {
   bool valid = false;
   std::size_t work_index = 0;
   ProcedureBodyWorkItem work;
-  std::size_t next_instance = 0;
   ProcedureBodySemanticPrefix prefix;
   SemanticPackage package;
   ConstantTable constants;
@@ -204,35 +205,32 @@ struct ProcedureBodyTaskInput {
 // only this task's append packet; program is this root's local HIR arena. The
 // worker never aliases or replaces PackageBodyWorkState. discovered_work
 // contains nested procedures and concrete instances found by this root.
-// work_index ties the result to the exact state row it consumed, while
-// next_instance records the resulting ParametricInstanceRecord boundary.
+// work_index ties the result to the exact state row it consumed.
 struct ProcedureBodyTaskResult {
   bool ok = false;
   std::size_t work_index = 0;
   SymbolId symbol;
   std::size_t checked_procedures = 0;
-  std::size_t next_instance = 0;
   ProcedureBodySemanticAppend semantic;
   // One local arena containing only this root's recoverable HIR.
   HirProgram program;
   std::vector<ProcedureBodyWorkItem> discovered_work;
 };
 
-// PackageBodyWorkState is the explicit sequential publication oracle for body
-// products. It owns the current append-only package prefix, lexical constants,
+// PackageBodyWorkState is the explicit deterministic publication state for
+// body products. It owns the current append-only package prefix, lexical constants,
 // already published procedure-local HIR results, and the dynamic work list.
-// `next_work` partitions completed work from the current ready suffix.
-// Publishing one task may append nested procedures and concrete specializations
-// to that suffix, but no task checks them recursively.
+// `next_work` partitions completed work from the current ready suffix. One
+// dispatch freezes that complete suffix as a wave; publication happens only
+// after every worker has returned. Publishing the wave may append nested
+// procedures and concrete specializations to the next suffix, but no task
+// checks them recursively.
 //
 // The state is deliberately public phase data rather than a callback-driven
 // executor: workspace orchestration freezes product waves, invokes one exact
-// item at a time, then creates product rows for the newly appended suffix.
-// Today this state is the deterministic exact-prefix publication oracle while
-// shared-prefix remapping is introduced. It retains canonical state while one
-// private snapshot is checked, then appends only the matching task packet.
-// Independent tasks cannot yet share one frozen prefix because task-local IDs
-// do not yet have a publication remap.
+// ready wave, then creates product rows for the newly appended suffix. The
+// state retains canonical data while every task reads one shared prefix;
+// publication remaps task-local IDs and interns types in stable work order.
 struct PackageBodyWorkState {
   bool ok = false;
   SemanticPackage package;
@@ -240,12 +238,10 @@ struct PackageBodyWorkState {
   std::vector<ProcedureBodyHirResult> procedures;
   std::vector<ProcedureBodyWorkItem> work;
   std::size_t next_work = 0;
-  std::size_t next_instance = 0;
   std::size_t checked_procedures = 0;
-  // Present after the coordinator dispatches one frozen-prefix snapshot and
-  // before it publishes the matching append packet. No second task may be
-  // dispatched while this row is present until ID remapping supports waves.
-  std::optional<std::size_t> active_work;
+  // Present after dispatch and before the complete matching result vector is
+  // published. It is the exclusive end of the frozen [next_work, end) wave.
+  std::optional<std::size_t> active_wave_end;
 };
 
 // Starts a clean body generation from immutable declaration inputs. Runtime
@@ -276,10 +272,12 @@ struct PackageBodyWorkState {
     DiagnosticSink &diagnostics,
     const std::vector<ProcedureInstantiationSeed> &additional_seeds);
 
-// Transfers the current package prefix and exact next root into a task-owned
-// input. This is a coordinator operation: it marks one active work index and
-// leaves no semantic payload available for another dispatch until publication.
-[[nodiscard]] ProcedureBodyTaskInput take_next_procedure_body_work(
+// Freezes every currently ready root and returns one task-owned input per row in
+// canonical work order. Every input reads the same retained package prefix.
+// The coordinator must finish all checks before publication and cannot dispatch
+// another wave while this one is active.
+[[nodiscard]] std::vector<ProcedureBodyTaskInput>
+take_ready_procedure_body_wave(
     PackageBodyWorkState &state,
     DiagnosticSink &diagnostics);
 
@@ -294,14 +292,13 @@ struct PackageBodyWorkState {
     ProcedureBodyTaskInput input,
     DiagnosticSink &diagnostics);
 
-// Adopts one task-owned successor into the sequential publication state. The
-// work index and root symbol must match the next pending item. Discovered roots
-// receive a prerequisite on that item and become visible only after adoption.
-// A contract mismatch diagnoses an internal scheduling error and leaves state
-// unchanged.
-[[nodiscard]] bool publish_procedure_body_work(
+// Adopts one complete frozen wave in canonical work order. Every packet must
+// name the shared dispatch prefix and matching root. Publication remaps IDs,
+// interns structural types, then exposes discovered roots for the next wave.
+// A contract mismatch diagnoses an internal scheduling error.
+[[nodiscard]] bool publish_procedure_body_wave(
     PackageBodyWorkState &state,
-    ProcedureBodyTaskResult result,
+    std::vector<ProcedureBodyTaskResult> results,
     DiagnosticSink &diagnostics);
 
 // Completes package-wide invariants after every dynamic root has run, then

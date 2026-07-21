@@ -52,8 +52,11 @@ contracts. Recipe rows cover required integer expressions and deferred element
 counts, value expressions, and type applications. Aggregate offset,
 procedure-specialization, required-integer, and semantic-site mutation are
 explicitly restricted to a task's local suffix. No retained semantic table is
-copied into a body task. Append IDs still require sequential exact-prefix
-publication rather than shared-wave remapping.
+copied into a body task. Ready body tasks share one frozen prefix; deterministic
+publication remaps task suffix IDs, interns structural types, and canonicalizes
+equal procedure and nominal type specializations. The bootstrap driver still
+invokes the isolated workers sequentially rather than through its bounded
+executor.
 Effect closure, denials, and MIR still consume a package-wide HIR compatibility
 projection. Those mechanisms are explicit remaining deletion work in the
 [semantic work graph implementation plan](semantic-work-graph-implementation-plan.md),

@@ -172,10 +172,13 @@ gate.
    integer expressions and deferred element counts, value expressions, and type
    applications. Aggregate offset publication, procedure-specialization
    promotion, required-integer refinement, and semantic-site enrichment have
-   explicit local-only mutable operations. All suffix IDs still assume
-   sequential publication. Add deterministic remapping/canonical interning for
-   a shared ready wave. The consumer-first external-demand loop, body work key,
-   and extension/rebuild paths remain until that publication model closes.
+   explicit local-only mutable operations. All roots in one ready wave now read
+   one frozen prefix. Publication translates task-private suffix IDs, interns
+   structural types, and canonicalizes equal procedure and nominal type
+   specializations in stable work order after the wave joins. Run those workers
+   through the bounded executor and qualify worker-count determinism. The
+   consumer-first external-demand loop, body work key, and extension/rebuild
+   paths then remain as the deletion boundary for this step.
 
 6. **Synthesis as an explicit wait state.** A body or declaration task may
    report its exact ready `...` set after producing the typed constraint needed
