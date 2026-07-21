@@ -118,6 +118,19 @@ enum class TypeFacet {
   NaturalLayout,
 };
 
+// TypeFacetDependency names one exact prerequisite discovered by a semantic
+// product. The TypeId belongs to the command-local canonical TypeStore; facet
+// distinguishes facts that intentionally complete at different times. A
+// pointer consumer can therefore depend on Identity while size_of on the same
+// nominal type depends on NaturalLayout. Product-specific attempt records own
+// vectors of these values and the compiler coordinator maps them to graph IDs.
+struct TypeFacetDependency {
+  TypeId type;
+  TypeFacet facet = TypeFacet::Identity;
+
+  bool operator==(const TypeFacetDependency &) const = default;
+};
+
 // TypeCompletion is parallel to one TypeStore row. identity is Complete for
 // every allocated TypeId because allocation itself establishes the structural
 // or nominal identity. members closes the set of member names; member_types

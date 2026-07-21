@@ -180,7 +180,7 @@ Header_Size :: size_of(Header)
   EXPECT(state, layout.constant_dependencies.empty());
   EXPECT(state,
       layout.type_dependencies ==
-          std::vector<draft::ConstantTypeFacetDependency>({
+          std::vector<draft::TypeFacetDependency>({
               {waiting_type, draft::TypeFacet::NaturalLayout},
           }));
   EXPECT(state, !layout_diagnostics.has_errors());
@@ -286,7 +286,7 @@ when size_of(Header) == 16 {
   EXPECT(state, layout.constant_dependencies.empty());
   EXPECT(state,
       layout.type_dependencies ==
-          std::vector<draft::ConstantTypeFacetDependency>({
+          std::vector<draft::TypeFacetDependency>({
               {waiting_type, draft::TypeFacet::NaturalLayout},
           }));
   EXPECT(state, !layout_diagnostics.has_errors());

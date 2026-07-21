@@ -286,8 +286,8 @@ private:
         constant_dependencies_.end());
     std::sort(
         type_dependencies_.begin(), type_dependencies_.end(),
-        [](const ConstantTypeFacetDependency &left,
-           const ConstantTypeFacetDependency &right) {
+        [](const TypeFacetDependency &left,
+           const TypeFacetDependency &right) {
           if (left.type != right.type) return left.type.value < right.type.value;
           return static_cast<int>(left.facet) < static_cast<int>(right.facet);
         });
@@ -5766,7 +5766,7 @@ private:
   // local constant is a dependency, as required by a conditional expression.
   bool record_product_dependencies_ = false;
   std::vector<SymbolId> constant_dependencies_;
-  std::vector<ConstantTypeFacetDependency> type_dependencies_;
+  std::vector<TypeFacetDependency> type_dependencies_;
   std::vector<LocalFrame> local_frames_;
   // active_procedures_ mirrors local_frames_ only during procedure execution
   // and lets a reached `...` defer context construction to BodyChecker.

@@ -91,16 +91,6 @@ struct EvaluatedConstant {
   TypeId type;
 };
 
-// One faceted type prerequisite discovered while evaluating a single constant
-// product. Identity and layout are distinct because a type value may be ready
-// while size_of on that same type must still wait for natural layout.
-struct ConstantTypeFacetDependency {
-  TypeId type;
-  TypeFacet facet = TypeFacet::Identity;
-
-  bool operator==(const ConstantTypeFacetDependency &) const = default;
-};
-
 // The common terminal/wait vocabulary for one independently scheduled
 // compile-time value or branch choice. Blocked always carries explicit graph
 // prerequisites; WaitingForSynthesis is the sole provider suspension state.
@@ -121,7 +111,7 @@ struct ConstantProductAttempt {
   CompileTimeProductStatus status = CompileTimeProductStatus::Error;
   std::optional<EvaluatedConstant> result;
   std::vector<SymbolId> constant_dependencies;
-  std::vector<ConstantTypeFacetDependency> type_dependencies;
+  std::vector<TypeFacetDependency> type_dependencies;
   std::vector<SymbolId> compile_time_procedures;
 };
 
@@ -134,7 +124,7 @@ struct ConditionalProductAttempt {
   CompileTimeProductStatus status = CompileTimeProductStatus::Error;
   bool selected_true = false;
   std::vector<SymbolId> constant_dependencies;
-  std::vector<ConstantTypeFacetDependency> type_dependencies;
+  std::vector<TypeFacetDependency> type_dependencies;
   std::vector<SymbolId> compile_time_procedures;
 };
 
