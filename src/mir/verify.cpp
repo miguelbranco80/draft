@@ -43,14 +43,27 @@ private:
     diagnostics_.error(range, "invalid MIR: " + message);
   }
 
-  // Atomic object and expected-value operands are addresses in MIR. This small
-  // predicate guards table and type bounds before the shape checks inspect
-  // pointee information, so malformed test/fuzz MIR remains diagnostic-only.
-  [[nodiscard]] bool pointer_value(
+  // Returns the semantic value addressed by one MIR pointer. Source pointers
+  // carry an ordinary Pointer TypeId. Compiler-created local/member/index
+  // addresses instead carry rawptr plus addressed_type on their defining
+  // instruction, so verification does not require lowering to mutate the
+  // semantic TypeStore. Invalid hand-built MIR returns no type and remains a
+  // diagnostic rather than reaching an unchecked table access.
+  [[nodiscard]] TypeId addressed_type(
       const MirProcedure &procedure, MirValueId value) const {
-    return valid_value(procedure, value) &&
-        valid_type(procedure.value(value).type) &&
-        types_.type(procedure.value(value).type).kind == TypeKind::Pointer;
+    if (!valid_value(procedure, value)) return {};
+    const MirValue &row = procedure.value(value);
+    if (!valid_type(row.type)) return {};
+    const Type &type = types_.type(row.type);
+    if (type.kind == TypeKind::Pointer) return type.element;
+    if (type.kind != TypeKind::RawPointer || !row.definition.is_valid() ||
+        static_cast<std::size_t>(row.definition.value) >=
+            procedure.instructions.size()) {
+      return {};
+    }
+    const TypeId addressed =
+        procedure.instruction(row.definition).addressed_type;
+    return valid_type(addressed) ? addressed : TypeId{};
   }
 
   // Enum fields can still contain an invalid underlying value in hand-built
@@ -95,7 +108,7 @@ private:
       error(instruction.range, "atomic operation has an unknown memory order");
     }
     if (instruction.kind != MirInstructionKind::AtomicFence && arity != 0 &&
-        !pointer_value(procedure, instruction.operands.front())) {
+        !addressed_type(procedure, instruction.operands.front()).is_valid()) {
       error(instruction.range, "atomic object operand is not a pointer");
     }
     switch (instruction.kind) {
@@ -135,12 +148,11 @@ private:
       }
       if (arity == 3 && valid_value(procedure, instruction.operands[1]) &&
           valid_value(procedure, instruction.operands[2])) {
-        const TypeId expected_pointer =
-            procedure.value(instruction.operands[1]).type;
+        const TypeId expected_value =
+            addressed_type(procedure, instruction.operands[1]);
         const TypeId desired = procedure.value(instruction.operands[2]).type;
-        if (!valid_type(expected_pointer) || !valid_type(desired) ||
-            types_.type(expected_pointer).kind != TypeKind::Pointer ||
-            types_.type(expected_pointer).element != desired) {
+        if (!expected_value.is_valid() || !valid_type(desired) ||
+            expected_value != desired) {
           error(
               instruction.range,
               "compare-exchange expected pointer and desired value disagree");
@@ -190,6 +202,29 @@ private:
     }
 
     const std::size_t arity = instruction.operands.size();
+    const bool address_instruction =
+        instruction.kind == MirInstructionKind::LocalAddress ||
+        instruction.kind == MirInstructionKind::GlobalAddress ||
+        instruction.kind == MirInstructionKind::MemberAddress ||
+        instruction.kind == MirInstructionKind::IndexAddress;
+    if (address_instruction) {
+      if (!valid_type(instruction.addressed_type)) {
+        error(instruction.range, "address instruction has no addressed type");
+      }
+      if (valid_type(instruction.type)) {
+        const Type &result_type = types_.type(instruction.type);
+        if (result_type.kind != TypeKind::RawPointer &&
+            (result_type.kind != TypeKind::Pointer ||
+             result_type.element != instruction.addressed_type)) {
+          error(
+              instruction.range,
+              "address instruction result disagrees with its addressed type");
+        }
+      }
+    } else if (instruction.addressed_type.is_valid()) {
+      error(instruction.range,
+            "non-address instruction carries an addressed type");
+    }
     switch (instruction.kind) {
     case MirInstructionKind::Invalid:
       error(instruction.range, "invalid instruction reached verification");

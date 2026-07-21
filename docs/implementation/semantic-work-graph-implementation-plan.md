@@ -101,9 +101,9 @@ gate.
    procedure product which first published that type. All packages classify in
    one bounded ready wave and publish in product order. Native validation,
    C-header generation, and LLVM lowering consume the resulting table; no
-   downstream path recomputes the fact. Package-wide MIR can still append
-   address-only pointer types as an unclassified suffix, which step 8 deletes
-   with semantic-table mutation in lowering.
+   downstream path recomputes the fact. MIR address instructions now carry an
+   explicit addressed semantic type and lowering reads this ABI-complete type
+   prefix without appending synthetic pointer rows.
 
 4. **Canonical generic type demand — complete.** Every concrete cross-package
    owner-evaluated type application has one command-local key formed from its
@@ -284,6 +284,14 @@ gate.
    MIR result without mutating semantic type tables. Publish package static data
    and parsed assembly separately. Delete package-wide MIR lowering and semantic
    type interning from the lowering phase.
+
+   Semantic type interning in MIR is deleted. Compiler-created storage
+   addresses use the canonical `rawptr` representation plus explicit
+   `addressed_type` metadata; real source pointers retain their checked Pointer
+   TypeId. Lowering and verification now accept the complete semantic package
+   by const reference, and focused tests prove its TypeStore size is unchanged.
+   Package-wide projection/lowering and missing live MIR/static-data/assembly
+   products remain in this step.
 
 9. **Parallel semantic waves.** Run each frozen ready wave with bounded workers.
    Workers write only task slots; the coordinator sorts by stable product ID,

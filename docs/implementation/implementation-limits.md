@@ -82,10 +82,10 @@ external owner bodies depend on the exact completed consumer product which
 requested them; package-local semantic suffixes still publish in PackageId/work
 order after the whole worker set joins. Package loops whose payloads still use
 package snapshots remain sequential.
-MIR lowering still interns address-only pointer types into the shared
-`TypeStore`. These form an unclassified suffix after the completed semantic ABI
-prefix and cannot appear in a source C signature. Removing that suffix mutation
-belongs to the per-procedure MIR migration; it is not a second ABI path.
+MIR lowering now reads the shared `TypeStore` immutably. Compiler-only addresses
+use MIR-local addressed-type metadata, so there is no unclassified post-ABI
+type suffix. MIR is still invoked over a temporary package HIR projection until
+the per-procedure product migration is complete.
 Direct effects and denials consume authoritative procedure-owned HIR arenas and
 publish live procedure products; they no longer use a package-wide HIR
 compatibility projection. Agent metadata/obligation construction, native

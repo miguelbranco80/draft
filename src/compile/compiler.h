@@ -180,7 +180,8 @@ struct CompiledPackage {
   // Complete target ABI facet for the source-semantic TypeId prefix. Rows are
   // published by TypeAbiClassification products after each body fixed point
   // and extend only when later command-local body work appends canonical types.
-  // Package-wide MIR may append address-only pointer types after this prefix.
+  // MIR reads this prefix immutably; compiler-only addresses carry their
+  // pointee as MIR metadata instead of appending synthetic pointer TypeIds.
   Aarch64CAbiTable c_abi;
   PackageSemanticProgress semantic_progress =
       PackageSemanticProgress::InterfaceReady;

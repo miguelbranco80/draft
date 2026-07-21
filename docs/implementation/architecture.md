@@ -244,10 +244,9 @@ which installed them; all rows also depend on the target product. The pure
 classifier runs for every package in one bounded workspace wave and publishes a
 TypeId-indexed table in product order. Native validation, C-header emission, and
 LLVM lowering are consumers of that table, so ABI meaning is computed once and
-cannot drift between front end and backend. Package-wide MIR currently appends
-address-only pointer types after this boundary. They form an unclassified
-suffix which no C-signature operation may query; per-procedure MIR will remove
-that semantic-table mutation.
+cannot drift between front end and backend. MIR reads the table immutably:
+compiler-only storage addresses use `rawptr` plus an explicit addressed TypeId,
+while actual source pointers retain their canonical semantic type.
 
 After every selected package has reached target lowering, the backend derives a
 closed native work graph in canonical package/module/assembly order. Package

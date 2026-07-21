@@ -40,6 +40,7 @@ struct LoweredSource {
   draft::BodyCheckResult bodies;
   draft::HirProgram hir;
   draft::MirLoweringResult mir;
+  std::size_t semantic_type_count_before_mir = 0;
 
   explicit LoweredSource(
       std::string text,
@@ -64,6 +65,7 @@ struct LoweredSource {
         target.facts,
         diagnostics);
     hir = draft::project_package_body_hir(bodies.procedures);
+    semantic_type_count_before_mir = bodies.package.types.size();
     mir = draft::lower_package_to_mir(
         bodies.package, hir, runtime_assertions, diagnostics);
   }
@@ -152,6 +154,8 @@ compute :: proc(values: []i64, flag: bool) -> i64 {
   EXPECT(state, !source.diagnostics.has_errors());
   EXPECT(state, source.mir.lowered_procedures == 5);
   EXPECT(state, source.mir.program.procedures().size() == 5);
+  EXPECT(state, source.bodies.package.types.size() ==
+                    source.semantic_type_count_before_mir);
 
   std::size_t conditional_branches = 0;
   std::size_t switches = 0;

@@ -48,7 +48,7 @@ struct ControlTarget {
 class ProcedureLowerer {
 public:
   ProcedureLowerer(
-      SemanticPackage &semantic,
+      const SemanticPackage &semantic,
       const HirProgram &hir,
       const HirProcedure &source,
       const AssemblyProgram *assembly,
@@ -208,24 +208,33 @@ private:
     return procedure_.add_local(std::move(local));
   }
 
+  // Constructs an address without extending the semantic type universe. When
+  // source syntax itself has a pointer result, source_type is that already
+  // canonical Pointer TypeId. Internal materialization passes no source type
+  // and uses rawptr plus addressed_type instead.
   [[nodiscard]] MirValueId local_address(
-      MirLocalId local_id, SourceRange range) {
+      MirLocalId local_id, SourceRange range, TypeId source_type = {}) {
     MirInstruction instruction;
     instruction.kind = MirInstructionKind::LocalAddress;
     instruction.range = range;
     instruction.local = local_id;
-    instruction.type = semantic_.types.pointer(procedure_.local(local_id).type);
+    instruction.type = source_type.is_valid()
+        ? source_type
+        : semantic_.types.builtins().rawptr_type;
+    instruction.addressed_type = procedure_.local(local_id).type;
     return emit_value(std::move(instruction));
   }
 
   [[nodiscard]] MirValueId global_address(
-      SymbolId symbol_id, SourceRange range) {
+      SymbolId symbol_id, SourceRange range, TypeId source_type = {}) {
     MirInstruction instruction;
     instruction.kind = MirInstructionKind::GlobalAddress;
     instruction.range = range;
     instruction.symbol = symbol_id;
-    instruction.type =
-        semantic_.types.pointer(semantic_.symbols.symbol(symbol_id).type);
+    instruction.type = source_type.is_valid()
+        ? source_type
+        : semantic_.types.builtins().rawptr_type;
+    instruction.addressed_type = semantic_.symbols.symbol(symbol_id).type;
     return emit_value(std::move(instruction));
   }
 
@@ -703,7 +712,8 @@ private:
     return address;
   }
 
-  [[nodiscard]] MirValueId lower_address(HirExpressionId expression_id) {
+  [[nodiscard]] MirValueId lower_address(
+      HirExpressionId expression_id, TypeId source_type = {}) {
     const HirExpression &expression = hir_.expression(expression_id);
     switch (expression.kind) {
     case HirExpressionKind::Context:
@@ -714,10 +724,11 @@ private:
     case HirExpressionKind::Symbol: {
       const Symbol &symbol = semantic_.symbols.symbol(expression.symbol);
       if (symbol.kind == SymbolKind::Local || symbol.kind == SymbolKind::Parameter) {
-        return local_address(ensure_local(expression.symbol), expression.range);
+        return local_address(
+            ensure_local(expression.symbol), expression.range, source_type);
       }
       if (symbol.kind == SymbolKind::Variable) {
-        return global_address(expression.symbol, expression.range);
+        return global_address(expression.symbol, expression.range, source_type);
       }
       diagnostics_.error(expression.range, "MIR address requested for a non-storage symbol");
       return {};
@@ -742,17 +753,20 @@ private:
       MirInstruction instruction;
       instruction.kind = MirInstructionKind::MemberAddress;
       instruction.range = expression.range;
-      instruction.type = semantic_.types.pointer(expression.type);
+      instruction.type = source_type.is_valid()
+          ? source_type
+          : semantic_.types.builtins().rawptr_type;
+      instruction.addressed_type = expression.type;
       instruction.symbol = expression.symbol;
       instruction.offset = member_offset(expression);
       instruction.operands.push_back(base_address);
       return emit_value(std::move(instruction));
     }
     case HirExpressionKind::Index:
-      return lower_index_address(expression);
+      return lower_index_address(expression, source_type);
     case HirExpressionKind::Denial:
       if (!expression.operands.empty()) {
-        return lower_address(expression.operands.front());
+        return lower_address(expression.operands.front(), source_type);
       }
       break;
     default:
@@ -790,7 +804,7 @@ private:
   }
 
   [[nodiscard]] MirValueId lower_index_address(
-      const HirExpression &expression) {
+      const HirExpression &expression, TypeId source_type = {}) {
     if (expression.operands.size() != 2) {
       diagnostics_.error(expression.range, "indexed HIR expression has wrong arity");
       return {};
@@ -825,7 +839,10 @@ private:
     MirInstruction instruction;
     instruction.kind = MirInstructionKind::IndexAddress;
     instruction.range = expression.range;
-    instruction.type = semantic_.types.pointer(expression.type);
+    instruction.type = source_type.is_valid()
+        ? source_type
+        : semantic_.types.builtins().rawptr_type;
+    instruction.addressed_type = expression.type;
     instruction.operands = {base, index};
     instruction.offset = semantic_.types.type(expression.type).layout.size;
     return emit_value(std::move(instruction));
@@ -1110,7 +1127,7 @@ private:
     }
     case HirExpressionKind::Address:
       return expression.operands.empty() ? MirValueId{}
-                                         : lower_address(expression.operands.front());
+          : lower_address(expression.operands.front(), expression.type);
     case HirExpressionKind::Dereference:
     case HirExpressionKind::Member:
     case HirExpressionKind::Index:
@@ -1706,7 +1723,8 @@ private:
     MirInstruction address;
     address.kind = MirInstructionKind::IndexAddress;
     address.range = range;
-    address.type = semantic_.types.pointer(type.element);
+    address.type = semantic_.types.builtins().rawptr_type;
+    address.addressed_type = type.element;
     address.operands = {base, index};
     address.offset = semantic_.types.type(type.element).layout.size;
     return load(emit_value(std::move(address)), type.element, range);
@@ -2031,7 +2049,7 @@ private:
     }
   }
 
-  SemanticPackage &semantic_;
+  const SemanticPackage &semantic_;
   const HirProgram &hir_;
   const HirProcedure &source_;
   const AssemblyProgram *assembly_ = nullptr;
@@ -2050,7 +2068,7 @@ private:
 } // namespace
 
 MirLoweringResult lower_package_to_mir(
-    SemanticPackage &semantic,
+    const SemanticPackage &semantic,
     const HirProgram &hir,
     const AssemblyProgram *assembly,
     RuntimeAssertionMode runtime_assertions,
@@ -2077,7 +2095,7 @@ MirLoweringResult lower_package_to_mir(
 }
 
 MirLoweringResult lower_package_to_mir(
-    SemanticPackage &semantic,
+    const SemanticPackage &semantic,
     const HirProgram &hir,
     DiagnosticSink &diagnostics) {
   return lower_package_to_mir(
@@ -2085,7 +2103,7 @@ MirLoweringResult lower_package_to_mir(
 }
 
 MirLoweringResult lower_package_to_mir(
-    SemanticPackage &semantic,
+    const SemanticPackage &semantic,
     const HirProgram &hir,
     RuntimeAssertionMode runtime_assertions,
     DiagnosticSink &diagnostics) {
@@ -2094,7 +2112,7 @@ MirLoweringResult lower_package_to_mir(
 }
 
 MirLoweringResult lower_package_to_mir(
-    SemanticPackage &semantic,
+    const SemanticPackage &semantic,
     const HirProgram &hir,
     const AssemblyProgram &assembly,
     DiagnosticSink &diagnostics) {
@@ -2103,7 +2121,7 @@ MirLoweringResult lower_package_to_mir(
 }
 
 MirLoweringResult lower_package_to_mir(
-    SemanticPackage &semantic,
+    const SemanticPackage &semantic,
     const HirProgram &hir,
     const AssemblyProgram &assembly,
     RuntimeAssertionMode runtime_assertions,

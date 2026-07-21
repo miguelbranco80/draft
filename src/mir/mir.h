@@ -118,6 +118,14 @@ struct MirInstruction {
   MirInstructionKind kind = MirInstructionKind::Invalid;
   SourceRange range;
   TypeId type;
+  // Address-producing instructions may need a compiler-internal address even
+  // when source checking never constructed `^T`. In that case type is the
+  // canonical rawptr builtin and addressed_type records T directly. A real
+  // source pointer keeps its ordinary Pointer TypeId here as `type` and records
+  // the same element in addressed_type. Other instructions leave this invalid.
+  // This MIR-local fact prevents lowering from appending synthetic pointer rows
+  // to the immutable semantic TypeStore.
+  TypeId addressed_type;
   MirValueId result;
   HirOperation operation = HirOperation::None;
   // Atomic instructions carry orders as semantic enum values. They never use a

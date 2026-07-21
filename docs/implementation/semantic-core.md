@@ -456,12 +456,12 @@ the TypeId-indexed table and graph states in product order, and native
 validation, C-header generation, and LLVM lowering consume that table rather
 than invoking the classifier independently.
 
-MIR currently interns pointer types used only by address instructions after the
-ABI wave. The table consequently remains a valid target-matching prefix of the
-later `TypeStore`, while native validation requires exact equality at the
-semantic boundary. Those MIR-only suffix types cannot occur in a source C
-signature and no ABI consumer may query them. Step 8 removes this temporary
-semantic-table mutation when MIR becomes procedure-owned.
+MIR reads that ABI-complete semantic TypeStore immutably. A source pointer value
+retains its checked Pointer TypeId. A compiler-created local, global, member, or
+index address instead uses the canonical `rawptr` representation and records
+the addressed semantic TypeId directly on its MIR instruction. Verification
+checks that pair and uses it for atomic pointee rules. Lowering therefore cannot
+append an unclassified synthetic-pointer suffix after the ABI wave.
 
 Compile-time expression type preflight and early compile-time procedure checks
 operate on private copies. Their HIR is disposable and their only permitted
