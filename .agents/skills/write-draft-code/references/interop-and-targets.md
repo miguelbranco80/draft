@@ -164,6 +164,12 @@ slice as pointer plus length. Define a purpose-built `@repr(C)` record for a
 stable external layout. Never add `@repr(C)` solely to silence a diagnostic
 without auditing every member and both target ABIs.
 
+Inside the compiler, C legality and lowering consume one published
+target-specific ABI table. The semantic validator, generated C header, and LLVM
+emitter are not independent authorities and must not rerun or duplicate ABI
+classification. A new target or ABI rule therefore needs classifier oracle
+tests, semantic-product dependency tests, and consumer tests on the same rows.
+
 For a native input that reads but does not retain bytes, pass
 `raw_data(text), len(text)`. This is zero-copy and not zero-termination. Draft's
 `[^]u8` has no const qualifier, so the declaration, documentation, and foreign

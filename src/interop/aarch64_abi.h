@@ -11,6 +11,8 @@
 #include "sema/type.h"
 
 #include <cstdint>
+#include <string>
+#include <vector>
 
 namespace draft {
 
@@ -39,6 +41,36 @@ struct Aarch64CAbiType {
   std::uint32_t argument_integer_count = 0;
   std::uint32_t result_integer_bits = 0;
   std::uint32_t result_integer_count = 0;
+
+  bool operator==(const Aarch64CAbiType &) const = default;
+};
+
+// Aarch64CAbiTable is the immutable target-specific ABI facet for one package's
+// source-semantic TypeId prefix. rows are indexed directly by TypeId and include
+// Illegal as an ordinary completed result for types which cannot cross a C
+// boundary. target_identity prevents a table classified for one profile from
+// being consumed by another profile with coincidentally similar aggregate
+// rules. Workspace compilation publishes rows through TypeAbiClassification
+// products; classify_aarch64_c_types constructs the same table for direct
+// subsystem tests.
+struct Aarch64CAbiTable {
+  std::string target_identity;
+  std::vector<Aarch64CAbiType> rows;
+
+  [[nodiscard]] const Aarch64CAbiType *find(TypeId type) const;
+  // A semantic ABI table remains valid after MIR appends address-only pointer
+  // types to the shared TypeStore. Those suffix rows cannot appear in a source
+  // C signature and therefore have no TypeAbiClassification product. Consumers
+  // which run after MIR use this prefix invariant and still require every ABI
+  // query they make to resolve through find().
+  [[nodiscard]] bool valid_prefix_for(
+      const TypeStore &types,
+      const TargetFacts &target) const;
+  // Semantic validation runs before MIR and requires the stronger invariant:
+  // every currently canonical source-semantic TypeId has a published row.
+  [[nodiscard]] bool complete_for(
+      const TypeStore &types,
+      const TargetFacts &target) const;
 };
 
 // Classifies a direct C parameter/result source type for one supported AArch64
@@ -49,5 +81,13 @@ struct Aarch64CAbiType {
 // non-AArch64 or unknown ABI, so semantic validation fails closed before LLVM.
 [[nodiscard]] Aarch64CAbiType classify_aarch64_c_type(
     const TypeStore &types, TypeId type, const TargetFacts &target);
+
+// Builds the complete table directly and deterministically. The workspace
+// compiler does not use this aggregate path: it schedules the same pure
+// per-TypeId operation as explicit products. Direct interop/backend unit tests
+// use it when they intentionally bypass workspace orchestration.
+[[nodiscard]] Aarch64CAbiTable classify_aarch64_c_types(
+    const TypeStore &types,
+    const TargetFacts &target);
 
 } // namespace draft

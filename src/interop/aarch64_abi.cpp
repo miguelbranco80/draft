@@ -3,6 +3,7 @@
 #include "interop/aarch64_abi.h"
 
 #include "sema/constant.h"
+#include "target/profile.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -249,6 +250,36 @@ Aarch64CAbiType classify_aarch64_c_type(
   }
   std::vector<TypeId> active_procedures;
   return classify_with_active_procedures(types, type_id, active_procedures);
+}
+
+const Aarch64CAbiType *Aarch64CAbiTable::find(TypeId type) const {
+  if (!type.is_valid() || type.value >= rows.size()) return nullptr;
+  return &rows[type.value];
+}
+
+bool Aarch64CAbiTable::complete_for(
+    const TypeStore &types,
+    const TargetFacts &target) const {
+  return valid_prefix_for(types, target) && rows.size() == types.size();
+}
+
+bool Aarch64CAbiTable::valid_prefix_for(
+    const TypeStore &types,
+    const TargetFacts &target) const {
+  return target_identity == target.identity && rows.size() <= types.size();
+}
+
+Aarch64CAbiTable classify_aarch64_c_types(
+    const TypeStore &types,
+    const TargetFacts &target) {
+  Aarch64CAbiTable result;
+  result.target_identity = target.identity;
+  result.rows.reserve(types.size());
+  for (std::size_t index = 0; index < types.size(); ++index) {
+    result.rows.push_back(classify_aarch64_c_type(
+        types, TypeId{static_cast<std::uint32_t>(index)}, target));
+  }
+  return result;
 }
 
 } // namespace draft

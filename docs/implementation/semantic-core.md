@@ -4,9 +4,9 @@ This document records bootstrap representations and algorithms for lexical class
 
 ## Type completion facets
 
-Status: payload representation and declaration products implemented for
-workspace compilation and rejecting direct clients; the discovery-only direct
-compatibility composition and ABI products remain.
+Status: payload representation, declaration products, and the post-body ABI
+facet are implemented for workspace compilation and rejecting direct clients;
+the discovery-only direct compatibility composition remains.
 
 `TypeStore` retains one `TypeCompletion` row beside every canonical `Type` row.
 Allocation completes type identity. Member-name completeness, member-type
@@ -438,6 +438,24 @@ between waves. The fixed point is complete when no body is pending and neither
 the selected program nor its canonical demand sets change. This makes worker
 count a scheduling choice while retaining direct, deterministic package-local
 ID interning.
+
+That fixed point exposes the complete source-semantic TypeId prefix. The
+coordinator appends one `TypeAbiClassification` product per TypeId and evaluates
+all packages in one bounded read-only ready wave. Every row depends explicitly
+on the selected target. A declaration-baseline type also depends on its package
+interface; a type appended by body publication instead depends on the exact
+procedure product recorded as its producer. Classification returns `Illegal` as
+a completed semantic answer, not as a failed task. The coordinator publishes
+the TypeId-indexed table and graph states in product order, and native
+validation, C-header generation, and LLVM lowering consume that table rather
+than invoking the classifier independently.
+
+MIR currently interns pointer types used only by address instructions after the
+ABI wave. The table consequently remains a valid target-matching prefix of the
+later `TypeStore`, while native validation requires exact equality at the
+semantic boundary. Those MIR-only suffix types cannot occur in a source C
+signature and no ABI consumer may query them. Step 8 removes this temporary
+semantic-table mutation when MIR becomes procedure-owned.
 
 Compile-time expression type preflight and early compile-time procedure checks
 operate on private copies. Their HIR is disposable and their only permitted

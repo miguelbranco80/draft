@@ -31,6 +31,7 @@
 #include "compile/semantic_work_graph.h"
 #include "elaborator/obligation.h"
 #include "elaborator/resolution.h"
+#include "interop/aarch64_abi.h"
 #include "interop/native.h"
 #include "mir/lower.h"
 #include "sema/agent_metadata.h"
@@ -176,6 +177,11 @@ struct CompiledPackage {
   std::vector<ExternalProcedureBodyProduct> external_procedure_products;
   std::vector<std::size_t> selected_procedure_work;
   std::vector<std::size_t> selected_external_procedure_work;
+  // Complete target ABI facet for the source-semantic TypeId prefix. Rows are
+  // published by TypeAbiClassification products after each body fixed point
+  // and extend only when later command-local body work appends canonical types.
+  // Package-wide MIR may append address-only pointer types after this prefix.
+  Aarch64CAbiTable c_abi;
   PackageSemanticProgress semantic_progress =
       PackageSemanticProgress::InterfaceReady;
   AgentMetadataResult metadata;
@@ -322,6 +328,11 @@ struct PackageSemanticProducts {
   // owned by the generic-demand path. These products consume the nominal's
   // declaration_types row and may add edges to other layout rows.
   std::vector<SemanticProductId> natural_layouts;
+  // One TypeAbiClassification row for every TypeId in the body generation.
+  // Declaration-baseline rows depend on package_interface; body-appended rows
+  // depend on body_type_producer. The vector is TypeId-indexed and append-only
+  // while the declaration generation remains alive.
+  std::vector<SemanticProductId> abi_classifications;
   // Canonical owner-evaluated concrete applications discovered anywhere in the
   // selected workspace. The vector belongs to the owner package and contains
   // each command-local key once; requester products depend on these rows.

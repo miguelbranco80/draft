@@ -40,6 +40,7 @@ struct CheckedSource {
   draft::SemanticAnalysisResult semantics;
   draft::BodyCheckResult bodies;
   draft::HirProgram hir;
+  draft::Aarch64CAbiTable abi;
 
   explicit CheckedSource(
       std::string text,
@@ -64,6 +65,8 @@ struct CheckedSource {
         target.facts,
         diagnostics);
     hir = draft::project_package_body_hir(bodies.procedures);
+    abi = draft::classify_aarch64_c_types(
+        semantics.package.types, target.facts);
   }
 };
 
@@ -83,6 +86,7 @@ export increment :: c "draft_increment" proc(value: i32) -> i32 {
   const draft::NativeInteropResult native = draft::validate_native_interop(
       source.semantics.package,
       source.hir,
+      source.abi,
       source.target.facts,
       source.diagnostics);
   const draft::MirLoweringResult mir = draft::lower_package_to_mir(
@@ -94,6 +98,7 @@ export increment :: c "draft_increment" proc(value: i32) -> i32 {
       source.sources,
       options,
       source.semantics.package,
+      source.abi,
       source.semantics.global_initializers,
       mir.program,
       source.diagnostics);
@@ -134,6 +139,7 @@ export wrap_narrow :: c "wrap_narrow" proc(
   const draft::NativeInteropResult native = draft::validate_native_interop(
       source.semantics.package,
       source.hir,
+      source.abi,
       source.target.facts,
       source.diagnostics);
   const draft::MirLoweringResult mir = draft::lower_package_to_mir(
@@ -145,6 +151,7 @@ export wrap_narrow :: c "wrap_narrow" proc(
       source.sources,
       options,
       source.semantics.package,
+      source.abi,
       source.semantics.global_initializers,
       mir.program,
       source.diagnostics);
@@ -178,6 +185,7 @@ foreign provider {
   const draft::NativeInteropResult native = draft::validate_native_interop(
       source.semantics.package,
       source.hir,
+      source.abi,
       source.target.facts,
       source.diagnostics);
   EXPECT(state, !native.ok);
@@ -291,6 +299,7 @@ export wrap_large :: c "wrap_large" proc(value: C24) -> C24 {
   const draft::NativeInteropResult native = draft::validate_native_interop(
       source.semantics.package,
       source.hir,
+      source.abi,
       source.target.facts,
       source.diagnostics);
   const draft::MirLoweringResult mir = draft::lower_package_to_mir(
@@ -302,6 +311,7 @@ export wrap_large :: c "wrap_large" proc(value: C24) -> C24 {
       source.sources,
       options,
       source.semantics.package,
+      source.abi,
       source.semantics.global_initializers,
       mir.program,
       source.diagnostics);
@@ -375,6 +385,7 @@ foreign provider {
   const draft::NativeInteropResult native = draft::validate_native_interop(
       source.semantics.package,
       source.hir,
+      source.abi,
       source.target.facts,
       source.diagnostics);
   EXPECT(state, !native.ok);
@@ -397,6 +408,7 @@ callback_slot: Bad_Callback
   const draft::NativeInteropResult native = draft::validate_native_interop(
       source.semantics.package,
       source.hir,
+      source.abi,
       source.target.facts,
       source.diagnostics);
   EXPECT(state, !native.ok);

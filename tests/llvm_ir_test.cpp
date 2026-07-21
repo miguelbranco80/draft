@@ -74,6 +74,8 @@ struct EmittedFixture {
       draft::project_package_body_hir(bodies.procedures);
   draft::MirLoweringResult mir = draft::lower_package_to_mir(
       bodies.package, hir, diagnostics);
+  const draft::Aarch64CAbiTable abi =
+      draft::classify_aarch64_c_types(bodies.package.types, target.facts);
   draft::LlvmIrOptions options;
   options.package = {"workspace", "agent-noop"};
   draft::LlvmIrResult module = draft::emit_llvm_ir(
@@ -81,6 +83,7 @@ struct EmittedFixture {
       sources,
       options,
       bodies.package,
+      abi,
       semantics.global_initializers,
       mir.program,
       diagnostics);
@@ -741,6 +744,8 @@ main :: proc() -> int {
       draft::project_package_body_hir(bodies.procedures);
   draft::MirLoweringResult mir = draft::lower_package_to_mir(
       bodies.package, hir, diagnostics);
+  const draft::Aarch64CAbiTable abi =
+      draft::classify_aarch64_c_types(bodies.package.types, target.facts);
   draft::LlvmIrOptions options;
   options.package = {"workspace", "native"};
   options.emit_program_entry = true;
@@ -749,6 +754,7 @@ main :: proc() -> int {
       sources,
       options,
       bodies.package,
+      abi,
       semantics.global_initializers,
       mir.program,
       diagnostics);

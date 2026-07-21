@@ -58,6 +58,11 @@ Body continuation reports `package body starts`, `procedure bodies checked`,
 They distinguish a new package body generation, exact body tasks actually run,
 workspace-wide frozen worker waves, and previously unseen cross-package
 specializations.
+The following `ABI classification` phase reports `ABI classification ready
+waves`, `ABI classifications`, and `ABI classification worker slots`. These are
+the number of newly classified semantic type rows, the bounded workers actually
+used, and the single workspace-wide wave which owns them; later C and LLVM
+consumers do not repeat this work.
 Selection changes which reuse already completed products perform no body work
 and need no special “reuse” counter. All rows remain command-local; none is
 evidence of a persistent compiler cache.

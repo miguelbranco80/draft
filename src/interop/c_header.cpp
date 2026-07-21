@@ -102,10 +102,11 @@ class Emitter {
 public:
   Emitter(
       const SemanticPackage &semantic,
+      const Aarch64CAbiTable &abi,
       const TargetProfile &target,
       const CHeaderOptions &options,
       DiagnosticSink &diagnostics)
-      : semantic_(semantic), target_(target), options_(options),
+      : semantic_(semantic), abi_(abi), target_(target), options_(options),
         diagnostics_(diagnostics) {}
 
   [[nodiscard]] CHeaderResult run() {
@@ -128,6 +129,17 @@ public:
 private:
   [[nodiscard]] const Type &type(TypeId id) const {
     return semantic_.types.type(id);
+  }
+
+  // Header reachability consumes the same completed ABI fact as native
+  // validation and LLVM lowering. The public entry point verifies the target
+  // and classified semantic prefix. A null result therefore means the header
+  // reached an MIR-only suffix type or an invalid internal reference; neither
+  // may be exposed as a C declaration.
+  [[nodiscard]] bool c_abi_legal(TypeId id) const {
+    const Aarch64CAbiType *classification = abi_.find(id);
+    return classification != nullptr &&
+        classification->classification != Aarch64CAbiClass::Illegal;
   }
 
   [[nodiscard]] std::string package_prefix() const {
@@ -229,9 +241,7 @@ private:
       return;
     }
     if (!value.c_representation || contains_type(nominal_seen_, id) ||
-        classify_aarch64_c_type(semantic_.types, id, target_.facts)
-                .classification ==
-            Aarch64CAbiClass::Illegal) {
+        !c_abi_legal(id)) {
       return;
     }
     nominal_seen_.push_back(id);
@@ -327,10 +337,7 @@ private:
     }
     return (value.kind == TypeKind::Struct || value.kind == TypeKind::RawUnion ||
             value.kind == TypeKind::Enum) &&
-        value.c_representation &&
-        classify_aarch64_c_type(semantic_.types, id, target_.facts)
-                .classification !=
-            Aarch64CAbiClass::Illegal;
+        value.c_representation && c_abi_legal(id);
   }
 
   [[nodiscard]] std::string declaration(TypeId id, std::string name) const {
@@ -626,6 +633,7 @@ private:
   }
 
   const SemanticPackage &semantic_;
+  const Aarch64CAbiTable &abi_;
   const TargetProfile &target_;
   const CHeaderOptions &options_;
   DiagnosticSink &diagnostics_;
@@ -642,10 +650,17 @@ private:
 
 CHeaderResult emit_c_header(
     const SemanticPackage &semantic,
+    const Aarch64CAbiTable &abi,
     const TargetProfile &target,
     const CHeaderOptions &options,
     DiagnosticSink &diagnostics) {
-  return Emitter(semantic, target, options, diagnostics).run();
+  if (!abi.valid_prefix_for(semantic.types, target.facts)) {
+    diagnostics.error(
+        SourceRange::invalid(),
+        "C header emission requires a valid ABI classification table");
+    return {};
+  }
+  return Emitter(semantic, abi, target, options, diagnostics).run();
 }
 
 } // namespace draft

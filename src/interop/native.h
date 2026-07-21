@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include "interop/aarch64_abi.h"
 #include "sema/analyzer.h"
 #include "sema/hir.h"
 #include "source/diagnostic.h"
@@ -22,6 +23,7 @@ struct NativeInteropResult {
 [[nodiscard]] NativeInteropResult validate_native_interop(
     const SemanticPackage &semantic,
     const HirProgram &hir,
+    const Aarch64CAbiTable &abi,
     const TargetFacts &target,
     DiagnosticSink &diagnostics);
 

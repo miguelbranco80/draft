@@ -129,6 +129,10 @@ void test_procedure_bodies_are_dynamic_semantic_products(TestState &state) {
          products.selected_procedure_bodies == products.procedure_bodies);
   EXPECT(state, products.body_type_producer.size() ==
                     package.bodies.package.types.size());
+  EXPECT(state, products.abi_classifications.size() ==
+                    package.bodies.package.types.size());
+  EXPECT(state, package.c_abi.complete_for(
+                    package.bodies.package.types, options.target.facts));
   std::size_t published_type_count = 0;
   for (std::size_t work_index = 0;
        work_index < package.bodies.procedures.size(); ++work_index) {
@@ -149,6 +153,40 @@ void test_procedure_bodies_are_dynamic_semantic_products(TestState &state) {
     }
   }
   EXPECT(state, published_type_count != 0);
+
+  // ABI classification is an exact per-TypeId graph facet. Types installed by
+  // a body depend on that body product; declaration-baseline types depend on
+  // the package interface. Every row also names the target product explicitly
+  // because ABI class is target meaning rather than natural layout.
+  for (std::size_t type_index = 0;
+       type_index < products.abi_classifications.size(); ++type_index) {
+    const draft::TypeId type{static_cast<std::uint32_t>(type_index)};
+    const draft::SemanticProductId product =
+        products.abi_classifications[type_index];
+    EXPECT(state, product.is_valid());
+    if (!product.is_valid()) continue;
+    const draft::SemanticProduct &row =
+        compiled.semantic_graph.products[product.value];
+    EXPECT(state, row.kind ==
+                      draft::SemanticProductKind::TypeAbiClassification);
+    EXPECT(state, row.state == draft::SemanticProductState::Complete);
+    EXPECT(state, compiled.semantic_products.type_by_product[product.value] ==
+                      type);
+    EXPECT(state, package.c_abi.rows[type_index] ==
+                      draft::classify_aarch64_c_type(
+                          package.bodies.package.types,
+                          type,
+                          options.target.facts));
+    EXPECT(state, std::find(row.dependencies.begin(), row.dependencies.end(),
+                            compiled.semantic_products.target) !=
+                      row.dependencies.end());
+    const draft::SemanticProductId type_producer =
+        products.body_type_producer[type_index].is_valid()
+        ? products.body_type_producer[type_index]
+        : products.package_interface;
+    EXPECT(state, std::find(row.dependencies.begin(), row.dependencies.end(),
+                            type_producer) != row.dependencies.end());
+  }
 
   const draft::SemanticPackage &semantic = package.bodies.package;
   const std::optional<draft::SymbolId> identity =
@@ -330,6 +368,8 @@ void test_procedure_body_worker_counts_are_deterministic(TestState &state) {
     const draft::CompiledPackage &left = *sequential.packages.front();
     const draft::CompiledPackage &right = *parallel.packages.front();
     EXPECT(state, left.llvm.text == right.llvm.text);
+    EXPECT(state, left.c_abi.target_identity == right.c_abi.target_identity);
+    EXPECT(state, left.c_abi.rows == right.c_abi.rows);
     EXPECT(state,
            left.bodies.checked_procedures == right.bodies.checked_procedures);
     EXPECT(state,
@@ -404,6 +444,8 @@ void test_independent_packages_share_one_body_ready_wave(TestState &state) {
   EXPECT(state, report.find("procedure body tasks scheduled: 2") !=
                     std::string::npos);
   EXPECT(state, report.find("procedure body worker slots: 2") !=
+                    std::string::npos);
+  EXPECT(state, report.find("ABI classification ready waves: 1") !=
                     std::string::npos);
 }
 
@@ -1445,8 +1487,14 @@ void test_body_source_update_reuses_closed_generic_dependency(
       compiled.semantic_products.packages[app_index].procedure_bodies;
   const std::vector<draft::SemanticProductId> initial_formatting_body_products =
       compiled.semantic_products.packages[*formatting_index].procedure_bodies;
+  const std::vector<draft::SemanticProductId> initial_app_abi_products =
+      compiled.semantic_products.packages[app_index].abi_classifications;
+  const std::vector<draft::SemanticProductId> initial_formatting_abi_products =
+      compiled.semantic_products.packages[*formatting_index].abi_classifications;
   EXPECT(state, !initial_app_body_products.empty());
   EXPECT(state, !initial_formatting_body_products.empty());
+  EXPECT(state, !initial_app_abi_products.empty());
+  EXPECT(state, !initial_formatting_abi_products.empty());
   EXPECT(state,
          initial_formatting.declarations.package.parametric_instances.empty());
   EXPECT(state,
@@ -1493,12 +1541,33 @@ void test_body_source_update_reuses_closed_generic_dependency(
   EXPECT(state,
          compiled.semantic_products.packages[*formatting_index]
                  .procedure_bodies == initial_formatting_body_products);
+  EXPECT(state,
+         compiled.semantic_products.packages[app_index].abi_classifications !=
+             initial_app_abi_products);
+  EXPECT(state,
+         compiled.semantic_products.packages[*formatting_index]
+                 .abi_classifications == initial_formatting_abi_products);
+  EXPECT(state, updated_app.c_abi.complete_for(
+                    updated_app.bodies.package.types, options.target.facts));
+  EXPECT(state, updated_formatting.c_abi.complete_for(
+                    updated_formatting.bodies.package.types,
+                    options.target.facts));
   for (draft::SemanticProductId product : initial_app_body_products) {
     EXPECT(state,
            compiled.semantic_graph.products[product.value].state ==
                draft::SemanticProductState::Superseded);
   }
   for (draft::SemanticProductId product : initial_formatting_body_products) {
+    EXPECT(state,
+           compiled.semantic_graph.products[product.value].state ==
+               draft::SemanticProductState::Complete);
+  }
+  for (draft::SemanticProductId product : initial_app_abi_products) {
+    EXPECT(state,
+           compiled.semantic_graph.products[product.value].state ==
+               draft::SemanticProductState::Superseded);
+  }
+  for (draft::SemanticProductId product : initial_formatting_abi_products) {
     EXPECT(state,
            compiled.semantic_graph.products[product.value].state ==
                draft::SemanticProductState::Complete);

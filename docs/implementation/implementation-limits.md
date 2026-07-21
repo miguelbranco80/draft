@@ -37,7 +37,13 @@ results deterministically. Interface-synthesis discovery still uses the
 aggregate declaration/constant path. Aggregate-member conditions now have
 independent products and exact dynamically discovered continuation edges.
 Member-name and member-type readiness are separate products with stable member
-identities between them. ABI classification is not yet a product.
+identities between them. After the workspace body fixed point, every canonical
+source-semantic TypeId has one target-specific `TypeAbiClassification` product.
+Declaration-baseline rows depend on the package interface, while a type first
+published by a procedure depends on that exact procedure product. All packages
+share one bounded classification wave; payload and graph publication remain in
+product order. Native validation, C-header emission, and LLVM lowering consume
+the published table and never rerun the classifier.
 Concrete cross-package owner-evaluated type applications now use canonical
 command-local demand products with exact requester-layout and transitive-owner
 edges; no package is rebuilt to publish their results.
@@ -76,6 +82,10 @@ external owner bodies depend on the exact completed consumer product which
 requested them; package-local semantic suffixes still publish in PackageId/work
 order after the whole worker set joins. Package loops whose payloads still use
 package snapshots remain sequential.
+MIR lowering still interns address-only pointer types into the shared
+`TypeStore`. These form an unclassified suffix after the completed semantic ABI
+prefix and cannot appear in a source C signature. Removing that suffix mutation
+belongs to the per-procedure MIR migration; it is not a second ABI path.
 Effect closure, denials, and MIR still consume a package-wide HIR compatibility
 projection. Each operation builds and discards that view from authoritative
 procedure products; the compiler retains no package-wide HIR copy. Migrating

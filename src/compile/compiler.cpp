@@ -1090,6 +1090,10 @@ void invalidate_package_closure(
         products.natural_layouts.end());
     superseded.insert(
         superseded.end(),
+        products.abi_classifications.begin(),
+        products.abi_classifications.end());
+    superseded.insert(
+        superseded.end(),
         products.generic_type_demands.begin(),
         products.generic_type_demands.end());
     superseded.insert(
@@ -1127,6 +1131,7 @@ void invalidate_package_closure(
     products.type_members.clear();
     products.declaration_types.clear();
     products.natural_layouts.clear();
+    products.abi_classifications.clear();
     products.generic_type_demands.clear();
     products.conditions.clear();
     products.constants.clear();
@@ -4261,6 +4266,214 @@ struct PackageBodyWavePublication {
   return true;
 }
 
+// One ABI task reads an immutable complete package TypeStore and writes one
+// compact target classification. The table row is not written by the worker:
+// product-ID publication remains the only mutation of CompiledPackage.
+struct AbiClassificationTaskSlot {
+  const TypeStore *types = nullptr;
+  TypeId type;
+  Aarch64CAbiType result;
+};
+
+struct AbiClassificationWaveExecution {
+  const TargetFacts *target = nullptr;
+  std::vector<AbiClassificationTaskSlot> *slots = nullptr;
+  std::vector<SemanticProductOutcome> *outcomes = nullptr;
+};
+
+[[nodiscard]] bool execute_abi_classification_task(
+    void *opaque_context,
+    WorkTaskId task,
+    std::string &failure) {
+  auto &context =
+      *static_cast<AbiClassificationWaveExecution *>(opaque_context);
+  const std::size_t index = static_cast<std::size_t>(task);
+  if (context.target == nullptr || context.slots == nullptr ||
+      context.outcomes == nullptr || index >= context.slots->size() ||
+      index >= context.outcomes->size() ||
+      (*context.slots)[index].types == nullptr ||
+      !(*context.slots)[index].type.is_valid()) {
+    failure = "ABI classification worker received an invalid task slot";
+    return false;
+  }
+
+  AbiClassificationTaskSlot &slot = (*context.slots)[index];
+  slot.result =
+      classify_aarch64_c_type(*slot.types, slot.type, *context.target);
+  (*context.outcomes)[index].kind = SemanticProductOutcomeKind::Complete;
+  return true;
+}
+
+// Appends the unpublished suffix of each package's TypeId-indexed ABI facet.
+// A declaration-baseline type is available at PackageInterface. A type first
+// installed by body publication instead names that exact procedure product.
+// The target is explicit in both cases because ABI class is not natural layout
+// and a future profile may classify the same layout differently.
+[[nodiscard]] bool append_workspace_abi_products(
+    CompileWorkspaceResult &result,
+    DiagnosticSink &diagnostics) {
+  for (std::size_t package_index = 0;
+       package_index < result.packages.size(); ++package_index) {
+    if (!result.packages[package_index].has_value()) continue;
+    CompiledPackage &package = *result.packages[package_index];
+    PackageSemanticProducts &products =
+        result.semantic_products.packages[package_index];
+    const std::size_t type_count = package.bodies.package.types.size();
+    if (products.abi_classifications.size() != package.c_abi.rows.size() ||
+        products.abi_classifications.size() > type_count ||
+        products.body_type_producer.size() > type_count) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "ABI product, payload, and TypeStore prefixes are inconsistent");
+      return false;
+    }
+    products.body_type_producer.resize(type_count);
+
+    while (products.abi_classifications.size() < type_count) {
+      const std::size_t type_index = products.abi_classifications.size();
+      if (type_index >= std::numeric_limits<std::uint32_t>::max()) {
+        diagnostics.error(
+            SourceRange::invalid(),
+            "ABI classification exceeds the TypeId domain");
+        return false;
+      }
+      const TypeId type{static_cast<std::uint32_t>(type_index)};
+      std::vector<SemanticProductId> dependencies{
+          result.semantic_products.target};
+      const SemanticProductId body_producer =
+          products.body_type_producer[type_index];
+      if (body_producer.is_valid()) {
+        dependencies.push_back(body_producer);
+      } else {
+        if (!products.package_interface.is_valid()) {
+          diagnostics.error(
+              SourceRange::invalid(),
+              "declaration ABI classification has no package interface");
+          return false;
+        }
+        dependencies.push_back(products.package_interface);
+      }
+      const PackageId owner{static_cast<std::uint32_t>(package_index)};
+      const SemanticProductId product = append_workspace_semantic_product(
+          result,
+          SemanticProductKind::TypeAbiClassification,
+          dependencies,
+          owner,
+          false,
+          diagnostics);
+      if (!product.is_valid()) return false;
+      result.semantic_products.type_by_product[product.value] = type;
+      products.abi_classifications.push_back(product);
+    }
+  }
+  return true;
+}
+
+// Completes every newly appended ABI facet in one workspace ready wave. All
+// body products are already at a fixed point, so classification is read-only and
+// independent across TypeIds and packages. Results and graph states publish in
+// ProductId order after the bounded worker set joins.
+[[nodiscard]] bool run_workspace_abi_classifications(
+    const TargetFacts &target,
+    std::size_t worker_count,
+    TimingRecorder *timings,
+    CompileWorkspaceResult &result,
+    DiagnosticSink &diagnostics) {
+  const std::size_t product_count_before = result.semantic_graph.products.size();
+  if (!append_workspace_abi_products(result, diagnostics)) return false;
+  if (result.semantic_graph.products.size() == product_count_before) return true;
+
+  const SemanticReadyWave wave =
+      freeze_semantic_ready_wave(result.semantic_graph);
+  if (wave.status != SemanticReadyWaveStatus::Ready) {
+    diagnostics.error(
+        SourceRange::invalid(),
+        "ABI classification products did not form a ready semantic wave" +
+            (wave.failure.empty() ? std::string{} : ": " + wave.failure));
+    return false;
+  }
+
+  std::vector<AbiClassificationTaskSlot> slots(wave.products.size());
+  for (std::size_t index = 0; index < wave.products.size(); ++index) {
+    const SemanticProductId product = wave.products[index];
+    const SemanticProduct &row = result.semantic_graph.products[product.value];
+    const PackageId owner =
+        result.semantic_products.package_by_product[product.value];
+    const TypeId type = result.semantic_products.type_by_product[product.value];
+    if (row.kind != SemanticProductKind::TypeAbiClassification ||
+        !owner.is_valid() || owner.value >= result.packages.size() ||
+        !result.packages[owner.value].has_value() || !type.is_valid() ||
+        type.value >= result.packages[owner.value]->bodies.package.types.size()) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "ABI ready wave contains an invalid classification product");
+      return false;
+    }
+    slots[index].types = &result.packages[owner.value]->bodies.package.types;
+    slots[index].type = type;
+  }
+
+  std::vector<SemanticProductOutcome> outcomes(wave.products.size());
+  WorkGraph execution_graph;
+  execution_graph.tasks.resize(wave.products.size());
+  AbiClassificationWaveExecution execution{&target, &slots, &outcomes};
+  const WorkGraphRunResult scheduled = run_work_graph(
+      execution_graph,
+      WorkGraphRunOptions{worker_count},
+      execute_abi_classification_task,
+      &execution);
+  if (timings != nullptr) {
+    timings->add_counter("ABI classification ready waves", 1);
+    timings->add_counter("ABI classifications", wave.products.size());
+    timings->add_counter(
+        "ABI classification worker slots", scheduled.workers_used);
+  }
+  if (!scheduled.ok) {
+    std::string failure = "ABI classification worker scheduling failed";
+    for (std::size_t index = 0; index < scheduled.tasks.size(); ++index) {
+      if (scheduled.tasks[index].state != WorkTaskState::Failed) continue;
+      failure += " at task " + std::to_string(index) + ": " +
+          scheduled.tasks[index].failure;
+      break;
+    }
+    diagnostics.error(SourceRange::invalid(), std::move(failure));
+    return false;
+  }
+
+  for (std::size_t index = 0; index < wave.products.size(); ++index) {
+    const SemanticProductId product = wave.products[index];
+    const PackageId owner =
+        result.semantic_products.package_by_product[product.value];
+    const TypeId type = result.semantic_products.type_by_product[product.value];
+    CompiledPackage &package = *result.packages[owner.value];
+    if (package.c_abi.rows.empty()) {
+      package.c_abi.target_identity = target.identity;
+    }
+    if (package.c_abi.target_identity != target.identity ||
+        type.value != package.c_abi.rows.size()) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "ABI classification payload is not in TypeId order");
+      return false;
+    }
+    package.c_abi.rows.push_back(slots[index].result);
+  }
+
+  std::string publication_error;
+  if (!publish_semantic_ready_wave(
+          result.semantic_graph,
+          wave,
+          outcomes,
+          diagnostics,
+          publication_error)) {
+    diagnostics.error(
+        SourceRange::invalid(),
+        "cannot publish ABI classification wave: " + publication_error);
+    return false;
+  }
+  return true;
+}
+
 } // namespace
 
 CompileWorkspaceResult compile_workspace(
@@ -4865,6 +5078,19 @@ bool continue_compiled_workspace_semantics(
   }
   body_timing.finish();
 
+  TimingScope abi_timing = options.timings != nullptr
+      ? options.timings->scope("ABI classification")
+      : TimingScope{};
+  if (!run_workspace_abi_classifications(
+          options.target.facts,
+          options.semantic_worker_count,
+          options.timings,
+          result,
+          diagnostics)) {
+    return false;
+  }
+  abi_timing.finish();
+
   // Validation files are compiled in a parallel graph only after interface
   // synthesis has resolved every declaration they may name. Runtime body holes
   // remain legal checked HIR sites, so this pass can type tests before asking a
@@ -5034,6 +5260,7 @@ bool continue_compiled_workspace_semantics(
     package.native_interop = validate_native_interop(
         package.bodies.package,
         package_hir,
+        package.c_abi,
         options.target.facts,
         diagnostics);
     const bool denials_ok = check_package_denials(
@@ -5204,6 +5431,7 @@ bool continue_compiled_workspace(
           sources,
           llvm_options,
           package.bodies.package,
+          package.c_abi,
           package.declarations.global_initializers,
           package.mir.program,
           diagnostics);

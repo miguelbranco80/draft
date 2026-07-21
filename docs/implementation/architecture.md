@@ -131,8 +131,9 @@ traversals not yet migrated to semantic products. Building its sorted views
 costs O((packages + imports) log(packages + imports)); invalidation costs
 O(packages + imports), without a persistent cache. The `compiler passes`,
 `workspace loads`, `workspace source transitions`, `package body starts`,
-`procedure bodies checked`, and `external procedure bodies materialized`
-counters make those distinct operations visible. `--timings=all` adds package/tool scopes, file
+`procedure bodies checked`, `external procedure bodies materialized`, and ABI
+classification wave/task/worker counters make those distinct operations
+visible. `--timings=all` adds package/tool scopes, file
 discovery and I/O, lexing/parsing, import-graph resolution, and exclusive time;
 child process CPU is reported separately from parent wall time.
 
@@ -234,6 +235,18 @@ demand. Cross-package demand discovery and retained-product selection repeat
 until the current program reaches a fixed point; there is no consumer-first
 body executor outside the graph.
 
+After that body fixed point, every TypeId in the source-semantic prefix owns a
+separate target ABI-classification product. Declaration types depend on their
+package interface; body-created types depend on the exact procedure product
+which installed them; all rows also depend on the target product. The pure
+classifier runs for every package in one bounded workspace wave and publishes a
+TypeId-indexed table in product order. Native validation, C-header emission, and
+LLVM lowering are consumers of that table, so ABI meaning is computed once and
+cannot drift between front end and backend. Package-wide MIR currently appends
+address-only pointer types after this boundary. They form an unclassified
+suffix which no C-signature operation may query; per-procedure MIR will remove
+that semantic-table mutation.
+
 After every selected package has reached target lowering, the backend derives a
 closed native work graph in canonical package/module/assembly order. Package
 modules have already expressed imported symbols as external declarations, so
@@ -261,6 +274,10 @@ parallel scheduling changes elapsed time, never artifacts or diagnostics.
   Publication joins those rows into the generation consumed by current
   package-wide compatibility passes. No HIR is paired with declaration-only
   tables.
+- **Target ABI facet:** one immutable row per source-semantic TypeId, published
+  after body closure with explicit target and exact type-producer edges. An
+  `Illegal` row is a completed answer. Later consumers read the table through
+  the target-matching semantic prefix and never invoke the classifier.
 - **Procedure CFG:** explicit branches and scopes, used for return analysis,
   `defer`, branch facts, judgments, and denial summaries.
 - **Draft MIR:** a small non-optimizing IR with explicit loads, stores, checks,

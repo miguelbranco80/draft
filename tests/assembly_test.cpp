@@ -41,6 +41,7 @@ struct CheckedAssembly {
   draft::SemanticAnalysisResult semantics;
   draft::BodyCheckResult bodies;
   draft::HirProgram hir;
+  draft::Aarch64CAbiTable abi;
   draft::AssemblyProgram assembly;
 
   explicit CheckedAssembly(std::string text) {
@@ -62,6 +63,8 @@ struct CheckedAssembly {
         target.facts,
         diagnostics);
     hir = draft::project_package_body_hir(bodies.procedures);
+    abi = draft::classify_aarch64_c_types(
+        semantics.package.types, target.facts);
     if (bodies.ok) {
       assembly = draft::analyze_aarch64_assembly(
           sources,
@@ -222,6 +225,7 @@ main :: proc() -> int {
       source.sources,
       options,
       source.semantics.package,
+      source.abi,
       source.semantics.global_initializers,
       mir.program,
       source.diagnostics);

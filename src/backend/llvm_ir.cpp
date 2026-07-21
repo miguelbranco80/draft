@@ -265,16 +265,23 @@ public:
       const SourceManager &sources,
       const LlvmIrOptions &options,
       const SemanticPackage &semantic,
+      const Aarch64CAbiTable &abi,
       const ConstantTable &global_initializers,
       const MirProgram &mir,
       DiagnosticSink &diagnostics)
       : target_(target), sources_(sources), options_(options), semantic_(semantic),
-        global_initializers_(global_initializers), mir_(mir),
+        abi_(abi), global_initializers_(global_initializers), mir_(mir),
         diagnostics_(diagnostics) {}
 
   [[nodiscard]] LlvmIrResult run() {
     LlvmIrResult result;
     initial_errors_ = diagnostics_.error_count();
+    if (!abi_.valid_prefix_for(semantic_.types, target_.facts)) {
+      error(
+          SourceRange::invalid(),
+          "ABI classification table does not match package and target");
+      return result;
+    }
     collect_strings();
     initialize_debug_metadata();
 
@@ -308,7 +315,7 @@ public:
   }
 
 private:
-  void error(SourceRange range, const std::string &message) {
+  void error(SourceRange range, const std::string &message) const {
     diagnostics_.error(range, "LLVM emission: " + message);
   }
 
@@ -1754,8 +1761,14 @@ private:
       abi.alignment = context.layout.alignment;
       return abi;
     }
-    return classify_aarch64_c_type(
-        semantic_.types, type_id, target_.facts);
+    const Aarch64CAbiType *abi = abi_.find(type_id);
+    if (abi == nullptr) {
+      error(
+          SourceRange::invalid(),
+          "C ABI query names a type outside the classified semantic prefix");
+      return {};
+    }
+    return *abi;
   }
 
   [[nodiscard]] std::string llvm_function_result(TypeId type_id) const {
@@ -4219,6 +4232,7 @@ private:
   const SourceManager &sources_;
   const LlvmIrOptions &options_;
   const SemanticPackage &semantic_;
+  const Aarch64CAbiTable &abi_;
   const ConstantTable &global_initializers_;
   const MirProgram &mir_;
   DiagnosticSink &diagnostics_;
@@ -4251,6 +4265,7 @@ LlvmIrResult emit_llvm_ir(
     const SourceManager &sources,
     const LlvmIrOptions &options,
     const SemanticPackage &semantic,
+    const Aarch64CAbiTable &abi,
     const ConstantTable &global_initializers,
     const MirProgram &mir,
     DiagnosticSink &diagnostics) {
@@ -4259,6 +4274,7 @@ LlvmIrResult emit_llvm_ir(
       sources,
       options,
       semantic,
+      abi,
       global_initializers,
       mir,
       diagnostics).run();

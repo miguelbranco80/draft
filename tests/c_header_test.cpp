@@ -183,13 +183,21 @@ export echo_rune :: c "draft_echo_rune" proc(value: rune) -> rune {
       diagnostics);
   const draft::HirProgram hir =
       draft::project_package_body_hir(bodies.procedures);
+  const draft::Aarch64CAbiTable abi =
+      draft::classify_aarch64_c_types(semantics.package.types, target.facts);
+  const draft::TargetProfile linux_target =
+      draft::make_aarch64_linux_profile();
+  const draft::Aarch64CAbiTable linux_abi =
+      draft::classify_aarch64_c_types(
+          semantics.package.types, linux_target.facts);
   const draft::NativeInteropResult native = draft::validate_native_interop(
-      semantics.package, hir, target.facts, diagnostics);
+      semantics.package, hir, abi, target.facts, diagnostics);
   const draft::CHeaderResult header = draft::emit_c_header(
-      semantics.package, target, {}, diagnostics);
+      semantics.package, abi, target, {}, diagnostics);
   const draft::CHeaderResult linux_header = draft::emit_c_header(
       semantics.package,
-      draft::make_aarch64_linux_profile(),
+      linux_abi,
+      linux_target,
       {},
       diagnostics);
   if (diagnostics.has_errors()) {

@@ -168,6 +168,7 @@ void test_c_client_consumes_draft_shared_library(TestState &state) {
 
   const draft::CHeaderResult header = draft::emit_c_header(
       compiled.packages[root]->bodies.package,
+      compiled.packages[root]->c_abi,
       target,
       {},
       diagnostics);

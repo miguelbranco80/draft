@@ -983,6 +983,7 @@ int emit_c_header_package(
           : draft::TimingScope{};
       const draft::CHeaderResult header = draft::emit_c_header(
           compiled.packages[root]->bodies.package,
+          compiled.packages[root]->c_abi,
           target,
           {},
           diagnostics);

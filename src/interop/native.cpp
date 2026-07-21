@@ -25,22 +25,26 @@ namespace {
 }
 
 [[nodiscard]] bool valid_c_signature(
-    const TypeStore &types, TypeId id, const TargetFacts &target) {
+    const TypeStore &types,
+    TypeId id,
+    const Aarch64CAbiTable &abi) {
   const Type &procedure = types.type(id);
   if (procedure.kind != TypeKind::Procedure || !procedure.c_calling_convention ||
       procedure.members.empty()) {
     return false;
   }
   for (std::size_t index = 0; index + 1 < procedure.members.size(); ++index) {
-    if (classify_aarch64_c_type(types, procedure.members[index], target)
-            .classification == Aarch64CAbiClass::Illegal) {
+    const Aarch64CAbiType *parameter = abi.find(procedure.members[index]);
+    if (parameter == nullptr ||
+        parameter->classification == Aarch64CAbiClass::Illegal) {
       return false;
     }
   }
   const TypeId result = procedure.members.back();
-  return result == types.builtins().void_type ||
-      classify_aarch64_c_type(types, result, target).classification !=
-          Aarch64CAbiClass::Illegal;
+  if (result == types.builtins().void_type) return true;
+  const Aarch64CAbiType *classified_result = abi.find(result);
+  return classified_result != nullptr &&
+      classified_result->classification != Aarch64CAbiClass::Illegal;
 }
 
 [[nodiscard]] std::optional<std::string> decode_linker_name(
@@ -129,7 +133,7 @@ void validate_c_procedure_type_graph(
     TypeId root,
     SourceRange diagnostic_range,
     bool exempt_root,
-    const TargetFacts &target,
+    const Aarch64CAbiTable &abi,
     std::vector<TypeId> &diagnosed,
     DiagnosticSink &diagnostics) {
   std::vector<TypeId> visited;
@@ -138,9 +142,9 @@ void validate_c_procedure_type_graph(
     visited.push_back(type_id);
     const Type &type = semantic.types.type(type_id);
     if (type.kind == TypeKind::Procedure && type.c_calling_convention) {
+      const Aarch64CAbiType &classification = *abi.find(type_id);
       const bool legal =
-          classify_aarch64_c_type(semantic.types, type_id, target)
-              .classification != Aarch64CAbiClass::Illegal;
+          classification.classification != Aarch64CAbiClass::Illegal;
       if (!legal) {
         if (!(is_root && exempt_root) && !contains_type(diagnosed, type_id)) {
           diagnostics.error(
@@ -167,10 +171,21 @@ void validate_c_procedure_type_graph(
 NativeInteropResult validate_native_interop(
     const SemanticPackage &semantic,
     const HirProgram &hir,
+    const Aarch64CAbiTable &abi,
     const TargetFacts &target,
     DiagnosticSink &diagnostics) {
   NativeInteropResult result;
   const std::size_t initial_errors = diagnostics.error_count();
+  // Native validation is a consumer of the explicit ABI facet, not another
+  // hidden classifier pass. A missing row or mismatched target is an internal
+  // orchestration failure: continuing would make the accepted C boundary
+  // depend on which consumer happened to run first.
+  if (!abi.complete_for(semantic.types, target)) {
+    diagnostics.error(
+        SourceRange::invalid(),
+        "native interop requires a complete ABI classification table");
+    return result;
+  }
   std::vector<TypeId> diagnosed_c_procedures;
   for (const NativeBinding &binding : semantic.native_bindings) {
     const Symbol &symbol = semantic.symbols.symbol(binding.symbol);
@@ -182,7 +197,7 @@ NativeInteropResult validate_native_interop(
     }
     const std::optional<std::string> linker_name =
         decode_linker_name(binding.linker_name_spelling);
-    if (!valid_c_signature(semantic.types, symbol.type, target) &&
+    if (!valid_c_signature(semantic.types, symbol.type, abi) &&
         !valid_default_context_bridge(
             semantic, binding, symbol, linker_name)) {
       diagnostics.error(
@@ -224,7 +239,7 @@ NativeInteropResult validate_native_interop(
         symbol.type,
         symbol.name_range,
         bridge,
-        target,
+        abi,
         diagnosed_c_procedures,
         diagnostics);
   }

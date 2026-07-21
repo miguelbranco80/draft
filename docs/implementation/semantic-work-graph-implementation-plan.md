@@ -91,13 +91,20 @@ gate.
    chain now completes through product edges instead of tripping the legacy
    recursive evaluator-depth limit.
 
-   This step remains open in two narrower places. The explicit direct Discover-
+   This step remains open in one narrower place. The explicit direct Discover-
    mode overload and its early metadata tests still use
    `discover_package_declarations`; step 6 replaces that provider-surface
-   compatibility composition with task-owned synthesis constraints. ABI
-   classification must become an explicit product at the body/declaration
-   boundary established by step 5 rather than being attached prematurely to a
-   declaration-only `TypeStore`.
+   compatibility composition with task-owned synthesis constraints.
+
+   ABI classification is now an explicit post-body type facet. One product is
+   appended for every TypeId in the completed source-semantic prefix. Each row
+   depends on the target plus either its package interface or the exact
+   procedure product which first published that type. All packages classify in
+   one bounded ready wave and publish in product order. Native validation,
+   C-header generation, and LLVM lowering consume the resulting table; no
+   downstream path recomputes the fact. Package-wide MIR can still append
+   address-only pointer types as an unclassified suffix, which step 8 deletes
+   with semantic-table mutation in lowering.
 
 4. **Canonical generic type demand — complete.** Every concrete cross-package
    owner-evaluated type application has one command-local key formed from its
@@ -211,6 +218,10 @@ gate.
    selection, and new owner work repeat to one workspace fixed point. Public
    tests prove independent imported packages share a ready wave and that the
    requester edge survives source transitions.
+
+   The post-body ABI seam is complete as well. Procedure results record every
+   canonical TypeId first published by their append packet, allowing each ABI
+   product to name one exact producer rather than a package-wide body barrier.
 
    The remaining step-5 cleanup is `BodyCheckResult`'s package-wide semantic
    transfer form in direct non-workspace APIs. Package-wide compatibility HIR
