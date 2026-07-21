@@ -1076,11 +1076,12 @@ void invalidate_package_closure(
     products.generic_type_demands.clear();
     products.conditions.clear();
     products.constants.clear();
-    std::vector<SemanticProductId> dependencies;
-    dependencies.push_back(result.semantic_products.target);
-    dependencies.push_back(products.imports);
-    dependencies.insert(dependencies.end(), products.parsed_files.begin(),
-                        products.parsed_files.end());
+    products.declaration_inputs.clear();
+    products.declaration_inputs.push_back(result.semantic_products.target);
+    products.declaration_inputs.push_back(products.imports);
+    products.declaration_inputs.insert(products.declaration_inputs.end(),
+                                       products.parsed_files.begin(),
+                                       products.parsed_files.end());
     for (std::size_t edge_index :
          schedule.import_edges_by_consumer[package_index]) {
       const PackageImport &import = result.graph.imports[edge_index];
@@ -1094,12 +1095,12 @@ void invalidate_package_closure(
             "package interface product is missing before its consumer");
         return false;
       }
-      dependencies.push_back(dependency_interface);
+      products.declaration_inputs.push_back(dependency_interface);
     }
     const PackageId owner{static_cast<std::uint32_t>(package_index)};
     products.name_set = append_workspace_semantic_product(
-        result, SemanticProductKind::PackageNameSet, dependencies, owner, false,
-        diagnostics);
+        result, SemanticProductKind::PackageNameSet,
+        products.declaration_inputs, owner, false, diagnostics);
     if (!products.name_set.is_valid())
       return false;
     products.opaque_synthesis_set = {};
@@ -1519,6 +1520,25 @@ has_symbol_product(std::span<const SemanticProductId> products,
   return false;
 }
 
+// Finds the condition row for one exact reachable source site. An initial site
+// is appended before its member product; a nested `else when` site is appended
+// after its parent selects that syntax but before the blocked member attempt is
+// retried. Every returned ID therefore belongs to the current source generation
+// and is safe to attach as the consumer's exact prerequisite.
+[[nodiscard]] std::optional<SemanticProductId> package_condition_product(
+    const CompileWorkspaceResult &result,
+    PackageId owner,
+    SyntaxReference syntax) {
+  const PackageSemanticProducts &products =
+      result.semantic_products.packages[owner.value];
+  for (SemanticProductId product : products.conditions) {
+    if (result.semantic_products.condition_by_product[product.value] == syntax) {
+      return product;
+    }
+  }
+  return std::nullopt;
+}
+
 // Appends the declaration/type-facet products revealed by the current
 // append-only package declaration table. Nominal identity already exists after
 // collection and receives one completed TypeIdentity row; its independently
@@ -1575,7 +1595,25 @@ has_symbol_product(std::span<const SemanticProductId> products,
         return false;
       result.semantic_products.type_by_product[identity.value] =
           declaration.type;
-      const std::array dependencies{identity};
+      std::vector<SemanticProductId> dependencies{identity};
+      // A member task may inspect only the selected branch of each reachable
+      // `when`. Initial sites were discovered without declaring members, so
+      // their exact condition rows can precede the first member attempt.
+      for (const SemanticSite &site : semantic.sites) {
+        if (site.kind != SemanticSiteKind::ConditionalMember ||
+            site.anchor != symbol) {
+          continue;
+        }
+        const std::optional<SemanticProductId> condition =
+            package_condition_product(result, owner, site.syntax);
+        if (!condition.has_value()) {
+          diagnostics.error(
+              SourceRange::invalid(),
+              "nominal member condition has no semantic product");
+          return false;
+        }
+        dependencies.push_back(*condition);
+      }
       declaration_product = append_workspace_semantic_product(
           result, SemanticProductKind::TypeMemberTypes, dependencies, owner,
           false, diagnostics);
@@ -2312,6 +2350,20 @@ package_condition_needs_materialization(const SemanticPackage &package,
           }
           slot.outcome.dependencies.push_back(*blocker);
         }
+        for (SyntaxReference dependency :
+             slot.declaration_type->condition_dependencies) {
+          const std::optional<SemanticProductId> blocker =
+              package_condition_product(result, owner, dependency);
+          if (!blocker.has_value()) {
+            slot.outcome.kind = SemanticProductOutcomeKind::Error;
+            slot.outcome.failure =
+                "declaration member condition has no product";
+            slot.outcome.diagnostics.error(SourceRange::invalid(),
+                                           slot.outcome.failure);
+            break;
+          }
+          slot.outcome.dependencies.push_back(*blocker);
+        }
         if (slot.outcome.kind != SemanticProductOutcomeKind::Error) {
           slot.outcome.kind = SemanticProductOutcomeKind::Blocked;
         }
@@ -2699,8 +2751,8 @@ package_condition_needs_materialization(const SemanticPackage &package,
         package_products.opaque_synthesis_set =
             append_workspace_semantic_product(
                 result, SemanticProductKind::OpaqueSynthesisSet,
-                result.semantic_graph.products[name_set.value].dependencies,
-                owner, false, slot.outcome.diagnostics);
+                package_products.declaration_inputs, owner, false,
+                slot.outcome.diagnostics);
         if (!package_products.opaque_synthesis_set.is_valid()) {
           slot.outcome.kind = SemanticProductOutcomeKind::Error;
           slot.outcome.failure = "cannot publish opaque package synthesis set";
@@ -2733,18 +2785,21 @@ package_condition_needs_materialization(const SemanticPackage &package,
         }
         const PackageId owner =
             result.semantic_products.package_by_product[name_set.value];
-        const std::vector<SemanticProductId> base_dependencies =
-            result.semantic_graph.products[name_set.value].dependencies;
+        const std::vector<SemanticProductId> &base_dependencies =
+            result.semantic_products.packages[owner.value].declaration_inputs;
+        // Reachable conditions precede the member packets which consume their
+        // selections. Constants follow type products so ambiguous type/value
+        // declarations can depend on their classification row.
         const bool appended =
+            append_package_condition_products(result, base_dependencies, owner,
+                                              *slot.package,
+                                              slot.outcome.diagnostics) &&
             append_package_type_products(result, base_dependencies, owner,
                                          *slot.package,
                                          slot.outcome.diagnostics) &&
             append_package_constant_products(result, base_dependencies, owner,
                                              *slot.package,
-                                             slot.outcome.diagnostics) &&
-            append_package_condition_products(result, base_dependencies, owner,
-                                              *slot.package,
-                                              slot.outcome.diagnostics);
+                                             slot.outcome.diagnostics);
         if (!appended) {
           slot.outcome.kind = SemanticProductOutcomeKind::Error;
           slot.outcome.failure = "cannot append package declaration products";
@@ -3040,6 +3095,21 @@ package_condition_needs_materialization(const SemanticPackage &package,
               sources, result.graph.packages[owner.value].loaded,
               package.declaration_discovery.selections, site,
               package.declaration_discovery.package, diagnostics)) {
+        return false;
+      }
+      // A selected package branch can introduce a nominal with its first
+      // member condition, while a selected member branch can reveal the next
+      // `else when` in its opaque chain. Discover that new frontier now and
+      // append its products before another semantic wave is frozen.
+      discover_package_member_condition_sites(
+          sources, result.graph.packages[owner.value].loaded,
+          package.declaration_discovery.selections,
+          package.declaration_discovery.package, diagnostics);
+      const PackageSemanticProducts &package_products =
+          result.semantic_products.packages[owner.value];
+      if (!append_package_condition_products(
+              result, package_products.declaration_inputs, owner, package,
+              diagnostics)) {
         return false;
       }
       package.declarations.package = package.declaration_discovery.package;

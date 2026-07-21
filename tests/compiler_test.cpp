@@ -324,6 +324,121 @@ void test_named_constants_are_semantic_products(TestState &state) {
   std::filesystem::remove_all(root, error);
 }
 
+// A member-level `when` owns the selected member namespace and therefore must
+// complete before the aggregate's member packet or layout. Nested `else when`
+// sites are intentionally opaque until the preceding false selection publishes;
+// this regression verifies that each newly reachable site becomes an exact
+// dependency instead of letting the first incomplete member attempt complete.
+void test_conditional_members_extend_the_semantic_graph(TestState &state) {
+  draft::test::TemporaryDirectory temporary_directory{
+      "draft-bootstrap-conditional-member-product-test"};
+  const std::filesystem::path &root = temporary_directory.path();
+  std::error_code error;
+  std::filesystem::create_directories(root / "app", error);
+  EXPECT(state, !error);
+  if (error) return;
+
+  std::ofstream app(root / "app" / "package.draft", std::ios::binary);
+  app << "package app\n"
+         "Selected :: struct {\n"
+         "    first: u8,\n"
+         "    when false {\n"
+         "        wrong: u64,\n"
+         "    } else when true {\n"
+         "        chosen: u32,\n"
+         "    } else {\n"
+         "        also_wrong: u64,\n"
+         "    }\n"
+         "    last: u16,\n"
+         "}\n"
+         "main :: proc() {\n"
+         "    value: Selected\n"
+         "    value.chosen = 42\n"
+         "}\n";
+  app.close();
+  EXPECT(state, app.good());
+
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  draft::CompileWorkspaceOptions options;
+  options.target = draft::make_aarch64_macos_profile();
+  options.workspace.workspace_directory = root.string();
+  const draft::CompileWorkspaceResult compiled = draft::compile_workspace(
+      sources, (root / "app").string(), std::move(options), diagnostics);
+  if (diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+  }
+  EXPECT(state, compiled.ok);
+  EXPECT(state, !diagnostics.has_errors());
+  EXPECT(state, compiled.packages.size() == 1);
+  if (!compiled.ok || compiled.packages.size() != 1 ||
+      !compiled.packages.front().has_value()) {
+    std::filesystem::remove_all(root, error);
+    return;
+  }
+
+  const draft::CompiledPackage &package = *compiled.packages.front();
+  const draft::SemanticPackage &semantic = package.declarations.package;
+  const std::optional<draft::SymbolId> selected =
+      semantic.symbols.lookup_direct(semantic.package_scope, "Selected");
+  EXPECT(state, selected.has_value());
+  if (!selected.has_value()) {
+    std::filesystem::remove_all(root, error);
+    return;
+  }
+  const draft::TypeId selected_type =
+      semantic.symbols.symbol(*selected).type;
+  const draft::Type &type = semantic.types.type(selected_type);
+  EXPECT(state, type.layout.known);
+  EXPECT(state, type.layout.size == 12);
+  EXPECT(state, type.layout.alignment == 4);
+
+  std::vector<std::string> member_names;
+  for (const draft::AggregateMember &member : semantic.aggregate_members) {
+    if (member.owner == *selected) {
+      member_names.push_back(semantic.symbols.symbol(member.member).name);
+    }
+  }
+  const std::vector<std::string> expected_members{"first", "chosen", "last"};
+  EXPECT(state, member_names == expected_members);
+
+  const draft::PackageSemanticProducts &products =
+      compiled.semantic_products.packages.front();
+  EXPECT(state, products.conditions.size() == 2);
+  std::optional<draft::SemanticProductId> member_product;
+  for (draft::SemanticProductId product : products.declaration_types) {
+    if (compiled.semantic_products.declaration_by_product[product.value] ==
+        *selected) {
+      member_product = product;
+      break;
+    }
+  }
+  EXPECT(state, member_product.has_value());
+  if (member_product.has_value()) {
+    const std::vector<draft::SemanticProductId> &dependencies =
+        compiled.semantic_graph.products[member_product->value].dependencies;
+    for (draft::SemanticProductId condition : products.conditions) {
+      EXPECT(state,
+             compiled.semantic_graph.products[condition.value].state ==
+                 draft::SemanticProductState::Complete);
+      EXPECT(state,
+             std::find(dependencies.begin(), dependencies.end(), condition) !=
+                 dependencies.end());
+      // A nested condition receives only the immutable declaration inputs. If
+      // it inherited PackageNameSet's dynamically enlarged dependency set, it
+      // would point back to this member product and make the real graph cyclic.
+      const std::vector<draft::SemanticProductId> &condition_dependencies =
+          compiled.semantic_graph.products[condition.value].dependencies;
+      EXPECT(state,
+             std::find(condition_dependencies.begin(),
+                       condition_dependencies.end(), *member_product) ==
+                 condition_dependencies.end());
+    }
+  }
+
+  std::filesystem::remove_all(root, error);
+}
+
 // Imported constants are completed dependency-interface inputs, not duplicate
 // consumer products. They must nevertheless enter the consumer's local proxy
 // table so body checking and typed validation context observe the same value.
@@ -2544,6 +2659,7 @@ int main() {
   TestState state;
   test_procedure_demand_sets_are_canonical_and_exact(state);
   test_named_constants_are_semantic_products(state);
+  test_conditional_members_extend_the_semantic_graph(state);
   test_imported_constant_products_enter_consumer_table(state);
   test_source_update_reuses_unaffected_semantics(state);
   test_interface_synthesis_is_an_explicit_graph_wait(state);

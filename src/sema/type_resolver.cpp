@@ -195,12 +195,13 @@ public:
           semantic_.imported_type_instantiation_requests[index]);
     }
     if (!declaration_dependencies_.empty() || !constant_dependencies_.empty() ||
-        !type_dependencies_.empty() ||
+        !type_dependencies_.empty() || !condition_dependencies_.empty() ||
         !result.generic_type_dependencies.empty()) {
       result.status = TypeProductStatus::Blocked;
       result.declaration_dependencies = declaration_dependencies_;
       result.constant_dependencies = constant_dependencies_;
       result.type_dependencies = type_dependencies_;
+      result.condition_dependencies = condition_dependencies_;
       return result;
     }
     result.status = diagnostics_.has_errors()
@@ -209,12 +210,49 @@ public:
     return result;
   }
 
+  // Pre-discovers the currently reachable member-condition frontier without
+  // running ordinary type resolution. File scope is sufficient because Draft
+  // 1 member conditions are independent of enclosing parametric declarations;
+  // the eventual member task creates the exact parametric/type scopes used by
+  // member declarations themselves.
+  void discover_member_condition_sites() {
+    const std::vector<SymbolId> package_symbols =
+        semantic_.symbols.scope(semantic_.package_scope).symbols;
+    for (SymbolId owner : package_symbols) {
+      const Symbol &symbol = semantic_.symbols.symbol(owner);
+      if (symbol.kind != SymbolKind::Type || !symbol.type.is_valid() ||
+          !symbol.syntax.file.is_valid() || !symbol.syntax.node.is_valid()) {
+        continue;
+      }
+      const TypeKind kind = semantic_.types.type(symbol.type).kind;
+      if (kind != TypeKind::Struct && kind != TypeKind::Enum &&
+          kind != TypeKind::TaggedUnion && kind != TypeKind::RawUnion) {
+        continue;
+      }
+      const SyntaxTree *tree = find_tree(symbol.syntax.file);
+      if (tree == nullptr)
+        continue;
+      const SyntaxNode &declaration = tree->node(symbol.syntax.node);
+      const std::optional<NodeId> payload =
+          declaration_payload(*tree, declaration);
+      if (!payload.has_value())
+        continue;
+      for (NodeId child : tree->node(*payload).children) {
+        if (tree->node(child).kind == NodeKind::MemberList) {
+          discover_member_condition_list(
+              owner, *tree, child, file_scope(tree->file()));
+          break;
+        }
+      }
+    }
+  }
+
 private:
   // A declaration-owned expression may encounter the same prerequisite through
   // several syntax paths (for example both size_of(T) and align_of(T)). The
   // coordinator requires one stable edge packet, independent of traversal
-  // accidents, so normalize all three dependency domains before returning the
-  // task result.
+  // accidents, so normalize every dependency domain before returning the task
+  // result.
   void canonicalize_product_dependencies() {
     std::sort(
         declaration_dependencies_.begin(), declaration_dependencies_.end(),
@@ -239,6 +277,17 @@ private:
     type_dependencies_.erase(
         std::unique(type_dependencies_.begin(), type_dependencies_.end()),
         type_dependencies_.end());
+    std::sort(
+        condition_dependencies_.begin(), condition_dependencies_.end(),
+        [](SyntaxReference left, SyntaxReference right) {
+          if (left.file != right.file)
+            return left.file.value < right.file.value;
+          return left.node.value < right.node.value;
+        });
+    condition_dependencies_.erase(
+        std::unique(condition_dependencies_.begin(),
+                    condition_dependencies_.end()),
+        condition_dependencies_.end());
   }
 
   // Reduces a waiting derived layout to the authored nominal products that can
@@ -519,8 +568,63 @@ private:
       NodeId node,
       ScopeId scope,
       SymbolId owner) {
+    const SyntaxReference syntax{tree.file(), node};
+    for (const SemanticSite &site : semantic_.sites) {
+      if (site.kind == kind && site.syntax == syntax && site.anchor == owner) {
+        return;
+      }
+    }
     semantic_.sites.push_back(
-        {kind, {tree.file(), node}, scope, owner, {}, {}, {}});
+        {kind, syntax, scope, owner, {}, {}, {}});
+  }
+
+  // Scans only the branch made reachable by already published selections. The
+  // first unresolved site in each chain is recorded, but neither branch is
+  // entered until that site completes. This is the same opaque selection rule
+  // used by the later member resolver without declaring provisional members.
+  void discover_member_condition(
+      SymbolId owner,
+      const SyntaxTree &tree,
+      NodeId member_id,
+      ScopeId scope) {
+    const SyntaxNode &member = tree.node(member_id);
+    add_site(SemanticSiteKind::ConditionalMember, tree, member_id, scope, owner);
+    const ConditionalSelection *selection =
+        selections_.find({tree.file(), member_id});
+    if (selection == nullptr)
+      return;
+    if (selection->select_true) {
+      if (member.children.size() >= 2) {
+        discover_member_condition_list(
+            owner, tree, member.children[1], scope);
+      }
+      return;
+    }
+    if (member.children.size() < 3)
+      return;
+    const NodeId alternative = member.children[2];
+    if (tree.node(alternative).kind == NodeKind::WhenMember) {
+      discover_member_condition(owner, tree, alternative, scope);
+    } else {
+      discover_member_condition_list(owner, tree, alternative, scope);
+    }
+  }
+
+  void discover_member_condition_list(
+      SymbolId owner,
+      const SyntaxTree &tree,
+      NodeId list_id,
+      ScopeId scope) {
+    for (NodeId member_id : tree.node(list_id).children) {
+      const SyntaxNode &member = tree.node(member_id);
+      if (member.kind == NodeKind::WhenMember) {
+        discover_member_condition(owner, tree, member_id, scope);
+      } else if (member.kind == NodeKind::DenyMember &&
+                 !member.children.empty()) {
+        discover_member_condition_list(
+            owner, tree, member.children.back(), scope);
+      }
+    }
   }
 
   // Finds a previously created owner scope of the requested semantic kind.
@@ -4220,6 +4324,9 @@ private:
     const ConditionalSelection *selection =
         selections_.find({tree.file(), member_id});
     if (selection == nullptr) {
+      if (product_root_.is_valid()) {
+        condition_dependencies_.push_back({tree.file(), member_id});
+      }
       data.incomplete = true;
       return;
     }
@@ -4710,6 +4817,7 @@ private:
   std::vector<SymbolId> declaration_dependencies_;
   std::vector<SymbolId> constant_dependencies_;
   std::vector<TypeFacetDependency> type_dependencies_;
+  std::vector<SyntaxReference> condition_dependencies_;
   // Full-interpreter results exist only for the lifetime of one declaration
   // task. They bridge evaluation to the immediately following contextual type
   // check; no command state or cache retains them after publication.
@@ -4925,6 +5033,17 @@ TypeId instantiate_parametric_type_application(
       active_constants, nullptr, nullptr, &target);
   return resolver.instantiate_one_type(
       source, std::move(arguments), use_range);
+}
+
+void discover_package_member_condition_sites(
+    const SourceManager &sources,
+    const LoadedPackage &loaded,
+    const ConditionalSelections &selections,
+    SemanticPackage &package,
+    DiagnosticSink &diagnostics) {
+  TypeResolver resolver(
+      sources, loaded, package, selections, diagnostics);
+  resolver.discover_member_condition_sites();
 }
 
 TypeId instantiate_owner_evaluated_type_application(

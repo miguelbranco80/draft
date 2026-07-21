@@ -39,8 +39,23 @@ struct DeclarationTypeProductAttempt {
   std::vector<SymbolId> declaration_dependencies;
   std::vector<SymbolId> constant_dependencies;
   std::vector<TypeFacetDependency> type_dependencies;
+  // Reachable member-level `when` sites whose selection is not published yet.
+  // SyntaxReference is stable in one source generation and maps directly to a
+  // condition product; no provisional member SymbolId crosses the task seam.
+  std::vector<SyntaxReference> condition_dependencies;
   std::vector<ImportedTypeInstantiationRequest> generic_type_dependencies;
 };
+
+// Adds only member-level conditional sites reachable through the selections
+// already published for authored nominal declarations. Unselected branches are
+// not scanned. The operation declares no members and resolves no member types;
+// it exists so condition products can precede their owning member-type task.
+void discover_package_member_condition_sites(
+    const SourceManager &sources,
+    const LoadedPackage &loaded,
+    const ConditionalSelections &selections,
+    SemanticPackage &package,
+    DiagnosticSink &diagnostics);
 
 // Resolves exactly root in task_package. completed_declarations are immutable
 // products already present in that snapshot. Any other forward declaration is

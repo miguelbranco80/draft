@@ -278,6 +278,14 @@ struct GenericTypeDemand {
 struct PackageSemanticProducts {
   std::vector<SemanticProductId> parsed_files;
   SemanticProductId imports;
+  // Immutable prerequisites shared by every declaration-stage product in this
+  // source generation: target facts, this package's parsed/import rows, and the
+  // imported package interfaces selected when the generation was created.
+  // PackageNameSet begins with this exact set but later gains dynamic edges to
+  // declarations, constants, layouts, and conditions. Retaining the original
+  // inputs separately prevents a newly discovered product from inheriting those
+  // downstream edges and manufacturing a dependency cycle.
+  std::vector<SemanticProductId> declaration_inputs;
   SemanticProductId name_set;
   // One declaration-type row per authored package symbol whose signature or
   // type must be completed. Nominal identities are eager; their row produces

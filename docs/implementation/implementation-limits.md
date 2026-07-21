@@ -34,8 +34,10 @@ source-generation transitions. Collection and import binding happen once per
 source generation; selected package branches append into that retained table.
 Ready tasks use private package copies and the coordinator publishes their
 results deterministically. Interface-synthesis discovery still uses the
-aggregate declaration/constant path, conditional aggregate-member continuation
-is not yet independently scheduled, and ABI classification is not a product.
+aggregate declaration/constant path. Aggregate-member conditions now have
+independent products and exact dynamically discovered continuation edges, but
+member-name and member-type readiness still share one declaration product. ABI
+classification is not yet a product.
 Concrete cross-package owner-evaluated type applications now use canonical
 command-local demand products with exact requester-layout and transitive-owner
 edges; no package is rebuilt to publish their results.

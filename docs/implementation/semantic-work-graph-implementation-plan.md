@@ -60,11 +60,14 @@ gate.
    publication across mixed waves, source-generation supersession, and full
    core/generic pipeline composition.
 
-   This step remains open in three places. Interface-synthesis discovery still
-   uses the aggregate declaration compatibility path until opaque waits produce
-   graph successors. Conditional aggregate members need an explicit
-   member-name/member-type continuation rather than sharing the declaration
-   attempt. ABI classification still lacks its own product. Once those paths
+   Member-condition selection now has an explicit reachable frontier and exact
+   continuation edges: a nested `else when` becomes a product only after its
+   predecessor selects that syntax, and the owning member packet cannot publish
+   before every selected condition completes. This step remains open in three
+   places. Interface-synthesis discovery still uses the aggregate declaration
+   compatibility path until opaque waits produce graph successors. Member names
+   and member types still share one declaration attempt rather than separate
+   products. ABI classification still lacks its own product. Once those paths
    move, delete
    `discover_package_declarations`, the aggregate conditional/readiness rounds,
    and the remaining private readiness copies.

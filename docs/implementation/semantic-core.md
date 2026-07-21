@@ -57,11 +57,15 @@ demand described below.
 
 Package and member `when` conditions also have one-site producers. The
 coordinator publishes a completed package selection and appends only the chosen
-branch before extending the dynamic product graph. Conditional aggregate-member
-continuation is still incomplete: its member-name/member-type successor must be
-split from the declaration attempt. Interface-synthesis discovery likewise
-retains the aggregate compatibility path until opaque waits create source-
-generation successors.
+branch before extending the dynamic product graph. For aggregate members, a
+syntax-only scan records the initially reachable condition frontier without
+declaring members. A member packet waits on those exact products; if a selected
+false branch reveals an `else when`, the private member attempt reports that
+site by `SyntaxReference`, the coordinator appends its condition product, and
+only then retries the packet. Unselected branches remain opaque. Member names
+and member types still share that one declaration product and must become
+separate facets. Interface-synthesis discovery likewise retains the aggregate
+compatibility path until opaque waits create source-generation successors.
 
 Named-constant evaluation has a single-product entry point. It accepts
 an immutable table of already published constants, evaluates only its named

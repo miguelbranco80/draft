@@ -454,6 +454,12 @@ PackageDeclarationDiscovery begin_package_declaration_discovery(
   result.package = collect_package_declarations(sources, loaded, diagnostics);
   result.package.identity = imports.consumer_identity;
   bind_package_interfaces(result.package, imports, diagnostics);
+  // Member conditions are graph prerequisites of their owning nominal member
+  // packet. Discover only the initial reachable frontier now; each published
+  // selection asks the same scanner for newly reachable nested sites without
+  // declaring provisional members or inspecting an unselected branch.
+  discover_package_member_condition_sites(
+      sources, loaded, result.selections, result.package, diagnostics);
   result.discovery_ok =
       diagnostics.error_count() == initial_error_count;
   return result;
