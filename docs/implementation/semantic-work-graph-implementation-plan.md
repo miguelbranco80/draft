@@ -81,12 +81,22 @@ gate.
    their completed published prerequisites; step 6 replaces that composition
    with task-owned typed constraint results.
 
-   This step remains open in two narrower places. ABI classification still lacks
-   its own product. Direct semantic test and subsystem entry points still use
-   `discover_package_declarations` as a convenience composition outside the
-   workspace compiler. Move those clients onto a small product coordinator, then
-   delete the aggregate conditional/readiness rounds and their private readiness
-   copies.
+   Rejecting direct semantic test and subsystem entry points now use a small
+   package-local sequential product coordinator. This migration exposed and
+   corrected three hidden aggregate assumptions: ordinary constants now produce
+   constant rather than declaration edges for inferred types; non-evaluating
+   `type_of` waits on an unfinished procedure signature; and full-interpreter
+   value arguments preserve their concrete integer identity. A long constant
+   chain now completes through product edges instead of tripping the legacy
+   recursive evaluator-depth limit.
+
+   This step remains open in two narrower places. The explicit direct Discover-
+   mode overload and its early metadata tests still use
+   `discover_package_declarations`; step 6 replaces that provider-surface
+   compatibility composition with task-owned synthesis constraints. ABI
+   classification must become an explicit product at the body/declaration
+   boundary established by step 5 rather than being attached prematurely to a
+   declaration-only `TypeStore`.
 
 4. **Canonical generic type demand — complete.** Every concrete cross-package
    owner-evaluated type application has one command-local key formed from its

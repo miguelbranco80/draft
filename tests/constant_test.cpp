@@ -1,4 +1,4 @@
-// Compile-time evaluation and fixed-point declaration `when` tests.
+// Compile-time evaluation and product-scheduled declaration `when` tests.
 
 #include "sema/constant.h"
 #include "sema/semantic.h"
@@ -1323,9 +1323,10 @@ Buffer :: struct {
     small: Small[small_count()],
 }
 
-// This value cannot be known in the first semantic round: Buffer itself needs
-// procedure evaluation before it has a layout. It exercises real fixed-point
-// progress instead of several independent calls that happen to finish together.
+// This value waits for Buffer's completed layout, while Buffer's own counts wait
+// for procedure declarations and compile-time execution. It exercises a real
+// multi-edge product chain rather than several independent calls that happen to
+// finish together.
 Measured :: struct {
     bytes: [size_of(Buffer)]u8,
 }
@@ -1429,7 +1430,8 @@ Code :: enum i16 {
 
   // u64 and usize happen to have the same machine representation on the first
   // target, but Draft value parameters do not gain an implicit conversion from
-  // that coincidence. The typed fixed-point result must retain this boundary.
+  // that coincidence. Independently scheduled declaration products must retain
+  // this boundary for both a generic body and each concrete application.
   AnalyzedSource invalid(R"draft(
 package conditions
 
@@ -1449,8 +1451,11 @@ Sized[N: usize] :: struct {
     values: [N]u8,
 }
 
-Bad :: struct {
+Bad_Value_Application :: struct {
     value: Sized[wrong_count()],
+}
+
+Bad_Generic_Application :: struct {
     generic: Bad_Generic[4],
 }
 
@@ -1467,10 +1472,18 @@ Bad_Aligned :: @align(wrong_count()) struct {
   EXPECT(state, !invalid.analysis.ok);
   const std::string rendered =
       draft::render_diagnostics(invalid.sources, invalid.diagnostics);
-  EXPECT(state, rendered.find("package.draft:21:18") != std::string::npos);
   EXPECT(state, rendered.find(
                     "compile-time value argument has the wrong concrete integer type") !=
                     std::string::npos);
+  bool saw_wrong_value_argument_range = false;
+  for (const draft::Diagnostic &diagnostic :
+       invalid.diagnostics.diagnostics()) {
+    saw_wrong_value_argument_range = saw_wrong_value_argument_range ||
+        (diagnostic.message ==
+             "compile-time value argument has the wrong concrete integer type" &&
+         invalid.sources.text(diagnostic.range) == "wrong_count()");
+  }
+  EXPECT(state, saw_wrong_value_argument_range);
   EXPECT(state, rendered.find("array length must have type 'usize'") !=
                     std::string::npos);
   EXPECT(state, rendered.find("SIMD lane count must have type 'usize'") !=
@@ -2040,7 +2053,7 @@ aggregate := (u16, true)
       std::string::npos);
 }
 
-void test_constant_dependency_depth_is_bounded(TestState &state) {
+void test_constant_dependency_chain_is_product_scheduled(TestState &state) {
   std::string text = "package conditions\n\n";
   constexpr std::size_t constant_count = 320;
   for (std::size_t index = 0; index < constant_count; ++index) {
@@ -2053,13 +2066,19 @@ void test_constant_dependency_depth_is_bounded(TestState &state) {
   text += "Constant_" + std::to_string(constant_count) + " :: 42\n";
   AnalyzedSource source(std::move(text));
 
-  EXPECT(state, !source.analysis.ok);
-  const std::string rendered =
-      draft::render_diagnostics(source.sources, source.diagnostics);
-  EXPECT(state,
-      rendered.find(
-          "compile-time constant dependency depth exceeds the implementation "
-          "limit of 256") != std::string::npos);
+  EXPECT(state, source.analysis.ok);
+  EXPECT(state, !source.diagnostics.has_errors());
+  const std::optional<draft::SymbolId> first =
+      find_symbol(source.analysis.package, "Constant_0");
+  EXPECT(state, first.has_value());
+  const draft::ConstantValue *value = first.has_value()
+      ? source.analysis.constants.find(*first)
+      : nullptr;
+  EXPECT(state, value != nullptr);
+  if (value != nullptr) {
+    EXPECT(state, value->kind == draft::ConstantKind::Integer);
+    EXPECT(state, value->integer.to_decimal() == "42");
+  }
 }
 
 void test_type_values_and_structural_queries(TestState &state) {
@@ -2594,7 +2613,7 @@ int main() {
   test_operator_type_boundaries(state);
   test_global_initializers(state);
   test_global_type_value_storage_is_rejected(state);
-  test_constant_dependency_depth_is_bounded(state);
+  test_constant_dependency_chain_is_product_scheduled(state);
   test_type_values_and_structural_queries(state);
   test_selected_when_condition_type_validation(state);
 

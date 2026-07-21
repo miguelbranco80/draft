@@ -997,9 +997,11 @@ private:
     return value.has_value() ? value->to_u64() : std::nullopt;
   }
 
-  // Looks up a full-interpreter result produced by a prior semantic round.
-  // Returning a pointer is safe only until the resolver returns: the driver
-  // keeps the supplied vector immutable for the entire clean rebuild.
+  // Looks up a full-interpreter integer result retained either by the legacy
+  // aggregate discovery composition or by this declaration-product attempt.
+  // Returning a pointer is safe only until another product result is appended;
+  // callers consume it immediately, while the supplied compatibility vector is
+  // immutable for the entire resolver call.
   [[nodiscard]] const ResolvedIntegerExpression *
   resolved_integer(const SyntaxTree &tree, NodeId expression) const {
     const SyntaxReference wanted{tree.file(), expression};
@@ -3228,6 +3230,24 @@ private:
         } else {
           value =
               integer_constant_expression(tree, argument_node, scope, required);
+          // The full interpreter path above appends its exact evaluated type to
+          // product_integers_. Read it back before checking this value-parameter
+          // boundary. Keeping only the mathematical BigInteger here would
+          // incorrectly accept a concrete u64 result for a usize parameter on
+          // targets where both happen to have the same representation.
+          if (value.has_value()) {
+            const ResolvedIntegerExpression *evaluated_integer =
+                resolved_integer(tree, argument_node);
+            if (evaluated_integer != nullptr) {
+              if (!evaluated_integer->type.has_value()) {
+                diagnostics_.error(
+                    tree.node(argument_node).range,
+                    "compile-time value argument must have an integer type");
+                return semantic_.types.builtins().invalid;
+              }
+              supplied_type = *evaluated_integer->type;
+            }
+          }
         }
       }
       if (!value.has_value()) {
@@ -4988,9 +5008,15 @@ private:
     }
   }
 
-  // Records a package declaration whose completed graph product is not an
-  // explicit prerequisite of the active task. Member and lexical symbols never
-  // enter this product domain, and the root owns its own work.
+  // Records a package declaration whose completed declaration product is not
+  // an explicit prerequisite of the active task. An ordinary Constant is not
+  // in this domain: its ConstantValue product publishes both its value and its
+  // inferred Symbol type, and constant_type_value or
+  // named_integer_constant records that exact edge instead. An unresolved `::`
+  // declaration remains here until its declaration product classifies it as a
+  // type or constant; its provisional ConstantValue row depends on that same
+  // classification product. Member and lexical symbols never enter either
+  // package-product domain, and the root owns its own work.
   void record_unpublished_declaration_dependency(SymbolId id) {
     if (!product_root_.is_valid() || id == product_root_ ||
         static_cast<std::size_t>(id.value) >= states_.size()) {
@@ -4998,6 +5024,7 @@ private:
     }
     const Symbol &symbol = semantic_.symbols.symbol(id);
     if (symbol.scope != semantic_.package_scope ||
+        symbol.kind == SymbolKind::Constant ||
         states_[id.value] == ResolutionState::Resolved) {
       return;
     }

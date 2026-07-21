@@ -656,8 +656,14 @@ Packet :: struct {
   load_options.file_tag = target.facts.file_tag;
   const draft::PackageLoadResult loaded = draft::load_package(
       sources, temporary.path.string(), load_options, diagnostics);
+  const draft::AvailablePackageImports no_imports;
   draft::SemanticAnalysisResult semantics = draft::analyze_package_semantics(
-      sources, loaded.package, target.facts, diagnostics);
+      sources,
+      loaded.package,
+      target.facts,
+      no_imports,
+      draft::CompileTimeSynthesisMode::Discover,
+      diagnostics);
   const draft::AgentMetadataResult metadata = draft::collect_agent_metadata(
       sources,
       loaded.package,
@@ -1711,8 +1717,14 @@ void test_early_synthesis_receives_permitted_context(TestState &state) {
   load_options.file_tag = target.facts.file_tag;
   const draft::PackageLoadResult loaded = draft::load_package(
       sources, temporary.path.string(), load_options, diagnostics);
+  const draft::AvailablePackageImports no_imports;
   draft::SemanticAnalysisResult semantics = draft::analyze_package_semantics(
-      sources, loaded.package, target.facts, diagnostics);
+      sources,
+      loaded.package,
+      target.facts,
+      no_imports,
+      draft::CompileTimeSynthesisMode::Discover,
+      diagnostics);
   const draft::AgentMetadataResult metadata = draft::collect_agent_metadata(
       sources,
       loaded.package,

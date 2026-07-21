@@ -3,10 +3,11 @@
 // Initial collection and interface binding run once. Workspace compilation in
 // both complete and interface-synthesis modes appends selected package `when`
 // branches and publishes declaration, constant, and nominal-layout products into
-// that authoritative generation before its one terminal close operation. Direct
-// semantic clients still use the aggregate compatibility composition declared
-// below while they migrate onto a command-local coordinator. Neither path owns
-// source bytes, invokes providers, or lowers target IR.
+// that authoritative generation before its one terminal close operation.
+// Ordinary direct semantic clients use the package-local sequential product
+// coordinator; only the explicit Discover-mode compatibility entry point below
+// retains aggregate readiness rounds until synthesis waits become task-owned.
+// Neither path owns source bytes, invokes providers, or lowers target IR.
 
 #pragma once
 
@@ -42,8 +43,8 @@ struct SemanticAnalysisResult {
 // PackageDeclarationDiscovery owns the selected declaration/type graph before
 // final constant validation, storage initialization, and target checks. It is
 // the payload of PackageNameSet while ConstantValue products are scheduled.
-// terminal is false while graph products or direct-client aggregate discovery
-// are incomplete. blocked_integer_synthesis is compatibility evidence retained
+// terminal is false while graph products or discovery-only aggregate work are
+// incomplete. blocked_integer_synthesis is compatibility evidence retained
 // only by the latter path; it is never serialized.
 struct PackageDeclarationDiscovery {
   bool terminal = false;
@@ -53,7 +54,9 @@ struct PackageDeclarationDiscovery {
   // Filled monotonically with local ConstantValue product publication after
   // discovery. Imported ready constants are upstream PackageInterface inputs;
   // the product-aware finalizer installs them under consumer-local proxies.
-  // Direct semantic clients leave this empty and use finish_package_semantics.
+  // Rejecting direct semantic clients publish into this table through their
+  // package-local products. The legacy Discover path leaves it empty and uses
+  // finish_package_semantics.
   ConstantTable published_constants;
   std::vector<ResolvedIntegerExpression> resolved_integers;
   std::vector<SyntaxReference> blocked_integer_synthesis;
@@ -129,20 +132,21 @@ finish_package_declaration_discovery(PackageDeclarationDiscovery &discovery,
     PackageDeclarationDiscovery discovery,
     DiagnosticSink &diagnostics);
 
-// Collects declarations once, appends each newly selected package-level branch,
-// and probes type/constant readiness until no product changes. The terminal
-// probe is retained as the authoritative selected package instead of being
-// discarded and reconstructed. A conditional that depends on unavailable
-// synthesis remains an explicit unresolved site.
+// Runs complete, provider-free analysis through a deterministic package-local
+// product scheduler. It collects declarations once, publishes selected
+// branches and each declaration/constant/layout result separately, then closes
+// the package barrier and performs final validation. Blocked task mutations and
+// diagnostics are discarded; terminal task results advance the canonical
+// package in product order.
 [[nodiscard]] SemanticAnalysisResult analyze_package_semantics(
     const SourceManager &sources,
     const LoadedPackage &loaded,
     const TargetFacts &target,
     DiagnosticSink &diagnostics);
 
-// Workspace-aware form. Every source import must have a matching dependency
-// interface. Binding occurs once on the authoritative declaration generation;
-// private readiness probes copy those already bound interface rows.
+// Workspace-aware direct form. Every source import must have a matching
+// dependency interface. Binding occurs once on the authoritative declaration
+// generation; private product attempts copy those already bound interface rows.
 [[nodiscard]] SemanticAnalysisResult analyze_package_semantics(
     const SourceManager &sources,
     const LoadedPackage &loaded,
@@ -150,11 +154,11 @@ finish_package_declaration_discovery(PackageDeclarationDiscovery &discovery,
     const AvailablePackageImports &imports,
     DiagnosticSink &diagnostics);
 
-// Interface discovery form used by the compiler's dependency scheduler. In
-// Discover mode, constant execution may stop at `...` and returns the exact
-// package procedures whose ordinary body check must publish those obligations.
-// Every other semantic rule and diagnostic remains identical to the rejecting
-// form above.
+// Legacy direct interface-discovery form. In Discover mode, constant execution
+// may stop at `...` and returns the exact package procedures whose ordinary
+// body check must publish those obligations. The workspace compiler itself no
+// longer uses this aggregate composition; remaining lower-level discovery tests
+// migrate when synthesis waits become task-owned products in step 6.
 [[nodiscard]] SemanticAnalysisResult analyze_package_semantics(
     const SourceManager &sources,
     const LoadedPackage &loaded,

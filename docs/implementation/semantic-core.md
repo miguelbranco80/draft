@@ -4,8 +4,9 @@ This document records bootstrap representations and algorithms for lexical class
 
 ## Type completion facets
 
-Status: payload representation and ordinary complete-compilation declaration
-products implemented; interface-synthesis compatibility and ABI products remain.
+Status: payload representation and declaration products implemented for
+workspace compilation and rejecting direct clients; the discovery-only direct
+compatibility composition and ABI products remain.
 
 `TypeStore` retains one `TypeCompletion` row beside every canonical `Type` row.
 Allocation completes type identity. Member-name completeness, member-type
@@ -68,8 +69,10 @@ site by `SyntaxReference`, the coordinator appends its condition product, and
 only then retries the packet. Unselected branches remain opaque. The completed
 condition frontier feeds `TypeMembers`; `TypeMemberTypes` depends on that stable
 namespace and may add its own exact declaration, constant, generic-demand, or
-type-facet prerequisites. Interface-synthesis discovery retains the aggregate
-compatibility path until opaque waits create source-generation successors.
+type-facet prerequisites. Workspace interface-synthesis discovery uses these
+same products and suspends exact producers on the package opaque set. Only the
+lower-level direct Discover-mode API retains aggregate compatibility until step
+6 gives it task-owned synthesis constraints.
 
 Named-constant evaluation has a single-product entry point. It accepts
 an immutable table of already published constants, evaluates only its named
@@ -79,11 +82,16 @@ entered recursively; the coordinator adds the corresponding product edge. An
 ambiguous `Alias :: Name` value product explicitly depends on declaration
 classification and completes without publishing a value when the row is a type
 alias. Blocked attempts discard their private mutations and diagnostics.
-Complete workspace compilation schedules every final package-scope constant as
-a real `ConstantValue` product. The product-aware finalizer consumes the
-published constant table and rechecks required storage/target contracts without
-recursively recomputing named constants. Interface-synthesis discovery retains
-aggregate constant evaluation until provider waits use the same products.
+Complete workspace compilation and rejecting direct analysis schedule every
+final package-scope constant as a real `ConstantValue` product. The
+product-aware finalizer consumes the published constant table and rechecks
+required storage/target contracts without recursively recomputing named
+constants. The direct sequential coordinator also exhausts independent products
+after a source error, then runs only the diagnostic validation closure; it does
+not manufacture values for failed or blocked products. A long acyclic constant
+chain therefore advances through graph edges rather than consuming recursive
+constant-evaluator depth. The discovery-only direct compatibility API retains
+aggregate constant evaluation until step 6.
 Ready constants imported through dependency interfaces are not duplicated as
 consumer products. The finalizer copies their already translated values under
 the consumer-local proxy IDs before body checking and validation context use.
@@ -298,8 +306,10 @@ blocked on one package `OpaqueSynthesisSet`, and no incomplete facet enters the
 retained generation. The current sequential oracle replays only those stopped
 products over completed canonical inputs to compose their shared provider
 context. Step 6 moves that constraint context into the task results themselves.
-Direct semantic test and subsystem entry points still retain the aggregate
-compatibility composition during migration.
+Rejecting direct semantic test and subsystem entry points use the same product
+operations through a package-local sequential coordinator. Only the explicit
+direct Discover-mode entry point retains the aggregate compatibility
+composition during migration.
 
 Body checking never appends to that retained value. It copies the declaration
 prefix and returns the enriched SemanticPackage, body constants, and HIR as one

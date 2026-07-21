@@ -112,9 +112,19 @@ void test_named_constants_are_semantic_products(TestState &state) {
          "Derived :: Base + 2\n"
          "Untyped_Tuple :: (1, 2.5)\n"
          "Compile_Record :: Record{value = 42}\n"
+         "Vector_Type :: #simd[4]u32\n"
+         "Vector :: Vector_Type{1, 2, 3, 4}\n"
+         "Vector_Value :: Vector[2]\n"
+         "callback_identity :: proc(value: i32) -> i32 {\n"
+         "    return value\n"
+         "}\n"
+         "when type_of(callback_identity) == proc(value: i32) -> i32 {\n"
+         "    Signature_Selected :: true\n"
+         "}\n"
          "main :: proc() {\n"
          "    static_assert(Derived == 42)\n"
          "    static_assert(size_of(Computed) == 24)\n"
+         "    static_assert(Vector_Value == 3)\n"
          "}\n";
   app.close();
   EXPECT(state, app.good());
@@ -158,6 +168,16 @@ void test_named_constants_are_semantic_products(TestState &state) {
       semantic.symbols.lookup_direct(semantic.package_scope, "Record");
   const std::optional<draft::SymbolId> compile_record =
       semantic.symbols.lookup_direct(semantic.package_scope, "Compile_Record");
+  const std::optional<draft::SymbolId> vector =
+      semantic.symbols.lookup_direct(semantic.package_scope, "Vector");
+  const std::optional<draft::SymbolId> vector_value =
+      semantic.symbols.lookup_direct(semantic.package_scope, "Vector_Value");
+  const std::optional<draft::SymbolId> callback_identity =
+      semantic.symbols.lookup_direct(
+          semantic.package_scope, "callback_identity");
+  const std::optional<draft::SymbolId> signature_selected =
+      semantic.symbols.lookup_direct(
+          semantic.package_scope, "Signature_Selected");
   EXPECT(state, base.has_value());
   EXPECT(state, derived.has_value());
   EXPECT(state, second.has_value());
@@ -168,8 +188,13 @@ void test_named_constants_are_semantic_products(TestState &state) {
   EXPECT(state, computed_count.has_value());
   EXPECT(state, record.has_value());
   EXPECT(state, compile_record.has_value());
+  EXPECT(state, vector.has_value());
+  EXPECT(state, vector_value.has_value());
+  EXPECT(state, callback_identity.has_value());
+  EXPECT(state, signature_selected.has_value());
   if (!base || !derived || !second || !duration || !pair || !untyped_tuple ||
-      !computed || !computed_count || !record || !compile_record) {
+      !computed || !computed_count || !record || !compile_record || !vector ||
+      !vector_value || !callback_identity || !signature_selected) {
     return;
   }
 
@@ -188,10 +213,12 @@ void test_named_constants_are_semantic_products(TestState &state) {
   EXPECT(state,
          compiled.semantic_products.generic_type_demand_by_product.size() ==
              compiled.semantic_graph.products.size());
-  EXPECT(state, products.constants.size() == 5);
+  EXPECT(state, products.constants.size() == 8);
   std::optional<draft::SemanticProductId> base_product;
   std::optional<draft::SemanticProductId> derived_product;
   std::optional<draft::SemanticProductId> compile_record_product;
+  std::optional<draft::SemanticProductId> vector_product;
+  std::optional<draft::SemanticProductId> vector_value_product;
   for (draft::SemanticProductId product : products.constants) {
     EXPECT(state,
         compiled.semantic_graph.products[product.value].kind ==
@@ -207,15 +234,29 @@ void test_named_constants_are_semantic_products(TestState &state) {
       derived_product = product;
     if (root_symbol == *compile_record)
       compile_record_product = product;
+    if (root_symbol == *vector)
+      vector_product = product;
+    if (root_symbol == *vector_value)
+      vector_value_product = product;
   }
   EXPECT(state, base_product.has_value());
   EXPECT(state, derived_product.has_value());
+  EXPECT(state, vector_product.has_value());
+  EXPECT(state, vector_value_product.has_value());
   if (base_product && derived_product) {
     const std::vector<draft::SemanticProductId> &dependencies =
         compiled.semantic_graph.products[derived_product->value].dependencies;
     EXPECT(state,
         std::find(dependencies.begin(), dependencies.end(), *base_product) !=
             dependencies.end());
+  }
+  if (vector_product && vector_value_product) {
+    const std::vector<draft::SemanticProductId> &dependencies =
+        compiled.semantic_graph.products[vector_value_product->value]
+            .dependencies;
+    EXPECT(state,
+           std::find(dependencies.begin(), dependencies.end(),
+                     *vector_product) != dependencies.end());
   }
 
   // Pair is collected before Duration. Its MemberTypes product must acquire an
@@ -228,6 +269,7 @@ void test_named_constants_are_semantic_products(TestState &state) {
   std::optional<draft::SemanticProductId> computed_type_product;
   std::optional<draft::SemanticProductId> computed_count_type_product;
   std::optional<draft::SemanticProductId> record_type_product;
+  std::optional<draft::SemanticProductId> callback_type_product;
   for (draft::SemanticProductId product : products.type_members) {
     const draft::SymbolId declaration =
         compiled.semantic_products.declaration_by_product[product.value];
@@ -247,10 +289,13 @@ void test_named_constants_are_semantic_products(TestState &state) {
       computed_count_type_product = product;
     if (declaration == *record)
       record_type_product = product;
+    if (declaration == *callback_identity)
+      callback_type_product = product;
   }
   EXPECT(state, pair_members_product.has_value());
   EXPECT(state, pair_type_product.has_value());
   EXPECT(state, duration_type_product.has_value());
+  EXPECT(state, callback_type_product.has_value());
   if (pair_members_product && pair_type_product && duration_type_product) {
     EXPECT(state,
            compiled.semantic_graph.products[pair_members_product->value].kind ==
@@ -291,6 +336,18 @@ void test_named_constants_are_semantic_products(TestState &state) {
     EXPECT(state,
            std::find(dependencies.begin(), dependencies.end(),
                      *computed_count_type_product) != dependencies.end());
+  }
+  // type_of does not evaluate callback_identity, but its static result still
+  // waits for the procedure's declaration product. The explicit edge prevents
+  // a future parallel task from consuming an incidental sequential snapshot.
+  EXPECT(state, products.conditions.size() == 1);
+  if (products.conditions.size() == 1 && callback_type_product.has_value()) {
+    const std::vector<draft::SemanticProductId> &dependencies =
+        compiled.semantic_graph.products[products.conditions.front().value]
+            .dependencies;
+    EXPECT(state,
+           std::find(dependencies.begin(), dependencies.end(),
+                     *callback_type_product) != dependencies.end());
   }
   // A composite constant may see Record's eager identity before its member
   // packet. The evaluator must block on that packet instead of treating the

@@ -1237,6 +1237,17 @@ private:
           type = substitute_local_type(value.type);
         }
       }
+      if ((!type.is_valid() ||
+           semantic_.types.type(type).kind == TypeKind::Invalid) &&
+          record_product_dependencies_ &&
+          symbol.kind == SymbolKind::Procedure &&
+          symbol.scope == semantic_.package_scope) {
+        // The procedure's source declaration is independently schedulable.
+        // type_of must not enter that syntax merely to learn its signature;
+        // the condition or constant waits for the declaration product and
+        // retries against its published static type.
+        declaration_dependencies_.push_back(*found);
+      }
       return type.is_valid() &&
               semantic_.types.type(type).kind != TypeKind::Invalid
           ? type
@@ -2852,10 +2863,27 @@ private:
             "static argument pack may be used only by len or static iteration",
             required);
       }
+      const std::size_t declaration_dependency_count =
+          declaration_dependencies_.size();
+      const std::size_t constant_dependency_count =
+          constant_dependencies_.size();
+      const std::size_t type_dependency_count = type_dependencies_.size();
       TypeId operand = declared_value_type_hint(
           tree, call.children[1], scope);
       if (!operand.is_valid() ||
           semantic_.types.type(operand).kind == TypeKind::Invalid) {
+        // The non-evaluating type reader can discover that a package
+        // declaration or constant has not published its static type yet. In a
+        // product attempt that is an ordinary wait, not a malformed type_of:
+        // run_condition/run_product will canonicalize and return the exact
+        // dependency recorded by the reader. A retry after publication sees
+        // the type and follows the normal complete path below.
+        if (declaration_dependencies_.size() !=
+                declaration_dependency_count ||
+            constant_dependencies_.size() != constant_dependency_count ||
+            type_dependencies_.size() != type_dependency_count) {
+          return pending();
+        }
         return fail(
             tree.node(call.children[1]).range,
             "type_of could not determine the expression type without evaluating it",
