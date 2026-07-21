@@ -461,7 +461,7 @@ skip, fatal expectation, reporter callback, or expected-failure mechanism.
 
 ## `core/terminal`
 
-Interactive byte-input surface:
+Interactive input and full-screen surface:
 
 ```draft
 terminal.Session
@@ -469,6 +469,23 @@ terminal.begin_raw(&session, input: os.File) -> io.Error
 terminal.read(&session, destination, timeout: time.Duration)
     -> (usize, io.Error)
 terminal.restore(&session) -> bool
+
+terminal.Screen
+terminal.begin_screen(&screen, output: os.File) -> io.Error
+terminal.write_screen(&screen, frame: []u8) -> io.Error
+terminal.restore_screen(&screen) -> bool
+
+terminal.Decoder
+terminal.Key
+terminal.Key_Kind // none, byte, escape, up/down/right/left,
+                  // home/end, delete, page_up/page_down
+terminal.decode_key(&decoder, byte: u8) -> terminal.Key
+terminal.flush_key(&decoder) -> terminal.Key
+
+terminal.cursor_home
+terminal.erase_line_tail
+terminal.erase_screen_tail
+terminal.reset_style
 ```
 
 Session owns a saved native input mode but borrows the descriptor. Keep an
@@ -479,11 +496,26 @@ supplied duration upward to poll's millisecond resolution; a timeout is
 Raw mode makes control keys ordinary bytes, so applications can handle Ctrl-C
 and leave through normal cleanup.
 
-The package deliberately has no output or screen abstraction, ANSI builder,
-key enum/decoder, terminal-size query, signal recovery, mouse protocol, event
-loop, or ncurses dependency. Applications own those policies. The current
-implementation exists for AArch64 macOS and AArch64 GNU/Linux through exact
-target-qualified termios and poll layouts.
+Screen borrows its output descriptor and owns only the alternate-screen cleanup
+obligation. Pair every active Screen with `restore_screen`; unlike begin_raw, a
+failed `begin_screen` may leave Screen active because a prefix of the ANSI enter
+sequence may already have changed terminal state. Applications construct frame
+bytes in their own storage and publish them through `write_screen`. Public
+`cursor_home`, `erase_line_tail`, `erase_screen_tail`, and `reset_style` byte
+strings are available for fixed-buffer frame construction.
+
+Decoder preserves ordinary input as `.byte` keys and recognizes common ANSI
+arrow, home/end, delete, and page sequences across fragmented reads. Escape
+alone is emitted only by `flush_key`, after the caller's chosen timeout. It does
+not decode UTF-8: each source byte remains an ordinary byte for the application
+or `core/utf8` to interpret. Modified-key CSI parameters and function keys are
+not part of the initial decoder.
+
+The package deliberately has no frame/layout builder, terminal-size query,
+signal recovery, mouse protocol, event loop, terminfo, or ncurses dependency.
+The current native-mode implementation exists for AArch64 macOS and AArch64
+GNU/Linux through exact target-qualified termios and poll layouts; its ANSI
+screen and key policy is target-independent.
 
 ## `core/thread`
 
@@ -575,8 +607,7 @@ The current core does not yet supply several facilities a larger application
 may need:
 
 - path manipulation, directories, metadata, random-access files, or rename;
-- cursor control, key decoding, window-size queries, or signal-safe terminal
-  recovery;
+- window-size queries, mouse input, or signal-safe terminal recovery;
 - sockets, subprocesses, signals, dynamic libraries, or event loops;
 - Unicode normalization, properties, case mapping, and grapheme algorithms;
 - general formatting/parsing and string builders;

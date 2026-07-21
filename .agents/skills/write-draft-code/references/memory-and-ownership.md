@@ -43,7 +43,7 @@ Treat these live values as non-copyable by convention:
 - `array.Dynamic`, `map.Map`, `memory.Buffer`, `memory.Owned_String`, and
   `memory.Arena`;
 - `memory.Virtual_Region` and an opened `os.File`;
-- an active `terminal.Session`;
+- an active `terminal.Session` or `terminal.Screen`;
 - `thread.Thread`, `thread.Mutex`, and `thread.Condition`.
 
 Pass a pointer to one stable owner. If an intentional transfer is necessary,
@@ -252,6 +252,14 @@ that must be restored. Keep the Session at one stable address, restore before
 closing the descriptor, and do not copy an active value. A failed restore keeps
 the obligation active so the same owner may report or retry it. Runtime traps
 and external process termination do not run deferred restoration.
+
+`terminal.Screen` likewise borrows its output `os.File` and owns the obligation
+to leave the alternate screen and show the cursor. `begin_screen` records that
+obligation before writing because a failed complete write may already have
+published a state-changing prefix. Therefore call `restore_screen` whenever a
+begin attempt leaves the Screen active—even when begin returned an error—and
+keep the descriptor open until restoration succeeds. A failed restore preserves
+the active owner for reporting or retry, exactly as for Session.
 
 `memory.Virtual_Region` is move-by-convention. Reserve returns inaccessible
 address space; commit/protect applies to the complete region; release unmaps

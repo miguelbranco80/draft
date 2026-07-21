@@ -1,10 +1,11 @@
 // These tests exercise the platform-independent contracts of core/terminal
 // without borrowing or modifying the test runner's real terminal. They verify
-// timeout conversion at its rounding and saturation boundaries plus inactive
-// Session behavior. The native validation driver copies this package to a
-// private workspace, selects the host AArch64 target, and links the real libc
-// symbols. Actual mode changes require an application or pseudo-terminal
-// integration test and are deliberately not attempted against CTest's stdin.
+// timeout conversion, inactive raw/screen resources, and streaming key
+// decoding across read boundaries. The native validation driver copies this
+// package to a private workspace, selects the host AArch64 target, and links
+// the real libc symbols. Actual mode and alternate-screen changes require an
+// application or pseudo-terminal integration test and are deliberately not
+// attempted against CTest's stdin/stdout.
 package terminal
 
 import core/c as c
@@ -56,4 +57,48 @@ test_inactive_session :: proc(test: ^testing.Test) {
     begin_error := begin_raw(&session, invalid_input)
     testing.expect(test, begin_error == .invalid)
     testing.expect(test, !session.active)
+}
+
+// test_key_decoder covers ordinary bytes, read-fragmented direct CSI keys,
+// numeric tilde keys, and the caller-controlled lone-Escape timeout. It feeds
+// exactly one byte per call so no buffering assumption can hide state errors.
+test_key_decoder :: proc(test: ^testing.Test) {
+    decoder: Decoder
+
+    ordinary := decode_key(&decoder, cast[u8]('q'))
+    testing.expect(test, ordinary.kind == .byte)
+    testing.expect(test, ordinary.byte_value == cast[u8]('q'))
+
+    testing.expect(test, decode_key(&decoder, 27).kind == .none)
+    testing.expect(test,
+        decode_key(&decoder, cast[u8]('[')).kind == .none)
+    testing.expect(test,
+        decode_key(&decoder, cast[u8]('D')).kind == .left)
+
+    testing.expect(test, decode_key(&decoder, 27).kind == .none)
+    testing.expect(test,
+        decode_key(&decoder, cast[u8]('[')).kind == .none)
+    testing.expect(test,
+        decode_key(&decoder, cast[u8]('3')).kind == .none)
+    testing.expect(test,
+        decode_key(&decoder, cast[u8]('~')).kind == .delete)
+
+    testing.expect(test, decode_key(&decoder, 27).kind == .none)
+    testing.expect(test, flush_key(&decoder).kind == .escape)
+    testing.expect(test, flush_key(&decoder).kind == .none)
+}
+
+// test_inactive_screen fixes the zero-state contract without writing control
+// bytes to the test runner. Invalid output is rejected before it can create a
+// restoration obligation, and inactive cleanup remains idempotent.
+test_inactive_screen :: proc(test: ^testing.Test) {
+    screen: Screen
+    storage: [1]u8
+    testing.expect(test, write_screen(&screen, storage[:]) == .invalid)
+    testing.expect(test, restore_screen(&screen))
+
+    invalid_output := os.File{descriptor = -1}
+    testing.expect(test,
+        begin_screen(&screen, invalid_output) == .invalid)
+    testing.expect(test, !screen.active)
 }

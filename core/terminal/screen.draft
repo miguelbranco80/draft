@@ -1,0 +1,76 @@
+// This file owns the smallest reusable full-screen output boundary: entering
+// an ANSI/VT alternate screen with a hidden cursor, writing caller-constructed
+// frame bytes, and restoring the normal screen and cursor. It deliberately does
+// not own a frame buffer, layout engine, style model, terminal dimensions, or
+// output descriptor. Those policies remain ordinary application code.
+//
+// Screen is an explicit move-by-convention resource like Session. A failed
+// enter may have written a prefix of its control sequence, so it still records
+// the restoration obligation before output begins. This rule lets callers
+// clean up the terminal even after a partial native write. The implementation
+// depends only on core/io and core/os and uses widely supported ANSI/VT bytes;
+// it has no ncurses, terminfo, allocation, or target-specific ABI.
+package terminal
+
+import core/io
+import core/os
+
+Enter_Screen_Sequence :: "\x1b[?1049h\x1b[2J\x1b[H\x1b[?25l"
+Leave_Screen_Sequence :: "\x1b[0m\x1b[?25h\x1b[?1049l"
+
+// These fragments are public so an application can construct one complete
+// frame in its own storage and publish it atomically at the application layer.
+// They are byte strings, not terminal state or an implicit global renderer.
+pub cursor_home :: "\x1b[H"
+pub erase_line_tail :: "\x1b[K"
+pub erase_screen_tail :: "\x1b[J"
+pub reset_style :: "\x1b[0m"
+
+// Screen owns an alternate-screen restoration obligation but borrows output.
+// Its zero value is inactive. Once active, copying it would create two apparent
+// owners of one cleanup action; keep one value at a stable address and pass it
+// by pointer. A failed restore deliberately retains active state for retry.
+pub Screen :: struct {
+    output: os.File,
+    active: bool,
+}
+
+// begin_screen starts an alternate-screen session. screen must be inactive and
+// output must name a nonnegative descriptor. The resource becomes active before
+// bytes are written because a short successful prefix followed by failure may
+// already have changed terminal state. Therefore every call that makes screen
+// active must be paired with restore_screen even when the returned error is not
+// none. The output descriptor is borrowed until restoration succeeds.
+pub begin_screen :: proc(screen: ^Screen, output: os.File) -> io.Error {
+    if screen^.active || output.descriptor < 0 {
+        return .invalid
+    }
+    screen^.output = output
+    screen^.active = true
+    return os.write_text_all(output, Enter_Screen_Sequence)
+}
+
+// write_screen publishes exactly the borrowed frame bytes in order. Screen
+// must be active; the operation neither prefixes cursor movement nor retains
+// source, keeping complete-frame construction and repaint policy visible in
+// the caller.
+pub write_screen :: proc(screen: ^Screen, source: []u8) -> io.Error {
+    if !screen^.active {
+        return .invalid
+    }
+    return os.write_all(screen^.output, source)
+}
+
+// restore_screen resets style, shows the cursor, and returns to the primary
+// screen. It is idempotent for an inactive value. A write failure preserves the
+// active flag and borrowed handle so the owner can report or retry cleanup.
+pub restore_screen :: proc(screen: ^Screen) -> bool {
+    if !screen^.active {
+        return true
+    }
+    if os.write_text_all(screen^.output, Leave_Screen_Sequence) != .none {
+        return false
+    }
+    screen^.active = false
+    return true
+}

@@ -1,0 +1,171 @@
+// This file incrementally decodes the small portable keyboard vocabulary needed
+// by full-screen terminal applications. Ordinary bytes—including control bytes
+// and each byte of UTF-8 text—are preserved exactly. Common ANSI/VT cursor,
+// home/end, delete, and page sequences become semantic keys. The decoder owns
+// no storage and performs no I/O or allocation.
+//
+// One key sequence may be split across arbitrary reads, so Decoder must persist
+// beside the application's input buffer. Escape alone is ambiguous with the
+// start of a sequence; a caller that wants it as a key invokes flush_key after
+// its own chosen timeout. This keeps timing policy in the event loop.
+package terminal
+
+// Key_Kind distinguishes an ordinary byte from terminal-generated navigation.
+// none is an incomplete or unsupported sequence. byte is intentionally not
+// called character: one value may be a control code or one byte of UTF-8.
+pub Key_Kind :: enum u8 {
+    none,
+    byte,
+    escape,
+    up,
+    down,
+    right,
+    left,
+    home,
+    end,
+    delete,
+    page_up,
+    page_down,
+}
+
+// Key is one decoder result. byte_value is meaningful only for kind byte and
+// is otherwise zero. The value owns no storage and may be copied freely.
+pub Key :: struct {
+    kind: Key_Kind,
+    byte_value: u8,
+}
+
+// Decoder_State is private because callers should react only to completed Key
+// values. csi follows ESC `[`, while csi_parameter accumulates the numeric part
+// of sequences such as ESC `[3~`.
+Decoder_State :: enum u8 {
+    plain,
+    escape,
+    csi,
+    csi_parameter,
+}
+
+// Decoder persists partial ANSI sequence state across read boundaries. The
+// numeric parameter is bounded above; the zero value is ready to decode.
+pub Decoder :: struct {
+    state: Decoder_State,
+    parameter: u16,
+}
+
+// byte_key constructs the exact ordinary-byte result at one obvious point.
+byte_key :: proc(byte: u8) -> Key {
+    return Key{kind = .byte, byte_value = byte}
+}
+
+// navigation_key maps direct CSI final bytes. H/F are the direct home/end
+// variants; numeric tilde variants are handled separately below.
+navigation_key :: proc(byte: u8) -> Key {
+    switch byte {
+    case cast[u8]('A'):
+        return Key{kind = .up}
+    case cast[u8]('B'):
+        return Key{kind = .down}
+    case cast[u8]('C'):
+        return Key{kind = .right}
+    case cast[u8]('D'):
+        return Key{kind = .left}
+    case cast[u8]('H'):
+        return Key{kind = .home}
+    case cast[u8]('F'):
+        return Key{kind = .end}
+    }
+    empty: Key
+    return empty
+}
+
+// parameter_key maps the common xterm/VT numeric-tilde spellings. Both 1/7 and
+// 4/8 are accepted for home/end because widely used terminals emit either pair.
+parameter_key :: proc(parameter: u16) -> Key {
+    switch parameter {
+    case 1, 7:
+        return Key{kind = .home}
+    case 4, 8:
+        return Key{kind = .end}
+    case 3:
+        return Key{kind = .delete}
+    case 5:
+        return Key{kind = .page_up}
+    case 6:
+        return Key{kind = .page_down}
+    }
+    empty: Key
+    return empty
+}
+
+// decode_key consumes one byte and returns at most one key. An unexpected byte
+// immediately after ESC is preserved as an ordinary byte rather than swallowed;
+// unsupported CSI content is discarded as one terminal control sequence. The
+// parameter accumulator saturates at 999, preventing hostile input from
+// wrapping while still covering every recognized value.
+pub decode_key :: proc(decoder: ^Decoder, byte: u8) -> Key {
+    switch decoder^.state {
+    case .plain:
+        if byte == 27 {
+            decoder^.state = .escape
+            empty: Key
+            return empty
+        }
+        return byte_key(byte)
+    case .escape:
+        if byte == cast[u8]('[') {
+            decoder^.state = .csi
+            empty: Key
+            return empty
+        }
+        decoder^.state = .plain
+        if byte == 27 {
+            decoder^.state = .escape
+            return Key{kind = .escape}
+        }
+        return byte_key(byte)
+    case .csi:
+        if byte >= cast[u8]('0') && byte <= cast[u8]('9') {
+            decoder^.parameter = cast[u16](byte - cast[u8]('0'))
+            decoder^.state = .csi_parameter
+            empty: Key
+            return empty
+        }
+        decoder^.state = .plain
+        return navigation_key(byte)
+    case .csi_parameter:
+        if byte >= cast[u8]('0') && byte <= cast[u8]('9') {
+            digit := cast[u16](byte - cast[u8]('0'))
+            if decoder^.parameter <= 99 {
+                decoder^.parameter = decoder^.parameter * 10 + digit
+            } else {
+                decoder^.parameter = 999
+            }
+            empty: Key
+            return empty
+        }
+        parameter := decoder^.parameter
+        decoder^.parameter = 0
+        decoder^.state = .plain
+        if byte == cast[u8]('~') {
+            return parameter_key(parameter)
+        }
+        empty: Key
+        return empty
+    }
+    empty: Key
+    return empty
+}
+
+// flush_key resolves pending state after the caller's chosen ambiguity timeout.
+// A lone ESC becomes escape; an incomplete CSI sequence is discarded. In every
+// case Decoder returns to its zero resting state.
+pub flush_key :: proc(decoder: ^Decoder) -> Key {
+    was_escape := decoder^.state == .escape
+    decoder^.state = .plain
+    decoder^.parameter = 0
+    if was_escape {
+        return Key{kind = .escape}
+    }
+    empty: Key
+    return empty
+}

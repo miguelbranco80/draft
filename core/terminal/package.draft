@@ -1,9 +1,10 @@
 // The terminal package is the small interactive-console boundary shared by
 // full-screen applications. It turns one existing input descriptor into an
 // immediate byte stream, waits for input with a bounded timeout, and restores
-// the exact native terminal mode saved at entry. The package owns no descriptor
-// and performs no output: callers retain descriptor lifetime, key decoding,
-// ANSI rendering, cursor policy, and application event-loop policy.
+// the exact native terminal mode saved at entry. Companion files own a small
+// ANSI alternate-screen lifetime and a streaming key decoder. The package owns
+// no descriptor: callers retain descriptor lifetime, frame construction,
+// styling, text interpretation, and application event-loop policy.
 //
 // Session is an explicit move-by-convention resource. A successful begin_raw
 // must be paired with restore while the input descriptor remains open. The

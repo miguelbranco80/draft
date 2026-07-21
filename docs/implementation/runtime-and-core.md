@@ -166,9 +166,23 @@ rounded upward to poll's millisecond resolution and saturated at the largest
 positive C `int`, preventing a large finite timeout from narrowing into poll's
 negative infinite-wait convention. Timeout is the successful `(0, .none)`
 case, hangup is `.end_of_input`, and the initial core error vocabulary collapses
-other native failures to `.unavailable`. Key decoding, ANSI screen policy,
-window-size queries, signals, and event-loop composition remain outside this
-narrow substrate.
+other native failures to `.unavailable`.
+
+`core/terminal.Screen` separately owns the obligation to leave an ANSI/VT
+alternate screen and show the cursor. It borrows the output descriptor and
+becomes active before writing the enter sequence, because a failed complete
+write may already have published a state-changing prefix. Applications build
+their own complete frame bytes and publish them through `write_screen`; small
+public cursor-home and erase fragments support that construction without
+introducing a layout engine or fixed library buffer.
+
+The allocation-free `Decoder` preserves ordinary input—including control and
+UTF-8 bytes—as byte keys and recognizes common cursor, home/end, delete, and
+page CSI sequences across arbitrary read boundaries. A lone Escape remains
+pending until the application calls `flush_key` after its own timeout, keeping
+ambiguity and event-loop timing policy explicit. Styling, terminal-size queries,
+signals, mouse input, Unicode text interpretation, and event-loop composition
+remain application or future-library concerns.
 
 Darwin stores a 72-byte, eight-aligned termios record and uses 32-bit `nfds_t`;
 the selected glibc contract stores a 60-byte, four-aligned record and uses
