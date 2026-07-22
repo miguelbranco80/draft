@@ -36,6 +36,12 @@ set(configure_command
   -DPLATFORM=Memory
   -DCUSTOMIZE_BUILD=ON
   -DSUPPORT_MODULE_RAUDIO=OFF
+  # This one-frame headless gate drives no platform event loop. Keep custom
+  # frame control explicit because raylib 6.0's memory backend has no Apple
+  # GetTime implementation; enabling its ordinary frame pacing on macOS would
+  # wait forever. Desktop builds must disable this option as documented by the
+  # example because their windows require EndDrawing to poll platform events.
+  -DSUPPORT_CUSTOM_FRAME_CONTROL=ON
   -DSUPPORT_TRACELOG=OFF
   -DCMAKE_BUILD_TYPE=Release
 )

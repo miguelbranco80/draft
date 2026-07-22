@@ -35,9 +35,17 @@ cmake -S vendor/raylib -B build/raylib-desktop \
   -DPLATFORM=Desktop \
   -DCUSTOMIZE_BUILD=ON \
   -DSUPPORT_MODULE_RAUDIO=OFF \
+  -DSUPPORT_CUSTOM_FRAME_CONTROL=OFF \
+  -DSUPPORT_BUSY_WAIT_LOOP=OFF \
   -DCMAKE_BUILD_TYPE=Release
 cmake --build build/raylib-desktop --parallel
 ```
+
+The two frame-control settings are required when using raylib's customized
+build. Its CMake customization defaults otherwise enable application-owned
+frame control and a full busy-wait loop. Application-owned frame control makes
+`EndDrawing` omit buffer presentation, frame pacing, and input/window event
+polling, which is not the contract used by this example.
 
 On macOS, resolve CMake's dylib symlink to the regular provider file, build the
 optimized Draft application, and expose that directory to the loader:
@@ -75,7 +83,9 @@ cmake -S vendor/raylib -B build/raylib-desktop -A x64 `
   -DBUILD_SHARED_LIBS=ON `
   -DPLATFORM=Desktop `
   -DCUSTOMIZE_BUILD=ON `
-  -DSUPPORT_MODULE_RAUDIO=OFF
+  -DSUPPORT_MODULE_RAUDIO=OFF `
+  -DSUPPORT_CUSTOM_FRAME_CONTROL=OFF `
+  -DSUPPORT_BUSY_WAIT_LOOP=OFF
 cmake --build build/raylib-desktop --config Release --parallel 4
 $raylib = (Resolve-Path build/raylib-desktop/raylib/Release/raylib.lib).Path
 build/Release/draftc.exe build examples/raylib-asteroids --root app `
