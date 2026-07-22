@@ -14,6 +14,8 @@
 // invariants. Draft specification: sections 4-7.
 package game
 
+import core/random
+
 pub World_Width :: 960
 pub World_Height :: 720
 pub Fixed_Steps_Per_Second :: 120
@@ -98,16 +100,16 @@ pub Asteroid :: struct {
 }
 
 // Game is one complete simulation owner. The arrays never relocate and no
-// pointer into them survives a public operation. random_state is a local
-// xorshift state used only for gameplay placement and velocity; it is not a
-// source of cryptographic randomness. score and wave grow monotonically during
-// one game. game_over implies lives == 0 and suppresses every later tick until
-// the caller explicitly invokes game_init again.
+// pointer into them survives a public operation. generator is core/random's
+// deterministic stream used only for gameplay placement and velocity; it is
+// not a source of cryptographic randomness. score and wave grow monotonically
+// during one game. game_over implies lives == 0 and suppresses every later tick
+// until the caller explicitly invokes game_init again.
 pub Game :: struct {
     ship: Ship,
     bullets: [Bullet_Capacity]Bullet,
     asteroids: [Asteroid_Capacity]Asteroid,
-    random_state: u64,
+    generator: random.Generator,
     score: u64,
     lives: u32,
     wave: u32,
@@ -183,27 +185,6 @@ positions_overlap :: proc(
     )
     radius := left_radius + right_radius
     return x * x + y * y <= radius * radius
-}
-
-// random_next advances xorshift64*. Seed zero is replaced during game_init
-// because it is the generator's one absorbing state. The result sequence is a
-// gameplay implementation detail but deterministic on every Draft target.
-random_next :: proc(game: ^Game) -> u64 {
-    value := game^.random_state
-    value ~= value >> 12
-    value ~= value << 25
-    value ~= value >> 27
-    game^.random_state = value
-    return value * 2685821657736338717
-}
-
-// random_fraction uses the high 24 bits so every produced f32 is exactly one
-// of 2^24 values in [0, 1). This avoids target-dependent conversion of the
-// generator's full 64-bit magnitude while retaining more precision than the
-// game geometry needs.
-random_fraction :: proc(game: ^Game) -> f32 {
-    numerator := cast[f32](random_next(game) >> 40)
-    return numerator / 16777216.0
 }
 
 // direction_from_index returns one of sixteen fixed unit-circle directions.
@@ -313,7 +294,7 @@ random_edge_position :: proc(game: ^Game, edge: u32) -> Vector {
         }
         return Vector{
             x = x,
-            y = random_fraction(game) * cast[f32](World_Height),
+            y = random.unit_f32(&game^.generator) * cast[f32](World_Height),
         }
     }
 
@@ -322,7 +303,7 @@ random_edge_position :: proc(game: ^Game, edge: u32) -> Vector {
         y = cast[f32](World_Height) - 1.0
     }
     return Vector{
-        x = random_fraction(game) * cast[f32](World_Width),
+        x = random.unit_f32(&game^.generator) * cast[f32](World_Width),
         y = y,
     }
 }
@@ -341,12 +322,14 @@ spawn_wave :: proc(game: ^Game) {
         count += cast[int](additional)
     }
     for index: int = 0; index < count; index += 1 {
-        direction_index := cast[u32](random_next(game) & 15)
+        direction_index := cast[u32](
+            random.next_u64(&game^.generator) & 15,
+        )
         direction := direction_from_index(direction_index)
-        speed := 38.0 + random_fraction(game) * 42.0
+        speed := 38.0 + random.unit_f32(&game^.generator) * 42.0
         position := random_edge_position(game, cast[u32](index))
-        rotation := random_fraction(game) * 360.0
-        spin := (random_fraction(game) - 0.5) * 1.2
+        rotation := random.unit_f32(&game^.generator) * 360.0
+        spin := (random.unit_f32(&game^.generator) - 0.5) * 1.2
         activated := activate_asteroid(
             game,
             .large,
@@ -382,10 +365,7 @@ reset_ship :: proc(game: ^Game) {
 pub game_init :: proc(game: ^Game, seed: u64) {
     empty: Game
     game^ = empty
-    game^.random_state = seed
-    if game^.random_state == 0 {
-        game^.random_state = 0x9e3779b97f4a7c15
-    }
+    random.init(&game^.generator, seed)
     game^.lives = Initial_Lives
     game^.wave = 1
     reset_ship(game)

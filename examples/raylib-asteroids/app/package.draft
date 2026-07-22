@@ -14,6 +14,7 @@ package app
 
 import core/memory
 import core/os
+import core/random
 import game
 import raylib
 
@@ -212,6 +213,9 @@ main :: proc() -> int {
     if has_smoke_argument() {
         return run_smoke(labels)
     }
-    seed := os.process_id() ~ 0x44524146542d4153
+    (seed, seeded) := random.seed_u64()
+    if !seeded {
+        seed = os.process_id() ~ 0x44524146542d4153
+    }
     return run_interactive(labels, seed)
 }

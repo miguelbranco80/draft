@@ -79,6 +79,24 @@ all use the matching type and alignment. Windows uses an atomic FLS-key state
 machine instead of fabricating a pthread layout. These target facts never enter
 Draft's source-visible type system.
 
+## Random bytes and deterministic streams
+
+`core/random.fill` is the small ordinary-Draft facade over the active Context
+provider. It forwards a nonempty mutable slice as `{pointer, count}`, treats an
+empty slice as a completed no-op, and reports a nil or failing provider as
+`false`. `seed_u64` requests exactly eight bytes and assembles them explicitly
+in little-endian order, so custom-provider tests do not depend on host byte
+order. Provider failure does not reinterpret a possibly written prefix.
+
+`random.Generator` is intentionally independent of that ambient capability.
+Initialization normalizes xorshift64*'s zero absorbing state, then every draw is
+pure specified wrapping `u64` arithmetic. Bounded draws reject the incomplete
+low residue range before applying remainder, avoiding modulo bias. `unit_f32`
+uses the high 24 bits so every result is exactly representable and below one.
+Games seed a Generator once—normally from the hosted provider—and use only the
+local stream afterward, preserving deterministic simulation tests and avoiding
+an operating-system call for every gameplay choice.
+
 ## Initial core memory facilities
 
 Status: ordinary Draft library surface over the allocator and target-selected

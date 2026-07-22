@@ -1,0 +1,103 @@
+// These same-package tests qualify the deterministic stream, unbiased bound,
+// floating range, and Context-provider boundary. Fake providers make byte order
+// and failure behavior reproducible; no test depends on host entropy output.
+package random
+
+import core/runtime
+import core/testing
+
+// sequential_provider writes a predictable increasing byte sequence beginning
+// at the u8 addressed by user. It retains no pointer and wraps naturally.
+sequential_provider :: proc(
+    user: rawptr,
+    output: [^]u8,
+    count: usize,
+) -> bool {
+    next := cast[^u8](user)
+    for index: usize = 0; index < count; index += 1 {
+        output[index] = next^
+        next^ += 1
+    }
+    return true
+}
+
+failing_provider :: proc(
+    user: rawptr,
+    output: [^]u8,
+    count: usize,
+) -> bool {
+    if count != 0 {
+        output[0] = 0xaa
+    }
+    return false
+}
+
+// test_random_known_sequence fixes xorshift64* and zero-seed normalization as
+// cross-target behavior rather than leaving the algorithm accidental.
+test_random_known_sequence :: proc(test: ^testing.Test) {
+    generator: Generator
+    init(&generator, 1)
+    expected := [4]u64{
+        0x47e4ce4b896cdd1d,
+        0xabcfa6a8e079651d,
+        0xb9d10d8feb731f57,
+        0x4db418a0bb1b019d,
+    }
+    for value in expected {
+        testing.expect(test, next_u64(&generator) == value)
+    }
+
+    zero_seed: Generator
+    default_seed: Generator
+    init(&zero_seed, 0)
+    init(&default_seed, Default_Nonzero_Seed)
+    testing.expect(test, next_u64(&zero_seed) == next_u64(&default_seed))
+}
+
+// test_random_ranges exercises many draws over awkward non-power-of-two bounds
+// and verifies unit_f32's closed/open endpoints without asserting a statistical
+// property from one small deterministic sample.
+test_random_ranges :: proc(test: ^testing.Test) {
+    generator: Generator
+    init(&generator, 42)
+    for draw: usize = 0; draw < 4096; draw += 1 {
+        testing.expect(test, bounded_u64(&generator, 7) < 7)
+        fraction := unit_f32(&generator)
+        testing.expect(test, fraction >= 0.0 && fraction < 1.0)
+    }
+    testing.expect(test, bounded_u64(&generator, 1) == 0)
+}
+
+// test_random_context_provider proves empty-fill policy, exact forwarding,
+// target-independent seed byte order, and explicit provider failure.
+test_random_context_provider :: proc(test: ^testing.Test) {
+    empty: []u8
+    testing.expect(test, fill(empty))
+
+    next_byte: u8 = 1
+    {
+        context.random_generator = runtime.Random_Generator{
+            procedure = sequential_provider,
+            user = cast[rawptr](&next_byte),
+        }
+        bytes: [4]u8
+        testing.expect(test, fill(bytes[:]))
+        testing.expect(test,
+            bytes[0] == 1 && bytes[1] == 2 &&
+            bytes[2] == 3 && bytes[3] == 4)
+        (seed, seeded) := seed_u64()
+        testing.expect(test, seeded)
+        testing.expect(test, seed == 0x0c0b0a0908070605)
+    }
+
+    {
+        context.random_generator = runtime.Random_Generator{
+            procedure = failing_provider,
+        }
+        storage: [1]u8
+        testing.expect(test, !fill(storage[:]))
+        testing.expect(test, storage[0] == 0xaa)
+        (seed, seeded) := seed_u64()
+        testing.expect(test, !seeded && seed == 0)
+    }
+}

@@ -23,6 +23,7 @@ from another standard library is not evidence that Draft provides it.
 - [`core/memory`](#corememory)
 - [`core/option` and `core/result`](#coreoption-and-coreresult)
 - [`core/os`](#coreos)
+- [`core/random`](#corerandom)
 - [`core/runtime`](#coreruntime)
 - [`core/testing`](#coretesting)
 - [`core/terminal`](#coreterminal)
@@ -419,6 +420,34 @@ There is no path type, environment lookup, directory traversal, metadata,
 seek, flush/fsync, rename, pipe, socket, subprocess, signal, permission API,
 detailed errno, or asynchronous I/O.
 
+## `core/random`
+
+Context-provided bytes and deterministic application streams:
+
+```draft
+random.fill(destination: []u8) -> bool
+random.seed_u64() -> (u64, bool)
+
+random.Generator{state}
+random.init(&generator, seed)
+random.next_u64(&generator) -> u64
+random.bounded_u64(&generator, upper_bound) -> u64
+random.unit_f32(&generator) -> f32
+```
+
+`fill` borrows and initializes caller storage through
+`context.random_generator`; empty input succeeds, while a missing/failing
+provider returns false. Hosted defaults use OS facilities, but a custom Context
+can install any provider, so do not infer cryptographic security from this API.
+`seed_u64` uses an explicit little-endian byte interpretation and returns
+`(0, false)` rather than using a partially written provider result.
+
+`Generator` is a copyable inline deterministic xorshift64* stream. Seed once,
+then pass `^Generator` for advancement; seed zero is normalized to the package's
+fixed nonzero default. `bounded_u64` is unbiased and requires a nonzero bound;
+`unit_f32` lies in `[0, 1)`. This stream is for simulations, games, procedural
+generation, and tests—not secrets, keys, nonces, or tokens.
+
 ## `core/runtime`
 
 Public provider records:
@@ -448,8 +477,10 @@ context is dynamic call state and is not permanently installed as thread
 default. These bridges are primarily for C callbacks and `core/thread`; use
 ordinary calls in ordinary Draft code.
 
-There are no public logging/random convenience procedures, Context guard,
-allocator error type, or provider ownership framework.
+Logging has no public convenience facade. Random byte and deterministic stream
+operations live in `core/random`; runtime retains only their provider ABI.
+There is no Context guard, allocator error type, or provider ownership
+framework.
 
 ## `core/testing`
 

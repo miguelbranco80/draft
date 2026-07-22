@@ -38,7 +38,10 @@ The program uses a shuffled seven-piece bag, a ghost piece, line clearing,
 score and level progression, timed gravity, colored pieces over an explicit
 black cell background, and compact deterministic wall kicks. The kick rules
 are deliberately smaller than guideline SRS, and the first game has no hold
-slot, lock delay, or high-score file.
+slot, lock delay, or high-score file. Interactive play normally seeds one
+`core/random.Generator` from the hosted OS-backed provider and uses an explicit
+clock/process fallback when that capability is unavailable. Gameplay consumes
+only the deterministic local stream, and tests supply fixed seeds.
 
 ## Why the example is split
 

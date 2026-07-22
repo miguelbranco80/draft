@@ -2,8 +2,9 @@
 // settled board, seven tetromino masks, shuffled seven-piece bag, active/next
 // pieces, collision, compact wall kicks, locking, line clearing, scoring, and
 // level speed. It performs no allocation, I/O, timing, or terminal work. A
-// caller supplies one seed and explicit actions, so tests can reproduce every
-// state transition exactly and the interactive shell remains a thin adapter.
+// caller supplies one seed to core/random's deterministic Generator plus
+// explicit actions, so tests can reproduce every state transition exactly and
+// the interactive shell remains a thin adapter.
 //
 // Board cells are zero for empty or one plus Piece_Kind's backing value for a
 // settled block. Active and ghost pieces are derived views and never written to
@@ -11,6 +12,8 @@
 // visible row zero; any such cell still above the board when a piece locks ends
 // the game. The file depends only on Draft sections 4-6.
 package tetris
+
+import core/random
 
 Board_Width :: 10
 Board_Height :: 20
@@ -52,7 +55,7 @@ Drop_Result :: enum u8 {
     game_over,
 }
 
-// Game is one complete simulation owner. board, bag, and random_state are
+// Game is one complete simulation owner. board, bag, and generator are
 // inline values and require no cleanup. The structure is intentionally copied
 // only in focused tests; the interactive program keeps one stable owner and
 // mutates it through ^Game. score and lines are monotonic within one game;
@@ -63,7 +66,7 @@ Game :: struct {
     next: Piece_Kind,
     bag: [Bag_Size]Piece_Kind,
     bag_index: usize,
-    random_state: u64,
+    generator: random.Generator,
     score: u64,
     lines: u64,
     level: u32,
@@ -212,21 +215,10 @@ piece_value :: proc(kind: Piece_Kind) -> u8 {
     return cast[u8](kind) + 1
 }
 
-// random_next advances a local xorshift64* generator. Game initialization
-// replaces seed zero, the one absorbing xorshift state, with a fixed nonzero
-// value. This is gameplay randomness, not cryptography or a core random API.
-random_next :: proc(state: ^u64) -> u64 {
-    value := state^
-    value ~= value >> 12
-    value ~= value << 25
-    value ~= value >> 27
-    state^ = value
-    return value * 2685821657736338717
-}
-
 // fill_bag installs each kind exactly once and Fisher-Yates shuffles in place.
-// Iterating downward makes the modulo bound explicit and avoids allocation or
-// rejection sampling. bag_index is reset only after the complete bag exists.
+// Iterating downward is allocation-free; core/random's bounded draw removes
+// modulo bias for every non-power-of-two suffix. bag_index is reset only after
+// the complete bag exists.
 fill_bag :: proc(game: ^Game) {
     game^.bag = [Bag_Size]Piece_Kind{
         .i, .o, .t, .s, .z, .j, .l,
@@ -236,7 +228,10 @@ fill_bag :: proc(game: ^Game) {
     for index != 0 {
         upper_bound := index + 1
         selected := cast[usize](
-            random_next(&game^.random_state) % cast[u64](upper_bound),
+            random.bounded_u64(
+                &game^.generator,
+                cast[u64](upper_bound),
+            ),
         )
         game^.bag[index], game^.bag[selected] =
             game^.bag[selected], game^.bag[index]
@@ -278,10 +273,7 @@ spawn_next :: proc(game: ^Game) {
 game_init :: proc(game: ^Game, seed: u64) {
     empty: Game
     game^ = empty
-    game^.random_state = seed
-    if game^.random_state == 0 {
-        game^.random_state = 0x9e3779b97f4a7c15
-    }
+    random.init(&game^.generator, seed)
     game^.level = 1
     fill_bag(game)
     game^.next = take_bag_piece(game)

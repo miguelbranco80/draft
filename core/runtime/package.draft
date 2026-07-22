@@ -40,12 +40,23 @@ pub Logger :: c struct {
     user: rawptr,
 }
 
+// A random provider synchronously initializes output[0:count] and returns true
+// only when every byte is available. On false it may already have written a
+// prefix, so the caller must discard the complete destination. It retains
+// neither output nor user after returning. The provider owns user and its
+// referenced state, which must remain live and stable for every call. Random
+// quality and cryptographic suitability are provider-defined, not implied by
+// this ABI; the hosted default uses the selected operating system facility.
 pub Random_Generator_Proc :: proc(
     user: rawptr,
     output: [^]u8,
     count: usize,
 ) -> bool
 
+// Random_Generator is a borrowed provider pair stored in Context. Copying it
+// aliases provider-owned user state and transfers no ownership. Ordinary code
+// should prefer core/random's slice and deterministic-stream operations over
+// calling this pointer/count ABI directly.
 pub Random_Generator :: c struct {
     procedure: Random_Generator_Proc,
     user: rawptr,

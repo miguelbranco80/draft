@@ -16,6 +16,7 @@ package tetris
 
 import core/io
 import core/os
+import core/random
 import core/terminal
 import core/time
 import core/tui
@@ -120,7 +121,7 @@ apply_action :: proc(game: ^Game, action: Action) -> Action_Outcome {
         return outcome
     case .restart:
         if game^.game_over {
-            restart_seed := random_next(&game^.random_state)
+            restart_seed := random.next_u64(&game^.generator)
             game_init(game, restart_seed)
             outcome.changed = true
             outcome.reset_fall = true
@@ -161,7 +162,13 @@ run_interactive :: proc(
     resize_watcher: ^terminal.Resize_Watcher,
     initial_size: terminal.Size,
 ) -> Run_Result {
-    seed := cast[u64](cast[i64](time.monotonic_now())) ~ os.process_id()
+    // Hosted contexts normally supply OS-backed bytes. A deliberately empty or
+    // failing custom provider falls back to clock/process mixing so the game
+    // remains usable rather than treating optional entropy as terminal I/O.
+    (seed, seeded) := random.seed_u64()
+    if !seeded {
+        seed = cast[u64](cast[i64](time.monotonic_now())) ~ os.process_id()
+    }
     game: Game
     game_init(&game, seed)
 

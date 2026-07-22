@@ -5,6 +5,7 @@
 // selected targets.
 package tetris
 
+import core/random
 import core/testing
 import core/tui
 
@@ -38,7 +39,7 @@ test_every_tetromino_rotation_has_four_cells :: proc(test: ^testing.Test) {
 // fixing one incidental shuffled order. Each identity must occur once.
 test_bag_is_one_complete_permutation :: proc(test: ^testing.Test) {
     game: Game
-    game.random_state = 42
+    random.init(&game.generator, 42)
     fill_bag(&game)
 
     seen: [Bag_Size]u8

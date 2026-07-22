@@ -949,6 +949,24 @@ if(BUILD_TESTING)
       PROPERTIES LABELS "integration"
     )
 
+    # core/random combines a Context-provider boundary with deterministic
+    # application streams. Native tests install fake providers so exact bytes,
+    # failure, range, and sequence behavior remain reproducible.
+    add_test(
+      NAME draft_core_random_tests
+      COMMAND
+        "${CMAKE_COMMAND}"
+        "-DDRAFTC=$<TARGET_FILE:draftc>"
+        "-DSOURCE_ROOT=${CMAKE_CURRENT_SOURCE_DIR}"
+        "-DTEST_ROOT=${CMAKE_CURRENT_BINARY_DIR}/core-random-test"
+        "-DTARGET_SELECTOR=${DRAFT_NATIVE_TEST_TARGET}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/driver_core_random_test.cmake"
+    )
+    set_tests_properties(
+      draft_core_random_tests
+      PROPERTIES LABELS "integration"
+    )
+
     # core/unicode pins target-independent grapheme and terminal-width policy,
     # but its tests execute native Draft code. The copied workspace prevents
     # test evidence and object files from entering the source checkout.

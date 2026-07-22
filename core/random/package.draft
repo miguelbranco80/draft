@@ -1,0 +1,112 @@
+// The random package exposes two deliberately separate facilities. fill and
+// seed_u64 obtain bytes from the active runtime Context provider; the hosted
+// default provider is backed by operating-system randomness, but a caller may
+// install any provider and therefore owns its security claim. Generator is a
+// small deterministic xorshift64* stream for simulations, procedural content,
+// tests, and games. It never consults ambient state after explicit seeding.
+//
+// All APIs are allocation-free. fill mutates only caller storage and retains
+// no slice. Generator owns one inline u64 state, may be copied intentionally to
+// fork/replay a stream, and has identical results on every Draft target. It is
+// not cryptographic and must not generate secrets, keys, nonces, or tokens.
+// Draft specification: sections 5-7 and the runtime Context contract.
+package random
+
+import core/runtime
+
+// Generator is one deterministic xorshift64* stream. state is always nonzero
+// after init and remains nonzero under the transition. The representation is
+// public only so the plain value has transparent copy/storage behavior; callers
+// should initialize it and advance it through package procedures.
+pub Generator :: struct {
+    state: u64,
+}
+
+Default_Nonzero_Seed :: 0x9e3779b97f4a7c15
+Unit_F32_Denominator :: 16777216.0
+
+// fill asks the active Context provider to initialize the complete destination.
+// An empty destination succeeds without requiring a provider. For nonempty
+// input, a nil provider or provider failure returns false; bytes are unspecified
+// after provider failure because an external provider may have written a prefix.
+pub fill :: proc(destination: []u8) -> bool {
+    if len(destination) == 0 {
+        return true
+    }
+    provider: runtime.Random_Generator = context.random_generator
+    if provider.procedure == nil {
+        return false
+    }
+    return provider.procedure(
+        provider.user,
+        cast[[^]u8](&destination[0]),
+        len(destination),
+    )
+}
+
+// seed_u64 obtains eight provider bytes and interprets them in little-endian
+// order. The explicit byte order makes a deterministic test provider produce
+// the same seed on every target; OS entropy itself has no portable sequence.
+// Failure returns zero and false and does not pretend partially written bytes
+// form a usable seed.
+pub seed_u64 :: proc() -> (u64, bool) {
+    storage: [8]u8
+    if !fill(storage[:]) {
+        return (0, false)
+    }
+    result: u64
+    for index: usize = 0; index < len(storage); index += 1 {
+        result |= cast[u64](storage[index]) << (index * 8)
+    }
+    return (result, true)
+}
+
+// init starts one deterministic stream. Seed zero is normalized because it is
+// xorshift64*'s only absorbing state; all other 64-bit seeds are retained
+// exactly. Reinitializing an existing value intentionally discards its stream.
+pub init :: proc(generator: ^Generator, seed: u64) {
+    generator^.state = seed
+    if generator^.state == 0 {
+        generator^.state = Default_Nonzero_Seed
+    }
+}
+
+// next_u64 advances and returns one full-width deterministic value. The shift,
+// XOR, and multiplication operations use Draft's specified u64 wrapping, so
+// the sequence is independent of the backend and host architecture.
+pub next_u64 :: proc(generator: ^Generator) -> u64 {
+    value := generator^.state
+    assert(value != 0, "random Generator must be initialized")
+    value ~= value >> 12
+    value ~= value << 25
+    value ~= value >> 27
+    generator^.state = value
+    return value * 2685821657736338717
+}
+
+// bounded_u64 returns an unbiased value in [0, upper_bound). Rejection removes
+// the short remainder at the bottom of the full 2^64 source domain; direct `%`
+// would make those low residues occur once more whenever the bound does not
+// divide 2^64. upper_bound zero is a caller contract violation.
+pub bounded_u64 :: proc(
+    generator: ^Generator,
+    upper_bound: u64,
+) -> u64 {
+    assert(upper_bound != 0, "random bound must be nonzero")
+    // Unsigned subtraction wraps by specification. This computes
+    // 2^64 % upper_bound without representing 2^64 in a u64.
+    threshold := (cast[u64](0) - upper_bound) % upper_bound
+    value := next_u64(generator)
+    for value < threshold {
+        value = next_u64(generator)
+    }
+    return value % upper_bound
+}
+
+// unit_f32 returns one of 2^24 exactly representable values in [0, 1). Using
+// the high 24 bits avoids target-dependent rounding of a complete u64 while
+// retaining all precision available in an f32 significand.
+pub unit_f32 :: proc(generator: ^Generator) -> f32 {
+    numerator := cast[f32](next_u64(generator) >> 40)
+    return numerator / Unit_F32_Denominator
+}

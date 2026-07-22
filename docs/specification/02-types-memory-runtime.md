@@ -1036,6 +1036,7 @@ The initial core set includes:
 | `core/heap` | Heap allocator backends and direct heap operations. |
 | `core/array` | `array.Dynamic[T]`, an owning growable contiguous array. |
 | `core/map` | `map.Map[K, V]` and explicit hash-map operations. |
+| `core/random` | Context-provided random bytes and deterministic seeded streams. |
 | `core/format` | Allocation-free conversion of values into caller-owned byte buffers. |
 | `core/console` | Checked human-facing text and scalar output over standard process handles. |
 | `core/terminal` | Suspendable raw/screen sessions, timed reads, cell-size queries/watchers, and streaming key decoding. |
@@ -1079,6 +1080,15 @@ while ambiguous-width characters occupy one. Controls and clusters with no
 printable base are rejected. This is a portable `core/tui` layout policy, not a
 locale-sensitive claim about every font or terminal, and it performs no
 normalization, shaping, bidi reordering, or line breaking.
+
+`core/random.fill` obtains bytes through the active `Context.random_generator`.
+The hosted default provider is operating-system-backed, but the Context may
+install a deterministic or otherwise non-security provider; the core API makes
+no cryptographic claim on its behalf. `seed_u64` gives those bytes one explicit
+little-endian interpretation. Separately, `random.Generator` is an inline,
+explicitly seeded deterministic stream with full-width, unbiased bounded, and
+unit-`f32` draws. It is suitable for repeatable simulation and procedural work,
+not secrets, keys, nonces, or tokens.
 
 `core/time` defines `Duration` as a distinct signed integer type and constants
 such as `time.nanosecond: Duration`; the distinct-operator rules make

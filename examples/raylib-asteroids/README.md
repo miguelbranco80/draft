@@ -3,8 +3,8 @@
 This example is a complete vector-style Asteroids game and Draft's first
 graphical native-library application. It deliberately separates three concerns:
 
-- [`game`](game/) is a pure fixed-step Draft simulation with inline storage and
-  deterministic tests;
+- [`game`](game/) is a pure fixed-step Draft simulation with inline storage, a
+  deterministic `core/random.Generator`, and reproducible tests;
 - [`raylib`](raylib/) is the small audited raylib 6.0 C ABI surface the program
   actually consumes; and
 - [`app`](app/) owns the window, input, time accumulator, UI text, and drawing.

@@ -115,6 +115,11 @@ reset, destroyed, or leaves scope. Common invalidation points include:
 - successful `memory.virtual_release`;
 - return from a procedure that owned the referenced automatic local.
 
+`random.Generator` is intentionally a plain copyable value: copying it forks a
+deterministic stream at that exact state. `random.fill` borrows its mutable slice
+only for the provider call and retains nothing; a provider failure may have
+modified a prefix, so discard the bytes unless it returns true.
+
 Use `ptr_offset` and `ptr_sub` for pointer operations. Ordinary `+` and `-` are
 not pointer arithmetic. A typed access requires live, sufficiently aligned
 storage containing a valid representation. Draft has no strict-aliasing rule,
