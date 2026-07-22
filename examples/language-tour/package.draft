@@ -1,8 +1,9 @@
 // This executable is the readable, end-to-end tour of Draft's ordinary
 // application-language surface. It intentionally keeps one small data problem
 // in view while demonstrating compile-time declarations, nominal types,
-// parametrics, arrays and slices, tuples, tagged unions, pointers, control flow,
-// deferred calls, target selection, assertions, and console output.
+// parametrics, named/default arguments, arrays and slices, tuples, tagged
+// unions, pointers, control flow, deferred calls, target selection, assertions,
+// and console output.
 //
 // The example owns only stack values plus one package global. It uses no native
 // interoperation or synthesis, so every transformation remains visible as
@@ -127,6 +128,17 @@ deferred_value :: proc(finished: ^bool) -> u64 {
     return 42
 }
 
+// adjusted_total demonstrates the declaration-owned part of a call contract.
+// Parameter names and default constants are not part of the procedure type or
+// ABI; this direct call may nevertheless bind out of order and omit scale.
+adjusted_total :: proc(
+    base: u64,
+    scale: u64 = 2,
+    offset: u64 = 1,
+) -> u64 {
+    return base * scale + offset
+}
+
 // print_summary renders a valid reduction result and checks every I/O outcome.
 // It owns only stack formatting state inside core/console and does not retain
 // summary or either destructured bound.
@@ -171,6 +183,8 @@ main :: proc() {
     preferred := select[Reading](readings[0], readings[1], false)
     wrapped := Box[Reading]{value = preferred}
     assert(wrapped.value.value == 20)
+    assert(adjusted_total(offset = 3, base = 10) == 23)
+    assert(adjusted_total(10) == 21)
 
     nickname: option.Option[string] = .some("Ada")
     switch nickname {

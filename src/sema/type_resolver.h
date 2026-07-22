@@ -168,6 +168,36 @@ resolve_dependent_integer_expression_syntax(
     const TargetFacts &target,
     DiagnosticSink &diagnostics);
 
+// Evaluates declaration-owned default arguments after the procedure signature
+// and its visible compile-time constants are complete. Defaults become closed
+// ConstantValue rows on the procedure Symbol; callers never re-evaluate source
+// syntax and imported package interfaces need not retain dependency files.
+// The single-owner form is also used for a lexical procedure immediately after
+// its signature is created. It accepts the enclosing procedure's compile-time
+// type bindings so a nested declaration inside a concrete specialization can
+// still resolve a concrete default type.
+[[nodiscard]] bool finalize_procedure_parameter_defaults(
+    const SourceManager &sources,
+    const LoadedPackage &loaded,
+    SemanticPackage &package,
+    SymbolId owner,
+    const TargetFacts &target,
+    const ConstantTable &active_constants,
+    DiagnosticSink &diagnostics,
+    const std::vector<ConstantTypeBinding> *active_types = nullptr);
+
+// Closes every package-level procedure default in SymbolId order at the
+// PackageInterface barrier. That barrier already waits for all named constant
+// products, so evaluation neither introduces a hidden retry loop nor observes
+// a partially published constant environment.
+[[nodiscard]] bool finalize_package_procedure_parameter_defaults(
+    const SourceManager &sources,
+    const LoadedPackage &loaded,
+    SemanticPackage &package,
+    const TargetFacts &target,
+    const ConstantTable &active_constants,
+    DiagnosticSink &diagnostics);
+
 // Resolves one named type declaration introduced by a procedure body. The
 // declaration owner already exists in the lexical Block scope and nominal
 // declarations already own an incomplete TypeId, exactly as package types do

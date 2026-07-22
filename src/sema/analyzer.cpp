@@ -670,10 +670,10 @@ private:
       if (child.kind != NodeKind::ParameterList) continue;
       for (NodeId parameter_id : child.children) {
         const SyntaxNode &parameter = tree.node(parameter_id);
-        if (!parameter.children.empty() &&
-            tree.node(parameter.children.back()).kind ==
-                NodeKind::StaticPackType) {
-          return true;
+        for (NodeId part_id : parameter.children) {
+          if (tree.node(part_id).kind == NodeKind::StaticPackType) {
+            return true;
+          }
         }
       }
     }

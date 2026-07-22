@@ -72,6 +72,10 @@ enum class NodeKind {
   Procedure,
   ParameterList,
   Parameter,
+  // ParameterDefault wraps the expression after `=` in a named procedure
+  // declaration. Keeping it distinct from the type child prevents semantic
+  // clients from depending on a fragile "last child is the type" convention.
+  ParameterDefault,
   StaticPackType,
   ResultClause,
   MemberList,
@@ -132,6 +136,11 @@ enum class NodeKind {
   BinaryExpression,
   ConditionalExpression,
   CallExpression,
+  // NamedArgument wraps one call operand written `name = expression`. The
+  // name remains in the token span and the sole child is the value expression.
+  // Assignment is a statement in Draft, so this production is unambiguous in
+  // call-argument position.
+  NamedArgument,
   BracketExpression,
   SliceExpression,
   MemberExpression,

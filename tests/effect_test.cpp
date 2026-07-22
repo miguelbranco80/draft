@@ -1366,6 +1366,69 @@ tuple_assignment_caller :: proc() {
       !has_effect(*tuple_assignment_summary, draft::EffectKind::UnknownCall));
 }
 
+// Effect substitution consumes physical formal-parameter order even though the
+// callback operands below are evaluated in the opposite source order. Without
+// the HIR call mapping this would incorrectly select harmless instead of danger.
+void test_named_argument_effect_mapping(TestState &state) {
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  draft::LoadedPackage loaded;
+  loaded.short_name = "named_effects";
+  draft::LoadedPackageFile file;
+  file.kind = draft::PackageFileKind::DraftSource;
+  file.relative_name = "package.draft";
+  file.source = sources.add_source(
+      "package.draft",
+      R"draft(package named_effects
+
+invoke_selected :: proc(unused: proc(), callback: proc()) {
+    callback()
+}
+
+harmless :: proc() {
+}
+
+danger :: proc() {
+    assert(true)
+}
+
+caller :: proc() {
+    invoke_selected(callback = danger, unused = harmless)
+}
+)draft");
+  file.syntax.emplace(
+      draft::parse_source_file(sources, file.source, diagnostics));
+  loaded.files.push_back(std::move(file));
+  const draft::TargetProfile target = draft::make_aarch64_macos_profile();
+  const draft::SemanticAnalysisResult semantics =
+      draft::analyze_package_semantics(
+          sources, loaded, target.facts, diagnostics);
+  const draft::PackageBodyWorkState bodies = draft::check_package_bodies(
+      sources,
+      loaded,
+      semantics.selections,
+      semantics.package,
+      semantics.constants,
+      target.facts,
+      diagnostics);
+  const draft::EffectSummaryResult effects = close_effects(bodies, &target);
+  if (diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+  }
+  EXPECT(state, semantics.ok);
+  EXPECT(state, bodies.ok);
+  EXPECT(state, !diagnostics.has_errors());
+  const std::optional<draft::SymbolId> caller = symbol(bodies.package, "caller");
+  EXPECT(state, caller.has_value());
+  if (!caller.has_value()) return;
+  const draft::ProcedureEffectSummary *summary = effects.find(*caller);
+  EXPECT(state, summary != nullptr);
+  if (summary != nullptr) {
+    EXPECT(state, has_effect(*summary, draft::EffectKind::RuntimeAssert));
+    EXPECT(state, !has_effect(*summary, draft::EffectKind::UnknownCall));
+  }
+}
+
 } // namespace
 
 int main() {
@@ -1379,6 +1442,7 @@ int main() {
   test_returned_procedure_flow(state);
   test_pointer_field_write_flow(state);
   test_higher_order_flow(state);
+  test_named_argument_effect_mapping(state);
   if (state.failures != 0) {
     std::cerr << state.failures << " effect summary expectation(s) failed\n";
     return EXIT_FAILURE;

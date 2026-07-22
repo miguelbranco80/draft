@@ -1286,9 +1286,10 @@ private:
       return result;
     }
     const HirExpression &callee = hir_->expression(call.operands.front());
-    // record_call captured source-ordered arguments before the call's own
-    // write-back became visible. Reuse that immutable snapshot when deriving a
-    // returned callback instead of rereading possibly mutated storage here.
+    // record_call captured arguments before the call's own write-back became
+    // visible, then placed those immutable snapshots in physical parameter
+    // order. Reuse them when deriving a returned callback instead of rereading
+    // possibly mutated storage here.
     const std::vector<ProcedureArgumentSummary> *arguments = nullptr;
     if (current_ != nullptr) {
       for (const ProcedureInvocationSummary &invocation :
@@ -1591,9 +1592,17 @@ private:
 
   [[nodiscard]] std::vector<ProcedureArgumentSummary> call_arguments(
       const HirExpression &call, std::size_t first) const {
-    std::vector<ProcedureArgumentSummary> result;
+    const std::size_t count = call.operands.size() - first;
+    std::vector<ProcedureArgumentSummary> result(count);
     for (std::size_t index = first; index < call.operands.size(); ++index) {
-      result.push_back(call_argument(call.operands[index]));
+      const std::size_t source_ordinal = index - first;
+      const std::size_t physical = first == 1 &&
+              call.call_parameter_indices.size() == count
+          ? call.call_parameter_indices[source_ordinal]
+          : source_ordinal;
+      if (physical < count) {
+        result[physical] = call_argument(call.operands[index]);
+      }
     }
     return result;
   }
@@ -1905,10 +1914,18 @@ private:
       visit_expression(expression.operands.front());
       ProcedureValueSummary callee =
           procedure_value(expression.operands.front());
-      std::vector<ProcedureArgumentSummary> arguments;
+      const std::size_t argument_count = expression.operands.size() - 1;
+      std::vector<ProcedureArgumentSummary> arguments(argument_count);
       for (std::size_t index = 1; index < expression.operands.size(); ++index) {
         visit_expression(expression.operands[index]);
-        arguments.push_back(call_argument(expression.operands[index]));
+        const std::size_t source_ordinal = index - 1;
+        const std::size_t physical =
+            expression.call_parameter_indices.size() == argument_count
+            ? expression.call_parameter_indices[source_ordinal]
+            : source_ordinal;
+        if (physical < argument_count) {
+          arguments[physical] = call_argument(expression.operands[index]);
+        }
       }
       record_call(
           id, expression, std::move(callee), std::move(arguments));

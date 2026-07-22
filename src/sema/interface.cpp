@@ -175,6 +175,25 @@ public:
       declaration.kind = symbol.kind;
       declaration.flags = symbol.flags;
       declaration.type = translate_type(symbol.type);
+      if (symbol.kind == SymbolKind::Procedure) {
+        for (const ProcedureParameter &parameter :
+             symbol.procedure_parameters) {
+          InterfaceProcedureParameter exported;
+          exported.name = parameter.name;
+          exported.has_default = parameter.has_default;
+          if (parameter.has_default) {
+            if (!parameter.default_is_ready) {
+              diagnostics_.error(
+                  parameter.name_range,
+                  "public procedure has an unevaluated default argument");
+            } else {
+              exported.default_value =
+                  canonical_constant(parameter.default_value);
+            }
+          }
+          declaration.procedure_parameters.push_back(std::move(exported));
+        }
+      }
       for (const ParametricParameterRecord &parameter :
            package_.parametric_parameters_for_read()) {
         if (parameter.owner != id) {
@@ -894,6 +913,23 @@ public:
       consumer_.symbols.symbol_mut(proxy_id).type =
           import_type(package, cache, declaration.type);
       active_parameters_ = previous_parameters;
+
+      // Procedure names/defaults are reconstructed only after the signature
+      // graph, because a default may itself contain a type-valued constant that
+      // must be translated through the same package-local type cache.
+      Symbol &imported_procedure = consumer_.symbols.symbol_mut(proxy_id);
+      for (const InterfaceProcedureParameter &parameter :
+           declaration.procedure_parameters) {
+        ProcedureParameter local;
+        local.name = parameter.name;
+        local.has_default = parameter.has_default;
+        local.default_is_ready = parameter.has_default;
+        if (parameter.has_default) {
+          local.default_value = import_constant(
+              package, cache, parameter.default_value);
+        }
+        imported_procedure.procedure_parameters.push_back(std::move(local));
+      }
 
       if (declaration.has_static_argument_pack) {
         // The imported marker lives in a procedure scope, matching a source

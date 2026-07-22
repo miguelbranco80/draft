@@ -124,6 +124,30 @@ checksum :: proc(input: []u8) -> u64 {
 }
 ```
 
+A named procedure parameter may have a compile-time constant default. The
+default applies only to that one binding, so a grouped parameter declaration
+cannot carry `=` and `_` cannot have a default:
+
+```draft
+adjust :: proc(value: i64, scale: i64 = 2, offset: i64 = 0) -> i64 {
+    return value * scale + offset
+}
+
+plain := adjust(10)
+shifted := adjust(offset = 3, value = 10)
+```
+
+A call may bind fixed parameters by name in any declaration order. Positional
+arguments must precede named arguments, every fixed parameter is supplied at
+most once, and every omitted parameter must have a default. The name/default
+contract is available only through a direct procedure declaration; a procedure
+value has only its structural signature and therefore accepts the complete
+positional list. Defaults are checked in declaration scope, converted to the
+declared parameter type, and required to be compile-time constants. They cannot
+depend on runtime parameters or unresolved parametric bindings, or have a
+parameter type which remains symbolic. Defaults are not valid in standalone
+procedure types or on a static pack.
+
 Procedures live in packages or lexical scopes. Structs contain data; package
 procedures operate on that data explicitly:
 
@@ -268,7 +292,9 @@ conversion to their native counterpart for arithmetic or ordering. Aggregates,
 slices, and strings use library comparison. User-defined operator overloading
 is absent in Draft 1.
 
-A call evaluates its callee and then its arguments from left to right. An
+A call evaluates its callee and then every explicit argument in source order,
+regardless of the physical parameter selected by a named argument. Omitted
+defaults are closed constants and introduce no runtime evaluation. An
 assignment evaluates lvalue address and index expressions from left to right,
 then right-hand sides from left to right, then performs stores from left to
 right. A conditional expression evaluates its condition first and then only its

@@ -2638,13 +2638,25 @@ private:
             for (NodeId parameter_id : child.children) {
               const SyntaxNode &parameter = tree.node(parameter_id);
               if (parameter.children.size() < 2) return std::nullopt;
-              const SyntaxNode &parameter_type =
-                  tree.node(parameter.children.back());
+              NodeId parameter_type_id;
+              for (std::size_t index = 1;
+                   index < parameter.children.size(); ++index) {
+                const NodeId part_id = parameter.children[index];
+                const SyntaxNode &part = tree.node(part_id);
+                if (part.kind == NodeKind::ParameterDefault) {
+                  return std::nullopt;
+                }
+                if (!parameter_type_id.is_valid()) {
+                  parameter_type_id = part_id;
+                }
+              }
+              if (!parameter_type_id.is_valid()) return std::nullopt;
+              const SyntaxNode &parameter_type = tree.node(parameter_type_id);
               if (parameter_type.kind == NodeKind::StaticPackType) {
                 return std::nullopt;
               }
               const std::optional<TypeId> resolved =
-                  type_value(tree, parameter.children.back(), scope);
+                  type_value(tree, parameter_type_id, scope);
               if (!resolved.has_value()) return std::nullopt;
               const SyntaxNode &name_list =
                   tree.node(parameter.children.front());
@@ -3604,10 +3616,13 @@ private:
     }
     const std::vector<std::string> parameters =
         procedure_parameter_names(*procedure_tree, procedure);
-    if (call.children.size() - 1 != parameters.size()) {
+    const std::vector<ProcedureParameter> &parameter_metadata =
+        symbol.procedure_parameters;
+    if (!parameter_metadata.empty() &&
+        parameter_metadata.size() != parameters.size()) {
       return fail(
           call.range,
-          "compile-time procedure argument count does not match its parameters",
+          "compile-time procedure parameter metadata is inconsistent",
           required);
     }
     const std::vector<ParametricParameterRecord> compile_parameters =
@@ -3672,16 +3687,139 @@ private:
       parameter_types.push_back(parameter_type);
     }
 
-    std::vector<EvalResult> supplied_arguments;
-    supplied_arguments.reserve(parameters.size());
-    for (std::size_t index = 1; index < call.children.size(); ++index) {
-      const TypeId expected = index - 1U < parameter_types.size()
-          ? parameter_types[index - 1U]
-          : TypeId{};
+    // Evaluate explicit operands in caller source order, but retain them by
+    // physical parameter slot. Named syntax is declaration-only metadata: an
+    // indirect procedure value has no stable parameter names or defaults.
+    std::vector<EvalResult> supplied_arguments(parameters.size());
+    std::vector<SourceRange> supplied_ranges(
+        parameters.size(), call.range);
+    std::vector<bool> supplied(parameters.size(), false);
+    std::size_t next_positional = 0;
+    bool saw_named = false;
+    for (std::size_t source_index = 1;
+         source_index < call.children.size(); ++source_index) {
+      const NodeId argument_id = call.children[source_index];
+      const SyntaxNode &argument_syntax = tree.node(argument_id);
+      std::size_t parameter_index = next_positional;
+      NodeId value_id = argument_id;
+      if (argument_syntax.kind == NodeKind::NamedArgument) {
+        saw_named = true;
+        if (parameter_metadata.empty() ||
+            argument_syntax.children.size() != 1 ||
+            argument_syntax.token_begin >= argument_syntax.token_end) {
+          return fail(
+              argument_syntax.range,
+              "named arguments require a direct procedure declaration",
+              required);
+        }
+        const std::string name(
+            sources_.text(tree.token(argument_syntax.token_begin).range));
+        parameter_index = parameters.size();
+        for (std::size_t index = 0;
+             index < parameter_metadata.size(); ++index) {
+          if (!parameter_metadata[index].name.empty() &&
+              parameter_metadata[index].name == name) {
+            parameter_index = index;
+            break;
+          }
+        }
+        if (parameter_index == parameters.size()) {
+          return fail(
+              tree.token(argument_syntax.token_begin).range,
+              "procedure has no parameter named '" + name + "'",
+              required);
+        }
+        value_id = argument_syntax.children.front();
+      } else {
+        if (saw_named) {
+          return fail(
+              argument_syntax.range,
+              "positional argument cannot follow a named argument",
+              required);
+        }
+        if (next_positional >= parameters.size()) {
+          return fail(
+              argument_syntax.range,
+              "compile-time procedure call has too many arguments",
+              required);
+        }
+        ++next_positional;
+      }
+      if (supplied[parameter_index]) {
+        return fail(
+            argument_syntax.range,
+            "compile-time procedure parameter is supplied more than once",
+            required);
+      }
       const EvalResult argument = evaluate_expression(
-          tree, call.children[index], scope, required, expected);
+          tree,
+          value_id,
+          scope,
+          required,
+          parameter_types[parameter_index]);
       if (argument.status != EvalStatus::Ready) return argument;
-      supplied_arguments.push_back(argument);
+      supplied_arguments[parameter_index] = argument;
+      supplied_ranges[parameter_index] = tree.node(value_id).range;
+      supplied[parameter_index] = true;
+    }
+
+    for (std::size_t index = 0; index < parameters.size(); ++index) {
+      if (supplied[index]) continue;
+      if (parameter_metadata.empty() ||
+          !parameter_metadata[index].has_default) {
+        return fail(
+            call.range,
+            "compile-time procedure call is missing required argument '" +
+                parameters[index] + "'",
+            required);
+      }
+      if (parameter_metadata[index].default_is_ready) {
+        supplied_arguments[index] = ready(
+            parameter_metadata[index].default_value,
+            parameter_types[index]);
+        supplied[index] = true;
+        continue;
+      }
+      const SyntaxReference default_syntax =
+          parameter_metadata[index].default_syntax;
+      const SyntaxTree *default_tree = find_tree(default_syntax.file);
+      if (default_tree == nullptr || !default_syntax.node.is_valid()) {
+        return fail(
+            call.range,
+            "procedure default argument is unavailable",
+            required);
+      }
+      if (std::find(
+              active_defaults_.begin(),
+              active_defaults_.end(),
+              default_syntax) != active_defaults_.end()) {
+        return fail(
+            default_tree->node(default_syntax.node).range,
+            "procedure default arguments form a compile-time cycle",
+            required);
+      }
+
+      // Defaults are evaluated in their declaration scope, never the caller's
+      // local frame. An empty callee frame blocks accidental dynamic lookup;
+      // parametric type substitutions remain available for the declared
+      // expected type and compile-time type queries.
+      LocalFrame default_frame;
+      default_frame.scopes.emplace_back();
+      default_frame.type_bindings = prepared.type_bindings;
+      local_frames_.push_back(std::move(default_frame));
+      active_defaults_.push_back(default_syntax);
+      const EvalResult default_value = evaluate_expression(
+          *default_tree,
+          default_syntax.node,
+          body_scope,
+          required,
+          parameter_types[index]);
+      active_defaults_.pop_back();
+      local_frames_.pop_back();
+      if (default_value.status != EvalStatus::Ready) return default_value;
+      supplied_arguments[index] = default_value;
+      supplied_ranges[index] = default_tree->node(default_syntax.node).range;
+      supplied[index] = true;
     }
 
     for (std::size_t index = 0; index < supplied_arguments.size(); ++index) {
@@ -3691,7 +3829,7 @@ private:
           parameter_type.is_valid() && argument.type.is_valid() &&
           argument.type != parameter_type) {
         return fail(
-            tree.node(call.children[index + 1]).range,
+            supplied_ranges[index],
             "compile-time procedure argument has a different procedure type",
             required);
       }
@@ -3701,7 +3839,7 @@ private:
                 argument.value,
                 parameter_type,
                 false,
-                tree.node(call.children[index + 1]).range,
+                supplied_ranges[index],
                 required)
           : argument;
       if (converted.status != EvalStatus::Ready) {
@@ -5957,6 +6095,11 @@ private:
   std::vector<SymbolId> declaration_dependencies_;
   std::vector<TypeFacetDependency> type_dependencies_;
   std::vector<LocalFrame> local_frames_;
+  // Source defaults can be needed before the package-interface barrier (for
+  // example by a named constant that calls a procedure). Retaining the active
+  // syntax chain gives recursive lazy evaluation a deterministic cycle error
+  // instead of recursing before a procedure frame has been entered.
+  std::vector<SyntaxReference> active_defaults_;
   // active_procedures_ mirrors local_frames_ only during procedure execution
   // and lets a reached `...` defer context construction to BodyChecker.
   std::vector<SymbolId> active_procedures_;

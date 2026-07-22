@@ -1205,6 +1205,38 @@ void test_type_declaration_depth_is_bounded(TestState &state) {
           "limit of 256") != std::string::npos);
 }
 
+void test_default_argument_declaration_diagnostics(TestState &state) {
+  SemanticSource source(R"draft(
+package types
+
+Callback :: proc(value: i64 = 0)
+
+grouped :: proc(left, right: i64 = 0) {
+}
+
+discarded :: proc(_: i64 = 0) {
+}
+
+packed :: proc(values: ..type = 0) {
+}
+)draft");
+  EXPECT(state, source.diagnostics.has_errors());
+  const std::string rendered =
+      draft::render_diagnostics(source.sources, source.diagnostics);
+  EXPECT(state, rendered.find(
+      "default arguments require a named procedure declaration") !=
+      std::string::npos);
+  EXPECT(state, rendered.find(
+      "a parameter default requires exactly one binding name") !=
+      std::string::npos);
+  EXPECT(state, rendered.find(
+      "discard parameter cannot have a default value") !=
+      std::string::npos);
+  EXPECT(state, rendered.find(
+      "static argument pack cannot have a default value") !=
+      std::string::npos);
+}
+
 } // namespace
 
 int main() {
@@ -1225,6 +1257,7 @@ int main() {
   test_invalid_layout_modifiers(state);
   test_cyclic_layout_constant(state);
   test_type_declaration_depth_is_bounded(state);
+  test_default_argument_declaration_diagnostics(state);
 
   if (state.failures != 0) {
     std::cerr << state.failures << " type resolver expectation(s) failed\n";

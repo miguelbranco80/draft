@@ -206,7 +206,7 @@ pub C_Point :: c align(16) struct {
     y: i64,
 }
 
-pub add :: proc(a, b: i64) -> i64 {
+pub add :: proc(a: i64, b: i64 = 1) -> i64 {
     return a + b
 }
 
@@ -225,6 +225,24 @@ Hidden :: struct { value: u64, }
       dependency_semantics.package,
       dependency_semantics.constants,
       diagnostics);
+  const auto add_declaration = std::find_if(
+      dependency_interface.declarations.begin(),
+      dependency_interface.declarations.end(),
+      [](const draft::InterfaceDeclaration &declaration) {
+        return declaration.name == "add";
+      });
+  EXPECT(state, add_declaration != dependency_interface.declarations.end());
+  if (add_declaration != dependency_interface.declarations.end()) {
+    EXPECT(state, add_declaration->procedure_parameters.size() == 2);
+    if (add_declaration->procedure_parameters.size() == 2) {
+      EXPECT(state, add_declaration->procedure_parameters[0].name == "a");
+      EXPECT(state, add_declaration->procedure_parameters[1].name == "b");
+      EXPECT(state, add_declaration->procedure_parameters[1].has_default);
+      EXPECT(state,
+          add_declaration->procedure_parameters[1].default_value.integer ==
+              draft::BigInteger::from_u64(1));
+    }
+  }
 
   draft::LoadedPackage consumer = parse_package(
       sources,
@@ -265,7 +283,7 @@ Sized :: struct {
 }
 
 main :: proc() {
-    value := math.add(math.Count, 1)
+    value := math.add(a = math.Count)
     assert(value == 8)
     assert(callback(20, 22) == 42)
     assert(float_count() == 7.0)

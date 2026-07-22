@@ -125,6 +125,16 @@ struct InterfaceParameter {
   InterfaceTypeId type;
 };
 
+// Runtime parameter names and defaults are declaration call metadata rather
+// than procedure-type identity. A published interface contains one row per
+// fixed signature parameter. Defaults are already evaluated, canonical
+// constants; dependency source syntax never crosses the package boundary.
+struct InterfaceProcedureParameter {
+  std::string name;
+  bool has_default = false;
+  ConstantValue default_value;
+};
+
 // InterfaceDeclaration is one `pub` package binding in declaration order.
 // constant is meaningful only when has_constant is true. flags retain language
 // properties such as parametric and foreign; imported proxies never reinterpret
@@ -140,6 +150,7 @@ struct InterfaceDeclaration {
   std::string native_provider;
   std::string native_linker_name_spelling;
   std::vector<InterfaceParameter> parameters;
+  std::vector<InterfaceProcedureParameter> procedure_parameters;
   // A static pack is signature-generation metadata, not an InterfaceType row:
   // the public source procedure type contains only its fixed prefix and result.
   // Consumers reproduce the marker from these canonical source facts and send

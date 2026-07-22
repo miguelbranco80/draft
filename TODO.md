@@ -1,6 +1,6 @@
 # TODO
 
-- [ ] Add named and default procedure arguments.
+- [x] Add named and default procedure arguments.
 - [ ] Add packed structs and bit fields.
 - [ ] Add Raylib bindings, native linking, ABI tests, and examples.
 - [ ] Add an x86-64 Linux native target.

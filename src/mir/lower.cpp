@@ -928,8 +928,38 @@ private:
         captured.operands.push_back(context_);
       }
     }
-    for (std::size_t index = 1; index < expression.operands.size(); ++index) {
-      captured.operands.push_back(lower_expression(expression.operands[index]));
+    const std::size_t argument_count = expression.operands.size() - 1;
+    if (!expression.call_parameter_indices.empty() &&
+        expression.call_parameter_indices.size() != argument_count) {
+      diagnostics_.error(
+          expression.range,
+          "call HIR parameter mapping does not match its operands");
+      return captured;
+    }
+    std::vector<MirValueId> physical_arguments(argument_count);
+    std::vector<bool> filled(argument_count, false);
+    for (std::size_t index = 0; index < argument_count; ++index) {
+      const std::size_t physical = expression.call_parameter_indices.empty()
+          ? index
+          : expression.call_parameter_indices[index];
+      const MirValueId value = lower_expression(expression.operands[index + 1]);
+      if (physical >= argument_count || filled[physical]) {
+        diagnostics_.error(
+            expression.range,
+            "call HIR contains an invalid parameter mapping");
+        continue;
+      }
+      physical_arguments[physical] = value;
+      filled[physical] = true;
+    }
+    for (std::size_t index = 0; index < argument_count; ++index) {
+      if (!filled[index]) {
+        diagnostics_.error(
+            expression.range,
+            "call HIR leaves a physical parameter unbound");
+        continue;
+      }
+      captured.operands.push_back(physical_arguments[index]);
     }
     return captured;
   }

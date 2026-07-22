@@ -7,8 +7,9 @@
 // table with nondeterministic iteration.
 //
 // The table initially records declarations before every type is known. Symbol
-// type and classification may therefore be completed by later semantic passes,
-// but name, declaration source, owning scope, and visibility never change.
+// type, classification, and procedure call metadata may therefore be completed
+// by later semantic passes, but name, declaration source, owning scope, and
+// visibility never change.
 // Duplicate declarations are diagnosed against the exact new range and return
 // an invalid ID so later passes cannot accidentally treat the duplicate as the
 // canonical binding.
@@ -18,6 +19,7 @@
 
 #pragma once
 
+#include "sema/constant_value.h"
 #include "sema/type.h"
 #include "source/diagnostic.h"
 #include "source/source.h"
@@ -99,6 +101,27 @@ struct SymbolFlags {
   bool parametric = false;
 };
 
+// ProcedureParameter records the source-level calling contract that is not
+// part of a procedure TypeId. name is empty for `_`, which can be supplied only
+// positionally. A source declaration initially carries default_syntax; the
+// package-interface barrier evaluates that expression once and publishes the
+// canonical value. Imported declarations carry only the ready value and never
+// retain a source coordinate from another package.
+//
+// Rows are in physical signature order, including expansion of a grouped
+// declaration such as `left, right: i64`. Static packs are intentionally absent:
+// they name an open tail rather than one physical parameter. The vector must
+// therefore have exactly one row per fixed procedure parameter whenever it is
+// nonempty.
+struct ProcedureParameter {
+  std::string name;
+  SourceRange name_range;
+  bool has_default = false;
+  SyntaxReference default_syntax;
+  bool default_is_ready = false;
+  ConstantValue default_value;
+};
+
 struct Symbol {
   std::string name;
   // Most symbols use their source name for both lookup and native linkage.
@@ -116,6 +139,10 @@ struct Symbol {
   TypeId type;
   SyntaxReference syntax;
   SourceRange name_range;
+  // Declaration-only call metadata. Procedure type values deliberately omit
+  // it, which keeps assignment and ABI compatibility structural and makes
+  // named/default calls available only when the callee declaration is known.
+  std::vector<ProcedureParameter> procedure_parameters;
 };
 
 // Scope owns bindings declared directly in one lexical region. Symbol IDs

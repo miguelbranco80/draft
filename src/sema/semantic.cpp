@@ -971,6 +971,13 @@ SemanticAnalysisResult finish_package_semantics_from_products(
     if (symbol.kind != SymbolKind::Type)
       symbol.type = binding.type;
   }
+  (void)finalize_package_procedure_parameter_defaults(
+      sources,
+      loaded,
+      result.package,
+      target,
+      result.constants,
+      diagnostics);
   const CompileTimeRoundResult final_round = validate_compile_time_products(
       sources, loaded, result.package, target, result.selections,
       result.constants, CompileTimeSynthesisMode::Reject, true, diagnostics);

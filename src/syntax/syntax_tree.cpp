@@ -120,6 +120,7 @@ std::string_view node_kind_name(NodeKind kind) {
   case NodeKind::Procedure: return "Procedure";
   case NodeKind::ParameterList: return "ParameterList";
   case NodeKind::Parameter: return "Parameter";
+  case NodeKind::ParameterDefault: return "ParameterDefault";
   case NodeKind::StaticPackType: return "StaticPackType";
   case NodeKind::ResultClause: return "ResultClause";
   case NodeKind::MemberList: return "MemberList";
@@ -177,6 +178,7 @@ std::string_view node_kind_name(NodeKind kind) {
   case NodeKind::BinaryExpression: return "BinaryExpression";
   case NodeKind::ConditionalExpression: return "ConditionalExpression";
   case NodeKind::CallExpression: return "CallExpression";
+  case NodeKind::NamedArgument: return "NamedArgument";
   case NodeKind::BracketExpression: return "BracketExpression";
   case NodeKind::SliceExpression: return "SliceExpression";
   case NodeKind::MemberExpression: return "MemberExpression";

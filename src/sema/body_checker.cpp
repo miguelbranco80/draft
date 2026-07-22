@@ -135,6 +135,17 @@ struct ExplicitProcedureArguments {
   std::vector<ValueSubstitution> value_substitutions;
 };
 
+// One checked direct call first binds surface arguments to fixed physical
+// parameters. Explicit rows remain in source order; default_parameter_indices
+// are appended later in declaration order as constant HIR operands. The final
+// mapping is a permutation even when named arguments reorder the fixed prefix.
+struct BoundProcedureArguments {
+  bool valid = false;
+  std::vector<NodeId> explicit_expressions;
+  std::vector<std::uint32_t> explicit_parameter_indices;
+  std::vector<std::uint32_t> default_parameter_indices;
+};
+
 // One source template can produce several concrete procedure bodies. Instances
 // retain both substitution kinds here while the permanent semantic graph owns
 // the concrete symbol, signature, and cloned runtime-parameter scope used by
@@ -824,6 +835,151 @@ private:
       const SyntaxTree &tree, std::uint32_t index) const {
     const Token &token = tree.token(index);
     return {std::string(sources_.text(token.range)), token.range};
+  }
+
+  // Binds one call's syntax to a declaration's fixed parameter rows without
+  // checking operand expressions. This separation is important for generics:
+  // the checker must know which declared type pattern receives each explicit
+  // operand before it can infer substitutions. Positional operands must precede
+  // named operands; a static pack is therefore always one source-ordered tail.
+  [[nodiscard]] BoundProcedureArguments bind_procedure_arguments(
+      const SyntaxTree &tree,
+      const SyntaxNode &call,
+      const Symbol *declaration,
+      std::size_t fixed_parameter_count,
+      bool has_static_pack) {
+    BoundProcedureArguments result;
+    const std::size_t initial_errors = diagnostics_.error_count();
+    const std::vector<ProcedureParameter> *parameters = declaration == nullptr
+        ? nullptr
+        : &declaration->procedure_parameters;
+    if (parameters != nullptr && !parameters->empty() &&
+        parameters->size() != fixed_parameter_count) {
+      diagnostics_.error(
+          call.range,
+          "procedure call metadata does not match its signature");
+      return result;
+    }
+
+    std::vector<bool> bound(fixed_parameter_count, false);
+    std::size_t next_positional = 0;
+    std::size_t pack_count = 0;
+    bool saw_named = false;
+    for (std::size_t source_index = 1;
+         source_index < call.children.size(); ++source_index) {
+      const NodeId argument_id = call.children[source_index];
+      const SyntaxNode &argument = tree.node(argument_id);
+      if (argument.kind == NodeKind::NamedArgument) {
+        saw_named = true;
+        if (parameters == nullptr || parameters->empty()) {
+          diagnostics_.error(
+              argument.range,
+              "named arguments require a direct procedure declaration");
+          continue;
+        }
+        if (argument.children.size() != 1 ||
+            argument.token_begin >= argument.token_end) {
+          diagnostics_.error(argument.range, "malformed named argument");
+          continue;
+        }
+        const SourceName name = token_name(tree, argument.token_begin);
+        std::optional<std::size_t> parameter_index;
+        for (std::size_t index = 0; index < parameters->size(); ++index) {
+          if (!(*parameters)[index].name.empty() &&
+              (*parameters)[index].name == name.text) {
+            parameter_index = index;
+            break;
+          }
+        }
+        if (!parameter_index.has_value()) {
+          diagnostics_.error(
+              name.range,
+              "procedure has no parameter named '" + name.text + "'");
+          continue;
+        }
+        if (bound[*parameter_index]) {
+          diagnostics_.error(
+              name.range,
+              "procedure parameter '" + name.text +
+                  "' is supplied more than once");
+          continue;
+        }
+        bound[*parameter_index] = true;
+        result.explicit_expressions.push_back(argument.children.front());
+        result.explicit_parameter_indices.push_back(
+            static_cast<std::uint32_t>(*parameter_index));
+        continue;
+      }
+
+      if (saw_named) {
+        diagnostics_.error(
+            argument.range,
+            "positional argument cannot follow a named argument");
+        continue;
+      }
+      if (next_positional < fixed_parameter_count) {
+        bound[next_positional] = true;
+        result.explicit_expressions.push_back(argument_id);
+        result.explicit_parameter_indices.push_back(
+            static_cast<std::uint32_t>(next_positional));
+        ++next_positional;
+        continue;
+      }
+      if (!has_static_pack) {
+        diagnostics_.error(
+            argument.range,
+            "procedure call has too many arguments");
+        continue;
+      }
+      result.explicit_expressions.push_back(argument_id);
+      result.explicit_parameter_indices.push_back(static_cast<std::uint32_t>(
+          fixed_parameter_count + pack_count));
+      ++pack_count;
+    }
+
+    for (std::size_t index = 0; index < fixed_parameter_count; ++index) {
+      if (bound[index]) continue;
+      if (parameters != nullptr && !parameters->empty() &&
+          (*parameters)[index].has_default &&
+          (*parameters)[index].default_is_ready) {
+        result.default_parameter_indices.push_back(
+            static_cast<std::uint32_t>(index));
+        continue;
+      }
+      const std::string detail = parameters != nullptr && !parameters->empty() &&
+              !(*parameters)[index].name.empty()
+          ? " '" + (*parameters)[index].name + "'"
+          : std::string();
+      diagnostics_.error(
+          call.range,
+          "procedure call is missing required argument" + detail);
+    }
+
+    result.valid = diagnostics_.error_count() == initial_errors;
+    return result;
+  }
+
+  // Materializes one already closed default as an ordinary constant operand.
+  // It intentionally has no source expression to execute at the call site:
+  // declaration finalization proved and converted the value once, and the
+  // package interface carries that exact value to every consumer.
+  [[nodiscard]] HirExpressionId default_argument_expression(
+      const Symbol &declaration,
+      std::uint32_t parameter_index,
+      TypeId parameter_type,
+      SourceRange call_range) {
+    assert(parameter_index < declaration.procedure_parameters.size());
+    const ProcedureParameter &parameter =
+        declaration.procedure_parameters[parameter_index];
+    assert(parameter.has_default && parameter.default_is_ready);
+    HirExpression expression;
+    expression.kind = HirExpressionKind::Constant;
+    expression.type = parameter_type;
+    expression.range = parameter.name_range.is_valid()
+        ? parameter.name_range
+        : call_range;
+    expression.constant = parameter.default_value;
+    return hir_.add_expression(std::move(expression));
   }
 
   // Extracts names from a grammar-owned flat token span in source order.
@@ -5756,14 +5912,17 @@ private:
             // recoverable property of source input.
             assert(pack == nullptr ||
                 pack->fixed_parameter_count == parameter_count);
-            const std::size_t supplied_count = node.children.size() - 1;
-            if ((pack == nullptr && supplied_count != parameter_count) ||
-                (pack != nullptr && supplied_count < parameter_count)) {
-              diagnostics_.error(
-                  node.range, "procedure call has the wrong number of arguments");
+            const BoundProcedureArguments bound = bind_procedure_arguments(
+                tree,
+                node,
+                &candidate,
+                parameter_count,
+                pack != nullptr);
+            if (!bound.valid) {
               return invalid_expression(node.range);
             }
             std::vector<HirExpressionId> arguments;
+            std::vector<std::uint32_t> argument_parameter_indices;
             std::vector<TypeSubstitution> type_substitutions =
                 explicit_arguments.has_value()
                 ? std::move(explicit_arguments->type_substitutions)
@@ -5772,12 +5931,30 @@ private:
                 explicit_arguments.has_value()
                 ? std::move(explicit_arguments->value_substitutions)
                 : std::vector<ValueSubstitution>{};
-            for (std::size_t index = 0; index < parameter_count; ++index) {
+            std::vector<TypeId> pack_types;
+            for (std::size_t index = 0;
+                 index < bound.explicit_expressions.size(); ++index) {
+              const NodeId supplied_id = bound.explicit_expressions[index];
+              const std::size_t parameter_index =
+                  bound.explicit_parameter_indices[index];
+              if (parameter_index >= parameter_count) {
+                const HirExpressionId argument = check_expression(
+                    tree, supplied_id, scope);
+                TypeId concrete = default_inferred_runtime_type(
+                    hir_.expression(argument).type);
+                contextualize_inferred_runtime_expression(argument, concrete);
+                hir_.expression_mut(argument).type = concrete;
+                arguments.push_back(argument);
+                argument_parameter_indices.push_back(
+                    static_cast<std::uint32_t>(parameter_index));
+                pack_types.push_back(concrete);
+                continue;
+              }
               const TypeId argument_pattern = substitute_type(
-                  template_signature.members[index],
+                  template_signature.members[parameter_index],
                   type_substitutions,
                   value_substitutions,
-                  tree.node(node.children[index + 1]).range);
+                  tree.node(supplied_id).range);
               const TypeId argument_expected =
                   contains_symbolic_type(argument_pattern)
                   ? TypeId{}
@@ -5785,33 +5962,34 @@ private:
               const HirExpressionId argument =
                   check_expression(
                       tree,
-                      node.children[index + 1],
+                      supplied_id,
                       scope,
                       argument_expected);
               arguments.push_back(argument);
+              argument_parameter_indices.push_back(
+                  static_cast<std::uint32_t>(parameter_index));
               if (!infer_type_argument(
                       *inferred_template,
-                      template_signature.members[index],
+                      template_signature.members[parameter_index],
                       hir_.expression(argument).type,
                       type_substitutions,
                       value_substitutions)) {
                 diagnostics_.error(
-                    tree.node(node.children[index + 1]).range,
+                    tree.node(supplied_id).range,
                     "procedure type arguments cannot be inferred uniquely");
                 return invalid_expression(node.range);
               }
             }
-            std::vector<TypeId> pack_types;
-            for (std::size_t index = parameter_count;
-                 index < supplied_count; ++index) {
-              const HirExpressionId argument = check_expression(
-                  tree, node.children[index + 1], scope);
-              TypeId concrete = default_inferred_runtime_type(
-                  hir_.expression(argument).type);
-              contextualize_inferred_runtime_expression(argument, concrete);
-              hir_.expression_mut(argument).type = concrete;
-              arguments.push_back(argument);
-              pack_types.push_back(concrete);
+            for (std::uint32_t parameter_index :
+                 bound.default_parameter_indices) {
+              const TypeId default_type = substitute_type(
+                  template_signature.members[parameter_index],
+                  type_substitutions,
+                  value_substitutions,
+                  node.range);
+              arguments.push_back(default_argument_expression(
+                  candidate, parameter_index, default_type, node.range));
+              argument_parameter_indices.push_back(parameter_index);
             }
             // A template HIR row is semantic evidence, not executable code.
             // Do not let a concrete-looking call inside that row manufacture a
@@ -5881,13 +6059,17 @@ private:
             expression.operands.push_back(checked_callee);
             for (std::size_t index = 0; index < arguments.size(); ++index) {
               HirExpression &argument = hir_.expression_mut(arguments[index]);
+              const std::size_t parameter_index =
+                  argument_parameter_indices[index];
               const TypeId concrete = apply_expected_type(
                   argument.type,
-                  concrete_signature.members[index],
+                  concrete_signature.members[parameter_index],
                   argument.range);
               contextualize_numeric_expression(arguments[index], concrete);
               argument.type = concrete;
               expression.operands.push_back(arguments[index]);
+              expression.call_parameter_indices.push_back(
+                  static_cast<std::uint32_t>(parameter_index));
             }
             const TypeId result = concrete_signature.members.empty()
                 ? semantic_.types.builtins().void_type
@@ -5917,20 +6099,49 @@ private:
       const std::size_t parameter_count = signature.members.empty()
           ? 0
           : signature.members.size() - 1;
-      if (node.children.size() - 1 != parameter_count) {
-        diagnostics_.error(node.range, "procedure call has the wrong number of arguments");
+      std::optional<Symbol> direct_declaration;
+      const HirExpression &callee_expression = hir_.expression(callee);
+      if (callee_expression.kind == HirExpressionKind::Symbol &&
+          callee_expression.symbol.is_valid()) {
+        const Symbol &candidate =
+            semantic_.symbols.symbol(callee_expression.symbol);
+        if (candidate.kind == SymbolKind::Procedure) {
+          direct_declaration = candidate;
+        }
+      }
+      const BoundProcedureArguments bound = bind_procedure_arguments(
+          tree,
+          node,
+          direct_declaration.has_value() ? &*direct_declaration : nullptr,
+          parameter_count,
+          false);
+      if (!bound.valid) {
+        return invalid_expression(node.range);
       }
       HirExpression expression;
       expression.kind = HirExpressionKind::Call;
       expression.range = node.range;
       expression.operands.push_back(callee);
-      const std::size_t checked_count = std::min(parameter_count, node.children.size() - 1);
-      for (std::size_t index = 0; index < checked_count; ++index) {
+      for (std::size_t index = 0;
+           index < bound.explicit_expressions.size(); ++index) {
+        const std::uint32_t parameter_index =
+            bound.explicit_parameter_indices[index];
         expression.operands.push_back(check_expression(
-            tree, node.children[index + 1], scope, signature.members[index]));
+            tree,
+            bound.explicit_expressions[index],
+            scope,
+            signature.members[parameter_index]));
+        expression.call_parameter_indices.push_back(parameter_index);
       }
-      for (std::size_t index = checked_count + 1; index < node.children.size(); ++index) {
-        expression.operands.push_back(check_expression(tree, node.children[index], scope));
+      for (std::uint32_t parameter_index :
+           bound.default_parameter_indices) {
+        assert(direct_declaration.has_value());
+        expression.operands.push_back(default_argument_expression(
+            *direct_declaration,
+            parameter_index,
+            signature.members[parameter_index],
+            node.range));
+        expression.call_parameter_indices.push_back(parameter_index);
       }
       TypeId result = signature.members.empty()
           ? semantic_.types.builtins().void_type
@@ -6996,6 +7207,24 @@ private:
         }
       }
     }
+
+    // Package procedures close their defaults at the interface barrier. A
+    // lexical procedure is discovered later, so close its declaration-owned
+    // constants after both its signature and parameter-symbol rows have their
+    // concrete enclosing substitutions. The active bindings permit a nested
+    // declaration inside a concrete generic body to use enclosing compile-time
+    // constants without admitting runtime capture.
+    const std::vector<ConstantTypeBinding> default_types =
+        active_constant_types();
+    (void)finalize_procedure_parameter_defaults(
+        sources_,
+        loaded_,
+        semantic_,
+        id,
+        target_,
+        active_constant_table(),
+        diagnostics_,
+        &default_types);
 
     // A body nested in a symbolic outer template is itself non-executable even
     // when it has no parameters of its own. The concrete outer body is checked

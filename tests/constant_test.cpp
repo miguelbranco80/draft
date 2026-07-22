@@ -2396,7 +2396,7 @@ Bad_Raw_Data_Call_Type :: type_of(raw_data(runtime_text_with_value()))
   EXPECT(state, rendered.find("raw_data requires a string argument") !=
       std::string::npos);
   EXPECT(state, rendered.find(
-      "procedure call has the wrong number of arguments") !=
+      "procedure call is missing required argument 'value'") !=
       std::string::npos);
   EXPECT(state, rendered.find(
       "target.has_feature requires exactly one argument") !=
@@ -2591,7 +2591,7 @@ when false && target.has_feature(42) &&
          spelling == "42");
     saw_missing_argument = saw_missing_argument ||
         (diagnostic.message ==
-             "procedure call has the wrong number of arguments" &&
+             "procedure call is missing required argument 'value'" &&
          spelling == "runtime_text_with_value()");
     saw_short_circuited_wrong_type = saw_short_circuited_wrong_type ||
         (diagnostic.message == "raw_data requires a string argument" &&
@@ -2636,6 +2636,72 @@ when false && target.has_feature(42) &&
   }
 }
 
+// A package constant may call a procedure before the later interface barrier
+// has canonicalized its defaults. The evaluator therefore resolves an omitted
+// source default lazily in declaration scope while preserving named binding.
+void test_compile_time_named_and_default_arguments(TestState &state) {
+  AnalyzedSource source(R"draft(
+package conditions
+
+Offset :: 20
+
+sum_three :: proc(first: i64, second: i64 = Offset, third: i64 = 30) -> i64 {
+    return first + second + third
+}
+
+Forward_Result :: forward_default()
+Later :: 7
+forward_default :: proc(value: i64 = Later) -> i64 {
+    return value
+}
+
+Named_Result :: sum_three(third = 3, first = 1)
+Positional_Result :: sum_three(2)
+)draft");
+  if (source.diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(source.sources, source.diagnostics);
+  }
+  EXPECT(state, source.analysis.ok);
+  EXPECT(state, !source.diagnostics.has_errors());
+
+  const auto expect_integer = [&](std::string_view name,
+                                  std::string_view expected) {
+    const std::optional<draft::SymbolId> symbol =
+        find_symbol(source.analysis.package, name);
+    EXPECT(state, symbol.has_value());
+    if (!symbol.has_value()) return;
+    const draft::ConstantValue *value = source.analysis.constants.find(*symbol);
+    EXPECT(state, value != nullptr);
+    if (value != nullptr) {
+      EXPECT(state, value->kind == draft::ConstantKind::Integer);
+      EXPECT(state, value->integer.to_decimal() == expected);
+    }
+  };
+  expect_integer("Forward_Result", "7");
+  expect_integer("Named_Result", "24");
+  expect_integer("Positional_Result", "52");
+
+  AnalyzedSource cycle(R"draft(
+package conditions
+
+left :: proc(value: i64 = right()) -> i64 {
+    return value
+}
+
+right :: proc(value: i64 = left()) -> i64 {
+    return value
+}
+
+Result :: left()
+)draft");
+  EXPECT(state, !cycle.analysis.ok);
+  const std::string cycle_rendered =
+      draft::render_diagnostics(cycle.sources, cycle.diagnostics);
+  EXPECT(state, cycle_rendered.find(
+      "procedure default arguments form a compile-time cycle") !=
+      std::string::npos);
+}
+
 } // namespace
 
 int main() {
@@ -2656,6 +2722,7 @@ int main() {
   test_constant_dependency_chain_is_product_scheduled(state);
   test_type_values_and_structural_queries(state);
   test_selected_when_condition_type_validation(state);
+  test_compile_time_named_and_default_arguments(state);
 
   if (state.failures != 0) {
     std::cerr << state.failures << " constant evaluation expectation(s) failed\n";

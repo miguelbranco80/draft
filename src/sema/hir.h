@@ -133,6 +133,13 @@ struct HirExpression {
   AtomicMemoryOrder atomic_failure_order =
       AtomicMemoryOrder::SequentiallyConsistent;
   std::vector<HirExpressionId> operands;
+  // A Call keeps explicit operands in source evaluation order, followed by
+  // compiler-supplied constant defaults in declaration order. This parallel
+  // vector maps each operand after the callee to its zero-based physical
+  // parameter slot. It is a complete permutation; MIR and effect analysis
+  // evaluate the source sequence first and then assemble ABI/contract inputs
+  // in parameter order. Other expression kinds leave it empty.
+  std::vector<std::uint32_t> call_parameter_indices;
   // Composite operands may be positional or name-directed. This parallel
   // vector contains an invalid SymbolId for a positional operand and the
   // resolved field SymbolId for a keyed operand. Other expression kinds leave

@@ -86,8 +86,25 @@ distance :: proc(left, right: Point) -> u64 {
 ```
 
 Parameters are immutable. Create an explicit local copy to mutate a value.
-Arguments and operands evaluate left to right. Draft 1 has no declaration
-overloading or default procedure arguments.
+Arguments and operands evaluate left to right. A direct procedure call may use
+named arguments after all positional arguments, and may omit parameters with
+compile-time constant defaults:
+
+```draft
+adjust :: proc(value: i64, scale: i64 = 2, offset: i64 = 0) -> i64 {
+    return value * scale + offset
+}
+
+plain := adjust(10)
+shifted := adjust(offset = 3, value = 10)
+```
+
+Names/defaults belong to the declaration, not its procedure type or ABI. A
+procedure value therefore requires the complete positional list. Defaults are
+checked in declaration scope, cannot depend on runtime parameters or unresolved
+parametric bindings, and require a concrete parameter type. Do not put defaults
+on grouped, discard, or static-pack parameters or in standalone procedure
+types.
 
 Nested procedures are static procedures, not closures. They may use package
 declarations, imports, predeclared names, context, and enclosing compile-time or
@@ -466,7 +483,10 @@ print_values :: proc(prefix: string, values: ..type) {
 }
 ```
 
-Call it directly with the fixed prefix and any number of tail values. Each tail
+Call it directly with the fixed prefix and any number of tail values. Defaults
+may fill fixed parameters; a call with pack-tail values supplies its fixed
+prefix positionally because no positional value may follow a named argument.
+Each tail
 keeps its own concrete type; untyped integers/floats default independently to
 `int`/`f64`. `len(values)` is a compile-time `usize`, and static iteration
 expands in source order with a compile-time `usize` index. The pack is not a
@@ -531,7 +551,7 @@ no `main`.
 Do not synthesize syntax for familiar features that are absent. Draft 1 has no
 methods, closures, inheritance, interfaces/traits, exceptions, implicit
 destructors, automatic ownership/moves, operator overloading, declaration
-overloading, default arguments, variadic foreign procedures, macro expander,
+overloading, variadic foreign procedures, macro expander,
 AST construction API, textual preprocessor, hidden package initialization,
 strict-aliasing assumption, implicit numeric conversions, implicit truthiness,
 aggregate equality, general compile-time declaration generation, or raw-string

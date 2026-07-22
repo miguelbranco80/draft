@@ -142,7 +142,7 @@ foreign libc {
     puts :: c proc(message: cstring) -> c.int
 }
 
-pack_proc :: proc(values: ..type) {
+pack_proc :: proc(prefix: u32 = 0, values: ..type) {
 }
 
 export draft_entry as "grammar_entry" :: c proc(argument: u32) -> c.int {
@@ -158,7 +158,7 @@ export draft_entry as "grammar_entry" :: c proc(argument: u32) -> c.int {
     unary := -initial
     binary := initial + 1
     conditional := initial if true else 0
-    called := helper(initial)
+    called := helper(value = initial)
     indexed := values[0]
     sliced := values[1:3]
     member := tuple.1

@@ -893,6 +893,12 @@ private:
     std::vector<TypeId> parameters;
     TypeId result = semantic_.types.builtins().void_type;
     bool saw_static_pack = false;
+    if (owner.has_value()) {
+      // Signature resolution may run in a private product attempt before its
+      // completed Symbol patch is published. Rebuild the metadata from syntax
+      // on each attempt so retries never append duplicate parameter rows.
+      semantic_.symbols.symbol_mut(*owner).procedure_parameters.clear();
+    }
     for (NodeId child_id : procedure.children) {
       const SyntaxNode &child = tree.node(child_id);
       if (child.kind == NodeKind::ParameterList) {
@@ -904,11 +910,28 @@ private:
             continue;
           }
           const SyntaxNode &name_list = tree.node(parameter.children.front());
-          const SyntaxNode &parameter_type_node =
-              tree.node(parameter.children.back());
+          NodeId parameter_type_id;
+          std::optional<NodeId> default_id;
+          for (std::size_t part_index = 1;
+               part_index < parameter.children.size(); ++part_index) {
+            const NodeId part_id = parameter.children[part_index];
+            const SyntaxNode &part = tree.node(part_id);
+            if (part.kind == NodeKind::ParameterDefault) {
+              default_id = part_id;
+            } else if (!parameter_type_id.is_valid()) {
+              parameter_type_id = part_id;
+            }
+          }
+          if (!parameter_type_id.is_valid()) continue;
+          const SyntaxNode &parameter_type_node = tree.node(parameter_type_id);
           const std::vector<SourceName> names = names_in_span(
               tree, name_list.token_begin, name_list.token_end);
           if (parameter_type_node.kind == NodeKind::StaticPackType) {
+            if (default_id.has_value()) {
+              diagnostics_.error(
+                  tree.node(*default_id).range,
+                  "static argument pack cannot have a default value");
+            }
             if (saw_static_pack) {
               diagnostics_.error(
                   parameter.range,
@@ -979,9 +1002,37 @@ private:
             continue;
           }
           const TypeId resolved_parameter_type =
-              resolve_type(tree, parameter.children.back(), parent);
+              resolve_type(tree, parameter_type_id, parent);
+          if (default_id.has_value() && !owner.has_value()) {
+            diagnostics_.error(
+                tree.node(*default_id).range,
+                "default arguments require a named procedure declaration");
+          }
+          if (default_id.has_value() && names.size() != 1) {
+            diagnostics_.error(
+                tree.node(*default_id).range,
+                "a parameter default requires exactly one binding name");
+          }
           for (const SourceName &name : names) {
             parameters.push_back(resolved_parameter_type);
+            if (owner.has_value()) {
+              ProcedureParameter metadata;
+              if (name.text != "_") metadata.name = name.text;
+              metadata.name_range = name.range;
+              if (default_id.has_value() && names.size() == 1 &&
+                  name.text != "_" &&
+                  !tree.node(*default_id).children.empty()) {
+                metadata.has_default = true;
+                metadata.default_syntax = {
+                    tree.file(), tree.node(*default_id).children.front()};
+              } else if (default_id.has_value() && name.text == "_") {
+                diagnostics_.error(
+                    name.range,
+                    "discard parameter cannot have a default value");
+              }
+              semantic_.symbols.symbol_mut(*owner)
+                  .procedure_parameters.push_back(std::move(metadata));
+            }
             if (!owner.has_value() || name.text == "_") {
               continue;
             }
@@ -5411,6 +5462,136 @@ TypeId resolve_local_procedure_signature(
       &active_constants, &active_types, &target);
   return resolver.resolve_one_procedure(
       tree, declaration, procedure, scope, owner);
+}
+
+bool finalize_procedure_parameter_defaults(
+    const SourceManager &sources,
+    const LoadedPackage &loaded,
+    SemanticPackage &package,
+    SymbolId owner,
+    const TargetFacts &target,
+    const ConstantTable &active_constants,
+    DiagnosticSink &diagnostics,
+    const std::vector<ConstantTypeBinding> *active_types) {
+  if (!owner.is_valid() || owner.value >= package.symbols.symbol_count()) {
+    diagnostics.error(
+        SourceRange::invalid(),
+        "procedure default finalization received an invalid owner");
+    return false;
+  }
+  const Symbol owner_snapshot = package.symbols.symbol(owner);
+  if (owner_snapshot.kind != SymbolKind::Procedure ||
+      owner_snapshot.procedure_parameters.empty()) {
+    return true;
+  }
+  if (!owner_snapshot.type.is_valid()) {
+    diagnostics.error(
+        owner_snapshot.name_range,
+        "procedure defaults require a complete signature");
+    return false;
+  }
+  const Type signature = package.types.type(owner_snapshot.type);
+  const std::size_t parameter_count = signature.members.empty()
+      ? 0
+      : signature.members.size() - 1;
+  if (owner_snapshot.procedure_parameters.size() != parameter_count) {
+    diagnostics.error(
+        owner_snapshot.name_range,
+        "procedure parameter metadata does not match its signature");
+    return false;
+  }
+
+  const SyntaxTree *tree = nullptr;
+  for (const LoadedPackageFile &file : loaded.files) {
+    if (file.source == owner_snapshot.syntax.file && file.syntax.has_value()) {
+      tree = &*file.syntax;
+      break;
+    }
+  }
+  ScopeId procedure_scope;
+  for (const OwnedSemanticScope &owned : package.owned_scopes_for_read()) {
+    if (owned.owner == owner &&
+        package.symbols.scope(owned.scope).kind == ScopeKind::Procedure) {
+      procedure_scope = owned.scope;
+      break;
+    }
+  }
+
+  bool ok = true;
+  for (std::size_t index = 0; index < parameter_count; ++index) {
+    const ProcedureParameter parameter =
+        package.symbols.symbol(owner).procedure_parameters[index];
+    if (!parameter.has_default || parameter.default_is_ready) continue;
+    if (tree == nullptr || !procedure_scope.is_valid() ||
+        parameter.default_syntax.file != tree->file() ||
+        !parameter.default_syntax.node.is_valid()) {
+      diagnostics.error(
+          parameter.name_range,
+          "procedure default expression is unavailable");
+      ok = false;
+      continue;
+    }
+    const TypeId expected = signature.members[index];
+    if (package.types.contains_compile_time_type(expected)) {
+      diagnostics.error(
+          tree->node(parameter.default_syntax.node).range,
+          "default argument requires a concrete runtime parameter type");
+      ok = false;
+      continue;
+    }
+
+    const std::optional<EvaluatedConstant> evaluated =
+        evaluate_typed_constant_expression(
+            sources,
+            loaded,
+            package,
+            target,
+            *tree,
+            parameter.default_syntax.node,
+            procedure_scope,
+            diagnostics,
+            &active_constants,
+            active_types,
+            expected);
+    if (!evaluated.has_value()) {
+      ok = false;
+      continue;
+    }
+    ProcedureParameter &published =
+        package.symbols.symbol_mut(owner).procedure_parameters[index];
+    published.default_value = evaluated->value;
+    published.default_is_ready = true;
+  }
+  return ok;
+}
+
+bool finalize_package_procedure_parameter_defaults(
+    const SourceManager &sources,
+    const LoadedPackage &loaded,
+    SemanticPackage &package,
+    const TargetFacts &target,
+    const ConstantTable &active_constants,
+    DiagnosticSink &diagnostics) {
+  bool ok = true;
+  const std::size_t symbol_count = package.symbols.symbol_count();
+  for (std::uint32_t index = 0; index < symbol_count; ++index) {
+    const SymbolId owner{index};
+    const Symbol &symbol = package.symbols.symbol(owner);
+    if (symbol.scope != package.package_scope ||
+        symbol.kind != SymbolKind::Procedure) {
+      continue;
+    }
+    ok = finalize_procedure_parameter_defaults(
+             sources,
+             loaded,
+             package,
+             owner,
+             target,
+             active_constants,
+             diagnostics) &&
+        ok;
+  }
+  return ok;
 }
 
 TypeId resolve_local_type_declaration(

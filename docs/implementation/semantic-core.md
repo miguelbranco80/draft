@@ -100,6 +100,38 @@ coordinator fixes the declaration TypeStore prefix before interning
 constant-task structural types. This publication order prevents equal numeric
 task-local TypeIds from being reinterpreted as unrelated declaration rows.
 
+## Named and default call binding
+
+Status: implemented for local, nested, generic, static-pack-prefix, foreign,
+exported, and cross-package direct procedure declarations.
+
+Procedure signature resolution expands each fixed runtime binding into one
+ordered `ProcedureParameter` row on its declaration Symbol. The row owns the
+source name and optional default syntax but does not enter `TypeStore`.
+Package semantic finalization runs after all named constant products, evaluates
+each default once in the procedure scope with its declared type as context, and
+stores the closed `ConstantValue`. A lexical procedure performs the same close
+operation immediately after local signature resolution. Constant evaluation
+can need a default earlier when a package constant calls a procedure; that path
+evaluates the source default lazily under an empty declaration-scope frame and
+tracks active default syntax to reject cycles rather than observing caller
+locals.
+
+Public interfaces carry one fixed runtime-parameter row per procedure. Names
+are ordinary interface strings; ready defaults use the same recursive constant
+canonicalization and TypeId translation as public constants. Imported proxy
+Symbols reconstruct this metadata after their procedure type graph. Procedure
+type identity remains only ordered types, result, and calling convention.
+
+Body checking binds every explicit argument to a physical parameter before
+generic inference or expression checking. The HIR call retains explicit
+operands in source evaluation order, followed by closed defaults in declaration
+order, and carries a parallel physical-parameter permutation. MIR lowers the
+source sequence first and assembles ABI operands through that permutation.
+Effect analysis snapshots values in the same source sequence, then stores the
+summaries in physical order before substituting callee contracts. Indirect calls
+have no declaration metadata and retain the exact positional-arity rule.
+
 ## Compile-time type values and inspection
 
 Status: exact type values and the complete Draft 1 structural query vocabulary
@@ -523,7 +555,9 @@ rows recursively retain the typed arguments supplied to the callback, including
 their own finite procedure contracts, and the same shape crosses package
 interfaces. Callees and arguments are snapshotted in source evaluation order
 before a call's write-back becomes visible, so later argument effects cannot
-rewrite earlier values.
+rewrite earlier values. Named-call snapshots are then placed in physical
+parameter order through the HIR call mapping before formal flow slots are
+substituted.
 
 Initial direct discovery exposes every syntactically named call edge. Procedure
 return and caller-visible pointer-write contracts then close over explicit

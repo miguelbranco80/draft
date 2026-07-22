@@ -57,7 +57,7 @@ tests instead of reporting false skips.
 
 | Example | What it covers |
 | --- | --- |
-| [`language-tour`](language-tour/) | A readable ordinary-language tour: constants, `when`, arrays and slices, structs, enums, tagged `Result` and `Option`, tuples, distinct types, parametric types and procedures, pointers, `for`, `switch`, `defer`, assertions, `docs`, and console output. |
+| [`language-tour`](language-tour/) | A readable ordinary-language tour: constants, `when`, named/default arguments, arrays and slices, structs, enums, tagged `Result` and `Option`, tuples, distinct types, parametric types and procedures, pointers, `for`, `switch`, `defer`, assertions, `docs`, and console output. |
 | [`console`](console/) | Static heterogeneous `console.println` packs, allocation-free `core/format`, standard output, process arguments, booleans, mixed integer widths, and exact 64/128-bit boundary spellings. |
 | [`file-io`](file-io/) | Owned C path storage, explicit file handles, a zero-copy immutable-text write, byte reads, `defer` cleanup, and a complete create/read/remove round trip. |
 | [`simple-editor`](simple-editor/) | A useful but deliberately disposable ed-like application: line storage, byte input, numbered navigation, insertion, deletion, dirty-buffer protection, file load/save, command parsing, and focused Draft tests. |
@@ -119,7 +119,7 @@ policy rather than missing backend features.
 | Draft area | Primary examples |
 | --- | --- |
 | Declarations, expressions, literals, arrays, slices, control flow, tuples, pointers, aggregates, enums, tagged unions, and distinct types | `language-tour`, `runtime-checks` |
-| Compile-time evaluation, target facts, layout, `when`, parametrics, structural type inspection, and static heterogeneous argument packs | `language-tour`, `console`, `packages`, `packages-generic`, `nested-procedures` |
+| Compile-time evaluation, target facts, layout, `when`, named/default arguments, parametrics, structural type inspection, and static heterogeneous argument packs | `language-tour`, `console`, `packages`, `packages-generic`, `nested-procedures` |
 | Globals, TLS, context, allocation, collections, atomics, and threads | `core-runtime`, `core-memory`, `core-array`, `core-map`, `core-atomic`, `core-thread`, `runtime-checks` |
 | Console, formatting, files, arguments, environment, raw timed terminal input, and complete interactive applications | `console`, `file-io`, `core-os`, `simple-editor`, `tetris` |
 | Explicit UTF-8 validation, scalar traversal, and encoding over byte strings | `core-utf8` |

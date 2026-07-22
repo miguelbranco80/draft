@@ -645,6 +645,15 @@ private:
       } else {
         children.push_back(parse_type());
       }
+      if (match(TokenKind::Equal)) {
+        const std::uint32_t default_start = position_ - 1;
+        std::vector<NodeId> default_children{parse_expression()};
+        children.push_back(tree_.add_node(
+            NodeKind::ParameterDefault,
+            default_start,
+            position_,
+            std::move(default_children)));
+      }
       parameters.push_back(tree_.add_node(
           NodeKind::Parameter, parameter_start, position_, std::move(children)));
       if (!match(TokenKind::Comma)) {
@@ -1009,11 +1018,25 @@ private:
     while (true) {
       if (match(TokenKind::LeftParen)) {
         std::vector<NodeId> children{expression};
+        const auto parse_call_argument = [&]() {
+          if (at_name() && lookahead(1).kind == TokenKind::Equal) {
+            const std::uint32_t argument_start = position_;
+            advance();
+            advance();
+            std::vector<NodeId> argument_children{parse_expression()};
+            return tree_.add_node(
+                NodeKind::NamedArgument,
+                argument_start,
+                position_,
+                std::move(argument_children));
+          }
+          return parse_expression();
+        };
         if (!at(TokenKind::RightParen)) {
-          children.push_back(parse_expression());
+          children.push_back(parse_call_argument());
           while (match(TokenKind::Comma)) {
             if (at(TokenKind::RightParen)) break;
-            children.push_back(parse_expression());
+            children.push_back(parse_call_argument());
           }
         }
         (void)expect(TokenKind::RightParen, "expected ')' after call arguments");

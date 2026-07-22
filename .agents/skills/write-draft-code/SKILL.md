@@ -76,7 +76,7 @@ update the stale skill reference in the same coherent change.
 
 - Use plain structs, enums, tagged unions, fixed arrays, slices, explicit loops,
   and package procedures. Draft has no methods, inheritance, exceptions,
-  operator overloading, declaration overloading, or default arguments.
+  operator overloading, or declaration overloading.
 - Show ownership in names, types, initialization, and cleanup. A pointer,
   slice, string, `io.Reader`, or `io.Writer` is a view or handle, not ownership.
 - Keep an owning value at one stable address once callbacks or allocators retain

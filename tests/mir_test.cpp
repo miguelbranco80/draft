@@ -567,6 +567,55 @@ slice :: proc(text: string) -> [^]u8 {
   EXPECT(state, extractions == 2);
 }
 
+// HIR evaluates named operands in source order, but MIR's Call instruction is
+// an ABI-facing row and must receive them in physical declaration order. The
+// omitted middle argument is the same constant operand as an explicit value.
+void test_named_argument_call_order(TestState &state) {
+  LoweredSource source(R"draft(
+package mir
+
+combine :: proc(first: i64, second: i64 = 2, third: i64 = 3) -> i64 {
+    return first * 100 + second * 10 + third
+}
+
+main :: proc() -> i64 {
+    return combine(third = 3, first = 1)
+}
+)draft");
+  if (source.diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(source.sources, source.diagnostics);
+  }
+  EXPECT(state, source.semantics.ok);
+  EXPECT(state, source.bodies.ok);
+  EXPECT(state, source.mir.ok);
+  EXPECT(state, !source.diagnostics.has_errors());
+
+  bool saw_call = false;
+  for (const draft::MirProcedure &procedure : source.mir.procedures) {
+    const draft::Symbol &owner =
+        source.bodies.package.symbols.symbol(procedure.symbol);
+    if (owner.name != "main") continue;
+    for (const draft::MirInstruction &instruction : procedure.instructions) {
+      if (instruction.kind != draft::MirInstructionKind::Call ||
+          instruction.operands.size() != 5) {
+        continue;
+      }
+      saw_call = true;
+      for (std::size_t index = 0; index < 3; ++index) {
+        const draft::MirValue &argument =
+            procedure.value(instruction.operands[index + 2]);
+        const draft::MirInstruction &definition =
+            procedure.instruction(argument.definition);
+        EXPECT(state, definition.kind == draft::MirInstructionKind::Constant);
+        EXPECT(state,
+            definition.constant.integer ==
+                draft::BigInteger::from_u64(index + 1));
+      }
+    }
+  }
+  EXPECT(state, saw_call);
+}
+
 } // namespace
 
 int main() {
@@ -578,6 +627,7 @@ int main() {
   test_static_argument_packs_erase_before_mir(state);
   test_compile_time_type_procedures_erase_before_mir(state);
   test_raw_string_data_lowering(state);
+  test_named_argument_call_order(state);
 
   if (state.failures != 0) {
     std::cerr << state.failures << " MIR expectation(s) failed\n";

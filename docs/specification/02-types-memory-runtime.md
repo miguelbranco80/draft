@@ -88,6 +88,12 @@ cstring                          zero-terminated C byte pointer
 #simd[N]T                        fixed vector with native vector lowering
 ```
 
+A procedure type is identified by its ordered parameter types, result type, and
+calling convention. Source parameter names and default constants belong to a
+named declaration's call contract; they do not affect procedure-type equality,
+assignment compatibility, representation, or ABI. Consequently, taking a
+procedure as a value deliberately loses named/default calling convenience.
+
 `nil` is the zero-address literal for pointer-like and procedure-pointer types.
 A zero slice may contain `{nil, 0}`. Pointer arithmetic is performed through
 explicit `ptr_offset` and `ptr_sub` operations.
@@ -435,6 +441,9 @@ Bracketed type/value parameters, when present, retain their existing syntax:
 bracketed pack parameter and no source-level pack-of-types object.
 
 A direct call supplies the fixed prefix followed by zero or more pack values.
+Defaults may fill omitted fixed parameters. Named arguments may select fixed
+parameters, but because positional arguments cannot follow a named argument, a
+call that supplies a pack tail uses positional fixed arguments first.
 The callee and every argument are evaluated exactly once from left to right.
 Each tail expression is checked without a common expected type; an untyped
 integer therefore defaults to `int` and an untyped floating value defaults to
@@ -731,10 +740,10 @@ arena_tree := memory.new_with_allocator[Tree](arena_allocator)
 defer memory.free_with_allocator(arena_tree, arena_allocator)
 ```
 
-The explicit forms use distinct names because Draft 1 has neither declaration
-overloading nor default procedure arguments. `allocate`, `resize`, and the
-corresponding `*_with_allocator` and `free_bytes*` operations expose the raw
-byte substrate used by containers and arenas.
+The explicit forms use distinct names to keep allocator selection and ownership
+visible at each call site; Draft has no declaration overloading. `allocate`,
+`resize`, the corresponding `*_with_allocator` operations, and `free_bytes*`
+expose the raw byte substrate used by containers and arenas.
 
 Owning growable arrays and maps are separate core-library types. Each initialized
 container stores its allocator; initialization and destruction are explicit.

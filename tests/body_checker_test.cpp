@@ -1068,6 +1068,118 @@ main :: proc() {
   EXPECT(state, synthesis_sites == 1);
 }
 
+// Named operands retain source evaluation order in HIR while their mapping
+// records physical parameter order. Defaults are appended as declaration-order
+// constants, and the same binder feeds generic inference and static-pack
+// specialization rather than creating a separate convenience-only path.
+void test_named_and_default_arguments(TestState &state) {
+  CheckedSource source(R"draft(
+package bodies
+
+sum_three :: proc(first: i64, second: i64 = 20, third: i64 = 30) -> i64 {
+    return first + second + third
+}
+
+generic_count[T: type] :: proc(value: T, count: i64 = 1) -> i64 {
+    _ = value
+    return count
+}
+
+pack_after_default :: proc(prefix: i64 = 0, values: ..type) {
+    _ = prefix
+    for value in values {
+        _ = value
+    }
+}
+
+main :: proc() {
+    assert(sum_three(third = 3, first = 1) == 24)
+    assert(sum_three(1) == 51)
+    assert(generic_count(count = 4, value = cast[u8](7)) == 4)
+    assert(generic_count(cast[u16](8)) == 1)
+    pack_after_default()
+    pack_after_default(2, "tail")
+}
+)draft");
+  if (source.diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(source.sources, source.diagnostics);
+  }
+  EXPECT(state, source.semantics.ok);
+  EXPECT(state, source.bodies.ok);
+  EXPECT(state, !source.diagnostics.has_errors());
+
+  bool saw_reordered_with_default = false;
+  bool saw_positional_defaults = false;
+  bool saw_generic_reordering = false;
+  for (const draft::ProcedureBodyHirResult &product :
+       source.bodies.procedures) {
+    for (std::size_t index = 0;
+         index < product.program.expression_count(); ++index) {
+      const draft::HirExpression &expression = product.program.expression(
+          draft::HirExpressionId{static_cast<std::uint32_t>(index)});
+      if (expression.kind != draft::HirExpressionKind::Call) continue;
+      saw_reordered_with_default = saw_reordered_with_default ||
+          expression.call_parameter_indices ==
+              std::vector<std::uint32_t>{2, 0, 1};
+      saw_positional_defaults = saw_positional_defaults ||
+          expression.call_parameter_indices ==
+              std::vector<std::uint32_t>{0, 1, 2};
+      saw_generic_reordering = saw_generic_reordering ||
+          expression.call_parameter_indices ==
+              std::vector<std::uint32_t>{1, 0};
+    }
+  }
+  EXPECT(state, saw_reordered_with_default);
+  EXPECT(state, saw_positional_defaults);
+  EXPECT(state, saw_generic_reordering);
+
+  CheckedSource invalid(R"draft(
+package bodies
+
+required :: proc(first: i64, second: i64) {
+}
+
+main :: proc() {
+    required(third = 3, first = 1)
+    required(first = 1, first = 2)
+    required(first = 1, 2)
+    callback := required
+    callback(first = 1, second = 2)
+}
+)draft");
+  EXPECT(state, !invalid.bodies.ok);
+  const std::string rendered =
+      draft::render_diagnostics(invalid.sources, invalid.diagnostics);
+  EXPECT(state, rendered.find("no parameter named 'third'") !=
+      std::string::npos);
+  EXPECT(state, rendered.find("is supplied more than once") !=
+      std::string::npos);
+  EXPECT(state, rendered.find(
+      "positional argument cannot follow a named argument") !=
+      std::string::npos);
+  EXPECT(state, rendered.find(
+      "named arguments require a direct procedure declaration") !=
+      std::string::npos);
+
+  CheckedSource invalid_defaults(R"draft(
+package bodies
+
+runtime_dependent :: proc(first: i64, second: i64 = first) {
+}
+
+symbolic_default[T: type] :: proc(value: T = 0) {
+}
+)draft");
+  EXPECT(state, !invalid_defaults.semantics.ok);
+  const std::string default_rendered = draft::render_diagnostics(
+      invalid_defaults.sources, invalid_defaults.diagnostics);
+  EXPECT(state, default_rendered.find(
+      "expression is not compile-time evaluable") != std::string::npos);
+  EXPECT(state, default_rendered.find(
+      "default argument requires a concrete runtime parameter type") !=
+      std::string::npos);
+}
+
 void test_static_argument_pack_use_diagnostics(TestState &state) {
   CheckedSource source(R"draft(
 package bodies
@@ -2650,7 +2762,7 @@ main :: proc() {
          spelling == "42");
     saw_missing_argument = saw_missing_argument ||
         (diagnostic.message ==
-             "procedure call has the wrong number of arguments" &&
+             "procedure call is missing required argument 'value'" &&
          spelling == "runtime_text_with_value()");
     saw_short_circuited_wrong_type = saw_short_circuited_wrong_type ||
         (diagnostic.message == "raw_data requires a string argument" &&
@@ -3683,6 +3795,7 @@ int main() {
   test_body_diagnostics(state);
   test_parametric_procedure_instances(state);
   test_static_argument_pack_instances(state);
+  test_named_and_default_arguments(state);
   test_static_argument_pack_use_diagnostics(state);
   test_value_parametric_nominal_composition(state);
   test_procedural_structural_alias_composition(state);
