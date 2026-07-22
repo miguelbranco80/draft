@@ -60,6 +60,8 @@ four 64-bit flag words, twenty one-byte control characters, padding to two
 eight bytes with four-byte alignment, while Darwin `nfds_t` is a 32-bit
 unsigned integer. `core/terminal` keeps these layouts target-selected and uses
 the fixed `tcgetattr`, `tcsetattr`, `cfmakeraw`, and `poll` libc signatures.
+Its size query uses the eight-byte `winsize` layout and Darwin
+`TIOCGWINSZ = 0x40087468` through the real variadic `ioctl` ABI.
 
 ## C enum ABI
 

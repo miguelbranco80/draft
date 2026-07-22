@@ -1,8 +1,9 @@
 // This target-selected half of core/terminal defines glibc 2.39's AArch64
-// termios record and poll count ABI. Native_Mode matches the selected Ubuntu
-// 24.04-class contract: four 32-bit flag words, one line byte, thirty-two
-// control bytes, padding, two 32-bit speeds, and 60 bytes total. Every pointer
-// is borrowed for one libc call; ownership and error policy remain common.
+// termios record, poll count ABI, and TIOCGWINSZ request. Native_Mode matches
+// the selected Ubuntu 24.04-class contract: four 32-bit flag words, one line
+// byte, thirty-two control bytes, padding, two 32-bit speeds, and 60 bytes total.
+// Every pointer is borrowed for one libc call; ownership and error policy remain
+// common.
 //
 // The declarations depend only on core/c_abi and the AArch64 GNU/Linux target
 // profile. Their layouts and signatures are versioned ABI facts rather than a
@@ -26,6 +27,7 @@ Native_Mode :: c struct {
 }
 
 Native_Apply_Now :: cast[c_abi.int](0)
+Native_Size_Request :: cast[c_abi.unsigned_long](0x5413)
 
 foreign linux {
     native_get_mode as "tcgetattr" :: c proc(
@@ -43,6 +45,11 @@ foreign linux {
         count: c_abi.unsigned_long,
         timeout_milliseconds: c_abi.int,
     ) -> c_abi.int
+    native_ioctl as "ioctl" :: c proc(
+        descriptor: c_abi.int,
+        request: c_abi.unsigned_long,
+        ..,
+    ) -> c_abi.int
 }
 
 // glibc defines nfds_t as unsigned long. The common implementation always
@@ -55,4 +62,14 @@ native_poll_one :: proc(
     static_assert(size_of(Native_Mode) == 60)
     static_assert(align_of(Native_Mode) == 4)
     return native_poll(descriptor, 1, timeout_milliseconds)
+}
+
+// Linux TIOCGWINSZ writes the common eight-byte winsize record through ioctl's
+// unnamed C argument. Keeping the request in selected target source prevents a
+// kernel UAPI constant from masquerading as portable terminal policy.
+native_query_size :: proc(
+    descriptor: c_abi.int,
+    size: ^Native_Window_Size,
+) -> c_abi.int {
+    return native_ioctl(descriptor, Native_Size_Request, size)
 }

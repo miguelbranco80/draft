@@ -43,7 +43,7 @@ Treat these live values as non-copyable by convention:
 - `array.Dynamic`, `map.Map`, `memory.Buffer`, `memory.Owned_String`, and
   `memory.Arena`;
 - `memory.Virtual_Region` and an opened `os.File`;
-- an active `terminal.Session` or `terminal.Screen`;
+- a non-inactive `terminal.Session` or `terminal.Screen`;
 - `thread.Thread`, `thread.Mutex`, and `thread.Condition`.
 
 Pass a pointer to one stable owner. If an intentional transfer is necessary,
@@ -249,9 +249,11 @@ owner; pass `File` by value only to operations that borrow the descriptor.
 
 `terminal.Session` borrows its input `os.File` and owns the exact native mode
 that must be restored. Keep the Session at one stable address, restore before
-closing the descriptor, and do not copy an active value. A failed restore keeps
-the obligation active so the same owner may report or retry it. Runtime traps
-and external process termination do not run deferred restoration.
+closing the descriptor, and do not copy an active or suspended value. Suspend
+temporarily installs the saved mode without releasing the obligation; resume
+reapplies raw mode. Failed transitions retain their source state so the same
+owner may report, retry, or restore. Runtime traps and external process
+termination do not run deferred restoration.
 
 `terminal.Screen` likewise borrows its output `os.File` and owns the obligation
 to leave the alternate screen and show the cursor. `begin_screen` records that
@@ -259,7 +261,15 @@ obligation before writing because a failed complete write may already have
 published a state-changing prefix. Therefore call `restore_screen` whenever a
 begin attempt leaves the Screen active—even when begin returned an error—and
 keep the descriptor open until restoration succeeds. A failed restore preserves
-the active owner for reporting or retry, exactly as for Session.
+the active owner for reporting or retry. A suspended Screen remains an owner
+even though the primary screen is currently visible; failed resume deliberately
+marks it active because a control-sequence prefix may require cleanup.
+
+When an application owns both resources, acquire Session then Screen, suspend
+Screen then Session, resume Session then Screen, and finally restore Screen then
+Session. Always attempt both final restorations even when the first fails. This
+ordering exposes the primary screen and saved input mode to external work, and
+avoids re-entering the alternate screen when raw input could not be reacquired.
 
 `memory.Virtual_Region` is move-by-convention. Reserve returns inaccessible
 address space; commit/protect applies to the complete region; release unmaps

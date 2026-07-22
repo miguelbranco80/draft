@@ -1,11 +1,11 @@
 // These tests exercise the platform-independent contracts of core/terminal
 // without borrowing or modifying the test runner's real terminal. They verify
-// timeout conversion, inactive raw/screen resources, and streaming key
-// decoding across read boundaries. The native validation driver copies this
-// package to a private workspace, selects the host AArch64 target, and links
-// the real libc symbols. Actual mode and alternate-screen changes require an
-// application or pseudo-terminal integration test and are deliberately not
-// attempted against CTest's stdin/stdout.
+// timeout conversion, inactive raw/screen resources, size-query validation,
+// and streaming key decoding across read boundaries. The native validation
+// driver copies this package to a private workspace, selects the host AArch64
+// target, and links the real libc symbols. Actual mode and alternate-screen
+// changes require an application or pseudo-terminal integration test and are
+// deliberately not attempted against CTest's stdin/stdout.
 package terminal
 
 import core/c_abi
@@ -48,26 +48,54 @@ test_inactive_session :: proc(test: ^testing.Test) {
     session: Session
     storage: [1]u8
 
+    testing.expect(test, session.state == .inactive)
     (count, error) := read(&session, storage[:], 0 * time.nanosecond)
     testing.expect(test, count == 0)
     testing.expect(test, error == .invalid)
+    testing.expect(test, !suspend(&session))
+    testing.expect(test, !resume(&session))
     testing.expect(test, restore(&session))
 
     invalid_input := os.File{descriptor = -1}
     begin_error := begin_raw(&session, invalid_input)
     testing.expect(test, begin_error == .invalid)
-    testing.expect(test, !session.active)
+    testing.expect(test, session.state == .inactive)
+
+    (terminal_size, size_error) := query_size(invalid_input)
+    testing.expect(test, size_error == .invalid)
+    testing.expect(test, terminal_size.columns == 0)
+    testing.expect(test, terminal_size.rows == 0)
 }
 
-// test_key_decoder covers ordinary bytes, read-fragmented direct CSI keys,
-// numeric tilde keys, and the caller-controlled lone-Escape timeout. It feeds
-// exactly one byte per call so no buffering assumption can hide state errors.
+// test_key_decoder covers ordinary/single-byte keys, fragmented CSI and SS3
+// forms, xterm modifiers, Alt-prefixed bytes, and the caller-controlled lone-
+// Escape timeout. It feeds exactly one byte per call so no buffering assumption
+// can hide state errors.
 test_key_decoder :: proc(test: ^testing.Test) {
     decoder: Decoder
 
     ordinary := decode_key(&decoder, cast[u8]('q'))
     testing.expect(test, ordinary.kind == .byte)
     testing.expect(test, ordinary.byte_value == cast[u8]('q'))
+    testing.expect(test, !ordinary.shift && !ordinary.alt && !ordinary.control)
+
+    enter := decode_key(&decoder, 13)
+    testing.expect(test, enter.kind == .enter)
+    tab := decode_key(&decoder, 9)
+    testing.expect(test, tab.kind == .tab)
+    backspace := decode_key(&decoder, 127)
+    testing.expect(test, backspace.kind == .backspace)
+    control_c := decode_key(&decoder, 3)
+    testing.expect(test, control_c.kind == .byte)
+    testing.expect(test, control_c.byte_value == 3)
+    testing.expect(test, control_c.control)
+
+    // ESC followed by an ordinary byte is the byte-terminal spelling of Alt.
+    testing.expect(test, decode_key(&decoder, 27).kind == .none)
+    alt_q := decode_key(&decoder, cast[u8]('q'))
+    testing.expect(test, alt_q.kind == .byte)
+    testing.expect(test, alt_q.byte_value == cast[u8]('q'))
+    testing.expect(test, alt_q.alt)
 
     testing.expect(test, decode_key(&decoder, 27).kind == .none)
     testing.expect(test,
@@ -75,16 +103,17 @@ test_key_decoder :: proc(test: ^testing.Test) {
     testing.expect(test,
         decode_key(&decoder, cast[u8]('D')).kind == .left)
 
+    // Numeric-tilde keys include Insert and the editing/navigation vocabulary.
     testing.expect(test, decode_key(&decoder, 27).kind == .none)
     testing.expect(test,
         decode_key(&decoder, cast[u8]('[')).kind == .none)
     testing.expect(test,
-        decode_key(&decoder, cast[u8]('3')).kind == .none)
+        decode_key(&decoder, cast[u8]('2')).kind == .none)
     testing.expect(test,
-        decode_key(&decoder, cast[u8]('~')).kind == .delete)
+        decode_key(&decoder, cast[u8]('~')).kind == .insert)
 
-    // Modified CSI arrows collapse to their base direction. Every parameter
-    // byte is consumed by the sequence rather than leaking as ordinary input.
+    // Modified CSI arrows preserve their explicit modifier parameter. Every
+    // parameter byte is consumed rather than leaking as ordinary input.
     testing.expect(test, decode_key(&decoder, 27).kind == .none)
     testing.expect(test,
         decode_key(&decoder, cast[u8]('[')).kind == .none)
@@ -94,16 +123,60 @@ test_key_decoder :: proc(test: ^testing.Test) {
         decode_key(&decoder, cast[u8](';')).kind == .none)
     testing.expect(test,
         decode_key(&decoder, cast[u8]('5')).kind == .none)
-    testing.expect(test,
-        decode_key(&decoder, cast[u8]('D')).kind == .left)
+    control_left := decode_key(&decoder, cast[u8]('D'))
+    testing.expect(test, control_left.kind == .left)
+    testing.expect(test, control_left.control)
+    testing.expect(test, !control_left.shift && !control_left.alt)
 
-    // Unsupported SS3 function keys are consumed as a unit, then ordinary
-    // bytes resume immediately.
+    // Back-tab establishes Shift directly, even without a numeric modifier.
+    testing.expect(test, decode_key(&decoder, 27).kind == .none)
+    testing.expect(test,
+        decode_key(&decoder, cast[u8]('[')).kind == .none)
+    shift_tab := decode_key(&decoder, cast[u8]('Z'))
+    testing.expect(test, shift_tab.kind == .tab)
+    testing.expect(test, shift_tab.shift)
+
+    // SS3 P is F1. Numeric-tilde 24 is F12, fixing both common function-key
+    // families without depending on the read boundary.
     testing.expect(test, decode_key(&decoder, 27).kind == .none)
     testing.expect(test,
         decode_key(&decoder, cast[u8]('O')).kind == .none)
     testing.expect(test,
-        decode_key(&decoder, cast[u8]('P')).kind == .none)
+        decode_key(&decoder, cast[u8]('P')).kind == .f1)
+
+    testing.expect(test, decode_key(&decoder, 27).kind == .none)
+    testing.expect(test,
+        decode_key(&decoder, cast[u8]('[')).kind == .none)
+    testing.expect(test,
+        decode_key(&decoder, cast[u8]('2')).kind == .none)
+    testing.expect(test,
+        decode_key(&decoder, cast[u8]('4')).kind == .none)
+    testing.expect(test,
+        decode_key(&decoder, cast[u8]('~')).kind == .f12)
+
+    // `15;4~` is F5 with Shift+Alt under xterm's modifier numbering.
+    testing.expect(test, decode_key(&decoder, 27).kind == .none)
+    testing.expect(test,
+        decode_key(&decoder, cast[u8]('[')).kind == .none)
+    testing.expect(test,
+        decode_key(&decoder, cast[u8]('1')).kind == .none)
+    testing.expect(test,
+        decode_key(&decoder, cast[u8]('5')).kind == .none)
+    testing.expect(test,
+        decode_key(&decoder, cast[u8](';')).kind == .none)
+    testing.expect(test,
+        decode_key(&decoder, cast[u8]('4')).kind == .none)
+    shifted_alt_f5 := decode_key(&decoder, cast[u8]('~'))
+    testing.expect(test, shifted_alt_f5.kind == .f5)
+    testing.expect(test, shifted_alt_f5.shift && shifted_alt_f5.alt)
+    testing.expect(test, !shifted_alt_f5.control)
+
+    // Unsupported SS3 finals are consumed as a unit, then bytes resume.
+    testing.expect(test, decode_key(&decoder, 27).kind == .none)
+    testing.expect(test,
+        decode_key(&decoder, cast[u8]('O')).kind == .none)
+    testing.expect(test,
+        decode_key(&decoder, cast[u8]('X')).kind == .none)
     testing.expect(test,
         decode_key(&decoder, cast[u8]('q')).kind == .byte)
 
@@ -118,11 +191,14 @@ test_key_decoder :: proc(test: ^testing.Test) {
 test_inactive_screen :: proc(test: ^testing.Test) {
     screen: Screen
     storage: [1]u8
+    testing.expect(test, screen.state == .inactive)
     testing.expect(test, write_screen(&screen, storage[:]) == .invalid)
+    testing.expect(test, !suspend_screen(&screen))
+    testing.expect(test, !resume_screen(&screen))
     testing.expect(test, restore_screen(&screen))
 
     invalid_output := os.File{descriptor = -1}
     testing.expect(test,
         begin_screen(&screen, invalid_output) == .invalid)
-    testing.expect(test, !screen.active)
+    testing.expect(test, screen.state == .inactive)
 }

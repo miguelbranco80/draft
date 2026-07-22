@@ -1,15 +1,19 @@
 // This file owns the smallest reusable full-screen output boundary: entering
 // an ANSI/VT alternate screen with a hidden cursor, writing caller-constructed
-// frame bytes, and restoring the normal screen and cursor. It deliberately does
+// frame bytes, temporarily leaving/re-entering that screen for process
+// suspension, and restoring the normal screen and cursor. It deliberately does
 // not own a frame buffer, layout engine, style model, terminal dimensions, or
 // output descriptor. Those policies remain ordinary application code.
 //
 // Screen is an explicit move-by-convention resource like Session. A failed
-// enter may have written a prefix of its control sequence, so it still records
-// the restoration obligation before output begins. This rule lets callers
-// clean up the terminal even after a partial native write. The implementation
-// depends only on core/io and core/os and uses widely supported ANSI/VT bytes;
-// it has no ncurses, terminfo, allocation, or target-specific ABI.
+// enter or resume may have written a prefix of its control sequence, so it still
+// records the active restoration obligation before output begins. This rule
+// lets callers clean up the terminal even after a partial native write. The
+// implementation depends only on core/io and core/os and uses widely supported
+// ANSI/VT bytes; it has no ncurses, terminfo, allocation, or target-specific ABI.
+// When paired with Session, acquire Session first; suspend Screen first; resume
+// Session first; and restore Screen first. Both final restorations must still be
+// attempted when one fails, because their obligations are independent.
 package terminal
 
 import core/io
@@ -26,13 +30,22 @@ pub erase_line_tail :: "\x1b[K"
 pub erase_screen_tail :: "\x1b[J"
 pub reset_style :: "\x1b[0m"
 
+// Screen_State mirrors the visible lifetime of the alternate screen. suspended
+// retains the output borrow and the ability to re-enter, but the primary screen
+// and cursor are currently restored for an external shell or subprocess.
+pub Screen_State :: enum u8 {
+    inactive,
+    active,
+    suspended,
+}
+
 // Screen owns an alternate-screen restoration obligation but borrows output.
-// Its zero value is inactive. Once active, copying it would create two apparent
-// owners of one cleanup action; keep one value at a stable address and pass it
-// by pointer. A failed restore deliberately retains active state for retry.
+// Its zero value is inactive. Once non-inactive, copying it would create two
+// apparent owners of one cleanup action; keep one value at a stable address and
+// pass it by pointer. Failed transitions retain a cleanup-capable state.
 pub Screen :: struct {
     output: os.File,
-    active: bool,
+    state: Screen_State,
 }
 
 // begin_screen starts an alternate-screen session. screen must be inactive and
@@ -42,11 +55,11 @@ pub Screen :: struct {
 // active must be paired with restore_screen even when the returned error is not
 // none. The output descriptor is borrowed until restoration succeeds.
 pub begin_screen :: proc(screen: ^Screen, output: os.File) -> io.Error {
-    if screen^.active || output.descriptor < 0 {
+    if screen^.state != .inactive || output.descriptor < 0 {
         return .invalid
     }
     screen^.output = output
-    screen^.active = true
+    screen^.state = .active
     return os.write_text_all(output, Enter_Screen_Sequence)
 }
 
@@ -55,22 +68,61 @@ pub begin_screen :: proc(screen: ^Screen, output: os.File) -> io.Error {
 // source, keeping complete-frame construction and repaint policy visible in
 // the caller.
 pub write_screen :: proc(screen: ^Screen, source: []u8) -> io.Error {
-    if !screen^.active {
+    if screen^.state != .active {
         return .invalid
     }
     return os.write_all(screen^.output, source)
 }
 
-// restore_screen resets style, shows the cursor, and returns to the primary
-// screen. It is idempotent for an inactive value. A write failure preserves the
-// active flag and borrowed handle so the owner can report or retry cleanup.
-pub restore_screen :: proc(screen: ^Screen) -> bool {
-    if !screen^.active {
+// suspend_screen leaves the alternate screen and shows the cursor without
+// releasing the output borrow. It is idempotent while suspended and fails for
+// an inactive Screen. A failed write leaves state active because a prefix may
+// have changed only part of the terminal state and still requires cleanup.
+pub suspend_screen :: proc(screen: ^Screen) -> bool {
+    if screen^.state == .inactive {
+        return false
+    }
+    if screen^.state == .suspended {
         return true
     }
     if os.write_text_all(screen^.output, Leave_Screen_Sequence) != .none {
         return false
     }
-    screen^.active = false
+    screen^.state = .suspended
+    return true
+}
+
+// resume_screen re-enters the alternate screen after suspension. The state
+// becomes active before writing because even a failing complete write may have
+// emitted a state-changing prefix; restore_screen must then be able to clean it
+// up. Calling resume on an active Screen is idempotent, while inactive fails.
+pub resume_screen :: proc(screen: ^Screen) -> bool {
+    if screen^.state == .inactive {
+        return false
+    }
+    if screen^.state == .active {
+        return true
+    }
+    screen^.state = .active
+    return os.write_text_all(screen^.output, Enter_Screen_Sequence) == .none
+}
+
+// restore_screen resets style, shows the cursor, and returns to the primary
+// screen. It is idempotent for an inactive value. A suspended value has already
+// published the leave sequence and can end its obligation without another
+// write. A failure from active preserves that state and the borrowed handle so
+// the owner can report or retry cleanup.
+pub restore_screen :: proc(screen: ^Screen) -> bool {
+    if screen^.state == .inactive {
+        return true
+    }
+    if screen^.state == .suspended {
+        screen^.state = .inactive
+        return true
+    }
+    if os.write_text_all(screen^.output, Leave_Screen_Sequence) != .none {
+        return false
+    }
+    screen^.state = .inactive
     return true
 }

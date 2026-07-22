@@ -1,17 +1,19 @@
 // The terminal package is the small interactive-console boundary shared by
 // full-screen applications. It turns one existing input descriptor into an
-// immediate byte stream, waits for input with a bounded timeout, and restores
-// the exact native terminal mode saved at entry. Companion files own a small
-// ANSI alternate-screen lifetime and a streaming key decoder. The package owns
-// no descriptor: callers retain descriptor lifetime, frame construction,
-// styling, text interpretation, and application event-loop policy.
+// immediate byte stream, waits for input with a bounded timeout, queries the
+// terminal cell dimensions, and restores the exact native mode saved at entry.
+// Companion files own a small ANSI alternate-screen lifetime and a streaming
+// key decoder. The package owns no descriptor: callers retain descriptor
+// lifetime, frame construction, styling, text interpretation, signal delivery,
+// and application event-loop policy.
 //
 // Session is an explicit move-by-convention resource. A successful begin_raw
-// must be paired with restore while the input descriptor remains open. The
-// selected target file owns the native termios layout and poll ABI; this common
-// file owns target-independent lifetime, timeout, and error policy. It depends
-// only on core/c_abi, core/io, core/os, and core/time. Draft specification:
-// sections 5-7 and 12, plus the selected target profile.
+// must be paired with restore while the input descriptor remains open. Suspend
+// temporarily returns the descriptor to its saved mode; resume reapplies raw
+// mode. The selected target file owns the native termios, poll, and ioctl ABI;
+// this common file owns target-independent lifetime, timeout, and error policy.
+// It depends only on core/c_abi, core/io, core/os, and core/time. Draft
+// specification: sections 5-7 and 12, plus the selected target profile.
 package terminal
 
 import core/c_abi
@@ -37,15 +39,44 @@ Poll_Invalid :: cast[c_abi.short](0x0020)
 Nanoseconds_Per_Millisecond :: 1000 * 1000
 Maximum_Poll_Milliseconds :: 2147483647
 
+// Native_Window_Size is the POSIX winsize record written by TIOCGWINSZ on both
+// selected targets. Pixel dimensions are retained only to establish the exact
+// C layout; the public API reports rows and columns because terminal cells are
+// the unit used by text applications.
+Native_Window_Size :: c struct {
+    rows: c_abi.unsigned_short,
+    columns: c_abi.unsigned_short,
+    pixel_width: c_abi.unsigned_short,
+    pixel_height: c_abi.unsigned_short,
+}
+
+// Size is one terminal cell extent. A successful native query may report zero
+// for either dimension when the terminal cannot currently establish it; the
+// library preserves that fact and leaves fallback policy to the application.
+pub Size :: struct {
+    columns: usize,
+    rows: usize,
+}
+
+// Session_State makes the restoration obligation and job-control transition
+// explicit. inactive owns no cleanup. active means raw mode is installed.
+// suspended still owns the saved mode and descriptor borrow, but has restored
+// the terminal for an external shell or subprocess.
+pub Session_State :: enum u8 {
+    inactive,
+    active,
+    suspended,
+}
+
 // Session owns one saved native input mode but not the input descriptor. Its
-// zero value is inactive and may be passed to begin_raw. Once active, copying
-// the value would create two apparent owners of one restoration obligation, so
-// callers keep it at one stable address and pass ^Session to every operation.
-// A failed restore leaves active set, allowing the same owner to retry.
+// zero value is inactive and may be passed to begin_raw. Once non-inactive,
+// copying the value would create two apparent owners of one restoration
+// obligation, so callers keep it at one stable address and pass ^Session to
+// every operation. Failed transitions retain their source state for retry.
 pub Session :: struct {
     input: os.File,
     saved_mode: Native_Mode,
-    active: bool,
+    state: Session_State,
 }
 
 // timeout_milliseconds converts the nanosecond Duration contract to poll's
@@ -72,6 +103,22 @@ timeout_milliseconds :: proc(timeout: time.Duration) -> c_abi.int {
     return cast[c_abi.int](milliseconds)
 }
 
+// apply_raw_mode derives the platform's conventional raw mode from a borrowed
+// saved mode and applies it immediately. It changes no Session state: callers
+// publish a transition only after the native operation succeeds.
+apply_raw_mode :: proc(
+    input: os.File,
+    saved_mode: ^Native_Mode,
+) -> bool {
+    raw_mode := saved_mode^
+    native_make_raw(&raw_mode)
+    return native_set_mode(
+        input.descriptor,
+        Native_Apply_Now,
+        &raw_mode,
+    ) == 0
+}
+
 // begin_raw saves input's complete native terminal mode, derives the platform's
 // conventional raw mode through cfmakeraw, and applies it immediately. Raw mode
 // disables canonical line buffering, echo, signal-generating control keys, and
@@ -83,7 +130,7 @@ timeout_milliseconds :: proc(timeout: time.Duration) -> c_abi.int {
 // changes unless both native mode operations succeed. An invalid descriptor or
 // repeated begin returns io.Error.invalid; native failure returns unavailable.
 pub begin_raw :: proc(session: ^Session, input: os.File) -> io.Error {
-    if session^.active || input.descriptor < 0 {
+    if session^.state != .inactive || input.descriptor < 0 {
         return .invalid
     }
 
@@ -92,24 +139,27 @@ pub begin_raw :: proc(session: ^Session, input: os.File) -> io.Error {
         return .unavailable
     }
 
-    raw_mode := saved_mode
-    native_make_raw(&raw_mode)
-    if native_set_mode(input.descriptor, Native_Apply_Now, &raw_mode) != 0 {
+    if !apply_raw_mode(input, &saved_mode) {
         return .unavailable
     }
 
     session^.input = input
     session^.saved_mode = saved_mode
-    session^.active = true
+    session^.state = .active
     return .none
 }
 
-// restore reapplies the exact mode saved by begin_raw. It is idempotent for an
-// inactive Session. A native failure keeps the Session active and its saved
-// mode intact so the owner can report the error or retry; success ends the
-// restoration obligation without closing the borrowed descriptor.
-pub restore :: proc(session: ^Session) -> bool {
-    if !session^.active {
+// suspend temporarily restores the exact mode saved by begin_raw without
+// releasing the Session's restoration obligation or descriptor borrow. It is
+// idempotent while already suspended and fails for an inactive Session. Native
+// failure leaves the Session active so cleanup or another attempt remains
+// possible. Applications call this before yielding terminal control; signal
+// installation and process suspension remain explicit application policy.
+pub suspend :: proc(session: ^Session) -> bool {
+    if session^.state == .inactive {
+        return false
+    }
+    if session^.state == .suspended {
         return true
     }
     if native_set_mode(
@@ -119,8 +169,77 @@ pub restore :: proc(session: ^Session) -> bool {
     ) != 0 {
         return false
     }
-    session^.active = false
+    session^.state = .suspended
     return true
+}
+
+// resume reapplies raw mode after a successful suspend. It is idempotent while
+// already active and fails for an inactive Session. Native failure leaves the
+// Session suspended, so the external terminal-facing mode remains authoritative
+// and the owner may retry without losing its saved mode.
+pub resume :: proc(session: ^Session) -> bool {
+    if session^.state == .inactive {
+        return false
+    }
+    if session^.state == .active {
+        return true
+    }
+    if !apply_raw_mode(session^.input, &session^.saved_mode) {
+        return false
+    }
+    session^.state = .active
+    return true
+}
+
+// restore reapplies the exact mode saved by begin_raw. It is idempotent for an
+// inactive Session. A suspended Session is already in the saved mode and ends
+// its obligation without another native call. A native failure from active
+// state retains that state and the saved mode so the owner can report or retry;
+// success never closes the borrowed descriptor.
+pub restore :: proc(session: ^Session) -> bool {
+    if session^.state == .inactive {
+        return true
+    }
+    if session^.state == .suspended {
+        session^.state = .inactive
+        return true
+    }
+    if native_set_mode(
+        session^.input.descriptor,
+        Native_Apply_Now,
+        &session^.saved_mode,
+    ) != 0 {
+        return false
+    }
+    session^.state = .inactive
+    return true
+}
+
+// query_size asks one borrowed terminal descriptor for its current rows and
+// columns. The variadic ioctl tail carries a pointer to exact native storage;
+// the call writes synchronously and does not retain it. Invalid descriptors
+// return .invalid before native code. Native failure returns .unavailable and a
+// zero Size. Successful zero dimensions are preserved as a valid observation.
+pub query_size :: proc(terminal_file: os.File) -> (Size, io.Error) {
+    static_assert(size_of(Native_Window_Size) == 8)
+    static_assert(align_of(Native_Window_Size) == 2)
+
+    if terminal_file.descriptor < 0 {
+        empty: Size
+        return (empty, .invalid)
+    }
+    native_size: Native_Window_Size = ---
+    if native_query_size(terminal_file.descriptor, &native_size) != 0 {
+        empty: Size
+        return (empty, .unavailable)
+    }
+    return (
+        Size{
+            columns = cast[usize](native_size.columns),
+            rows = cast[usize](native_size.rows),
+        },
+        .none,
+    )
 }
 
 // read waits for input using timeout rounded upward to poll's millisecond
@@ -128,14 +247,14 @@ pub restore :: proc(session: ^Session) -> bool {
 // zero timeout polls immediately; any positive sub-millisecond duration waits
 // one millisecond. A clean timeout returns (0, .none), while terminal hangup
 // returns .end_of_input. The call neither allocates nor retains destination. It
-// requires an active Session and returns .invalid otherwise. Empty destination
-// succeeds immediately after validating that resource state.
+// requires an active Session and returns .invalid while inactive or suspended.
+// Empty destination succeeds immediately after validating resource state.
 pub read :: proc(
     session: ^Session,
     destination: []u8,
     timeout: time.Duration,
 ) -> (usize, io.Error) {
-    if !session^.active {
+    if session^.state != .active {
         return (0, .invalid)
     }
     if len(destination) == 0 {

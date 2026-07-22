@@ -1,67 +1,134 @@
-// This file incrementally decodes the small portable keyboard vocabulary needed
-// by full-screen terminal applications. Ordinary bytes—including control bytes
+// This file incrementally decodes the portable keyboard vocabulary needed by
+// full-screen terminal applications. Ordinary bytes—including control bytes
 // and each byte of UTF-8 text—are preserved exactly. Common ANSI/VT cursor,
-// home/end, delete, and page sequences become semantic keys. The decoder owns
-// no storage and performs no I/O or allocation.
+// editing, paging, and function-key sequences become semantic keys with the
+// Shift, Alt, and Control modifiers carried by xterm-style sequence parameters.
+// The decoder owns no storage and performs no I/O or allocation.
 //
 // One key sequence may be split across arbitrary reads, so Decoder must persist
 // beside the application's input buffer. Escape alone is ambiguous with the
 // start of a sequence; a caller that wants it as a key invokes flush_key after
-// its own chosen timeout. This keeps timing policy in the event loop.
+// its own chosen timeout. Some physical key combinations are indistinguishable
+// in a byte terminal protocol: for example, Enter and Ctrl-M commonly produce
+// the same byte. The decoder reports what the byte protocol establishes rather
+// than inventing unavailable keyboard state.
 package terminal
 
-// Key_Kind distinguishes an ordinary byte from terminal-generated navigation.
-// none is an incomplete or unsupported sequence. byte is intentionally not
-// called character: one value may be a control code or one byte of UTF-8.
+// Key_Kind distinguishes an ordinary byte from terminal-generated keys. none
+// is an incomplete or unsupported sequence. byte is intentionally not called
+// character: one value may be a control code or one byte of UTF-8.
 pub Key_Kind :: enum u8 {
     none,
     byte,
     escape,
+    enter,
+    tab,
+    backspace,
     up,
     down,
     right,
     left,
     home,
     end,
+    insert,
     delete,
     page_up,
     page_down,
+    f1,
+    f2,
+    f3,
+    f4,
+    f5,
+    f6,
+    f7,
+    f8,
+    f9,
+    f10,
+    f11,
+    f12,
 }
 
 // Key is one decoder result. byte_value is meaningful only for kind byte and
-// is otherwise zero. The value owns no storage and may be copied freely.
+// is otherwise zero. The modifier fields describe explicit protocol state:
+// Alt before an ordinary byte, xterm modifier parameters, and control-shaped
+// ordinary bytes. Shift state for ordinary letters cannot be distinguished
+// from the letter's byte spelling and is therefore not inferred. The value
+// owns no storage and may be copied freely.
 pub Key :: struct {
     kind: Key_Kind,
     byte_value: u8,
+    shift: bool,
+    alt: bool,
+    control: bool,
 }
 
-// Decoder_State is private because callers should react only to completed Key
-// values. csi follows ESC `[`, while csi_parameter accumulates the numeric part
-// of sequences such as ESC `[3~`.
+// Decoder_State is private because callers react only to completed Key values.
+// csi_parameter records the at-most-two numeric fields used by the supported
+// sequences. csi_ignore consumes a well-formed but unsupported sequence through
+// its final byte without leaking parameter bytes as application input.
 Decoder_State :: enum u8 {
     plain,
     escape,
     csi,
     csi_parameter,
+    csi_ignore,
     ss3,
 }
 
 // Decoder persists partial ANSI sequence state across read boundaries. The
-// numeric parameter is bounded above; the zero value is ready to decode.
+// first parameter identifies a key such as `3~`; the optional second parameter
+// carries xterm modifiers. Each accumulator saturates at 999, and the zero
+// value is ready to decode.
 pub Decoder :: struct {
     state: Decoder_State,
-    parameter: u16,
-    ignore_parameter_digits: bool,
+    first_parameter: u16,
+    modifier_parameter: u16,
+    parameter_index: u8,
 }
 
-// byte_key constructs the exact ordinary-byte result at one obvious point.
-byte_key :: proc(byte: u8) -> Key {
-    return Key{kind = .byte, byte_value = byte}
+// reset_decoder returns the streaming state to the exact zero resting state.
+// Keeping reset in one operation prevents a completed or abandoned sequence
+// from leaking a modifier parameter into the next key.
+reset_decoder :: proc(decoder: ^Decoder) {
+    decoder^.state = .plain
+    decoder^.first_parameter = 0
+    decoder^.modifier_parameter = 0
+    decoder^.parameter_index = 0
 }
 
-// navigation_key maps direct CSI final bytes. H/F are the direct home/end
-// variants; numeric tilde variants are handled separately below.
-navigation_key :: proc(byte: u8) -> Key {
+// byte_key constructs one exact ordinary-byte result. Control-shaped bytes are
+// still retained verbatim; the flag merely exposes the information already
+// present in the byte. Tab, Enter, and Backspace are handled before this helper
+// because their byte spellings conventionally name those semantic keys.
+byte_key :: proc(byte: u8, alt: bool) -> Key {
+    return Key{
+        kind = .byte,
+        byte_value = byte,
+        alt = alt,
+        control = byte >= 1 && byte <= 26,
+    }
+}
+
+// plain_key maps the unambiguous conventional single-byte keys and otherwise
+// preserves the exact byte. CR and LF both mean Enter because terminals may
+// select either spelling; BS and DEL both mean Backspace for the same reason.
+plain_key :: proc(byte: u8, alt: bool) -> Key {
+    switch byte {
+    case 10, 13:
+        return Key{kind = .enter, alt = alt}
+    case 9:
+        return Key{kind = .tab, alt = alt}
+    case 8, 127:
+        return Key{kind = .backspace, alt = alt}
+    }
+    return byte_key(byte, alt)
+}
+
+// direct_sequence_key maps final bytes shared by CSI and SS3. `Z` is the
+// conventional back-tab sequence and therefore establishes Shift even without
+// a numeric modifier parameter. P/Q/R/S are F1-F4 under SS3 and under the
+// modified CSI spellings emitted by common xterm-compatible terminals.
+direct_sequence_key :: proc(byte: u8) -> Key {
     switch byte {
     case cast[u8]('A'):
         return Key{kind = .up}
@@ -75,43 +142,150 @@ navigation_key :: proc(byte: u8) -> Key {
         return Key{kind = .home}
     case cast[u8]('F'):
         return Key{kind = .end}
+    case cast[u8]('P'):
+        return Key{kind = .f1}
+    case cast[u8]('Q'):
+        return Key{kind = .f2}
+    case cast[u8]('R'):
+        return Key{kind = .f3}
+    case cast[u8]('S'):
+        return Key{kind = .f4}
+    case cast[u8]('Z'):
+        return Key{kind = .tab, shift = true}
     }
     empty: Key
     return empty
 }
 
-// parameter_key maps the common xterm/VT numeric-tilde spellings. Both 1/7 and
-// 4/8 are accepted for home/end because widely used terminals emit either pair.
-parameter_key :: proc(parameter: u16) -> Key {
+// tilde_key maps the common xterm/VT numeric-tilde spellings. Both 1/7 and
+// 4/8 are accepted for home/end. The older 11-14 spellings complement the SS3
+// F1-F4 form, while 15 and 17-24 cover F5-F12.
+tilde_key :: proc(parameter: u16) -> Key {
     switch parameter {
     case 1, 7:
         return Key{kind = .home}
-    case 4, 8:
-        return Key{kind = .end}
+    case 2:
+        return Key{kind = .insert}
     case 3:
         return Key{kind = .delete}
+    case 4, 8:
+        return Key{kind = .end}
     case 5:
         return Key{kind = .page_up}
     case 6:
         return Key{kind = .page_down}
+    case 11:
+        return Key{kind = .f1}
+    case 12:
+        return Key{kind = .f2}
+    case 13:
+        return Key{kind = .f3}
+    case 14:
+        return Key{kind = .f4}
+    case 15:
+        return Key{kind = .f5}
+    case 17:
+        return Key{kind = .f6}
+    case 18:
+        return Key{kind = .f7}
+    case 19:
+        return Key{kind = .f8}
+    case 20:
+        return Key{kind = .f9}
+    case 21:
+        return Key{kind = .f10}
+    case 23:
+        return Key{kind = .f11}
+    case 24:
+        return Key{kind = .f12}
     }
     empty: Key
     return empty
 }
 
-// decode_key consumes one byte and returns at most one key. An unexpected byte
-// immediately after ESC is preserved as an ordinary byte rather than swallowed;
-// unsupported CSI content is discarded as one terminal control sequence. The
-// parameter accumulator saturates at 999, preventing hostile input from
-// wrapping while still covering every recognized value.
+// apply_modifier decodes xterm's `1 + Shift + 2*Alt + 4*Control` parameter.
+// Zero means that no second parameter was present; explicit one also means no
+// modifiers. Values outside 1-8 are unsupported and cause the complete control
+// sequence to be discarded.
+apply_modifier :: proc(key: ^Key, parameter: u16) -> bool {
+    switch parameter {
+    case 0, 1:
+        return true
+    case 2:
+        key^.shift = true
+    case 3:
+        key^.alt = true
+    case 4:
+        key^.shift = true
+        key^.alt = true
+    case 5:
+        key^.control = true
+    case 6:
+        key^.shift = true
+        key^.control = true
+    case 7:
+        key^.alt = true
+        key^.control = true
+    case 8:
+        key^.shift = true
+        key^.alt = true
+        key^.control = true
+    case:
+        return false
+    }
+    return true
+}
+
+// parameter_sequence_key completes one supported CSI sequence. Direct cursor
+// and F1-F4 final bytes conventionally use first parameter 1 when modifiers are
+// present. Numeric-tilde keys use their identifying first parameter directly.
+parameter_sequence_key :: proc(
+    first_parameter: u16,
+    modifier_parameter: u16,
+    final_byte: u8,
+) -> Key {
+    key: Key
+    if final_byte == cast[u8]('~') {
+        key = tilde_key(first_parameter)
+    } else if first_parameter == 0 || first_parameter == 1 {
+        key = direct_sequence_key(final_byte)
+    }
+    if key.kind == .none || !apply_modifier(&key, modifier_parameter) {
+        empty: Key
+        return empty
+    }
+    return key
+}
+
+// append_parameter_digit adds one decimal digit to the selected accumulator.
+// Saturation makes hostile or malformed input bounded while retaining every
+// parameter value used by the supported key vocabulary.
+append_parameter_digit :: proc(decoder: ^Decoder, digit: u16) {
+    if decoder^.parameter_index == 0 {
+        if decoder^.first_parameter <= 99 {
+            decoder^.first_parameter = decoder^.first_parameter * 10 + digit
+        } else {
+            decoder^.first_parameter = 999
+        }
+        return
+    }
+    if decoder^.modifier_parameter <= 99 {
+        decoder^.modifier_parameter = decoder^.modifier_parameter * 10 + digit
+    } else {
+        decoder^.modifier_parameter = 999
+    }
+}
+
+// decode_key consumes one byte and returns at most one key. An ordinary byte
+// immediately after ESC is returned with Alt set rather than swallowed.
+// Unsupported CSI content is discarded as one complete terminal sequence.
 pub decode_key :: proc(decoder: ^Decoder, byte: u8) -> Key {
     // Escape restarts a damaged or incomplete sequence. Two consecutive Escape
     // bytes complete the first key while leaving the second pending.
     if byte == 27 && decoder^.state != .plain {
         repeated := decoder^.state == .escape
+        reset_decoder(decoder)
         decoder^.state = .escape
-        decoder^.parameter = 0
-        decoder^.ignore_parameter_digits = false
         if repeated {
             return Key{kind = .escape}
         }
@@ -126,7 +300,7 @@ pub decode_key :: proc(decoder: ^Decoder, byte: u8) -> Key {
             empty: Key
             return empty
         }
-        return byte_key(byte)
+        return plain_key(byte, false)
     case .escape:
         if byte == cast[u8]('[') {
             decoder^.state = .csi
@@ -138,73 +312,78 @@ pub decode_key :: proc(decoder: ^Decoder, byte: u8) -> Key {
             empty: Key
             return empty
         }
-        decoder^.state = .plain
-        return byte_key(byte)
+        reset_decoder(decoder)
+        return plain_key(byte, true)
     case .csi:
         if byte >= cast[u8]('0') && byte <= cast[u8]('9') {
-            decoder^.parameter = cast[u16](byte - cast[u8]('0'))
-            decoder^.ignore_parameter_digits = false
+            append_parameter_digit(
+                decoder,
+                cast[u16](byte - cast[u8]('0')),
+            )
             decoder^.state = .csi_parameter
             empty: Key
             return empty
         }
-        // CSI parameter/intermediate bytes occupy 0x20-0x3f. Retain the
-        // sequence until its final byte instead of leaking modifier digits as
-        // ordinary application input.
+        if byte == cast[u8](';') {
+            decoder^.parameter_index = 1
+            decoder^.state = .csi_parameter
+            empty: Key
+            return empty
+        }
         if byte >= 0x20 && byte <= 0x3f {
-            decoder^.parameter = 0
-            decoder^.ignore_parameter_digits = true
-            decoder^.state = .csi_parameter
+            decoder^.state = .csi_ignore
             empty: Key
             return empty
         }
-        decoder^.state = .plain
-        return navigation_key(byte)
+        reset_decoder(decoder)
+        return direct_sequence_key(byte)
     case .csi_parameter:
         if byte >= cast[u8]('0') && byte <= cast[u8]('9') {
-            digit := cast[u16](byte - cast[u8]('0'))
-            if !decoder^.ignore_parameter_digits {
-                if decoder^.parameter <= 99 {
-                    decoder^.parameter = decoder^.parameter * 10 + digit
-                } else {
-                    decoder^.parameter = 999
-                }
-            }
+            append_parameter_digit(
+                decoder,
+                cast[u16](byte - cast[u8]('0')),
+            )
+            empty: Key
+            return empty
+        }
+        if byte == cast[u8](';') && decoder^.parameter_index == 0 {
+            decoder^.parameter_index = 1
             empty: Key
             return empty
         }
         if byte >= 0x20 && byte <= 0x3f {
-            decoder^.ignore_parameter_digits = true
+            decoder^.state = .csi_ignore
             empty: Key
             return empty
         }
-        parameter := decoder^.parameter
-        decoder^.parameter = 0
-        decoder^.ignore_parameter_digits = false
-        decoder^.state = .plain
-        if byte == cast[u8]('~') {
-            return parameter_key(parameter)
+        first_parameter := decoder^.first_parameter
+        modifier_parameter := decoder^.modifier_parameter
+        reset_decoder(decoder)
+        return parameter_sequence_key(
+            first_parameter,
+            modifier_parameter,
+            byte,
+        )
+    case .csi_ignore:
+        if byte >= 0x40 && byte <= 0x7e {
+            reset_decoder(decoder)
         }
-        return navigation_key(byte)
+        empty: Key
+        return empty
     case .ss3:
-        // SS3 is the other common prefix for cursor/home/end keys. P/Q/R/S are
-        // function keys, which the current Key_Kind cannot represent; consuming
-        // their final byte as none prevents it from becoming text or a command.
-        decoder^.state = .plain
-        return navigation_key(byte)
+        reset_decoder(decoder)
+        return direct_sequence_key(byte)
     }
     empty: Key
     return empty
 }
 
 // flush_key resolves pending state after the caller's chosen ambiguity timeout.
-// A lone ESC becomes escape; an incomplete CSI sequence is discarded. In every
-// case Decoder returns to its zero resting state.
+// A lone ESC becomes escape; an incomplete CSI/SS3 sequence is discarded. In
+// every case Decoder returns to its zero resting state.
 pub flush_key :: proc(decoder: ^Decoder) -> Key {
     was_escape := decoder^.state == .escape
-    decoder^.state = .plain
-    decoder^.parameter = 0
-    decoder^.ignore_parameter_digits = false
+    reset_decoder(decoder)
     if was_escape {
         return Key{kind = .escape}
     }

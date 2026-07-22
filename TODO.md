@@ -14,4 +14,4 @@
 - [x] Reserve `^` for pointers and use binary `~`/`~=` for XOR.
 - [ ] Add freestanding and embedded target support.
 - [ ] Complete cross-target sanitizer, race, and coverage profiles.
-- [ ] Add terminal resize/signal handling and Unicode display support.
+- [ ] Add terminal resize notifications/signal handling and Unicode display support.

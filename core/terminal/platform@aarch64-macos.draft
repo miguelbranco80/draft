@@ -1,8 +1,9 @@
 // This target-selected half of core/terminal defines Darwin's native termios
-// record and poll count ABI. Native_Mode matches the macOS 14 arm64 SDK exactly:
-// four unsigned-long flag words, twenty control bytes, padding to eight-byte
-// speed fields, and 72 bytes total. Every pointer is borrowed for one libc call;
-// resource ownership and portable error policy remain in package.draft.
+// record, poll count ABI, and TIOCGWINSZ request. Native_Mode matches the macOS
+// 14 arm64 SDK exactly: four unsigned-long flag words, twenty control bytes,
+// padding to eight-byte speed fields, and 72 bytes total. Every pointer is
+// borrowed for one libc call; resource ownership and portable error policy
+// remain in package.draft.
 //
 // The declarations depend only on core/c_abi and the AArch64 macOS target profile.
 // Their layouts and signatures are target ABI facts, not portable POSIX facts.
@@ -25,6 +26,7 @@ Native_Mode :: c struct {
 }
 
 Native_Apply_Now :: cast[c_abi.int](0)
+Native_Size_Request :: cast[c_abi.unsigned_long](0x40087468)
 
 foreign darwin {
     native_get_mode as "tcgetattr" :: c proc(
@@ -42,6 +44,11 @@ foreign darwin {
         count: c_abi.unsigned_int,
         timeout_milliseconds: c_abi.int,
     ) -> c_abi.int
+    native_ioctl as "ioctl" :: c proc(
+        descriptor: c_abi.int,
+        request: c_abi.unsigned_long,
+        ..,
+    ) -> c_abi.int
 }
 
 // Darwin defines nfds_t as unsigned int. Hiding that count type behind this
@@ -54,4 +61,14 @@ native_poll_one :: proc(
     static_assert(size_of(Native_Mode) == 72)
     static_assert(align_of(Native_Mode) == 8)
     return native_poll(descriptor, 1, timeout_milliseconds)
+}
+
+// TIOCGWINSZ writes one borrowed Native_Window_Size through ioctl's unnamed C
+// argument. The request value encodes Darwin's eight-byte output record and is
+// therefore an exact selected-target fact rather than portable POSIX policy.
+native_query_size :: proc(
+    descriptor: c_abi.int,
+    size: ^Native_Window_Size,
+) -> c_abi.int {
+    return native_ioctl(descriptor, Native_Size_Request, size)
 }

@@ -149,7 +149,7 @@ handling.
 ## Interactive terminal sessions
 
 Status: ordinary Draft library policy over target-selected Darwin/glibc C
-layouts and fixed libc calls; no ncurses, event framework, or compiler
+layouts and fixed/variadic libc calls; no ncurses, event framework, or compiler
 intrinsic.
 
 `core/terminal.Session` is a move-by-convention owner of one restoration
@@ -158,8 +158,11 @@ complete native terminal mode, derives the platform's conventional raw mode
 through `cfmakeraw`, applies it immediately, and publishes Session state only
 after both native operations succeed. Raw mode makes control bytes—including
 Ctrl-C—application input, allowing normal application cleanup to restore the
-terminal. `restore` is idempotent when inactive and deliberately retains an
-active failed session so the owner can report or retry restoration.
+terminal. The explicit inactive/active/suspended state also supports process
+job control without hiding signals: `suspend` restores the saved mode while
+retaining the descriptor borrow, and `resume` derives and reapplies raw mode.
+Failed transitions retain their source state. `restore` is idempotent when
+inactive and ends an already-suspended obligation without another native call.
 
 `terminal.read` combines one `poll` with one ordinary `os.read`. Durations are
 rounded upward to poll's millisecond resolution and saturated at the largest
@@ -171,26 +174,41 @@ other native failures to `.unavailable`.
 `core/terminal.Screen` separately owns the obligation to leave an ANSI/VT
 alternate screen and show the cursor. It borrows the output descriptor and
 becomes active before writing the enter sequence, because a failed complete
-write may already have published a state-changing prefix. Applications build
+write may already have published a state-changing prefix. Its matching
+inactive/active/suspended states let an application leave the alternate screen
+before yielding terminal control and re-enter it afterward. Applications build
 their own complete frame bytes and publish them through `write_screen`; small
 public cursor-home and erase fragments support that construction without
 introducing a layout engine or fixed library buffer.
 
+An application coordinating both owners acquires Session then Screen, suspends
+Screen then Session, resumes Session then Screen, and restores Screen then
+Session. It attempts both final restorations even if the first fails. This
+ordering exposes the primary screen and saved input mode to external work and
+does not re-enter the alternate screen when raw input could not be reacquired.
+
+`terminal.query_size` passes one exact eight-byte POSIX winsize record through
+the selected target's real variadic `ioctl` declaration. Darwin owns request
+`0x40087468`; Linux owns `0x5413`. The public result widens rows and columns to
+`usize`, preserves a successful zero dimension, and deliberately omits pixel
+dimensions because cell layout is the portable text-application contract.
+
 The allocation-free `Decoder` preserves ordinary input—including control and
-UTF-8 bytes—as byte keys and recognizes common cursor, home/end, delete, and
-page CSI sequences across arbitrary read boundaries. A lone Escape remains
-pending until the application calls `flush_key` after its own timeout, keeping
-ambiguity and event-loop timing policy explicit. Modified navigation sequences
-collapse to the base navigation key, while unsupported SS3 function keys are
-consumed without leaking their final byte as ordinary input. Styling,
-terminal-size queries, signals, mouse input, Unicode text interpretation, and
-event-loop composition remain application or future-library concerns.
+UTF-8 bytes—as byte keys and recognizes Enter, Tab, Backspace, cursor,
+home/end, insert/delete, page, and F1-F12 forms across arbitrary read
+boundaries. A lone Escape remains pending until the application calls
+`flush_key` after its own timeout. Escape-prefixed bytes and xterm numeric
+parameters preserve explicit Alt/Shift/Control state, while combinations the
+byte protocol cannot distinguish are not guessed. Styling, automatic resize
+and signal handling, mouse input, Unicode text interpretation, and event-loop
+composition remain application or future-library concerns.
 
 Darwin stores a 72-byte, eight-aligned termios record and uses 32-bit `nfds_t`;
 the selected glibc contract stores a 60-byte, four-aligned record and uses
-64-bit `nfds_t`. Both use the common eight-byte `pollfd` layout. Target source
-contains compile-time size/alignment assertions, while native package
-validation links every fixed symbol against the selected libc boundary.
+64-bit `nfds_t`. Both use the common eight-byte `pollfd` and `winsize` layouts.
+Target source contains compile-time size/alignment assertions, while native
+package validation links the selected libc boundary, including real variadic
+`ioctl` calls.
 
 The virtual-memory seam uses target-qualified source with fixed signatures for
 `mmap`, `mprotect`, and `munmap`. Reserve creates inaccessible private anonymous
