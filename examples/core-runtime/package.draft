@@ -1,6 +1,6 @@
 package core_runtime
 
-import core/c as c
+import core/c_abi
 import core/option
 import core/result
 import core/runtime
@@ -14,7 +14,7 @@ read_option :: proc(value: option.Option[i64]) -> i64 {
     }
 }
 
-read_result :: proc(value: result.Result[i64, c.int]) -> i64 {
+read_result :: proc(value: result.Result[i64, c_abi.int]) -> i64 {
     switch value {
     case .ok(payload):
         return payload

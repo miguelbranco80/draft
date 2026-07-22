@@ -4,45 +4,45 @@
 // control bytes, padding, two 32-bit speeds, and 60 bytes total. Every pointer
 // is borrowed for one libc call; ownership and error policy remain common.
 //
-// The declarations depend only on core/c and the AArch64 GNU/Linux target
+// The declarations depend only on core/c_abi and the AArch64 GNU/Linux target
 // profile. Their layouts and signatures are versioned ABI facts rather than a
 // claim about every Linux libc. Draft specification: sections 5-7 and 12.
 package terminal
 
-import core/c as c
+import core/c_abi
 
 // Native_Mode is stored opaquely by Session. libc's cfmakeraw owns flag policy;
 // exposing the physical fields here exists solely to give the C boundary the
 // exact selected glibc layout and alignment.
 Native_Mode :: c struct {
-    input_flags: c.unsigned_int,
-    output_flags: c.unsigned_int,
-    control_flags: c.unsigned_int,
-    local_flags: c.unsigned_int,
-    line_discipline: c.unsigned_char,
-    control_characters: [32]c.unsigned_char,
-    input_speed: c.unsigned_int,
-    output_speed: c.unsigned_int,
+    input_flags: c_abi.unsigned_int,
+    output_flags: c_abi.unsigned_int,
+    control_flags: c_abi.unsigned_int,
+    local_flags: c_abi.unsigned_int,
+    line_discipline: c_abi.unsigned_char,
+    control_characters: [32]c_abi.unsigned_char,
+    input_speed: c_abi.unsigned_int,
+    output_speed: c_abi.unsigned_int,
 }
 
-Native_Apply_Now :: cast[c.int](0)
+Native_Apply_Now :: cast[c_abi.int](0)
 
 foreign linux {
     native_get_mode as "tcgetattr" :: c proc(
-        descriptor: c.int,
+        descriptor: c_abi.int,
         mode: ^Native_Mode,
-    ) -> c.int
+    ) -> c_abi.int
     native_set_mode as "tcsetattr" :: c proc(
-        descriptor: c.int,
-        action: c.int,
+        descriptor: c_abi.int,
+        action: c_abi.int,
         mode: ^Native_Mode,
-    ) -> c.int
+    ) -> c_abi.int
     native_make_raw as "cfmakeraw" :: c proc(mode: ^Native_Mode)
     native_poll as "poll" :: c proc(
         descriptors: ^Poll_Descriptor,
-        count: c.unsigned_long,
-        timeout_milliseconds: c.int,
-    ) -> c.int
+        count: c_abi.unsigned_long,
+        timeout_milliseconds: c_abi.int,
+    ) -> c_abi.int
 }
 
 // glibc defines nfds_t as unsigned long. The common implementation always
@@ -50,8 +50,8 @@ foreign linux {
 // to this target-owned adapter.
 native_poll_one :: proc(
     descriptor: ^Poll_Descriptor,
-    timeout_milliseconds: c.int,
-) -> c.int {
+    timeout_milliseconds: c_abi.int,
+) -> c_abi.int {
     static_assert(size_of(Native_Mode) == 60)
     static_assert(align_of(Native_Mode) == 4)
     return native_poll(descriptor, 1, timeout_milliseconds)

@@ -142,7 +142,7 @@ Keep foreign callbacks small and make the Context bridge visible.
 
 Draft 1 permits these types by value at a user C boundary:
 
-- machine scalars with defined C lowering and `core/c` scalar aliases;
+- machine scalars with defined C lowering and `core/c_abi` scalar aliases;
 - data pointers, `rawptr`, `cstring`, and C procedure pointers;
 - recursively legal `c struct` and `c raw union` types;
 - legal `c enum` types;
@@ -183,15 +183,15 @@ A foreign block declares fixed-arity procedure symbols from one semantic link
 provider:
 
 ```draft
-import core/c as c
+import core/c_abi
 
 foreign zlib {
     compress_bytes as "compress" :: c proc(
         destination: [^]u8,
-        destination_length: ^c.unsigned_long,
+        destination_length: ^c_abi.unsigned_long,
         source: [^]u8,
-        source_length: c.unsigned_long,
-    ) -> c.int
+        source_length: c_abi.unsigned_long,
+    ) -> c_abi.int
 }
 ```
 
@@ -268,12 +268,14 @@ int draft_open_fixed(const char *path, int flags, unsigned mode) {
 ```
 
 ```draft
+import core/c_abi
+
 foreign package_assembly {
     native_open as "draft_open_fixed" :: c proc(
         path: cstring,
-        flags: c.int,
-        mode: c.unsigned_int,
-    ) -> c.int
+        flags: c_abi.int,
+        mode: c_abi.unsigned_int,
+    ) -> c_abi.int
 }
 ```
 

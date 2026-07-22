@@ -128,11 +128,11 @@ and are not user C imports or exports. This exception does not make
 A `foreign` block declares C symbols supplied by a link provider:
 
 ```draft
-import core/c as c
+import core/c_abi
 
 foreign zlib {
     zcompress as "compress" :: c proc(dst: [^]u8, dst_len: ^usize,
-                                    src: [^]u8, src_len: usize) -> c.int
+                                    src: [^]u8, src_len: usize) -> c_abi.int
 }
 ```
 
@@ -145,11 +145,11 @@ containing package normally. In the declaration above:
 | `zcompress` | Local Draft declaration name used by source code. |
 | `as "compress"` | Optional exact symbol requested from the linker. |
 | `c` | C calling convention and ABI lowering. |
-| `proc(...) -> c.int` | Draft-visible signature of that symbol. |
+| `proc(...) -> c_abi.int` | Draft-visible signature of that symbol. |
 
-The leading `c` is a Draft calling-convention modifier. The `c` in `c.int`
-is merely the file-local alias introduced by `import core/c as c`; the shared
-spelling is conventional and creates no semantic relationship.
+The leading `c` is a Draft calling-convention modifier. `c_abi.int` is an
+ordinary qualified type imported from `core/c_abi`; the package name makes the
+two independent roles explicit.
 
 If the `as "compress"` clause is omitted, the linker symbol is the local
 declaration name. The alias sits beside the local binding rather than inside the
@@ -204,7 +204,7 @@ and foreign data symbols require a fixed-signature C wrapper.
 package. It uses the same local-name and optional-linker-name rule:
 
 ```draft
-import core/c as c
+import core/c_abi
 import core/runtime
 
 decode_for_c_impl :: proc(
@@ -212,7 +212,7 @@ decode_for_c_impl :: proc(
     input_len: usize,
     output: [^]u8,
     output_len: usize,
-) -> c.int {
+) -> c_abi.int {
     ... "validate the C buffers and call decode"
 }
 
@@ -221,7 +221,7 @@ export decode_for_c as "jpeg_decode" :: c proc(
     input_len: usize,
     output: [^]u8,
     output_len: usize,
-) -> c.int {
+) -> c_abi.int {
     ctx := runtime.default_context()
     return runtime.call_with_context(
         &ctx,

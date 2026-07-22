@@ -98,7 +98,7 @@ foreign libc {
   add_file(sources, loaded, diagnostics, "b.draft", R"draft(
 package demo
 
-import core/c as c
+import core/c_abi
 
 judge "The exported entry has a stable C boundary."
 
@@ -162,8 +162,8 @@ export entry as "draft_entry" :: c proc() -> int {
   }
 
   EXPECT(state, package.symbols.lookup(package.files[0].scope, "io").has_value());
-  EXPECT(state, !package.symbols.lookup(package.files[0].scope, "c").has_value());
-  EXPECT(state, package.symbols.lookup(package.files[1].scope, "c").has_value());
+  EXPECT(state, !package.symbols.lookup(package.files[0].scope, "c_abi").has_value());
+  EXPECT(state, package.symbols.lookup(package.files[1].scope, "c_abi").has_value());
   EXPECT(state, !package.symbols.lookup(package.files[1].scope, "io").has_value());
 
   EXPECT(state, count_sites(package, draft::SemanticSiteKind::Documentation) == 2);

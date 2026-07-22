@@ -3,21 +3,21 @@
 // resources or state: every pointer is borrowed for one synchronous native
 // call, and descriptor lifetime remains with the common File API.
 //
-// The declarations intentionally depend only on core/c and the Linux target
+// The declarations intentionally depend only on core/c_abi and the Linux target
 // profile. Their numeric flags and C signatures are ABI facts rather than
 // portable POSIX assumptions. Draft specification: sections 5-7, section 12,
 // and the versioned AArch64 GNU/Linux target profile.
 package os
 
-import core/c as c
+import core/c_abi
 
 // Linux UAPI open(2) flags for the initial little-endian AArch64 GNU profile.
 // Keeping them in target-selected Draft source makes their use inspectable and
 // prevents a shared POSIX-looking name from hiding incompatible numeric bits.
-pub open_append :: cast[c.int](0x0400)
-pub open_create :: cast[c.int](0x0040)
-pub open_truncate :: cast[c.int](0x0200)
-pub open_exclusive :: cast[c.int](0x0080)
+pub open_append :: cast[c_abi.int](0x0400)
+pub open_create :: cast[c_abi.int](0x0040)
+pub open_truncate :: cast[c_abi.int](0x0200)
+pub open_exclusive :: cast[c_abi.int](0x0080)
 
 pub page_size :: proc() -> usize {
     return 4096
@@ -29,17 +29,17 @@ pub page_size :: proc() -> usize {
 // what permits package.draft to pass raw_data(string) without copying.
 foreign linux {
     native_read as "read" :: c proc(
-        descriptor: c.int,
+        descriptor: c_abi.int,
         destination: [^]u8,
-        count: c.size_t,
-    ) -> c.ssize_t
+        count: c_abi.size_t,
+    ) -> c_abi.ssize_t
     native_write as "write" :: c proc(
-        descriptor: c.int,
+        descriptor: c_abi.int,
         source: [^]u8,
-        count: c.size_t,
-    ) -> c.ssize_t
-    native_close as "close" :: c proc(descriptor: c.int) -> c.int
-    native_unlink as "unlink" :: c proc(path: cstring) -> c.int
-    native_process_id as "getpid" :: c proc() -> c.int
-    native_exit as "_exit" :: c proc(status: c.int)
+        count: c_abi.size_t,
+    ) -> c_abi.ssize_t
+    native_close as "close" :: c proc(descriptor: c_abi.int) -> c_abi.int
+    native_unlink as "unlink" :: c proc(path: cstring) -> c_abi.int
+    native_process_id as "getpid" :: c proc() -> c_abi.int
+    native_exit as "_exit" :: c proc(status: c_abi.int)
 }

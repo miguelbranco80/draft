@@ -1,6 +1,6 @@
 package thread
 
-import core/c as c
+import core/c_abi
 import core/memory
 import core/runtime
 import core/time

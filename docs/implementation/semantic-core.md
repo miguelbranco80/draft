@@ -531,10 +531,12 @@ reconstructs all semantic state from authored and committed generated source.
 Status: implementation representation; no intended semantic change.
 
 The lexer records `c` distinctly because it introduces a C procedure calling
-convention. The parser also accepts that token wherever an ordinary contextual
-name is required, because the specification deliberately uses `c` as the local
-alias in `import core/c as c` and in qualified names such as `c.int`. A line
-ending in the alias therefore receives ordinary identifier semicolon behavior.
+convention and aggregate layout where the surrounding grammar permits those
+forms. The parser also accepts that token wherever an ordinary contextual name
+is required, so the special meaning does not globally reserve a short and
+otherwise valid identifier. A line ending in an ordinary `c` name therefore
+receives identifier semicolon behavior. The distributed scalar aliases live in
+`core/c_abi`, so compiler-owned source does not overload the spelling.
 
 ## Procedure-flow and external-audit summaries
 

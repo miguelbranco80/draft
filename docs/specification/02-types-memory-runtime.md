@@ -956,7 +956,7 @@ The initial core set includes:
 | `core/os` | Process, argument, environment, file, and operating-system facilities. |
 | `core/atomic` | Compiler-backed atomic values and memory-order operations. |
 | `core/thread` | Threads, synchronization, and Draft TLS/context establishment. |
-| `core/c` | C ABI scalar aliases and interoperation declarations. |
+| `core/c_abi` | C ABI scalar aliases for interoperation declarations. |
 | `core/testing` | Test harness types and assertions. |
 | `core/benchmark` | Benchmark harnesses and performance budgets. |
 | `core/time` | Time values, units, clocks, and durations. |

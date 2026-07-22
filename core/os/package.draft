@@ -13,7 +13,7 @@
 // Draft specification: sections 5-7 and the selected target profile.
 package os
 
-import core/c as c
+import core/c_abi
 import core/io
 
 // The hosted entry shim owns the process vectors and exposes their already
@@ -44,7 +44,7 @@ pub environment :: proc() -> []string {
 // descriptor is -1. Keeping that sentinel in the ordinary value means callers
 // can initialize and clean up a handle without a second representation.
 pub File :: c struct {
-    descriptor: c.int,
+    descriptor: c_abi.int,
 }
 
 pub standard_input: File = File{descriptor = 0}
@@ -54,14 +54,14 @@ pub standard_error: File = File{descriptor = 2}
 // Access modes occupy the low two bits and must not be combined with each
 // other on either supported POSIX target. Target-owned creation and status
 // flag values live in the selected platform source file.
-pub open_read_only :: cast[c.int](0)
-pub open_write_only :: cast[c.int](1)
-pub open_read_write :: cast[c.int](2)
+pub open_read_only :: cast[c_abi.int](0)
+pub open_write_only :: cast[c_abi.int](1)
+pub open_read_write :: cast[c_abi.int](2)
 
 // New files receive rw-rw-rw- before the process umask removes permissions.
 // The decimal spelling is octal 0666; naming the policy is clearer at call
 // sites than repeating a target-shaped numeric literal.
-pub default_creation_permissions :: cast[c.unsigned_int](438)
+pub default_creation_permissions :: cast[c_abi.unsigned_int](438)
 
 // POSIX declares open(2) as variadic because the mode argument is consumed only
 // when O_CREAT is present. Draft 1 rejects variadic foreign declarations, so
@@ -70,12 +70,12 @@ pub default_creation_permissions :: cast[c.unsigned_int](438)
 foreign package_assembly {
     native_open as "draft_os_open_fixed" :: c proc(
         path: cstring,
-        flags: c.int,
-        mode: c.unsigned_int,
-    ) -> c.int
+        flags: c_abi.int,
+        mode: c_abi.unsigned_int,
+    ) -> c_abi.int
 }
 
-pub file_from_descriptor :: proc(descriptor: c.int) -> File {
+pub file_from_descriptor :: proc(descriptor: c_abi.int) -> File {
     return File{descriptor = descriptor}
 }
 
@@ -85,8 +85,8 @@ pub file_from_descriptor :: proc(descriptor: c.int) -> File {
 // creation, while the convenience procedures below cover the common cases.
 pub open :: proc(
     path: cstring,
-    flags: c.int,
-    mode: c.unsigned_int,
+    flags: c_abi.int,
+    mode: c_abi.unsigned_int,
 ) -> (File, io.Error) {
     descriptor := native_open(path, flags, mode)
     if descriptor < 0 {
@@ -218,5 +218,5 @@ pub process_id :: proc() -> u64 {
 }
 
 pub exit :: proc(status: int) {
-    native_exit(cast[c.int](status))
+    native_exit(cast[c_abi.int](status))
 }

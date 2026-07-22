@@ -212,9 +212,10 @@ ends the attachment group. Consequently, `} else {` remains on one line.
 
 `c` is contextual rather than globally reserved. Before `proc` it selects the C
 calling convention; before `struct`, `enum`, or `raw union` it selects C layout,
-as defined by sections 5 and 12. Elsewhere it may be an ordinary local import
-alias or the first component of a qualified name such as `c.int`. Those
-identifier uses receive ordinary semicolon behavior. `align` is the reserved
+as defined by sections 5 and 12. Elsewhere it is an ordinary identifier, so a
+project may still choose it as a local binding or import alias; those uses
+receive ordinary semicolon behavior. The distributed C scalar package is named
+`core/c_abi` and does not rely on that contextual-name freedom. `align` is the reserved
 aggregate-layout modifier defined by section 5; Draft has no general annotation
 prefix or user-defined declaration modifier.
 

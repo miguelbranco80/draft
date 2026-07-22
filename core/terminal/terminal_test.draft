@@ -8,7 +8,7 @@
 // attempted against CTest's stdin/stdout.
 package terminal
 
-import core/c as c
+import core/c_abi
 import core/os
 import core/testing
 import core/time
@@ -26,7 +26,7 @@ test_timeout_milliseconds :: proc(test: ^testing.Test) {
         test,
         timeout_milliseconds(time.millisecond + time.nanosecond) == 2,
     )
-    maximum := cast[c.int](Maximum_Poll_Milliseconds)
+    maximum := cast[c_abi.int](Maximum_Poll_Milliseconds)
     testing.expect(
         test,
         timeout_milliseconds(

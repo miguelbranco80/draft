@@ -4,44 +4,44 @@
 // speed fields, and 72 bytes total. Every pointer is borrowed for one libc call;
 // resource ownership and portable error policy remain in package.draft.
 //
-// The declarations depend only on core/c and the AArch64 macOS target profile.
+// The declarations depend only on core/c_abi and the AArch64 macOS target profile.
 // Their layouts and signatures are target ABI facts, not portable POSIX facts.
 // Draft specification: sections 5-7 and 12.
 package terminal
 
-import core/c as c
+import core/c_abi
 
 // Native_Mode is stored opaquely by public Session after begin_raw. Field names
 // document the Darwin layout, but common code deliberately delegates all flag
 // mutation to libc's cfmakeraw so Draft does not duplicate platform policy.
 Native_Mode :: c struct {
-    input_flags: c.unsigned_long,
-    output_flags: c.unsigned_long,
-    control_flags: c.unsigned_long,
-    local_flags: c.unsigned_long,
-    control_characters: [20]c.unsigned_char,
-    input_speed: c.unsigned_long,
-    output_speed: c.unsigned_long,
+    input_flags: c_abi.unsigned_long,
+    output_flags: c_abi.unsigned_long,
+    control_flags: c_abi.unsigned_long,
+    local_flags: c_abi.unsigned_long,
+    control_characters: [20]c_abi.unsigned_char,
+    input_speed: c_abi.unsigned_long,
+    output_speed: c_abi.unsigned_long,
 }
 
-Native_Apply_Now :: cast[c.int](0)
+Native_Apply_Now :: cast[c_abi.int](0)
 
 foreign darwin {
     native_get_mode as "tcgetattr" :: c proc(
-        descriptor: c.int,
+        descriptor: c_abi.int,
         mode: ^Native_Mode,
-    ) -> c.int
+    ) -> c_abi.int
     native_set_mode as "tcsetattr" :: c proc(
-        descriptor: c.int,
-        action: c.int,
+        descriptor: c_abi.int,
+        action: c_abi.int,
         mode: ^Native_Mode,
-    ) -> c.int
+    ) -> c_abi.int
     native_make_raw as "cfmakeraw" :: c proc(mode: ^Native_Mode)
     native_poll as "poll" :: c proc(
         descriptors: ^Poll_Descriptor,
-        count: c.unsigned_int,
-        timeout_milliseconds: c.int,
-    ) -> c.int
+        count: c_abi.unsigned_int,
+        timeout_milliseconds: c_abi.int,
+    ) -> c_abi.int
 }
 
 // Darwin defines nfds_t as unsigned int. Hiding that count type behind this
@@ -49,8 +49,8 @@ foreign darwin {
 // without pretending Linux has the same poll signature.
 native_poll_one :: proc(
     descriptor: ^Poll_Descriptor,
-    timeout_milliseconds: c.int,
-) -> c.int {
+    timeout_milliseconds: c_abi.int,
+) -> c_abi.int {
     static_assert(size_of(Native_Mode) == 72)
     static_assert(align_of(Native_Mode) == 8)
     return native_poll(descriptor, 1, timeout_milliseconds)

@@ -14,7 +14,7 @@ from another standard library is not evidence that Draft provides it.
 - [`core/array`](#corearray)
 - [`core/atomic`](#coreatomic)
 - [`core/benchmark`](#corebenchmark)
-- [`core/c`](#corec)
+- [`core/c_abi`](#corec_abi)
 - [`core/console`](#coreconsole)
 - [`core/format`](#coreformat)
 - [`core/heap`](#coreheap)
@@ -129,12 +129,12 @@ The package measures one call with `time.monotonic_now`. It has no warmup,
 batching, statistics, report formatter, callback arguments, or error channel.
 The validation runner owns policy beyond this minimal record.
 
-## `core/c`
+## `core/c_abi`
 
-Import conventionally as:
+Import directly as:
 
 ```draft
-import core/c as c
+import core/c_abi
 ```
 
 It provides LP64 aliases for the current AArch64 Darwin and GNU targets:
@@ -142,9 +142,9 @@ It provides LP64 aliases for the current AArch64 Darwin and GNU targets:
 `unsigned_int`, `long`, `unsigned_long`, `long_long`,
 `unsigned_long_long`, `size_t`, `ssize_t`, `intptr_t`, and `uintptr_t`.
 
-It does not provide libc procedures, errno, C file APIs, `float`, `double`, or
-variadic helpers. Do not assume these aliases describe a future Windows or
-32-bit C ABI.
+Use qualified names such as `c_abi.int` and `c_abi.size_t`. It does not provide
+libc procedures, errno, C file APIs, `float`, `double`, or variadic helpers. Do
+not assume these aliases describe a future Windows or 32-bit C ABI.
 
 ## `core/console`
 

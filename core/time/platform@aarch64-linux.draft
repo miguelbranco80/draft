@@ -1,6 +1,6 @@
 package time
 
-import core/c as c
+import core/c_abi
 
 Timespec :: c struct {
     seconds: i64,
@@ -8,7 +8,7 @@ Timespec :: c struct {
 }
 
 foreign linux {
-    clock_gettime :: c proc(clock: c.int, value: ^Timespec) -> c.int
+    clock_gettime :: c proc(clock: c_abi.int, value: ^Timespec) -> c_abi.int
 }
 
 // Linux CLOCK_MONOTONIC_RAW is 4. clock_gettime is expected to succeed for

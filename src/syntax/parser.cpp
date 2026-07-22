@@ -185,12 +185,13 @@ private:
   }
 
   [[nodiscard]] bool is_contextual_name(TokenKind kind) const {
-    // `c` is both the calling-convention modifier and the conventional ordinary
-    // alias in `import core/c as c`. `memory` and `flags` are directives only
-    // after assembly `clobber`, while `core/memory` and ordinary declarations
-    // must still be nameable. Constraint spellings are compiler-defined names
-    // valid in their parameter position. Treating these as contextual names
-    // keeps the lexer useful while preserving the source examples.
+    // `c` is a calling-convention/layout modifier only where the surrounding
+    // grammar expects one; elsewhere it remains an ordinary contextual name.
+    // `memory` and `flags` are likewise directives only after assembly
+    // `clobber`, while `core/memory` and ordinary declarations must still be
+    // nameable. Constraint spellings are compiler-defined names valid in their
+    // parameter position. Treating these as contextual names keeps each
+    // special meaning local to the grammar that introduces it.
     return kind == TokenKind::Identifier || kind == TokenKind::KeywordC ||
            kind == TokenKind::KeywordType || kind == TokenKind::KeywordInteger ||
            kind == TokenKind::KeywordFloat || kind == TokenKind::KeywordNumber ||
@@ -720,7 +721,8 @@ private:
     // `c` before an aggregate constructor selects the target C layout. It may
     // precede align(N), which then raises the completed C layout. A `c` before
     // `proc` remains the calling-convention modifier consumed by
-    // parse_procedure, while `c.int` remains an ordinary qualified name.
+    // parse_procedure, while every other `c` use remains an ordinary
+    // contextual name.
     if (at(TokenKind::KeywordC) &&
         (lookahead(1).kind == TokenKind::KeywordAlign ||
          lookahead(1).kind == TokenKind::KeywordStruct ||

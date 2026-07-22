@@ -139,13 +139,13 @@ deny asm {
 }
 
 foreign libc {
-    puts :: c proc(message: cstring) -> c.int
+    puts :: c proc(message: cstring) -> c_abi.int
 }
 
 pack_proc :: proc(prefix: u32 = 0, values: ..type) {
 }
 
-export draft_entry as "grammar_entry" :: c proc(argument: u32) -> c.int {
+export draft_entry as "grammar_entry" :: c proc(argument: u32) -> c_abi.int {
     values := [4]u32{1, 2, 3, 4}
     record := Container[u32, 4]{first = 1, second = 2}
     left, right: u32 = 1
@@ -235,7 +235,7 @@ export draft_entry as "grammar_entry" :: c proc(argument: u32) -> c.int {
         add x0, x0, #1
     }
 
-    return cast[c.int](assembled)
+    return cast[c_abi.int](assembled)
 }
 )draft");
 
@@ -251,7 +251,7 @@ docs "Package design context."
     file "DESIGN.md"
     folder "notes/"
 
-import core/c as c
+import core/c_abi
 import core/result
 
 Pair[T: type, U: type] :: struct {
@@ -279,7 +279,7 @@ C_Value :: c raw union {
 }
 
 Duration :: distinct i64
-Callback :: c proc(value: u8) -> c.int
+Callback :: c proc(value: u8) -> c_abi.int
 
 when target.pointer_bits == 64 {
     Word :: u64
@@ -292,10 +292,10 @@ deny asm {
 }
 
 foreign libc {
-    puts :: c proc(message: cstring) -> c.int
+    puts :: c proc(message: cstring) -> c_abi.int
 }
 
-export draft_entry :: c proc() -> c.int {
+export draft_entry :: c proc() -> c_abi.int {
     return 0
 }
 )draft");

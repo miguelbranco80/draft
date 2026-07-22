@@ -335,7 +335,7 @@ void test_partial_text_writes(TestState &state) {
   std::error_code error;
   for (const std::filesystem::path &directory : {
            workspace / "app",
-           core / "c",
+           core / "c_abi",
            core / "console",
            core / "format",
            core / "io",
@@ -350,7 +350,7 @@ void test_partial_text_writes(TestState &state) {
   const draft::TargetProfile target = native_host_target();
   const std::filesystem::path source_root(DRAFT_SOURCE_DIRECTORY);
   for (const std::filesystem::path &relative : {
-           std::filesystem::path("c/package.draft"),
+           std::filesystem::path("c_abi/package.draft"),
            std::filesystem::path("console/package.draft"),
            std::filesystem::path("format/package.draft"),
            std::filesystem::path("io/package.draft"),
@@ -385,16 +385,16 @@ void test_partial_text_writes(TestState &state) {
 // resets between cases; no pointer is retained after native_write returns.
 //
 // Production package.draft, console, format, io, runtime, and package assembly
-// remain unchanged. This provider depends only on core/c and intentionally
+// remain unchanged. This provider depends only on core/c_abi and intentionally
 // supplies the complete private seam required by core/os.
 package os
 
-import core/c as c
+import core/c_abi
 
-pub open_append :: cast[c.int](0)
-pub open_create :: cast[c.int](0)
-pub open_truncate :: cast[c.int](0)
-pub open_exclusive :: cast[c.int](0)
+pub open_append :: cast[c_abi.int](0)
+pub open_create :: cast[c_abi.int](0)
+pub open_truncate :: cast[c_abi.int](0)
+pub open_exclusive :: cast[c_abi.int](0)
 
 Test_Capacity :: 16384
 
@@ -437,10 +437,10 @@ pub page_size :: proc() -> usize {
 // The launched fixture never reads through this provider. Returning a native
 // error keeps accidental reads deterministic and outside the write assertions.
 native_read :: proc(
-    descriptor: c.int,
+    descriptor: c_abi.int,
     destination: [^]u8,
-    count: c.size_t,
-) -> c.ssize_t {
+    count: c_abi.size_t,
+) -> c_abi.ssize_t {
     return -1
 }
 
@@ -450,10 +450,10 @@ native_read :: proc(
 // An injected failure consumes no bytes, matching the native negative result
 // observed by core/os.
 native_write :: proc(
-    descriptor: c.int,
+    descriptor: c_abi.int,
     source: [^]u8,
-    count: c.size_t,
-) -> c.ssize_t {
+    count: c_abi.size_t,
+) -> c_abi.ssize_t {
     test_calls += 1
     if test_failure_call != 0 && test_calls == test_failure_call {
         return -1
@@ -472,24 +472,24 @@ native_write :: proc(
         test_bytes[test_length + index] = source[index]
     }
     test_length += accepted
-    return cast[c.ssize_t](accepted)
+    return cast[c_abi.ssize_t](accepted)
 }
 
 // The remaining procedures complete core/os's private target seam. They own no
 // resources in this provider because the launched app uses only standard_output.
-native_close :: proc(descriptor: c.int) -> c.int {
+native_close :: proc(descriptor: c_abi.int) -> c_abi.int {
     return 0
 }
 
-native_unlink :: proc(path: cstring) -> c.int {
+native_unlink :: proc(path: cstring) -> c_abi.int {
     return 0
 }
 
-native_process_id :: proc() -> c.int {
+native_process_id :: proc() -> c_abi.int {
     return 1
 }
 
-native_exit :: proc(status: c.int) {
+native_exit :: proc(status: c_abi.int) {
 }
 )draft";
   platform.close();
