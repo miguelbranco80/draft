@@ -42,8 +42,8 @@ constexpr std::array kKeywords{
     Keyword{"align", TokenKind::KeywordAlign},
     Keyword{"struct", TokenKind::KeywordStruct},
     Keyword{"enum", TokenKind::KeywordEnum},
+    Keyword{"variant", TokenKind::KeywordVariant},
     Keyword{"union", TokenKind::KeywordUnion},
-    Keyword{"raw", TokenKind::KeywordRaw},
     Keyword{"distinct", TokenKind::KeywordDistinct},
     Keyword{"thread_local", TokenKind::KeywordThreadLocal},
     Keyword{"foreign", TokenKind::KeywordForeign},
@@ -696,10 +696,11 @@ void advance_attachment_state(AttachmentState &state, TokenKind kind) {
 }
 
 // Reserved type-constructor words normally cannot finish a source item. They
-// can finish one when used as the stable compiler-enum alternatives `.struct`
-// and `.distinct`, however. Keeping this two-token exception in the insertion
-// pass avoids declaring either keyword a general statement-ending token, which
-// would incorrectly split `struct\n{ ... }` and `distinct\nT` type syntax.
+// can finish one when used as stable compiler-enum alternatives such as
+// `.struct`, `.variant`, `.union`, and `.distinct`. Keeping this dot-prefixed
+// exception in the insertion pass avoids declaring any constructor keyword a
+// general statement-ending token, which would incorrectly split
+// `variant\n{ ... }` or `distinct\nT` type syntax.
 [[nodiscard]] bool token_sequence_can_end_statement(
     TokenKind before_previous, TokenKind previous) {
   if (token_can_end_statement(previous)) return true;

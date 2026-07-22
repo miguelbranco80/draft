@@ -123,8 +123,8 @@ incidental encoding differences.
 Status: bootstrap backend representation; language layout is unchanged.
 
 Strings and concrete procedure identities contain linker relocations and cannot
-be flattened into the byte-array storage used for unions. An array, tuple,
-struct, tagged union, or raw union constant may contain those values at any
+be flattened into the byte-array storage used for variants and unions. An
+array, tuple, struct, variant, or union constant may contain those values at any
 nesting depth.
 The LLVM backend walks the checked Draft layout, writes every non-relocatable
 subtree as exact bytes, and retains each string or procedure leaf as a typed
@@ -160,7 +160,7 @@ Assembly output is a directory bundle with one compiler-produced source for
 each semantic package module plus exact copied external assembly inputs,
 avoiding local-label collisions that concatenation could create.
 Generated C headers cover root-package exports and transitively required C
-records, raw unions, enums, fixed-array fields, and callback types. Layout
+records, unions, enums, fixed-array fields, and callback types. Layout
 assertions make size, alignment, and field-offset disagreement a C compile error.
 
 A `c enum` without an explicit backing follows the selected AArch64 C

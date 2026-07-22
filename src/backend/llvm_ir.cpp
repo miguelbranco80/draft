@@ -33,8 +33,9 @@ struct StringConstant {
   std::string value;
   SymbolId global;
   // One MIR/global constant may contain several strings nested inside arrays,
-  // tuples, structs, or union payloads.  The logical aggregate path gives each
-  // leaf a stable module identity without teaching ConstantValue about LLVM.
+  // tuples, structs, variants, or unions. The logical aggregate path gives
+  // each leaf a stable module identity without teaching ConstantValue about
+  // LLVM.
   std::vector<std::size_t> path;
 };
 
@@ -50,12 +51,12 @@ struct TypedConstantOperand {
   std::string value;
 };
 
-// A relocatable scalar cannot be flattened into the byte array used for a
-// union's ordinary storage constant.  The module instead gives the allocation
-// an initializer-specific packed type and places each such scalar at its exact
-// Draft byte offset.  LLVM opaque pointers let later loads continue to use the
-// canonical Draft type.  Keeping the field record this small makes the layout
-// algorithm below a direct byte-offset walk rather than an LLVM type rewrite.
+// A relocatable scalar cannot be flattened into the byte array used for an
+// ordinary variant/union storage constant. The module instead gives the
+// allocation an initializer-specific packed type and places each such scalar at
+// its exact Draft byte offset. LLVM opaque pointers let later loads continue to
+// use the canonical Draft type. Keeping the field record this small makes the
+// layout algorithm below a direct byte-offset walk rather than an LLVM rewrite.
 struct RelocatableConstantField {
   std::uint64_t offset = 0;
   std::uint64_t size = 0;
@@ -599,8 +600,8 @@ private:
       return "%draft.type." + std::to_string(id.value);
     case TypeKind::Enum:
       return "i" + std::to_string(value.layout.size * 8U);
-    case TypeKind::TaggedUnion:
-    case TypeKind::RawUnion:
+    case TypeKind::Variant:
+    case TypeKind::Union:
       return "%draft.type." + std::to_string(id.value);
     case TypeKind::Distinct:
       return llvm_type(value.element);
@@ -685,10 +686,12 @@ private:
           output_ << '[' << value.layout.size - cursor << " x i8]";
         }
         output_ << " }>\n";
-      } else if (value.kind == TypeKind::TaggedUnion ||
-                 value.kind == TypeKind::RawUnion) {
+      } else if (value.kind == TypeKind::Variant ||
+                 value.kind == TypeKind::Union) {
         if (!value.layout.known) {
-          error(value.declaration, "union has no complete physical layout");
+          error(
+              value.declaration,
+              "variant or union has no complete physical layout");
           continue;
         }
         output_ << "%draft.type." << index << " = type ["
@@ -1734,7 +1737,7 @@ private:
       return llvm_type(type_id);
     case Aarch64CAbiClass::HomogeneousFloatAggregate:
       // Using the same explicit lane array for both directions avoids relying
-      // on LLVM to rediscover HFA shape through Draft's opaque raw-union
+      // on LLVM to rediscover HFA shape through Draft's opaque union
       // storage or through nested source aggregate names.
       return homogeneous_llvm_type(abi);
     case Aarch64CAbiClass::SmallAggregate:
@@ -2096,7 +2099,7 @@ private:
     const std::uint64_t size = storage.layout.size;
     if (bits == 0 || size == 0 || offset > bytes.size() ||
         size > bytes.size() - offset) {
-      error(range, "integer constant does not fit union storage");
+      error(range, "integer constant does not fit aggregate byte storage");
       return false;
     }
 
@@ -2152,12 +2155,12 @@ private:
                ? round_ieee_bits(value.floating, *format)
                : std::nullopt);
     if (!bits.has_value()) {
-      error(range, "floating constant has no union-storage encoding");
+      error(range, "floating constant has no aggregate byte encoding");
       return false;
     }
     const std::uint64_t size = storage.layout.size;
     if (offset > bytes.size() || size > bytes.size() - offset) {
-      error(range, "floating constant does not fit union storage");
+      error(range, "floating constant does not fit aggregate byte storage");
       return false;
     }
     const bool little = scalar_uses_little_endian(type_id);
@@ -2263,15 +2266,15 @@ private:
       }
       return true;
     }
-    if (storage.kind == TypeKind::RawUnion ||
-        storage.kind == TypeKind::TaggedUnion) {
-      if (value.variant_index >= storage.members.size()) {
-        error(range, "constant union has an invalid selected member");
+    if (storage.kind == TypeKind::Union ||
+        storage.kind == TypeKind::Variant) {
+      if (value.member_index >= storage.members.size()) {
+        error(range, "constant variant or union has an invalid selected member");
         return false;
       }
-      if (storage.kind == TypeKind::TaggedUnion) {
+      if (storage.kind == TypeKind::Variant) {
         if (!write_integer_bytes(
-                BigInteger::from_u64(value.variant_index),
+                BigInteger::from_u64(value.member_index),
                 storage.element,
                 bytes,
                 offset,
@@ -2281,18 +2284,18 @@ private:
       }
       if (value.elements.empty()) return true;
       if (value.elements.size() != 1) {
-        error(range, "constant union has more than one payload");
+        error(range, "constant variant or union has more than one selected value");
         return false;
       }
       const std::uint64_t payload_offset =
-          value.variant_index < storage.member_offsets.size()
-          ? storage.member_offsets[value.variant_index]
+          value.member_index < storage.member_offsets.size()
+          ? storage.member_offsets[value.member_index]
           : 0;
       ConstantSite child = std::move(site);
       child.path.push_back(0);
       return write_constant_bytes(
           value.elements.front(),
-          storage.members[value.variant_index],
+          storage.members[value.member_index],
           bytes,
           offset + payload_offset,
           std::move(child),
@@ -2322,8 +2325,8 @@ private:
     }
     const TypeKind kind = type(type_id).kind;
     const bool aggregate = kind == TypeKind::Array || kind == TypeKind::Tuple ||
-        kind == TypeKind::Struct || kind == TypeKind::TaggedUnion ||
-        kind == TypeKind::RawUnion;
+        kind == TypeKind::Struct || kind == TypeKind::Variant ||
+        kind == TypeKind::Union;
     return aggregate && contains_relocation(value);
   }
 
@@ -2339,8 +2342,8 @@ private:
   }
 
   // Writes every ordinary leaf into `bytes` and records every relocation leaf
-  // as a typed field. The same walk handles arrays, tuples, structs, tagged
-  // unions, raw unions, and any nesting of those forms. This is intentionally
+  // as a typed field. The same walk handles arrays, tuples, structs, variants,
+  // unions, and any nesting of those forms. This is intentionally
   // driven by Draft's checked layouts rather than by LLVM's aggregate layout:
   // the semantic type store is the authority for offsets, padding, and size.
   [[nodiscard]] bool collect_relocatable_constant_fields(
@@ -2441,26 +2444,28 @@ private:
       return true;
     }
 
-    if (storage.kind == TypeKind::TaggedUnion ||
-        storage.kind == TypeKind::RawUnion) {
-      if (value.variant_index >= storage.members.size() ||
+    if (storage.kind == TypeKind::Variant ||
+        storage.kind == TypeKind::Union) {
+      if (value.member_index >= storage.members.size() ||
           value.elements.size() != 1) {
-        error(range, "relocatable union constant has an invalid payload");
+        error(
+            range,
+            "relocatable variant or union constant has an invalid selected value");
         return false;
       }
-      if (storage.kind == TypeKind::TaggedUnion &&
+      if (storage.kind == TypeKind::Variant &&
           !write_integer_bytes(
-              BigInteger::from_u64(value.variant_index),
+              BigInteger::from_u64(value.member_index),
               storage.element,
               bytes,
               offset,
               range)) {
         return false;
       }
-      const TypeId payload_type = storage.members[value.variant_index];
+      const TypeId payload_type = storage.members[value.member_index];
       const std::uint64_t payload_offset =
-          value.variant_index < storage.member_offsets.size()
-          ? storage.member_offsets[value.variant_index]
+          value.member_index < storage.member_offsets.size()
+          ? storage.member_offsets[value.member_index]
           : 0;
       ConstantSite child = std::move(site);
       child.path.push_back(0);
@@ -2572,7 +2577,7 @@ private:
         std::to_string(instruction);
   }
 
-  // A relocatable aggregate cannot be an SSA literal with the canonical union
+  // A relocatable aggregate cannot be an SSA literal with the canonical opaque
   // byte-array type: LLVM relocations must remain typed. Materialize one private
   // constant per MIR site with the initializer-specific packed type, then load
   // it through an opaque pointer when the Constant instruction executes. The
@@ -2621,7 +2626,7 @@ private:
     if (emitted) output_ << '\n';
   }
 
-  [[nodiscard]] std::string union_constant(
+  [[nodiscard]] std::string selected_member_constant(
       const ConstantValue &value,
       TypeId type_id,
       ConstantSite site,
@@ -2663,9 +2668,9 @@ private:
       type_id = type(type_id).element;
     }
     const Type &aggregate = type(type_id);
-    if (aggregate.kind == TypeKind::TaggedUnion ||
-        aggregate.kind == TypeKind::RawUnion) {
-      return union_constant(value, type_id, std::move(site), range);
+    if (aggregate.kind == TypeKind::Variant ||
+        aggregate.kind == TypeKind::Union) {
+      return selected_member_constant(value, type_id, std::move(site), range);
     }
 
     const bool homogeneous = aggregate.kind == TypeKind::Array ||
@@ -3177,11 +3182,11 @@ private:
     return 0;
   }
 
-  [[nodiscard]] std::string union_scratch(std::size_t instruction_index) const {
-    return "%union.scratch." + std::to_string(instruction_index);
+  [[nodiscard]] std::string aggregate_scratch(std::size_t instruction_index) const {
+    return "%aggregate.scratch." + std::to_string(instruction_index);
   }
 
-  [[nodiscard]] std::optional<TypeId> union_scratch_type(
+  [[nodiscard]] std::optional<TypeId> aggregate_scratch_type(
       const MirProcedure &procedure,
       const MirInstruction &instruction) const {
     TypeId candidate;
@@ -3193,7 +3198,7 @@ private:
     }
     if (!candidate.is_valid()) return std::nullopt;
     const TypeKind kind = runtime_scalar_kind(candidate);
-    if (kind != TypeKind::TaggedUnion && kind != TypeKind::RawUnion) {
+    if (kind != TypeKind::Variant && kind != TypeKind::Union) {
       return std::nullopt;
     }
     return candidate;
@@ -3205,14 +3210,14 @@ private:
       const MirInstruction &instruction,
       std::vector<std::string> &operands) {
     const TypeId storage_type = runtime_scalar_id(instruction.type);
-    if (type(storage_type).kind == TypeKind::TaggedUnion ||
-        type(storage_type).kind == TypeKind::RawUnion) {
-      // Unions are represented as their exact byte-sized storage because LLVM
-      // has no source-level tagged-union type. Build the value in temporary
-      // memory: zeroing first gives deterministic padding and the Draft zero
-      // value, then discriminator/payload stores write their typed fields.
+    if (type(storage_type).kind == TypeKind::Variant ||
+        type(storage_type).kind == TypeKind::Union) {
+      // Variants and unions use their exact byte-sized storage because no LLVM
+      // aggregate type expresses either Draft layout directly. Build the value
+      // in temporary memory: zeroing first gives deterministic padding and the
+      // Draft zero value, then typed stores write the discriminator/member.
       const Type &aggregate_type = type(storage_type);
-      const std::string storage = union_scratch(instruction_index);
+      const std::string storage = aggregate_scratch(instruction_index);
       output_ << "  store " << llvm_type(instruction.type)
               << " zeroinitializer, ptr " << storage << ", align "
               << aggregate_type.layout.alignment << '\n';
@@ -3680,11 +3685,11 @@ private:
         const MirValueId aggregate_id = instruction.operands[0];
         const TypeId aggregate_type = procedure.value(aggregate_id).type;
         const TypeKind aggregate_kind = runtime_scalar_kind(aggregate_type);
-        if (aggregate_kind == TypeKind::TaggedUnion ||
-            aggregate_kind == TypeKind::RawUnion) {
+        if (aggregate_kind == TypeKind::Variant ||
+            aggregate_kind == TypeKind::Union) {
           // The source is an opaque byte aggregate in LLVM. Materializing it
           // permits a typed load at the semantically checked payload offset.
-          const std::string storage = union_scratch(instruction_index);
+          const std::string storage = aggregate_scratch(instruction_index);
           output_ << "  store "
                   << typed_operand(
                          procedure, operands, aggregate_id, instruction.range)
@@ -4092,16 +4097,16 @@ private:
           }
         }
         emit_c_abi_scratch_allocas(procedure);
-        // Union packing and extraction use one fixed scratch slot per MIR
-        // instruction. Declaring these in the entry block avoids dynamic stack
-        // growth when the source operation executes repeatedly inside a loop.
+        // Variant/union packing and extraction use one fixed scratch slot per
+        // MIR instruction. Declaring these in the entry block avoids dynamic
+        // stack growth when the source operation repeats inside a loop.
         for (std::size_t instruction_index = 0;
              instruction_index < procedure.instructions.size();
              ++instruction_index) {
-          const std::optional<TypeId> scratch_type = union_scratch_type(
+          const std::optional<TypeId> scratch_type = aggregate_scratch_type(
               procedure, procedure.instructions[instruction_index]);
           if (!scratch_type.has_value()) continue;
-          output_ << "  " << union_scratch(instruction_index) << " = alloca "
+          output_ << "  " << aggregate_scratch(instruction_index) << " = alloca "
                   << llvm_type(*scratch_type) << ", align "
                   << type(*scratch_type).layout.alignment << '\n';
         }

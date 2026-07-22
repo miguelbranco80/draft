@@ -432,7 +432,7 @@ Mode :: enum {
     On,
 }
 
-Outcome :: union {
+Outcome :: variant {
     empty,
     value: u32,
 }
@@ -1785,17 +1785,17 @@ Header :: struct {
     value: u64,
 }
 
-Outcome :: union {
+Outcome :: variant {
     empty,
     value: u32,
 }
 
-Float_Outcome :: union {
+Float_Outcome :: variant {
     empty,
     value: f32,
 }
 
-Overlay :: raw union {
+Overlay :: union {
     byte: u8,
     word: u64,
 }
@@ -1975,7 +1975,7 @@ thread_local scratch: i32 = -7
         source.analysis.global_initializers.find(*outcome);
     EXPECT(state, value != nullptr);
     if (value != nullptr) {
-      EXPECT(state, value->variant_index == 1);
+      EXPECT(state, value->member_index == 1);
       EXPECT(state, value->elements.size() == 1);
     }
   }
@@ -1985,7 +1985,7 @@ thread_local scratch: i32 = -7
     EXPECT(state, value != nullptr);
     if (value != nullptr && value->elements.size() == 2) {
       EXPECT(state, value->elements[0].kind == draft::ConstantKind::Aggregate);
-      EXPECT(state, value->elements[0].variant_index == 1);
+      EXPECT(state, value->elements[0].member_index == 1);
       EXPECT(state, value->elements[0].elements.size() == 1);
       EXPECT(state, value->elements[1].kind == draft::ConstantKind::Integer);
       EXPECT(state, value->elements[1].integer.to_decimal() == "7");
@@ -2005,7 +2005,7 @@ thread_local scratch: i32 = -7
         source.analysis.global_initializers.find(*overlay);
     EXPECT(state, value != nullptr);
     if (value != nullptr) {
-      EXPECT(state, value->variant_index == 1);
+      EXPECT(state, value->member_index == 1);
       EXPECT(state, value->elements.size() == 1);
     }
   }
@@ -2022,7 +2022,7 @@ Record :: struct {
     right: i64,
 }
 
-Overlay :: raw union {
+Overlay :: union {
     signed: i64,
     unsigned: u64,
 }
@@ -2063,7 +2063,7 @@ dead_conditional_type: i64 = 42 if true else "wrong"
                     std::string::npos);
   EXPECT(state, rendered.find("must initialize exactly one field") !=
                     std::string::npos);
-  EXPECT(state, rendered.find("raw union composite element must name a field") !=
+  EXPECT(state, rendered.find("union composite element must name a field") !=
                     std::string::npos);
   EXPECT(state, rendered.find("logical operators require matching bool operands") !=
                     std::string::npos);

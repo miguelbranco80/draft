@@ -75,8 +75,8 @@ HH3 :: c struct { values: [3]f16, }
 HD4 :: c struct { values: [4]f64, }
 HD5 :: c struct { values: [5]f64, }
 HF2_Aligned :: c align(16) struct { first: f32, second: f32, }
-Float_Union :: c raw union { first: f32, second: f32, }
-Unequal_Float_Union :: c raw union {
+Float_Union :: c union { first: f32, second: f32, }
+Unequal_Float_Union :: c union {
     scalar: f32,
     pair: [2]f32,
 }
@@ -84,7 +84,7 @@ Nested_Union_HF4 :: c struct {
     union_value: Unequal_Float_Union,
     pair: [2]f32,
 }
-Mixed_Union :: c raw union { first: f32, second: f64, }
+Mixed_Union :: c union { first: f32, second: f64, }
 Default_Record :: struct { value: i64, }
 Bad_Member :: c struct { value: []u8, }
 C_Enum :: c enum { off, on, }

@@ -577,18 +577,18 @@ Code :: enum i16 {
     Seven = 7,
 }
 
-Outcome :: union {
+Outcome :: variant {
     empty,
     value: i64,
     failure: u32,
 }
 
-Text_Outcome :: union {
+Text_Outcome :: variant {
     empty,
     value: string,
 }
 
-Callback_Outcome :: union {
+Callback_Outcome :: variant {
     empty,
     value: proc(value: u32) -> u32,
 }
@@ -608,12 +608,12 @@ Text_Count :: struct {
     count: u64,
 }
 
-Overlay :: raw union {
+Overlay :: union {
     byte: u8,
     word: u64,
 }
 
-Text_Overlay :: raw union {
+Text_Overlay :: union {
     text: string,
     words: [2]u64,
 }
@@ -653,7 +653,7 @@ global_infinity: f32 = compile_time_infinity()
 global_nan: f32 = compile_time_nan()
 global_negative_zero: f32 = compile_time_negative_zero()
 
-Maybe[T: type] :: union {
+Maybe[T: type] :: variant {
     none,
     some: T,
 }

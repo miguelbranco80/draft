@@ -1280,7 +1280,7 @@ private:
         if (base.is_valid() && member.has_value()) {
           const Type aggregate = semantic_.types.type(base);
           if (aggregate.kind == TypeKind::Struct ||
-              aggregate.kind == TypeKind::RawUnion) {
+              aggregate.kind == TypeKind::Union) {
             const std::optional<std::size_t> index =
                 aggregate_member_index(base, *member);
             if (index.has_value() && *index < aggregate.members.size()) {
@@ -1454,7 +1454,7 @@ private:
       return nil_context_type(hinted_type);
     }
     const TypeKind kind = runtime_type(hinted_type).kind;
-    return kind == TypeKind::Enum || kind == TypeKind::TaggedUnion;
+    return kind == TypeKind::Enum || kind == TypeKind::Variant;
   }
 
   // Finds a concrete numeric type without evaluating the expression.  This is
@@ -1842,27 +1842,27 @@ private:
       return ready(std::move(value), type_id);
     }
     if (value.kind == ConstantKind::Aggregate &&
-        (type.kind == TypeKind::RawUnion ||
-         type.kind == TypeKind::TaggedUnion)) {
-      if (value.variant_index >= type.members.size()) {
+        (type.kind == TypeKind::Union ||
+         type.kind == TypeKind::Variant)) {
+      if (value.member_index >= type.members.size()) {
         return fail(
             range,
-            "compile-time union has an invalid selected member",
+            "compile-time variant or union has an invalid selected member",
             required);
       }
-      const TypeId payload_type = type.members[value.variant_index];
+      const TypeId payload_type = type.members[value.member_index];
       const bool has_payload =
           semantic_.types.type(payload_type).kind != TypeKind::Void;
-      // A zero-initialized raw union means all storage bytes are zero.  It does
+      // A zero-initialized union means all storage bytes are zero.  It does
       // not semantically initialize the first member, which may itself be a
       // non-void type, so it carries no payload value.
-      if (type.kind == TypeKind::RawUnion && value.elements.empty()) {
+      if (type.kind == TypeKind::Union && value.elements.empty()) {
         return ready(std::move(value), type_id);
       }
       if (has_payload != (value.elements.size() == 1)) {
         return fail(
             range,
-            "compile-time union payload does not match its selected member",
+            "compile-time variant or union value does not match its selected member",
             required);
       }
       if (has_payload) {
@@ -1885,13 +1885,13 @@ private:
       return ready(ConstantValue::make_integer(*member), type_id);
     }
     if (value.kind == ConstantKind::EnumLabel &&
-        type.kind == TypeKind::TaggedUnion) {
+        type.kind == TypeKind::Variant) {
       const std::optional<std::size_t> member =
           aggregate_member_index(type_id, value.text);
       if (!member.has_value() || *member >= type.members.size()) {
         return fail(
             range,
-            "compile-time union initializer names no matching alternative",
+            "compile-time variant initializer names no matching alternative",
             required);
       }
       const TypeId payload_type = type.members[*member];
@@ -1901,8 +1901,8 @@ private:
         return fail(
             range,
             has_payload
-                ? "compile-time union alternative requires a payload"
-                : "compile-time union alternative does not accept a payload",
+                ? "compile-time variant alternative requires a payload"
+                : "compile-time variant alternative does not accept a payload",
             required);
       }
       std::vector<ConstantValue> payload;
@@ -3038,8 +3038,8 @@ private:
     case NodeKind::DistinctType:
     case NodeKind::StructType:
     case NodeKind::EnumType:
-    case NodeKind::TaggedUnionType:
-    case NodeKind::RawUnionType:
+    case NodeKind::VariantType:
+    case NodeKind::UnionType:
       return true;
     default:
       return false;
@@ -3171,9 +3171,9 @@ private:
       }
       return ConstantValue::make_aggregate(std::move(elements));
     }
-    case TypeKind::RawUnion:
+    case TypeKind::Union:
       return ConstantValue::make_aggregate({}, 0);
-    case TypeKind::TaggedUnion: {
+    case TypeKind::Variant: {
       std::vector<ConstantValue> payload;
       if (!type.members.empty() &&
           semantic_.types.type(type.members.front()).kind != TypeKind::Void) {
@@ -3209,8 +3209,8 @@ private:
       }
       return ConstantValue::make_aggregate(std::move(elements));
     }
-    // A union does not have independently addressable simultaneous fields. Its
-    // active alternative remains unknown until a complete union value is stored.
+    // A union does not have independently addressable simultaneous fields. The
+    // selected field remains unknown until a complete union value is stored.
     return ConstantValue{};
   }
 
@@ -4832,8 +4832,8 @@ private:
     std::optional<NodeId> selected;
     std::optional<NodeId> fallback;
     std::optional<LocalBinding> selected_payload;
-    const bool tagged_subject = subject.type.is_valid() &&
-        runtime_type(subject.type).kind == TypeKind::TaggedUnion &&
+    const bool variant_subject = subject.type.is_valid() &&
+        runtime_type(subject.type).kind == TypeKind::Variant &&
         subject.value.kind == ConstantKind::Aggregate;
     for (std::size_t index = 1; index < statement.children.size(); ++index) {
       const SyntaxNode &switch_case = tree.node(statement.children[index]);
@@ -4848,7 +4848,7 @@ private:
            ++label) {
         const NodeId label_id = switch_case.children[label];
         const SyntaxNode &label_node = tree.node(label_id);
-        if (tagged_subject &&
+        if (variant_subject &&
             label_node.kind == NodeKind::ContextualAlternativeExpression) {
           const std::optional<std::string> name = first_name(tree, label_node);
           const std::optional<std::size_t> alternative = name.has_value()
@@ -4857,13 +4857,13 @@ private:
           if (!alternative.has_value()) {
             return failed_execution(fail(
                 label_node.range,
-                "compile-time switch names no tagged-union alternative",
+                "compile-time switch names no variant alternative",
                 required));
           }
-          if (*alternative != subject.value.variant_index) continue;
+          if (*alternative != subject.value.member_index) continue;
 
-          const Type union_type = runtime_type(subject.type);
-          const TypeId payload_type = union_type.members[*alternative];
+          const Type variant_type = runtime_type(subject.type);
+          const TypeId payload_type = variant_type.members[*alternative];
           const bool has_payload =
               semantic_.types.type(payload_type).kind != TypeKind::Void;
           if (has_payload) {
@@ -4871,7 +4871,7 @@ private:
                 subject.value.elements.size() != 1) {
               return failed_execution(fail(
                   label_node.range,
-                  "compile-time union switch payload has the wrong shape",
+                  "compile-time variant switch payload has the wrong shape",
                   required));
             }
             const SyntaxNode &binding_node =
@@ -4883,7 +4883,7 @@ private:
             if (!binding.has_value()) {
               return failed_execution(fail(
                   binding_node.range,
-                  "compile-time union switch payload requires a binding name",
+                  "compile-time variant switch payload requires a binding name",
                   required));
             }
             if (*binding != "_") {
@@ -4893,7 +4893,7 @@ private:
           } else if (!label_node.children.empty()) {
             return failed_execution(fail(
                 label_node.range,
-                "payload-free union alternative cannot bind a payload",
+                "payload-free variant alternative cannot bind a payload",
                 required));
           }
           selected = statements;
@@ -5482,13 +5482,13 @@ private:
       }
       TypeId payload_type;
       if (expected.is_valid() &&
-          runtime_type(expected).kind == TypeKind::TaggedUnion) {
+          runtime_type(expected).kind == TypeKind::Variant) {
         const std::optional<std::size_t> alternative =
             aggregate_member_index(expected, *name);
-        const Type union_type = runtime_type(expected);
+        const Type variant_type = runtime_type(expected);
         if (alternative.has_value() &&
-            *alternative < union_type.members.size()) {
-          payload_type = union_type.members[*alternative];
+            *alternative < variant_type.members.size()) {
+          payload_type = variant_type.members[*alternative];
         }
       }
       std::vector<ConstantValue> payload;
@@ -5717,7 +5717,7 @@ private:
       if (composite.kind != TypeKind::Array &&
           composite.kind != TypeKind::Simd &&
           composite.kind != TypeKind::Struct &&
-          composite.kind != TypeKind::RawUnion) {
+          composite.kind != TypeKind::Union) {
         return fail(
             node.range,
             "type does not support a constant composite literal",
@@ -5774,12 +5774,12 @@ private:
           }
         } else {
           if (composite.kind == TypeKind::Struct ||
-              composite.kind == TypeKind::RawUnion) {
+              composite.kind == TypeKind::Union) {
             return fail(
                 element.range,
                 composite.kind == TypeKind::Struct
                     ? "constant struct composite elements must name a field"
-                    : "constant raw union composite element must name a field",
+                    : "constant union composite element must name a field",
                 required);
           }
           destination = positional_index;
@@ -5835,12 +5835,12 @@ private:
             required);
         if (converted.status != EvalStatus::Ready) return converted;
 
-        if (composite.kind == TypeKind::RawUnion) {
+        if (composite.kind == TypeKind::Union) {
           ++explicit_union_members;
           if (explicit_union_members > 1) {
             return fail(
                 element.range,
-                "raw union constant initializes more than one member",
+                "union constant initializes more than one member",
                 required);
           }
           result = ConstantValue::make_aggregate(
@@ -5849,11 +5849,11 @@ private:
           result.elements[*destination] = converted.value;
         }
       }
-      if (composite.kind == TypeKind::RawUnion &&
+      if (composite.kind == TypeKind::Union &&
           explicit_union_members != 1) {
         return fail(
             node.range,
-            "constant raw union composite literal must initialize exactly one field",
+            "constant union composite literal must initialize exactly one field",
             required);
       }
       return ready(std::move(result), *composite_type);
@@ -6173,11 +6173,11 @@ ConstantValue ConstantValue::make_string(std::string value) {
 }
 
 ConstantValue ConstantValue::make_aggregate(
-    std::vector<ConstantValue> elements, std::uint64_t variant_index) {
+    std::vector<ConstantValue> elements, std::uint64_t member_index) {
   ConstantValue result;
   result.kind = ConstantKind::Aggregate;
   result.elements = std::move(elements);
-  result.variant_index = variant_index;
+  result.member_index = member_index;
   return result;
 }
 

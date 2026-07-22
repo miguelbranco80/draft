@@ -171,7 +171,7 @@ Composite literals are:
 ```draft
 bytes := [4]u8{1, 2, 3, 4}
 point := Point{x = 10, y = 20}
-overlay := C_Value{bits = 42}       // exactly one raw-union field
+overlay := C_Value{bits = 42}       // exactly one union field
 pair := (left, right)
 mode: Mode = .read
 result: result.Result[u64, Error] = .ok(42)
@@ -181,10 +181,10 @@ Omitted fixed-array elements and struct fields receive zero values. In an
 `if`, `for`, or `switch` header, parenthesize a composite literal so its `{`
 cannot be confused with the statement body.
 
-Enum and tagged-union cases use contextual `.case` or `.case(payload)` syntax.
+Enum and variant cases use contextual `.case` or `.case(payload)` syntax.
 Write `error == .none`, not `error == io.Error.none`; the latter is not Draft
 member syntax. Add a type annotation when no surrounding expected type can
-determine which enum or union owns the case.
+determine which enum or variant owns the case.
 
 ## Runtime types and views
 
@@ -245,8 +245,8 @@ implicit pointer or integer truthiness; write `pointer != nil`.
 
 ## Aggregates and layout
 
-Draft supports tuples, structs, enums, aliases, distinct types, tagged unions,
-and raw unions. Empty arrays and empty aggregates are invalid in Draft 1.
+Draft supports tuples, structs, enums, aliases, distinct types, variants, and
+unions. Empty arrays and empty aggregates are invalid in Draft 1.
 
 ```draft
 Index :: usize
@@ -257,12 +257,12 @@ Mode :: enum u8 {
     write,
 }
 
-Outcome :: union {
+Outcome :: variant {
     failed: Error,
     complete: usize,
 }
 
-C_Value :: c raw union {
+C_Value :: c union {
     bits: u64,
     pointer: rawptr,
 }
@@ -272,23 +272,23 @@ Cache_Line :: align(64) struct {
 }
 ```
 
-Tuples and structs are products; tagged unions are sums with one active
-alternative; raw unions overlay fields without an active tag. Access tuple
-members as `.0`, `.1`, and so on. Switch over a tagged union to obtain a typed
-payload binding.
+Tuples and structs are products; variants are sums with one active alternative;
+unions overlay fields without an active tag. Access tuple members as `.0`, `.1`,
+and so on. Switch over a variant to obtain a typed payload binding.
 
 An alias has the target's identity. A `distinct` type has the target's layout
 and operators but a separate identity; cross its boundary with an explicit
 cast. Enums require a zero-valued member for a valid zero value. The first
 implicit enum member is zero; values then increment.
 
-Use `c struct`, `c raw union`, or `c enum` for selected-target C layout.
-`align(N)` may raise struct/raw-union alignment; combine them as
-`c align(N) struct`. These are direct modifiers, not annotations. Do not guess
-C layout: read the target profile and add ABI tests against Clang.
+Use `c struct`, `c union`, or `c enum` for selected-target C layout.
+`align(N)` may raise struct or union alignment; combine the modifiers as
+`c align(N) struct` or `c align(N) union`. These are direct modifiers, not
+annotations. Do not guess C layout: read the target profile and add ABI tests
+against Clang.
 
-`core/option.Option[T]` and `core/result.Result[T, E]` are ordinary tagged
-unions, not magic. A zero `Result` selects its first `.err` alternative.
+`core/option.Option[T]` and `core/result.Result[T, E]` are ordinary variants,
+not magic. A zero `Result` selects its first `.err` alternative.
 
 ## Expressions and conversions
 
@@ -363,8 +363,8 @@ Iteration values are copies. Mutate an element through an index or pointer.
 The iterable expression is evaluated once.
 
 `switch` evaluates its subject once, never falls through, and supports
-comma-separated labels plus an empty default `case:`. Enum and tagged-union
-switches must be exhaustive or have a default.
+comma-separated labels plus an empty default `case:`. Enum and variant switches
+must be exhaustive or have a default.
 
 ```draft
 switch outcome {
@@ -383,8 +383,8 @@ run.
 
 ## Constants, targets, and compile-time selection
 
-`::` values may include numbers, booleans, strings, enums, aggregates, tagged
-unions, procedures, and types. Constants have no mutable storage or stable
+`::` values may include numbers, booleans, strings, enums, aggregates, variants,
+procedures, and types. Constants have no mutable storage or stable
 address. Untyped integers are arbitrary precision and untyped decimal floats
 are exact rationals until conversion.
 

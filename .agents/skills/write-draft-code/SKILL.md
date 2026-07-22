@@ -74,7 +74,7 @@ update the stale skill reference in the same coherent change.
 
 ## Write the direct Draft version
 
-- Use plain structs, enums, tagged unions, fixed arrays, slices, explicit loops,
+- Use plain structs, enums, variants, unions, fixed arrays, slices, explicit loops,
   and package procedures. Draft has no methods, inheritance, exceptions,
   operator overloading, or declaration overloading.
 - Show ownership in names, types, initialization, and cleanup. A pointer,

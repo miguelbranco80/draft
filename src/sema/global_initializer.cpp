@@ -33,8 +33,8 @@ namespace {
   case NodeKind::DistinctType:
   case NodeKind::StructType:
   case NodeKind::EnumType:
-  case NodeKind::TaggedUnionType:
-  case NodeKind::RawUnionType:
+  case NodeKind::VariantType:
+  case NodeKind::UnionType:
     return true;
   default:
     return false;
@@ -324,12 +324,12 @@ private:
       diagnostics_.error(range, "global enum initializer names no member");
       return std::nullopt;
     } else if (value.kind == ConstantKind::EnumLabel &&
-               type.kind == TypeKind::TaggedUnion) {
+               type.kind == TypeKind::Variant) {
       const std::optional<std::size_t> member =
           aggregate_member_index(target, value.text);
       if (!member.has_value() || *member >= type.members.size()) {
         diagnostics_.error(
-            range, "global union initializer names no alternative");
+            range, "global variant initializer names no alternative");
         return std::nullopt;
       }
       const TypeId payload_type = type.members[*member];
@@ -339,8 +339,8 @@ private:
         diagnostics_.error(
             range,
             has_payload
-                ? "global union alternative requires a payload"
-                : "global union alternative does not accept a payload");
+                ? "global variant alternative requires a payload"
+                : "global variant alternative does not accept a payload");
         return std::nullopt;
       }
       std::vector<ConstantValue> payload;
@@ -375,19 +375,21 @@ private:
       }
       return value;
     } else if (value.kind == ConstantKind::Aggregate &&
-               (type.kind == TypeKind::RawUnion ||
-                type.kind == TypeKind::TaggedUnion)) {
-      if (value.variant_index >= type.members.size()) {
-        diagnostics_.error(range, "global union initializer has no valid member");
+               (type.kind == TypeKind::Union ||
+                type.kind == TypeKind::Variant)) {
+      if (value.member_index >= type.members.size()) {
+        diagnostics_.error(
+            range, "global variant or union initializer has no valid member");
         return std::nullopt;
       }
-      const TypeId payload_type = type.members[value.variant_index];
+      const TypeId payload_type = type.members[value.member_index];
       const bool has_payload =
           package_.types.type(payload_type).kind != TypeKind::Void;
-      if (type.kind == TypeKind::RawUnion && value.elements.empty()) return value;
+      if (type.kind == TypeKind::Union && value.elements.empty()) return value;
       if (has_payload != (value.elements.size() == 1)) {
         diagnostics_.error(
-            range, "global union initializer payload does not match its member");
+            range,
+            "global variant or union initializer does not match its member");
         return std::nullopt;
       }
       if (has_payload) {

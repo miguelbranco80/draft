@@ -99,7 +99,7 @@ struct HomogeneousFloatInfo {
     return type.element_count != 0 &&
         aggregate_member_legal(types, type.element, active_procedures);
   }
-  if ((type.kind != TypeKind::Struct && type.kind != TypeKind::RawUnion) ||
+  if ((type.kind != TypeKind::Struct && type.kind != TypeKind::Union) ||
       !type.c_representation || !type.layout.known) {
     return false;
   }
@@ -132,7 +132,7 @@ struct HomogeneousFloatInfo {
             static_cast<std::uint64_t>(element->count) * type.element_count),
     };
   }
-  if ((type.kind != TypeKind::Struct && type.kind != TypeKind::RawUnion) ||
+  if ((type.kind != TypeKind::Struct && type.kind != TypeKind::Union) ||
       !type.c_representation || type.members.empty()) {
     return std::nullopt;
   }
@@ -151,8 +151,8 @@ struct HomogeneousFloatInfo {
     if (candidate->bits != result->bits) {
       return std::nullopt;
     }
-    if (type.kind == TypeKind::RawUnion) {
-      // A union overlays its alternatives, so its homogeneous element count is
+    if (type.kind == TypeKind::Union) {
+      // A union overlays its members, so its homogeneous element count is
       // the largest alternative rather than the sum used by a struct.  The
       // alternatives need only share the same basic floating element type;
       // they do not need to contain the same number of elements.  For example,
@@ -194,7 +194,7 @@ struct HomogeneousFloatInfo {
     result.classification = Aarch64CAbiClass::Direct;
     return result;
   }
-  if ((type.kind != TypeKind::Struct && type.kind != TypeKind::RawUnion) ||
+  if ((type.kind != TypeKind::Struct && type.kind != TypeKind::Union) ||
       !type.c_representation || !type.layout.known || type.layout.size == 0 ||
       !aggregate_member_legal(types, type_id, active_procedures)) {
     return result;

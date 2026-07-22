@@ -2,7 +2,7 @@
 //
 // This module is the payload producer for the TypeNaturalLayout semantic
 // product. Its inputs are an immutable TypeStore, an ordered member-type list,
-// and, for tagged unions, the already selected discriminator type. Its output
+// and, for variants, the already selected discriminator type. Its output
 // owns the exact aggregate layout and one byte offset per member. It does not
 // declare symbols, resolve syntax, select `when`, evaluate constants, mutate a
 // Type row, apply ABI call classification, or emit diagnostics.
@@ -39,7 +39,7 @@ enum class NaturalLayoutStatus {
 // TypeId whose NaturalLayout facet is not complete, in first-use order. The
 // semantic coordinator maps those IDs to TypeNaturalLayout products; keeping
 // dependency discovery here prevents callers from duplicating the aggregate
-// and tagged-union discriminator traversal rules.
+// and variant discriminator traversal rules.
 struct NaturalAggregateLayout {
   NaturalLayoutStatus status = NaturalLayoutStatus::Waiting;
   TypeLayout layout;
@@ -50,10 +50,10 @@ struct NaturalAggregateLayout {
 [[nodiscard]] NaturalAggregateLayout compute_struct_natural_layout(
     const TypeStore &types, std::span<const TypeId> members);
 
-[[nodiscard]] NaturalAggregateLayout compute_raw_union_natural_layout(
+[[nodiscard]] NaturalAggregateLayout compute_union_natural_layout(
     const TypeStore &types, std::span<const TypeId> members);
 
-[[nodiscard]] NaturalAggregateLayout compute_tagged_union_natural_layout(
+[[nodiscard]] NaturalAggregateLayout compute_variant_natural_layout(
     const TypeStore &types,
     TypeId discriminator,
     std::span<const TypeId> alternatives);

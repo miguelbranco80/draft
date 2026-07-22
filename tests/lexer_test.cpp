@@ -88,6 +88,22 @@ void test_basic_semicolon_insertion(TestState &state) {
   EXPECT(state, !source.diagnostics.has_errors());
 }
 
+// `variant` and `union` are distinct type constructors. `raw` remains an
+// ordinary identifier: low-level concepts such as raw pointers and raw strings
+// do not reserve a general-purpose source modifier.
+void test_variant_union_keywords(TestState &state) {
+  const LexedSource source = lex("variant union raw\n");
+  const std::vector expected{
+      draft::TokenKind::KeywordVariant,
+      draft::TokenKind::KeywordUnion,
+      draft::TokenKind::Identifier,
+      draft::TokenKind::Semicolon,
+      draft::TokenKind::EndOfFile,
+  };
+  EXPECT(state, kinds(source) == expected);
+  EXPECT(state, !source.diagnostics.has_errors());
+}
+
 void test_delimiter_suppression(TestState &state) {
   const LexedSource source = lex("call(\n  first,\n  second\n)\narray[\n0\n]\n");
   int inserted_semicolons = 0;
@@ -265,14 +281,18 @@ void test_caret_and_uninitialized_end_lines(TestState &state) {
 }
 
 void test_keyword_alternative_end_lines(TestState &state) {
-  const LexedSource alternatives = lex("first := .struct\nsecond := .distinct\n");
+  const LexedSource alternatives = lex(
+      "first := .struct\n"
+      "second := .distinct\n"
+      "third := .variant\n"
+      "fourth := .union\n");
   int inserted_semicolons = 0;
   for (const draft::Token &token : alternatives.tokens) {
     if (token.kind == draft::TokenKind::Semicolon && token.inserted) {
       ++inserted_semicolons;
     }
   }
-  EXPECT(state, inserted_semicolons == 2);
+  EXPECT(state, inserted_semicolons == 4);
   EXPECT(state, !alternatives.diagnostics.has_errors());
 
   // The same keyword tokens remain non-terminating in type-constructor
@@ -295,6 +315,7 @@ int main() {
   TestState state;
   test_source_coordinates(state);
   test_basic_semicolon_insertion(state);
+  test_variant_union_keywords(state);
   test_delimiter_suppression(state);
   test_attachment_continuation(state);
   test_comments_and_eof(state);

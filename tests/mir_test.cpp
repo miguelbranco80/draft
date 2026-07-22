@@ -79,7 +79,7 @@ Mode :: enum {
     On,
 }
 
-Choice :: union {
+Choice :: variant {
     none,
     some: i64,
 }

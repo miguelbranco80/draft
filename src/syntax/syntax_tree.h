@@ -81,7 +81,7 @@ enum class NodeKind {
   MemberList,
   FieldMember,
   EnumMember,
-  UnionAlternative,
+  VariantAlternative,
 
   NamedType,
   PointerType,
@@ -94,8 +94,8 @@ enum class NodeKind {
   DistinctType,
   StructType,
   EnumType,
-  TaggedUnionType,
-  RawUnionType,
+  VariantType,
+  UnionType,
 
   Block,
   StatementList,

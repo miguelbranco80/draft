@@ -347,7 +347,7 @@ mapped-file API, guard-page policy, or fallible general allocator.
 
 ## `core/option` and `core/result`
 
-These are ordinary tagged unions:
+These are ordinary variants:
 
 ```draft
 option.Option[T]        // .none, .some(T)

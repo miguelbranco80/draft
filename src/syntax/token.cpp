@@ -29,8 +29,8 @@ std::string_view token_kind_name(TokenKind kind) {
   case TokenKind::KeywordAlign: return "align";
   case TokenKind::KeywordStruct: return "struct";
   case TokenKind::KeywordEnum: return "enum";
+  case TokenKind::KeywordVariant: return "variant";
   case TokenKind::KeywordUnion: return "union";
-  case TokenKind::KeywordRaw: return "raw";
   case TokenKind::KeywordDistinct: return "distinct";
   case TokenKind::KeywordThreadLocal: return "thread_local";
   case TokenKind::KeywordForeign: return "foreign";
@@ -167,7 +167,8 @@ bool token_is_contextual_alternative_name(TokenKind kind) {
       kind == TokenKind::KeywordType || kind == TokenKind::KeywordInteger ||
       kind == TokenKind::KeywordFloat || kind == TokenKind::KeywordNumber ||
       kind == TokenKind::KeywordFlags || kind == TokenKind::KeywordMemory ||
-      kind == TokenKind::KeywordStruct ||
+      kind == TokenKind::KeywordStruct || kind == TokenKind::KeywordVariant ||
+      kind == TokenKind::KeywordUnion ||
       kind == TokenKind::KeywordDistinct;
 }
 

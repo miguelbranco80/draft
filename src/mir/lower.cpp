@@ -978,7 +978,7 @@ private:
     return emit_value(std::move(instruction));
   }
 
-  [[nodiscard]] std::optional<std::uint64_t> union_discriminator(
+  [[nodiscard]] std::optional<std::uint64_t> variant_discriminator(
       SymbolId alternative) const {
     if (!alternative.is_valid()) return std::nullopt;
     const Symbol &member_symbol = semantic_.symbols.symbol(alternative);
@@ -1338,13 +1338,13 @@ private:
       instruction.type = expression.type;
       instruction.symbol = expression.symbol;
       const Type aggregate_type = runtime_scalar_type(expression.type);
-      if (aggregate_type.kind == TypeKind::TaggedUnion) {
+      if (aggregate_type.kind == TypeKind::Variant) {
         const std::optional<std::uint64_t> discriminator =
-            union_discriminator(expression.symbol);
+            variant_discriminator(expression.symbol);
         if (!discriminator.has_value()) {
           diagnostics_.error(
               expression.range,
-              "tagged-union construction has no alternative discriminator");
+              "variant construction has no alternative discriminator");
           return {};
         }
         instruction.operands.push_back(constant(
@@ -1356,7 +1356,7 @@ private:
       }
       for (std::size_t index = 0; index < expression.operands.size(); ++index) {
         instruction.operands.push_back(lower_expression(expression.operands[index]));
-        if (aggregate_type.kind == TypeKind::TaggedUnion) {
+        if (aggregate_type.kind == TypeKind::Variant) {
           instruction.offsets.push_back(
               aggregate_member_offset(expression.symbol).value_or(0));
         } else {
@@ -1874,7 +1874,7 @@ private:
         hir_.expression(statement.expressions.front());
     const Type subject_type = runtime_scalar_type(subject_expression.type);
     const MirValueId subject = lower_expression(statement.expressions.front());
-    const MirValueId switch_subject = subject_type.kind == TypeKind::TaggedUnion
+    const MirValueId switch_subject = subject_type.kind == TypeKind::Variant
         ? extract_member(
               subject,
               subject_type.element,
@@ -1915,7 +1915,7 @@ private:
     }
     MirBlockId impossible_default;
     if (statement.switch_is_exhaustive && !has_default) {
-      // A complete enum/tagged-union switch has no semantic default value, but
+      // A complete enum/variant switch has no semantic default value, but
       // LLVM's switch terminator requires a default edge. Route impossible
       // representations to an explicit unreachable block rather than making
       // the ordinary join appear reachable.
@@ -1923,7 +1923,7 @@ private:
       default_target = impossible_default;
     }
 
-    const TypeId dispatch_type = subject_type.kind == TypeKind::TaggedUnion
+    const TypeId dispatch_type = subject_type.kind == TypeKind::Variant
         ? subject_type.element
         : subject_expression.type;
     if (llvm_switch_subject(dispatch_type)) {
@@ -1982,7 +1982,7 @@ private:
             aggregate_member_offset(source_case.payload_alternative);
         if (!offset.has_value()) {
           diagnostics_.error(
-              statement.range, "tagged-union payload has no physical offset");
+              statement.range, "variant payload has no physical offset");
         } else {
           const MirValueId value = extract_member(
               subject, payload.type, *offset, statement.range);

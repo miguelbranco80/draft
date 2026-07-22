@@ -1,13 +1,13 @@
 // This executable is the readable, end-to-end tour of Draft's ordinary
 // application-language surface. It intentionally keeps one small data problem
 // in view while demonstrating compile-time declarations, nominal types,
-// parametrics, named/default arguments, arrays and slices, tuples, tagged
-// unions, pointers, control flow, deferred calls, target selection, assertions,
+// parametrics, named/default arguments, arrays and slices, tuples, variants,
+// pointers, control flow, deferred calls, target selection, assertions,
 // and console output.
 //
 // The example owns only stack values plus one package global. It uses no native
 // interoperation or synthesis, so every transformation remains visible as
-// ordinary Draft code. More specialized examples cover raw layout, assembly,
+// ordinary Draft code. More specialized examples cover union layout, assembly,
 // concurrency, C ABI boundaries, and agent constructs.
 package language_tour
 
@@ -71,7 +71,7 @@ Points :: distinct u64
 launch_count: u64 = 1
 
 // summarize converts a borrowed slice of readings into an explicit
-// success-or-error tagged union. Iteration values are copies; the source slice
+// success-or-error variant. Iteration values are copies; the source slice
 // remains unchanged and valid for the caller's lifetime.
 summarize :: proc(
     readings: []Reading,

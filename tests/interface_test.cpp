@@ -474,7 +474,7 @@ void test_imported_parametric_type(TestState &state) {
       "option",
       R"draft(package option
 
-pub Maybe[T: type] :: union {
+pub Maybe[T: type] :: variant {
     none,
     some: T,
 }
@@ -498,7 +498,7 @@ pub Packet[N: usize] :: struct {
 
   // The consumer sees no dependency syntax. Resolving the public field must
   // rebuild Maybe's parameter scope from the interface and instantiate its
-  // concrete tagged-union member layout locally.
+  // concrete variant member layout locally.
   draft::LoadedPackage consumer = parse_package(
       sources,
       diagnostics,
@@ -679,7 +679,7 @@ pub relay :: proc(holder: middle.Holder) -> i64 {
   bool saw_maybe_specialization = false;
   bool saw_buffer_specialization = false;
   for (const draft::InterfaceType &type : consumer_interface.types) {
-    if (type.kind == draft::TypeKind::TaggedUnion &&
+    if (type.kind == draft::TypeKind::Variant &&
         type.nominal_public_name == "Maybe" &&
         type.nominal_arguments.size() == 1) {
       saw_maybe_specialization = true;

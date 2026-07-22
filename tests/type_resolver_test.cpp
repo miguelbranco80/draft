@@ -454,7 +454,7 @@ Header :: struct {
     tail: [Member_Count]u16,
 }
 
-Overlay :: raw union {
+Overlay :: union {
     byte: u8,
     word: u64,
 }
@@ -464,7 +464,7 @@ C_Header :: c struct {
     value: u64,
 }
 
-C_Overlay :: c align(16) raw union {
+C_Overlay :: c align(16) union {
     byte: u8,
     word: u64,
 }
@@ -490,7 +490,7 @@ C_Kind :: c enum {
     Second,
 }
 
-Choice :: union u16 {
+Choice :: variant u16 {
     none,
     some: u32,
 }
@@ -1107,8 +1107,8 @@ Wide_Negative :: c enum {
   EXPECT(state, backing_name("Wide_Negative") == "i64");
 }
 
-void test_tagged_union_discriminator_capacity(TestState &state) {
-  std::string text = "package types\n\nToo_Many :: union u8 {\n";
+void test_variant_discriminator_capacity(TestState &state) {
+  std::string text = "package types\n\nToo_Many :: variant u8 {\n";
   // u8 can represent discriminators 0 through 255. The 257th source-order
   // alternative therefore proves that the complete range is validated.
   for (std::size_t index = 0; index < 257; ++index) {
@@ -1131,7 +1131,7 @@ package types
 Bad_Alignment :: align(3) struct { value: u8, }
 Reduced_Alignment :: align(2) struct { value: u64, }
 Aligned_Enum :: align(8) enum { Value, }
-C_Union :: c union { none, }
+C_Variant :: c variant { none, }
 Attributed_Scalar :: align(8) u64
 )draft");
 
@@ -1140,9 +1140,9 @@ Attributed_Scalar :: align(8) u64
       draft::render_diagnostics(source.sources, source.diagnostics);
   EXPECT(state, rendered.find("positive power-of-two") != std::string::npos);
   EXPECT(state, rendered.find("cannot reduce") != std::string::npos);
-  EXPECT(state, rendered.find("valid only on structs and raw unions") !=
+  EXPECT(state, rendered.find("valid only on structs and unions") !=
                     std::string::npos);
-  EXPECT(state, rendered.find("valid only on structs, raw unions, and enums") !=
+  EXPECT(state, rendered.find("valid only on structs, unions, and enums") !=
                     std::string::npos);
 }
 
@@ -1253,7 +1253,7 @@ int main() {
   test_value_parameter_diagnostics(state);
   test_invalid_enum_values(state);
   test_c_enum_default_backing(state);
-  test_tagged_union_discriminator_capacity(state);
+  test_variant_discriminator_capacity(state);
   test_invalid_layout_modifiers(state);
   test_cyclic_layout_constant(state);
   test_type_declaration_depth_is_bounded(state);

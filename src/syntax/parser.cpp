@@ -39,7 +39,7 @@ namespace {
 enum class MemberMode {
   Struct,
   Enum,
-  Union,
+  Variant,
 };
 
 enum class SynthesisPosition {
@@ -552,8 +552,8 @@ private:
     case TokenKind::KeywordProc:
     case TokenKind::KeywordStruct:
     case TokenKind::KeywordEnum:
+    case TokenKind::KeywordVariant:
     case TokenKind::KeywordUnion:
-    case TokenKind::KeywordRaw:
     case TokenKind::KeywordDistinct:
       return true;
     case TokenKind::KeywordC:
@@ -561,8 +561,8 @@ private:
           lookahead(1).kind == TokenKind::KeywordAlign ||
           lookahead(1).kind == TokenKind::KeywordStruct ||
           lookahead(1).kind == TokenKind::KeywordEnum ||
-          lookahead(1).kind == TokenKind::KeywordUnion ||
-          lookahead(1).kind == TokenKind::KeywordRaw;
+          lookahead(1).kind == TokenKind::KeywordVariant ||
+          lookahead(1).kind == TokenKind::KeywordUnion;
     default:
       return false;
     }
@@ -718,17 +718,19 @@ private:
     const std::uint32_t start = position_;
     std::vector<NodeId> children;
 
-    // `c` before an aggregate constructor selects the target C layout. It may
-    // precede align(N), which then raises the completed C layout. A `c` before
-    // `proc` remains the calling-convention modifier consumed by
-    // parse_procedure, while every other `c` use remains an ordinary
-    // contextual name.
+    // `c` before an aggregate constructor records an explicit C-layout
+    // request. Semantic resolution accepts the constructors that have a C
+    // representation and diagnoses `c variant` rather than letting the parser
+    // reinterpret `c` as a type name. It may precede align(N), which then
+    // raises the completed C layout. A `c` before `proc` remains the
+    // calling-convention modifier consumed by parse_procedure, while every
+    // other `c` use remains an ordinary contextual name.
     if (at(TokenKind::KeywordC) &&
         (lookahead(1).kind == TokenKind::KeywordAlign ||
          lookahead(1).kind == TokenKind::KeywordStruct ||
          lookahead(1).kind == TokenKind::KeywordEnum ||
-         lookahead(1).kind == TokenKind::KeywordUnion ||
-         lookahead(1).kind == TokenKind::KeywordRaw)) {
+         lookahead(1).kind == TokenKind::KeywordVariant ||
+         lookahead(1).kind == TokenKind::KeywordUnion)) {
       const std::uint32_t modifier_start = position_;
       advance();
       children.push_back(tree_.add_node(
@@ -799,15 +801,14 @@ private:
       if (!at(TokenKind::LeftBrace)) {
         children.push_back(parse_type());
       }
-    } else if (match(TokenKind::KeywordUnion)) {
-      aggregate_kind = NodeKind::TaggedUnionType;
-      member_mode = MemberMode::Union;
+    } else if (match(TokenKind::KeywordVariant)) {
+      aggregate_kind = NodeKind::VariantType;
+      member_mode = MemberMode::Variant;
       if (!at(TokenKind::LeftBrace)) {
         children.push_back(parse_type());
       }
-    } else if (match(TokenKind::KeywordRaw)) {
-      (void)expect(TokenKind::KeywordUnion, "expected 'union' after 'raw'");
-      aggregate_kind = NodeKind::RawUnionType;
+    } else if (match(TokenKind::KeywordUnion)) {
+      aggregate_kind = NodeKind::UnionType;
       member_mode = MemberMode::Struct;
     }
     if (aggregate_kind != NodeKind::Error) {
@@ -927,8 +928,8 @@ private:
     if (match(TokenKind::Colon)) {
       children.push_back(parse_type());
     }
-    finish_member("expected ',' or semicolon after union alternative");
-    return tree_.add_node(NodeKind::UnionAlternative, start, position_, std::move(children));
+    finish_member("expected ',' or semicolon after variant alternative");
+    return tree_.add_node(NodeKind::VariantAlternative, start, position_, std::move(children));
   }
 
   [[nodiscard]] int binary_precedence(TokenKind kind) const {

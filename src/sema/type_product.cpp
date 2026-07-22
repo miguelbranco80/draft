@@ -67,7 +67,7 @@ NaturalLayoutProductAttempt evaluate_natural_layout_product(
 
   const Type &type = types.type(nominal);
   if (type.kind != TypeKind::Struct && type.kind != TypeKind::Enum &&
-      type.kind != TypeKind::TaggedUnion && type.kind != TypeKind::RawUnion) {
+      type.kind != TypeKind::Variant && type.kind != TypeKind::Union) {
     diagnostics.error(
         type.declaration,
         "natural-layout product requires a nominal aggregate type");
@@ -88,16 +88,16 @@ NaturalLayoutProductAttempt evaluate_natural_layout_product(
   NaturalAggregateLayout natural;
   if (type.kind == TypeKind::Struct) {
     natural = compute_struct_natural_layout(types, type.members);
-  } else if (type.kind == TypeKind::RawUnion) {
-    natural = compute_raw_union_natural_layout(types, type.members);
-  } else if (type.kind == TypeKind::TaggedUnion) {
+  } else if (type.kind == TypeKind::Union) {
+    natural = compute_union_natural_layout(types, type.members);
+  } else if (type.kind == TypeKind::Variant) {
     if (!type.element.is_valid()) {
       diagnostics.error(
           type.declaration,
-          "tagged union has no completed discriminator type");
+          "variant has no completed discriminator type");
       return result;
     }
-    natural = compute_tagged_union_natural_layout(
+    natural = compute_variant_natural_layout(
         types, type.element, type.members);
   } else {
     if (!type.element.is_valid()) {

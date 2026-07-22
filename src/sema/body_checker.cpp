@@ -69,8 +69,8 @@ namespace {
   case NodeKind::DistinctType:
   case NodeKind::StructType:
   case NodeKind::EnumType:
-  case NodeKind::TaggedUnionType:
-  case NodeKind::RawUnionType:
+  case NodeKind::VariantType:
+  case NodeKind::UnionType:
     return true;
   default:
     return false;
@@ -81,8 +81,8 @@ namespace {
   switch (kind) {
   case NodeKind::StructType: return TypeKind::Struct;
   case NodeKind::EnumType: return TypeKind::Enum;
-  case NodeKind::TaggedUnionType: return TypeKind::TaggedUnion;
-  case NodeKind::RawUnionType: return TypeKind::RawUnion;
+  case NodeKind::VariantType: return TypeKind::Variant;
+  case NodeKind::UnionType: return TypeKind::Union;
   default: return std::nullopt;
   }
 }
@@ -1270,8 +1270,8 @@ private:
     // layout. Substitute its retained arguments, then ask TypeResolver for the
     // canonical application of the original template.
     if (value.kind == TypeKind::Struct || value.kind == TypeKind::Enum ||
-        value.kind == TypeKind::TaggedUnion ||
-        value.kind == TypeKind::RawUnion) {
+        value.kind == TypeKind::Variant ||
+        value.kind == TypeKind::Union) {
       const std::optional<NominalApplication> application =
           nominal_application(source);
       if (application.has_value()) {
@@ -1833,7 +1833,7 @@ private:
         kind == TypeKind::RawPointer || kind == TypeKind::CString;
   }
 
-  // A value switch is equality dispatch. Tagged unions compare their integer
+  // A value switch is equality dispatch. Variants compare their integer
   // discriminator separately; every other accepted subject must have the
   // built-in scalar equality defined by Draft 1. Strings and aggregates use
   // library comparison and therefore cannot silently acquire switch equality.
@@ -2260,7 +2260,7 @@ private:
         tree.token(node.token_begin).kind == TokenKind::KeywordNil;
   }
 
-  // A contextual enum/union alternative is like `nil`: its spelling identifies
+  // A contextual enum/variant alternative is like `nil`: its spelling identifies
   // a member only after the surrounding expression identifies the owning type.
   // This predicate does not inspect or evaluate values; it only lets a sibling
   // branch provide the missing expected type during semantic checking.
@@ -2874,7 +2874,7 @@ private:
 
   // Returns the declaration symbol owning a nominal type's Type scope.
   [[nodiscard]] std::optional<SymbolId> type_owner(TypeId type) const {
-    // Enum and tagged-union switches over a distinct wrapper still use the
+    // Enum and variant switches over a distinct wrapper still use the
     // alternative set owned by the underlying nominal declaration.
     type = underlying_type_id(type);
     for (const OwnedSemanticScope &owned : semantic_.owned_scopes_for_read()) {
@@ -2886,13 +2886,13 @@ private:
     return std::nullopt;
   }
 
-  // Tagged-union discriminators are source-order integers independent from
+  // Variant discriminators are source-order integers independent from
   // enum values. Keeping this small lookup in semantic checking makes switch
   // labels scalar constants before MIR and prevents native lowering from
   // comparing whole payload-bearing aggregate values.
-  [[nodiscard]] std::optional<std::uint64_t> union_discriminator(
-      TypeId union_type, SymbolId alternative) const {
-    const std::optional<SymbolId> owner = type_owner(union_type);
+  [[nodiscard]] std::optional<std::uint64_t> variant_discriminator(
+      TypeId variant_type, SymbolId alternative) const {
+    const std::optional<SymbolId> owner = type_owner(variant_type);
     if (!owner.has_value()) return std::nullopt;
     std::uint64_t discriminator = 0;
     for (const AggregateMember &member :
@@ -2904,10 +2904,10 @@ private:
     return std::nullopt;
   }
 
-  // Checks a tagged-union case label as a pattern rather than as a value
+  // Checks a variant case label as a pattern rather than as a value
   // constructor. `.value(name)` introduces one case-local binding; `.value`
   // and `.value(_)` both select the alternative while ignoring its payload.
-  [[nodiscard]] HirExpressionId check_union_case_label(
+  [[nodiscard]] HirExpressionId check_variant_case_label(
       const SyntaxTree &tree,
       NodeId label_id,
       ScopeId case_scope,
@@ -2918,7 +2918,7 @@ private:
     const std::vector<SourceName> names =
         alternative_names_in_span(tree, label.token_begin, label.token_end);
     if (label.kind != NodeKind::ContextualAlternativeExpression || names.empty()) {
-      diagnostics_.error(label.range, "tagged-union case requires a contextual alternative");
+      diagnostics_.error(label.range, "variant case requires a contextual alternative");
       return invalid_expression(label.range);
     }
     const std::optional<SymbolId> alternative =
@@ -2930,9 +2930,9 @@ private:
     }
     const Symbol member = semantic_.symbols.symbol(*alternative);
     const std::optional<std::uint64_t> discriminator =
-        union_discriminator(subject_type, *alternative);
+        variant_discriminator(subject_type, *alternative);
     if (!discriminator.has_value()) {
-      diagnostics_.error(label.range, "tagged-union alternative has no discriminator");
+      diagnostics_.error(label.range, "variant alternative has no discriminator");
       return invalid_expression(label.range);
     }
 
@@ -2958,7 +2958,7 @@ private:
         if (!binding.has_value()) {
           diagnostics_.error(
               tree.node(label.children.front()).range,
-              "tagged-union payload pattern must be a name or '_'");
+              "variant payload pattern must be a name or '_'");
         } else {
           hir_case.payload_alternative = *alternative;
           if (binding->text != "_") {
@@ -3905,8 +3905,8 @@ private:
       return false;
     }
     if (value.kind == TypeKind::Struct || value.kind == TypeKind::Enum ||
-        value.kind == TypeKind::TaggedUnion ||
-        value.kind == TypeKind::RawUnion) {
+        value.kind == TypeKind::Variant ||
+        value.kind == TypeKind::Union) {
       const std::optional<NominalApplication> application =
           nominal_application(type);
       if (!application.has_value()) return false;
@@ -3955,8 +3955,8 @@ private:
     // Comparing members here would both miss T (the concrete layout contains
     // no symbolic type) and incorrectly equate unrelated aggregate templates.
     if (pattern.kind == TypeKind::Struct || pattern.kind == TypeKind::Enum ||
-        pattern.kind == TypeKind::TaggedUnion ||
-        pattern.kind == TypeKind::RawUnion) {
+        pattern.kind == TypeKind::Variant ||
+        pattern.kind == TypeKind::Union) {
       const std::optional<NominalApplication> pattern_application =
           nominal_application(pattern_id);
       const std::optional<NominalApplication> actual_application =
@@ -5549,7 +5549,7 @@ private:
       const Type composite = semantic_.types.type(composite_type);
       if (composite.kind != TypeKind::Array &&
           composite.kind != TypeKind::Struct &&
-          composite.kind != TypeKind::RawUnion) {
+          composite.kind != TypeKind::Union) {
         diagnostics_.error(node.range, "type does not support a composite literal");
         return invalid_expression(node.range);
       }
@@ -5588,7 +5588,7 @@ private:
               element.range,
               composite.kind == TypeKind::Struct
                   ? "struct composite elements must name a field"
-                  : "raw union composite element must name a field");
+                  : "union composite element must name a field");
         } else {
           const std::vector<SourceName> names = names_in_span(
               tree,
@@ -5619,10 +5619,10 @@ private:
             tree, element.children.front(), scope, element_type));
         expression.operand_members.push_back(operand_member);
       }
-      if (composite.kind == TypeKind::RawUnion && element_count != 1) {
+      if (composite.kind == TypeKind::Union && element_count != 1) {
         diagnostics_.error(
             node.range,
-            "raw union composite literal must initialize exactly one field");
+            "union composite literal must initialize exactly one field");
       }
       return hir_.add_expression(std::move(expression));
     }
@@ -6575,12 +6575,14 @@ private:
 
     case NodeKind::ContextualAlternativeExpression: {
       if (!expected.is_valid() || is_invalid_type(expected)) {
-        diagnostics_.error(node.range, "contextual alternative requires an expected enum or union type");
+        diagnostics_.error(
+            node.range,
+            "contextual alternative requires an expected enum or variant type");
         return invalid_expression(node.range);
       }
       const TypeKind expected_kind = runtime_scalar_type(expected).kind;
-      if (expected_kind != TypeKind::Enum && expected_kind != TypeKind::TaggedUnion) {
-        diagnostics_.error(node.range, "contextual alternative expected type is not an enum or tagged union");
+      if (expected_kind != TypeKind::Enum && expected_kind != TypeKind::Variant) {
+        diagnostics_.error(node.range, "contextual alternative expected type is not an enum or variant");
         return invalid_expression(node.range);
       }
       const std::vector<SourceName> names =
@@ -6619,16 +6621,16 @@ private:
       expression.type = expected;
       expression.symbol = *alternative;
       expression.constant = ConstantValue::make_enum_label(names.front().text);
-      if (expected_kind == TypeKind::TaggedUnion) {
+      if (expected_kind == TypeKind::Variant) {
         // Both payload-bearing and payload-free alternatives are aggregate
         // values. MIR inserts their source-order discriminator and optional
         // payload; representing the latter as a scalar constant would lose the
-        // tagged union's physical storage type.
+        // variant's physical storage type.
         expression.kind = HirExpressionKind::Composite;
         const bool has_payload = member.type != semantic_.types.builtins().void_type;
         if (has_payload != !node.children.empty()) {
           diagnostics_.error(node.range, has_payload
-              ? "tagged-union alternative requires a payload"
+              ? "variant alternative requires a payload"
               : "payload-free alternative cannot carry a value");
         } else if (has_payload) {
           expression.operands.push_back(check_expression(
@@ -8183,7 +8185,7 @@ private:
             ? TypeKind::Invalid
             : runtime_scalar_type(subject_type).kind;
         if (subject_kind != TypeKind::Invalid &&
-            subject_kind != TypeKind::TaggedUnion &&
+            subject_kind != TypeKind::Variant &&
             !switch_subject_type(subject_type)) {
           diagnostics_.error(
               tree.node(node.children.front()).range,
@@ -8229,8 +8231,8 @@ private:
                label_index + 1 < case_node.children.size();
                ++label_index) {
             const HirExpressionId label =
-                subject_kind == TypeKind::TaggedUnion
-                ? check_union_case_label(
+                subject_kind == TypeKind::Variant
+                ? check_variant_case_label(
                       tree,
                       case_node.children[label_index],
                       case_scope,
@@ -8244,12 +8246,12 @@ private:
             const HirExpression &label_expression = hir_.expression(label);
             std::optional<SymbolId> alternative;
             if ((subject_kind == TypeKind::Enum ||
-                 subject_kind == TypeKind::TaggedUnion) &&
+                 subject_kind == TypeKind::Variant) &&
                 label_expression.symbol.is_valid()) {
               const SymbolKind kind = semantic_.symbols.symbol(
                   label_expression.symbol).kind;
               if (kind == SymbolKind::EnumMember ||
-                  kind == SymbolKind::UnionAlternative) {
+                  kind == SymbolKind::VariantAlternative) {
                 alternative = label_expression.symbol;
               }
             }
@@ -8326,7 +8328,7 @@ private:
 
         statement.switch_is_exhaustive = has_default;
         if (!has_default &&
-            (subject_kind == TypeKind::Enum || subject_kind == TypeKind::TaggedUnion)) {
+            (subject_kind == TypeKind::Enum || subject_kind == TypeKind::Variant)) {
           const std::optional<SymbolId> owner = type_owner(subject_type);
           if (owner.has_value()) {
             std::size_t alternative_count = 0;
@@ -8339,7 +8341,7 @@ private:
             if (!statement.switch_is_exhaustive) {
               diagnostics_.error(
                   node.range,
-                  "switch over enum or tagged union is not exhaustive and has no default");
+                  "switch over enum or variant is not exhaustive and has no default");
             }
           }
         }
@@ -8371,7 +8373,7 @@ private:
 
   // Return analysis consumes checked control-flow structure rather than
   // reinterpreting syntax. In particular it can trust the exhaustiveness fact
-  // established while resolving enum/tagged-union case labels.
+  // established while resolving enum/variant case labels.
   [[nodiscard]] bool statement_definitely_returns(
       const HirStatement &statement) const {
     if (statement.kind == HirStatementKind::Return) return true;

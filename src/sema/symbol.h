@@ -70,7 +70,7 @@ enum class SymbolKind {
   Local,
   Field,
   EnumMember,
-  UnionAlternative,
+  VariantAlternative,
   TypeParameter,
   ValueParameter,
 };

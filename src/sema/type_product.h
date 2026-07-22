@@ -51,7 +51,7 @@ struct NaturalLayoutProductAttempt {
 };
 
 // Evaluates the NaturalLayout facet for exactly nominal. MemberTypes must be
-// complete. Inline member and tagged-discriminator waits become exact
+// complete. Inline member and variant-discriminator waits become exact
 // NaturalLayout dependencies; inline self-recursion therefore becomes a visible
 // graph cycle, while a pointer member is already a complete pointer-sized input.
 [[nodiscard]] NaturalLayoutProductAttempt evaluate_natural_layout_product(

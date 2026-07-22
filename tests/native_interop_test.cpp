@@ -227,7 +227,7 @@ HH3 :: c struct {
     values: [3]f16,
 }
 
-Float_Overlay :: c raw union {
+Float_Overlay :: c union {
     scalar: f32,
     pair: [2]f32,
 }

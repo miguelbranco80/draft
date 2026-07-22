@@ -197,7 +197,7 @@ struct HirSwitchCase {
   std::size_t first_label = 0;
   std::size_t label_count = 0;
   HirBlockId body;
-  // A tagged-union payload binding belongs to exactly one case alternative.
+  // A variant payload binding belongs to exactly one case alternative.
   // The alternative identifies the payload byte offset/type; the binding is
   // invalid when the case ignores the payload or uses `_`.
   SymbolId payload_alternative;
@@ -248,7 +248,7 @@ struct HirStatement {
   bool local_destructures_tuple = false;
   bool assignment_destructures_tuple = false;
   // Set after semantic coverage checking. A default makes any switch
-  // exhaustive; enum and tagged-union switches are also exhaustive when every
+  // exhaustive; enum and variant switches are also exhaustive when every
   // declared alternative is covered exactly once.
   bool switch_is_exhaustive = false;
   // True only when exhaustiveness holds and every checked case body definitely

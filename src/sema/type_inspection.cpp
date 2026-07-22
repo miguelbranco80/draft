@@ -40,8 +40,8 @@ constexpr std::array<std::string_view, 24> kTypeKindNames = {
     "simd",
     "struct",
     "enumeration",
-    "tagged_union",
-    "raw_union",
+    "variant",
+    "union",
     "distinct",
     "type",
 };
@@ -67,8 +67,8 @@ constexpr std::array<TypeKind, 24> kTypeKinds = {
     TypeKind::Simd,
     TypeKind::Struct,
     TypeKind::Enum,
-    TypeKind::TaggedUnion,
-    TypeKind::RawUnion,
+    TypeKind::Variant,
+    TypeKind::Union,
     TypeKind::Distinct,
     TypeKind::MetaType,
 };
@@ -152,8 +152,8 @@ constexpr std::array<std::string_view, 2> kTargetObjectFormatNames = {
   case TypeKind::Simd: return 17;
   case TypeKind::Struct: return 18;
   case TypeKind::Enum: return 19;
-  case TypeKind::TaggedUnion: return 20;
-  case TypeKind::RawUnion: return 21;
+  case TypeKind::Variant: return 20;
+  case TypeKind::Union: return 21;
   case TypeKind::Distinct: return 22;
   case TypeKind::MetaType: return 23;
   case TypeKind::Invalid:
@@ -244,8 +244,8 @@ constexpr std::array<std::string_view, 2> kTargetObjectFormatNames = {
 
 [[nodiscard]] bool aggregate_kind(TypeKind kind) {
   return kind == TypeKind::Tuple || kind == TypeKind::Struct ||
-      kind == TypeKind::Enum || kind == TypeKind::TaggedUnion ||
-      kind == TypeKind::RawUnion;
+      kind == TypeKind::Enum || kind == TypeKind::Variant ||
+      kind == TypeKind::Union;
 }
 
 [[nodiscard]] std::optional<std::uint64_t> required_index(
@@ -526,8 +526,8 @@ TypeInspectionAttempt inspect_type(
     return type_result(package, type.element);
   }
   if (query == "type_discriminator") {
-    if (type.kind != TypeKind::TaggedUnion) {
-      return failure("type_discriminator requires a tagged union type");
+    if (type.kind != TypeKind::Variant) {
+      return failure("type_discriminator requires a variant type");
     }
     if (const std::optional<TypeInspectionAttempt> unavailable =
             require_facet(
@@ -568,8 +568,8 @@ TypeInspectionAttempt inspect_type(
   }
   if (query == "type_is_c_repr") {
     if (type.kind != TypeKind::Struct && type.kind != TypeKind::Enum &&
-        type.kind != TypeKind::RawUnion) {
-      return failure("type_is_c_repr requires a struct, enum, or raw union type");
+        type.kind != TypeKind::Union) {
+      return failure("type_is_c_repr requires a struct, enum, or union type");
     }
     if (const std::optional<TypeInspectionAttempt> unavailable =
             require_facet(package, queried, TypeFacet::Members, query)) {
@@ -578,8 +578,8 @@ TypeInspectionAttempt inspect_type(
     return success(ConstantValue::make_bool(type.c_representation), builtins.bool_type);
   }
   if (query == "type_requested_alignment") {
-    if (type.kind != TypeKind::Struct && type.kind != TypeKind::RawUnion) {
-      return failure("type_requested_alignment requires a struct or raw union type");
+    if (type.kind != TypeKind::Struct && type.kind != TypeKind::Union) {
+      return failure("type_requested_alignment requires a struct or union type");
     }
     if (const std::optional<TypeInspectionAttempt> unavailable =
             require_facet(package, queried, TypeFacet::Members, query)) {

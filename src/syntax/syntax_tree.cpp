@@ -126,7 +126,7 @@ std::string_view node_kind_name(NodeKind kind) {
   case NodeKind::MemberList: return "MemberList";
   case NodeKind::FieldMember: return "FieldMember";
   case NodeKind::EnumMember: return "EnumMember";
-  case NodeKind::UnionAlternative: return "UnionAlternative";
+  case NodeKind::VariantAlternative: return "VariantAlternative";
   case NodeKind::NamedType: return "NamedType";
   case NodeKind::PointerType: return "PointerType";
   case NodeKind::MultiPointerType: return "MultiPointerType";
@@ -138,8 +138,8 @@ std::string_view node_kind_name(NodeKind kind) {
   case NodeKind::DistinctType: return "DistinctType";
   case NodeKind::StructType: return "StructType";
   case NodeKind::EnumType: return "EnumType";
-  case NodeKind::TaggedUnionType: return "TaggedUnionType";
-  case NodeKind::RawUnionType: return "RawUnionType";
+  case NodeKind::VariantType: return "VariantType";
+  case NodeKind::UnionType: return "UnionType";
   case NodeKind::Block: return "Block";
   case NodeKind::StatementList: return "StatementList";
   case NodeKind::DeclarationStatement: return "DeclarationStatement";

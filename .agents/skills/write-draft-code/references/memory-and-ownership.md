@@ -53,7 +53,7 @@ zero value before either path can fail or clean up.
 ## Storage and initialization
 
 Ordinary locals are zero-initialized. Pointers become `nil`, aggregate fields
-become their zero values, and a tagged union selects its first alternative.
+become their zero values, and a variant selects its first alternative.
 This makes a declared-but-uninitialized-looking owner an empty owner:
 
 ```draft

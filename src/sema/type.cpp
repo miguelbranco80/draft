@@ -349,8 +349,8 @@ TypeId TypeStore::add(Type type_value) {
     break;
   case TypeKind::Struct:
   case TypeKind::Enum:
-  case TypeKind::TaggedUnion:
-  case TypeKind::RawUnion:
+  case TypeKind::Variant:
+  case TypeKind::Union:
     // begin_nominal allocates an empty shell. Compiler-defined enums arrive
     // with their complete member packet already installed.
     if (!type_value.members.empty()) {
@@ -742,8 +742,8 @@ bool TypeStore::contains_compile_time_type(
   case TypeKind::Tuple:
   case TypeKind::Procedure:
   case TypeKind::Struct:
-  case TypeKind::TaggedUnion:
-  case TypeKind::RawUnion:
+  case TypeKind::Variant:
+  case TypeKind::Union:
     for (TypeId member : candidate.members) {
       if (contains_compile_time_type(member, active)) {
         contains = true;
@@ -794,7 +794,7 @@ TypeId TypeStore::type_parameter(std::string name, SourceRange declaration) {
 
 TypeId TypeStore::begin_nominal(TypeKind kind, std::string name, SourceRange declaration) {
   assert(kind == TypeKind::Struct || kind == TypeKind::Enum ||
-         kind == TypeKind::TaggedUnion || kind == TypeKind::RawUnion);
+         kind == TypeKind::Variant || kind == TypeKind::Union);
   Type result;
   result.kind = kind;
   result.name = std::move(name);
@@ -805,7 +805,7 @@ TypeId TypeStore::begin_nominal(TypeKind kind, std::string name, SourceRange dec
 void TypeStore::publish_nominal_members(TypeId id) {
   Type &nominal = type_mut(id);
   assert(nominal.kind == TypeKind::Struct || nominal.kind == TypeKind::Enum ||
-         nominal.kind == TypeKind::TaggedUnion || nominal.kind == TypeKind::RawUnion);
+         nominal.kind == TypeKind::Variant || nominal.kind == TypeKind::Union);
   TypeCompletion &facets = completion_mut(id);
   assert(facets.members == TypeFacetState::Waiting);
   facets.members = TypeFacetState::Complete;
@@ -815,7 +815,7 @@ void TypeStore::publish_nominal_member_types(
     TypeId id, std::vector<TypeId> members) {
   Type &nominal = type_mut(id);
   assert(nominal.kind == TypeKind::Struct || nominal.kind == TypeKind::Enum ||
-         nominal.kind == TypeKind::TaggedUnion || nominal.kind == TypeKind::RawUnion);
+         nominal.kind == TypeKind::Variant || nominal.kind == TypeKind::Union);
   TypeCompletion &facets = completion_mut(id);
   assert(facets.member_types == TypeFacetState::Waiting);
   nominal.members = std::move(members);
@@ -828,7 +828,7 @@ void TypeStore::publish_nominal_natural_layout(
     std::vector<std::uint64_t> member_offsets) {
   Type &nominal = type_mut(id);
   assert(nominal.kind == TypeKind::Struct || nominal.kind == TypeKind::Enum ||
-         nominal.kind == TypeKind::TaggedUnion || nominal.kind == TypeKind::RawUnion);
+         nominal.kind == TypeKind::Variant || nominal.kind == TypeKind::Union);
   assert(layout.known);
   TypeCompletion &facets = completion_mut(id);
   assert(facets.natural_layout == TypeFacetState::Waiting);
@@ -885,8 +885,8 @@ std::string_view type_kind_name(TypeKind kind) {
   case TypeKind::Simd: return "SIMD";
   case TypeKind::Struct: return "struct";
   case TypeKind::Enum: return "enum";
-  case TypeKind::TaggedUnion: return "tagged union";
-  case TypeKind::RawUnion: return "raw union";
+  case TypeKind::Variant: return "variant";
+  case TypeKind::Union: return "union";
   case TypeKind::Distinct: return "distinct";
   case TypeKind::TypeParameter: return "type parameter";
   case TypeKind::MetaType: return "type";

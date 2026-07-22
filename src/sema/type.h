@@ -63,8 +63,8 @@ enum class TypeKind {
   Simd,
   Struct,
   Enum,
-  TaggedUnion,
-  RawUnion,
+  Variant,
+  Union,
   Distinct,
   TypeParameter,
   // MetaType is the compile-time-only type of exact Draft type values. It has
@@ -86,7 +86,7 @@ enum class ScalarByteOrder {
 
 // TypeLayout uses natural Draft layout before call-boundary ABI decomposition.
 // alignment is a positive power of two when known. A zero size remains valid for
-// a payload-free union alternative, but complete runtime types in Draft 1 are
+// a payload-free variant alternative, but complete runtime types in Draft 1 are
 // otherwise rejected later when the specification forbids empty aggregates.
 struct TypeLayout {
   bool known = false;

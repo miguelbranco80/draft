@@ -3,7 +3,7 @@ package c_library
 import core/runtime
 
 // This package has no Draft `main`: it is a native library fixture. Its public
-// C surface exercises records, enums, raw unions, and callback pointers through
+// C surface exercises records, enums, unions, and callback pointers through
 // the exact same selected AArch64 C ABI classifier used by call lowering.
 Pair :: c struct {
     left: i32,
@@ -49,7 +49,7 @@ Huge_Choice :: c enum u128 {
     huge = 340282366920938463463374607431768211455,
 }
 
-Number :: c raw union {
+Number :: c union {
     integer: i64,
     decimal: f64,
 }
@@ -79,10 +79,10 @@ Half_Triple :: c struct {
 }
 
 // AAPCS64 homogeneous-aggregate classification composes through C unions and
-// nested records. Union alternatives overlap, so their lane count is the maximum of
-// the alternatives rather than their sum. Nested_Floats is therefore four
+// nested records. Union members overlap, so their lane count is the maximum of
+// the members rather than their sum. Nested_Floats is therefore four
 // f32 lanes: two from overlay plus two from tail.
-Float_Overlay :: c raw union {
+Float_Overlay :: c union {
     scalar: f32,
     pair: [2]f32,
 }

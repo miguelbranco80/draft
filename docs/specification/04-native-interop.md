@@ -102,8 +102,8 @@ A foreign exception or `longjmp` that crosses a Draft frame has undefined
 behavior.
 
 A Draft 1 C signature may contain machine scalars with defined C lowering, C scalar
-aliases, pointers, `cstring`, C procedure pointers, and `c struct`, `c raw
-union`, and `c enum` types. Slices, strings, tuples, tagged unions, SIMD values,
+aliases, pointers, `cstring`, C procedure pointers, and `c struct`, `c union`,
+and `c enum` types. Slices, strings, tuples, variants, SIMD values,
 and default-layout aggregates are rejected by value; wrappers may pass them
 through pointers or explicit C representations.
 
@@ -273,7 +273,7 @@ and the bridge never retains its pointer afterward. Before either operation, a
 
 ### ABI artifacts
 
-`c struct`/`c raw union`/`c enum` types, C integer aliases, symbol names,
+`c struct`/`c union`/`c enum` types, C integer aliases, symbol names,
 linkage strength, visibility,
 and calling conventions have explicit lowering. The compiler emits object
 files, static libraries, dynamic libraries, executables, C headers, assembly,

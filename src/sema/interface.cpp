@@ -41,7 +41,7 @@ void hash_constant(Sha256 &hash, const ConstantValue &value) {
   hash_u64(hash, value.type_index);
   hash_field(hash, value.root_identity);
   hash_field(hash, value.root_relative_path);
-  hash_u64(hash, value.variant_index);
+  hash_u64(hash, value.member_index);
   hash_u64(hash, static_cast<std::uint64_t>(value.elements.size()));
   for (const ConstantValue &element : value.elements) {
     hash_constant(hash, element);
@@ -691,7 +691,7 @@ private:
   void set_nominal_identity(TypeId source, InterfaceType &translated) const {
     const TypeKind kind = package_.types.type(source).kind;
     if (kind != TypeKind::Struct && kind != TypeKind::Enum &&
-        kind != TypeKind::TaggedUnion && kind != TypeKind::RawUnion &&
+        kind != TypeKind::Variant && kind != TypeKind::Union &&
         kind != TypeKind::Distinct && kind != TypeKind::TypeParameter) {
       return;
     }
@@ -1280,8 +1280,8 @@ private:
     }
 
     const bool nominal = source.kind == TypeKind::Struct ||
-        source.kind == TypeKind::Enum || source.kind == TypeKind::TaggedUnion ||
-        source.kind == TypeKind::RawUnion || source.kind == TypeKind::Distinct ||
+        source.kind == TypeKind::Enum || source.kind == TypeKind::Variant ||
+        source.kind == TypeKind::Union || source.kind == TypeKind::Distinct ||
         source.kind == TypeKind::TypeParameter;
     const bool retained_application =
         !source.nominal_public_name.empty();
@@ -1390,8 +1390,8 @@ private:
       break;
     case TypeKind::Struct:
     case TypeKind::Enum:
-    case TypeKind::TaggedUnion:
-    case TypeKind::RawUnion: {
+    case TypeKind::Variant:
+    case TypeKind::Union: {
       result = consumer_.types.begin_nominal(
           source.kind, qualified_name(source), SourceRange::invalid());
       cache.translated[source_id.value] = result;

@@ -288,7 +288,7 @@ std::string_view symbol_kind_name(SymbolKind kind) {
   case SymbolKind::Local: return "local";
   case SymbolKind::Field: return "field";
   case SymbolKind::EnumMember: return "enum member";
-  case SymbolKind::UnionAlternative: return "union alternative";
+  case SymbolKind::VariantAlternative: return "variant alternative";
   case SymbolKind::TypeParameter: return "type parameter";
   case SymbolKind::ValueParameter: return "value parameter";
   }

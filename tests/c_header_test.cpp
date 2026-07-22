@@ -82,7 +82,7 @@ Huge_Choice :: c enum u128 {
     huge = 340282366920938463463374607431768211455,
 }
 
-Number :: c raw union {
+Number :: c union {
     integer: i64,
     decimal: f64,
 }

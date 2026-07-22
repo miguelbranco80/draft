@@ -155,8 +155,8 @@ void remap_arguments(
   switch (type.kind) {
   case TypeKind::Struct:
   case TypeKind::Enum:
-  case TypeKind::TaggedUnion:
-  case TypeKind::RawUnion:
+  case TypeKind::Variant:
+  case TypeKind::Union:
   case TypeKind::Distinct:
   case TypeKind::TypeParameter:
     return true;

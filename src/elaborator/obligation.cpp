@@ -530,8 +530,8 @@ void collect_constant_procedures(
   case TypeKind::String:
   case TypeKind::Struct:
   case TypeKind::Enum:
-  case TypeKind::TaggedUnion:
-  case TypeKind::RawUnion:
+  case TypeKind::Variant:
+  case TypeKind::Union:
   case TypeKind::Distinct:
   case TypeKind::TypeParameter:
   case TypeKind::MetaType:
@@ -634,7 +634,7 @@ void append_constant_context(
   append_context_field(
       "CONSTANT_ROOT_RELATIVE_PATH", value.root_relative_path, output);
   append_context_field(
-      "CONSTANT_VARIANT", std::to_string(value.variant_index), output);
+      "CONSTANT_VARIANT", std::to_string(value.member_index), output);
   output += "CONSTANT_ELEMENTS ";
   append_context_u64(
       static_cast<std::uint64_t>(value.elements.size()), output);

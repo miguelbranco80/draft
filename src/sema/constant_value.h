@@ -63,10 +63,11 @@ struct ConstantValue {
   std::string root_relative_path;
   // Aggregate elements use logical source order. Arrays, tuples, and structs
   // contain every element including recursively constructed zero defaults.
-  // Tagged/raw unions use variant_index to identify the selected member and
-  // contain its optional payload as the sole element.
+  // Variants and unions use member_index to identify the selected source-order
+  // member and contain its optional value as the sole element. A zeroed union
+  // may have no element because its bytes do not select an active field.
   std::vector<ConstantValue> elements;
-  std::uint64_t variant_index = std::numeric_limits<std::uint64_t>::max();
+  std::uint64_t member_index = std::numeric_limits<std::uint64_t>::max();
 
   bool operator==(const ConstantValue &) const = default;
 
@@ -82,7 +83,7 @@ struct ConstantValue {
   [[nodiscard]] static ConstantValue make_string(std::string value);
   [[nodiscard]] static ConstantValue make_aggregate(
       std::vector<ConstantValue> elements,
-      std::uint64_t variant_index = std::numeric_limits<std::uint64_t>::max());
+      std::uint64_t member_index = std::numeric_limits<std::uint64_t>::max());
   [[nodiscard]] static ConstantValue make_enum_label(
       std::string value, std::vector<ConstantValue> payload = {});
   [[nodiscard]] static ConstantValue make_procedure(

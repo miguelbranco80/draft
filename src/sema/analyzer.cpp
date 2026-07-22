@@ -386,8 +386,8 @@ struct CollectionContext {
   case NodeKind::DistinctType:
   case NodeKind::StructType:
   case NodeKind::EnumType:
-  case NodeKind::TaggedUnionType:
-  case NodeKind::RawUnionType:
+  case NodeKind::VariantType:
+  case NodeKind::UnionType:
     return true;
   default:
     return false;
@@ -398,8 +398,8 @@ struct CollectionContext {
   switch (kind) {
   case NodeKind::StructType: return TypeKind::Struct;
   case NodeKind::EnumType: return TypeKind::Enum;
-  case NodeKind::TaggedUnionType: return TypeKind::TaggedUnion;
-  case NodeKind::RawUnionType: return TypeKind::RawUnion;
+  case NodeKind::VariantType: return TypeKind::Variant;
+  case NodeKind::UnionType: return TypeKind::Union;
   default: return std::nullopt;
   }
 }

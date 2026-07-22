@@ -1196,7 +1196,7 @@ private:
     fragment_contract =
         "Return member-list content matching ENCLOSING_DECLARATION_SOURCE, "
         "not Markdown or enclosing braces. Struct fields use `value: i64,`; "
-        "enum members use `Ready = 1,`; union alternatives use `some: i64,`.";
+        "enum members use `Ready = 1,`; variant alternatives use `some: i64,`.";
     break;
   case AgentConstructKind::SynthesisStatement:
     fragment_contract =

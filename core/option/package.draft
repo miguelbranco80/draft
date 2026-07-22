@@ -1,8 +1,10 @@
+// Option is the conventional optional-value variant. It owns no storage beyond
+// its inline discriminator and payload, and has no compiler-defined behavior:
+// zero initialization selects none, while switch payload binding unwraps some.
+// Draft specification: section 5, "Variants, Option, and Result".
 package option
 
-// Option is intentionally an ordinary tagged union.  It has no compiler magic:
-// zero initialization selects none, and switch payload binding unwraps some.
-pub Option[T: type] :: union {
+pub Option[T: type] :: variant {
     none,
     some: T,
 }

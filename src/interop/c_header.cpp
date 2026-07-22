@@ -236,7 +236,7 @@ private:
       if (value.element_count != 0) collect_type(value.element);
       return;
     }
-    if (value.kind != TypeKind::Struct && value.kind != TypeKind::RawUnion &&
+    if (value.kind != TypeKind::Struct && value.kind != TypeKind::Union &&
         value.kind != TypeKind::Enum) {
       return;
     }
@@ -305,7 +305,7 @@ private:
     case TypeKind::CString: return "char *";
     case TypeKind::Procedure: return procedure_name(id);
     case TypeKind::Struct:
-    case TypeKind::RawUnion:
+    case TypeKind::Union:
     case TypeKind::Enum:
       return value.c_representation ? nominal_name(id) : "void";
     default: return "void";
@@ -335,7 +335,7 @@ private:
     if (value.kind == TypeKind::Procedure) {
       return value.c_calling_convention;
     }
-    return (value.kind == TypeKind::Struct || value.kind == TypeKind::RawUnion ||
+    return (value.kind == TypeKind::Struct || value.kind == TypeKind::Union ||
             value.kind == TypeKind::Enum) &&
         value.c_representation && c_abi_legal(id);
   }
@@ -408,7 +408,7 @@ private:
       if (value.kind == TypeKind::Struct) {
         output_ << "typedef struct " << nominal_name(id) << ' '
                 << nominal_name(id) << ";\n";
-      } else if (value.kind == TypeKind::RawUnion) {
+      } else if (value.kind == TypeKind::Union) {
         output_ << "typedef union " << nominal_name(id) << ' '
                 << nominal_name(id) << ";\n";
       }

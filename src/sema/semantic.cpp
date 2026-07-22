@@ -316,9 +316,9 @@ private:
           (discovery_.package.types.type(declaration.type).kind == TypeKind::Struct ||
            discovery_.package.types.type(declaration.type).kind == TypeKind::Enum ||
            discovery_.package.types.type(declaration.type).kind ==
-               TypeKind::TaggedUnion ||
+               TypeKind::Variant ||
            discovery_.package.types.type(declaration.type).kind ==
-               TypeKind::RawUnion);
+               TypeKind::Union);
       const bool needs_type = nominal || declaration.kind == SymbolKind::Type ||
           declaration.kind == SymbolKind::Procedure ||
           declaration.kind == SymbolKind::Variable ||
@@ -905,7 +905,7 @@ bool finish_package_declaration_discovery(
     if (symbol.kind != SymbolKind::Type || !symbol.type.is_valid()) continue;
     const TypeKind kind = discovery.package.types.type(symbol.type).kind;
     if (kind != TypeKind::Struct && kind != TypeKind::Enum &&
-        kind != TypeKind::TaggedUnion && kind != TypeKind::RawUnion) {
+        kind != TypeKind::Variant && kind != TypeKind::Union) {
       continue;
     }
     const bool member_types_complete =

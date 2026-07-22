@@ -29,7 +29,7 @@ still-incomplete query at its source call.
 
 The old bundled `complete_nominal` operation is gone: member-name closure,
 member-type closure, and natural layout have separate one-way publication
-operations. Target-natural struct, raw-union, tagged-union, and enum layout is a
+operations. Target-natural struct, union, variant, and enum layout is a
 pure producer over an immutable `TypeStore`; it returns a task-owned layout and
 offset packet or the exact incomplete type facets in first-use order.
 
@@ -803,7 +803,7 @@ invalid count traps before the shift executes.
 Status: complete Draft 1 contextual-value inference rule.
 
 An outer expected type continues to flow into both conditional value branches.
-Without one, a direct `nil` or contextual enum/tagged-union alternative may take
+Without one, a direct `nil` or contextual enum/variant alternative may take
 its type from the opposite, independently typed branch regardless of whether it
 appears on the left or right. This is a type-checking dependency only: runtime
 evaluation still executes the condition first and then exactly one value branch.

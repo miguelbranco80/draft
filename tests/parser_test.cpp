@@ -109,12 +109,12 @@ Mode :: enum u16 {
     extended = 7,
 }
 
-Choice :: union u8 {
+Choice :: variant u8 {
     none,
     some: u32,
 }
 
-Bits :: c raw union {
+Bits :: c union {
     integer: u64,
     pointer: rawptr,
 }
@@ -268,12 +268,12 @@ Mode :: enum u16 {
     Extended = 7,
 }
 
-Choice :: union u16 {
+Choice :: variant u16 {
     none,
     some: u32,
 }
 
-C_Value :: c raw union {
+C_Value :: c union {
     bits: u64,
     pointer: rawptr,
 }
@@ -303,8 +303,8 @@ export draft_entry :: c proc() -> c_abi.int {
   expect_clean(state, source);
   EXPECT(state, source.tree.count(draft::NodeKind::StructType) == 2);
   EXPECT(state, source.tree.count(draft::NodeKind::EnumType) == 1);
-  EXPECT(state, source.tree.count(draft::NodeKind::TaggedUnionType) == 1);
-  EXPECT(state, source.tree.count(draft::NodeKind::RawUnionType) == 1);
+  EXPECT(state, source.tree.count(draft::NodeKind::VariantType) == 1);
+  EXPECT(state, source.tree.count(draft::NodeKind::UnionType) == 1);
   EXPECT(state, source.tree.count(draft::NodeKind::DistinctType) == 1);
   EXPECT(state, source.tree.count(draft::NodeKind::ForeignBlock) == 1);
   EXPECT(state, source.tree.count(draft::NodeKind::ExportDeclaration) == 1);
@@ -480,7 +480,7 @@ void test_invalid_production_recovery(TestState &state) {
       {"missing multi-pointer close", "package bad\nPointer :: [^u32\n", "expected ']' in multi-pointer type"},
       {"missing array close", "package bad\nArray :: [4 u32\n", "expected ']' after array length"},
       {"missing simd open", "package bad\nVector :: #simd 4]f32\n", "expected '[' before SIMD lane count"},
-      {"raw without union", "package bad\nBits :: raw struct {}\n", "expected 'union' after 'raw'"},
+      {"missing variant region", "package bad\nChoice :: variant u8\n", "expected '{' to begin type members"},
       {"missing qualified type name", "package bad\nvalue: core.\n", "expected type name after '.'"},
       {"missing type argument close", "package bad\nvalue: Box[u32\n", "expected ']' after type arguments"},
       {"missing member region", "package bad\nRecord :: struct\n", "expected '{' to begin type members"},

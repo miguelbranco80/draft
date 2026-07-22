@@ -211,7 +211,7 @@ insertion before them; an explicit semicolon or the first other non-trivia token
 ends the attachment group. Consequently, `} else {` remains on one line.
 
 `c` is contextual rather than globally reserved. Before `proc` it selects the C
-calling convention; before `struct`, `enum`, or `raw union` it selects C layout,
+calling convention; before `struct`, `enum`, or `union` it selects C layout,
 as defined by sections 5 and 12. Elsewhere it is an ordinary identifier, so a
 project may still choose it as a local binding or import alias; those uses
 receive ordinary semicolon behavior. The distributed C scalar package is named
@@ -238,9 +238,9 @@ across lines. Escaped Unicode scalars in strings are encoded as UTF-8, while
 byte escapes permit arbitrary string bytes.
 
 Composite literals have these Draft 1 forms: `[N]T{values}` for fixed arrays,
-`T{field = value, ...}` for structs, `T{field = value}` for one selected raw-
-union field, `(a, b)` for tuples, and contextual `.case` or `.case(value)` for
-enum and tagged-union alternatives. Arrays reject excess elements and zero-fill
+`T{field = value, ...}` for structs, `T{field = value}` for one selected union
+field, `(a, b)` for tuples, and contextual `.case` or `.case(value)` for
+enum and variant alternatives. Arrays reject excess elements and zero-fill
 an omitted tail; struct fields are unique and omitted fields take their zero
 value. In an `if`, `for`, or `switch` header, an unparenthesized `{` begins the
 statement body, so a composite literal there must be parenthesized.
@@ -381,7 +381,7 @@ are checked for representability when converted to a machine type. Untyped
 decimal floating constants remain exact rationals derived from their spelling
 until contextual conversion, then round once under the runtime IEEE rule.
 Constant values may include booleans, numbers, strings, enums, arrays, structs,
-tagged unions, procedure identities, and types.
+variants, unions, procedure identities, and types.
 
 A type value has the compile-time-only type `type`. It may be named by a
 constant, compared for exact identity, inspected, and transmitted through a
@@ -476,7 +476,7 @@ larger := a if a > b else b
 ```
 
 An outer expected type is propagated into both values. Without one, a direct
-`nil`, contextual enum alternative, or contextual tagged-union alternative
+`nil`, contextual enum alternative, or contextual variant alternative
 may discover its type from the concrete opposite value, symmetrically on either
 side. If both values require context and there is no outer expected type, the
 expression is ambiguous. Parentheses and denial wrappers do not change this
@@ -549,7 +549,7 @@ case:
 
 Cases never fall through. Each case body is a lexical scope; its locals and
 `defer` calls follow the ordinary scope-exit rules. A `switch` over an enum or
-tagged union must cover every alternative or provide a default. Tagged-union
+variant must cover every alternative or provide a default. Variant
 cases may bind the active payload; the binding is local to that case:
 
 ```draft

@@ -144,7 +144,7 @@ Draft 1 permits these types by value at a user C boundary:
 
 - machine scalars with defined C lowering and `core/c_abi` scalar aliases;
 - data pointers, `rawptr`, `cstring`, and C procedure pointers;
-- recursively legal `c struct` and `c raw union` types;
+- recursively legal `c struct` and `c union` types;
 - legal `c enum` types;
 - fixed arrays as members of recursively legal C aggregates.
 
@@ -154,7 +154,7 @@ passed by value.
 These are rejected by value:
 
 - `string` and slices;
-- tuples and tagged unions;
+- tuples and variants;
 - SIMD values;
 - default-layout aggregates;
 - `runtime.Context` in a user C signature.

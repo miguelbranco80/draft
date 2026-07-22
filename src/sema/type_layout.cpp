@@ -90,7 +90,7 @@ NaturalAggregateLayout compute_struct_natural_layout(
   return result;
 }
 
-NaturalAggregateLayout compute_raw_union_natural_layout(
+NaturalAggregateLayout compute_union_natural_layout(
     const TypeStore &types, std::span<const TypeId> members) {
   std::vector<TypeId> dependencies =
       missing_layout_dependencies(types, members);
@@ -114,7 +114,7 @@ NaturalAggregateLayout compute_raw_union_natural_layout(
   return result;
 }
 
-NaturalAggregateLayout compute_tagged_union_natural_layout(
+NaturalAggregateLayout compute_variant_natural_layout(
     const TypeStore &types,
     TypeId discriminator,
     std::span<const TypeId> alternatives) {

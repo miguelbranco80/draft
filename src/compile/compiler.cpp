@@ -1790,8 +1790,8 @@ has_symbol_product(std::span<const SemanticProductId> products,
         declaration.kind == SymbolKind::Type && declaration.type.is_valid() &&
         (semantic.types.type(declaration.type).kind == TypeKind::Struct ||
          semantic.types.type(declaration.type).kind == TypeKind::Enum ||
-         semantic.types.type(declaration.type).kind == TypeKind::TaggedUnion ||
-         semantic.types.type(declaration.type).kind == TypeKind::RawUnion);
+         semantic.types.type(declaration.type).kind == TypeKind::Variant ||
+         semantic.types.type(declaration.type).kind == TypeKind::Union);
     const bool needs_declaration_type =
         nominal || declaration.kind == SymbolKind::Type ||
         declaration.kind == SymbolKind::Procedure ||

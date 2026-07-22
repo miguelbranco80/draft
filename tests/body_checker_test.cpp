@@ -617,7 +617,7 @@ Mode :: enum {
     On,
 }
 
-Choice :: union {
+Choice :: variant {
     none,
     some: i64,
 }
@@ -748,7 +748,7 @@ main :: proc() {
   bool saw_compound_add = false;
   bool saw_switch_shape = false;
   bool saw_tuple_destructuring = false;
-  bool saw_union_payload_binding = false;
+  bool saw_variant_payload_binding = false;
   for (const draft::ProcedureBodyHirResult &product :
        source.bodies.procedures) {
     for (std::size_t index = 0;
@@ -783,7 +783,7 @@ main :: proc() {
              !statement.switch_cases[1].is_default);
         for (const draft::HirSwitchCase &switch_case :
              statement.switch_cases) {
-          saw_union_payload_binding = saw_union_payload_binding ||
+          saw_variant_payload_binding = saw_variant_payload_binding ||
               (switch_case.payload_alternative.is_valid() &&
                switch_case.payload_binding.is_valid());
         }
@@ -795,7 +795,7 @@ main :: proc() {
   EXPECT(state, saw_compound_add);
   EXPECT(state, saw_switch_shape);
   EXPECT(state, saw_tuple_destructuring);
-  EXPECT(state, saw_union_payload_binding);
+  EXPECT(state, saw_variant_payload_binding);
 }
 
 void test_body_diagnostics(TestState &state) {
@@ -1676,7 +1676,7 @@ Record :: struct {
     right: i64,
 }
 
-Bits :: raw union {
+Bits :: union {
     signed: i64,
     unsigned: u64,
 }
@@ -1702,7 +1702,7 @@ Record :: struct {
     right: i64,
 }
 
-Bits :: raw union {
+Bits :: union {
     signed: i64,
     unsigned: u64,
 }
@@ -1754,11 +1754,11 @@ tuple_composite :: proc(value: i64) {
           std::string::npos);
   EXPECT(
       state,
-      rendered.find("raw union composite literal must initialize exactly one field") !=
+      rendered.find("union composite literal must initialize exactly one field") !=
           std::string::npos);
   EXPECT(
       state,
-      rendered.find("raw union composite element must name a field") !=
+      rendered.find("union composite element must name a field") !=
           std::string::npos);
   EXPECT(
       state,
@@ -1891,11 +1891,11 @@ local_types[T: type, N: usize] :: proc(value: T, values: [N]T) -> T {
         Off,
         On,
     }
-    Choice :: union {
+    Choice :: variant {
         none,
         some: Alias,
     }
-    Bits :: raw union {
+    Bits :: union {
         value: Alias,
     }
     Wrapped :: distinct Alias
@@ -2430,7 +2430,7 @@ Stored_Pair :: struct {
     second: u64,
 }
 
-Stored_Choice :: union {
+Stored_Choice :: variant {
     none,
     some: u64,
 }
@@ -2938,7 +2938,7 @@ Mode :: enum {
     On,
 }
 
-Choice :: union {
+Choice :: variant {
     none,
     some: i64,
 }
@@ -2985,7 +2985,7 @@ untyped_alternative_pair :: proc(condition: bool) {
   EXPECT(state, rendered.find("nil requires an expected pointer type") !=
                     std::string::npos);
   EXPECT(state, rendered.find(
-                    "contextual alternative requires an expected enum or union type") !=
+                    "contextual alternative requires an expected enum or variant type") !=
                     std::string::npos);
 }
 
@@ -3055,7 +3055,7 @@ Record :: struct {
     value: u32,
 }
 
-Choice :: union {
+Choice :: variant {
     none,
     some: u32,
 }
@@ -3118,7 +3118,7 @@ bad_record_equality :: proc(left, right: Record) -> bool {
     return left == right
 }
 
-bad_union_equality :: proc(left, right: Choice) -> bool {
+bad_variant_equality :: proc(left, right: Choice) -> bool {
     return left == right
 }
 
@@ -3364,14 +3364,14 @@ Mode :: enum u8 {
     On,
 }
 
-Choice :: union {
+Choice :: variant {
     none,
     some: u32,
 }
 
 Meters :: distinct i64
 
-Overlay :: c align(8) raw union {
+Overlay :: c align(8) union {
     byte: u8,
     word: u64,
 }
@@ -3428,8 +3428,8 @@ inspect_types :: proc() {
     static_assert(type_kind(Vector) == .simd)
     static_assert(type_kind(Record) == .struct)
     static_assert(type_kind(Mode) == .enumeration)
-    static_assert(type_kind(Choice) == .tagged_union)
-    static_assert(type_kind(Overlay) == .raw_union)
+    static_assert(type_kind(Choice) == .variant)
+    static_assert(type_kind(Overlay) == .union)
     static_assert(type_kind(Meters) == .distinct)
     static_assert(type_kind(type) == .type)
 

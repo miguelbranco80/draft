@@ -137,8 +137,8 @@ struct BuiltIntegerExpressionNode {
   case NodeKind::DistinctType:
   case NodeKind::StructType:
   case NodeKind::EnumType:
-  case NodeKind::TaggedUnionType:
-  case NodeKind::RawUnionType:
+  case NodeKind::VariantType:
+  case NodeKind::UnionType:
     return true;
   default:
     return false;
@@ -279,7 +279,7 @@ public:
       }
       const TypeKind kind = semantic_.types.type(symbol.type).kind;
       if (kind != TypeKind::Struct && kind != TypeKind::Enum &&
-          kind != TypeKind::TaggedUnion && kind != TypeKind::RawUnion) {
+          kind != TypeKind::Variant && kind != TypeKind::Union) {
         continue;
       }
       const SyntaxTree *tree = find_tree(symbol.syntax.file);
@@ -362,7 +362,7 @@ private:
     const Type &value = semantic_.types.type(type);
     const bool nominal =
         value.kind == TypeKind::Struct || value.kind == TypeKind::Enum ||
-        value.kind == TypeKind::TaggedUnion || value.kind == TypeKind::RawUnion;
+        value.kind == TypeKind::Variant || value.kind == TypeKind::Union;
     bool concrete_instance = false;
     if (nominal) {
       // A waiting imported nominal with concrete owner-evaluated arguments is
@@ -499,8 +499,8 @@ public:
 
     if (type_node.kind == NodeKind::StructType ||
         type_node.kind == NodeKind::EnumType ||
-        type_node.kind == NodeKind::TaggedUnionType ||
-        type_node.kind == NodeKind::RawUnionType) {
+        type_node.kind == NodeKind::VariantType ||
+        type_node.kind == NodeKind::UnionType) {
       if (initial.type.is_valid()) {
         resolve_aggregate(owner, initial.type, tree, type_id, semantic_parent);
         result = initial.type;
@@ -1891,8 +1891,8 @@ private:
     }
     if (!result &&
         (value.kind == TypeKind::Struct || value.kind == TypeKind::Enum ||
-         value.kind == TypeKind::TaggedUnion ||
-         value.kind == TypeKind::RawUnion)) {
+         value.kind == TypeKind::Variant ||
+         value.kind == TypeKind::Union)) {
       for (const ParametricTypeInstanceRecord &instance :
            semantic_.parametric_type_instances_for_read()) {
         if (semantic_.symbols.symbol(instance.instance).type != type) continue;
@@ -1956,8 +1956,8 @@ private:
     }
     if (!result &&
         (value.kind == TypeKind::Struct || value.kind == TypeKind::Enum ||
-         value.kind == TypeKind::TaggedUnion ||
-         value.kind == TypeKind::RawUnion)) {
+         value.kind == TypeKind::Variant ||
+         value.kind == TypeKind::Union)) {
       for (const ParametricTypeInstanceRecord &instance :
            semantic_.parametric_type_instances_for_read()) {
         if (semantic_.symbols.symbol(instance.instance).type != type) continue;
@@ -2511,8 +2511,8 @@ private:
     // `Dynamic[u64]` application when Map is instantiated; substituting the
     // aggregate's already-laid-out members would leave Dynamic's own T behind.
     if (value.kind == TypeKind::Struct || value.kind == TypeKind::Enum ||
-        value.kind == TypeKind::TaggedUnion ||
-        value.kind == TypeKind::RawUnion) {
+        value.kind == TypeKind::Variant ||
+        value.kind == TypeKind::Union) {
       std::optional<SymbolId> template_source;
       std::vector<ParametricArgument> arguments;
       std::optional<ImportedType> imported_application;
@@ -2793,16 +2793,16 @@ private:
       layout = retain_natural_layout(
           data,
           compute_struct_natural_layout(semantic_.types, data.types));
-    } else if (pattern_type.kind == TypeKind::RawUnion) {
+    } else if (pattern_type.kind == TypeKind::Union) {
       layout = retain_natural_layout(
           data,
-          compute_raw_union_natural_layout(semantic_.types, data.types));
+          compute_union_natural_layout(semantic_.types, data.types));
     } else if (pattern_type.kind == TypeKind::Enum) {
       layout = semantic_.types.type(element).layout;
     } else {
       layout = retain_natural_layout(
           data,
-          compute_tagged_union_natural_layout(
+          compute_variant_natural_layout(
               semantic_.types, element, data.types));
     }
     layout = apply_requested_alignment(
@@ -3046,8 +3046,8 @@ private:
     }
     if (template_type.kind != TypeKind::Struct &&
         template_type.kind != TypeKind::Enum &&
-        template_type.kind != TypeKind::TaggedUnion &&
-        template_type.kind != TypeKind::RawUnion) {
+        template_type.kind != TypeKind::Variant &&
+        template_type.kind != TypeKind::Union) {
       if (has_owner_evaluated_argument) {
         // Structural aliases intentionally have no nominal instance identity.
         // Retain this particular symbolic application in a non-interned shape
@@ -3164,9 +3164,9 @@ private:
       natural_layout =
           compute_struct_natural_layout(semantic_.types, data.types);
       layout = retain_natural_layout(data, natural_layout);
-    } else if (template_type.kind == TypeKind::RawUnion) {
+    } else if (template_type.kind == TypeKind::Union) {
       natural_layout =
-          compute_raw_union_natural_layout(semantic_.types, data.types);
+          compute_union_natural_layout(semantic_.types, data.types);
       layout = retain_natural_layout(data, natural_layout);
     } else if (template_type.kind == TypeKind::Enum) {
       layout = semantic_.types.type(element).layout;
@@ -3175,7 +3175,7 @@ private:
         natural_layout.dependencies.push_back(element);
       }
     } else {
-      natural_layout = compute_tagged_union_natural_layout(semantic_.types,
+      natural_layout = compute_variant_natural_layout(semantic_.types,
                                                            element, data.types);
       layout = retain_natural_layout(data, natural_layout);
     }
@@ -3599,21 +3599,21 @@ private:
     const TypeId invalid = semantic_.types.builtins().invalid;
     const bool aggregate = node.kind == NodeKind::StructType ||
         node.kind == NodeKind::EnumType ||
-        node.kind == NodeKind::TaggedUnionType ||
-        node.kind == NodeKind::RawUnionType;
+        node.kind == NodeKind::VariantType ||
+        node.kind == NodeKind::UnionType;
     if (!aggregate) {
       for (NodeId child_id : node.children) {
         const SyntaxNode &child = tree.node(child_id);
         if (child.kind == NodeKind::AlignmentSpecifier) {
           diagnostics_.error(
               child.range,
-              "'align(N)' is valid only on structs and raw unions");
+              "'align(N)' is valid only on structs and unions");
           return invalid;
         }
         if (child.kind == NodeKind::CRepresentationSpecifier) {
           diagnostics_.error(
               child.range,
-              "'c' layout is valid only on structs, raw unions, and enums");
+              "'c' layout is valid only on structs, unions, and enums");
           return invalid;
         }
       }
@@ -3849,12 +3849,12 @@ private:
 
     case NodeKind::StructType:
     case NodeKind::EnumType:
-    case NodeKind::TaggedUnionType:
-    case NodeKind::RawUnionType: {
+    case NodeKind::VariantType:
+    case NodeKind::UnionType: {
       TypeKind kind = TypeKind::Struct;
       if (node.kind == NodeKind::EnumType) kind = TypeKind::Enum;
-      if (node.kind == NodeKind::TaggedUnionType) kind = TypeKind::TaggedUnion;
-      if (node.kind == NodeKind::RawUnionType) kind = TypeKind::RawUnion;
+      if (node.kind == NodeKind::VariantType) kind = TypeKind::Variant;
+      if (node.kind == NodeKind::UnionType) kind = TypeKind::Union;
       const TypeId anonymous = semantic_.types.begin_nominal(
           kind, "<anonymous>", node.range);
       resolve_aggregate({}, anonymous, tree, type_id, scope);
@@ -3950,7 +3950,7 @@ private:
     }
   }
 
-  // Declares the single source identity owned by an enum member or union
+  // Declares the single source identity owned by an enum member or variant
   // alternative. The later typing traversal reuses this exact SymbolId and
   // supplies its backing or payload type.
   void collect_single_member_name(
@@ -4072,9 +4072,9 @@ private:
         collect_single_member_name(
             tree, member_id, scope, SymbolKind::EnumMember, data);
         break;
-      case NodeKind::UnionAlternative:
+      case NodeKind::VariantAlternative:
         collect_single_member_name(
-            tree, member_id, scope, SymbolKind::UnionAlternative, data);
+            tree, member_id, scope, SymbolKind::VariantAlternative, data);
         break;
       case NodeKind::Documentation:
         add_site(SemanticSiteKind::Documentation, tree, member_id, scope, owner);
@@ -4117,7 +4117,7 @@ private:
     }
   }
 
-  // Resolves a possibly grouped struct/raw-union field declaration. Every name
+  // Resolves a possibly grouped struct/union field declaration. Every name
   // shares the one parsed type and receives an independent member identity.
   void collect_field_member(
       const SyntaxTree &tree,
@@ -4476,11 +4476,11 @@ private:
     for (NodeId child_id : aggregate.children) {
       const SyntaxNode &modifier = tree.node(child_id);
       if (modifier.kind == NodeKind::CRepresentationSpecifier) {
-        if (kind != TypeKind::Struct && kind != TypeKind::RawUnion &&
+        if (kind != TypeKind::Struct && kind != TypeKind::Union &&
             kind != TypeKind::Enum) {
           diagnostics_.error(
               modifier.range,
-              "'c' layout is valid only on structs, raw unions, and enums");
+              "'c' layout is valid only on structs, unions, and enums");
           continue;
         }
         result.c_representation = true;
@@ -4489,10 +4489,10 @@ private:
       if (modifier.kind != NodeKind::AlignmentSpecifier) {
         continue;
       }
-      if (kind != TypeKind::Struct && kind != TypeKind::RawUnion) {
+      if (kind != TypeKind::Struct && kind != TypeKind::Union) {
         diagnostics_.error(
             modifier.range,
-            "'align(N)' is valid only on structs and raw unions");
+            "'align(N)' is valid only on structs and unions");
         continue;
       }
       if (modifier.children.size() != 1) {
@@ -4619,9 +4619,9 @@ private:
     }
   }
 
-  // Declares one tagged-union alternative. A payload-free alternative uses the
+  // Declares one variant alternative. A payload-free alternative uses the
   // canonical void type whose layout is zero bytes with alignment one.
-  void collect_union_alternative(
+  void collect_variant_alternative(
       const SyntaxTree &tree,
       NodeId member_id,
       ScopeId scope,
@@ -4642,7 +4642,7 @@ private:
         member_id,
         scope,
         names.front(),
-        SymbolKind::UnionAlternative,
+        SymbolKind::VariantAlternative,
         type);
     if (symbol.has_value()) {
       data.symbols.push_back(*symbol);
@@ -4707,8 +4707,8 @@ private:
       case NodeKind::EnumMember:
         collect_enum_member(tree, member_id, scope, data);
         break;
-      case NodeKind::UnionAlternative:
-        collect_union_alternative(tree, member_id, scope, data);
+      case NodeKind::VariantAlternative:
+        collect_variant_alternative(tree, member_id, scope, data);
         break;
       case NodeKind::Documentation:
         add_site(SemanticSiteKind::Documentation, tree, member_id, scope, owner);
@@ -5008,13 +5008,13 @@ private:
           data.types[index] = backing;
           semantic_.symbols.symbol_mut(data.symbols[index]).type = backing;
         }
-      } else if (kind == TypeKind::TaggedUnion) {
+      } else if (kind == TypeKind::Variant) {
         TypeId discriminator = explicit_backing.has_value()
             ? explicit_backing_type
             : inferred_discriminator(data.symbols.size());
         if (!semantic_.types.is_integer(discriminator)) {
           diagnostics_.error(
-              aggregate.range, "tagged-union discriminator must be an integer type");
+              aggregate.range, "variant discriminator must be an integer type");
           discriminator = semantic_.types.builtins().invalid;
         } else if (!data.symbols.empty()) {
           // Source-order discriminators are 0 through alternative_count - 1.
@@ -5024,7 +5024,7 @@ private:
           if (!integer_fits_type(greatest, discriminator)) {
             diagnostics_.error(
                 aggregate.range,
-                "tagged-union alternatives do not fit its discriminator type");
+                "variant alternatives do not fit its discriminator type");
           }
         }
         semantic_.types.type_mut(nominal).element = discriminator;
@@ -5116,7 +5116,7 @@ private:
     if (symbol.kind == SymbolKind::Type && symbol.type.is_valid()) {
       const TypeKind kind = semantic_.types.type(symbol.type).kind;
       if (kind == TypeKind::Struct || kind == TypeKind::Enum ||
-          kind == TypeKind::TaggedUnion || kind == TypeKind::RawUnion) {
+          kind == TypeKind::Variant || kind == TypeKind::Union) {
         // Authored nominal identity is allocated during declaration collection,
         // before either member product runs. Merely naming or pointing to that
         // identity must not acquire a dependency on the later MemberTypes row.
@@ -5204,8 +5204,8 @@ private:
       const SyntaxNode &type_node = tree.node(*payload);
       if (type_node.kind == NodeKind::StructType ||
           type_node.kind == NodeKind::EnumType ||
-          type_node.kind == NodeKind::TaggedUnionType ||
-          type_node.kind == NodeKind::RawUnionType) {
+          type_node.kind == NodeKind::VariantType ||
+          type_node.kind == NodeKind::UnionType) {
         if (initial_symbol.type.is_valid()) {
           resolve_aggregate(id, initial_symbol.type, tree, *payload, semantic_parent);
         }

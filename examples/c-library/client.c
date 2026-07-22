@@ -86,7 +86,7 @@ int main(void) {
         return 17;
     }
 
-    // The largest union alternative controls its HFA lane count. Nesting that
+    // The largest union member controls its HFA lane count. Nesting that
     // union beside another pair must preserve all four FP-register lanes.
     draft_c_library_Float_Overlay overlay;
     overlay.pair[0] = 4.5f;

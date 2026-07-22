@@ -176,8 +176,8 @@ built-in language types.
 - Structs and fixed arrays with inline storage.
 - Enums with explicit or inferred integer backing types.
 - Type aliases and `distinct` types.
-- Tagged unions with an explicit discriminator.
-- Unsafe raw untagged unions for storage overlay and C compatibility.
+- Variants with an explicit discriminator.
+- Unsafe unions for untagged storage overlay and C compatibility.
 
 Aliases and distinct types use the same declaration shape:
 
@@ -199,41 +199,41 @@ tuple result uses the same value layout, although the target ABI may decompose
 it at a call boundary. Draft 1 rejects zero-length arrays and aggregates with no
 members or alternatives.
 
-`union { ... }` is tagged; `raw union { ... }` overlays every named field at
-offset zero. A raw union uses the maximum member alignment and the maximum
+`variant { ... }` is a tagged sum; `union { ... }` overlays every named field
+at offset zero. A union uses the maximum member alignment and the maximum
 member size rounded to that alignment.
 
-A tagged union stores discriminator `D` first. Payload-free alternatives have
+A variant stores discriminator `D` first. Payload-free alternatives have
 size zero and alignment one; its remaining layout is exact:
 
 ```text
 payload_alignment = max(alignment of every alternative)
 payload_size       = round_up(maximum alternative size, payload_alignment)
 payload_offset     = round_up(size_of(D), payload_alignment)
-union_alignment    = max(align_of(D), payload_alignment)
-union_size         = round_up(payload_offset + payload_size, union_alignment)
+variant_alignment  = max(align_of(D), payload_alignment)
+variant_size       = round_up(payload_offset + payload_size, variant_alignment)
 ```
 
 An enum member is `Name` or `Name = constant`. The first implicit enum value is
 zero; each later implicit value is one greater than the preceding value,
-including an explicit one. Duplicate values are invalid. Tagged-union
+including an explicit one. Duplicate values are invalid. Variant
 discriminators start at zero and increase in source order.
 The inferred enum backing is the smallest fixed-width unsigned integer that fits
 all values, or the smallest fixed-width signed integer when any value is
-negative. A tagged union uses the smallest fitting unsigned discriminator.
-`enum u16 { ... }` and `union u16 { ... }` select these types explicitly; every
+negative. A variant uses the smallest fitting unsigned discriminator.
+`enum u16 { ... }` and `variant u16 { ... }` select these types explicitly; every
 value must fit the selected backing type.
 
-`c struct`, `c raw union`, and `c enum` delegate layout and ABI lowering to the
+`c struct`, `c union`, and `c enum` delegate layout and ABI lowering to the
 selected target's C ABI. C layout replaces the default aggregate layout and,
 for an enum without an explicit backing type, the default backing rule. An
 explicit enum backing may combine with `c enum` only when the target C ABI
 supports it; otherwise the declaration is invalid.
 
-`align(N) struct` and `align(N) raw union` require a positive, power-of-two
+`align(N) struct` and `align(N) union` require a positive, power-of-two
 compile-time `usize`. The request may raise but not reduce alignment; size and
 array stride are rounded to the resulting alignment. C layout and requested
-alignment compose as `c align(N) struct` or `c align(N) raw union`: C layout is
+alignment compose as `c align(N) struct` or `c align(N) union`: C layout is
 computed first and the requested alignment is applied afterward. These are a
 closed set of direct type-constructor modifiers, not annotations:
 
@@ -242,7 +242,7 @@ Header :: c struct {
     kind: u32,
 }
 
-C_Value :: c raw union {
+C_Value :: c union {
     bits:    u64,
     pointer: rawptr,
 }
@@ -276,8 +276,8 @@ graph is reconstructed in the consumer package.
 alternatives are `.void`, `.bool`, `.boolean_storage`, `.signed_integer`,
 `.unsigned_integer`, `.float`, `.rune`, `.endian_scalar`, `.raw_pointer`,
 `.c_string`, `.string`, `.pointer`, `.multi_pointer`, `.slice`, `.array`,
-`.tuple`, `.procedure`, `.simd`, `.struct`, `.enumeration`, `.tagged_union`,
-`.raw_union`, `.distinct`, and `.type`. Untyped values and unresolved type
+`.tuple`, `.procedure`, `.simd`, `.struct`, `.enumeration`, `.variant`,
+`.union`, `.distinct`, and `.type`. Untyped values and unresolved type
 parameters are not concrete type values and cannot produce a folded query
 result. A query in a parameter-dependent compile-time expression may remain
 symbolic until a concrete instantiation supplies the exact type; it never
@@ -294,22 +294,22 @@ The remaining structural queries are compile-time intrinsics:
   arrays, and SIMD vectors; `type_element_count(T) -> usize` applies to
   concrete arrays and SIMD vectors.
 - `type_member_count(T) -> usize`, `type_member_name(T, index) -> string`, and
-  `type_member_type(T, index) -> type` inspect tuples, structs, enums, tagged
-  unions, and raw unions in source order. Tuple member names are their decimal
+  `type_member_type(T, index) -> type` inspect tuples, structs, enums, variants,
+  and unions in source order. Tuple member names are their decimal
   indices.
 - `type_member_offset(T, index) -> usize` returns the natural-layout byte
-  offset of a tuple, struct, tagged-union alternative, or raw-union member.
+  offset of a tuple, struct, variant alternative, or union member.
   Enum alternatives have no member offset.
 - `type_member_value(T, index)` returns an enum alternative's backing-typed
   integer value.
 - `type_underlying(T) -> type` applies to distinct types, enums, and endian
-  scalars. `type_discriminator(T) -> type` applies to tagged unions.
+  scalars. `type_discriminator(T) -> type` applies to variants.
 - `type_parameter_count(T) -> usize`, `type_parameter_type(T, index) -> type`,
   `type_result(T) -> type`, and
   `type_calling_convention(T) -> Calling_Convention` inspect procedure types.
   Calling conventions are `.draft` and `.c`.
-- `type_is_c_repr(T) -> bool` applies to structs, enums, and raw unions.
-  `type_requested_alignment(T) -> usize` applies to structs and raw unions and
+- `type_is_c_repr(T) -> bool` applies to structs, enums, and unions.
+  `type_requested_alignment(T) -> usize` applies to structs and unions and
   returns zero when no `align(N)` was requested.
 
 An inapplicable query or an out-of-range index is a compile-time error at the
@@ -320,18 +320,18 @@ profile and is not a type-inspection query.
 Draft 1 supports only SIMD lane counts and element types named by the selected target
 profile. Unsupported combinations are compile errors.
 
-### Tagged unions, `Option`, and `Result`
+### Variants, `Option`, and `Result`
 
-A tuple is a product: every member exists simultaneously. A tagged union is a
+A tuple is a product: every member exists simultaneously. A variant is a
 sum: one named alternative is active.
 
-`core/option` and `core/result` supply conventional ordinary parametric tagged
-unions. They have no compiler-defined behavior:
+`core/option` and `core/result` supply conventional ordinary parametric
+variants. They have no compiler-defined behavior:
 
 ```draft
 package option
 
-pub Option[T: type] :: union {
+pub Option[T: type] :: variant {
     none,
     some: T,
 }
@@ -340,7 +340,7 @@ pub Option[T: type] :: union {
 ```draft
 package result
 
-pub Result[T: type, E: type] :: union {
+pub Result[T: type, E: type] :: variant {
     err: E,
     ok:  T,
 }
@@ -374,8 +374,8 @@ consume_marker :: proc(input: []u8) {
 
 Nullable pointers model zero-address absence. `option.Option[T]` models a
 semantic choice between `.none` and `.some(value)` for any permitted `T`.
-Draft 1 keeps the explicit tagged representation and performs no niche layout
-optimization.
+Draft 1 keeps the explicit discriminator representation and performs no niche
+layout optimization.
 
 ### Parametric types and procedures
 
@@ -585,7 +585,7 @@ activation unless optimized into registers or equivalent storage.
 Variables are initialized to their zero value by default. Zero clears scalar
 and storage bytes; pointers become `nil`; aggregate members become their zero
 values; an enum must declare a zero-valued member; and the first alternative of
-a tagged union has discriminator zero and zeroed payload storage.
+a variant has discriminator zero and zeroed payload storage.
 
 `---` is a special initializer, not a general expression or first-class value.
 It is valid only on an automatic local declaration and permits the compiler to
@@ -683,11 +683,11 @@ written by a typed store is unspecified. `byte` and `u8` may inspect or copy any
 initialized object byte, including padding.
 
 Draft 1 has no strict-aliasing assumption: pointers of different types may refer to
-the same bytes. Reading a raw-union member interprets the shared bytes as that
+the same bytes. Reading a union member interprets the shared bytes as that
 member and is valid when those bytes form a valid value of its type. Every bit
 pattern is valid for integers, floats, boolean-storage types, endian scalars,
 and pointer values. `bool` requires zero or one, `rune` a Unicode scalar, an
-enum a declared value, and a tagged union a declared discriminator with a valid
+enum a declared value, and a variant a declared discriminator with a valid
 active payload. Loading any other typed representation is undefined behavior.
 
 ### Bounds and addresses
@@ -942,8 +942,8 @@ The initial core set includes:
 | Package | Role |
 | --- | --- |
 | `core/runtime` | Context, allocator, failure, entry, thread-bridge, and ABI contracts. |
-| `core/option` | `option.Option[T]`, an ordinary optional-value tagged union. |
-| `core/result` | `result.Result[T, E]`, an ordinary success-or-error tagged union. |
+| `core/option` | `option.Option[T]`, an ordinary optional-value variant. |
+| `core/result` | `result.Result[T, E]`, an ordinary success-or-error variant. |
 | `core/memory` | Typed allocation, arenas, owned buffers and strings, and virtual memory. |
 | `core/heap` | Heap allocator backends and direct heap operations. |
 | `core/array` | `array.Dynamic[T]`, an owning growable contiguous array. |

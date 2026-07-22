@@ -5,28 +5,28 @@ Code :: enum i16 {
     Seven = 7,
 }
 
-Outcome :: union {
+Outcome :: variant {
     empty,
     value: i64,
     failure: u32,
 }
 
-Text_Outcome :: union {
+Text_Outcome :: variant {
     empty,
     value: string,
 }
 
-Callback_Outcome :: union {
+Callback_Outcome :: variant {
     empty,
     value: proc(value: i64) -> i64,
 }
 
-Overlay :: raw union {
+Overlay :: union {
     byte: u8,
     word: u64,
 }
 
-Text_Overlay :: raw union {
+Text_Overlay :: union {
     text: string,
     words: [2]u64,
 }
@@ -41,7 +41,7 @@ Relocation_Box :: struct {
     overlay: Text_Overlay,
 }
 
-Relocation_Envelope :: union {
+Relocation_Envelope :: variant {
     empty,
     value: Relocation_Box,
 }
@@ -64,7 +64,7 @@ Pair[T: type, U: type] :: struct {
     second: U,
 }
 
-Maybe[T: type] :: union {
+Maybe[T: type] :: variant {
     none,
     some: T,
 }

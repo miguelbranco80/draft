@@ -1,8 +1,10 @@
+// Result is the conventional explicit success-or-error variant. It owns no
+// storage beyond its inline discriminator and payload. The first alternative
+// is the zero value, so a default-initialized Result is always an error.
+// Draft specification: section 5, "Variants, Option, and Result".
 package result
 
-// Result keeps failure and success types explicit. The first alternative is
-// the zero value, so a default-initialized Result is always an error.
-pub Result[T: type, E: type] :: union {
+pub Result[T: type, E: type] :: variant {
     err: E,
     ok: T,
 }
