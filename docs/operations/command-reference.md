@@ -210,11 +210,12 @@ companion paths when present. A native Windows compiler build links the official
 LLVM-C 22 development distribution; matching Clang/lld-link/llvm-lib and an x64
 Visual Studio/Windows SDK environment are operational prerequisites. Ordinary
 `check`, `emit-llvm`, `emit-c-header`, and `build` work on that host. The
-bootstrap Windows validation runner and Codex provider subprocess adapters are
-not yet implemented, so native `test`, `bench`, `resolve`, and active `judge`
-operations which require those adapters fail explicitly rather than silently
-skipping work. Provider-free builds of already resolved source remain ordinary
-`build` commands.
+bootstrap Windows validation runner, durable resolution-store lock, and Codex
+provider subprocess adapters are not yet implemented. Native `test` and `bench`
+therefore fail explicitly. Any `resolve` which must write or re-pin a manifest,
+including provider-free `--revalidate`, also fails explicitly; active `judge`
+runs requiring Codex are unavailable, while `judge --list` works. Provider-free
+builds of already resolved source remain ordinary `build` commands.
 
 All completely lowered package modules and package-assembly inputs form one
 bounded native ready set. Workers emit only

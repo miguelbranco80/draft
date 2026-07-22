@@ -266,7 +266,10 @@ the deliberate source-changing operation; changing `--model` alone is not.
 `draft resolve --revalidate` never contacts an agent. It stages existing
 generated source under current obligations, runs ordinary compiler checks, and
 re-pins only on success. It cannot fill a missing pin and does not modify
-validation or judgment evidence.
+validation or judgment evidence. The current Windows bootstrap cannot acquire
+the durable resolution-store lock, so any resolve that must commit or re-pin a
+manifest, including `--revalidate`, fails explicitly there. This host limitation
+does not affect provider-free `build` of already resolved source.
 
 `draft build` consumes surface and valid generated-source pins. It never
 contacts a model, updates a pin, runs tests, evaluates judgments, or reruns

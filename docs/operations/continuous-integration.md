@@ -1,9 +1,9 @@
 # Continuous integration
 
-Status: three native target gates, with bootstrap sanitizers on Linux x86-64.
+Status: four native target gates, with bootstrap sanitizers on Linux x86-64.
 
 The ordinary GitHub Actions workflow builds and tests the bootstrap compiler on
-the three implemented native host/target pairs:
+the four implemented native host/target pairs:
 
 - `macos-15` runs the Apple Silicon Mach-O path with AppleClang and Homebrew
   LLVM 22;
@@ -12,17 +12,25 @@ the three implemented native host/target pairs:
   utilities;
 - `ubuntu-24.04` builds the bootstrap with GCC ASan/UBSan and runs the complete
   x86-64 SysV/ELF Draft path with the same LLVM 22 tool family.
+- `windows-2022` builds the MSVC bootstrap against the official LLVM-C 22
+  archive and runs the x86-64 Win64/PE path with matching Clang, lld-link,
+  llvm-lib, UCRT, and Windows SDK components.
 
-All jobs treat warnings as errors, build the complete test suite, and run it on
-the host. On each matching pair CMake includes native conformance,
+All jobs treat warnings as errors. The macOS/Linux jobs build the complete test
+suite and run it on the host. On each of those matching pairs CMake includes
+native conformance,
 one-worker/four-worker byte-for-byte artifact determinism, embedded-LLVM versus
 external-Clang parity, generated-C-header/client, explicit foreign-provider
 linking, and validation harness tests. The exhaustive
 `examples/qualification.tsv` gate checks every tracked example package for all
-three targets, builds and launches every ordinary executable row, and runs every
-classified Draft test and benchmark from an isolated workspace copy. Linux
-native execution is therefore a required job, not an optional cross-compilation
-probe.
+four targets. Windows uses a focused driver-level gate while its validation
+process runner is still POSIX-only: it builds and launches every ordinary
+executable row except the signal-classification trap fixture, publishes all
+initial COFF artifact families including an assembly bundle, links a foreign
+provider, and compiles/launches the independent C client against a Draft DLL.
+Draft tests and benchmarks remain in the macOS/Linux gates. Linux and Windows
+native execution are therefore required jobs, not optional cross-compilation
+probes.
 
 The x86-64 row additionally enables GCC AddressSanitizer and
 UndefinedBehaviorSanitizer with leak detection and immediate failure. Those
@@ -42,12 +50,20 @@ selected LLVM directory supplies the default absolute paths for matching Clang,
 unrelated ambient Clang. None of these tools are synthesized source or Draft
 program dependencies, and they do not appear in resolution manifests.
 
+Windows uses the official `clang+llvm` development archive rather than the
+smaller tool-only installer because the bootstrap needs LLVM headers, CMake
+exports, and `LLVM-C.dll`. CI verifies the upstream SHA-256 before extraction
+and caches that immutable tree by version and digest. The Visual Studio
+developer environment supplies the matching Windows SDK include/library paths
+to the Clang processes launched by `draftc`.
+
 Foreign objects, archives, shared libraries, provider summaries, and runtime
 assets remain exact resolved-program inputs when a program selects them. Their
 content-tree verification is covered by target-independent tests. Native
-artifact reproducibility is checked directly: each native host repeats all
-artifact kinds under the same target profile and compares the complete output
-trees.
+artifact reproducibility is checked directly by the macOS/Linux harnesses,
+which repeat all artifact kinds under the same target profile and compare the
+complete output trees. The Windows gate checks successful reproducible-mode
+publication and required companions; repeated-byte comparison remains pending.
 
 ## Local equivalent
 
@@ -75,6 +91,19 @@ installation must include Clang, lld, and the utilities even when GCC is
 selected as `CMAKE_CXX_COMPILER`: GCC compiles the bootstrap, LLVM's linked C
 API emits one complete object per semantic package, and matching tools
 provide qualification, assembly, linking, archiving, and debug operations.
+
+On Windows, configure a 64-bit Visual Studio build with `LLVM_DIR` naming
+`lib/cmake/llvm` inside the official LLVM 22 development archive. Build
+`Release/draftc.exe`, enter the Visual Studio x64 developer environment, and
+reproduce the maintained native slice with:
+
+```powershell
+cmake -DDRAFTC="$PWD/build/Release/draftc.exe" `
+  -DCLANG="$env:LLVM_ROOT/bin/clang.exe" `
+  -DSOURCE_ROOT="$PWD" `
+  -DTEST_ROOT="$PWD/build/windows-native-smoke" `
+  -P "$PWD/tests/driver_windows_native_smoke_test.cmake"
+```
 
 The sanitizer job's local equivalent on an x86-64 Linux host is:
 

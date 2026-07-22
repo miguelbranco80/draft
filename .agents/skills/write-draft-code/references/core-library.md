@@ -527,7 +527,8 @@ then Session; resume Session then Screen; and restore Screen then Session.
 Always attempt both final restorations even if the first fails.
 
 `query_size` borrows any terminal descriptor and reports cell columns/rows via
-the selected target's `TIOCGWINSZ` request. Invalid descriptors return
+the selected POSIX `TIOCGWINSZ` request or Windows visible console rectangle.
+Invalid descriptors return
 `.invalid`, native failures return `.unavailable`, and successful zero
 dimensions are preserved for application fallback policy.
 
@@ -542,9 +543,10 @@ and Ctrl-M—are not guessed.
 
 The package deliberately has no frame/layout builder, automatic resize/signal
 handling, mouse protocol, event loop, terminfo, or ncurses dependency.
-The current native-mode implementation exists for AArch64 macOS, AArch64
-GNU/Linux, and x86-64 GNU/Linux through exact target-qualified termios, poll,
-and ioctl contracts; its ANSI screen and key policy is target-independent.
+The current native-mode implementation exists for AArch64 macOS, AArch64/
+x86-64 GNU/Linux, and x86-64 Windows. POSIX owns exact termios, poll, and ioctl
+contracts; Windows owns console modes, handle waits, and visible-window size.
+The ANSI/VT screen and key policy is target-independent.
 
 The built-in target denial summaries do not yet audit the terminal-specific
 `tcgetattr`, `tcsetattr`, `cfmakeraw`, `poll`, or `ioctl` calls. A reachable
@@ -635,9 +637,10 @@ thread.sleep(duration) -> bool
 
 Spawn copies the active Context but gives the child thread-owned temporary
 storage. The `user` pointer is borrowed until completion. Join clears the
-handle after success. Mutexes and conditions must remain at stable addresses;
-waits belong in predicate loops. Some lifecycle operations return `bool`,
-while lock/wait/signal failures assert.
+pthread or Windows HANDLE after success. Mutexes and conditions must remain at
+stable addresses; waits belong in predicate loops. Windows maps them to
+exclusive SRW locks and condition variables. Some lifecycle operations return
+`bool`, while lock/wait/signal failures assert.
 
 There is no detach, thread return value, cancellation, timed condition wait,
 sleep retry, builder, once, read/write lock, semaphore, affinity, naming, or

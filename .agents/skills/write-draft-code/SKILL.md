@@ -148,9 +148,13 @@ also wanted.
 Pass `--target aarch64-linux`, `--target x86_64-linux`, or
 `--target x86_64-windows` when selecting those profiles; macOS is the
 compatibility default. Run all four target checks for portable code. Matching
-Apple Silicon, AArch64 Linux, and x86-64 Linux hosts can execute current Draft
-artifacts; Windows currently supports checking and PE/COFF artifact publication
-but not the hosted runtime/core or native execution qualification. See
+Apple Silicon, AArch64 Linux, x86-64 Linux, and x86-64 Windows hosts can execute
+current Draft artifacts. Windows has the hosted runtime/core and a native
+example/C-client/provider gate; its bootstrap validation runner is not yet
+implemented. On Windows, `judge --list` and provider-free consumers of already
+resolved source work normally. Any `resolve` that must write a manifest,
+including `--revalidate`, still fails at the unavailable resolution-store lock;
+Codex-backed generation and active judge runs are also unavailable. See
 [workflow-and-testing.md](references/workflow-and-testing.md) for negative
 compiler tests, CMake/CTest, sanitizer, example, and documentation routing.
 

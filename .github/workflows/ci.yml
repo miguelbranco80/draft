@@ -147,3 +147,88 @@ jobs:
       # instrument the bootstrap compiler and test harnesses.
       - name: Test
         run: ctest --test-dir build --output-on-failure --parallel 4
+
+  native-windows-x86-64:
+    name: Native / Windows x86-64
+    runs-on: windows-2022
+    timeout-minutes: 45
+    env:
+      LLVM_VERSION: 22.1.6
+      LLVM_ARCHIVE_SHA256: 657343edf361ca463bd642e39c74b251c6338b96cdbd55ff277555298b027696
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # LLVM does not offer the monolithic libLLVM dylib on Windows. Its
+      # official development archive contains LLVM-C.dll, Clang, lld-link,
+      # llvm-lib, headers, and CMake exports from one exact release. Cache the
+      # extracted tree by release and official SHA-256 so ordinary CI runs do
+      # not repeatedly transfer the large upstream package.
+      - name: Restore LLVM 22 development archive
+        id: llvm-cache
+        uses: actions/cache@v5
+        with:
+          path: ${{ runner.temp }}\llvm-22.1.6
+          key: llvm-windows-x86-64-22.1.6-657343edf361
+
+      - name: Install LLVM 22 development archive
+        if: steps.llvm-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP "llvm-$env:LLVM_VERSION.tar.xz"
+          $destination = Join-Path $env:RUNNER_TEMP "llvm-$env:LLVM_VERSION"
+          $url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-$env:LLVM_VERSION/clang%2Bllvm-$env:LLVM_VERSION-x86_64-pc-windows-msvc.tar.xz"
+          Invoke-WebRequest -Uri $url -OutFile $archive
+          $actual = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
+          if ($actual -ne $env:LLVM_ARCHIVE_SHA256) {
+            throw "LLVM archive SHA-256 mismatch: expected $env:LLVM_ARCHIVE_SHA256, got $actual"
+          }
+          New-Item -ItemType Directory -Path $destination -Force | Out-Null
+          tar -xf $archive -C $destination --strip-components=1
+
+      - name: Select LLVM 22 tools
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP "llvm-$env:LLVM_VERSION"
+          if (-not (Test-Path (Join-Path $root "lib\cmake\llvm\LLVMConfig.cmake"))) {
+            throw "LLVM development archive has no CMake package"
+          }
+          "LLVM_ROOT=$root" | Out-File -FilePath $env:GITHUB_ENV -Append
+          (Join-Path $root "bin") | Out-File -FilePath $env:GITHUB_PATH -Append
+
+      - name: Record tool versions
+        shell: pwsh
+        run: |
+          cmake --version
+          & "$env:LLVM_ROOT\bin\clang.exe" --version
+
+      # The Windows row builds the real bootstrap with MSVC warnings as errors.
+      # POSIX-shaped C++ harnesses are not registered here; the following
+      # target-specific gate performs native Draft execution through draftc.
+      - name: Configure
+        shell: pwsh
+        run: |
+          cmake -S . -B build -A x64 `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DLLVM_DIR="$env:LLVM_ROOT\lib\cmake\llvm" `
+            -DDRAFT_WARNINGS_AS_ERRORS=ON `
+            -DDRAFT_ENABLE_SANITIZERS=OFF `
+            -DBUILD_TESTING=OFF
+
+      - name: Build
+        shell: pwsh
+        run: cmake --build build --config Release --parallel 4
+
+      # Clang's MSVC driver needs the selected Visual Studio/Windows SDK LIB and
+      # INCLUDE environment. draftc inherits that exact environment when it
+      # launches Clang and lld-link for the real PE/COFF programs below.
+      - name: Qualify native Draft programs and C interoperation
+        shell: cmd
+        run: |
+          call "%ProgramFiles%\Microsoft Visual Studio\2022\Enterprise\Common7\Tools\VsDevCmd.bat" -arch=x64
+          if errorlevel 1 exit /b 1
+          cmake -DDRAFTC="%CD%\build\Release\draftc.exe" -DCLANG="%LLVM_ROOT%\bin\clang.exe" -DSOURCE_ROOT="%CD%" -DTEST_ROOT="%CD%\build\windows-native-smoke" -P "%CD%\tests\driver_windows_native_smoke_test.cmake"
+          if errorlevel 1 exit /b 1

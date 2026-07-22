@@ -386,12 +386,13 @@ ctest --test-dir build -L examples --output-on-failure
 ```
 
 `examples/qualification.tsv` must classify every tracked Draft/assembly package
-directory. Its rows currently drive the three fully hosted target frontend
-checks, every ordinary native example execution, special C-library and
-foreign-provider link gates, and all example-owned Draft tests and benchmarks.
-Windows is checked only by its focused foundation fixtures until the core and
-examples are ported. Do not add an example source package without adding its
-explicit final-state classification.
+directory. Its rows drive all four target frontend checks, every ordinary
+native example execution, special C-library and foreign-provider link gates,
+and all example-owned Draft tests and benchmarks. Windows consumes the same
+ordinary executable inventory through
+`tests/driver_windows_native_smoke_test.cmake`; its validation-process runner
+does not yet execute the test/benchmark rows. Do not add an example source
+package without adding its explicit final-state classification.
 
 Run one or a small regular-expression slice while iterating:
 
@@ -421,13 +422,15 @@ ctest --test-dir build --output-on-failure \
   -R '^(draft_mir_tests|draft_native_interop_tests|draft_aarch64_abi_tests|draft_x86_64_abi_tests|draft_win64_abi_tests|draft_c_header_tests|draft_toolchain_tests|draft_target_profile_tests|draft_assembly_tests|draft_llvm_ir_tests|draft_llvm_object_emitter_tests|draft_native_object_tasks_tests|draft_compiler_tests)$'
 ```
 
-On any supported native host, artifact closure also includes
+On the macOS/Linux native hosts, artifact closure also includes
 `draft_native_determinism_tests`, `draft_native_backend_parity_tests`,
 `draft_native_conformance_tests`, `draft_c_client_integration_tests`, the
 foreign-provider link/run gate, and the example test/benchmark matrix. The first
 compares one-worker and four-worker output; the second exercises every artifact
 kind through embedded LLVM and the external Clang oracle. CMake deliberately
-omits unsupported native tests rather than reporting false skips.
+omits unsupported native tests rather than reporting false skips. Windows
+instead requires its driver-level example, COFF artifact, foreign-provider,
+and C-client/DLL smoke script in CI.
 
 Run that native closure directly on a supported host with:
 

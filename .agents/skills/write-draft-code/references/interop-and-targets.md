@@ -25,9 +25,7 @@ editing.
 
 ## Current target boundary
 
-The compiler currently selects four native target profiles. The first three
-are fully hosted; the Windows row currently reaches semantic checking and
-PE/COFF artifact publication while its runtime/core stage is completed:
+The compiler currently selects four hosted native target profiles:
 
 | CLI target | Profile identity | ABI and object format | Page size | File tag |
 | --- | --- | --- | --- | --- |
@@ -37,14 +35,14 @@ PE/COFF artifact publication while its runtime/core stage is completed:
 | `x86_64-windows` | `draft-x86_64-windows-msvc-v1` | Microsoft x64, COFF/UCRT | 4 KiB | `x86_64-windows` |
 
 All are 64-bit little-endian native profiles, but they are not one generic
-platform. C aggregate rules, narrow scalar extension, enum ABI,
-pthread and termios layouts, poll count types, open flags, object/linker
-behavior, page size, and assembly profile identity differ.
+platform. C aggregate rules, narrow scalar extension, enum ABI, thread and
+terminal records, readiness count types, open flags, object/linker behavior,
+page size, and assembly profile identity differ.
 
 macOS is the CLI compatibility default. Portable code should be checked
-explicitly against all four profiles; native execution remains required only
-where the selected hosted stage is implemented. Other libcs and other
-operating systems are not implemented Draft targets. Parsed inline assembly is
+explicitly against all four profiles; native execution requires the matching
+host toolchain and runtime. Other libcs and other operating systems are not
+implemented Draft targets. Parsed inline assembly is
 available only on AArch64; x86-64 still supports ordinary native code and exact
 target-qualified package assembly.
 
@@ -79,6 +77,8 @@ difference inside otherwise shared source:
 ```draft
 when target.os == .linux {
     Platform_Name :: "linux"
+} else when target.os == .windows {
+    Platform_Name :: "windows"
 } else {
     Platform_Name :: "macos"
 }
@@ -193,6 +193,12 @@ record parameter is indirect and every such result uses the hidden result
 pointer. Thus 3- and 16-byte records are indirect, while an exact 8-byte record
 uses one i64 carrier. Never reuse the SysV eightbyte or register-budget rule for
 `--target x86_64-windows`.
+
+On that target, Clang-compatible 128-bit C integers are also not ordinary
+direct scalars: parameters pass by address and results use a `<2 x i64>`
+carrier. This applies to `i128`, `u128`, endian storage equivalents, and C enums
+with those fixed backings. It does not change ordinary Draft procedure ABI.
+The same address carrier is used in a C variadic tail.
 
 For a native input that reads but does not retain bytes, pass
 `raw_data(text), len(text)`. This is zero-copy and not zero-termination. Draft's
@@ -452,9 +458,10 @@ LLVM `dsymutil`; applicable executable/shared outputs publish a verified
 selected glibc development contract; DWARF remains in ELF and no fake dSYM is
 emitted. These are compiler build/host requirements, not Draft package
 dependencies or resolution-manifest inputs.
-Windows uses matching Clang/LLD and `llvm-lib`, with `.exe`, `.obj`, `.lib`, and
-`.dll` defaults. Linked PE outputs publish a sibling PDB; a DLL also publishes
-its import `.lib` companion.
+Windows uses matching Clang/lld-link and `llvm-lib`, with `.exe`, `.obj`,
+`.lib`, and `.dll` defaults. Linked PE outputs publish a sibling PDB; a DLL
+also publishes its import `.lib` companion. Its bootstrap links `LLVM-C.dll`
+because LLVM's monolithic libLLVM dylib is unavailable on Windows.
 
 After complete lowering, one explicit artifact layout orders each package's
 complete LLVM module followed by its package-assembly inputs. Every row becomes

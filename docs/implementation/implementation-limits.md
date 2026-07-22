@@ -133,11 +133,13 @@ package-module object emission. Matching
 Clang/`ld.lld`/`llvm-ar`/`dsymutil`, the Apple linker, `libtool`, SDK, and system
 runtime remain ordinary tooling prerequisites rather than Draft program inputs.
 The Windows bootstrap still lacks validation-process execution, durable
-evidence-store locking, and provider-backed Codex subprocess support. Ordinary
-provider-free checking, compilation, linking, core/runtime use, and execution
-do not depend on those operations. COFF whole-graph object output is limited to
-a single native input because the format has no relocatable partial link;
-multi-input consumers use a `.lib`.
+resolution/evidence-store locking, and provider-backed Codex subprocess
+support. Ordinary provider-free checking, compilation, linking, core/runtime
+use, and execution do not depend on those operations. Any resolve that must
+write or re-pin a manifest fails explicitly until the resolution lock is
+implemented. COFF whole-graph object output is limited to a single native input
+because the format has no relocatable partial link; multi-input consumers use a
+`.lib`.
 Other Linux libcs/distribution contracts
 and other architectures still have no target profile. Parsed inline assembly
 remains AArch64-only; x86-64
