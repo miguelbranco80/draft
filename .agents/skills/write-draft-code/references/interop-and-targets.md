@@ -186,6 +186,14 @@ fit the remaining six-GPR/eight-XMM budget, the whole argument is passed in
 memory. Do not derive x86 aggregate lowering from size alone or omit the hidden
 result pointer's GPR consumption.
 
+Win64 uses a different rule on the same x86-64 architecture. A legal C record
+uses one exact-width integer carrier only when its complete size is 1, 2, 4, or
+8 bytes; member kinds never create an SSE record class. Every other nonempty
+record parameter is indirect and every such result uses the hidden result
+pointer. Thus 3- and 16-byte records are indirect, while an exact 8-byte record
+uses one i64 carrier. Never reuse the SysV eightbyte or register-budget rule for
+`--target x86_64-windows`.
+
 For a native input that reads but does not retain bytes, pass
 `raw_data(text), len(text)`. This is zero-copy and not zero-termination. Draft's
 `[^]u8` has no const qualifier, so the declaration, documentation, and foreign
