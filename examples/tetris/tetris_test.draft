@@ -164,9 +164,27 @@ surface_contains_text :: proc(
     return false
 }
 
+// surface_has_black_background proves that complete-cell style replacement did
+// not leave a default-background hole in blank space, text, previews, the
+// active piece, or its ghost. It deliberately checks the public cell view
+// rather than terminal escape bytes.
+surface_has_black_background :: proc(surface: ^tui.Surface) -> bool {
+    for row: usize = 0; row < surface^.rows; row += 1 {
+        for column: usize = 0; column < surface^.columns; column += 1 {
+            (cell, valid) := tui.cell_at(surface, column, row)
+            if !valid || !cell.style.background.indexed ||
+                cell.style.background.index != Black_Palette_Index {
+                return false
+            }
+        }
+    }
+    return true
+}
+
 // test_tui_paint_is_complete_and_bounded checks semantic landmarks rather than
-// an ANSI snapshot. It also proves the undersized path clips text and succeeds
-// without changing core/tui's exact-write policy.
+// an ANSI snapshot. It proves every normal and undersized cell retains the
+// application's black background, while clipping remains local to the small-
+// terminal notice rather than changing core/tui's exact-write policy.
 test_tui_paint_is_complete_and_bounded :: proc(test: ^testing.Test) {
     game: Game
     game_init(&game, 11)
@@ -185,6 +203,8 @@ test_tui_paint_is_complete_and_bounded :: proc(test: ^testing.Test) {
     testing.expect_message(test,
         surface_contains_text(surface, "+--------------------+"),
         "the surface must include the board boundary")
+    testing.expect_message(test, surface_has_black_background(surface),
+        "every normal-layout cell must have a black background")
     tui.renderer_destroy(&renderer)
 
     small: tui.Renderer
@@ -197,5 +217,8 @@ test_tui_paint_is_complete_and_bounded :: proc(test: ^testing.Test) {
     testing.expect_message(test,
         surface_contains_text(tui.surface(&small), "Terminal too"),
         "the undersized notice must clip rather than overflow")
+    testing.expect_message(test,
+        surface_has_black_background(tui.surface(&small)),
+        "every undersized-layout cell must have a black background")
     tui.renderer_destroy(&small)
 }

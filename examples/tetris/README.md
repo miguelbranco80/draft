@@ -33,9 +33,10 @@ screen.
 | Q / Ctrl-C | Quit cleanly |
 
 The program uses a shuffled seven-piece bag, a ghost piece, line clearing,
-score and level progression, timed gravity, color, and compact deterministic
-wall kicks. The kick rules are deliberately smaller than guideline SRS, and
-the first game has no hold slot, lock delay, or high-score file.
+score and level progression, timed gravity, colored pieces over an explicit
+black cell background, and compact deterministic wall kicks. The kick rules
+are deliberately smaller than guideline SRS, and the first game has no hold
+slot, lock delay, or high-score file.
 
 ## Why the example is split
 

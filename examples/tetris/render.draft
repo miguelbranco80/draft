@@ -7,8 +7,10 @@
 //
 // The renderer reads Game without mutating it. Its fixed 50-by-24 game layout
 // is centered when space permits; smaller terminals receive a clipped bounded
-// message instead of an out-of-bounds write. All glyphs are printable ASCII
-// occupying exactly one cell, so no Unicode width policy is hidden here.
+// message instead of an out-of-bounds write. Every cell uses an explicit black
+// background rather than inheriting the user's terminal theme. All glyphs are
+// printable ASCII occupying exactly one cell, so no Unicode width policy is
+// hidden here.
 package tetris
 
 import core/format
@@ -18,29 +20,55 @@ import core/tui
 
 Layout_Columns :: 50
 Layout_Rows :: 24
+Black_Palette_Index :: 0
+Text_Palette_Index :: 15
+
+// plain_style is the visual base for every Tetris cell, including otherwise
+// blank viewport space. ANSI indexed color zero is the conventional black
+// palette entry; bright white keeps ordinary text visible even when a light
+// terminal theme has a dark default foreground. Keeping both choices in
+// application policy leaves core/tui's zero Style correctly defined as the
+// user's terminal defaults.
+plain_style :: proc() -> tui.Style {
+    return tui.Style{
+        foreground = tui.indexed_color(Text_Palette_Index),
+        background = tui.indexed_color(Black_Palette_Index),
+    }
+}
+
+// ghost_style adds only the dim attribute to the shared black base. Returning
+// a complete Style matters because a cell write replaces, rather than merges,
+// every style field stored by the Surface.
+ghost_style :: proc() -> tui.Style {
+    style := plain_style()
+    style.dim = true
+    return style
+}
 
 // piece_style maps nonzero board identities to ANSI 256-color foregrounds
 // through tui's target-independent cell style. The chosen palette entries are
 // distinguishable on light and dark backgrounds. An invalid identity gets the
-// default style rather than indexing unrelated state.
+// black base without a foreground override rather than indexing unrelated
+// state.
 piece_style :: proc(value: u8) -> tui.Style {
+    style := plain_style()
     switch value {
     case 1:
-        return tui.Style{foreground = tui.indexed_color(51)}
+        style.foreground = tui.indexed_color(51)
     case 2:
-        return tui.Style{foreground = tui.indexed_color(226)}
+        style.foreground = tui.indexed_color(226)
     case 3:
-        return tui.Style{foreground = tui.indexed_color(201)}
+        style.foreground = tui.indexed_color(201)
     case 4:
-        return tui.Style{foreground = tui.indexed_color(46)}
+        style.foreground = tui.indexed_color(46)
     case 5:
-        return tui.Style{foreground = tui.indexed_color(196)}
+        style.foreground = tui.indexed_color(196)
     case 6:
-        return tui.Style{foreground = tui.indexed_color(27)}
+        style.foreground = tui.indexed_color(27)
     case 7:
-        return tui.Style{foreground = tui.indexed_color(208)}
+        style.foreground = tui.indexed_color(208)
     }
-    return tui.Style{}
+    return style
 }
 
 // piece_contains_world translates a visible board coordinate into one piece's
@@ -74,7 +102,7 @@ paint_unsigned :: proc(
         column,
         row,
         digits,
-        tui.Style{},
+        plain_style(),
     )
 }
 
@@ -111,7 +139,7 @@ paint_board_cell :: proc(
             screen_column,
             screen_row,
             "..",
-            tui.Style{dim = true},
+            ghost_style(),
         )
     }
     return true
@@ -155,7 +183,7 @@ paint_sidebar :: proc(
 ) -> bool {
     switch board_row {
     case 0:
-        return tui.write_ascii(surface, column, row, "NEXT", tui.Style{})
+        return tui.write_ascii(surface, column, row, "NEXT", plain_style())
     case 1, 2, 3, 4:
         return paint_preview_row(
             surface,
@@ -165,17 +193,17 @@ paint_sidebar :: proc(
             board_row - 1,
         )
     case 6:
-        if !tui.write_ascii(surface, column, row, "SCORE  ", tui.Style{}) {
+        if !tui.write_ascii(surface, column, row, "SCORE  ", plain_style()) {
             return false
         }
         return paint_unsigned(surface, column + 7, row, game^.score)
     case 7:
-        if !tui.write_ascii(surface, column, row, "LINES  ", tui.Style{}) {
+        if !tui.write_ascii(surface, column, row, "LINES  ", plain_style()) {
             return false
         }
         return paint_unsigned(surface, column + 7, row, game^.lines)
     case 8:
-        if !tui.write_ascii(surface, column, row, "LEVEL  ", tui.Style{}) {
+        if !tui.write_ascii(surface, column, row, "LEVEL  ", plain_style()) {
             return false
         }
         return paint_unsigned(
@@ -190,7 +218,7 @@ paint_sidebar :: proc(
             column,
             row,
             "A/D or arrows  move",
-            tui.Style{},
+            plain_style(),
         )
     case 11:
         return tui.write_ascii(
@@ -198,7 +226,7 @@ paint_sidebar :: proc(
             column,
             row,
             "W/up           rotate",
-            tui.Style{},
+            plain_style(),
         )
     case 12:
         return tui.write_ascii(
@@ -206,7 +234,7 @@ paint_sidebar :: proc(
             column,
             row,
             "Z              rotate back",
-            tui.Style{},
+            plain_style(),
         )
     case 13:
         return tui.write_ascii(
@@ -214,7 +242,7 @@ paint_sidebar :: proc(
             column,
             row,
             "S/down         soft drop",
-            tui.Style{},
+            plain_style(),
         )
     case 14:
         return tui.write_ascii(
@@ -222,7 +250,7 @@ paint_sidebar :: proc(
             column,
             row,
             "Space          hard drop",
-            tui.Style{},
+            plain_style(),
         )
     case 15:
         return tui.write_ascii(
@@ -230,7 +258,7 @@ paint_sidebar :: proc(
             column,
             row,
             "P pause   Q quit",
-            tui.Style{},
+            plain_style(),
         )
     case 17:
         if game^.game_over {
@@ -239,7 +267,7 @@ paint_sidebar :: proc(
                 column,
                 row,
                 "GAME OVER",
-                tui.Style{},
+                plain_style(),
             )
         }
         if game^.paused {
@@ -248,7 +276,7 @@ paint_sidebar :: proc(
                 column,
                 row,
                 "PAUSED",
-                tui.Style{},
+                plain_style(),
             )
         }
         return tui.write_ascii(
@@ -256,7 +284,7 @@ paint_sidebar :: proc(
             column,
             row,
             "PLAYING",
-            tui.Style{},
+            plain_style(),
         )
     case 18:
         if game^.game_over {
@@ -265,7 +293,7 @@ paint_sidebar :: proc(
                 column,
                 row,
                 "Press R to restart",
-                tui.Style{},
+                plain_style(),
             )
         }
     }
@@ -296,7 +324,7 @@ paint_clipped_ascii :: proc(
             column + index,
             row,
             text[index],
-            tui.Style{},
+            plain_style(),
         ) {
             return false
         }
@@ -309,7 +337,7 @@ paint_clipped_ascii :: proc(
 // diagnostic frame and still counts as a successful renderable state.
 paint_game :: proc(renderer: ^tui.Renderer, game: ^Game) -> bool {
     surface := tui.surface(renderer)
-    tui.clear(surface, tui.Style{})
+    tui.clear(surface, plain_style())
 
     if surface^.columns < Layout_Columns || surface^.rows < Layout_Rows {
         if !paint_clipped_ascii(surface, 0, 0, "DRAFT TETRIS") {
@@ -328,13 +356,13 @@ paint_game :: proc(renderer: ^tui.Renderer, game: ^Game) -> bool {
         origin_column,
         origin_row,
         "DRAFT TETRIS",
-        tui.Style{},
+        plain_style(),
     ) || !tui.write_ascii(
         surface,
         origin_column,
         origin_row + 1,
         "+--------------------+",
-        tui.Style{},
+        plain_style(),
     ) {
         return false
     }
@@ -347,7 +375,7 @@ paint_game :: proc(renderer: ^tui.Renderer, game: ^Game) -> bool {
             origin_column,
             screen_row,
             cast[u8]('|'),
-            tui.Style{},
+            plain_style(),
         ) {
             return false
         }
@@ -371,7 +399,7 @@ paint_game :: proc(renderer: ^tui.Renderer, game: ^Game) -> bool {
             origin_column + 21,
             screen_row,
             cast[u8]('|'),
-            tui.Style{},
+            plain_style(),
         ) || !paint_sidebar(
             surface,
             origin_column + 24,
@@ -388,13 +416,13 @@ paint_game :: proc(renderer: ^tui.Renderer, game: ^Game) -> bool {
         origin_column,
         origin_row + 22,
         "+--------------------+",
-        tui.Style{},
+        plain_style(),
     ) && tui.write_ascii(
         surface,
         origin_column,
         origin_row + 23,
         "Seven-bag pieces. Compact wall kicks.",
-        tui.Style{},
+        plain_style(),
     )
 }
 
