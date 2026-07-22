@@ -219,10 +219,13 @@ widgets, layout framework, callbacks, or compiler intrinsic.
 single-column ASCII cells. Each cell contains one byte plus foreground,
 background, bold, dim, underline, and reverse style state. The zero style maps
 to terminal defaults; colors are either default or one ANSI 256-color index.
-Public put, fill, and whole-string operations validate the complete coordinate
-range and byte vocabulary before mutation. The initial package intentionally
-rejects control bytes, UTF-8, combining characters, and wide glyphs until a
-real display-width contract can preserve the one-cell invariant.
+Public put, fill, immutable-string, and mutable-byte-slice operations validate
+the complete coordinate range and byte vocabulary before mutation. The two
+ASCII writers share one exact contract; the slice form lets bounded runtime
+formatters paint their initialized output without an intermediate copy. The
+initial package intentionally rejects control bytes, UTF-8, combining
+characters, and wide glyphs until a real display-width contract can preserve
+the one-cell invariant.
 
 `core/tui.Renderer` owns desired and last-published Surfaces of equal size plus
 one reusable output byte array. Rendering scans in row-major order, groups each

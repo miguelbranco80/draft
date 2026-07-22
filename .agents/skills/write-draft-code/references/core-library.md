@@ -566,6 +566,7 @@ tui.put(&surface, column, row, byte_value, style) -> bool
 tui.put_cell(&surface, column, row, cell) -> bool
 tui.fill(&surface, column, row, width, height, cell) -> bool
 tui.write_ascii(&surface, column, row, text, style) -> bool
+tui.write_ascii_bytes(&surface, column, row, bytes, style) -> bool
 tui.cell_at(&surface, column, row) -> (tui.Cell, bool)
 
 tui.Renderer
@@ -589,11 +590,12 @@ may have emitted terminal bytes—successful or failed—and after any out-of-ba
 terminal output.
 
 Coordinates are zero-based. Mutations reject out-of-bounds placement and
-non-printable/non-ASCII bytes before changing cells. `write_ascii` is
-all-or-nothing and does not clip. The zero Style means terminal defaults;
-indexed colors cover ANSI palette entries 0-255. The renderer emits maximal
-contiguous changed runs in row-major order with absolute cursor positions and
-resets style at the update boundary.
+non-printable/non-ASCII bytes before changing cells. `write_ascii` and its
+runtime `[]u8` counterpart `write_ascii_bytes` are all-or-nothing and do not
+clip or retain input. The zero Style means terminal defaults; indexed colors
+cover ANSI palette entries 0-255. The renderer emits maximal contiguous
+changed runs in row-major order with absolute cursor positions and resets style
+at the update boundary.
 
 There are no widgets, layout engine, text wrapping, clipping regions, input
 dispatch, focus, event loop, mouse support, Unicode width rules, transparency,

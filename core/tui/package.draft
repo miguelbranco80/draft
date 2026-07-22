@@ -224,6 +224,35 @@ pub write_ascii :: proc(
     return true
 }
 
+// write_ascii_bytes is the mutable-slice counterpart used by formatting and
+// other bounded byte producers. It borrows bytes only for this call and has
+// the same preflight and all-or-nothing mutation contract as write_ascii.
+// Keeping both entry points avoids copying initialized runtime text through an
+// unrelated immutable-string conversion merely to paint ordinary ASCII.
+pub write_ascii_bytes :: proc(
+    surface: ^Surface,
+    column, row: usize,
+    bytes: []u8,
+    style: Style,
+) -> bool {
+    if row >= surface^.rows || column > surface^.columns ||
+        len(bytes) > surface^.columns - column {
+        return false
+    }
+    for byte in bytes {
+        if byte < 0x20 || byte > 0x7e {
+            return false
+        }
+    }
+    for index: usize = 0; index < len(bytes); index += 1 {
+        surface^.cells.data[cell_index(surface, column + index, row)] = Cell{
+            byte_value = bytes[index],
+            style = style,
+        }
+    }
+    return true
+}
+
 // cell_at returns a copy of one cell and a validity bit. The surface retains
 // ownership; callers cannot accidentally keep a pointer across destruction.
 pub cell_at :: proc(

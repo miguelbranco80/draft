@@ -21,7 +21,7 @@ bytes_equal_text :: proc(bytes: []u8, text: string) -> bool {
 }
 
 // test_surface_mutation verifies zero-style blank initialization and the
-// all-or-nothing bounds/ASCII contracts of put, fill, and write_ascii.
+// all-or-nothing bounds/ASCII contracts of put, fill, and both ASCII writers.
 test_surface_mutation :: proc(test: ^testing.Test) {
     grid: Surface
     surface_init(&grid, 5, 2)
@@ -33,9 +33,31 @@ test_surface_mutation :: proc(test: ^testing.Test) {
 
     accent := Style{foreground = indexed_color(51), bold = true}
     testing.expect(test, put(&grid, 1, 0, cast[u8]('X'), accent))
-    testing.expect(test, write_ascii(&grid, 2, 0, "abc", Style{}))
+    runtime_text := [3]u8{
+        cast[u8]('a'),
+        cast[u8]('b'),
+        cast[u8]('c'),
+    }
+    testing.expect(test, write_ascii_bytes(
+        &grid,
+        2,
+        0,
+        runtime_text[:],
+        Style{},
+    ))
     testing.expect(test, !write_ascii(&grid, 4, 1, "no", Style{}))
     testing.expect(test, !write_ascii(&grid, 0, 1, "bad\n", Style{}))
+    invalid_runtime_text := [2]u8{cast[u8]('x'), cast[u8]('\n')}
+    testing.expect(test, !write_ascii_bytes(
+        &grid,
+        0,
+        1,
+        invalid_runtime_text[:],
+        Style{},
+    ))
+    (unchanged, unchanged_valid) := cell_at(&grid, 0, 1)
+    testing.expect(test, unchanged_valid)
+    testing.expect(test, unchanged.byte_value == cast[u8](' '))
     testing.expect(test, fill(
         &grid,
         0,
