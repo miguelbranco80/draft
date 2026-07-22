@@ -1,0 +1,278 @@
+// Turbo Draft is an ordinary Draft executable. It owns command-line selection,
+// the project/editor/UI lifetime, and the real hosted main. The bootstrap C++
+// implementation appears only as an explicitly mapped compiler-service
+// provider behind an opaque handle; it never calls into this application.
+package draftide
+
+import core/memory
+import core/os
+import lib/draft_compiler
+import lib/draft_project
+import lib/turbo_editor_app
+
+Error_Capacity :: 512
+Path_Capacity :: 4096
+Project_Manifest_Capacity :: 16384
+
+text_equal :: proc(left, right: string) -> bool {
+    if len(left) != len(right) {
+        return false
+    }
+    for index: usize = 0; index < len(left); index += 1 {
+        if left[index] != right[index] {
+            return false
+        }
+    }
+    return true
+}
+
+write_error :: proc(text: string) {
+    result := os.write_text_all(os.standard_error, text)
+    if result != .none {
+        return
+    }
+}
+
+write_error_bytes :: proc(bytes: []u8) {
+    result := os.write_all(os.standard_error, bytes)
+    if result != .none {
+        return
+    }
+}
+
+usage :: proc() {
+    write_error(
+        "usage: draftide <workspace> [--root <package>] [--source <file>] [--target <target>] [--smoke]\n",
+    )
+    write_error("       without --root, <workspace>/draft.project selects root and source\n")
+}
+
+// project_manifest_path creates the only project configuration pathname Turbo
+// Draft reads. It performs no parent search and preserves the workspace bytes
+// exactly; the compiler service later canonicalizes the workspace itself.
+project_manifest_path :: proc(
+    workspace: string,
+    destination: ^memory.Owned_String,
+) -> bool {
+    separator := true
+    if len(workspace) != 0 {
+        last := workspace[len(workspace) - 1]
+        separator = last != 47 && last != 92
+    }
+    required := len(workspace) + len(draft_project.Manifest_Name)
+    if separator {
+        required += 1
+    }
+    if required > Path_Capacity {
+        return false
+    }
+    storage: [Path_Capacity]u8
+    length: usize
+    for index: usize = 0; index < len(workspace); index += 1 {
+        storage[length] = workspace[index]
+        length += 1
+    }
+    if separator {
+        storage[length] = 47
+        length += 1
+    }
+    for index: usize = 0; index < len(draft_project.Manifest_Name); index += 1 {
+        storage[length] = draft_project.Manifest_Name[index]
+        length += 1
+    }
+    memory.owned_string_copy_bytes(destination, storage[:length])
+    return true
+}
+
+// read_project_manifest performs one bounded complete-file read. The manifest
+// is intentionally tiny operator configuration; exceeding the fixed bound is
+// an explicit error rather than an invitation to allocate from malformed input.
+// destination remains caller-owned and valid through the later synchronous
+// compiler-service creation call.
+read_project_manifest :: proc(workspace: string, destination: []u8) -> (usize, bool) {
+    path: memory.Owned_String
+    if !project_manifest_path(workspace, &path) {
+        return (0, false)
+    }
+    defer memory.owned_string_destroy(&path)
+    (handle, open_error) := os.open_for_reading(memory.owned_string_cstring(&path))
+    if open_error != .none {
+        return (0, false)
+    }
+    length: usize
+    read_ok := true
+    for {
+        if length == len(destination) {
+            extra: [1]u8
+            (_, error) := os.read(handle, extra[:])
+            read_ok = error == .end_of_input
+            break
+        }
+        (count, error) := os.read(handle, destination[length:])
+        if error == .end_of_input {
+            break
+        }
+        if error != .none || count == 0 {
+            read_ok = false
+            break
+        }
+        length += count
+    }
+    if !os.close(&handle) {
+        read_ok = false
+    }
+    return (length, read_ok)
+}
+
+parse_target :: proc(text: string) -> (draft_compiler.Target, bool) {
+    if text_equal(text, "aarch64-macos") {
+        return (.aarch64_macos, true)
+    }
+    if text_equal(text, "aarch64-linux") {
+        return (.aarch64_linux, true)
+    }
+    if text_equal(text, "x86_64-linux") {
+        return (.x86_64_linux, true)
+    }
+    if text_equal(text, "x86_64-windows") {
+        return (.x86_64_windows, true)
+    }
+    target: draft_compiler.Target
+    return (target, false)
+}
+
+host_target :: proc() -> draft_compiler.Target {
+    when target.os == .macos {
+        return .aarch64_macos
+    } else when target.os == .linux && target.arch == .aarch64 {
+        return .aarch64_linux
+    } else when target.os == .linux && target.arch == .x86_64 {
+        return .x86_64_linux
+    } else {
+        return .x86_64_windows
+    }
+}
+
+main :: proc() -> int {
+    arguments := os.args()
+    if len(arguments) < 2 {
+        usage()
+        return 1
+    }
+
+    workspace := arguments[1]
+    root := ""
+    source := "package.draft"
+    root_explicit := false
+    source_explicit := false
+    selected_target := host_target()
+    index: usize = 2
+    for index < len(arguments) {
+        argument := arguments[index]
+        if text_equal(argument, "--root") && index + 1 < len(arguments) {
+            root = arguments[index + 1]
+            root_explicit = true
+            index += 2
+        } else if text_equal(argument, "--source") && index + 1 < len(arguments) {
+            source = arguments[index + 1]
+            source_explicit = true
+            index += 2
+        } else if text_equal(argument, "--target") && index + 1 < len(arguments) {
+            (target_value, valid) := parse_target(arguments[index + 1])
+            if !valid {
+                write_error("draftide: unknown target\n")
+                return 1
+            }
+            selected_target = target_value
+            index += 2
+        } else if text_equal(argument, "--smoke") {
+            // turbo_editor_app observes the same process argument after the
+            // compiler session has proved its configuration.
+            index += 1
+        } else {
+            usage()
+            return 1
+        }
+    }
+
+    error_storage: [Error_Capacity]u8
+    session: rawptr
+    project_storage: [Project_Manifest_Capacity]u8
+    source_override: [Path_Capacity]u8
+    if root_explicit {
+        session = draft_compiler.create(
+            workspace,
+            root,
+            source,
+            selected_target,
+            error_storage[:],
+        )
+    } else {
+        (project_length, loaded) := read_project_manifest(
+            workspace,
+            project_storage[:],
+        )
+        if !loaded {
+            write_error(
+                "draftide: no --root was supplied and draft.project could not be read\n",
+            )
+            return 1
+        }
+        project_bytes := project_storage[:project_length]
+        parsed := draft_project.parse(project_bytes)
+        if parsed.error != .none {
+            write_error("draftide: invalid draft.project: ")
+            write_error(draft_project.error_message(parsed.error))
+            write_error("\n")
+            return 1
+        }
+        root_bytes := draft_project.value(project_bytes, parsed.manifest.root)
+        if len(source) > len(source_override) {
+            write_error("draftide: --source exceeds the supported path length\n")
+            return 1
+        }
+        source_bytes := source_override[:len(source)]
+        for source_index: usize = 0; source_index < len(source); source_index += 1 {
+            source_override[source_index] = source[source_index]
+        }
+        if !source_explicit && parsed.manifest.source_present {
+            source_bytes = draft_project.value(
+                project_bytes,
+                parsed.manifest.source,
+            )
+        }
+        session = draft_compiler.create_from_bytes(
+            workspace,
+            root_bytes,
+            source_bytes,
+            selected_target,
+            error_storage[:],
+        )
+    }
+    if session == nil {
+        write_error("draftide: ")
+        length: usize
+        for length < len(error_storage) && error_storage[length] != 0 {
+            length += 1
+        }
+        write_error_bytes(error_storage[:length])
+        write_error("\n")
+        return 1
+    }
+    defer draft_compiler.session_destroy(session)
+
+    path_storage: [Path_Capacity]u8
+    path_length := draft_compiler.copy_source_path(
+        session,
+        cast[[^]u8](&path_storage[0]),
+        len(path_storage),
+    )
+    if path_length == 0 || path_length >= len(path_storage) {
+        write_error("draftide: active source path exceeds the supported path size\n")
+        return 1
+    }
+    return turbo_editor_app.run_with_host_bytes(
+        path_storage[:path_length],
+        draft_compiler.host_api(session),
+    )
+}

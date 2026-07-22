@@ -1,0 +1,177 @@
+// CompilerSession is the long-lived compiler boundary behind the native C ABI.
+// It binds one canonical workspace, selected root package, target, and active
+// complete source file to the last successful CompileWorkspaceResult.
+// Each check builds a private candidate through the existing complete-file
+// override API; success atomically replaces the stored source/graph pair, while
+// failure publishes diagnostics and leaves the previous checked program intact.
+//
+// The class owns no terminal, editor buffer, or Draft allocation. C ABI bridge
+// functions in service.cpp borrow source bytes synchronously and copy only
+// plain result records back to the Draft owner. The module depends on compiler
+// and workspace products, the production lexer, and native publication, never
+// on driver CLI internals or the Turbo UI.
+
+#pragma once
+
+#include "backend/toolchain.h"
+#include "compile/compiler.h"
+#include "source/diagnostic.h"
+#include "source/source.h"
+#include "target/profile.h"
+
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <filesystem>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <vector>
+
+namespace draft::ide {
+
+// SyntaxStyle is the stable byte vocabulary copied through service.h. Values
+// describe display hints only and never affect parsing or language meaning.
+// Keep explicit ordinals synchronized with turbo_editor.Syntax_Kind.
+enum class SyntaxStyle : std::uint8_t {
+  Plain = 0,
+  Keyword = 1,
+  Comment = 2,
+  String = 3,
+  Number = 4,
+  Declaration = 5,
+  Invalid = 6,
+};
+
+// SyntaxSpan covers one half-open range in the exact current source buffer.
+// Spans are source-ordered, non-owning style facts rebuilt on every check,
+// including failed checks. Plain text is represented by the absence of a row.
+struct SyntaxSpan {
+  std::size_t start = 0;
+  std::size_t end = 0;
+  SyntaxStyle style = SyntaxStyle::Plain;
+};
+
+// CheckResult reports the semantic outcome and the saturated number of errors
+// published for that attempt. Syntax spans and diagnostics are session side
+// products; a successful result also replaces the last-good compiler graph.
+struct CheckResult {
+  bool ok = false;
+  std::uint32_t diagnostic_count = 0;
+};
+
+// ToolingSection selects one read-only projection of the last successful
+// compiler graph. Text is rebuilt only when that graph is replaced and remains
+// valid until the next successful check or session destruction. Diagnostics
+// are separate because they describe the latest attempt, including failures.
+enum class ToolingSection : std::uint8_t {
+  Packages = 0,
+  Declarations = 1,
+  References = 2,
+  Effects = 3,
+  Denials = 4,
+  Count = 5,
+};
+
+// CompilerConfiguration contains only durable selection facts. Physical paths
+// are canonicalized by the C service before construction. source_relative_name
+// names a selected Draft file inside root_package_directory and is also the
+// exact PackageSourceOverride relative name.
+struct CompilerConfiguration {
+  std::filesystem::path workspace_directory;
+  std::filesystem::path root_package_directory;
+  std::string root_relative_path;
+  std::string source_relative_name = "package.draft";
+  TargetProfile target;
+};
+
+// RootOption is one valid workspace executable root available for the selected
+// target, plus the first selected Draft file used when the editor switches to
+// it. The explicitly opened root is retained even when it is a library without
+// main, so a workspace can still be used for focused library editing.
+struct RootOption {
+  std::string root_relative_path;
+  std::filesystem::path physical_directory;
+  std::string source_relative_name;
+};
+
+class CompilerSession {
+public:
+  // Construction records already-canonical selection facts and allocates no
+  // compiler graph. initialize later creates one collision-checked temporary
+  // build directory, which destruction removes best-effort.
+  explicit CompilerSession(CompilerConfiguration configuration);
+  ~CompilerSession();
+
+  CompilerSession(const CompilerSession &) = delete;
+  CompilerSession &operator=(const CompilerSession &) = delete;
+
+  // Checks one complete in-memory replacement for the active source file.
+  // source is borrowed only for this call. Success replaces retained semantic
+  // products; failure replaces diagnostics/spans but preserves the last-good
+  // graph and all tooling projections derived from it.
+  [[nodiscard]] CheckResult check(std::string_view source);
+
+  // Rechecks the exact current bytes, then continues only that successful graph
+  // through MIR, LLVM, and native linking. A failure clears the published
+  // artifact path, so callers cannot accidentally run an older program.
+  [[nodiscard]] CheckResult build(std::string_view source);
+
+  // Discovers target-selected executable roots and establishes the stable root
+  // list used by the Draft project UI. Selection replaces compiler products;
+  // it never attempts to reinterpret a checked graph under another root/target.
+  [[nodiscard]] bool initialize(DiagnosticSink &diagnostics);
+  [[nodiscard]] std::size_t root_count() const;
+  [[nodiscard]] std::size_t selected_root() const;
+  [[nodiscard]] std::string_view root_name(std::size_t index) const;
+  [[nodiscard]] bool select_root(std::size_t index,
+                                 DiagnosticSink &diagnostics);
+  [[nodiscard]] bool select_target(TargetProfile target,
+                                   DiagnosticSink &diagnostics);
+  [[nodiscard]] const TargetProfile &target() const;
+
+  // Returned views borrow session-owned storage and remain valid only until the
+  // next mutating session operation or destruction. C callers copy through the
+  // fixed-buffer facade instead of observing these C++ representations.
+  [[nodiscard]] const std::vector<SyntaxSpan> &syntax_spans() const;
+  [[nodiscard]] std::string_view diagnostics_text() const;
+  [[nodiscard]] std::string_view tooling_text(ToolingSection section) const;
+  [[nodiscard]] const std::filesystem::path &source_path() const;
+  [[nodiscard]] const std::filesystem::path &built_output_path() const;
+
+private:
+  [[nodiscard]] CompileWorkspaceOptions compile_options() const;
+  [[nodiscard]] WorkspaceSourceOverride
+  source_override(std::string_view source) const;
+  void collect_syntax_spans(std::string_view source);
+  void rebuild_tooling_index();
+  void publish_diagnostics(const SourceManager &sources,
+                           const DiagnosticSink &diagnostics);
+  [[nodiscard]] bool fresh_check(std::string_view source,
+                                 SourceManager &candidate_sources,
+                                 CompileWorkspaceResult &candidate,
+                                 DiagnosticSink &diagnostics);
+  [[nodiscard]] CheckResult build_checked();
+  [[nodiscard]] bool create_build_directory(DiagnosticSink &diagnostics);
+  [[nodiscard]] bool refresh_root_options(DiagnosticSink &diagnostics);
+  void reset_checked_program();
+
+  CompilerConfiguration configuration_;
+  PackageIdentity root_identity_;
+  std::filesystem::path source_path_;
+  std::filesystem::path build_directory_;
+  std::filesystem::path output_path_;
+  std::filesystem::path built_output_path_;
+  std::vector<RootOption> root_options_;
+  std::size_t selected_root_ = 0;
+
+  SourceManager last_good_sources_;
+  std::optional<CompileWorkspaceResult> last_good_;
+  std::vector<SyntaxSpan> syntax_spans_;
+  std::array<std::string, static_cast<std::size_t>(ToolingSection::Count)>
+      tooling_text_;
+  std::string diagnostics_text_;
+  std::uint32_t diagnostic_count_ = 0;
+};
+
+} // namespace draft::ide

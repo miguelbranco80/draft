@@ -116,3 +116,20 @@ It implements the complete ordinary-language pipeline independently of Codex;
 provider-backed synthesis and judgment live behind compiler-owned typed,
 content-addressed boundaries. Detailed capability and evidence claims belong to
 the linked qualification report rather than this overview.
+
+The same CMake build produces `build/draftide`, a Turbo-style terminal IDE whose
+application, editor, project interaction, syntax-colored UI, and Build/Run
+policy are written in Draft. During bootstrap it calls the C++ compiler library
+through a narrow opaque C ABI:
+
+```sh
+build/draftide .
+```
+
+The repository's `draft.project` selects `examples/turbo-editor` initially;
+`--root` remains an explicit override. F5 checks, builds, and runs the selected
+root, while F6 opens its root selector and package/dependency view.
+
+See [Turbo Draft](tools/draftide/README.md) for controls and
+[the implementation boundary](docs/implementation/turbo-draft.md) for the
+ownership design.

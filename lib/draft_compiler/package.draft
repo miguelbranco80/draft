@@ -1,0 +1,204 @@
+// draft_compiler is the thin Draft binding to the bootstrap compiler service.
+// The service is an explicitly mapped native provider; this package owns no
+// native handle implicitly and performs no filesystem discovery of its own.
+// Configuration strings are borrowed only during create, while source and
+// destination buffers are borrowed only for their synchronous call.
+package draft_compiler
+
+import lib/draft_compiler_api
+
+// Target values are a versioned service ABI rather than target facts encoded in
+// application code. The compiler service turns the selected value into its
+// authoritative TargetProfile.
+pub Target :: enum u8 {
+    aarch64_macos,
+    aarch64_linux,
+    x86_64_linux,
+    x86_64_windows,
+}
+
+// Configuration points at immutable Draft strings for one create call. The
+// native service copies and canonicalizes every path before returning.
+pub Configuration :: c struct {
+    workspace_data: rawptr,
+    workspace_length: usize,
+    root_data: rawptr,
+    root_length: usize,
+    source_data: rawptr,
+    source_length: usize,
+    target: Target,
+}
+
+foreign draft_compiler_service {
+    session_create_raw as "draft_compiler_session_create" :: c proc(
+        configuration: ^Configuration,
+        error_destination: [^]u8,
+        error_capacity: usize,
+    ) -> rawptr
+
+    pub session_destroy as "draft_compiler_session_destroy" :: c proc(
+        session: rawptr,
+    )
+
+    pub check as "draft_compiler_session_check" :: c proc(
+        session: rawptr,
+        source: [^]u8,
+        length: usize,
+        result: ^draft_compiler_api.Result,
+    )
+
+    pub build as "draft_compiler_session_build" :: c proc(
+        session: rawptr,
+        source: [^]u8,
+        length: usize,
+        result: ^draft_compiler_api.Result,
+    )
+
+    pub span as "draft_compiler_session_span" :: c proc(
+        session: rawptr,
+        index: usize,
+        result: ^draft_compiler_api.Span,
+    )
+
+    pub copy_diagnostics as "draft_compiler_session_copy_diagnostics" :: c proc(
+        session: rawptr,
+        destination: [^]u8,
+        capacity: usize,
+    ) -> usize
+
+    pub copy_tooling as "draft_compiler_session_copy_tooling_section" :: c proc(
+        session: rawptr,
+        section: u8,
+        destination: [^]u8,
+        capacity: usize,
+    ) -> usize
+
+    pub copy_source_path as "draft_compiler_session_copy_source_path" :: c proc(
+        session: rawptr,
+        destination: [^]u8,
+        capacity: usize,
+    ) -> usize
+
+    pub copy_artifact_path as "draft_compiler_session_copy_artifact_path" :: c proc(
+        session: rawptr,
+        destination: [^]u8,
+        capacity: usize,
+    ) -> usize
+
+    pub root_count as "draft_compiler_session_root_count" :: c proc(
+        session: rawptr,
+    ) -> usize
+
+    pub selected_root as "draft_compiler_session_selected_root" :: c proc(
+        session: rawptr,
+    ) -> usize
+
+    pub copy_root_name as "draft_compiler_session_copy_root_name" :: c proc(
+        session: rawptr,
+        index: usize,
+        destination: [^]u8,
+        capacity: usize,
+    ) -> usize
+
+    pub select_root as "draft_compiler_session_select_root" :: c proc(
+        session: rawptr,
+        index: usize,
+    ) -> u8
+
+    pub current_target as "draft_compiler_session_target" :: c proc(
+        session: rawptr,
+    ) -> u8
+
+    pub select_target as "draft_compiler_session_select_target" :: c proc(
+        session: rawptr,
+        target: u8,
+    ) -> u8
+}
+
+// create constructs the transient pointer record without retaining any Draft
+// string. error_destination receives a possibly truncated human-readable error
+// only when nil is returned.
+pub create :: proc(
+    workspace, root, source: string,
+    target: Target,
+    error_destination: []u8,
+) -> rawptr {
+    configuration := Configuration{
+        workspace_data = cast[rawptr](raw_data(workspace)),
+        workspace_length = len(workspace),
+        root_data = cast[rawptr](raw_data(root)),
+        root_length = len(root),
+        source_data = cast[rawptr](raw_data(source)),
+        source_length = len(source),
+        target = target,
+    }
+    error_data: [^]u8 = nil
+    if len(error_destination) != 0 {
+        error_data = cast[[^]u8](&error_destination[0])
+    }
+    return session_create_raw(
+        &configuration,
+        error_data,
+        len(error_destination),
+    )
+}
+
+// create_from_bytes is the project-manifest counterpart to create. workspace
+// remains a process-argument string, while root and source borrow parsed bytes
+// from the caller's live manifest buffer. The native create call copies every
+// range synchronously, so neither byte slice is retained after this procedure
+// returns.
+pub create_from_bytes :: proc(
+    workspace: string,
+    root, source: []u8,
+    target: Target,
+    error_destination: []u8,
+) -> rawptr {
+    root_data: rawptr = nil
+    source_data: rawptr = nil
+    if len(root) != 0 {
+        root_data = cast[rawptr](&root[0])
+    }
+    if len(source) != 0 {
+        source_data = cast[rawptr](&source[0])
+    }
+    configuration := Configuration{
+        workspace_data = cast[rawptr](raw_data(workspace)),
+        workspace_length = len(workspace),
+        root_data = root_data,
+        root_length = len(root),
+        source_data = source_data,
+        source_length = len(source),
+        target = target,
+    }
+    error_data: [^]u8 = nil
+    if len(error_destination) != 0 {
+        error_data = cast[[^]u8](&error_destination[0])
+    }
+    return session_create_raw(
+        &configuration,
+        error_data,
+        len(error_destination),
+    )
+}
+
+// host_api borrows session and presents the exact callback table consumed by
+// turbo_editor_app. The owner must destroy session only after the UI returns.
+pub host_api :: proc(session: rawptr) -> draft_compiler_api.Host_Api {
+    return draft_compiler_api.Host_Api{
+        user = session,
+        check = check,
+        build = build,
+        span = span,
+        copy_diagnostics = copy_diagnostics,
+        copy_tooling = copy_tooling,
+        copy_source_path = copy_source_path,
+        copy_artifact_path = copy_artifact_path,
+        root_count = root_count,
+        selected_root = selected_root,
+        copy_root_name = copy_root_name,
+        select_root = select_root,
+        target = current_target,
+        select_target = select_target,
+    }
+}

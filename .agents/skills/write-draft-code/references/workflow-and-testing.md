@@ -92,6 +92,14 @@ Another source file repeats the imports it uses. Imports do not re-export.
 `draft bench`. Both are excluded from ordinary package compilation. A
 conventional `package.draft` is useful but has no privileged semantics.
 
+Turbo Draft opens a workspace rather than inferring one from the shell's
+current directory. Without a `--root` override, `<workspace>/draft.project`
+contains a `draft-project-v1` header, required workspace-relative `root`, and
+optional direct-child `source` (default `package.draft`). This file selects the
+IDE's initial runnable package; it does not enumerate sources, alter imports, or
+replace the compiler's `.draft/` resolution and evidence state. F5 always
+checks/builds/runs the root associated with the active editor buffer.
+
 ## Choose the owning layer
 
 Before adding an API, answer:

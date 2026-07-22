@@ -205,6 +205,18 @@ target_link_libraries(
   PUBLIC draft_build_options Threads::Threads
   PRIVATE draft_llvm_backend
 )
+# The bootstrap compiler is also consumed behind the draft_compiler_service
+# shared-library boundary. Position-independent objects keep that embedding
+# valid on ELF. Hidden C++ visibility ensures the shared object exposes only
+# service.h's explicitly default-visible C ABI rather than the bootstrap's
+# accidental implementation symbols.
+set_target_properties(
+  draft_compiler draft_llvm_backend
+  PROPERTIES
+    POSITION_INDEPENDENT_CODE ON
+    CXX_VISIBILITY_PRESET hidden
+    VISIBILITY_INLINES_HIDDEN ON
+)
 
 if(MSVC)
   target_compile_options(draft_build_options INTERFACE /W4 /permissive- /GR- /EHs-c-)
@@ -242,8 +254,162 @@ target_compile_definitions(
     DRAFT_CORE_CONTENT_IDENTITY="draft-core-bootstrap-v4"
 )
 
+# The compiler service is an opaque C ABI over the C++ bootstrap. Draft owns the
+# real draftide executable, main procedure, project selection, editor, and UI;
+# this library owns only compiler-session products and native build operations.
+add_library(
+  draft_compiler_service SHARED
+  src/ide/compiler_session.cpp
+  src/ide/service.cpp
+)
+target_include_directories(
+  draft_compiler_service PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_compile_definitions(
+  draft_compiler_service
+  PRIVATE
+    DRAFT_COMPILER_SERVICE_BUILD
+    DRAFT_CORE_DIRECTORY="${CMAKE_CURRENT_SOURCE_DIR}/core"
+    DRAFT_CORE_CONTENT_IDENTITY="draft-core-bootstrap-v4"
+)
+target_link_libraries(draft_compiler_service PRIVATE draft_compiler)
+set_target_properties(
+  draft_compiler_service
+  PROPERTIES
+    POSITION_INDEPENDENT_CODE ON
+    CXX_VISIBILITY_PRESET hidden
+    VISIBILITY_INLINES_HIDDEN ON
+    OUTPUT_NAME draft_compiler_service
+    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+    ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+)
+foreach(configuration DEBUG RELEASE RELWITHDEBINFO MINSIZEREL)
+  set_target_properties(
+    draft_compiler_service
+    PROPERTIES
+      LIBRARY_OUTPUT_DIRECTORY_${configuration} "${CMAKE_CURRENT_BINARY_DIR}"
+      RUNTIME_OUTPUT_DIRECTORY_${configuration} "${CMAKE_CURRENT_BINARY_DIR}"
+      ARCHIVE_OUTPUT_DIRECTORY_${configuration} "${CMAKE_CURRENT_BINARY_DIR}"
+  )
+endforeach()
+if(APPLE)
+  # The Draft executable and service are installed as siblings. Recording a
+  # loader-relative install name keeps the development and installed pair
+  # relocatable without an ambient DYLD_LIBRARY_PATH.
+  set_target_properties(
+    draft_compiler_service
+    PROPERTIES
+      INSTALL_NAME_DIR "@loader_path"
+      BUILD_WITH_INSTALL_NAME_DIR ON
+  )
+  # Hidden source visibility cannot suppress every default-visible libc++
+  # template instantiation pulled from a static archive. The explicit export
+  # list makes service.h the only dynamic boundary on Mach-O.
+  target_link_options(
+    draft_compiler_service
+    PRIVATE
+      "-Wl,-exported_symbols_list,${CMAKE_CURRENT_SOURCE_DIR}/src/ide/service.exports"
+  )
+  set_property(
+    TARGET draft_compiler_service APPEND PROPERTY LINK_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/ide/service.exports"
+  )
+elseif(UNIX)
+  # The Draft linker adds $ORIGIN to executables that consume a shared foreign
+  # provider; a stable soname lets the loader resolve this sibling library.
+  set_target_properties(draft_compiler_service PROPERTIES SOVERSION 0)
+  # The ELF version script performs the same final-symbol filtering as the
+  # Mach-O export list and gives the first bootstrap ABI an explicit version.
+  target_link_options(
+    draft_compiler_service
+    PRIVATE
+      "-Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/src/ide/service.map"
+  )
+  set_property(
+    TARGET draft_compiler_service APPEND PROPERTY LINK_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/ide/service.map"
+  )
+endif()
+
+# draftc builds Turbo Draft as an ordinary Draft executable with a hosted Draft
+# main. The service is merely an explicitly mapped foreign provider. The build
+# graph remains acyclic: draftc does not consume the service, and the service
+# does not call back into the Draft UI.
+file(GLOB_RECURSE DRAFTIDE_DRAFT_SOURCES CONFIGURE_DEPENDS
+  "${CMAKE_CURRENT_SOURCE_DIR}/core/*.draft"
+  "${CMAKE_CURRENT_SOURCE_DIR}/lib/draft_compiler/*.draft"
+  "${CMAKE_CURRENT_SOURCE_DIR}/lib/draft_compiler_api/*.draft"
+  "${CMAKE_CURRENT_SOURCE_DIR}/lib/draft_project/*.draft"
+  "${CMAKE_CURRENT_SOURCE_DIR}/lib/turbo_ui/*.draft"
+  "${CMAKE_CURRENT_SOURCE_DIR}/lib/turbo_ui_terminal/*.draft"
+  "${CMAKE_CURRENT_SOURCE_DIR}/lib/turbo_editor/*.draft"
+  "${CMAKE_CURRENT_SOURCE_DIR}/lib/turbo_editor_app/*.draft"
+  "${CMAKE_CURRENT_SOURCE_DIR}/tools/draftide/*.draft"
+)
+if(APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64)$")
+  set(DRAFTIDE_HOST_TARGET aarch64-macos)
+elseif(
+  CMAKE_SYSTEM_NAME STREQUAL "Linux"
+  AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64)$"
+)
+  set(DRAFTIDE_HOST_TARGET aarch64-linux)
+elseif(
+  CMAKE_SYSTEM_NAME STREQUAL "Linux"
+  AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$"
+)
+  set(DRAFTIDE_HOST_TARGET x86_64-linux)
+elseif(WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8)
+  set(DRAFTIDE_HOST_TARGET x86_64-windows)
+endif()
+
+if(DRAFTIDE_HOST_TARGET)
+  if(WIN32)
+    set(DRAFTIDE_PROVIDER_KIND archive)
+    set(DRAFTIDE_PROVIDER_PATH $<TARGET_LINKER_FILE:draft_compiler_service>)
+  else()
+    set(DRAFTIDE_PROVIDER_KIND shared-library)
+    set(DRAFTIDE_PROVIDER_PATH $<TARGET_FILE:draft_compiler_service>)
+  endif()
+  set(DRAFTIDE_EXECUTABLE
+    "${CMAKE_CURRENT_BINARY_DIR}/draftide${CMAKE_EXECUTABLE_SUFFIX}")
+  set(DRAFTIDE_BUILD_STAMP "${CMAKE_CURRENT_BINARY_DIR}/draftide-build.stamp")
+  add_custom_command(
+    OUTPUT "${DRAFTIDE_BUILD_STAMP}"
+    BYPRODUCTS "${DRAFTIDE_EXECUTABLE}"
+    COMMAND $<TARGET_FILE:draftc> build "${CMAKE_CURRENT_SOURCE_DIR}"
+      --root tools/draftide --target "${DRAFTIDE_HOST_TARGET}" -O0
+      --provider
+        "draft_compiler_service=${DRAFTIDE_PROVIDER_KIND}:${DRAFTIDE_PROVIDER_PATH}"
+      -o "${DRAFTIDE_EXECUTABLE}"
+    COMMAND "${CMAKE_COMMAND}" -E touch "${DRAFTIDE_BUILD_STAMP}"
+    DEPENDS
+      draftc
+      draft_compiler_service
+      ${DRAFTIDE_DRAFT_SOURCES}
+      "${CMAKE_CURRENT_SOURCE_DIR}/draft.project"
+    COMMENT "Building the Draft-owned Turbo Draft executable"
+    VERBATIM
+  )
+  add_custom_target(draftide ALL DEPENDS "${DRAFTIDE_BUILD_STAMP}")
+endif()
+
 include(CTest)
 if(BUILD_TESTING)
+  if(DRAFTIDE_HOST_TARGET)
+    # This smoke is deliberately provider-backed and noninteractive. It proves
+    # that the executable produced by Draft can create the opaque C++ compiler
+    # service, retrieve production lexer/semantic products, and render one UI
+    # frame without making the test runner enter a terminal session.
+    add_test(
+      NAME draft_draftide_smoke
+      COMMAND
+        "${DRAFTIDE_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}" --smoke
+    )
+    set_tests_properties(
+      draft_draftide_smoke PROPERTIES LABELS "ide;integration"
+    )
+  endif()
+
   # The complete native matrix must execute the artifacts it just built. Keep
   # it enabled only when the host exactly matches an implemented target pair.
   # Other hosts still build every target-independent compiler, ABI, and
@@ -299,6 +465,23 @@ if(BUILD_TESTING)
   add_executable(draft_lexer_tests tests/lexer_test.cpp)
   target_link_libraries(draft_lexer_tests PRIVATE draft_compiler)
   add_test(NAME draft_lexer_tests COMMAND draft_lexer_tests)
+
+  if(DRAFT_NATIVE_HOST)
+    add_executable(
+      draft_compiler_service_tests
+      tests/compiler_service_test.cpp
+    )
+    target_link_libraries(
+      draft_compiler_service_tests PRIVATE draft_compiler_service
+    )
+    add_test(
+      NAME draft_compiler_service_tests
+      COMMAND draft_compiler_service_tests
+    )
+    set_tests_properties(
+      draft_compiler_service_tests PROPERTIES LABELS "ide;integration"
+    )
+  endif()
 
   add_executable(draft_parser_tests tests/parser_test.cpp)
   target_link_libraries(draft_parser_tests PRIVATE draft_compiler)
@@ -1002,6 +1185,25 @@ if(BUILD_TESTING)
     set_tests_properties(
       draft_core_tui_tests
       PROPERTIES LABELS "integration"
+    )
+
+    # The reusable Turbo libraries and project-manifest parser are ordinary
+    # Draft packages. Run their same-package tests from a copied workspace so
+    # editor buffer ownership, root synchronization, widgets, and manifest
+    # grammar are exercised without publishing evidence in the source tree.
+    add_test(
+      NAME draft_turbo_ide_library_tests
+      COMMAND
+        "${CMAKE_COMMAND}"
+        "-DDRAFTC=$<TARGET_FILE:draftc>"
+        "-DSOURCE_ROOT=${CMAKE_CURRENT_SOURCE_DIR}"
+        "-DTEST_ROOT=${CMAKE_CURRENT_BINARY_DIR}/turbo-ide-library-test"
+        "-DTARGET_SELECTOR=${DRAFT_NATIVE_TEST_TARGET}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/driver_turbo_ide_library_test.cmake"
+    )
+    set_tests_properties(
+      draft_turbo_ide_library_tests
+      PROPERTIES LABELS "ide;integration"
     )
 
     # Build the logical custom_math provider independently as C, then map its

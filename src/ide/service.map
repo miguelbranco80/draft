@@ -1,0 +1,20 @@
+DRAFT_COMPILER_SERVICE_0 {
+  global:
+    draft_compiler_session_create;
+    draft_compiler_session_destroy;
+    draft_compiler_session_check;
+    draft_compiler_session_build;
+    draft_compiler_session_span;
+    draft_compiler_session_copy_diagnostics;
+    draft_compiler_session_copy_tooling_section;
+    draft_compiler_session_copy_source_path;
+    draft_compiler_session_copy_artifact_path;
+    draft_compiler_session_root_count;
+    draft_compiler_session_selected_root;
+    draft_compiler_session_copy_root_name;
+    draft_compiler_session_select_root;
+    draft_compiler_session_target;
+    draft_compiler_session_select_target;
+  local:
+    *;
+};

@@ -80,6 +80,38 @@ and phase names describe the work the command actually performed. Failed
 commands still print the completed portion of an enabled report, which makes
 the option useful for locating failure-path costs.
 
+## Run Turbo Draft
+
+The default CMake build also produces `build/draftide`: a Draft-hosted terminal
+IDE linked to the sibling bootstrap compiler service.
+
+```sh
+cmake --build build --target draftide --parallel
+build/draftide path/to/workspace \
+  [--root package/path] [--source package.draft] \
+  [--target aarch64-macos|aarch64-linux|x86_64-linux|x86_64-windows]
+```
+
+Without `--root`, Turbo Draft reads exactly `<workspace>/draft.project`. The
+versioned file requires `root = package/path` and may specify
+`source = package.draft`; the source otherwise defaults to `package.draft`.
+`--root` bypasses the manifest, while `--source` overrides its source. The
+target defaults to the native host. The source is one target-applicable file
+directly inside the selected package. The manifest is initial IDE operator
+configuration, not a source/package list or dependency manifest.
+
+Turbo Draft opens ordinary files; unsaved edits are in-memory compiler overlays
+and saving updates the same file. F5 checks, builds, and runs the currently
+selected root. F6 opens the selectable run-root list and package/dependency
+view; F7-F11 toggle other compiler-derived semantic windows. F12 cycles
+executable roots, and Shift-F12 cycles targets. Build and Run always check the
+current buffer first.
+
+The executable and `draft_compiler_service` shared library must remain
+discoverable as siblings. The build records a loader-relative lookup on macOS
+and ELF; Windows places the DLL beside the executable. `--smoke` performs a
+noninteractive compiler/UI composition check for CI.
+
 ## Inspect and compile
 
 ```sh
@@ -150,9 +182,11 @@ Each `--provider` artifact path is absolute and names a real regular file;
 symlinks are rejected so hashing and later identity checks never depend on link
 retargeting. Resolve a build-system convenience symlink with `realpath` before
 passing a dylib or shared object. A `shared-library` mapping supplies the link
-input only: the application still arranges normal runtime discovery (for
-example `DYLD_LIBRARY_PATH`/`LD_LIBRARY_PATH`, an installed path, or a DLL beside
-the executable). The complete vendored example is
+input. ELF executable and dynamic-library links record `$ORIGIN` as a runtime
+search directory so a copied provider can live beside the artifact. Mach-O
+still follows the provider's install name and normal `@rpath`/loader rules;
+Windows requires the matching DLL beside the executable or otherwise visible
+to the loader. The complete vendored example is
 [`examples/raylib-asteroids`](../../examples/raylib-asteroids/README.md).
 
 Native builds default to `-O0`, which skips LLVM middle-end optimization and
