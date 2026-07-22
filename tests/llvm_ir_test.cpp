@@ -670,7 +670,9 @@ call_one_after_five :: proc(value: One_Integer) -> One_Integer {
 // 1, 2, 4, or 8 bytes. Other records use plain pointers for parameters and a
 // hidden sret pointer for results. The plain-pointer assertion is important:
 // SysV's `byval` spelling would request a caller copy and select a different
-// Windows ABI contract.
+// Windows ABI contract. Clang's Microsoft ABI also treats __int128
+// asymmetrically: the parameter is an address, but the result is <2 x i64>
+// rather than an sret value.
 void test_win64_aggregate_signatures_and_calls(TestState &state) {
   const draft::TargetProfile target = draft::make_x86_64_windows_profile();
   const EmittedFixture emitted = emit_fixture_for_target(R"draft(
@@ -680,6 +682,12 @@ Eight :: c struct { bytes: [8]u8, }
 Float_Pair :: c struct { first: f32, second: f32, }
 Six :: c struct { bytes: [6]u8, }
 Sixteen :: c struct { first: u64, second: u64, }
+
+export wide_identity as "draft_wide_identity" :: c proc(
+    value: u128,
+) -> u128 {
+    return value
+}
 
 export float_pair_identity as "draft_float_pair_identity" :: c proc(
     value: Float_Pair,
@@ -696,6 +704,7 @@ foreign windows {
     take_sixteen as "draft_take_sixteen" :: c proc(
         value: Sixteen,
     ) -> Sixteen
+    take_wide as "draft_take_wide" :: c proc(value: i128) -> i128
 }
 
 call_eight :: proc(value: Eight) -> Eight {
@@ -704,6 +713,10 @@ call_eight :: proc(value: Eight) -> Eight {
 
 call_sixteen :: proc(value: Sixteen) -> Sixteen {
     return take_sixteen(value)
+}
+
+call_wide :: proc(value: i128) -> i128 {
+    return take_wide(value)
 }
 )draft",
                                                          target);
@@ -716,11 +729,18 @@ call_sixteen :: proc(value: Sixteen) -> Sixteen {
   EXPECT(state, emitted.text.find(
       "define dllexport void @\"draft_six_identity\"(ptr sret(") !=
       std::string::npos);
+  EXPECT(state, emitted.text.find(
+      "define dllexport <2 x i64> @\"draft_wide_identity\"(ptr %arg0)") !=
+      std::string::npos);
   EXPECT(state, emitted.text.find("ptr byval(") == std::string::npos);
   EXPECT(state, emitted.text.find("@\"draft_take_eight\"(i64)") !=
       std::string::npos);
   EXPECT(state, emitted.text.find("@\"draft_take_sixteen\"(ptr sret(") !=
       std::string::npos);
+  EXPECT(state, emitted.text.find(
+      "declare <2 x i64> @\"draft_take_wide\"(ptr)") != std::string::npos);
+  EXPECT(state, emitted.text.find(
+      "call <2 x i64> @\"draft_take_wide\"(ptr ") != std::string::npos);
   EXPECT(state, emitted.text.find("!\"CodeView\", i32 1") !=
       std::string::npos);
   EXPECT(state, emitted.text.find("!\"Dwarf Version\"") ==
@@ -1221,7 +1241,9 @@ main :: proc() -> int {
   EXPECT(state, module.text.find("copy == 42") != std::string::npos);
   EXPECT(state, module.text.find("package.draft") != std::string::npos);
   EXPECT(state, module.text.find(
-      "define i32 @main(i32 %argc, ptr %argv, ptr %envp)") !=
+      target.facts.os == "windows"
+          ? "define i32 @wmain(i32 %argc, ptr %argv, ptr %envp)"
+          : "define i32 @main(i32 %argc, ptr %argv, ptr %envp)") !=
       std::string::npos);
   EXPECT(state, module.text.find(
       "%draft.runtime.Context = type { %draft.runtime.Allocator, "
@@ -1246,19 +1268,41 @@ main :: proc() -> int {
       "define internal void @__draft.default_logger") != std::string::npos);
   EXPECT(state, module.text.find(
       "define internal i1 @__draft.default_random") != std::string::npos);
-  EXPECT(state, module.text.find(
-      "%resize.grows = icmp ugt i64 %new_size, %old_size") !=
-      std::string::npos);
-  EXPECT(state, module.text.find(
-      "%resize.tail = getelementptr i8, ptr %resized, i64 %old_size") !=
-      std::string::npos);
-  EXPECT(state, module.text.find(
-      "ptr %resize.tail, i8 0, i64 %resize.growth, i1 false") !=
-      std::string::npos);
+  if (target.facts.os == "windows") {
+    EXPECT(state, module.text.find(
+        "define internal ptr @__draft.resize_allocation") !=
+        std::string::npos);
+    EXPECT(state, module.text.find(
+        "call void @__draft.release_allocation(ptr %old_memory)") !=
+        std::string::npos);
+  } else {
+    EXPECT(state, module.text.find(
+        "%resize.grows = icmp ugt i64 %new_size, %old_size") !=
+        std::string::npos);
+    EXPECT(state, module.text.find(
+        "%resize.tail = getelementptr i8, ptr %resized, i64 %old_size") !=
+        std::string::npos);
+    EXPECT(state, module.text.find(
+        "ptr %resize.tail, i8 0, i64 %resize.growth, i1 false") !=
+        std::string::npos);
+  }
   EXPECT(state, module.text.find(
       "define internal ptr @__draft.ensure_thread_context") !=
       std::string::npos);
-  if (target.facts.os == "linux") {
+  if (target.facts.os == "windows") {
+    EXPECT(state, module.text.find(
+        "@__draft.temp_key = internal global i32 -1") !=
+        std::string::npos);
+    EXPECT(state, module.text.find("declare i32 @FlsAlloc(ptr)") !=
+        std::string::npos);
+    EXPECT(state, module.text.find("call i32 @rand_s(ptr %word)") !=
+        std::string::npos);
+    EXPECT(state, module.text.find(
+        "define internal void @__draft.initialize_windows_process_views") !=
+        std::string::npos);
+    EXPECT(state, module.text.find("@pthread_getspecific") ==
+        std::string::npos);
+  } else if (target.facts.os == "linux") {
     EXPECT(state, module.text.find(
         "%draft.runtime.PthreadOnce = type { i32 }") != std::string::npos);
     EXPECT(state, module.text.find(

@@ -3,8 +3,10 @@
 // These cases isolate the Win64 rule from the SysV AMD64 rule implemented for
 // the same instruction architecture. Exact 1, 2, 4, and 8-byte C records use
 // one integer carrier; every other nonempty record crosses the boundary by
-// reference. The expectations mirror Clang's x86_64-pc-windows-msvc IR and are
-// supplemented by the backend's independent Clang ABI oracle.
+// reference. The expectations also cover the asymmetric __int128 extension:
+// it is passed by address and returned as <2 x i64>. They mirror Clang's
+// x86_64-pc-windows-msvc IR and are supplemented by the backend's independent
+// Clang ABI oracle.
 
 #include "interop/c_abi.h"
 #include "sema/semantic.h"
@@ -176,12 +178,52 @@ Too_Large :: c enum { zero, value = 4294967296, }
   EXPECT(state, rejected.diagnostics.has_errors());
 }
 
+void test_wide_integer_boundary(TestState &state) {
+  SemanticSource source(R"draft(
+package abi
+
+Huge :: c enum u128 { zero, maximum = 340282366920938463463374607431768211455, }
+
+foreign windows {
+    signed_identity :: c proc(value: i128) -> i128
+    enum_identity :: c proc(value: Huge) -> Huge
+}
+)draft");
+  if (source.diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(source.sources, source.diagnostics);
+  }
+  EXPECT(state, source.semantics.ok);
+  EXPECT(state, !source.diagnostics.has_errors());
+
+  const std::optional<draft::TypeId> i128 =
+      source.semantics.package.types.find_builtin("i128");
+  EXPECT(state, i128.has_value());
+  if (i128.has_value()) {
+    EXPECT(state, draft::classify_c_type(
+        source.semantics.package.types, *i128, source.target.facts)
+        .classification == draft::CAbiClass::Win64WideInteger);
+  }
+  EXPECT(state, source.classify("Huge").classification ==
+      draft::CAbiClass::Win64WideInteger);
+
+  for (std::string_view procedure : {"signed_identity", "enum_identity"}) {
+    const draft::CAbiFunctionPlan plan = source.plan(procedure);
+    EXPECT(state, plan.ok);
+    EXPECT(state, plan.parameters.size() == 1);
+    EXPECT(state, plan.parameters[0].mode ==
+        draft::CAbiParameterMode::Indirect);
+    EXPECT(state, plan.result.classification ==
+        draft::CAbiClass::Win64WideInteger);
+  }
+}
+
 } // namespace
 
 int main() {
   TestState state;
   test_record_carriers(state);
   test_llp64_enum_boundary(state);
+  test_wide_integer_boundary(state);
   if (state.failures != 0) {
     std::cerr << state.failures << " Win64 ABI expectation(s) failed\n";
     return EXIT_FAILURE;

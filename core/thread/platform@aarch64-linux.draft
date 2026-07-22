@@ -1,11 +1,14 @@
 package thread
 
 import core/c_abi
+import core/time
 
 // glibc AArch64 defines pthread_t as unsigned long. Keeping that scalar rather
 // than pretending it is a pointer matters to C ABI type identity even though
 // both occupy one 64-bit argument register.
 Pthread_Handle :: uintptr
+Native_Thread_Result :: rawptr
+Native_Start_Routine :: c proc(user: rawptr) -> Native_Thread_Result
 
 pub Thread :: c struct {
     handle: Pthread_Handle,
@@ -28,7 +31,7 @@ foreign linux {
     pthread_create :: c proc(
         thread: ^Pthread_Handle,
         attributes: rawptr,
-        start: Start_Routine,
+        start: Native_Start_Routine,
         user: rawptr,
     ) -> c_abi.int
     pthread_join :: c proc(thread: Pthread_Handle, result: ^rawptr) -> c_abi.int
@@ -45,4 +48,91 @@ foreign linux {
     pthread_cond_signal :: c proc(condition: ^Condition) -> c_abi.int
     pthread_cond_broadcast :: c proc(condition: ^Condition) -> c_abi.int
     nanosleep :: c proc(requested: ^Timespec, remaining: ^Timespec) -> c_abi.int
+}
+
+Timespec :: c struct {
+    seconds: i64,
+    nanoseconds: i64,
+}
+
+native_thread_create :: proc(
+    handle: ^Pthread_Handle,
+    attributes: rawptr,
+    start: Native_Start_Routine,
+    user: rawptr,
+) -> c_abi.int {
+    return pthread_create(handle, attributes, start, user)
+}
+
+native_thread_is_empty :: proc(thread: ^Thread) -> bool {
+    return thread^.handle == cast[Pthread_Handle](0)
+}
+
+native_thread_join :: proc(thread: ^Thread) -> c_abi.int {
+    return pthread_join(thread^.handle, nil)
+}
+
+native_thread_clear :: proc(thread: ^Thread) {
+    thread^.handle = cast[Pthread_Handle](0)
+}
+
+native_thread_current_id :: proc() -> uintptr {
+    return cast[uintptr](pthread_self())
+}
+
+native_thread_yield :: proc() {
+    sched_yield()
+}
+
+native_mutex_init :: proc(mutex: ^Mutex) -> c_abi.int {
+    return pthread_mutex_init(mutex, nil)
+}
+
+native_mutex_destroy :: proc(mutex: ^Mutex) -> c_abi.int {
+    return pthread_mutex_destroy(mutex)
+}
+
+native_mutex_lock :: proc(mutex: ^Mutex) -> c_abi.int {
+    return pthread_mutex_lock(mutex)
+}
+
+native_mutex_try_lock :: proc(mutex: ^Mutex) -> c_abi.int {
+    return pthread_mutex_trylock(mutex)
+}
+
+native_mutex_unlock :: proc(mutex: ^Mutex) -> c_abi.int {
+    return pthread_mutex_unlock(mutex)
+}
+
+native_condition_init :: proc(condition: ^Condition) -> c_abi.int {
+    return pthread_cond_init(condition, nil)
+}
+
+native_condition_destroy :: proc(condition: ^Condition) -> c_abi.int {
+    return pthread_cond_destroy(condition)
+}
+
+native_condition_wait :: proc(
+    condition: ^Condition,
+    mutex: ^Mutex,
+) -> c_abi.int {
+    return pthread_cond_wait(condition, mutex)
+}
+
+native_condition_signal :: proc(condition: ^Condition) -> c_abi.int {
+    return pthread_cond_signal(condition)
+}
+
+native_condition_broadcast :: proc(condition: ^Condition) -> c_abi.int {
+    return pthread_cond_broadcast(condition)
+}
+
+native_thread_sleep :: proc(duration: time.Duration) -> bool {
+    total := cast[i64](duration)
+    requested := Timespec{
+        seconds = total / cast[i64](time.second),
+        nanoseconds = total % cast[i64](time.second),
+    }
+    remaining: Timespec
+    return nanosleep(&requested, &remaining) == 0
 }

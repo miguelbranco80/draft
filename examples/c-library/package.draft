@@ -17,26 +17,25 @@ Choice :: c enum {
     right = 2,
 }
 
-// C's default enum backing never narrows below `int` width. A nonnegative set
-// uses the unsigned form, and a value beyond u32 widens to 64 bits on every
-// current LP64 C ABI. These types keep that target rule visible in the real
-// generated-header and C-client boundary below.
-Unsigned_Choice :: c enum {
+// The wide fixtures use explicit backing so one header means the same thing on
+// LP64 Darwin/Linux and LLP64 Windows. Unfixed Win64 C enums are intentionally
+// restricted to the 32-bit range accepted by the target's ordinary C enum ABI.
+Unsigned_Choice :: c enum u32 {
     none,
     largest = 4294967295,
 }
 
-Wide_Choice :: c enum {
+Wide_Choice :: c enum u64 {
     none,
     large = 4294967296,
 }
 
-Maximum_Choice :: c enum {
+Maximum_Choice :: c enum u64 {
     none,
     maximum = 18446744073709551615,
 }
 
-Minimum_Choice :: c enum {
+Minimum_Choice :: c enum i64 {
     minimum = -9223372036854775808,
     none = 0,
 }

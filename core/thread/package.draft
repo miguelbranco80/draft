@@ -6,7 +6,6 @@ import core/runtime
 import core/time
 
 pub Entry_Proc :: proc(user: rawptr)
-Start_Routine :: c proc(user: rawptr) -> rawptr
 
 Start_State :: struct {
     thread_context: runtime.Context,
@@ -18,11 +17,13 @@ release_start_state :: proc(state: ^Start_State) {
     memory.free_with_allocator(state, state^.thread_context.allocator)
 }
 
-// A pthread begins with the C calling convention and no hidden Context. The
-// two runtime bridge calls lazily establish Draft TLS, enter the ordinary user
-// callback with the copied spawning Context, and finally release trampoline
-// state through the same explicit Context.
-thread_trampoline :: c proc(user: rawptr) -> rawptr {
+// An OS thread begins with the target's C callback convention and no hidden
+// Context. The two runtime bridge calls lazily establish Draft TLS, enter the
+// ordinary user callback with the copied spawning Context, and finally release
+// trampoline state through the same explicit Context. Native_Thread_Result and
+// the returned zero is selected at compile time because POSIX returns a pointer
+// from a start callback while Windows returns a 32-bit status.
+thread_trampoline :: c proc(user: rawptr) -> Native_Thread_Result {
     state := cast[^Start_State](user)
     runtime.install_thread_context(&state^.thread_context)
     // Installation replaces the copied temp_allocator with the hosted
@@ -39,7 +40,11 @@ thread_trampoline :: c proc(user: rawptr) -> rawptr {
         release_start_state,
         state,
     )
-    return nil
+    when target.os == .windows {
+        return 0
+    } else {
+        return nil
+    }
 }
 
 pub spawn :: proc(entry: Entry_Proc, user: rawptr) -> (Thread, bool) {
@@ -50,7 +55,7 @@ pub spawn :: proc(entry: Entry_Proc, user: rawptr) -> (Thread, bool) {
     state^.user = user
 
     result: Thread
-    status := pthread_create(
+    status := native_thread_create(
         &result.handle,
         nil,
         thread_trampoline,
@@ -65,80 +70,70 @@ pub spawn :: proc(entry: Entry_Proc, user: rawptr) -> (Thread, bool) {
 }
 
 pub join :: proc(thread: ^Thread) -> bool {
-    if thread^.handle == cast[Pthread_Handle](cast[uintptr](0)) {
+    if native_thread_is_empty(thread) {
         return true
     }
-    status := pthread_join(thread^.handle, nil)
+    status := native_thread_join(thread)
     if status == 0 {
-        thread^.handle = cast[Pthread_Handle](cast[uintptr](0))
+        native_thread_clear(thread)
         return true
     }
     return false
 }
 
 pub current_id :: proc() -> uintptr {
-    return cast[uintptr](pthread_self())
+    return native_thread_current_id()
 }
 
 pub yield :: proc() {
-    sched_yield()
+    native_thread_yield()
 }
 
 pub mutex_init :: proc(mutex: ^Mutex) -> bool {
-    return pthread_mutex_init(mutex, nil) == 0
+    return native_mutex_init(mutex) == 0
 }
 
 pub mutex_destroy :: proc(mutex: ^Mutex) -> bool {
-    return pthread_mutex_destroy(mutex) == 0
+    return native_mutex_destroy(mutex) == 0
 }
 
 pub mutex_lock :: proc(mutex: ^Mutex) {
-    assert(pthread_mutex_lock(mutex) == 0, "mutex lock failed")
+    assert(native_mutex_lock(mutex) == 0, "mutex lock failed")
 }
 
 pub mutex_try_lock :: proc(mutex: ^Mutex) -> bool {
-    return pthread_mutex_trylock(mutex) == 0
+    return native_mutex_try_lock(mutex) == 0
 }
 
 pub mutex_unlock :: proc(mutex: ^Mutex) {
-    assert(pthread_mutex_unlock(mutex) == 0, "mutex unlock failed")
+    assert(native_mutex_unlock(mutex) == 0, "mutex unlock failed")
 }
 
 pub condition_init :: proc(condition: ^Condition) -> bool {
-    return pthread_cond_init(condition, nil) == 0
+    return native_condition_init(condition) == 0
 }
 
 pub condition_destroy :: proc(condition: ^Condition) -> bool {
-    return pthread_cond_destroy(condition) == 0
+    return native_condition_destroy(condition) == 0
 }
 
 pub condition_wait :: proc(condition: ^Condition, mutex: ^Mutex) {
-    assert(pthread_cond_wait(condition, mutex) == 0, "condition wait failed")
+    assert(native_condition_wait(condition, mutex) == 0,
+        "condition wait failed")
 }
 
 pub condition_signal :: proc(condition: ^Condition) {
-    assert(pthread_cond_signal(condition) == 0, "condition signal failed")
+    assert(native_condition_signal(condition) == 0, "condition signal failed")
 }
 
 pub condition_broadcast :: proc(condition: ^Condition) {
-    assert(pthread_cond_broadcast(condition) == 0,
+    assert(native_condition_broadcast(condition) == 0,
         "condition broadcast failed")
-}
-
-Timespec :: c struct {
-    seconds: i64,
-    nanoseconds: i64,
 }
 
 pub sleep :: proc(duration: time.Duration) -> bool {
     if duration <= 0 {
         return true
     }
-    total := cast[i64](duration)
-    requested := Timespec{
-        seconds = total / cast[i64](time.second),
-        nanoseconds = total % cast[i64](time.second),
-    }
-    remaining: Timespec
-    return nanosleep(&requested, &remaining) == 0
+    return native_thread_sleep(duration)
 }

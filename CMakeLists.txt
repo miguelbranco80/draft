@@ -67,9 +67,17 @@ if(NOT LLVM_PACKAGE_VERSION MATCHES "^22\\.")
 endif()
 message(STATUS "Using LLVM ${LLVM_PACKAGE_VERSION} from ${LLVM_DIR}")
 separate_arguments(LLVM_DEFINITIONS_LIST NATIVE_COMMAND "${LLVM_DEFINITIONS}")
-if(NOT TARGET LLVM)
+# Unix distributions may publish the monolithic libLLVM target. LLVM cannot
+# build that dylib on Windows; its official Windows package instead exports the
+# C API as LLVM-C.dll. The adapter below uses only llvm-c headers and symbols,
+# so these are equivalent host-link products rather than two compiler modes.
+if(TARGET LLVM)
+  set(DRAFT_LLVM_LIBRARY_TARGET LLVM)
+elseif(WIN32 AND TARGET LLVM-C)
+  set(DRAFT_LLVM_LIBRARY_TARGET LLVM-C)
+else()
   message(FATAL_ERROR
-    "LLVM 22 distribution does not export the required shared LLVM target"
+    "LLVM 22 distribution does not export the required LLVM or LLVM-C target"
   )
 endif()
 
@@ -101,7 +109,7 @@ target_compile_definitions(
 target_link_libraries(
   draft_llvm_backend
   PUBLIC draft_build_options
-  PRIVATE LLVM
+  PRIVATE ${DRAFT_LLVM_LIBRARY_TARGET}
 )
 
 add_library(

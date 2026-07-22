@@ -1,0 +1,202 @@
+// This target-selected half of core/thread maps the public explicit thread,
+// mutex, and condition lifetimes onto Windows x64 kernel primitives. Thread
+// owns one HANDLE after successful creation. Mutex and Condition contain the
+// exact one-pointer SRWLOCK and CONDITION_VARIABLE representations; Windows
+// gives both zero/initialized values no destruction operation, so the common
+// destroy calls validate the Draft lifetime while remaining native no-ops.
+//
+// CreateThread callbacks return a 32-bit status, unlike POSIX pointer results;
+// Native_Thread_Result makes that physical difference target-selected without
+// changing Entry_Proc or the public spawn API. All callback/user pointers are
+// retained only for the new thread lifetime described by common Start_State.
+// Draft specification: sections 5-7 and 12, plus the x86-64 Windows profile.
+package thread
+
+import core/c_abi
+import core/time
+
+Native_Thread_Result :: c_abi.unsigned_long
+Native_Start_Routine :: c proc(user: rawptr) -> Native_Thread_Result
+
+pub Thread :: c struct {
+    handle: rawptr,
+}
+
+// SRWLOCK and CONDITION_VARIABLE are each one pointer on Windows x64. Only the
+// corresponding kernel procedures may interpret or mutate the opaque value.
+pub Mutex :: c struct {
+    opaque: rawptr,
+}
+
+pub Condition :: c struct {
+    opaque: rawptr,
+}
+
+Wait_Object_0 :: cast[c_abi.unsigned_long](0)
+Infinite :: cast[c_abi.unsigned_long](0xffffffff)
+Maximum_Finite_Milliseconds :: cast[u64](0xfffffffe)
+
+foreign windows_kernel {
+    create_thread as "CreateThread" :: c proc(
+        security_attributes: rawptr,
+        stack_size: usize,
+        start: Native_Start_Routine,
+        user: rawptr,
+        flags: c_abi.unsigned_long,
+        thread_id: ^c_abi.unsigned_long,
+    ) -> rawptr
+    wait_for_single_object as "WaitForSingleObject" :: c proc(
+        handle: rawptr,
+        milliseconds: c_abi.unsigned_long,
+    ) -> c_abi.unsigned_long
+    close_handle as "CloseHandle" :: c proc(handle: rawptr) -> i32
+    get_current_thread_id as "GetCurrentThreadId" :: c proc() -> c_abi.unsigned_long
+    switch_to_thread as "SwitchToThread" :: c proc() -> i32
+    sleep_milliseconds as "Sleep" :: c proc(milliseconds: c_abi.unsigned_long)
+
+    initialize_srw_lock as "InitializeSRWLock" :: c proc(lock: ^Mutex)
+    acquire_srw_lock_exclusive as "AcquireSRWLockExclusive" :: c proc(lock: ^Mutex)
+    try_acquire_srw_lock_exclusive as "TryAcquireSRWLockExclusive" :: c proc(
+        lock: ^Mutex,
+    ) -> i32
+    release_srw_lock_exclusive as "ReleaseSRWLockExclusive" :: c proc(lock: ^Mutex)
+
+    initialize_condition_variable as "InitializeConditionVariable" :: c proc(
+        condition: ^Condition,
+    )
+    sleep_condition_variable_srw as "SleepConditionVariableSRW" :: c proc(
+        condition: ^Condition,
+        lock: ^Mutex,
+        milliseconds: c_abi.unsigned_long,
+        flags: c_abi.unsigned_long,
+    ) -> i32
+    wake_condition_variable as "WakeConditionVariable" :: c proc(
+        condition: ^Condition,
+    )
+    wake_all_condition_variable as "WakeAllConditionVariable" :: c proc(
+        condition: ^Condition,
+    )
+}
+
+native_thread_create :: proc(
+    handle: ^rawptr,
+    attributes: rawptr,
+    start: Native_Start_Routine,
+    user: rawptr,
+) -> c_abi.int {
+    // Draft exposes no security-attribute policy yet. The common caller always
+    // supplies nil, and Windows selects default security and stack size.
+    if attributes != nil {
+        return -1
+    }
+    native := create_thread(nil, 0, start, user, 0, nil)
+    if native == nil {
+        return -1
+    }
+    handle^ = native
+    return 0
+}
+
+native_thread_is_empty :: proc(thread: ^Thread) -> bool {
+    return thread^.handle == nil
+}
+
+native_thread_join :: proc(thread: ^Thread) -> c_abi.int {
+    if wait_for_single_object(thread^.handle, Infinite) != Wait_Object_0 {
+        return -1
+    }
+    if close_handle(thread^.handle) == 0 {
+        return -1
+    }
+    return 0
+}
+
+native_thread_clear :: proc(thread: ^Thread) {
+    thread^.handle = nil
+}
+
+native_thread_current_id :: proc() -> uintptr {
+    return cast[uintptr](get_current_thread_id())
+}
+
+native_thread_yield :: proc() {
+    switch_to_thread()
+}
+
+native_mutex_init :: proc(mutex: ^Mutex) -> c_abi.int {
+    initialize_srw_lock(mutex)
+    return 0
+}
+
+native_mutex_destroy :: proc(mutex: ^Mutex) -> c_abi.int {
+    mutex^.opaque = nil
+    return 0
+}
+
+native_mutex_lock :: proc(mutex: ^Mutex) -> c_abi.int {
+    acquire_srw_lock_exclusive(mutex)
+    return 0
+}
+
+native_mutex_try_lock :: proc(mutex: ^Mutex) -> c_abi.int {
+    if try_acquire_srw_lock_exclusive(mutex) == 0 {
+        return -1
+    }
+    return 0
+}
+
+native_mutex_unlock :: proc(mutex: ^Mutex) -> c_abi.int {
+    release_srw_lock_exclusive(mutex)
+    return 0
+}
+
+native_condition_init :: proc(condition: ^Condition) -> c_abi.int {
+    initialize_condition_variable(condition)
+    return 0
+}
+
+native_condition_destroy :: proc(condition: ^Condition) -> c_abi.int {
+    condition^.opaque = nil
+    return 0
+}
+
+native_condition_wait :: proc(
+    condition: ^Condition,
+    mutex: ^Mutex,
+) -> c_abi.int {
+    if sleep_condition_variable_srw(condition, mutex, Infinite, 0) == 0 {
+        return -1
+    }
+    return 0
+}
+
+native_condition_signal :: proc(condition: ^Condition) -> c_abi.int {
+    wake_condition_variable(condition)
+    return 0
+}
+
+native_condition_broadcast :: proc(condition: ^Condition) -> c_abi.int {
+    wake_all_condition_variable(condition)
+    return 0
+}
+
+// Sleep rounds any positive fractional millisecond upward, then issues bounded
+// finite calls. Avoiding DWORD 0xffffffff matters because Windows reserves it
+// as INFINITE for waits even though Sleep itself accepts an unsigned interval.
+native_thread_sleep :: proc(duration: time.Duration) -> bool {
+    nanoseconds := cast[u64](cast[i64](duration))
+    nanoseconds_per_millisecond := cast[u64](cast[i64](time.millisecond))
+    milliseconds := nanoseconds / nanoseconds_per_millisecond
+    if nanoseconds % nanoseconds_per_millisecond != 0 {
+        milliseconds += 1
+    }
+    for milliseconds != 0 {
+        chunk := milliseconds
+        if chunk > Maximum_Finite_Milliseconds {
+            chunk = Maximum_Finite_Milliseconds
+        }
+        sleep_milliseconds(cast[c_abi.unsigned_long](chunk))
+        milliseconds -= chunk
+    }
+    return true
+}

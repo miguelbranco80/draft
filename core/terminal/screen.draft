@@ -45,6 +45,7 @@ pub Screen_State :: enum u8 {
 // pass it by pointer. Failed transitions retain a cleanup-capable state.
 pub Screen :: struct {
     output: os.File,
+    saved_mode: Native_Output_Mode,
     state: Screen_State,
 }
 
@@ -58,7 +59,12 @@ pub begin_screen :: proc(screen: ^Screen, output: os.File) -> io.Error {
     if screen^.state != .inactive || output.descriptor < 0 {
         return .invalid
     }
+    saved_mode: Native_Output_Mode = ---
+    if !native_begin_screen(output.descriptor, &saved_mode) {
+        return .unavailable
+    }
     screen^.output = output
+    screen^.saved_mode = saved_mode
     screen^.state = .active
     return os.write_text_all(output, Enter_Screen_Sequence)
 }
@@ -88,6 +94,12 @@ pub suspend_screen :: proc(screen: ^Screen) -> bool {
     if os.write_text_all(screen^.output, Leave_Screen_Sequence) != .none {
         return false
     }
+    if !native_suspend_screen(
+        screen^.output.descriptor,
+        &screen^.saved_mode,
+    ) {
+        return false
+    }
     screen^.state = .suspended
     return true
 }
@@ -102,6 +114,12 @@ pub resume_screen :: proc(screen: ^Screen) -> bool {
     }
     if screen^.state == .active {
         return true
+    }
+    if !native_resume_screen(
+        screen^.output.descriptor,
+        &screen^.saved_mode,
+    ) {
+        return false
     }
     screen^.state = .active
     return os.write_text_all(screen^.output, Enter_Screen_Sequence) == .none
@@ -121,6 +139,12 @@ pub restore_screen :: proc(screen: ^Screen) -> bool {
         return true
     }
     if os.write_text_all(screen^.output, Leave_Screen_Sequence) != .none {
+        return false
+    }
+    if !native_restore_screen(
+        screen^.output.descriptor,
+        &screen^.saved_mode,
+    ) {
         return false
     }
     screen^.state = .inactive

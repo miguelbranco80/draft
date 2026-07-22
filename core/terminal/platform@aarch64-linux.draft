@@ -12,6 +12,41 @@ package terminal
 
 import core/c_abi
 
+// POSIX terminals require no separate output-mode resource for ANSI escape
+// processing. The byte exists only so common Screen can retain one uniform
+// target-owned restoration record.
+Native_Output_Mode :: struct {
+    unused: u8,
+}
+
+native_begin_screen :: proc(
+    descriptor: c_abi.int,
+    mode: ^Native_Output_Mode,
+) -> bool {
+    return true
+}
+
+native_suspend_screen :: proc(
+    descriptor: c_abi.int,
+    mode: ^Native_Output_Mode,
+) -> bool {
+    return true
+}
+
+native_resume_screen :: proc(
+    descriptor: c_abi.int,
+    mode: ^Native_Output_Mode,
+) -> bool {
+    return true
+}
+
+native_restore_screen :: proc(
+    descriptor: c_abi.int,
+    mode: ^Native_Output_Mode,
+) -> bool {
+    return true
+}
+
 // Native_Mode is stored opaquely by Session. libc's cfmakeraw owns flag policy;
 // exposing the physical fields here exists solely to give the C boundary the
 // exact selected glibc layout and alignment.

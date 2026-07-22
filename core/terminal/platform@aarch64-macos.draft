@@ -12,6 +12,41 @@ package terminal
 
 import core/c_abi
 
+// POSIX terminals require no separate output-mode resource for ANSI escape
+// processing. The byte exists only so common Screen can retain one uniform
+// target-owned restoration record.
+Native_Output_Mode :: struct {
+    unused: u8,
+}
+
+native_begin_screen :: proc(
+    descriptor: c_abi.int,
+    mode: ^Native_Output_Mode,
+) -> bool {
+    return true
+}
+
+native_suspend_screen :: proc(
+    descriptor: c_abi.int,
+    mode: ^Native_Output_Mode,
+) -> bool {
+    return true
+}
+
+native_resume_screen :: proc(
+    descriptor: c_abi.int,
+    mode: ^Native_Output_Mode,
+) -> bool {
+    return true
+}
+
+native_restore_screen :: proc(
+    descriptor: c_abi.int,
+    mode: ^Native_Output_Mode,
+) -> bool {
+    return true
+}
+
 // Native_Mode is stored opaquely by public Session after begin_raw. Field names
 // document the Darwin layout, but common code deliberately delegates all flag
 // mutation to libc's cfmakeraw so Draft does not duplicate platform policy.

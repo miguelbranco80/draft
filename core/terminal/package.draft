@@ -10,8 +10,9 @@
 // Session is an explicit move-by-convention resource. A successful begin_raw
 // must be paired with restore while the input descriptor remains open. Suspend
 // temporarily returns the descriptor to its saved mode; resume reapplies raw
-// mode. The selected target file owns the native termios, poll, and ioctl ABI;
-// this common file owns target-independent lifetime, timeout, and error policy.
+// mode. The selected target file owns the native mode, readiness, and size-
+// query ABI; this common file owns target-independent lifetime, timeout, and
+// error policy.
 // It depends only on core/c_abi, core/io, core/os, and core/time. Draft
 // specification: sections 5-7 and 12, plus the selected target profile.
 package terminal
@@ -21,10 +22,10 @@ import core/io
 import core/os
 import core/time
 
-// Poll_Descriptor is the common C layout of one pollfd on both selected POSIX
-// profiles. Only native_poll writes revents. The package requests readable
-// input and interprets hangup as end-of-input; all remaining error events become
-// io.Error.unavailable because core/io does not yet expose native errno detail.
+// Poll_Descriptor is the small exchange record used by common readiness policy.
+// POSIX targets pass its compatible layout to poll; Windows translates it
+// around WaitForSingleObject. Only native_poll_one writes returned_events.
+// Hangup becomes end-of-input; all other errors become io.Error.unavailable.
 Poll_Descriptor :: c struct {
     descriptor: c_abi.int,
     events: c_abi.short,
@@ -39,10 +40,10 @@ Poll_Invalid :: cast[c_abi.short](0x0020)
 Nanoseconds_Per_Millisecond :: 1000 * 1000
 Maximum_Poll_Milliseconds :: 2147483647
 
-// Native_Window_Size is the POSIX winsize record written by TIOCGWINSZ on both
-// selected targets. Pixel dimensions are retained only to establish the exact
-// C layout; the public API reports rows and columns because terminal cells are
-// the unit used by text applications.
+// Native_Window_Size is the target-seam result record. POSIX writes it directly
+// through TIOCGWINSZ; Windows derives the same fields from its visible console
+// rectangle. Pixel dimensions establish the POSIX ABI shape but are otherwise
+// ignored because text applications operate in terminal cells.
 Native_Window_Size :: c struct {
     rows: c_abi.unsigned_short,
     columns: c_abi.unsigned_short,
@@ -120,7 +121,7 @@ apply_raw_mode :: proc(
 }
 
 // begin_raw saves input's complete native terminal mode, derives the platform's
-// conventional raw mode through cfmakeraw, and applies it immediately. Raw mode
+// conventional raw mode, and applies it immediately. Raw mode
 // disables canonical line buffering, echo, signal-generating control keys, and
 // byte transformations; Ctrl-C therefore arrives as byte 3 for application
 // policy rather than terminating before normal cleanup can run.
@@ -216,8 +217,8 @@ pub restore :: proc(session: ^Session) -> bool {
 }
 
 // query_size asks one borrowed terminal descriptor for its current rows and
-// columns. The variadic ioctl tail carries a pointer to exact native storage;
-// the call writes synchronously and does not retain it. Invalid descriptors
+// columns. The target operation writes the exchange record synchronously and
+// retains no pointer. Invalid descriptors
 // return .invalid before native code. Native failure returns .unavailable and a
 // zero Size. Successful zero dimensions are preserved as a valid observation.
 pub query_size :: proc(terminal_file: os.File) -> (Size, io.Error) {
@@ -242,7 +243,7 @@ pub query_size :: proc(terminal_file: os.File) -> (Size, io.Error) {
     )
 }
 
-// read waits for input using timeout rounded upward to poll's millisecond
+// read waits for input using timeout rounded upward to native millisecond
 // resolution, then performs one ordinary os.read into caller-owned storage. A
 // zero timeout polls immediately; any positive sub-millisecond duration waits
 // one millisecond. A clean timeout returns (0, .none), while terminal hangup
@@ -273,7 +274,7 @@ pub read :: proc(
         return (0, .none)
     }
 
-    // A peer may close after poll reports readability. os.read remains the
+    // A peer may close after readiness is reported. os.read remains the
     // authority for that race and translates a zero-byte native read to EOF.
     if descriptor.returned_events & Poll_Input != 0 {
         return os.read(session^.input, destination)
@@ -285,7 +286,7 @@ pub read :: proc(
         return (0, .unavailable)
     }
 
-    // poll promised one ready descriptor but supplied no event understood by
+    // The target promised one ready descriptor but supplied no event understood by
     // the selected contract. Treat that mismatch as native unavailability
     // rather than spinning the application event loop without progress.
     return (0, .unavailable)

@@ -14,9 +14,11 @@ build/draftc build examples/tetris --target aarch64-macos -O2 -o /tmp/draft-tetr
 ```
 
 On GNU/Linux, select `--target aarch64-linux` or `--target x86_64-linux` for
-the host architecture. Use a terminal of 50 columns by 24 rows or larger. The
-game follows terminal resizes; a smaller terminal displays a bounded size
-notice instead of corrupting the screen.
+the host architecture. On x86-64 Windows, select `--target x86_64-windows` and
+use a Windows 10-or-newer console with virtual-terminal processing. Use a
+terminal of 50 columns by 24 rows or larger. The game follows terminal resizes;
+a smaller terminal displays a bounded size notice instead of corrupting the
+screen.
 
 ## Controls
 

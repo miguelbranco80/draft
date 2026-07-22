@@ -9,8 +9,8 @@
 // The program intentionally uses only Draft core packages and ANSI/VT output:
 // there is no ncurses, event library, background thread, or platform code in
 // the example. The TUI owns bounded heap storage for current and previous cell
-// surfaces. Current target support follows core/terminal: AArch64 macOS and
-// AArch64 GNU/Linux.
+// surfaces. Current target support follows core/terminal: AArch64 macOS,
+// AArch64/x86-64 GNU/Linux, and x86-64 Windows.
 package tetris
 
 import core/io

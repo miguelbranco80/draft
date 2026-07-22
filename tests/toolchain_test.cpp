@@ -568,6 +568,8 @@ void test_windows_toolchain_arguments(TestState &state) {
   EXPECT(state, arguments.find("\n-Wl,/debug:full\n") != std::string::npos);
   EXPECT(state, arguments.find("\n/pdbaltpath:%_PDB%\n") !=
       std::string::npos);
+  EXPECT(state, arguments.find("\n/entry:wmainCRTStartup\n") !=
+      std::string::npos);
   EXPECT(state, arguments.find("\n/implib:" +
       (temporary / "windows_toolchain.lib").string() + "\n") !=
       std::string::npos);

@@ -22,6 +22,7 @@ struct TargetFacts;
 enum class CAbiClass {
   Illegal,
   Direct,
+  Win64WideInteger,
   HomogeneousFloatAggregate,
   SmallAggregate,
   EightbyteAggregate,
@@ -57,6 +58,9 @@ struct CAbiType {
   // four times. SmallAggregate uses integer containers. AArch64 arguments may
   // occupy one or two 64-bit registers and exact-width results; Win64 uses one
   // exact-width i8/i16/i32/i64 carrier for its four legal record sizes.
+  // Win64WideInteger is deliberately separate: Clang passes __int128 through
+  // an address but returns it in the target's <2 x i64> vector carrier. It is
+  // neither an ordinary direct scalar nor an sret aggregate.
   std::uint32_t homogeneous_element_bits = 0;
   std::uint32_t homogeneous_element_count = 0;
   std::uint32_t argument_integer_bits = 0;

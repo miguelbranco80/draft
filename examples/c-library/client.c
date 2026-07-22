@@ -2,7 +2,13 @@
 
 #include "draft-c-library.h"
 
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+#else
 #include <pthread.h>
+#endif
 
 static int32_t add_one(int32_t value) {
     return value + 1;
@@ -13,11 +19,19 @@ typedef struct bridge_observation {
     int32_t second;
 } bridge_observation;
 
+#if defined(_WIN32)
+static DWORD WINAPI run_bridge_on_foreign_thread(LPVOID user) {
+#else
 static void *run_bridge_on_foreign_thread(void *user) {
+#endif
     bridge_observation *observation = (bridge_observation *)user;
     observation->first = draft_bridge_from_c(35);
     observation->second = draft_bridge_from_c(35);
+#if defined(_WIN32)
+    return 0;
+#else
     return NULL;
+#endif
 }
 
 int main(void) {
@@ -144,11 +158,21 @@ int main(void) {
     if (draft_bridge_from_c(35) != 42) return 12;
     if (draft_bridge_from_c(35) != 43) return 13;
 
-    // This pthread is unknown to core/thread. The context-free runtime bridge
-    // must attach it on first entry, initialize its package TLS to seven, and
-    // retain that independent value until pthread exit.
-    pthread_t foreign_thread;
+    // This native thread is unknown to core/thread. The context-free runtime
+    // bridge must attach it on first entry, initialize its package TLS to
+    // seven, and retain that independent value until native thread exit.
     bridge_observation observation = {0, 0};
+#if defined(_WIN32)
+    HANDLE foreign_thread = CreateThread(
+        NULL, 0, run_bridge_on_foreign_thread, &observation, 0, NULL);
+    if (foreign_thread == NULL) return 14;
+    if (WaitForSingleObject(foreign_thread, INFINITE) != WAIT_OBJECT_0) {
+        CloseHandle(foreign_thread);
+        return 15;
+    }
+    if (!CloseHandle(foreign_thread)) return 15;
+#else
+    pthread_t foreign_thread;
     if (pthread_create(
             &foreign_thread,
             NULL,
@@ -157,6 +181,7 @@ int main(void) {
         return 14;
     }
     if (pthread_join(foreign_thread, NULL) != 0) return 15;
+#endif
     if (observation.first != 42 || observation.second != 43) return 16;
     return 0;
 }

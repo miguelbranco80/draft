@@ -1,0 +1,34 @@
+// This target-selected half of core/time exposes Windows' invariant performance
+// counter as nanoseconds since an unspecified monotonic origin. Neither the
+// counter nor its frequency owns a resource. The conversion uses i128
+// intermediates so long uptimes and high frequencies cannot overflow before
+// the final Duration range check.
+//
+// QueryPerformanceCounter/Frequency signatures and the signed 64-bit
+// LARGE_INTEGER representation are Windows x64 ABI facts. Draft specification:
+// sections 5-7 and 12, plus the x86-64 Windows target profile.
+package time
+
+foreign windows_kernel {
+    query_performance_counter as "QueryPerformanceCounter" :: c proc(
+        value: ^i64,
+    ) -> i32
+    query_performance_frequency as "QueryPerformanceFrequency" :: c proc(
+        value: ^i64,
+    ) -> i32
+}
+
+pub monotonic_now :: proc() -> Duration {
+    counter: i64
+    frequency: i64
+    assert(query_performance_frequency(&frequency) != 0 && frequency > 0,
+        "performance-counter frequency is unavailable")
+    assert(query_performance_counter(&counter) != 0 && counter >= 0,
+        "performance counter is unavailable")
+
+    nanoseconds := cast[i128](counter) * cast[i128](cast[i64](second)) /
+        cast[i128](frequency)
+    assert(nanoseconds <= cast[i128](~cast[u64](0) >> 1),
+        "monotonic timestamp exceeds Duration")
+    return cast[Duration](cast[i64](nanoseconds))
+}

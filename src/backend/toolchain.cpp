@@ -1471,6 +1471,13 @@ NativeBuildResult build_native_artifact(
       link_arguments.push_back("-Xlinker");
       link_arguments.push_back("/pdbaltpath:%_PDB%");
     }
+    if (options.artifact_kind == NativeArtifactKind::Executable) {
+      // Draft's Windows entry is wmain so UTF-16 process vectors can be
+      // converted to the language's UTF-8 byte-string views without depending
+      // on the machine's active ANSI code page.
+      link_arguments.push_back("-Xlinker");
+      link_arguments.push_back("/entry:wmainCRTStartup");
+    }
     if (options.artifact_kind == NativeArtifactKind::DynamicLibrary) {
       import_library_path = output_path;
       import_library_path->replace_extension(".lib");

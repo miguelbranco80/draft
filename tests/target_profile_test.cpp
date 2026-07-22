@@ -146,16 +146,16 @@ void test_x86_64_windows_profile(TestState &state) {
   EXPECT(state, profile.system_link_providers ==
       std::vector<std::string>({"libc", "windows"}));
   EXPECT(state, profile.system_link_library == "kernel32");
-  EXPECT(state, profile.system_foreign_summaries.size() == 31);
-  EXPECT(state, profile.system_foreign_summaries[13].linker_name ==
+  EXPECT(state, profile.system_foreign_summaries.size() == 43);
+  EXPECT(state, profile.system_foreign_summaries[18].linker_name ==
       "CreateThread");
   EXPECT(state,
-      profile.system_foreign_summaries[13].callback_parameters ==
+      profile.system_foreign_summaries[18].callback_parameters ==
           std::vector<std::uint32_t>{2});
-  EXPECT(state, profile.system_foreign_summaries[14].linker_name ==
+  EXPECT(state, profile.system_foreign_summaries[19].linker_name ==
       "FlsAlloc");
   EXPECT(state,
-      profile.system_foreign_summaries[14].callback_parameters ==
+      profile.system_foreign_summaries[19].callback_parameters ==
           std::vector<std::uint32_t>{0});
 
   draft::TargetProfile selected;

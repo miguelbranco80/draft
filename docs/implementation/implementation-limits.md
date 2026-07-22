@@ -121,18 +121,23 @@ parallel package-module representation remain in compiler state.
 
 ## Native host and instrumentation limits
 
-Status: three hosted targets plus the in-progress x86-64 Windows target.
+Status: four hosted target profiles; three complete native test harnesses plus
+one Windows native build/launch smoke gate.
 
 The bootstrap compiler runs and executes its complete native integration suite
-on AArch64 macOS, AArch64 GNU/Linux, and x86-64 GNU/Linux. It links a selected
-LLVM 22 library for ordinary package-module object emission. Matching
+on AArch64 macOS, AArch64 GNU/Linux, and x86-64 GNU/Linux. The x86-64 Windows
+host builds the bootstrap and launches every ordinary example, target package
+assembly, foreign-provider executable, and an independent C client/Draft DLL
+pair. It links a selected LLVM 22 library (LLVM-C on Windows) for ordinary
+package-module object emission. Matching
 Clang/`ld.lld`/`llvm-ar`/`dsymutil`, the Apple linker, `libtool`, SDK, and system
 runtime remain ordinary tooling prerequisites rather than Draft program inputs.
-The x86-64 Windows profile currently reaches target selection, LLP64/Win64 ABI
-semantics, COFF object emission, and PE/COFF artifact publication, but not its
-hosted runtime/core platform implementation or native qualification. COFF
-whole-graph object output is limited to a single native input because the
-format has no relocatable partial link; multi-input consumers use a `.lib`.
+The Windows bootstrap still lacks validation-process execution, durable
+evidence-store locking, and provider-backed Codex subprocess support. Ordinary
+provider-free checking, compilation, linking, core/runtime use, and execution
+do not depend on those operations. COFF whole-graph object output is limited to
+a single native input because the format has no relocatable partial link;
+multi-input consumers use a `.lib`.
 Other Linux libcs/distribution contracts
 and other architectures still have no target profile. Parsed inline assembly
 remains AArch64-only; x86-64

@@ -22,6 +22,18 @@ foreign linux {
     native_munmap as "munmap" :: c proc(address: rawptr, size: usize) -> i32
 }
 
+native_virtual_protect :: proc(
+    address: rawptr,
+    size: usize,
+    protection: Virtual_Protection,
+) -> bool {
+    return native_mprotect(address, size, cast[i32](protection)) == 0
+}
+
+native_virtual_release :: proc(address: rawptr, size: usize) -> bool {
+    return native_munmap(address, size) == 0
+}
+
 // Linux MAP_PRIVATE | MAP_ANONYMOUS is 0x0002 | 0x0020 for the selected
 // x86-64 UAPI. mmap reports failure with the all-ones pointer value.
 pub virtual_reserve :: proc(size: usize) -> (Virtual_Region, bool) {

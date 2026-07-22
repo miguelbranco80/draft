@@ -471,11 +471,11 @@ pub virtual_protect :: proc(
     if region^.data == nil {
         return false
     }
-    return native_mprotect(
+    return native_virtual_protect(
         region^.data,
         region^.size,
-        cast[i32](protection),
-    ) == 0
+        protection,
+    )
 }
 
 pub virtual_commit :: proc(region: ^Virtual_Region) -> bool {
@@ -487,7 +487,7 @@ pub virtual_release :: proc(region: ^Virtual_Region) -> bool {
     if region^.data == nil {
         return true
     }
-    if native_munmap(region^.data, region^.size) != 0 {
+    if !native_virtual_release(region^.data, region^.size) {
         return false
     }
     region^.data = nil

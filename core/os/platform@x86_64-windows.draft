@@ -1,0 +1,173 @@
+// This target-selected half of core/os supplies the Windows x64 UCRT file
+// boundary. Public File values remain integer CRT descriptors so the common
+// read/write/close policy and standard descriptors do not expose HANDLEs.
+// Pathnames are UTF-8: each borrowed cstring is converted synchronously to one
+// temporary UTF-16 buffer before `_wopen` or `_wunlink`, then released before
+// returning. Opened descriptors always use binary mode, so the UCRT never
+// translates newlines or treats byte 0x1a as end-of-input.
+//
+// This file owns no retained state. Successful open transfers exactly one
+// descriptor close obligation through the common File API. Numeric flags and
+// UCRT signatures are facts of the versioned Windows target profile. Draft
+// specification: sections 5-7 and 12, plus the x86-64 Windows target profile.
+package os
+
+import core/c_abi
+
+// UCRT `_O_*` values. The common access modes already occupy values 0, 1, and
+// 2. `native_open` adds binary mode centrally so callers cannot accidentally
+// request text translation through a low-level flag combination.
+pub open_append :: cast[c_abi.int](0x0008)
+pub open_create :: cast[c_abi.int](0x0100)
+pub open_truncate :: cast[c_abi.int](0x0200)
+pub open_exclusive :: cast[c_abi.int](0x0400)
+Open_Binary :: cast[c_abi.int](0x8000)
+
+// Windows `_S_IREAD | _S_IWRITE` is 0x0100 | 0x0080. Windows has no POSIX
+// process umask contract; the value requests an ordinary readable/writable
+// file and the filesystem security descriptor remains authoritative.
+pub default_creation_permissions :: cast[c_abi.unsigned_int](0x0180)
+
+pub page_size :: proc() -> usize {
+    return 4096
+}
+
+Cp_Utf8 :: cast[c_abi.unsigned_int](65001)
+Mb_Err_Invalid_Chars :: cast[c_abi.unsigned_long](0x00000008)
+Maximum_Ucrt_Count :: cast[usize](0xffffffff)
+
+foreign windows_ucrt {
+    ucrt_wopen as "_wopen" :: c proc(
+        path: [^]u16,
+        flags: c_abi.int,
+        ..,
+    ) -> c_abi.int
+    ucrt_read as "_read" :: c proc(
+        descriptor: c_abi.int,
+        destination: [^]u8,
+        count: c_abi.unsigned_int,
+    ) -> c_abi.int
+    ucrt_write as "_write" :: c proc(
+        descriptor: c_abi.int,
+        source: [^]u8,
+        count: c_abi.unsigned_int,
+    ) -> c_abi.int
+    native_close as "_close" :: c proc(descriptor: c_abi.int) -> c_abi.int
+    ucrt_wunlink as "_wunlink" :: c proc(path: [^]u16) -> c_abi.int
+    native_process_id as "_getpid" :: c proc() -> c_abi.int
+    native_exit as "_exit" :: c proc(status: c_abi.int)
+    ucrt_malloc as "malloc" :: c proc(size: c_abi.size_t) -> rawptr
+    ucrt_free as "free" :: c proc(storage: rawptr)
+}
+
+foreign windows_kernel {
+    multi_byte_to_wide_char as "MultiByteToWideChar" :: c proc(
+        code_page: c_abi.unsigned_int,
+        flags: c_abi.unsigned_long,
+        source: cstring,
+        source_length: c_abi.int,
+        destination: [^]u16,
+        destination_length: c_abi.int,
+    ) -> c_abi.int
+}
+
+// with_utf16_path materializes one zero-terminated UTF-16 path. The caller
+// receives ownership of the returned UCRT allocation and releases it before
+// returning from the native operation. A nil result covers invalid UTF-8,
+// allocation failure, and the impossible byte-size overflow.
+utf16_path :: proc(path: cstring) -> [^]u16 {
+    required := multi_byte_to_wide_char(
+        Cp_Utf8,
+        Mb_Err_Invalid_Chars,
+        path,
+        -1,
+        nil,
+        0,
+    )
+    if required <= 0 {
+        return nil
+    }
+    count := cast[usize](required)
+    if count > ~cast[usize](0) / size_of(u16) {
+        return nil
+    }
+    storage := cast[[^]u16](ucrt_malloc(count * size_of(u16)))
+    if storage == nil {
+        return nil
+    }
+    converted := multi_byte_to_wide_char(
+        Cp_Utf8,
+        Mb_Err_Invalid_Chars,
+        path,
+        -1,
+        storage,
+        required,
+    )
+    if converted != required {
+        ucrt_free(cast[rawptr](storage))
+        return nil
+    }
+    return storage
+}
+
+// These fixed-signature wrappers keep the UCRT variadic tail and UTF-16
+// allocation out of common core/os. `_wopen` observes mode only with create,
+// exactly like the POSIX entry point used by the other targets.
+native_open :: proc(
+    path: cstring,
+    flags: c_abi.int,
+    mode: c_abi.unsigned_int,
+) -> c_abi.int {
+    wide := utf16_path(path)
+    if wide == nil {
+        return -1
+    }
+    descriptor := ucrt_wopen(wide, flags | Open_Binary, mode)
+    ucrt_free(cast[rawptr](wide))
+    return descriptor
+}
+
+native_unlink :: proc(path: cstring) -> c_abi.int {
+    wide := utf16_path(path)
+    if wide == nil {
+        return -1
+    }
+    result := ucrt_wunlink(wide)
+    ucrt_free(cast[rawptr](wide))
+    return result
+}
+
+// UCRT byte counts are 32-bit even in the LLP64 process. Preserve core/os's
+// one-call partial-I/O contract by clamping one request; write_all/read loops
+// already handle the remaining suffix explicitly.
+native_read :: proc(
+    descriptor: c_abi.int,
+    destination: [^]u8,
+    count: c_abi.size_t,
+) -> c_abi.ssize_t {
+    requested := count
+    if requested > Maximum_Ucrt_Count {
+        requested = Maximum_Ucrt_Count
+    }
+    return cast[c_abi.ssize_t](ucrt_read(
+        descriptor,
+        destination,
+        cast[c_abi.unsigned_int](requested),
+    ))
+}
+
+native_write :: proc(
+    descriptor: c_abi.int,
+    source: [^]u8,
+    count: c_abi.size_t,
+) -> c_abi.ssize_t {
+    requested := count
+    if requested > Maximum_Ucrt_Count {
+        requested = Maximum_Ucrt_Count
+    }
+    return cast[c_abi.ssize_t](ucrt_write(
+        descriptor,
+        source,
+        cast[c_abi.unsigned_int](requested),
+    ))
+}

@@ -107,9 +107,11 @@ Use `/usr/lib/llvm-22/lib/cmake/llvm` for the standard Ubuntu LLVM 22 layout.
 package; no ambient `llvm-config` lookup decides the linked backend version.
 
 The bootstrap is a direct C++20 implementation targeting AArch64 macOS,
-AArch64 GNU/Linux, and x86-64 GNU/Linux. All three build and execute on their
-matching native hosts; the x86-64 CI row additionally runs the bootstrap under
-address and undefined-behavior sanitizers.
+AArch64 GNU/Linux, x86-64 GNU/Linux, and x86-64 Windows/MSVC. All four build
+and execute on matching native hosts; the Linux x86-64 CI row additionally runs
+the bootstrap under address and undefined-behavior sanitizers. Windows links
+the official LLVM-C 22 development distribution and uses its matching Clang,
+lld-link, and llvm-lib tools plus the Windows SDK.
 It implements the complete ordinary-language pipeline independently of Codex;
 provider-backed synthesis and judgment live behind compiler-owned typed,
 content-addressed boundaries. Detailed capability and evidence claims belong to

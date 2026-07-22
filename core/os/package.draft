@@ -1,5 +1,5 @@
 // This package is the hosted operating-system boundary shared by the current
-// macOS and GNU/Linux targets. It exposes process-lifetime argument and
+// macOS, GNU/Linux, and Windows targets. It exposes process-lifetime argument and
 // environment views, explicit descriptor handles, one-call byte/text
 // reads/writes, complete writes, pathname operations, and small process facts.
 // Target files own platform constants and C ABI declarations; this common file
@@ -53,16 +53,11 @@ pub standard_output: File = File{descriptor = 1}
 pub standard_error: File = File{descriptor = 2}
 
 // Access modes occupy the low two bits and must not be combined with each
-// other on either supported POSIX target. Target-owned creation and status
-// flag values live in the selected platform source file.
+// other on any selected hosted target. Target-owned creation/status flags and
+// default creation permissions live in the selected platform source file.
 pub open_read_only :: cast[c_abi.int](0)
 pub open_write_only :: cast[c_abi.int](1)
 pub open_read_write :: cast[c_abi.int](2)
-
-// New files receive rw-rw-rw- before the process umask removes permissions.
-// The decimal spelling is octal 0666; naming the policy is clearer at call
-// sites than repeating a target-shaped numeric literal.
-pub default_creation_permissions :: cast[c_abi.unsigned_int](438)
 
 pub file_from_descriptor :: proc(descriptor: c_abi.int) -> File {
     return File{descriptor = descriptor}
@@ -131,7 +126,7 @@ pub write :: proc(handle: File, source: []u8) -> (usize, io.Error) {
 
 // write_text performs one native write from immutable string storage without
 // copying it into a mutable byte buffer. raw_data is safe for this exact use:
-// the selected POSIX write operation reads `count` bytes synchronously and
+// the selected native write operation reads `count` bytes synchronously and
 // neither mutates nor retains the pointer. The empty case avoids presenting a
 // possibly nil empty-string address to a native call and matches write([]u8).
 // A successful call may accept only a prefix; callers needing completion use

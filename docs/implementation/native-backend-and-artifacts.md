@@ -83,6 +83,24 @@ actually guaranteed by the aggregate base. Unit tests compare Clang-shaped IR
 contracts and compile them through the embedded X86 backend; native x86-64 CI
 closes the boundary with the independent generated-header C client.
 
+## Win64 C ABI lowering
+
+Status: fixed scalar, aggregate, callback, import, and export lowering implemented.
+
+Microsoft x64 uses one integer carrier only for C records of exactly 1, 2, 4,
+or 8 bytes. Other record parameters are pointers and other record results use
+`sret`; record members do not create SysV-style INTEGER/SSE classes. The
+Clang-compatible 128-bit integer extension is a separate ABI class because its
+contract is asymmetric: the parameter is a pointer to 16-byte storage, while
+the result is LLVM `<2 x i64>`. The adapter uses bounded scratch storage to
+translate both directions without changing ordinary Draft `i128`/`u128`
+procedure representation.
+
+Classifier tests cover record and wide-integer decisions, emitted-IR tests
+compile the exact public signatures through LLVM's X86 backend, and native
+Windows CI closes the boundary with the independently compiled generated-header
+C client.
+
 ## C variadic LLVM lowering
 
 Status: promoted scalar/pointer tails implemented for every current native ABI.
@@ -315,7 +333,8 @@ profile must be a separate explicit artifact contract rather than an ambient
 
 ## Native PE/COFF artifacts and debug information
 
-Status: artifact construction implemented; native hosted qualification pending.
+Status: artifact construction implemented with a native Windows build/launch
+gate; full validation/determinism harness parity remains pending.
 
 The x86-64 Windows adapter emits AMD64 COFF package objects in process, invokes
 matching Clang/LLD for `.exe` and `.dll` links, and uses `llvm-lib` for
@@ -338,7 +357,8 @@ impossible shapes rather than labeling archive bytes as an object.
 
 ## Native integration gates
 
-Status: required on AArch64 macOS, AArch64 Linux, and x86-64 Linux CI hosts.
+Status: complete harness required on AArch64 macOS, AArch64 Linux, and x86-64
+Linux; native artifact/application smoke required on x86-64 Windows.
 
 The native integration executables select the target matching the host pair:
 Apple Silicon exercises `draft-aarch64-macos-v5`, AArch64 Linux exercises
@@ -354,6 +374,15 @@ The native matrix also runs the embedded-LLVM/external-Clang parity gate for all
 five artifact kinds and the one-worker/four-worker determinism gate. Those tests
 make the retained oracle executable, prove actual multi-package overlap, and
 keep stable publication a required behavior rather than a comment-only design.
+
+Windows CI uses a separate driver-level gate while the validation runner and
+POSIX-oriented C++ launch harnesses are ported. It builds the MSVC bootstrap
+against LLVM-C, builds and launches every ordinary example except the
+signal-classification trap fixture, exercises exact COFF package assembly and a
+mapped foreign object, publishes object/archive/EXE/DLL/PDB/import-library
+forms, and compiles and runs the independent C client. This proves the hosted
+runtime/core path without overstating validation evidence or byte-for-byte
+artifact determinism on Windows.
 
 These gates use the declared host toolchain and prove that current source
 composes into working native artifacts on each host. Reproducibility is tested

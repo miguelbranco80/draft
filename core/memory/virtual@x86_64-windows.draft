@@ -1,0 +1,90 @@
+// This target-selected half of core/memory maps the portable virtual-region
+// lifetime onto VirtualAlloc, VirtualProtect, and VirtualFree. Reservation uses
+// MEM_RESERVE with PAGE_NOACCESS; commit is represented by the common
+// read-write protection request and adds MEM_COMMIT before applying protection.
+// Windows release requires size zero with MEM_RELEASE, while the public region
+// retains its original byte size until that call succeeds.
+//
+// All pointers are borrowed for one synchronous kernel call. The returned
+// Virtual_Region is the only owner of a successful reservation. Constants and
+// signatures are versioned Windows x64 target facts. Draft specification:
+// sections 5-7 and 12, plus the x86-64 Windows target profile.
+package memory
+
+Mem_Commit :: cast[u32](0x00001000)
+Mem_Reserve :: cast[u32](0x00002000)
+Mem_Release :: cast[u32](0x00008000)
+
+Page_No_Access :: cast[u32](0x01)
+Page_Read_Only :: cast[u32](0x02)
+Page_Read_Write :: cast[u32](0x04)
+Page_Execute_Read :: cast[u32](0x20)
+Page_Execute_Read_Write :: cast[u32](0x40)
+
+foreign windows_kernel {
+    virtual_alloc as "VirtualAlloc" :: c proc(
+        address: rawptr,
+        size: usize,
+        allocation_type: u32,
+        protection: u32,
+    ) -> rawptr
+    win32_virtual_protect as "VirtualProtect" :: c proc(
+        address: rawptr,
+        size: usize,
+        protection: u32,
+        previous_protection: ^u32,
+    ) -> i32
+    virtual_free as "VirtualFree" :: c proc(
+        address: rawptr,
+        size: usize,
+        free_type: u32,
+    ) -> i32
+}
+
+pub virtual_reserve :: proc(size: usize) -> (Virtual_Region, bool) {
+    empty: Virtual_Region
+    if size == 0 {
+        return (empty, false)
+    }
+    storage := virtual_alloc(nil, size, Mem_Reserve, Page_No_Access)
+    if storage == nil {
+        return (empty, false)
+    }
+    return (Virtual_Region{data = storage, size = size}, true)
+}
+
+// Windows separates commitment from protection. Commit first for every state,
+// including `.none`; committing PAGE_NOACCESS preserves inaccessibility while
+// making a later VirtualProtect well-defined. Recommitting an already committed
+// page is permitted. The explicit VirtualProtect then establishes the requested
+// state both on the first transition and on later changes.
+native_virtual_protect :: proc(
+    address: rawptr,
+    size: usize,
+    protection: Virtual_Protection,
+) -> bool {
+    native_protection: u32
+    switch protection {
+    case .none:
+        native_protection = Page_No_Access
+    case .read:
+        native_protection = Page_Read_Only
+    case .read_write:
+        native_protection = Page_Read_Write
+    case .read_execute:
+        native_protection = Page_Execute_Read
+    case .read_write_execute:
+        native_protection = Page_Execute_Read_Write
+    }
+
+    committed := virtual_alloc(address, size, Mem_Commit, native_protection)
+    if committed != address {
+        return false
+    }
+    previous: u32
+    return win32_virtual_protect(address, size, native_protection, &previous) != 0
+}
+
+native_virtual_release :: proc(address: rawptr, size: usize) -> bool {
+    return virtual_free(address, 0, Mem_Release) != 0
+}

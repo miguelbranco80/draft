@@ -77,7 +77,8 @@ foreach(line IN LISTS matrix_lines)
     list(APPEND matrix_bench_packages "${package_relative}")
   endif()
 
-  foreach(target IN ITEMS aarch64-macos aarch64-linux x86_64-linux)
+  foreach(target IN ITEMS
+      aarch64-macos aarch64-linux x86_64-linux x86_64-windows)
     execute_process(
       COMMAND "${DRAFTC}" check "${SOURCE_ROOT}/${workspace}"
         --root "${root}" --target "${target}"

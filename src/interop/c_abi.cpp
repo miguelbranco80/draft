@@ -406,6 +406,22 @@ classify_sysv_member(const TypeStore &types, TypeId type_id, std::uint64_t base,
   result.alignment = type.layout.alignment;
 
   if (direct_scalar(types, type_id, target, active_procedures)) {
+    // Microsoft x64 gives the Clang/GNU __int128 extension a split contract:
+    // parameters are pointers to caller-owned 16-byte values, while results
+    // use a <2 x i64> carrier. Treating it as an ordinary direct i128 happens
+    // to verify as LLVM IR but disagrees with an independently compiled C
+    // caller. Fixed-backing C enums recurse to the same physical scalar rule.
+    Type scalar = type;
+    while (scalar.kind == TypeKind::Enum && scalar.element.is_valid()) {
+      scalar = types.type(scalar.element);
+    }
+    if ((scalar.kind == TypeKind::SignedInteger ||
+         scalar.kind == TypeKind::UnsignedInteger ||
+         scalar.kind == TypeKind::EndianScalar) &&
+        scalar.bit_width == 128) {
+      result.classification = CAbiClass::Win64WideInteger;
+      return result;
+    }
     result.classification = CAbiClass::Direct;
     return result;
   }
@@ -518,7 +534,8 @@ CAbiFunctionPlan plan_c_abi_function(const TypeStore &types,
           classified->classification == CAbiClass::Illegal) {
         return CAbiFunctionPlan{};
       }
-      if (classified->classification == CAbiClass::Indirect) {
+      if (classified->classification == CAbiClass::Indirect ||
+          classified->classification == CAbiClass::Win64WideInteger) {
         result.parameters[index].mode = CAbiParameterMode::Indirect;
       }
     }

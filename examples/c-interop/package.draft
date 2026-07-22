@@ -1,7 +1,9 @@
 package c_interop
 
+import core/c_abi
+
 foreign libc {
-    labs :: c proc(value: i64) -> i64
+    labs :: c proc(value: c_abi.long) -> c_abi.long
 }
 
 export increment as "draft_increment" :: c proc(value: i32) -> i32 {
@@ -9,6 +11,10 @@ export increment as "draft_increment" :: c proc(value: i32) -> i32 {
 }
 
 main :: proc() {
+    // The untyped integer is checked directly against the selected C `long`.
+    // That keeps one source program valid for LP64 Darwin/Linux and LLP64
+    // Windows without asking the runtime cast emitter to convert equal
+    // underlying integer representations.
     assert(labs(-42) == 42)
     assert(increment(41) == 42)
 }

@@ -221,7 +221,8 @@ void test_checked_test_harness(TestState &state) {
           "@\"__draft.runtime.reset_temporary_allocator\"()") !=
           std::string::npos);
       EXPECT(state, llvm.find(
-          "call i64 @write(i32 3, ptr %validation.state.0, i64 16)") !=
+          "call i64 @__draft.host_write(i32 3, "
+          "ptr %validation.state.0, i64 16)") !=
           std::string::npos);
     }
   }

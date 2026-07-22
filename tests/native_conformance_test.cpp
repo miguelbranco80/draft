@@ -389,6 +389,7 @@ pub open_append :: cast[c_abi.int](0)
 pub open_create :: cast[c_abi.int](0)
 pub open_truncate :: cast[c_abi.int](0)
 pub open_exclusive :: cast[c_abi.int](0)
+pub default_creation_permissions :: cast[c_abi.unsigned_int](0)
 
 Test_Capacity :: 16384
 

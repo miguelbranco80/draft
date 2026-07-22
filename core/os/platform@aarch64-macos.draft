@@ -18,6 +18,10 @@ pub open_create :: cast[c_abi.int](0x0200)
 pub open_truncate :: cast[c_abi.int](0x0400)
 pub open_exclusive :: cast[c_abi.int](0x0800)
 
+// New files begin as rw-rw-rw- before the process umask removes permissions.
+// Decimal 438 is octal 0666 in the selected Darwin SDK.
+pub default_creation_permissions :: cast[c_abi.unsigned_int](438)
+
 pub page_size :: proc() -> usize {
     return 16384
 }

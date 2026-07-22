@@ -15,6 +15,18 @@ foreign darwin {
     native_munmap as "munmap" :: c proc(address: rawptr, size: usize) -> i32
 }
 
+native_virtual_protect :: proc(
+    address: rawptr,
+    size: usize,
+    protection: Virtual_Protection,
+) -> bool {
+    return native_mprotect(address, size, cast[i32](protection)) == 0
+}
+
+native_virtual_release :: proc(address: rawptr, size: usize) -> bool {
+    return native_munmap(address, size) == 0
+}
+
 // MAP_PRIVATE | MAP_ANON is 0x0002 | 0x1000 in the selected Darwin SDK.
 pub virtual_reserve :: proc(size: usize) -> (Virtual_Region, bool) {
     empty: Virtual_Region

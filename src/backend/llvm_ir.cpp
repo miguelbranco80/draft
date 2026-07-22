@@ -886,6 +886,8 @@ private:
       return;
     }
 
+    const bool is_windows = target_.facts.os == "windows";
+
     // pthread_once_t and pthread_key_t are libc ABI types, not architectural
     // machine types. Darwin uses a 16-byte signed once record and a 64-bit
     // key; the selected glibc contract uses a 32-bit once word initialized to
@@ -910,9 +912,12 @@ private:
             << "%draft.runtime.Logger = type { ptr, ptr }\n"
             << "%draft.runtime.RandomGenerator = type { ptr, ptr }\n"
             << "%draft.runtime.TempNode = type { ptr, ptr }\n"
-            << "%draft.runtime.TempState = type { ptr }\n"
-            << "%draft.runtime.PthreadOnce = type " << pthread_once_type << "\n"
-            << "%draft.runtime.Context = type { "
+            << "%draft.runtime.TempState = type { ptr }\n";
+    if (!is_windows) {
+      output_ << "%draft.runtime.PthreadOnce = type " << pthread_once_type
+              << "\n";
+    }
+    output_ << "%draft.runtime.Context = type { "
                "%draft.runtime.Allocator, %draft.runtime.Allocator, ptr, "
                "%draft.runtime.Logger, %draft.runtime.RandomGenerator, "
                "ptr, i64, ptr }\n"
@@ -922,13 +927,20 @@ private:
             << "@__draft.process_args_data = internal global ptr null, align 8\n"
             << "@__draft.process_args_count = internal global i64 0, align 8\n"
             << "@__draft.process_environment_data = internal global ptr null, align 8\n"
-            << "@__draft.process_environment_count = internal global i64 0, align 8\n"
-            << "@__draft.temp_key_once = internal global "
-            << pthread_once_initializer << "\n"
-            << "@__draft.temp_key = internal global " << pthread_key_type
-            << " 0, align " << pthread_key_alignment << "\n"
-            << "@__draft.temp_key_ready = internal global i1 false, align 1\n"
-            << "@__draft.root_context = internal global %draft.runtime.Context "
+            << "@__draft.process_environment_count = internal global i64 0, align 8\n";
+    if (is_windows) {
+      // -1 is uninitialized, -2 is the initializing thread, and -3 is a
+      // permanent FlsAlloc failure. Real FLS indices are small nonnegative
+      // DWORDs, so one atomic word represents the complete state machine.
+      output_ << "@__draft.temp_key = internal global i32 -1, align 4\n";
+    } else {
+      output_ << "@__draft.temp_key_once = internal global "
+              << pthread_once_initializer << "\n"
+              << "@__draft.temp_key = internal global " << pthread_key_type
+              << " 0, align " << pthread_key_alignment << "\n"
+              << "@__draft.temp_key_ready = internal global i1 false, align 1\n";
+    }
+    output_ << "@__draft.root_context = internal global %draft.runtime.Context "
                "{ %draft.runtime.Allocator { ptr @__draft.default_allocator, "
                "ptr null }, "
                "%draft.runtime.Allocator { ptr @__draft.temp_allocator, "
@@ -953,56 +965,231 @@ private:
             << llvm_bytes(bounds_prefix) << "\", align 1\n"
             << "@.draft.runtime.newline = private unnamed_addr constant [1 x i8] "
                "c\"" << llvm_bytes(newline) << "\", align 1\n\n"
-            << "declare i64 @write(i32, ptr, i64)\n"
             << "declare ptr @calloc(i64, i64)\n"
-            << "declare ptr @realloc(ptr, i64)\n"
             << "declare void @free(ptr)\n"
-            << "declare i32 @posix_memalign(ptr, i64, i64)\n"
-            << "declare i32 @pthread_once(ptr, ptr)\n"
-            << "declare i32 @pthread_key_create(ptr, ptr)\n"
-            << "declare ptr @pthread_getspecific(" << pthread_key_type << ")\n"
-            << "declare i32 @pthread_setspecific(" << pthread_key_type
-            << ", ptr)\n"
-            << "declare void @arc4random_buf(ptr, i64)\n"
             << "declare i64 @strlen(ptr)\n"
             << "declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)\n"
-            << "declare void @llvm.memset.p0.i64(ptr, i8, i64, i1)\n\n"
-            // The runtime allocator is an ordinary Draft procedure pointer:
-            // its first physical argument is the hidden Context, followed by
-            // provider state and the source-visible allocator ABI. Allocation
-            // returns cleared storage so typed `memory.new` observes Draft's
-            // zero value. Large alignments use posix_memalign; aligned resize
-            // preserves the old allocation on failure and copies only the
-            // common live prefix before releasing it.
-            << "define internal ptr @__draft.allocate_zeroed("
-               "i64 %size, i64 %alignment) {\n"
-            << "entry:\n"
-            << "  %is.empty = icmp eq i64 %size, 0\n"
-            << "  br i1 %is.empty, label %empty, label %choose\n"
-            << "choose:\n"
-            << "  %ordinary = icmp ule i64 %alignment, 16\n"
-            << "  br i1 %ordinary, label %calloc, label %aligned\n"
-            << "calloc:\n"
-            << "  %calloc.memory = call ptr @calloc(i64 1, i64 %size)\n"
-            << "  ret ptr %calloc.memory\n"
-            << "aligned:\n"
-            << "  %slot = alloca ptr, align 8\n"
-            << "  store ptr null, ptr %slot, align 8\n"
-            << "  %status = call i32 @posix_memalign("
-               "ptr %slot, i64 %alignment, i64 %size)\n"
-            << "  %aligned.ok = icmp eq i32 %status, 0\n"
-            << "  br i1 %aligned.ok, label %clear, label %failed\n"
-            << "clear:\n"
-            << "  %aligned.memory = load ptr, ptr %slot, align 8\n"
-            << "  call void @llvm.memset.p0.i64("
-               "ptr %aligned.memory, i8 0, i64 %size, i1 false)\n"
-            << "  ret ptr %aligned.memory\n"
-            << "failed:\n"
-            << "  ret ptr null\n"
-            << "empty:\n"
-            << "  ret ptr null\n"
-            << "}\n\n"
-            // The default logger deliberately owns no formatting policy beyond
+            << "declare void @llvm.memset.p0.i64(ptr, i8, i64, i1)\n\n";
+
+    if (is_windows) {
+      output_ << "declare i32 @_write(i32, ptr, i32)\n"
+              << "declare i32 @_setmode(i32, i32)\n"
+              << "declare ptr @malloc(i64)\n"
+              << "declare i32 @rand_s(ptr)\n"
+              << "declare i32 @FlsAlloc(ptr)\n"
+              << "declare ptr @FlsGetValue(i32)\n"
+              << "declare i32 @FlsSetValue(i32, ptr)\n"
+              << "declare i32 @FlsFree(i32)\n"
+              << "declare i32 @SwitchToThread()\n"
+              << "declare i32 @WideCharToMultiByte("
+                 "i32, i32, ptr, i32, ptr, i32, ptr, ptr)\n"
+              << "declare i64 @wcslen(ptr)\n\n"
+              << "define internal void @__draft.initialize_standard_streams() {\n"
+              << "entry:\n"
+              << "  %stdin.mode = call i32 @_setmode(i32 0, i32 32768)\n"
+              << "  %stdout.mode = call i32 @_setmode(i32 1, i32 32768)\n"
+              << "  %stderr.mode = call i32 @_setmode(i32 2, i32 32768)\n"
+              << "  ret void\n"
+              << "}\n\n"
+              // UCRT `_write` has a 32-bit byte count. Runtime diagnostics and
+              // validation rows are bounded compiler-owned records, so one
+              // clamped call preserves the existing best-effort write policy.
+              << "define internal i64 @__draft.host_write("
+                 "i32 %descriptor, ptr %data, i64 %count) {\n"
+              << "entry:\n"
+              << "  %large = icmp ugt i64 %count, 4294967295\n"
+              << "  %bounded = select i1 %large, i64 4294967295, i64 %count\n"
+              << "  %narrow = trunc i64 %bounded to i32\n"
+              << "  %written = call i32 @_write("
+                 "i32 %descriptor, ptr %data, i32 %narrow)\n"
+              << "  %result = sext i32 %written to i64\n"
+              << "  ret i64 %result\n"
+              << "}\n\n"
+              // Every Windows allocation reserves one pointer-sized header
+              // immediately before the aligned result. The header remembers
+              // malloc's base, giving all alignments one release operation
+              // without relying on `_aligned_malloc`'s separate free family.
+              << "define internal ptr @__draft.allocate_zeroed("
+                 "i64 %size, i64 %alignment) {\n"
+              << "entry:\n"
+              << "  %empty = icmp eq i64 %size, 0\n"
+              << "  %alignment.invalid = icmp eq i64 %alignment, 0\n"
+              << "  %alignment.previous = sub i64 %alignment, 1\n"
+              << "  %alignment.bits = and i64 %alignment, %alignment.previous\n"
+              << "  %alignment.power = icmp eq i64 %alignment.bits, 0\n"
+              << "  %alignment.not.power = xor i1 %alignment.power, true\n"
+              << "  %alignment.bad = or i1 %alignment.invalid, %alignment.not.power\n"
+              << "  %invalid = or i1 %empty, %alignment.bad\n"
+              << "  br i1 %invalid, label %failed, label %measure\n"
+              << "measure:\n"
+              << "  %padding = add i64 %alignment, 7\n"
+              << "  %padding.overflow = icmp ult i64 %padding, %alignment\n"
+              << "  %total = add i64 %size, %padding\n"
+              << "  %total.overflow = icmp ult i64 %total, %size\n"
+              << "  %overflow = or i1 %padding.overflow, %total.overflow\n"
+              << "  br i1 %overflow, label %failed, label %allocate\n"
+              << "allocate:\n"
+              << "  %base = call ptr @malloc(i64 %total)\n"
+              << "  %base.exists = icmp ne ptr %base, null\n"
+              << "  br i1 %base.exists, label %align, label %failed\n"
+              << "align:\n"
+              << "  %base.integer = ptrtoint ptr %base to i64\n"
+              << "  %after.header = add i64 %base.integer, 8\n"
+              << "  %alignment.mask = sub i64 %alignment, 1\n"
+              << "  %with.mask = add i64 %after.header, %alignment.mask\n"
+              << "  %inverse.mask = xor i64 %alignment.mask, -1\n"
+              << "  %aligned.integer = and i64 %with.mask, %inverse.mask\n"
+              << "  %aligned = inttoptr i64 %aligned.integer to ptr\n"
+              << "  %header = getelementptr i8, ptr %aligned, i64 -8\n"
+              << "  store ptr %base, ptr %header, align 1\n"
+              << "  call void @llvm.memset.p0.i64("
+                 "ptr %aligned, i8 0, i64 %size, i1 false)\n"
+              << "  ret ptr %aligned\n"
+              << "failed:\n"
+              << "  ret ptr null\n"
+              << "}\n\n"
+              << "define internal void @__draft.release_allocation(ptr %memory) {\n"
+              << "entry:\n"
+              << "  %exists = icmp ne ptr %memory, null\n"
+              << "  br i1 %exists, label %release, label %finish\n"
+              << "release:\n"
+              << "  %header = getelementptr i8, ptr %memory, i64 -8\n"
+              << "  %base = load ptr, ptr %header, align 1\n"
+              << "  call void @free(ptr %base)\n"
+              << "  br label %finish\n"
+              << "finish:\n"
+              << "  ret void\n"
+              << "}\n\n"
+              << "define internal ptr @__draft.resize_allocation("
+                 "ptr %old_memory, i64 %old_size, i64 %new_size, "
+                 "i64 %alignment) {\n"
+              << "entry:\n"
+              << "  %replacement = call ptr @__draft.allocate_zeroed("
+                 "i64 %new_size, i64 %alignment)\n"
+              << "  %replacement.ok = icmp ne ptr %replacement, null\n"
+              << "  br i1 %replacement.ok, label %copy.check, label %failed\n"
+              << "copy.check:\n"
+              << "  %old.exists = icmp ne ptr %old_memory, null\n"
+              << "  %old.smaller = icmp ult i64 %old_size, %new_size\n"
+              << "  %copy.size = select i1 %old.smaller, "
+                 "i64 %old_size, i64 %new_size\n"
+              << "  %copy.nonempty = icmp ne i64 %copy.size, 0\n"
+              << "  %copy.required = and i1 %old.exists, %copy.nonempty\n"
+              << "  br i1 %copy.required, label %copy, label %finish\n"
+              << "copy:\n"
+              << "  call void @llvm.memcpy.p0.p0.i64("
+                 "ptr %replacement, ptr %old_memory, i64 %copy.size, i1 false)\n"
+              << "  br label %finish\n"
+              << "finish:\n"
+              << "  call void @__draft.release_allocation(ptr %old_memory)\n"
+              << "  ret ptr %replacement\n"
+              << "failed:\n"
+              << "  ret ptr null\n"
+              << "}\n\n";
+    } else {
+      output_ << "declare i64 @write(i32, ptr, i64)\n"
+              << "declare ptr @realloc(ptr, i64)\n"
+              << "declare i32 @posix_memalign(ptr, i64, i64)\n"
+              << "declare i32 @pthread_once(ptr, ptr)\n"
+              << "declare i32 @pthread_key_create(ptr, ptr)\n"
+              << "declare ptr @pthread_getspecific(" << pthread_key_type << ")\n"
+              << "declare i32 @pthread_setspecific(" << pthread_key_type
+              << ", ptr)\n"
+              << "declare void @arc4random_buf(ptr, i64)\n\n"
+              << "define internal void @__draft.initialize_standard_streams() {\n"
+              << "entry:\n"
+              << "  ret void\n"
+              << "}\n\n"
+              << "define internal i64 @__draft.host_write("
+                 "i32 %descriptor, ptr %data, i64 %count) {\n"
+              << "entry:\n"
+              << "  %written = call i64 @write("
+                 "i32 %descriptor, ptr %data, i64 %count)\n"
+              << "  ret i64 %written\n"
+              << "}\n\n"
+              << "define internal ptr @__draft.allocate_zeroed("
+                 "i64 %size, i64 %alignment) {\n"
+              << "entry:\n"
+              << "  %is.empty = icmp eq i64 %size, 0\n"
+              << "  br i1 %is.empty, label %empty, label %choose\n"
+              << "choose:\n"
+              << "  %ordinary = icmp ule i64 %alignment, 16\n"
+              << "  br i1 %ordinary, label %calloc, label %aligned\n"
+              << "calloc:\n"
+              << "  %calloc.memory = call ptr @calloc(i64 1, i64 %size)\n"
+              << "  ret ptr %calloc.memory\n"
+              << "aligned:\n"
+              << "  %slot = alloca ptr, align 8\n"
+              << "  store ptr null, ptr %slot, align 8\n"
+              << "  %status = call i32 @posix_memalign("
+                 "ptr %slot, i64 %alignment, i64 %size)\n"
+              << "  %aligned.ok = icmp eq i32 %status, 0\n"
+              << "  br i1 %aligned.ok, label %clear, label %failed\n"
+              << "clear:\n"
+              << "  %aligned.memory = load ptr, ptr %slot, align 8\n"
+              << "  call void @llvm.memset.p0.i64("
+                 "ptr %aligned.memory, i8 0, i64 %size, i1 false)\n"
+              << "  ret ptr %aligned.memory\n"
+              << "failed:\n"
+              << "  ret ptr null\n"
+              << "empty:\n"
+              << "  ret ptr null\n"
+              << "}\n\n"
+              << "define internal void @__draft.release_allocation(ptr %memory) {\n"
+              << "entry:\n"
+              << "  call void @free(ptr %memory)\n"
+              << "  ret void\n"
+              << "}\n\n"
+              << "define internal ptr @__draft.resize_allocation("
+                 "ptr %old_memory, i64 %old_size, i64 %new_size, "
+                 "i64 %alignment) {\n"
+              << "entry:\n"
+              << "  %ordinary = icmp ule i64 %alignment, 16\n"
+              << "  br i1 %ordinary, label %resize.realloc, label %resize.aligned\n"
+              << "resize.realloc:\n"
+              << "  %resized = call ptr @realloc("
+                 "ptr %old_memory, i64 %new_size)\n"
+              << "  %resized.ok = icmp ne ptr %resized, null\n"
+              << "  br i1 %resized.ok, label %resize.realloc.growth.check, "
+                 "label %failed\n"
+              << "resize.realloc.growth.check:\n"
+              << "  %resize.grows = icmp ugt i64 %new_size, %old_size\n"
+              << "  br i1 %resize.grows, label %resize.realloc.clear, "
+                 "label %resize.realloc.finish\n"
+              << "resize.realloc.clear:\n"
+              << "  %resize.tail = getelementptr i8, ptr %resized, i64 %old_size\n"
+              << "  %resize.growth = sub i64 %new_size, %old_size\n"
+              << "  call void @llvm.memset.p0.i64("
+                 "ptr %resize.tail, i8 0, i64 %resize.growth, i1 false)\n"
+              << "  br label %resize.realloc.finish\n"
+              << "resize.realloc.finish:\n"
+              << "  ret ptr %resized\n"
+              << "resize.aligned:\n"
+              << "  %replacement = call ptr @__draft.allocate_zeroed("
+                 "i64 %new_size, i64 %alignment)\n"
+              << "  %replacement.ok = icmp ne ptr %replacement, null\n"
+              << "  br i1 %replacement.ok, label %resize.copy.check, label %failed\n"
+              << "resize.copy.check:\n"
+              << "  %old.exists = icmp ne ptr %old_memory, null\n"
+              << "  %old.smaller = icmp ult i64 %old_size, %new_size\n"
+              << "  %copy.size = select i1 %old.smaller, "
+                 "i64 %old_size, i64 %new_size\n"
+              << "  %copy.nonempty = icmp ne i64 %copy.size, 0\n"
+              << "  %copy.required = and i1 %old.exists, %copy.nonempty\n"
+              << "  br i1 %copy.required, label %resize.copy, label %resize.finish\n"
+              << "resize.copy:\n"
+              << "  call void @llvm.memcpy.p0.p0.i64("
+                 "ptr %replacement, ptr %old_memory, i64 %copy.size, i1 false)\n"
+              << "  br label %resize.finish\n"
+              << "resize.finish:\n"
+              << "  call void @free(ptr %old_memory)\n"
+              << "  ret ptr %replacement\n"
+              << "failed:\n"
+              << "  ret ptr null\n"
+              << "}\n\n";
+    }
+
+    output_ // The default logger deliberately owns no formatting policy beyond
             // a trailing newline. Applications can replace the context field
             // with any ordinary Draft provider record.
             << "define internal void @__draft.default_logger("
@@ -1011,13 +1198,48 @@ private:
             << "entry:\n"
             << "  %message.pointer = extractvalue { ptr, i64 } %message, 0\n"
             << "  %message.length = extractvalue { ptr, i64 } %message, 1\n"
-            << "  %write.message = call i64 @write("
+            << "  %write.message = call i64 @__draft.host_write("
                "i32 2, ptr %message.pointer, i64 %message.length)\n"
-            << "  %write.newline = call i64 @write("
+            << "  %write.newline = call i64 @__draft.host_write("
                "i32 2, ptr @.draft.runtime.newline, i64 1)\n"
             << "  ret void\n"
-            << "}\n\n"
-            // arc4random_buf is supplied by both selected hosted libc
+            << "}\n\n";
+
+    if (is_windows) {
+      // rand_s obtains OS-backed random words through the UCRT. Copying at
+      // most four bytes from one stack word handles every tail without reading
+      // or writing beyond the caller's exact byte count.
+      output_ << "define internal i1 @__draft.default_random("
+                 "ptr %context, ptr %user, ptr %output, i64 %count) {\n"
+              << "entry:\n"
+              << "  %word = alloca i32, align 4\n"
+              << "  br label %loop\n"
+              << "loop:\n"
+              << "  %offset = phi i64 [ 0, %entry ], [ %next, %copy ]\n"
+              << "  %done = icmp uge i64 %offset, %count\n"
+              << "  br i1 %done, label %success, label %generate\n"
+              << "generate:\n"
+              << "  %status = call i32 @rand_s(ptr %word)\n"
+              << "  %generated = icmp eq i32 %status, 0\n"
+              << "  br i1 %generated, label %measure, label %failed\n"
+              << "measure:\n"
+              << "  %remaining = sub i64 %count, %offset\n"
+              << "  %full = icmp uge i64 %remaining, 4\n"
+              << "  %chunk = select i1 %full, i64 4, i64 %remaining\n"
+              << "  %destination = getelementptr i8, ptr %output, i64 %offset\n"
+              << "  br label %copy\n"
+              << "copy:\n"
+              << "  call void @llvm.memcpy.p0.p0.i64("
+                 "ptr %destination, ptr %word, i64 %chunk, i1 false)\n"
+              << "  %next = add i64 %offset, %chunk\n"
+              << "  br label %loop\n"
+              << "success:\n"
+              << "  ret i1 true\n"
+              << "failed:\n"
+              << "  ret i1 false\n"
+              << "}\n\n";
+    } else {
+      output_ // arc4random_buf is supplied by both selected POSIX hosted libc
             // contracts. It has no failure result; the Draft provider returns
             // true after filling the requested byte range, including an empty
             // one.
@@ -1026,8 +1248,10 @@ private:
             << "entry:\n"
             << "  call void @arc4random_buf(ptr %output, i64 %count)\n"
             << "  ret i1 true\n"
-            << "}\n\n"
-            << "define internal ptr @__draft.default_allocator("
+            << "}\n\n";
+    }
+
+    output_ << "define internal ptr @__draft.default_allocator("
                "ptr %context, ptr %user, i8 %operation, ptr %old_memory, "
                "i64 %old_size, i64 %new_size, i64 %alignment) {\n"
             << "entry:\n"
@@ -1042,62 +1266,14 @@ private:
             << "  ret ptr %allocated\n"
             << "resize:\n"
             << "  %resize.empty = icmp eq i64 %new_size, 0\n"
-            << "  br i1 %resize.empty, label %release, label %resize.choose\n"
-            << "resize.choose:\n"
-            << "  %resize.ordinary = icmp ule i64 %alignment, 16\n"
-            << "  br i1 %resize.ordinary, label %resize.realloc, "
-               "label %resize.aligned\n"
-            << "resize.realloc:\n"
-            << "  %resized = call ptr @realloc("
-               "ptr %old_memory, i64 %new_size)\n"
-            // realloc preserves the old prefix but deliberately leaves any
-            // grown tail unspecified. Draft's hosted allocator returns
-            // cleared storage, including bytes added by resize, so make that
-            // part of the runtime ABI explicit instead of depending on fresh
-            // pages happening to contain zeroes.
-            << "  %resized.ok = icmp ne ptr %resized, null\n"
-            << "  br i1 %resized.ok, label %resize.realloc.growth.check, "
-               "label %resize.realloc.failed\n"
-            << "resize.realloc.growth.check:\n"
-            << "  %resize.grows = icmp ugt i64 %new_size, %old_size\n"
-            << "  br i1 %resize.grows, label %resize.realloc.clear, "
-               "label %resize.realloc.finish\n"
-            << "resize.realloc.clear:\n"
-            << "  %resize.tail = getelementptr i8, ptr %resized, i64 %old_size\n"
-            << "  %resize.growth = sub i64 %new_size, %old_size\n"
-            << "  call void @llvm.memset.p0.i64("
-               "ptr %resize.tail, i8 0, i64 %resize.growth, i1 false)\n"
-            << "  br label %resize.realloc.finish\n"
-            << "resize.realloc.finish:\n"
-            << "  ret ptr %resized\n"
-            << "resize.realloc.failed:\n"
-            << "  ret ptr null\n"
-            << "resize.aligned:\n"
-            << "  %replacement = call ptr @__draft.allocate_zeroed("
-               "i64 %new_size, i64 %alignment)\n"
-            << "  %replacement.ok = icmp ne ptr %replacement, null\n"
-            << "  br i1 %replacement.ok, label %resize.copy.check, "
-               "label %resize.failed\n"
-            << "resize.copy.check:\n"
-            << "  %old.exists = icmp ne ptr %old_memory, null\n"
-            << "  %old.smaller = icmp ult i64 %old_size, %new_size\n"
-            << "  %copy.size = select i1 %old.smaller, "
-               "i64 %old_size, i64 %new_size\n"
-            << "  %copy.nonempty = icmp ne i64 %copy.size, 0\n"
-            << "  %copy.required = and i1 %old.exists, %copy.nonempty\n"
-            << "  br i1 %copy.required, label %resize.copy, "
-               "label %resize.finish\n"
-            << "resize.copy:\n"
-            << "  call void @llvm.memcpy.p0.p0.i64("
-               "ptr %replacement, ptr %old_memory, i64 %copy.size, i1 false)\n"
-            << "  br label %resize.finish\n"
-            << "resize.finish:\n"
-            << "  call void @free(ptr %old_memory)\n"
+            << "  br i1 %resize.empty, label %release, label %resize.call\n"
+            << "resize.call:\n"
+            << "  %replacement = call ptr @__draft.resize_allocation("
+               "ptr %old_memory, i64 %old_size, i64 %new_size, "
+               "i64 %alignment)\n"
             << "  ret ptr %replacement\n"
-            << "resize.failed:\n"
-            << "  ret ptr null\n"
             << "release:\n"
-            << "  call void @free(ptr %old_memory)\n"
+            << "  call void @__draft.release_allocation(ptr %old_memory)\n"
             << "  ret ptr null\n"
             << "invalid:\n"
             << "  ret ptr null\n"
@@ -1105,9 +1281,9 @@ private:
             // The hosted temporary allocator keeps one intrusive list of
             // separately aligned allocations per OS thread. This deliberately
             // favors a simple, auditable lifetime model over slab cleverness:
-            // reset and pthread-key destruction walk the list, while an
+            // reset and target TLS destruction walk the list, while an
             // individual allocator free is a no-op. The allocation bytes and
-            // bookkeeping nodes are both ordinary Darwin heap objects.
+            // bookkeeping nodes are both ordinary host heap objects.
             << "define internal void @__draft.reset_temp_state(ptr %state) {\n"
             << "entry:\n"
             << "  %state.exists = icmp ne ptr %state, null\n"
@@ -1129,7 +1305,7 @@ private:
                "ptr %node, i32 0, i32 1\n"
             << "  %next = load ptr, ptr %next.slot, align 8\n"
             << "  %memory = load ptr, ptr %memory.slot, align 8\n"
-            << "  call void @free(ptr %memory)\n"
+            << "  call void @__draft.release_allocation(ptr %memory)\n"
             << "  call void @free(ptr %node)\n"
             << "  br label %loop\n"
             << "finish:\n"
@@ -1140,8 +1316,76 @@ private:
             << "  call void @__draft.reset_temp_state(ptr %state)\n"
             << "  call void @free(ptr %state)\n"
             << "  ret void\n"
-            << "}\n\n"
-            << "define internal void @__draft.initialize_temp_key() {\n"
+            << "}\n\n";
+
+    if (is_windows) {
+      // FLS supplies a destructor on both Draft-created and foreign-created
+      // threads. The atomic sentinel state machine publishes exactly one key
+      // without requiring an additional Windows callback/once record.
+      output_ << "define internal i32 @__draft.ensure_temp_key() {\n"
+              << "entry:\n"
+              << "  br label %observe\n"
+              << "observe:\n"
+              << "  %observed = load atomic i32, ptr @__draft.temp_key acquire, align 4\n"
+              << "  %ready = icmp sge i32 %observed, 0\n"
+              << "  br i1 %ready, label %return.observed, label %classify\n"
+              << "classify:\n"
+              << "  %uninitialized = icmp eq i32 %observed, -1\n"
+              << "  br i1 %uninitialized, label %claim, label %wait.or.fail\n"
+              << "claim:\n"
+              << "  %claimed = cmpxchg ptr @__draft.temp_key, i32 -1, i32 -2 "
+                 "acq_rel acquire, align 4\n"
+              << "  %won = extractvalue { i32, i1 } %claimed, 1\n"
+              << "  br i1 %won, label %allocate, label %observe\n"
+              << "allocate:\n"
+              << "  %allocated = call i32 @FlsAlloc("
+                 "ptr @__draft.destroy_temp_state)\n"
+              << "  %failed = icmp eq i32 %allocated, -1\n"
+              << "  %published = select i1 %failed, i32 -3, i32 %allocated\n"
+              << "  store atomic i32 %published, ptr @__draft.temp_key release, align 4\n"
+              << "  br i1 %failed, label %return.failed, label %return.allocated\n"
+              << "wait.or.fail:\n"
+              << "  %initializing = icmp eq i32 %observed, -2\n"
+              << "  br i1 %initializing, label %wait, label %return.failed\n"
+              << "wait:\n"
+              << "  %yielded = call i32 @SwitchToThread()\n"
+              << "  br label %observe\n"
+              << "return.observed:\n"
+              << "  ret i32 %observed\n"
+              << "return.allocated:\n"
+              << "  ret i32 %allocated\n"
+              << "return.failed:\n"
+              << "  ret i32 -1\n"
+              << "}\n\n"
+              << "define internal ptr @__draft.ensure_temp_state() {\n"
+              << "entry:\n"
+              << "  %key = call i32 @__draft.ensure_temp_key()\n"
+              << "  %available = icmp sge i32 %key, 0\n"
+              << "  br i1 %available, label %lookup, label %failed\n"
+              << "lookup:\n"
+              << "  %existing = call ptr @FlsGetValue(i32 %key)\n"
+              << "  %has.existing = icmp ne ptr %existing, null\n"
+              << "  br i1 %has.existing, label %ready, label %create\n"
+              << "create:\n"
+              << "  %fresh = call ptr @calloc(i64 1, i64 8)\n"
+              << "  %fresh.exists = icmp ne ptr %fresh, null\n"
+              << "  br i1 %fresh.exists, label %install, label %failed\n"
+              << "install:\n"
+              << "  %install.status = call i32 @FlsSetValue("
+                 "i32 %key, ptr %fresh)\n"
+              << "  %installed = icmp ne i32 %install.status, 0\n"
+              << "  br i1 %installed, label %ready, label %release.fresh\n"
+              << "release.fresh:\n"
+              << "  call void @free(ptr %fresh)\n"
+              << "  br label %failed\n"
+              << "ready:\n"
+              << "  %state = phi ptr [ %existing, %lookup ], [ %fresh, %install ]\n"
+              << "  ret ptr %state\n"
+              << "failed:\n"
+              << "  ret ptr null\n"
+              << "}\n\n";
+    } else {
+      output_ << "define internal void @__draft.initialize_temp_key() {\n"
             << "entry:\n"
             << "  %status = call i32 @pthread_key_create("
                "ptr @__draft.temp_key, ptr @__draft.destroy_temp_state)\n"
@@ -1185,8 +1429,10 @@ private:
             << "  ret ptr %state\n"
             << "failed:\n"
             << "  ret ptr null\n"
-            << "}\n\n"
-            << "define internal ptr @__draft.temp_allocate("
+            << "}\n\n";
+    }
+
+    output_ << "define internal ptr @__draft.temp_allocate("
                "i64 %size, i64 %alignment) {\n"
             << "entry:\n"
             << "  %nonempty = icmp ne i64 %size, 0\n"
@@ -1217,7 +1463,7 @@ private:
             << "  store ptr %record, ptr %head.slot, align 8\n"
             << "  ret ptr %memory\n"
             << "release.memory:\n"
-            << "  call void @free(ptr %memory)\n"
+            << "  call void @__draft.release_allocation(ptr %memory)\n"
             << "  br label %failed\n"
             << "failed:\n"
             << "  ret ptr null\n"
@@ -1263,8 +1509,58 @@ private:
             << "  ret ptr null\n"
             << "invalid:\n"
             << "  ret ptr null\n"
-            << "}\n\n"
-            // Reset is a public context-free runtime bridge because provider
+            << "}\n\n";
+
+    if (is_windows) {
+      output_ // Reset is a public context-free bridge. A failed/uninitialized
+              // key has no state to reset; no call creates a TempState merely
+              // to reset an empty epoch.
+              << "define hidden void "
+                 "@\"__draft.runtime.reset_temporary_allocator\"() {\n"
+              << "entry:\n"
+              << "  %key = call i32 @__draft.ensure_temp_key()\n"
+              << "  %available = icmp sge i32 %key, 0\n"
+              << "  br i1 %available, label %lookup, label %finish\n"
+              << "lookup:\n"
+              << "  %state = call ptr @FlsGetValue(i32 %key)\n"
+              << "  call void @__draft.reset_temp_state(ptr %state)\n"
+              << "  br label %finish\n"
+              << "finish:\n"
+              << "  ret void\n"
+              << "}\n\n"
+              << "define internal void @__draft.destroy_current_temp_state() {\n"
+              << "entry:\n"
+              << "  %key = call i32 @__draft.ensure_temp_key()\n"
+              << "  %available = icmp sge i32 %key, 0\n"
+              << "  br i1 %available, label %lookup, label %finish\n"
+              << "lookup:\n"
+              << "  %state = call ptr @FlsGetValue(i32 %key)\n"
+              << "  %state.exists = icmp ne ptr %state, null\n"
+              << "  br i1 %state.exists, label %clear, label %finish\n"
+              << "clear:\n"
+              << "  %clear.status = call i32 @FlsSetValue(i32 %key, ptr null)\n"
+              << "  %cleared = icmp ne i32 %clear.status, 0\n"
+              << "  br i1 %cleared, label %destroy, label %finish\n"
+              << "destroy:\n"
+              << "  call void @__draft.destroy_temp_state(ptr %state)\n"
+              << "  br label %finish\n"
+              << "finish:\n"
+              << "  ret void\n"
+              << "}\n\n"
+              << "define internal void @__draft.shutdown_temp_key() {\n"
+              << "entry:\n"
+              << "  %key = load atomic i32, ptr @__draft.temp_key acquire, align 4\n"
+              << "  %available = icmp sge i32 %key, 0\n"
+              << "  br i1 %available, label %release, label %finish\n"
+              << "release:\n"
+              << "  %released = call i32 @FlsFree(i32 %key)\n"
+              << "  store atomic i32 -3, ptr @__draft.temp_key release, align 4\n"
+              << "  br label %finish\n"
+              << "finish:\n"
+              << "  ret void\n"
+              << "}\n\n";
+    } else {
+      output_ // Reset is a public context-free runtime bridge because provider
             // state belongs to the current OS thread, not to a source-visible
             // pointer in Context. It is safe before the first allocation and
             // retains the empty state for later reuse.
@@ -1315,7 +1611,13 @@ private:
             << "finish:\n"
             << "  ret void\n"
             << "}\n\n"
-            << "define internal void @__draft.default_assertion_failure("
+            << "define internal void @__draft.shutdown_temp_key() {\n"
+            << "entry:\n"
+            << "  ret void\n"
+            << "}\n\n";
+    }
+
+    output_ << "define internal void @__draft.default_assertion_failure("
                "ptr %context, { ptr, i64 } %condition_text, "
                "{ ptr, i64 } %message, { ptr, i64 } %file, "
                "i64 %line, i64 %column) {\n"
@@ -1324,12 +1626,12 @@ private:
                "%condition_text, 0\n"
             << "  %condition.length = extractvalue { ptr, i64 } "
                "%condition_text, 1\n"
-            << "  %write.prefix = call i64 @write(i32 2, ptr "
+            << "  %write.prefix = call i64 @__draft.host_write(i32 2, ptr "
                "@.draft.runtime.assertion_prefix, i64 "
             << assertion_prefix.size() << ")\n"
-            << "  %write.condition = call i64 @write(i32 2, "
+            << "  %write.condition = call i64 @__draft.host_write(i32 2, "
                "ptr %condition.pointer, i64 %condition.length)\n"
-            << "  %write.newline = call i64 @write(i32 2, ptr "
+            << "  %write.newline = call i64 @__draft.host_write(i32 2, ptr "
                "@.draft.runtime.newline, i64 1)\n"
             << "  ret void\n"
             << "}\n\n"
@@ -1362,10 +1664,10 @@ private:
                "i64 %first, i64 %second, i64 %length, ptr %file, "
                "i64 %line, i64 %column) {\n"
             << "entry:\n"
-            << "  %write.bounds = call i64 @write(i32 2, ptr "
+            << "  %write.bounds = call i64 @__draft.host_write(i32 2, ptr "
                "@.draft.runtime.bounds_prefix, i64 "
             << bounds_prefix.size() << ")\n"
-            << "  %write.bounds.newline = call i64 @write(i32 2, ptr "
+            << "  %write.bounds.newline = call i64 @__draft.host_write(i32 2, ptr "
                "@.draft.runtime.newline, i64 1)\n"
             << "  ret void\n"
             << "}\n\n"
@@ -1399,8 +1701,136 @@ private:
             << "  ret void\n"
             << "}\n\n";
 
-    // Darwin's hosted entry supplies argv and envp as null-terminated C-string
-    // vectors. Materialize immutable Draft string records once before main so
+    if (is_windows) {
+      // wmain supplies UTF-16 vectors. Convert each entry once to an owned,
+      // zero-terminated UTF-8 buffer, then feed the common record materializer
+      // exactly the same narrow-vector shape used by POSIX. The UTF-8 pointer
+      // vectors remain process-owned so shutdown can release every string and
+      // both vectors without changing core/os's borrowed slice ABI.
+      output_ << "define internal ptr @__draft.utf16_to_utf8(ptr %wide) {\n"
+              << "entry:\n"
+              << "  %wide.length = call i64 @wcslen(ptr %wide)\n"
+              << "  %wide.too.long = icmp ugt i64 %wide.length, 2147483647\n"
+              << "  br i1 %wide.too.long, label %failed, label %measure\n"
+              << "measure:\n"
+              << "  %wide.length.i32 = trunc i64 %wide.length to i32\n"
+              << "  %empty = icmp eq i32 %wide.length.i32, 0\n"
+              << "  br i1 %empty, label %empty.allocate, label %convert.measure\n"
+              << "empty.allocate:\n"
+              << "  %empty.storage = call ptr @calloc(i64 1, i64 1)\n"
+              << "  ret ptr %empty.storage\n"
+              << "convert.measure:\n"
+              << "  %required = call i32 @WideCharToMultiByte("
+                 "i32 65001, i32 0, ptr %wide, i32 %wide.length.i32, "
+                 "ptr null, i32 0, ptr null, ptr null)\n"
+              << "  %required.valid = icmp sgt i32 %required, 0\n"
+              << "  br i1 %required.valid, label %allocate, label %failed\n"
+              << "allocate:\n"
+              << "  %required.i64 = zext i32 %required to i64\n"
+              << "  %storage.count = add i64 %required.i64, 1\n"
+              << "  %storage = call ptr @calloc(i64 %storage.count, i64 1)\n"
+              << "  %storage.exists = icmp ne ptr %storage, null\n"
+              << "  br i1 %storage.exists, label %convert, label %failed\n"
+              << "convert:\n"
+              << "  %converted = call i32 @WideCharToMultiByte("
+                 "i32 65001, i32 0, ptr %wide, i32 %wide.length.i32, "
+                 "ptr %storage, i32 %required, ptr null, ptr null)\n"
+              << "  %complete = icmp eq i32 %converted, %required\n"
+              << "  br i1 %complete, label %ready, label %release\n"
+              << "release:\n"
+              << "  call void @free(ptr %storage)\n"
+              << "  br label %failed\n"
+              << "ready:\n"
+              << "  ret ptr %storage\n"
+              << "failed:\n"
+              << "  ret ptr null\n"
+              << "}\n\n"
+              << "define internal void @__draft.initialize_windows_process_views("
+                 "i32 %argc, ptr %wide.argv, ptr %wide.envp) {\n"
+              << "entry:\n"
+              << "  %argument.count = zext i32 %argc to i64\n"
+              << "  %argument.vector = call ptr @calloc("
+                 "i64 %argument.count, i64 8)\n"
+              << "  %argument.empty = icmp eq i64 %argument.count, 0\n"
+              << "  %argument.allocated = icmp ne ptr %argument.vector, null\n"
+              << "  %argument.valid.vector = or i1 %argument.empty, %argument.allocated\n"
+              << "  br i1 %argument.valid.vector, label %argument.loop, label %failed\n"
+              << "argument.loop:\n"
+              << "  %argument.index = phi i64 [ 0, %entry ], "
+                 "[ %argument.next, %argument.store ]\n"
+              << "  %argument.done = icmp uge i64 %argument.index, %argument.count\n"
+              << "  br i1 %argument.done, label %environment.count.entry, "
+                 "label %argument.convert\n"
+              << "argument.convert:\n"
+              << "  %argument.wide.slot = getelementptr ptr, ptr %wide.argv, "
+                 "i64 %argument.index\n"
+              << "  %argument.wide = load ptr, ptr %argument.wide.slot, align 8\n"
+              << "  %argument.utf8 = call ptr @__draft.utf16_to_utf8("
+                 "ptr %argument.wide)\n"
+              << "  %argument.valid = icmp ne ptr %argument.utf8, null\n"
+              << "  br i1 %argument.valid, label %argument.store, label %failed\n"
+              << "argument.store:\n"
+              << "  %argument.slot = getelementptr ptr, ptr %argument.vector, "
+                 "i64 %argument.index\n"
+              << "  store ptr %argument.utf8, ptr %argument.slot, align 8\n"
+              << "  %argument.next = add i64 %argument.index, 1\n"
+              << "  br label %argument.loop\n"
+              << "environment.count.entry:\n"
+              << "  br label %environment.count.loop\n"
+              << "environment.count.loop:\n"
+              << "  %environment.count = phi i64 [ 0, %environment.count.entry ], "
+                 "[ %environment.count.next, %environment.count.body ]\n"
+              << "  %environment.wide.slot = getelementptr ptr, ptr %wide.envp, "
+                 "i64 %environment.count\n"
+              << "  %environment.wide = load ptr, ptr %environment.wide.slot, align 8\n"
+              << "  %environment.done = icmp eq ptr %environment.wide, null\n"
+              << "  br i1 %environment.done, label %environment.allocate, "
+                 "label %environment.count.body\n"
+              << "environment.count.body:\n"
+              << "  %environment.count.next = add i64 %environment.count, 1\n"
+              << "  br label %environment.count.loop\n"
+              << "environment.allocate:\n"
+              << "  %environment.vector.count = add i64 %environment.count, 1\n"
+              << "  %environment.vector = call ptr @calloc("
+                 "i64 %environment.vector.count, i64 8)\n"
+              << "  %environment.allocated = icmp ne ptr %environment.vector, null\n"
+              << "  br i1 %environment.allocated, label %environment.loop, label %failed\n"
+              << "environment.loop:\n"
+              << "  %environment.index = phi i64 [ 0, %environment.allocate ], "
+                 "[ %environment.next, %environment.store ]\n"
+              << "  %environment.convert.done = icmp uge i64 "
+                 "%environment.index, %environment.count\n"
+              << "  br i1 %environment.convert.done, label %finish, "
+                 "label %environment.convert\n"
+              << "environment.convert:\n"
+              << "  %environment.source.slot = getelementptr ptr, ptr %wide.envp, "
+                 "i64 %environment.index\n"
+              << "  %environment.source = load ptr, ptr %environment.source.slot, align 8\n"
+              << "  %environment.utf8 = call ptr @__draft.utf16_to_utf8("
+                 "ptr %environment.source)\n"
+              << "  %environment.valid = icmp ne ptr %environment.utf8, null\n"
+              << "  br i1 %environment.valid, label %environment.store, label %failed\n"
+              << "environment.store:\n"
+              << "  %environment.slot = getelementptr ptr, ptr %environment.vector, "
+                 "i64 %environment.index\n"
+              << "  store ptr %environment.utf8, ptr %environment.slot, align 8\n"
+              << "  %environment.next = add i64 %environment.index, 1\n"
+              << "  br label %environment.loop\n"
+              << "finish:\n"
+              << "  store ptr %argument.vector, ptr @__draft.process_argv, align 8\n"
+              << "  store ptr %environment.vector, ptr @__draft.process_envp, align 8\n"
+              << "  call void @__draft.initialize_process_views("
+                 "i32 %argc, ptr %argument.vector, ptr %environment.vector)\n"
+              << "  ret void\n"
+              << "failed:\n"
+              << "  call void @llvm.trap()\n"
+              << "  unreachable\n"
+              << "}\n\n";
+    }
+
+    // POSIX entry vectors already contain byte strings. Windows first converts
+    // its UTF-16 wmain vectors through the helper above, then enters this common
+    // materializer. It creates immutable Draft string records once before main so
     // core/os can return stable slices without allocating on every query or
     // smuggling C-string rules into ordinary library code.
     output_ << "define internal void @__draft.initialize_process_views("
@@ -1509,10 +1939,71 @@ private:
             << "entry:\n"
             << "  %count = load i64, ptr @__draft.process_environment_count, align 8\n"
             << "  ret i64 %count\n"
-            << "}\n\n"
-            << "define internal void @__draft.shutdown_process_views() {\n"
+            << "}\n\n";
+    if (is_windows) {
+      output_ << "define internal void @__draft.shutdown_process_views() {\n"
+              << "entry:\n"
+              << "  call void @__draft.destroy_current_temp_state()\n"
+              << "  %arguments = load ptr, ptr @__draft.process_args_data, align 8\n"
+              << "  %argument.count = load i64, "
+                 "ptr @__draft.process_args_count, align 8\n"
+              << "  br label %argument.loop\n"
+              << "argument.loop:\n"
+              << "  %argument.index = phi i64 [ 0, %entry ], "
+                 "[ %argument.next, %argument.body ]\n"
+              << "  %argument.done = icmp uge i64 %argument.index, %argument.count\n"
+              << "  br i1 %argument.done, label %environment.entry, "
+                 "label %argument.body\n"
+              << "argument.body:\n"
+              << "  %argument.record = getelementptr { ptr, i64 }, "
+                 "ptr %arguments, i64 %argument.index\n"
+              << "  %argument.pointer = load ptr, ptr %argument.record, align 8\n"
+              << "  call void @free(ptr %argument.pointer)\n"
+              << "  %argument.next = add i64 %argument.index, 1\n"
+              << "  br label %argument.loop\n"
+              << "environment.entry:\n"
+              << "  %environment = load ptr, "
+                 "ptr @__draft.process_environment_data, align 8\n"
+              << "  %environment.count = load i64, "
+                 "ptr @__draft.process_environment_count, align 8\n"
+              << "  br label %environment.loop\n"
+              << "environment.loop:\n"
+              << "  %environment.index = phi i64 [ 0, %environment.entry ], "
+                 "[ %environment.next, %environment.body ]\n"
+              << "  %environment.done = icmp uge i64 "
+                 "%environment.index, %environment.count\n"
+              << "  br i1 %environment.done, label %release.vectors, "
+                 "label %environment.body\n"
+              << "environment.body:\n"
+              << "  %environment.record = getelementptr { ptr, i64 }, "
+                 "ptr %environment, i64 %environment.index\n"
+              << "  %environment.pointer = load ptr, ptr %environment.record, align 8\n"
+              << "  call void @free(ptr %environment.pointer)\n"
+              << "  %environment.next = add i64 %environment.index, 1\n"
+              << "  br label %environment.loop\n"
+              << "release.vectors:\n"
+              << "  %argv = load ptr, ptr @__draft.process_argv, align 8\n"
+              << "  %envp = load ptr, ptr @__draft.process_envp, align 8\n"
+              << "  call void @free(ptr %arguments)\n"
+              << "  call void @free(ptr %environment)\n"
+              << "  call void @free(ptr %argv)\n"
+              << "  call void @free(ptr %envp)\n"
+              << "  call void @__draft.shutdown_temp_key()\n"
+              << "  br label %finish\n"
+              << "finish:\n"
+              << "  store ptr null, ptr @__draft.process_argv, align 8\n"
+              << "  store ptr null, ptr @__draft.process_envp, align 8\n"
+              << "  store ptr null, ptr @__draft.process_args_data, align 8\n"
+              << "  store i64 0, ptr @__draft.process_args_count, align 8\n"
+              << "  store ptr null, ptr @__draft.process_environment_data, align 8\n"
+              << "  store i64 0, ptr @__draft.process_environment_count, align 8\n"
+              << "  ret void\n"
+              << "}\n\n";
+    } else {
+      output_ << "define internal void @__draft.shutdown_process_views() {\n"
             << "entry:\n"
             << "  call void @__draft.destroy_current_temp_state()\n"
+            << "  call void @__draft.shutdown_temp_key()\n"
             << "  %arguments = load ptr, ptr @__draft.process_args_data, align 8\n"
             << "  %environment = load ptr, "
                "ptr @__draft.process_environment_data, align 8\n"
@@ -1524,6 +2015,7 @@ private:
             << "  store i64 0, ptr @__draft.process_environment_count, align 8\n"
             << "  ret void\n"
             << "}\n\n";
+    }
     if (!semantic_.runtime_context_type.is_valid()) {
       error(
           SourceRange::invalid(),
@@ -1714,6 +2206,14 @@ private:
         std::to_string(bits) + "]";
   }
 
+  // LLVM models Microsoft x64's __int128 result registers as one two-lane
+  // vector. An LLVM i128 return selects a different ABI, while [2 x i64] is an
+  // aggregate and can select memory. Keep the exact carrier spelling isolated
+  // behind the target-owned C ABI class.
+  [[nodiscard]] std::string win64_wide_integer_result_type() const {
+    return "<2 x i64>";
+  }
+
   [[nodiscard]] std::string
   sysv_eightbyte_llvm_type(const CAbiEightbyte &component) const {
     if (component.classification == CAbiEightbyteClass::Integer) {
@@ -1746,6 +2246,10 @@ private:
     switch (abi.classification) {
     case CAbiClass::Direct:
       return llvm_type(type_id);
+    case CAbiClass::Win64WideInteger:
+      // Parameters of this class always have Indirect mode, so this branch is
+      // defensive rather than part of a valid function signature.
+      return "<invalid-win64-wide-integer-parameter>";
     case CAbiClass::HomogeneousFloatAggregate:
       return homogeneous_llvm_type(abi);
     case CAbiClass::SmallAggregate:
@@ -1799,6 +2303,8 @@ private:
     switch (abi.classification) {
     case CAbiClass::Direct:
       return llvm_type(type_id);
+    case CAbiClass::Win64WideInteger:
+      return win64_wide_integer_result_type();
     case CAbiClass::HomogeneousFloatAggregate:
       // Using the same explicit lane array for both directions avoids relying
       // on LLVM to rediscover HFA shape through Draft's opaque union
@@ -3908,7 +4414,8 @@ private:
             : std::string();
     if (returns_void || result_abi.classification == CAbiClass::Indirect) {
       output_ << "  call void " << variadic_signature << callee_operand << '(';
-    } else if (result_abi.classification == CAbiClass::SmallAggregate ||
+    } else if (result_abi.classification == CAbiClass::Win64WideInteger ||
+               result_abi.classification == CAbiClass::SmallAggregate ||
                result_abi.classification ==
                    CAbiClass::HomogeneousFloatAggregate ||
                result_abi.classification == CAbiClass::EightbyteAggregate) {
@@ -3932,7 +4439,8 @@ private:
 
     if (returns_void)
       return;
-    if (result_abi.classification == CAbiClass::SmallAggregate ||
+    if (result_abi.classification == CAbiClass::Win64WideInteger ||
+        result_abi.classification == CAbiClass::SmallAggregate ||
         result_abi.classification == CAbiClass::HomogeneousFloatAggregate ||
         result_abi.classification == CAbiClass::EightbyteAggregate) {
       const std::string scratch = abi_call_result_scratch(instruction_index);
@@ -4455,7 +4963,8 @@ private:
                   << ", ptr %sret, align " << abi.alignment << '\n'
                   << "  ret void\n";
         } else if (signature.c_calling_convention &&
-                   (abi.classification == CAbiClass::SmallAggregate ||
+                   (abi.classification == CAbiClass::Win64WideInteger ||
+                    abi.classification == CAbiClass::SmallAggregate ||
                     abi.classification ==
                         CAbiClass::HomogeneousFloatAggregate ||
                     abi.classification == CAbiClass::EightbyteAggregate)) {
@@ -4528,7 +5037,8 @@ private:
     const Type &own_signature = type(procedure.type);
     if (own_signature.c_calling_convention) {
       const CAbiType result_abi = function_result_abi(procedure.type);
-      if (result_abi.classification == CAbiClass::SmallAggregate ||
+      if (result_abi.classification == CAbiClass::Win64WideInteger ||
+          result_abi.classification == CAbiClass::SmallAggregate ||
           result_abi.classification == CAbiClass::HomogeneousFloatAggregate ||
           result_abi.classification == CAbiClass::EightbyteAggregate) {
         emit_abi_scratch("%abi.return", abi_result_storage_size(result_abi),
@@ -4575,7 +5085,8 @@ private:
                          abi_argument_storage_size(abi), abi.alignment);
       }
       const CAbiType result_abi = function_result_abi(signature_id);
-      if (result_abi.classification == CAbiClass::SmallAggregate ||
+      if (result_abi.classification == CAbiClass::Win64WideInteger ||
+          result_abi.classification == CAbiClass::SmallAggregate ||
           result_abi.classification == CAbiClass::HomogeneousFloatAggregate ||
           result_abi.classification == CAbiClass::EightbyteAggregate ||
           result_abi.classification == CAbiClass::Indirect) {
@@ -4782,12 +5293,18 @@ private:
       return;
     }
     const TypeId result_type = function_result(symbol.type);
-    output_ << "define i32 @main(i32 %argc, ptr %argv, ptr %envp) {\n"
+    const bool windows = target_.facts.os == "windows";
+    output_ << "define i32 @" << (windows ? "wmain" : "main")
+            << "(i32 %argc, ptr %argv, ptr %envp) {\n"
             << "entry:\n"
             << "  store i32 %argc, ptr @__draft.process_argc, align 4\n"
             << "  store ptr %argv, ptr @__draft.process_argv, align 8\n"
             << "  store ptr %envp, ptr @__draft.process_envp, align 8\n"
-            << "  call void @__draft.initialize_process_views("
+            << "  call void @__draft.initialize_standard_streams()\n"
+            << "  call void @"
+            << (windows ? "__draft.initialize_windows_process_views"
+                        : "__draft.initialize_process_views")
+            << "("
                "i32 %argc, ptr %argv, ptr %envp)\n";
     if (result_type == semantic_.types.builtins().void_type) {
       output_ << "  call void " << symbol_name(*entry)
@@ -4813,12 +5330,18 @@ private:
     // fresh zeroed state object, contributes its failure counter, and is
     // followed by a temporary-allocation epoch reset. A trap or signal still
     // terminates the process and is classified by the outer runner.
-    output_ << "define i32 @main(i32 %argc, ptr %argv, ptr %envp) {\n"
+    const bool windows = target_.facts.os == "windows";
+    output_ << "define i32 @" << (windows ? "wmain" : "main")
+            << "(i32 %argc, ptr %argv, ptr %envp) {\n"
             << "entry:\n"
             << "  store i32 %argc, ptr @__draft.process_argc, align 4\n"
             << "  store ptr %argv, ptr @__draft.process_argv, align 8\n"
             << "  store ptr %envp, ptr @__draft.process_envp, align 8\n"
-            << "  call void @__draft.initialize_process_views("
+            << "  call void @__draft.initialize_standard_streams()\n"
+            << "  call void @"
+            << (windows ? "__draft.initialize_windows_process_views"
+                        : "__draft.initialize_process_views")
+            << "("
                "i32 %argc, ptr %argv, ptr %envp)\n";
 
     std::string accumulated = "false";
@@ -4851,7 +5374,7 @@ private:
               // fail, but validation behavior and the aggregate exit status
               // remain unchanged.
               << "  %validation.reported." << suffix
-              << " = call i64 @write(i32 3, ptr %validation.state."
+              << " = call i64 @__draft.host_write(i32 3, ptr %validation.state."
               << suffix << ", i64 " << entry.report_size << ")\n"
               << "  call void "
                  "@\"__draft.runtime.reset_temporary_allocator\"()\n";

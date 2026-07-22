@@ -7,10 +7,11 @@ the already implemented SysV GNU/Linux target.
 
 ## Initial profile
 
-Status: target selection, compile-time introspection, LLP64 C scalar aliases,
-Win64 aggregate classification, COFF emission, and the PE/COFF artifact
-publication contract are implemented. The hosted Windows runtime/core
-implementations and native Windows CI are the remaining stages.
+Status: initial hosted target implemented. Target selection, compile-time
+introspection, LLP64/Win64 C semantics, COFF emission, PE artifact publication,
+the hosted runtime/core packages, and native Windows build/launch CI are one
+coherent target path. Cross-platform validation execution and provider-backed
+Codex commands remain bootstrap-host limitations rather than target semantics.
 
 The command selector is `x86_64-windows`, the profile identity is
 `draft-x86_64-windows-msvc-v1`, and the target-qualified source tag is
@@ -48,6 +49,12 @@ placement. C variadic tails use Draft's checked default promotions and LLVM's
 target calling-convention lowering, including Win64's required register
 duplication for unnamed floating-point arguments.
 
+The Clang-compatible `__int128` extension is asymmetric on Microsoft x64:
+Draft passes `i128`, `u128`, endian storage equivalents, and fixed-backing C
+enums by address, while results use LLVM's `<2 x i64>` carrier. This rule is
+part of C interoperation only; ordinary Draft procedures keep Draft's direct
+128-bit value representation.
+
 The implementation applies one classification product to imports, exports,
 definitions, and call sites. Unit tests compare the exact public LLVM types
 with Clang's `x86_64-pc-windows-msvc` lowering and verify that LLVM emits AMD64
@@ -61,11 +68,24 @@ summaries, including callback positions for `CreateThread` and `FlsAlloc`, so a
 denial never treats an entire DLL as semantically trusted. The linker selects
 the UCRT through the MSVC driver contract and adds `kernel32` explicitly.
 
-The hosted implementation will preserve Draft's target-independent public
-core APIs. Windows handles, virtual-memory flags, synchronization objects,
-performance counters, and console modes remain private to target-qualified
-core files or the hosted runtime adapter; they do not become new language
-types.
+The hosted implementation preserves Draft's target-independent public core
+APIs. `core/os` converts UTF-8 C paths synchronously for UCRT wide pathname
+operations while retaining ordinary integer file descriptors. `core/memory`
+uses `VirtualAlloc`, `VirtualProtect`, and `VirtualFree`; `core/time` uses the
+performance counter; `core/thread` uses owned thread handles, SRW locks, and
+condition variables. `core/terminal` translates CRT descriptors to console
+handles, saves/restores exact input and output modes, enables VT processing,
+waits for input, and reports the visible console window in cells. All Windows
+handles, flags, and physical records remain private to target-qualified source.
+
+The runtime exposes Draft byte strings on Windows without an ANSI-code-page
+dependency. Its `wmain` adapter converts UTF-16 arguments and environment rows
+once to owned, zero-terminated UTF-8, then feeds the same stable string-record
+shape used by other targets. UCRT `_read`/`_write` provide byte I/O, `rand_s`
+provides random words, and fiber-local storage owns each thread's temporary
+allocator state and destructor. General allocations use a small aligned-header
+scheme over `malloc` so every supported alignment has one matching release
+operation.
 
 ## Native artifacts and assembly
 
@@ -86,9 +106,11 @@ must be supplied separately when a Draft object/archive is consumed.
 
 The Windows process adapter invokes tools with `CreateProcessW`, exact UTF-8 to
 UTF-16 argument conversion, CRT-correct quoting, combined output capture, and
-an explicit inherited-handle list. Native Windows CI remains the independent
-execution and C-client oracle; off-host command/COFF tests alone do not qualify
-the hosted runtime.
+an explicit inherited-handle list. Native Windows CI builds the bootstrap
+against the official LLVM-C 22 distribution, builds and launches the complete
+ordinary example inventory, exercises exact COFF package assembly and foreign
+objects, and compiles a C client against a generated header and Draft DLL.
+Off-host command/COFF tests alone do not qualify the hosted runtime.
 
 Files such as `native@x86_64-windows.s` are exact assembler inputs. The profile
 does not claim a parsed `asm x86_64` dialect; selected parsed assembly receives

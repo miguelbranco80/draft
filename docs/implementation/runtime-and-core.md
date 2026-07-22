@@ -10,8 +10,9 @@ exact machine and OS facts live in the selected target profile.
 Status: bootstrap runtime ABI; synchronized with `core/runtime` by tests.
 
 Core content identity `draft-core-bootstrap-v4` names the current target-
-qualified Darwin/Linux OS, memory, thread, time, package-assembly, formatting,
-and console distribution. It includes the typed immutable-string write path:
+qualified Darwin/Linux/Windows OS, memory, thread, time, package-assembly,
+formatting, terminal, and console distribution. It includes the typed
+immutable-string write path:
 core code may pass existing string storage to a synchronous nonmutating native
 write without manufacturing a mutable byte slice or copying through a bounded
 buffer.
@@ -51,31 +52,37 @@ arbitrary C signatures. The supplied pointer remains dynamic-call state and is
 not installed as the thread default.
 
 The hosted default allocator implements the three `core/runtime` operations
-against the selected libc heap. Fresh storage is zeroed, alignments through 16
-use the ordinary allocator, larger alignments use `posix_memalign`, and aligned
-resize allocates/copies/releases while preserving the old allocation on failure. The
-root and each lazy thread Context use this provider for general allocation. The
-temporary provider instead owns a pthread-key state containing a direct list of
-separately aligned allocations. Individual free is a no-op, resize allocates and
-preserves the live prefix, explicit reset releases the whole list, pthread key
-destruction releases it on thread return, and hosted main releases its state
-before process-view teardown. `core/memory` exposes temporary byte/typed helpers
-and explicit reset without hiding a call-boundary reset. The runtime also
-installs a stderr logger and `arc4random_buf` random provider rather than empty
-records.
+against the selected host heap. POSIX targets use `calloc`, `realloc`, and
+`posix_memalign`. Windows keeps a malloc base pointer in one private header
+before every aligned result; allocate/resize/release can then share one exact
+zeroing and ownership rule for every alignment. Both paths preserve the old
+allocation when a growing replacement fails. The root and each lazy thread
+Context use this provider for general allocation.
+
+The temporary provider owns a direct list of separately aligned allocations in
+thread-specific state. POSIX selects a pthread key; Windows selects one
+race-published fiber-local-storage key with a destructor, which also covers
+foreign-created threads. Individual free is a no-op, resize allocates and
+preserves the live prefix, explicit reset releases the list, native thread exit
+destroys the state, and hosted main releases its state before process teardown.
+`core/memory` exposes explicit temporary helpers and reset without hiding a
+call-boundary reset. The runtime installs a stderr logger. POSIX random bytes
+come from `arc4random_buf`; Windows fills exact byte ranges from UCRT `rand_s`
+words, including a bounded final partial word.
 
 The LLVM runtime bridge uses the selected libc's physical pthread typedefs.
 Darwin's `pthread_once_t` is a 16-byte signature record initialized with its
 fixed `PTHREAD_ONCE_INIT` value and `pthread_key_t` is 64 bits. Under the
 selected glibc contract, `pthread_once_t` is one zero-initialized 32-bit word
 and `pthread_key_t` is 32 bits. Their declarations, globals, loads, and calls
-all use the matching type and alignment; these target facts never enter
+all use the matching type and alignment. Windows uses an atomic FLS-key state
+machine instead of fabricating a pthread layout. These target facts never enter
 Draft's source-visible type system.
 
 ## Initial core memory facilities
 
 Status: ordinary Draft library surface over the allocator and target-selected
-Darwin/GNU ABIs.
+Darwin/GNU/Windows ABIs.
 
 `core/memory.Arena` is a direct linked list of backing blocks with an absolute
 address-aligned bump cursor. Its allocator performs allocate and preserving
@@ -148,15 +155,14 @@ handling.
 
 ## Interactive terminal sessions
 
-Status: ordinary Draft library policy over target-selected Darwin/glibc C
-layouts and fixed/variadic libc calls; no ncurses, event framework, or compiler
-intrinsic.
+Status: ordinary Draft library policy over target-selected Darwin/glibc/Windows
+console operations; no ncurses, event framework, or compiler intrinsic.
 
 `core/terminal.Session` is a move-by-convention owner of one restoration
 obligation, not of the underlying `os.File`. `begin_raw` first obtains the
 complete native terminal mode, derives the platform's conventional raw mode
-through `cfmakeraw`, applies it immediately, and publishes Session state only
-after both native operations succeed. Raw mode makes control bytes—including
+and applies it immediately, then publishes Session state only after both native
+operations succeed. Raw mode makes control bytes—including
 Ctrl-C—application input, allowing normal application cleanup to restore the
 terminal. The explicit inactive/active/suspended state also supports process
 job control without hiding signals: `suspend` restores the saved mode while
@@ -164,12 +170,12 @@ retaining the descriptor borrow, and `resume` derives and reapplies raw mode.
 Failed transitions retain their source state. `restore` is idempotent when
 inactive and ends an already-suspended obligation without another native call.
 
-`terminal.read` combines one `poll` with one ordinary `os.read`. Durations are
-rounded upward to poll's millisecond resolution and saturated at the largest
-positive C `int`, preventing a large finite timeout from narrowing into poll's
-negative infinite-wait convention. Timeout is the successful `(0, .none)`
-case, hangup is `.end_of_input`, and the initial core error vocabulary collapses
-other native failures to `.unavailable`.
+`terminal.read` combines one target readiness wait with one ordinary `os.read`.
+Durations are rounded upward to millisecond resolution and saturated at the
+largest positive C `int`. POSIX uses `poll`; Windows waits on the descriptor's
+console handle. Timeout is the successful `(0, .none)` case, hangup is
+`.end_of_input`, and the initial core error vocabulary collapses other native
+failures to `.unavailable`.
 
 `core/terminal.Screen` separately owns the obligation to leave an ANSI/VT
 alternate screen and show the cursor. It borrows the output descriptor and
@@ -187,11 +193,12 @@ Session. It attempts both final restorations even if the first fails. This
 ordering exposes the primary screen and saved input mode to external work and
 does not re-enter the alternate screen when raw input could not be reacquired.
 
-`terminal.query_size` passes one exact eight-byte POSIX winsize record through
-the selected target's real variadic `ioctl` declaration. Darwin owns request
-`0x40087468`; Linux owns `0x5413`. The public result widens rows and columns to
-`usize`, preserves a successful zero dimension, and deliberately omits pixel
-dimensions because cell layout is the portable text-application contract.
+`terminal.query_size` uses one exact eight-byte exchange record. Darwin and
+Linux pass that compatible winsize shape through their target-owned variadic
+`ioctl`; Windows derives it from `GetConsoleScreenBufferInfo`'s visible window.
+The public result widens rows and columns to `usize`, preserves a successful
+zero dimension, and deliberately omits pixel dimensions because cell layout is
+the portable text-application contract.
 
 The allocation-free `Decoder` preserves ordinary input—including control and
 UTF-8 bytes—as byte keys and recognizes Enter, Tab, Backspace, cursor,
@@ -206,9 +213,10 @@ composition remain application or future-library concerns.
 Darwin stores a 72-byte, eight-aligned termios record and uses 32-bit `nfds_t`;
 the selected glibc contract stores a 60-byte, four-aligned record and uses
 64-bit `nfds_t`. Both use the common eight-byte `pollfd` and `winsize` layouts.
-Target source contains compile-time size/alignment assertions, while native
-package validation links the selected libc boundary, including real variadic
-`ioctl` calls.
+Windows stores the saved input/output mode as 32-bit console flags and uses
+one-pointer SRW/condition records. Target source contains compile-time
+size/alignment assertions, while native qualification links the selected libc
+or Kernel32 boundary.
 
 ## Minimal terminal cell rendering
 
@@ -248,29 +256,33 @@ surface; equal dimensions are an exact no-op. Focus, input dispatch, clipping,
 text wrapping, widgets, layout, event loops, and Unicode display remain
 application or future-library policy.
 
-The virtual-memory seam uses target-qualified source with fixed signatures for
-`mmap`, `mprotect`, and `munmap`. Reserve creates inaccessible private anonymous
-address space, commit/protect change whole-region permissions, and release
-clears the move-by-convention handle. Darwin selects `MAP_ANON = 0x1000`; Linux
-selects `MAP_ANONYMOUS = 0x20`. These constants are versioned core/target facts,
-not values inferred from host headers.
+The virtual-memory seam uses target-qualified source with fixed signatures.
+POSIX calls `mmap`, `mprotect`, and `munmap`; Windows calls `VirtualAlloc`,
+`VirtualProtect`, and `VirtualFree`. Reserve creates inaccessible address space,
+commit/protect change whole-region permissions, and release clears the move-by-
+convention handle. Darwin selects `MAP_ANON = 0x1000`; Linux selects
+`MAP_ANONYMOUS = 0x20`; Windows owns its allocation/protection constants. These
+are versioned core/target facts, not values inferred from host headers.
 
 ## Hosted process views and core threads
 
-Status: target-selected AArch64 Darwin plus AArch64/x86-64 GNU source contract;
-ELF runtime/link qualification follows in the native backend slice.
+Status: target-selected AArch64 Darwin, AArch64/x86-64 GNU, and x86-64 Windows
+source contracts.
 
-The hosted C entry receives the platform `envp` vector. Before Draft `main`, the
-runtime materializes argv and envp as stable `{pointer,length}` string records;
+The hosted C entry receives the platform process vectors. Before Draft `main`,
+the runtime materializes arguments and environment as stable `{pointer,length}`
+string records;
 `core/os` returns non-owning slices over those records. Normal return frees the
 record arrays after all Draft defers finish. Environment entries preserve their
 exact `name=value` bytes and ordering. The initial file API wraps already-open
 fixed descriptors. Pathname opening now uses a target-qualified true C variadic
 `open` declaration. Body checking promotes the mode value and LLVM applies the
 selected target's unnamed-argument ABI, so `core/os` needs no package-assembly
-adapter for Darwin, GNU AArch64, or SysV AMD64.
+adapter on POSIX. Windows synchronously converts UTF-8 paths to UTF-16 and calls
+fixed-signature UCRT wide pathname operations. Its `wmain` vectors are likewise
+converted once to owned UTF-8 before the common record materializer runs.
 
-`core/thread` uses pthreads through fixed C signatures. Spawn state owns a copy
+`core/thread` uses a target-owned native-operation seam. Spawn state owns a copy
 of the active Context. The C trampoline installs that copy as the child TLS
 default before entering the ordinary Draft callback, replacing temp_allocator
 with a provider whose state belongs to that OS thread, so ordinary calls,
@@ -280,7 +292,11 @@ uses 64-byte mutex and 48-byte condition storage, including their signatures.
 glibc 2.39 AArch64 uses 48 bytes with eight-byte alignment for both. On x86-64,
 the mutex is 40 bytes and the condition remains 48 bytes, both aligned to eight.
 Both GNU profiles define `pthread_t` as `unsigned long` rather than Darwin's
-opaque pointer.
+opaque pointer. Windows owns a `CreateThread` HANDLE through successful join,
+uses a 32-bit callback result, and maps stable one-pointer mutex/condition
+records to exclusive SRW locks and condition variables. Their destroy
+operations are explicit Draft lifetime boundaries even though Windows requires
+no native destruction call.
 
 ## Initial compiler-backed atomic interface
 

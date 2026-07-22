@@ -206,7 +206,15 @@ inputs. Ordinary builds do not execute a toolchain-version probe.
 Windows defaults to `.exe`, `.obj`, `.lib`, and `.dll` names. A linked PE
 executable or DLL also publishes a deterministic sibling `.pdb`; a DLL
 publishes its import `.lib` as a second companion. The command prints both
-companion paths when present.
+companion paths when present. A native Windows compiler build links the official
+LLVM-C 22 development distribution; matching Clang/lld-link/llvm-lib and an x64
+Visual Studio/Windows SDK environment are operational prerequisites. Ordinary
+`check`, `emit-llvm`, `emit-c-header`, and `build` work on that host. The
+bootstrap Windows validation runner and Codex provider subprocess adapters are
+not yet implemented, so native `test`, `bench`, `resolve`, and active `judge`
+operations which require those adapters fail explicitly rather than silently
+skipping work. Provider-free builds of already resolved source remain ordinary
+`build` commands.
 
 All completely lowered package modules and package-assembly inputs form one
 bounded native ready set. Workers emit only

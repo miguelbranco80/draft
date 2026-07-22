@@ -1,0 +1,217 @@
+// This target-selected half of core/terminal maps the common raw-session and
+// ANSI screen lifetimes onto the Windows console. CRT descriptors remain the
+// public handle shape; `_get_osfhandle` is used only at this boundary. Input raw
+// mode enables virtual-terminal key sequences and disables canonical, echo,
+// processed, mouse, window, insert, and quick-edit input. Screen acquisition
+// separately enables virtual-terminal output and restores the exact saved mode.
+//
+// Native_Mode and Native_Output_Mode are copied restoration records. No HANDLE
+// is retained: each operation derives it synchronously from the still-borrowed
+// descriptor. Window-size queries report the visible console window in cells,
+// not the backing buffer. Draft specification: sections 5-7 and 12, plus the
+// x86-64 Windows target profile.
+package terminal
+
+import core/c_abi
+
+Native_Mode :: c struct {
+    input_mode: c_abi.unsigned_long,
+}
+
+Native_Output_Mode :: c struct {
+    saved_mode: c_abi.unsigned_long,
+    active_mode: c_abi.unsigned_long,
+}
+
+Console_Coord :: c struct {
+    x: c_abi.short,
+    y: c_abi.short,
+}
+
+Console_Rectangle :: c struct {
+    left: c_abi.short,
+    top: c_abi.short,
+    right: c_abi.short,
+    bottom: c_abi.short,
+}
+
+Console_Buffer_Info :: c struct {
+    buffer_size: Console_Coord,
+    cursor_position: Console_Coord,
+    attributes: c_abi.unsigned_short,
+    window: Console_Rectangle,
+    maximum_window_size: Console_Coord,
+}
+
+Native_Apply_Now :: cast[c_abi.int](0)
+
+Enable_Processed_Input :: cast[c_abi.unsigned_long](0x0001)
+Enable_Line_Input :: cast[c_abi.unsigned_long](0x0002)
+Enable_Echo_Input :: cast[c_abi.unsigned_long](0x0004)
+Enable_Window_Input :: cast[c_abi.unsigned_long](0x0008)
+Enable_Mouse_Input :: cast[c_abi.unsigned_long](0x0010)
+Enable_Insert_Mode :: cast[c_abi.unsigned_long](0x0020)
+Enable_Quick_Edit_Mode :: cast[c_abi.unsigned_long](0x0040)
+Enable_Extended_Flags :: cast[c_abi.unsigned_long](0x0080)
+Enable_Auto_Position :: cast[c_abi.unsigned_long](0x0100)
+Enable_Virtual_Terminal_Input :: cast[c_abi.unsigned_long](0x0200)
+
+Enable_Processed_Output :: cast[c_abi.unsigned_long](0x0001)
+Enable_Virtual_Terminal_Processing :: cast[c_abi.unsigned_long](0x0004)
+
+Wait_Object_0 :: cast[c_abi.unsigned_long](0)
+Wait_Timeout :: cast[c_abi.unsigned_long](258)
+Invalid_Os_Handle :: ~cast[uintptr](0)
+
+foreign windows_ucrt {
+    descriptor_os_handle as "_get_osfhandle" :: c proc(
+        descriptor: c_abi.int,
+    ) -> c_abi.intptr_t
+}
+
+foreign windows_kernel {
+    get_console_mode as "GetConsoleMode" :: c proc(
+        handle: rawptr,
+        mode: ^c_abi.unsigned_long,
+    ) -> i32
+    set_console_mode as "SetConsoleMode" :: c proc(
+        handle: rawptr,
+        mode: c_abi.unsigned_long,
+    ) -> i32
+    wait_for_single_object as "WaitForSingleObject" :: c proc(
+        handle: rawptr,
+        milliseconds: c_abi.unsigned_long,
+    ) -> c_abi.unsigned_long
+    get_console_screen_buffer_info as "GetConsoleScreenBufferInfo" :: c proc(
+        handle: rawptr,
+        info: ^Console_Buffer_Info,
+    ) -> i32
+}
+
+native_handle :: proc(descriptor: c_abi.int) -> rawptr {
+    value := cast[uintptr](descriptor_os_handle(descriptor))
+    if value == Invalid_Os_Handle {
+        return nil
+    }
+    return cast[rawptr](value)
+}
+
+native_get_mode :: proc(
+    descriptor: c_abi.int,
+    mode: ^Native_Mode,
+) -> c_abi.int {
+    handle := native_handle(descriptor)
+    if handle == nil || get_console_mode(handle, &mode^.input_mode) == 0 {
+        return -1
+    }
+    return 0
+}
+
+native_set_mode :: proc(
+    descriptor: c_abi.int,
+    action: c_abi.int,
+    mode: ^Native_Mode,
+) -> c_abi.int {
+    if action != Native_Apply_Now {
+        return -1
+    }
+    handle := native_handle(descriptor)
+    if handle == nil || set_console_mode(handle, mode^.input_mode) == 0 {
+        return -1
+    }
+    return 0
+}
+
+native_make_raw :: proc(mode: ^Native_Mode) {
+    disabled := Enable_Processed_Input | Enable_Line_Input |
+        Enable_Echo_Input | Enable_Window_Input | Enable_Mouse_Input |
+        Enable_Insert_Mode | Enable_Quick_Edit_Mode | Enable_Auto_Position
+    mode^.input_mode = (mode^.input_mode & ~disabled) |
+        Enable_Extended_Flags | Enable_Virtual_Terminal_Input
+}
+
+// WaitForSingleObject accepts DWORD milliseconds. Common timeout conversion
+// already saturates at signed INT_MAX, so the cast cannot become INFINITE.
+native_poll_one :: proc(
+    descriptor: ^Poll_Descriptor,
+    timeout_milliseconds: c_abi.int,
+) -> c_abi.int {
+    descriptor^.returned_events = 0
+    handle := native_handle(descriptor^.descriptor)
+    if handle == nil {
+        descriptor^.returned_events = Poll_Invalid
+        return -1
+    }
+    waited := wait_for_single_object(
+        handle,
+        cast[c_abi.unsigned_long](timeout_milliseconds),
+    )
+    if waited == Wait_Timeout {
+        return 0
+    }
+    if waited != Wait_Object_0 {
+        descriptor^.returned_events = Poll_Error
+        return -1
+    }
+    descriptor^.returned_events = Poll_Input
+    return 1
+}
+
+native_query_size :: proc(
+    descriptor: c_abi.int,
+    size: ^Native_Window_Size,
+) -> c_abi.int {
+    static_assert(size_of(Console_Buffer_Info) == 22)
+    static_assert(align_of(Console_Buffer_Info) == 2)
+    handle := native_handle(descriptor)
+    info: Console_Buffer_Info
+    if handle == nil || get_console_screen_buffer_info(handle, &info) == 0 {
+        return -1
+    }
+    width := cast[i32](info.window.right) - cast[i32](info.window.left) + 1
+    height := cast[i32](info.window.bottom) - cast[i32](info.window.top) + 1
+    if width < 0 || height < 0 || width > 65535 || height > 65535 {
+        return -1
+    }
+    size^.columns = cast[c_abi.unsigned_short](width)
+    size^.rows = cast[c_abi.unsigned_short](height)
+    size^.pixel_width = 0
+    size^.pixel_height = 0
+    return 0
+}
+
+native_begin_screen :: proc(
+    descriptor: c_abi.int,
+    mode: ^Native_Output_Mode,
+) -> bool {
+    handle := native_handle(descriptor)
+    if handle == nil || get_console_mode(handle, &mode^.saved_mode) == 0 {
+        return false
+    }
+    mode^.active_mode = mode^.saved_mode | Enable_Processed_Output |
+        Enable_Virtual_Terminal_Processing
+    return set_console_mode(handle, mode^.active_mode) != 0
+}
+
+native_suspend_screen :: proc(
+    descriptor: c_abi.int,
+    mode: ^Native_Output_Mode,
+) -> bool {
+    handle := native_handle(descriptor)
+    return handle != nil && set_console_mode(handle, mode^.saved_mode) != 0
+}
+
+native_resume_screen :: proc(
+    descriptor: c_abi.int,
+    mode: ^Native_Output_Mode,
+) -> bool {
+    handle := native_handle(descriptor)
+    return handle != nil && set_console_mode(handle, mode^.active_mode) != 0
+}
+
+native_restore_screen :: proc(
+    descriptor: c_abi.int,
+    mode: ^Native_Output_Mode,
+) -> bool {
+    return native_suspend_screen(descriptor, mode)
+}
